@@ -56,3 +56,15 @@ import Foundation
     #expect(annotations.contains { $0.contains("→") })
     #expect(annotations.contains { $0.contains("type descriptor for") })
 }
+
+/// disasm JSON output parses and carries the expected fields.
+@Test func emitsValidJSONIfPresent() async throws {
+    let path = "Fixtures/Sample/sample.release"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await Disassembler(preset: .simplified).disassemble(path: path)
+    let parsed = try JSONSerialization.jsonObject(with: Data(functions.jsonString().utf8))
+    let array = try #require(parsed as? [[String: Any]])
+    #expect(!array.isEmpty)
+    #expect(array.first?["address"] is String)
+    #expect(array.first?["instructions"] is [Any])
+}

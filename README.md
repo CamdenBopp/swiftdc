@@ -60,6 +60,11 @@ swiftdc analyze /path/to/Universal --arch arm64
 
 # Write to a file
 swiftdc analyze /path/to/Binary -o report.txt
+
+# Structured JSON (composable with jq, diffing across builds, etc.)
+swiftdc disasm  /path/to/Binary --json        # [{ name, symbol, address, source, instructions:[…] }]
+swiftdc dump    /path/to/Binary --json        # [ "<declaration block>", … ]
+swiftdc analyze /path/to/Binary --json        # { declarations:[…], functions:[…] }
 ```
 
 Demangle presets: `default` (fully-qualified, `sample.Point`), `simplified`

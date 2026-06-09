@@ -9,6 +9,15 @@ public struct AnalysisReport: Sendable {
         self.preset = preset
     }
 
+    /// Structured JSON: `{ declarations: [...], functions: [...] }`.
+    public func generateJSON(path: String, architecture: String? = nil) async throws -> String {
+        let machO = try BinaryLoader.load(path: path, architecture: architecture)
+        let declarations = await SwiftDeclarationDumper(preset: preset).dump(machO)
+        let functions = (try? await Disassembler(preset: preset)
+            .disassemble(path: path, architecture: architecture)) ?? []
+        return reportJSON(declarations: declarations, functions: functions)
+    }
+
     public func generate(path: String, architecture: String? = nil) async throws -> String {
         let machO = try BinaryLoader.load(path: path, architecture: architecture)
         let declarations = await SwiftDeclarationDumper(preset: preset).dump(machO)

@@ -41,10 +41,15 @@ struct AnalyzeCommand: AsyncParsableCommand {
     @Option(name: [.short, .long], help: "Write output to a file instead of stdout.")
     var output: String?
 
+    @Flag(name: .long, help: "Emit structured JSON instead of text.")
+    var json = false
+
     func run() async throws {
-        let report = try await AnalysisReport(preset: demangle)
-            .generate(path: path, architecture: architecture)
-        try emit(report, to: output)
+        let report = AnalysisReport(preset: demangle)
+        let text = json
+            ? try await report.generateJSON(path: path, architecture: architecture)
+            : try await report.generate(path: path, architecture: architecture)
+        try emit(text, to: output)
     }
 }
 
@@ -73,6 +78,9 @@ struct DumpCommand: AsyncParsableCommand {
     @Option(name: [.short, .long], help: "Write output to a file instead of stdout.")
     var output: String?
 
+    @Flag(name: .long, help: "Emit structured JSON (array of declaration blocks).")
+    var json = false
+
     func run() async throws {
         let machO = try BinaryLoader.load(path: path, architecture: architecture)
         let dumper = SwiftDeclarationDumper(preset: demangle)
@@ -80,7 +88,11 @@ struct DumpCommand: AsyncParsableCommand {
             ? Set(SwiftDeclarationDumper.Section.allCases)
             : Set(sections)
         let text = await dumper.dump(machO, sections: selected)
-        try emit(text.isEmpty ? "// No Swift metadata found for the selected sections." : text, to: output)
+        if json {
+            try emit(declarationsJSON(text), to: output)
+        } else {
+            try emit(text.isEmpty ? "// No Swift metadata found for the selected sections." : text, to: output)
+        }
     }
 }
 
@@ -105,6 +117,9 @@ struct DisasmCommand: AsyncParsableCommand {
     @Option(name: [.short, .long], help: "Write output to a file instead of stdout.")
     var output: String?
 
+    @Flag(name: .long, help: "Emit structured JSON instead of text.")
+    var json = false
+
     func run() async throws {
         let disassembler = Disassembler(preset: demangle)
         let functions = try await disassembler.disassemble(
@@ -112,10 +127,14 @@ struct DisasmCommand: AsyncParsableCommand {
             architecture: architecture,
             functionFilter: function
         )
-        let text = functions.isEmpty
-            ? "// No functions matched."
-            : functions.map { $0.render() }.joined(separator: "\n\n")
-        try emit(text, to: output)
+        if json {
+            try emit(functions.jsonString(), to: output)
+        } else {
+            let text = functions.isEmpty
+                ? "// No functions matched."
+                : functions.map { $0.render() }.joined(separator: "\n\n")
+            try emit(text, to: output)
+        }
     }
 }
 
