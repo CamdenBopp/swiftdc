@@ -17,7 +17,9 @@ SwiftDump, plus annotated assembly), not a full control-flow decompiler. See
   inheritance, reconstructed from Swift runtime metadata.
 - **Annotated ARM64** — function bodies disassembled via `llvm-objdump`, with
   branch/call targets demangled to readable Swift names and string-literal
-  references surfaced.
+  references surfaced. `adrp`/`add` operand references are resolved to the
+  target's name (`→ Rectangle.origin.getter`, `→ type descriptor for Stack`,
+  or a demangled Swift symbol) — context objdump leaves bare.
 - **Stripped-binary function recovery** — when the symbol table is gone,
   function boundaries are recovered from `LC_FUNCTION_STARTS` (which survives
   stripping), and names from Swift metadata for class vtable methods and

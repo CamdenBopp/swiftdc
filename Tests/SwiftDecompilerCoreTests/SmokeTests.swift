@@ -46,3 +46,13 @@ import Foundation
         #expect(areaWitness.instructions.contains { $0.text.hasPrefix("fmul") })
     }
 }
+
+/// adrp/add operand references resolve to function/type-descriptor names.
+@Test func annotatesOperandReferencesIfPresent() async throws {
+    let path = "Fixtures/Sample/sample.release"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await Disassembler(preset: .simplified).disassemble(path: path)
+    let annotations = functions.flatMap(\.instructions).compactMap(\.annotation)
+    #expect(annotations.contains { $0.contains("→") })
+    #expect(annotations.contains { $0.contains("type descriptor for") })
+}

@@ -121,12 +121,17 @@ public struct Disassembler: Sendable {
         }
 
         // 4. Re-segment the flat stream at the boundaries and name each piece.
-        let functions = segment(
+        var functions = segment(
             instructions,
             boundaries: boundaries,
             labelByAddress: labelByAddress,
             metadataNames: metadataNames
         )
+
+        // 5. Resolve adrp/add(+ldr) operand references to function, type-
+        //    descriptor, and Swift-symbol names that objdump leaves bare.
+        let referenceNames = referenceIndex(functions: functions, in: machO)
+        functions = functions.map { annotateReferences(in: $0, names: referenceNames, machO: machO) }
 
         guard let needle = functionFilter?.lowercased(), !needle.isEmpty else {
             return functions
@@ -211,6 +216,138 @@ public struct Disassembler: Sendable {
     private func functionStarts(of machO: MachOFile) -> [UInt64] {
         guard let starts = machO.functionStarts else { return [] }
         return starts.map { UInt64($0.offset) }
+    }
+
+    // MARK: - Operand reference resolution
+
+    /// Known target addresses → display names: every recovered function start,
+    /// plus Swift type descriptors. Used to resolve adrp/add operand targets.
+    private func referenceIndex(functions: [DisassembledFunction], in machO: MachOFile) -> [UInt64: String] {
+        var names: [UInt64: String] = [:]
+        for function in functions where names[function.startAddress] == nil {
+            names[function.startAddress] = function.displayName
+        }
+        for type in (try? machO.swift.types) ?? [] {
+            let offset: Int
+            let name: String?
+            switch type {
+            case .enum(let model): offset = model.descriptor.offset; name = try? model.descriptor.name(in: machO)
+            case .struct(let model): offset = model.descriptor.offset; name = try? model.descriptor.name(in: machO)
+            case .class(let model): offset = model.descriptor.offset; name = try? model.descriptor.name(in: machO)
+            }
+            if let name {
+                names[machO.address(forOffset: offset)] = "type descriptor for \(name)"
+            }
+        }
+        return names
+    }
+
+    /// Walk a function's instructions tracking `adrp` page registers, and when a
+    /// following `add`/`ldr` forms a concrete target, annotate it (if objdump
+    /// left it bare) with a resolved name.
+    private func annotateReferences(
+        in function: DisassembledFunction,
+        names: [UInt64: String],
+        machO: MachOFile
+    ) -> DisassembledFunction {
+        var pageByRegister: [String: UInt64] = [:]
+        var updated: [Instruction] = []
+        updated.reserveCapacity(function.instructions.count)
+
+        for insn in function.instructions {
+            if let (register, page) = parseAdrp(insn.text) {
+                pageByRegister[register] = page
+                updated.append(insn)
+                continue
+            }
+
+            // Only annotate operands objdump left without a comment of its own.
+            if insn.annotation == nil, !insn.text.contains(";"),
+               let (base, immediate) = parsePageOffset(insn.text),
+               let page = pageByRegister[base],
+               let name = referenceName(at: page &+ immediate, names: names, machO: machO) {
+                updated.append(Instruction(address: insn.address, text: insn.text, annotation: name))
+            } else {
+                updated.append(insn)
+            }
+
+            // The written (first-operand) register no longer holds an adrp page.
+            // Clearing it keeps a stale page from being reused on a later op
+            // (conservative: at worst we miss an annotation, never invent one).
+            if let written = firstRegister(insn.text) {
+                pageByRegister[written] = nil
+            }
+        }
+
+        return DisassembledFunction(
+            symbol: function.symbol,
+            demangledName: function.demangledName,
+            startAddress: function.startAddress,
+            instructions: updated,
+            source: function.source
+        )
+    }
+
+    /// Resolve a target address to a name: a known function/descriptor, or a
+    /// Swift mangled-symbol string read from the binary. Returns nil otherwise
+    /// (never guesses at arbitrary data).
+    private func referenceName(at target: UInt64, names: [UInt64: String], machO: MachOFile) -> String? {
+        if let name = names[target] { return "→ \(name)" }
+        guard let fileOffset = machO.fileOffset(of: target),
+              let string = try? machO.readString(offset: Int(fileOffset)),
+              !string.isEmpty,
+              let demangled = demangle(string)
+        else { return nil }
+        return "→ \(demangled)"
+    }
+
+    /// `adrp x8, 12 ; 0x10000c000` → ("x8", 0x10000c000). The resolved page comes
+    /// from objdump's trailing comment.
+    private func parseAdrp(_ text: String) -> (register: String, page: UInt64)? {
+        let fields = text.split(whereSeparator: { $0 == " " || $0 == "\t" })
+        guard fields.first == "adrp", fields.count >= 2 else { return nil }
+        let register = fields[1].trimmingCharacters(in: CharacterSet(charactersIn: ", "))
+        guard let hashIndex = text.range(of: "; 0x")?.upperBound else { return nil }
+        let hex = text[hashIndex...].prefix { $0.isHexDigit }
+        guard let page = UInt64(hex, radix: 16) else { return nil }
+        return (register, page)
+    }
+
+    /// For `add xN, xB, #0x170` or `ldr xT, [xB, #0x170]`, return (base xB, 0x170).
+    private func parsePageOffset(_ text: String) -> (base: String, offset: UInt64)? {
+        let fields = text.split(whereSeparator: { $0 == " " || $0 == "\t" })
+        guard let mnemonic = fields.first else { return nil }
+        func immediate(_ token: Substring) -> UInt64? {
+            let cleaned = token.trimmingCharacters(in: CharacterSet(charactersIn: "#[],"))
+            guard cleaned.hasPrefix("0x"), let value = UInt64(cleaned.dropFirst(2), radix: 16) else { return nil }
+            return value
+        }
+        func register(_ token: Substring) -> String {
+            String(token).trimmingCharacters(in: CharacterSet(charactersIn: "[],"))
+        }
+        if mnemonic == "add", fields.count >= 4 {
+            guard let offset = immediate(fields[3]) else { return nil }
+            return (register(fields[2]), offset)
+        }
+        if mnemonic.hasPrefix("ldr") || mnemonic.hasPrefix("ldur"), fields.count >= 4 {
+            // ldr xT, [xB, #imm]  → fields: ["ldr", "xT,", "[xB,", "#imm]"]
+            guard let offset = immediate(fields[3]) else { return nil }
+            return (register(fields[2]), offset)
+        }
+        return nil
+    }
+
+    /// The instruction's first operand register (its destination for the ops we
+    /// track), e.g. `add x0, …` → "x0". Used only for page invalidation.
+    private func firstRegister(_ text: String) -> String? {
+        let fields = text.split(whereSeparator: { $0 == " " || $0 == "\t" })
+        guard fields.count >= 2 else { return nil }
+        var token = String(fields[1]).trimmingCharacters(in: CharacterSet(charactersIn: "[],"))
+        guard let first = token.first, first == "x" || first == "w" else { return nil }
+        // Normalize the 32-bit view (w0) to its 64-bit register (x0); a w-write
+        // still clobbers the full register that held the adrp page.
+        if first == "w" { token = "x" + token.dropFirst() }
+        return token
     }
 
     // MARK: - objdump parsing
