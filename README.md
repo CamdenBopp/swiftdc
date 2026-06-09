@@ -1,0 +1,139 @@
+# swiftdc — a Swift-aware Mach-O decompiler
+
+`swiftdc` reverse-engineers compiled Swift Mach-O binaries (executables,
+frameworks, dylibs) on Apple Silicon. It reconstructs **approximate Swift
+declarations** from the binary's Swift metadata and produces **ARM64
+disassembly annotated with demangled symbols** — including for stripped
+binaries, where the type structure still survives in the `__swift5_*` sections.
+
+This is the "Swift-aware binary browser" tier (think `class-dump` / `dsdump` /
+SwiftDump, plus annotated assembly), not a full control-flow decompiler. See
+[Scope & limitations](#scope--limitations).
+
+## What it produces
+
+- **Declarations** — `struct` / `enum` / `class` / `protocol` definitions with
+  stored properties, methods, enum cases (incl. `indirect`), generics, and
+  inheritance, reconstructed from Swift runtime metadata.
+- **Annotated ARM64** — function bodies disassembled via `llvm-objdump`, with
+  branch/call targets demangled to readable Swift names and string-literal
+  references surfaced.
+- **Stripped-binary function recovery** — when the symbol table is gone,
+  function boundaries are recovered from `LC_FUNCTION_STARTS` (which survives
+  stripping), and names from Swift metadata for class vtable methods and
+  protocol-conformance witnesses, so a stripped binary still disassembles as
+  discrete, partly-named functions instead of one blob.
+- **Combined report** — declarations followed by disassembly grouped by the
+  owning type.
+
+## Requirements
+
+- macOS on **Apple Silicon (arm64)**
+- **Xcode 26 / Swift 6.3** toolchain (provides `swiftc`, `llvm-objdump`,
+  `swift-demangle`)
+
+## Build
+
+```bash
+swift build            # debug build → .build/debug/swiftdc
+swift build -c release # optimized → .build/release/swiftdc
+```
+
+## Usage
+
+```bash
+# Full report: declarations + disassembly grouped by type
+swiftdc analyze /path/to/Binary
+
+# Just the reconstructed declarations
+swiftdc dump /path/to/Binary
+swiftdc dump /path/to/Binary --sections types,protocols
+swiftdc dump /path/to/Binary --demangle simplified   # drop module prefixes
+
+# Just annotated disassembly, optionally filtered to a function
+swiftdc disasm /path/to/Binary --function distance
+
+# Fat/universal binaries: pick a slice
+swiftdc analyze /path/to/Universal --arch arm64
+
+# Write to a file
+swiftdc analyze /path/to/Binary -o report.txt
+```
+
+Demangle presets: `default` (fully-qualified, `sample.Point`), `simplified`
+(drops module/standard-library prefixes), `interface` (interface-style names).
+
+### Example
+
+```text
+$ swiftdc dump Fixtures/Sample/sample.release --sections types --demangle simplified
+struct Point {
+    var x: Double
+    var y: Double
+    /* Function */ Point.distance(to:)
+}
+
+$ swiftdc disasm Fixtures/Sample/sample.release --function distance --demangle simplified
+Point.distance(to:):
+  // _$s6sample5PointV8distance2toSdAC_tF  @ 0x100001628
+  100001628:  fsub  d0, d2, d0
+  ...
+  100001640:  ret
+```
+
+## Architecture
+
+```
+swiftdc (CLI, swift-argument-parser)
+        │
+        ▼
+SwiftDecompilerCore (library)
+  ├── BinaryLoader          load Mach-O / select fat slice          (MachOKit)
+  ├── SwiftDeclarationDumper reconstruct declarations from metadata  (MachOSwiftSection / SwiftDump)
+  ├── Disassembler          ARM64 + demangled annotation            (llvm-objdump + Demangling)
+  └── AnalysisReport        combined, grouped report
+```
+
+Parsing leans on [`MachOKit`](https://github.com/p-x9/MachOKit) (Mach-O
+container) and [`MachOSwiftSection`](https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection)
+(Swift `__swift5_*` metadata → typed declarations). Demangling uses the
+in-process `Demangling` library. Instruction decoding shells out to the
+Xcode-bundled `llvm-objdump`.
+
+> **Dependency note:** `MachOSwiftSection` is pinned to a specific `main` commit,
+> not its 0.9.1 release. 0.9.1 does not compile under Swift 6.3 (an `await` was
+> missing on `Node.print()` once swift-demangling added an async overload); the
+> fix is on `main`. See the comment in `Package.swift`.
+
+## Test fixture
+
+`Fixtures/Sample/sample.swift` is a metadata-rich program (structs, enums,
+classes, protocols, generics). Build debug/release/stripped variants with:
+
+```bash
+Fixtures/Sample/build.sh
+```
+
+Run the tests (the fixture-based test self-skips if the binary isn't built):
+
+```bash
+swift test
+```
+
+## Scope & limitations
+
+- **Apple Silicon / ARM64 only** right now (x86_64 slices load, but the
+  disassembly/annotation is tuned for ARM64).
+- **Not a control-flow decompiler.** Output is reconstructed *declarations* +
+  *annotated assembly*, not recovered C-like function bodies. (A Ghidra backend
+  for true pseudocode is a possible future direction.)
+- **Stripped binaries**: function *boundaries* are recovered from
+  `LC_FUNCTION_STARTS`, and *names* from Swift metadata for **class vtable
+  methods** (`Type.method`) and **protocol-conformance witnesses**
+  (`Type: Protocol.kind`, read from the witness table). Free functions,
+  closures, thunks, and **struct/enum non-protocol methods** still render as
+  `sub_<addr>` — with static dispatch they have no metadata record, so only
+  their boundary is recoverable, not their name.
+- Class vtable method names occasionally fall back to `sub_<addr>` even
+  unstripped (a SwiftDump resolution gap); the address is still correct and
+  disassemblable.

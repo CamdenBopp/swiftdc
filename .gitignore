@@ -1,0 +1,26 @@
+# SwiftPM
+.build/
+.swiftpm/
+Package.pins
+
+# Xcode
+*.xcodeproj
+*.xcworkspace
+DerivedData/
+xcuserdata/
+
+# Compiled fixture artifacts (regenerate with Fixtures/Sample/build.sh)
+Fixtures/Sample/sample.debug
+Fixtures/Sample/sample.release
+Fixtures/Sample/sample.stripped
+Fixtures/Sample/*.dylib
+Fixtures/Sample/*.dSYM/
+Fixtures/Sample/*.swiftmodule
+Fixtures/Sample/*.swiftdoc
+
+# macOS
+.DS_Store
+
+# Note: Package.resolved is intentionally tracked. We pin MachOSwiftSection to
+# `branch: main` (0.9.1 is broken on Swift 6.3), so Package.resolved is the only
+# record of the exact commit that builds.
