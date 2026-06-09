@@ -25,6 +25,7 @@ private struct FunctionDTO: Encodable {
 
 private struct ReportDTO: Encodable {
     let declarations: [String]
+    let objc: [String]
     let functions: [FunctionDTO]
 }
 
@@ -66,12 +67,17 @@ public func declarationBlocks(_ dump: String) -> [String] {
         .filter { !$0.isEmpty }
 }
 
-/// JSON object combining declaration blocks and disassembled functions.
-public func reportJSON(declarations: String, functions: [DisassembledFunction]) -> String {
-    jsonEncode(ReportDTO(declarations: declarationBlocks(declarations), functions: functions.map(\.dto)))
+/// JSON object combining Swift declarations, ObjC headers, and functions.
+public func reportJSON(declarations: String, objc: [String], functions: [DisassembledFunction]) -> String {
+    jsonEncode(ReportDTO(declarations: declarationBlocks(declarations), objc: objc, functions: functions.map(\.dto)))
 }
 
 /// JSON array of declaration blocks parsed from a declarations dump.
 public func declarationsJSON(_ dump: String) -> String {
     jsonEncode(declarationBlocks(dump))
+}
+
+/// JSON array of pre-split string blocks (e.g. ObjC headers).
+public func jsonStrings(_ strings: [String]) -> String {
+    jsonEncode(strings)
 }

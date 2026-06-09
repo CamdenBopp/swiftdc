@@ -15,6 +15,10 @@ SwiftDump, plus annotated assembly), not a full control-flow decompiler. See
 - **Declarations** — `struct` / `enum` / `class` / `protocol` definitions with
   stored properties, methods, enum cases (incl. `indirect`), generics, and
   inheritance, reconstructed from Swift runtime metadata.
+- **Objective-C headers** — `@interface` / `@protocol` / category declarations
+  with properties and method signatures, reconstructed from ObjC runtime
+  metadata. Covers the Swift+ObjC mix in real apps/frameworks (and Swift classes
+  exposed to the ObjC runtime); survives stripping.
 - **Annotated ARM64** — function bodies disassembled via `llvm-objdump`, with
   branch/call targets demangled to readable Swift names and string-literal
   references surfaced. `adrp`/`add` operand references are resolved to the
@@ -51,6 +55,9 @@ swiftdc analyze /path/to/Binary
 swiftdc dump /path/to/Binary
 swiftdc dump /path/to/Binary --sections types,protocols
 swiftdc dump /path/to/Binary --demangle simplified   # drop module prefixes
+
+# Just the reconstructed Objective-C headers
+swiftdc objc /path/to/Binary
 
 # Just annotated disassembly, optionally filtered to a function
 swiftdc disasm /path/to/Binary --function distance
@@ -97,15 +104,18 @@ swiftdc (CLI, swift-argument-parser)
 SwiftDecompilerCore (library)
   ├── BinaryLoader          load Mach-O / select fat slice          (MachOKit)
   ├── SwiftDeclarationDumper reconstruct declarations from metadata  (MachOSwiftSection / SwiftDump)
+  ├── ObjCDumper            reconstruct ObjC headers                 (MachOObjCSection / ObjCDump)
   ├── Disassembler          ARM64 + demangled annotation            (llvm-objdump + Demangling)
   └── AnalysisReport        combined, grouped report
 ```
 
 Parsing leans on [`MachOKit`](https://github.com/p-x9/MachOKit) (Mach-O
-container) and [`MachOSwiftSection`](https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection)
-(Swift `__swift5_*` metadata → typed declarations). Demangling uses the
-in-process `Demangling` library. Instruction decoding shells out to the
-Xcode-bundled `llvm-objdump`.
+container), [`MachOSwiftSection`](https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection)
+(Swift `__swift5_*` metadata → typed declarations), and
+[`MachOObjCSection`](https://github.com/MxIris-Reverse-Engineering/MachOObjCSection)
++ [`ObjCDump`](https://github.com/p-x9/swift-objc-dump) (ObjC `__objc_*` metadata
+→ headers). Demangling uses the in-process `Demangling` library. Instruction
+decoding shells out to the Xcode-bundled `llvm-objdump`.
 
 > **Dependency note:** `MachOSwiftSection` is pinned to a specific `main` commit,
 > not its 0.9.1 release. 0.9.1 does not compile under Swift 6.3 (an `await` was

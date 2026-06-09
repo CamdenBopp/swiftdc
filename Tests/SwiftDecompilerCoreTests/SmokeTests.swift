@@ -57,6 +57,16 @@ import Foundation
     #expect(annotations.contains { $0.contains("type descriptor for") })
 }
 
+/// Objective-C headers are reconstructed from ObjC runtime metadata.
+@Test func dumpsObjCHeadersIfPresent() throws {
+    let path = "Fixtures/Sample/libSample.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let machO = try BinaryLoader.load(path: path)
+    let text = ObjCDumper().dump(machO)
+    #expect(text.contains("@interface SDWidget"))
+    #expect(text.contains("ping"))
+}
+
 /// disasm JSON output parses and carries the expected fields.
 @Test func emitsValidJSONIfPresent() async throws {
     let path = "Fixtures/Sample/sample.release"

@@ -43,6 +43,18 @@ let package = Package(
             url: "https://github.com/MxIris-Reverse-Engineering/swift-demangling",
             from: "0.4.0"
         ),
+        // Objective-C runtime metadata (classes/protocols/categories) for real
+        // Swift+ObjC app binaries. Same fork URLs MachOSwiftSection resolves to,
+        // so there's no package-identity conflict. ObjCDump renders the
+        // `@interface … @end` headers (with decoded type encodings).
+        .package(
+            url: "https://github.com/MxIris-Reverse-Engineering/MachOObjCSection.git",
+            from: "0.7.103"
+        ),
+        .package(
+            url: "https://github.com/MxIris-Reverse-Engineering/swift-objc-dump",
+            from: "0.8.101"
+        ),
         .package(
             url: "https://github.com/apple/swift-argument-parser",
             from: "1.5.0"
@@ -57,6 +69,8 @@ let package = Package(
                 .product(name: "SwiftDump", package: "MachOSwiftSection"),
                 .product(name: "Semantic", package: "swift-semantic-string"),
                 .product(name: "Demangling", package: "swift-demangling"),
+                .product(name: "MachOObjCSection", package: "MachOObjCSection"),
+                .product(name: "ObjCDump", package: "swift-objc-dump"),
             ]
         ),
         .executableTarget(

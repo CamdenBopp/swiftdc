@@ -9,25 +9,32 @@ public struct AnalysisReport: Sendable {
         self.preset = preset
     }
 
-    /// Structured JSON: `{ declarations: [...], functions: [...] }`.
+    /// Structured JSON: `{ declarations: [...], objc: [...], functions: [...] }`.
     public func generateJSON(path: String, architecture: String? = nil) async throws -> String {
         let machO = try BinaryLoader.load(path: path, architecture: architecture)
         let declarations = await SwiftDeclarationDumper(preset: preset).dump(machO)
+        let objc = ObjCDumper().blocks(machO)
         let functions = (try? await Disassembler(preset: preset)
             .disassemble(path: path, architecture: architecture)) ?? []
-        return reportJSON(declarations: declarations, functions: functions)
+        return reportJSON(declarations: declarations, objc: objc, functions: functions)
     }
 
     public func generate(path: String, architecture: String? = nil) async throws -> String {
         let machO = try BinaryLoader.load(path: path, architecture: architecture)
         let declarations = await SwiftDeclarationDumper(preset: preset).dump(machO)
+        let objc = ObjCDumper().dump(machO)
         // Disassembly is best-effort; a missing/odd binary shouldn't sink the report.
         let functions = (try? await Disassembler(preset: preset)
             .disassemble(path: path, architecture: architecture)) ?? []
 
         var out = ""
-        out += banner("DECLARATIONS")
+        out += banner("SWIFT DECLARATIONS")
         out += declarations.isEmpty ? "// (no Swift type metadata found)\n" : declarations + "\n"
+
+        if !objc.isEmpty {
+            out += "\n" + banner("OBJECTIVE-C")
+            out += objc + "\n"
+        }
 
         out += "\n" + banner("DISASSEMBLY")
         if functions.isEmpty {

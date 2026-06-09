@@ -8,9 +8,38 @@ struct SwiftDC: AsyncParsableCommand {
         commandName: "swiftdc",
         abstract: "A Swift-aware Mach-O decompiler: reconstructed declarations + annotated ARM64.",
         version: SwiftDecompiler.version,
-        subcommands: [AnalyzeCommand.self, DumpCommand.self, DisasmCommand.self],
+        subcommands: [AnalyzeCommand.self, DumpCommand.self, ObjCCommand.self, DisasmCommand.self],
         defaultSubcommand: AnalyzeCommand.self
     )
+}
+
+struct ObjCCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "objc",
+        abstract: "Reconstruct Objective-C headers (@interface/@protocol) from ObjC metadata."
+    )
+
+    @Argument(help: "Path to the Mach-O (or fat) binary.")
+    var path: String
+
+    @Option(name: [.short, .customLong("arch")], help: "Architecture slice for fat binaries (arm64, arm64e, x86_64).")
+    var architecture: String?
+
+    @Option(name: [.short, .long], help: "Write output to a file instead of stdout.")
+    var output: String?
+
+    @Flag(name: .long, help: "Emit structured JSON (array of ObjC header blocks).")
+    var json = false
+
+    func run() throws {
+        let machO = try BinaryLoader.load(path: path, architecture: architecture)
+        let blocks = ObjCDumper().blocks(machO)
+        if json {
+            try emit(jsonStrings(blocks), to: output)
+        } else {
+            try emit(blocks.isEmpty ? "// No Objective-C metadata found." : blocks.joined(separator: "\n\n"), to: output)
+        }
+    }
 }
 
 /// Writes `text` to `output` if given, otherwise prints to stdout.

@@ -95,6 +95,19 @@ final class Dog: Animal {
     override func speak() -> String { "Woof, I am \(name) the \(breed)" }
 }
 
+// MARK: - Objective-C interop (emits ObjC runtime metadata)
+
+@objc(SDWidget)
+public class Widget: NSObject {
+    @objc public var label: String
+    @objc public init(label: String) {
+        self.label = label
+        super.init()
+    }
+    @objc public func ping() -> Int { label.count }
+    @objc public func reset() { label = "" }
+}
+
 // MARK: - Generics
 
 struct Stack<Element> {
