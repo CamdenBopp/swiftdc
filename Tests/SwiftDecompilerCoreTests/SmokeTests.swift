@@ -6,6 +6,22 @@ import Foundation
     #expect(SwiftDecompiler.version == "0.0.1")
 }
 
+/// Capstone decodes ARM64 and classifies control flow.
+@Test func capstoneDecodesARM64() throws {
+    let engine = try #require(CapstoneEngine())
+    // ret = c0 03 5f d6 ; nop = 1f 20 03 d5 ; bl #0x100c (delta +0x8) = 02 00 00 94
+    let bytes = Data([0xc0, 0x03, 0x5f, 0xd6, 0x1f, 0x20, 0x03, 0xd5, 0x02, 0x00, 0x00, 0x94])
+    let insns = engine.disassemble(bytes, address: 0x1000)
+    #expect(insns.count == 3)
+    #expect(insns[0].mnemonic == "ret")
+    #expect(insns[0].controlFlow == .return)
+    #expect(insns[1].mnemonic == "nop")
+    #expect(insns[1].controlFlow == .sequential)
+    #expect(insns[2].mnemonic == "bl")
+    #expect(insns[2].controlFlow == .call)
+    #expect(insns[2].branchTarget == 0x1010)
+}
+
 @Test func ownerNameParsing() {
     #expect(AnalysisReport.ownerName(of: "sample.Point.distance(to:) -> Swift.Double") == "sample.Point")
     #expect(AnalysisReport.ownerName(of: "Point.area.getter : Swift.Double") == "Point")
@@ -65,6 +81,21 @@ import Foundation
     let text = ObjCDumper().dump(machO)
     #expect(text.contains("@interface SDWidget"))
     #expect(text.contains("ping"))
+}
+
+/// Capstone enrichment yields control-flow classification and basic blocks.
+@Test func recoversBasicBlocksIfPresent() async throws {
+    let path = "Fixtures/Sample/sample.release"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await Disassembler(preset: .simplified).disassemble(path: path)
+    let tree = try #require(functions.first { $0.demangledName == "Tree.sum()" })
+    // Control flow is classified by Capstone.
+    #expect(tree.instructions.contains { $0.controlFlow == .call })
+    #expect(tree.instructions.contains { $0.controlFlow == .return })
+    // CFG: condition / recursive-case / ret (/ trap) → multiple blocks.
+    let blocks = tree.basicBlocks()
+    #expect(blocks.count >= 3)
+    #expect(blocks.first?.successors.count == 2) // entry ends in a conditional branch
 }
 
 /// disasm JSON output parses and carries the expected fields.

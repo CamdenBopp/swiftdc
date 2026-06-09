@@ -1,5 +1,6 @@
 import Foundation
 import MachOKit
+import MachOSwiftSection
 import Demangling
 
 /// A single decoded ARM64 instruction.
@@ -10,6 +11,24 @@ public struct Instruction: Sendable {
     public let text: String
     /// Human-readable annotation (e.g. a demangled call target), if any.
     public let annotation: String?
+    /// Control-flow class (from Capstone), when available.
+    public let controlFlow: ControlFlow?
+    /// Resolved branch/call target (from Capstone), when statically known.
+    public let branchTarget: UInt64?
+
+    public init(
+        address: UInt64,
+        text: String,
+        annotation: String? = nil,
+        controlFlow: ControlFlow? = nil,
+        branchTarget: UInt64? = nil
+    ) {
+        self.address = address
+        self.text = text
+        self.annotation = annotation
+        self.controlFlow = controlFlow
+        self.branchTarget = branchTarget
+    }
 }
 
 /// How a function's name/boundary was recovered — useful context, especially
@@ -102,8 +121,23 @@ public struct Disassembler: Sendable {
         }
 
         // 1. Flat instruction stream + the symbol-table labels objdump emitted.
-        let (instructions, labelByAddress) = parseObjdump(result.stdout)
-        guard !instructions.isEmpty else { return [] }
+        let (parsed, labelByAddress) = parseObjdump(result.stdout)
+        guard !parsed.isEmpty else { return [] }
+
+        // 1b. Enrich each instruction with Capstone's control-flow class and
+        //     branch target (decoded in-process from the raw __text bytes) —
+        //     structural data objdump text doesn't expose.
+        let controlFlow = capstoneControlFlow(in: machO)
+        let instructions = parsed.map { insn -> Instruction in
+            guard let decoded = controlFlow[insn.address] else { return insn }
+            return Instruction(
+                address: insn.address,
+                text: insn.text,
+                annotation: insn.annotation,
+                controlFlow: decoded.controlFlow,
+                branchTarget: decoded.branchTarget
+            )
+        }
 
         // 2. Function boundaries: LC_FUNCTION_STARTS ∪ objdump label addresses.
         //    Function-starts survive stripping, so this re-creates boundaries
@@ -218,6 +252,23 @@ public struct Disassembler: Sendable {
         return starts.map { UInt64($0.offset) }
     }
 
+    /// Decode `__text` in-process with Capstone, returning a map of address →
+    /// structured instruction (control-flow class + branch target).
+    private func capstoneControlFlow(in machO: MachOFile) -> [UInt64: DecodedInstruction] {
+        guard let engine = CapstoneEngine(),
+              let text = machO.sections.first(where: {
+                  $0.segmentName == "__TEXT" && $0.sectionName == "__text"
+              }),
+              let bytes: [UInt8] = try? machO.readElements(offset: text.offset, numberOfElements: text.size)
+        else { return [:] }
+
+        var map: [UInt64: DecodedInstruction] = [:]
+        for decoded in engine.disassemble(Data(bytes), address: UInt64(text.address)) {
+            map[decoded.address] = decoded
+        }
+        return map
+    }
+
     // MARK: - Operand reference resolution
 
     /// Known target addresses → display names: every recovered function start,
@@ -266,7 +317,10 @@ public struct Disassembler: Sendable {
                let (base, immediate) = parsePageOffset(insn.text),
                let page = pageByRegister[base],
                let name = referenceName(at: page &+ immediate, names: names, machO: machO) {
-                updated.append(Instruction(address: insn.address, text: insn.text, annotation: name))
+                updated.append(Instruction(
+                    address: insn.address, text: insn.text, annotation: name,
+                    controlFlow: insn.controlFlow, branchTarget: insn.branchTarget
+                ))
             } else {
                 updated.append(insn)
             }

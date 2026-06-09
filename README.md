@@ -24,6 +24,10 @@ SwiftDump, plus annotated assembly), not a full control-flow decompiler. See
   references surfaced. `adrp`/`add` operand references are resolved to the
   target's name (`→ Rectangle.origin.getter`, `→ type descriptor for Stack`,
   or a demangled Swift symbol) — context objdump leaves bare.
+- **Control-flow graph (Capstone)** — `__text` is decoded in-process by Capstone
+  into structured instructions (control-flow class + branch target), so each
+  function can be split into **basic blocks with successor edges** (`disasm --cfg`,
+  and `blocks` in JSON). The foundation for data-flow / a future IR.
 - **Stripped-binary function recovery** — when the symbol table is gone,
   function boundaries are recovered from `LC_FUNCTION_STARTS` (which survives
   stripping), and names from Swift metadata for class vtable methods and
@@ -37,6 +41,8 @@ SwiftDump, plus annotated assembly), not a full control-flow decompiler. See
 - macOS on **Apple Silicon (arm64)**
 - **Xcode 26 / Swift 6.3** toolchain (provides `swiftc`, `llvm-objdump`,
   `swift-demangle`)
+- **Capstone** for structured decoding / CFG: `brew install capstone`
+  (linked via its pkg-config file)
 
 ## Build
 
@@ -61,6 +67,9 @@ swiftdc objc /path/to/Binary
 
 # Just annotated disassembly, optionally filtered to a function
 swiftdc disasm /path/to/Binary --function distance
+
+# Control-flow graph: basic blocks + successor edges (Capstone)
+swiftdc disasm /path/to/Binary --function sum --cfg
 
 # Fat/universal binaries: pick a slice
 swiftdc analyze /path/to/Universal --arch arm64
@@ -106,6 +115,8 @@ SwiftDecompilerCore (library)
   ├── SwiftDeclarationDumper reconstruct declarations from metadata  (MachOSwiftSection / SwiftDump)
   ├── ObjCDumper            reconstruct ObjC headers                 (MachOObjCSection / ObjCDump)
   ├── Disassembler          ARM64 + demangled annotation            (llvm-objdump + Demangling)
+  ├── CapstoneEngine        structured decode (control flow, targets) (Capstone, CCapstone)
+  ├── CFG                   basic-block / control-flow-graph recovery
   └── AnalysisReport        combined, grouped report
 ```
 
@@ -114,8 +125,10 @@ container), [`MachOSwiftSection`](https://github.com/MxIris-Reverse-Engineering/
 (Swift `__swift5_*` metadata → typed declarations), and
 [`MachOObjCSection`](https://github.com/MxIris-Reverse-Engineering/MachOObjCSection)
 + [`ObjCDump`](https://github.com/p-x9/swift-objc-dump) (ObjC `__objc_*` metadata
-→ headers). Demangling uses the in-process `Demangling` library. Instruction
-decoding shells out to the Xcode-bundled `llvm-objdump`.
+→ headers). Demangling uses the in-process `Demangling` library. Instruction *text* comes
+from the Xcode-bundled `llvm-objdump`; [`Capstone`](https://github.com/capstone-engine/capstone)
+decodes the same `__text` bytes in-process to add per-instruction control-flow
+class and branch targets (basic-block / CFG recovery).
 
 > **Dependency note:** `MachOSwiftSection` is pinned to a specific `main` commit,
 > not its 0.9.1 release. 0.9.1 does not compile under Swift 6.3 (an `await` was

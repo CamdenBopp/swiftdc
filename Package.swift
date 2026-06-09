@@ -61,9 +61,17 @@ let package = Package(
         ),
     ],
     targets: [
+        // Homebrew-installed Capstone (`brew install capstone`), surfaced via its
+        // pkg-config file. Used for structured in-process ARM64 decoding.
+        .systemLibrary(
+            name: "CCapstone",
+            pkgConfig: "capstone",
+            providers: [.brew(["capstone"])]
+        ),
         .target(
             name: "SwiftDecompilerCore",
             dependencies: [
+                "CCapstone",
                 .product(name: "MachOKit", package: "MachOKit"),
                 .product(name: "MachOSwiftSection", package: "MachOSwiftSection"),
                 .product(name: "SwiftDump", package: "MachOSwiftSection"),

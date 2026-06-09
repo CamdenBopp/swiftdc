@@ -149,6 +149,9 @@ struct DisasmCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Emit structured JSON instead of text.")
     var json = false
 
+    @Flag(name: .long, help: "Render the control-flow graph (basic blocks + edges) instead of a flat listing.")
+    var cfg = false
+
     func run() async throws {
         let disassembler = Disassembler(preset: demangle)
         let functions = try await disassembler.disassemble(
@@ -158,11 +161,12 @@ struct DisasmCommand: AsyncParsableCommand {
         )
         if json {
             try emit(functions.jsonString(), to: output)
+        } else if functions.isEmpty {
+            try emit("// No functions matched.", to: output)
+        } else if cfg {
+            try emit(functions.map { $0.renderCFG() }.joined(separator: "\n\n"), to: output)
         } else {
-            let text = functions.isEmpty
-                ? "// No functions matched."
-                : functions.map { $0.render() }.joined(separator: "\n\n")
-            try emit(text, to: output)
+            try emit(functions.map { $0.render() }.joined(separator: "\n\n"), to: output)
         }
     }
 }

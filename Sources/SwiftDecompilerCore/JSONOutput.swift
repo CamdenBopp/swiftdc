@@ -12,6 +12,14 @@ private struct InstructionDTO: Encodable {
     let address: String
     let text: String
     let annotation: String?
+    /// Control-flow class ("branch"/"call"/"return"/…); omitted when sequential.
+    let controlFlow: String?
+    let branchTarget: String?
+}
+
+private struct BlockDTO: Encodable {
+    let address: String
+    let successors: [String]
 }
 
 private struct FunctionDTO: Encodable {
@@ -21,6 +29,8 @@ private struct FunctionDTO: Encodable {
     /// How the name/boundary was recovered: "symbol", "metadata", or "address".
     let source: String
     let instructions: [InstructionDTO]
+    /// Basic blocks (control-flow graph) recovered via Capstone.
+    let blocks: [BlockDTO]
 }
 
 private struct ReportDTO: Encodable {
@@ -48,7 +58,17 @@ private extension DisassembledFunction {
             address: hex(startAddress),
             source: source.rawValue,
             instructions: instructions.map {
-                InstructionDTO(address: hex($0.address), text: $0.text, annotation: $0.annotation)
+                InstructionDTO(
+                    address: hex($0.address),
+                    text: $0.text,
+                    annotation: $0.annotation,
+                    controlFlow: ($0.controlFlow == nil || $0.controlFlow == .sequential)
+                        ? nil : $0.controlFlow?.rawValue,
+                    branchTarget: $0.branchTarget.map(hex)
+                )
+            },
+            blocks: basicBlocks().map {
+                BlockDTO(address: hex($0.startAddress), successors: $0.successors.map(hex))
             }
         )
     }

@@ -1,0 +1,5 @@
+module CCapstone [system] {
+    header "shim.h"
+    link "capstone"
+    export *
+}
