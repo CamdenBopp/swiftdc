@@ -32,6 +32,8 @@ SwiftDump, plus annotated assembly), not a full control-flow decompiler. See
   propagates constants and `adrp`/`add` addresses through registers per block and
   snapshots the argument registers at each call, so calls read like
   `swift_allocObject(type descriptor for Dog, 48, 7)` instead of bare branches.
+  A call's return value flows into later arguments, so nested expressions
+  surface: `print(swift_allocObject(…), …)`, `Hasher._finalize(Hasher._combine())`.
   Surfaced inline (`args(…)`), as `arguments` in JSON, and as a **proto-pseudocode
   view** (`disasm --pseudo`) that renders each function as its recovered call
   sequence (`String.append("Woof, I am ")`), hiding ARC/runtime bookkeeping.

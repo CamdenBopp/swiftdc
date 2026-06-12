@@ -134,3 +134,14 @@ import Foundation
     #expect(array.first?["address"] is String)
     #expect(array.first?["instructions"] is [Any])
 }
+
+/// A call's return value flows into a later call's argument as a nested
+/// expression (e.g. `Hasher._finalize(Hasher._combine())`).
+@Test func threadsCallResultsIntoArgumentsIfPresent() async throws {
+    let path = "Fixtures/Sample/sample.release"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await Disassembler(preset: .simplified).disassemble(path: path)
+    let arguments = functions.flatMap(\.instructions).compactMap(\.callArguments).flatMap { $0 }
+    // At least one argument is itself a recovered call expression (has nesting).
+    #expect(arguments.contains { $0.contains("(") && $0.contains(")") })
+}

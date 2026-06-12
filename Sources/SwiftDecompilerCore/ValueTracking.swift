@@ -6,6 +6,9 @@ public enum AbstractValue: Equatable, Sendable {
     case unknown
     case immediate(UInt64)
     case address(UInt64)
+    /// The return value (x0) of the call at this instruction address — lets a
+    /// result flow into a later call's argument as a nested expression.
+    case callResult(UInt64)
 }
 
 /// An abstract interpreter over a function's basic blocks. Propagates constants
@@ -28,27 +31,18 @@ public struct ValueTracer: Sendable {
                     if let trimmed = Self.trimTrailingUnknown(args) {
                         result[insn.address] = trimmed
                     }
-                    // AAPCS64: x0–x17 (+ LR) are caller-saved — invalidate them.
-                    for index in 0...17 { registers["x\(index)"] = .unknown }
+                    // AAPCS64: x0–x17 (+ LR) are caller-saved. x1–x17 become
+                    // unknown; x0 now holds this call's return value, so a later
+                    // use as an argument renders as a nested call.
+                    for index in 1...17 { registers["x\(index)"] = .unknown }
                     registers["x30"] = .unknown
+                    registers["x0"] = .callResult(insn.address)
                     continue
                 }
                 apply(insn, into: &registers)
             }
         }
         return result
-    }
-
-    /// Render an argument value, resolving addresses to names via `resolve`.
-    public func render(_ value: AbstractValue, resolve: (UInt64) -> String?) -> String {
-        switch value {
-        case .unknown:
-            return "?"
-        case .immediate(let v):
-            return v < 4096 ? String(v) : "0x" + String(v, radix: 16)
-        case .address(let a):
-            return resolve(a) ?? "0x" + String(a, radix: 16)
-        }
     }
 
     // MARK: - Transfer function
@@ -75,7 +69,7 @@ public struct ValueTracer: Sendable {
             switch value(of: operands[1], in: registers) {
             case .address(let a): registers[dest] = .address(mnemonic == "add" ? a &+ imm : a &- imm)
             case .immediate(let v): registers[dest] = .immediate(mnemonic == "add" ? v &+ imm : v &- imm)
-            case .unknown: registers[dest] = .unknown
+            case .unknown, .callResult: registers[dest] = .unknown
             }
 
         case "mov", "movz":

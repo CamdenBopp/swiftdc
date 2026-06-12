@@ -406,14 +406,38 @@ public struct Disassembler: Sendable {
         in function: DisassembledFunction,
         resolver: ReferenceResolver
     ) -> DisassembledFunction {
-        let tracer = ValueTracer()
-        let argumentsByAddress = tracer.callArguments(in: function)
+        let argumentsByAddress = ValueTracer().callArguments(in: function)
         guard !argumentsByAddress.isEmpty else { return function }
 
-        let resolve: (UInt64) -> String? = { resolver.name(at: $0) }
+        // Callee name per call address, for nesting result-of-call arguments.
+        var calleeByAddress: [UInt64: String] = [:]
+        for insn in function.instructions where insn.controlFlow == .call {
+            calleeByAddress[insn.address] = DisassembledFunction.calleeName(of: insn)
+        }
+
+        func render(_ value: AbstractValue, depth: Int) -> String {
+            switch value {
+            case .unknown:
+                return "?"
+            case .immediate(let v):
+                return v < 4096 ? String(v) : "0x" + String(v, radix: 16)
+            case .address(let a):
+                return resolver.name(at: a) ?? "0x" + String(a, radix: 16)
+            case .callResult(let addr):
+                let inner = argumentsByAddress[addr] ?? []
+                guard depth < 4, let callee = calleeByAddress[addr] else { return "result" }
+                // ARC/exclusivity calls return their argument — unwrap them.
+                if DisassembledFunction.isRuntimeNoise(callee) {
+                    return inner.first.map { render($0, depth: depth + 1) } ?? "result"
+                }
+                let args = inner.map { render($0, depth: depth + 1) }.joined(separator: ", ")
+                return "\(DisassembledFunction.strippedCallee(callee))(\(args))"
+            }
+        }
+
         let instructions = function.instructions.map { insn -> Instruction in
             guard insn.controlFlow == .call, let values = argumentsByAddress[insn.address] else { return insn }
-            let rendered = values.map { tracer.render($0, resolve: resolve) }
+            let rendered = values.map { render($0, depth: 0) }
             let note = "args(" + rendered.joined(separator: ", ") + ")"
             let merged = [insn.annotation, note].compactMap { $0 }.joined(separator: "  ")
             return Instruction(
