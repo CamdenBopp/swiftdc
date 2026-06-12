@@ -109,6 +109,20 @@ import Foundation
     #expect(argLists.contains { $0.count == 3 && $0.last == "7" })
 }
 
+/// The pseudo view renders recovered call statements and hides ARC noise.
+@Test func rendersPseudocodeIfPresent() async throws {
+    let path = "Fixtures/Sample/sample.release"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await Disassembler(preset: .simplified).disassemble(path: path)
+    let speak = try #require(functions.first { $0.demangledName == "Dog.speak()" })
+    let pseudo = speak.renderPseudo()
+    #expect(pseudo.hasPrefix("Dog.speak() {"))
+    #expect(pseudo.contains("String.append"))
+    #expect(!pseudo.contains("swift_release")) // runtime noise hidden
+    // Signature isn't doubled with the recovered args.
+    #expect(!pseudo.contains("(_:)("))
+}
+
 /// disasm JSON output parses and carries the expected fields.
 @Test func emitsValidJSONIfPresent() async throws {
     let path = "Fixtures/Sample/sample.release"

@@ -152,6 +152,9 @@ struct DisasmCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Render the control-flow graph (basic blocks + edges) instead of a flat listing.")
     var cfg = false
 
+    @Flag(name: .long, help: "Render proto-pseudocode: recovered call statements per function (ARC/runtime noise hidden).")
+    var pseudo = false
+
     func run() async throws {
         let disassembler = Disassembler(preset: demangle)
         let functions = try await disassembler.disassemble(
@@ -163,6 +166,8 @@ struct DisasmCommand: AsyncParsableCommand {
             try emit(functions.jsonString(), to: output)
         } else if functions.isEmpty {
             try emit("// No functions matched.", to: output)
+        } else if pseudo {
+            try emit(functions.map { $0.renderPseudo() }.joined(separator: "\n\n"), to: output)
         } else if cfg {
             try emit(functions.map { $0.renderCFG() }.joined(separator: "\n\n"), to: output)
         } else {

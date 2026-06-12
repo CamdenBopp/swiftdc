@@ -32,8 +32,9 @@ SwiftDump, plus annotated assembly), not a full control-flow decompiler. See
   propagates constants and `adrp`/`add` addresses through registers per block and
   snapshots the argument registers at each call, so calls read like
   `swift_allocObject(type descriptor for Dog, 48, 7)` instead of bare branches.
-  Surfaced inline (`args(…)`) and as `arguments` in JSON — the first step toward
-  pseudocode.
+  Surfaced inline (`args(…)`), as `arguments` in JSON, and as a **proto-pseudocode
+  view** (`disasm --pseudo`) that renders each function as its recovered call
+  sequence (`String.append("Woof, I am ")`), hiding ARC/runtime bookkeeping.
 - **Stripped-binary function recovery** — when the symbol table is gone,
   function boundaries are recovered from `LC_FUNCTION_STARTS` (which survives
   stripping), and names from Swift metadata for class vtable methods and
@@ -76,6 +77,9 @@ swiftdc disasm /path/to/Binary --function distance
 
 # Control-flow graph: basic blocks + successor edges (Capstone)
 swiftdc disasm /path/to/Binary --function sum --cfg
+
+# Proto-pseudocode: recovered call statements per function (ARC noise hidden)
+swiftdc disasm /path/to/Binary --function speak --pseudo
 
 # Fat/universal binaries: pick a slice
 swiftdc analyze /path/to/Universal --arch arm64
