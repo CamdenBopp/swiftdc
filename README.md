@@ -41,6 +41,11 @@ SwiftDump, plus annotated assembly), not a full control-flow decompiler. See
   Surfaced inline (`args(…)`), as `arguments` in JSON, and as a **proto-pseudocode
   view** (`disasm --pseudo`) that renders each function as its recovered call
   sequence (`String.append("Woof, I am ")`), hiding ARC/runtime bookkeeping.
+- **Structured control flow** (`disasm --structured`) — folds the call statements
+  into `if`/`else` using post-dominators over the CFG, with conditions
+  reconstructed from the compare + branch (`if (w8 != 0x1) { return } else { … }`).
+  Back-edges (loops) emit honest `goto`s rather than guessing a `while`, so the
+  output is never structurally wrong.
 - **Stripped-binary function recovery** — when the symbol table is gone,
   function boundaries are recovered from `LC_FUNCTION_STARTS` (which survives
   stripping), and names from Swift metadata for class vtable methods and
@@ -86,6 +91,9 @@ swiftdc disasm /path/to/Binary --function sum --cfg
 
 # Proto-pseudocode: recovered call statements per function (ARC noise hidden)
 swiftdc disasm /path/to/Binary --function speak --pseudo
+
+# Structured: fold the CFG into if/else with recovered conditions (goto for loops)
+swiftdc disasm /path/to/Binary --function sum --structured
 
 # Fat/universal binaries: pick a slice
 swiftdc analyze /path/to/Universal --arch arm64

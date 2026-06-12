@@ -8,11 +8,9 @@ public extension DisassembledFunction {
     func renderPseudo(hideRuntime: Bool = true) -> String {
         var lines = ["\(displayName) {"]
         var shown = 0
-        for insn in instructions where insn.controlFlow == .call {
-            guard let callee = Self.calleeName(of: insn) else { continue }
-            if hideRuntime, Self.isRuntimeNoise(callee) { continue }
-            let arguments = insn.callArguments?.joined(separator: ", ") ?? ""
-            lines.append("    \(Self.strippedCallee(callee))(\(arguments))")
+        for insn in instructions {
+            guard let statement = Self.callStatement(of: insn, hideRuntime: hideRuntime) else { continue }
+            lines.append("    \(statement)")
             shown += 1
         }
         if shown == 0 {
@@ -20,6 +18,15 @@ public extension DisassembledFunction {
         }
         lines.append("}")
         return lines.joined(separator: "\n")
+    }
+
+    /// The pseudo statement for a call instruction (`callee(args)`), or nil if
+    /// `insn` is not a call or is hidden runtime bookkeeping.
+    static func callStatement(of insn: Instruction, hideRuntime: Bool) -> String? {
+        guard insn.controlFlow == .call, let callee = calleeName(of: insn) else { return nil }
+        if hideRuntime, isRuntimeNoise(callee) { return nil }
+        let arguments = insn.callArguments?.joined(separator: ", ") ?? ""
+        return "\(strippedCallee(callee))(\(arguments))"
     }
 
     /// Best-effort callee name for a call instruction, from the demangled

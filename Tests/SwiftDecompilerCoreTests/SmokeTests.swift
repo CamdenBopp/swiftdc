@@ -131,6 +131,20 @@ import Foundation
     #expect(!pseudo.contains("(_:)("))
 }
 
+/// Structured view folds the CFG into if/else with recovered conditions.
+@Test func structuresControlFlowIfPresent() async throws {
+    let path = "Fixtures/Sample/sample.release"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await Disassembler(preset: .simplified).disassemble(path: path)
+    let tree = try #require(functions.first { $0.demangledName == "Tree.sum()" })
+    let structured = tree.renderStructured()
+    #expect(structured.contains("if ("))
+    #expect(structured.contains("} else {"))
+    #expect(structured.contains("return"))
+    // Never emits structurally broken output.
+    #expect(structured.filter { $0 == "{" }.count == structured.filter { $0 == "}" }.count)
+}
+
 /// disasm JSON output parses and carries the expected fields.
 @Test func emitsValidJSONIfPresent() async throws {
     let path = "Fixtures/Sample/sample.release"
