@@ -27,7 +27,13 @@ SwiftDump, plus annotated assembly), not a full control-flow decompiler. See
 - **Control-flow graph (Capstone)** — `__text` is decoded in-process by Capstone
   into structured instructions (control-flow class + branch target), so each
   function can be split into **basic blocks with successor edges** (`disasm --cfg`,
-  and `blocks` in JSON). The foundation for data-flow / a future IR.
+  and `blocks` in JSON).
+- **Call-argument recovery (data-flow)** — a small abstract interpreter
+  propagates constants and `adrp`/`add` addresses through registers per block and
+  snapshots the argument registers at each call, so calls read like
+  `swift_allocObject(type descriptor for Dog, 48, 7)` instead of bare branches.
+  Surfaced inline (`args(…)`) and as `arguments` in JSON — the first step toward
+  pseudocode.
 - **Stripped-binary function recovery** — when the symbol table is gone,
   function boundaries are recovered from `LC_FUNCTION_STARTS` (which survives
   stripping), and names from Swift metadata for class vtable methods and
@@ -117,6 +123,7 @@ SwiftDecompilerCore (library)
   ├── Disassembler          ARM64 + demangled annotation            (llvm-objdump + Demangling)
   ├── CapstoneEngine        structured decode (control flow, targets) (Capstone, CCapstone)
   ├── CFG                   basic-block / control-flow-graph recovery
+  ├── ValueTracer           abstract interpreter → call-argument recovery
   └── AnalysisReport        combined, grouped report
 ```
 

@@ -98,6 +98,17 @@ import Foundation
     #expect(blocks.first?.successors.count == 2) // entry ends in a conditional branch
 }
 
+/// Value tracking recovers concrete call arguments (constants/addresses).
+@Test func recoversCallArgumentsIfPresent() async throws {
+    let path = "Fixtures/Sample/sample.release"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await Disassembler(preset: .simplified).disassemble(path: path)
+    let argLists = functions.flatMap(\.instructions).compactMap(\.callArguments)
+    #expect(!argLists.isEmpty)
+    // swift_allocObject(metadata, size, alignMask=7): a 3-arg call ending in "7".
+    #expect(argLists.contains { $0.count == 3 && $0.last == "7" })
+}
+
 /// disasm JSON output parses and carries the expected fields.
 @Test func emitsValidJSONIfPresent() async throws {
     let path = "Fixtures/Sample/sample.release"

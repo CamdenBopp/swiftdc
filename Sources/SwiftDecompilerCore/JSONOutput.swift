@@ -15,6 +15,8 @@ private struct InstructionDTO: Encodable {
     /// Control-flow class ("branch"/"call"/"return"/…); omitted when sequential.
     let controlFlow: String?
     let branchTarget: String?
+    /// Recovered call arguments (x0…), when value-tracking inferred them.
+    let arguments: [String]?
 }
 
 private struct BlockDTO: Encodable {
@@ -64,7 +66,8 @@ private extension DisassembledFunction {
                     annotation: $0.annotation,
                     controlFlow: ($0.controlFlow == nil || $0.controlFlow == .sequential)
                         ? nil : $0.controlFlow?.rawValue,
-                    branchTarget: $0.branchTarget.map(hex)
+                    branchTarget: $0.branchTarget.map(hex),
+                    arguments: $0.callArguments
                 )
             },
             blocks: basicBlocks().map {

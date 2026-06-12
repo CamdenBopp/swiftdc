@@ -15,19 +15,24 @@ public struct Instruction: Sendable {
     public let controlFlow: ControlFlow?
     /// Resolved branch/call target (from Capstone), when statically known.
     public let branchTarget: UInt64?
+    /// For call instructions: recovered argument values (x0…), rendered, when
+    /// value-tracking could infer them.
+    public let callArguments: [String]?
 
     public init(
         address: UInt64,
         text: String,
         annotation: String? = nil,
         controlFlow: ControlFlow? = nil,
-        branchTarget: UInt64? = nil
+        branchTarget: UInt64? = nil,
+        callArguments: [String]? = nil
     ) {
         self.address = address
         self.text = text
         self.annotation = annotation
         self.controlFlow = controlFlow
         self.branchTarget = branchTarget
+        self.callArguments = callArguments
     }
 }
 
@@ -166,6 +171,9 @@ public struct Disassembler: Sendable {
         //    descriptor, and Swift-symbol names that objdump leaves bare.
         let referenceNames = referenceIndex(functions: functions, in: machO)
         functions = functions.map { annotateReferences(in: $0, names: referenceNames, machO: machO) }
+
+        // 6. Value-track each function to recover call-site arguments.
+        functions = functions.map { enrichCallArguments(in: $0, names: referenceNames, machO: machO) }
 
         guard let needle = functionFilter?.lowercased(), !needle.isEmpty else {
             return functions
@@ -346,13 +354,48 @@ public struct Disassembler: Sendable {
     /// Swift mangled-symbol string read from the binary. Returns nil otherwise
     /// (never guesses at arbitrary data).
     private func referenceName(at target: UInt64, names: [UInt64: String], machO: MachOFile) -> String? {
-        if let name = names[target] { return "→ \(name)" }
+        resolvedName(at: target, names: names, machO: machO).map { "→ \($0)" }
+    }
+
+    /// Bare name for an address: a known function/descriptor, or a Swift
+    /// mangled-symbol string read from the binary. Nil if not resolvable.
+    private func resolvedName(at target: UInt64, names: [UInt64: String], machO: MachOFile) -> String? {
+        if let name = names[target] { return name }
         guard let fileOffset = machO.fileOffset(of: target),
               let string = try? machO.readString(offset: Int(fileOffset)),
               !string.isEmpty,
               let demangled = demangle(string)
         else { return nil }
-        return "→ \(demangled)"
+        return demangled
+    }
+
+    /// Run value tracking on a function and append recovered call arguments
+    /// (`args(…)`) to each call instruction.
+    private func enrichCallArguments(
+        in function: DisassembledFunction,
+        names: [UInt64: String],
+        machO: MachOFile
+    ) -> DisassembledFunction {
+        let tracer = ValueTracer()
+        let argumentsByAddress = tracer.callArguments(in: function)
+        guard !argumentsByAddress.isEmpty else { return function }
+
+        let resolve: (UInt64) -> String? = { resolvedName(at: $0, names: names, machO: machO) }
+        let instructions = function.instructions.map { insn -> Instruction in
+            guard insn.controlFlow == .call, let values = argumentsByAddress[insn.address] else { return insn }
+            let rendered = values.map { tracer.render($0, resolve: resolve) }
+            let note = "args(" + rendered.joined(separator: ", ") + ")"
+            let merged = [insn.annotation, note].compactMap { $0 }.joined(separator: "  ")
+            return Instruction(
+                address: insn.address, text: insn.text, annotation: merged,
+                controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
+                callArguments: rendered
+            )
+        }
+        return DisassembledFunction(
+            symbol: function.symbol, demangledName: function.demangledName,
+            startAddress: function.startAddress, instructions: instructions, source: function.source
+        )
     }
 
     /// `adrp x8, 12 ; 0x10000c000` → ("x8", 0x10000c000). The resolved page comes
