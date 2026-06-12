@@ -141,7 +141,24 @@ import Foundation
     #expect(structured.contains("if ("))
     #expect(structured.contains("} else {"))
     #expect(structured.contains("return"))
+    // Conditions are reconstructed (back-substituted), not bare temp registers.
+    #expect(structured.contains("& 0xff"))
+    // Trivial tails are duplicated: both inner branches are non-empty.
+    #expect(structured.contains("trap()"))
     // Never emits structurally broken output.
+    #expect(structured.filter { $0 == "{" }.count == structured.filter { $0 == "}" }.count)
+}
+
+/// Reducible loops fold into `while (true) { … break/continue }`.
+@Test func foldsLoopsIntoWhileIfPresent() async throws {
+    let path = "Fixtures/Sample/sample.release"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await Disassembler(preset: .simplified).disassemble(path: path)
+    guard let loop = functions.first(where: { ($0.demangledName ?? "").hasPrefix("countMatches") })
+    else { return }
+    let structured = loop.renderStructured()
+    #expect(structured.contains("while (true)"))
+    #expect(structured.contains("continue") || structured.contains("break"))
     #expect(structured.filter { $0 == "{" }.count == structured.filter { $0 == "}" }.count)
 }
 

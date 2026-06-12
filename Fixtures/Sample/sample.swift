@@ -121,6 +121,17 @@ func maxElement<T: Comparable>(_ xs: [T]) -> T? {
     xs.max()
 }
 
+// MARK: - Loop (exercises while-structuring)
+
+@inline(never)
+public func countMatches(_ items: [Int], _ target: Int) -> Int {
+    var count = 0
+    for x in items {
+        if x == target { count += 1 }
+    }
+    return count
+}
+
 // MARK: - Driver (keep symbols alive under -O)
 
 @inline(never)
@@ -142,6 +153,7 @@ func run() {
     print(dog.speak())
 
     print("max", maxElement([3, 1, 4, 1, 5, 9, 2, 6]) ?? -1)
+    print("matches", countMatches([1, 2, 1, 3, 1], 1))
     print("dir", Direction.east.rawValue)
 
     switch (NetworkResult.success(payload: Data([1, 2, 3]), code: 200)) {
