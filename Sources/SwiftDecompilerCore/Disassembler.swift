@@ -168,12 +168,17 @@ public struct Disassembler: Sendable {
         )
 
         // 5. Resolve adrp/add(+ldr) operand references to function, type-
-        //    descriptor, and Swift-symbol names that objdump leaves bare.
-        let referenceNames = referenceIndex(functions: functions, in: machO)
-        functions = functions.map { annotateReferences(in: $0, names: referenceNames, machO: machO) }
+        //    descriptor, string, and Swift-symbol names that objdump leaves bare.
+        let resolver = ReferenceResolver(
+            names: referenceIndex(functions: functions, in: machO),
+            stringRanges: stringSectionRanges(in: machO),
+            machO: machO,
+            demangleSymbol: { self.demangle($0) }
+        )
+        functions = functions.map { annotateReferences(in: $0, resolver: resolver) }
 
         // 6. Value-track each function to recover call-site arguments.
-        functions = functions.map { enrichCallArguments(in: $0, names: referenceNames, machO: machO) }
+        functions = functions.map { enrichCallArguments(in: $0, resolver: resolver) }
 
         guard let needle = functionFilter?.lowercased(), !needle.isEmpty else {
             return functions
@@ -306,8 +311,7 @@ public struct Disassembler: Sendable {
     /// left it bare) with a resolved name.
     private func annotateReferences(
         in function: DisassembledFunction,
-        names: [UInt64: String],
-        machO: MachOFile
+        resolver: ReferenceResolver
     ) -> DisassembledFunction {
         var pageByRegister: [String: UInt64] = [:]
         var updated: [Instruction] = []
@@ -324,7 +328,7 @@ public struct Disassembler: Sendable {
             if insn.annotation == nil, !insn.text.contains(";"),
                let (base, immediate) = parsePageOffset(insn.text),
                let page = pageByRegister[base],
-               let name = referenceName(at: page &+ immediate, names: names, machO: machO) {
+               let name = resolver.reference(at: page &+ immediate) {
                 updated.append(Instruction(
                     address: insn.address, text: insn.text, annotation: name,
                     controlFlow: insn.controlFlow, branchTarget: insn.branchTarget
@@ -350,37 +354,63 @@ public struct Disassembler: Sendable {
         )
     }
 
-    /// Resolve a target address to a name: a known function/descriptor, or a
-    /// Swift mangled-symbol string read from the binary. Returns nil otherwise
-    /// (never guesses at arbitrary data).
-    private func referenceName(at target: UInt64, names: [UInt64: String], machO: MachOFile) -> String? {
-        resolvedName(at: target, names: names, machO: machO).map { "→ \($0)" }
+    /// VM address ranges of C-string-literal sections (`__cstring`,
+    /// `__objc_methname`, …). Used to safely resolve string-pointer arguments.
+    private func stringSectionRanges(in machO: MachOFile) -> [Range<UInt64>] {
+        machO.sections.compactMap { section in
+            guard section.flags.type == .cstring_literals, section.size > 0 else { return nil }
+            let start = UInt64(section.address)
+            return start ..< (start + UInt64(section.size))
+        }
     }
 
-    /// Bare name for an address: a known function/descriptor, or a Swift
-    /// mangled-symbol string read from the binary. Nil if not resolvable.
-    private func resolvedName(at target: UInt64, names: [UInt64: String], machO: MachOFile) -> String? {
-        if let name = names[target] { return name }
-        guard let fileOffset = machO.fileOffset(of: target),
-              let string = try? machO.readString(offset: Int(fileOffset)),
-              !string.isEmpty,
-              let demangled = demangle(string)
-        else { return nil }
-        return demangled
+    /// Resolves a target address to a display name: a known function/descriptor,
+    /// a C-string literal (quoted, only inside cstring sections), or a demangled
+    /// Swift mangled-name string. Never guesses at arbitrary data.
+    struct ReferenceResolver {
+        let names: [UInt64: String]
+        let stringRanges: [Range<UInt64>]
+        let machO: MachOFile
+        let demangleSymbol: @Sendable (String) -> String?
+
+        func name(at target: UInt64) -> String? {
+            if let name = names[target] { return name }
+            if stringRanges.contains(where: { $0.contains(target) }),
+               let string = Self.cString(at: target, in: machO) {
+                return "\"\(string)\""
+            }
+            if let fileOffset = machO.fileOffset(of: target),
+               let string = try? machO.readString(offset: Int(fileOffset)), !string.isEmpty,
+               let demangled = demangleSymbol(string) {
+                return demangled
+            }
+            return nil
+        }
+
+        /// `→ name` form for inline operand annotation.
+        func reference(at target: UInt64) -> String? { name(at: target).map { "→ \($0)" } }
+
+        private static func cString(at target: UInt64, in machO: MachOFile) -> String? {
+            guard let fileOffset = machO.fileOffset(of: target),
+                  let s = try? machO.readString(offset: Int(fileOffset)), !s.isEmpty,
+                  s.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value < 0x7f })
+            else { return nil }
+            let truncated = s.count > 48 ? String(s.prefix(48)) + "…" : s
+            return truncated.replacingOccurrences(of: "\"", with: "\\\"")
+        }
     }
 
     /// Run value tracking on a function and append recovered call arguments
     /// (`args(…)`) to each call instruction.
     private func enrichCallArguments(
         in function: DisassembledFunction,
-        names: [UInt64: String],
-        machO: MachOFile
+        resolver: ReferenceResolver
     ) -> DisassembledFunction {
         let tracer = ValueTracer()
         let argumentsByAddress = tracer.callArguments(in: function)
         guard !argumentsByAddress.isEmpty else { return function }
 
-        let resolve: (UInt64) -> String? = { resolvedName(at: $0, names: names, machO: machO) }
+        let resolve: (UInt64) -> String? = { resolver.name(at: $0) }
         let instructions = function.instructions.map { insn -> Instruction in
             guard insn.controlFlow == .call, let values = argumentsByAddress[insn.address] else { return insn }
             let rendered = values.map { tracer.render($0, resolve: resolve) }
