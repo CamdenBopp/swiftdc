@@ -154,13 +154,28 @@ struct ControlFlowStructure {
             let succs = block.successors.compactMap { index(of: $0) }
             if succs.count >= 2 {
                 let merge = ipdom[current]
-                lines.append("\(pad)if (\(condition(of: block))) {")
-                lines += edge(from: current, to: succs[0], until: merge, indent: indent + 1, visited: &visited, loop: loop)
-                if succs[1] != merge {
-                    lines.append("\(pad)} else {")
-                    lines += edge(from: current, to: succs[1], until: merge, indent: indent + 1, visited: &visited, loop: loop)
+                let thenLines = edge(from: current, to: succs[0], until: merge, indent: indent + 1, visited: &visited, loop: loop)
+                let elseLines = succs[1] != merge
+                    ? edge(from: current, to: succs[1], until: merge, indent: indent + 1, visited: &visited, loop: loop)
+                    : []
+                let cond = condition(of: block)
+                // Collapse empty branches: drop a no-op `if`, invert when only the
+                // `then` side is empty.
+                if thenLines.isEmpty, elseLines.isEmpty {
+                    // both rejoin immediately — nothing to emit
+                } else if thenLines.isEmpty {
+                    lines.append("\(pad)if (!(\(cond))) {")
+                    lines += elseLines
+                    lines.append("\(pad)}")
+                } else {
+                    lines.append("\(pad)if (\(cond)) {")
+                    lines += thenLines
+                    if !elseLines.isEmpty {
+                        lines.append("\(pad)} else {")
+                        lines += elseLines
+                    }
+                    lines.append("\(pad)}")
                 }
-                lines.append("\(pad)}")
                 if merge == exit { break }
                 current = merge
             } else if succs.count == 1 {
@@ -211,7 +226,14 @@ struct ControlFlowStructure {
             for index in stride(from: last - 1, through: 0, by: -1) {
                 let (m, ops) = Self.decode(block.instructions[index].text)
                 if ["cmp", "subs", "cmn", "adds"].contains(m), ops.count >= 2 {
-                    return "\(resolve(ops[0], before: index, in: block)) \(op) \(resolve(ops[1], before: index, in: block))"
+                    let lhs = resolve(ops[0], before: index, in: block)
+                    let rhs = resolve(ops[1], before: index, in: block)
+                    // If back-substitution collapsed distinct operands to the same
+                    // text, it lost information — show the raw registers instead.
+                    if lhs == rhs, ops[0] != ops[1] {
+                        return "\(ops[0]) \(op) \(Self.cleanImmediate(ops[1]))"
+                    }
+                    return "\(lhs) \(op) \(rhs)"
                 }
                 if m == "tst", ops.count >= 2 {
                     return "(\(resolve(ops[0], before: index, in: block)) & \(Self.cleanImmediate(ops[1]))) \(op) 0"
