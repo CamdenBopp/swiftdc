@@ -22,6 +22,14 @@ import Foundation
     #expect(insns[2].branchTarget == 0x1010)
 }
 
+/// Swift _SmallString decoding from its two-register encoding.
+@Test func decodesSmallString() {
+    // " the " = UTF-8 20 74 68 65 20, count 5, discriminator 0xE5.
+    #expect(ValueTracer.decodeSmallString(lo: 0x0000002065687420, hi: 0xe500000000000000) == " the ")
+    #expect(ValueTracer.decodeSmallString(lo: 0, hi: 0) == nil)                 // not a small string
+    #expect(ValueTracer.decodeSmallString(lo: 0xff, hi: 0xe100000000000000) == nil) // non-printable
+}
+
 @Test func ownerNameParsing() {
     #expect(AnalysisReport.ownerName(of: "sample.Point.distance(to:) -> Swift.Double") == "sample.Point")
     #expect(AnalysisReport.ownerName(of: "Point.area.getter : Swift.Double") == "Point")
@@ -144,4 +152,14 @@ import Foundation
     let arguments = functions.flatMap(\.instructions).compactMap(\.callArguments).flatMap { $0 }
     // At least one argument is itself a recovered call expression (has nesting).
     #expect(arguments.contains { $0.contains("(") && $0.contains(")") })
+}
+
+/// Small-string literal arguments decode to quoted text in the recovered args.
+@Test func decodesSmallStringArgumentsIfPresent() async throws {
+    let path = "Fixtures/Sample/sample.release"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await Disassembler(preset: .simplified).disassemble(path: path)
+    let arguments = functions.flatMap(\.instructions).compactMap(\.callArguments).flatMap { $0 }
+    // e.g. Dog.speak()'s " the ", Rectangle.describe()'s "Rect "/"x", Dog("Rex","Lab").
+    #expect(arguments.contains { $0 == "\" the \"" || $0 == "\"Rect \"" || $0 == "\"Rex\"" })
 }

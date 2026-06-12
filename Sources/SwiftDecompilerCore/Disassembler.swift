@@ -415,7 +415,7 @@ public struct Disassembler: Sendable {
             calleeByAddress[insn.address] = DisassembledFunction.calleeName(of: insn)
         }
 
-        func render(_ value: AbstractValue, depth: Int) -> String {
+        func renderValue(_ value: AbstractValue, depth: Int) -> String {
             switch value {
             case .unknown:
                 return "?"
@@ -428,16 +428,38 @@ public struct Disassembler: Sendable {
                 guard depth < 4, let callee = calleeByAddress[addr] else { return "result" }
                 // ARC/exclusivity calls return their argument — unwrap them.
                 if DisassembledFunction.isRuntimeNoise(callee) {
-                    return inner.first.map { render($0, depth: depth + 1) } ?? "result"
+                    return inner.first.map { renderValue($0, depth: depth + 1) } ?? "result"
                 }
-                let args = inner.map { render($0, depth: depth + 1) }.joined(separator: ", ")
-                return "\(DisassembledFunction.strippedCallee(callee))(\(args))"
+                return "\(DisassembledFunction.strippedCallee(callee))(\(renderArguments(inner, depth: depth + 1)))"
             }
+        }
+
+        // Render an argument list, collapsing the two-register pairs that encode
+        // a Swift small string into a single quoted literal.
+        func renderArguments(_ values: [AbstractValue], depth: Int) -> [String] {
+            var parts: [String] = []
+            var index = 0
+            while index < values.count {
+                if index + 1 < values.count,
+                   case .immediate(let lo) = values[index],
+                   case .immediate(let hi) = values[index + 1],
+                   let string = ValueTracer.decodeSmallString(lo: lo, hi: hi) {
+                    parts.append("\"\(string)\"")
+                    index += 2
+                } else {
+                    parts.append(renderValue(values[index], depth: depth))
+                    index += 1
+                }
+            }
+            return parts
+        }
+        func renderArguments(_ values: [AbstractValue], depth: Int) -> String {
+            renderArguments(values, depth: depth).joined(separator: ", ")
         }
 
         let instructions = function.instructions.map { insn -> Instruction in
             guard insn.controlFlow == .call, let values = argumentsByAddress[insn.address] else { return insn }
-            let rendered = values.map { render($0, depth: 0) }
+            let rendered: [String] = renderArguments(values, depth: 0)
             let note = "args(" + rendered.joined(separator: ", ") + ")"
             let merged = [insn.annotation, note].compactMap { $0 }.joined(separator: "  ")
             return Instruction(

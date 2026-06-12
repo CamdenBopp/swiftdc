@@ -34,6 +34,8 @@ SwiftDump, plus annotated assembly), not a full control-flow decompiler. See
   `swift_allocObject(type descriptor for Dog, 48, 7)` instead of bare branches.
   A call's return value flows into later arguments, so nested expressions
   surface: `print(swift_allocObject(…), …)`, `Hasher._finalize(Hasher._combine())`.
+  Swift `_SmallString` literals packed into register pairs are decoded back to
+  text — `String.append(" the ")`, `Dog("Rex", "Lab")`.
   Surfaced inline (`args(…)`), as `arguments` in JSON, and as a **proto-pseudocode
   view** (`disasm --pseudo`) that renders each function as its recovered call
   sequence (`String.append("Woof, I am ")`), hiding ARC/runtime bookkeeping.

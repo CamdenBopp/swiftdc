@@ -45,6 +45,24 @@ public struct ValueTracer: Sendable {
         return result
     }
 
+    /// Decode a Swift `_SmallString` passed in two registers (x0 = low 8 bytes,
+    /// x1 = high 8 bytes, with the count in the top byte's low nibble and the
+    /// `0xE` small-string discriminator in its high nibble). Returns the text
+    /// when it decodes to printable UTF-8, else nil.
+    public static func decodeSmallString(lo: UInt64, hi: UInt64) -> String? {
+        let discriminator = UInt8(truncatingIfNeeded: hi >> 56)
+        guard (discriminator & 0xF0) == 0xE0 else { return nil }
+        let count = Int(discriminator & 0x0F)
+        guard (1...15).contains(count) else { return nil }
+
+        var bytes: [UInt8] = []
+        for shift in stride(from: 0, to: 64, by: 8) { bytes.append(UInt8(truncatingIfNeeded: lo >> shift)) }
+        for shift in stride(from: 0, to: 64, by: 8) { bytes.append(UInt8(truncatingIfNeeded: hi >> shift)) }
+        let content = Array(bytes.prefix(count))
+        guard content.allSatisfy({ $0 >= 0x20 && $0 < 0x7f }) else { return nil }
+        return String(decoding: content, as: UTF8.self)
+    }
+
     // MARK: - Transfer function
 
     private func apply(_ insn: Instruction, into registers: inout [String: AbstractValue]) {
