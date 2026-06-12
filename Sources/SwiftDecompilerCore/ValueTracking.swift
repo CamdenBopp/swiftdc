@@ -19,30 +19,92 @@ public enum AbstractValue: Equatable, Sendable {
 public struct ValueTracer: Sendable {
     public init() {}
 
+    private typealias State = [String: AbstractValue]
+
     /// Map of call-instruction address → recovered argument values (x0…),
     /// trailing-unknowns trimmed. Calls with no inferable argument are omitted.
+    ///
+    /// A forward data-flow fixpoint over the CFG carries values across basic
+    /// blocks (e.g. callee-saved x19–x28 holding `self`/locals), so an argument
+    /// set before a branch is still recovered at a call after it.
     public func callArguments(in function: DisassembledFunction) -> [UInt64: [AbstractValue]] {
-        var result: [UInt64: [AbstractValue]] = [:]
-        for block in function.basicBlocks() {
-            var registers: [String: AbstractValue] = [:]
-            for insn in block.instructions {
-                if insn.controlFlow == .call {
-                    let args = (0...7).map { registers["x\($0)"] ?? .unknown }
-                    if let trimmed = Self.trimTrailingUnknown(args) {
-                        result[insn.address] = trimmed
-                    }
-                    // AAPCS64: x0–x17 (+ LR) are caller-saved. x1–x17 become
-                    // unknown; x0 now holds this call's return value, so a later
-                    // use as an argument renders as a nested call.
-                    for index in 1...17 { registers["x\(index)"] = .unknown }
-                    registers["x30"] = .unknown
-                    registers["x0"] = .callResult(insn.address)
-                    continue
+        let blocks = function.basicBlocks()
+        guard !blocks.isEmpty else { return [:] }
+        let blockByStart = Dictionary(blocks.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
+
+        var predecessors: [UInt64: [UInt64]] = [:]
+        for block in blocks {
+            for successor in block.successors where blockByStart[successor] != nil {
+                predecessors[successor, default: []].append(block.startAddress)
+            }
+        }
+
+        // Forward fixpoint: block entry state = meet of predecessors' exit states.
+        var inState: [UInt64: State] = [:]
+        var outState: [UInt64: State] = [:]
+        var worklist = blocks.map(\.startAddress)
+        var queued = Set(worklist)
+        var iterations = 0
+        let cap = blocks.count * 64 + 16 // safety bound; the analysis is monotone
+        while let addr = worklist.first {
+            worklist.removeFirst()
+            queued.remove(addr)
+            iterations += 1
+            if iterations > cap { break }
+            guard let block = blockByStart[addr] else { continue }
+            let entry = Self.meet((predecessors[addr] ?? []).compactMap { outState[$0] })
+            inState[addr] = entry
+            var registers = entry
+            for insn in block.instructions { transfer(insn, into: &registers, record: nil) }
+            if outState[addr] != registers {
+                outState[addr] = registers
+                for successor in block.successors
+                where blockByStart[successor] != nil && !queued.contains(successor) {
+                    worklist.append(successor)
+                    queued.insert(successor)
                 }
-                apply(insn, into: &registers)
+            }
+        }
+
+        // Snapshot pass: replay from each block's fixed entry state, recording args.
+        var result: [UInt64: [AbstractValue]] = [:]
+        for block in blocks {
+            var registers = inState[block.startAddress] ?? [:]
+            for insn in block.instructions {
+                transfer(insn, into: &registers) { result[$0] = $1 }
             }
         }
         return result
+    }
+
+    /// One instruction's effect on the register state. At a call, snapshot the
+    /// argument registers (via `record`) then apply AAPCS64 clobbering.
+    private func transfer(
+        _ insn: Instruction,
+        into registers: inout State,
+        record: ((UInt64, [AbstractValue]) -> Void)?
+    ) {
+        if insn.controlFlow == .call {
+            if let record {
+                let args = (0...7).map { registers["x\($0)"] ?? .unknown }
+                if let trimmed = Self.trimTrailingUnknown(args) { record(insn.address, trimmed) }
+            }
+            for index in 1...17 { registers["x\(index)"] = .unknown }
+            registers["x30"] = .unknown
+            registers["x0"] = .callResult(insn.address) // return value
+            return
+        }
+        apply(insn, into: &registers)
+    }
+
+    /// Meet (∧) of predecessor states: a register keeps its value only when all
+    /// predecessors agree; otherwise it becomes unknown (absent).
+    private static func meet(_ states: [State]) -> State {
+        guard var accumulator = states.first else { return [:] }
+        for state in states.dropFirst() {
+            accumulator = accumulator.filter { state[$0.key] == $0.value }
+        }
+        return accumulator
     }
 
     /// Decode a Swift `_SmallString` passed in two registers (x0 = low 8 bytes,
@@ -110,10 +172,29 @@ public struct ValueTracer: Sendable {
             registers[dest] = .immediate((base & mask) | (imm << shift))
 
         default:
-            // Anything else writing a register invalidates it (conservative).
+            // Stores, compares, and branches don't write their register
+            // operands — leaving their values intact matters for cross-block flow.
+            if mnemonic.hasPrefix("st") || mnemonic.hasPrefix("b.")
+                || Self.nonWritingMnemonics.contains(mnemonic) {
+                return
+            }
+            // Pair loads write two destination registers.
+            if mnemonic.hasPrefix("ldp") || mnemonic.hasPrefix("ldnp") {
+                for operand in operands.prefix(2) {
+                    if let reg = Self.register(operand), reg != "xzr" { registers[reg] = .unknown }
+                }
+                return
+            }
+            // Most remaining instructions write (only) their first operand.
             clobberDestination()
         }
     }
+
+    private static let nonWritingMnemonics: Set<String> = [
+        "cmp", "cmn", "tst", "ccmp", "ccmn",
+        "b", "bl", "br", "blr", "ret", "cbz", "cbnz", "tbz", "tbnz",
+        "brk", "nop", "svc", "hlt", "dmb", "dsb", "isb", "prfm", "prfum",
+    ]
 
     private func value(of token: String, in registers: [String: AbstractValue]) -> AbstractValue {
         guard let reg = Self.register(token) else { return .unknown }

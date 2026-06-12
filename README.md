@@ -29,8 +29,10 @@ SwiftDump, plus annotated assembly), not a full control-flow decompiler. See
   function can be split into **basic blocks with successor edges** (`disasm --cfg`,
   and `blocks` in JSON).
 - **Call-argument recovery (data-flow)** — a small abstract interpreter
-  propagates constants and `adrp`/`add` addresses through registers per block and
-  snapshots the argument registers at each call, so calls read like
+  propagates constants and `adrp`/`add` addresses through registers via a forward
+  data-flow fixpoint **across the control-flow graph** (so callee-saved values
+  surviving a branch are recovered too), and snapshots the argument registers at
+  each call, so calls read like
   `swift_allocObject(type descriptor for Dog, 48, 7)` instead of bare branches.
   A call's return value flows into later arguments, so nested expressions
   surface: `print(swift_allocObject(…), …)`, `Hasher._finalize(Hasher._combine())`.
