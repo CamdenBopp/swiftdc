@@ -40,8 +40,15 @@ public extension DisassembledFunction {
                 return stripUnderscores(String(raw))
             }
         }
-        // Direct call: prefer the demangled annotation, else the symbol operand.
+        // Direct call: prefer the demangled annotation, else a resolved
+        // `→ name` target (the in-process path), else the symbol operand.
         if let demangled = demangledName(from: insn.annotation) { return demangled }
+        if let annotation = insn.annotation, let arrow = annotation.range(of: "→ ") {
+            let name = annotation[arrow.upperBound...]
+                .components(separatedBy: "  args(")[0]
+                .trimmingCharacters(in: .whitespaces)
+            if !name.isEmpty { return name }
+        }
         let fields = insn.text.split(whereSeparator: { $0 == " " || $0 == "\t" })
         if fields.count >= 2 {
             let operand = String(fields[1])

@@ -215,6 +215,7 @@ public struct Disassembler: Sendable {
             demangleSymbol: { self.demangle($0) }
         )
         functions = functions.map { annotateReferences(in: $0, resolver: resolver) }
+        functions = functions.map { annotateCallTargets(in: $0, resolver: resolver) }
         functions = functions.map { enrichCallArguments(in: $0, resolver: resolver) }
 
         guard let needle = functionFilter?.lowercased(), !needle.isEmpty else {
@@ -467,6 +468,36 @@ public struct Disassembler: Sendable {
         )
     }
 
+    /// Annotate direct call/branch instructions with their resolved target
+    /// name (`→ Type.method`). objdump already names file-mode calls in the
+    /// instruction text (via stubs); this fills the in-process (Capstone) path,
+    /// where the operand is a bare `#0x…` address — so calls to another function
+    /// in the same image read by name and flow into `--pseudo`.
+    private func annotateCallTargets(
+        in function: DisassembledFunction,
+        resolver: ReferenceResolver
+    ) -> DisassembledFunction {
+        let branchFlows: Set<ControlFlow> = [.call, .branch, .conditionalBranch]
+        let instructions = function.instructions.map { insn -> Instruction in
+            // Only name calls not already annotated — objdump's file-mode calls
+            // carry their name in-text; this fills the bare-address in-process path.
+            guard insn.annotation == nil,
+                  let flow = insn.controlFlow, branchFlows.contains(flow),
+                  let target = insn.branchTarget,
+                  let name = resolver.callTargetName(at: target)
+            else { return insn }
+            return Instruction(
+                address: insn.address, text: insn.text, annotation: "→ \(name)",
+                controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
+                callArguments: insn.callArguments
+            )
+        }
+        return DisassembledFunction(
+            symbol: function.symbol, demangledName: function.demangledName,
+            startAddress: function.startAddress, instructions: instructions, source: function.source
+        )
+    }
+
     /// VM address ranges of C-string-literal sections (`__cstring`,
     /// `__objc_methname`, …). Used to safely resolve string-pointer arguments.
     private func stringSectionRanges(in machO: MachOFile) -> [Range<UInt64>] {
@@ -502,6 +533,12 @@ public struct Disassembler: Sendable {
 
         /// `→ name` form for inline operand annotation.
         func reference(at target: UInt64) -> String? { name(at: target).map { "→ \($0)" } }
+
+        /// Name for a direct call/branch *code* target — a recovered function or
+        /// descriptor in this image. Unlike `name(at:)` it does not fall back to
+        /// string/data interpretations (a branch target is code, never a
+        /// cstring), so it never invents a spurious name for a call.
+        func callTargetName(at target: UInt64) -> String? { names[target] }
 
         private static func cString(at target: UInt64, in machO: MachOFile) -> String? {
             guard let fileOffset = machO.fileOffset(of: target),

@@ -294,4 +294,7 @@ func withStableDependencies<R>(
     #expect(ipTree.instructions.contains { $0.controlFlow == .return })
     // adrp adaptation + value tracking survive the Capstone text format.
     #expect(inProcess.flatMap(\.instructions).contains { $0.callArguments != nil })
+    // Direct within-image call/branch targets are resolved to names (Tree.sum
+    // recurses), so the in-process listing isn't just bare `bl #0x…`.
+    #expect(inProcess.flatMap(\.instructions).contains { ($0.annotation ?? "").hasPrefix("→") })
 }
