@@ -34,6 +34,12 @@ struct ObjCCommand: AsyncParsableCommand {
     @Option(name: .customLong("cache"), help: "Path to a dyld_shared_cache_* file. Defaults to the running system's cache when --image is used.")
     var cache: String?
 
+    @Option(name: .customLong("binary"), help: "For an .app/.framework/.ipa: analyze this embedded binary by name (e.g. a framework). Default: the main executable.")
+    var binary: String?
+
+    @Flag(name: .customLong("list-binaries"), help: "List the Mach-O binaries inside an .app/.framework/.ipa (main + embedded frameworks/extensions) and exit.")
+    var listBinaries = false
+
     @Option(name: [.short, .long], help: "Write output to a file instead of stdout.")
     var output: String?
 
@@ -41,12 +47,14 @@ struct ObjCCommand: AsyncParsableCommand {
     var json = false
 
     func run() throws {
+        if listBinaries { try emit(binaryListing(for: path), to: output); return }
         let machO = try BinaryLoader.loadMachO(
             path: path,
             architecture: architecture,
             image: image,
             imagePath: imagePath,
-            cachePath: cache
+            cachePath: cache,
+            binary: binary
         )
         let blocks = ObjCDumper().blocks(machO)
         if json {
@@ -55,6 +63,17 @@ struct ObjCCommand: AsyncParsableCommand {
             try emit(blocks.isEmpty ? "// No Objective-C metadata found." : blocks.joined(separator: "\n\n"), to: output)
         }
     }
+}
+
+/// `kind  name  path` lines for the binaries inside a bundle/archive. Backs
+/// `--list-binaries`.
+private func binaryListing(for path: String?) throws -> String {
+    guard let path else {
+        throw BinaryLoadError("--list-binaries needs a path to a binary, .app, .framework, or .ipa.")
+    }
+    return try BinaryLoader.binaries(in: path)
+        .map { "\($0.kind.rawValue)\t\($0.name)\t\($0.path)" }
+        .joined(separator: "\n")
 }
 
 /// Writes `text` to `output` if given, otherwise prints to stdout.
@@ -91,6 +110,12 @@ struct AnalyzeCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Demangle preset: default, simplified, interface.")
     var demangle: DemanglePreset = .default
 
+    @Option(name: .customLong("binary"), help: "For an .app/.framework/.ipa: analyze this embedded binary by name (e.g. a framework). Default: the main executable.")
+    var binary: String?
+
+    @Flag(name: .customLong("list-binaries"), help: "List the Mach-O binaries inside an .app/.framework/.ipa (main + embedded frameworks/extensions) and exit.")
+    var listBinaries = false
+
     @Option(name: [.short, .long], help: "Write output to a file instead of stdout.")
     var output: String?
 
@@ -98,17 +123,20 @@ struct AnalyzeCommand: AsyncParsableCommand {
     var json = false
 
     func run() async throws {
+        if listBinaries { try emit(binaryListing(for: path), to: output); return }
         let report = AnalysisReport(preset: demangle)
         let text: String
         if image != nil || imagePath != nil || cache != nil {
             let machO = try BinaryLoader.loadMachO(
-                path: path, image: image, imagePath: imagePath, cachePath: cache
+                path: path, image: image, imagePath: imagePath, cachePath: cache, binary: binary
             )
             text = json ? await report.generateJSON(machO: machO) : await report.generate(machO: machO)
         } else if let path {
+            // Accept an .app/.framework/.ipa, resolving to a real Mach-O for llvm-objdump.
+            let resolved = try BinaryLoader.resolveBinaryInput(path, binary: binary)
             text = json
-                ? try await report.generateJSON(path: path, architecture: architecture)
-                : try await report.generate(path: path, architecture: architecture)
+                ? try await report.generateJSON(path: resolved, architecture: architecture)
+                : try await report.generate(path: resolved, architecture: architecture)
         } else {
             throw BinaryLoadError("Provide a binary path, or --image <name> to analyze a dyld shared-cache image.")
         }
@@ -150,6 +178,12 @@ struct DumpCommand: AsyncParsableCommand {
     )
     var sections: [SwiftDeclarationDumper.Section] = []
 
+    @Option(name: .customLong("binary"), help: "For an .app/.framework/.ipa: analyze this embedded binary by name (e.g. a framework). Default: the main executable.")
+    var binary: String?
+
+    @Flag(name: .customLong("list-binaries"), help: "List the Mach-O binaries inside an .app/.framework/.ipa (main + embedded frameworks/extensions) and exit.")
+    var listBinaries = false
+
     @Option(name: [.short, .long], help: "Write output to a file instead of stdout.")
     var output: String?
 
@@ -157,6 +191,7 @@ struct DumpCommand: AsyncParsableCommand {
     var json = false
 
     func run() async throws {
+        if listBinaries { try emit(binaryListing(for: path), to: output); return }
         if listImages {
             try emit(BinaryLoader.dyldCacheImagePaths(cachePath: cache).joined(separator: "\n"), to: output)
             return
@@ -166,7 +201,8 @@ struct DumpCommand: AsyncParsableCommand {
             architecture: architecture,
             image: image,
             imagePath: imagePath,
-            cachePath: cache
+            cachePath: cache,
+            binary: binary
         )
         let dumper = SwiftDeclarationDumper(preset: demangle)
         let selected = sections.isEmpty
@@ -226,16 +262,24 @@ struct InterfaceCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Parse opaque (some P) return types. Experimental — may error on complex types.")
     var opaqueReturnTypes = false
 
+    @Option(name: .customLong("binary"), help: "For an .app/.framework/.ipa: analyze this embedded binary by name (e.g. a framework). Default: the main executable.")
+    var binary: String?
+
+    @Flag(name: .customLong("list-binaries"), help: "List the Mach-O binaries inside an .app/.framework/.ipa (main + embedded frameworks/extensions) and exit.")
+    var listBinaries = false
+
     @Option(name: [.short, .long], help: "Write output to a file instead of stdout.")
     var output: String?
 
     func run() async throws {
+        if listBinaries { try emit(binaryListing(for: path), to: output); return }
         let machO = try BinaryLoader.loadMachO(
             path: path,
             architecture: architecture,
             image: image,
             imagePath: imagePath,
-            cachePath: cache
+            cachePath: cache,
+            binary: binary
         )
         let options = InterfaceReconstructor.Options(
             showCImportedTypes: showCImportedTypes,
@@ -279,6 +323,12 @@ struct DisasmCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Demangle preset: default, simplified, interface.")
     var demangle: DemanglePreset = .default
 
+    @Option(name: .customLong("binary"), help: "For an .app/.framework/.ipa: analyze this embedded binary by name (e.g. a framework). Default: the main executable.")
+    var binary: String?
+
+    @Flag(name: .customLong("list-binaries"), help: "List the Mach-O binaries inside an .app/.framework/.ipa (main + embedded frameworks/extensions) and exit.")
+    var listBinaries = false
+
     @Option(name: [.short, .long], help: "Write output to a file instead of stdout.")
     var output: String?
 
@@ -295,18 +345,21 @@ struct DisasmCommand: AsyncParsableCommand {
     var structured = false
 
     func run() async throws {
+        if listBinaries { try emit(binaryListing(for: path), to: output); return }
         let disassembler = Disassembler(preset: demangle)
         let functions: [DisassembledFunction]
         if image != nil || imagePath != nil || cache != nil {
             // dyld shared-cache image: no standalone file for llvm-objdump, so
             // decode in-process with Capstone.
             let machO = try BinaryLoader.loadMachO(
-                path: path, image: image, imagePath: imagePath, cachePath: cache
+                path: path, image: image, imagePath: imagePath, cachePath: cache, binary: binary
             )
             functions = await disassembler.disassemble(machO: machO, functionFilter: function)
         } else if let path {
+            // Accept an .app/.framework/.ipa, resolving to a real Mach-O for llvm-objdump.
+            let resolved = try BinaryLoader.resolveBinaryInput(path, binary: binary)
             functions = try await disassembler.disassemble(
-                path: path, architecture: architecture, functionFilter: function
+                path: resolved, architecture: architecture, functionFilter: function
             )
         } else {
             throw BinaryLoadError("Provide a binary path, or --image <name> to disassemble a dyld shared-cache image.")

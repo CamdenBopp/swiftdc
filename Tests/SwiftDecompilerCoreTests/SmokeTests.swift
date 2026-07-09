@@ -122,6 +122,36 @@ func withStableDependencies<R>(
     #expect(interface.contains("Comparable"))
 }
 
+/// A `.app`/`.framework` bundle resolves to its main executable, lists its
+/// embedded binaries, and selects one by name — so you can point swiftdc at an
+/// app instead of digging out the binary first.
+@Test func resolvesBundleInputIfFixturePresent() throws {
+    let fixture = "Fixtures/Sample/sample.release"
+    guard FileManager.default.fileExists(atPath: fixture) else { return }
+    let fm = FileManager.default
+
+    // Throwaway iOS-layout .app (binary at bundle root) with an embedded framework.
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("swiftdc-bundle-\(UUID().uuidString)")
+    let app = root.appendingPathComponent("MyApp.app")
+    let framework = app.appendingPathComponent("Frameworks/SampleKit.framework")
+    try fm.createDirectory(at: framework, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: root) }
+    try fm.copyItem(atPath: fixture, toPath: app.appendingPathComponent("MyApp").path)
+    try fm.copyItem(atPath: fixture, toPath: framework.appendingPathComponent("SampleKit").path)
+    try #"<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleExecutable</key><string>MyApp</string></dict></plist>"#
+        .write(to: app.appendingPathComponent("Info.plist"), atomically: true, encoding: .utf8)
+
+    // Default → the main executable.
+    #expect(try BinaryLoader.resolveBinaryInput(app.path).hasSuffix("MyApp.app/MyApp"))
+    // --binary → the named embedded framework.
+    #expect(try BinaryLoader.resolveBinaryInput(app.path, binary: "SampleKit").hasSuffix("SampleKit.framework/SampleKit"))
+    // Listing surfaces both, tagged by kind.
+    let listed = try BinaryLoader.binaries(in: app.path)
+    #expect(listed.contains { $0.name == "MyApp" && $0.kind == .executable })
+    #expect(listed.contains { $0.name == "SampleKit" && $0.kind == .framework })
+}
+
 /// Stripped binaries lose their symbol table, but LC_FUNCTION_STARTS + Swift
 /// metadata let us re-delimit and (partly) name functions anyway.
 @Test func recoversStrippedFunctionsIfPresent() async throws {

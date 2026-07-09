@@ -10,9 +10,14 @@ enum Shell {
 
     /// Run `xcrun <tool> <args...>` and capture output.
     static func xcrun(_ tool: String, _ args: [String]) throws -> Result {
+        try run("/usr/bin/xcrun", [tool] + args)
+    }
+
+    /// Run an executable at an absolute path with `args` and capture output.
+    static func run(_ executable: String, _ args: [String]) throws -> Result {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-        process.arguments = [tool] + args
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = args
 
         let outPipe = Pipe()
         let errPipe = Pipe()

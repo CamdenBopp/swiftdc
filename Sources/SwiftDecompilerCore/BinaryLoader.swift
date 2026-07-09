@@ -32,6 +32,7 @@ public enum BinaryLoader {
 
         switch file {
         case .machO(let machO):
+            warnIfEncrypted(machO, path: path)
             return machO
 
         case .fat(let fat):
@@ -50,8 +51,22 @@ public enum BinaryLoader {
                     "Architecture '\(architecture)' not found. Available: \(available)"
                 )
             }
+            warnIfEncrypted(match, path: path)
             return match
         }
+    }
+
+    /// FairPlay-encrypted App Store binaries (`cryptid != 0`) read as garbage —
+    /// warn loudly so the user isn't puzzled by nonsense output.
+    private static func warnIfEncrypted(_ machO: MachOFile, path: String) {
+        guard machO.isEncrypted else { return }
+        let name = (path as NSString).lastPathComponent
+        FileHandle.standardError.write(Data("""
+        warning: '\(name)' is FairPlay-encrypted (cryptid != 0) — its __text and Swift metadata \
+        will read as garbage. Analyze a decrypted dump (e.g. from a jailbroken device via \
+        frida-ios-dump) or an un-encrypted build instead.
+
+        """.utf8))
     }
 
     /// Best-effort architecture name for a thin Mach-O slice.
@@ -93,7 +108,8 @@ extension BinaryLoader {
         architecture: String? = nil,
         image: String? = nil,
         imagePath: String? = nil,
-        cachePath: String? = nil
+        cachePath: String? = nil,
+        binary: String? = nil
     ) throws -> MachOFile {
         if image != nil, imagePath != nil {
             throw BinaryLoadError("Pass only one of --image or --image-path.")
@@ -110,7 +126,8 @@ extension BinaryLoader {
         guard let path else {
             throw BinaryLoadError("Provide a binary path, or --image <name> to read from the dyld shared cache.")
         }
-        return try load(path: path, architecture: architecture)
+        // Accept a Mach-O, or an .app/.framework/.ipa to dig the binary out of.
+        return try load(path: resolveBinaryInput(path, binary: binary), architecture: architecture)
     }
 
     /// Extract a single image from a dyld shared cache as a cache-aware

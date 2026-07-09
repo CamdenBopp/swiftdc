@@ -77,6 +77,14 @@ swift build -c release # optimized → .build/release/swiftdc
 # Full report: declarations + disassembly grouped by type
 swiftdc analyze /path/to/Binary
 
+# Point straight at an app, framework, or IPA — no need to dig out the binary.
+# Any subcommand accepts a Mach-O, a .app/.framework bundle, or a .ipa (unzipped
+# for you). Defaults to the bundle's main executable.
+swiftdc interface MyApp.app
+swiftdc dump MyApp.ipa --list-binaries        # main executable + embedded frameworks/extensions
+swiftdc dump MyApp.ipa --binary SomeKit       # analyze an embedded framework by name
+swiftdc analyze /path/to/SomeKit.framework
+
 # Just the reconstructed declarations
 swiftdc dump /path/to/Binary
 swiftdc dump /path/to/Binary --sections types,protocols
@@ -218,3 +226,12 @@ swift test
   different subcache file than its header. `objc --image` on a very large
   framework (Foundation, CoreLocation) is slow — it resolves every ObjC class
   through the cache; the other subcommands are fine.
+- **Apps / IPAs**: any subcommand accepts a `.app`/`.framework` bundle or a
+  `.ipa` (unzipped to a temp dir) and resolves to the main executable, or an
+  embedded framework via `--binary` (see `--list-binaries`). **App Store `.ipa`s
+  ship their main binary FairPlay-encrypted** (`cryptid != 0`) — swiftdc detects
+  this and warns, but *cannot* decrypt it; you need a decrypted dump (e.g. from a
+  jailbroken device via frida-ios-dump) or an un-encrypted build. Enterprise/dev
+  builds and `.app`s are unaffected.
+- **x86_64**: metadata/declarations/interface work on any slice, but
+  disassembly is ARM64-only.
