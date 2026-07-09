@@ -11,17 +11,20 @@ let package = Package(
         .executable(name: "swiftdc", targets: ["swiftdc"]),
     ],
     dependencies: [
-        // Pinned to a specific `main` commit, NOT a release tag. The latest tag
-        // (0.9.1) does not compile under Swift 6.3: SwiftDump's async dumpers call
-        // `Node.print()`, which has both sync and async overloads in
-        // swift-demangling >=0.3.0, and Swift prefers the async overload in an
-        // async context — so 0.9.1's missing `await` is a hard error. This `main`
-        // commit (toward 0.10.0) added the `await`s and is the Swift 6.3-compatible
-        // combo with async demangling 0.4.x. Frozen to a revision so `swift package
-        // update` can't drift us onto an untested commit.
+        // Pinned to the 0.12.0-beta.3 tag's commit (da7abcf, 2026-06-03), NOT a
+        // release tag via `from:`. History: older tags like 0.9.1 do not compile
+        // under Swift 6.3 — SwiftDump's async dumpers call `Node.print()`, which has
+        // both sync and async overloads in swift-demangling >=0.3.0, and Swift
+        // prefers the async overload in an async context, so 0.9.1's missing `await`
+        // is a hard error. beta.3 carries those `await` fixes and pairs with async
+        // demangling 0.4.x. It is a content-superset of the previous pin (8b34efb on
+        // `main`) plus additive June commits: public SharedCache API, resilient-
+        // superclass dumping, associated-type + opaque-type symbolic-ref fixes.
+        // Frozen to a revision so `swift package update` can't drift us onto an
+        // untested commit; re-verify the build under Swift 6.3 before moving it.
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection",
-            revision: "8b34efb02340298e3a2cee69541f99a8e701a719"
+            revision: "da7abcf91fc9a1208f53b7314aad288da3dafb14"
         ),
         // MachOKit is the Mach-O container parser MachOSwiftSection is built on.
         // It is NOT re-exported, so we depend on the same fork/identity directly
@@ -59,6 +62,15 @@ let package = Package(
             url: "https://github.com/apple/swift-argument-parser",
             from: "1.5.0"
         ),
+        // Test-only. Lets the test target import `Dependencies` and pre-seed
+        // `\.symbolIndexStore` into DependencyValues storage, which makes
+        // swift-dependencies return it without building the per-test cache key
+        // that segfaults under swift-testing on this toolchain (see SmokeTests).
+        // Already resolved transitively via MachOSwiftSection.
+        .package(
+            url: "https://github.com/pointfreeco/swift-dependencies",
+            from: "1.9.0"
+        ),
     ],
     targets: [
         // Homebrew-installed Capstone (`brew install capstone`), surfaced via its
@@ -90,7 +102,14 @@ let package = Package(
         ),
         .testTarget(
             name: "SwiftDecompilerCoreTests",
-            dependencies: ["SwiftDecompilerCore"]
+            dependencies: [
+                "SwiftDecompilerCore",
+                // For the swift-testing dependency-resolution workaround in
+                // SmokeTests. MachOSwiftSection re-exports MachOSymbols, whose
+                // `@_spi(Internals)` surface vends `SymbolIndexStore`.
+                .product(name: "Dependencies", package: "swift-dependencies"),
+                .product(name: "MachOSwiftSection", package: "MachOSwiftSection"),
+            ]
         ),
     ]
 )

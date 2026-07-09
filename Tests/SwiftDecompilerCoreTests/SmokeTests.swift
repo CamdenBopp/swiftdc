@@ -1,6 +1,36 @@
 import Testing
 import Foundation
+import Dependencies
+@_spi(Internals) import MachOSwiftSection  // re-exports MachOSymbols → SymbolIndexStore
 @testable import SwiftDecompilerCore
+
+/// Runs `operation` with `\.symbolIndexStore` pre-seeded into DependencyValues.
+///
+/// Deep in SwiftDump/SwiftInterface, dumping and disassembly read
+/// `@Dependency(\.symbolIndexStore)`. Under swift-testing, resolving that
+/// dependency through swift-dependencies' *cached* path builds a per-test
+/// `CachedValues.CacheKey`, which reads swift-testing's current `Test.ID` via
+/// `String(reflecting:)` — a type-name reflection that segfaults on the current
+/// toolchain (`objc_class::demangledName`, EXC_BAD_ACCESS at 0x3). The crash is
+/// pre-existing and independent of the MachOSwiftSection version; the CLI never
+/// links swift-testing, so it is unaffected.
+///
+/// Providing the value here writes it straight into `DependencyValues.storage`,
+/// so the getter returns it directly — `DependencyValues.subscript` short-
+/// circuits before ever building a `CacheKey` (and thus never reflects). The
+/// live and test values are both `.shared`, so this is the exact instance
+/// production uses: no behavior change, just no crash. Covers every access in
+/// the scoped call, including `SwiftInterfaceIndexer.deinit`.
+func withStableDependencies<R>(
+    isolation: isolated (any Actor)? = #isolation,
+    _ operation: () async throws -> R
+) async rethrows -> R {
+    try await withDependencies(
+        isolation: isolation,
+        { $0.symbolIndexStore = .shared },
+        operation: operation
+    )
+}
 
 @Test func versionIsSet() {
     #expect(SwiftDecompiler.version == "0.0.1")
@@ -44,7 +74,9 @@ import Foundation
     let path = "Fixtures/Sample/sample.release"
     guard FileManager.default.fileExists(atPath: path) else { return }
     let machO = try BinaryLoader.load(path: path)
-    let text = await SwiftDeclarationDumper(preset: .simplified).dump(machO, sections: [.types])
+    let text = await withStableDependencies {
+        await SwiftDeclarationDumper(preset: .simplified).dump(machO, sections: [.types])
+    }
     #expect(text.contains("struct Point"))
     #expect(text.contains("enum Direction"))
     #expect(text.contains("class Dog: Animal"))
@@ -55,7 +87,9 @@ import Foundation
 @Test func recoversStrippedFunctionsIfPresent() async throws {
     let path = "Fixtures/Sample/sample.stripped"
     guard FileManager.default.fileExists(atPath: path) else { return }
-    let functions = try await Disassembler(preset: .simplified).disassemble(path: path)
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .simplified).disassemble(path: path)
+    }
     // Re-segmented into many functions, not collapsed into one `_main` blob.
     #expect(functions.count > 50)
     // At least one function name was recovered from Swift metadata.
@@ -75,7 +109,9 @@ import Foundation
 @Test func annotatesOperandReferencesIfPresent() async throws {
     let path = "Fixtures/Sample/sample.release"
     guard FileManager.default.fileExists(atPath: path) else { return }
-    let functions = try await Disassembler(preset: .simplified).disassemble(path: path)
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .simplified).disassemble(path: path)
+    }
     let annotations = functions.flatMap(\.instructions).compactMap(\.annotation)
     #expect(annotations.contains { $0.contains("→") })
     #expect(annotations.contains { $0.contains("type descriptor for") })
@@ -95,7 +131,9 @@ import Foundation
 @Test func recoversBasicBlocksIfPresent() async throws {
     let path = "Fixtures/Sample/sample.release"
     guard FileManager.default.fileExists(atPath: path) else { return }
-    let functions = try await Disassembler(preset: .simplified).disassemble(path: path)
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .simplified).disassemble(path: path)
+    }
     let tree = try #require(functions.first { $0.demangledName == "Tree.sum()" })
     // Control flow is classified by Capstone.
     #expect(tree.instructions.contains { $0.controlFlow == .call })
@@ -110,7 +148,9 @@ import Foundation
 @Test func recoversCallArgumentsIfPresent() async throws {
     let path = "Fixtures/Sample/sample.release"
     guard FileManager.default.fileExists(atPath: path) else { return }
-    let functions = try await Disassembler(preset: .simplified).disassemble(path: path)
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .simplified).disassemble(path: path)
+    }
     let argLists = functions.flatMap(\.instructions).compactMap(\.callArguments)
     #expect(!argLists.isEmpty)
     // swift_allocObject(metadata, size, alignMask=7): a 3-arg call ending in "7".
@@ -121,7 +161,9 @@ import Foundation
 @Test func rendersPseudocodeIfPresent() async throws {
     let path = "Fixtures/Sample/sample.release"
     guard FileManager.default.fileExists(atPath: path) else { return }
-    let functions = try await Disassembler(preset: .simplified).disassemble(path: path)
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .simplified).disassemble(path: path)
+    }
     let speak = try #require(functions.first { $0.demangledName == "Dog.speak()" })
     let pseudo = speak.renderPseudo()
     #expect(pseudo.hasPrefix("Dog.speak() {"))
@@ -135,7 +177,9 @@ import Foundation
 @Test func structuresControlFlowIfPresent() async throws {
     let path = "Fixtures/Sample/sample.release"
     guard FileManager.default.fileExists(atPath: path) else { return }
-    let functions = try await Disassembler(preset: .simplified).disassemble(path: path)
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .simplified).disassemble(path: path)
+    }
     let tree = try #require(functions.first { $0.demangledName == "Tree.sum()" })
     let structured = tree.renderStructured()
     #expect(structured.contains("if ("))
@@ -153,7 +197,9 @@ import Foundation
 @Test func foldsLoopsIntoWhileIfPresent() async throws {
     let path = "Fixtures/Sample/sample.release"
     guard FileManager.default.fileExists(atPath: path) else { return }
-    let functions = try await Disassembler(preset: .simplified).disassemble(path: path)
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .simplified).disassemble(path: path)
+    }
     guard let loop = functions.first(where: { ($0.demangledName ?? "").hasPrefix("countMatches") })
     else { return }
     let structured = loop.renderStructured()
@@ -166,7 +212,9 @@ import Foundation
 @Test func emitsValidJSONIfPresent() async throws {
     let path = "Fixtures/Sample/sample.release"
     guard FileManager.default.fileExists(atPath: path) else { return }
-    let functions = try await Disassembler(preset: .simplified).disassemble(path: path)
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .simplified).disassemble(path: path)
+    }
     let parsed = try JSONSerialization.jsonObject(with: Data(functions.jsonString().utf8))
     let array = try #require(parsed as? [[String: Any]])
     #expect(!array.isEmpty)
@@ -179,7 +227,9 @@ import Foundation
 @Test func threadsCallResultsIntoArgumentsIfPresent() async throws {
     let path = "Fixtures/Sample/sample.release"
     guard FileManager.default.fileExists(atPath: path) else { return }
-    let functions = try await Disassembler(preset: .simplified).disassemble(path: path)
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .simplified).disassemble(path: path)
+    }
     let arguments = functions.flatMap(\.instructions).compactMap(\.callArguments).flatMap { $0 }
     // At least one argument is itself a recovered call expression (has nesting).
     #expect(arguments.contains { $0.contains("(") && $0.contains(")") })
@@ -189,7 +239,9 @@ import Foundation
 @Test func decodesSmallStringArgumentsIfPresent() async throws {
     let path = "Fixtures/Sample/sample.release"
     guard FileManager.default.fileExists(atPath: path) else { return }
-    let functions = try await Disassembler(preset: .simplified).disassemble(path: path)
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .simplified).disassemble(path: path)
+    }
     let arguments = functions.flatMap(\.instructions).compactMap(\.callArguments).flatMap { $0 }
     // e.g. Dog.speak()'s " the ", Rectangle.describe()'s "Rect "/"x", Dog("Rex","Lab").
     #expect(arguments.contains { $0 == "\" the \"" || $0 == "\"Rect \"" || $0 == "\"Rex\"" })
