@@ -144,22 +144,61 @@ public struct Disassembler: Sendable {
             )
         }
 
-        // 2. Function boundaries: LC_FUNCTION_STARTS ∪ objdump label addresses.
-        //    Function-starts survive stripping, so this re-creates boundaries
-        //    objdump couldn't label.
+        // 2-6. Segment, name, annotate, value-track (shared with the in-process
+        //       front-end below).
+        return await assemble(
+            instructions: instructions,
+            labelByAddress: labelByAddress,
+            in: machO,
+            functionFilter: functionFilter
+        )
+    }
+
+    /// Disassemble a `MachOFile` fully in-process with Capstone — no
+    /// `llvm-objdump` subprocess, so it works on images that have no standalone
+    /// file on disk (dyld shared-cache frameworks). Boundaries come from
+    /// `LC_FUNCTION_STARTS`, names from Swift metadata, and adrp/call operand
+    /// targets are resolved against recovered function/descriptor addresses.
+    public func disassemble(
+        machO: MachOFile,
+        functionFilter: String? = nil
+    ) async -> [DisassembledFunction] {
+        let instructions = capstoneInstructions(in: machO)
+        guard !instructions.isEmpty else { return [] }
+        return await assemble(
+            instructions: instructions,
+            labelByAddress: symbolLabels(in: machO),
+            in: machO,
+            functionFilter: functionFilter
+        )
+    }
+
+    // MARK: - Shared pipeline
+
+    /// Segment the flat instruction stream into functions, name them, resolve
+    /// operand references, and recover call arguments. Both front-ends — objdump
+    /// (files) and Capstone (in-process/cache) — feed into this.
+    private func assemble(
+        instructions: [Instruction],
+        labelByAddress: [UInt64: String],
+        in machO: MachOFile,
+        functionFilter: String?
+    ) async -> [DisassembledFunction] {
+        // Function boundaries: LC_FUNCTION_STARTS ∪ label addresses. Function-
+        // starts survive stripping, so this re-creates boundaries a label set
+        // (objdump's, or a stripped cache image's exports) couldn't cover.
         var boundaries = Set(functionStarts(of: machO))
         boundaries.formUnion(labelByAddress.keys)
 
-        // 3. Names from Swift metadata (class vtables + protocol witnesses) —
-        //    only worth computing when many boundaries lack a symbol label
-        //    (i.e. the binary looks stripped).
+        // Names from Swift metadata (class vtables + protocol witnesses) — worth
+        // computing when many boundaries lack a symbol label (stripped binaries,
+        // or an in-process decode with few/no symbols).
         let unlabeled = boundaries.subtracting(labelByAddress.keys)
         var metadataNames: [UInt64: String] = [:]
         if Double(unlabeled.count) > Double(max(boundaries.count, 1)) * 0.25 {
             metadataNames = await MetadataSymbolizer(preset: preset).functionNames(in: machO)
         }
 
-        // 4. Re-segment the flat stream at the boundaries and name each piece.
         var functions = segment(
             instructions,
             boundaries: boundaries,
@@ -167,8 +206,8 @@ public struct Disassembler: Sendable {
             metadataNames: metadataNames
         )
 
-        // 5. Resolve adrp/add(+ldr) operand references to function, type-
-        //    descriptor, string, and Swift-symbol names that objdump leaves bare.
+        // Resolve adrp/add(+ldr) operand references to function, type-descriptor,
+        // string, and Swift-symbol names, and name direct call/branch targets.
         let resolver = ReferenceResolver(
             names: referenceIndex(functions: functions, in: machO),
             stringRanges: stringSectionRanges(in: machO),
@@ -176,8 +215,6 @@ public struct Disassembler: Sendable {
             demangleSymbol: { self.demangle($0) }
         )
         functions = functions.map { annotateReferences(in: $0, resolver: resolver) }
-
-        // 6. Value-track each function to recover call-site arguments.
         functions = functions.map { enrichCallArguments(in: $0, resolver: resolver) }
 
         guard let needle = functionFilter?.lowercased(), !needle.isEmpty else {
@@ -187,6 +224,82 @@ public struct Disassembler: Sendable {
             $0.symbol.lowercased().contains(needle)
                 || ($0.demangledName?.lowercased().contains(needle) ?? false)
         }
+    }
+
+    /// Decode `__text` in-process with Capstone into an ordered instruction
+    /// stream carrying text, control-flow class, and branch target.
+    private func capstoneInstructions(in machO: MachOFile) -> [Instruction] {
+        guard let engine = CapstoneEngine(),
+              let text = machO.sections.first(where: {
+                  $0.segmentName == "__TEXT" && $0.sectionName == "__text"
+              }),
+              let bytes = textSectionBytes(address: UInt64(text.address), size: text.size, in: machO)
+        else { return [] }
+        return engine.disassemble(bytes, address: UInt64(text.address)).map { decoded in
+            Instruction(
+                address: decoded.address,
+                text: decoded.text,
+                annotation: nil,
+                controlFlow: decoded.controlFlow,
+                branchTarget: decoded.branchTarget
+            )
+        }
+    }
+
+    /// Raw `__text` bytes.
+    ///
+    /// For a plain file, read through the image reader. For a dyld-cache image
+    /// the code usually lives in a *different* subcache file than the image
+    /// header, and MachOKit's image reader only reaches the header's subcache —
+    /// so locate the subcache that maps the section's VM address and read that
+    /// subcache file directly.
+    private func textSectionBytes(address: UInt64, size: Int, in machO: MachOFile) -> Data? {
+        if let full = machO.fullCache,
+           let fullOffset = full.fileOffset(of: address),
+           let subcache = full.cache(forOffset: fullOffset),
+           let url = full.url(forOffset: fullOffset),
+           let localOffset = subcache.fileOffset(of: address),
+           let handle = try? FileHandle(forReadingFrom: url) {
+            defer { try? handle.close() }
+            do {
+                try handle.seek(toOffset: localOffset)
+                return try handle.read(upToCount: size)
+            } catch {
+                return nil
+            }
+        }
+        if let bytes: [UInt8] = try? machO.readElements(
+            offset: machO.resolveOffset(at: address),
+            numberOfElements: size
+        ) {
+            return Data(bytes)
+        }
+        return nil
+    }
+
+    /// Function labels from the symbol table: `__text`-range defined symbols,
+    /// keyed by VM address. Present even in dyld-cache images (exports), and a
+    /// no-op when the symbol table is stripped.
+    private func symbolLabels(in machO: MachOFile) -> [UInt64: String] {
+        // Restrict to the __text VM range so a defined-symbol's offset that maps
+        // outside code (a mis-typed symbol) can't mislabel a function.
+        guard let text = machO.sections.first(where: {
+            $0.segmentName == "__TEXT" && $0.sectionName == "__text"
+        }) else { return [:] }
+        let textRange = UInt64(text.address) ..< UInt64(text.address + text.size)
+
+        // MachOKit's `Symbol.offset` is the nlist `n_value` — for a defined
+        // symbol that's its (unslid) VM address, the same space as instruction
+        // addresses and LC_FUNCTION_STARTS. (Undefined symbols have n_value 0,
+        // which the __text-range filter drops.)
+        var labels: [UInt64: String] = [:]
+        for symbol in machO.symbols where !symbol.name.isEmpty {
+            let address = UInt64(symbol.offset)
+            if textRange.contains(address), labels[address] == nil {
+                labels[address] = symbol.name
+            }
+        }
+        return labels
     }
 
     // MARK: - Segmentation
@@ -474,16 +587,24 @@ public struct Disassembler: Sendable {
         )
     }
 
-    /// `adrp x8, 12 ; 0x10000c000` → ("x8", 0x10000c000). The resolved page comes
-    /// from objdump's trailing comment.
+    /// `adrp x8, 12 ; 0x10000c000` (llvm-objdump) or `adrp x8, 0x10000c000`
+    /// (Capstone) → ("x8", 0x10000c000). objdump keeps the resolved page in a
+    /// trailing comment; Capstone puts it straight in the operand.
     private func parseAdrp(_ text: String) -> (register: String, page: UInt64)? {
         let fields = text.split(whereSeparator: { $0 == " " || $0 == "\t" })
         guard fields.first == "adrp", fields.count >= 2 else { return nil }
         let register = fields[1].trimmingCharacters(in: CharacterSet(charactersIn: ", "))
-        guard let hashIndex = text.range(of: "; 0x")?.upperBound else { return nil }
-        let hex = text[hashIndex...].prefix { $0.isHexDigit }
-        guard let page = UInt64(hex, radix: 16) else { return nil }
-        return (register, page)
+        if let hashIndex = text.range(of: "; 0x")?.upperBound {
+            let hex = text[hashIndex...].prefix { $0.isHexDigit }
+            if let page = UInt64(hex, radix: 16) { return (register, page) }
+        }
+        if fields.count >= 3 {
+            let operand = fields[2].trimmingCharacters(in: CharacterSet(charactersIn: "#, "))
+            if operand.hasPrefix("0x"), let page = UInt64(operand.dropFirst(2), radix: 16) {
+                return (register, page)
+            }
+        }
+        return nil
     }
 
     /// For `add xN, xB, #0x170` or `ldr xT, [xB, #0x170]`, return (base xB, 0x170).

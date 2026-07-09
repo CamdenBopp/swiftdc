@@ -138,9 +138,14 @@ public struct ValueTracer: Sendable {
 
         switch mnemonic {
         case "adrp":
-            guard let first = operands.first, let dest = Self.register(first),
-                  let page = Self.trailingHexComment(insn.text)
-            else { clobberDestination(); return }
+            guard let first = operands.first, let dest = Self.register(first) else {
+                clobberDestination(); return
+            }
+            // objdump keeps the resolved page in a trailing `; 0x…` comment;
+            // Capstone puts it straight in the operand.
+            let page = Self.trailingHexComment(insn.text)
+                ?? (operands.count >= 2 ? Self.hexOperand(operands[1]) : nil)
+            guard let page else { clobberDestination(); return }
             registers[dest] = .address(page)
 
         case "add", "sub":
@@ -247,6 +252,13 @@ public struct ValueTracer: Sendable {
     private static func trailingHexComment(_ text: String) -> UInt64? {
         guard let range = text.range(of: "; 0x")?.upperBound else { return nil }
         return UInt64(text[range...].prefix { $0.isHexDigit }, radix: 16)
+    }
+
+    /// A bare `0x…` operand (Capstone renders a resolved adrp page this way).
+    private static func hexOperand(_ token: String) -> UInt64? {
+        let s = token.trimmingCharacters(in: CharacterSet(charactersIn: "#[], "))
+        guard s.hasPrefix("0x") else { return nil }
+        return UInt64(s.dropFirst(2), radix: 16)
     }
 
     private static func trimTrailingUnknown(_ values: [AbstractValue]) -> [AbstractValue]? {

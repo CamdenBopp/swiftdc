@@ -73,11 +73,20 @@ struct AnalyzeCommand: AsyncParsableCommand {
         abstract: "Full report: reconstructed declarations + disassembly grouped by type."
     )
 
-    @Argument(help: "Path to the Mach-O (or fat) binary.")
-    var path: String
+    @Argument(help: "Path to the Mach-O (or fat) binary. Omit when reading from the dyld shared cache with --image.")
+    var path: String?
 
     @Option(name: [.short, .customLong("arch")], help: "Architecture slice for fat binaries (arm64, arm64e, x86_64).")
     var architecture: String?
+
+    @Option(name: .customLong("image"), help: "Analyze this image from the dyld shared cache by name (e.g. Foundation). Disassembly is decoded in-process with Capstone.")
+    var image: String?
+
+    @Option(name: .customLong("image-path"), help: "Analyze this image from the dyld shared cache by full install path.")
+    var imagePath: String?
+
+    @Option(name: .customLong("cache"), help: "Path to a dyld_shared_cache_* file. Defaults to the running system's cache when --image is used.")
+    var cache: String?
 
     @Option(name: .long, help: "Demangle preset: default, simplified, interface.")
     var demangle: DemanglePreset = .default
@@ -90,9 +99,19 @@ struct AnalyzeCommand: AsyncParsableCommand {
 
     func run() async throws {
         let report = AnalysisReport(preset: demangle)
-        let text = json
-            ? try await report.generateJSON(path: path, architecture: architecture)
-            : try await report.generate(path: path, architecture: architecture)
+        let text: String
+        if image != nil || imagePath != nil || cache != nil {
+            let machO = try BinaryLoader.loadMachO(
+                path: path, image: image, imagePath: imagePath, cachePath: cache
+            )
+            text = json ? await report.generateJSON(machO: machO) : await report.generate(machO: machO)
+        } else if let path {
+            text = json
+                ? try await report.generateJSON(path: path, architecture: architecture)
+                : try await report.generate(path: path, architecture: architecture)
+        } else {
+            throw BinaryLoadError("Provide a binary path, or --image <name> to analyze a dyld shared-cache image.")
+        }
         try emit(text, to: output)
     }
 }
@@ -168,11 +187,20 @@ struct DisasmCommand: AsyncParsableCommand {
         abstract: "Disassemble function bodies to ARM64, annotated with demangled calls."
     )
 
-    @Argument(help: "Path to the Mach-O (or fat) binary.")
-    var path: String
+    @Argument(help: "Path to the Mach-O (or fat) binary. Omit when reading from the dyld shared cache with --image.")
+    var path: String?
 
     @Option(name: [.short, .customLong("arch")], help: "Architecture slice for fat binaries (arm64, arm64e, x86_64).")
     var architecture: String?
+
+    @Option(name: .customLong("image"), help: "Disassemble this image from the dyld shared cache by name (e.g. Foundation). Decoded in-process with Capstone.")
+    var image: String?
+
+    @Option(name: .customLong("image-path"), help: "Disassemble this image from the dyld shared cache by full install path.")
+    var imagePath: String?
+
+    @Option(name: .customLong("cache"), help: "Path to a dyld_shared_cache_* file. Defaults to the running system's cache when --image is used.")
+    var cache: String?
 
     @Option(name: [.short, .long], help: "Only show functions whose name (raw or demangled) contains this string.")
     var function: String?
@@ -197,11 +225,21 @@ struct DisasmCommand: AsyncParsableCommand {
 
     func run() async throws {
         let disassembler = Disassembler(preset: demangle)
-        let functions = try await disassembler.disassemble(
-            path: path,
-            architecture: architecture,
-            functionFilter: function
-        )
+        let functions: [DisassembledFunction]
+        if image != nil || imagePath != nil || cache != nil {
+            // dyld shared-cache image: no standalone file for llvm-objdump, so
+            // decode in-process with Capstone.
+            let machO = try BinaryLoader.loadMachO(
+                path: path, image: image, imagePath: imagePath, cachePath: cache
+            )
+            functions = await disassembler.disassemble(machO: machO, functionFilter: function)
+        } else if let path {
+            functions = try await disassembler.disassemble(
+                path: path, architecture: architecture, functionFilter: function
+            )
+        } else {
+            throw BinaryLoadError("Provide a binary path, or --image <name> to disassemble a dyld shared-cache image.")
+        }
         if json {
             try emit(functions.jsonString(), to: output)
         } else if functions.isEmpty {

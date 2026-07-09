@@ -266,3 +266,32 @@ func withStableDependencies<R>(
     // e.g. Dog.speak()'s " the ", Rectangle.describe()'s "Rect "/"x", Dog("Rex","Lab").
     #expect(arguments.contains { $0 == "\" the \"" || $0 == "\"Rect \"" || $0 == "\"Rex\"" })
 }
+
+/// The in-process Capstone front-end (`disassemble(machO:)`) recovers the same
+/// functions as the llvm-objdump front-end — same `__text`, same
+/// `LC_FUNCTION_STARTS`. This is the path that lets `disasm` read dyld-cache
+/// images, which have no standalone file for llvm-objdump.
+@Test func inProcessDisasmMatchesObjdumpIfPresent() async throws {
+    let path = "Fixtures/Sample/sample.release"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+
+    let objdump = try await withStableDependencies {
+        try await Disassembler(preset: .simplified).disassemble(path: path)
+    }
+    let machO = try BinaryLoader.load(path: path)
+    let inProcess = await withStableDependencies {
+        await Disassembler(preset: .simplified).disassemble(machO: machO)
+    }
+    #expect(!inProcess.isEmpty)
+
+    // Same key function at the same address with the same instruction count.
+    let objTree = try #require(objdump.first { $0.demangledName == "Tree.sum()" })
+    let ipTree = try #require(inProcess.first { $0.demangledName == "Tree.sum()" })
+    #expect(objTree.startAddress == ipTree.startAddress)
+    #expect(objTree.instructions.count == ipTree.instructions.count)
+    // Capstone gives control flow directly.
+    #expect(ipTree.instructions.contains { $0.controlFlow == .call })
+    #expect(ipTree.instructions.contains { $0.controlFlow == .return })
+    // adrp adaptation + value tracking survive the Capstone text format.
+    #expect(inProcess.flatMap(\.instructions).contains { $0.callArguments != nil })
+}

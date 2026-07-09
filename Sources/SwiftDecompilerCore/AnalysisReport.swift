@@ -1,4 +1,5 @@
 import Foundation
+import MachOKit
 
 /// Produces a combined human-readable report: reconstructed Swift declarations
 /// followed by ARM64 disassembly grouped by the owning type.
@@ -9,23 +10,50 @@ public struct AnalysisReport: Sendable {
         self.preset = preset
     }
 
+    // MARK: - File input (llvm-objdump disassembly)
+
     /// Structured JSON: `{ declarations: [...], objc: [...], functions: [...] }`.
     public func generateJSON(path: String, architecture: String? = nil) async throws -> String {
         let machO = try BinaryLoader.load(path: path, architecture: architecture)
-        let declarations = await SwiftDeclarationDumper(preset: preset).dump(machO)
-        let objc = ObjCDumper().blocks(machO)
         let functions = (try? await Disassembler(preset: preset)
             .disassemble(path: path, architecture: architecture)) ?? []
-        return reportJSON(declarations: declarations, objc: objc, functions: functions)
+        return await json(machO: machO, functions: functions)
     }
 
     public func generate(path: String, architecture: String? = nil) async throws -> String {
         let machO = try BinaryLoader.load(path: path, architecture: architecture)
-        let declarations = await SwiftDeclarationDumper(preset: preset).dump(machO)
-        let objc = ObjCDumper().dump(machO)
         // Disassembly is best-effort; a missing/odd binary shouldn't sink the report.
         let functions = (try? await Disassembler(preset: preset)
             .disassemble(path: path, architecture: architecture)) ?? []
+        return await text(machO: machO, functions: functions)
+    }
+
+    // MARK: - Pre-loaded image input (in-process Capstone disassembly)
+
+    /// Text report for an already-loaded image — e.g. a dyld shared-cache
+    /// framework, which has no standalone file. Disassembly is in-process.
+    public func generate(machO: MachOFile) async -> String {
+        let functions = await Disassembler(preset: preset).disassemble(machO: machO)
+        return await text(machO: machO, functions: functions)
+    }
+
+    /// JSON report for an already-loaded image (in-process disassembly).
+    public func generateJSON(machO: MachOFile) async -> String {
+        let functions = await Disassembler(preset: preset).disassemble(machO: machO)
+        return await json(machO: machO, functions: functions)
+    }
+
+    // MARK: - Rendering (shared by both input paths)
+
+    private func json(machO: MachOFile, functions: [DisassembledFunction]) async -> String {
+        let declarations = await SwiftDeclarationDumper(preset: preset).dump(machO)
+        let objc = ObjCDumper().blocks(machO)
+        return reportJSON(declarations: declarations, objc: objc, functions: functions)
+    }
+
+    private func text(machO: MachOFile, functions: [DisassembledFunction]) async -> String {
+        let declarations = await SwiftDeclarationDumper(preset: preset).dump(machO)
+        let objc = ObjCDumper().dump(machO)
 
         var out = ""
         out += banner("SWIFT DECLARATIONS")

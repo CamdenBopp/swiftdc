@@ -106,6 +106,8 @@ swiftdc analyze /path/to/Universal --arch arm64
 swiftdc dump --image Foundation --demangle simplified
 swiftdc dump --image SwiftUI --sections types
 swiftdc objc --image UserNotifications
+swiftdc disasm --image UserNotifications --function authorizationStatus  # in-process Capstone
+swiftdc analyze --image SwiftUI                   # declarations + disassembly
 swiftdc dump --list-images                       # every image path in the cache
 swiftdc dump --image-path /System/Library/Frameworks/Foundation.framework/Versions/C/Foundation
 swiftdc dump --image Foundation --cache /path/to/dyld_shared_cache_arm64e   # an extracted cache
@@ -204,8 +206,10 @@ swift test
 - Class vtable method names occasionally fall back to `sub_<addr>` even
   unstripped (a SwiftDump resolution gap); the address is still correct and
   disassemblable.
-- **dyld shared cache**: `dump` and `objc` can read a cache image (`--image`);
-  `disasm`/`analyze` cannot yet — they shell out to `llvm-objdump`, which needs a
-  standalone file, and cache images have none. `objc --image` on a very large
-  framework (Foundation, CoreLocation) is slow: it resolves every ObjC class's
-  metadata through the cache. `dump --image` on the same frameworks is fine.
+- **dyld shared cache**: `dump`, `objc`, `disasm`, and `analyze` all read a cache
+  image with `--image`. `disasm`/`analyze` decode **in-process with Capstone** (no
+  `llvm-objdump`, which needs a standalone file that cache images don't have); the
+  loader handles the fact that a cache image's `__text` code often lives in a
+  different subcache file than its header. `objc --image` on a very large
+  framework (Foundation, CoreLocation) is slow — it resolves every ObjC class
+  through the cache; the other subcommands are fine.
