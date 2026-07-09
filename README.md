@@ -100,6 +100,16 @@ swiftdc disasm /path/to/Binary --function sum --structured
 # Fat/universal binaries: pick a slice
 swiftdc analyze /path/to/Universal --arch arm64
 
+# System frameworks: read straight from the dyld shared cache (they have no
+# standalone on-disk binary on modern macOS/iOS). --image matches by name;
+# omit --cache to use the running system's cache.
+swiftdc dump --image Foundation --demangle simplified
+swiftdc dump --image SwiftUI --sections types
+swiftdc objc --image UserNotifications
+swiftdc dump --list-images                       # every image path in the cache
+swiftdc dump --image-path /System/Library/Frameworks/Foundation.framework/Versions/C/Foundation
+swiftdc dump --image Foundation --cache /path/to/dyld_shared_cache_arm64e   # an extracted cache
+
 # Write to a file
 swiftdc analyze /path/to/Binary -o report.txt
 
@@ -194,3 +204,8 @@ swift test
 - Class vtable method names occasionally fall back to `sub_<addr>` even
   unstripped (a SwiftDump resolution gap); the address is still correct and
   disassemblable.
+- **dyld shared cache**: `dump` and `objc` can read a cache image (`--image`);
+  `disasm`/`analyze` cannot yet — they shell out to `llvm-objdump`, which needs a
+  standalone file, and cache images have none. `objc --image` on a very large
+  framework (Foundation, CoreLocation) is slow: it resolves every ObjC class's
+  metadata through the cache. `dump --image` on the same frameworks is fine.

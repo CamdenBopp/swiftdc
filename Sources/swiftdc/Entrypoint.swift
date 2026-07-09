@@ -19,11 +19,20 @@ struct ObjCCommand: AsyncParsableCommand {
         abstract: "Reconstruct Objective-C headers (@interface/@protocol) from ObjC metadata."
     )
 
-    @Argument(help: "Path to the Mach-O (or fat) binary.")
-    var path: String
+    @Argument(help: "Path to the Mach-O (or fat) binary. Omit when reading from the dyld shared cache with --image.")
+    var path: String?
 
     @Option(name: [.short, .customLong("arch")], help: "Architecture slice for fat binaries (arm64, arm64e, x86_64).")
     var architecture: String?
+
+    @Option(name: .customLong("image"), help: "Read this image from the dyld shared cache by name (e.g. Foundation, UIKit).")
+    var image: String?
+
+    @Option(name: .customLong("image-path"), help: "Read this image from the dyld shared cache by full install path.")
+    var imagePath: String?
+
+    @Option(name: .customLong("cache"), help: "Path to a dyld_shared_cache_* file. Defaults to the running system's cache when --image is used.")
+    var cache: String?
 
     @Option(name: [.short, .long], help: "Write output to a file instead of stdout.")
     var output: String?
@@ -32,7 +41,13 @@ struct ObjCCommand: AsyncParsableCommand {
     var json = false
 
     func run() throws {
-        let machO = try BinaryLoader.load(path: path, architecture: architecture)
+        let machO = try BinaryLoader.loadMachO(
+            path: path,
+            architecture: architecture,
+            image: image,
+            imagePath: imagePath,
+            cachePath: cache
+        )
         let blocks = ObjCDumper().blocks(machO)
         if json {
             try emit(jsonStrings(blocks), to: output)
@@ -85,14 +100,26 @@ struct AnalyzeCommand: AsyncParsableCommand {
 struct DumpCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "dump",
-        abstract: "Reconstruct Swift declarations from a Mach-O binary's metadata."
+        abstract: "Reconstruct Swift declarations from a Mach-O binary — or a dyld shared-cache image."
     )
 
-    @Argument(help: "Path to the Mach-O (or fat) binary.")
-    var path: String
+    @Argument(help: "Path to the Mach-O (or fat) binary. Omit when reading from the dyld shared cache with --image.")
+    var path: String?
 
     @Option(name: [.short, .customLong("arch")], help: "Architecture slice for fat binaries (arm64, arm64e, x86_64).")
     var architecture: String?
+
+    @Option(name: .customLong("image"), help: "Read this image from the dyld shared cache by name (e.g. Foundation, SwiftUI, libswiftCore).")
+    var image: String?
+
+    @Option(name: .customLong("image-path"), help: "Read this image from the dyld shared cache by full install path.")
+    var imagePath: String?
+
+    @Option(name: .customLong("cache"), help: "Path to a dyld_shared_cache_* file. Defaults to the running system's cache when --image is used.")
+    var cache: String?
+
+    @Flag(name: .customLong("list-images"), help: "List every image install path in the dyld shared cache and exit.")
+    var listImages = false
 
     @Option(name: .long, help: "Demangle preset: default, simplified, interface.")
     var demangle: DemanglePreset = .default
@@ -111,7 +138,17 @@ struct DumpCommand: AsyncParsableCommand {
     var json = false
 
     func run() async throws {
-        let machO = try BinaryLoader.load(path: path, architecture: architecture)
+        if listImages {
+            try emit(BinaryLoader.dyldCacheImagePaths(cachePath: cache).joined(separator: "\n"), to: output)
+            return
+        }
+        let machO = try BinaryLoader.loadMachO(
+            path: path,
+            architecture: architecture,
+            image: image,
+            imagePath: imagePath,
+            cachePath: cache
+        )
         let dumper = SwiftDeclarationDumper(preset: demangle)
         let selected = sections.isEmpty
             ? Set(SwiftDeclarationDumper.Section.allCases)

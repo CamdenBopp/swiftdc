@@ -67,6 +67,26 @@ func withStableDependencies<R>(
     #expect(AnalysisReport.ownerName(of: "sample.run() -> ()") == "sample")
 }
 
+/// The dyld-shared-cache loader lists images and resolves a system framework by
+/// name. Skips where there's no host cache (some CI/sandboxes). Only exercises
+/// the loader (fast) — not a full metadata dump of a huge framework.
+@Test func listsAndFindsDyldCacheImagesIfAvailable() throws {
+    let paths: [String]
+    do {
+        paths = try BinaryLoader.dyldCacheImagePaths(cachePath: nil)
+    } catch {
+        return // no host dyld shared cache on this system
+    }
+    #expect(!paths.isEmpty)
+    #expect(paths.contains { $0.hasSuffix("/Foundation") })
+    // A known image resolves by name without throwing (returns a cache MachOFile).
+    _ = try BinaryLoader.loadFromDyldCache(cachePath: nil, selector: .name("libswiftCore"))
+    // A bogus name surfaces a clear error rather than crashing.
+    #expect(throws: (any Error).self) {
+        _ = try BinaryLoader.loadFromDyldCache(cachePath: nil, selector: .name("NoSuchImage_ZZZ"))
+    }
+}
+
 /// Integration check that runs only when the compiled fixture is present
 /// (build it with `Fixtures/Sample/build.sh`). Keeps `swift test` green on a
 /// clean checkout while still exercising the real pipeline in dev.
