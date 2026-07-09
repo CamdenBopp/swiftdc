@@ -82,6 +82,11 @@ swiftdc dump /path/to/Binary
 swiftdc dump /path/to/Binary --sections types,protocols
 swiftdc dump /path/to/Binary --demangle simplified   # drop module prefixes
 
+# A full Swift interface (.swiftinterface-style source: generics, extensions,
+# conformances) — higher fidelity than `dump`. Also works with --image.
+swiftdc interface /path/to/Binary
+swiftdc interface /path/to/Binary --enum-layout --field-offsets   # + memory layout comments
+
 # Just the reconstructed Objective-C headers
 swiftdc objc /path/to/Binary
 

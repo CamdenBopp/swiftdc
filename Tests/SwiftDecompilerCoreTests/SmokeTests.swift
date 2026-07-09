@@ -102,6 +102,26 @@ func withStableDependencies<R>(
     #expect(text.contains("class Dog: Animal"))
 }
 
+/// The SwiftInterface-backed reconstructor emits real Swift interface syntax —
+/// generics with constraints, computed properties, enum cases — a higher
+/// fidelity than the flat declaration dump.
+@Test func reconstructsInterfaceIfPresent() async throws {
+    let path = "Fixtures/Sample/sample.release"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let machO = try BinaryLoader.load(path: path)
+    let interface = try await withStableDependencies {
+        try await InterfaceReconstructor().reconstruct(machO)
+    }
+    #expect(interface.contains("struct Point {"))
+    #expect(interface.contains("var x: Swift.Double"))
+    #expect(interface.contains("func distance(to: sample.Point) -> Swift.Double"))
+    #expect(interface.contains("enum Direction {"))
+    #expect(interface.contains("case north"))
+    // A generic function reconstructed with its constraint clause.
+    #expect(interface.contains("where"))
+    #expect(interface.contains("Comparable"))
+}
+
 /// Stripped binaries lose their symbol table, but LC_FUNCTION_STARTS + Swift
 /// metadata let us re-delimit and (partly) name functions anyway.
 @Test func recoversStrippedFunctionsIfPresent() async throws {

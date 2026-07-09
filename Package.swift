@@ -87,6 +87,9 @@ let package = Package(
                 .product(name: "MachOKit", package: "MachOKit"),
                 .product(name: "MachOSwiftSection", package: "MachOSwiftSection"),
                 .product(name: "SwiftDump", package: "MachOSwiftSection"),
+                // Full Swift-interface reconstruction (`.swiftinterface`-style),
+                // higher fidelity than SwiftDump's declaration listing.
+                .product(name: "SwiftInterface", package: "MachOSwiftSection"),
                 .product(name: "Semantic", package: "swift-semantic-string"),
                 .product(name: "Demangling", package: "swift-demangling"),
                 .product(name: "MachOObjCSection", package: "MachOObjCSection"),

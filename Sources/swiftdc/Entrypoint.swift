@@ -8,7 +8,7 @@ struct SwiftDC: AsyncParsableCommand {
         commandName: "swiftdc",
         abstract: "A Swift-aware Mach-O decompiler: reconstructed declarations + annotated ARM64.",
         version: SwiftDecompiler.version,
-        subcommands: [AnalyzeCommand.self, DumpCommand.self, ObjCCommand.self, DisasmCommand.self],
+        subcommands: [AnalyzeCommand.self, DumpCommand.self, InterfaceCommand.self, ObjCCommand.self, DisasmCommand.self],
         defaultSubcommand: AnalyzeCommand.self
     )
 }
@@ -178,6 +178,77 @@ struct DumpCommand: AsyncParsableCommand {
         } else {
             try emit(text.isEmpty ? "// No Swift metadata found for the selected sections." : text, to: output)
         }
+    }
+}
+
+struct InterfaceCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "interface",
+        abstract: "Reconstruct a Swift interface (.swiftinterface-style source) from a Mach-O — or a dyld shared-cache image."
+    )
+
+    @Argument(help: "Path to the Mach-O (or fat) binary. Omit when reading from the dyld shared cache with --image.")
+    var path: String?
+
+    @Option(name: [.short, .customLong("arch")], help: "Architecture slice for fat binaries (arm64, arm64e, x86_64).")
+    var architecture: String?
+
+    @Option(name: .customLong("image"), help: "Read this image from the dyld shared cache by name (e.g. Foundation, SwiftUI).")
+    var image: String?
+
+    @Option(name: .customLong("image-path"), help: "Read this image from the dyld shared cache by full install path.")
+    var imagePath: String?
+
+    @Option(name: .customLong("cache"), help: "Path to a dyld_shared_cache_* file. Defaults to the running system's cache when --image is used.")
+    var cache: String?
+
+    @Flag(name: .long, help: "Include types imported from C.")
+    var showCImportedTypes = false
+
+    @Flag(name: .long, help: "Emit field-offset comments for stored properties.")
+    var fieldOffsets = false
+
+    @Flag(name: .long, help: "Emit each member's binary address as a comment.")
+    var memberAddresses = false
+
+    @Flag(name: .long, help: "Emit vtable-offset comments for class methods and computed properties.")
+    var vtableOffsets = false
+
+    @Flag(name: .long, help: "Emit a memory-layout comment for each type.")
+    var typeLayout = false
+
+    @Flag(name: .long, help: "Emit a memory-layout comment for each enum (payload / spare-bit info).")
+    var enumLayout = false
+
+    @Flag(name: .long, help: "Order members by binary layout offset instead of grouping by category.")
+    var sortByOffset = false
+
+    @Flag(name: .long, help: "Parse opaque (some P) return types. Experimental — may error on complex types.")
+    var opaqueReturnTypes = false
+
+    @Option(name: [.short, .long], help: "Write output to a file instead of stdout.")
+    var output: String?
+
+    func run() async throws {
+        let machO = try BinaryLoader.loadMachO(
+            path: path,
+            architecture: architecture,
+            image: image,
+            imagePath: imagePath,
+            cachePath: cache
+        )
+        let options = InterfaceReconstructor.Options(
+            showCImportedTypes: showCImportedTypes,
+            fieldOffsets: fieldOffsets,
+            memberAddresses: memberAddresses,
+            vtableOffsets: vtableOffsets,
+            typeLayout: typeLayout,
+            enumLayout: enumLayout,
+            sortByOffset: sortByOffset,
+            parseOpaqueReturnTypes: opaqueReturnTypes
+        )
+        let text = try await InterfaceReconstructor(options: options).reconstruct(machO)
+        try emit(text.isEmpty ? "// No Swift metadata found." : text, to: output)
     }
 }
 
