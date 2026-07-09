@@ -348,3 +348,28 @@ func withStableDependencies<R>(
     // recurses), so the in-process listing isn't just bare `bl #0x…`.
     #expect(inProcess.flatMap(\.instructions).contains { ($0.annotation ?? "").hasPrefix("→") })
 }
+
+/// A filtered disasm decodes only the matched function's slice of __text, and
+/// must recover that function *identically* to a whole-binary decode — same
+/// address, same instructions.
+@Test func filteredDisasmMatchesUnfilteredIfPresent() async throws {
+    let path = "Fixtures/Sample/sample.release"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let machO = try BinaryLoader.load(path: path)
+    let all = await withStableDependencies {
+        await Disassembler(preset: .simplified).disassemble(machO: machO)
+    }
+    let filtered = await withStableDependencies {
+        await Disassembler(preset: .simplified).disassemble(machO: machO, functionFilter: "Tree.sum")
+    }
+    let whole = try #require(all.first { $0.demangledName == "Tree.sum()" })
+    let sliced = try #require(filtered.first { $0.demangledName == "Tree.sum()" })
+    #expect(sliced.startAddress == whole.startAddress)
+    #expect(sliced.instructions.map(\.address) == whole.instructions.map(\.address))
+    #expect(sliced.instructions.map(\.text) == whole.instructions.map(\.text))
+    // A filter matching nothing returns empty, not everything.
+    let none = await withStableDependencies {
+        await Disassembler(preset: .simplified).disassemble(machO: machO, functionFilter: "NoSuchFunctionZZZ")
+    }
+    #expect(none.isEmpty)
+}

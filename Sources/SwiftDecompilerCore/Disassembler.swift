@@ -114,6 +114,17 @@ public struct Disassembler: Sendable {
     ) async throws -> [DisassembledFunction] {
         let machO = try BinaryLoader.load(path: path, architecture: architecture)
 
+        // Filtered: decode in-process with Capstone (only the matched functions'
+        // ranges). `llvm-objdump` re-parses the whole binary on every invocation
+        // and `--start/--stop-address` only bounds *decoding*, not parsing — so on
+        // a large binary a filtered objdump run costs the same as a full one. The
+        // in-process path reads just the matched bytes. Its instruction text is
+        // Capstone's rather than objdump's, but the structure is identical.
+        if let filter = functionFilter, !filter.isEmpty {
+            return await disassemble(machO: machO, functionFilter: filter)
+        }
+
+        // Unfiltered: one full objdump pass (its text is the default file listing).
         var args = ["-d", "--macho", "--no-show-raw-insn"]
         if let architecture {
             args += ["--arch", architecture]
@@ -125,32 +136,24 @@ public struct Disassembler: Sendable {
             throw DisassembleError.toolFailed(result.stderr.isEmpty ? result.stdout : result.stderr)
         }
 
-        // 1. Flat instruction stream + the symbol-table labels objdump emitted.
+        // Flat instruction stream + objdump's symbol labels, enriched with
+        // Capstone's control-flow class + branch target (data objdump doesn't show).
         let (parsed, labelByAddress) = parseObjdump(result.stdout)
         guard !parsed.isEmpty else { return [] }
-
-        // 1b. Enrich each instruction with Capstone's control-flow class and
-        //     branch target (decoded in-process from the raw __text bytes) —
-        //     structural data objdump text doesn't expose.
         let controlFlow = capstoneControlFlow(in: machO)
         let instructions = parsed.map { insn -> Instruction in
             guard let decoded = controlFlow[insn.address] else { return insn }
             return Instruction(
-                address: insn.address,
-                text: insn.text,
-                annotation: insn.annotation,
-                controlFlow: decoded.controlFlow,
-                branchTarget: decoded.branchTarget
+                address: insn.address, text: insn.text, annotation: insn.annotation,
+                controlFlow: decoded.controlFlow, branchTarget: decoded.branchTarget
             )
         }
 
-        // 2-6. Segment, name, annotate, value-track (shared with the in-process
-        //       front-end below).
         return await assemble(
             instructions: instructions,
             labelByAddress: labelByAddress,
             in: machO,
-            functionFilter: functionFilter
+            functionFilter: nil
         )
     }
 
@@ -163,7 +166,15 @@ public struct Disassembler: Sendable {
         machO: MachOFile,
         functionFilter: String? = nil
     ) async -> [DisassembledFunction] {
-        let instructions = capstoneInstructions(in: machO)
+        // Filtered: decode only the matched functions' ranges of __text.
+        let instructions: [Instruction]
+        if let filter = functionFilter, !filter.isEmpty {
+            let ranges = await matchedRanges(filter: filter, in: machO)
+            guard !ranges.isEmpty else { return [] }
+            instructions = ranges.flatMap { capstoneInstructions(in: machO, span: $0) }
+        } else {
+            instructions = capstoneInstructions(in: machO, span: nil)
+        }
         guard !instructions.isEmpty else { return [] }
         return await assemble(
             instructions: instructions,
@@ -227,16 +238,40 @@ public struct Disassembler: Sendable {
         }
     }
 
-    /// Decode `__text` in-process with Capstone into an ordered instruction
-    /// stream carrying text, control-flow class, and branch target.
-    private func capstoneInstructions(in machO: MachOFile) -> [Instruction] {
-        guard let engine = CapstoneEngine(),
-              let text = machO.sections.first(where: {
-                  $0.segmentName == "__TEXT" && $0.sectionName == "__text"
-              }),
-              let bytes = textSectionBytes(address: UInt64(text.address), size: text.size, in: machO)
-        else { return [] }
-        return engine.disassemble(bytes, address: UInt64(text.address)).map { decoded in
+    /// `(vmaddr, size)` of the `__text` section.
+    private func textSectionBounds(in machO: MachOFile) -> (address: UInt64, size: Int)? {
+        guard let text = machO.sections.first(where: {
+            $0.segmentName == "__TEXT" && $0.sectionName == "__text"
+        }) else { return nil }
+        return (UInt64(text.address), text.size)
+    }
+
+    /// Decode `__text`, or just the `[start, stop)` slice of it, in-process with
+    /// Capstone. Restricting to a span is what makes `disasm --function` fast on
+    /// a large binary — only the matched function's code is decoded, not the
+    /// whole text section.
+    private func decodeText(in machO: MachOFile, span: (start: UInt64, stop: UInt64)?) -> [DecodedInstruction] {
+        guard let engine = CapstoneEngine(), let text = textSectionBounds(in: machO) else { return [] }
+        let start: UInt64
+        let size: Int
+        if let span {
+            let lo = max(span.start, text.address)
+            let hi = min(span.stop, text.address + UInt64(text.size))
+            guard hi > lo else { return [] }
+            start = lo
+            size = Int(hi - lo)
+        } else {
+            start = text.address
+            size = text.size
+        }
+        guard let bytes = textSectionBytes(address: start, size: size, in: machO) else { return [] }
+        return engine.disassemble(bytes, address: start)
+    }
+
+    /// Decode `__text` (or `span`) into an ordered instruction stream carrying
+    /// text, control-flow class, and branch target.
+    private func capstoneInstructions(in machO: MachOFile, span: (start: UInt64, stop: UInt64)? = nil) -> [Instruction] {
+        decodeText(in: machO, span: span).map { decoded in
             Instruction(
                 address: decoded.address,
                 text: decoded.text,
@@ -379,21 +414,57 @@ public struct Disassembler: Sendable {
         return starts.map { UInt64($0.offset) }
     }
 
-    /// Decode `__text` in-process with Capstone, returning a map of address →
-    /// structured instruction (control-flow class + branch target).
-    private func capstoneControlFlow(in machO: MachOFile) -> [UInt64: DecodedInstruction] {
-        guard let engine = CapstoneEngine(),
-              let text = machO.sections.first(where: {
-                  $0.segmentName == "__TEXT" && $0.sectionName == "__text"
-              }),
-              let bytes: [UInt8] = try? machO.readElements(offset: text.offset, numberOfElements: text.size)
-        else { return [:] }
-
+    /// Decode `__text` (or `span`) in-process with Capstone, returning a map of
+    /// address → structured instruction (control-flow class + branch target).
+    private func capstoneControlFlow(in machO: MachOFile, span: (start: UInt64, stop: UInt64)? = nil) -> [UInt64: DecodedInstruction] {
         var map: [UInt64: DecodedInstruction] = [:]
-        for decoded in engine.disassemble(Data(bytes), address: UInt64(text.address)) {
+        for decoded in decodeText(in: machO, span: span) {
             map[decoded.address] = decoded
         }
         return map
+    }
+
+    /// The `[start, stop)` ranges of every function whose raw symbol or demangled
+    /// name contains `filter` — computed *without* disassembling (from
+    /// `LC_FUNCTION_STARTS`, the symbol table, and Swift-metadata names).
+    /// Adjacent matches (gap < 64 KB) are coalesced so a cluster is one decode.
+    /// A filtered disasm decodes only these ranges instead of all of `__text`.
+    private func matchedRanges(filter: String, in machO: MachOFile) async -> [(start: UInt64, stop: UInt64)] {
+        let needle = filter.lowercased()
+        let labels = symbolLabels(in: machO)
+        var boundarySet = Set(functionStarts(of: machO))
+        boundarySet.formUnion(labels.keys)
+        let boundaries = boundarySet.sorted()
+        guard !boundaries.isEmpty else { return [] }
+
+        // Metadata names, on the same gate `assemble` uses, so a match against a
+        // metadata-named (stripped) function still finds its range.
+        let unlabeled = boundarySet.subtracting(labels.keys)
+        var metadataNames: [UInt64: String] = [:]
+        if Double(unlabeled.count) > Double(max(boundarySet.count, 1)) * 0.25 {
+            metadataNames = await MetadataSymbolizer(preset: preset).functionNames(in: machO)
+        }
+
+        let textEnd = textSectionBounds(in: machO).map { $0.address + UInt64($0.size) }
+            ?? (boundaries.last! + 0x4000)
+
+        func matches(_ start: UInt64) -> Bool {
+            let symbol = labels[start] ?? "sub_\(String(start, radix: 16))"
+            if symbol.lowercased().contains(needle) { return true }
+            let demangled = labels[start].flatMap { demangle($0) } ?? metadataNames[start]
+            return demangled?.lowercased().contains(needle) ?? false
+        }
+
+        var ranges: [(start: UInt64, stop: UInt64)] = []
+        for (index, start) in boundaries.enumerated() where matches(start) {
+            let stop = index + 1 < boundaries.count ? boundaries[index + 1] : textEnd
+            if let last = ranges.last, start <= last.stop + 0x10000 {
+                ranges[ranges.count - 1].stop = max(last.stop, stop)
+            } else {
+                ranges.append((start, stop))
+            }
+        }
+        return ranges
     }
 
     // MARK: - Operand reference resolution
