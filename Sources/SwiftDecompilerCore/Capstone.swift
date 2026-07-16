@@ -20,6 +20,9 @@ public struct DecodedInstruction: Sendable {
     public let controlFlow: ControlFlow
     /// Resolved absolute target for direct branches/calls, when statically known.
     public let branchTarget: UInt64?
+    /// Structured operands from Capstone's detail mode. Nil only if detail is
+    /// unavailable.
+    public let detail: StructuredInsn?
 
     /// `mnemonic` + `operands` as a single assembly string.
     public var text: String { operands.isEmpty ? mnemonic : "\(mnemonic)\t\(operands)" }
@@ -61,18 +64,23 @@ final class CapstoneEngine {
             for index in 0..<count {
                 let pointer = insns + index
                 let insn = pointer.pointee
-                let mnemonic = Self.string(insn.mnemonic)
-                let operands = Self.string(insn.op_str)
-                let flow = controlFlow(of: pointer, mnemonic: mnemonic)
+                let detail = StructuredInsn.decode(insn)
+                let flow = controlFlow(of: pointer, detail: detail)
+                // The branch target is the last immediate operand — true for
+                // every direct form (`b 0x…`, `cbz x0, 0x…`, `tbz w0, #3, 0x…`),
+                // and absent for indirect ones, which is exactly right.
+                let target: UInt64? = (flow == .branch || flow == .conditionalBranch || flow == .call)
+                    ? detail?.branchTargetOperand.map(UInt64.init(bitPattern:))
+                    : nil
                 results.append(
                     DecodedInstruction(
                         address: insn.address,
                         size: Int(insn.size),
-                        mnemonic: mnemonic,
-                        operands: operands,
+                        mnemonic: Self.string(insn.mnemonic),
+                        operands: Self.string(insn.op_str),
                         controlFlow: flow,
-                        branchTarget: (flow == .branch || flow == .conditionalBranch || flow == .call)
-                            ? Self.lastHex(in: operands) : nil
+                        branchTarget: target,
+                        detail: detail
                     )
                 )
             }
@@ -86,14 +94,30 @@ final class CapstoneEngine {
         cs_insn_group(handle, pointer, UInt32(group.rawValue))
     }
 
-    private func controlFlow(of pointer: UnsafePointer<cs_insn>, mnemonic: String) -> ControlFlow {
+    /// A jump is conditional iff it carries a real condition code, or is one of
+    /// the compare-and-branch forms (which encode their condition in the opcode
+    /// rather than in `cc`).
+    ///
+    /// This replaced a mnemonic denylist (`mnemonic == "b" || mnemonic == "br"`)
+    /// that misclassified every pointer-auth branch — `braa`, `braaz`, `brab`,
+    /// `brabz` — as conditional. Those are unconditional indirect tail calls, and
+    /// calling them conditional made `CFG.successors` invent a fall-through edge
+    /// that does not exist, on every arm64e stub island and tail call. arm64e is
+    /// the default for shipping Apple binaries, so this was wrong nearly
+    /// everywhere it mattered.
+    private static let compareAndBranch: Set<UInt32> = [
+        ARM64_INS_CBZ, ARM64_INS_CBNZ, ARM64_INS_TBZ, ARM64_INS_TBNZ,
+    ].map(\.rawValue).reduce(into: Set()) { $0.insert($1) }
+
+    private func controlFlow(of pointer: UnsafePointer<cs_insn>, detail: StructuredInsn?) -> ControlFlow {
         if inGroup(pointer, CS_GRP_RET) { return .return }
         if inGroup(pointer, CS_GRP_CALL) { return .call }
-        if inGroup(pointer, CS_GRP_JUMP) {
-            // Unconditional `b`/`br` vs. conditional (`b.eq`, `cbz`, `tbnz`, …).
-            return (mnemonic == "b" || mnemonic == "br") ? .branch : .conditionalBranch
-        }
-        return .sequential
+        guard inGroup(pointer, CS_GRP_JUMP) else { return .sequential }
+        guard let detail else { return .conditionalBranch } // no detail: assume the weaker claim
+        if Self.compareAndBranch.contains(detail.id.rawValue) { return .conditionalBranch }
+        let cc = detail.conditionCode
+        let conditional = cc != ARM64_CC_INVALID && cc != ARM64_CC_AL && cc != ARM64_CC_NV
+        return conditional ? .conditionalBranch : .branch
     }
 
     /// Convert a fixed-size C char array (imported as a tuple) to a String.
@@ -104,16 +128,4 @@ final class CapstoneEngine {
         }
     }
 
-    /// The last `0x…` hex value in an operand string (the branch target in
-    /// `b 0x…`, `cbz x0, 0x…`, `tbz w0, #3, 0x…`).
-    private static func lastHex(in operands: String) -> UInt64? {
-        var result: UInt64?
-        var scalars = Substring(operands)
-        while let range = scalars.range(of: "0x") {
-            let hex = scalars[range.upperBound...].prefix { $0.isHexDigit }
-            if let value = UInt64(hex, radix: 16) { result = value }
-            scalars = scalars[range.upperBound...]
-        }
-        return result
-    }
 }
