@@ -39,6 +39,9 @@ struct LayoutCommand: AsyncParsableCommand {
     @Option(name: [.short, .long], help: "Only show types whose name contains this string.")
     var type: String?
 
+    @Flag(name: .customLong("self-index"), help: "Instead of layouts, list each function address whose `self` type is known from a class vtable slot. This is what makes field naming work on a stripped binary — run it before and after `strip -x -S` to see it survive.")
+    var selfIndex = false
+
     @Option(name: .long, help: "Resolve one offset into this type, as `swiftdc layout Bin --type Dog --at 0x10`.")
     var at: String?
 
@@ -55,6 +58,10 @@ struct LayoutCommand: AsyncParsableCommand {
         let machO = try BinaryLoader.loadMachO(
             path: path, architecture: architecture, image: image, cachePath: cache, binary: binary
         )
+        if selfIndex {
+            try emit(renderSelfIndex(SelfTypeIndex.build(in: machO)), to: output)
+            return
+        }
         var maps = try FieldMapBuilder.build(in: machO)
         if let needle = type?.lowercased() {
             maps = maps.filter { $0.key.lowercased().contains(needle) }
@@ -69,6 +76,36 @@ struct LayoutCommand: AsyncParsableCommand {
             return
         }
         try emit(json ? renderJSON(maps) : renderText(maps), to: output)
+    }
+
+    private func renderSelfIndex(_ index: SelfTypeIndex) -> String {
+        guard index.count > 0 else {
+            return json ? "[]" : "// No class vtable slots — no `self` bindings."
+        }
+        if json {
+            let payload = index.all.map { entry -> [String: Any] in
+                guard case .vtableSlot(let type, let slot) = entry.binding.source else { return [:] }
+                return [
+                    "address": "0x" + String(entry.address, radix: 16),
+                    "selfType": entry.binding.selfTypeName,
+                    "kind": entry.binding.kind,
+                    "isInstance": entry.binding.isInstance,
+                    "source": ["vtableSlot": ["type": type, "slot": slot]],
+                ]
+            }
+            guard let data = try? JSONSerialization.data(
+                withJSONObject: payload, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+            ) else { return "[]" }
+            return String(decoding: data, as: UTF8.self)
+        }
+        var lines = index.all.map { entry -> String in
+            guard case .vtableSlot(_, let slot) = entry.binding.source else { return "" }
+            let receiver = entry.binding.isInstance ? "self" : "Self (metatype)"
+            return "0x\(String(entry.address, radix: 16))  \(entry.binding.selfTypeName).\(entry.binding.kind)  slot \(slot)  \(receiver)"
+        }
+        lines.append("")
+        lines.append("\(index.count) functions have a known `self` type, from class vtable slots — no symbols required.")
+        return lines.joined(separator: "\n")
     }
 
     /// `--at`: the exact query the disassembler will make.
