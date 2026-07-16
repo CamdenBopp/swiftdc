@@ -41,6 +41,19 @@ SwiftDump, plus annotated assembly), not a full control-flow decompiler. See
   Surfaced inline (`args(…)`), as `arguments` in JSON, and as a **proto-pseudocode
   view** (`disasm --pseudo`) that renders each function as its recovered call
   sequence (`String.append("Woof, I am ")`), hiding ARC/runtime bookkeeping.
+- **Swift field naming** — `ldr x0, [x20, #0x10]` renders as `self.age`, and
+  `add x0, x20, #0x20` as `&self.breed`, which then flows into recovered call
+  arguments (`swift_beginAccess(&self.age, …)`). This is the one thing Ghidra
+  structurally cannot do: it needs to know what a Swift field descriptor and a
+  class vtable slot *mean*.
+
+  Two metadata-sourced halves, both of which survive stripping: `swiftdc layout`
+  says what lives at `+0x10` of a `Dog`, and `SelfTypeIndex` says the pointer in
+  x20 *is* a Dog. `self` arrives in x20 under the Swift calling convention, and
+  is seeded **only** when the receiver's type is known — never guessed.
+  Measured on a fixture: 49 field names unstripped, 33 after `strip -x -S`
+  (67% retained). The lost third is what only the symbol could name; the
+  remaining two-thirds come from class vtable slots, which are metadata.
 - **Objective-C message sends** — `objc_msgSend` calls are rendered as real
   message syntax: `[[NSUserDefaults standardUserDefaults] setBool:0 forKey:@"…"]`.
   Both dispatch shapes are handled: the modern per-selector stub (`__objc_stubs`,
@@ -237,6 +250,8 @@ SwiftDecompilerCore (library)
   ├── CFG                   basic-block / control-flow-graph recovery
   ├── ValueTracer           abstract interpreter → call args, stack slots, self
   ├── ObjCSelectors         __objc_stubs/__objc_selrefs → selector names
+  ├── FieldMap              byte offset → Swift stored property (`swiftdc layout`)
+  ├── SelfTypeIndex         impl address → the type of its `self` (strip-proof)
   ├── CacheSymbolResolver   dyld-cache stub islands → cross-image symbol names
   ├── CallGraph             caller/callee edges (backs `xrefs`)
   └── AnalysisReport        combined, grouped report
@@ -370,5 +385,18 @@ swift test
   and agree empirically: across 573 apps on an iOS 27 device, every App Store app
   had a SINF and every system and development-signed app had none. `BinaryLoader`
   still reads the real `cryptid` whenever it has a binary in hand.
+- **Field naming needs both halves.** A field is named only where the receiver's
+  type is known AND the offset is inside that type's trusted prefix. Struct and
+  enum methods are statically dispatched with no metadata record, so their
+  receiver is known only while the mangled symbol survives; classes fall back to
+  the vtable index, which does not need symbols. Static methods and allocating
+  initializers hold a *metatype* in x20, not an instance — the index's
+  `isInstance` flag is what refuses them, and consulting the symbol first
+  (which does not carry that flag) produced a real `swift_allocObject(self, …)`
+  fabrication before the ordering was fixed.
+- **`disasm --image SwiftUI` (unfiltered) decodes only ~285 functions.**
+  Pre-existing, and unrelated to field naming — the same before and after. Use
+  `--function` there, which resolves through metadata and works. Not yet
+  diagnosed.
 - **x86_64**: metadata/declarations/interface work on any slice, but
   disassembly is ARM64-only.

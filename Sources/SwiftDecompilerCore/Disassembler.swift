@@ -254,8 +254,20 @@ public struct Disassembler: Sendable {
         )
         functions = functions.map { annotateReferences(in: $0, resolver: resolver) }
         functions = functions.map { annotateCallTargets(in: $0, resolver: resolver) }
-        functions = functions.map {
-            enrichCallArguments(in: $0, resolver: resolver, swiftTargets: swiftTargets)
+        // The differentiator's two halves: what lives at an offset (FieldMap),
+        // and whether the pointer in x20 is that type (SelfTypeIndex). Both are
+        // metadata-sourced, so both survive stripping.
+        let fieldMaps = (try? FieldMapBuilder.build(in: machO)) ?? [:]
+        let selfIndex = SelfTypeIndex.build(in: machO)
+        functions = functions.map { function in
+            let selfTypeName = fieldMaps.isEmpty
+                ? nil
+                : Self.selfType(of: function, selfIndex: selfIndex, fieldMaps: fieldMaps)
+            return enrichCallArguments(
+                in: function, resolver: resolver, swiftTargets: swiftTargets,
+                selfTypeName: selfTypeName,
+                fieldMap: selfTypeName.flatMap { fieldMaps[$0] }
+            )
         }
 
         guard let needle = functionFilter?.lowercased(), !needle.isEmpty else {
@@ -770,6 +782,103 @@ public struct Disassembler: Sendable {
 
     /// Run value tracking on a function and append recovered call arguments
     /// (`args(…)`) to each call instruction.
+    /// The type whose instance arrives in x20, for one function — or nil, which
+    /// is the honest answer for everything that isn't a Swift instance method.
+    ///
+    /// Two sources, and they are complementary rather than redundant:
+    ///
+    /// - The **demangled symbol** names the type directly and covers structs and
+    ///   enums, whose methods are statically dispatched and have no metadata
+    ///   record at all. It dies under `strip -x -S` for anything internal.
+    /// - The **vtable index** is metadata and survives stripping completely, but
+    ///   only classes have vtables.
+    ///
+    /// The **index is consulted first**, because it is the only source that
+    /// carries `isInstance`. Getting this order wrong is not academic: it made
+    /// `Animal.__allocating_init` — a static entry point whose x20 holds the
+    /// *metatype* — render `swift_allocObject(self, 32, 7)`, attaching an
+    /// instance's identity to a metatype pointer. The vtable knows
+    /// (`Animal slot 6, Init, instance=false`); the symbol does not say.
+    static func selfType(
+        of function: DisassembledFunction,
+        selfIndex: SelfTypeIndex,
+        fieldMaps: [String: FieldMap]
+    ) -> String? {
+        if let binding = selfIndex.binding(for: function.startAddress) {
+            // Authoritative, including when it says no.
+            guard binding.isInstance, fieldMaps[binding.selfTypeName] != nil else { return nil }
+            return binding.selfTypeName
+        }
+        guard let fromSymbol = selfTypeFromDemangledName(function.demangledName),
+              fieldMaps[fromSymbol] != nil
+        else { return nil }
+        return fromSymbol
+    }
+
+    /// Strip a trailing `(…)` argument list.
+    ///
+    /// Matched from the end, for two reasons. A tuple argument
+    /// (`value(for: (Int, Int))`) means the *first* `(` is not where the
+    /// signature starts. And a private member is spelled
+    /// `Type.(name in _HASH).setter` — cutting at the first `(` there destroys
+    /// the name and loses the type, which is how every private property accessor
+    /// in SwiftUI went unnamed.
+    static func stripSignature(_ head: String) -> String {
+        guard head.hasSuffix(")") else { return head }
+        var depth = 0
+        for index in head.indices.reversed() {
+            if head[index] == ")" {
+                depth += 1
+            } else if head[index] == "(" {
+                depth -= 1
+                if depth == 0 { return String(head[..<index]) }
+            }
+        }
+        return head
+    }
+
+    /// Demangled names whose x20 is not an instance of the type they mention.
+    ///
+    /// Checked against the name with its signature already removed, so an
+    /// argument label cannot trip them.
+    private static let nonInstanceMarkers = [
+        "static ",                  // x20 holds the metatype
+        "__allocating_init",        // ditto: a static entry point
+        " for ",                    // "method descriptor for", "protocol witness for"
+        " of ",                     // "dispatch thunk of", "variable initialization expression of"
+        "@objc ",                   // an ObjC thunk: self is in x0, not x20
+    ]
+
+    /// `sample.Dog.breed.getter : Swift.String` → `Dog`.
+    ///
+    /// Positional, not a search. A right-to-left scan for "the first component
+    /// that happens to be a known type" would resolve
+    /// `struct Foo { var Bar: Int }`'s `m.Foo.Bar.getter` to the *type* `Bar`.
+    /// Property accessors nest one level deeper than methods —
+    /// `Module.Type.property.accessor` vs `Module.Type.method` — so the accessor
+    /// kind decides which component is the type.
+    ///
+    /// The `fieldMaps` membership check at the call site is the backstop:
+    /// `sample.run() -> ()` also has a dot, but a module has no field map.
+    static func selfTypeFromDemangledName(_ name: String?) -> String? {
+        guard let name else { return nil }
+        // Cut the return clause and property type first, so `foo(a: Dog.Kind)`
+        // and `... : Swift.String` are not mined for type names.
+        var head = name
+        if let arrow = head.range(of: " -> ") { head = String(head[..<arrow.lowerBound]) }
+        if let colon = head.range(of: " : ") { head = String(head[..<colon.lowerBound]) }
+        head = stripSignature(head)
+        guard !nonInstanceMarkers.contains(where: head.contains) else { return nil }
+
+        let parts = head.split(separator: ".").map(String.init)
+        let accessors: Set<String> = ["getter", "setter", "modify", "read", "init", "deinit"]
+        // `Type.property.accessor` -> the type is 3 from the end.
+        // `Type.method`            -> 2 from the end.
+        let typeIndex = accessors.contains(parts.last ?? "") ? parts.count - 3 : parts.count - 2
+        guard typeIndex >= 0, typeIndex < parts.count else { return nil }
+        return parts[typeIndex]
+    }
+
     /// Whether a symbol is Swift-mangled, and so uses the Swift calling
     /// convention (`self` in x20, error in x21).
     static func isSwiftMangled(_ symbol: String) -> Bool {
@@ -799,8 +908,21 @@ public struct Disassembler: Sendable {
     private func enrichCallArguments(
         in function: DisassembledFunction,
         resolver: ReferenceResolver,
-        swiftTargets: Set<UInt64>
+        swiftTargets: Set<UInt64>,
+        selfTypeName: String?,
+        fieldMap: FieldMap?
     ) -> DisassembledFunction {
+        /// `self.breed` for an offset, or nil when it cannot be named honestly.
+        func fieldName(at offset: Int, bytes: Int) -> String? {
+            guard let fieldMap else { return nil }
+            // A zero width means "the address of whatever starts here" (`add x0,
+            // x20, #0x20`), so probe one byte.
+            switch fieldMap.lookup(offset: offset, bytes: max(bytes, 1)) {
+            case .success(let hit): return hit.rendered
+            case .failure: return nil
+            }
+        }
+
         // A `.loaded` value only means something when we can name what lives at
         // the address; any other load is unnamed data. Degrade those to
         // `.unknown` and re-trim, so tracking `ldr` doesn't leave a trailing
@@ -814,9 +936,13 @@ public struct Disassembler: Sendable {
             })
         }
 
-        let sites = ValueTracer().callSites(in: function)
+        let analysis = ValueTracer().analyze(function, hasSelf: selfTypeName != nil)
+        let sites = analysis.callSites
         let argumentsByAddress = sites.compactMapValues { sanitize($0.arguments) }
-        guard !sites.isEmpty else { return function }
+        // A property getter is often `ldr x0, [x20, #n]; ret` — no calls at all.
+        // Bailing on `sites.isEmpty` alone would skip field naming for precisely
+        // the functions it is most useful in.
+        guard !sites.isEmpty || !analysis.selfFieldAccesses.isEmpty else { return function }
 
         // Callee name per call address, for nesting result-of-call arguments.
         var calleeByAddress: [UInt64: String] = [:]
@@ -842,6 +968,15 @@ public struct Disassembler: Sendable {
                 guard offset != 0 else { return "sp" }
                 let magnitude = String(abs(offset), radix: 16)
                 return offset < 0 ? "local_\(magnitude)" : "frame_\(magnitude)"
+            case .selfPointer:
+                return "self"
+            case .selfField(let offset):
+                // `&self.breed`, when the field is nameable; otherwise the raw
+                // offset, which is still true.
+                guard let name = fieldName(at: offset, bytes: 0) else {
+                    return "&self+0x\(String(offset, radix: 16))"
+                }
+                return "&self.\(name)"
             case .callResult(let addr):
                 let inner = argumentsByAddress[addr] ?? []
                 guard depth < 4, let callee = calleeByAddress[addr] else { return "result" }
@@ -881,6 +1016,20 @@ public struct Disassembler: Sendable {
         }
 
         let instructions = function.instructions.map { insn -> Instruction in
+            // A `self` field access: the differentiator. `ldp x19, x20, [x20,
+            // #0x20]` inside Dog.breed.getter is a 16-byte read of self.breed.
+            if let access = analysis.selfFieldAccesses[insn.address] {
+                guard let name = fieldName(at: access.offset, bytes: access.bytes) else { return insn }
+                let note = access.isAddressOf
+                    ? "&self.\(name)"
+                    : (access.isWrite ? "self.\(name) = …" : "self.\(name)")
+                let merged = [insn.annotation, note].compactMap { $0 }.joined(separator: "  ")
+                return Instruction(
+                    address: insn.address, text: insn.text, annotation: merged,
+                    controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
+                    callArguments: insn.callArguments, callSelf: insn.callSelf, detail: insn.detail
+                )
+            }
             guard insn.controlFlow == .call, let site = sites[insn.address] else { return insn }
 
             // x20 is `self` only under the Swift calling convention; for any

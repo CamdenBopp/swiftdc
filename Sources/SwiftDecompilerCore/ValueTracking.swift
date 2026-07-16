@@ -15,6 +15,20 @@ public enum AbstractValue: Equatable, Sendable {
     /// `__objc_selrefs` slot, say); callers that can't resolve it should treat
     /// it as `.unknown`.
     case loaded(UInt64)
+    /// The `self` pointer as it arrives at a Swift instance method — x20 under
+    /// the Swift calling convention.
+    ///
+    /// Seeded at entry ONLY when the function is known to be an instance method
+    /// of a known type. That is not a guess: x20 is an ordinary callee-saved
+    /// register in a C or ObjC function, holds a metatype in a static method,
+    /// and holds a heap-boxed capture context in a closure invocation function.
+    /// Seeding it on any of those would attach a nominal type's field names to a
+    /// pointer that is not that type.
+    case selfPointer
+    /// The address of a field of `self` — `add x0, x20, #0x20` forms
+    /// `&self.breed`. Distinct from `.selfPointer` at offset 0 so that a
+    /// zero-offset field access is still recognisable as one.
+    case selfField(offset: Int)
     /// A frame-relative address: the stack pointer on function entry, plus this
     /// (usually negative) offset.
     ///
@@ -45,9 +59,29 @@ public struct CallSite: Equatable, Sendable {
     }
 }
 
+/// A memory access into `self`, for field naming.
+public struct SelfFieldAccess: Sendable, Equatable {
+    /// Byte offset from the start of the instance.
+    public var offset: Int
+    /// Access width. Comes from the instruction id and register width —
+    /// `arm64_op_mem` carries no width at all.
+    public var bytes: Int
+    public var isWrite: Bool
+    /// True when the instruction forms the field's ADDRESS rather than loading
+    /// it (`add x0, x20, #0x20` -> `&self.breed`).
+    public var isAddressOf: Bool = false
+}
+
+/// Everything one pass over a function recovers.
+public struct FunctionAnalysis: Sendable {
+    public var callSites: [UInt64: CallSite] = [:]
+    /// Instruction address → the access it makes into `self`.
+    public var selfFieldAccesses: [UInt64: SelfFieldAccess] = [:]
+}
+
 /// An abstract interpreter over a function's basic blocks. Propagates constants,
-/// addresses, and frame-relative stack slots through registers, and snapshots
-/// the argument registers at each call.
+/// addresses, frame-relative stack slots, and `self` through registers, and
+/// snapshots the argument registers at each call.
 public struct ValueTracer: Sendable {
     public init() {}
 
@@ -56,8 +90,14 @@ public struct ValueTracer: Sendable {
     /// both live in one map and flow through the same meet.
     private typealias State = [String: AbstractValue]
 
-    /// Entry state: `sp` anchors the frame at offset 0.
-    private static var initialState: State { ["sp": .frame(0)] }
+    /// Entry state: `sp` anchors the frame at offset 0, and — only when the
+    /// caller has established that this really is a Swift instance method —
+    /// x20 holds `self`.
+    private static func initialState(hasSelf: Bool) -> State {
+        var state: State = ["sp": .frame(0)]
+        if hasSelf { state["x20"] = .selfPointer }
+        return state
+    }
 
     /// Map of call-instruction address → the values reaching that call.
     /// Calls where nothing could be inferred are omitted.
@@ -65,9 +105,14 @@ public struct ValueTracer: Sendable {
     /// A forward data-flow fixpoint over the CFG carries values across basic
     /// blocks (e.g. callee-saved x19–x28 holding `self`/locals), so an argument
     /// set before a branch is still recovered at a call after it.
-    public func callSites(in function: DisassembledFunction) -> [UInt64: CallSite] {
+    /// Recover call sites and `self` field accesses in one pass.
+    ///
+    /// - Parameter hasSelf: seed x20 with `self`. Pass true ONLY when the
+    ///   function is known to be an instance method of a known type — see
+    ///   `AbstractValue.selfPointer`.
+    public func analyze(_ function: DisassembledFunction, hasSelf: Bool = false) -> FunctionAnalysis {
         let blocks = function.basicBlocks()
-        guard !blocks.isEmpty else { return [:] }
+        guard !blocks.isEmpty else { return FunctionAnalysis() }
         let blockByStart = Dictionary(blocks.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
 
         var predecessors: [UInt64: [UInt64]] = [:]
@@ -93,10 +138,10 @@ public struct ValueTracer: Sendable {
             let preds = predecessors[addr] ?? []
             // No predecessors: the entry block (or unreachable code) — start from
             // the frame anchor rather than an empty state.
-            let entry = preds.isEmpty ? Self.initialState : Self.meet(preds.compactMap { outState[$0] })
+            let entry = preds.isEmpty ? Self.initialState(hasSelf: hasSelf) : Self.meet(preds.compactMap { outState[$0] })
             inState[addr] = entry
             var registers = entry
-            for insn in block.instructions { transfer(insn, into: &registers, record: nil) }
+            for insn in block.instructions { transfer(insn, into: &registers, record: nil, recordAccess: nil) }
             if outState[addr] != registers {
                 outState[addr] = registers
                 for successor in block.successors
@@ -107,15 +152,25 @@ public struct ValueTracer: Sendable {
             }
         }
 
-        // Snapshot pass: replay from each block's fixed entry state, recording args.
-        var result: [UInt64: CallSite] = [:]
+        // Snapshot pass: replay from each block's fixed entry state, recording
+        // call arguments and self-field accesses.
+        var result = FunctionAnalysis()
         for block in blocks {
             var registers = inState[block.startAddress] ?? [:]
             for insn in block.instructions {
-                transfer(insn, into: &registers) { result[$0] = $1 }
+                transfer(
+                    insn, into: &registers,
+                    record: { result.callSites[$0] = $1 },
+                    recordAccess: { result.selfFieldAccesses[$0] = $1 }
+                )
             }
         }
         return result
+    }
+
+    /// Call sites only — the common case.
+    public func callSites(in function: DisassembledFunction) -> [UInt64: CallSite] {
+        analyze(function).callSites
     }
 
     /// Run the transfer function over a short, straight-line instruction
@@ -123,7 +178,7 @@ public struct ValueTracer: Sendable {
     /// decode stub bodies, which are branch-free by construction.
     public func finalState(of instructions: [Instruction]) -> [String: AbstractValue] {
         var registers: State = [:]
-        for insn in instructions { transfer(insn, into: &registers, record: nil) }
+        for insn in instructions { transfer(insn, into: &registers, record: nil, recordAccess: nil) }
         return registers
     }
 
@@ -133,7 +188,8 @@ public struct ValueTracer: Sendable {
     private func transfer(
         _ insn: Instruction,
         into registers: inout State,
-        record: ((UInt64, CallSite) -> Void)?
+        record: ((UInt64, CallSite) -> Void)?,
+        recordAccess: ((UInt64, SelfFieldAccess) -> Void)?
     ) {
         if insn.controlFlow == .call {
             if let record {
@@ -158,7 +214,7 @@ public struct ValueTracer: Sendable {
             return
         }
         let hadSelf = registers[Self.selfFreshKey]
-        apply(insn, into: &registers)
+        apply(insn, into: &registers, recordAccess: recordAccess)
         if Self.writesSwiftSelf(insn) {
             registers[Self.selfFreshKey] = .immediate(1)
         } else {
@@ -234,7 +290,11 @@ public struct ValueTracer: Sendable {
     /// value on every compare. Reads are likewise unreliable (`ldaddal` reports
     /// no accesses at all). So: an explicit table for what we model, and a
     /// pessimistic clobber for everything else.
-    private func apply(_ insn: Instruction, into registers: inout State) {
+    private func apply(
+        _ insn: Instruction,
+        into registers: inout State,
+        recordAccess: ((UInt64, SelfFieldAccess) -> Void)? = nil
+    ) {
         guard let detail = insn.detail else {
             // Capstone couldn't decode what objdump printed — data in __text, or
             // an unknown encoding. We cannot know what it writes, and keeping
@@ -273,7 +333,14 @@ public struct ValueTracer: Sendable {
             case .address(let a): write(dest, .address(adding ? a &+ magnitude : a &- magnitude), into: &registers)
             case .immediate(let v): write(dest, .immediate(adding ? v &+ magnitude : v &- magnitude), into: &registers)
             case .frame(let f): write(dest, .frame(adding ? f &+ delta : f &- delta), into: &registers)
-            case .unknown, .callResult, .loaded: write(dest, .unknown, into: &registers)
+            case .selfPointer where adding:
+                recordAccess?(insn.address, SelfFieldAccess(offset: Int(delta), bytes: 0, isWrite: false, isAddressOf: true))
+                write(dest, .selfField(offset: Int(delta)), into: &registers)
+            case .selfField(let base) where adding:
+                recordAccess?(insn.address, SelfFieldAccess(offset: base + Int(delta), bytes: 0, isWrite: false, isAddressOf: true))
+                write(dest, .selfField(offset: base + Int(delta)), into: &registers)
+            case .unknown, .callResult, .loaded, .selfPointer, .selfField:
+                write(dest, .unknown, into: &registers)
             }
 
         case ARM64_INS_MOV, ARM64_INS_MOVZ:
@@ -296,17 +363,22 @@ public struct ValueTracer: Sendable {
         // Only the full 64-bit forms: a sub-word load can't produce a pointer.
         case ARM64_INS_LDR, ARM64_INS_LDUR:
             guard let dest = destinationRegister(detail) else { clobber(detail, into: &registers); return }
+            noteFieldAccess(insn, detail, in: registers, recordAccess)
             let target = memoryTarget(detail, in: registers)
             applyWriteback(detail, into: &registers)
             switch target {
             case .stackSlot(let key): write(dest, registers[key] ?? .unknown, into: &registers)
             case .absolute(let address): write(dest, .loaded(address), into: &registers)
+            // The heap contents of a self field are not tracked; the *access*
+            // was already recorded for naming, which is what matters.
+            case .selfField: write(dest, .unknown, into: &registers)
             case .none: write(dest, .unknown, into: &registers)
             }
 
         // A store writes memory, not a register — but it populates a stack slot,
         // which is how a value materialised before a branch reaches a call after it.
         case ARM64_INS_STR, ARM64_INS_STUR:
+            noteFieldAccess(insn, detail, in: registers, recordAccess)
             if case .stackSlot(let key)? = memoryTarget(detail, in: registers),
                let first = detail.operands.first {
                 registers[key] = source(first, in: registers)
@@ -314,12 +386,15 @@ public struct ValueTracer: Sendable {
             applyWriteback(detail, into: &registers)
 
         case ARM64_INS_STP, ARM64_INS_STNP:
+            noteFieldAccess(insn, detail, in: registers, recordAccess)
             // Stores two registers; writes none. Writeback still applies —
             // `stp x29, x30, [sp, #-0x70]!` is the standard prologue, and missing
             // it desynchronises the frame for every stack slot that follows.
             applyWriteback(detail, into: &registers)
 
         case ARM64_INS_LDP, ARM64_INS_LDNP:
+            // A 16-byte Swift.String field arrives exactly here.
+            noteFieldAccess(insn, detail, in: registers, recordAccess)
             for operand in detail.operands.prefix(2) {
                 if let reg = operand.operand.register { write(reg, .unknown, into: &registers) }
             }
@@ -468,6 +543,8 @@ public struct ValueTracer: Sendable {
     private enum MemoryTarget {
         case stackSlot(String)
         case absolute(UInt64)
+        /// A byte offset into `self`.
+        case selfField(Int)
     }
 
     /// Where a memory operand points, when its base is a known frame offset or a
@@ -483,8 +560,59 @@ public struct ValueTracer: Sendable {
         switch registers[base.key] {
         case .frame(let offset): return .stackSlot(Self.stackKey(offset &+ effective))
         case .address(let address): return .absolute(address &+ UInt64(bitPattern: effective))
+        case .selfPointer: return .selfField(Int(effective))
+        case .selfField(let field): return .selfField(field + Int(effective))
         default: return nil
         }
+    }
+
+    /// Access width in bytes.
+    ///
+    /// `arm64_op_mem` carries no width, so it comes from the instruction id plus
+    /// the destination register's width: `ldr w0` reads 4 bytes, `ldr x0` reads
+    /// 8, and `ldp x19, x20` reads 16 — which is exactly how a 16-byte
+    /// `Swift.String` field is loaded.
+    private static func accessBytes(_ detail: StructuredInsn) -> Int? {
+        let registerBytes = detail.operands.first?.operand.register.map { $0.widthBits / 8 }
+        switch detail.id {
+        case ARM64_INS_LDRB, ARM64_INS_LDURB, ARM64_INS_STRB, ARM64_INS_STURB,
+             ARM64_INS_LDRSB, ARM64_INS_LDURSB:
+            return 1
+        case ARM64_INS_LDRH, ARM64_INS_LDURH, ARM64_INS_STRH, ARM64_INS_STURH,
+             ARM64_INS_LDRSH, ARM64_INS_LDURSH:
+            return 2
+        case ARM64_INS_LDRSW, ARM64_INS_LDURSW:
+            return 4
+        case ARM64_INS_LDR, ARM64_INS_LDUR, ARM64_INS_STR, ARM64_INS_STUR:
+            return registerBytes
+        case ARM64_INS_LDP, ARM64_INS_LDNP, ARM64_INS_STP, ARM64_INS_STNP:
+            return registerBytes.map { $0 * 2 }
+        default:
+            return nil
+        }
+    }
+
+    private static let storeIDs: Set<UInt32> = Set([
+        ARM64_INS_STR, ARM64_INS_STUR, ARM64_INS_STRB, ARM64_INS_STURB,
+        ARM64_INS_STRH, ARM64_INS_STURH, ARM64_INS_STP, ARM64_INS_STNP,
+    ].map(\.rawValue))
+
+    /// Record a `self` field access, when this instruction makes one.
+    private func noteFieldAccess(
+        _ insn: Instruction,
+        _ detail: StructuredInsn,
+        in registers: State,
+        _ recordAccess: ((UInt64, SelfFieldAccess) -> Void)?
+    ) {
+        guard let recordAccess,
+              case .selfField(let offset)? = memoryTarget(detail, in: registers),
+              let bytes = Self.accessBytes(detail)
+        else { return }
+        recordAccess(insn.address, SelfFieldAccess(
+            offset: offset,
+            bytes: bytes,
+            isWrite: Self.storeIDs.contains(detail.id.rawValue)
+        ))
     }
 
     /// Stack slots share the register map, under a key no register can collide with.
