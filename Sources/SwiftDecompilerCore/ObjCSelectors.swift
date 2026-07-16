@@ -78,7 +78,7 @@ enum ObjCSelectors {
     /// Selectors are identifiers with `:` separators. Requiring that shape is
     /// what keeps a misread pointer from being published as a method name once
     /// the cache path loses the `__objc_methname` bounds check.
-    private static func isSelectorShaped(_ text: String) -> Bool {
+    static func isSelectorShaped(_ text: String) -> Bool {
         guard let first = text.first, first.isLetter || first == "_" else { return false }
         return text.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" || $0 == ":" }
     }

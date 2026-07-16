@@ -138,6 +138,10 @@ import Testing
         "return [NSString stringWithFormat:@\"%ld\", self->_count]"
     ))
     #expect(pseudo("seventhValueA:b:c:d:e:f:g:").contains("return arg6"))
+    #expect(pseudo("initWithA:b:c:d:e:f:g:").contains("self->_count = arg6"))
+    #expect(pseudo("counterWithA:b:c:d:e:f:g:").contains(
+        "return [[self alloc] initWithA:arg0 b:arg1 c:arg2 d:arg3 e:arg4 f:arg5 g:arg6]"
+    ))
 
     let json = functions.jsonString()
     #expect(json.contains("\"statement\" : \"return self->_name\""))

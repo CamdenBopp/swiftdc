@@ -1082,6 +1082,9 @@ public struct Disassembler: Sendable {
                 let rhs = sanitizeValue(rhs)
                 guard lhs != .unknown, rhs != .unknown else { return .unknown }
                 return .binary(op, lhs, rhs)
+            case .aggregate(let values):
+                let values = values.map(sanitizeValue)
+                return values.allSatisfy({ $0 != .unknown }) ? .aggregate(values) : .unknown
             default:
                 return value
             }
@@ -1137,11 +1140,30 @@ public struct Disassembler: Sendable {
         for (address, site) in sites {
             var values = site.arguments
             if let callee = calleeByAddress[address],
-               selectorName(callee: callee, arguments: values).map(isVariadicObjCSelector) == true,
+               let selector = selectorName(callee: callee, arguments: values),
                !site.stackArguments.isEmpty {
-                values += site.stackArguments
+                if isVariadicObjCSelector(selector) {
+                    values += site.stackArguments
+                } else {
+                    let fixedStackCount = max(0, selector.filter({ $0 == ":" }).count - 6)
+                    values += site.stackArguments.prefix(fixedStackCount)
+                }
             }
             if let values = sanitize(values) { argumentsByAddress[address] = values }
+        }
+
+        /// Runtime entry points with a fixed public ABI often inherit unrelated
+        /// live values in later argument registers. Keep only parameters the
+        /// helper actually accepts before embedding it in a source expression.
+        func normalizedArguments(callee: String, values: [AbstractValue]) -> [AbstractValue] {
+            let arity: Int? = if callee == "objc_opt_class" || callee == "objc_alloc" {
+                1
+            } else if callee.hasPrefix("objc_opt_isKindOfClass") {
+                2
+            } else {
+                nil
+            }
+            return arity.map { Array(values.prefix($0)) } ?? values
         }
 
         func renderValue(_ value: AbstractValue, depth: Int) -> String {
@@ -1181,6 +1203,8 @@ public struct Disassembler: Sendable {
             case .binary(let op, let lhs, let rhs):
                 guard depth < 8 else { return "?" }
                 return "(\(renderValue(lhs, depth: depth + 1)) \(op.symbol) \(renderValue(rhs, depth: depth + 1)))"
+            case .aggregate(let values):
+                return "(" + values.map { renderValue($0, depth: depth + 1) }.joined(separator: ", ") + ")"
             case .callResult(let addr):
                 let inner = argumentsByAddress[addr] ?? []
                 let unresolved = "/* unresolved call @ 0x\(String(addr, radix: 16)) */ ?"
@@ -1189,7 +1213,19 @@ public struct Disassembler: Sendable {
                 if DisassembledFunction.isRuntimeNoise(callee) {
                     return inner.first.map { renderValue($0, depth: depth + 1) } ?? unresolved
                 }
-                let arguments: [String] = renderArguments(inner, depth: depth + 1)
+                // Clang lowers `[[self alloc] init…]` through
+                // objc_alloc(objc_opt_class(self)). Preserve the source idiom
+                // once both runtime calls and their shared receiver are proven.
+                if callee == "objc_alloc", let allocatedClass = inner.first {
+                    if case .callResult(let classCall) = allocatedClass,
+                       calleeByAddress[classCall] == "objc_opt_class",
+                       let receiver = argumentsByAddress[classCall]?.first {
+                        return "[\(renderValue(receiver, depth: depth + 1)) alloc]"
+                    }
+                    return "[\(renderValue(allocatedClass, depth: depth + 1)) alloc]"
+                }
+                let callValues = normalizedArguments(callee: callee, values: inner)
+                let arguments: [String] = renderArguments(callValues, depth: depth + 1)
                 if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {
                     return send.rendered
                 }
@@ -1221,7 +1257,9 @@ public struct Disassembler: Sendable {
         }
 
         func callExpression(callee: String, values: [AbstractValue], depth: Int = 0) -> String {
-            let arguments: [String] = renderArguments(values, depth: depth)
+            let arguments: [String] = renderArguments(
+                normalizedArguments(callee: callee, values: values), depth: depth
+            )
             if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {
                 return send.rendered
             }
@@ -1313,6 +1351,8 @@ public struct Disassembler: Sendable {
             case .binary(_, let lhs, let rhs):
                 collectCallResults(in: lhs, into: &consumed)
                 collectCallResults(in: rhs, into: &consumed)
+            case .aggregate(let values):
+                for value in values { collectCallResults(in: value, into: &consumed) }
             default:
                 break
             }

@@ -12,7 +12,21 @@
 @property(nonatomic, copy) NSString *name;
 @property(nonatomic, getter=isEnabled) BOOL enabled;
 
++ (instancetype)counterWithA:(NSInteger)a
+                            b:(NSInteger)b
+                            c:(NSInteger)c
+                            d:(NSInteger)d
+                            e:(NSInteger)e
+                            f:(NSInteger)f
+                            g:(NSInteger)g;
 - (instancetype)initWithName:(NSString *)name count:(NSInteger)count;
+- (instancetype)initWithA:(NSInteger)a
+                         b:(NSInteger)b
+                         c:(NSInteger)c
+                         d:(NSInteger)d
+                         e:(NSInteger)e
+                         f:(NSInteger)f
+                         g:(NSInteger)g;
 - (NSInteger)incrementBy:(NSInteger)delta;
 - (NSInteger)incrementIfEnabled:(NSInteger)delta;
 - (NSInteger)incrementIfPositive:(NSInteger)delta;
@@ -29,12 +43,36 @@
 
 @implementation SDObjCCounter
 
++ (instancetype)counterWithA:(NSInteger)a
+                            b:(NSInteger)b
+                            c:(NSInteger)c
+                            d:(NSInteger)d
+                            e:(NSInteger)e
+                            f:(NSInteger)f
+                            g:(NSInteger)g {
+    return [[self alloc] initWithA:a b:b c:c d:d e:e f:f g:g];
+}
+
 - (instancetype)initWithName:(NSString *)name count:(NSInteger)count {
     self = [super init];
     if (self) {
         _name = [name copy];
         _count = count;
         _enabled = YES;
+    }
+    return self;
+}
+
+- (instancetype)initWithA:(NSInteger)a
+                         b:(NSInteger)b
+                         c:(NSInteger)c
+                         d:(NSInteger)d
+                         e:(NSInteger)e
+                         f:(NSInteger)f
+                         g:(NSInteger)g {
+    self = [super init];
+    if (self) {
+        _count = g;
     }
     return self;
 }

@@ -41,6 +41,12 @@ full optimizing-decompiler replacement. See
   tail helpers that were previously bare branches. Calls embedded in a later
   store/return are suppressed as duplicate standalone statements. JSON
   instructions expose each recovered statement in a `statement` field.
+- **Shared-cache Objective-C recovery (stage 3)** — cache-global selector stubs
+  are decoded by shape (`adrp/add x1` followed by a verified
+  `objc_msgSend` branch), including selectors longer than 256 bytes. Fixed
+  selector arguments beyond x7 survive compiler shuffles through 128-bit ARM64
+  `q` registers, and `objc_alloc` / `objc_opt_class` allocation idioms render as
+  `[[self alloc] initWith…]` instead of runtime helper calls.
 - **Annotated ARM64** — function bodies disassembled via `llvm-objdump`, with
   branch/call targets demangled to readable Swift names and string-literal
   references surfaced. `adrp`/`add` operand references are resolved to the
@@ -391,9 +397,11 @@ swift test
     looks the target up in the owning image's **export trie**. This takes
     CoreLocation from 10,387/48,053 named calls to 35,719, and Contacts from
     5,831/90,300 to 66,837.
-  - Cache images make almost no direct `objc_msgSend` calls (5 in Contacts, 0 in
-    CoreLocation) — sends are overwhelmingly `objc_msgSendSuper2`, so bracket
-    syntax there is mostly `[super …]`.
+  - Cache images make almost no direct exported `objc_msgSend` calls. Ordinary
+    sends instead target a cache-global selector-stub pool; those entries are
+    not exports, so `CacheSymbolResolver` decodes their `adrp/add x1` selector
+    materialization and verifies their tail branch to an exported Objective-C
+    dispatcher before publishing bracket syntax.
 
   Three traps, each of which cost real time:
 

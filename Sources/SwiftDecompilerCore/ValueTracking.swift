@@ -71,6 +71,9 @@ public indirect enum AbstractValue: Equatable, Sendable {
     /// Expression construction is bounded by `ValueTracer.expression` so loops
     /// and long instruction chains cannot create unbounded trees.
     case binary(AbstractBinaryOperator, AbstractValue, AbstractValue)
+    /// Consecutive eight-byte values packed into a wider SIMD register. Clang
+    /// commonly moves two Objective-C stack arguments at once through `q0`.
+    case aggregate([AbstractValue])
     /// A frame-relative address: the stack pointer on function entry, plus this
     /// (usually negative) offset.
     ///
@@ -563,7 +566,11 @@ public struct ValueTracer: Sendable {
             let target = memoryTarget(detail, in: registers)
             applyWriteback(detail, into: &registers)
             switch target {
-            case .stackSlot(let key): write(dest, registers[key] ?? .unknown, into: &registers)
+            case .stackSlot(let key):
+                let offset = Self.stackOffset(from: key)
+                let bytes = Self.accessBytes(detail) ?? max(dest.widthBits / 8, 1)
+                write(dest, offset.map { Self.stackValue(at: $0, bytes: bytes, in: registers) } ?? .unknown,
+                      into: &registers)
             case .absolute(let address):
                 // Only pointer-width loads can safely denote a selref/GOT slot.
                 let isPointerLoad = detail.id == ARM64_INS_LDR || detail.id == ARM64_INS_LDUR
@@ -581,9 +588,9 @@ public struct ValueTracer: Sendable {
             if let first = detail.operands.first {
                 let value = source(first, in: registers)
                 if case .stackSlot(let key)? = target {
-                    registers[key] = value
                     if let offset = Self.stackOffset(from: key) {
-                        registers[Self.outgoingKey(offset)] = value
+                        let bytes = Self.accessBytes(detail) ?? 8
+                        Self.storeStack(value, at: offset, bytes: bytes, outgoing: true, into: &registers)
                     }
                 }
                 // A full-width store establishes a useful equality: its source
@@ -607,7 +614,11 @@ public struct ValueTracer: Sendable {
                let offset = Self.stackOffset(from: key),
                let bytes = detail.operands.first?.operand.register.map({ $0.widthBits / 8 }) {
                 for (index, operand) in detail.operands.prefix(2).enumerated() {
-                    registers[Self.stackKey(offset + Int64(index * bytes))] = source(operand, in: registers)
+                    Self.storeStack(
+                        source(operand, in: registers),
+                        at: offset + Int64(index * bytes), bytes: bytes,
+                        outgoing: true, into: &registers
+                    )
                 }
             } else if case .selfField(let offset)? = target,
                       let bytes = detail.operands.first?.operand.register.map({ $0.widthBits / 8 }) {
@@ -634,7 +645,10 @@ public struct ValueTracer: Sendable {
                 let value: AbstractValue = switch target {
                 case .stackSlot(let key):
                     Self.stackOffset(from: key).flatMap {
-                        registers[Self.stackKey($0 + Int64(index * registerBytes))]
+                        Self.stackValue(
+                            at: $0 + Int64(index * registerBytes),
+                            bytes: registerBytes, in: registers
+                        )
                     } ?? .unknown
                 case .selfField(let offset):
                     .selfFieldValue(offset: offset + index * registerBytes)
@@ -813,6 +827,37 @@ public struct ValueTracer: Sendable {
     private static func expressionDepth(_ value: AbstractValue) -> Int {
         guard case .binary(_, let lhs, let rhs) = value else { return 0 }
         return 1 + max(expressionDepth(lhs), expressionDepth(rhs))
+    }
+
+    /// Read one scalar or a SIMD-packed run of eight-byte stack values.
+    private static func stackValue(at offset: Int64, bytes: Int, in registers: State) -> AbstractValue {
+        guard bytes > 8 else { return registers[stackKey(offset)] ?? .unknown }
+        let words = stride(from: 0, to: bytes, by: 8).map {
+            registers[stackKey(offset + Int64($0))] ?? .unknown
+        }
+        guard words.allSatisfy({ $0 != .unknown }) else { return .unknown }
+        return .aggregate(words)
+    }
+
+    /// Store a scalar or unpack a SIMD value into consecutive stack words.
+    private static func storeStack(
+        _ value: AbstractValue,
+        at offset: Int64,
+        bytes: Int,
+        outgoing: Bool,
+        into registers: inout State
+    ) {
+        let words: [AbstractValue]
+        if case .aggregate(let packed) = value, bytes > 8 {
+            words = Array(packed.prefix(max(1, (bytes + 7) / 8)))
+        } else {
+            words = [value]
+        }
+        for (index, word) in words.enumerated() {
+            let wordOffset = offset + Int64(index * 8)
+            registers[stackKey(wordOffset)] = word
+            if outgoing { registers[outgoingKey(wordOffset)] = word }
+        }
     }
 
     /// The value an operand supplies: a register's tracked value, or a literal.

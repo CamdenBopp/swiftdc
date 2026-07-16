@@ -1,8 +1,57 @@
 import Testing
 import Foundation
 import Dependencies
+import CCapstone
 @_spi(Internals) import MachOSwiftSection  // re-exports MachOSymbols → SymbolIndexStore
 @testable import SwiftDecompilerCore
+
+private func operand(_ value: StructuredOperand) -> StructuredOperandInfo {
+    StructuredOperandInfo(
+        operand: value,
+        shift: (ARM64_SFT_INVALID, 0),
+        extender: ARM64_EXT_INVALID
+    )
+}
+
+private func detail(_ id: arm64_insn, _ operands: [StructuredOperandInfo]) -> StructuredInsn {
+    StructuredInsn(
+        id: id, conditionCode: ARM64_CC_INVALID, updatesFlags: false,
+        writeback: false, postIndex: false, operands: operands
+    )
+}
+
+@Test func recognizesCacheGlobalObjectiveCSelectorStubs() {
+    let x1 = PhysReg(kind: .gpr, number: 1, widthBits: 64)
+    let instructions = [
+        Instruction(
+            address: 0x1000, text: "adrp x1, 0x2000",
+            detail: detail(ARM64_INS_ADRP, [operand(.register(x1)), operand(.immediate(0x2000))])
+        ),
+        Instruction(
+            address: 0x1004, text: "add x1, x1, #0x118",
+            detail: detail(ARM64_INS_ADD, [
+                operand(.register(x1)), operand(.register(x1)), operand(.immediate(0x118)),
+            ])
+        ),
+        Instruction(
+            address: 0x1008, text: "b 0x3000", controlFlow: .branch,
+            branchTarget: 0x3000
+        ),
+    ]
+    // Deliberately exceed the old 256-byte cache string read limit.
+    let selector = "init" + (0..<30).map { "WithField\($0):" }.joined()
+    #expect(selector.count > 256)
+    #expect(CacheSymbolResolver.selectorStubName(
+        in: instructions,
+        selectorText: { $0 == 0x2118 ? selector : nil },
+        dispatcherName: { $0 == 0x3000 ? "_objc_msgSend" : nil }
+    ) == "objc_msgSend$\(selector)")
+    #expect(CacheSymbolResolver.selectorStubName(
+        in: instructions,
+        selectorText: { _ in selector },
+        dispatcherName: { _ in "_not_a_dispatcher" }
+    ) == nil)
+}
 
 /// Runs `operation` with `\.symbolIndexStore` pre-seeded into DependencyValues.
 ///
@@ -206,6 +255,38 @@ private func assembledFunction(
     #expect(access.offset == 8)
     #expect(access.bytes == 16)
     #expect(access.storedValues == [.argument(0), .argument(1)])
+}
+
+@Test func tracksObjectiveCStackArgumentsThroughSIMDRegisters() throws {
+    let q0 = PhysReg(kind: .vector, number: 0, widthBits: 128)
+    let q1 = PhysReg(kind: .vector, number: 1, widthBits: 128)
+    let sp = PhysReg(kind: .stackPointer, number: 31, widthBits: 64)
+    let memory = operand(.memory(base: sp, index: nil, displacement: 0))
+    let function = DisassembledFunction(
+        symbol: "_simd_args", demangledName: nil, startAddress: 0x1000,
+        instructions: [
+            Instruction(
+                address: 0x1000, text: "ldp q0, q1, [sp]",
+                detail: detail(ARM64_INS_LDP, [operand(.register(q0)), operand(.register(q1)), memory])
+            ),
+            Instruction(
+                address: 0x1004, text: "stp q0, q1, [sp]",
+                detail: detail(ARM64_INS_STP, [operand(.register(q0)), operand(.register(q1)), memory])
+            ),
+            Instruction(
+                address: 0x1008, text: "bl 0x2000", controlFlow: .call,
+                branchTarget: 0x2000
+            ),
+            Instruction(address: 0x100c, text: "ret", controlFlow: .return),
+        ],
+        source: .symbol
+    )
+    let site = try #require(ValueTracer().analyze(
+        function, entry: .objectiveC(argumentCount: 10)
+    ).callSites[0x1008])
+    #expect(site.stackArguments == [
+        .argument(6), .argument(7), .argument(8), .argument(9),
+    ])
 }
 
 /// x20 is callee-saved, so a value set up for one call survives into the next.

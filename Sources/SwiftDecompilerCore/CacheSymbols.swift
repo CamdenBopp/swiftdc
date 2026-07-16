@@ -119,8 +119,60 @@ final class CacheSymbolResolver {
 
     private func resolve(_ address: UInt64) -> String? {
         if let direct = symbol(at: address) { return direct }
+        if let selectorStub = selectorStubName(at: address) { return selectorStub }
         guard let target = stubTarget(at: address) else { return nil }
         return symbol(at: target)
+    }
+
+    /// Decode a cache-global Objective-C selector stub.
+    ///
+    /// The shared-cache builder removes each image's `__objc_stubs` and retargets
+    /// calls to a compact selector-stub pool in libobjc:
+    ///
+    ///     adrp x1, <uniqued selector page>
+    ///     add  x1, x1, #<selector offset>
+    ///     b    _objc_msgSend
+    ///
+    /// These entries are code inside an image but are not exports, so the normal
+    /// exact export lookup intentionally cannot name them. The shape plus a
+    /// verified objc dispatcher target proves both the call family and selector.
+    private func selectorStubName(at address: UInt64) -> String? {
+        guard let bytes = reader.bytes(at: address, count: 12) else { return nil }
+        let decoded = engine.disassemble(bytes, address: address)
+        guard decoded.count == 3 else { return nil }
+        let instructions = decoded.map {
+            Instruction(
+                address: $0.address, text: $0.text, controlFlow: $0.controlFlow,
+                branchTarget: $0.branchTarget, detail: $0.detail
+            )
+        }
+        return Self.selectorStubName(
+            in: instructions,
+            selectorText: { self.reader.cString(at: $0, limit: 4096) },
+            dispatcherName: { self.symbol(at: $0) }
+        )
+    }
+
+    /// Pure shape recognizer, split out so selector stubs can be regression
+    /// tested without depending on the host machine's cache addresses.
+    static func selectorStubName(
+        in instructions: [Instruction],
+        selectorText: (UInt64) -> String?,
+        dispatcherName: (UInt64) -> String?
+    ) -> String? {
+        guard instructions.count == 3,
+              case .address(let selectorAddress)? = ValueTracer()
+                .finalState(of: Array(instructions.prefix(2)))["x1"],
+              let dispatcherAddress = instructions[2].branchTarget,
+              let rawDispatcher = dispatcherName(dispatcherAddress)
+        else { return nil }
+        let dispatcher = rawDispatcher.hasPrefix("_")
+            ? String(rawDispatcher.dropFirst()) : rawDispatcher
+        guard dispatcher.hasPrefix("objc_msgSend"),
+              let selector = selectorText(selectorAddress),
+              selector.count <= 4096, ObjCSelectors.isSelectorShaped(selector)
+        else { return nil }
+        return "\(dispatcher)$\(selector)"
     }
 
     /// Follow a stub island to the address its pre-bound slot holds.
