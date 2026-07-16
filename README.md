@@ -41,6 +41,27 @@ SwiftDump, plus annotated assembly), not a full control-flow decompiler. See
   Surfaced inline (`args(…)`), as `arguments` in JSON, and as a **proto-pseudocode
   view** (`disasm --pseudo`) that renders each function as its recovered call
   sequence (`String.append("Woof, I am ")`), hiding ARC/runtime bookkeeping.
+- **Objective-C message sends** — `objc_msgSend` calls are rendered as real
+  message syntax: `[[NSUserDefaults standardUserDefaults] setBool:0 forKey:@"…"]`.
+  Both dispatch shapes are handled: the modern per-selector stub (`__objc_stubs`,
+  Xcode 14+), whose selector is recovered by decoding the stub body and
+  dereferencing its `__objc_selrefs` slot, and the classic form where the caller
+  materialises the selector into x1. Receivers are resolved through GOT binds
+  (`_OBJC_CLASS_$_NSUserDefaults` → `NSUserDefaults`), and `__cfstring` operands
+  render as `@"literal"`. Without this a real app's pseudocode is *only* ARC
+  bookkeeping — every actual call is an unnamed branch.
+- **Swift calling convention** — `self` arrives in x20, not x0, so it would
+  otherwise vanish from every method call; it's surfaced as
+  `String.append(self: local_30, "…")`. Reported only for Swift-mangled callees
+  (x20 is an ordinary callee-saved register elsewhere) and only when freshly
+  written for that call, so a stale x20 is never passed off as a receiver.
+- **Stack slots** — the abstract interpreter tracks frame-relative locals
+  (`str x0, [sp, #n]` … `ldr x20, [sp, #n]`) against a symbolic frame base, so
+  they survive the prologue's `sub sp, sp, #k` and `stp …, [sp, #-k]!`. This is
+  what lets a receiver stored and reloaded across a branch resolve instead of
+  reading `?`.
+- **Cross-references** (`swiftdc xrefs`) — callers and callees of a function,
+  over a call graph built from resolved direct-branch targets.
 - **Structured control flow** (`disasm --structured`) — folds the call statements
   into `if`/`else`/`while` using post-dominators over the CFG. Conditions are
   reconstructed and back-substituted through the block (`if ((w1 & 0xff) != 1)`);
@@ -143,6 +164,23 @@ swiftdc analyze /path/to/Binary --json        # { declarations:[…], functions:
 Demangle presets: `default` (fully-qualified, `sample.Point`), `simplified`
 (drops module/standard-library prefixes), `interface` (interface-style names).
 
+### Cross-references
+
+```bash
+# Who calls this, and what does it call?
+swiftdc xrefs /path/to/Binary --function "Circle.describe"
+
+# Works on selector stubs too: every site that sends a given message.
+swiftdc xrefs /path/to/App.app --function 'objc_msgSend$standardUserDefaults'
+
+# Functions nothing statically calls.
+swiftdc xrefs /path/to/Binary --unreferenced
+swiftdc xrefs /path/to/Binary --function foo --json
+```
+
+`xrefs` needs the whole image disassembled (unlike `disasm --function`, which
+decodes only what matched), so it is slower on a large binary.
+
 ### Physical devices
 
 ```bash
@@ -197,7 +235,10 @@ SwiftDecompilerCore (library)
   ├── Disassembler          ARM64 + demangled annotation            (llvm-objdump + Demangling)
   ├── CapstoneEngine        structured decode (control flow, targets) (Capstone, CCapstone)
   ├── CFG                   basic-block / control-flow-graph recovery
-  ├── ValueTracer           abstract interpreter → call-argument recovery
+  ├── ValueTracer           abstract interpreter → call args, stack slots, self
+  ├── ObjCSelectors         __objc_stubs/__objc_selrefs → selector names
+  ├── CacheSymbolResolver   dyld-cache stub islands → cross-image symbol names
+  ├── CallGraph             caller/callee edges (backs `xrefs`)
   └── AnalysisReport        combined, grouped report
 
 MobileDevice (library)      talk to physical iOS devices
@@ -271,6 +312,52 @@ swift test
   this and warns, but *cannot* decrypt it; you need a decrypted dump (e.g. from a
   jailbroken device via frida-ios-dump) or an un-encrypted build. Enterprise/dev
   builds and `.app`s are unaffected.
+- **dyld cache images** work, but differ from standalone binaries in ways worth
+  knowing (all verified against an iOS 27 host cache):
+
+  - `__objc_stubs` and `__objc_methname` are **stripped to size 0** — the cache
+    pre-binds every call (so per-selector stubs are unnecessary) and uniques
+    selectors into one cache-global region. Selector recovery therefore reads
+    through `FullDyldCache` and validates by selector *shape*, since there's no
+    per-image `__objc_methname` to bounds-check against.
+  - Call sites don't load selrefs. The builder rewrites each `adrp`+`ldr` of a
+    selref into an `adrp`+`add` forming the uniqued string's address directly,
+    so selectors are matched **by string address** as well as by selref slot.
+  - **~78% of a cache image's calls leave the image**, via a stub island outside
+    every image (`adrp x17` / `ldr x16, [x17]` / `braa x16, x17`) whose slot is
+    pre-bound to the real target. `CacheSymbolResolver` follows the island and
+    looks the target up in the owning image's **export trie**. This takes
+    CoreLocation from 10,387/48,053 named calls to 35,719, and Contacts from
+    5,831/90,300 to 66,837.
+  - Cache images make almost no direct `objc_msgSend` calls (5 in Contacts, 0 in
+    CoreLocation) — sends are overwhelmingly `objc_msgSendSuper2`, so bracket
+    syntax there is mostly `[super …]`.
+
+  Three traps, each of which cost real time:
+
+  1. `MachOFile.symbols` **fatalErrors** (`numericCast` on a bogus `n_value`) on
+     cache images whose `__LINKEDIT` sits in another subcache. It cannot be
+     caught — hence the export trie, which is also the semantically right source
+     since a cross-image call can only target an export.
+  2. An image's base is its **`__TEXT` segment vmaddr**, *not*
+     `address(forOffset: 0)` — that returns the whole cache's base
+     (`0x180000000`), and export offsets are image-relative.
+  3. The two rebase resolvers disagree: `FullDyldCache.resolveRebase` returns a
+     target **VM address**, `MachOFile.resolveRebase` an **image-relative
+     offset**.
+- **Call graph edges are direct calls only.** Indirect dispatch (`blr` through a
+  vtable, witness table, or block pointer) has no static target, so `xrefs`
+  reports the unresolved count rather than implying completeness — and
+  `--unreferenced` is not a dead-code proof, since entry points, exports, and
+  indirectly-called functions all look unreferenced.
+- **`self` is reported conservatively.** x20 is only read as `self` for a
+  Swift-mangled callee, and only when written since the previous call. A Swift
+  method whose self isn't pointer-shaped (`Double.write(to:)`, whose self is a
+  Double in d0) therefore shows no `self` rather than the stale x20 — a
+  deliberate false-negative-over-false-positive trade.
+- **Stack tracking is frame-local.** Slots are keyed off `sp`/`x29` offsets and
+  do not model aliasing: a callee handed `&local` can write through it, and that
+  store isn't seen, so a slot's value can go stale across such a call.
 - **Device commands** (`devices`, `apps`) enumerate and classify only — they do
   **not** pull binaries off the device. A stock iOS device does not vend other
   apps' bundles over any lockdown service (`house_arrest` reaches an app's *data*

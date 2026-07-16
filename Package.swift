@@ -12,33 +12,43 @@ let package = Package(
         .executable(name: "swiftdc", targets: ["swiftdc"]),
     ],
     dependencies: [
-        // Pinned to the 0.12.0-beta.3 tag's commit (da7abcf, 2026-06-03), NOT a
-        // release tag via `from:`. History: older tags like 0.9.1 do not compile
-        // under Swift 6.3 — SwiftDump's async dumpers call `Node.print()`, which has
-        // both sync and async overloads in swift-demangling >=0.3.0, and Swift
-        // prefers the async overload in an async context, so 0.9.1's missing `await`
-        // is a hard error. beta.3 carries those `await` fixes and pairs with async
-        // demangling 0.4.x. It is a content-superset of the previous pin (8b34efb on
-        // `main`) plus additive June commits: public SharedCache API, resilient-
-        // superclass dumping, associated-type + opaque-type symbolic-ref fixes.
-        // Frozen to a revision so `swift package update` can't drift us onto an
-        // untested commit; re-verify the build under Swift 6.3 before moving it.
+        // `0.12.0` is the first *release tag* we can use: older tags like 0.9.1 do
+        // not compile under Swift 6.3 — SwiftDump's async dumpers call
+        // `Node.print()`, which has both sync and async overloads in
+        // swift-demangling >=0.3.0, and Swift prefers the async overload in an
+        // async context, so 0.9.1's missing `await` is a hard error. 0.12.0 carries
+        // those `await` fixes and pairs with async demangling 0.4.x.
+        //
+        // This previously pinned revision da7abcf with a comment calling it "the
+        // 0.12.0-beta.3 tag's commit". That was wrong twice over: beta.3 is
+        // 2477a00, and da7abcf was reachable from no branch or tag at all —
+        // upstream had rebased it away, leaving us on an orphaned commit that a
+        // GC upstream could have deleted out from under `swift package resolve`.
+        // Everything that pin carried (public SharedCache API, resilient-superclass
+        // dumping, associated-type/opaque-type symbolic-ref fixes) is in 0.12.0 by
+        // content — the commits were rebased, not dropped.
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection",
-            revision: "da7abcf91fc9a1208f53b7314aad288da3dafb14"
+            exact: "0.12.0"
         ),
         // MachOKit is the Mach-O container parser MachOSwiftSection is built on.
         // It is NOT re-exported, so we depend on the same fork/identity directly
         // to name `MachOFile` / `loadFromFile` without a package-identity conflict.
+        //
+        // 0.51.100 is mostly performance work on paths this tool leans on hard:
+        // chained-fixup caching (every GOT bind and selref resolution), dyld
+        // subcache file-handle reuse, and cached cache-mapping lookups.
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/MachOKit.git",
-            from: "0.50.100"
+            from: "0.51.100"
         ),
         // `Semantic` provides SemanticString, the return type of SwiftDump's
-        // `.dump(...)`. Pinned to match MachOSwiftSection's exact requirement.
+        // `.dump(...)`. Pinned to match MachOSwiftSection's own floor — 0.12.0
+        // requires >= 0.1.5 (it needs the Rows component), so this must move in
+        // lockstep with that dependency or resolution fails outright.
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/swift-semantic-string",
-            exact: "0.1.1"
+            exact: "0.1.5"
         ),
         // Declared directly so our core can use the `Demangling` product for
         // symbol annotation. `from: 0.4.0` provides the async `print` overload
@@ -110,6 +120,10 @@ let package = Package(
                 .product(name: "MachOKit", package: "MachOKit"),
                 .product(name: "MachOSwiftSection", package: "MachOSwiftSection"),
                 .product(name: "SwiftDump", package: "MachOSwiftSection"),
+                // 0.12.0 modularized MachOSwiftSection; the render configuration
+                // moved out of SwiftDump into its own module, which SwiftDump
+                // depends on but does not re-export.
+                .product(name: "SwiftDeclarationRendering", package: "MachOSwiftSection"),
                 // Full Swift-interface reconstruction (`.swiftinterface`-style),
                 // higher fidelity than SwiftDump's declaration listing.
                 .product(name: "SwiftInterface", package: "MachOSwiftSection"),

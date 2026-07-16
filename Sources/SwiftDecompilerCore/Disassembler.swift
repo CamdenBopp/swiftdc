@@ -18,6 +18,10 @@ public struct Instruction: Sendable {
     /// For call instructions: recovered argument values (x0…), rendered, when
     /// value-tracking could infer them.
     public let callArguments: [String]?
+    /// For calls to a Swift function: the rendered `self` (x20), when known.
+    /// Only set for Swift callees — x20 is `self` under the Swift calling
+    /// convention, and merely a callee-saved register everywhere else.
+    public let callSelf: String?
 
     public init(
         address: UInt64,
@@ -25,7 +29,8 @@ public struct Instruction: Sendable {
         annotation: String? = nil,
         controlFlow: ControlFlow? = nil,
         branchTarget: UInt64? = nil,
-        callArguments: [String]? = nil
+        callArguments: [String]? = nil,
+        callSelf: String? = nil
     ) {
         self.address = address
         self.text = text
@@ -33,6 +38,7 @@ public struct Instruction: Sendable {
         self.controlFlow = controlFlow
         self.branchTarget = branchTarget
         self.callArguments = callArguments
+        self.callSelf = callSelf
     }
 }
 
@@ -220,14 +226,26 @@ public struct Disassembler: Sendable {
         // Resolve adrp/add(+ldr) operand references to function, type-descriptor,
         // string, and Swift-symbol names, and name direct call/branch targets.
         let resolver = ReferenceResolver(
-            names: referenceIndex(functions: functions, in: machO),
+            names: crossImageNames(
+                for: functions, in: machO,
+                names: referenceIndex(functions: functions, in: machO)
+            ),
             stringRanges: stringSectionRanges(in: machO),
             machO: machO,
-            demangleSymbol: { self.demangle($0) }
+            demangleSymbol: { self.demangle($0) },
+            selectors: ObjCSelectors.selectorTable(in: machO),
+            cfStringRange: sectionRange(named: "__cfstring", in: machO)
+        )
+        // Addresses whose callee uses the Swift calling convention, so `self` in
+        // x20 is meaningful there.
+        let swiftTargets = Set(
+            functions.filter { Self.isSwiftMangled($0.symbol) }.map(\.startAddress)
         )
         functions = functions.map { annotateReferences(in: $0, resolver: resolver) }
         functions = functions.map { annotateCallTargets(in: $0, resolver: resolver) }
-        functions = functions.map { enrichCallArguments(in: $0, resolver: resolver) }
+        functions = functions.map {
+            enrichCallArguments(in: $0, resolver: resolver, swiftTargets: swiftTargets)
+        }
 
         guard let needle = functionFilter?.lowercased(), !needle.isEmpty else {
             return functions
@@ -264,7 +282,7 @@ public struct Disassembler: Sendable {
             start = text.address
             size = text.size
         }
-        guard let bytes = textSectionBytes(address: start, size: size, in: machO) else { return [] }
+        guard let bytes = sectionBytes(address: start, size: size, in: machO) else { return [] }
         return engine.disassemble(bytes, address: start)
     }
 
@@ -282,14 +300,14 @@ public struct Disassembler: Sendable {
         }
     }
 
-    /// Raw `__text` bytes.
+    /// Raw bytes of an arbitrary section span (`__text`, `__objc_stubs`, …).
     ///
     /// For a plain file, read through the image reader. For a dyld-cache image
     /// the code usually lives in a *different* subcache file than the image
     /// header, and MachOKit's image reader only reaches the header's subcache —
     /// so locate the subcache that maps the section's VM address and read that
     /// subcache file directly.
-    private func textSectionBytes(address: UInt64, size: Int, in machO: MachOFile) -> Data? {
+    private func sectionBytes(address: UInt64, size: Int, in machO: MachOFile) -> Data? {
         if let full = machO.fullCache,
            let fullOffset = full.fileOffset(of: address),
            let subcache = full.cache(forOffset: fullOffset),
@@ -311,6 +329,52 @@ public struct Disassembler: Sendable {
             return Data(bytes)
         }
         return nil
+    }
+
+    /// Add names for call targets that leave a dyld-cache image.
+    ///
+    /// No-op for a standalone binary (objdump already names its stubs in-text).
+    /// For a cache image this is most of the difference between calls being
+    /// anonymous addresses and being named.
+    private func crossImageNames(
+        for functions: [DisassembledFunction],
+        in machO: MachOFile,
+        names: [UInt64: String]
+    ) -> [UInt64: String] {
+        guard let resolver = CacheSymbolResolver(machO: machO) else { return names }
+        var names = names
+        var targets = Set<UInt64>()
+        for function in functions {
+            for insn in function.instructions
+            where insn.controlFlow == .call || insn.controlFlow == .branch {
+                if let target = insn.branchTarget, names[target] == nil { targets.insert(target) }
+            }
+        }
+        for target in targets {
+            if let name = resolver.name(forCallTarget: target) {
+                names[target] = demangle(name) ?? Self.stripLeadingUnderscore(name)
+            }
+        }
+        return names
+    }
+
+    private static func stripLeadingUnderscore(_ symbol: String) -> String {
+        symbol.hasPrefix("_") ? String(symbol.dropFirst()) : symbol
+    }
+
+    /// `stub address → objc_msgSend$selector` for this image's selector stubs.
+    private func objcStubNames(in machO: MachOFile) -> [UInt64: String] {
+        let selectors = ObjCSelectors.selectorTable(in: machO).bySelref
+        guard !selectors.isEmpty, let engine = CapstoneEngine() else { return [:] }
+        return ObjCSelectors.stubNames(in: machO, selectors: selectors) { address, size in
+            guard let bytes = sectionBytes(address: address, size: size, in: machO) else { return [] }
+            return engine.disassemble(bytes, address: address).map { decoded in
+                Instruction(
+                    address: decoded.address, text: decoded.text, annotation: nil,
+                    controlFlow: decoded.controlFlow, branchTarget: decoded.branchTarget
+                )
+            }
+        }
     }
 
     /// Function labels from the symbol table: `__text`-range defined symbols,
@@ -470,11 +534,18 @@ public struct Disassembler: Sendable {
     // MARK: - Operand reference resolution
 
     /// Known target addresses → display names: every recovered function start,
-    /// plus Swift type descriptors. Used to resolve adrp/add operand targets.
+    /// Swift type descriptors, and ObjC selector stubs. Used to resolve adrp/add
+    /// operand targets and to name call targets.
     private func referenceIndex(functions: [DisassembledFunction], in machO: MachOFile) -> [UInt64: String] {
         var names: [UInt64: String] = [:]
         for function in functions where names[function.startAddress] == nil {
             names[function.startAddress] = function.displayName
+        }
+        // Selector stubs live in __objc_stubs, outside __text, so they are never
+        // recovered as functions — without this every message send is a call to
+        // an unnamed address.
+        for (address, name) in objcStubNames(in: machO) where names[address] == nil {
+            names[address] = name
         }
         for type in (try? machO.swift.types) ?? [] {
             let offset: Int
@@ -569,6 +640,14 @@ public struct Disassembler: Sendable {
         )
     }
 
+    /// VM range of a named section, if present.
+    private func sectionRange(named name: String, in machO: MachOFile) -> Range<UInt64>? {
+        guard let section = machO.sections.first(where: { $0.sectionName == name && $0.size > 0 })
+        else { return nil }
+        let start = UInt64(section.address)
+        return start ..< (start + UInt64(section.size))
+    }
+
     /// VM address ranges of C-string-literal sections (`__cstring`,
     /// `__objc_methname`, …). Used to safely resolve string-pointer arguments.
     private func stringSectionRanges(in machO: MachOFile) -> [Range<UInt64>] {
@@ -587,9 +666,63 @@ public struct Disassembler: Sendable {
         let stringRanges: [Range<UInt64>]
         let machO: MachOFile
         let demangleSymbol: @Sendable (String) -> String?
+        /// Selector names, by selref slot and by string address — the two ways a
+        /// call site can name one.
+        var selectors = SelectorTable()
+        /// VM range of `__cfstring`, whose entries are the `@"…"` literals.
+        var cfStringRange: Range<UInt64>?
+
+        /// The selector a loaded address denotes, when that address is a selref
+        /// slot. Nil for every other load.
+        func selector(at slot: UInt64) -> String? { selectors.bySelref[slot] }
+
+        /// A display name for the *contents* of `slot` — what an `ldr` from it
+        /// yields. Either a selector ref, or a GOT-style slot bound to an
+        /// imported symbol (`_OBJC_CLASS_$_NSUserDefaults` → `NSUserDefaults`,
+        /// which is how a class-method receiver is materialised). Nil for any
+        /// other load: unnamed data we must not guess at.
+        func loadedName(at slot: UInt64) -> String? {
+            if let selector = selectors.bySelref[slot] { return "@selector(\(selector))" }
+            guard let symbol = boundSymbol(at: slot) else { return nil }
+            if symbol.hasPrefix(Self.classSymbolPrefix) {
+                return String(symbol.dropFirst(Self.classSymbolPrefix.count))
+            }
+            if let demangled = demangleSymbol(symbol) { return demangled }
+            return symbol.hasPrefix("_") ? String(symbol.dropFirst()) : symbol
+        }
+
+        private static let classSymbolPrefix = "_OBJC_CLASS_$_"
+
+        /// The imported symbol a slot binds to, via the chained-fixup imports.
+        private func boundSymbol(at slot: UInt64) -> String? {
+            guard let fixups = try? machO.dyldChainedFixups,
+                  let fileOffset = machO.fileOffset(of: slot),
+                  let (imported, _) = machO.resolveBind(at: UInt64(fileOffset))
+            else { return nil }
+            return fixups.symbolName(for: imported.info.nameOffset)
+        }
+
+        /// `@"literal"` for a `__cfstring` entry.
+        ///
+        /// Layout is `struct __NSConstantString { void *isa; int32 flags; int32 _;
+        /// const char *str; long length; }`, so the character pointer sits at
+        /// +16 — and is itself rebased, not a literal on-disk pointer.
+        func cfString(at address: UInt64) -> String? {
+            guard cfStringRange?.contains(address) == true,
+                  let fileOffset = machO.fileOffset(of: address &+ 16),
+                  let runtimeOffset = machO.resolveRebase(at: UInt64(fileOffset))
+            else { return nil }
+            let target = machO.address(forOffset: 0) &+ runtimeOffset
+            guard let text = Self.cString(at: target, in: machO) else { return nil }
+            return "@\"\(text)\""
+        }
 
         func name(at target: UInt64) -> String? {
             if let name = names[target] { return name }
+            // A direct reference to a uniqued selector string — how a shared-cache
+            // image names the selector it's about to send.
+            if let selector = selectors.byStringAddress[target] { return "@selector(\(selector))" }
+            if let literal = cfString(at: target) { return literal }
             if stringRanges.contains(where: { $0.contains(target) }),
                let string = Self.cString(at: target, in: machO) {
                 return "\"\(string)\""
@@ -623,12 +756,53 @@ public struct Disassembler: Sendable {
 
     /// Run value tracking on a function and append recovered call arguments
     /// (`args(…)`) to each call instruction.
+    /// Whether a symbol is Swift-mangled, and so uses the Swift calling
+    /// convention (`self` in x20, error in x21).
+    static func isSwiftMangled(_ symbol: String) -> Bool {
+        let bare = symbol.hasPrefix("_") ? String(symbol.dropFirst()) : symbol
+        return bare.hasPrefix("$s") || bare.hasPrefix("$S")
+    }
+
+    /// The raw (still-mangled) callee symbol from the instruction text, for
+    /// calls objdump resolved through a stub or named inline. The reference
+    /// index holds *demangled* names, so the mangling — the only reliable
+    /// signal that a callee is Swift — has to come from the text.
+    private static func rawCalleeSymbol(of insn: Instruction) -> String? {
+        if let range = insn.text.range(of: "symbol stub for: ") {
+            return String(insn.text[range.upperBound...].prefix { !$0.isWhitespace && $0 != ";" })
+        }
+        let fields = insn.text.split(whereSeparator: { $0 == " " || $0 == "\t" })
+        guard fields.count >= 2, fields[1].hasPrefix("_") else { return nil }
+        return String(fields[1])
+    }
+
+    /// Whether `insn` calls a Swift function.
+    private static func isSwiftCall(_ insn: Instruction, swiftTargets: Set<UInt64>) -> Bool {
+        if let target = insn.branchTarget, swiftTargets.contains(target) { return true }
+        return rawCalleeSymbol(of: insn).map(isSwiftMangled) ?? false
+    }
+
     private func enrichCallArguments(
         in function: DisassembledFunction,
-        resolver: ReferenceResolver
+        resolver: ReferenceResolver,
+        swiftTargets: Set<UInt64>
     ) -> DisassembledFunction {
-        let argumentsByAddress = ValueTracer().callArguments(in: function)
-        guard !argumentsByAddress.isEmpty else { return function }
+        // A `.loaded` value only means something when we can name what lives at
+        // the address; any other load is unnamed data. Degrade those to
+        // `.unknown` and re-trim, so tracking `ldr` doesn't leave a trailing
+        // unresolvable load rendering as a spurious `?`.
+        func sanitize(_ values: [AbstractValue]) -> [AbstractValue]? {
+            ValueTracer.trimTrailingUnknown(values.map { value in
+                guard case .loaded(let address) = value,
+                      resolver.loadedName(at: address) == nil
+                else { return value }
+                return .unknown
+            })
+        }
+
+        let sites = ValueTracer().callSites(in: function)
+        let argumentsByAddress = sites.compactMapValues { sanitize($0.arguments) }
+        guard !sites.isEmpty else { return function }
 
         // Callee name per call address, for nesting result-of-call arguments.
         var calleeByAddress: [UInt64: String] = [:]
@@ -644,6 +818,16 @@ public struct Disassembler: Sendable {
                 return v < 4096 ? String(v) : "0x" + String(v, radix: 16)
             case .address(let a):
                 return resolver.name(at: a) ?? "0x" + String(a, radix: 16)
+            case .loaded(let a):
+                // Sanitised above, so a surviving `.loaded` always has a name.
+                return resolver.loadedName(at: a) ?? "?"
+            case .frame(let offset):
+                // A frame-relative address: a local's address being passed
+                // (inout/indirect). Named by frame offset, the way a disassembler
+                // names stack slots.
+                guard offset != 0 else { return "sp" }
+                let magnitude = String(abs(offset), radix: 16)
+                return offset < 0 ? "local_\(magnitude)" : "frame_\(magnitude)"
             case .callResult(let addr):
                 let inner = argumentsByAddress[addr] ?? []
                 guard depth < 4, let callee = calleeByAddress[addr] else { return "result" }
@@ -651,7 +835,11 @@ public struct Disassembler: Sendable {
                 if DisassembledFunction.isRuntimeNoise(callee) {
                     return inner.first.map { renderValue($0, depth: depth + 1) } ?? "result"
                 }
-                return "\(DisassembledFunction.strippedCallee(callee))(\(renderArguments(inner, depth: depth + 1)))"
+                let arguments: [String] = renderArguments(inner, depth: depth + 1)
+                if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {
+                    return send.rendered
+                }
+                return "\(DisassembledFunction.strippedCallee(callee))(\(arguments.joined(separator: ", ")))"
             }
         }
 
@@ -679,14 +867,32 @@ public struct Disassembler: Sendable {
         }
 
         let instructions = function.instructions.map { insn -> Instruction in
-            guard insn.controlFlow == .call, let values = argumentsByAddress[insn.address] else { return insn }
-            let rendered: [String] = renderArguments(values, depth: 0)
-            let note = "args(" + rendered.joined(separator: ", ") + ")"
-            let merged = [insn.annotation, note].compactMap { $0 }.joined(separator: "  ")
+            guard insn.controlFlow == .call, let site = sites[insn.address] else { return insn }
+
+            // x20 is `self` only under the Swift calling convention; for any
+            // other callee it's a callee-saved register the caller happens to be
+            // using, and calling it `self` would be a fabrication.
+            let selfText: String? = {
+                guard Self.isSwiftCall(insn, swiftTargets: swiftTargets),
+                      site.selfValue != .unknown
+                else { return nil }
+                return renderValue(site.selfValue, depth: 0)
+            }()
+
+            let rendered: [String] = (argumentsByAddress[insn.address]).map {
+                renderArguments($0, depth: 0)
+            } ?? []
+            guard !rendered.isEmpty || selfText != nil else { return insn }
+
+            var notes: [String] = []
+            if let selfText { notes.append("self=\(selfText)") }
+            if !rendered.isEmpty { notes.append("args(" + rendered.joined(separator: ", ") + ")") }
+            let merged = ([insn.annotation] + notes).compactMap { $0 }.joined(separator: "  ")
             return Instruction(
                 address: insn.address, text: insn.text, annotation: merged,
                 controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
-                callArguments: rendered
+                callArguments: rendered.isEmpty ? nil : rendered,
+                callSelf: selfText
             )
         }
         return DisassembledFunction(

@@ -20,13 +20,72 @@ public extension DisassembledFunction {
         return lines.joined(separator: "\n")
     }
 
-    /// The pseudo statement for a call instruction (`callee(args)`), or nil if
-    /// `insn` is not a call or is hidden runtime bookkeeping.
+    /// The pseudo statement for a call instruction (`callee(args)`, or
+    /// `[receiver doThing:]` for a message send), or nil if `insn` is not a call
+    /// or is hidden runtime bookkeeping.
     static func callStatement(of insn: Instruction, hideRuntime: Bool) -> String? {
         guard insn.controlFlow == .call, let callee = calleeName(of: insn) else { return nil }
         if hideRuntime, isRuntimeNoise(callee) { return nil }
-        let arguments = insn.callArguments?.joined(separator: ", ") ?? ""
-        return "\(strippedCallee(callee))(\(arguments))"
+        let arguments = insn.callArguments ?? []
+        if let send = MessageSend(callee: callee, arguments: arguments) { return send.rendered }
+        // A Swift method's receiver arrives in x20, not x0, so show it as an
+        // explicit `self:` rather than letting it vanish from the call.
+        let parts = insn.callSelf.map { ["self: \($0)"] + arguments } ?? arguments
+        return "\(strippedCallee(callee))(\(parts.joined(separator: ", ")))"
+    }
+
+    /// An Objective-C message send recovered from a call, in either dispatch
+    /// shape the compiler emits.
+    struct MessageSend {
+        var receiver: String
+        var selector: String
+        var arguments: [String]
+
+        /// Recognise a message send.
+        ///
+        /// Two shapes exist. Since Xcode 14 the compiler emits a per-selector
+        /// stub and the selector lands in the callee's name
+        /// (`objc_msgSend$setBool:forKey:`). Older code (and
+        /// `-fno-objc-msgsend-selector-stubs`) materialises the selector into x1
+        /// at the call site instead, where value tracking recovers it as a
+        /// `@selector(…)` literal.
+        ///
+        /// Either way `x0` is the receiver and `x1` is `_cmd`, so the selector's
+        /// own arguments start at `x2`.
+        init?(callee: String, arguments: [String]) {
+            guard callee.hasPrefix("objc_msgSend") else { return nil }
+            let selector: String
+            if let marker = callee.firstIndex(of: "$") {
+                selector = String(callee[callee.index(after: marker)...])
+            } else if arguments.count >= 2, let literal = Self.selectorLiteral(arguments[1]) {
+                selector = literal
+            } else {
+                return nil
+            }
+            guard !selector.isEmpty else { return nil }
+            self.receiver = callee.hasPrefix("objc_msgSendSuper") ? "super" : (arguments.first ?? "?")
+            self.selector = selector
+            self.arguments = Array(arguments.dropFirst(2))
+        }
+
+        private static func selectorLiteral(_ text: String) -> String? {
+            guard text.hasPrefix("@selector("), text.hasSuffix(")") else { return nil }
+            return String(text.dropFirst("@selector(".count).dropLast())
+        }
+
+        /// `[receiver setBool:1 forKey:@"k"]`, or `[receiver reload]` for a
+        /// selector that takes none.
+        var rendered: String {
+            guard selector.contains(":") else { return "[\(receiver) \(selector)]" }
+            // `setBool:forKey:` splits to ["setBool", "forKey", ""] — the trailing
+            // empty piece is the final colon, so drop it, then pair each keyword
+            // with its argument.
+            let keywords = selector.split(separator: ":", omittingEmptySubsequences: false).dropLast()
+            let pieces = keywords.enumerated().map { index, keyword in
+                "\(keyword):\(index < arguments.count ? arguments[index] : "?")"
+            }
+            return "[\(receiver) \(pieces.joined(separator: " "))]"
+        }
     }
 
     /// Best-effort callee name for a call instruction, from the demangled
@@ -44,9 +103,7 @@ public extension DisassembledFunction {
         // `→ name` target (the in-process path), else the symbol operand.
         if let demangled = demangledName(from: insn.annotation) { return demangled }
         if let annotation = insn.annotation, let arrow = annotation.range(of: "→ ") {
-            let name = annotation[arrow.upperBound...]
-                .components(separatedBy: "  args(")[0]
-                .trimmingCharacters(in: .whitespaces)
+            let name = stripNotes(String(annotation[arrow.upperBound...]))
             if !name.isEmpty { return name }
         }
         let fields = insn.text.split(whereSeparator: { $0 == " " || $0 == "\t" })
@@ -61,10 +118,21 @@ public extension DisassembledFunction {
     /// appended). Nil when the annotation is only arguments or a `→` reference.
     private static func demangledName(from annotation: String?) -> String? {
         guard let annotation else { return nil }
-        let base = annotation.components(separatedBy: "  args(")[0]
-            .trimmingCharacters(in: .whitespaces)
-        if base.isEmpty || base.hasPrefix("args(") || base.hasPrefix("→") { return nil }
+        let base = stripNotes(annotation)
+        if base.isEmpty || base.hasPrefix("args(") || base.hasPrefix("self=") || base.hasPrefix("→") {
+            return nil
+        }
         return base
+    }
+
+    /// Drop the notes value-tracking appends to an annotation (`self=…`,
+    /// `args(…)`), leaving just the resolved name.
+    private static func stripNotes(_ text: String) -> String {
+        var cut = text.endIndex
+        for marker in ["  args(", "  self="] {
+            if let range = text.range(of: marker), range.lowerBound < cut { cut = range.lowerBound }
+        }
+        return String(text[..<cut]).trimmingCharacters(in: .whitespaces)
     }
 
     private static func stripUnderscores(_ symbol: String) -> String {
@@ -99,6 +167,10 @@ public extension DisassembledFunction {
             "swift_bridgeObjectRelease", "swift_beginAccess", "swift_endAccess",
             "objc_retain", "objc_release", "swift_isUniquelyReferenced",
             "__chkstk", "swift_unknownObjectRetain", "swift_unknownObjectRelease",
+            // The autorelease family brackets almost every ObjC call that
+            // returns an object; left in, it drowns out the actual sends.
+            "objc_autorelease", "objc_claimAutoreleasedReturnValue",
+            "objc_retainAutorelease", "objc_retainAutoreleasedReturnValue",
         ]
         return prefixes.contains { callee.hasPrefix($0) }
     }

@@ -2,6 +2,10 @@ import Foundation
 import MachOKit
 import MachOSwiftSection
 import SwiftDump
+// 0.12.0 split the render configuration out of SwiftDump into its own module,
+// which SwiftDump depends on but does not re-export. It still vends a
+// `DeclarationRenderConfiguration` typealias for source compatibility; we use the new name.
+import SwiftDeclarationRendering
 import Semantic
 
 /// Demangling presets, mapped onto SwiftDump's `DemangleOptions` so callers
@@ -43,7 +47,7 @@ public struct SwiftDeclarationDumper: Sendable {
         _ machO: MachOFile,
         sections: Set<Section> = Set(Section.allCases)
     ) async -> String {
-        let configuration = DumperConfiguration.demangleOptions(preset.options)
+        let configuration = DeclarationRenderConfiguration.demangleOptions(preset.options)
         var blocks: [String] = []
 
         if sections.contains(.types), let types = try? machO.swift.types {
@@ -83,7 +87,7 @@ public struct SwiftDeclarationDumper: Sendable {
 
     private func dumpType(
         _ type: TypeContextWrapper,
-        _ configuration: DumperConfiguration,
+        _ configuration: DeclarationRenderConfiguration,
         in machO: MachOFile
     ) async -> String? {
         switch type {

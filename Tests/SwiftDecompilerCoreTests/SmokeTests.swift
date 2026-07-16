@@ -60,6 +60,105 @@ func withStableDependencies<R>(
     #expect(ValueTracer.decodeSmallString(lo: 0xff, hi: 0xe100000000000000) == nil) // non-printable
 }
 
+/// Both `objc_msgSend` dispatch shapes fold into bracket syntax.
+@Test func rendersMessageSends() {
+    // Modern: per-selector stub, selector in the callee's name. x1 is `_cmd`
+    // (junk at the call site, since the stub sets it), so args start at x2.
+    let stub = DisassembledFunction.MessageSend(
+        callee: "objc_msgSend$setBool:forKey:",
+        arguments: ["NSUserDefaults", "?", "1", "@\"k\""]
+    )
+    #expect(stub?.rendered == "[NSUserDefaults setBool:1 forKey:@\"k\"]")
+
+    // Classic: selector materialised into x1 at the call site.
+    let classic = DisassembledFunction.MessageSend(
+        callee: "objc_msgSend",
+        arguments: ["view", "@selector(setTitle:)", "@\"hi\""]
+    )
+    #expect(classic?.rendered == "[view setTitle:@\"hi\"]")
+
+    // Zero-argument selector takes no colon.
+    #expect(
+        DisassembledFunction.MessageSend(callee: "objc_msgSend$reload", arguments: ["table"])?
+            .rendered == "[table reload]"
+    )
+    // A send to super names the receiver `super`, not x0.
+    #expect(
+        DisassembledFunction.MessageSend(callee: "objc_msgSendSuper2$init", arguments: ["x"])?
+            .rendered == "[super init]"
+    )
+    // Missing arguments stay honest rather than being dropped.
+    #expect(
+        DisassembledFunction.MessageSend(callee: "objc_msgSend$a:b:", arguments: [])?
+            .rendered == "[? a:? b:?]"
+    )
+    // Not a message send.
+    #expect(DisassembledFunction.MessageSend(callee: "swift_allocObject", arguments: ["x"]) == nil)
+    // objc_msgSend with no recoverable selector: don't invent bracket syntax.
+    #expect(DisassembledFunction.MessageSend(callee: "objc_msgSend", arguments: ["x", "?"]) == nil)
+}
+
+/// A value stored to a stack slot is recovered when reloaded — and survives the
+/// prologue moving `sp` underneath it, which is what makes ObjC receivers and
+/// Swift `self` resolvable at all.
+@Test func tracksStackSlotsAcrossFrameAdjustments() {
+    func insn(_ address: UInt64, _ text: String, _ flow: ControlFlow = .sequential) -> Instruction {
+        Instruction(address: address, text: text, controlFlow: flow, branchTarget: flow == .call ? 0x2000 : nil)
+    }
+    // The slot is written at sp+8 and read back at sp+8, but `sp` moves twice
+    // between entry and the store — via pre-index writeback, then a plain sub.
+    // Both stores land at frame offset -0x28, which is the point of the model.
+    let function = DisassembledFunction(
+        symbol: "_$stest", demangledName: "test", startAddress: 0x1000,
+        instructions: [
+            insn(0x1000, "stp\tx29, x30, [sp, #-0x20]!"), // sp = frame-0x20
+            insn(0x1004, "sub\tsp, sp, #0x10"),           // sp = frame-0x30
+            insn(0x1008, "movz\tx0, #0x2a"),
+            insn(0x100c, "str\tx0, [sp, #0x8]"),          // stack@-0x28 = 42
+            insn(0x1010, "ldr\tx20, [sp, #0x8]"),         // x20 = 42
+            insn(0x1014, "bl\t0x2000", .call),
+        ],
+        source: .symbol
+    )
+    let site = ValueTracer().callSites(in: function)[0x1014]
+    #expect(site?.arguments.first == .immediate(42))
+    // x20 was written by the `ldr` immediately before the call, so it counts as
+    // this call's `self`.
+    #expect(site?.selfValue == .immediate(42))
+}
+
+/// x20 is callee-saved, so a value set up for one call survives into the next.
+/// Only a *fresh* write counts as `self`, or a Swift callee whose self isn't in
+/// x20 at all inherits the previous call's receiver.
+@Test func staleSwiftSelfIsNotReported() {
+    func insn(_ address: UInt64, _ text: String, _ flow: ControlFlow = .sequential) -> Instruction {
+        Instruction(address: address, text: text, controlFlow: flow, branchTarget: flow == .call ? 0x2000 : nil)
+    }
+    let function = DisassembledFunction(
+        symbol: "_$stest", demangledName: "test", startAddress: 0x1000,
+        instructions: [
+            insn(0x1000, "movz\tx20, #0x7"),
+            insn(0x1004, "bl\t0x2000", .call), // self=7: x20 freshly written
+            insn(0x1008, "bl\t0x2000", .call), // x20 still 7, but stale now
+        ],
+        source: .symbol
+    )
+    let sites = ValueTracer().callSites(in: function)
+    #expect(sites[0x1004]?.selfValue == .immediate(7))
+    #expect(sites[0x1008]?.selfValue == .unknown)
+}
+
+/// Swift-mangled symbols use the Swift calling convention (self in x20); C and
+/// ObjC ones don't, and must not have x20 reported as `self`.
+@Test func detectsSwiftMangling() {
+    #expect(Disassembler.isSwiftMangled("_$sSS6appendyySSF"))
+    #expect(Disassembler.isSwiftMangled("$s6sample3DogC4barkyyF"))
+    #expect(Disassembler.isSwiftMangled("_$S6legacy3FooV"))     // pre-5.0 mangling
+    #expect(!Disassembler.isSwiftMangled("_objc_msgSend"))
+    #expect(!Disassembler.isSwiftMangled("_malloc"))
+    #expect(!Disassembler.isSwiftMangled(""))
+}
+
 @Test func ownerNameParsing() {
     #expect(AnalysisReport.ownerName(of: "sample.Point.distance(to:) -> Swift.Double") == "sample.Point")
     #expect(AnalysisReport.ownerName(of: "Point.area.getter : Swift.Double") == "Point")
