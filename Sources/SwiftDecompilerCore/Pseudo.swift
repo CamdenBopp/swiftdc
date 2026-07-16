@@ -25,20 +25,31 @@ public extension DisassembledFunction {
     /// their richer message-send rendering; direct stores to a known Swift
     /// field or Objective-C ivar reuse the field annotation from disassembly.
     static func pseudoStatement(of insn: Instruction, hideRuntime: Bool) -> String? {
-        if let call = callStatement(of: insn, hideRuntime: hideRuntime) { return call }
-        guard let annotation = insn.annotation else { return nil }
-        return annotation.components(separatedBy: "  ")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .first { note in
-                (note.hasPrefix("self.") || note.hasPrefix("self->")) && note.contains(" = …")
-            }
+        if let annotation = insn.annotation {
+            let semantic = annotation.components(separatedBy: "  ")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .first { note in
+                    if note.hasPrefix("return ") { return true }
+                    if note.hasPrefix("self = ") { return true }
+                    if note.hasPrefix("("), note.contains("self->"), note.contains(" = ") {
+                        return true
+                    }
+                    guard note.hasPrefix("self.") || note.hasPrefix("self->") else { return false }
+                    return [" = ", " += ", " -= "].contains(where: note.contains)
+                }
+            if let semantic { return semantic }
+        }
+        return callStatement(of: insn, hideRuntime: hideRuntime)
     }
 
-    /// The pseudo statement for a call instruction (`callee(args)`, or
-    /// `[receiver doThing:]` for a message send), or nil if `insn` is not a call
-    /// or is hidden runtime bookkeeping.
+    /// The pseudo statement for a call or resolved tail-call instruction
+    /// (`callee(args)`, or `[receiver doThing:]` for a message send), or nil if
+    /// `insn` is not a call boundary or is hidden runtime bookkeeping.
     static func callStatement(of insn: Instruction, hideRuntime: Bool) -> String? {
-        guard insn.controlFlow == .call, let callee = calleeName(of: insn) else { return nil }
+        guard !insn.resultConsumed,
+              insn.controlFlow == .call || insn.controlFlow == .branch,
+              let callee = calleeName(of: insn)
+        else { return nil }
         if hideRuntime, isRuntimeNoise(callee) { return nil }
         let arguments = insn.callArguments ?? []
         if let send = MessageSend(callee: callee, arguments: arguments) { return send.rendered }
@@ -87,6 +98,16 @@ public extension DisassembledFunction {
             return String(text.dropFirst("@selector(".count).dropLast())
         }
 
+        /// Foundation selector families whose final source arguments continue
+        /// after the colon-delimited fixed parameters.
+        static func isVariadicSelector(_ selector: String) -> Bool {
+            guard !selector.contains("arguments:") else { return false }
+            return selector.hasSuffix("WithFormat:")
+                || selector.hasSuffix("appendFormat:")
+                || selector.hasSuffix("WithObjects:")
+                || selector.hasSuffix("WithObjectsAndKeys:")
+        }
+
         /// `[receiver setBool:1 forKey:@"k"]`, or `[receiver reload]` for a
         /// selector that takes none.
         var rendered: String {
@@ -98,7 +119,11 @@ public extension DisassembledFunction {
             let pieces = keywords.enumerated().map { index, keyword in
                 "\(keyword):\(index < arguments.count ? arguments[index] : "?")"
             }
-            return "[\(receiver) \(pieces.joined(separator: " "))]"
+            var body = pieces.joined(separator: " ")
+            if Self.isVariadicSelector(selector), arguments.count > keywords.count {
+                body += ", " + arguments.dropFirst(keywords.count).joined(separator: ", ")
+            }
+            return "[\(receiver) \(body)]"
         }
     }
 

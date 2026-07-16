@@ -7,7 +7,8 @@ disassembly annotated with demangled symbols** — including for stripped
 binaries, where the type structure still survives in the `__swift5_*` sections.
 
 This is the "Swift-aware binary browser" tier (think `class-dump` / `dsdump` /
-SwiftDump, plus annotated assembly), not a full control-flow decompiler. See
+SwiftDump, plus annotated assembly and best-effort source-like bodies), not a
+full optimizing-decompiler replacement. See
 [Scope & limitations](#scope--limitations).
 
 ## What it produces
@@ -26,9 +27,20 @@ SwiftDump, plus annotated assembly), not a full control-flow decompiler. See
   calling convention is seeded from metadata (`self` in x0, `_cmd` in x1,
   explicit arguments from x2), so arguments survive as `arg0`, `arg1`, … in
   recovered expressions. Runtime ivar offsets and encoded storage sizes turn
-  direct loads/stores into `self->_count` / `self->_count = …`; loaded ivar
+  direct loads/stores into `self->_count` / `self->_count = arg1`; loaded ivar
   values flow into sends such as
   `[arg0 stringByAppendingString:self->_name]`.
+- **Objective-C body recovery (stage 2)** — the CFG-aware value lattice retains
+  bounded ARM64 arithmetic and records exact ivar stores and return-register
+  values. Common compiler patterns recover as `_count += arg0`,
+  `return self->_name`, `self = [super init]`, copy-property assignments, BOOL
+  getters/setters, destructor nil stores, variadic message arguments, and
+  Objective-C parameters beyond x7. Paired ARM64 loads/stores preserve adjacent
+  ivar assignments and stack arguments instead of collapsing them to `…`.
+  Imported `__stubs` are named from the indirect symbol table, exposing runtime
+  tail helpers that were previously bare branches. Calls embedded in a later
+  store/return are suppressed as duplicate standalone statements. JSON
+  instructions expose each recovered statement in a `statement` field.
 - **Annotated ARM64** — function bodies disassembled via `llvm-objdump`, with
   branch/call targets demangled to readable Swift names and string-literal
   references surfaced. `adrp`/`add` operand references are resolved to the
@@ -85,9 +97,11 @@ SwiftDump, plus annotated assembly), not a full control-flow decompiler. See
   reading `?`.
 - **Cross-references** (`swiftdc xrefs`) — callers and callees of a function,
   over a call graph built from resolved direct-branch targets.
-- **Structured control flow** (`disasm --structured`) — folds the call statements
-  into `if`/`else`/`while` using post-dominators over the CFG. Conditions are
+- **Structured control flow** (`disasm --structured`, `objc --structured`) —
+  folds recovered calls, stores, and returns into `if`/`else`/`while` using
+  post-dominators over the CFG. Conditions are
   reconstructed and back-substituted through the block (`if ((w1 & 0xff) != 1)`);
+  Objective-C field loads and x2…x7 entry registers become ivar/argument names;
   reducible loops fold into `while (true) { … break/continue }`; trivial tails
   (lone `return`/`trap`) are duplicated so branches aren't left empty. Anything
   irreducible degrades to a labeled `goto`, so the output is never structurally
@@ -156,9 +170,13 @@ swiftdc objc /path/to/Binary --methods
 # works after stripping because metadata is matched before code is decoded.
 swiftdc objc /path/to/Binary --function incrementBy --pseudo
 
+# Fold Objective-C bodies into structured control flow. Typical output includes
+# `if (self->_enabled) { self->_count += arg0 }` and `return self->_count`.
+swiftdc objc /path/to/Binary --function incrementIfEnabled --structured
+
 # With --methods (or --function), JSON is
 # { headers: [...], methods: [{ objectiveC: { class, category, selector,
-#   kind, typeEncoding, signature }, ... }] }
+#   kind, typeEncoding, signature }, instructions: [{ statement: ... }], ... }] }
 swiftdc objc /path/to/Binary --function setName --json
 
 # Just annotated disassembly, optionally filtered to a function
@@ -273,7 +291,7 @@ SwiftDecompilerCore (library)
   ├── Disassembler          ARM64 + demangled annotation            (llvm-objdump + Demangling)
   ├── CapstoneEngine        structured decode (control flow, targets) (Capstone, CCapstone)
   ├── CFG                   basic-block / control-flow-graph recovery
-  ├── ValueTracer           abstract interpreter → call args, stack slots, self
+  ├── ValueTracer           abstract interpreter → args, expressions, stores, returns
   ├── ObjCSelectors         __objc_stubs/__objc_selrefs → selector names
   ├── FieldMap              byte offset → Swift stored property (`swiftdc layout`)
   ├── SelfTypeIndex         impl address → the type of its `self` (strip-proof)
@@ -326,9 +344,11 @@ swift test
 
 - **Apple Silicon / ARM64 only** right now (x86_64 slices load, but the
   disassembly/annotation is tuned for ARM64).
-- **Not a control-flow decompiler.** Output is reconstructed *declarations* +
-  *annotated assembly*, not recovered C-like function bodies. (A Ghidra backend
-  for true pseudocode is a possible future direction.)
+- **Best-effort bodies, not original source.** Objective-C metadata plus the
+  ARM64 data-flow/CFG passes recover many calls, ivar expressions, returns, and
+  structured branches, but not original local names, macros, comments, exact
+  source types, arbitrary pointer aliasing, or every optimized expression. Raw
+  annotated assembly remains the authoritative fallback.
 - **Stripped binaries**: function *boundaries* are recovered from
   `LC_FUNCTION_STARTS` and Objective-C IMPs; *names* come from Objective-C
   class/category method records and Swift metadata for **class vtable methods**

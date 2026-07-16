@@ -17,6 +17,8 @@ private struct InstructionDTO: Encodable {
     let branchTarget: String?
     /// Recovered call arguments (x0…), when value-tracking inferred them.
     let arguments: [String]?
+    /// Source-like statement recovered for this instruction, when any.
+    let statement: String?
 }
 
 private struct BlockDTO: Encodable {
@@ -96,7 +98,8 @@ private extension DisassembledFunction {
                     controlFlow: ($0.controlFlow == nil || $0.controlFlow == .sequential)
                         ? nil : $0.controlFlow?.rawValue,
                     branchTarget: $0.branchTarget.map(hex),
-                    arguments: $0.callArguments
+                    arguments: $0.callArguments,
+                    statement: DisassembledFunction.pseudoStatement(of: $0, hideRuntime: true)
                 )
             },
             blocks: basicBlocks().map {

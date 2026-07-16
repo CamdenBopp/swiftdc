@@ -47,6 +47,20 @@ public struct ObjCMethodBinding: Sendable, Equatable {
     /// Objective-C's two hidden arguments are `self` and `_cmd`; explicit
     /// arguments are exactly the selector's colon count.
     public var argumentCount: Int { selector.filter { $0 == ":" }.count }
+
+    /// Whether the runtime method encoding declares a void return. Qualifiers
+    /// may precede the first type code; stack offsets begin only after it.
+    public var returnsVoid: Bool {
+        typeEncoding.first { !"rnNoORVA".contains($0) } == "v"
+    }
+
+    /// Objective-C initializer families are defined by selector spelling. This
+    /// metadata fact is enough to model `self = [super init…]` without relying
+    /// on a symbol-table name that stripping removes.
+    public var isInitializer: Bool {
+        selector == "init" || (selector.hasPrefix("init")
+            && selector.dropFirst(4).first.map { !$0.isLowercase } == true)
+    }
 }
 
 /// Classes/categories parsed once from the runtime sections. Keeping this

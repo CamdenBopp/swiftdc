@@ -11,7 +11,7 @@ public extension DisassembledFunction {
         let blocks = basicBlocks()
         guard blocks.count > 1 else { return renderPseudo() }
 
-        let cfg = ControlFlowStructure(blocks: blocks)
+        let cfg = ControlFlowStructure(blocks: blocks, objectiveCArguments: objcMethod != nil)
         var lines = ["\(displayName) {"]
         if let objcMethod { lines.append("    // \(objcMethod.signature)") }
         var visited = Set<Int>()
@@ -39,10 +39,12 @@ struct ControlFlowStructure {
     private let backSuccessors: [[Int]]       // back-edges (to loop headers)
     private let ipdom: [Int]                   // immediate post-dominator per block
     private let loops: [Int: LoopInfo]         // foldable natural loops, by header
+    private let objectiveCArguments: Bool
 
-    init(blocks: [BasicBlock]) {
+    init(blocks: [BasicBlock], objectiveCArguments: Bool = false) {
         self.blocks = blocks
         self.exit = blocks.count
+        self.objectiveCArguments = objectiveCArguments
         var indexByAddress: [UInt64: Int] = [:]
         for (index, block) in blocks.enumerated() { indexByAddress[block.startAddress] = index }
         self.indexByAddress = indexByAddress
@@ -145,12 +147,17 @@ struct ControlFlowStructure {
             if loops[current] == nil, isLoopHeader(current) {
                 lines.append("\(pad)loc_\(hex(block.startAddress)):  // loop header")
             }
+            var emittedReturn = false
             for insn in block.instructions {
                 if let statement = DisassembledFunction.pseudoStatement(of: insn, hideRuntime: true) {
                     lines.append("\(pad)\(statement)")
+                    emittedReturn = emittedReturn || statement.hasPrefix("return ")
                 }
             }
-            if isReturn(block) { lines.append("\(pad)return"); break }
+            if isReturn(block) {
+                if !emittedReturn { lines.append("\(pad)return") }
+                break
+            }
 
             let succs = block.successors.compactMap { index(of: $0) }
             if succs.count >= 2 {
@@ -165,7 +172,7 @@ struct ControlFlowStructure {
                 if thenLines.isEmpty, elseLines.isEmpty {
                     // both rejoin immediately — nothing to emit
                 } else if thenLines.isEmpty {
-                    lines.append("\(pad)if (!(\(cond))) {")
+                    lines.append("\(pad)if (\(Self.inverted(cond))) {")
                     lines += elseLines
                     lines.append("\(pad)}")
                 } else {
@@ -218,8 +225,14 @@ struct ControlFlowStructure {
         let (mnemonic, operands) = Self.decode(terminator.text)
         let last = block.instructions.count - 1
         switch mnemonic {
-        case "cbz": return "\(resolve(operands.first ?? "?", before: last, in: block)) == 0"
-        case "cbnz": return "\(resolve(operands.first ?? "?", before: last, in: block)) != 0"
+        case "cbz":
+            let operand = operands.first ?? "?"
+            let value = resolve(operand, before: last, in: block)
+            return isBooleanSource(operand, before: last, in: block) ? "!\(value)" : "\(value) == 0"
+        case "cbnz":
+            let operand = operands.first ?? "?"
+            let value = resolve(operand, before: last, in: block)
+            return isBooleanSource(operand, before: last, in: block) ? value : "\(value) != 0"
         case "tbz": return "bit \(Self.cleanImmediate(operands.count > 1 ? operands[1] : "?")) of \(resolve(operands.first ?? "?", before: last, in: block)) clear"
         case "tbnz": return "bit \(Self.cleanImmediate(operands.count > 1 ? operands[1] : "?")) of \(resolve(operands.first ?? "?", before: last, in: block)) set"
         default:
@@ -234,6 +247,10 @@ struct ControlFlowStructure {
                     if lhs == rhs, ops[0] != ops[1] {
                         return "\(ops[0]) \(op) \(Self.cleanImmediate(ops[1]))"
                     }
+                    if isBooleanSource(ops[0], before: index, in: block),
+                       let simplified = Self.booleanComparison(lhs: lhs, op: op, rhs: rhs) {
+                        return simplified
+                    }
                     return "\(lhs) \(op) \(rhs)"
                 }
                 if m == "tst", ops.count >= 2 {
@@ -244,25 +261,90 @@ struct ControlFlowStructure {
         }
     }
 
+    /// Whether a compared register comes from a metadata-typed BOOL field load.
+    /// Stop at calls for the same clobber reason as `resolve`; follow plain moves
+    /// because optimized code often copies a byte load before comparing it.
+    private func isBooleanSource(_ token: String, before: Int, in block: BasicBlock) -> Bool {
+        guard let register = Self.canonicalRegister(token) else { return false }
+        for index in stride(from: before - 1, through: 0, by: -1) {
+            let instruction = block.instructions[index]
+            if instruction.controlFlow == .call,
+               let number = Int(register.dropFirst()), number <= 17 { return false }
+            let (mnemonic, operands) = Self.decode(instruction.text)
+            guard let destination = operands.first,
+                  Self.canonicalRegister(destination) == register
+            else { continue }
+            if instruction.sourceType == "B" { return true }
+            if mnemonic == "mov", operands.count >= 2 {
+                return isBooleanSource(operands[1], before: index, in: block)
+            }
+            return false
+        }
+        return false
+    }
+
+    private static func booleanComparison(lhs: String, op: String, rhs: String) -> String? {
+        switch (op, rhs) {
+        case ("==", "1"), ("!=", "0"): return lhs
+        case ("==", "0"), ("!=", "1"): return "!\(lhs)"
+        default: return nil
+        }
+    }
+
     /// Render an operand, substituting a register one level back through a
     /// data-moving definition earlier in the same block.
     private func resolve(_ token: String, before: Int, in block: BasicBlock) -> String {
         if token.hasPrefix("#") { return Self.cleanImmediate(token) }
         guard let register = Self.canonicalRegister(token) else { return token }
         for index in stride(from: before - 1, through: 0, by: -1) {
-            let (mnemonic, ops) = Self.decode(block.instructions[index].text)
+            let instruction = block.instructions[index]
+            // Calls clobber x0...x17. Never substitute a pre-call definition
+            // for a post-call condition (e.g. x0 is the returned object, not
+            // the stack pointer that was passed to objc_msgSendSuper2).
+            if instruction.controlFlow == .call,
+               let number = Int(register.dropFirst()), number <= 17 {
+                if register == "x0", instruction.annotation?.components(separatedBy: "  ")
+                    .contains(where: { $0.hasPrefix("self = ") }) == true {
+                    return "self"
+                }
+                return token
+            }
+            let (mnemonic, ops) = Self.decode(instruction.text)
             guard let dest = ops.first, Self.canonicalRegister(dest) == register else { continue }
+            if let annotation = instruction.annotation,
+               let field = annotation.components(separatedBy: "  ")
+                .map({ $0.trimmingCharacters(in: .whitespaces) })
+                .first(where: {
+                    ($0.hasPrefix("self.") || $0.hasPrefix("self->"))
+                        && ![" = ", " += ", " -= "].contains(where: $0.contains)
+                        && !$0.hasPrefix("&")
+                }) {
+                return field
+            }
             switch mnemonic {
             case "and" where ops.count >= 3: return "(\(ops[1]) & \(Self.cleanImmediate(ops[2])))"
             case "orr" where ops.count >= 3: return "(\(ops[1]) | \(Self.cleanImmediate(ops[2])))"
             case "lsr", "asr": return ops.count >= 3 ? "(\(ops[1]) >> \(Self.cleanImmediate(ops[2])))" : token
             case "lsl": return ops.count >= 3 ? "(\(ops[1]) << \(Self.cleanImmediate(ops[2])))" : token
-            case "ubfx", "sbfx": return ops.count >= 2 ? ops[1] : token
-            case "mov" where ops.count >= 2: return ops[1].hasPrefix("#") ? Self.cleanImmediate(ops[1]) : ops[1]
-            default: return token
+            case "ubfx", "sbfx": return ops.count >= 2 ? sourceName(ops[1]) : sourceName(token)
+            case "mov" where ops.count >= 2:
+                return ops[1].hasPrefix("#") ? Self.cleanImmediate(ops[1]) : sourceName(ops[1])
+            default: return sourceName(token)
             }
         }
-        return token
+        return sourceName(token)
+    }
+
+    /// At an Objective-C method entry x2...x7 are the first six explicit
+    /// selector arguments. Use those names only when no definition inside the
+    /// block supersedes the entry value.
+    private func sourceName(_ token: String) -> String {
+        guard objectiveCArguments,
+              let register = Self.canonicalRegister(token),
+              register.hasPrefix("x"),
+              let number = Int(register.dropFirst()), (2...7).contains(number)
+        else { return token }
+        return "arg\(number - 2)"
     }
 
     /// `#0x1` → `1`, `#0xff` → `0xff` (keep masks hex), `#5` → `5`.
@@ -295,6 +377,21 @@ struct ControlFlowStructure {
         case "b.vc": return "no-overflow"
         default: return "?"
         }
+    }
+
+    private static func inverted(_ condition: String) -> String {
+        for (op, inverse) in [
+            (" != ", " == "), (" == ", " != "),
+            (" <= ", " > "), (" >= ", " < "),
+            (" < ", " >= "), (" > ", " <= "),
+        ] where condition.contains(op) {
+            return condition.replacingOccurrences(of: op, with: inverse)
+        }
+        if condition.hasPrefix("!("), condition.hasSuffix(")") {
+            return String(condition.dropFirst(2).dropLast())
+        }
+        if condition.hasPrefix("!") { return String(condition.dropFirst()) }
+        return "!\(condition)"
     }
 
     // MARK: - Helpers

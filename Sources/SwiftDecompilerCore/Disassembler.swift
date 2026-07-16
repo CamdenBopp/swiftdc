@@ -22,6 +22,13 @@ public struct Instruction: Sendable {
     /// Only set for Swift callees — x20 is `self` under the Swift calling
     /// convention, and merely a callee-saved register everywhere else.
     public let callSelf: String?
+    /// The call's result is embedded in a later recovered expression, so flat
+    /// pseudocode should not also emit it as a duplicate standalone call.
+    public let resultConsumed: Bool
+    /// Metadata type of a field read or written by this instruction, when the
+    /// access was resolved exactly enough to name it. Objective-C encodings
+    /// such as `B` let structured output distinguish booleans from integers.
+    public let sourceType: String?
     /// Structured operands from Capstone's detail mode.
     ///
     /// Present on both front-ends: the objdump path already runs the full
@@ -39,6 +46,8 @@ public struct Instruction: Sendable {
         branchTarget: UInt64? = nil,
         callArguments: [String]? = nil,
         callSelf: String? = nil,
+        resultConsumed: Bool = false,
+        sourceType: String? = nil,
         detail: StructuredInsn? = nil
     ) {
         self.address = address
@@ -48,6 +57,8 @@ public struct Instruction: Sendable {
         self.branchTarget = branchTarget
         self.callArguments = callArguments
         self.callSelf = callSelf
+        self.resultConsumed = resultConsumed
+        self.sourceType = sourceType
         self.detail = detail
     }
 }
@@ -306,7 +317,9 @@ public struct Disassembler: Sendable {
                 ? Self.selfType(of: function, selfIndex: selfIndex, fieldMaps: fieldMaps)
                 : nil
             let entry: MethodEntryConvention? = if let objcMethod {
-                .objectiveC(argumentCount: objcMethod.argumentCount)
+                objcMethod.isInitializer
+                    ? .objectiveCInitializer(argumentCount: objcMethod.argumentCount)
+                    : .objectiveC(argumentCount: objcMethod.argumentCount)
             } else if selfTypeName != nil {
                 .swiftInstance
             } else {
@@ -455,6 +468,37 @@ public struct Disassembler: Sendable {
                 )
             }
         }
+    }
+
+    /// Classic `__stubs` address → imported symbol. These symbols are not
+    /// function definitions and therefore never appear in `symbolLabels`, but
+    /// naming them is essential for recognizing runtime tail calls such as
+    /// `objc_autoreleaseReturnValue` and `objc_setProperty_nonatomic_copy`.
+    private func symbolStubNames(in machO: MachOFile) -> [UInt64: String] {
+        guard let table = machO.indirectSymbols else { return [:] }
+        let indirect = Array(table)
+        let symbols = Array(machO.symbols)
+        var names: [UInt64: String] = [:]
+
+        for section in machO.sections where section.flags.type == .symbol_stubs {
+            guard let first = section.indirectSymbolIndex,
+                  let count = section.numberOfIndirectSymbols,
+                  count > 0, first >= 0, first + count <= indirect.count
+            else { continue }
+            let stubSize = section.size / count
+            guard stubSize > 0 else { continue }
+
+            for slot in 0..<count {
+                guard let symbolIndex = indirect[first + slot].index,
+                      symbols.indices.contains(symbolIndex)
+                else { continue }
+                let raw = symbols[symbolIndex].name
+                guard !raw.isEmpty else { continue }
+                let address = UInt64(section.address + slot * stubSize)
+                names[address] = demangle(raw) ?? Self.stripLeadingUnderscore(raw)
+            }
+        }
+        return names
     }
 
     /// Function labels from the symbol table: `__text`-range defined symbols,
@@ -642,12 +686,15 @@ public struct Disassembler: Sendable {
     // MARK: - Operand reference resolution
 
     /// Known target addresses → display names: every recovered function start,
-    /// Swift type descriptors, and ObjC selector stubs. Used to resolve adrp/add
-    /// operand targets and to name call targets.
+    /// imported/ObjC selector stubs, and Swift type descriptors. Used to resolve
+    /// adrp/add operand targets and to name direct call/tail-call targets.
     private func referenceIndex(functions: [DisassembledFunction], in machO: MachOFile) -> [UInt64: String] {
         var names: [UInt64: String] = [:]
         for function in functions where names[function.startAddress] == nil {
             names[function.startAddress] = function.displayName
+        }
+        for (address, name) in symbolStubNames(in: machO) where names[address] == nil {
+            names[address] = name
         }
         // Selector stubs live in __objc_stubs, outside __text, so they are never
         // recovered as functions — without this every message send is a call to
@@ -1003,42 +1050,98 @@ public struct Disassembler: Sendable {
             objcFieldSyntax ? "self->\(name)" : "self.\(name)"
         }
 
-        /// A field name for an offset, or nil when it cannot be named honestly.
-        func fieldName(at offset: Int, bytes: Int) -> String? {
+        func fieldInfo(at offset: Int, bytes: Int) -> (names: [String], type: String?)? {
             guard let fieldMap else { return nil }
-            // A zero width means "the address of whatever starts here" (`add x0,
-            // x20, #0x20`), so probe one byte.
             switch fieldMap.lookup(offset: offset, bytes: max(bytes, 1)) {
-            case .success(let hit): return hit.rendered
-            case .failure: return nil
+            case .success(.whole(let name, let type)):
+                return ([name], type)
+            case .success(.part(let name, let type, _, _)):
+                return ([name], type)
+            case .success(.spans(let names)):
+                return (names, nil)
+            case .failure:
+                return nil
             }
         }
 
+        /// A field name for an offset, or nil when it cannot be named honestly.
+        func fieldName(at offset: Int, bytes: Int) -> String? {
+            guard let names = fieldInfo(at: offset, bytes: bytes)?.names else { return nil }
+            return names.count == 1 ? names[0] : "{\(names.joined(separator: ", "))}"
+        }
+
         // A `.loaded` value only means something when we can name what lives at
-        // the address; any other load is unnamed data. Degrade those to
-        // `.unknown` and re-trim, so tracking `ldr` doesn't leave a trailing
-        // unresolvable load rendering as a spurious `?`.
-        func sanitize(_ values: [AbstractValue]) -> [AbstractValue]? {
-            ValueTracer.trimTrailingUnknown(values.map { value in
-                guard case .loaded(let address) = value,
-                      resolver.loadedName(at: address) == nil
-                else { return value }
+        // the address; any other load is unnamed data. Sanitize recursively now
+        // that arithmetic expressions can contain loaded values.
+        func sanitizeValue(_ value: AbstractValue) -> AbstractValue {
+            switch value {
+            case .loaded(let address) where resolver.loadedName(at: address) == nil:
                 return .unknown
-            })
+            case .binary(let op, let lhs, let rhs):
+                let lhs = sanitizeValue(lhs)
+                let rhs = sanitizeValue(rhs)
+                guard lhs != .unknown, rhs != .unknown else { return .unknown }
+                return .binary(op, lhs, rhs)
+            default:
+                return value
+            }
+        }
+
+        func sanitize(_ values: [AbstractValue]) -> [AbstractValue]? {
+            ValueTracer.trimTrailingUnknown(values.map(sanitizeValue))
         }
 
         let analysis = ValueTracer().analyze(function, entry: entry)
-        let sites = analysis.callSites
-        let argumentsByAddress = sites.compactMapValues { sanitize($0.arguments) }
+        var sites = analysis.callSites
+        // A resolved unconditional branch outside this function is a tail call.
+        // Keep internal CFG branches out: they have no callee name.
+        for insn in function.instructions where insn.controlFlow == .branch {
+            if DisassembledFunction.calleeName(of: insn) != nil,
+               let site = analysis.branchSites[insn.address] {
+                sites[insn.address] = site
+            }
+        }
         // A property getter is often `ldr x0, [x20, #n]; ret` — no calls at all.
         // Bailing on `sites.isEmpty` alone would skip field naming for precisely
         // the functions it is most useful in.
-        guard !sites.isEmpty || !analysis.selfFieldAccesses.isEmpty else { return function }
+        guard !sites.isEmpty || !analysis.selfFieldAccesses.isEmpty || !analysis.exitValues.isEmpty
+        else { return function }
 
-        // Callee name per call address, for nesting result-of-call arguments.
+        // Callee name per call/tail-call address, for nesting result expressions.
         var calleeByAddress: [UInt64: String] = [:]
-        for insn in function.instructions where insn.controlFlow == .call {
+        for insn in function.instructions
+        where insn.controlFlow == .call || insn.controlFlow == .branch {
             calleeByAddress[insn.address] = DisassembledFunction.calleeName(of: insn)
+        }
+
+        /// A selector proven by either a modern per-selector message stub or an
+        /// old-style selref in x1. Stack values are never appended to a call
+        /// merely because they happen to exist: only a known variadic selector
+        /// makes those fresh stack stores part of the source argument list.
+        func selectorName(callee: String, arguments: [AbstractValue]) -> String? {
+            if callee.hasPrefix("objc_msgSend"), let marker = callee.firstIndex(of: "$") {
+                return String(callee[callee.index(after: marker)...])
+            }
+            guard callee == "objc_msgSend" || callee.hasPrefix("objc_msgSendSuper"),
+                  arguments.count > 1,
+                  case .loaded(let slot) = arguments[1]
+            else { return nil }
+            return resolver.selector(at: slot)
+        }
+
+        func isVariadicObjCSelector(_ selector: String) -> Bool {
+            DisassembledFunction.MessageSend.isVariadicSelector(selector)
+        }
+
+        var argumentsByAddress: [UInt64: [AbstractValue]] = [:]
+        for (address, site) in sites {
+            var values = site.arguments
+            if let callee = calleeByAddress[address],
+               selectorName(callee: callee, arguments: values).map(isVariadicObjCSelector) == true,
+               !site.stackArguments.isEmpty {
+                values += site.stackArguments
+            }
+            if let values = sanitize(values) { argumentsByAddress[address] = values }
         }
 
         func renderValue(_ value: AbstractValue, depth: Int) -> String {
@@ -1075,12 +1178,16 @@ public struct Disassembler: Sendable {
                     return "self[0x\(String(offset, radix: 16))]"
                 }
                 return fieldPath(name)
+            case .binary(let op, let lhs, let rhs):
+                guard depth < 8 else { return "?" }
+                return "(\(renderValue(lhs, depth: depth + 1)) \(op.symbol) \(renderValue(rhs, depth: depth + 1)))"
             case .callResult(let addr):
                 let inner = argumentsByAddress[addr] ?? []
-                guard depth < 4, let callee = calleeByAddress[addr] else { return "result" }
+                let unresolved = "/* unresolved call @ 0x\(String(addr, radix: 16)) */ ?"
+                guard depth < 4, let callee = calleeByAddress[addr] else { return unresolved }
                 // ARC/exclusivity calls return their argument — unwrap them.
                 if DisassembledFunction.isRuntimeNoise(callee) {
-                    return inner.first.map { renderValue($0, depth: depth + 1) } ?? "result"
+                    return inner.first.map { renderValue($0, depth: depth + 1) } ?? unresolved
                 }
                 let arguments: [String] = renderArguments(inner, depth: depth + 1)
                 if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {
@@ -1113,22 +1220,196 @@ public struct Disassembler: Sendable {
             renderArguments(values, depth: depth).joined(separator: ", ")
         }
 
+        func callExpression(callee: String, values: [AbstractValue], depth: Int = 0) -> String {
+            let arguments: [String] = renderArguments(values, depth: depth)
+            if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {
+                return send.rendered
+            }
+            return "\(DisassembledFunction.strippedCallee(callee))(\(arguments.joined(separator: ", ")))"
+        }
+
+        func fieldWrite(
+            _ access: SelfFieldAccess,
+            field: (names: [String], type: String?)
+        ) -> String {
+            if field.names.count > 1, let stored = access.storedValues,
+               stored.count >= field.names.count {
+                let values = stored.prefix(field.names.count).map(sanitizeValue)
+                if values.allSatisfy({ $0 != .unknown }) {
+                    let paths = field.names.map(fieldPath).joined(separator: ", ")
+                    let rendered = values.map { renderValue($0, depth: 0) }.joined(separator: ", ")
+                    return "(\(paths)) = (\(rendered))"
+                }
+            }
+            let name = field.names.count == 1
+                ? field.names[0] : "{\(field.names.joined(separator: ", "))}"
+            let path = fieldPath(name)
+            guard let rawValue = access.storedValue else { return "\(path) = …" }
+            let value = sanitizeValue(rawValue)
+            guard value != .unknown else { return "\(path) = …" }
+
+            // The canonical compiler shape for `_count += delta` is load/add/
+            // store. Preserve that source operator instead of spelling a noisy
+            // self-assignment.
+            if case .binary(let op, let lhs, let rhs) = value,
+               case .selfFieldValue(let offset) = lhs, offset == access.offset,
+               op == .add || op == .subtract {
+                return "\(path) \(op == .add ? "+=" : "-=") \(renderValue(rhs, depth: 0))"
+            }
+            if objcFieldSyntax, field.type == "B", case .immediate(let raw) = value, raw <= 1 {
+                return "\(path) = \(raw == 0 ? "NO" : "YES")"
+            }
+            return "\(path) = \(renderValue(value, depth: 0))"
+        }
+
+        /// Runtime helpers emitted as tail calls can express higher-level ivar
+        /// operations more accurately than their low-level ABI argument list.
+        func objcHelperStatement(callee: String, site: CallSite) -> String? {
+            let args = site.arguments
+            if callee.hasPrefix("objc_setProperty"), args.count >= 4,
+               case .immediate(let rawOffset) = args[3],
+               let offset = Int(exactly: rawOffset),
+               let name = fieldName(at: offset, bytes: 1) {
+                let value = renderValue(sanitizeValue(args[2]), depth: 0)
+                let copied = callee.contains("copy") ? "[\(value) copy]" : value
+                return "\(fieldPath(name)) = \(copied)"
+            }
+            if callee.hasPrefix("objc_storeStrong"), args.count >= 2,
+               case .selfField(let offset) = args[0],
+               case .immediate(0) = args[1],
+               let name = fieldName(at: offset, bytes: 1) {
+                return "\(fieldPath(name)) = nil"
+            }
+            return nil
+        }
+
+        let passthroughReturnHelpers = [
+            "objc_autoreleaseReturnValue", "objc_retainAutoreleaseReturnValue",
+            "objc_claimAutoreleasedReturnValue", "objc_retainAutoreleasedReturnValue",
+        ]
+
+        func renderReturnValue(_ rawValue: AbstractValue, before address: UInt64) -> String {
+            let value = sanitizeValue(rawValue)
+            // If this exact expression was just stored to a known ivar, return
+            // the ivar's new value. This turns load/add/store/mov/ret into the
+            // source-like `_count += delta; return _count` form.
+            let matchingStore = analysis.selfFieldAccesses
+                .filter { candidate, access in
+                    candidate < address && access.isWrite
+                        && access.storedValue.map(sanitizeValue) == value
+                }
+                .max(by: { $0.key < $1.key })?.value
+            if let matchingStore,
+               let name = fieldName(at: matchingStore.offset, bytes: matchingStore.bytes) {
+                return fieldPath(name)
+            }
+            return renderValue(value, depth: 0)
+        }
+
+        func collectCallResults(in value: AbstractValue, into consumed: inout Set<UInt64>) {
+            switch value {
+            case .callResult(let address):
+                consumed.insert(address)
+            case .binary(_, let lhs, let rhs):
+                collectCallResults(in: lhs, into: &consumed)
+                collectCallResults(in: rhs, into: &consumed)
+            default:
+                break
+            }
+        }
+
+        var consumedCallResults = Set<UInt64>()
+        for access in analysis.selfFieldAccesses.values {
+            if let value = access.storedValue {
+                collectCallResults(in: value, into: &consumedCallResults)
+            }
+            for value in access.storedValues ?? [] {
+                collectCallResults(in: value, into: &consumedCallResults)
+            }
+        }
+        for insn in function.instructions {
+            if let site = sites[insn.address],
+               DisassembledFunction.calleeName(of: insn)
+                .map({ !DisassembledFunction.isRuntimeNoise($0) }) ?? true {
+                for value in site.arguments {
+                    collectCallResults(in: value, into: &consumedCallResults)
+                }
+                for value in site.stackArguments {
+                    collectCallResults(in: value, into: &consumedCallResults)
+                }
+            }
+            guard function.objcMethod.map({ !$0.returnsVoid }) == true,
+                  let value = analysis.exitValues[insn.address]
+            else { continue }
+            if insn.controlFlow == .return {
+                collectCallResults(in: value, into: &consumedCallResults)
+            } else if insn.controlFlow == .branch,
+                      let callee = DisassembledFunction.calleeName(of: insn),
+                      passthroughReturnHelpers.contains(where: callee.hasPrefix)
+                        || !DisassembledFunction.isRuntimeNoise(callee) {
+                collectCallResults(in: value, into: &consumedCallResults)
+            }
+        }
+
         let instructions = function.instructions.map { insn -> Instruction in
+            var sourceNotes: [String] = []
+            var sourceType = insn.sourceType
+
             // A `self` field access: the differentiator. `ldp x19, x20, [x20,
             // #0x20]` inside Dog.breed.getter is a 16-byte read of self.breed.
             if let access = analysis.selfFieldAccesses[insn.address] {
-                guard let name = fieldName(at: access.offset, bytes: access.bytes) else { return insn }
-                let note = access.isAddressOf
-                    ? "&\(fieldPath(name))"
-                    : (access.isWrite ? "\(fieldPath(name)) = …" : fieldPath(name))
-                let merged = [insn.annotation, note].compactMap { $0 }.joined(separator: "  ")
+                if let field = fieldInfo(at: access.offset, bytes: access.bytes) {
+                    sourceType = field.type
+                    let name = field.names.count == 1
+                        ? field.names[0] : "{\(field.names.joined(separator: ", "))}"
+                    sourceNotes.append(access.isAddressOf
+                        ? "&\(fieldPath(name))"
+                        : (access.isWrite
+                            ? fieldWrite(access, field: field)
+                            : fieldPath(name)))
+                }
+            }
+
+            let callee = DisassembledFunction.calleeName(of: insn)
+            let isObjCNonVoid = function.objcMethod.map { !$0.returnsVoid } == true
+            if isObjCNonVoid, let rawExit = analysis.exitValues[insn.address] {
+                let exit = sanitizeValue(rawExit)
+                if insn.controlFlow == .return, exit != .unknown {
+                    sourceNotes.append("return \(renderReturnValue(exit, before: insn.address))")
+                } else if insn.controlFlow == .branch, let callee {
+                    if passthroughReturnHelpers.contains(where: callee.hasPrefix), exit != .unknown {
+                        sourceNotes.append("return \(renderReturnValue(exit, before: insn.address))")
+                    } else if !DisassembledFunction.isRuntimeNoise(callee),
+                              let values = argumentsByAddress[insn.address] {
+                        sourceNotes.append("return \(callExpression(callee: callee, values: values))")
+                    }
+                }
+            }
+
+            if insn.controlFlow == .branch, let callee,
+               let site = sites[insn.address],
+               let helper = objcHelperStatement(callee: callee, site: site) {
+                sourceNotes.append(helper)
+            }
+
+            if function.objcMethod?.isInitializer == true,
+               insn.controlFlow == .call,
+               let callee, callee.hasPrefix("objc_msgSendSuper"),
+               let values = argumentsByAddress[insn.address] {
+                sourceNotes.append("self = \(callExpression(callee: callee, values: values))")
+            }
+
+            guard let site = sites[insn.address] else {
+                guard !sourceNotes.isEmpty || consumedCallResults.contains(insn.address) else { return insn }
+                let merged = ([insn.annotation] + sourceNotes).compactMap { $0 }.joined(separator: "  ")
                 return Instruction(
                     address: insn.address, text: insn.text, annotation: merged,
                     controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
-                    callArguments: insn.callArguments, callSelf: insn.callSelf, detail: insn.detail
+                    callArguments: insn.callArguments, callSelf: insn.callSelf,
+                    resultConsumed: consumedCallResults.contains(insn.address),
+                    sourceType: sourceType, detail: insn.detail
                 )
             }
-            guard insn.controlFlow == .call, let site = sites[insn.address] else { return insn }
 
             // x20 is `self` only under the Swift calling convention; for any
             // other callee it's a callee-saved register the caller happens to be
@@ -1143,9 +1424,11 @@ public struct Disassembler: Sendable {
             let rendered: [String] = (argumentsByAddress[insn.address]).map {
                 renderArguments($0, depth: 0)
             } ?? []
-            guard !rendered.isEmpty || selfText != nil else { return insn }
+            guard !rendered.isEmpty || selfText != nil || !sourceNotes.isEmpty
+                    || consumedCallResults.contains(insn.address)
+            else { return insn }
 
-            var notes: [String] = []
+            var notes = sourceNotes
             if let selfText { notes.append("self=\(selfText)") }
             if !rendered.isEmpty { notes.append("args(" + rendered.joined(separator: ", ") + ")") }
             let merged = ([insn.annotation] + notes).compactMap { $0 }.joined(separator: "  ")
@@ -1153,7 +1436,8 @@ public struct Disassembler: Sendable {
                 address: insn.address, text: insn.text, annotation: merged,
                 controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
                 callArguments: rendered.isEmpty ? nil : rendered,
-                callSelf: selfText, detail: insn.detail
+                callSelf: selfText, resultConsumed: consumedCallResults.contains(insn.address),
+                sourceType: sourceType, detail: insn.detail
             )
         }
         return DisassembledFunction(

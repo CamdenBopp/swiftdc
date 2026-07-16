@@ -46,7 +46,7 @@ struct ObjCCommand: AsyncParsableCommand {
     @Option(name: [.short, .long], help: "Write output to a file instead of stdout.")
     var output: String?
 
-    @Flag(name: .long, help: "Emit structured JSON (array of ObjC header blocks).")
+    @Flag(name: .long, help: "Emit structured JSON (headers array, or {headers,methods} when bodies are requested).")
     var json = false
 
     @Flag(name: .long, help: "Also recover Objective-C IMP method bodies, named from runtime metadata.")
@@ -54,6 +54,9 @@ struct ObjCCommand: AsyncParsableCommand {
 
     @Flag(name: .long, help: "With --methods, render recovered call/message pseudocode instead of annotated assembly.")
     var pseudo = false
+
+    @Flag(name: .long, help: "Like --pseudo, but fold recovered Objective-C bodies into structured if/else/while control flow.")
+    var structured = false
 
     @Option(name: [.short, .long], help: "Only include Objective-C methods whose owner, selector, or signature contains this string. Implies --methods.")
     var function: String?
@@ -69,7 +72,7 @@ struct ObjCCommand: AsyncParsableCommand {
             binary: binary
         )
         let blocks = ObjCDumper().blocks(machO)
-        let includeMethods = methods || pseudo || function != nil
+        let includeMethods = methods || pseudo || structured || function != nil
         guard includeMethods else {
             if json {
                 try emit(jsonStrings(blocks), to: output)
@@ -88,7 +91,10 @@ struct ObjCCommand: AsyncParsableCommand {
         } else {
             var sections: [String] = []
             if !blocks.isEmpty { sections.append(blocks.joined(separator: "\n\n")) }
-            let body = implementations.map { pseudo ? $0.renderPseudo() : $0.render() }
+            let body = implementations.map {
+                if structured { return $0.renderStructured() }
+                return pseudo ? $0.renderPseudo() : $0.render()
+            }
                 .joined(separator: "\n\n")
             if !body.isEmpty {
                 sections.append("// OBJECTIVE-C METHOD IMPLEMENTATIONS\n\n" + body)

@@ -14,7 +14,16 @@
 
 - (instancetype)initWithName:(NSString *)name count:(NSInteger)count;
 - (NSInteger)incrementBy:(NSInteger)delta;
+- (NSInteger)incrementIfEnabled:(NSInteger)delta;
+- (NSInteger)incrementIfPositive:(NSInteger)delta;
 - (NSString *)greetingWithPrefix:(NSString *)prefix;
+- (NSInteger)seventhValueA:(NSInteger)a
+                         b:(NSInteger)b
+                         c:(NSInteger)c
+                         d:(NSInteger)d
+                         e:(NSInteger)e
+                         f:(NSInteger)f
+                         g:(NSInteger)g;
 
 @end
 
@@ -35,8 +44,33 @@
     return _count;
 }
 
+- (NSInteger)incrementIfEnabled:(NSInteger)delta {
+    if (!_enabled) {
+        return _count;
+    }
+    _count += delta;
+    return _count;
+}
+
+- (NSInteger)incrementIfPositive:(NSInteger)delta {
+    if (delta > 0) {
+        _count += delta;
+    }
+    return _count;
+}
+
 - (NSString *)greetingWithPrefix:(NSString *)prefix {
     return [prefix stringByAppendingString:_name];
+}
+
+- (NSInteger)seventhValueA:(NSInteger)a
+                         b:(NSInteger)b
+                         c:(NSInteger)c
+                         d:(NSInteger)d
+                         e:(NSInteger)e
+                         f:(NSInteger)f
+                         g:(NSInteger)g {
+    return g;
 }
 
 @end

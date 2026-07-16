@@ -62,8 +62,9 @@ import Testing
     #expect(method.objcMethod?.signature == "- (long long)incrementBy:(long long)arg0;")
     let notes = method.instructions.compactMap(\.annotation)
     #expect(notes.contains("self->_count"))
-    #expect(notes.contains("self->_count = …"))
-    #expect(method.renderPseudo().contains("self->_count = …"))
+    #expect(notes.contains("self->_count += arg0"))
+    #expect(method.renderPseudo().contains("self->_count += arg0"))
+    #expect(method.renderPseudo().contains("return self->_count"))
 }
 
 /// ObjC metadata proves x0=self and x2=arg0 at entry. Both values should flow
@@ -80,7 +81,7 @@ import Testing
     guard let method = functions.first(where: { $0.objcMethod?.selector == "greetingWithPrefix:" }) else {
         return
     }
-    #expect(method.renderPseudo().contains("[arg0 stringByAppendingString:self->_name]"))
+    #expect(method.renderPseudo().contains("return [arg0 stringByAppendingString:self->_name]"))
 }
 
 @Test func preservesObjCCategoryOwnership() async throws {
@@ -98,5 +99,76 @@ import Testing
     #expect(method.objcMethod?.className == "NSString")
     #expect(method.objcMethod?.categoryName == "SDSampleExtras")
     #expect(method.displayName == "-[NSString(SDSampleExtras) sd_stringByAddingBang]")
-    #expect(method.renderPseudo().contains("[self stringByAppendingString:@\"!\"]"))
+    #expect(method.renderPseudo().contains("return [self stringByAppendingString:@\"!\"]"))
+}
+
+/// Stage 2 retains values through arithmetic, runtime property helpers, subword
+/// ivar accesses, initializer super-calls, and return registers.
+@Test func recoversSourceLikeObjCStatements() async throws {
+    let path = "Fixtures/Sample/libSample.stripped.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .simplified).disassemble(
+            path: path,
+            functionFilter: "SDObjCCounter"
+        )
+    }
+
+    func pseudo(_ selector: String) -> String {
+        functions.first(where: { $0.objcMethod?.selector == selector })?.renderPseudo() ?? ""
+    }
+
+    let initializer = pseudo("initWithName:count:")
+    #expect(initializer.contains("self = [super init]"))
+    #expect(initializer.contains("self->_name = [arg0 copy]"))
+    #expect(initializer.contains("self->_count = arg1"))
+    #expect(initializer.contains("self->_enabled = YES"))
+    #expect(initializer.contains("return self"))
+    let structuredInitializer = functions
+        .first(where: { $0.objcMethod?.selector == "initWithName:count:" })?
+        .renderStructured() ?? ""
+    #expect(structuredInitializer.contains("if (self != 0)"))
+    #expect(!structuredInitializer.contains("if (sp"))
+    #expect(pseudo("name").contains("return self->_name"))
+    #expect(pseudo("setName:").contains("self->_name = [arg0 copy]"))
+    #expect(pseudo("isEnabled").contains("return self->_enabled"))
+    #expect(pseudo("setEnabled:").contains("self->_enabled = arg0"))
+    #expect(pseudo(".cxx_destruct").contains("self->_name = nil"))
+    #expect(pseudo("formattedCount").contains(
+        "return [NSString stringWithFormat:@\"%ld\", self->_count]"
+    ))
+    #expect(pseudo("seventhValueA:b:c:d:e:f:g:").contains("return arg6"))
+
+    let json = functions.jsonString()
+    #expect(json.contains("\"statement\" : \"return self->_name\""))
+}
+
+@Test func structuresObjCControlFlowWithSourceNames() async throws {
+    let path = "Fixtures/Sample/libSample.stripped.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .simplified).disassemble(
+            path: path,
+            functionFilter: "incrementIfEnabled"
+        )
+    }
+    guard let method = functions.first(where: { $0.objcMethod?.selector == "incrementIfEnabled:" })
+    else { return }
+    let structured = method.renderStructured()
+    #expect(structured.contains("if (self->_enabled)"))
+    #expect(structured.contains("self->_count += arg0"))
+    #expect(structured.contains("return self->_count"))
+
+    let argumentFunctions = try await withStableDependencies {
+        try await Disassembler(preset: .simplified).disassemble(
+            path: path,
+            functionFilter: "incrementIfPositive"
+        )
+    }
+    guard let argumentMethod = argumentFunctions.first(where: {
+        $0.objcMethod?.selector == "incrementIfPositive:"
+    }) else { return }
+    let argumentStructured = argumentMethod.renderStructured()
+    #expect(argumentStructured.contains("arg0"))
+    #expect(!argumentStructured.contains("x2"))
 }

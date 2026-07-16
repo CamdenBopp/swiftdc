@@ -92,6 +92,12 @@ func withStableDependencies<R>(
         DisassembledFunction.MessageSend(callee: "objc_msgSend$a:b:", arguments: [])?
             .rendered == "[? a:? b:?]"
     )
+    #expect(
+        DisassembledFunction.MessageSend(
+            callee: "objc_msgSend$stringWithFormat:",
+            arguments: ["NSString", "?", "@\"%ld\"", "self->_count"]
+        )?.rendered == "[NSString stringWithFormat:@\"%ld\", self->_count]"
+    )
     // Not a message send.
     #expect(DisassembledFunction.MessageSend(callee: "swift_allocObject", arguments: ["x"]) == nil)
     // objc_msgSend with no recoverable selector: don't invent bracket syntax.
@@ -147,6 +153,59 @@ private func assembledFunction(
     // x20 was written by the `ldr` immediately before the call, so it counts as
     // this call's `self`.
     #expect(site.selfValue == .immediate(42))
+}
+
+/// Values placed in the AAPCS64 outgoing stack area are retained separately
+/// from x0...x7. Objective-C variadic message sends use this path even when
+/// their fixed receiver, selector, and format arguments all fit in registers.
+@Test func tracksOutgoingStackArguments() throws {
+    //   sub  sp, sp, #0x20
+    //   mov  x9, #0x2a
+    //   str  x9, [sp]
+    //   bl   L
+    // L: ret
+    let function = try #require(assembledFunction([
+        0xff, 0x83, 0x00, 0xd1,
+        0x49, 0x05, 0x80, 0xd2,
+        0xe9, 0x03, 0x00, 0xf9,
+        0x01, 0x00, 0x00, 0x94,
+        0xc0, 0x03, 0x5f, 0xd6,
+    ]))
+    let site = try #require(ValueTracer().callSites(in: function)[0x100c])
+    #expect(site.stackArguments == [.immediate(42)])
+}
+
+/// Pair operations retain both halves: optimized Objective-C initializers use
+/// `ldp` for entry-stack arguments and `stp` for adjacent ivar assignments.
+@Test func tracksPairedObjectiveCValues() throws {
+    //   ldp x9, x10, [sp]
+    //   mov x0, x9
+    //   mov x1, x10
+    //   bl  L
+    // L: ret
+    let loads = try #require(assembledFunction([
+        0xe9, 0x2b, 0x40, 0xa9,
+        0xe0, 0x03, 0x09, 0xaa,
+        0xe1, 0x03, 0x0a, 0xaa,
+        0x01, 0x00, 0x00, 0x94,
+        0xc0, 0x03, 0x5f, 0xd6,
+    ]))
+    let loadSite = try #require(ValueTracer().analyze(
+        loads, entry: .objectiveC(argumentCount: 8)
+    ).callSites[0x100c])
+    #expect(loadSite.arguments.prefix(2).elementsEqual([.argument(6), .argument(7)]))
+
+    // stp x2, x3, [x0, #8] ; ret
+    let stores = try #require(assembledFunction([
+        0x02, 0x8c, 0x00, 0xa9,
+        0xc0, 0x03, 0x5f, 0xd6,
+    ]))
+    let access = try #require(ValueTracer().analyze(
+        stores, entry: .objectiveC(argumentCount: 2)
+    ).selfFieldAccesses[0x1000])
+    #expect(access.offset == 8)
+    #expect(access.bytes == 16)
+    #expect(access.storedValues == [.argument(0), .argument(1)])
 }
 
 /// x20 is callee-saved, so a value set up for one call survives into the next.
