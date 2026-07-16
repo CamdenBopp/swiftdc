@@ -143,6 +143,23 @@ import Testing
         "return [[self alloc] initWithA:arg0 b:arg1 c:arg2 d:arg3 e:arg4 f:arg5 g:arg6]"
     ))
 
+    // ARC runtime helpers are exact lowerings of a source send, so rendering
+    // each one back composes into the original expression.
+    //
+    // The composed form is the load-bearing case, and the lowering is the
+    // reverse of what it looks like: `[self alloc]` (a Class receiver, as in
+    // +counterWithA: above) lowers to a bare objc_alloc(self), while
+    // `[[self class] alloc]` (an INSTANCE receiver) lowers to
+    // objc_alloc(objc_opt_class(self)). Collapsing the composed form to
+    // `[self alloc]` therefore drops a real `class` call — and on an instance
+    // receiver prints something that is not valid ObjC at all, since `alloc` is
+    // a class method. These three methods are instance methods for that reason;
+    // a class-method fixture cannot reach this path.
+    #expect(pseudo("sd_bareClassAlloc").contains("return [[self class] alloc]"))
+    #expect(!pseudo("sd_bareClassAlloc").contains("return [self alloc]"))
+    #expect(pseudo("sd_classAllocInit").contains("return [[[self class] alloc] init]"))
+    #expect(pseudo("sd_isSameKindAs:").contains("[arg0 isKindOfClass:[self class]]"))
+
     let json = functions.jsonString()
     #expect(json.contains("\"statement\" : \"return self->_name\""))
 }

@@ -102,7 +102,9 @@ full optimizing-decompiler replacement. See
   what lets a receiver stored and reloaded across a branch resolve instead of
   reading `?`.
 - **Cross-references** (`swiftdc xrefs`) — callers and callees of a function,
-  over a call graph built from resolved direct-branch targets.
+  over a call graph built from resolved branch targets. Concrete indirect calls
+  through witness/vtable/GOT slots are included when register data flow plus
+  Mach-O fixups prove the function pointer.
 - **Structured control flow** (`disasm --structured`, `objc --structured`) —
   folds recovered calls, stores, and returns into `if`/`else`/`while` using
   post-dominators over the CFG. Conditions are
@@ -415,11 +417,12 @@ swift test
   3. The two rebase resolvers disagree: `FullDyldCache.resolveRebase` returns a
      target **VM address**, `MachOFile.resolveRebase` an **image-relative
      offset**.
-- **Call graph edges are direct calls only.** Indirect dispatch (`blr` through a
-  vtable, witness table, or block pointer) has no static target, so `xrefs`
-  reports the unresolved count rather than implying completeness — and
-  `--unreferenced` is not a dead-code proof, since entry points, exports, and
-  indirectly-called functions all look unreferenced.
+- **Call graph edges require a provable target.** Direct calls are included, as
+  are indirect `blr` calls whose register value traces to a concrete
+  witness/vtable/GOT pointer slot and whose rebased target is a known function.
+  Generic witness tables, unknown receiver vtables, and block pointers remain
+  unresolved, so `xrefs` reports their count — and `--unreferenced` is not a
+  dead-code proof.
 - **`self` is reported conservatively.** x20 is only read as `self` for a
   Swift-mangled callee, and only when written since the previous call. A Swift
   method whose self isn't pointer-shaped (`Double.write(to:)`, whose self is a

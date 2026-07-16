@@ -148,6 +148,11 @@ public struct SelfFieldAccess: Sendable, Equatable {
 /// Everything one pass over a function recovers.
 public struct FunctionAnalysis: Sendable {
     public var callSites: [UInt64: CallSite] = [:]
+    /// Register-derived call/tail-call targets at indirect control-flow sites.
+    /// A value such as `.loaded(slot)` is still only an address provenance fact;
+    /// the Mach-O enrichment pass decides whether that slot provably contains a
+    /// known function pointer before publishing a target name or graph edge.
+    public var indirectControlFlowTargets: [UInt64: AbstractValue] = [:]
     /// Unconditional branches with a register snapshot. Once symbolization
     /// proves that the target is outside the function, these become tail calls.
     public var branchSites: [UInt64: CallSite] = [:]
@@ -273,6 +278,12 @@ public struct ValueTracer: Sendable {
         for block in blocks {
             var registers = inState[block.startAddress] ?? [:]
             for insn in block.instructions {
+                if insn.branchTarget == nil,
+                   insn.controlFlow == .call || insn.controlFlow == .branch,
+                   let target = Self.indirectTarget(of: insn, in: registers),
+                   target != .unknown {
+                    result.indirectControlFlowTargets[insn.address] = target
+                }
                 if insn.controlFlow == .return || insn.controlFlow == .branch,
                    let value = registers["x0"], value != .unknown {
                     result.exitValues[insn.address] = value
@@ -290,6 +301,16 @@ public struct ValueTracer: Sendable {
             }
         }
         return result
+    }
+
+    /// The abstract value in the register an indirect `blr`/`br`/pointer-auth
+    /// variant branches through. Direct branches have an immediate operand and
+    /// therefore return nil here.
+    private static func indirectTarget(of insn: Instruction, in registers: State) -> AbstractValue? {
+        guard let register = insn.detail?.operands.first?.operand.register,
+              register.kind != .zero
+        else { return nil }
+        return registers[register.key] ?? .unknown
     }
 
     /// Call sites only — the common case.

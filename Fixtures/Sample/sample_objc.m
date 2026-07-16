@@ -39,9 +39,31 @@
                          f:(NSInteger)f
                          g:(NSInteger)g;
 
+// Instance receivers. `[self alloc]` is only valid where self is a Class, so
+// these lower through objc_opt_class — the composed form that a class-method
+// fixture cannot exercise.
+- (id)sd_bareClassAlloc;
+- (id)sd_classAllocInit;
+- (BOOL)sd_isSameKindAs:(id)other;
+
 @end
 
 @implementation SDObjCCounter
+
+// [[self class] alloc] -> objc_alloc(objc_opt_class(self)). Rendering this as
+// `[self alloc]` drops the `class` call, and on an instance receiver `alloc` is
+// not even a valid message.
+- (id)sd_bareClassAlloc {
+    return [[self class] alloc];
+}
+
+- (id)sd_classAllocInit {
+    return [[[self class] alloc] init];
+}
+
+- (BOOL)sd_isSameKindAs:(id)other {
+    return [other isKindOfClass:[self class]];
+}
 
 + (instancetype)counterWithA:(NSInteger)a
                             b:(NSInteger)b

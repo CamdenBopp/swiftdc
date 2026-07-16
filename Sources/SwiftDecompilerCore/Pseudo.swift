@@ -53,10 +53,53 @@ public extension DisassembledFunction {
         if hideRuntime, isRuntimeNoise(callee) { return nil }
         let arguments = insn.callArguments ?? []
         if let send = MessageSend(callee: callee, arguments: arguments) { return send.rendered }
+        if let idiom = objcRuntimeIdiom(callee: callee, arguments: arguments) { return idiom }
         // A Swift method's receiver arrives in x20, not x0, so show it as an
         // explicit `self:` rather than letting it vanish from the call.
         let parts = insn.callSelf.map { ["self: \($0)"] + arguments } ?? arguments
         return "\(strippedCallee(callee))(\(parts.joined(separator: ", ")))"
+    }
+
+    /// ARC runtime helpers that are exact lowerings of a source message send,
+    /// rendered back as that send.
+    ///
+    /// Each is a *faithful* rewrite — helper and bracket form denote the same
+    /// call — so composing them reproduces the source rather than approximating
+    /// it: `objc_alloc(objc_opt_class(self))` becomes `[[self class] alloc]`,
+    /// which is exactly what was written.
+    ///
+    /// That composition is the reason the inner call is rendered rather than
+    /// re-attributed. The lowering is the reverse of what it looks like,
+    /// measured against clang:
+    ///
+    ///     [self alloc]           (self is a Class)     -> objc_alloc(self)
+    ///     [[self class] alloc]   (self is an instance)  -> objc_alloc(objc_opt_class(self))
+    ///
+    /// so collapsing the composed form to `[self alloc]` drops the `class` call —
+    /// and on an instance receiver prints something that is not valid ObjC at
+    /// all, since `alloc` is a class method.
+    ///
+    /// Operands are rendered, never dropped: `objc_alloc()` would claim the call
+    /// takes no argument, which is false. The send is proven by the callee; only
+    /// its receiver is unknown, so that is what `?` says.
+    static func objcRuntimeIdiom(callee: String, arguments: [String]) -> String? {
+        func operand(_ index: Int) -> String {
+            index < arguments.count ? arguments[index] : "?"
+        }
+        switch callee {
+        case "objc_opt_class":     return "[\(operand(0)) class]"
+        case "objc_opt_self":      return operand(0)
+        case "objc_alloc":         return "[\(operand(0)) alloc]"
+        case "objc_allocWithZone": return "[\(operand(0)) allocWithZone:nil]"
+        case "objc_alloc_init",
+             "objc_opt_new":       return "[[\(operand(0)) alloc] init]"
+        case "objc_opt_isKindOfClass":
+            return "[\(operand(0)) isKindOfClass:\(operand(1))]"
+        case "objc_opt_respondsToSelector":
+            return "[\(operand(0)) respondsToSelector:\(operand(1))]"
+        default:
+            return nil
+        }
     }
 
     /// An Objective-C message send recovered from a call, in either dispatch

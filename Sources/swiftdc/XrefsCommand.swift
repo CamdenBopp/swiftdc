@@ -7,14 +7,14 @@ struct XrefsCommand: AsyncParsableCommand {
         commandName: "xrefs",
         abstract: "Show who calls a function, and what it calls.",
         discussion: """
-        Builds a call graph from resolved direct-branch targets across the whole \
+        Builds a call graph from resolved branch targets across the whole \
         image, so unlike `disasm --function` it must disassemble everything — \
         expect it to be slow on a large binary.
 
-        Indirect dispatch (a `blr` through a vtable, witness table, or block \
-        pointer) has no statically known target, so those calls are not edges. \
-        The unresolved count is reported alongside the results rather than \
-        pretending the graph is complete.
+        A `blr` through a concrete vtable/witness-table or GOT slot is included \
+        when data flow and Mach-O fixups prove its function target. Generic \
+        witness tables, unknown receivers, and block pointers remain unresolved; \
+        their count is reported rather than pretending the graph is complete.
         """
     )
 
@@ -39,7 +39,7 @@ struct XrefsCommand: AsyncParsableCommand {
     @Option(name: [.short, .long], help: "Function to cross-reference: matches any function whose name (raw or demangled) contains this string.")
     var function: String?
 
-    @Flag(name: .long, help: "List functions no other function in this image statically calls.")
+    @Flag(name: .long, help: "List functions with no resolved caller in this image.")
     var unreferenced = false
 
     @Option(name: .long, help: "Demangle preset: default, simplified, interface.")
@@ -88,9 +88,9 @@ struct XrefsCommand: AsyncParsableCommand {
         var lines = addresses.map { "\(hex($0))  \(graph.name(of: $0))" }
         lines.append("")
         lines.append("""
-        \(addresses.count) of \(graph.functionAddresses.count) functions have no static \
-        caller in this image — entry points, exported symbols, and anything reached by \
-        indirect dispatch look the same as dead code here.
+        \(addresses.count) of \(graph.functionAddresses.count) functions have no resolved \
+        caller in this image — entry points, exported symbols, and anything reached only \
+        by unresolved indirect dispatch look the same as dead code here.
         """)
         return lines.joined(separator: "\n")
     }
@@ -124,7 +124,7 @@ struct XrefsCommand: AsyncParsableCommand {
 
             lines.append("  callers (\(callers.count)):")
             if callers.isEmpty {
-                lines.append("    <none — an entry point, an export, or called indirectly>")
+                lines.append("    <none — an entry point, an export, or called only through unresolved dispatch>")
             }
             for edge in callers {
                 lines.append("    \(hex(edge.site))  \(graph.name(of: edge.caller))")
@@ -142,8 +142,8 @@ struct XrefsCommand: AsyncParsableCommand {
 
         if graph.unresolvedCallSites > 0 {
             blocks.append("""
-            // \(graph.unresolvedCallSites) call sites in this image dispatch \
-            indirectly and have no static target, so they are absent from the graph.
+            // \(graph.unresolvedCallSites) call sites in this image still dispatch \
+            indirectly without a provable target, so they are absent from the graph.
             """)
         }
         return blocks.joined(separator: "\n\n")

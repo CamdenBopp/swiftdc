@@ -204,6 +204,44 @@ private func assembledFunction(
     #expect(site.selfValue == .immediate(42))
 }
 
+/// The value tracer preserves the provenance of a register-indirect call target
+/// without claiming that the loaded slot is executable. Mach-O enrichment makes
+/// that second, stricter determination from fixups and the function index.
+@Test func tracksIndirectCallTargetProvenance() throws {
+    let x8 = PhysReg(kind: .gpr, number: 8, widthBits: 64)
+    let x23 = PhysReg(kind: .gpr, number: 23, widthBits: 64)
+    let function = DisassembledFunction(
+        symbol: "_$stest", demangledName: "test", startAddress: 0x1000,
+        instructions: [
+            Instruction(
+                address: 0x1000, text: "adrp x23, 0x8000",
+                detail: detail(ARM64_INS_ADRP, [operand(.register(x23)), operand(.immediate(0x8000))])
+            ),
+            Instruction(
+                address: 0x1004, text: "add x23, x23, #0xc0",
+                detail: detail(ARM64_INS_ADD, [
+                    operand(.register(x23)), operand(.register(x23)), operand(.immediate(0xc0)),
+                ])
+            ),
+            Instruction(
+                address: 0x1008, text: "ldr x8, [x23, #8]",
+                detail: detail(ARM64_INS_LDR, [
+                    operand(.register(x8)),
+                    operand(.memory(base: x23, index: nil, displacement: 8)),
+                ])
+            ),
+            Instruction(
+                address: 0x100c, text: "blr x8", controlFlow: .call,
+                detail: detail(ARM64_INS_BLR, [operand(.register(x8))])
+            ),
+        ],
+        source: .symbol
+    )
+
+    let analysis = ValueTracer().analyze(function)
+    #expect(analysis.indirectControlFlowTargets[0x100c] == .loaded(0x80c8))
+}
+
 /// Values placed in the AAPCS64 outgoing stack area are retained separately
 /// from x0...x7. Objective-C variadic message sends use this path even when
 /// their fixed receiver, selector, and format arguments all fit in registers.
@@ -547,6 +585,33 @@ private func assembledFunction(
     #expect(argLists.contains { $0.count == 3 && $0.last == "7" })
 }
 
+/// Concrete protocol existential values carry concrete witness-table pointers.
+/// Their `ldr slot; blr register` calls should become named graph edges, while
+/// generic/unknown table dispatch remains unresolved.
+@Test func resolvesConcreteWitnessTableDispatchIfPresent() async throws {
+    let path = "Fixtures/Sample/sample.release"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .simplified).disassemble(path: path)
+    }
+    let run = try #require(functions.first { $0.demangledName == "run()" })
+    let indirectCalls = run.instructions.filter {
+        $0.controlFlow == .call && $0.text.hasPrefix("blr")
+    }
+    #expect(indirectCalls.count >= 3)
+    #expect(indirectCalls.allSatisfy { $0.branchTarget != nil })
+    #expect(indirectCalls.allSatisfy {
+        let annotation = $0.annotation ?? ""
+        return annotation.hasPrefix("→ ")
+            && (annotation.contains("Circle") || annotation.contains("Rectangle"))
+    })
+
+    let graph = CallGraph(functions: functions)
+    for call in indirectCalls {
+        #expect(graph.edges.contains { $0.site == call.address && $0.callee == call.branchTarget })
+    }
+}
+
 /// The pseudo view renders recovered call statements and hides ARC noise.
 @Test func rendersPseudocodeIfPresent() async throws {
     let path = "Fixtures/Sample/sample.release"
@@ -692,4 +757,34 @@ private func assembledFunction(
         await Disassembler(preset: .simplified).disassemble(machO: machO, functionFilter: "NoSuchFunctionZZZ")
     }
     #expect(none.isEmpty)
+}
+
+/// ARC runtime helpers are exact lowerings of a source send, so each renders
+/// back as that send — and composing them reproduces the original expression.
+@Test func rendersObjCRuntimeIdioms() {
+    func idiom(_ callee: String, _ arguments: [String]) -> String? {
+        DisassembledFunction.objcRuntimeIdiom(callee: callee, arguments: arguments)
+    }
+    #expect(idiom("objc_alloc", ["NSString"]) == "[NSString alloc]")
+    #expect(idiom("objc_opt_class", ["self"]) == "[self class]")
+    #expect(idiom("objc_alloc_init", ["Foo"]) == "[[Foo alloc] init]")
+    #expect(idiom("objc_opt_new", ["Foo"]) == "[[Foo alloc] init]")
+    #expect(idiom("objc_opt_isKindOfClass", ["x", "[NSNumber class]"]) == "[x isKindOfClass:[NSNumber class]]")
+
+    // The composed form. `objc_alloc(objc_opt_class(x))` is `[[x class] alloc]`
+    // — NOT `[x alloc]`. The lowering is the reverse of what it looks like:
+    // `[self alloc]` (a Class receiver) emits a bare objc_alloc(self), while
+    // `[[self class] alloc]` (an instance receiver) is what routes through
+    // objc_opt_class. Collapsing it drops a real call, and on an instance
+    // receiver prints invalid ObjC — `alloc` is a class method.
+    #expect(idiom("objc_alloc", [idiom("objc_opt_class", ["self"])!]) == "[[self class] alloc]")
+
+    // An unrecovered operand renders `?`, never a shorter argument list:
+    // `objc_alloc()` would claim the call takes no argument, which is false.
+    #expect(idiom("objc_alloc", []) == "[? alloc]")
+    #expect(idiom("objc_opt_isKindOfClass", ["x"]) == "[x isKindOfClass:?]")
+
+    // Not a runtime idiom.
+    #expect(idiom("objc_msgSend", ["a", "b"]) == nil)
+    #expect(idiom("swift_allocObject", ["t"]) == nil)
 }

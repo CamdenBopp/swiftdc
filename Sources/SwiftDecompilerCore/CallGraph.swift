@@ -12,11 +12,11 @@ public struct CallEdge: Sendable, Hashable {
 
 /// Caller/callee relationships across a set of disassembled functions.
 ///
-/// Built from resolved direct-branch targets only. Indirect dispatch — a
-/// `blr` through a vtable, witness table, or block pointer — has no static
-/// target, so those edges are genuinely absent rather than merely unrecovered;
-/// `unresolvedCallSites` counts them so callers can say so instead of implying
-/// the graph is complete.
+/// Built from resolved branch targets. This includes direct calls and indirect
+/// calls whose function pointer was proven from a concrete Mach-O slot (for
+/// example a known witness table). Truly dynamic vtable, generic witness-table,
+/// and block dispatch remains absent; `unresolvedCallSites` counts those sites
+/// so callers can say so instead of implying the graph is complete.
 public struct CallGraph: Sendable {
     /// Address → display name. Covers functions in this image plus stub/import
     /// targets that appear only as callees.
