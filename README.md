@@ -55,6 +55,10 @@ SwiftDump, plus annotated assembly), not a full control-flow decompiler. See
   discrete, partly-named functions instead of one blob.
 - **Combined report** — declarations followed by disassembly grouped by the
   owning type.
+- **Device app inventory** (`swiftdc devices`, `swiftdc apps`) — enumerate apps
+  installed on an attached iPhone/iPad and report which are FairPlay-encrypted,
+  so you know up front which binaries are analyzable. Speaks usbmux → lockdown →
+  installation_proxy natively; **no root, no libimobiledevice, no Python**.
 
 ## Requirements
 
@@ -63,6 +67,8 @@ SwiftDump, plus annotated assembly), not a full control-flow decompiler. See
   `swift-demangle`)
 - **Capstone** for structured decoding / CFG: `brew install capstone`
   (linked via its pkg-config file)
+- **OpenSSL** for the device commands: `brew install openssl@3` (also via
+  pkg-config). Only needed for `devices` / `apps`.
 
 ## Build
 
@@ -137,6 +143,29 @@ swiftdc analyze /path/to/Binary --json        # { declarations:[…], functions:
 Demangle presets: `default` (fully-qualified, `sample.Point`), `simplified`
 (drops module/standard-library prefixes), `interface` (interface-style names).
 
+### Physical devices
+
+```bash
+# Attached devices
+swiftdc devices                       # 00008120-…  USB  iPhone (iPhone15,3, iOS 27.0)
+
+# Installed apps + FairPlay status. `ENC` = encrypted, `·` = plaintext.
+swiftdc apps                          # user apps (default)
+swiftdc apps --type system            # or: user, system, internal, any
+swiftdc apps --encrypted-only
+swiftdc apps --udid 00008120-…        # required only with >1 device attached
+swiftdc apps --json                   # { device: {…}, apps: [{ bundleID, encryption, sinfLength, … }] }
+```
+
+```text
+iPhone (iPhone15,3, iOS 27.0) — 00008120-001122AABBCCDDEE
+
+ENC  com.example.PhotoVault  3.2.1  PhotoVault
+  ·  com.example.DevSandbox  1.0    DevSandbox
+
+2 of 2 apps — 1 FairPlay-encrypted, 1 plaintext
+```
+
 ### Example
 
 ```text
@@ -170,7 +199,16 @@ SwiftDecompilerCore (library)
   ├── CFG                   basic-block / control-flow-graph recovery
   ├── ValueTracer           abstract interpreter → call-argument recovery
   └── AnalysisReport        combined, grouped report
+
+MobileDevice (library)      talk to physical iOS devices
+  ├── DeviceSocket          AF_UNIX socket + mid-stream TLS upgrade   (OpenSSL, COpenSSL)
+  ├── UsbmuxClient          ListDevices / ReadPairRecord / Connect
+  ├── LockdownClient        StartSession → TLS → StartService
+  └── InstallationProxy     Browse → installed apps + FairPlay status
 ```
+
+`MobileDevice` is deliberately a separate target: the decompiler proper does not
+depend on OpenSSL, and `swiftdc analyze` works with no device attached.
 
 Parsing leans on [`MachOKit`](https://github.com/p-x9/MachOKit) (Mach-O
 container), [`MachOSwiftSection`](https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection)
@@ -233,5 +271,17 @@ swift test
   this and warns, but *cannot* decrypt it; you need a decrypted dump (e.g. from a
   jailbroken device via frida-ios-dump) or an un-encrypted build. Enterprise/dev
   builds and `.app`s are unaffected.
+- **Device commands** (`devices`, `apps`) enumerate and classify only — they do
+  **not** pull binaries off the device. A stock iOS device does not vend other
+  apps' bundles over any lockdown service (`house_arrest` reaches an app's *data*
+  container, not its `.app`), so getting a binary to analyze still means an
+  `.ipa`, a local build, or a jailbroken dump.
+- **`apps` infers encryption from the FairPlay `ApplicationSINF` blob**, which is
+  what installation_proxy exposes; it does not read `cryptid` off the device
+  (that needs the binary, which the previous point rules out). The two agree by
+  construction — SINF is the DRM record whose consequence is `cryptid != 0` —
+  and agree empirically: across 573 apps on an iOS 27 device, every App Store app
+  had a SINF and every system and development-signed app had none. `BinaryLoader`
+  still reads the real `cryptid` whenever it has a binary in hand.
 - **x86_64**: metadata/declarations/interface work on any slice, but
   disassembly is ARM64-only.

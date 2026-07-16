@@ -8,7 +8,10 @@ struct SwiftDC: AsyncParsableCommand {
         commandName: "swiftdc",
         abstract: "A Swift-aware Mach-O decompiler: reconstructed declarations + annotated ARM64.",
         version: SwiftDecompiler.version,
-        subcommands: [AnalyzeCommand.self, DumpCommand.self, InterfaceCommand.self, ObjCCommand.self, DisasmCommand.self],
+        subcommands: [
+            AnalyzeCommand.self, DumpCommand.self, InterfaceCommand.self, ObjCCommand.self,
+            DisasmCommand.self, DevicesCommand.self, AppsCommand.self,
+        ],
         defaultSubcommand: AnalyzeCommand.self
     )
 }
@@ -77,7 +80,7 @@ private func binaryListing(for path: String?) throws -> String {
 }
 
 /// Writes `text` to `output` if given, otherwise prints to stdout.
-private func emit(_ text: String, to output: String?) throws {
+func emit(_ text: String, to output: String?) throws {
     if let output {
         try text.write(toFile: output, atomically: true, encoding: .utf8)
         FileHandle.standardError.write(Data("Wrote \(output)\n".utf8))

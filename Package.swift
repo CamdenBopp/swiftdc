@@ -8,6 +8,7 @@ let package = Package(
     ],
     products: [
         .library(name: "SwiftDecompilerCore", targets: ["SwiftDecompilerCore"]),
+        .library(name: "MobileDevice", targets: ["MobileDevice"]),
         .executable(name: "swiftdc", targets: ["swiftdc"]),
     ],
     dependencies: [
@@ -80,6 +81,28 @@ let package = Package(
             pkgConfig: "capstone",
             providers: [.brew(["capstone"])]
         ),
+        // Homebrew-installed OpenSSL (`brew install openssl@3`), same
+        // pkg-config pattern as CCapstone above.
+        //
+        // Needed because lockdown upgrades a live plaintext socket to TLS
+        // mid-stream, presenting a client certificate that exists only as a
+        // detached PEM cert+key in the usbmux pair record. Network.framework
+        // can't upgrade an existing connection, and SecureTransport needs a
+        // `SecIdentity`, which can't be built from a detached cert+key without
+        // a keychain round-trip or private API. OpenSSL's SSL_set_fd takes the
+        // fd directly — the approach libimobiledevice uses.
+        .systemLibrary(
+            name: "COpenSSL",
+            pkgConfig: "openssl",
+            providers: [.brew(["openssl@3"])]
+        ),
+        // usbmux / lockdown / installation_proxy: talking to physical iOS
+        // devices. Deliberately separate from SwiftDecompilerCore so the
+        // decompiler itself stays free of an OpenSSL dependency.
+        .target(
+            name: "MobileDevice",
+            dependencies: ["COpenSSL"]
+        ),
         .target(
             name: "SwiftDecompilerCore",
             dependencies: [
@@ -100,6 +123,7 @@ let package = Package(
             name: "swiftdc",
             dependencies: [
                 "SwiftDecompilerCore",
+                "MobileDevice",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),

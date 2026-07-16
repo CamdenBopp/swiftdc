@@ -1,0 +1,6 @@
+module COpenSSL [system] {
+    umbrella header "include/shim.h"
+    link "ssl"
+    link "crypto"
+    export *
+}
