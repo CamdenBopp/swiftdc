@@ -19,6 +19,16 @@ SwiftDump, plus annotated assembly), not a full control-flow decompiler. See
   with properties and method signatures, reconstructed from ObjC runtime
   metadata. Covers the Swift+ObjC mix in real apps/frameworks (and Swift classes
   exposed to the ObjC runtime); survives stripping.
+- **Objective-C IMP recovery** — class and category method records contribute
+  real function boundaries and conventional names (`-[Class selector:]`,
+  `+[Class selector:]`) even after symbols are stripped. Their type encodings
+  become decoded signatures in text and structured metadata in JSON. The ObjC
+  calling convention is seeded from metadata (`self` in x0, `_cmd` in x1,
+  explicit arguments from x2), so arguments survive as `arg0`, `arg1`, … in
+  recovered expressions. Runtime ivar offsets and encoded storage sizes turn
+  direct loads/stores into `self->_count` / `self->_count = …`; loaded ivar
+  values flow into sends such as
+  `[arg0 stringByAppendingString:self->_name]`.
 - **Annotated ARM64** — function bodies disassembled via `llvm-objdump`, with
   branch/call targets demangled to readable Swift names and string-literal
   references surfaced. `adrp`/`add` operand references are resolved to the
@@ -83,10 +93,11 @@ SwiftDump, plus annotated assembly), not a full control-flow decompiler. See
   irreducible degrades to a labeled `goto`, so the output is never structurally
   wrong (brace-balanced by construction).
 - **Stripped-binary function recovery** — when the symbol table is gone,
-  function boundaries are recovered from `LC_FUNCTION_STARTS` (which survives
-  stripping), and names from Swift metadata for class vtable methods and
-  protocol-conformance witnesses, so a stripped binary still disassembles as
-  discrete, partly-named functions instead of one blob.
+  function boundaries are recovered from `LC_FUNCTION_STARTS` plus Objective-C
+  IMPs (both survive stripping), and names from Objective-C method records or
+  Swift metadata for class vtable methods and protocol-conformance witnesses,
+  so a stripped binary still disassembles as discrete, partly-named functions
+  instead of one blob.
 - **Combined report** — declarations followed by disassembly grouped by the
   owning type.
 - **Device app inventory** (`swiftdc devices`, `swiftdc apps`) — enumerate apps
@@ -138,6 +149,18 @@ swiftdc interface /path/to/Binary --enum-layout --field-offsets   # + memory lay
 # Just the reconstructed Objective-C headers
 swiftdc objc /path/to/Binary
 
+# Headers plus every metadata-backed Objective-C implementation
+swiftdc objc /path/to/Binary --methods
+
+# Find one owner/selector/signature and render message/call pseudocode. This
+# works after stripping because metadata is matched before code is decoded.
+swiftdc objc /path/to/Binary --function incrementBy --pseudo
+
+# With --methods (or --function), JSON is
+# { headers: [...], methods: [{ objectiveC: { class, category, selector,
+#   kind, typeEncoding, signature }, ... }] }
+swiftdc objc /path/to/Binary --function setName --json
+
 # Just annotated disassembly, optionally filtered to a function
 swiftdc disasm /path/to/Binary --function distance
 
@@ -159,6 +182,7 @@ swiftdc analyze /path/to/Universal --arch arm64
 swiftdc dump --image Foundation --demangle simplified
 swiftdc dump --image SwiftUI --sections types
 swiftdc objc --image UserNotifications
+swiftdc objc --image UserNotifications --function authorizationStatus --pseudo
 swiftdc disasm --image UserNotifications --function authorizationStatus  # in-process Capstone
 swiftdc analyze --image SwiftUI                   # declarations + disassembly
 swiftdc dump --list-images                       # every image path in the cache
@@ -169,9 +193,9 @@ swiftdc dump --image Foundation --cache /path/to/dyld_shared_cache_arm64e   # an
 swiftdc analyze /path/to/Binary -o report.txt
 
 # Structured JSON (composable with jq, diffing across builds, etc.)
-swiftdc disasm  /path/to/Binary --json        # [{ name, symbol, address, source, instructions:[…] }]
+swiftdc disasm  /path/to/Binary --json        # functions include objectiveC metadata when applicable
 swiftdc dump    /path/to/Binary --json        # [ "<declaration block>", … ]
-swiftdc analyze /path/to/Binary --json        # { declarations:[…], functions:[…] }
+swiftdc analyze /path/to/Binary --json        # { declarations:[…], objc:[…], functions:[…] }
 ```
 
 Demangle presets: `default` (fully-qualified, `sample.Point`), `simplified`
@@ -245,6 +269,7 @@ SwiftDecompilerCore (library)
   ├── BinaryLoader          load Mach-O / select fat slice          (MachOKit)
   ├── SwiftDeclarationDumper reconstruct declarations from metadata  (MachOSwiftSection / SwiftDump)
   ├── ObjCDumper            reconstruct ObjC headers                 (MachOObjCSection / ObjCDump)
+  ├── ObjCMetadataIndex     IMP → class/category/selector/signature; ivar layouts
   ├── Disassembler          ARM64 + demangled annotation            (llvm-objdump + Demangling)
   ├── CapstoneEngine        structured decode (control flow, targets) (Capstone, CCapstone)
   ├── CFG                   basic-block / control-flow-graph recovery
@@ -283,8 +308,9 @@ class and branch targets (basic-block / CFG recovery).
 
 ## Test fixture
 
-`Fixtures/Sample/sample.swift` is a metadata-rich program (structs, enums,
-classes, protocols, generics). Build debug/release/stripped variants with:
+`Fixtures/Sample/sample.swift` plus `sample_objc.m` form a metadata-rich program
+(Swift structs/enums/classes/protocols/generics; pure ObjC methods, properties,
+ivars, and categories). Build debug/release/stripped variants with:
 
 ```bash
 Fixtures/Sample/build.sh
@@ -304,12 +330,13 @@ swift test
   *annotated assembly*, not recovered C-like function bodies. (A Ghidra backend
   for true pseudocode is a possible future direction.)
 - **Stripped binaries**: function *boundaries* are recovered from
-  `LC_FUNCTION_STARTS`, and *names* from Swift metadata for **class vtable
-  methods** (`Type.method`) and **protocol-conformance witnesses**
-  (`Type: Protocol.kind`, read from the witness table). Free functions,
-  closures, thunks, and **struct/enum non-protocol methods** still render as
-  `sub_<addr>` — with static dispatch they have no metadata record, so only
-  their boundary is recoverable, not their name.
+  `LC_FUNCTION_STARTS` and Objective-C IMPs; *names* come from Objective-C
+  class/category method records and Swift metadata for **class vtable methods**
+  (`Type.method`) and **protocol-conformance witnesses** (`Type: Protocol.kind`,
+  read from the witness table). Free Swift functions, closures, thunks, and
+  **struct/enum non-protocol methods** still render as `sub_<addr>` — with static
+  dispatch they have no metadata record, so only their boundary is recoverable,
+  not their name.
 - Class vtable method names occasionally fall back to `sub_<addr>` even
   unstripped (a SwiftDump resolution gap); the address is still correct and
   disassemblable.

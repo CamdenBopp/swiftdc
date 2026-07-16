@@ -106,6 +106,37 @@ public struct FieldMap: Sendable {
         self.ranges = ranges.sorted { $0.0.lowerBound < $1.0.lowerBound }
     }
 
+    /// Build a fully-known field map from an ABI that publishes concrete field
+    /// offsets and encodings directly. Objective-C ivar metadata is such an ABI:
+    /// every `ivar_t` carries an absolute instance offset, and its encoded type
+    /// gives the storage size for ordinary scalar, object, pointer, array, and
+    /// aggregate ivars.
+    ///
+    /// Unlike the Swift-layout initializer, there is no unresolved suffix here:
+    /// fields whose encoded size cannot be established are omitted individually
+    /// instead of making later absolute offsets untrustworthy.
+    init(
+        typeName: String,
+        instanceSize: Int,
+        fields: [(offset: Int, bytes: Int, name: String, typeEncoding: String)]
+    ) {
+        self.typeName = typeName
+        self.instanceSize = instanceSize
+        self.trustedOffsetLimit = instanceSize
+        self.trustLimitReason = nil
+        self.ranges = fields.compactMap { field in
+            guard field.offset >= 0, field.bytes > 0,
+                  field.offset < instanceSize,
+                  field.offset + field.bytes <= instanceSize
+            else { return nil }
+            return (
+                field.offset ..< (field.offset + field.bytes),
+                field.name,
+                field.typeEncoding
+            )
+        }.sorted { $0.0.lowerBound < $1.0.lowerBound }
+    }
+
     /// Resolve a memory access.
     ///
     /// A **range** query, not a point query: the access width matters, because a

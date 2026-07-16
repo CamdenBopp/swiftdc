@@ -17,6 +17,7 @@ Fixtures/Sample/*.dylib
 Fixtures/Sample/*.dSYM/
 Fixtures/Sample/*.swiftmodule
 Fixtures/Sample/*.swiftdoc
+Fixtures/Sample/*.o
 
 # macOS
 .DS_Store

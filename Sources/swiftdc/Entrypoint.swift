@@ -19,7 +19,7 @@ struct SwiftDC: AsyncParsableCommand {
 struct ObjCCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "objc",
-        abstract: "Reconstruct Objective-C headers (@interface/@protocol) from ObjC metadata."
+        abstract: "Reconstruct Objective-C headers and, optionally, metadata-named IMP method bodies."
     )
 
     @Argument(help: "Path to the Mach-O (or fat) binary. Omit when reading from the dyld shared cache with --image.")
@@ -49,7 +49,16 @@ struct ObjCCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Emit structured JSON (array of ObjC header blocks).")
     var json = false
 
-    func run() throws {
+    @Flag(name: .long, help: "Also recover Objective-C IMP method bodies, named from runtime metadata.")
+    var methods = false
+
+    @Flag(name: .long, help: "With --methods, render recovered call/message pseudocode instead of annotated assembly.")
+    var pseudo = false
+
+    @Option(name: [.short, .long], help: "Only include Objective-C methods whose owner, selector, or signature contains this string. Implies --methods.")
+    var function: String?
+
+    func run() async throws {
         if listBinaries { try emit(binaryListing(for: path), to: output); return }
         let machO = try BinaryLoader.loadMachO(
             path: path,
@@ -60,10 +69,34 @@ struct ObjCCommand: AsyncParsableCommand {
             binary: binary
         )
         let blocks = ObjCDumper().blocks(machO)
+        let includeMethods = methods || pseudo || function != nil
+        guard includeMethods else {
+            if json {
+                try emit(jsonStrings(blocks), to: output)
+            } else {
+                try emit(blocks.isEmpty ? "// No Objective-C metadata found." : blocks.joined(separator: "\n\n"), to: output)
+            }
+            return
+        }
+
+        let implementations = await Disassembler().disassemble(
+            machO: machO,
+            functionFilter: function
+        ).filter { $0.objcMethod != nil }
         if json {
-            try emit(jsonStrings(blocks), to: output)
+            try emit(objcReportJSON(headers: blocks, methods: implementations), to: output)
         } else {
-            try emit(blocks.isEmpty ? "// No Objective-C metadata found." : blocks.joined(separator: "\n\n"), to: output)
+            var sections: [String] = []
+            if !blocks.isEmpty { sections.append(blocks.joined(separator: "\n\n")) }
+            let body = implementations.map { pseudo ? $0.renderPseudo() : $0.render() }
+                .joined(separator: "\n\n")
+            if !body.isEmpty {
+                sections.append("// OBJECTIVE-C METHOD IMPLEMENTATIONS\n\n" + body)
+            }
+            try emit(
+                sections.isEmpty ? "// No Objective-C metadata or method implementations found." : sections.joined(separator: "\n\n"),
+                to: output
+            )
         }
     }
 }

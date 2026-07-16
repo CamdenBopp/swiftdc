@@ -14,31 +14,10 @@ public struct ObjCDumper: Sendable {
 
     /// One ObjC header string per class/protocol/category, in that order.
     public func blocks(_ machO: MachOFile) -> [String] {
-        let objc = machO.objc
-        var out: [String] = []
-
-        if machO.is64Bit {
-            for cls in objc.classes64 ?? [] {
-                if let info = cls.info(in: machO) { out.append(info.headerString) }
-            }
-            for proto in objc.protocols64 ?? [] {
-                if let info = proto.info(in: machO) { out.append(info.headerString) }
-            }
-            for category in objc.categories64 ?? [] {
-                if let info = category.info(in: machO) { out.append(info.headerString) }
-            }
-        } else {
-            for cls in objc.classes32 ?? [] {
-                if let info = cls.info(in: machO) { out.append(info.headerString) }
-            }
-            for proto in objc.protocols32 ?? [] {
-                if let info = proto.info(in: machO) { out.append(info.headerString) }
-            }
-            for category in objc.categories32 ?? [] {
-                if let info = category.info(in: machO) { out.append(info.headerString) }
-            }
-        }
-        return out
+        let snapshot = ObjCMetadataSnapshot.build(in: machO)
+        return snapshot.classes.map(\.headerString)
+            + snapshot.protocols.map(\.headerString)
+            + snapshot.categories.map(\.headerString)
     }
 
     /// All ObjC headers joined into a single document.

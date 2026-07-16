@@ -13,6 +13,7 @@ public extension DisassembledFunction {
 
         let cfg = ControlFlowStructure(blocks: blocks)
         var lines = ["\(displayName) {"]
+        if let objcMethod { lines.append("    // \(objcMethod.signature)") }
         var visited = Set<Int>()
         lines += cfg.emit(from: 0, until: cfg.exit, indent: 1, visited: &visited, loop: nil)
         // Anything unreachable from entry by forward edges (e.g. landing pads):
@@ -145,7 +146,7 @@ struct ControlFlowStructure {
                 lines.append("\(pad)loc_\(hex(block.startAddress)):  // loop header")
             }
             for insn in block.instructions {
-                if let statement = DisassembledFunction.callStatement(of: insn, hideRuntime: true) {
+                if let statement = DisassembledFunction.pseudoStatement(of: insn, hideRuntime: true) {
                     lines.append("\(pad)\(statement)")
                 }
             }
@@ -302,16 +303,16 @@ struct ControlFlowStructure {
     private func isLoopHeader(_ node: Int) -> Bool { backSuccessors.contains { $0.contains(node) } }
     private func isReturn(_ block: BasicBlock) -> Bool { block.instructions.last?.controlFlow == .return }
 
-    /// A sink block with no calls that ends in `return` or a trap — safe to
+    /// A sink block with no recovered statements that ends in `return` or a trap — safe to
     /// duplicate into multiple branches (no side effects, no recursion).
     func isTrivialTail(_ node: Int) -> Bool {
         guard forwardSuccessors[node].isEmpty, backSuccessors[node].isEmpty,
               let last = blocks[node].instructions.last
         else { return false }
-        let hasCalls = blocks[node].instructions.contains {
-            DisassembledFunction.callStatement(of: $0, hideRuntime: true) != nil
+        let hasStatements = blocks[node].instructions.contains {
+            DisassembledFunction.pseudoStatement(of: $0, hideRuntime: true) != nil
         }
-        guard !hasCalls else { return false }
+        guard !hasStatements else { return false }
         return last.controlFlow == .return || Self.isTrap(last)
     }
 

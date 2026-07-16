@@ -78,6 +78,7 @@ public extension DisassembledFunction {
     /// labels and successor edges.
     func renderCFG() -> String {
         var lines = ["\(displayName):  // \(symbol) @ 0x\(String(startAddress, radix: 16))"]
+        if let objcMethod { lines.append("  // \(objcMethod.signature)") }
         for block in basicBlocks() {
             lines.append("  loc_\(String(block.startAddress, radix: 16)):")
             for insn in block.instructions {

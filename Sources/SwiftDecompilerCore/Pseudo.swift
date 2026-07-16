@@ -1,15 +1,16 @@
 import Foundation
 
 /// A first-cut pseudocode view: each function rendered as its sequence of
-/// recovered call statements (callee + arguments), with low-level ARC/runtime
-/// bookkeeping hidden. Not a structured decompiler — it surfaces the call
-/// skeleton that the CFG + value-tracking already recover.
+/// recovered calls and named field writes, with low-level ARC/runtime
+/// bookkeeping hidden. Not a structured decompiler — it surfaces the useful
+/// statements that the CFG + value-tracking already recover.
 public extension DisassembledFunction {
     func renderPseudo(hideRuntime: Bool = true) -> String {
         var lines = ["\(displayName) {"]
+        if let objcMethod { lines.append("    // \(objcMethod.signature)") }
         var shown = 0
         for insn in instructions {
-            guard let statement = Self.callStatement(of: insn, hideRuntime: hideRuntime) else { continue }
+            guard let statement = Self.pseudoStatement(of: insn, hideRuntime: hideRuntime) else { continue }
             lines.append("    \(statement)")
             shown += 1
         }
@@ -18,6 +19,19 @@ public extension DisassembledFunction {
         }
         lines.append("}")
         return lines.joined(separator: "\n")
+    }
+
+    /// A source-level statement recovered from an instruction. Calls retain
+    /// their richer message-send rendering; direct stores to a known Swift
+    /// field or Objective-C ivar reuse the field annotation from disassembly.
+    static func pseudoStatement(of insn: Instruction, hideRuntime: Bool) -> String? {
+        if let call = callStatement(of: insn, hideRuntime: hideRuntime) { return call }
+        guard let annotation = insn.annotation else { return nil }
+        return annotation.components(separatedBy: "  ")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { note in
+                (note.hasPrefix("self.") || note.hasPrefix("self->")) && note.contains(" = …")
+            }
     }
 
     /// The pseudo statement for a call instruction (`callee(args)`, or

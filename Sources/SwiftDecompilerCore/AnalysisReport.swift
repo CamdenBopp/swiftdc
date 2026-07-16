@@ -89,7 +89,7 @@ public struct AnalysisReport: Sendable {
         var order: [String] = []
         var buckets: [String: [DisassembledFunction]] = [:]
         for function in functions {
-            let owner = ownerName(of: function.displayName)
+            let owner = function.objcMethod?.ownerName ?? ownerName(of: function.displayName)
             if buckets[owner] == nil { order.append(owner) }
             buckets[owner, default: []].append(function)
         }

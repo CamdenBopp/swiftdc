@@ -10,6 +10,10 @@ public enum AbstractValue: Equatable, Sendable {
     /// The return value (x0) of the call at this instruction address — lets a
     /// result flow into a later call's argument as a nested expression.
     case callResult(UInt64)
+    /// A named source-level method argument. Objective-C's explicit arguments
+    /// begin in x2 (after `self` and `_cmd`), so metadata can seed these without
+    /// guessing and keep `arg0` alive through register moves and stack spills.
+    case argument(Int)
     /// The *contents* of the given address, loaded by an `ldr` from a known
     /// base. Only meaningful once something resolves what lives there (an
     /// `__objc_selrefs` slot, say); callers that can't resolve it should treat
@@ -29,6 +33,10 @@ public enum AbstractValue: Equatable, Sendable {
     /// `&self.breed`. Distinct from `.selfPointer` at offset 0 so that a
     /// zero-offset field access is still recognisable as one.
     case selfField(offset: Int)
+    /// A value loaded from a field of `self`. Distinct from `selfField`, which
+    /// is the field's address; this lets an ivar/object value flow into a later
+    /// message-send argument as `self->_name`.
+    case selfFieldValue(offset: Int)
     /// A frame-relative address: the stack pointer on function entry, plus this
     /// (usually negative) offset.
     ///
@@ -37,6 +45,15 @@ public enum AbstractValue: Equatable, Sendable {
     /// `stp …, [sp, #-k]!` — after those, the same local is at a different `sp`
     /// offset, but the same frame offset.
     case frame(Int64)
+}
+
+/// Register state that metadata proves at a method's entry point.
+public enum MethodEntryConvention: Sendable, Equatable {
+    /// Swift instance method: `self` is x20.
+    case swiftInstance
+    /// Objective-C class or instance method: `self` is x0, `_cmd` is x1, and
+    /// explicit selector arguments begin in x2.
+    case objectiveC(argumentCount: Int)
 }
 
 /// The values reaching one call, snapshotted just before it executes.
@@ -90,12 +107,24 @@ public struct ValueTracer: Sendable {
     /// both live in one map and flow through the same meet.
     private typealias State = [String: AbstractValue]
 
-    /// Entry state: `sp` anchors the frame at offset 0, and — only when the
-    /// caller has established that this really is a Swift instance method —
-    /// x20 holds `self`.
-    private static func initialState(hasSelf: Bool) -> State {
+    /// Entry state: `sp` anchors the frame at offset 0. Receiver/argument
+    /// registers are seeded only when runtime or Swift metadata establishes the
+    /// method convention for this exact implementation address.
+    private static func initialState(entry: MethodEntryConvention?) -> State {
         var state: State = ["sp": .frame(0)]
-        if hasSelf { state["x20"] = .selfPointer }
+        switch entry {
+        case .swiftInstance:
+            state["x20"] = .selfPointer
+        case .objectiveC(let argumentCount):
+            state["x0"] = .selfPointer
+            // AAPCS64 has six argument registers left after self/_cmd. Further
+            // ObjC arguments are stack-passed and intentionally remain unknown.
+            for argument in 0 ..< min(max(argumentCount, 0), 6) {
+                state["x\(argument + 2)"] = .argument(argument)
+            }
+        case nil:
+            break
+        }
         return state
     }
 
@@ -111,6 +140,14 @@ public struct ValueTracer: Sendable {
     ///   function is known to be an instance method of a known type — see
     ///   `AbstractValue.selfPointer`.
     public func analyze(_ function: DisassembledFunction, hasSelf: Bool = false) -> FunctionAnalysis {
+        analyze(function, entry: hasSelf ? .swiftInstance : nil)
+    }
+
+    /// Analyze with a metadata-proven Swift or Objective-C method entry state.
+    public func analyze(
+        _ function: DisassembledFunction,
+        entry: MethodEntryConvention?
+    ) -> FunctionAnalysis {
         let blocks = function.basicBlocks()
         guard !blocks.isEmpty else { return FunctionAnalysis() }
         let blockByStart = Dictionary(blocks.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
@@ -138,9 +175,11 @@ public struct ValueTracer: Sendable {
             let preds = predecessors[addr] ?? []
             // No predecessors: the entry block (or unreachable code) — start from
             // the frame anchor rather than an empty state.
-            let entry = preds.isEmpty ? Self.initialState(hasSelf: hasSelf) : Self.meet(preds.compactMap { outState[$0] })
-            inState[addr] = entry
-            var registers = entry
+            let blockEntry = preds.isEmpty
+                ? Self.initialState(entry: entry)
+                : Self.meet(preds.compactMap { outState[$0] })
+            inState[addr] = blockEntry
+            var registers = blockEntry
             for insn in block.instructions { transfer(insn, into: &registers, record: nil, recordAccess: nil) }
             if outState[addr] != registers {
                 outState[addr] = registers
@@ -339,7 +378,7 @@ public struct ValueTracer: Sendable {
             case .selfField(let base) where adding:
                 recordAccess?(insn.address, SelfFieldAccess(offset: base + Int(delta), bytes: 0, isWrite: false, isAddressOf: true))
                 write(dest, .selfField(offset: base + Int(delta)), into: &registers)
-            case .unknown, .callResult, .loaded, .selfPointer, .selfField:
+            case .unknown, .callResult, .argument, .loaded, .selfPointer, .selfField, .selfFieldValue:
                 write(dest, .unknown, into: &registers)
             }
 
@@ -369,9 +408,7 @@ public struct ValueTracer: Sendable {
             switch target {
             case .stackSlot(let key): write(dest, registers[key] ?? .unknown, into: &registers)
             case .absolute(let address): write(dest, .loaded(address), into: &registers)
-            // The heap contents of a self field are not tracked; the *access*
-            // was already recorded for naming, which is what matters.
-            case .selfField: write(dest, .unknown, into: &registers)
+            case .selfField(let offset): write(dest, .selfFieldValue(offset: offset), into: &registers)
             case .none: write(dest, .unknown, into: &registers)
             }
 

@@ -59,6 +59,9 @@ public enum RecoverySource: String, Sendable {
     case symbol
     /// Named from Swift `__swift5_*` metadata (survives stripping).
     case metadata
+    /// Named from an Objective-C class/category method record (survives
+    /// stripping and carries selector, type encoding, and IMP).
+    case objcMetadata = "objc-metadata"
     /// Boundary known (LC_FUNCTION_STARTS) but no name — synthesized `sub_<addr>`.
     case address
 }
@@ -74,6 +77,24 @@ public struct DisassembledFunction: Sendable {
     public let instructions: [Instruction]
     /// Where the name/boundary came from.
     public let source: RecoverySource
+    /// Objective-C owner/selector/signature when this entry point is an IMP.
+    public let objcMethod: ObjCMethodBinding?
+
+    public init(
+        symbol: String,
+        demangledName: String?,
+        startAddress: UInt64,
+        instructions: [Instruction],
+        source: RecoverySource,
+        objcMethod: ObjCMethodBinding? = nil
+    ) {
+        self.symbol = symbol
+        self.demangledName = demangledName
+        self.startAddress = startAddress
+        self.instructions = instructions
+        self.source = source
+        self.objcMethod = objcMethod
+    }
 
     /// The name to show: demangled if available, else the raw symbol.
     public var displayName: String { demangledName ?? symbol }
@@ -82,8 +103,15 @@ public struct DisassembledFunction: Sendable {
     public func render() -> String {
         var lines: [String] = []
         lines.append("\(displayName):")
-        let tag = source == .metadata ? "  [recovered from metadata]" : ""
-        if demangledName != nil {
+        let tag: String = switch source {
+        case .metadata: "  [recovered from Swift metadata]"
+        case .objcMetadata: "  [recovered from Objective-C metadata]"
+        case .symbol, .address: ""
+        }
+        if let objcMethod {
+            lines.append("  // \(objcMethod.signature)  @ 0x\(String(startAddress, radix: 16))\(tag)")
+            if source == .symbol { lines.append("  // \(symbol)") }
+        } else if demangledName != nil {
             lines.append("  // \(symbol)  @ 0x\(String(startAddress, radix: 16))\(tag)")
         } else if source == .address {
             lines.append("  // unnamed function  @ 0x\(String(startAddress, radix: 16))  [boundary from LC_FUNCTION_STARTS]")
@@ -183,10 +211,13 @@ public struct Disassembler: Sendable {
         machO: MachOFile,
         functionFilter: String? = nil
     ) async -> [DisassembledFunction] {
+        // Filtering needs ObjC names before decoding; carry the same index into
+        // assembly so large class graphs are parsed once, not twice.
+        let objcIndex = ObjCMetadataIndex.build(in: machO)
         // Filtered: decode only the matched functions' ranges of __text.
         let instructions: [Instruction]
         if let filter = functionFilter, !filter.isEmpty {
-            let ranges = await matchedRanges(filter: filter, in: machO)
+            let ranges = await matchedRanges(filter: filter, in: machO, objcIndex: objcIndex)
             guard !ranges.isEmpty else { return [] }
             instructions = ranges.flatMap { capstoneInstructions(in: machO, span: $0) }
         } else {
@@ -197,7 +228,8 @@ public struct Disassembler: Sendable {
             instructions: instructions,
             labelByAddress: symbolLabels(in: machO),
             in: machO,
-            functionFilter: functionFilter
+            functionFilter: functionFilter,
+            objcIndex: objcIndex
         )
     }
 
@@ -210,13 +242,19 @@ public struct Disassembler: Sendable {
         instructions: [Instruction],
         labelByAddress: [UInt64: String],
         in machO: MachOFile,
-        functionFilter: String?
+        functionFilter: String?,
+        objcIndex providedObjCIndex: ObjCMetadataIndex? = nil
     ) async -> [DisassembledFunction] {
         // Function boundaries: LC_FUNCTION_STARTS ∪ label addresses. Function-
         // starts survive stripping, so this re-creates boundaries a label set
         // (objdump's, or a stripped cache image's exports) couldn't cover.
+        let objcIndex = providedObjCIndex ?? ObjCMetadataIndex.build(in: machO)
         var boundaries = Set(functionStarts(of: machO))
         boundaries.formUnion(labelByAddress.keys)
+        // An Objective-C IMP is itself a function start. This also recovers
+        // methods omitted from LC_FUNCTION_STARTS, and provides names when the
+        // nlist symbol was stripped.
+        boundaries.formUnion(objcIndex.addresses)
 
         // Names from Swift metadata (class vtables + protocol witnesses) — worth
         // computing when many boundaries lack a symbol label (stripped binaries,
@@ -231,7 +269,8 @@ public struct Disassembler: Sendable {
             instructions,
             boundaries: boundaries,
             labelByAddress: labelByAddress,
-            metadataNames: metadataNames
+            metadataNames: metadataNames,
+            objcIndex: objcIndex
         )
 
         // Resolve adrp/add(+ldr) operand references to function, type-descriptor,
@@ -250,7 +289,9 @@ public struct Disassembler: Sendable {
         // Addresses whose callee uses the Swift calling convention, so `self` in
         // x20 is meaningful there.
         let swiftTargets = Set(
-            functions.filter { Self.isSwiftMangled($0.symbol) }.map(\.startAddress)
+            functions.filter {
+                $0.objcMethod == nil && Self.isSwiftMangled($0.symbol)
+            }.map(\.startAddress)
         )
         functions = functions.map { annotateReferences(in: $0, resolver: resolver) }
         functions = functions.map { annotateCallTargets(in: $0, resolver: resolver) }
@@ -260,13 +301,27 @@ public struct Disassembler: Sendable {
         let fieldMaps = (try? FieldMapBuilder.build(in: machO)) ?? [:]
         let selfIndex = SelfTypeIndex.build(in: machO)
         functions = functions.map { function in
-            let selfTypeName = fieldMaps.isEmpty
-                ? nil
-                : Self.selfType(of: function, selfIndex: selfIndex, fieldMaps: fieldMaps)
+            let objcMethod = function.objcMethod
+            let selfTypeName = objcMethod == nil && !fieldMaps.isEmpty
+                ? Self.selfType(of: function, selfIndex: selfIndex, fieldMaps: fieldMaps)
+                : nil
+            let entry: MethodEntryConvention? = if let objcMethod {
+                .objectiveC(argumentCount: objcMethod.argumentCount)
+            } else if selfTypeName != nil {
+                .swiftInstance
+            } else {
+                nil
+            }
+            let fieldMap: FieldMap? = if let objcMethod, !objcMethod.isClassMethod {
+                objcIndex.fieldMaps[objcMethod.className]
+            } else {
+                selfTypeName.flatMap { fieldMaps[$0] }
+            }
             return enrichCallArguments(
                 in: function, resolver: resolver, swiftTargets: swiftTargets,
-                selfTypeName: selfTypeName,
-                fieldMap: selfTypeName.flatMap { fieldMaps[$0] }
+                entry: entry,
+                fieldMap: fieldMap,
+                objcFieldSyntax: objcMethod != nil
             )
         }
 
@@ -433,7 +488,8 @@ public struct Disassembler: Sendable {
         _ instructions: [Instruction],
         boundaries: Set<UInt64>,
         labelByAddress: [UInt64: String],
-        metadataNames: [UInt64: String]
+        metadataNames: [UInt64: String],
+        objcIndex: ObjCMetadataIndex
     ) -> [DisassembledFunction] {
         var functions: [DisassembledFunction] = []
         var current: [Instruction] = []
@@ -443,7 +499,8 @@ public struct Disassembler: Sendable {
             guard !current.isEmpty else { return }
             functions.append(makeFunction(start: start, instructions: current,
                                            labelByAddress: labelByAddress,
-                                           metadataNames: metadataNames))
+                                           metadataNames: metadataNames,
+                                           objcIndex: objcIndex))
             current = []
         }
 
@@ -465,16 +522,31 @@ public struct Disassembler: Sendable {
         start: UInt64,
         instructions: [Instruction],
         labelByAddress: [UInt64: String],
-        metadataNames: [UInt64: String]
+        metadataNames: [UInt64: String],
+        objcIndex: ObjCMetadataIndex
     ) -> DisassembledFunction {
         let subName = "sub_\(String(start, radix: 16))"
+        let objcMethod = objcIndex.binding(for: start)
         if let rawLabel = labelByAddress[start] {
             return DisassembledFunction(
                 symbol: rawLabel,
-                demangledName: demangle(rawLabel),
+                // Runtime metadata is authoritative about an ObjC thunk's
+                // source-level identity; keep the raw Swift/C symbol below it.
+                demangledName: objcMethod?.displayName ?? demangle(rawLabel),
                 startAddress: start,
                 instructions: instructions,
-                source: .symbol
+                source: .symbol,
+                objcMethod: objcMethod
+            )
+        }
+        if let objcMethod {
+            return DisassembledFunction(
+                symbol: subName,
+                demangledName: objcMethod.displayName,
+                startAddress: start,
+                instructions: instructions,
+                source: .objcMetadata,
+                objcMethod: objcMethod
             )
         }
         if let metaName = metadataNames[start] {
@@ -518,11 +590,16 @@ public struct Disassembler: Sendable {
     /// `LC_FUNCTION_STARTS`, the symbol table, and Swift-metadata names).
     /// Adjacent matches (gap < 64 KB) are coalesced so a cluster is one decode.
     /// A filtered disasm decodes only these ranges instead of all of `__text`.
-    private func matchedRanges(filter: String, in machO: MachOFile) async -> [(start: UInt64, stop: UInt64)] {
+    private func matchedRanges(
+        filter: String,
+        in machO: MachOFile,
+        objcIndex: ObjCMetadataIndex
+    ) async -> [(start: UInt64, stop: UInt64)] {
         let needle = filter.lowercased()
         let labels = symbolLabels(in: machO)
         var boundarySet = Set(functionStarts(of: machO))
         boundarySet.formUnion(labels.keys)
+        boundarySet.formUnion(objcIndex.addresses)
         let boundaries = boundarySet.sorted()
         guard !boundaries.isEmpty else { return [] }
 
@@ -540,6 +617,12 @@ public struct Disassembler: Sendable {
         func matches(_ start: UInt64) -> Bool {
             let symbol = labels[start] ?? "sub_\(String(start, radix: 16))"
             if symbol.lowercased().contains(needle) { return true }
+            if let objc = objcIndex.binding(for: start),
+               objc.displayName.lowercased().contains(needle)
+                || objc.signature.lowercased().contains(needle)
+                || objc.typeEncoding.lowercased().contains(needle) {
+                return true
+            }
             let demangled = labels[start].flatMap { demangle($0) } ?? metadataNames[start]
             return demangled?.lowercased().contains(needle) ?? false
         }
@@ -632,7 +715,8 @@ public struct Disassembler: Sendable {
             demangledName: function.demangledName,
             startAddress: function.startAddress,
             instructions: updated,
-            source: function.source
+            source: function.source,
+            objcMethod: function.objcMethod
         )
     }
 
@@ -662,7 +746,8 @@ public struct Disassembler: Sendable {
         }
         return DisassembledFunction(
             symbol: function.symbol, demangledName: function.demangledName,
-            startAddress: function.startAddress, instructions: instructions, source: function.source
+            startAddress: function.startAddress, instructions: instructions, source: function.source,
+            objcMethod: function.objcMethod
         )
     }
 
@@ -909,10 +994,16 @@ public struct Disassembler: Sendable {
         in function: DisassembledFunction,
         resolver: ReferenceResolver,
         swiftTargets: Set<UInt64>,
-        selfTypeName: String?,
-        fieldMap: FieldMap?
+        entry: MethodEntryConvention?,
+        fieldMap: FieldMap?,
+        objcFieldSyntax: Bool
     ) -> DisassembledFunction {
-        /// `self.breed` for an offset, or nil when it cannot be named honestly.
+        /// A source-level field path for this method convention.
+        func fieldPath(_ name: String) -> String {
+            objcFieldSyntax ? "self->\(name)" : "self.\(name)"
+        }
+
+        /// A field name for an offset, or nil when it cannot be named honestly.
         func fieldName(at offset: Int, bytes: Int) -> String? {
             guard let fieldMap else { return nil }
             // A zero width means "the address of whatever starts here" (`add x0,
@@ -936,7 +1027,7 @@ public struct Disassembler: Sendable {
             })
         }
 
-        let analysis = ValueTracer().analyze(function, hasSelf: selfTypeName != nil)
+        let analysis = ValueTracer().analyze(function, entry: entry)
         let sites = analysis.callSites
         let argumentsByAddress = sites.compactMapValues { sanitize($0.arguments) }
         // A property getter is often `ldr x0, [x20, #n]; ret` — no calls at all.
@@ -956,6 +1047,8 @@ public struct Disassembler: Sendable {
                 return "?"
             case .immediate(let v):
                 return v < 4096 ? String(v) : "0x" + String(v, radix: 16)
+            case .argument(let index):
+                return "arg\(index)"
             case .address(let a):
                 return resolver.name(at: a) ?? "0x" + String(a, radix: 16)
             case .loaded(let a):
@@ -976,7 +1069,12 @@ public struct Disassembler: Sendable {
                 guard let name = fieldName(at: offset, bytes: 0) else {
                     return "&self+0x\(String(offset, radix: 16))"
                 }
-                return "&self.\(name)"
+                return "&\(fieldPath(name))"
+            case .selfFieldValue(let offset):
+                guard let name = fieldName(at: offset, bytes: 1) else {
+                    return "self[0x\(String(offset, radix: 16))]"
+                }
+                return fieldPath(name)
             case .callResult(let addr):
                 let inner = argumentsByAddress[addr] ?? []
                 guard depth < 4, let callee = calleeByAddress[addr] else { return "result" }
@@ -1021,8 +1119,8 @@ public struct Disassembler: Sendable {
             if let access = analysis.selfFieldAccesses[insn.address] {
                 guard let name = fieldName(at: access.offset, bytes: access.bytes) else { return insn }
                 let note = access.isAddressOf
-                    ? "&self.\(name)"
-                    : (access.isWrite ? "self.\(name) = …" : "self.\(name)")
+                    ? "&\(fieldPath(name))"
+                    : (access.isWrite ? "\(fieldPath(name)) = …" : fieldPath(name))
                 let merged = [insn.annotation, note].compactMap { $0 }.joined(separator: "  ")
                 return Instruction(
                     address: insn.address, text: insn.text, annotation: merged,
@@ -1060,7 +1158,8 @@ public struct Disassembler: Sendable {
         }
         return DisassembledFunction(
             symbol: function.symbol, demangledName: function.demangledName,
-            startAddress: function.startAddress, instructions: instructions, source: function.source
+            startAddress: function.startAddress, instructions: instructions, source: function.source,
+            objcMethod: function.objcMethod
         )
     }
 
