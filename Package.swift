@@ -127,6 +127,12 @@ let package = Package(
                 // Full Swift-interface reconstruction (`.swiftinterface`-style),
                 // higher fidelity than SwiftDump's declaration listing.
                 .product(name: "SwiftInterface", package: "MachOSwiftSection"),
+                // Static type layout: stored-property names, types, and byte
+                // OFFSETS, computed offline from metadata. This is what turns
+                // `ldr x8, [x0, #0x10]` into `self.name`, and it is the one
+                // capability Ghidra structurally cannot have. 100% public API —
+                // no SPI, no `package` walls.
+                .product(name: "SwiftLayout", package: "MachOSwiftSection"),
                 .product(name: "Semantic", package: "swift-semantic-string"),
                 .product(name: "Demangling", package: "swift-demangling"),
                 .product(name: "MachOObjCSection", package: "MachOObjCSection"),
