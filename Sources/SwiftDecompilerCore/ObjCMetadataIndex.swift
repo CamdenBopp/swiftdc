@@ -71,6 +71,39 @@ struct ObjCMetadataSnapshot {
     var protocols: [ObjCProtocolInfo] = []
     var categories: [ObjCCategoryInfo] = []
 
+    /// Whether reading this class would take MachOObjCSection down its
+    /// shared-cache "relative list list" path — which, on a binary that is not a
+    /// cache image, traps.
+    ///
+    /// The low bit of `baseMethods`/`baseProperties`/`baseProtocols` marks a
+    /// cache-merged list-of-lists (ObjCClassRODataProtocol.swift:339/370/401:
+    /// `guard layout.baseX & 1 == 1`). But those fields hold the RAW on-disk
+    /// value, and under chained fixups that is a fixup encoding rather than a
+    /// pointer — so outside a shared cache the bit means nothing. When it
+    /// happens to be set, the library reads an element count out of a
+    /// misinterpreted header and `try!`s the resulting out-of-bounds read
+    /// (_FileIOProtocol+.swift:52). That is a fatalError: uncatchable, so the
+    /// only way to survive it is not to make the call.
+    ///
+    /// This is not hypothetical or rare. 39 of the 506 classes in the iOS
+    /// simulator's UIKit.axbundle have the bit set spuriously; every one of them
+    /// kills the process, and with it a `disasm` run that wanted nothing from
+    /// ObjC metadata at all. Stickies has 0, which is why standalone binaries
+    /// generally look fine.
+    ///
+    /// Skipping the class loses its methods and properties. That is a real loss,
+    /// and it is the *only* option here — `info(in:)` returns an Optional, so
+    /// `compactMap` looks like it provides per-class resilience, but a trap
+    /// cannot return nil.
+    static func readsCacheOnlyRelativeLists(_ machO: MachOFile, _ classData: ObjCClass64) -> Bool {
+        // Inside a real shared cache the marker is meaningful; honour it.
+        guard machO.cache == nil, let ro = classData.classROData(in: machO) else { return false }
+        func marked(_ pointer: UInt64) -> Bool { pointer > 0 && pointer & 1 == 1 }
+        return marked(numericCast(ro.layout.baseMethods))
+            || marked(numericCast(ro.layout.baseProperties))
+            || marked(numericCast(ro.layout.baseProtocols))
+    }
+
     static func build(
         in machO: MachOFile,
         includeProtocols: Bool = true
@@ -78,7 +111,9 @@ struct ObjCMetadataSnapshot {
         let objc = machO.objc
         var snapshot = ObjCMetadataSnapshot()
         if machO.is64Bit {
-            snapshot.classes = (objc.classes64 ?? []).compactMap { $0.info(in: machO) }
+            snapshot.classes = (objc.classes64 ?? [])
+                .filter { !readsCacheOnlyRelativeLists(machO, $0) }
+                .compactMap { $0.info(in: machO) }
             if includeProtocols {
                 snapshot.protocols = (objc.protocols64 ?? []).compactMap { $0.info(in: machO) }
             }
