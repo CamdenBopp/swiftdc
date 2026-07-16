@@ -127,7 +127,8 @@ final class CacheSymbolResolver {
     private func stubTarget(at address: UInt64) -> UInt64? {
         guard let bytes = reader.bytes(at: address, count: 16) else { return nil }
         let instructions = engine.disassemble(bytes, address: address).map {
-            Instruction(address: $0.address, text: $0.text, controlFlow: $0.controlFlow, branchTarget: $0.branchTarget)
+            Instruction(address: $0.address, text: $0.text, controlFlow: $0.controlFlow,
+                        branchTarget: $0.branchTarget, detail: $0.detail)
         }
         guard instructions.count >= 3 else { return nil }
         // x16 holds the loaded pointer in both the arm64 (`br x16`) and arm64e

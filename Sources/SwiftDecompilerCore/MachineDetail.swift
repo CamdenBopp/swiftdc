@@ -115,6 +115,11 @@ public enum StructuredOperand: Sendable {
         if case .immediate(let value) = self { return value }
         return nil
     }
+
+    public var isMemory: Bool {
+        if case .memory = self { return true }
+        return false
+    }
 }
 
 /// An operand plus the modifiers Capstone attaches to it.

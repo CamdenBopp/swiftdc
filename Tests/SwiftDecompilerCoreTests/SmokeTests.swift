@@ -98,54 +98,135 @@ func withStableDependencies<R>(
     #expect(DisassembledFunction.MessageSend(callee: "objc_msgSend", arguments: ["x", "?"]) == nil)
 }
 
+/// Build a function from real machine code. These used to be hand-written
+/// instruction *text*, which only ever exercised the old string parser; value
+/// tracking now reads Capstone's structured operands, so the bytes are the input
+/// that matters. They are assembled by clang, not hand-encoded.
+private func assembledFunction(
+    _ bytes: [UInt8],
+    at address: UInt64 = 0x1000,
+    symbol: String = "_$stest"
+) -> DisassembledFunction? {
+    guard let engine = CapstoneEngine() else { return nil }
+    let instructions = engine.disassemble(Data(bytes), address: address).map {
+        Instruction(
+            address: $0.address, text: $0.text, controlFlow: $0.controlFlow,
+            branchTarget: $0.branchTarget, detail: $0.detail
+        )
+    }
+    return DisassembledFunction(
+        symbol: symbol, demangledName: "test", startAddress: address,
+        instructions: instructions, source: .symbol
+    )
+}
+
 /// A value stored to a stack slot is recovered when reloaded — and survives the
 /// prologue moving `sp` underneath it, which is what makes ObjC receivers and
 /// Swift `self` resolvable at all.
-@Test func tracksStackSlotsAcrossFrameAdjustments() {
-    func insn(_ address: UInt64, _ text: String, _ flow: ControlFlow = .sequential) -> Instruction {
-        Instruction(address: address, text: text, controlFlow: flow, branchTarget: flow == .call ? 0x2000 : nil)
-    }
-    // The slot is written at sp+8 and read back at sp+8, but `sp` moves twice
-    // between entry and the store — via pre-index writeback, then a plain sub.
-    // Both stores land at frame offset -0x28, which is the point of the model.
-    let function = DisassembledFunction(
-        symbol: "_$stest", demangledName: "test", startAddress: 0x1000,
-        instructions: [
-            insn(0x1000, "stp\tx29, x30, [sp, #-0x20]!"), // sp = frame-0x20
-            insn(0x1004, "sub\tsp, sp, #0x10"),           // sp = frame-0x30
-            insn(0x1008, "movz\tx0, #0x2a"),
-            insn(0x100c, "str\tx0, [sp, #0x8]"),          // stack@-0x28 = 42
-            insn(0x1010, "ldr\tx20, [sp, #0x8]"),         // x20 = 42
-            insn(0x1014, "bl\t0x2000", .call),
-        ],
-        source: .symbol
-    )
-    let site = ValueTracer().callSites(in: function)[0x1014]
-    #expect(site?.arguments.first == .immediate(42))
+@Test func tracksStackSlotsAcrossFrameAdjustments() throws {
+    //   stp  x29, x30, [sp, #-0x20]!   sp = frame-0x20  (pre-index writeback)
+    //   sub  sp, sp, #0x10             sp = frame-0x30
+    //   mov  x0, #0x2a
+    //   str  x0, [sp, #0x8]            stack@-0x28 = 42
+    //   ldr  x20, [sp, #0x8]           x20 = 42
+    //   bl   L
+    // L: ret
+    // The slot is written and read at the same `sp+8`, but sp moves twice before
+    // the store — the frame model is what keeps both at frame offset -0x28.
+    let function = try #require(assembledFunction([
+        0xfd, 0x7b, 0xbe, 0xa9,
+        0xff, 0x43, 0x00, 0xd1,
+        0x40, 0x05, 0x80, 0xd2,
+        0xe0, 0x07, 0x00, 0xf9,
+        0xf4, 0x07, 0x40, 0xf9,
+        0x01, 0x00, 0x00, 0x94,
+        0xc0, 0x03, 0x5f, 0xd6,
+    ]))
+    let site = try #require(ValueTracer().callSites(in: function)[0x1014])
+    #expect(site.arguments.first == .immediate(42))
     // x20 was written by the `ldr` immediately before the call, so it counts as
     // this call's `self`.
-    #expect(site?.selfValue == .immediate(42))
+    #expect(site.selfValue == .immediate(42))
 }
 
 /// x20 is callee-saved, so a value set up for one call survives into the next.
 /// Only a *fresh* write counts as `self`, or a Swift callee whose self isn't in
 /// x20 at all inherits the previous call's receiver.
-@Test func staleSwiftSelfIsNotReported() {
-    func insn(_ address: UInt64, _ text: String, _ flow: ControlFlow = .sequential) -> Instruction {
-        Instruction(address: address, text: text, controlFlow: flow, branchTarget: flow == .call ? 0x2000 : nil)
-    }
-    let function = DisassembledFunction(
-        symbol: "_$stest", demangledName: "test", startAddress: 0x1000,
-        instructions: [
-            insn(0x1000, "movz\tx20, #0x7"),
-            insn(0x1004, "bl\t0x2000", .call), // self=7: x20 freshly written
-            insn(0x1008, "bl\t0x2000", .call), // x20 still 7, but stale now
-        ],
-        source: .symbol
-    )
+@Test func staleSwiftSelfIsNotReported() throws {
+    //   mov x20, #0x7
+    //   bl  L        <- self=7: x20 freshly written
+    //   bl  L        <- x20 still holds 7, but it is stale now
+    // L: ret
+    let function = try #require(assembledFunction([
+        0xf4, 0x00, 0x80, 0xd2,
+        0x02, 0x00, 0x00, 0x94,
+        0x01, 0x00, 0x00, 0x94,
+        0xc0, 0x03, 0x5f, 0xd6,
+    ]))
     let sites = ValueTracer().callSites(in: function)
     #expect(sites[0x1004]?.selfValue == .immediate(7))
     #expect(sites[0x1008]?.selfValue == .unknown)
+}
+
+/// The shifted-immediate fix, end to end through the tracker.
+///
+/// `sub sp, sp, #0x2, lsl #12` moves sp by 8192. The old text path read the
+/// immediate and dropped the `lsl #12`, yielding a frame — and every local
+/// offset in it — wrong by 4096x, and two distinct slots could collide on one
+/// key.
+@Test func tracksShiftedFrameAdjustment() throws {
+    //   sub  sp, sp, #0x2, lsl #12     sp = frame-0x2000
+    //   mov  x0, #0x2a
+    //   str  x0, [sp, #0x8]            stack@-0x1ff8
+    //   ldr  x1, [sp, #0x8]
+    //   bl   L
+    // L: ret
+    let function = try #require(assembledFunction([
+        0xff, 0x0b, 0x40, 0xd1,
+        0x40, 0x05, 0x80, 0xd2,
+        0xe0, 0x07, 0x00, 0xf9,
+        0xe1, 0x07, 0x40, 0xf9,
+        0x01, 0x00, 0x00, 0x94,
+        0xc0, 0x03, 0x5f, 0xd6,
+    ]))
+    let site = try #require(ValueTracer().callSites(in: function)[0x1010])
+    // Reached only if sp moved by 8192 on both the store and the load.
+    #expect(site.arguments.count >= 2)
+    #expect(site.arguments[1] == .immediate(42))
+}
+
+/// An atomic must clobber what it writes.
+///
+/// `ldaddal x1, x0, [x2]` writes **x0**, but Capstone reports no accesses at all
+/// for it — `op.access` is 0 on every operand and `cs_regs_access` claims it
+/// writes nothing. The old text path fell to a default that clobbered
+/// `operands[0]` (x1), leaving x0's stale value to render verbatim as a later
+/// call argument: a fabricated value, not a missing one. There are 583 atomic
+/// sites in CoreLocation's __text alone.
+///
+/// The fix is the pessimistic default — an unmodelled instruction may write any
+/// register it names. That also over-clobbers x1, which `ldaddal` only reads;
+/// imprecise by construction, never a lie.
+@Test func atomicsClobberTheirDestinations() throws {
+    //   mov     x0, #0x99      x0 = 0x99   (tracked)
+    //   mov     x5, #0x2a      x5 = 42     (tracked, untouched by the atomic)
+    //   ldaddal x1, x0, [x2]   writes x0
+    //   bl      L
+    // L: ret
+    let function = try #require(assembledFunction([
+        0x20, 0x13, 0x80, 0xd2,
+        0x45, 0x05, 0x80, 0xd2,
+        0x40, 0x00, 0xe1, 0xf8,
+        0x01, 0x00, 0x00, 0x94,
+        0xc0, 0x03, 0x5f, 0xd6,
+    ]))
+    let site = try #require(ValueTracer().callSites(in: function)[0x100c])
+    // The bug: x0 previously survived as 0x99 and was rendered as argument 0.
+    #expect(site.arguments[0] == .unknown)
+    // A register the atomic never names is untouched — the clobber is targeted,
+    // not a blanket reset.
+    #expect(site.arguments.count == 6)
+    #expect(site.arguments[5] == .immediate(42))
 }
 
 /// Swift-mangled symbols use the Swift calling convention (self in x20); C and

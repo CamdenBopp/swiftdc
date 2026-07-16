@@ -1,3 +1,4 @@
+import CCapstone
 import Foundation
 
 /// A small abstract-value lattice for intra-block data-flow. Deliberately tiny:
@@ -126,13 +127,6 @@ public struct ValueTracer: Sendable {
         return registers
     }
 
-    /// The instruction's mnemonic and destination register, for callers that
-    /// need to recognise a specific instruction shape.
-    public static func destination(of insn: Instruction) -> (mnemonic: String, register: String)? {
-        let (mnemonic, operands) = decode(insn.text)
-        guard let first = operands.first, let dest = register(first) else { return nil }
-        return (mnemonic, dest)
-    }
 
     /// One instruction's effect on the register state. At a call, snapshot the
     /// argument registers (via `record`) then apply AAPCS64 clobbering.
@@ -184,9 +178,19 @@ public struct ValueTracer: Sendable {
     private static let selfFreshKey = "swiftself.fresh"
 
     private static func writesSwiftSelf(_ insn: Instruction) -> Bool {
-        guard let (mnemonic, register) = destination(of: insn), register == "x20" else { return false }
-        // `str x20, [sp, #n]` names x20 first but reads it.
-        return !mnemonic.hasPrefix("st") && !nonWritingMnemonics.contains(mnemonic)
+        guard let detail = insn.detail else { return false }
+        // Branches write no general register.
+        if let flow = insn.controlFlow, flow != .sequential { return false }
+        switch detail.id {
+        case ARM64_INS_STR, ARM64_INS_STUR, ARM64_INS_STP, ARM64_INS_STNP,
+             ARM64_INS_CMP, ARM64_INS_CMN, ARM64_INS_TST, ARM64_INS_CCMP, ARM64_INS_CCMN:
+            // These name a register first but read it.
+            return false
+        case ARM64_INS_LDP, ARM64_INS_LDNP:
+            return detail.operands.prefix(2).contains { $0.operand.register?.key == "x20" }
+        default:
+            return detail.operands.first?.operand.register?.key == "x20"
+        }
     }
 
     /// Meet (∧) of predecessor states: a register keeps its value only when all
@@ -219,249 +223,295 @@ public struct ValueTracer: Sendable {
 
     // MARK: - Transfer function
 
-    private func apply(_ insn: Instruction, into registers: inout [String: AbstractValue]) {
-        let (mnemonic, operands) = Self.decode(insn.text)
-
-        func clobberDestination() {
-            if let first = operands.first, let dest = Self.register(first), dest != "xzr" {
-                registers[dest] = .unknown
-            }
+    /// One instruction's effect on the register/stack state, driven by Capstone's
+    /// structured operands.
+    ///
+    /// Dispatch is on the instruction **id**, never on the mnemonic text and
+    /// never on Capstone's per-operand `access` flags. Both of those lie:
+    /// `cmp x1, #1` is an alias for `subs xzr, x1, #1`, and Capstone reports its
+    /// x1 operand as WRITE (in `op.access` *and* in `cs_regs_access`) even though
+    /// `cmp` writes no general register. Trusting either would clobber a tracked
+    /// value on every compare. Reads are likewise unreliable (`ldaddal` reports
+    /// no accesses at all). So: an explicit table for what we model, and a
+    /// pessimistic clobber for everything else.
+    private func apply(_ insn: Instruction, into registers: inout State) {
+        guard let detail = insn.detail else {
+            // Capstone couldn't decode what objdump printed — data in __text, or
+            // an unknown encoding. We cannot know what it writes, and keeping
+            // stale values would be a lie, so drop everything nameable.
+            registers.removeAll()
+            return
         }
 
-        switch mnemonic {
-        case "adrp":
-            guard let first = operands.first, let dest = Self.register(first) else {
-                clobberDestination(); return
-            }
-            // objdump keeps the resolved page in a trailing `; 0x…` comment;
-            // Capstone puts it straight in the operand.
-            let page = Self.trailingHexComment(insn.text)
-                ?? (operands.count >= 2 ? Self.hexOperand(operands[1]) : nil)
-            guard let page else { clobberDestination(); return }
-            registers[dest] = .address(page)
+        // Branches and returns write no general register. (Calls never reach
+        // here — `transfer` intercepts them.) This must precede the default,
+        // which would otherwise clobber `x0` on `cbz x0, …`.
+        if let flow = insn.controlFlow, flow != .sequential { return }
 
-        case "add", "sub":
-            guard operands.count >= 3, let dest = Self.register(operands[0]) else { clobberDestination(); return }
-            guard let imm = Self.immediate(operands[2]) else { registers[dest] = .unknown; return }
-            let delta = Int64(bitPattern: imm)
-            switch value(of: operands[1], in: registers) {
-            case .address(let a): registers[dest] = .address(mnemonic == "add" ? a &+ imm : a &- imm)
-            case .immediate(let v): registers[dest] = .immediate(mnemonic == "add" ? v &+ imm : v &- imm)
-            case .frame(let f): registers[dest] = .frame(mnemonic == "add" ? f &+ delta : f &- delta)
-            case .unknown, .callResult, .loaded: registers[dest] = .unknown
-            }
+        switch detail.id {
+        case ARM64_INS_ADRP, ARM64_INS_ADR:
+            // Capstone resolves the page/PC-relative target into the immediate.
+            guard let dest = destinationRegister(detail),
+                  let target = detail.operands.count >= 2 ? detail.operands[1].operand.immediateValue : nil
+            else { clobber(detail, into: &registers); return }
+            write(dest, .address(UInt64(bitPattern: target)), into: &registers)
 
-        // Only the full 64-bit forms: a sub-word load (`ldrb`/`ldrh`/`ldrsw`)
-        // can't produce a pointer, so it falls through to the default clobber.
-        case "ldr", "ldur":
-            guard let first = operands.first, let dest = Self.register(first) else {
-                clobberDestination(); return
+        case ARM64_INS_ADD, ARM64_INS_ADDS, ARM64_INS_SUB, ARM64_INS_SUBS:
+            guard let dest = destinationRegister(detail), detail.operands.count >= 3 else {
+                clobber(detail, into: &registers); return
             }
-            let slot = frameSlot(operands, in: registers)
-            let address = memoryAddress(operands, in: registers)
-            applyWriteback(operands, into: &registers)
-            if let slot {
-                registers[dest] = registers[slot] ?? .unknown
-            } else {
-                registers[dest] = address.map { AbstractValue.loaded($0) } ?? .unknown
+            // `shiftedImmediate` is the fix for `sub sp, sp, #0x2, lsl #12`:
+            // reading the immediate alone yields 2 where the real value is 8192.
+            guard let delta = detail.operands[2].shiftedImmediate else {
+                // A register operand (`add x0, x1, x2`) — not modelled.
+                write(dest, .unknown, into: &registers)
+                return
+            }
+            let adding = detail.id == ARM64_INS_ADD || detail.id == ARM64_INS_ADDS
+            let magnitude = UInt64(bitPattern: delta)
+            switch source(detail.operands[1], in: registers) {
+            case .address(let a): write(dest, .address(adding ? a &+ magnitude : a &- magnitude), into: &registers)
+            case .immediate(let v): write(dest, .immediate(adding ? v &+ magnitude : v &- magnitude), into: &registers)
+            case .frame(let f): write(dest, .frame(adding ? f &+ delta : f &- delta), into: &registers)
+            case .unknown, .callResult, .loaded: write(dest, .unknown, into: &registers)
             }
 
-        // A store writes memory, not a register — but it does populate a stack
-        // slot, which is how a value materialized before a branch reaches a call
-        // after it (`str x0, [sp, #n]` … `ldr x20, [sp, #n]`).
-        case "str", "stur":
-            if let slot = frameSlot(operands, in: registers), let first = operands.first {
-                registers[slot] = value(of: first, in: registers)
+        case ARM64_INS_MOV, ARM64_INS_MOVZ:
+            // Capstone pre-folds MOVZ's shift into the immediate.
+            guard let dest = destinationRegister(detail), detail.operands.count >= 2 else {
+                clobber(detail, into: &registers); return
             }
-            applyWriteback(operands, into: &registers)
+            write(dest, source(detail.operands[1], in: registers), into: &registers)
 
-        case "mov", "movz":
-            guard let first = operands.first, let dest = Self.register(first), operands.count >= 2 else {
-                clobberDestination(); return
-            }
-            if let imm = Self.immediate(operands[1]) {
-                registers[dest] = .immediate(imm)
-            } else {
-                registers[dest] = value(of: operands[1], in: registers) // register copy
-            }
-
-        case "movk":
-            guard let first = operands.first, let dest = Self.register(first),
-                  operands.count >= 2, let imm = Self.immediate(operands[1])
-            else { clobberDestination(); return }
-            let shift = operands.count >= 3 ? Self.lslShift(operands[2]) : 0
-            let base: UInt64 = { if case .immediate(let v) = registers[dest] { return v } else { return 0 } }()
+        case ARM64_INS_MOVK:
+            // MOVK's shift is NOT pre-folded, and it merges into the existing value.
+            guard let dest = destinationRegister(detail), detail.operands.count >= 2,
+                  let imm = detail.operands[1].operand.immediateValue
+            else { clobber(detail, into: &registers); return }
+            let shift = detail.operands[1].shift.type == ARM64_SFT_LSL ? UInt64(detail.operands[1].shift.amount) : 0
+            let base: UInt64 = { if case .immediate(let v) = registers[dest.key] { return v } else { return 0 } }()
             let mask = ~(UInt64(0xffff) << shift)
-            registers[dest] = .immediate((base & mask) | (imm << shift))
+            write(dest, .immediate((base & mask) | (UInt64(bitPattern: imm) << shift)), into: &registers)
+
+        // Only the full 64-bit forms: a sub-word load can't produce a pointer.
+        case ARM64_INS_LDR, ARM64_INS_LDUR:
+            guard let dest = destinationRegister(detail) else { clobber(detail, into: &registers); return }
+            let target = memoryTarget(detail, in: registers)
+            applyWriteback(detail, into: &registers)
+            switch target {
+            case .stackSlot(let key): write(dest, registers[key] ?? .unknown, into: &registers)
+            case .absolute(let address): write(dest, .loaded(address), into: &registers)
+            case .none: write(dest, .unknown, into: &registers)
+            }
+
+        // A store writes memory, not a register — but it populates a stack slot,
+        // which is how a value materialised before a branch reaches a call after it.
+        case ARM64_INS_STR, ARM64_INS_STUR:
+            if case .stackSlot(let key)? = memoryTarget(detail, in: registers),
+               let first = detail.operands.first {
+                registers[key] = source(first, in: registers)
+            }
+            applyWriteback(detail, into: &registers)
+
+        case ARM64_INS_STP, ARM64_INS_STNP:
+            // Stores two registers; writes none. Writeback still applies —
+            // `stp x29, x30, [sp, #-0x70]!` is the standard prologue, and missing
+            // it desynchronises the frame for every stack slot that follows.
+            applyWriteback(detail, into: &registers)
+
+        case ARM64_INS_LDP, ARM64_INS_LDNP:
+            for operand in detail.operands.prefix(2) {
+                if let reg = operand.operand.register { write(reg, .unknown, into: &registers) }
+            }
+            applyWriteback(detail, into: &registers)
+
+        case ARM64_INS_CMP, ARM64_INS_CMN, ARM64_INS_TST, ARM64_INS_CCMP, ARM64_INS_CCMN:
+            // Write only NZCV, which isn't tracked. Critically, these must NOT
+            // reach the default: Capstone renders `cmp x1, #1` with x1 as its
+            // first operand (it is an alias for `subs xzr, x1, #1`), so a
+            // destination-clobbering default would destroy x1.
+            break
 
         default:
-            // Stores, compares, and branches don't write their register
-            // operands — leaving their values intact matters for cross-block flow.
-            // Stores still need writeback applied: `stp x29, x30, [sp, #-0x70]!`
-            // is the standard prologue, and missing it desynchronises the frame
-            // for every stack slot that follows.
-            if mnemonic.hasPrefix("st") {
-                applyWriteback(operands, into: &registers)
-                return
-            }
-            if mnemonic.hasPrefix("b.") || Self.nonWritingMnemonics.contains(mnemonic) {
-                return
-            }
-            // Pair loads write two destination registers.
-            if mnemonic.hasPrefix("ldp") || mnemonic.hasPrefix("ldnp") {
-                for operand in operands.prefix(2) {
-                    if let reg = Self.register(operand), reg != "xzr" { registers[reg] = .unknown }
-                }
-                applyWriteback(operands, into: &registers)
-                return
-            }
-            // Most remaining instructions write (only) their first operand.
-            clobberDestination()
+            clobber(detail, into: &registers)
         }
     }
 
-    private static let nonWritingMnemonics: Set<String> = [
-        "cmp", "cmn", "tst", "ccmp", "ccmn",
-        "b", "bl", "br", "blr", "ret", "cbz", "cbnz", "tbz", "tbnz",
-        "brk", "nop", "svc", "hlt", "dmb", "dsb", "isb", "prfm", "prfum",
-        // Pointer-auth branches. These *read* their register operand — arm64e
-        // stubs end in `braa x16, x17`, and without these the default clobber
-        // would wipe x16, the very value the stub resolved.
-        "braa", "braaz", "brab", "brabz",
-        "blraa", "blraaz", "blrab", "blrabz",
-        "retaa", "retab",
-    ]
-
-    private func value(of token: String, in registers: [String: AbstractValue]) -> AbstractValue {
-        guard let reg = Self.register(token) else { return .unknown }
-        if reg == "xzr" { return .immediate(0) }
-        return registers[reg] ?? .unknown
-    }
-
-    /// Index of the operand that opens the memory reference. `str` puts it
-    /// second, `stp`/`ldp` third — so find it rather than assuming.
-    private static func memoryOperandIndex(_ operands: [String]) -> Int? {
-        operands.firstIndex { $0.hasPrefix("[") }
-    }
-
-    /// Decompose a memory operand into its base token and immediate offset.
+    /// What an unmodelled instruction writes.
     ///
-    /// The bracket distinguishes the addressing modes: an offset/pre-index
-    /// operand splits across the comma as `[xB` + `#imm]`, so the base token has
-    /// no `]`; a bare `[xB]` or a post-index `[xB], #imm` closes on the base
-    /// token and accesses the base itself. Register-offset forms (`[xB, xC]`)
-    /// have no immediate and stay unresolved.
-    private static func memoryOperand(_ operands: [String]) -> (base: String, offset: Int64)? {
-        guard let index = memoryOperandIndex(operands) else { return nil }
-        let baseToken = operands[index]
-        if baseToken.hasSuffix("]") { return (baseToken, 0) }
-        guard index + 1 < operands.count,
-              let offset = immediate(stripBracket(operands[index + 1]))
-        else { return nil }
-        return (baseToken, Int64(bitPattern: offset))
+    /// The default is **operand 0**, because that is what almost every ARM64
+    /// instruction writes, and the exceptions are enumerable. Clobbering every
+    /// register an instruction merely *names* would be sound but destroys real
+    /// information: `csel x0, x1, x19, eq` only writes x0, and killing x19 —
+    /// which is callee-saved and routinely holds a receiver across a call —
+    /// silently drops arguments that were previously recovered.
+    ///
+    /// Being wrong here is asymmetric, and the tables reflect that. Over-
+    /// clobbering costs precision (a `?` where a value was known). Under-
+    /// clobbering leaves a stale value that renders as a confident, fabricated
+    /// argument — which the "never invent" rule forbids. So a family is listed
+    /// only when its members provably write nothing (plain stores), and
+    /// anything whose destination is not operand 0 (the atomics) clobbers wide.
+    private func clobber(_ detail: StructuredInsn, into registers: inout State) {
+        let id = detail.id.rawValue
+        if Self.storesWithoutRegisterWrite.contains(id) {
+            applyWriteback(detail, into: &registers)
+            return
+        }
+        if Self.atomicReadModifyWrite.contains(id) || Self.pairLoads.contains(id) {
+            for operand in detail.operands {
+                if let reg = operand.operand.register { write(reg, .unknown, into: &registers) }
+            }
+            applyWriteback(detail, into: &registers)
+            return
+        }
+        if let dest = destinationRegister(detail) { write(dest, .unknown, into: &registers) }
+        applyWriteback(detail, into: &registers)
     }
 
-    /// The concrete address a memory operand reads, when its base holds a known
-    /// absolute address.
-    private func memoryAddress(_ operands: [String], in registers: State) -> UInt64? {
-        guard let (baseToken, offset) = Self.memoryOperand(operands),
-              case .address(let base) = value(of: baseToken, in: registers)
-        else { return nil }
-        return base &+ UInt64(bitPattern: offset)
+    /// Stores write memory, not registers.
+    ///
+    /// The exclusive stores (STXR/STLXR/STXP/STLXP) are deliberately ABSENT:
+    /// they write a status register in operand 0, so the default handles them.
+    /// The old text path matched `hasPrefix("st")` and clobbered nothing for
+    /// them, leaving a stale value to render as a later call argument.
+    private static let storesWithoutRegisterWrite: Set<UInt32> = Set([
+        ARM64_INS_ST1, ARM64_INS_ST1B, ARM64_INS_ST1D, ARM64_INS_ST1H, ARM64_INS_ST1Q,
+        ARM64_INS_ST1W, ARM64_INS_ST2, ARM64_INS_ST2B, ARM64_INS_ST2D, ARM64_INS_ST2G,
+        ARM64_INS_ST2H, ARM64_INS_ST2W, ARM64_INS_ST3, ARM64_INS_ST3B, ARM64_INS_ST3D,
+        ARM64_INS_ST3H, ARM64_INS_ST3W, ARM64_INS_ST4, ARM64_INS_ST4B, ARM64_INS_ST4D,
+        ARM64_INS_ST4H, ARM64_INS_ST4W, ARM64_INS_ST64B, ARM64_INS_ST64BV, ARM64_INS_ST64BV0,
+        ARM64_INS_STADD, ARM64_INS_STADDB, ARM64_INS_STADDH, ARM64_INS_STADDL,
+        ARM64_INS_STADDLB, ARM64_INS_STADDLH, ARM64_INS_STCLR, ARM64_INS_STCLRB,
+        ARM64_INS_STCLRH, ARM64_INS_STCLRL, ARM64_INS_STCLRLB, ARM64_INS_STCLRLH,
+        ARM64_INS_STEOR, ARM64_INS_STEORB, ARM64_INS_STEORH, ARM64_INS_STEORL,
+        ARM64_INS_STEORLB, ARM64_INS_STEORLH, ARM64_INS_STG, ARM64_INS_STGM, ARM64_INS_STGP,
+        ARM64_INS_STLLR, ARM64_INS_STLLRB, ARM64_INS_STLLRH, ARM64_INS_STLR, ARM64_INS_STLRB,
+        ARM64_INS_STLRH, ARM64_INS_STLUR, ARM64_INS_STLURB, ARM64_INS_STLURH, ARM64_INS_STNP,
+        ARM64_INS_STNT1B, ARM64_INS_STNT1D, ARM64_INS_STNT1H, ARM64_INS_STNT1W, ARM64_INS_STP,
+        ARM64_INS_STR, ARM64_INS_STRB, ARM64_INS_STRH, ARM64_INS_STSET, ARM64_INS_STSETB,
+        ARM64_INS_STSETH, ARM64_INS_STSETL, ARM64_INS_STSETLB, ARM64_INS_STSETLH,
+        ARM64_INS_STSMAX, ARM64_INS_STSMAXB, ARM64_INS_STSMAXH, ARM64_INS_STSMAXL,
+        ARM64_INS_STSMAXLB, ARM64_INS_STSMAXLH, ARM64_INS_STSMIN, ARM64_INS_STSMINB,
+        ARM64_INS_STSMINH, ARM64_INS_STSMINL, ARM64_INS_STSMINLB, ARM64_INS_STSMINLH,
+        ARM64_INS_STTR, ARM64_INS_STTRB, ARM64_INS_STTRH, ARM64_INS_STUMAX, ARM64_INS_STUMAXB,
+        ARM64_INS_STUMAXH, ARM64_INS_STUMAXL, ARM64_INS_STUMAXLB, ARM64_INS_STUMAXLH,
+        ARM64_INS_STUMIN, ARM64_INS_STUMINB, ARM64_INS_STUMINH, ARM64_INS_STUMINL,
+        ARM64_INS_STUMINLB, ARM64_INS_STUMINLH, ARM64_INS_STUR, ARM64_INS_STURB,
+        ARM64_INS_STURH, ARM64_INS_STZ2G, ARM64_INS_STZG, ARM64_INS_STZGM
+    ].map(\.rawValue))
+
+    /// Atomic read-modify-write. The destination is operand **1**, not 0, and
+    /// Capstone reports no operand accesses at all for these (`op.access` is 0
+    /// on every operand; `cs_regs_access` claims they write nothing). Clobber
+    /// every register operand: imprecise, since operand 0 is only read, but
+    /// never a lie. 583 sites in CoreLocation's __text.
+    private static let atomicReadModifyWrite: Set<UInt32> = Set([
+        ARM64_INS_CAS, ARM64_INS_CASA, ARM64_INS_CASAB, ARM64_INS_CASAH, ARM64_INS_CASAL,
+        ARM64_INS_CASALB, ARM64_INS_CASALH, ARM64_INS_CASB, ARM64_INS_CASH, ARM64_INS_CASL,
+        ARM64_INS_CASLB, ARM64_INS_CASLH, ARM64_INS_CASP, ARM64_INS_CASPA, ARM64_INS_CASPAL,
+        ARM64_INS_CASPL, ARM64_INS_LDADD, ARM64_INS_LDADDA, ARM64_INS_LDADDAB,
+        ARM64_INS_LDADDAH, ARM64_INS_LDADDAL, ARM64_INS_LDADDALB, ARM64_INS_LDADDALH,
+        ARM64_INS_LDADDB, ARM64_INS_LDADDH, ARM64_INS_LDADDL, ARM64_INS_LDADDLB,
+        ARM64_INS_LDADDLH, ARM64_INS_LDCLR, ARM64_INS_LDCLRA, ARM64_INS_LDCLRAB,
+        ARM64_INS_LDCLRAH, ARM64_INS_LDCLRAL, ARM64_INS_LDCLRALB, ARM64_INS_LDCLRALH,
+        ARM64_INS_LDCLRB, ARM64_INS_LDCLRH, ARM64_INS_LDCLRL, ARM64_INS_LDCLRLB,
+        ARM64_INS_LDCLRLH, ARM64_INS_LDEOR, ARM64_INS_LDEORA, ARM64_INS_LDEORAB,
+        ARM64_INS_LDEORAH, ARM64_INS_LDEORAL, ARM64_INS_LDEORALB, ARM64_INS_LDEORALH,
+        ARM64_INS_LDEORB, ARM64_INS_LDEORH, ARM64_INS_LDEORL, ARM64_INS_LDEORLB,
+        ARM64_INS_LDEORLH, ARM64_INS_LDSET, ARM64_INS_LDSETA, ARM64_INS_LDSETAB,
+        ARM64_INS_LDSETAH, ARM64_INS_LDSETAL, ARM64_INS_LDSETALB, ARM64_INS_LDSETALH,
+        ARM64_INS_LDSETB, ARM64_INS_LDSETH, ARM64_INS_LDSETL, ARM64_INS_LDSETLB,
+        ARM64_INS_LDSETLH, ARM64_INS_LDSMAX, ARM64_INS_LDSMAXA, ARM64_INS_LDSMAXAB,
+        ARM64_INS_LDSMAXAH, ARM64_INS_LDSMAXAL, ARM64_INS_LDSMAXALB, ARM64_INS_LDSMAXALH,
+        ARM64_INS_LDSMAXB, ARM64_INS_LDSMAXH, ARM64_INS_LDSMAXL, ARM64_INS_LDSMAXLB,
+        ARM64_INS_LDSMAXLH, ARM64_INS_LDSMIN, ARM64_INS_LDSMINA, ARM64_INS_LDSMINAB,
+        ARM64_INS_LDSMINAH, ARM64_INS_LDSMINAL, ARM64_INS_LDSMINALB, ARM64_INS_LDSMINALH,
+        ARM64_INS_LDSMINB, ARM64_INS_LDSMINH, ARM64_INS_LDSMINL, ARM64_INS_LDSMINLB,
+        ARM64_INS_LDSMINLH, ARM64_INS_LDUMAX, ARM64_INS_LDUMAXA, ARM64_INS_LDUMAXAB,
+        ARM64_INS_LDUMAXAH, ARM64_INS_LDUMAXAL, ARM64_INS_LDUMAXALB, ARM64_INS_LDUMAXALH,
+        ARM64_INS_LDUMAXB, ARM64_INS_LDUMAXH, ARM64_INS_LDUMAXL, ARM64_INS_LDUMAXLB,
+        ARM64_INS_LDUMAXLH, ARM64_INS_LDUMIN, ARM64_INS_LDUMINA, ARM64_INS_LDUMINAB,
+        ARM64_INS_LDUMINAH, ARM64_INS_LDUMINAL, ARM64_INS_LDUMINALB, ARM64_INS_LDUMINALH,
+        ARM64_INS_LDUMINB, ARM64_INS_LDUMINH, ARM64_INS_LDUMINL, ARM64_INS_LDUMINLB,
+        ARM64_INS_LDUMINLH, ARM64_INS_SWP, ARM64_INS_SWPA, ARM64_INS_SWPAB, ARM64_INS_SWPAH,
+        ARM64_INS_SWPAL, ARM64_INS_SWPALB, ARM64_INS_SWPALH, ARM64_INS_SWPB, ARM64_INS_SWPH,
+        ARM64_INS_SWPL, ARM64_INS_SWPLB, ARM64_INS_SWPLH
+    ].map(\.rawValue))
+
+    /// Two destinations: operands 0 and 1.
+    private static let pairLoads: Set<UInt32> = Set([
+        ARM64_INS_LDAXP, ARM64_INS_LDNP, ARM64_INS_LDP, ARM64_INS_LDPSW, ARM64_INS_LDXP
+    ].map(\.rawValue))
+
+
+
+    private func write(_ reg: PhysReg, _ value: AbstractValue, into registers: inout State) {
+        guard reg.kind != .zero else { return }   // writes to xzr are discarded
+        registers[reg.key] = value
     }
 
-    /// The state key for a frame-relative memory operand (`[sp, #0x70]`), when
-    /// the base register holds a frame offset.
-    private func frameSlot(_ operands: [String], in registers: State) -> String? {
-        guard let (baseToken, offset) = Self.memoryOperand(operands),
-              case .frame(let base) = value(of: baseToken, in: registers)
-        else { return nil }
-        return Self.stackKey(base &+ offset)
+    /// The value an operand supplies: a register's tracked value, or a literal.
+    private func source(_ operand: StructuredOperandInfo, in registers: State) -> AbstractValue {
+        if let shifted = operand.shiftedImmediate { return .immediate(UInt64(bitPattern: shifted)) }
+        guard let reg = operand.operand.register else { return .unknown }
+        if reg.kind == .zero { return .immediate(0) }
+        // A shifted register operand (`x2, lsl #3`) is not a plain copy.
+        guard operand.shift.type == ARM64_SFT_INVALID else { return .unknown }
+        return registers[reg.key] ?? .unknown
     }
 
-    /// Stack slots share the register map, under a key no register can collide
-    /// with.
+    private func destinationRegister(_ detail: StructuredInsn) -> PhysReg? {
+        detail.operands.first?.operand.register
+    }
+
+    private enum MemoryTarget {
+        case stackSlot(String)
+        case absolute(UInt64)
+    }
+
+    /// Where a memory operand points, when its base is a known frame offset or a
+    /// known absolute address. A register index (`[x0, w1, uxtw #3]`) is left
+    /// unresolved rather than guessed.
+    private func memoryTarget(_ detail: StructuredInsn, in registers: State) -> MemoryTarget? {
+        guard let operand = detail.operands.first(where: { $0.operand.isMemory }),
+              case .memory(let base, let index, let displacement) = operand.operand,
+              let base, index == nil
+        else { return nil }
+        // Post-index accesses the base itself; the displacement applies after.
+        let effective = detail.postIndex ? 0 : displacement
+        switch registers[base.key] {
+        case .frame(let offset): return .stackSlot(Self.stackKey(offset &+ effective))
+        case .address(let address): return .absolute(address &+ UInt64(bitPattern: effective))
+        default: return nil
+        }
+    }
+
+    /// Stack slots share the register map, under a key no register can collide with.
     private static func stackKey(_ frameOffset: Int64) -> String { "stack@\(frameOffset)" }
 
     /// Apply a writeback/post-index memory operand's effect on its base register.
-    private func applyWriteback(_ operands: [String], into registers: inout State) {
-        guard let index = Self.memoryOperandIndex(operands),
-              let base = Self.register(operands[index]),
-              index + 1 < operands.count
+    /// `writeback`/`postIndex` are flags from the decoder — the old path sniffed
+    /// for a trailing `!` in the operand text.
+    private func applyWriteback(_ detail: StructuredInsn, into registers: inout State) {
+        guard detail.writeback,
+              let operand = detail.operands.first(where: { $0.operand.isMemory }),
+              case .memory(let base, _, let displacement) = operand.operand,
+              let base
         else { return }
-        let isPostIndex = operands[index].hasSuffix("]")
-        let isPreIndex = operands[index + 1].contains("!")
-        guard isPostIndex || isPreIndex else { return }
-        guard let immediate = Self.immediate(Self.stripBracket(operands[index + 1])) else {
-            registers[base] = .unknown
-            return
-        }
-        let delta = Int64(bitPattern: immediate)
-        switch registers[base] {
-        case .frame(let offset): registers[base] = .frame(offset &+ delta)
-        case .address(let address): registers[base] = .address(address &+ UInt64(bitPattern: delta))
-        default: registers[base] = .unknown
+        // Pre-index: the displacement is in the memory operand. Post-index: it is
+        // a separate trailing immediate, and mem.disp is 0.
+        let delta = detail.postIndex
+            ? (detail.operands.last?.operand.immediateValue ?? 0)
+            : displacement
+        switch registers[base.key] {
+        case .frame(let offset): registers[base.key] = .frame(offset &+ delta)
+        case .address(let address): registers[base.key] = .address(address &+ UInt64(bitPattern: delta))
+        default: registers[base.key] = .unknown
         }
     }
 
-    private static func stripBracket(_ token: String) -> String {
-        token.trimmingCharacters(in: CharacterSet(charactersIn: "]!"))
-    }
-
-    // MARK: - Parsing
-
-    static func decode(_ text: String) -> (mnemonic: String, operands: [String]) {
-        let beforeComment = text.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)[0]
-        let trimmed = beforeComment.trimmingCharacters(in: .whitespaces)
-        guard let split = trimmed.firstIndex(where: { $0 == " " || $0 == "\t" }) else {
-            return (trimmed, [])
-        }
-        let mnemonic = String(trimmed[..<split])
-        let operands = trimmed[trimmed.index(after: split)...]
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-        return (mnemonic, operands)
-    }
-
-    /// Canonical 64-bit register name (`w3`→`x3`), the `xzr` zero sentinel, or
-    /// `sp` (tracked because it anchors the frame); nil for anything else.
-    static func register(_ token: String) -> String? {
-        let t = token.trimmingCharacters(in: CharacterSet(charactersIn: "[]!"))
-        if t == "xzr" || t == "wzr" { return "xzr" }
-        if t == "sp" || t == "wsp" { return "sp" }
-        guard let first = t.first, first == "x" || first == "w",
-              t.dropFirst().allSatisfy(\.isNumber), t.count > 1
-        else { return nil }
-        return "x" + t.dropFirst()
-    }
-
-    static func immediate(_ token: String) -> UInt64? {
-        guard token.hasPrefix("#") else { return nil }
-        var s = Substring(token.dropFirst())
-        let negative = s.hasPrefix("-")
-        if negative { s = s.dropFirst() }
-        let value = s.hasPrefix("0x") ? UInt64(s.dropFirst(2), radix: 16) : UInt64(s)
-        guard let v = value else { return nil }
-        return negative ? (~v &+ 1) : v
-    }
-
-    private static func lslShift(_ token: String) -> UInt64 {
-        guard let range = token.range(of: "#") else { return 0 }
-        return UInt64(token[range.upperBound...].prefix { $0.isNumber }) ?? 0
-    }
-
-    /// The `0x…` value in objdump's trailing `; 0x…` comment (adrp page).
-    private static func trailingHexComment(_ text: String) -> UInt64? {
-        guard let range = text.range(of: "; 0x")?.upperBound else { return nil }
-        return UInt64(text[range...].prefix { $0.isHexDigit }, radix: 16)
-    }
-
-    /// A bare `0x…` operand (Capstone renders a resolved adrp page this way).
-    private static func hexOperand(_ token: String) -> UInt64? {
-        let s = token.trimmingCharacters(in: CharacterSet(charactersIn: "#[], "))
-        guard s.hasPrefix("0x") else { return nil }
-        return UInt64(s.dropFirst(2), radix: 16)
-    }
+    // MARK: - Helpers
 
     static func trimTrailingUnknown(_ values: [AbstractValue]) -> [AbstractValue]? {
         guard let last = values.lastIndex(where: { $0 != .unknown }) else { return nil }

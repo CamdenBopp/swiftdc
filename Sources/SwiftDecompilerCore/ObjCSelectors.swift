@@ -1,3 +1,4 @@
+import CCapstone
 import Foundation
 import MachOKit
 
@@ -116,8 +117,8 @@ enum ObjCSelectors {
         let tracer = ValueTracer()
         var result: [UInt64: String] = [:]
         for (index, insn) in instructions.enumerated() {
-            guard let (mnemonic, register) = ValueTracer.destination(of: insn),
-                  mnemonic == "adrp", register == "x1"
+            guard let detail = insn.detail, detail.id == ARM64_INS_ADRP,
+                  detail.operands.first?.operand.register?.key == "x1"
             else { continue }
             let window = Array(instructions[index ..< min(index + 2, instructions.count)])
             guard case .loaded(let slot)? = tracer.finalState(of: window)["x1"],

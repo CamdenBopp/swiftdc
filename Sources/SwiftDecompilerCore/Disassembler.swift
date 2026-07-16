@@ -22,6 +22,14 @@ public struct Instruction: Sendable {
     /// Only set for Swift callees — x20 is `self` under the Swift calling
     /// convention, and merely a callee-saved register everywhere else.
     public let callSelf: String?
+    /// Structured operands from Capstone's detail mode.
+    ///
+    /// Present on both front-ends: the objdump path already runs the full
+    /// Capstone decoder and merges it by address (objdump supplies text,
+    /// Capstone supplies semantics), so this is threaded through that same
+    /// merge. Nil only where Capstone failed to decode an address objdump
+    /// emitted — data in `__text`, or an encoding Capstone doesn't know.
+    public let detail: StructuredInsn?
 
     public init(
         address: UInt64,
@@ -30,7 +38,8 @@ public struct Instruction: Sendable {
         controlFlow: ControlFlow? = nil,
         branchTarget: UInt64? = nil,
         callArguments: [String]? = nil,
-        callSelf: String? = nil
+        callSelf: String? = nil,
+        detail: StructuredInsn? = nil
     ) {
         self.address = address
         self.text = text
@@ -39,6 +48,7 @@ public struct Instruction: Sendable {
         self.branchTarget = branchTarget
         self.callArguments = callArguments
         self.callSelf = callSelf
+        self.detail = detail
     }
 }
 
@@ -151,7 +161,8 @@ public struct Disassembler: Sendable {
             guard let decoded = controlFlow[insn.address] else { return insn }
             return Instruction(
                 address: insn.address, text: insn.text, annotation: insn.annotation,
-                controlFlow: decoded.controlFlow, branchTarget: decoded.branchTarget
+                controlFlow: decoded.controlFlow, branchTarget: decoded.branchTarget,
+                detail: decoded.detail
             )
         }
 
@@ -295,7 +306,8 @@ public struct Disassembler: Sendable {
                 text: decoded.text,
                 annotation: nil,
                 controlFlow: decoded.controlFlow,
-                branchTarget: decoded.branchTarget
+                branchTarget: decoded.branchTarget,
+                detail: decoded.detail
             )
         }
     }
@@ -371,7 +383,8 @@ public struct Disassembler: Sendable {
             return engine.disassemble(bytes, address: address).map { decoded in
                 Instruction(
                     address: decoded.address, text: decoded.text, annotation: nil,
-                    controlFlow: decoded.controlFlow, branchTarget: decoded.branchTarget
+                    controlFlow: decoded.controlFlow, branchTarget: decoded.branchTarget,
+                    detail: decoded.detail
                 )
             }
         }
@@ -587,7 +600,8 @@ public struct Disassembler: Sendable {
                let name = resolver.reference(at: page &+ immediate) {
                 updated.append(Instruction(
                     address: insn.address, text: insn.text, annotation: name,
-                    controlFlow: insn.controlFlow, branchTarget: insn.branchTarget
+                    controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
+                    detail: insn.detail
                 ))
             } else {
                 updated.append(insn)
@@ -631,7 +645,7 @@ public struct Disassembler: Sendable {
             return Instruction(
                 address: insn.address, text: insn.text, annotation: "→ \(name)",
                 controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
-                callArguments: insn.callArguments
+                callArguments: insn.callArguments, detail: insn.detail
             )
         }
         return DisassembledFunction(
@@ -892,7 +906,7 @@ public struct Disassembler: Sendable {
                 address: insn.address, text: insn.text, annotation: merged,
                 controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
                 callArguments: rendered.isEmpty ? nil : rendered,
-                callSelf: selfText
+                callSelf: selfText, detail: insn.detail
             )
         }
         return DisassembledFunction(
