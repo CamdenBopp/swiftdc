@@ -70,6 +70,11 @@ struct ObjCMetadataSnapshot {
     var classes: [ObjCClassInfo] = []
     var protocols: [ObjCProtocolInfo] = []
     var categories: [ObjCCategoryInfo] = []
+    /// Class name → superclass name recovered from dyld bind opcodes, for classes
+    /// whose superclass lives in another image and so is left unnamed by the
+    /// metadata (see `resolveExternalSuperclasses`). Empty on chained-fixup or
+    /// shared-cache inputs, where the superclass is already resolved.
+    var superclassBinds: [String: String] = [:]
 
     /// Whether reading this class would take MachOObjCSection down its
     /// shared-cache "relative list list" path — which, on a binary that is not a
@@ -111,13 +116,27 @@ struct ObjCMetadataSnapshot {
         let objc = machO.objc
         var snapshot = ObjCMetadataSnapshot()
         if machO.is64Bit {
-            snapshot.classes = (objc.classes64 ?? [])
+            // Bound-slot → symbol map, shared by superclass and category recovery.
+            // A shared-cache image already has its cross-image references named.
+            let boundSlots = machO.cache == nil ? externalBindSlots(in: machO) : [:]
+            // Keep each raw class paired with its decoded info: the raw struct's
+            // file offset is what locates the superclass field for bind recovery.
+            let pairs = (objc.classes64 ?? [])
                 .filter { !readsCacheOnlyRelativeLists(machO, $0) }
-                .compactMap { $0.info(in: machO) }
+                .compactMap { raw in raw.info(in: machO).map { (raw, $0) } }
+            snapshot.classes = pairs.map(\.1)
+            snapshot.superclassBinds = resolveExternalSuperclasses(
+                classes: pairs, boundSlots: boundSlots, in: machO
+            )
             if includeProtocols {
                 snapshot.protocols = (objc.protocols64 ?? []).compactMap { $0.info(in: machO) }
             }
-            snapshot.categories = (objc.categories64 ?? []).compactMap { $0.info(in: machO) }
+            snapshot.categories = (objc.categories64 ?? []).compactMap { raw in
+                // A category on an external class has an unnamed `cls` bind, which
+                // makes ObjCDump drop it (info returns nil). Rebuild it with the
+                // class name resolved from the same bind table.
+                raw.info(in: machO) ?? reconstructCategory(raw, boundSlots: boundSlots, in: machO)
+            }
         } else {
             snapshot.classes = (objc.classes32 ?? []).compactMap { $0.info(in: machO) }
             if includeProtocols {
@@ -126,6 +145,127 @@ struct ObjCMetadataSnapshot {
             snapshot.categories = (objc.categories32 ?? []).compactMap { $0.info(in: machO) }
         }
         return snapshot
+    }
+
+    /// Recover superclass names that the metadata leaves nil because the
+    /// superclass is defined in another image.
+    ///
+    /// On chained-fixup and shared-cache inputs MachOObjCSection already resolves
+    /// these. But on a classic `LC_DYLD_INFO` binary — every Intel app and many
+    /// older dylibs — a class's `superclass` field is an ordinary dyld bind that
+    /// it does not follow, so `superClassName` is nil and the class renders with
+    /// no `: Super` at all (invalid ObjC). We interpret the bind opcodes ourselves
+    /// to map each bound slot to its `_OBJC_CLASS_$_Name` symbol, then read the
+    /// slot at `objc_class + 8` (the `superclass` field) for each unnamed class.
+    private static func resolveExternalSuperclasses(
+        classes: [(ObjCClass64, ObjCClassInfo)],
+        boundSlots: [UInt64: String],
+        in machO: MachOFile
+    ) -> [String: String] {
+        guard !boundSlots.isEmpty else { return [:] }
+        var result: [String: String] = [:]
+        for (raw, info) in classes where info.superClassName == nil {
+            // objc_class layout: isa @ 0, superclass @ 8 (pointer-sized).
+            let slot = machO.address(forOffset: raw.offset + 8)
+            guard let symbol = boundSlots[slot] else { continue }
+            result[info.name] = objcClassName(fromBindSymbol: symbol)
+        }
+        return result
+    }
+
+    /// Rebuild a category that ObjCDump dropped because its owning class is an
+    /// external bind it could not name. Resolves the class name from the `cls`
+    /// field's bind (category_t: name @ 0, cls @ 8), then assembles the same
+    /// `ObjCCategoryInfo` the library would have, using its public list readers.
+    private static func reconstructCategory(
+        _ raw: ObjCCategory64,
+        boundSlots: [UInt64: String],
+        in machO: MachOFile
+    ) -> ObjCCategoryInfo? {
+        guard let name = raw.name(in: machO) else { return nil }
+        let slot = machO.address(forOffset: raw.offset + 8)
+        guard let symbol = boundSlots[slot] else { return nil }
+        let className = objcClassName(fromBindSymbol: symbol)
+
+        let protocols = raw.protocolList(in: machO)?.protocols(in: machO)?
+            .compactMap { $1.info(in: $0) } ?? []
+        let properties = raw.instancePropertyList(in: machO)?.properties(in: machO)
+            .compactMap { $0.info(isClassProperty: false) } ?? []
+        let methods = raw.instanceMethodList(in: machO)?.methods(in: machO)?
+            .compactMap { $0.info(isClassMethod: false) } ?? []
+        let classProperties = raw.classPropertyList(in: machO)?.properties(in: machO)
+            .compactMap { $0.info(isClassProperty: true) } ?? []
+        let classMethods = raw.classMethodList(in: machO)?.methods(in: machO)?
+            .compactMap { $0.info(isClassMethod: true) } ?? []
+
+        return ObjCCategoryInfo(
+            name: name,
+            className: className,
+            protocols: protocols,
+            classProperties: classProperties,
+            properties: properties,
+            classMethods: classMethods,
+            methods: methods
+        )
+    }
+
+    /// `{ bound slot VM address → symbol name }` from the LC_DYLD_INFO bind
+    /// opcode stream. A minimal interpreter of the standard dyld algorithm — only
+    /// the opcodes that move the cursor or emit a binding — since MachOKit exposes
+    /// the raw `BindOperation`s but not a resolved symbol/address list publicly.
+    private static func externalBindSlots(in machO: MachOFile) -> [UInt64: String] {
+        guard let operations = machO.bindOperations else { return [:] }
+        let segments = machO.segments
+        let pointerSize: UInt = 8
+        var symbol = ""
+        var segmentIndex = 0
+        var segmentOffset: UInt = 0
+        var slots: [UInt64: String] = [:]
+
+        func record() {
+            guard !symbol.isEmpty, segments.indices.contains(segmentIndex) else { return }
+            let address = UInt64(segments[segmentIndex].virtualMemoryAddress) &+ UInt64(segmentOffset)
+            slots[address] = symbol
+        }
+
+        for operation in operations {
+            switch operation {
+            case .set_symbol_trailing_flags_imm(_, let name):
+                symbol = name
+            case .set_segment_and_offset_uleb(let segment, let offset):
+                segmentIndex = Int(segment)
+                segmentOffset = offset
+            case .add_addr_uleb(let offset):
+                segmentOffset = segmentOffset &+ offset
+            case .do_bind:
+                record()
+                segmentOffset = segmentOffset &+ pointerSize
+            case .do_bind_add_addr_uleb(let offset):
+                record()
+                segmentOffset = segmentOffset &+ pointerSize &+ offset
+            case .do_bind_add_addr_imm_scaled(let scale):
+                record()
+                segmentOffset = segmentOffset &+ pointerSize &+ scale &* pointerSize
+            case .do_bind_uleb_times_skipping_uleb(let count, let skip):
+                for _ in 0 ..< count {
+                    record()
+                    segmentOffset = segmentOffset &+ pointerSize &+ skip
+                }
+            case .done:
+                return slots
+            default:
+                break
+            }
+        }
+        return slots
+    }
+
+    /// `_OBJC_CLASS_$_NSObject` → `NSObject`.
+    private static func objcClassName(fromBindSymbol symbol: String) -> String {
+        for prefix in ["_OBJC_CLASS_$_", "OBJC_CLASS_$_"] where symbol.hasPrefix(prefix) {
+            return String(symbol.dropFirst(prefix.count))
+        }
+        return symbol
     }
 }
 
