@@ -236,13 +236,15 @@ struct ControlFlowStructure {
         let (mnemonic, operands) = Self.decode(terminator.text)
         let last = block.instructions.count - 1
         // A value reads as a boolean when it is a message send (a `[…]` idiom),
-        // an already-negated boolean, or a metadata-typed BOOL field. `tbz X, #0`
-        // and `cbz X` on such a value are the compiler's `if (!X)`. `before` is
-        // the index the register's definition precedes — the terminator for a
-        // direct test, or the compare for a `cmp`-driven branch (walking from the
-        // terminator would mistake the compare itself for the definition).
+        // a value-returning call (`foo(…)` — a single-bit or 0/1 test on a call
+        // result is the compiler testing a Bool/nil return), an already-negated
+        // boolean, or a metadata-typed BOOL field. `tbz X, #0` and `cbz X` on such
+        // a value are the compiler's `if (!X)`. `before` is the index the
+        // register's definition precedes — the terminator for a direct test, or
+        // the compare for a `cmp`-driven branch (walking from the terminator would
+        // mistake the compare itself for the definition).
         func isBoolean(_ value: String, operand: String, before: Int) -> Bool {
-            value.hasPrefix("[") || value.hasPrefix("!")
+            value.hasPrefix("[") || value.hasPrefix("!") || Self.looksLikeCall(value)
                 || isBooleanSource(operand, before: before, in: block)
         }
         switch mnemonic {
@@ -391,18 +393,40 @@ struct ControlFlowStructure {
         return sourceName(token)
     }
 
-    /// The source-level expression a value-returning call denotes — a message
-    /// send (`[recv sel:…]`) or a runtime idiom (`[x isKindOfClass:y]`) — for
-    /// inlining into a branch condition. Nil for a void call, so only genuine
-    /// values are substituted. Unlike `callStatement`, this ignores
-    /// `resultConsumed`: a result consumed by the branch is exactly the case here.
+    /// The source-level expression a value-returning call denotes, for inlining
+    /// into a branch condition: a message send (`[recv sel:…]`), a runtime idiom
+    /// (`[x isKindOfClass:y]`), or any other named call (a Swift function, a
+    /// runtime predicate like `swift_task_isCurrentExecutor`, a C function)
+    /// rendered as `callee(args)`. Unlike `callStatement`, this ignores
+    /// `resultConsumed` — a result consumed by the branch is exactly the case
+    /// here. ARC/exclusivity bookkeeping returns nil so `resolve` sees through it
+    /// to the real producer rather than inlining `objc_retain(x)`.
     private static func callValueExpression(_ insn: Instruction) -> String? {
         guard let callee = DisassembledFunction.calleeName(of: insn) else { return nil }
+        if DisassembledFunction.isRuntimeNoise(callee) { return nil }
         let arguments = insn.callArguments ?? []
         if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {
             return send.rendered
         }
-        return DisassembledFunction.objcRuntimeIdiom(callee: callee, arguments: arguments)
+        if let idiom = DisassembledFunction.objcRuntimeIdiom(callee: callee, arguments: arguments) {
+            return idiom
+        }
+        // A Swift receiver arrives in x20, not the argument registers, so show it
+        // explicitly the way the statement form does rather than dropping it.
+        let parts = insn.callSelf.map { ["self: \($0)"] + arguments } ?? arguments
+        return "\(DisassembledFunction.strippedCallee(callee))(\(parts.joined(separator: ", ")))"
+    }
+
+    /// Whether a rendered value is an identifier-led call expression `name(args)`
+    /// (as opposed to an arithmetic group like `(a + b)`, which starts with `(`).
+    /// A single-bit or 0/1 test on a call result is the compiler testing a Bool
+    /// or nil return, so such a value renders as `!call` / `call`. Message sends
+    /// (`[recv sel]`) are recognised separately by their `[` prefix.
+    private static func looksLikeCall(_ value: String) -> Bool {
+        guard value.hasSuffix(")"), value.contains("("),
+              let first = value.first, first.isLetter || first == "_" || first == "$"
+        else { return false }
+        return true
     }
 
     /// At an Objective-C method entry x2...x7 are the first six explicit
