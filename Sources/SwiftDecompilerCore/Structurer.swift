@@ -349,6 +349,13 @@ struct ControlFlowStructure {
                         consumed.insert(instruction.address)
                         return send
                     }
+                    // ARC identity wrappers (objc_retain / …AutoreleasedReturnValue)
+                    // return x0 unchanged, so the real producer is one call back —
+                    // keep walking rather than giving up on the retained result.
+                    if let callee = DisassembledFunction.calleeName(of: instruction),
+                       DisassembledFunction.isRuntimeNoise(callee) {
+                        continue
+                    }
                 }
                 return token
             }

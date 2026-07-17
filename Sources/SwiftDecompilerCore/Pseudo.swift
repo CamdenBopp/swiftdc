@@ -121,12 +121,17 @@ public extension DisassembledFunction {
         /// Either way `x0` is the receiver and `x1` is `_cmd`, so the selector's
         /// own arguments start at `x2`.
         init?(callee: String, arguments: [String]) {
-            guard callee.hasPrefix("objc_msgSend") else { return nil }
             let selector: String
-            if let marker = callee.firstIndex(of: "$") {
-                selector = String(callee[callee.index(after: marker)...])
-            } else if arguments.count >= 2, let literal = Self.selectorLiteral(arguments[1]) {
-                selector = literal
+            if callee.hasPrefix("objc_msgSend") {
+                if let marker = callee.firstIndex(of: "$") {
+                    selector = String(callee[callee.index(after: marker)...])
+                } else if arguments.count >= 2, let literal = Self.selectorLiteral(arguments[1]) {
+                    selector = literal
+                } else {
+                    return nil
+                }
+            } else if let direct = Self.directMethodSelector(callee) {
+                selector = direct
             } else {
                 return nil
             }
@@ -139,6 +144,21 @@ public extension DisassembledFunction {
         private static func selectorLiteral(_ text: String) -> String? {
             guard text.hasPrefix("@selector("), text.hasSuffix(")") else { return nil }
             return String(text.dropFirst("@selector(".count).dropLast())
+        }
+
+        /// The selector of a statically-dispatched call whose callee is spelled
+        /// `-[Class selector]` / `+[Class selector]` (a direct IMP call the
+        /// compiler emitted instead of a msgSend). It takes the same
+        /// `(self, _cmd, args…)` ABI as a message send, so x0 is the receiver and
+        /// the selector's arguments still begin at x2 — rendering identically as
+        /// `[receiver selector]` rather than the raw `-[Class sel](self, …)`.
+        private static func directMethodSelector(_ callee: String) -> String? {
+            guard callee.hasPrefix("-[") || callee.hasPrefix("+["), callee.hasSuffix("]") else { return nil }
+            let inner = callee.dropFirst(2).dropLast()
+            guard let space = inner.firstIndex(of: " ") else { return nil }
+            let selector = inner[inner.index(after: space)...]
+            guard !selector.isEmpty, !selector.contains(" ") else { return nil }
+            return String(selector)
         }
 
         /// Foundation selector families whose final source arguments continue

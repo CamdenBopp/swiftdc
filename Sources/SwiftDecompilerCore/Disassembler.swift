@@ -1380,7 +1380,12 @@ public struct Disassembler: Sendable {
             case .callResult(let addr):
                 let inner = argumentsByAddress[addr] ?? []
                 let unresolved = "/* unresolved call @ 0x\(String(addr, radix: 16)) */ ?"
-                guard depth < 4, let callee = calleeByAddress[addr] else { return unresolved }
+                // Deeply nested message chains (`[[[[self a] b] c] d]`) are common
+                // in framework code; a shallow cap turns the tail into `unresolved`.
+                // callResult references cannot cycle — a call's arguments are fully
+                // computed before it runs — so this bound only limits line length,
+                // never termination. Kept below the depth-8 expression cap.
+                guard depth < 6, let callee = calleeByAddress[addr] else { return unresolved }
                 // ARC/exclusivity calls return their argument — unwrap them.
                 if DisassembledFunction.isRuntimeNoise(callee) {
                     return inner.first.map { renderValue($0, depth: depth + 1) } ?? unresolved
