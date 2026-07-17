@@ -241,6 +241,61 @@ public extension DisassembledFunction {
         return s
     }
 
+    /// Fixed-ABI runtime/libc entry points whose argument count is publicly
+    /// stable, so a stale live register past the real parameter list is trimmed
+    /// rather than printed as a fabricated argument (`abort([? x])` → `abort()`).
+    ///
+    /// Membership is deliberately conservative and asymmetric, matching the
+    /// tracer's "never invent" rule: clamping only ever DROPS trailing values, so
+    /// a wrong entry costs at most a missed argument — never a fabricated one. An
+    /// unknown callee returns nil and keeps every recovered value. Message sends
+    /// are intentionally absent: their arity comes from the selector's colons, and
+    /// `MessageSend` already pairs those.
+    static func knownCArity(of callee: String) -> Int? {
+        switch callee {
+        case "abort", "__stack_chk_fail", "objc_autoreleasePoolPush",
+             "swift_unexpectedError", "objc_exception_rethrow", "exit":
+            return 0
+        case "objc_opt_class", "objc_opt_self", "objc_alloc", "objc_allocWithZone",
+             "objc_alloc_init", "objc_opt_new", "objc_retain", "objc_release",
+             "objc_autorelease", "objc_retainAutorelease",
+             "objc_retainAutoreleasedReturnValue", "objc_claimAutoreleasedReturnValue",
+             "objc_autoreleaseReturnValue", "objc_autoreleasePoolPop",
+             "objc_sync_enter", "objc_sync_exit", "objc_begin_catch",
+             "objc_retainBlock", "_Block_copy", "free":
+            return 1
+        case "objc_opt_isKindOfClass", "objc_opt_respondsToSelector",
+             "objc_storeStrong", "objc_storeWeak", "objc_initWeak",
+             "objc_loadWeakRetained", "os_log_type_enabled", "objc_sync_wait":
+            return 2
+        case "objc_copyWeak", "objc_moveWeak":
+            return 3
+        default:
+            // The formatted-emit os_log helpers: (dso, log, type, format, buf, size).
+            if callee.hasPrefix("_os_log"), callee.hasSuffix("_impl") { return 6 }
+            // Historical prefix match: some selectors resolve as
+            // `objc_opt_isKindOfClass` with a trailing disambiguator.
+            if callee.hasPrefix("objc_opt_isKindOfClass") { return 2 }
+            return nil
+        }
+    }
+
+    /// Checked-cast / safe-category helpers whose result IS one of their
+    /// arguments — the object being cast — by that argument's index. Unwrapping
+    /// them is faithful (the helper returns its operand unchanged) and mirrors the
+    /// ARC identity unwrap, so a checked cast doesn't bury the value it wraps.
+    /// These are pervasive in Apple's accessibility bundles, where nearly every
+    /// cross-type access goes through one.
+    static func castPassthroughIndex(of callee: String) -> Int? {
+        switch callee {
+        // (targetClass, value, shouldAssert, outError) — the value is argument 1.
+        case "__UIAccessibilityCastAsClass", "__UIAccessibilityCastAsSafeCategory":
+            return 1
+        default:
+            return nil
+        }
+    }
+
     /// Low-level retain/release/exclusivity bookkeeping — hidden by default so
     /// the program logic stands out.
     static func isRuntimeNoise(_ callee: String) -> Bool {

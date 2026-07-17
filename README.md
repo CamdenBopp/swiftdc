@@ -6,10 +6,13 @@ declarations** from the binary's Swift metadata and produces **ARM64
 disassembly annotated with demangled symbols** — including for stripped
 binaries, where the type structure still survives in the `__swift5_*` sections.
 
-This is the "Swift-aware binary browser" tier (think `class-dump` / `dsdump` /
-SwiftDump, plus annotated assembly and best-effort source-like bodies), not a
-full optimizing-decompiler replacement. See
-[Scope & limitations](#scope--limitations).
+It sits between a "Swift-aware binary browser" (think `class-dump` / `dsdump` /
+SwiftDump) and a decompiler: on top of declarations and annotated assembly it
+recovers **structured, source-level function bodies** — Objective-C message
+sends, runtime idioms (`[x isKindOfClass:y]`), `self` field reads and writes,
+returns, and `if`/`else`/`while` whose conditions are back-substituted to source
+(`if (![NSThread isMainThread])`) — though not a full variable-level
+decompilation. See [Scope & limitations](#scope--limitations).
 
 ## What it produces
 
@@ -354,8 +357,11 @@ swift test
   disassembly/annotation is tuned for ARM64).
 - **Best-effort bodies, not original source.** Objective-C metadata plus the
   ARM64 data-flow/CFG passes recover many calls, ivar expressions, returns, and
-  structured branches, but not original local names, macros, comments, exact
-  source types, arbitrary pointer aliasing, or every optimized expression. Raw
+  structured branches — including branch conditions back-substituted to their
+  source form (`if (![x isKindOfClass:[Y class]])`) — but not original local
+  names, macros, comments, exact source types, arbitrary pointer aliasing, or
+  every optimized expression. A value the passes cannot prove renders as `?`
+  rather than a guess, so a fabricated argument or receiver never appears; raw
   annotated assembly remains the authoritative fallback.
 - **Stripped binaries**: function *boundaries* are recovered from
   `LC_FUNCTION_STARTS` and Objective-C IMPs; *names* come from Objective-C

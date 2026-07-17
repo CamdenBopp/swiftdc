@@ -147,8 +147,14 @@ struct ControlFlowStructure {
             if loops[current] == nil, isLoopHeader(current) {
                 lines.append("\(pad)loc_\(hex(block.startAddress)):  // loop header")
             }
+            let succs = block.successors.compactMap { index(of: $0) }
+            // Resolve the branch condition first: a boolean-returning call whose
+            // result only feeds the test is inlined into the condition, so it is
+            // dropped from the straight-line statements to avoid printing it twice.
+            let branch = succs.count >= 2 ? condition(of: block) : nil
             var emittedReturn = false
             for insn in block.instructions {
+                if branch?.consumed.contains(insn.address) == true { continue }
                 if let statement = DisassembledFunction.pseudoStatement(of: insn, hideRuntime: true) {
                     lines.append("\(pad)\(statement)")
                     emittedReturn = emittedReturn || statement.hasPrefix("return ")
@@ -159,14 +165,13 @@ struct ControlFlowStructure {
                 break
             }
 
-            let succs = block.successors.compactMap { index(of: $0) }
             if succs.count >= 2 {
                 let merge = ipdom[current]
                 let thenLines = edge(from: current, to: succs[0], until: merge, indent: indent + 1, visited: &visited, loop: loop)
                 let elseLines = succs[1] != merge
                     ? edge(from: current, to: succs[1], until: merge, indent: indent + 1, visited: &visited, loop: loop)
                     : []
-                let cond = condition(of: block)
+                let cond = branch?.text ?? "?"
                 // Collapse empty branches: drop a no-op `if`, invert when only the
                 // `then` side is empty.
                 if thenLines.isEmpty, elseLines.isEmpty {
@@ -220,44 +225,71 @@ struct ControlFlowStructure {
     /// Reconstruct a readable branch condition from the block's terminator,
     /// back-substituting compared registers through the block (`w8` →
     /// `(w1 & 0xff)`) so the condition reflects what's actually tested.
-    private func condition(of block: BasicBlock) -> String {
-        guard let terminator = block.instructions.last else { return "?" }
+    ///
+    /// Returns the condition text and the addresses of any calls whose result was
+    /// inlined into it — a `bool`-returning `[recv isSomething]` that only feeds
+    /// the branch — so the caller can drop those from the straight-line body
+    /// rather than print the send twice.
+    private func condition(of block: BasicBlock) -> (text: String, consumed: Set<UInt64>) {
+        var consumed: Set<UInt64> = []
+        guard let terminator = block.instructions.last else { return ("?", consumed) }
         let (mnemonic, operands) = Self.decode(terminator.text)
         let last = block.instructions.count - 1
+        // A value reads as a boolean when it is a message send (a `[…]` idiom),
+        // an already-negated boolean, or a metadata-typed BOOL field. `tbz X, #0`
+        // and `cbz X` on such a value are the compiler's `if (!X)`. `before` is
+        // the index the register's definition precedes — the terminator for a
+        // direct test, or the compare for a `cmp`-driven branch (walking from the
+        // terminator would mistake the compare itself for the definition).
+        func isBoolean(_ value: String, operand: String, before: Int) -> Bool {
+            value.hasPrefix("[") || value.hasPrefix("!")
+                || isBooleanSource(operand, before: before, in: block)
+        }
         switch mnemonic {
         case "cbz":
             let operand = operands.first ?? "?"
-            let value = resolve(operand, before: last, in: block)
-            return isBooleanSource(operand, before: last, in: block) ? "!\(value)" : "\(value) == 0"
+            let value = resolve(operand, before: last, in: block, consumed: &consumed)
+            return (isBoolean(value, operand: operand, before: last) ? "!\(value)" : "\(value) == 0", consumed)
         case "cbnz":
             let operand = operands.first ?? "?"
-            let value = resolve(operand, before: last, in: block)
-            return isBooleanSource(operand, before: last, in: block) ? value : "\(value) != 0"
-        case "tbz": return "bit \(Self.cleanImmediate(operands.count > 1 ? operands[1] : "?")) of \(resolve(operands.first ?? "?", before: last, in: block)) clear"
-        case "tbnz": return "bit \(Self.cleanImmediate(operands.count > 1 ? operands[1] : "?")) of \(resolve(operands.first ?? "?", before: last, in: block)) set"
+            let value = resolve(operand, before: last, in: block, consumed: &consumed)
+            return (isBoolean(value, operand: operand, before: last) ? value : "\(value) != 0", consumed)
+        case "tbz":
+            let operand = operands.first ?? "?"
+            let bit = Self.cleanImmediate(operands.count > 1 ? operands[1] : "?")
+            let value = resolve(operand, before: last, in: block, consumed: &consumed)
+            // Bit 0 is the boolean bit: `tbz X, #0` branches when X is false.
+            if bit == "0", isBoolean(value, operand: operand, before: last) { return ("!\(value)", consumed) }
+            return ("bit \(bit) of \(value) clear", consumed)
+        case "tbnz":
+            let operand = operands.first ?? "?"
+            let bit = Self.cleanImmediate(operands.count > 1 ? operands[1] : "?")
+            let value = resolve(operand, before: last, in: block, consumed: &consumed)
+            if bit == "0", isBoolean(value, operand: operand, before: last) { return (value, consumed) }
+            return ("bit \(bit) of \(value) set", consumed)
         default:
             let op = Self.conditionOperator(mnemonic)
             for index in stride(from: last - 1, through: 0, by: -1) {
                 let (m, ops) = Self.decode(block.instructions[index].text)
                 if ["cmp", "subs", "cmn", "adds"].contains(m), ops.count >= 2 {
-                    let lhs = resolve(ops[0], before: index, in: block)
-                    let rhs = resolve(ops[1], before: index, in: block)
+                    let lhs = resolve(ops[0], before: index, in: block, consumed: &consumed)
+                    let rhs = resolve(ops[1], before: index, in: block, consumed: &consumed)
                     // If back-substitution collapsed distinct operands to the same
                     // text, it lost information — show the raw registers instead.
                     if lhs == rhs, ops[0] != ops[1] {
-                        return "\(ops[0]) \(op) \(Self.cleanImmediate(ops[1]))"
+                        return ("\(ops[0]) \(op) \(Self.cleanImmediate(ops[1]))", consumed)
                     }
-                    if isBooleanSource(ops[0], before: index, in: block),
+                    if isBoolean(lhs, operand: ops[0], before: index),
                        let simplified = Self.booleanComparison(lhs: lhs, op: op, rhs: rhs) {
-                        return simplified
+                        return (simplified, consumed)
                     }
-                    return "\(lhs) \(op) \(rhs)"
+                    return ("\(lhs) \(op) \(rhs)", consumed)
                 }
                 if m == "tst", ops.count >= 2 {
-                    return "(\(resolve(ops[0], before: index, in: block)) & \(Self.cleanImmediate(ops[1]))) \(op) 0"
+                    return ("(\(resolve(ops[0], before: index, in: block, consumed: &consumed)) & \(Self.cleanImmediate(ops[1]))) \(op) 0", consumed)
                 }
             }
-            return op == "?" ? terminator.text : "cond \(op)"
+            return (op == "?" ? terminator.text : "cond \(op)", consumed)
         }
     }
 
@@ -292,8 +324,10 @@ struct ControlFlowStructure {
     }
 
     /// Render an operand, substituting a register one level back through a
-    /// data-moving definition earlier in the same block.
-    private func resolve(_ token: String, before: Int, in block: BasicBlock) -> String {
+    /// data-moving definition earlier in the same block. When the operand is the
+    /// result of a boolean-returning message send, the send is inlined and its
+    /// address recorded in `consumed`.
+    private func resolve(_ token: String, before: Int, in block: BasicBlock, consumed: inout Set<UInt64>) -> String {
         if token.hasPrefix("#") { return Self.cleanImmediate(token) }
         guard let register = Self.canonicalRegister(token) else { return token }
         for index in stride(from: before - 1, through: 0, by: -1) {
@@ -303,9 +337,18 @@ struct ControlFlowStructure {
             // the stack pointer that was passed to objc_msgSendSuper2).
             if instruction.controlFlow == .call,
                let number = Int(register.dropFirst()), number <= 17 {
-                if register == "x0", instruction.annotation?.components(separatedBy: "  ")
-                    .contains(where: { $0.hasPrefix("self = ") }) == true {
-                    return "self"
+                if register == "x0" {
+                    if instruction.annotation?.components(separatedBy: "  ")
+                        .contains(where: { $0.hasPrefix("self = ") }) == true {
+                        return "self"
+                    }
+                    // The branch tests the value this call returned. Inline the
+                    // send so the condition reads as source (`[x isKindOfClass:…]`),
+                    // and record the call so the body drops its now-dead statement.
+                    if let send = Self.callValueExpression(instruction) {
+                        consumed.insert(instruction.address)
+                        return send
+                    }
                 }
                 return token
             }
@@ -328,11 +371,31 @@ struct ControlFlowStructure {
             case "lsl": return ops.count >= 3 ? "(\(ops[1]) << \(Self.cleanImmediate(ops[2])))" : token
             case "ubfx", "sbfx": return ops.count >= 2 ? sourceName(ops[1]) : sourceName(token)
             case "mov" where ops.count >= 2:
-                return ops[1].hasPrefix("#") ? Self.cleanImmediate(ops[1]) : sourceName(ops[1])
+                if ops[1].hasPrefix("#") { return Self.cleanImmediate(ops[1]) }
+                // Follow a copy out of the ABI return register, so a boolean moved
+                // aside before a clobbering call still resolves to its source send.
+                if Self.canonicalRegister(ops[1]) == "x0" {
+                    return resolve(ops[1], before: index, in: block, consumed: &consumed)
+                }
+                return sourceName(ops[1])
             default: return sourceName(token)
             }
         }
         return sourceName(token)
+    }
+
+    /// The source-level expression a value-returning call denotes — a message
+    /// send (`[recv sel:…]`) or a runtime idiom (`[x isKindOfClass:y]`) — for
+    /// inlining into a branch condition. Nil for a void call, so only genuine
+    /// values are substituted. Unlike `callStatement`, this ignores
+    /// `resultConsumed`: a result consumed by the branch is exactly the case here.
+    private static func callValueExpression(_ insn: Instruction) -> String? {
+        guard let callee = DisassembledFunction.calleeName(of: insn) else { return nil }
+        let arguments = insn.callArguments ?? []
+        if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {
+            return send.rendered
+        }
+        return DisassembledFunction.objcRuntimeIdiom(callee: callee, arguments: arguments)
     }
 
     /// At an Objective-C method entry x2...x7 are the first six explicit
@@ -391,6 +454,10 @@ struct ControlFlowStructure {
             return String(condition.dropFirst(2).dropLast())
         }
         if condition.hasPrefix("!") { return String(condition.dropFirst()) }
+        // A bit test inverts by flipping set/clear, not by prefixing `!` — which
+        // would read as the double negative `!bit 0 of w8 clear`.
+        if condition.hasSuffix(" clear") { return String(condition.dropLast(6)) + " set" }
+        if condition.hasSuffix(" set") { return String(condition.dropLast(4)) + " clear" }
         return "!\(condition)"
     }
 

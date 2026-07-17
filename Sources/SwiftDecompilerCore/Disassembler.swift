@@ -324,13 +324,21 @@ public struct Disassembler: Sendable {
         let selfIndex = SelfTypeIndex.build(in: machO)
         functions = functions.map { function in
             let objcMethod = function.objcMethod
-            let selfTypeName = objcMethod == nil && !fieldMaps.isEmpty
+            // Runtime-added category IMPs (an accessibility bundle is almost all
+            // of them) frequently have no ObjC metadata binding, yet their symbol
+            // name carries the full method shape. Recover the receiver convention
+            // from the symbol so `self` survives — without it x0 is never seeded
+            // and every receiver renders `?`.
+            let symbolEntry = objcMethod == nil ? Self.objcEntryFromSymbol(function.symbol) : nil
+            let selfTypeName = objcMethod == nil && symbolEntry == nil && !fieldMaps.isEmpty
                 ? Self.selfType(of: function, selfIndex: selfIndex, fieldMaps: fieldMaps)
                 : nil
             let entry: MethodEntryConvention? = if let objcMethod {
                 objcMethod.isInitializer
                     ? .objectiveCInitializer(argumentCount: objcMethod.argumentCount)
                     : .objectiveC(argumentCount: objcMethod.argumentCount)
+            } else if let symbolEntry {
+                symbolEntry
             } else if selfTypeName != nil {
                 .swiftInstance
             } else {
@@ -338,6 +346,10 @@ public struct Disassembler: Sendable {
             }
             let fieldMap: FieldMap? = if let objcMethod, !objcMethod.isClassMethod {
                 objcIndex.fieldMaps[objcMethod.className]
+            } else if let className = objcMethod == nil ? Self.objcClassName(fromSymbol: function.symbol) : nil {
+                // No binding, but the symbol names the owning class: its ivar
+                // layout may still be indexed, so `self->_ivar` can be named.
+                objcIndex.fieldMaps[className]
             } else {
                 selfTypeName.flatMap { fieldMaps[$0] }
             }
@@ -345,7 +357,7 @@ public struct Disassembler: Sendable {
                 in: function, resolver: resolver, swiftTargets: swiftTargets,
                 entry: entry,
                 fieldMap: fieldMap,
-                objcFieldSyntax: objcMethod != nil
+                objcFieldSyntax: objcMethod != nil || symbolEntry != nil
             )
         }
 
@@ -1152,6 +1164,45 @@ public struct Disassembler: Sendable {
         return rawCalleeSymbol(of: insn).map(isSwiftMangled) ?? false
     }
 
+    /// Split an Objective-C method symbol (`-[Class sel:with:]`, `+[Class sel]`,
+    /// or with a category `-[Class(Cat) sel]`) into its owner name and selector.
+    /// Nil for anything that is not an ObjC method symbol.
+    private static func objcMethodSymbolParts(_ symbol: String) -> (owner: Substring, selector: Substring)? {
+        guard symbol.hasPrefix("-[") || symbol.hasPrefix("+["), symbol.hasSuffix("]") else { return nil }
+        let inner = symbol.dropFirst(2).dropLast()
+        guard let space = inner.firstIndex(of: " ") else { return nil }
+        let owner = inner[..<space]
+        let selector = inner[inner.index(after: space)...]
+        // A real selector is a run of identifier characters and colons — reject
+        // anything with embedded spaces (a demangled Swift name, say).
+        guard !owner.isEmpty, !selector.isEmpty, !selector.contains(" ") else { return nil }
+        return (owner, selector)
+    }
+
+    /// The Objective-C receiver convention implied by a method symbol name, used
+    /// when no metadata binding exists. `self` is x0, `_cmd` is x1, and one
+    /// explicit argument per selector colon begins at x2 — the same ABI a bound
+    /// method gets. Initializer families are detected from selector spelling so
+    /// `self = [super init…]` still threads through.
+    private static func objcEntryFromSymbol(_ symbol: String) -> MethodEntryConvention? {
+        guard let (_, selector) = objcMethodSymbolParts(symbol) else { return nil }
+        let argumentCount = selector.filter { $0 == ":" }.count
+        let isInitializer = selector == "init"
+            || (selector.hasPrefix("init") && selector.dropFirst(4).first.map { !$0.isLowercase } == true)
+        return isInitializer
+            ? .objectiveCInitializer(argumentCount: argumentCount)
+            : .objectiveC(argumentCount: argumentCount)
+    }
+
+    /// The owning class name from a method symbol, category suffix stripped
+    /// (`-[UILabel(Accessibility) foo]` → `UILabel`), for looking up an ivar
+    /// layout the metadata binding didn't provide.
+    private static func objcClassName(fromSymbol symbol: String) -> String? {
+        guard let (owner, _) = objcMethodSymbolParts(symbol) else { return nil }
+        if let paren = owner.firstIndex(of: "(") { return String(owner[..<paren]) }
+        return String(owner)
+    }
+
     private func enrichCallArguments(
         in function: DisassembledFunction,
         resolver: ReferenceResolver,
@@ -1275,14 +1326,7 @@ public struct Disassembler: Sendable {
         /// live values in later argument registers. Keep only parameters the
         /// helper actually accepts before embedding it in a source expression.
         func normalizedArguments(callee: String, values: [AbstractValue]) -> [AbstractValue] {
-            let arity: Int? = if callee == "objc_opt_class" || callee == "objc_alloc" {
-                1
-            } else if callee.hasPrefix("objc_opt_isKindOfClass") {
-                2
-            } else {
-                nil
-            }
-            return arity.map { Array(values.prefix($0)) } ?? values
+            DisassembledFunction.knownCArity(of: callee).map { Array(values.prefix($0)) } ?? values
         }
 
         /// Render a runtime helper as the source send it lowers from.
@@ -1340,6 +1384,13 @@ public struct Disassembler: Sendable {
                 // ARC/exclusivity calls return their argument — unwrap them.
                 if DisassembledFunction.isRuntimeNoise(callee) {
                     return inner.first.map { renderValue($0, depth: depth + 1) } ?? unresolved
+                }
+                // Checked-cast / safe-category helpers return their operand
+                // unchanged; unwrap to that operand so the cast doesn't bury the
+                // value. The operand index is explicit per helper, never guessed.
+                if let index = DisassembledFunction.castPassthroughIndex(of: callee),
+                   index < inner.count {
+                    return renderValue(inner[index], depth: depth + 1)
                 }
                 // `objc_alloc(cls)` is `[cls alloc]`, so the argument is the
                 // receiver as-is.
@@ -1603,8 +1654,12 @@ public struct Disassembler: Sendable {
                 return renderValue(site.selfValue, depth: 0)
             }()
 
-            let rendered: [String] = (argumentsByAddress[insn.address]).map {
-                renderArguments($0, depth: 0)
+            let rendered: [String] = (argumentsByAddress[insn.address]).map { values in
+                // Clamp a fixed-ABI callee's arguments to its real arity before
+                // rendering the top-level statement, so a stale live register does
+                // not surface as a fabricated trailing argument (`abort([? x])`).
+                let clamped = callee.map { normalizedArguments(callee: $0, values: values) } ?? values
+                return renderArguments(clamped, depth: 0)
             } ?? []
             guard !rendered.isEmpty || selfText != nil || !sourceNotes.isEmpty
                     || consumedCallResults.contains(insn.address)

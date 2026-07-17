@@ -100,7 +100,6 @@ public struct SelfTypeIndex: Sendable {
         case .setter: return "setter"
         case .modifyCoroutine: return "modify"
         case .readCoroutine: return "read"
-        default: return "\(kind)"
         }
     }
 }
