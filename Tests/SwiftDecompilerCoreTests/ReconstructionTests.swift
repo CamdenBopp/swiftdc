@@ -483,19 +483,21 @@ private func reconstructionStructured(
         #expect(countTo.contains("while (i < arg0)"))
     }
     // Adversarial: a NON-linear update (`i *= 2`) is not an `i ± c` recurrence, so
-    // the induction pass declines — the comparison stays in raw registers and no
-    // induction variable is fabricated.
+    // the induction pass declines — the comparison stays in raw registers, and no
+    // induction variable or `i += …` body update is fabricated.
     if let doubleUntil = try await reconstructionStructured("doubleUntil") {
         #expect(!doubleUntil.contains("(i "))
+        #expect(!doubleUntil.contains("i +="))
     }
 }
 
 @Test func rotatesLoopHeaderTestIntoWhileConditionIfPresent() async throws {
     // A header that is purely the loop test rotates into `while (cond) { … }`
-    // (here with the named induction variable) instead of `while (true) { if
-    // (exit) return … }`.
+    // (here with the named induction variable), and the proven induction step
+    // renders as the body update `i += 1` — filling what was an empty body.
     if let countTo = try await reconstructionStructured("countTo") {
         #expect(countTo.contains("while (i < arg0)"))
+        #expect(countTo.contains("i += 1"))
         #expect(!countTo.contains("while (true)"))
     }
     // Adversarial: a `for x in array` header does real work each iteration

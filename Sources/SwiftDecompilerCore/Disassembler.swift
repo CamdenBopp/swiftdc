@@ -2694,6 +2694,11 @@ public struct Disassembler: Sendable {
                     sourceNotes.append("cond: \(renderValue(condition, depth: 0))")
                 }
             }
+            // A proven loop induction body update (`i += 1`) on the loop header's
+            // branch — the structurer appends it inside a rotated `while (i < n)`.
+            if let update = analysis.loopUpdates[insn.address] {
+                sourceNotes.append("loop-update: \(update)")
+            }
 
             if insn.controlFlow == .branch, let callee,
                let site = sites[insn.address],

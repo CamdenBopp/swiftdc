@@ -255,6 +255,15 @@ struct ControlFlowStructure {
                     // redundant once the test is in the `while`. Drop it.
                     if body.last == "\(pad)    continue" { body.removeLast() }
                     lines += body
+                    // Append the proven induction update (`i += 1`) at the body end
+                    // — the Swift for/while increment position. Only when the loop
+                    // condition is the tracer-baked one (which names `i`); if the
+                    // condition fell back to raw registers, `i` would be undefined.
+                    let annotation = blocks[current].instructions.last?.annotation
+                    if Self.bakedCondition(annotation) != nil,
+                       let update = Self.bakedLoopUpdate(annotation) {
+                        lines.append("\(pad)    \(update)")
+                    }
                     lines.append("\(pad)}")
                     current = rotated.exit   // resume at the loop's exit successor
                 } else {
@@ -641,6 +650,17 @@ struct ControlFlowStructure {
             let trimmed = note.trimmingCharacters(in: .whitespaces)
             guard trimmed.hasPrefix("cond: ") else { continue }
             return unwrapOuterParentheses(String(trimmed.dropFirst("cond: ".count)))
+        }
+        return nil
+    }
+
+    /// The loop induction body update (`i += 1`) the enrichment baked on a loop
+    /// header's branch, or nil.
+    private static func bakedLoopUpdate(_ annotation: String?) -> String? {
+        guard let annotation else { return nil }
+        for note in annotation.components(separatedBy: "  ") {
+            let trimmed = note.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("loop-update: ") { return String(trimmed.dropFirst("loop-update: ".count)) }
         }
         return nil
     }

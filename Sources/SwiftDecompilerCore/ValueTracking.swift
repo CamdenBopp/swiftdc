@@ -286,6 +286,11 @@ public struct FunctionAnalysis: Sendable {
     /// (`arg0 >= arg1`) in place of raw registers. Compare-and-branch forms
     /// (`cbz`/`tbz`) carry no condition code and are absent here.
     public var branchConditions: [UInt64: AbstractValue] = [:]
+    /// A proven loop induction body update, keyed by the loop header's branch
+    /// instruction — the text `i += 1` the structurer appends at the loop-body
+    /// end for a rotated `while (i < n) { … }`. Only set for a single, proven
+    /// linear induction variable (see `resolveLoopInductions`).
+    public var loopUpdates: [UInt64: String] = [:]
     /// x0 immediately before a return or unconditional branch. The enrichment
     /// pass uses Objective-C return types and resolved tail helpers to decide
     /// which of these are honest source-level returns.
@@ -441,8 +446,9 @@ public struct ValueTracer: Sendable {
         // Loop-carried induction variables: a header slot with a proven constant
         // initial value and a proven `i ± c` recurrence across the back-edge is
         // named `.local(i)`, so the loop's exit comparison reconstructs with a
-        // name (`i < n`) instead of raw registers. Declines anything unproven.
-        resolveLoopInductions(
+        // name (`i < n`) instead of raw registers, and its body update `i += c` is
+        // recorded. Declines anything unproven.
+        let loopUpdates = resolveLoopInductions(
             blocks: blocks, predecessors: predecessors,
             blockByStart: blockByStart, inState: &inState, outState: outState
         )
@@ -450,6 +456,7 @@ public struct ValueTracer: Sendable {
         // Snapshot pass: replay from each block's fixed entry state, recording
         // call arguments and self-field accesses.
         var result = FunctionAnalysis()
+        result.loopUpdates = loopUpdates
         for block in blocks {
             var registers = inState[block.startAddress] ?? [:]
             for insn in block.instructions {
@@ -874,7 +881,8 @@ public struct ValueTracer: Sendable {
         blockByStart: [UInt64: BasicBlock],
         inState: inout [UInt64: State],
         outState: [UInt64: State]
-    ) {
+    ) -> [UInt64: String] {
+        var updates: [UInt64: String] = [:]
         var sourcesByHeader: [UInt64: [UInt64]] = [:]
         for (from, header) in Self.backEdges(blocks: blocks, blockByStart: blockByStart) {
             sourcesByHeader[header, default: []].append(from)
@@ -902,25 +910,59 @@ public struct ValueTracer: Sendable {
             // Seed each candidate with a fresh placeholder and re-transfer the loop
             // body so the back-edge value is expressed in terms of the placeholder.
             var seed = preLoopEntry
-            var placeholderId: [String: Int] = [:]
+            var placeholderId: [Int: String] = [:]
             for (offset, key) in candidateKeys.enumerated() {
                 seed[key] = .local(offset)
-                placeholderId[key] = offset
+                placeholderId[offset] = key
             }
             let bodyOut = retransferBody(
                 body: body, header: header, headerSeed: seed,
                 blockByStart: blockByStart, predecessors: predecessors
             )
             guard let backOut = bodyOut[backFrom] else { continue }
-            // Accept a slot with a proven `placeholder ± c` recurrence, naming it
-            // with a stable display id.
-            for key in candidateKeys {
-                guard let pid = placeholderId[key], let recurrence = backOut[key],
-                      Self.isInductionRecurrence(recurrence, id: pid) else { continue }
-                inState[header, default: [:]][key] = .local(displayId)
-                displayId += 1
+            // The compared slot is the one the header's loop test references — the
+            // `.local` placeholder in the re-transferred compare flags. Naming ONLY
+            // it keeps `-Onone`'s redundant copies of the counter from becoming
+            // phantom variables, and matches the body update to the condition.
+            guard let comparedPid = Self.comparedInductionId(in: bodyOut[header]?[Self.flagsKey]),
+                  let comparedKey = placeholderId[comparedPid],
+                  let recurrence = backOut[comparedKey],
+                  Self.isInductionRecurrence(recurrence, id: comparedPid)
+            else { continue }
+            let name = Disassembler.inductionVariableName(displayId)
+            inState[header, default: [:]][comparedKey] = .local(displayId)
+            displayId += 1
+            if let branchAddr = blockByStart[header]?.instructions.last?.address,
+               let update = Self.inductionUpdate(recurrence, id: comparedPid, name: name) {
+                updates[branchAddr] = update
             }
         }
+        return updates
+    }
+
+    /// The placeholder id of the induction operand in a header's compare flags
+    /// (`i - n`), or nil when neither side is a seeded induction placeholder.
+    private static func comparedInductionId(in flags: AbstractValue?) -> Int? {
+        guard case .binary(.subtract, let a, let b)? = flags else { return nil }
+        if case .local(let id) = a { return id }
+        if case .local(let id) = b { return id }
+        return nil
+    }
+
+    /// Render a proven linear recurrence as the body update `name += c` / `-= c`.
+    private static func inductionUpdate(_ recurrence: AbstractValue, id: Int, name: String) -> String? {
+        guard case .binary(let op, let a, let b) = recurrence else { return nil }
+        func isLocal(_ v: AbstractValue) -> Bool { if case .local(let x) = v { return x == id }; return false }
+        func constOf(_ v: AbstractValue) -> UInt64? { if case .immediate(let c) = v { return c }; return nil }
+        let step: UInt64?
+        let add: Bool
+        switch op {
+        case .add: add = true; step = isLocal(a) ? constOf(b) : (isLocal(b) ? constOf(a) : nil)
+        case .subtract: add = false; step = isLocal(a) ? constOf(b) : nil
+        default: return nil
+        }
+        guard let c = step, c != 0 else { return nil }
+        return "\(name) \(add ? "+=" : "-=") \(c)"
     }
 
     /// Back-edges `(from, header)`: DFS edges to a node still on the recursion
