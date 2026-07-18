@@ -6,6 +6,27 @@
 > `decompiler-comparison.md` §8 (technical debt) and candid-assessment #5
 > ("most important architectural investment next").
 
+## Progress log
+
+- **Phase 4a DONE (commit `fc7e310`) — step 4, the checked-arithmetic trap fold**
+  (the user-chosen "trap-fold first"). Swift's checked `+`/`-`/`+=` overflow
+  branch to a trap sink is folded in the structured view; adversarially verified
+  at -O that genuine precondition/bounds/unwrap/fatalError traps survive. Also
+  fixed a CFG root cause (`brk`/`udf` had a spurious fall-through successor).
+  `sumTo` → clean `while`; `Tree.sum()` loses its overflow trap. New
+  structured-view test harness. 96 tests; --pseudo self-host green (0 crashes).
+- **⚠️ DISCOVERED — pre-existing `--structured` stack overflow.** Running
+  `--structured` over a large binary (swiftdc self-host) SIGBUSes: the recursive
+  `emit`/`edge` structuring has no depth bound and overflows the 8 MB stack on a
+  deep CFG (crash report: KERN_PROTECTION_FAILURE at the stack-guard region).
+  Confirmed pre-existing (the pre-fold binary crashes identically) — never caught
+  because prior self-host gates used `--pseudo`. It violates the Structurer's own
+  "degrade to goto, never crash" contract. **This is the immediate next step**
+  (a prerequisite for reliable `--structured`, which the layer-unification builds
+  on): thread a depth counter through `emit`/`edge` and degrade to the existing
+  `goto loc_<addr>` fallback past a safe depth. Then steps 1–3 (loop-carried φ,
+  body updates, named conditions) can proceed on a crash-safe structured path.
+
 ## TL;DR — the plan was misdiagnosed; here is what the code actually does
 
 Phases 1–3 assumed the next step was "add a loop structurer, with φ to feed it."
