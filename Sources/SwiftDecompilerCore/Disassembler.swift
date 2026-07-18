@@ -373,9 +373,9 @@ public struct Disassembler: Sendable {
             } else if let symbolEntry {
                 symbolEntry
             } else if selfTypeName != nil {
-                .swiftInstance(scalarArgumentCount: Self.swiftScalarArgumentCount(of: function) ?? 0)
-            } else if let scalarArgs = Self.swiftScalarArgumentCount(of: function) {
-                .swiftFunction(argumentCount: scalarArgs)
+                .swiftInstance(scalarArguments: Self.swiftScalarArgumentRegisters(of: function) ?? [:])
+            } else if let scalarArgs = Self.swiftScalarArgumentRegisters(of: function) {
+                .swiftFunction(scalarArguments: scalarArgs)
             } else {
                 nil
             }
@@ -1312,13 +1312,14 @@ public struct Disassembler: Sendable {
         return .integer
     }
 
-    /// The argument count to seed for a Swift free function or static method
-    /// whose every parameter is a single-register integer/pointer scalar — the
-    /// only shape whose parameters map cleanly onto x0…x(n-1). Nil for any
-    /// signature with an aggregate, floating-point, generic, `inout`, or
-    /// otherwise multi-register parameter (or none), so a register is never
-    /// mislabeled `arg k` when the real parameter layout differs.
-    static func swiftScalarArgumentCount(of function: DisassembledFunction) -> Int? {
+    /// The register→source-argument-index map to seed for a Swift free function
+    /// or static method whose every parameter is a single-register scalar. In the
+    /// Swift calling convention integer/pointer parameters fill x0… and
+    /// floating-point ones fill v0… by independent counters, so the two are
+    /// tracked separately. Nil for any signature with an aggregate, generic,
+    /// `inout`, `String`, or otherwise multi-register parameter (or none), so a
+    /// register is never mislabeled `arg k` when the real layout differs.
+    static func swiftScalarArgumentRegisters(of function: DisassembledFunction) -> [String: Int]? {
         guard function.objcMethod == nil, let name = function.demangledName,
               Self.isSwiftMangled(function.symbol),
               // A getter/setter/accessor or a name without a call signature has no
@@ -1329,18 +1330,34 @@ public struct Disassembler: Sendable {
         guard let paramsRange = DisassembledFunction.outermostArgumentListRange(of: String(signature))
         else { return nil }
         let parameters = DisassembledFunction.splitTopLevelArguments(signature[paramsRange])
-        guard !parameters.isEmpty, parameters.count <= 8,
-              parameters.allSatisfy(Self.isSingleRegisterScalarParameter)
-        else { return nil }
-        return parameters.count
+        guard !parameters.isEmpty else { return nil }
+
+        var registers: [String: Int] = [:]
+        var integerIndex = 0, floatIndex = 0
+        for (index, parameter) in parameters.enumerated() {
+            switch Self.scalarParameterClass(parameter) {
+            case .integer:
+                guard integerIndex < 8 else { return nil }
+                registers["x\(integerIndex)"] = index
+                integerIndex += 1
+            case .floating:
+                guard floatIndex < 8 else { return nil }
+                registers["v\(floatIndex)"] = index
+                floatIndex += 1
+            case nil:
+                return nil // not provably single-register — seed nothing
+            }
+        }
+        return registers
     }
 
-    /// Whether a demangled parameter is a single-register integer or pointer
-    /// scalar. Deliberately an under-approximation: an unlisted type (a class
-    /// reference is single-register too, but unidentifiable by name) is treated
-    /// as multi-register and blocks seeding, trading missed parameters for never
-    /// mislabeling one.
-    private static func isSingleRegisterScalarParameter(_ parameter: String) -> Bool {
+    private enum ScalarParameterClass { case integer, floating }
+
+    /// The register class of a demangled parameter, or nil when it isn't provably
+    /// a single-register scalar. Deliberately an under-approximation: an unlisted
+    /// type (a class reference is single-register too, but unidentifiable by name)
+    /// blocks seeding, trading missed parameters for never mislabeling one.
+    private static func scalarParameterClass(_ parameter: String) -> ScalarParameterClass? {
         // Demangled Swift signatures list bare types with no argument labels, but
         // tolerate a `label: Type` form defensively by taking the type.
         var type = parameter
@@ -1348,15 +1365,21 @@ public struct Disassembler: Sendable {
             type = String(type[colon.upperBound...])
         }
         type = type.trimmingCharacters(in: .whitespaces)
-        let scalars: Set<String> = [
+        let floating: Set<String> = [
+            "Swift.Double", "Swift.Float", "Swift.Float16", "Swift.Float32",
+            "Swift.Float64", "Swift.CGFloat", "CoreGraphics.CGFloat",
+        ]
+        if floating.contains(type) { return .floating }
+        let integers: Set<String> = [
             "Swift.Int", "Swift.UInt", "Swift.Int8", "Swift.Int16", "Swift.Int32",
             "Swift.Int64", "Swift.UInt8", "Swift.UInt16", "Swift.UInt32", "Swift.UInt64",
             "Swift.Bool", "Swift.OpaquePointer", "Swift.UnsafeRawPointer",
             "Swift.UnsafeMutableRawPointer",
         ]
-        if scalars.contains(type) { return true }
-        return type.hasPrefix("Swift.UnsafePointer<")
-            || type.hasPrefix("Swift.UnsafeMutablePointer<")
+        if integers.contains(type) { return .integer }
+        if type.hasPrefix("Swift.UnsafePointer<")
+            || type.hasPrefix("Swift.UnsafeMutablePointer<") { return .integer }
+        return nil
     }
 
     private func enrichCallArguments(

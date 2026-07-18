@@ -120,11 +120,12 @@ public indirect enum AbstractValue: Equatable, Sendable {
 
 /// Register state that metadata proves at a method's entry point.
 public enum MethodEntryConvention: Sendable, Equatable {
-    /// Swift instance method: `self` is x20, and the first `scalarArgumentCount`
-    /// single-register scalar parameters occupy x0…. The count is 0 when the
-    /// signature has parameters that aren't provably single-register (they are
-    /// left unseeded rather than mislabeled).
-    case swiftInstance(scalarArgumentCount: Int)
+    /// Swift instance method: `self` is x20, and each provably single-register
+    /// scalar parameter occupies the register named in `scalarArguments`
+    /// (register key → source argument index — integers in x0…, floats in v0…).
+    /// The map is empty when any parameter isn't provably single-register (they
+    /// are left unseeded rather than mislabeled).
+    case swiftInstance(scalarArguments: [String: Int])
     /// Objective-C class or instance method: `self` is x0, `_cmd` is x1, and
     /// explicit selector arguments begin in x2.
     case objectiveC(argumentCount: Int)
@@ -133,11 +134,11 @@ public enum MethodEntryConvention: Sendable, Equatable {
     /// method's new `self` for subsequent ivar accesses.
     case objectiveCInitializer(argumentCount: Int)
     /// A Swift free function or static method whose parameters are all
-    /// single-register integer/pointer scalars, so they map exactly onto
-    /// x0…x(n-1) with no aggregate spilling. Seeded only under that proof (see
-    /// `swiftScalarArgumentCount`) so a multi-register parameter never shifts the
-    /// mapping and mislabels a register.
-    case swiftFunction(argumentCount: Int)
+    /// single-register scalars, mapped by `scalarArguments` (register key →
+    /// source argument index — integers in x0…, floats in v0…). Seeded only under
+    /// that proof (see `swiftScalarArgumentRegisters`) so a multi-register
+    /// parameter never shifts the mapping and mislabels a register.
+    case swiftFunction(scalarArguments: [String: Int])
 
     var isObjectiveCInitializer: Bool {
         if case .objectiveCInitializer = self { return true }
@@ -234,14 +235,12 @@ public struct ValueTracer: Sendable {
     private static func initialState(entry: MethodEntryConvention?) -> State {
         var state: State = ["sp": .frame(0)]
         switch entry {
-        case .swiftInstance(let scalarArgumentCount):
+        case .swiftInstance(let scalarArguments):
             state["x20"] = .selfPointer
-            // Parameters occupy x0… independently of the `self` register (x20),
-            // so an instance method's scalar arguments are seeded the same way a
-            // free function's are.
-            for argument in 0 ..< min(max(scalarArgumentCount, 0), 8) {
-                state["x\(argument)"] = .argument(argument)
-            }
+            // Parameters occupy x0…/v0… independently of the `self` register
+            // (x20), so an instance method's scalar arguments are seeded the same
+            // way a free function's are.
+            for (register, argument) in scalarArguments { state[register] = .argument(argument) }
         case .objectiveC(let argumentCount), .objectiveCInitializer(let argumentCount):
             state["x0"] = .selfPointer
             // AAPCS64 has six argument registers left after self/_cmd. Further
@@ -257,13 +256,11 @@ public struct ValueTracer: Sendable {
             for argument in 6 ..< max(6, min(max(argumentCount, 0), 32)) {
                 state[Self.stackKey(Int64(argument - 6) * 8)] = .argument(argument)
             }
-        case .swiftFunction(let argumentCount):
-            // No `self`/`_cmd` prefix: a Swift function's first scalar argument is
-            // x0. Only the eight argument registers are seeded; a proven all-scalar
-            // signature never spills, so there is nothing past x7 to recover.
-            for argument in 0 ..< min(max(argumentCount, 0), 8) {
-                state["x\(argument)"] = .argument(argument)
-            }
+        case .swiftFunction(let scalarArguments):
+            // No `self`/`_cmd` prefix: a Swift function's integer arguments occupy
+            // x0…, its floating-point ones v0…. A proven all-scalar signature
+            // never spills, so there is nothing past the eighth of each to recover.
+            for (register, argument) in scalarArguments { state[register] = .argument(argument) }
         case nil:
             break
         }
@@ -282,7 +279,7 @@ public struct ValueTracer: Sendable {
     ///   function is known to be an instance method of a known type — see
     ///   `AbstractValue.selfPointer`.
     public func analyze(_ function: DisassembledFunction, hasSelf: Bool = false) -> FunctionAnalysis {
-        analyze(function, entry: hasSelf ? .swiftInstance(scalarArgumentCount: 0) : nil)
+        analyze(function, entry: hasSelf ? .swiftInstance(scalarArguments: [:]) : nil)
     }
 
     /// Analyze with a metadata-proven Swift or Objective-C method entry state.
