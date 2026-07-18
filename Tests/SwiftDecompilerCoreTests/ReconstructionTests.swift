@@ -57,6 +57,11 @@ private func reconstructionPseudo(
     guard let poly = try await reconstructionPseudo("polynomial") else { return }
     #expect(poly.contains("return ((arg0 * arg0) + 3.14)"))
     #expect(!poly.contains("0x"))
+
+    // An fmov-encodable constant is decoded from its machine encoding, not a
+    // literal-pool load, and renders as its decimal.
+    guard let scaled = try await reconstructionPseudo("scaled") else { return }
+    #expect(scaled.contains("return (arg0 * 2.5)"))
 }
 
 // MARK: - HFA struct decomposition

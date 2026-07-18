@@ -1015,11 +1015,21 @@ public struct ValueTracer: Sendable {
         case ARM64_INS_FMOV, ARM64_INS_FCVT, ARM64_INS_SCVTF, ARM64_INS_UCVTF,
              ARM64_INS_FCVTZS, ARM64_INS_FCVTZU:
             // A register-to-register FP move or width/int conversion carries the
-            // value through unchanged for display. An `fmov d0, #1.0` immediate is
-            // left unknown rather than surfaced as a raw bit pattern.
-            guard let dest = destinationRegister(detail), detail.operands.count >= 2,
-                  detail.operands[1].operand.register != nil
-            else { clobber(detail, into: &registers); return }
+            // value through unchanged for display.
+            guard let dest = destinationRegister(detail), detail.operands.count >= 2 else {
+                clobber(detail, into: &registers); return
+            }
+            // `fmov d0, #<imm>` — decode the encoded float and carry its bit
+            // pattern (single- or double-precision per the destination width), so
+            // a float context renders it as `0.5`/`2.5` rather than dropping it.
+            if let fp = detail.operands[1].operand.floatingPointValue {
+                let bits = dest.widthBits == 32 ? UInt64(Float(fp).bitPattern) : fp.bitPattern
+                write(dest, .immediate(bits), into: &registers)
+                return
+            }
+            guard detail.operands[1].operand.register != nil else {
+                clobber(detail, into: &registers); return
+            }
             write(dest, source(detail.operands[1], in: registers), into: &registers)
 
         case ARM64_INS_MOV, ARM64_INS_MOVZ:

@@ -24,6 +24,10 @@ public func scaleInt(_ n: Int, by f: Double) -> Double { Double(n) * f }
 // its decimal (`3.14`), not `0x40091eb851eb851f`.
 public func polynomial(_ x: Double) -> Double { x * x + 3.14 }
 
+// An fmov-encodable constant (2.5) is a machine immediate, not a literal-pool
+// load; it is decoded from the `fmov` encoding and rendered as its decimal too.
+public func scaled(_ x: Double) -> Double { x * 2.5 }
+
 // MARK: - HFA struct decomposition (self + by-value struct params)
 
 public struct Vec2 {

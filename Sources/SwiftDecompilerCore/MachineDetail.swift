@@ -116,6 +116,11 @@ public enum StructuredOperand: Sendable {
         return nil
     }
 
+    public var floatingPointValue: Double? {
+        if case .floatingPoint(let value) = self { return value }
+        return nil
+    }
+
     public var isMemory: Bool {
         if case .memory = self { return true }
         return false
