@@ -131,3 +131,18 @@ public func urgency() -> Priority { .high }
 // returned immediate must stay a raw value — never a fabricated `.eof`.
 public enum Token { case eof; case number(Int); case ident(Int) }
 public func endToken() -> Token { .eof }
+
+// MARK: - Enum equality against a case literal (no-payload)
+
+// A no-payload enum parameter is seeded as a scalar tag, then a comparison to a
+// case literal names the case. Both lowerings — the `__derived_enum_equals`
+// call (-Onone) and the masked-tag compare (-O) — reconstruct identically.
+// `!=` is recovered from the compiler's `^ 1` logical-negation.
+public func isNorth(_ d: Direction) -> Bool { d == .north }
+public func notWest(_ d: Direction) -> Bool { d != .west }
+public func sameHeading(_ a: Direction, _ b: Direction) -> Bool { a == b }
+
+// Negative: a PAYLOAD enum's `==` (indirect args, spare-bit tags) can name no
+// case, so it must not fabricate `.ping`.
+public enum Msg: Equatable { case ping; case data(Int) }
+public func isPing(_ m: Msg) -> Bool { m == .ping }

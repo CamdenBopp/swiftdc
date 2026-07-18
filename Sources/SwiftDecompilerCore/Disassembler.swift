@@ -387,8 +387,8 @@ public struct Disassembler: Sendable {
             } else if let valueSelf {
                 .swiftValueInstance(seededRegisters: valueSelf.seeded)
             } else if classSelfTypeName != nil {
-                .swiftInstance(scalarArguments: Self.swiftScalarArgumentRegisters(of: function) ?? [:])
-            } else if let scalarArgs = Self.swiftScalarArgumentRegisters(of: function) {
+                .swiftInstance(scalarArguments: Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: enumCaseIndex) ?? [:])
+            } else if let scalarArgs = Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: enumCaseIndex) {
                 .swiftFunction(scalarArguments: scalarArgs)
             } else {
                 nil
@@ -411,7 +411,8 @@ public struct Disassembler: Sendable {
                 objcFieldSyntax: objcMethod != nil || symbolEntry != nil,
                 selfTypeName: selfTypeName, vtableIndex: vtableIndex,
                 argumentFieldMaps: valueSelf?.argumentFieldMaps ?? [:],
-                enumCaseIndex: enumCaseIndex
+                enumCaseIndex: enumCaseIndex,
+                argumentEnumTypes: Self.swiftEnumArgumentTypes(of: function, enumCaseIndex: enumCaseIndex)
             )
         }
 
@@ -1345,7 +1346,9 @@ public struct Disassembler: Sendable {
     /// tracked separately. Nil for any signature with an aggregate, generic,
     /// `inout`, `String`, or otherwise multi-register parameter (or none), so a
     /// register is never mislabeled `arg k` when the real layout differs.
-    static func swiftScalarArgumentRegisters(of function: DisassembledFunction) -> [String: Int]? {
+    static func swiftScalarArgumentRegisters(
+        of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex = EnumCaseIndex()
+    ) -> [String: Int]? {
         guard function.objcMethod == nil, let name = function.demangledName,
               Self.isSwiftMangled(function.symbol),
               // A getter/setter/accessor or a name without a call signature has no
@@ -1361,7 +1364,7 @@ public struct Disassembler: Sendable {
         var registers: [String: Int] = [:]
         var integerIndex = 0, floatIndex = 0
         for (index, parameter) in parameters.enumerated() {
-            switch Self.scalarParameterClass(parameter) {
+            switch Self.scalarParameterClass(parameter, enumCaseIndex: enumCaseIndex) {
             case .integer:
                 guard integerIndex < 8 else { return nil }
                 registers["x\(integerIndex)"] = index
@@ -1375,6 +1378,49 @@ public struct Disassembler: Sendable {
             }
         }
         return registers
+    }
+
+    /// Maps each source-parameter index that is a no-payload enum to that enum's
+    /// demangled type name, keyed the same way `.argument(index)` is numbered.
+    /// This is what lets a `c == .case` comparison over an enum parameter name
+    /// the compared tag: the parameter list carries the type, the index carries
+    /// the register binding. Empty when the function has no enum parameters or no
+    /// demangled signature.
+    static func swiftEnumArgumentTypes(
+        of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex
+    ) -> [Int: String] {
+        guard function.objcMethod == nil, let name = function.demangledName,
+              Self.isSwiftMangled(function.symbol),
+              let arrow = name.range(of: " -> ", options: .backwards)
+        else { return [:] }
+        let signature = name[..<arrow.lowerBound]
+        guard let paramsRange = DisassembledFunction.outermostArgumentListRange(of: String(signature))
+        else { return [:] }
+        let parameters = DisassembledFunction.splitTopLevelArguments(signature[paramsRange])
+        var types: [Int: String] = [:]
+        for (index, parameter) in parameters.enumerated() {
+            var type = parameter
+            if let colon = type.range(of: ": ", options: .backwards) {
+                type = String(type[colon.upperBound...])
+            }
+            type = type.trimmingCharacters(in: .whitespaces)
+            if enumCaseIndex.isNoPayloadEnum(type) { types[index] = type }
+        }
+        return types
+    }
+
+    /// The enum type owning a `…__derived_enum_equals` callee (the compiler's
+    /// synthesized enum `Equatable.==`), or nil when the callee isn't that
+    /// method. `static Module.Color.__derived_enum_equals` → `Module.Color`.
+    static func derivedEnumEqualsType(_ callee: String) -> String? {
+        guard let range = callee.range(of: ".__derived_enum_equals") else { return nil }
+        var name = String(callee[..<range.lowerBound])
+        if let arrow = name.range(of: "→ ", options: .backwards) {
+            name = String(name[arrow.upperBound...])
+        }
+        if name.hasPrefix("static ") { name = String(name.dropFirst("static ".count)) }
+        name = name.trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? nil : name
     }
 
     /// For a nonmutating instance method of a small HFA-float struct, the SIMD
@@ -1487,7 +1533,9 @@ public struct Disassembler: Sendable {
     /// a single-register scalar. Deliberately an under-approximation: an unlisted
     /// type (a class reference is single-register too, but unidentifiable by name)
     /// blocks seeding, trading missed parameters for never mislabeling one.
-    private static func scalarParameterClass(_ parameter: String) -> ScalarParameterClass? {
+    private static func scalarParameterClass(
+        _ parameter: String, enumCaseIndex: EnumCaseIndex = EnumCaseIndex()
+    ) -> ScalarParameterClass? {
         // Demangled Swift signatures list bare types with no argument labels, but
         // tolerate a `label: Type` form defensively by taking the type.
         var type = parameter
@@ -1516,6 +1564,10 @@ public struct Disassembler: Sendable {
             let inner = String(type.dropFirst("Swift.Optional<".count).dropLast())
             if Self.isSingleRegisterPointer(inner) { return .integer }
         }
+        // A no-payload enum is a trivial integer tag in one register, so it seeds
+        // like a scalar — which is what lets `c == .case` over an enum parameter
+        // reconstruct. Payload enums are absent from the index and stay unseeded.
+        if enumCaseIndex.isNoPayloadEnum(type) { return .integer }
         return nil
     }
 
@@ -1537,7 +1589,8 @@ public struct Disassembler: Sendable {
         selfTypeName: String? = nil,
         vtableIndex: VTableIndex = VTableIndex(),
         argumentFieldMaps: [Int: FieldMap] = [:],
-        enumCaseIndex: EnumCaseIndex = EnumCaseIndex()
+        enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
+        argumentEnumTypes: [Int: String] = [:]
     ) -> DisassembledFunction {
         /// A source-level field path for this method convention.
         func fieldPath(_ name: String) -> String {
@@ -1734,7 +1787,108 @@ public struct Disassembler: Sendable {
             return "[\(elements.joined(separator: ", "))]"
         }
 
+        /// The enum-case name for a compared operand, when it is a bare tag
+        /// immediate of a known no-payload enum — `enumType` from a
+        /// `__derived_enum_equals` callee, else inferred from a seeded enum
+        /// argument on the other side. Nil declines to the operand's raw form.
+        func enumCaseOperand(_ value: AbstractValue, enumType: String?) -> String? {
+            guard let enumType, case .immediate(let tag) = sanitizeValue(value),
+                  tag <= UInt64(Int.max),
+                  let name = enumCaseIndex.caseName(ofEnum: enumType, tag: Int(tag))
+            else { return nil }
+            return "\(enumType).\(name)"
+        }
+
+        /// The enum type of a comparison operand that is a seeded no-payload enum
+        /// argument, unwrapping the optimizer's `& 0xFF` tag-extraction mask.
+        func enumArgumentType(of value: AbstractValue) -> String? {
+            switch value {
+            case .argument(let index):
+                return argumentEnumTypes[index]
+            case .binary(.bitAnd, let inner, .immediate(let mask))
+                where mask == 0xFF || mask == 0xFFFF || mask == 0xFFFF_FFFF:
+                return enumArgumentType(of: inner)
+            default:
+                return nil
+            }
+        }
+
+        /// The operand render for a comparison side: the enum case name when it is
+        /// a literal tag, the raw expression (mask stripped for a seeded enum arg)
+        /// otherwise.
+        func comparisonOperand(_ value: AbstractValue, enumType: String?, depth: Int) -> String {
+            if let cased = enumCaseOperand(value, enumType: enumType) { return cased }
+            // A seeded enum arg wrapped in `& 0xFF` is just the arg — the mask is
+            // the tag extraction, redundant once we know it is an enum.
+            if enumArgumentType(of: value) != nil,
+               case .binary(.bitAnd, let inner, _) = value {
+                return renderValue(inner, depth: depth + 1)
+            }
+            return renderValue(value, depth: depth + 1)
+        }
+
+        /// The inverse comparison operator, or nil when `op` isn't a comparison —
+        /// which doubles as the "is this a comparison?" gate (so an arithmetic
+        /// `enumArg + 1` never routes through the enum-naming path).
+        func invertedComparison(_ op: AbstractBinaryOperator) -> AbstractBinaryOperator? {
+            switch op {
+            case .equal: return .notEqual
+            case .notEqual: return .equal
+            case .less: return .greaterEqual
+            case .lessEqual: return .greater
+            case .greater: return .lessEqual
+            case .greaterEqual: return .less
+            default: return nil
+            }
+        }
+
+        /// Recognizes enum equality (`c == .case` / `!= .case`) and the boolean
+        /// noise around it — the redundant `& 1` normalization mask and the
+        /// `^ 1` logical-NOT the compiler emits for `!=`. Returns nil (declining
+        /// to the raw form) for anything that isn't a boolean expression it can
+        /// improve, so ordinary comparisons render through the normal path.
+        func renderBoolean(_ value: AbstractValue, negated: Bool, depth: Int) -> String? {
+            switch value {
+            case .binary(.bitAnd, let lhs, .immediate(1)):
+                // Redundant boolean-normalization mask; unwrap.
+                return renderBoolean(lhs, negated: negated, depth: depth)
+            case .binary(.bitXor, let lhs, .immediate(1)):
+                // `x ^ 1` is logical NOT of a boolean x.
+                return renderBoolean(lhs, negated: !negated, depth: depth)
+            case .binary(let op, let lhs, let rhs):
+                // Only comparisons are boolean; `invertedComparison` returning
+                // non-nil is the gate (so `enumArg + 1` never names `1` a case).
+                guard invertedComparison(op) != nil else { return nil }
+                let effectiveOp = negated ? invertedComparison(op)! : op
+                // Only intervene when there's something to improve: an enum to
+                // name (the immediate side is cased using the arg side's type),
+                // or a pending negation. Same type to both — only the immediate
+                // operand names; the arg operand isn't an immediate so it renders.
+                let enumType = enumArgumentType(of: lhs) ?? enumArgumentType(of: rhs)
+                guard enumType != nil || negated else { return nil }
+                let l = comparisonOperand(lhs, enumType: enumType, depth: depth)
+                let r = comparisonOperand(rhs, enumType: enumType, depth: depth)
+                return "(\(l) \(effectiveOp.symbol) \(r))"
+            case .callResult(let addr):
+                // `Enum.__derived_enum_equals(a, b)` is the synthesized `==`.
+                guard let callee = calleeByAddress[addr],
+                      callee.contains("__derived_enum_equals"),
+                      let args = argumentsByAddress[addr], args.count == 2
+                else { return nil }
+                let enumType = Self.derivedEnumEqualsType(callee)
+                let op = negated ? "!=" : "=="
+                let l = comparisonOperand(args[0], enumType: enumType, depth: depth)
+                let r = comparisonOperand(args[1], enumType: enumType, depth: depth)
+                return "(\(l) \(op) \(r))"
+            default:
+                return nil
+            }
+        }
+
         func renderValue(_ value: AbstractValue, depth: Int) -> String {
+            if depth < 8, let boolean = renderBoolean(value, negated: false, depth: depth) {
+                return boolean
+            }
             switch value {
             case .unknown:
                 return "?"

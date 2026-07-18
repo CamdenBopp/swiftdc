@@ -235,3 +235,37 @@ private func reconstructionPseudo(
         #expect(end.contains("return 0")) // honest raw fallback
     }
 }
+
+// MARK: - Enum equality against a case literal
+
+/// A no-payload enum parameter compared to a case literal reconstructs the
+/// comparison and names the case — identically across debug, optimized, and
+/// stripped, since both the `__derived_enum_equals` (-Onone) and masked-tag
+/// compare (-O) lowerings resolve the tag through `__swift5_fieldmd`.
+@Test func reconstructsEnumEqualityIfPresent() async throws {
+    for fixture in [reconstructionFixture,
+                    "Fixtures/Sample/libReconstruction.opt.dylib",
+                    "Fixtures/Sample/libReconstruction.opt.stripped.dylib"] {
+        guard let north = try await reconstructionPseudo("isNorth", in: fixture) else { continue }
+        #expect(north.contains("return (arg0 == Reconstruction.Direction.north)"))
+
+        // `!=` recovered from the compiler's `^ 1` logical negation.
+        guard let west = try await reconstructionPseudo("notWest", in: fixture) else { continue }
+        #expect(west.contains("return (arg0 != Reconstruction.Direction.west)"))
+
+        // Two enum values (no case literal): the synthesized `==` folds to a
+        // plain equality with nothing to name.
+        guard let same = try await reconstructionPseudo("sameHeading", in: fixture) else { continue }
+        #expect(same.contains("return (arg0 == arg1)"))
+    }
+}
+
+/// Adversarial: a PAYLOAD enum's `==` can name no case (its operands pass
+/// indirectly and its tags don't index the case list), so the reconstruction
+/// must not fabricate `.ping` — it declines to the raw call or nothing.
+@Test func declinesPayloadEnumEqualityNamingIfPresent() async throws {
+    for fixture in [reconstructionFixture, "Fixtures/Sample/libReconstruction.opt.dylib"] {
+        guard let ping = try await reconstructionPseudo("isPing", in: fixture) else { continue }
+        #expect(!ping.contains(".ping"))
+    }
+}

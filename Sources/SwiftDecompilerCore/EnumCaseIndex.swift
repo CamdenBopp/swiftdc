@@ -38,6 +38,16 @@ public struct EnumCaseIndex: Sendable {
         return cases[tag]
     }
 
+    /// Whether `typeName` (possibly module-qualified) names a no-payload enum
+    /// this image publishes unambiguously — i.e. one whose cases this index can
+    /// name. A no-payload enum is a trivial integer tag in a single register, so
+    /// this is also the safe gate for seeding such a parameter as a scalar.
+    public func isNoPayloadEnum(_ typeName: String) -> Bool {
+        let simple = typeName.split(separator: ".").last.map(String.init) ?? typeName
+        guard let entry = byName[simple] else { return false }
+        return entry != nil
+    }
+
     /// The number of enums indexed (unambiguous + ambiguous), for diagnostics.
     public var count: Int { byName.count }
 
