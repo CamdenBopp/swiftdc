@@ -2038,6 +2038,16 @@ public struct Disassembler: Sendable {
                 // operand names; the arg operand isn't an immediate so it renders.
                 let enumType = enumArgumentType(of: lhs) ?? enumArgumentType(of: rhs)
                 guard enumType != nil || negated else { return nil }
+                // For a non-enum comparison, put a lone constant operand on the
+                // right (source order) just as the plain-render path does; an
+                // enum comparison instead positions the tag via the case naming.
+                if enumType == nil, case .immediate = lhs, case .immediate = rhs {
+                    // const vs const — no reordering
+                } else if enumType == nil, case .immediate = lhs,
+                          let mirror = mirroredComparison(effectiveOp) {
+                    return "(\(comparisonOperand(rhs, enumType: nil, depth: depth))"
+                        + " \(mirror.symbol) \(comparisonOperand(lhs, enumType: nil, depth: depth)))"
+                }
                 let l = comparisonOperand(lhs, enumType: enumType, depth: depth)
                 let r = comparisonOperand(rhs, enumType: enumType, depth: depth)
                 return "(\(l) \(effectiveOp.symbol) \(r))"

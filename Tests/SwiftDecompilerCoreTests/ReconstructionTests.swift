@@ -370,4 +370,9 @@ private func reconstructionPseudo(
 
     guard let range = try await reconstructionPseudo("withinRange") else { return }
     #expect(range.contains("return ((arg0 >= 0) && (arg0 < 10))"))
+
+    // `x > 1` lowers constant-left (`1 < x`); normalization applies inside the
+    // `&&` operand too, so it reads `(arg0 > 1)` not `(1 < arg0)`.
+    guard let above = try await reconstructionPseudo("aboveOneBelowTen") else { return }
+    #expect(above.contains("return ((arg0 > 1) && (arg0 < 10))"))
 }

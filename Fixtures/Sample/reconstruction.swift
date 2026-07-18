@@ -218,3 +218,8 @@ public func fromHundred(_ x: Int) -> Int { 100 - x }
 public func bothTrue(_ a: Bool, _ b: Bool) -> Bool { a && b }
 public func eitherTrue(_ a: Bool, _ b: Bool) -> Bool { a || b }
 public func withinRange(_ x: Int) -> Bool { x >= 0 && x < 10 }
+
+// `x > 1` lowers to a `1 < x` (constant-left) compare; operand normalization
+// applies inside the `&&`'s boolean-rendered operand too, so both read with the
+// constant on the right.
+public func aboveOneBelowTen(_ x: Int) -> Bool { x > 1 && x < 10 }
