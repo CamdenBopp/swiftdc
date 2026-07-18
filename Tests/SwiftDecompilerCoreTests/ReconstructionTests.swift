@@ -27,8 +27,10 @@ private func reconstructionPseudo(
 // MARK: - Comparisons (NZCV + cset)
 
 @Test func recoversComparisonReturnsIfPresent() async throws {
+    // `x > 0` lowers to `0 - x < 0` (constant on the left); operand
+    // normalization mirrors it back to the source form `arg0 > 0`.
     guard let positive = try await reconstructionPseudo("isPositive") else { return }
-    #expect(positive.contains("return (0 < arg0)")) // x > 0 lowered as 0 - x < 0
+    #expect(positive.contains("return (arg0 > 0)"))
 
     guard let equal = try await reconstructionPseudo("isEqual") else { return }
     #expect(equal.contains("return (arg0 == arg1)"))
@@ -302,14 +304,10 @@ private func reconstructionPseudo(
 
 /// A switch over an `Int` uses the `n != k` fall-through lowering rather than
 /// the enum's `tag == k` taken edge; the resolver's reaching-condition
-/// unification recovers the same nested ternary (raw constants, explicit
-/// default). Structural checks, since the `subs`-derived arms render the
-/// constant on the left (`1 == arg0`).
+/// unification recovers the same nested ternary. Operand normalization mirrors
+/// the `subs`-derived constant back to the right (`arg0 == 1`, not `1 == arg0`),
+/// so every arm reads consistently.
 @Test func reconstructsIntegerSwitchIfPresent() async throws {
     guard let grade = try await reconstructionPseudo("gradeOf") else { return }
-    #expect(grade.contains(" ? 10 : "))   // case 0
-    #expect(grade.contains(" ? 20 : "))   // case 1
-    #expect(grade.contains(" ? 30 : "))   // case 2
-    #expect(grade.contains(": 99)"))      // default, innermost else
-    #expect(grade.contains("arg0"))
+    #expect(grade.contains("((arg0 == 0) ? 10 : ((arg0 == 1) ? 20 : ((arg0 == 2) ? 30 : 99)))"))
 }

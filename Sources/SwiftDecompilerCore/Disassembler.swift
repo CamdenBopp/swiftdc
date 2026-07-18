@@ -1842,6 +1842,22 @@ public struct Disassembler: Sendable {
             }
         }
 
+        /// The mirrored comparison — `a op b` ⇔ `b mirror(op) a` — for putting a
+        /// constant operand on the right (`1 == arg0` → `arg0 == 1`, `0 < arg0` →
+        /// `arg0 > 0`), which reads like the Swift source rather than the lowered
+        /// `subs`/`cbz` form. Nil for a non-comparison (never reordered).
+        func mirroredComparison(_ op: AbstractBinaryOperator) -> AbstractBinaryOperator? {
+            switch op {
+            case .equal: return .equal
+            case .notEqual: return .notEqual
+            case .less: return .greater
+            case .lessEqual: return .greaterEqual
+            case .greater: return .less
+            case .greaterEqual: return .lessEqual
+            default: return nil
+            }
+        }
+
         /// Recognizes enum equality (`c == .case` / `!= .case`) and the boolean
         /// noise around it — the redundant `& 1` normalization mask and the
         /// `^ 1` logical-NOT the compiler emits for `!=`. Returns nil (declining
@@ -1954,6 +1970,14 @@ public struct Disassembler: Sendable {
                 return "(\(c) ? \(t) : \(f))"
             case .binary(let op, let lhs, let rhs):
                 guard depth < 8 else { return "?" }
+                // Normalize `const op var` to `var mirror(op) const` so a
+                // comparison reads like source; only when the right side isn't
+                // itself a constant (so `const op const` is left as-is).
+                if case .immediate = lhs, case .immediate = rhs {
+                    // both constant — no reordering
+                } else if case .immediate = lhs, let mirror = mirroredComparison(op) {
+                    return "(\(renderValue(rhs, depth: depth + 1)) \(mirror.symbol) \(renderValue(lhs, depth: depth + 1)))"
+                }
                 return "(\(renderValue(lhs, depth: depth + 1)) \(op.symbol) \(renderValue(rhs, depth: depth + 1)))"
             case .unary(let op, let operand):
                 guard depth < 8 else { return "?" }
