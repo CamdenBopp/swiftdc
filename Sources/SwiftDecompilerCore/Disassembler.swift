@@ -1859,6 +1859,22 @@ public struct Disassembler: Sendable {
                 // Only comparisons are boolean; `invertedComparison` returning
                 // non-nil is the gate (so `enumArg + 1` never names `1` a case).
                 guard invertedComparison(op) != nil else { return nil }
+                // Boolean falsity/truth test: `(bool == 0)` = !bool, `(bool != 0)`
+                // = bool, `(bool == 1)` = bool, `(bool != 1)` = !bool — but only
+                // when the other operand is itself a recognized boolean, so a
+                // genuine zero-test on an integer (`(arg0 & 1) == 0`) is left
+                // alone. This peels the double-negation the compiler emits for
+                // `if x == .case { … }` (lowered as `(x == .case) == 0 ? … : …`).
+                if op == .equal || op == .notEqual {
+                    for (boolSide, litSide) in [(lhs, rhs), (rhs, lhs)] {
+                        guard case .immediate(let lit) = litSide, lit == 0 || lit == 1
+                        else { continue }
+                        let negateFold = (op == .equal) == (lit == 0)
+                        if let folded = renderBoolean(
+                            boolSide, negated: negated != negateFold, depth: depth
+                        ) { return folded }
+                    }
+                }
                 let effectiveOp = negated ? invertedComparison(op)! : op
                 // Only intervene when there's something to improve: an enum to
                 // name (the immediate side is cased using the arg side's type),

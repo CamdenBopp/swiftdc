@@ -146,3 +146,11 @@ public func sameHeading(_ a: Direction, _ b: Direction) -> Bool { a == b }
 // case, so it must not fabricate `.ping`.
 public enum Msg: Equatable { case ping; case data(Int) }
 public func isPing(_ m: Msg) -> Bool { m == .ping }
+
+// An `if` over a no-payload enum: the compiler lowers the guard as a falsity
+// test (`(d == .north) == 0 ? else : then`); the reconstruction peels that
+// double-negation so the ternary reads cleanly (no leftover `== 0`).
+public func northScore(_ d: Direction) -> Int {
+    if d == .north { return 100 }
+    return 0
+}

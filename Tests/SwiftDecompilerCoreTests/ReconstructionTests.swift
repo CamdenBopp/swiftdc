@@ -269,3 +269,19 @@ private func reconstructionPseudo(
         #expect(!ping.contains(".ping"))
     }
 }
+
+/// An `if` over a no-payload enum: the compiler lowers the guard as a falsity
+/// test (`(d == .case) == 0 ? … : …`), which the reconstruction peels so the
+/// ternary reads cleanly. Build-agnostic — debug keeps the `!=` arm, `-O` the
+/// `==` arm — but neither leaves a `== 0` / `!= 0` boolean double-negation.
+@Test func peelsEnumFalsityTestIfPresent() async throws {
+    for fixture in [reconstructionFixture,
+                    "Fixtures/Sample/libReconstruction.opt.dylib",
+                    "Fixtures/Sample/libReconstruction.opt.stripped.dylib"] {
+        guard let north = try await reconstructionPseudo("northScore", in: fixture) else { continue }
+        #expect(north.contains("Reconstruction.Direction.north"))
+        #expect(north.contains(" ? "))               // a ternary was recovered
+        #expect(!north.contains("== 0)"))             // no leftover falsity test
+        #expect(!north.contains("!= 0)"))
+    }
+}
