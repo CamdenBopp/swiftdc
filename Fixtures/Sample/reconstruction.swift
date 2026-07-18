@@ -102,3 +102,12 @@ public func threeWay(_ x: Int) -> Int {
     if x < 0 { r = -10 } else if x == 0 { r = 0 } else { r = 10 }
     return r
 }
+
+// Pointer-optional nil-coalescing: a pointer optional is one register (nil == 0),
+// so `x ?? f` reconstructs at -O via csel as `(arg0 == 0) ? arg1 : arg0`. The
+// -Onone lowering's redundant double nil-check is a three-way merge that declines.
+public func ptrOrElse(_ x: UnsafeRawPointer?, _ f: UnsafeRawPointer) -> UnsafeRawPointer { x ?? f }
+
+// Negative: a TAGGED optional (`Int?`) is multi-register (payload + tag byte);
+// its nil check isn't a single-register diamond, so it declines to guess.
+public func intOrDefault(_ x: Int?) -> Int { x ?? -1 }

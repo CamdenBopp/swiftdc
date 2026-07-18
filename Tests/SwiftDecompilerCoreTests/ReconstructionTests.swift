@@ -123,6 +123,24 @@ private func reconstructionPseudo(
     #expect(!threeWay.contains(" ? ")) // no fabricated select
 }
 
+/// Pointer-optional nil-coalescing: one register (nil == 0), so at -O it
+/// reconstructs as a select — semantically `arg0 ?? arg1`.
+@Test func reconstructsPointerNilCoalescingIfPresent() async throws {
+    guard let ptr = try await reconstructionPseudo(
+        "ptrOrElse", in: "Fixtures/Sample/libReconstruction.opt.dylib") else { return }
+    #expect(ptr.contains("return ((arg0 == 0) ? arg1 : arg0)"))
+}
+
+/// Adversarial: a TAGGED optional (`Int?`, payload + tag byte in separate
+/// registers) has no single-register nil check, so nil-coalescing over it must
+/// decline rather than guess — in both debug and optimized builds.
+@Test func declinesTaggedOptionalNilCoalescingIfPresent() async throws {
+    for fixture in [reconstructionFixture, "Fixtures/Sample/libReconstruction.opt.dylib"] {
+        guard let opt = try await reconstructionPseudo("intOrDefault", in: fixture) else { continue }
+        #expect(!opt.contains(" ? ")) // no fabricated select over the tag
+    }
+}
+
 // MARK: - Robustness edge cases
 
 @Test func handlesArithmeticEdgeCasesIfPresent() async throws {

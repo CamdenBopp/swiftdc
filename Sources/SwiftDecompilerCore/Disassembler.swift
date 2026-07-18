@@ -1495,9 +1495,24 @@ public struct Disassembler: Sendable {
             "Swift.UnsafeMutableRawPointer",
         ]
         if integers.contains(type) { return .integer }
-        if type.hasPrefix("Swift.UnsafePointer<")
-            || type.hasPrefix("Swift.UnsafeMutablePointer<") { return .integer }
+        if Self.isSingleRegisterPointer(type) { return .integer }
+        // A pointer optional is nil-or-a-pointer in ONE register (nil == 0), so it
+        // seeds like a scalar — which is what lets `x ?? f` over a pointer optional
+        // reconstruct via the `cbz`/diamond select. A tagged optional (`Int?`,
+        // multi-register) is deliberately NOT matched here.
+        if type.hasPrefix("Swift.Optional<"), type.hasSuffix(">") {
+            let inner = String(type.dropFirst("Swift.Optional<".count).dropLast())
+            if Self.isSingleRegisterPointer(inner) { return .integer }
+        }
         return nil
+    }
+
+    /// A single-register pointer type (nil-representable as 0).
+    private static func isSingleRegisterPointer(_ type: String) -> Bool {
+        ["Swift.OpaquePointer", "Swift.UnsafeRawPointer", "Swift.UnsafeMutableRawPointer"]
+            .contains(type)
+            || type.hasPrefix("Swift.UnsafePointer<")
+            || type.hasPrefix("Swift.UnsafeMutablePointer<")
     }
 
     private func enrichCallArguments(
