@@ -1922,6 +1922,75 @@ public struct Disassembler: Sendable {
             }
         }
 
+        /// Whether a value is provably a boolean (0/1) expression: a comparison,
+        /// a `Bool` parameter, a synthesized `==`, the `& 1`/`^ 1` normalization
+        /// of one, a `0`/`1` literal, or a select both of whose arms are boolean.
+        /// This is the gate for reconstructing `&&`/`||` — folding requires the
+        /// non-literal arm to be a proven boolean, so a genuine integer ternary
+        /// carrying a `0`/`1` is never mislabelled a logical operator.
+        func isBooleanValued(_ value: AbstractValue) -> Bool {
+            switch value {
+            case .binary(let op, let lhs, let rhs):
+                if invertedComparison(op) != nil { return true }
+                if (op == .bitAnd || op == .bitXor), case .immediate(1) = rhs {
+                    return isBooleanValued(lhs)
+                }
+                return false
+            case .argument(let index):
+                return boolArguments.contains(index)
+            case .immediate(let k):
+                return k == 0 || k == 1
+            case .callResult(let addr):
+                return calleeByAddress[addr].map {
+                    $0.contains("__derived_enum_equals") || $0.contains("__derived_struct_equals")
+                } ?? false
+            case .select(_, let whenTrue, let whenFalse):
+                return isBooleanValued(whenTrue) && isBooleanValued(whenFalse)
+            default:
+                return false
+            }
+        }
+
+        /// Render a value known to be boolean, negated if asked — preferring
+        /// `renderBoolean` (which inverts a comparison cleanly), else the plain
+        /// render with a `!(…)` wrap for a needed negation. Nil if not boolean.
+        func renderBooleanOperand(_ value: AbstractValue, negated: Bool, depth: Int) -> String? {
+            guard isBooleanValued(value) else { return nil }
+            if let b = renderBoolean(value, negated: negated, depth: depth) { return b }
+            let plain = renderValue(value, depth: depth)
+            return negated ? "!(\(plain))" : plain
+        }
+
+        /// A boolean-valued select is a short-circuit `&&`/`||`: `C ? T : F` where
+        /// one arm is a `false`/`true` literal and the other is a proven boolean.
+        /// `C?1:F`=`C||F`, `C?0:F`=`!C&&F`, `C?T:1`=`!C||T`, `C?T:0`=`C&&T`. Nil
+        /// (declining to the raw ternary) when the shape isn't one: a genuine
+        /// integer ternary, or both arms literal (bool-vs-int ambiguous).
+        func renderLogicalSelect(
+            _ condition: AbstractValue, _ whenTrue: AbstractValue, _ whenFalse: AbstractValue,
+            negated: Bool, depth: Int
+        ) -> String? {
+            var condNegated: Bool
+            var isOr: Bool
+            let other: AbstractValue
+            if case .immediate(1) = whenTrue { condNegated = false; isOr = true; other = whenFalse }
+            else if case .immediate(0) = whenTrue { condNegated = true; isOr = false; other = whenFalse }
+            else if case .immediate(1) = whenFalse { condNegated = true; isOr = true; other = whenTrue }
+            else if case .immediate(0) = whenFalse { condNegated = false; isOr = false; other = whenTrue }
+            else { return nil }
+            // The other arm must be a real (non-literal) proven boolean — the
+            // proof that this select is boolean-valued, not an integer ternary.
+            if case .immediate = other { return nil }
+            guard isBooleanValued(other) else { return nil }
+            // An outer negation distributes by De Morgan: !(a && b) = !a || !b.
+            var otherNegated = false
+            if negated { condNegated.toggle(); otherNegated = true; isOr.toggle() }
+            guard let c = renderBooleanOperand(condition, negated: condNegated, depth: depth + 1),
+                  let o = renderBooleanOperand(other, negated: otherNegated, depth: depth + 1)
+            else { return nil }
+            return "(\(c) \(isOr ? "||" : "&&") \(o))"
+        }
+
         /// Recognizes enum equality (`c == .case` / `!= .case`) and the boolean
         /// noise around it — the redundant `& 1` normalization mask and the
         /// `^ 1` logical-NOT the compiler emits for `!=`. Returns nil (declining
@@ -1929,6 +1998,9 @@ public struct Disassembler: Sendable {
         /// improve, so ordinary comparisons render through the normal path.
         func renderBoolean(_ value: AbstractValue, negated: Bool, depth: Int) -> String? {
             switch value {
+            case .select(let condition, let whenTrue, let whenFalse):
+                // A short-circuit `&&`/`||`.
+                return renderLogicalSelect(condition, whenTrue, whenFalse, negated: negated, depth: depth)
             case .argument(let index) where boolArguments.contains(index):
                 // A Bool parameter is a boolean value (0/1); `!b` and truthiness
                 // tests fold against it, and its raw form is just `arg`.

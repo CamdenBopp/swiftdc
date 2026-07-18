@@ -210,3 +210,11 @@ public func negateFlag(_ b: Bool) -> Bool { !b }
 // subtraction from a constant (`100 - x`) is left alone.
 public func absValue(_ x: Int) -> Int { x < 0 ? -x : x }
 public func fromHundred(_ x: Int) -> Int { 100 - x }
+
+// Short-circuit `&&`/`||` lower to a select with a Bool-literal arm; they
+// reconstruct as the logical operator (a compound condition nests). The
+// adversarial cases — `clampLow`/`maxOf`/`pickInc` — carry a `0`/`1` literal
+// but a non-boolean other arm, so they must stay plain ternaries.
+public func bothTrue(_ a: Bool, _ b: Bool) -> Bool { a && b }
+public func eitherTrue(_ a: Bool, _ b: Bool) -> Bool { a || b }
+public func withinRange(_ x: Int) -> Bool { x >= 0 && x < 10 }

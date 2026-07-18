@@ -356,3 +356,18 @@ private func reconstructionPseudo(
     guard let sub = try await reconstructionPseudo("fromHundred") else { return }
     #expect(sub.contains("return (100 - arg0)")) // genuine subtraction untouched
 }
+
+/// Short-circuit `&&`/`||` lower to a select with a `false`/`true` literal arm;
+/// they reconstruct as the logical operator, with a compound condition nesting.
+/// The adversarial ternaries (`clampLow`/`maxOf`/`pickInc`, asserted elsewhere)
+/// carry a `0`/`1` but a non-boolean other arm, so they stay plain ternaries.
+@Test func reconstructsLogicalOperatorsIfPresent() async throws {
+    guard let and = try await reconstructionPseudo("bothTrue") else { return }
+    #expect(and.contains("return (arg0 && arg1)"))
+
+    guard let or = try await reconstructionPseudo("eitherTrue") else { return }
+    #expect(or.contains("return (arg0 || arg1)"))
+
+    guard let range = try await reconstructionPseudo("withinRange") else { return }
+    #expect(range.contains("return ((arg0 >= 0) && (arg0 < 10))"))
+}
