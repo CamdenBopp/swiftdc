@@ -178,3 +178,17 @@ public func gradeOf(_ n: Int) -> Int {
     default: return 99
     }
 }
+
+// Negative integer constants render as signed decimals (`-1`), not the
+// two's-complement hex the immediate is stored as — exercised through a switch.
+public func polarity(_ n: Int) -> Int {
+    switch n {
+    case 0: return -1
+    case 1: return -2
+    default: return -3
+    }
+}
+
+// Adversarial: a genuine large unsigned mask is NOT within the small-negative
+// window, so it must stay hex — never relabelled as a negative.
+public func highMask() -> UInt64 { 0xFF00_0000_0000_0000 }

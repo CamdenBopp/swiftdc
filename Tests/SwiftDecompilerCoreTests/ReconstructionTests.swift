@@ -311,3 +311,15 @@ private func reconstructionPseudo(
     guard let grade = try await reconstructionPseudo("gradeOf") else { return }
     #expect(grade.contains("((arg0 == 0) ? 10 : ((arg0 == 1) ? 20 : ((arg0 == 2) ? 30 : 99)))"))
 }
+
+/// Negative integer constants render as signed decimals (`-1`), not the
+/// 16-digit two's-complement hex the immediate is stored as; a genuine large
+/// unsigned mask stays hex, so the narrow negative window never mislabels one.
+@Test func rendersNegativeConstantsIfPresent() async throws {
+    guard let polarity = try await reconstructionPseudo("polarity") else { return }
+    #expect(polarity.contains("((arg0 == 0) ? -1 : ((arg0 == 1) ? -2 : -3))"))
+
+    guard let mask = try await reconstructionPseudo("highMask") else { return }
+    #expect(mask.contains("0xff00000000000000")) // not relabelled negative
+    #expect(!mask.contains("return -"))
+}

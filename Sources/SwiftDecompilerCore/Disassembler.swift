@@ -1423,6 +1423,23 @@ public struct Disassembler: Sendable {
         return name.isEmpty ? nil : name
     }
 
+    /// Render an integer immediate for pseudocode. Small non-negatives print as
+    /// decimal; a small negative — the two's-complement bit pattern of a signed
+    /// value, e.g. `0xffffffffffffffff` for `-1` — prints as a signed decimal so
+    /// a negative literal reads as `-1` rather than a 16-digit hex; everything
+    /// else (large positives, bit masks, addresses, hashes) prints as hex, where
+    /// the bit pattern is what a reader needs.
+    ///
+    /// The negative window is deliberately narrow (down to `-0x10000`): a genuine
+    /// large *unsigned* value near `UInt64.max` must never be relabelled negative,
+    /// and real negative literals are overwhelmingly small in magnitude.
+    static func renderImmediate(_ v: UInt64) -> String {
+        if v < 4096 { return String(v) }
+        let signed = Int64(bitPattern: v)
+        if signed < 0, signed >= -0x1_0000 { return String(signed) }
+        return "0x" + String(v, radix: 16)
+    }
+
     /// For a nonmutating instance method of a small HFA-float struct, the SIMD
     /// register → `self` field-offset map to seed (plus the resolved self type
     /// and its field map, so the fields name). `self` arrives decomposed across
@@ -1925,7 +1942,7 @@ public struct Disassembler: Sendable {
             case .unknown:
                 return "?"
             case .immediate(let v):
-                return v < 4096 ? String(v) : "0x" + String(v, radix: 16)
+                return Self.renderImmediate(v)
             case .argument(let index):
                 return "arg\(index)"
             case .address(let a):
