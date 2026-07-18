@@ -327,8 +327,13 @@ literally.**
   deliberately merges signed+unsigned condition codes. For `x >= 0 && x < 10` (compiled to unsigned
   `UInt(x) < 10`), our output evaluates differently from the machine at negative inputs — a
   manufactured signed reading. **This is a type-information defect**: signedness is a type property
-  and `AbstractValue` carries no type on values. The proper fix is the value type lattice (§9); a
-  targeted correct interim fix is to reconstruct `x <ᵤ N` (N ≥ 0) as `((0 <= x) && (x < N))`.
+  and `AbstractValue` carries no type on values.
+  **✅ FIXED in Phase 1 (commit `2be9e31`, `docs/research/phase1-type-lattice.md`):** a `ValueType`
+  lattice now carries signedness; `comparisonOperator` preserves the unsigned distinction (new
+  unsigned operators); a signed operand compared unsigned against a non-negative constant recovers
+  the range idiom `(0 <= x) && (x < N)` (differential-proven equal to the machine), a proven `UInt`
+  renders `<`, and unknown signedness EXPOSES `x <ᵁ y` — never a fabricated signed compare. Real
+  win found on self-host: a Mach-O magic check `self.magic <ᵁ 0xfffffffffade0000` (wrong as signed).
 - **L1 — no variable promotion.** Stack locals are inlined bottom-up (`locals → ((arg0+1)+((arg0+1)*2))`,
   `(arg0+1)` recomputed) rather than promoted to named locals with a single definition. We have no
   HighVariable/SSA-name concept. Ghidra's HighVariable/merge is the mature answer.
