@@ -5,6 +5,48 @@
 > MULTIEQUAL), §8 (debt #2: `.select`-as-join), §9.3 step "edge-indexed φ",
 > candid assessment #6 ("best deliberately-scoped next feature").
 
+## ⚠️ COURSE CORRECTION — φ DEFERRED (evidence, per the "stop and report" rule)
+
+Reading the merge architecture (not just planning from the study) showed a
+standalone, output-stable φ is **premature**:
+
+- The two resolve passes (`resolveDiamondSelects`, `resolveSwitchSelects`)
+  **already avoid back-edges** — `ancestorChain` walks single-predecessor hops
+  and the diamond gate requires disjoint arms, so a loop header (whose arms
+  aren't disjoint forward chains) is already never turned into a select.
+- There are ~10 `.select`-consuming sites but **zero** consumers of a
+  predecessor→value mapping. A bare φ (loop-header, three-way) would have **no
+  consumer** — nothing reads the edge indices until a **loop structurer** exists.
+- So an output-stable φ is either (a) placement-only-where-derivable = pure
+  indirection that removes no special case, or (b) general placement with bare φs
+  that must be threaded through every exhaustive switch as "= unknown" — a
+  pervasive, regression-prone change **for zero present benefit**.
+
+**Conclusion:** φ must be **co-designed with the loop structurer** (its only real
+consumer) — exactly this doc's own stop condition. It is deferred to the loops
+phase (`phase4-loops.md`), where a loop-header φ is a loop-carried variable.
+
+**What Phase 3 shipped instead** (commit `9a15e35`): the study's recommended
+near-term win the type lattice enables — **O1, reference-Optional nil checks**
+(`refOrNil → (arg0 != nil)`; struct/tagged optionals still decline) — plus a
+general `(cond ? 1 : 0) → cond` value-identity fold (self-host 70→1 such
+ternaries, 69 clean boolean recoveries).
+
+## PLATEAU NOTE (three consecutive redirects)
+
+Phase 2 (flowing state → immediate-neutrality), and Phase 3 (φ → O1) both
+redirected on evidence. Pattern: the **type-lattice foundation is solid and its
+incremental wins are now largely exhausted** (U1, typeOf precision, O1). The
+remaining roadmap items each need a *larger, co-design* investment, not another
+incremental phase: loops (block-tree structurer + iterator idiom + loop-carried
+φ), or the semantic-IR expansion + rule pool (§9.3 step 2, entangled with new
+node kinds). The next phase should be a **deliberate larger effort**, scoped to a
+first sub-step — see `phase4-loops.md`.
+
+---
+
+## (original φ design — deferred to the loops phase)
+
 ## Why (the debt)
 
 Today a CFG join is represented **directly as `.select(cond, whenTrue, whenFalse)`**,

@@ -547,3 +547,36 @@ and worth doing in the order above rather than as more render-layer special case
 a few focused iterations to the type-lattice + rule-pool + φ foundation; then loops and single-register
 Optionals become tractable; closures/existentials/async remain larger, later efforts that should not be
 attempted until the foundation exists.
+
+---
+
+## Addendum (repo `9a15e35`) — correction from the Phase-4 probe
+
+Phases 1–3 shipped: type lattice (§ assessment #5 first half), U1 fix, typeOf
+precision, and O1 single-register reference-Optional nil checks (§ #6). Two
+premises above were then **overturned by evidence** (see
+`phase4-unify-value-and-structure.md`); recording the correction so this study
+does not carry a falsified roadmap:
+
+1. **A loop / block-tree structurer already exists.** #6/#7 treat "the block-tree
+   structurer that loops need" as unbuilt. In fact `renderStructured` →
+   `ControlFlowStructure` (Structurer.swift) already does natural-loop detection
+   (back-edges + post-dominators) and emits `while`/`break`/`continue`/`goto`.
+
+2. **The real gap is not "add loops" but two disjoint reconstruction layers.**
+   The rich value reconstruction (`renderPseudo`/`AbstractValue`, what phases 1–3
+   improved) and the control-flow structurer (`renderStructured`) are almost
+   fully separate (`ControlFlowStructure` calls `renderValue` **0** times). A loop
+   renders as a correct *shape* with an **empty body** — no `total += i`, raw
+   `x9 >= x10` conditions, value-less `return`, overflow-trap noise. The pseudo
+   path declines loops outright.
+
+**Revised #5 / #6:** the next architectural investment is to **widen the one
+existing value↔structure seam** (the `cond:` note that already lets a forward
+`if` read `arg0 >= arg1`) to carry loops — represent loop-carried values (φ finds
+its real consumer here), emit body updates, name loop conditions, and fold the
+checked-arithmetic trap idiom. This is the "unified IR, not two rendering passes"
+point (§8) made concrete. #7's bottom line is unchanged: general bodies (loops,
+closures, existentials, async) remain far from dependable, and this is the
+blocking foundational work — but the ordering is now "unify the layers," not
+"build a structurer that already exists."
