@@ -15,6 +15,14 @@ public enum AbstractBinaryOperator: Equatable, Sendable {
     case shiftLeft
     case shiftRight
     case arithmeticShiftRight
+    // Comparisons, produced by a flag-setting compare + `cset`. Signed and
+    // unsigned condition codes are merged onto one symbol set for display.
+    case equal
+    case notEqual
+    case less
+    case lessEqual
+    case greater
+    case greaterEqual
 
     public var symbol: String {
         switch self {
@@ -27,6 +35,12 @@ public enum AbstractBinaryOperator: Equatable, Sendable {
         case .bitXor: "^"
         case .shiftLeft: "<<"
         case .shiftRight, .arithmeticShiftRight: ">>"
+        case .equal: "=="
+        case .notEqual: "!="
+        case .less: "<"
+        case .lessEqual: "<="
+        case .greater: ">"
+        case .greaterEqual: ">="
         }
     }
 }
@@ -552,6 +566,14 @@ public struct ValueTracer: Sendable {
         // which would otherwise clobber `x0` on `cbz x0, …`.
         if let flow = insn.controlFlow, flow != .sequential { return }
 
+        // An instruction that writes NZCV but that we don't model into a
+        // comparison (float/conditional compares, the S-variant arithmetic) must
+        // invalidate the tracked flags, so a later `cset` never reads a stale
+        // comparison and fabricates the wrong condition.
+        if Self.unmodeledFlagWriters.contains(detail.id.rawValue) {
+            registers[Self.flagsKey] = nil
+        }
+
         switch detail.id {
         case ARM64_INS_ADRP, ARM64_INS_ADR:
             // Capstone resolves the page/PC-relative target into the immediate.
@@ -596,7 +618,13 @@ public struct ValueTracer: Sendable {
                     break
                 }
             }
-            write(dest, expression(op, lhs, rhs), into: &registers)
+            let result = expression(op, lhs, rhs)
+            write(dest, result, into: &registers)
+            // The S-variants (`adds`/`subs`) also set NZCV — the compiler emits
+            // `subs x8, x8, x0; cset …` for a comparison as readily as `cmp`.
+            if detail.id == ARM64_INS_ADDS || detail.id == ARM64_INS_SUBS {
+                registers[Self.flagsKey] = result
+            }
 
         case ARM64_INS_AND, ARM64_INS_ANDS, ARM64_INS_ORR, ARM64_INS_EOR,
              ARM64_INS_MUL, ARM64_INS_LSL, ARM64_INS_LSR, ARM64_INS_ASR:
@@ -613,11 +641,12 @@ public struct ValueTracer: Sendable {
             case ARM64_INS_ASR: .arithmeticShiftRight
             default: .add // unreachable: the outer case is exhaustive
             }
-            write(
-                dest,
-                expression(op, source(detail.operands[1], in: registers), source(detail.operands[2], in: registers)),
-                into: &registers
+            let result = expression(
+                op, source(detail.operands[1], in: registers),
+                source(detail.operands[2], in: registers)
             )
+            write(dest, result, into: &registers)
+            if detail.id == ARM64_INS_ANDS { registers[Self.flagsKey] = result }
 
         case ARM64_INS_FADD, ARM64_INS_FSUB, ARM64_INS_FMUL, ARM64_INS_FDIV, ARM64_INS_FNMUL:
             guard let dest = destinationRegister(detail), detail.operands.count >= 3 else {
@@ -775,11 +804,33 @@ public struct ValueTracer: Sendable {
             applyWriteback(detail, into: &registers)
 
         case ARM64_INS_CMP, ARM64_INS_CMN, ARM64_INS_TST, ARM64_INS_CCMP, ARM64_INS_CCMN:
-            // Write only NZCV, which isn't tracked. Critically, these must NOT
-            // reach the default: Capstone renders `cmp x1, #1` with x1 as its
-            // first operand (it is an alias for `subs xzr, x1, #1`), so a
-            // destination-clobbering default would destroy x1.
-            break
+            // These write only NZCV, never a general register — critically they
+            // must NOT reach the default, since Capstone renders `cmp x1, #1` with
+            // x1 as its first operand (it aliases `subs xzr, x1, #1`) and a
+            // destination-clobbering default would destroy x1. Record the flags
+            // value so a following `cset`/`csel` can reconstruct the comparison.
+            // `cmp` compares `a - b`, `cmn` compares `a + b`, `tst` is `a & b`.
+            if detail.operands.count >= 2 {
+                let lhs = source(detail.operands[0], in: registers)
+                let rhs = source(detail.operands[1], in: registers)
+                switch detail.id {
+                case ARM64_INS_CMP: registers[Self.flagsKey] = expression(.subtract, lhs, rhs)
+                case ARM64_INS_CMN: registers[Self.flagsKey] = expression(.add, lhs, rhs)
+                case ARM64_INS_TST: registers[Self.flagsKey] = expression(.bitAnd, lhs, rhs)
+                default: registers[Self.flagsKey] = nil // CCMP/CCMN: conditional
+                }
+            } else {
+                registers[Self.flagsKey] = nil
+            }
+
+        case ARM64_INS_CSET, ARM64_INS_CSETM:
+            // `cset wd, <cc>` materialises the flags as a boolean. Reconstruct the
+            // comparison from the recorded flags value and the condition code.
+            guard let dest = destinationRegister(detail),
+                  let op = Self.comparisonOperator(detail.conditionCode),
+                  let flags = registers[Self.flagsKey]
+            else { clobber(detail, into: &registers); return }
+            write(dest, comparisonValue(flags: flags, op), into: &registers)
 
         default:
             clobber(detail, into: &registers)
@@ -925,6 +976,12 @@ public struct ValueTracer: Sendable {
                 right < 64
                     ? UInt64(bitPattern: Int64(bitPattern: left) >> Int64(right))
                     : nil
+            case .equal: left == right ? 1 : 0
+            case .notEqual: left != right ? 1 : 0
+            case .less: Int64(bitPattern: left) < Int64(bitPattern: right) ? 1 : 0
+            case .lessEqual: Int64(bitPattern: left) <= Int64(bitPattern: right) ? 1 : 0
+            case .greater: Int64(bitPattern: left) > Int64(bitPattern: right) ? 1 : 0
+            case .greaterEqual: Int64(bitPattern: left) >= Int64(bitPattern: right) ? 1 : 0
             }
             return folded.map(AbstractValue.immediate) ?? .unknown
         }
@@ -935,6 +992,8 @@ public struct ValueTracer: Sendable {
                 return lhs
             case .multiply, .bitAnd: return .immediate(0)
             case .divide: return .unknown // division by zero — don't simplify
+            case .equal, .notEqual, .less, .lessEqual, .greater, .greaterEqual:
+                break // a comparison against 0 is meaningful; keep it symbolic
             }
         }
         guard Self.expressionDepth(lhs) < 8, Self.expressionDepth(rhs) < 8 else { return .unknown }
@@ -957,6 +1016,50 @@ public struct ValueTracer: Sendable {
     private func floatUnary(_ op: AbstractUnaryOperator, _ value: AbstractValue) -> AbstractValue {
         guard value != .unknown, Self.expressionDepth(value) < 8 else { return .unknown }
         return .unary(op, value)
+    }
+
+    /// The tracked flags value from the most recent modelled compare, keyed so it
+    /// flows through the register map and the block meet like any other state.
+    private static let flagsKey = "nzcv.flags"
+
+    /// Instruction ids that write NZCV but that we do NOT reconstruct into a
+    /// comparison — float and conditional compares, and the flag-setting
+    /// arithmetic (`adds`/`subs`/`ands` and friends). A `cset` after one of these
+    /// must not read a stale integer comparison, so they invalidate the flags.
+    private static let unmodeledFlagWriters: Set<UInt32> = Set([
+        ARM64_INS_FCMP, ARM64_INS_FCMPE, ARM64_INS_FCCMP, ARM64_INS_FCCMPE,
+        ARM64_INS_CCMP, ARM64_INS_CCMN, ARM64_INS_BICS, ARM64_INS_ADCS,
+        ARM64_INS_SBCS,
+    ].map(\.rawValue))
+
+    /// Reconstruct a boolean comparison from a flags value and a comparison
+    /// operator. A `cmp a, b` stores `a - b`, so a `.subtract` node unwraps to a
+    /// direct `a <op> b`; anything else (a `tst`'s `a & b`, or a `cmp a, #0`
+    /// folded to just `a`) compares against zero.
+    private func comparisonValue(flags: AbstractValue, _ op: AbstractBinaryOperator) -> AbstractValue {
+        let lhs: AbstractValue, rhs: AbstractValue
+        if case .binary(.subtract, let a, let b) = flags {
+            lhs = a; rhs = b
+        } else {
+            lhs = flags; rhs = .immediate(0)
+        }
+        guard lhs != .unknown, rhs != .unknown,
+              Self.expressionDepth(lhs) < 8, Self.expressionDepth(rhs) < 8
+        else { return .unknown }
+        return .binary(op, lhs, rhs)
+    }
+
+    /// The comparison a condition code denotes after a subtract-based compare.
+    /// Signed and unsigned variants collapse to one symbol set; the unordered,
+    /// overflow, and always/never codes are left unmodelled.
+    private static func comparisonOperator(_ cc: arm64_cc) -> AbstractBinaryOperator? {
+        if cc == ARM64_CC_EQ { return .equal }
+        if cc == ARM64_CC_NE { return .notEqual }
+        if cc == ARM64_CC_GE || cc == ARM64_CC_HS || cc == ARM64_CC_PL { return .greaterEqual }
+        if cc == ARM64_CC_LT || cc == ARM64_CC_LO || cc == ARM64_CC_MI { return .less }
+        if cc == ARM64_CC_GT || cc == ARM64_CC_HI { return .greater }
+        if cc == ARM64_CC_LE || cc == ARM64_CC_LS { return .lessEqual }
+        return nil
     }
 
     private static func expressionDepth(_ value: AbstractValue) -> Int {
