@@ -1513,6 +1513,12 @@ public struct Disassembler: Sendable {
         return "0x" + String(v, radix: 16)
     }
 
+    /// Name a loop-carried induction variable by id — `i`, `j`, `k`, then `i3`, …
+    /// (skips `l`/`m`/`n`, which read poorly next to `1` and common loop bounds).
+    static func inductionVariableName(_ id: Int) -> String {
+        ["i", "j", "k"].indices.contains(id) ? ["i", "j", "k"][id] : "i\(id)"
+    }
+
     /// A constant rendered per its declared type: a `Bool` as `true`/`false`, a
     /// floating-point value as its decimal. A float immediate holds the IEEE-754
     /// bit pattern, which as raw hex (`0x400921f9f01b866e`) reads like a garbage
@@ -2249,6 +2255,8 @@ public struct Disassembler: Sendable {
                 return Self.renderImmediate(v)
             case .argument(let index):
                 return "arg\(index)"
+            case .local(let id):
+                return Self.inductionVariableName(id)
             case .address(let a):
                 return resolver.name(at: a) ?? "0x" + String(a, radix: 16)
             case .loaded(let a):

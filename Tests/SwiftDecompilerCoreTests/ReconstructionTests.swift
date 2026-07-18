@@ -472,6 +472,23 @@ private func reconstructionStructured(
     }
 }
 
+// MARK: - Loop induction variables (structured view)
+
+@Test func namesLoopInductionVariableIfPresent() async throws {
+    // A linear counter (init constant, step +1) is a genuine induction variable:
+    // it is named `i`, so the loop's exit comparison reconstructs (`i >= n`)
+    // instead of raw registers (`x9 >= x10`).
+    if let countTo = try await reconstructionStructured("countTo") {
+        #expect(countTo.contains("(i >= arg0)"))
+    }
+    // Adversarial: a NON-linear update (`i *= 2`) is not an `i ± c` recurrence, so
+    // the induction pass declines — the comparison stays in raw registers and no
+    // induction variable is fabricated.
+    if let doubleUntil = try await reconstructionStructured("doubleUntil") {
+        #expect(!doubleUntil.contains("(i "))
+    }
+}
+
 @Test func keepsGenuineTrapsUnfoldedIfPresent() async throws {
     // Adversarial: a `precondition` is not an overflow check — at -O it lowers to
     // a raw `brk` reached by a signed compare (`b.lt`), which the fold must NOT

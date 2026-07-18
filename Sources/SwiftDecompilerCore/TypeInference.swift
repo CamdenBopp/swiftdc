@@ -84,6 +84,9 @@ public enum TypeInference {
         switch value {
         case .argument(let index):
             return arguments[index] ?? .unknown
+        case .local:
+            // A loop induction variable is a Swift `Int` index — signed.
+            return .signedInteger(nil)
         case .immediate:
             return ValueType(category: .integer, width: nil, signedness: .unknownSign)
         case .binary(let op, let lhs, let rhs):

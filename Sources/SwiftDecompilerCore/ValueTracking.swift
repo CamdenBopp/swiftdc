@@ -180,6 +180,14 @@ public indirect enum AbstractValue: Equatable, Sendable {
     /// `stp …, [sp, #-k]!` — after those, the same local is at a different `sp`
     /// offset, but the same frame offset.
     case frame(Int64)
+    /// A loop-carried induction variable, identified by a small id (rendered
+    /// `i`, `j`, …). Seeded at a loop header by the induction-variable pass when a
+    /// slot has a proven constant initial value and a proven `i ± c` recurrence
+    /// across the back-edge; otherwise the slot stays `.unknown` (declined). This
+    /// is the φ the earlier phases deferred, now with a consumer: it lets a loop
+    /// header condition reconstruct with a name (`i < n`) instead of raw
+    /// registers.
+    case local(Int)
 }
 
 /// Register state that metadata proves at a method's entry point.
@@ -427,6 +435,14 @@ public struct ValueTracer: Sendable {
         // The N-way generalization: a switch over a tag, whose merge has more
         // than the two predecessors a diamond does.
         resolveSwitchSelects(
+            blocks: blocks, predecessors: predecessors,
+            blockByStart: blockByStart, inState: &inState, outState: outState
+        )
+        // Loop-carried induction variables: a header slot with a proven constant
+        // initial value and a proven `i ± c` recurrence across the back-edge is
+        // named `.local(i)`, so the loop's exit comparison reconstructs with a
+        // name (`i < n`) instead of raw registers. Declines anything unproven.
+        resolveLoopInductions(
             blocks: blocks, predecessors: predecessors,
             blockByStart: blockByStart, inState: &inState, outState: outState
         )
@@ -840,6 +856,167 @@ public struct ValueTracer: Sendable {
                 if ok { enriched[key] = merged }
             }
             inState[block.startAddress] = enriched
+        }
+    }
+
+    // MARK: - Loop induction variables
+
+    /// Name loop-carried induction variables so a loop's exit comparison
+    /// reconstructs (`i < n`) instead of raw registers. For each back-edge
+    /// `u → h`, a stack slot with a proven constant value on loop entry that the
+    /// header's `meet` dropped (i.e. loop-carried) and that has a proven
+    /// `slot = i ± c` recurrence across the back-edge is seeded `.local(id)` at
+    /// the header. Hard-gated: single-back-edge reducible loops, a linear
+    /// `± constant` step only; anything unproven is left `.unknown` (declined).
+    private func resolveLoopInductions(
+        blocks: [BasicBlock],
+        predecessors: [UInt64: [UInt64]],
+        blockByStart: [UInt64: BasicBlock],
+        inState: inout [UInt64: State],
+        outState: [UInt64: State]
+    ) {
+        var sourcesByHeader: [UInt64: [UInt64]] = [:]
+        for (from, header) in Self.backEdges(blocks: blocks, blockByStart: blockByStart) {
+            sourcesByHeader[header, default: []].append(from)
+        }
+        var displayId = 0
+        for header in sourcesByHeader.keys.sorted() {
+            guard let sources = sourcesByHeader[header], sources.count == 1,
+                  let backFrom = sources.first else { continue }  // simple reducible loop only
+            let preds = predecessors[header] ?? []
+            let preLoopPreds = preds.filter { $0 != backFrom }
+            guard !preLoopPreds.isEmpty else { continue }
+            let preLoopEntry = Self.meet(preLoopPreds.compactMap { outState[$0] })
+            guard let body = Self.naturalLoopBody(
+                header: header, backFrom: backFrom,
+                predecessors: predecessors, blockByStart: blockByStart
+            ) else { continue }
+            let headerIn = inState[header] ?? [:]
+            // Candidate slots (deterministic by key): a constant value on loop
+            // entry that `meet` dropped at the header (loop-carried / divergent).
+            let candidateKeys = preLoopEntry.keys.filter { key in
+                guard key.hasPrefix("stack@"), case .immediate = preLoopEntry[key] else { return false }
+                return (headerIn[key] ?? .unknown) == .unknown
+            }.sorted()
+            guard !candidateKeys.isEmpty else { continue }
+            // Seed each candidate with a fresh placeholder and re-transfer the loop
+            // body so the back-edge value is expressed in terms of the placeholder.
+            var seed = preLoopEntry
+            var placeholderId: [String: Int] = [:]
+            for (offset, key) in candidateKeys.enumerated() {
+                seed[key] = .local(offset)
+                placeholderId[key] = offset
+            }
+            let bodyOut = retransferBody(
+                body: body, header: header, headerSeed: seed,
+                blockByStart: blockByStart, predecessors: predecessors
+            )
+            guard let backOut = bodyOut[backFrom] else { continue }
+            // Accept a slot with a proven `placeholder ± c` recurrence, naming it
+            // with a stable display id.
+            for key in candidateKeys {
+                guard let pid = placeholderId[key], let recurrence = backOut[key],
+                      Self.isInductionRecurrence(recurrence, id: pid) else { continue }
+                inState[header, default: [:]][key] = .local(displayId)
+                displayId += 1
+            }
+        }
+    }
+
+    /// Back-edges `(from, header)`: DFS edges to a node still on the recursion
+    /// stack (gray). Iterative, so a deep CFG can't overflow the stack.
+    private static func backEdges(
+        blocks: [BasicBlock], blockByStart: [UInt64: BasicBlock]
+    ) -> [(UInt64, UInt64)] {
+        guard let entry = blocks.first?.startAddress else { return [] }
+        var color: [UInt64: Int] = [:]  // 0/absent white, 1 gray, 2 black
+        var result: [(UInt64, UInt64)] = []
+        var stack: [(node: UInt64, next: Int)] = [(entry, 0)]
+        color[entry] = 1
+        while let top = stack.last {
+            let u = top.node
+            let succs = blockByStart[u]?.successors.filter { blockByStart[$0] != nil } ?? []
+            if top.next < succs.count {
+                stack[stack.count - 1].next += 1
+                let v = succs[top.next]
+                if color[v] == 1 { result.append((u, v)) }
+                else if (color[v] ?? 0) == 0 { color[v] = 1; stack.append((v, 0)) }
+            } else {
+                color[u] = 2
+                stack.removeLast()
+            }
+        }
+        return result
+    }
+
+    /// The natural loop of back-edge `backFrom → header`: `{header}` plus every
+    /// node that can reach `backFrom` without passing through `header`.
+    private static func naturalLoopBody(
+        header: UInt64, backFrom: UInt64,
+        predecessors: [UInt64: [UInt64]], blockByStart: [UInt64: BasicBlock]
+    ) -> Set<UInt64>? {
+        var body: Set<UInt64> = [header]
+        var work: [UInt64] = []
+        if backFrom != header { body.insert(backFrom); work.append(backFrom) }
+        while let n = work.popLast() {
+            for p in predecessors[n] ?? [] where !body.contains(p) && blockByStart[p] != nil {
+                body.insert(p); work.append(p)
+            }
+        }
+        return body
+    }
+
+    /// Re-run the transfer over just the loop body, with the header's entry state
+    /// FIXED to `headerSeed` (so the seeded induction placeholders are not merged
+    /// away by the back-edge). Bounded mini-fixpoint; internal joins meet over
+    /// body predecessors. Returns each body block's exit state.
+    private func retransferBody(
+        body: Set<UInt64>, header: UInt64, headerSeed: State,
+        blockByStart: [UInt64: BasicBlock], predecessors: [UInt64: [UInt64]]
+    ) -> [UInt64: State] {
+        var outS: [UInt64: State] = [:]
+        var worklist = [header]
+        var queued: Set<UInt64> = [header]
+        var iterations = 0
+        let cap = body.count * 8 + 8
+        while let addr = worklist.first {
+            worklist.removeFirst(); queued.remove(addr)
+            iterations += 1
+            if iterations > cap { break }
+            guard let block = blockByStart[addr] else { continue }
+            let entry: State
+            if addr == header {
+                entry = headerSeed
+            } else {
+                let bodyPreds = (predecessors[addr] ?? []).filter { body.contains($0) }
+                entry = Self.meet(bodyPreds.compactMap { outS[$0] })
+            }
+            var registers = entry
+            for insn in block.instructions {
+                transfer(insn, into: &registers, record: nil, recordAccess: nil)
+            }
+            if outS[addr] != registers {
+                outS[addr] = registers
+                for succ in block.successors
+                where body.contains(succ) && succ != header && !queued.contains(succ) {
+                    worklist.append(succ); queued.insert(succ)
+                }
+            }
+        }
+        return outS
+    }
+
+    /// Whether `value` is a linear recurrence `local(id) ± c` (c ≠ 0) — a genuine
+    /// induction step. `+` is commutative; `-` only with the placeholder on the
+    /// left (`i - c`).
+    private static func isInductionRecurrence(_ value: AbstractValue, id: Int) -> Bool {
+        guard case .binary(let op, let a, let b) = value else { return false }
+        func isLocal(_ v: AbstractValue) -> Bool { if case .local(let x) = v { return x == id }; return false }
+        func nonZeroConst(_ v: AbstractValue) -> Bool { if case .immediate(let c) = v { return c != 0 }; return false }
+        switch op {
+        case .add: return (isLocal(a) && nonZeroConst(b)) || (isLocal(b) && nonZeroConst(a))
+        case .subtract: return isLocal(a) && nonZeroConst(b)
+        default: return false
         }
     }
 

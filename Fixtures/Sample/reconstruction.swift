@@ -274,3 +274,25 @@ public func checkedSum(_ a: Int, _ b: Int) -> Int { a + b }
 // SURVIVE the fold. At -O it lowers to a raw `brk` reached by `b.lt`; at -Onone
 // it is a `_assertionFailure` call. Either way the trap must remain visible.
 public func requirePositive(_ x: Int) -> Int { precondition(x > 0); return x }
+
+// MARK: - Loop induction variables (structured view)
+
+// A simple counting loop: the loop-carried counter `i` starts at a constant and
+// increments by a constant, so it is a linear induction variable. The tracer
+// names it (`.local`), and the loop's exit comparison reconstructs with the name
+// (`i >= n`) instead of raw registers (`x9 >= x10`).
+public func countTo(_ n: Int) -> Int {
+    var i = 0
+    var seen = 0
+    while i < n { seen = seen + 1; i = i + 1 }
+    return seen
+}
+
+// Adversarial: a NON-linear update (`i *= 2`) is not an `i ± c` recurrence, so
+// the induction pass must DECLINE — the loop variable is not named `i`, and the
+// comparison stays in raw registers rather than fabricating an induction variable.
+public func doubleUntil(_ n: Int) -> Int {
+    var i = 1
+    while i < n { i = i * 2 }
+    return i
+}
