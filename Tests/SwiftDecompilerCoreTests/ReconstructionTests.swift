@@ -476,16 +476,32 @@ private func reconstructionStructured(
 
 @Test func namesLoopInductionVariableIfPresent() async throws {
     // A linear counter (init constant, step +1) is a genuine induction variable:
-    // it is named `i`, so the loop's exit comparison reconstructs (`i >= n`)
-    // instead of raw registers (`x9 >= x10`).
+    // it is named `i`, and the header exit-test rotates into the loop condition,
+    // so the loop reads `while (i < arg0)` instead of `while (true) { if (x9 >=
+    // x10) … }`.
     if let countTo = try await reconstructionStructured("countTo") {
-        #expect(countTo.contains("(i >= arg0)"))
+        #expect(countTo.contains("while (i < arg0)"))
     }
     // Adversarial: a NON-linear update (`i *= 2`) is not an `i ± c` recurrence, so
     // the induction pass declines — the comparison stays in raw registers and no
     // induction variable is fabricated.
     if let doubleUntil = try await reconstructionStructured("doubleUntil") {
         #expect(!doubleUntil.contains("(i "))
+    }
+}
+
+@Test func rotatesLoopHeaderTestIntoWhileConditionIfPresent() async throws {
+    // A header that is purely the loop test rotates into `while (cond) { … }`
+    // (here with the named induction variable) instead of `while (true) { if
+    // (exit) return … }`.
+    if let countTo = try await reconstructionStructured("countTo") {
+        #expect(countTo.contains("while (i < arg0)"))
+        #expect(!countTo.contains("while (true)"))
+    }
+    // Adversarial: a `for x in array` header does real work each iteration
+    // (`iterator.next()`), so its test cannot be hoisted — it stays `while (true)`.
+    if let sumArray = try await reconstructionStructured("sumArray") {
+        #expect(sumArray.contains("while (true)"))
     }
 }
 

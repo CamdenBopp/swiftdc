@@ -182,6 +182,42 @@ struct ControlFlowStructure {
         return lines
     }
 
+    /// If a loop header is purely a single loop-exit test — no side-effecting
+    /// statement that would be dropped by hoisting the test, exactly one successor
+    /// in the loop body and the other the loop's single structured exit — return
+    /// the `while (…)` condition (oriented so `true` keeps the loop running) and
+    /// the body's entry block. This rotates `while (true) { if (i >= n) break… }`
+    /// into `while (i < n) { … }`. Returns nil (keep `while (true)`) for anything
+    /// not provably this shape: a header that does real work, a multi-exit or
+    /// mid-body exit, a `do/while` (exit at the back-edge), etc.
+    private func whileCondition(header: Int, info: LoopInfo) -> (text: String, bodyStart: Int, exit: Int)? {
+        let block = blocks[header]
+        let succs = block.successors.compactMap { index(of: $0) }
+        guard succs.count == 2 else { return nil }
+        let branch = condition(of: block)
+        guard branch.text != "?" else { return nil }
+        // The header must carry the loop test only: a statement that must run each
+        // iteration would be lost by moving the test into the `while`.
+        let hasStatement = block.instructions.contains { insn in
+            !branch.consumed.contains(insn.address)
+                && DisassembledFunction.pseudoStatement(of: insn, hideRuntime: true) != nil
+        }
+        guard !hasStatement else { return nil }
+        // Exactly one successor continues the loop (in the body); the other leaves.
+        let takenInBody = info.body.contains(succs[0])
+        let fallInBody = info.body.contains(succs[1])
+        guard takenInBody != fallInBody else { return nil }
+        let exitSucc = takenInBody ? succs[1] : succs[0]
+        // The exit must be the loop's structured exit or a `return`/`trap` tail the
+        // loop falls out to — so control resumes cleanly there after the `while`.
+        guard exitSucc == (info.exit ?? exit) || isTrivialTail(exitSucc) else { return nil }
+        let bodyStart = takenInBody ? succs[0] : succs[1]
+        // `succs[0]` is the branch-taken target. If taking the branch stays in the
+        // loop, that condition keeps it running; otherwise invert the exit test.
+        let text = takenInBody ? branch.text : Self.inverted(branch.text)
+        return (text, bodyStart, exitSucc)
+    }
+
     func emit(from start: Int, until stop: Int, indent: Int, visited: inout Set<Int>, gotoTargets: inout Set<Int>, loop: LoopContext?, depth: Int) -> [String] {
         if depth > maxDepth,
            start != stop, start != exit, !visited.contains(start), !isTrivialTail(start) {
@@ -205,14 +241,28 @@ struct ControlFlowStructure {
                 break
             }
 
-            // Enter a foldable loop: wrap its region in `while (true)`.
+            // Enter a foldable loop. A header that is purely a single loop-exit
+            // test rotates into `while (cond) { … }`; anything else stays
+            // `while (true) { … }` with the test inside.
             if let info = loops[current], loop?.header != current {
                 if gotoTargets.contains(current) { lines.append("\(pad)loc_\(hex(blocks[current].startAddress)):") }
                 let context = LoopContext(header: current, exitNode: info.exit ?? exit)
-                lines.append("\(pad)while (true) {")
-                lines += emit(from: current, until: stop, indent: indent + 1, visited: &visited, gotoTargets: &gotoTargets, loop: context, depth: depth + 1)
-                lines.append("\(pad)}")
-                current = info.exit ?? exit
+                if let rotated = whileCondition(header: current, info: info) {
+                    visited.insert(current)   // header consumed as the loop condition
+                    lines.append("\(pad)while (\(rotated.text)) {")
+                    var body = emit(from: rotated.bodyStart, until: stop, indent: indent + 1, visited: &visited, gotoTargets: &gotoTargets, loop: context, depth: depth + 1)
+                    // A trailing top-level `continue` is the loop's natural end —
+                    // redundant once the test is in the `while`. Drop it.
+                    if body.last == "\(pad)    continue" { body.removeLast() }
+                    lines += body
+                    lines.append("\(pad)}")
+                    current = rotated.exit   // resume at the loop's exit successor
+                } else {
+                    lines.append("\(pad)while (true) {")
+                    lines += emit(from: current, until: stop, indent: indent + 1, visited: &visited, gotoTargets: &gotoTargets, loop: context, depth: depth + 1)
+                    lines.append("\(pad)}")
+                    current = info.exit ?? exit
+                }
                 continue
             }
 

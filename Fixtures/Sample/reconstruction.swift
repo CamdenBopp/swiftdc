@@ -296,3 +296,12 @@ public func doubleUntil(_ n: Int) -> Int {
     while i < n { i = i * 2 }
     return i
 }
+
+// Adversarial for the while-condition rotation: a `for x in array` loop's header
+// does real work each iteration (`iterator.next()`), so its test cannot be
+// hoisted into a `while (…)` condition — it must stay `while (true) { … }`.
+public func sumArray(_ a: [Int]) -> Int {
+    var total = 0
+    for x in a { total = total + x }
+    return total
+}
