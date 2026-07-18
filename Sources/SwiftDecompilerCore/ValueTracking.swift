@@ -1043,10 +1043,9 @@ public struct ValueTracer: Sendable {
         } else {
             lhs = flags; rhs = .immediate(0)
         }
-        guard lhs != .unknown, rhs != .unknown,
-              Self.expressionDepth(lhs) < 8, Self.expressionDepth(rhs) < 8
-        else { return .unknown }
-        return .binary(op, lhs, rhs)
+        // Through `expression` so a comparison of two known constants folds to its
+        // 0/1 result (`(0 != 0)` → 0) instead of printing the trivial compare.
+        return expression(op, lhs, rhs)
     }
 
     /// The comparison a condition code denotes after a subtract-based compare.
