@@ -1381,19 +1381,37 @@ public struct Disassembler: Sendable {
     ) -> (typeName: String, fieldMap: FieldMap,
           seeded: [String: AbstractValue], argumentFieldMaps: [Int: FieldMap])? {
         guard function.objcMethod == nil, let name = function.demangledName,
-              Self.isSwiftMangled(function.symbol), !name.hasPrefix("static "),
-              let arrow = name.range(of: " -> ", options: .backwards)
+              Self.isSwiftMangled(function.symbol), !name.hasPrefix("static ")
         else { return nil }
-        let signature = String(name[..<arrow.lowerBound])
-        // Strip the parameter list, then split the remainder at its last dot into
-        // the self type and the method name.
-        guard let paramsRange = DisassembledFunction.outermostArgumentListRange(of: signature)
-        else { return nil }
-        let qualifiedMethod = signature[..<signature.index(before: paramsRange.lowerBound)]
-        guard let dot = qualifiedMethod.lastIndex(of: ".") else { return nil }
-        let methodName = qualifiedMethod[qualifiedMethod.index(after: dot)...]
-        guard methodName != "init", !methodName.isEmpty else { return nil }
-        let selfTypeName = String(qualifiedMethod[..<dot])
+
+        // Two shapes: a method (`Type.method(params) -> Ret`) or a computed
+        // property's getter (`Type.property.getter : Ret`, which takes no explicit
+        // parameters). `.modify`/`.read` accessors are coroutines whose self is
+        // the x20 pointer, so they are excluded.
+        let selfTypeName: String
+        let parameters: [String]
+        if let arrow = name.range(of: " -> ", options: .backwards) {
+            let signature = String(name[..<arrow.lowerBound])
+            guard let paramsRange = DisassembledFunction.outermostArgumentListRange(of: signature)
+            else { return nil }
+            let qualifiedMethod = signature[..<signature.index(before: paramsRange.lowerBound)]
+            guard let dot = qualifiedMethod.lastIndex(of: ".") else { return nil }
+            let methodName = qualifiedMethod[qualifiedMethod.index(after: dot)...]
+            guard methodName != "init", !methodName.isEmpty else { return nil }
+            selfTypeName = String(qualifiedMethod[..<dot])
+            parameters = DisassembledFunction.splitTopLevelArguments(signature[paramsRange])
+        } else {
+            var base = name
+            if let colon = base.range(of: " : ") { base = String(base[..<colon.lowerBound]) }
+            guard base.hasSuffix(".getter") else { return nil }
+            base = String(base.dropLast(".getter".count)) // Type.property
+            guard let propertyDot = base.lastIndex(of: "."),
+                  case let typePart = String(base[..<propertyDot]), !typePart.isEmpty,
+                  base.index(after: propertyDot) < base.endIndex
+            else { return nil }
+            selfTypeName = typePart
+            parameters = []
+        }
 
         // The type must be a known HFA-float struct, and `self` must not be
         // accessed through x20 (which would be the pointer form).
@@ -1413,7 +1431,6 @@ public struct Disassembler: Sendable {
         var floatIndex = selfOffsets.count
         var integerIndex = 0
         var argumentFieldMaps: [Int: FieldMap] = [:]
-        let parameters = DisassembledFunction.splitTopLevelArguments(signature[paramsRange])
         for (parameter, index) in zip(parameters, parameters.indices) {
             switch Self.scalarParameterClass(parameter) {
             case .integer:
