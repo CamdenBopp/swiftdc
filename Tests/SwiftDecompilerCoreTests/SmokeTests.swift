@@ -651,6 +651,45 @@ private func assembledFunction(
     #expect(structured.filter { $0 == "{" }.count == structured.filter { $0 == "}" }.count)
 }
 
+/// A pathologically deep CFG (a long comparison cascade — what a giant switch
+/// lowers to) must not overflow the stack: the structurer degrades to `goto`
+/// past a safe recursion depth, honoring its "never crash, degrade to goto"
+/// contract. Regression for the pre-existing SIGBUS on `--structured` self-host.
+@Test func structuresDeepCFGWithoutStackOverflow() {
+    // ~1500 `cmp x0, #i; b.eq exit` blocks, each falling through to the next: an
+    // if-else-if cascade ~3000 emit/edge frames deep — far past the 600-frame
+    // depth limit, so the guard must fire (and repeatedly).
+    let n = 1500
+    let exitAddr = UInt64(0x1000 + 2 * n * 4)
+    var insns: [Instruction] = []
+    for i in 0..<n {
+        let cmpAddr = UInt64(0x1000 + (2 * i) * 4)
+        let beqAddr = UInt64(0x1000 + (2 * i + 1) * 4)
+        insns.append(Instruction(address: cmpAddr, text: "cmp x0, #\(i)", controlFlow: .sequential))
+        insns.append(Instruction(address: beqAddr, text: "b.eq #0x\(String(exitAddr, radix: 16))",
+                                 controlFlow: .conditionalBranch, branchTarget: exitAddr))
+    }
+    insns.append(Instruction(address: exitAddr, text: "ret", controlFlow: .return))
+    let fn = DisassembledFunction(symbol: "deepCascade", demangledName: "deepCascade()",
+                                  startAddress: 0x1000, instructions: insns, source: .symbol)
+
+    // Inject a small depth limit so the guard fires well within the test thread's
+    // (smaller-than-the-CLI) stack — this exercises the degradation logic itself;
+    // the self-host run validates the default limit against the real 8 MB stack.
+    let structured = fn.renderStructured(maxStructuringDepth: 40)  // must not crash
+    // Never structurally broken, even under degradation.
+    #expect(structured.filter { $0 == "{" }.count == structured.filter { $0 == "}" }.count)
+    // The depth guard fired: it degraded to a labeled goto rather than recursing
+    // (and overflowing) all the way down.
+    #expect(structured.contains("goto loc_"))
+    // Every emitted `goto loc_<addr>` resolves to a matching `loc_<addr>:` label.
+    let gotoTargets = structured.components(separatedBy: "goto loc_").dropFirst()
+        .map { String($0.prefix { $0.isHexDigit }) }
+    for target in gotoTargets where !target.isEmpty {
+        #expect(structured.contains("loc_\(target):"))
+    }
+}
+
 /// Reducible loops fold into `while (true) { … break/continue }`.
 @Test func foldsLoopsIntoWhileIfPresent() async throws {
     let path = "Fixtures/Sample/sample.release"

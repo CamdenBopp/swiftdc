@@ -7,25 +7,35 @@ import Foundation
 /// degrades to a labeled block with `goto`, so the output is never structurally
 /// wrong. Conditions are reconstructed from the compare + conditional-branch pair.
 public extension DisassembledFunction {
-    func renderStructured() -> String {
+    /// `maxStructuringDepth` bounds the structurer's recursion (see
+    /// `ControlFlowStructure.emit`); pass `0` (the default) to use the built-in
+    /// limit. Exposed so tests can inject a small value.
+    func renderStructured(maxStructuringDepth: Int = 0) -> String {
         let blocks = basicBlocks()
         guard blocks.count > 1 else { return renderPseudo() }
 
-        let cfg = ControlFlowStructure(blocks: blocks, objectiveCArguments: objcMethod != nil)
-        var lines = ["\(displayName) {"]
-        if let objcMethod { lines.append("    // \(objcMethod.signature)") }
-        var visited = Set<Int>()
-        lines += cfg.emit(from: 0, until: cfg.exit, indent: 1, visited: &visited, loop: nil)
-        // Anything unreachable from entry by forward edges (e.g. landing pads):
-        // emit honestly as labeled blocks. Trivial tails are duplicated into
-        // branches, not emitted standalone.
-        for index in blocks.indices where !visited.contains(index) && !cfg.isTrivialTail(index) {
-            lines += cfg.emit(from: index, until: cfg.exit, indent: 1, visited: &visited, loop: nil)
+        let depth = maxStructuringDepth > 0 ? maxStructuringDepth : ControlFlowStructure.defaultMaxDepth
+        let cfg = ControlFlowStructure(blocks: blocks, objectiveCArguments: objcMethod != nil, maxDepth: depth)
+        let header = "\(displayName) {"
+        let objcLine = objcMethod.map { "    // \($0.signature)" }
+
+        // The structurer recurses with the CFG's nesting depth, and each frame is
+        // large; a deeply nested CFG (a giant switch → a long if-else-if cascade)
+        // can exceed the ambient thread's stack. Run on a thread with a large,
+        // known stack so the depth guard (a backstop) is what bounds recursion,
+        // not the caller's stack size.
+        let result = ResultBox()
+        ControlFlowStructure.onLargeStack {
+            result.lines = cfg.renderLines(header: header, objcLine: objcLine)
         }
-        lines.append("}")
-        return lines.joined(separator: "\n")
+        return result.lines.joined(separator: "\n")
     }
 }
+
+/// Carries the rendered lines back from the large-stack worker thread. Safe
+/// because the caller reads `lines` only after the semaphore join (a
+/// happens-before), so there is no concurrent access.
+final class ResultBox: @unchecked Sendable { var lines: [String] = [] }
 
 /// Internal CFG + post-dominator structuring for `renderStructured`.
 struct ControlFlowStructure {
@@ -40,11 +50,13 @@ struct ControlFlowStructure {
     private let ipdom: [Int]                   // immediate post-dominator per block
     private let loops: [Int: LoopInfo]         // foldable natural loops, by header
     private let objectiveCArguments: Bool
+    let maxDepth: Int                          // recursion-depth guard (see emit)
 
-    init(blocks: [BasicBlock], objectiveCArguments: Bool = false) {
+    init(blocks: [BasicBlock], objectiveCArguments: Bool = false, maxDepth: Int = ControlFlowStructure.defaultMaxDepth) {
         self.blocks = blocks
         self.exit = blocks.count
         self.objectiveCArguments = objectiveCArguments
+        self.maxDepth = maxDepth
         var indexByAddress: [UInt64: Int] = [:]
         for (index, block) in blocks.enumerated() { indexByAddress[block.startAddress] = index }
         self.indexByAddress = indexByAddress
@@ -114,7 +126,68 @@ struct ControlFlowStructure {
 
     // MARK: - Structured emission
 
-    func emit(from start: Int, until stop: Int, indent: Int, visited: inout Set<Int>, loop: LoopContext?) -> [String] {
+    /// Past `maxDepth` `emit`/`edge` recursion frames, `emit` degrades to a `goto`
+    /// rather than run the recursion arbitrarily deep on a pathologically deep CFG
+    /// (e.g. a giant switch lowered to a long if-else-if cascade). The deferred
+    /// block is emitted later as a standalone labeled block — the Structurer's
+    /// "never crash, degrade to goto" contract. `renderStructured` runs the whole
+    /// recursion on a large dedicated stack, so this bounds *readability* (very
+    /// deep nesting degrades to gotos), and is a safety backstop only for the
+    /// truly absurd. Injectable so tests exercise it on a small-stack test thread.
+    static let defaultMaxDepth = 400
+
+    /// The stack given to the structuring worker thread. `emit`/`edge` frames are
+    /// large, and a deeply nested CFG recurses far deeper than a default worker
+    /// stack allows; 256 MB is virtual (lazily committed) and ample.
+    private static let workerStackSize = 256 * 1024 * 1024
+
+    /// Run `work` synchronously on a thread with a large stack (see above), so the
+    /// structurer's recursion depth is bounded by `maxDepth`, not the ambient
+    /// thread's stack. Blocks the caller until it finishes — fine for this batch
+    /// (non-server) rendering.
+    static func onLargeStack(_ work: @escaping @Sendable () -> Void) {
+        let done = DispatchSemaphore(value: 0)
+        let thread = Thread {
+            work()
+            done.signal()
+        }
+        thread.stackSize = workerStackSize
+        thread.start()
+        done.wait()
+    }
+
+    /// Build the structured body (the shared work run on the large-stack thread).
+    func renderLines(header: String, objcLine: String?) -> [String] {
+        var lines = [header]
+        if let objcLine { lines.append(objcLine) }
+        var visited = Set<Int>()
+        // Blocks a depth-guarded `goto` points to: they must be emitted with a
+        // `loc_<addr>:` label wherever they land (see `emit`).
+        var gotoTargets = Set<Int>()
+        lines += emit(from: 0, until: exit, indent: 1, visited: &visited, gotoTargets: &gotoTargets, loop: nil, depth: 0)
+        // Anything unreachable from entry by forward edges (e.g. landing pads),
+        // and any block deferred by the recursion-depth guard: emit honestly as
+        // labeled blocks. Trivial tails are duplicated into branches, not emitted
+        // standalone. Loop so a block the guard defers *while* draining the
+        // worklist still gets emitted (its index may already be behind us).
+        var progressed = true
+        while progressed {
+            progressed = false
+            for index in blocks.indices where !visited.contains(index) && !isTrivialTail(index) {
+                lines += emit(from: index, until: exit, indent: 1, visited: &visited, gotoTargets: &gotoTargets, loop: nil, depth: 0)
+                progressed = true
+            }
+        }
+        lines.append("}")
+        return lines
+    }
+
+    func emit(from start: Int, until stop: Int, indent: Int, visited: inout Set<Int>, gotoTargets: inout Set<Int>, loop: LoopContext?, depth: Int) -> [String] {
+        if depth > maxDepth,
+           start != stop, start != exit, !visited.contains(start), !isTrivialTail(start) {
+            gotoTargets.insert(start)
+            return ["\(String(repeating: "    ", count: indent))goto loc_\(hex(blocks[start].startAddress))"]
+        }
         var lines: [String] = []
         var current = start
         while current != stop, current != exit {
@@ -134,9 +207,10 @@ struct ControlFlowStructure {
 
             // Enter a foldable loop: wrap its region in `while (true)`.
             if let info = loops[current], loop?.header != current {
+                if gotoTargets.contains(current) { lines.append("\(pad)loc_\(hex(blocks[current].startAddress)):") }
                 let context = LoopContext(header: current, exitNode: info.exit ?? exit)
                 lines.append("\(pad)while (true) {")
-                lines += emit(from: current, until: stop, indent: indent + 1, visited: &visited, loop: context)
+                lines += emit(from: current, until: stop, indent: indent + 1, visited: &visited, gotoTargets: &gotoTargets, loop: context, depth: depth + 1)
                 lines.append("\(pad)}")
                 current = info.exit ?? exit
                 continue
@@ -144,8 +218,12 @@ struct ControlFlowStructure {
 
             visited.insert(current)
             let block = blocks[current]
+            // Label a block that is a loop header, or a `goto` target the depth
+            // guard deferred — so every emitted `goto loc_<addr>` resolves.
             if loops[current] == nil, isLoopHeader(current) {
                 lines.append("\(pad)loc_\(hex(block.startAddress)):  // loop header")
+            } else if gotoTargets.contains(current) {
+                lines.append("\(pad)loc_\(hex(block.startAddress)):")
             }
             let succs = block.successors.compactMap { index(of: $0) }
             // Swift's checked-arithmetic overflow guard (`adds; b.vs trap`) is an
@@ -178,9 +256,9 @@ struct ControlFlowStructure {
 
             if succs.count >= 2 {
                 let merge = ipdom[current]
-                let thenLines = edge(from: current, to: succs[0], until: merge, indent: indent + 1, visited: &visited, loop: loop)
+                let thenLines = edge(from: current, to: succs[0], until: merge, indent: indent + 1, visited: &visited, gotoTargets: &gotoTargets, loop: loop, depth: depth + 1)
                 let elseLines = succs[1] != merge
-                    ? edge(from: current, to: succs[1], until: merge, indent: indent + 1, visited: &visited, loop: loop)
+                    ? edge(from: current, to: succs[1], until: merge, indent: indent + 1, visited: &visited, gotoTargets: &gotoTargets, loop: loop, depth: depth + 1)
                     : []
                 let cond = branch?.text ?? "?"
                 // Collapse empty branches: drop a no-op `if`, invert when only the
@@ -220,7 +298,7 @@ struct ControlFlowStructure {
 
     /// Emit one branch edge `u → v`: a back-edge becomes `continue`/`goto`, the
     /// loop exit becomes `break`, the merge point is empty, else recurse.
-    private func edge(from u: Int, to v: Int, until merge: Int, indent: Int, visited: inout Set<Int>, loop: LoopContext?) -> [String] {
+    private func edge(from u: Int, to v: Int, until merge: Int, indent: Int, visited: inout Set<Int>, gotoTargets: inout Set<Int>, loop: LoopContext?, depth: Int) -> [String] {
         let pad = String(repeating: "    ", count: indent)
         if backSuccessors[u].contains(v) {
             if let loop, v == loop.header { return ["\(pad)continue"] }
@@ -228,7 +306,7 @@ struct ControlFlowStructure {
         }
         if let loop, v == loop.exitNode { return ["\(pad)break"] }
         if v == merge || v == exit { return [] }
-        return emit(from: v, until: merge, indent: indent, visited: &visited, loop: loop)
+        return emit(from: v, until: merge, indent: indent, visited: &visited, gotoTargets: &gotoTargets, loop: loop, depth: depth + 1)
     }
 
     // MARK: - Conditions
