@@ -15,17 +15,22 @@
   fixed a CFG root cause (`brk`/`udf` had a spurious fall-through successor).
   `sumTo` → clean `while`; `Tree.sum()` loses its overflow trap. New
   structured-view test harness. 96 tests; --pseudo self-host green (0 crashes).
-- **⚠️ DISCOVERED — pre-existing `--structured` stack overflow.** Running
-  `--structured` over a large binary (swiftdc self-host) SIGBUSes: the recursive
-  `emit`/`edge` structuring has no depth bound and overflows the 8 MB stack on a
-  deep CFG (crash report: KERN_PROTECTION_FAILURE at the stack-guard region).
-  Confirmed pre-existing (the pre-fold binary crashes identically) — never caught
-  because prior self-host gates used `--pseudo`. It violates the Structurer's own
-  "degrade to goto, never crash" contract. **This is the immediate next step**
-  (a prerequisite for reliable `--structured`, which the layer-unification builds
-  on): thread a depth counter through `emit`/`edge` and degrade to the existing
-  `goto loc_<addr>` fallback past a safe depth. Then steps 1–3 (loop-carried φ,
-  body updates, named conditions) can proceed on a crash-safe structured path.
+- **Structurer stack overflow FIXED (commit `ca82d6f`).** The pre-existing
+  `--structured` SIGBUS (recursive `emit`/`edge` on a deep CFG — a giant switch
+  cascade — overflowing the stack; ~20 KB frames, so a few hundred deep exhausts
+  8 MB) is fixed two ways: (1) run the structuring on a dedicated 256 MB-stack
+  thread so the ambient stack no longer bounds it; (2) a depth guard (default
+  400, injectable) that degrades to a labeled `goto loc_<addr>` past that depth,
+  restoring the "never crash, degrade to goto" contract. Self-host `--structured`
+  now completes EXIT 0 (540k lines, 0 crashes, balanced braces, only 2 gotos
+  across the corpus — nearly everything renders fully). Regression test: a
+  synthetic ~1500-deep cascade. `--structured` is now crash-safe, so the layer
+  unification can build on it.
+- **NEXT — the value↔structure unification (steps 1–3).** Represent loop-carried
+  values (φ) in the value tracer → name loop conditions via the existing `cond:`
+  seam (`i < n` not `x9 >= x10`) → emit body updates (`i += 1`, `total += i`).
+  This is the core Phase-4 investment; approach the seam design (φ in
+  `AbstractValue` vs. a recurrence table; who drives whom) as a deliberate step.
 
 ## TL;DR — the plan was misdiagnosed; here is what the code actually does
 
