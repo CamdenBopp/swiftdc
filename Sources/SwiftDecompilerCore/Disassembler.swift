@@ -363,16 +363,27 @@ public struct Disassembler: Sendable {
             // from the symbol so `self` survives — without it x0 is never seeded
             // and every receiver renders `?`.
             let symbolEntry = objcMethod == nil ? Self.objcEntryFromSymbol(function.symbol) : nil
-            let selfTypeName = objcMethod == nil && symbolEntry == nil && !fieldMaps.isEmpty
+            let classSelfTypeName = objcMethod == nil && symbolEntry == nil && !fieldMaps.isEmpty
                 ? Self.selfType(of: function, selfIndex: selfIndex, fieldMaps: fieldMaps)
                 : nil
+            // A nonmutating HFA-struct instance method passes `self` decomposed in
+            // SIMD registers rather than through x20, so it needs the value-self
+            // path even when the name-based `selfType` already found the type (it
+            // would otherwise seed x20, which this ABI leaves as garbage). The
+            // HFA + no-`[x20]` guards inside confine it to exactly that shape.
+            let valueSelf = objcMethod == nil && symbolEntry == nil
+                ? Self.swiftValueTypeSelfFields(of: function, fieldMaps: fieldMaps)
+                : nil
+            let selfTypeName = classSelfTypeName ?? valueSelf?.typeName
             let entry: MethodEntryConvention? = if let objcMethod {
                 objcMethod.isInitializer
                     ? .objectiveCInitializer(argumentCount: objcMethod.argumentCount)
                     : .objectiveC(argumentCount: objcMethod.argumentCount)
             } else if let symbolEntry {
                 symbolEntry
-            } else if selfTypeName != nil {
+            } else if let valueSelf {
+                .swiftValueInstance(seededRegisters: valueSelf.seeded)
+            } else if classSelfTypeName != nil {
                 .swiftInstance(scalarArguments: Self.swiftScalarArgumentRegisters(of: function) ?? [:])
             } else if let scalarArgs = Self.swiftScalarArgumentRegisters(of: function) {
                 .swiftFunction(scalarArguments: scalarArgs)
@@ -385,15 +396,18 @@ public struct Disassembler: Sendable {
                 // No binding, but the symbol names the owning class: its ivar
                 // layout may still be indexed, so `self->_ivar` can be named.
                 objcIndex.fieldMaps[className]
+            } else if let valueSelf {
+                valueSelf.fieldMap
             } else {
-                selfTypeName.flatMap { fieldMaps[$0] }
+                classSelfTypeName.flatMap { fieldMaps[$0] }
             }
             return enrichCallArguments(
                 in: function, resolver: resolver, swiftTargets: swiftTargets,
                 entry: entry,
                 fieldMap: fieldMap,
                 objcFieldSyntax: objcMethod != nil || symbolEntry != nil,
-                selfTypeName: selfTypeName, vtableIndex: vtableIndex
+                selfTypeName: selfTypeName, vtableIndex: vtableIndex,
+                argumentFieldMaps: valueSelf?.argumentFieldMaps ?? [:]
             )
         }
 
@@ -1351,6 +1365,93 @@ public struct Disassembler: Sendable {
         return registers
     }
 
+    /// For a nonmutating instance method of a small HFA-float struct, the SIMD
+    /// register → `self` field-offset map to seed (plus the resolved self type
+    /// and its field map, so the fields name). `self` arrives decomposed across
+    /// `d0…` in that ABI; this is what lets `Vec2.magnitude()` read `self.x`.
+    ///
+    /// Two structural guards keep it from fabricating: the demangled name must be
+    /// an instance method (not `static`, not `.init`) of a type whose layout is a
+    /// genuine HFA (`FieldMap.homogeneousFloatFieldOffsets`), and the body must
+    /// never use `x20` as a memory base — a `[x20, …]` access proves `self` is the
+    /// pointer form (a mutating or indirectly-passed struct, or a class), where
+    /// decomposing SIMD registers would be wrong.
+    static func swiftValueTypeSelfFields(
+        of function: DisassembledFunction, fieldMaps: [String: FieldMap]
+    ) -> (typeName: String, fieldMap: FieldMap,
+          seeded: [String: AbstractValue], argumentFieldMaps: [Int: FieldMap])? {
+        guard function.objcMethod == nil, let name = function.demangledName,
+              Self.isSwiftMangled(function.symbol), !name.hasPrefix("static "),
+              let arrow = name.range(of: " -> ", options: .backwards)
+        else { return nil }
+        let signature = String(name[..<arrow.lowerBound])
+        // Strip the parameter list, then split the remainder at its last dot into
+        // the self type and the method name.
+        guard let paramsRange = DisassembledFunction.outermostArgumentListRange(of: signature)
+        else { return nil }
+        let qualifiedMethod = signature[..<signature.index(before: paramsRange.lowerBound)]
+        guard let dot = qualifiedMethod.lastIndex(of: ".") else { return nil }
+        let methodName = qualifiedMethod[qualifiedMethod.index(after: dot)...]
+        guard methodName != "init", !methodName.isEmpty else { return nil }
+        let selfTypeName = String(qualifiedMethod[..<dot])
+
+        // The type must be a known HFA-float struct, and `self` must not be
+        // accessed through x20 (which would be the pointer form).
+        guard let selfMap = Self.namedFieldMap(selfTypeName, in: fieldMaps),
+              let selfOffsets = selfMap.homogeneousFloatFieldOffsets,
+              !function.instructions.contains(where: { $0.text.contains("[x20") })
+        else { return nil }
+
+        // `self`'s fields fill the first SIMD registers; parameters follow —
+        // integers in x0…, floats/HFAs in the remaining SIMD registers by their
+        // own counters. Any non-float-scalar, non-HFA parameter bails the whole
+        // decomposition so the register assignment can't drift.
+        var seeded: [String: AbstractValue] = [:]
+        for (index, offset) in selfOffsets.enumerated() {
+            seeded["v\(index)"] = .selfFieldValue(offset: offset)
+        }
+        var floatIndex = selfOffsets.count
+        var integerIndex = 0
+        var argumentFieldMaps: [Int: FieldMap] = [:]
+        let parameters = DisassembledFunction.splitTopLevelArguments(signature[paramsRange])
+        for (parameter, index) in zip(parameters, parameters.indices) {
+            switch Self.scalarParameterClass(parameter) {
+            case .integer:
+                guard integerIndex < 8 else { return nil }
+                seeded["x\(integerIndex)"] = .argument(index); integerIndex += 1
+            case .floating:
+                guard floatIndex < 8 else { return nil }
+                seeded["v\(floatIndex)"] = .argument(index); floatIndex += 1
+            case nil:
+                // The only other shape we decompose is an HFA-float struct.
+                guard let map = Self.namedFieldMap(Self.parameterType(parameter), in: fieldMaps),
+                      let offsets = map.homogeneousFloatFieldOffsets,
+                      floatIndex + offsets.count <= 8
+                else { return nil }
+                for offset in offsets {
+                    seeded["v\(floatIndex)"] = .argumentField(argument: index, offset: offset)
+                    floatIndex += 1
+                }
+                argumentFieldMaps[index] = map
+            }
+        }
+        return (selfMap.typeName, selfMap, seeded, argumentFieldMaps)
+    }
+
+    /// A demangled parameter's type, with any `label:` prefix removed.
+    private static func parameterType(_ parameter: String) -> String {
+        if let colon = parameter.range(of: ": ", options: .backwards) {
+            return String(parameter[colon.upperBound...]).trimmingCharacters(in: .whitespaces)
+        }
+        return parameter.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// A field map for a demangled type name, trying the qualified name then its
+    /// last (unqualified) component, since `FieldMap` is keyed unqualified.
+    private static func namedFieldMap(_ typeName: String, in fieldMaps: [String: FieldMap]) -> FieldMap? {
+        fieldMaps[typeName] ?? typeName.split(separator: ".").last.flatMap { fieldMaps[String($0)] }
+    }
+
     private enum ScalarParameterClass { case integer, floating }
 
     /// The register class of a demangled parameter, or nil when it isn't provably
@@ -1390,11 +1491,26 @@ public struct Disassembler: Sendable {
         fieldMap: FieldMap?,
         objcFieldSyntax: Bool,
         selfTypeName: String? = nil,
-        vtableIndex: VTableIndex = VTableIndex()
+        vtableIndex: VTableIndex = VTableIndex(),
+        argumentFieldMaps: [Int: FieldMap] = [:]
     ) -> DisassembledFunction {
         /// A source-level field path for this method convention.
         func fieldPath(_ name: String) -> String {
             objcFieldSyntax ? "self->\(name)" : "self.\(name)"
+        }
+
+        /// Render a by-value struct argument's field — `arg1.y` — from the
+        /// parameter's own field map, falling back to a byte offset.
+        func argumentFieldName(argument: Int, offset: Int) -> String {
+            if case .success(let hit)? = argumentFieldMaps[argument]?.lookup(offset: offset, bytes: 1) {
+                switch hit {
+                case .whole(let name, _), .part(let name, _, _, _):
+                    return "arg\(argument).\(name)"
+                case .spans:
+                    break
+                }
+            }
+            return "arg\(argument)[0x\(String(offset, radix: 16))]"
         }
 
         /// Resolve a vtable-dispatch byte offset to the method `self`'s class
@@ -1587,6 +1703,8 @@ public struct Disassembler: Sendable {
                 // A bare method pointer (rarely rendered on its own — the call it
                 // feeds is named at the dispatch site). Name it when resolvable.
                 return resolveVTableMethod(offset).map { "\($0)" } ?? "?"
+            case .argumentField(let argument, let offset):
+                return argumentFieldName(argument: argument, offset: offset)
             case .binary(let op, let lhs, let rhs):
                 guard depth < 8 else { return "?" }
                 return "(\(renderValue(lhs, depth: depth + 1)) \(op.symbol) \(renderValue(rhs, depth: depth + 1)))"

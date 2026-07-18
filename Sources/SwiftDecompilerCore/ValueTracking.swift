@@ -98,6 +98,10 @@ public indirect enum AbstractValue: Equatable, Sendable {
     /// the target of a `ldr x8,[x20]; ldr x8,[x8,#off]; blr x8` dispatch. Named
     /// against `self`'s type via `VTableIndex` at enrichment time.
     case selfVTableMethod(offset: Int)
+    /// A field, at a byte offset, of a struct argument passed by value in
+    /// registers (an HFA). Renders as `arg<n>.field`; seeded for a nonmutating
+    /// method whose parameter is a small floating-point aggregate.
+    case argumentField(argument: Int, offset: Int)
     /// A pure symbolic expression whose inputs are themselves proven values.
     /// Expression construction is bounded by `ValueTracer.expression` so loops
     /// and long instruction chains cannot create unbounded trees.
@@ -139,6 +143,14 @@ public enum MethodEntryConvention: Sendable, Equatable {
     /// that proof (see `swiftScalarArgumentRegisters`) so a multi-register
     /// parameter never shifts the mapping and mislabels a register.
     case swiftFunction(scalarArguments: [String: Int])
+    /// A nonmutating instance method of a small homogeneous floating-point
+    /// aggregate struct: `self` (and any HFA parameters) are passed by value in
+    /// consecutive SIMD registers, so `seededRegisters` maps each register key to
+    /// the field value it holds (`.selfFieldValue` for `self`, `.argumentField`
+    /// for a parameter). Used ONLY when the body proves `self` is not the x20
+    /// pointer form (mutating/indirect), so a register never gets a fabricated
+    /// field.
+    case swiftValueInstance(seededRegisters: [String: AbstractValue])
 
     var isObjectiveCInitializer: Bool {
         if case .objectiveCInitializer = self { return true }
@@ -261,6 +273,11 @@ public struct ValueTracer: Sendable {
             // x0…, its floating-point ones v0…. A proven all-scalar signature
             // never spills, so there is nothing past the eighth of each to recover.
             for (register, argument) in scalarArguments { state[register] = .argument(argument) }
+        case .swiftValueInstance(let seededRegisters):
+            // `self` (and HFA parameters) arrive decomposed across SIMD registers;
+            // each holds a field's value directly, so they read as `self.field` /
+            // `arg<n>.field` with no x20 pointer.
+            for (register, value) in seededRegisters { state[register] = value }
         case nil:
             break
         }

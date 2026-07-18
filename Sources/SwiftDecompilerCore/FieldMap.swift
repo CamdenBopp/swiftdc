@@ -179,6 +179,32 @@ public struct FieldMap: Sendable {
         ranges.map { ($0.range.lowerBound, $0.range.count, $0.name, $0.typeMangledName) }
     }
 
+    /// Field offsets when this type is a small homogeneous floating-point
+    /// aggregate — 1–4 fields, all `Double` (or all `Float`), packed contiguously
+    /// from offset 0 with no gaps. Such a value is passed in consecutive SIMD
+    /// registers (an HFA), so a method can decompose `self`/an argument onto
+    /// `d0…`. Nil for any other shape, so a non-HFA type never triggers the
+    /// register-decomposition path.
+    public var homogeneousFloatFieldOffsets: [Int]? {
+        let members = fields.sorted { $0.offset < $1.offset }
+        guard (1...4).contains(members.count) else { return nil }
+        // Double mangles as `Sd`, Float as `Sf`; both are single scalars whose
+        // storage size matches the element width.
+        let elementBytes: Int
+        if members.allSatisfy({ $0.typeMangledName == "Sd" && $0.bytes == 8 }) {
+            elementBytes = 8
+        } else if members.allSatisfy({ $0.typeMangledName == "Sf" && $0.bytes == 4 }) {
+            elementBytes = 4
+        } else {
+            return nil
+        }
+        // Contiguous from 0, no padding — a genuine HFA, not a padded struct.
+        for (index, member) in members.enumerated() where member.offset != index * elementBytes {
+            return nil
+        }
+        return members.map(\.offset)
+    }
+
     private static func describe(_ resolution: FieldResolution) -> String {
         guard case .unknown(let reason) = resolution else { return "computed" }
         return "\(reason)"
