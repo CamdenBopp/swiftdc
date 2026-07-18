@@ -274,14 +274,21 @@ struct ControlFlowStructure {
             for index in stride(from: last - 1, through: 0, by: -1) {
                 let (m, ops) = Self.decode(block.instructions[index].text)
                 if ["cmp", "subs", "cmn", "adds"].contains(m), ops.count >= 2 {
-                    let lhs = resolve(ops[0], before: index, in: block, consumed: &consumed)
-                    let rhs = resolve(ops[1], before: index, in: block, consumed: &consumed)
+                    // `cmp`/`cmn` compare their two operands; `subs`/`adds` write a
+                    // destination first, so their compared operands are 1 and 2 —
+                    // reading operand 0 would test the result register, not the
+                    // comparison (the source of bogus `x8 >= …` conditions).
+                    let hasDestination = (m == "subs" || m == "adds") && ops.count >= 3
+                    let lhsIndex = hasDestination ? 1 : 0
+                    let rhsIndex = hasDestination ? 2 : 1
+                    let lhs = resolve(ops[lhsIndex], before: index, in: block, consumed: &consumed)
+                    let rhs = resolve(ops[rhsIndex], before: index, in: block, consumed: &consumed)
                     // If back-substitution collapsed distinct operands to the same
                     // text, it lost information — show the raw registers instead.
-                    if lhs == rhs, ops[0] != ops[1] {
-                        return ("\(ops[0]) \(op) \(Self.cleanImmediate(ops[1]))", consumed)
+                    if lhs == rhs, ops[lhsIndex] != ops[rhsIndex] {
+                        return ("\(ops[lhsIndex]) \(op) \(Self.cleanImmediate(ops[rhsIndex]))", consumed)
                     }
-                    if isBoolean(lhs, operand: ops[0], before: index),
+                    if isBoolean(lhs, operand: ops[lhsIndex], before: index),
                        let simplified = Self.booleanComparison(lhs: lhs, op: op, rhs: rhs) {
                         return (simplified, consumed)
                     }
