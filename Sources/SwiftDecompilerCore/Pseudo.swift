@@ -57,6 +57,7 @@ public extension DisassembledFunction {
         // plumbing strip below would remove, so recognize it on the raw arguments
         // first.
         if hideRuntime, let cast = swiftCastIdiom(callee: callee, arguments: rawArguments) { return cast }
+        if hideRuntime, let literal = arrayLiteralPlaceholder(callee: callee) { return literal }
         if hideRuntime, isRuntimeNoise(callee) || isGenericPlumbingCallee(callee) { return nil }
         let arguments = hideRuntime ? strippingGenericPlumbing(rawArguments) : rawArguments
         if let send = MessageSend(callee: callee, arguments: arguments) { return send.rendered }
@@ -486,5 +487,17 @@ public extension DisassembledFunction {
         var kept = arguments.filter { !$0.hasPrefix("default argument ") }
         while let last = kept.last, isGenericPlumbingArgument(last) { kept.removeLast() }
         return kept
+    }
+
+    /// The compact rendering of a Swift array-literal / varargs construction — a
+    /// call to `_allocateUninitializedArray` (which returns an (array, buffer)
+    /// pair the caller fills) or its `_finalizeUninitializedArray` handback. The
+    /// elements box into the array's existential slots at ABI-specific offsets,
+    /// too fragile to recover faithfully, so `[…]` shows the literal's presence
+    /// without inventing its contents. Nil for any other callee.
+    static func arrayLiteralPlaceholder(callee: String) -> String? {
+        callee.contains("_allocateUninitializedArray")
+            || callee.contains("_finalizeUninitializedArray")
+            ? "[…]" : nil
     }
 }

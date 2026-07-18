@@ -1543,6 +1543,10 @@ public struct Disassembler: Sendable {
                 if DisassembledFunction.isRuntimeNoise(callee) {
                     return inner.first.map { renderValue($0, depth: depth + 1) } ?? unresolved
                 }
+                // A Swift array-literal / varargs construction collapses to `[…]`.
+                if let literal = DisassembledFunction.arrayLiteralPlaceholder(callee: callee) {
+                    return literal
+                }
                 // Checked-cast / safe-category helpers return their operand
                 // unchanged; unwrap to that operand so the cast doesn't bury the
                 // value. The operand index is explicit per helper, never guessed.
