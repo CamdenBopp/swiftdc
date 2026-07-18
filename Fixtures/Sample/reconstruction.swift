@@ -70,6 +70,13 @@ public func castOptional(_ a: Animal) -> Dog? { a as? Dog }
 public func castForced(_ a: Animal) -> Dog { a as! Dog }
 public func castToString(_ x: Any) -> String? { x as? String }
 
+// A reference (class) optional is a single register with `nil == 0`, so its nil
+// check reconstructs (`a != nil`). A value (struct) optional is multi-register
+// (payload + tag) and must still decline — never seeded as single-register.
+public func hasAnimal(_ a: Animal?) -> Bool { a != nil }
+public func isNilAnimal(_ a: Animal?) -> Bool { a == nil }
+public func hasVec(_ v: Vec2?) -> Bool { v != nil }
+
 // MARK: - Homogeneous array literals
 
 public func triple() -> [Int] { [10, 20, 30] }

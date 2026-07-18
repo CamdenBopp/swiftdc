@@ -358,6 +358,10 @@ public struct Disassembler: Sendable {
         // No-payload enum case names, so an immediate tag returned from an
         // enum-typed function renders as `.case` instead of a bare integer.
         let enumCaseIndex = EnumCaseIndex.build(in: machO)
+        // Class (reference) type names, so a single-register `Optional<SomeClass>`
+        // (nil == 0) seeds like a scalar and its `!= nil` reconstructs, while a
+        // value-typed (tagged) optional still declines.
+        let classTypeIndex = ClassTypeIndex.build(in: machO)
         functions = functions.map { function in
             let objcMethod = function.objcMethod
             // Runtime-added category IMPs (an accessibility bundle is almost all
@@ -387,8 +391,8 @@ public struct Disassembler: Sendable {
             } else if let valueSelf {
                 .swiftValueInstance(seededRegisters: valueSelf.seeded)
             } else if classSelfTypeName != nil {
-                .swiftInstance(scalarArguments: Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: enumCaseIndex) ?? [:])
-            } else if let scalarArgs = Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: enumCaseIndex) {
+                .swiftInstance(scalarArguments: Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) ?? [:])
+            } else if let scalarArgs = Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
                 .swiftFunction(scalarArguments: scalarArgs)
             } else {
                 nil
@@ -413,7 +417,8 @@ public struct Disassembler: Sendable {
                 argumentFieldMaps: valueSelf?.argumentFieldMaps ?? [:],
                 enumCaseIndex: enumCaseIndex,
                 argumentEnumTypes: Self.swiftEnumArgumentTypes(of: function, enumCaseIndex: enumCaseIndex),
-                boolArguments: Self.swiftBoolArgumentIndices(of: function)
+                boolArguments: Self.swiftBoolArgumentIndices(of: function),
+                classTypeIndex: classTypeIndex
             )
         }
 
@@ -1348,7 +1353,8 @@ public struct Disassembler: Sendable {
     /// `inout`, `String`, or otherwise multi-register parameter (or none), so a
     /// register is never mislabeled `arg k` when the real layout differs.
     static func swiftScalarArgumentRegisters(
-        of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex = EnumCaseIndex()
+        of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
+        classTypeIndex: ClassTypeIndex = ClassTypeIndex()
     ) -> [String: Int]? {
         guard function.objcMethod == nil, let name = function.demangledName,
               Self.isSwiftMangled(function.symbol),
@@ -1365,7 +1371,8 @@ public struct Disassembler: Sendable {
         var registers: [String: Int] = [:]
         var integerIndex = 0, floatIndex = 0
         for (index, parameter) in parameters.enumerated() {
-            switch Self.scalarParameterClass(parameter, enumCaseIndex: enumCaseIndex) {
+            switch Self.scalarParameterClass(parameter, enumCaseIndex: enumCaseIndex,
+                                             classTypeIndex: classTypeIndex) {
             case .integer:
                 guard integerIndex < 8 else { return nil }
                 registers["x\(integerIndex)"] = index
@@ -1638,7 +1645,8 @@ public struct Disassembler: Sendable {
     /// type (a class reference is single-register too, but unidentifiable by name)
     /// blocks seeding, trading missed parameters for never mislabeling one.
     private static func scalarParameterClass(
-        _ parameter: String, enumCaseIndex: EnumCaseIndex = EnumCaseIndex()
+        _ parameter: String, enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
+        classTypeIndex: ClassTypeIndex = ClassTypeIndex()
     ) -> ScalarParameterClass? {
         // Demangled Swift signatures list bare types with no argument labels, but
         // tolerate a `label: Type` form defensively by taking the type.
@@ -1668,6 +1676,11 @@ public struct Disassembler: Sendable {
             let inner = String(type.dropFirst("Swift.Optional<".count).dropLast())
             if Self.isSingleRegisterPointer(inner) { return .integer }
         }
+        // A reference (class) optional is also nil-or-a-pointer in ONE register
+        // (nil == 0), so it seeds like a scalar — which lets `r != nil` / `r ?? x`
+        // reconstruct. A value-typed (tagged) optional is not a class and stays
+        // unseeded here.
+        if classTypeIndex.referenceOptionalInner(type) != nil { return .integer }
         // A no-payload enum is a trivial integer tag in one register, so it seeds
         // like a scalar — which is what lets `c == .case` over an enum parameter
         // reconstruct. Payload enums are absent from the index and stay unseeded.
@@ -1695,7 +1708,8 @@ public struct Disassembler: Sendable {
         argumentFieldMaps: [Int: FieldMap] = [:],
         enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
         argumentEnumTypes: [Int: String] = [:],
-        boolArguments: Set<Int> = []
+        boolArguments: Set<Int> = [],
+        classTypeIndex: ClassTypeIndex = ClassTypeIndex()
     ) -> DisassembledFunction {
         // Floating-point signature info: which arguments are float, and whether
         // the function's float type is double-precision — so a literal operand
@@ -1704,7 +1718,7 @@ public struct Disassembler: Sendable {
         // Per-argument recovered types (Phase-1 lattice), computed once from the
         // signature. The typed source the boolean path consults to decide whether
         // an unsigned machine comparison reads as a signed range check.
-        let argumentTypes = TypeInference.argumentTypes(of: function)
+        let argumentTypes = TypeInference.argumentTypes(of: function, classTypeIndex: classTypeIndex)
 
         /// A source-level field path for this method convention.
         func fieldPath(_ name: String) -> String {
@@ -2028,6 +2042,15 @@ public struct Disassembler: Sendable {
             _ condition: AbstractValue, _ whenTrue: AbstractValue, _ whenFalse: AbstractValue,
             negated: Bool, depth: Int
         ) -> String? {
+            // `(cond ? 1 : 0)` materializes the boolean `cond`; `(cond ? 0 : 1)`
+            // materializes `!cond`. A value identity (same 0/1) — safe regardless
+            // of the result type — but only when `cond` is a proven boolean, so a
+            // genuine integer ternary with 0/1 arms is left alone.
+            if case .immediate(let t) = whenTrue, case .immediate(let f) = whenFalse,
+               t <= 1, f <= 1, t != f, isBooleanValued(condition) {
+                // t==1 ⇒ cond ; t==0 ⇒ !cond ; then compose the outer negation.
+                return renderBooleanOperand(condition, negated: (t == 0) != negated, depth: depth + 1)
+            }
             var condNegated: Bool
             var isOr: Bool
             let other: AbstractValue
@@ -2132,6 +2155,18 @@ public struct Disassembler: Sendable {
                 // `<` — its Swift meaning depends on the operand's recovered type.
                 if op.isUnsignedComparison {
                     return renderUnsignedComparison(op, lhs, rhs, negated: negated, depth: depth)
+                }
+                // A single-register (reference) optional compared to 0 is a nil
+                // check: `r != 0` reads `r != nil`. Only when the operand's
+                // recovered type is `.optional`, so an integer `!= 0` is untouched.
+                if op == .equal || op == .notEqual {
+                    for (opt, zero) in [(lhs, rhs), (rhs, lhs)] {
+                        guard case .immediate(0) = zero,
+                              TypeInference.typeOf(opt, arguments: argumentTypes).category == .optional
+                        else { continue }
+                        let effectiveOp = negated ? invertedComparison(op)! : op
+                        return "(\(renderValue(opt, depth: depth + 1)) \(effectiveOp.symbol) nil)"
+                    }
                 }
                 // Boolean falsity/truth test: `(bool == 0)` = !bool, `(bool != 0)`
                 // = bool, `(bool == 1)` = bool, `(bool != 1)` = !bool — but only
@@ -2256,6 +2291,18 @@ public struct Disassembler: Sendable {
                 return "(\(c) ? \(t) : \(f))"
             case .binary(let op, let lhs, let rhs):
                 guard depth < 8 else { return "?" }
+                // A single-register optional compared against 0 is a nil check:
+                // `r != 0` reads `r != nil`. Only when the other operand's
+                // recovered type is `.optional` (a reference optional we seeded),
+                // so an ordinary integer `!= 0` is untouched.
+                if op == .equal || op == .notEqual {
+                    for (opt, zero) in [(lhs, rhs), (rhs, lhs)] {
+                        guard case .immediate(0) = zero,
+                              TypeInference.typeOf(opt, arguments: argumentTypes).category == .optional
+                        else { continue }
+                        return "(\(renderValue(opt, depth: depth + 1)) \(op.symbol) nil)"
+                    }
+                }
                 // In a float-valued binary, a bare immediate operand is an IEEE
                 // bit pattern — render it as its decimal per the function's
                 // precision, not as a 16-digit integer.

@@ -12,7 +12,9 @@ public enum TypeInference {
     /// The recovered type of each source-parameter index, keyed like
     /// `.argument(index)`. The single typed source that replaces the scattered
     /// render-site signature parsers for the purpose of comparison signedness.
-    public static func argumentTypes(of function: DisassembledFunction) -> [Int: ValueType] {
+    public static func argumentTypes(
+        of function: DisassembledFunction, classTypeIndex: ClassTypeIndex = ClassTypeIndex()
+    ) -> [Int: ValueType] {
         guard function.objcMethod == nil, let name = function.demangledName,
               Disassembler.isSwiftMangled(function.symbol),
               let arrow = name.range(of: " -> ", options: .backwards)
@@ -23,7 +25,7 @@ public enum TypeInference {
         var types: [Int: ValueType] = [:]
         for (index, parameter) in DisassembledFunction
             .splitTopLevelArguments(signature[paramsRange]).enumerated() {
-            types[index] = classify(parameterType(parameter))
+            types[index] = classify(parameterType(parameter), classTypeIndex: classTypeIndex)
         }
         return types
     }
@@ -52,7 +54,9 @@ public enum TypeInference {
 
     /// Classify a Swift type name into the lattice. Unknown for anything not on
     /// the concrete-scalar list — an honest bottom, not a guess.
-    static func classify(_ type: String) -> ValueType {
+    static func classify(
+        _ type: String, classTypeIndex: ClassTypeIndex = ClassTypeIndex()
+    ) -> ValueType {
         if let w = signedInts[type] { return .signedInteger(w) }
         if let w = unsignedInts[type] { return .unsignedInteger(w) }
         if let w = floats[type] { return .floating(w) }
@@ -61,6 +65,11 @@ public enum TypeInference {
             || type == "Swift.UnsafeMutableRawPointer"
             || type.hasPrefix("Swift.UnsafePointer<")
             || type.hasPrefix("Swift.UnsafeMutablePointer<") { return .pointer }
+        // A reference (class) optional is a single-register nilable value; typing
+        // it `.optional` is what lets its `== 0`/`!= 0` render as `== nil`/`!= nil`.
+        if classTypeIndex.referenceOptionalInner(type) != nil {
+            return ValueType(category: .optional, width: 64, signedness: .unknownSign)
+        }
         return .unknown
     }
 

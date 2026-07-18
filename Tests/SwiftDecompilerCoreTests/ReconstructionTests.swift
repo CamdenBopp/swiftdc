@@ -136,6 +136,26 @@ private func reconstructionPseudo(
     #expect(string.contains("as? Swift.String"))
 }
 
+// MARK: - Single-register (reference) Optional nil checks (O1, type lattice)
+
+/// A reference (class) optional is one register with `nil == 0`, so its nil
+/// check reconstructs as `!= nil` / `== nil`. A value (struct) optional is
+/// multi-register (payload + tag) and must decline — never mis-seeded.
+@Test func reconstructsReferenceOptionalNilCheckIfPresent() async throws {
+    for fixture in [reconstructionFixture, "Fixtures/Sample/libReconstruction.opt.dylib"] {
+        guard let has = try await reconstructionPseudo("hasAnimal", in: fixture) else { continue }
+        #expect(has.contains("return (arg0 != nil)"))
+
+        guard let isNil = try await reconstructionPseudo("isNilAnimal", in: fixture) else { continue }
+        #expect(isNil.contains("return (arg0 == nil)"))
+    }
+
+    // Adversarial: a struct optional is multi-register — it must NOT be seeded as
+    // a single-register nil check (no `!= nil`, no `!= 0`).
+    guard let vec = try await reconstructionPseudo("hasVec") else { return }
+    #expect(!vec.contains("!= nil") && !vec.contains("arg0 != 0"))
+}
+
 // MARK: - Ternary / select reconstruction (control-flow value merge)
 
 @Test func reconstructsTernarySelectIfPresent() async throws {
