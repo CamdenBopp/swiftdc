@@ -104,6 +104,11 @@ public indirect enum AbstractValue: Equatable, Sendable {
     /// registers (an HFA). Renders as `arg<n>.field`; seeded for a nonmutating
     /// method whose parameter is a small floating-point aggregate.
     case argumentField(argument: Int, offset: Int)
+    /// A value merged from the two arms of a control-flow diamond — the phi at a
+    /// join. Renders as `condition ? whenTrue : whenFalse`, reconstructing a
+    /// ternary / nil-coalescing. Produced only when the deciding condition is
+    /// itself recoverable; otherwise the join keeps dropping to `.unknown`.
+    case select(condition: AbstractValue, whenTrue: AbstractValue, whenFalse: AbstractValue)
     /// The array `_allocateUninitializedArray` returns at this call address, with
     /// its element count. The caller then stores the elements into it; those are
     /// gathered (by store offset) so the literal renders as `[e0, e1, …]`.
@@ -362,6 +367,15 @@ public struct ValueTracer: Sendable {
             }
         }
 
+        // Value merging: a value that diverges across the two arms of a
+        // conditional-branch diamond is that branch's select (`cond ? a : b`),
+        // reconstructing a ternary / nil-coalescing. Enrich the merge blocks'
+        // entry states before the snapshot pass replays them.
+        resolveDiamondSelects(
+            blocks: blocks, predecessors: predecessors,
+            blockByStart: blockByStart, inState: &inState, outState: outState
+        )
+
         // Snapshot pass: replay from each block's fixed entry state, recording
         // call arguments and self-field accesses.
         var result = FunctionAnalysis()
@@ -566,6 +580,113 @@ public struct ValueTracer: Sendable {
             accumulator = accumulator.filter { state[$0.key] == $0.value }
         }
         return accumulator
+    }
+
+    /// Reconstruct the select at each control-flow diamond: a join with two
+    /// predecessors that are the two arms of one conditional branch. A register
+    /// or stack slot that differs across the arms is `cond ? taken : fall` — the
+    /// shape of a ternary or nil-coalescing. Enriches the join's entry state so
+    /// the snapshot pass carries the select to its use (usually a return).
+    ///
+    /// Deliberately conservative: only a clean 2-arm diamond whose deciding
+    /// condition is itself recoverable produces a select; a loop back-edge, a
+    /// three-way join, or an unrecoverable condition leaves the value dropping to
+    /// `.unknown` as before, rather than inventing a merge.
+    private func resolveDiamondSelects(
+        blocks: [BasicBlock],
+        predecessors: [UInt64: [UInt64]],
+        blockByStart: [UInt64: BasicBlock],
+        inState: inout [UInt64: State],
+        outState: [UInt64: State]
+    ) {
+        // The chain of blocks above `start` reachable by single-predecessor
+        // hops — the straight-line run of one diamond arm up to the split.
+        func ancestorChain(from start: UInt64) -> [UInt64] {
+            var chain = [start], current = start
+            while let preds = predecessors[current], preds.count == 1,
+                  blockByStart[preds[0]] != nil, chain.count < 32 {
+                current = preds[0]
+                chain.append(current)
+            }
+            return chain
+        }
+
+        for block in blocks {
+            guard let preds = predecessors[block.startAddress], preds.count == 2 else { continue }
+            let (p1, p2) = (preds[0], preds[1])
+            let chain1 = ancestorChain(from: p1), chain2 = ancestorChain(from: p2)
+            let chain2Set = Set(chain2)
+            // The decider is the first block common to both arms' chains.
+            guard let decider = chain1.first(where: chain2Set.contains),
+                  let deciderBlock = blockByStart[decider],
+                  let terminator = deciderBlock.instructions.last,
+                  let deciderOut = outState[decider],
+                  let out1 = outState[p1], let out2 = outState[p2],
+                  let taken = terminator.branchTarget
+            else { continue }
+            // A clean diamond: the two arms are disjoint before the decider.
+            let arm1 = chain1.prefix(while: { $0 != decider })
+            let arm2 = chain2.prefix(while: { $0 != decider })
+            guard Set(arm1).isDisjoint(with: Set(arm2)) else { continue }
+            // Which arm the branch-taken edge reaches.
+            let takenInArm1 = chain1.contains(taken), takenInArm2 = chain2.contains(taken)
+            guard takenInArm1 != takenInArm2 else { continue }
+            let takenOut = takenInArm1 ? out1 : out2
+            let fallOut = takenInArm1 ? out2 : out1
+            guard let condition = branchTakenCondition(terminator, in: deciderOut) else { continue }
+
+            var enriched = inState[block.startAddress] ?? [:]
+            for key in Set(out1.keys).union(out2.keys) where out1[key] != out2[key] {
+                guard let whenTrue = takenOut[key], whenTrue != .unknown,
+                      let whenFalse = fallOut[key], whenFalse != .unknown,
+                      Self.expressionDepth(whenTrue) < 6, Self.expressionDepth(whenFalse) < 6
+                else { continue }
+                enriched[key] = .select(condition: condition, whenTrue: whenTrue, whenFalse: whenFalse)
+            }
+            inState[block.startAddress] = enriched
+        }
+    }
+
+    /// The condition under which a conditional branch is TAKEN, as a comparison
+    /// value — for a compare-and-branch (`cbz`/`cbnz`, `tbz`/`tbnz` on a sign
+    /// bit) or a flag branch (`b.cond`). Nil when it isn't cleanly a comparison,
+    /// so a diamond over it declines to become a select.
+    private func branchTakenCondition(_ insn: Instruction, in registers: State) -> AbstractValue? {
+        guard let detail = insn.detail else { return nil }
+        func operandValue(_ index: Int) -> AbstractValue? {
+            guard index < detail.operands.count,
+                  let register = detail.operands[index].operand.register
+            else { return nil }
+            let value = registers[register.key] ?? .unknown
+            return value == .unknown ? nil : value
+        }
+        switch detail.id {
+        case ARM64_INS_CBZ:
+            return operandValue(0).map { .binary(.equal, $0, .immediate(0)) }
+        case ARM64_INS_CBNZ:
+            return operandValue(0).map { .binary(.notEqual, $0, .immediate(0)) }
+        case ARM64_INS_TBZ, ARM64_INS_TBNZ:
+            guard let value = operandValue(0), detail.operands.count >= 2,
+                  let bit = detail.operands[1].operand.immediateValue,
+                  (0..<64).contains(bit)
+            else { return nil }
+            let width = detail.operands[0].operand.register.map({ $0.widthBits }) ?? 64
+            if bit == width - 1 {
+                // Sign bit: tbz taken = non-negative, tbnz taken = negative.
+                return .binary(detail.id == ARM64_INS_TBZ ? .greaterEqual : .less,
+                               value, .immediate(0))
+            }
+            // Any other bit is an honest mask test — `(v & (1<<bit)) == 0` for
+            // tbz (bit clear taken), `!= 0` for tbnz. This is how a `Bool` (bit 0)
+            // condition arrives.
+            let masked = AbstractValue.binary(.bitAnd, value, .immediate(1 << bit))
+            return .binary(detail.id == ARM64_INS_TBZ ? .equal : .notEqual, masked, .immediate(0))
+        default:
+            guard let op = Self.comparisonOperator(detail.conditionCode),
+                  let flags = registers[Self.flagsKey]
+            else { return nil }
+            return comparisonValue(flags: flags, op)
+        }
     }
 
     /// Decode a Swift `_SmallString` passed in two registers (x0 = low 8 bytes,
@@ -915,6 +1036,29 @@ public struct ValueTracer: Sendable {
             else { clobber(detail, into: &registers); return }
             write(dest, comparisonValue(flags: flags, op), into: &registers)
 
+        case ARM64_INS_CSEL, ARM64_INS_CSINC, ARM64_INS_CSINV, ARM64_INS_CSNEG:
+            // The branchless ternary: `csel d, n, m, cc` = cc ? n : m. The
+            // `inc`/`inv`/`neg` variants apply +1 / bitwise-not / negate to the
+            // false operand. This is how `-O` lowers a ternary, so it produces the
+            // same `.select` a `-Onone` diamond does.
+            guard let dest = destinationRegister(detail), detail.operands.count >= 3,
+                  let op = Self.comparisonOperator(detail.conditionCode),
+                  let flags = registers[Self.flagsKey]
+            else { clobber(detail, into: &registers); return }
+            let condition = comparisonValue(flags: flags, op)
+            let whenTrue = source(detail.operands[1], in: registers)
+            let falseOperand = source(detail.operands[2], in: registers)
+            let whenFalse: AbstractValue = switch detail.id {
+            case ARM64_INS_CSINC: expression(.add, falseOperand, .immediate(1))
+            case ARM64_INS_CSINV: falseOperand == .unknown ? .unknown : .unary(.bitwiseNot, falseOperand)
+            case ARM64_INS_CSNEG: falseOperand == .unknown ? .unknown : .unary(.negate, falseOperand)
+            default: falseOperand
+            }
+            let result: AbstractValue = (condition == .unknown || whenTrue == .unknown || whenFalse == .unknown)
+                ? .unknown
+                : .select(condition: condition, whenTrue: whenTrue, whenFalse: whenFalse)
+            write(dest, result, into: &registers)
+
         default:
             clobber(detail, into: &registers)
         }
@@ -1157,6 +1301,8 @@ public struct ValueTracer: Sendable {
         switch value {
         case .binary(_, let lhs, let rhs): return 1 + max(expressionDepth(lhs), expressionDepth(rhs))
         case .unary(_, let operand): return 1 + expressionDepth(operand)
+        case .select(let condition, let whenTrue, let whenFalse):
+            return 1 + max(expressionDepth(condition), expressionDepth(whenTrue), expressionDepth(whenFalse))
         default: return 0
         }
     }

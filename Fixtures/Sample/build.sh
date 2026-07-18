@@ -27,6 +27,11 @@ strip -x libSample.stripped.dylib 2>/dev/null || strip libSample.stripped.dylib
 echo "==> reconstruction fixture (-Onone -g dylib) — Swift-body recovery cases"
 $SWIFTC -parse-as-library -Onone -g -emit-library -module-name Reconstruction reconstruction.swift -o libReconstruction.dylib
 
+echo "==> reconstruction fixture (-O) — optimized/branchless lowerings"
+$SWIFTC -parse-as-library -O -emit-library -module-name Reconstruction reconstruction.swift -o libReconstruction.opt.dylib
+cp libReconstruction.opt.dylib libReconstruction.opt.stripped.dylib
+strip -x libReconstruction.opt.stripped.dylib 2>/dev/null || strip libReconstruction.opt.stripped.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release

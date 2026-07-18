@@ -11,13 +11,15 @@ import Foundation
 /// checkout — the same convention as the other `…IfPresent` tests.
 private let reconstructionFixture = "Fixtures/Sample/libReconstruction.dylib"
 
-/// The recovered pseudocode for every function matching `filter`, or nil when the
-/// fixture hasn't been built.
-private func reconstructionPseudo(_ filter: String) async throws -> String? {
-    guard FileManager.default.fileExists(atPath: reconstructionFixture) else { return nil }
+/// The recovered pseudocode for every function matching `filter` in a fixture
+/// variant, or nil when it hasn't been built.
+private func reconstructionPseudo(
+    _ filter: String, in fixture: String = reconstructionFixture
+) async throws -> String? {
+    guard FileManager.default.fileExists(atPath: fixture) else { return nil }
     let functions = try await withStableDependencies {
         try await Disassembler(preset: .default)
-            .disassemble(path: reconstructionFixture, functionFilter: filter)
+            .disassemble(path: fixture, functionFilter: filter)
     }
     return functions.map { $0.renderPseudo() }.joined(separator: "\n")
 }
@@ -85,6 +87,40 @@ private func reconstructionPseudo(_ filter: String) async throws -> String? {
 
     guard let string = try await reconstructionPseudo("castToString") else { return }
     #expect(string.contains("as? Swift.String"))
+}
+
+// MARK: - Ternary / select reconstruction (control-flow value merge)
+
+@Test func reconstructsTernarySelectIfPresent() async throws {
+    // `-Onone` diamond: two arms store into a merge slot. Semantically
+    // equivalent — the compiler tests `x >= 0`, not `x < 0`.
+    guard let clamp = try await reconstructionPseudo("clampLow") else { return }
+    #expect(clamp.contains("return ((arg0 >= 0) ? arg0 : 0)"))
+
+    guard let maxOf = try await reconstructionPseudo("maxOf") else { return }
+    #expect(maxOf.contains(" ? ") && maxOf.contains("arg0") && maxOf.contains("arg1"))
+
+    // A Bool condition arrives as a bit-0 test, rendered honestly.
+    guard let pick = try await reconstructionPseudo("pickInc") else { return }
+    #expect(pick.contains("return (((arg0 & 1) == 0) ? (arg1 - 1) : (arg1 + 1))"))
+}
+
+/// The optimized build lowers the ternary to a branchless `csel`; it must
+/// reconstruct the same select — and survive stripping, since the value tracer
+/// needs no symbols for it.
+@Test func reconstructsOptimizedTernaryIfPresent() async throws {
+    for fixture in ["Fixtures/Sample/libReconstruction.opt.dylib",
+                    "Fixtures/Sample/libReconstruction.opt.stripped.dylib"] {
+        guard let maxOf = try await reconstructionPseudo("maxOf", in: fixture) else { continue }
+        #expect(maxOf.contains("return ((arg1 > arg0) ? arg1 : arg0)"))
+    }
+}
+
+/// Adversarial: a three-way merge is not a clean 2-arm diamond, so the tool must
+/// decline to reconstruct a select rather than fabricate one.
+@Test func declinesToGuessNonDiamondSelectIfPresent() async throws {
+    guard let threeWay = try await reconstructionPseudo("threeWay") else { return }
+    #expect(!threeWay.contains(" ? ")) // no fabricated select
 }
 
 // MARK: - Robustness edge cases

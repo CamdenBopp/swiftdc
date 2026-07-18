@@ -88,3 +88,17 @@ public func eightArgs(_ a: Int, _ b: Int, _ c: Int, _ d: Int,
 
 // Interleaved integer (x0, x1) and floating-point (v0, v1) parameters.
 public func interleaved(_ i: Int, _ d: Double, _ j: Int, _ e: Double) -> Double { d + e }
+
+// MARK: - Ternary / select reconstruction (control-flow value merge)
+
+public func clampLow(_ x: Int) -> Int { x < 0 ? 0 : x }
+public func maxOf(_ a: Int, _ b: Int) -> Int { a > b ? a : b }
+public func pickInc(_ c: Bool, _ a: Int) -> Int { c ? a + 1 : a - 1 }
+
+// Negative: a THREE-way merge is not a clean 2-arm diamond, so the tool must
+// decline to reconstruct a select rather than guess one.
+public func threeWay(_ x: Int) -> Int {
+    let r: Int
+    if x < 0 { r = -10 } else if x == 0 { r = 0 } else { r = 10 }
+    return r
+}

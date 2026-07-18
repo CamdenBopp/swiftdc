@@ -1591,6 +1591,12 @@ public struct Disassembler: Sendable {
             case .unary(let op, let operand):
                 let operand = sanitizeValue(operand)
                 return operand == .unknown ? .unknown : .unary(op, operand)
+            case .select(let condition, let whenTrue, let whenFalse):
+                let c = sanitizeValue(condition)
+                let t = sanitizeValue(whenTrue)
+                let f = sanitizeValue(whenFalse)
+                guard c != .unknown, t != .unknown, f != .unknown else { return .unknown }
+                return .select(condition: c, whenTrue: t, whenFalse: f)
             case .aggregate(let values):
                 let values = values.map(sanitizeValue)
                 return values.allSatisfy({ $0 != .unknown }) ? .aggregate(values) : .unknown
@@ -1742,6 +1748,12 @@ public struct Disassembler: Sendable {
                 return argumentFieldName(argument: argument, offset: offset)
             case .arrayLiteral(let site, let count):
                 return renderArrayLiteral(site: site, count: count, depth: depth)
+            case .select(let condition, let whenTrue, let whenFalse):
+                guard depth < 8 else { return "?" }
+                let c = renderValue(condition, depth: depth + 1)
+                let t = renderValue(whenTrue, depth: depth + 1)
+                let f = renderValue(whenFalse, depth: depth + 1)
+                return "(\(c) ? \(t) : \(f))"
             case .binary(let op, let lhs, let rhs):
                 guard depth < 8 else { return "?" }
                 return "(\(renderValue(lhs, depth: depth + 1)) \(op.symbol) \(renderValue(rhs, depth: depth + 1)))"
@@ -1960,6 +1972,10 @@ public struct Disassembler: Sendable {
                 collectCallResults(in: rhs, into: &consumed)
             case .unary(_, let operand):
                 collectCallResults(in: operand, into: &consumed)
+            case .select(let condition, let whenTrue, let whenFalse):
+                collectCallResults(in: condition, into: &consumed)
+                collectCallResults(in: whenTrue, into: &consumed)
+                collectCallResults(in: whenFalse, into: &consumed)
             case .aggregate(let values):
                 for value in values { collectCallResults(in: value, into: &consumed) }
             default:
