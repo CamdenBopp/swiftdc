@@ -71,7 +71,7 @@ struct ObjCCommand: AsyncParsableCommand {
             cachePath: cache,
             binary: binary
         )
-        let blocks = ObjCDumper().blocks(machO)
+        let blocks = await ObjCDumper().blocks(machO, disassembler: Disassembler(preset: .simplified))
         let includeMethods = methods || pseudo || structured || function != nil
         guard includeMethods else {
             if json {

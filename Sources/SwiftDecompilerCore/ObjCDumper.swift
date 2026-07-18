@@ -13,18 +13,41 @@ public struct ObjCDumper: Sendable {
     public init() {}
 
     /// One ObjC header string per class/protocol/category, in that order.
+    /// Property-backed accessors are suppressed metadata-only (every one treated
+    /// as synthesized); `blocks(_:disassembler:)` refines that with the body.
     public func blocks(_ machO: MachOFile) -> [String] {
+        Self.render(ObjCMetadataSnapshot.build(in: machO), isSynthesized: { _ in nil })
+    }
+
+    /// Header blocks with disassembly-backed accessor classification: on arm64,
+    /// each property-backed accessor's body is disassembled — synthesized ones
+    /// (a trivial ivar load/store the `@property` already implies) are dropped,
+    /// custom ones are kept and typed from the property. Off arm64 (no disasm)
+    /// this is the metadata-only behaviour of `blocks(_:)`.
+    public func blocks(_ machO: MachOFile, disassembler: Disassembler) async -> [String] {
         let snapshot = ObjCMetadataSnapshot.build(in: machO)
-        let classes = snapshot.classes.map { info in
-            Self.injectingSuperclass(
+        guard BinaryLoader.archName(machO).hasPrefix("arm64") else {
+            return Self.render(snapshot, isSynthesized: { _ in nil })
+        }
+        let classification = await Self.classifyAccessors(snapshot, in: machO, disassembler: disassembler)
+        return Self.render(snapshot, isSynthesized: { classification[$0] })
+    }
+
+    private static func render(
+        _ snapshot: ObjCMetadataSnapshot,
+        isSynthesized: (UInt64) -> Bool?
+    ) -> [String] {
+        let classes = snapshot.classes.map { info -> String in
+            let withSuper = injectingSuperclass(
                 info.headerString, class: info.name,
                 superclass: snapshot.superclassBinds[info.name]
             )
+            return rewritingPropertyAccessors(withSuper, class: info, isSynthesized: isSynthesized)
         }
         return (classes
             + snapshot.protocols.map(\.headerString)
             + snapshot.categories.map(\.headerString))
-            .map(Self.fixingArrayFields)
+            .map(fixingArrayFields)
     }
 
     /// Move an array dimension the type printer emitted *before* the field name

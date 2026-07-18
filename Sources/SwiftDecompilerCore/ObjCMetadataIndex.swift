@@ -304,6 +304,24 @@ public struct ObjCMetadataIndex: Sendable {
 
     var addresses: Set<UInt64> { Set(methods.keys) }
 
+    /// The runtime `__text` address of a method IMP as it appears in the ObjC
+    /// metadata. MachOObjCSection normalizes file-backed IMPs to offsets, so the
+    /// same file→address resolution the index uses is exposed here for callers
+    /// that hold a raw `ObjCMethodInfo.imp` and need the address to disassemble.
+    public static func implementationAddress(of imp: UInt64, in machO: MachOFile) -> UInt64? {
+        guard imp > 0,
+              let text = machO.sections.first(where: {
+                  $0.segmentName == "__TEXT" && $0.sectionName == "__text" && $0.size > 0
+              })
+        else { return nil }
+        let textRange = UInt64(text.address) ..< UInt64(text.address + text.size)
+        var candidates = [imp]
+        if let offset = Int(exactly: imp) {
+            candidates.insert(machO.address(forOffset: offset), at: 0)
+        }
+        return candidates.first(where: textRange.contains)
+    }
+
     /// Build from class and category method lists. Protocol declarations are
     /// intentionally absent: they describe requirements and have no IMP.
     public static func build(in machO: MachOFile) -> ObjCMetadataIndex {

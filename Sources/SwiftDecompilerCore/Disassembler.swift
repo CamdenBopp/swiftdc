@@ -244,6 +244,38 @@ public struct Disassembler: Sendable {
         )
     }
 
+    /// Disassemble only the functions beginning at `addresses`, each decoded up
+    /// to the next function boundary. Lets a caller classify a handful of
+    /// Objective-C accessor IMPs without decoding the whole binary.
+    public func disassembleFunctions(
+        at addresses: Set<UInt64>,
+        in machO: MachOFile
+    ) async -> [DisassembledFunction] {
+        guard !addresses.isEmpty else { return [] }
+        let objcIndex = ObjCMetadataIndex.build(in: machO)
+        var boundarySet = Set(functionStarts(of: machO))
+        boundarySet.formUnion(objcIndex.addresses)
+        let boundaries = boundarySet.sorted()
+        guard let text = machO.sections.first(where: {
+            $0.segmentName == "__TEXT" && $0.sectionName == "__text" && $0.size > 0
+        }) else { return [] }
+        let textEnd = UInt64(text.address + text.size)
+
+        let instructions = addresses.sorted().flatMap { start -> [Instruction] in
+            let stop = boundaries.first(where: { $0 > start }) ?? textEnd
+            guard stop > start else { return [] }
+            return capstoneInstructions(in: machO, span: (start, stop))
+        }
+        guard !instructions.isEmpty else { return [] }
+        return await assemble(
+            instructions: instructions,
+            labelByAddress: symbolLabels(in: machO),
+            in: machO,
+            functionFilter: nil,
+            objcIndex: objcIndex
+        )
+    }
+
     // MARK: - Shared pipeline
 
     /// Segment the flat instruction stream into functions, name them, resolve
