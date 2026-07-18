@@ -63,6 +63,12 @@ struct ValueTypeTests {
         #expect(TypeInference.typeOf(.binary(.bitAnd, .argument(1), .immediate(0xff)), arguments: args).isUnsignedInteger)
         // A low-byte mask of a SIGNED value is no longer provably signed.
         #expect(TypeInference.typeOf(.binary(.bitAnd, .argument(0), .immediate(0xff)), arguments: args).signedness == .unknownSign)
+        // A constant is signedness-NEUTRAL: `signedArg + 1` stays signed (so a
+        // range check over `x + 1` still recovers, not exposed unsigned).
+        #expect(TypeInference.typeOf(.binary(.add, .argument(0), .immediate(1)), arguments: args).isSignedInteger)
+        #expect(TypeInference.typeOf(.binary(.subtract, .argument(1), .immediate(48)), arguments: args).isUnsignedInteger)
+        // But two genuinely-conflicting operands still resolve DOWN to unknown.
+        #expect(TypeInference.typeOf(.binary(.subtract, .argument(0), .argument(1)), arguments: args).signedness == .unknownSign)
     }
 
     // MARK: - operator signedness (instruction evidence travels on the value)

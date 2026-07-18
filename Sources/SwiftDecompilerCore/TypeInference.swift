@@ -81,12 +81,21 @@ public enum TypeInference {
             if op.isComparison { return .boolean }
             switch op {
             case .add, .subtract, .multiply, .divide, .remainder:
-                // Arithmetic preserves the category/signedness both operands agree
-                // on (a signed `Int` stays signed through `+`); width is dropped.
-                let t = ValueType.meet(typeOf(lhs, arguments: arguments),
-                                       typeOf(rhs, arguments: arguments))
-                return ValueType(category: t.category == .integer ? .integer : t.category,
-                                 width: nil, signedness: t.signedness)
+                // Arithmetic preserves the signedness the non-constant operands
+                // agree on: a constant is signedness-NEUTRAL (`signedValue + 1`
+                // stays signed), so it imposes no facet and is not met in. Width
+                // is dropped. Two genuinely-conflicting operands (signed - unsigned)
+                // still resolve down to unknownSign.
+                let operandTypes = [lhs, rhs].compactMap { operand -> ValueType? in
+                    if case .immediate = operand { return nil }
+                    return typeOf(operand, arguments: arguments)
+                }
+                guard let first = operandTypes.first else {
+                    return ValueType(category: .integer, width: nil, signedness: .unknownSign)
+                }
+                let merged = operandTypes.dropFirst().reduce(first, ValueType.meet)
+                return ValueType(category: merged.category == .integer ? .integer : merged.category,
+                                 width: nil, signedness: merged.signedness)
             case .bitAnd:
                 // A low-bits mask (`& 0xff`) is a width TRUNCATION, not a sign
                 // change: a zero-extended byte of an unsigned value is unsigned at

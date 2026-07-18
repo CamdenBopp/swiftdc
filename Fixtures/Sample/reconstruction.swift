@@ -19,6 +19,10 @@ public func atLeast(_ a: Int, _ b: Int) -> Bool { a >= b }
 // the machine. A genuine signed comparison must stay signed.
 public func rangeCheck(_ x: Int) -> Bool { x >= 0 && x < 100 }
 public func signedLess(_ x: Int) -> Bool { x < 100 }
+// The typed value is COMPUTED (x + 1), not a bare argument: structural type
+// inference must keep it signed (a constant is signedness-neutral) so the
+// unsigned-lowered range check still recovers the range idiom.
+public func computedRange(_ x: Int) -> Bool { let y = x + 1; return y >= 0 && y < 100 }
 
 // MARK: - Integer + floating-point argument seeding
 

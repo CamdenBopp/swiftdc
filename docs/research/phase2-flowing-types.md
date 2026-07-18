@@ -4,6 +4,45 @@
 > (`phase1-type-lattice.md`, commit `2be9e31`). Companion to the study
 > `decompiler-comparison.md` §9.3 (evolution step: "flowing type-state").
 
+## ⚠️ COURSE CORRECTION (evidence, per the "stop and report" rule)
+
+Before building the flowing state, I probed the cases it was supposed to fix and
+found its **motivation was largely misdiagnosed** — the exposed-`<ᵁ` precision
+losses are NOT a missing flow:
+
+- **Computed-from-argument values are already typed structurally.** `diffRange`
+  (`(a-b) >= 0 && (a-b) < 100`, `a,b: Int`) already recovers the range idiom,
+  because `typeOf(arg0 - arg1) = meet(signed, signed) = signed`. No flow needed.
+- **The real gap was a `typeOf` precision bug: immediate non-neutrality.**
+  `incRange` (`(x+1) >= 0 && (x+1) < 100`) exposed `<ᵁ` because
+  `typeOf(arg0 + 1) = meet(signed, immediate)` dropped signedness — a constant
+  operand is signedness-**neutral** and must not be met in. Fixed in `typeOf`
+  (commit follows); `incRange` now recovers the range idiom. `Punycode.isDigit`'s
+  `(c & 255) - 48` likewise now types unsigned and renders a plain `<`.
+- **The remaining exposed-`<ᵁ` are genuinely untypable operands** — a field load
+  (`self.magic`) or a call result (`demangleIndex()`), whose base type is unknown
+  regardless of flow. A flowing state would NOT help them; typing them needs Swift
+  field/return metadata, a separate effort. Exposing `<ᵁ` there is correct.
+- **Mid-body sign/zero-EXTENSION of a typed value** — the one case a flowing state
+  genuinely adds — was not demonstrated as a real gap: extensions live at ABI
+  boundaries (captured by the argument type) or in explicit conversions (calls/
+  casts → unknown). No fixture or self-host case needed it.
+
+**Conclusion:** the full flowing type-state below is **deferred as not currently
+justified**. What Phase 2 actually shipped is the small, correct `typeOf`
+refinement (immediate-neutrality) that recovers the real precision losses. The
+type layer is now sufficient for the comparison decision on argument-derived
+values; the next high-value architectural step is NOT more type-flowing but the
+**named simplification-rule pool** (research §9.3 step 2) and then **edge-indexed
+φ** (step 3, the loop prerequisite). See `phase3-*.md`.
+
+The original flowing-state design is retained below for the record and for if a
+future case (real mid-body extension of a typed non-argument value) justifies it.
+
+---
+
+## (original design — deferred)
+
 ## Why (the gap Phase 1 left open)
 
 Phase 1 introduced `ValueType` + `meet` and fixed U1, but types are still

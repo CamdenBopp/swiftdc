@@ -55,6 +55,13 @@ private func reconstructionPseudo(
         "rangeCheck", in: "Fixtures/Sample/libReconstruction.opt.dylib") else { return }
     #expect(opt.contains("return ((0 <= arg0) && (arg0 < 100))"))
     #expect(!opt.contains("return (arg0 < 100)")) // the U1 defect must not reappear
+
+    // A COMPUTED signed value (x + 1) must still recover the range idiom — the
+    // constant is signedness-neutral, so structural inference keeps it signed.
+    guard let computed = try await reconstructionPseudo(
+        "computedRange", in: "Fixtures/Sample/libReconstruction.opt.dylib") else { return }
+    #expect(computed.contains("return ((0 <= (arg0 + 1)) && ((arg0 + 1) < 100))"))
+    #expect(!computed.contains("<\u{1D41}")) // not exposed-unsigned — the type is known
 }
 
 /// Adversarial: a genuine signed comparison stays signed — the fix is scoped to
