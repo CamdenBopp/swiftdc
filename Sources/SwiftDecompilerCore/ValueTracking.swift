@@ -94,6 +94,10 @@ public indirect enum AbstractValue: Equatable, Sendable {
     /// is the field's address; this lets an ivar/object value flow into a later
     /// message-send argument as `self->_name`.
     case selfFieldValue(offset: Int)
+    /// The function pointer at a byte offset into `self`'s class metadata vtable —
+    /// the target of a `ldr x8,[x20]; ldr x8,[x8,#off]; blr x8` dispatch. Named
+    /// against `self`'s type via `VTableIndex` at enrichment time.
+    case selfVTableMethod(offset: Int)
     /// A pure symbolic expression whose inputs are themselves proven values.
     /// Expression construction is bounded by `ValueTracer.expression` so loops
     /// and long instruction chains cannot create unbounded trees.
@@ -735,6 +739,11 @@ public struct ValueTracer: Sendable {
                 let isPointerLoad = detail.id == ARM64_INS_LDR || detail.id == ARM64_INS_LDUR
                 write(dest, isPointerLoad ? .loaded(address) : .unknown, into: &registers)
             case .selfField(let offset): write(dest, .selfFieldValue(offset: offset), into: &registers)
+            case .vtableMethod(let offset):
+                // The dispatch loads the vtable slot only through a pointer-width
+                // read; a narrower load isn't a method pointer.
+                let isPointerLoad = detail.id == ARM64_INS_LDR || detail.id == ARM64_INS_LDUR
+                write(dest, isPointerLoad ? .selfVTableMethod(offset: offset) : .unknown, into: &registers)
             case .none: write(dest, .unknown, into: &registers)
             }
 
@@ -811,7 +820,7 @@ public struct ValueTracer: Sendable {
                     } ?? .unknown
                 case .selfField(let offset):
                     .selfFieldValue(offset: offset + index * registerBytes)
-                case .absolute, .none:
+                case .absolute, .vtableMethod, .none:
                     .unknown
                 }
                 write(register, value, into: &registers)
@@ -1143,6 +1152,9 @@ public struct ValueTracer: Sendable {
         case absolute(UInt64)
         /// A byte offset into `self`.
         case selfField(Int)
+        /// A byte offset into `self`'s class metadata vtable — a load through the
+        /// metadata pointer that lives at `self + 0`.
+        case vtableMethod(Int)
     }
 
     /// Where a memory operand points, when its base is a known frame offset or a
@@ -1160,6 +1172,9 @@ public struct ValueTracer: Sendable {
         case .address(let address): return .absolute(address &+ UInt64(bitPattern: effective))
         case .selfPointer: return .selfField(Int(effective))
         case .selfField(let field): return .selfField(field + Int(effective))
+        // A load through the metadata pointer at `self + 0` (a class instance's
+        // isa) reaches the vtable — the second `ldr` of a virtual dispatch.
+        case .selfFieldValue(0): return .vtableMethod(Int(effective))
         default: return nil
         }
     }

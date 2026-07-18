@@ -354,6 +354,7 @@ public struct Disassembler: Sendable {
         // metadata-sourced, so both survive stripping.
         let fieldMaps = (try? FieldMapBuilder.build(in: machO)) ?? [:]
         let selfIndex = SelfTypeIndex.build(in: machO)
+        let vtableIndex = VTableIndex.build(in: machO)
         functions = functions.map { function in
             let objcMethod = function.objcMethod
             // Runtime-added category IMPs (an accessibility bundle is almost all
@@ -391,7 +392,8 @@ public struct Disassembler: Sendable {
                 in: function, resolver: resolver, swiftTargets: swiftTargets,
                 entry: entry,
                 fieldMap: fieldMap,
-                objcFieldSyntax: objcMethod != nil || symbolEntry != nil
+                objcFieldSyntax: objcMethod != nil || symbolEntry != nil,
+                selfTypeName: selfTypeName, vtableIndex: vtableIndex
             )
         }
 
@@ -883,13 +885,27 @@ public struct Disassembler: Sendable {
     private func annotateIndirectControlFlowTargets(
         in function: DisassembledFunction,
         targets: [UInt64: AbstractValue],
-        resolver: ReferenceResolver
+        resolver: ReferenceResolver,
+        selfTypeName: String? = nil,
+        vtableIndex: VTableIndex = VTableIndex()
     ) -> DisassembledFunction {
+        /// Resolve a `blr` target to a (name, address). A class vtable dispatch is
+        /// resolved through the class's metadata layout; anything else through the
+        /// generic indirect-target resolver.
+        func resolve(_ value: AbstractValue) -> (address: UInt64?, name: String)? {
+            if case .selfVTableMethod(let offset) = value,
+               let selfTypeName,
+               let address = vtableIndex.methodAddress(type: selfTypeName, offset: offset),
+               let name = resolver.name(at: address) {
+                return (address, name)
+            }
+            return resolver.indirectCallTarget(for: value)
+        }
         let instructions = function.instructions.map { insn -> Instruction in
             guard insn.branchTarget == nil,
                   insn.controlFlow == .call || insn.controlFlow == .branch,
                   let value = targets[insn.address],
-                  let resolved = resolver.indirectCallTarget(for: value)
+                  let resolved = resolve(value)
             else { return insn }
             let annotation = insn.annotation.map { "\($0)  → \(resolved.name)" }
                 ?? "→ \(resolved.name)"
@@ -1349,12 +1365,40 @@ public struct Disassembler: Sendable {
         swiftTargets: Set<UInt64>,
         entry: MethodEntryConvention?,
         fieldMap: FieldMap?,
-        objcFieldSyntax: Bool
+        objcFieldSyntax: Bool,
+        selfTypeName: String? = nil,
+        vtableIndex: VTableIndex = VTableIndex()
     ) -> DisassembledFunction {
         /// A source-level field path for this method convention.
         func fieldPath(_ name: String) -> String {
             objcFieldSyntax ? "self->\(name)" : "self.\(name)"
         }
+
+        /// Resolve a vtable-dispatch byte offset to the method `self`'s class
+        /// calls there — the demangled name of its implementation. Nil when
+        /// `self`'s type is unknown or the slot is an inherited (superclass) one
+        /// this class's descriptor doesn't list.
+        func resolveVTableMethod(_ offset: Int) -> String? {
+            guard let selfTypeName,
+                  let address = vtableIndex.methodAddress(type: selfTypeName, offset: offset)
+            else { return nil }
+            return resolver.name(at: address)
+        }
+
+        /// `self`'s own getters/setters, keyed by resolved method name, so a
+        /// vtable dispatch to one renders as `self.property` (or `self.property =`)
+        /// instead of `Type.property.getter(…)` with stale argument registers.
+        let selfAccessors: [String: (property: String, isGetter: Bool)] = {
+            guard let selfTypeName else { return [:] }
+            var map: [String: (String, Bool)] = [:]
+            for address in vtableIndex.methodAddresses(type: selfTypeName) {
+                guard let name = resolver.name(at: address),
+                      let access = DisassembledFunction.swiftAccessorProperty(name)
+                else { continue }
+                map[name] = access
+            }
+            return map
+        }()
 
         func fieldInfo(at offset: Int, bytes: Int) -> (names: [String], type: String?)? {
             guard let fieldMap else { return nil }
@@ -1406,7 +1450,7 @@ public struct Disassembler: Sendable {
         let analysis = ValueTracer().analyze(function, entry: entry)
         let function = annotateIndirectControlFlowTargets(
             in: function, targets: analysis.indirectControlFlowTargets,
-            resolver: resolver
+            resolver: resolver, selfTypeName: selfTypeName, vtableIndex: vtableIndex
         )
         var sites = analysis.callSites
         // A resolved unconditional branch outside this function is a tail call.
@@ -1516,6 +1560,10 @@ public struct Disassembler: Sendable {
                     return "self[0x\(String(offset, radix: 16))]"
                 }
                 return fieldPath(name)
+            case .selfVTableMethod(let offset):
+                // A bare method pointer (rarely rendered on its own — the call it
+                // feeds is named at the dispatch site). Name it when resolvable.
+                return resolveVTableMethod(offset).map { "\($0)" } ?? "?"
             case .binary(let op, let lhs, let rhs):
                 guard depth < 8 else { return "?" }
                 return "(\(renderValue(lhs, depth: depth + 1)) \(op.symbol) \(renderValue(rhs, depth: depth + 1)))"
@@ -1546,6 +1594,11 @@ public struct Disassembler: Sendable {
                 // A Swift array-literal / varargs construction collapses to `[…]`.
                 if let literal = DisassembledFunction.arrayLiteralPlaceholder(callee: callee) {
                     return literal
+                }
+                // A vtable dispatch to one of `self`'s own getters is the property
+                // access it reads — `self.x` — not a method call with stale args.
+                if let access = selfAccessors[callee], access.isGetter {
+                    return "self.\(access.property)"
                 }
                 // Checked-cast / safe-category helpers return their operand
                 // unchanged; unwrap to that operand so the cast doesn't bury the

@@ -504,4 +504,21 @@ public extension DisassembledFunction {
             || callee.contains("_finalizeUninitializedArray")
             ? "[…]" : nil
     }
+
+    /// Parse a Swift accessor's demangled name — `Module.Type.property.getter :
+    /// ReturnType`, or the `.setter` form — into its property name and kind. Nil
+    /// for any non-accessor name. Used to render a class's own vtable-dispatched
+    /// getter/setter as `self.property` rather than a raw method call.
+    static func swiftAccessorProperty(_ name: String) -> (property: String, isGetter: Bool)? {
+        var base = name
+        if let range = base.range(of: " : ") { base = String(base[..<range.lowerBound]) }
+        if let range = base.range(of: " -> ") { base = String(base[..<range.lowerBound]) }
+        let isGetter: Bool
+        if base.hasSuffix(".getter") { isGetter = true; base = String(base.dropLast(7)) }
+        else if base.hasSuffix(".setter") { isGetter = false; base = String(base.dropLast(7)) }
+        else { return nil }
+        guard let dot = base.lastIndex(of: ".") else { return nil }
+        let property = String(base[base.index(after: dot)...])
+        return property.isEmpty ? nil : (property, isGetter)
+    }
 }
