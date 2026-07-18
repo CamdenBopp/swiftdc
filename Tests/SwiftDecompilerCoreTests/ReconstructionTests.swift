@@ -202,3 +202,36 @@ private func reconstructionPseudo(
     guard let luminance = try await reconstructionPseudo("luminance") else { return }
     #expect(luminance.contains("return ((self.r + self.g) + self.b)"))
 }
+
+// MARK: - No-payload enum case naming
+
+/// A no-payload enum's returned tag is its declaration index, so it names the
+/// case (`.south` is tag 2). The case names live in `__swift5_fieldmd`, which
+/// `strip` does not touch — so it holds across debug, optimized, and stripped.
+@Test func namesNoPayloadEnumCasesIfPresent() async throws {
+    for fixture in [reconstructionFixture,
+                    "Fixtures/Sample/libReconstruction.opt.dylib",
+                    "Fixtures/Sample/libReconstruction.opt.stripped.dylib"] {
+        guard let heading = try await reconstructionPseudo("heading", in: fixture) else { continue }
+        #expect(heading.contains("return Reconstruction.Direction.south"))
+    }
+
+    // A raw-value enum names by DECLARATION INDEX, not the raw value: `.high`
+    // is tag 2 even though its `rawValue` is 12. Asserted only at `-Onone`: at
+    // `-O` the linker's identical-code-folding merges `urgency` with any other
+    // `mov w0, #2; ret` body (here `heading`), so only one label survives — an
+    // inherent property of the binary, not of the reconstruction.
+    guard let urgency = try await reconstructionPseudo("urgency") else { return }
+    #expect(urgency.contains("return Reconstruction.Priority.high"))
+}
+
+/// Adversarial: a PAYLOAD enum's tag does not index its cases in declaration
+/// order, so a returned immediate must stay a raw value — never a fabricated
+/// `.eof`. Holds under optimization too.
+@Test func declinesPayloadEnumCaseNamingIfPresent() async throws {
+    for fixture in [reconstructionFixture, "Fixtures/Sample/libReconstruction.opt.dylib"] {
+        guard let end = try await reconstructionPseudo("endToken", in: fixture) else { continue }
+        #expect(!end.contains(".eof"))   // no fabricated case name
+        #expect(end.contains("return 0")) // honest raw fallback
+    }
+}

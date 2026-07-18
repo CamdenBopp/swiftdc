@@ -355,6 +355,9 @@ public struct Disassembler: Sendable {
         let fieldMaps = (try? FieldMapBuilder.build(in: machO)) ?? [:]
         let selfIndex = SelfTypeIndex.build(in: machO)
         let vtableIndex = VTableIndex.build(in: machO)
+        // No-payload enum case names, so an immediate tag returned from an
+        // enum-typed function renders as `.case` instead of a bare integer.
+        let enumCaseIndex = EnumCaseIndex.build(in: machO)
         functions = functions.map { function in
             let objcMethod = function.objcMethod
             // Runtime-added category IMPs (an accessibility bundle is almost all
@@ -407,7 +410,8 @@ public struct Disassembler: Sendable {
                 fieldMap: fieldMap,
                 objcFieldSyntax: objcMethod != nil || symbolEntry != nil,
                 selfTypeName: selfTypeName, vtableIndex: vtableIndex,
-                argumentFieldMaps: valueSelf?.argumentFieldMaps ?? [:]
+                argumentFieldMaps: valueSelf?.argumentFieldMaps ?? [:],
+                enumCaseIndex: enumCaseIndex
             )
         }
 
@@ -1287,19 +1291,15 @@ public struct Disassembler: Sendable {
     /// The value register a Swift function returns in.
     enum SwiftReturnRegister { case integer, floating }
 
-    /// Which single register a Swift function delivers its result in, inferred
-    /// from the demangled return type — or nil when the function is `Void`,
-    /// returns a value spanning several registers or an indirect buffer
-    /// (`String`, tuples, large structs/existentials), or has no demangled
-    /// signature. Restricting to single-register returns is what keeps a stale
-    /// `x0`/`v0` from being printed as a fabricated return for a type that isn't
-    /// actually returned there.
-    static func swiftReturnRegister(of function: DisassembledFunction) -> SwiftReturnRegister? {
+    /// The demangled result type of a Swift function or property getter, or nil
+    /// when it is `Void`, has no demangled signature, or the signature shape
+    /// isn't one a single result type can be read from (a `.modify`/`.read`
+    /// coroutine, a `with`/`for`-qualified thunk).
+    ///
+    /// A function/method spells its result after ` -> `; a property *getter*
+    /// demangles as `Type.prop.getter : PropType`.
+    static func swiftReturnTypeName(of function: DisassembledFunction) -> String? {
         guard function.objcMethod == nil, let name = function.demangledName else { return nil }
-        // A function/method spells its result after ` -> `; a property *getter*
-        // demangles as `Type.prop.getter : PropType` and returns that type
-        // normally. `.modify`/`.read` are coroutines that yield rather than
-        // return, so they are intentionally excluded.
         let returnType: String
         if let arrow = name.range(of: " -> ", options: .backwards) {
             returnType = String(name[arrow.upperBound...]).trimmingCharacters(in: .whitespaces)
@@ -1312,6 +1312,18 @@ public struct Disassembler: Sendable {
         guard !returnType.isEmpty, returnType != "()",
               !returnType.contains(" with "), !returnType.contains(" for ")
         else { return nil }
+        return returnType
+    }
+
+    /// Which single register a Swift function delivers its result in, inferred
+    /// from the demangled return type — or nil when the function is `Void`,
+    /// returns a value spanning several registers or an indirect buffer
+    /// (`String`, tuples, large structs/existentials), or has no demangled
+    /// signature. Restricting to single-register returns is what keeps a stale
+    /// `x0`/`v0` from being printed as a fabricated return for a type that isn't
+    /// actually returned there.
+    static func swiftReturnRegister(of function: DisassembledFunction) -> SwiftReturnRegister? {
+        guard let returnType = Self.swiftReturnTypeName(of: function) else { return nil }
         // Double/Float come back in v0 (d0/s0), every other single value in x0.
         let floatingTypes: Set<String> = [
             "Swift.Double", "Swift.Float", "Swift.Float16", "Swift.Float32",
@@ -1524,7 +1536,8 @@ public struct Disassembler: Sendable {
         objcFieldSyntax: Bool,
         selfTypeName: String? = nil,
         vtableIndex: VTableIndex = VTableIndex(),
-        argumentFieldMaps: [Int: FieldMap] = [:]
+        argumentFieldMaps: [Int: FieldMap] = [:],
+        enumCaseIndex: EnumCaseIndex = EnumCaseIndex()
     ) -> DisassembledFunction {
         /// A source-level field path for this method convention.
         func fieldPath(_ name: String) -> String {
@@ -1956,8 +1969,21 @@ public struct Disassembler: Sendable {
             "objc_claimAutoreleasedReturnValue", "objc_retainAutoreleasedReturnValue",
         ]
 
+        // The demangled result type, when it names a no-payload enum whose cases
+        // this image publishes — so an immediate tag renders as `Type.case`.
+        let returnEnumType: String? = Self.swiftReturnTypeName(of: function)
+
         func renderReturnValue(_ rawValue: AbstractValue, before address: UInt64) -> String {
             let value = sanitizeValue(rawValue)
+            // An immediate returned from an enum-typed function is that enum's
+            // case tag: name it (`return Color.green`) instead of printing the
+            // raw discriminant. Declines — leaving the integer — for payload
+            // enums, unknown/ambiguous enums, and out-of-range tags.
+            if case .immediate(let tag) = value, let returnEnumType,
+               tag <= UInt64(Int.max),
+               let caseName = enumCaseIndex.caseName(ofEnum: returnEnumType, tag: Int(tag)) {
+                return "\(returnEnumType).\(caseName)"
+            }
             // If this exact expression was just stored to a known ivar, return
             // the ivar's new value. This turns load/add/store/mov/ret into the
             // source-like `_count += delta; return _count` form.

@@ -111,3 +111,23 @@ public func ptrOrElse(_ x: UnsafeRawPointer?, _ f: UnsafeRawPointer) -> UnsafeRa
 // Negative: a TAGGED optional (`Int?`) is multi-register (payload + tag byte);
 // its nil check isn't a single-register diamond, so it declines to guess.
 public func intOrDefault(_ x: Int?) -> Int { x ?? -1 }
+
+// MARK: - No-payload enum case naming (immediate tag → .case)
+
+// A no-payload enum: the returned tag is the declaration index, so it names
+// the case (`.south` is tag 2) — recovered from `__swift5_fieldmd`, which
+// survives stripping.
+public enum Direction { case north, east, south, west }
+public func heading() -> Direction { .south }
+
+// A raw-value enum names by DECLARATION INDEX, not the raw value: `.high` is
+// tag 2 even though its `rawValue` is 12. Proves the tag, not the literal, is
+// what indexes the case list.
+public enum Priority: Int { case low = 10, medium, high }
+public func urgency() -> Priority { .high }
+
+// Negative: a PAYLOAD enum's tag does not index its cases in declaration order
+// (payload cases and the spare-bit-encoded empty case interleave), so a
+// returned immediate must stay a raw value — never a fabricated `.eof`.
+public enum Token { case eof; case number(Int); case ident(Int) }
+public func endToken() -> Token { .eof }
