@@ -8,14 +8,16 @@ public extension DisassembledFunction {
     func renderPseudo(hideRuntime: Bool = true) -> String {
         var lines = ["\(displayName) {"]
         if let objcMethod { lines.append("    // \(objcMethod.signature)") }
-        var shown = 0
+        var statements: [String] = []
         for insn in instructions {
             guard let statement = Self.pseudoStatement(of: insn, hideRuntime: hideRuntime) else { continue }
-            lines.append("    \(statement)")
-            shown += 1
+            statements.append(statement)
         }
-        if shown == 0 {
+        if hideRuntime { statements = Self.foldSwiftIdioms(statements) }
+        if statements.isEmpty {
             lines.append("    // no non-runtime calls (leaf / pure computation)")
+        } else {
+            for statement in statements { lines.append("    \(statement)") }
         }
         lines.append("}")
         return lines.joined(separator: "\n")
@@ -50,8 +52,13 @@ public extension DisassembledFunction {
               insn.controlFlow == .call || insn.controlFlow == .branch,
               let callee = calleeName(of: insn)
         else { return nil }
-        if hideRuntime, isRuntimeNoise(callee) { return nil }
-        let arguments = insn.callArguments ?? []
+        let rawArguments = insn.callArguments ?? []
+        // A dynamic cast reads its target type from the metadata argument that the
+        // plumbing strip below would remove, so recognize it on the raw arguments
+        // first.
+        if hideRuntime, let cast = swiftCastIdiom(callee: callee, arguments: rawArguments) { return cast }
+        if hideRuntime, isRuntimeNoise(callee) || isGenericPlumbingCallee(callee) { return nil }
+        let arguments = hideRuntime ? strippingGenericPlumbing(rawArguments) : rawArguments
         if let send = MessageSend(callee: callee, arguments: arguments) { return send.rendered }
         if let idiom = objcRuntimeIdiom(callee: callee, arguments: arguments) { return idiom }
         // A Swift method's receiver arrives in x20, not x0, so show it as an
@@ -100,6 +107,67 @@ public extension DisassembledFunction {
         default:
             return nil
         }
+    }
+
+    /// A Swift dynamic cast (`x as? T` / `x as! T`) recovered from the runtime
+    /// call the compiler lowers it to. Read from the *raw* arguments, before
+    /// `strippingGenericPlumbing` removes the target-type metadata — for a cast
+    /// that metadata IS the source-level type, not scaffolding.
+    ///
+    /// The conditional/unconditional split is exact: the class/metatype helpers
+    /// spell `Unconditional` in their name (`as!`), and the general
+    /// `swift_dynamicCast` carries it in `DynamicCastFlags.Unconditional` (bit 0)
+    /// of its flags operand. Returns nil — leaving the raw call — when the target
+    /// type is an unrecoverable mangled-name instantiation or the flags are
+    /// unknown, so the cast is never rendered with a guessed type or direction.
+    static func swiftCastIdiom(callee: String, arguments: [String]) -> String? {
+        func cast(object: String, targetArgument: String, forced: Bool) -> String? {
+            guard let type = swiftTypeName(fromMetadata: targetArgument) else { return nil }
+            return "(\(object) \(forced ? "as!" : "as?") \(type))"
+        }
+        switch callee {
+        case "swift_dynamicCastClass", "swift_dynamicCastObjCClass",
+             "swift_dynamicCastUnknownClass", "swift_dynamicCastMetatype":
+            guard arguments.count >= 2 else { return nil }
+            return cast(object: arguments[0], targetArgument: arguments[1], forced: false)
+        case "swift_dynamicCastClassUnconditional", "swift_dynamicCastObjCClassUnconditional",
+             "swift_dynamicCastUnknownClassUnconditional", "swift_dynamicCastMetatypeUnconditional":
+            guard arguments.count >= 2 else { return nil }
+            return cast(object: arguments[0], targetArgument: arguments[1], forced: true)
+        case "swift_dynamicCast":
+            // (dest, src, srcType, targetType, flags): the value is `src`, the
+            // type is `targetType`, and `dest` is the out-parameter it's written
+            // through — not a source expression, so it isn't shown.
+            guard arguments.count >= 5, let forced = castFlagsUnconditional(arguments[4]) else { return nil }
+            return cast(object: arguments[1], targetArgument: arguments[3], forced: forced)
+        default:
+            return nil
+        }
+    }
+
+    /// The Swift type named by a metadata argument — `type metadata accessor for
+    /// Foo.Bar(0)` / `type metadata for Swift.String` → `Foo.Bar` / `Swift.String`
+    /// — or nil when the argument is not a nameable metadata reference (e.g. a
+    /// mangled-name instantiation we can't resolve to a spelling here).
+    static func swiftTypeName(fromMetadata argument: String) -> String? {
+        let prefixes = ["type metadata accessor for ", "type metadata for ", "type metadata pattern for "]
+        guard let prefix = prefixes.first(where: argument.hasPrefix) else { return nil }
+        var name = String(argument.dropFirst(prefix.count))
+        // An accessor is a call — drop its "(metadataRequest)" argument group,
+        // which a nominal or generic type name (using `<>`, not `()`) never has.
+        if let paren = name.firstIndex(of: "(") { name = String(name[..<paren]) }
+        name = name.trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? nil : name
+    }
+
+    /// Whether a `swift_dynamicCast` flags operand has `DynamicCastFlags`'
+    /// `Unconditional` bit (0x1) set — i.e. the cast is `as!`. Nil when the
+    /// operand isn't a recovered immediate, so the caller can decline to guess.
+    static func castFlagsUnconditional(_ argument: String) -> Bool? {
+        let value = argument.hasPrefix("0x")
+            ? UInt64(argument.dropFirst(2), radix: 16)
+            : UInt64(argument)
+        return value.map { $0 & 0x1 != 0 }
     }
 
     /// An Objective-C message send recovered from a call, in either dispatch
@@ -330,5 +398,93 @@ public extension DisassembledFunction {
             "objc_retainAutorelease", "objc_retainAutoreleasedReturnValue",
         ]
         return prefixes.contains { callee.hasPrefix($0) }
+    }
+
+    // MARK: - Implicit generic plumbing
+
+    /// A call whose *entire* purpose is the compiler's generic machinery — type
+    /// metadata, protocol witness tables, mangled-name instantiation, and the
+    /// `outlined` value-witness helpers. None of these appear in Swift source;
+    /// the compiler inserts them to carry `<T>`/conformances across a call. When
+    /// one surfaces as its own statement (its result unconsumed), hide it — it is
+    /// scaffolding, not logic.
+    ///
+    /// Deliberately kept OUT of `isRuntimeNoise`: that predicate also drives the
+    /// value tracer's "a call that returns its argument" unwrap in `Disassembler`,
+    /// and a metadata accessor does not return its argument. This one is
+    /// presentation-only.
+    static func isGenericPlumbingCallee(_ callee: String) -> Bool {
+        let prefixes = [
+            "outlined ",
+            "type metadata accessor for ",
+            "type metadata completion function for ",
+            "type metadata instantiation function for ",
+            "lazy protocol witness table accessor ",
+            "lazy protocol witness table cache variable ",
+            "protocol witness table accessor ",
+            "associated type descriptor for ",
+            "associated conformance descriptor for ",
+            "demangling cache variable for ",
+            "__swift_instantiateConcreteTypeFromMangledName",
+            // A defaulted parameter is lowered to a call to its generator; the
+            // source didn't write it, so as a statement it's scaffolding.
+            "default argument ",
+        ]
+        if prefixes.contains(where: callee.hasPrefix) { return true }
+        return genericPlumbingRuntimeNames.contains(where: callee.hasPrefix)
+    }
+
+    /// A rendered argument that is implicit generic plumbing rather than a source
+    /// value: a type-metadata reference, a witness table, or a mangled-name type
+    /// instantiation. In the Swift calling convention these are passed *after* the
+    /// formal value arguments, so `strippingGenericPlumbing` only drops a trailing
+    /// run of them — a metadata argument with real values after it (e.g. the type
+    /// operand of `swift_allocObject`) is left untouched.
+    static func isGenericPlumbingArgument(_ argument: String) -> Bool {
+        let prefixes = [
+            "type metadata accessor for ",
+            "type metadata for ",
+            "type metadata pattern for ",
+            "protocol witness table for ",
+            "protocol witness table accessor ",
+            "lazy protocol witness table accessor ",
+            "lazy protocol witness table cache variable ",
+            "associated type witness table accessor ",
+            "demangling cache variable for ",
+            "__swift_instantiateConcreteTypeFromMangledName",
+            "default argument ",
+        ]
+        if prefixes.contains(where: argument.hasPrefix) { return true }
+        return genericPlumbingRuntimeNames.contains(where: argument.hasPrefix)
+    }
+
+    /// Runtime entry points (from the compiler's `RuntimeFunctions.def`) that
+    /// only fetch or instantiate metadata / witness tables — implicit plumbing
+    /// whether they appear as a statement or an argument.
+    private static let genericPlumbingRuntimeNames = [
+        "swift_getWitnessTable", "swift_getWitnessTableRelative",
+        "swift_getAssociatedTypeWitness", "swift_getAssociatedTypeWitnessRelative",
+        "swift_getAssociatedConformanceWitness",
+        "swift_getGenericMetadata", "swift_getSingletonMetadata",
+        "swift_getTypeByMangledNameInContext", "swift_getTypeByMangledNameInContextInMetadataState",
+        "swift_getOpaqueTypeMetadata", "swift_getOpaqueTypeConformance",
+        "swift_getMetatypeMetadata", "swift_getExistentialTypeMetadata",
+        "swift_instantiateConcreteTypeFromMangledName",
+        "__swift_instantiateConcreteTypeFromMangledName",
+    ]
+
+    /// Drop implicit-plumbing arguments, leaving the source-level values.
+    ///
+    /// Two removal rules, matched to how each kind sits in the Swift calling
+    /// convention: a default-argument generator is never a source argument, so it
+    /// is dropped wherever it appears (they interleave with unrecovered `?`
+    /// slots); metadata / witness tables are passed *after* the formal arguments,
+    /// so only a trailing run of them is removed — a metadata operand that
+    /// precedes real arguments (e.g. the type operand of `swift_allocObject`) is
+    /// preserved.
+    static func strippingGenericPlumbing(_ arguments: [String]) -> [String] {
+        var kept = arguments.filter { !$0.hasPrefix("default argument ") }
+        while let last = kept.last, isGenericPlumbingArgument(last) { kept.removeLast() }
+        return kept
     }
 }

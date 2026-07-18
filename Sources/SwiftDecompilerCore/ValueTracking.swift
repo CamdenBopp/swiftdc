@@ -8,6 +8,7 @@ public enum AbstractBinaryOperator: Equatable, Sendable {
     case add
     case subtract
     case multiply
+    case divide
     case bitAnd
     case bitOr
     case bitXor
@@ -20,6 +21,7 @@ public enum AbstractBinaryOperator: Equatable, Sendable {
         case .add: "+"
         case .subtract: "-"
         case .multiply: "*"
+        case .divide: "/"
         case .bitAnd: "&"
         case .bitOr: "|"
         case .bitXor: "^"
@@ -27,6 +29,17 @@ public enum AbstractBinaryOperator: Equatable, Sendable {
         case .shiftRight, .arithmeticShiftRight: ">>"
         }
     }
+}
+
+/// Unary operators retained in symbolic expressions — the floating-point and
+/// bitwise inversions the compiler emits as single instructions (`fneg`,
+/// `fsqrt`, `fabs`, `mvn`). Like the binary set this stays small and pure; an
+/// unmodelled instruction still degrades to `.unknown`.
+public enum AbstractUnaryOperator: Equatable, Sendable {
+    case negate
+    case squareRoot
+    case absoluteValue
+    case bitwiseNot
 }
 
 /// A small abstract-value lattice for CFG-aware data-flow. Alongside constants
@@ -71,6 +84,9 @@ public indirect enum AbstractValue: Equatable, Sendable {
     /// Expression construction is bounded by `ValueTracer.expression` so loops
     /// and long instruction chains cannot create unbounded trees.
     case binary(AbstractBinaryOperator, AbstractValue, AbstractValue)
+    /// A pure unary expression — `-x`, `sqrt(x)`, `abs(x)`, `~x`. Bounded by the
+    /// same depth cap as `.binary`.
+    case unary(AbstractUnaryOperator, AbstractValue)
     /// Consecutive eight-byte values packed into a wider SIMD register. Clang
     /// commonly moves two Objective-C stack arguments at once through `q0`.
     case aggregate([AbstractValue])
@@ -86,8 +102,11 @@ public indirect enum AbstractValue: Equatable, Sendable {
 
 /// Register state that metadata proves at a method's entry point.
 public enum MethodEntryConvention: Sendable, Equatable {
-    /// Swift instance method: `self` is x20.
-    case swiftInstance
+    /// Swift instance method: `self` is x20, and the first `scalarArgumentCount`
+    /// single-register scalar parameters occupy x0…. The count is 0 when the
+    /// signature has parameters that aren't provably single-register (they are
+    /// left unseeded rather than mislabeled).
+    case swiftInstance(scalarArgumentCount: Int)
     /// Objective-C class or instance method: `self` is x0, `_cmd` is x1, and
     /// explicit selector arguments begin in x2.
     case objectiveC(argumentCount: Int)
@@ -95,6 +114,12 @@ public enum MethodEntryConvention: Sendable, Equatable {
     /// metadata-proven `init…` entry lets a super-initializer result become the
     /// method's new `self` for subsequent ivar accesses.
     case objectiveCInitializer(argumentCount: Int)
+    /// A Swift free function or static method whose parameters are all
+    /// single-register integer/pointer scalars, so they map exactly onto
+    /// x0…x(n-1) with no aggregate spilling. Seeded only under that proof (see
+    /// `swiftScalarArgumentCount`) so a multi-register parameter never shifts the
+    /// mapping and mislabels a register.
+    case swiftFunction(argumentCount: Int)
 
     var isObjectiveCInitializer: Bool {
         if case .objectiveCInitializer = self { return true }
@@ -160,6 +185,10 @@ public struct FunctionAnalysis: Sendable {
     /// pass uses Objective-C return types and resolved tail helpers to decide
     /// which of these are honest source-level returns.
     public var exitValues: [UInt64: AbstractValue] = [:]
+    /// v0 (the d0/s0 floating-point return register) immediately before a
+    /// return. A `Double`/`Float`-returning function delivers its result here,
+    /// not in x0, so the enrichment pass reads this one for those return types.
+    public var exitFloatValues: [UInt64: AbstractValue] = [:]
     /// Instruction address → the access it makes into `self`.
     public var selfFieldAccesses: [UInt64: SelfFieldAccess] = [:]
 }
@@ -181,8 +210,14 @@ public struct ValueTracer: Sendable {
     private static func initialState(entry: MethodEntryConvention?) -> State {
         var state: State = ["sp": .frame(0)]
         switch entry {
-        case .swiftInstance:
+        case .swiftInstance(let scalarArgumentCount):
             state["x20"] = .selfPointer
+            // Parameters occupy x0… independently of the `self` register (x20),
+            // so an instance method's scalar arguments are seeded the same way a
+            // free function's are.
+            for argument in 0 ..< min(max(scalarArgumentCount, 0), 8) {
+                state["x\(argument)"] = .argument(argument)
+            }
         case .objectiveC(let argumentCount), .objectiveCInitializer(let argumentCount):
             state["x0"] = .selfPointer
             // AAPCS64 has six argument registers left after self/_cmd. Further
@@ -197,6 +232,13 @@ public struct ValueTracer: Sendable {
             // common long selector signatures found in Apple frameworks.
             for argument in 6 ..< max(6, min(max(argumentCount, 0), 32)) {
                 state[Self.stackKey(Int64(argument - 6) * 8)] = .argument(argument)
+            }
+        case .swiftFunction(let argumentCount):
+            // No `self`/`_cmd` prefix: a Swift function's first scalar argument is
+            // x0. Only the eight argument registers are seeded; a proven all-scalar
+            // signature never spills, so there is nothing past x7 to recover.
+            for argument in 0 ..< min(max(argumentCount, 0), 8) {
+                state["x\(argument)"] = .argument(argument)
             }
         case nil:
             break
@@ -216,7 +258,7 @@ public struct ValueTracer: Sendable {
     ///   function is known to be an instance method of a known type — see
     ///   `AbstractValue.selfPointer`.
     public func analyze(_ function: DisassembledFunction, hasSelf: Bool = false) -> FunctionAnalysis {
-        analyze(function, entry: hasSelf ? .swiftInstance : nil)
+        analyze(function, entry: hasSelf ? .swiftInstance(scalarArgumentCount: 0) : nil)
     }
 
     /// Analyze with a metadata-proven Swift or Objective-C method entry state.
@@ -288,6 +330,10 @@ public struct ValueTracer: Sendable {
                    let value = registers["x0"], value != .unknown {
                     result.exitValues[insn.address] = value
                 }
+                if insn.controlFlow == .return,
+                   let value = registers["v0"], value != .unknown {
+                    result.exitFloatValues[insn.address] = value
+                }
                 if insn.controlFlow == .branch {
                     let site = Self.snapshot(registers)
                     if !site.isEmpty { result.branchSites[insn.address] = site }
@@ -353,6 +399,12 @@ public struct ValueTracer: Sendable {
             // carries `self` and locals across a call.
             for index in 1...17 { registers["x\(index)"] = .unknown }
             registers["x30"] = .unknown
+            // The vector/floating-point bank: v0–v7 and v16–v31 are caller-saved
+            // (only the low 64 bits of v8–v15 survive a call). Clobbering them is
+            // what stops a stale `d0` from before the call being read as the
+            // call's floating-point result after it.
+            for index in 0...7 { registers["v\(index)"] = nil }
+            for index in 16...31 { registers["v\(index)"] = nil }
             let outgoingKeys = registers.keys.filter { $0.hasPrefix(Self.outgoingPrefix) }
             for key in outgoingKeys { registers[key] = nil }
             let callee = DisassembledFunction.calleeName(of: insn) ?? ""
@@ -364,7 +416,12 @@ public struct ValueTracer: Sendable {
                 // chose a different allocation.
                 registers["x0"] = .selfPointer
             } else {
-                registers["x0"] = .callResult(insn.address) // return value
+                // The result register — x0 for integer/pointer/reference returns,
+                // v0 for a floating-point one. The callee delivers into one; only
+                // the register the caller actually reads next carries it forward,
+                // so modelling the result in both is faithful.
+                registers["x0"] = .callResult(insn.address)
+                registers["v0"] = .callResult(insn.address)
             }
             registers[Self.selfFreshKey] = nil
             return
@@ -561,6 +618,43 @@ public struct ValueTracer: Sendable {
                 expression(op, source(detail.operands[1], in: registers), source(detail.operands[2], in: registers)),
                 into: &registers
             )
+
+        case ARM64_INS_FADD, ARM64_INS_FSUB, ARM64_INS_FMUL, ARM64_INS_FDIV, ARM64_INS_FNMUL:
+            guard let dest = destinationRegister(detail), detail.operands.count >= 3 else {
+                clobber(detail, into: &registers); return
+            }
+            let op: AbstractBinaryOperator = switch detail.id {
+            case ARM64_INS_FADD: .add
+            case ARM64_INS_FSUB: .subtract
+            case ARM64_INS_FDIV: .divide
+            default: .multiply // FMUL, FNMUL
+            }
+            let product = floatBinary(op, source(detail.operands[1], in: registers),
+                                      source(detail.operands[2], in: registers))
+            // FNMUL negates the product: `-(a * b)`.
+            write(dest, detail.id == ARM64_INS_FNMUL ? floatUnary(.negate, product) : product,
+                  into: &registers)
+
+        case ARM64_INS_FNEG, ARM64_INS_FSQRT, ARM64_INS_FABS:
+            guard let dest = destinationRegister(detail), detail.operands.count >= 2 else {
+                clobber(detail, into: &registers); return
+            }
+            let op: AbstractUnaryOperator = switch detail.id {
+            case ARM64_INS_FSQRT: .squareRoot
+            case ARM64_INS_FABS: .absoluteValue
+            default: .negate // FNEG
+            }
+            write(dest, floatUnary(op, source(detail.operands[1], in: registers)), into: &registers)
+
+        case ARM64_INS_FMOV, ARM64_INS_FCVT, ARM64_INS_SCVTF, ARM64_INS_UCVTF,
+             ARM64_INS_FCVTZS, ARM64_INS_FCVTZU:
+            // A register-to-register FP move or width/int conversion carries the
+            // value through unchanged for display. An `fmov d0, #1.0` immediate is
+            // left unknown rather than surfaced as a raw bit pattern.
+            guard let dest = destinationRegister(detail), detail.operands.count >= 2,
+                  detail.operands[1].operand.register != nil
+            else { clobber(detail, into: &registers); return }
+            write(dest, source(detail.operands[1], in: registers), into: &registers)
 
         case ARM64_INS_MOV, ARM64_INS_MOVZ:
             // Capstone pre-folds MOVZ's shift into the immediate.
@@ -821,6 +915,7 @@ public struct ValueTracer: Sendable {
             case .add: left &+ right
             case .subtract: left &- right
             case .multiply: left &* right
+            case .divide: right != 0 ? left / right : nil
             case .bitAnd: left & right
             case .bitOr: left | right
             case .bitXor: left ^ right
@@ -839,15 +934,37 @@ public struct ValueTracer: Sendable {
                  .arithmeticShiftRight:
                 return lhs
             case .multiply, .bitAnd: return .immediate(0)
+            case .divide: return .unknown // division by zero — don't simplify
             }
         }
         guard Self.expressionDepth(lhs) < 8, Self.expressionDepth(rhs) < 8 else { return .unknown }
         return .binary(op, lhs, rhs)
     }
 
+    /// Build a floating-point binary node. Unlike `expression`, it never folds
+    /// constants or applies algebraic identities (`x + 0`, `x * 0`) — those hold
+    /// for two's-complement integers but not for IEEE floats (`-0.0`, `NaN`,
+    /// `Inf`), and an FP register never carries an `.immediate` anyway.
+    private func floatBinary(
+        _ op: AbstractBinaryOperator, _ lhs: AbstractValue, _ rhs: AbstractValue
+    ) -> AbstractValue {
+        guard lhs != .unknown, rhs != .unknown,
+              Self.expressionDepth(lhs) < 8, Self.expressionDepth(rhs) < 8
+        else { return .unknown }
+        return .binary(op, lhs, rhs)
+    }
+
+    private func floatUnary(_ op: AbstractUnaryOperator, _ value: AbstractValue) -> AbstractValue {
+        guard value != .unknown, Self.expressionDepth(value) < 8 else { return .unknown }
+        return .unary(op, value)
+    }
+
     private static func expressionDepth(_ value: AbstractValue) -> Int {
-        guard case .binary(_, let lhs, let rhs) = value else { return 0 }
-        return 1 + max(expressionDepth(lhs), expressionDepth(rhs))
+        switch value {
+        case .binary(_, let lhs, let rhs): return 1 + max(expressionDepth(lhs), expressionDepth(rhs))
+        case .unary(_, let operand): return 1 + expressionDepth(operand)
+        default: return 0
+        }
     }
 
     /// Read one scalar or a SIMD-packed run of eight-byte stack values.

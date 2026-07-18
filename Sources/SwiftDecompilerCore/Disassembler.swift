@@ -372,7 +372,9 @@ public struct Disassembler: Sendable {
             } else if let symbolEntry {
                 symbolEntry
             } else if selfTypeName != nil {
-                .swiftInstance
+                .swiftInstance(scalarArgumentCount: Self.swiftScalarArgumentCount(of: function) ?? 0)
+            } else if let scalarArgs = Self.swiftScalarArgumentCount(of: function) {
+                .swiftFunction(argumentCount: scalarArgs)
             } else {
                 nil
             }
@@ -1235,6 +1237,95 @@ public struct Disassembler: Sendable {
         return String(owner)
     }
 
+    /// The value register a Swift function returns in.
+    enum SwiftReturnRegister { case integer, floating }
+
+    /// Which single register a Swift function delivers its result in, inferred
+    /// from the demangled return type — or nil when the function is `Void`,
+    /// returns a value spanning several registers or an indirect buffer
+    /// (`String`, tuples, large structs/existentials), or has no demangled
+    /// signature. Restricting to single-register returns is what keeps a stale
+    /// `x0`/`v0` from being printed as a fabricated return for a type that isn't
+    /// actually returned there.
+    static func swiftReturnRegister(of function: DisassembledFunction) -> SwiftReturnRegister? {
+        guard function.objcMethod == nil, let name = function.demangledName else { return nil }
+        // A function/method spells its result after ` -> `; a property *getter*
+        // demangles as `Type.prop.getter : PropType` and returns that type
+        // normally. `.modify`/`.read` are coroutines that yield rather than
+        // return, so they are intentionally excluded.
+        let returnType: String
+        if let arrow = name.range(of: " -> ", options: .backwards) {
+            returnType = String(name[arrow.upperBound...]).trimmingCharacters(in: .whitespaces)
+        } else if name.hasSuffix(".getter") == false, name.contains(".getter : "),
+                  let colon = name.range(of: " : ", options: .backwards) {
+            returnType = String(name[colon.upperBound...]).trimmingCharacters(in: .whitespaces)
+        } else {
+            return nil
+        }
+        guard !returnType.isEmpty, returnType != "()",
+              !returnType.contains(" with "), !returnType.contains(" for ")
+        else { return nil }
+        // Double/Float come back in v0 (d0/s0), every other single value in x0.
+        let floatingTypes: Set<String> = [
+            "Swift.Double", "Swift.Float", "Swift.Float16", "Swift.Float32",
+            "Swift.Float64", "Swift.CGFloat", "CoreGraphics.CGFloat",
+        ]
+        if floatingTypes.contains(returnType) { return .floating }
+        // Multi-register / indirect returns — don't read a single register.
+        // `String` is two words; a tuple or a metatype/existential is several.
+        if returnType.hasPrefix("("), returnType != "()" { return nil }
+        if returnType == "Swift.String" || returnType == "Swift.StaticString" { return nil }
+        if returnType.contains(" -> ") { return nil } // returns a closure
+        return .integer
+    }
+
+    /// The argument count to seed for a Swift free function or static method
+    /// whose every parameter is a single-register integer/pointer scalar — the
+    /// only shape whose parameters map cleanly onto x0…x(n-1). Nil for any
+    /// signature with an aggregate, floating-point, generic, `inout`, or
+    /// otherwise multi-register parameter (or none), so a register is never
+    /// mislabeled `arg k` when the real parameter layout differs.
+    static func swiftScalarArgumentCount(of function: DisassembledFunction) -> Int? {
+        guard function.objcMethod == nil, let name = function.demangledName,
+              Self.isSwiftMangled(function.symbol),
+              // A getter/setter/accessor or a name without a call signature has no
+              // ordinary parameter list to seed.
+              let arrow = name.range(of: " -> ", options: .backwards)
+        else { return nil }
+        let signature = name[..<arrow.lowerBound]
+        guard let paramsRange = DisassembledFunction.outermostArgumentListRange(of: String(signature))
+        else { return nil }
+        let parameters = DisassembledFunction.splitTopLevelArguments(signature[paramsRange])
+        guard !parameters.isEmpty, parameters.count <= 8,
+              parameters.allSatisfy(Self.isSingleRegisterScalarParameter)
+        else { return nil }
+        return parameters.count
+    }
+
+    /// Whether a demangled parameter is a single-register integer or pointer
+    /// scalar. Deliberately an under-approximation: an unlisted type (a class
+    /// reference is single-register too, but unidentifiable by name) is treated
+    /// as multi-register and blocks seeding, trading missed parameters for never
+    /// mislabeling one.
+    private static func isSingleRegisterScalarParameter(_ parameter: String) -> Bool {
+        // Demangled Swift signatures list bare types with no argument labels, but
+        // tolerate a `label: Type` form defensively by taking the type.
+        var type = parameter
+        if let colon = type.range(of: ": ", options: .backwards) {
+            type = String(type[colon.upperBound...])
+        }
+        type = type.trimmingCharacters(in: .whitespaces)
+        let scalars: Set<String> = [
+            "Swift.Int", "Swift.UInt", "Swift.Int8", "Swift.Int16", "Swift.Int32",
+            "Swift.Int64", "Swift.UInt8", "Swift.UInt16", "Swift.UInt32", "Swift.UInt64",
+            "Swift.Bool", "Swift.OpaquePointer", "Swift.UnsafeRawPointer",
+            "Swift.UnsafeMutableRawPointer",
+        ]
+        if scalars.contains(type) { return true }
+        return type.hasPrefix("Swift.UnsafePointer<")
+            || type.hasPrefix("Swift.UnsafeMutablePointer<")
+    }
+
     private func enrichCallArguments(
         in function: DisassembledFunction,
         resolver: ReferenceResolver,
@@ -1280,6 +1371,9 @@ public struct Disassembler: Sendable {
                 let rhs = sanitizeValue(rhs)
                 guard lhs != .unknown, rhs != .unknown else { return .unknown }
                 return .binary(op, lhs, rhs)
+            case .unary(let op, let operand):
+                let operand = sanitizeValue(operand)
+                return operand == .unknown ? .unknown : .unary(op, operand)
             case .aggregate(let values):
                 let values = values.map(sanitizeValue)
                 return values.allSatisfy({ $0 != .unknown }) ? .aggregate(values) : .unknown
@@ -1309,7 +1403,8 @@ public struct Disassembler: Sendable {
         // A property getter is often `ldr x0, [x20, #n]; ret` — no calls at all.
         // Bailing on `sites.isEmpty` alone would skip field naming for precisely
         // the functions it is most useful in.
-        guard !sites.isEmpty || !analysis.selfFieldAccesses.isEmpty || !analysis.exitValues.isEmpty
+        guard !sites.isEmpty || !analysis.selfFieldAccesses.isEmpty
+                || !analysis.exitValues.isEmpty || !analysis.exitFloatValues.isEmpty
         else { return function }
 
         // Callee name per call/tail-call address, for nesting result expressions.
@@ -1407,6 +1502,15 @@ public struct Disassembler: Sendable {
             case .binary(let op, let lhs, let rhs):
                 guard depth < 8 else { return "?" }
                 return "(\(renderValue(lhs, depth: depth + 1)) \(op.symbol) \(renderValue(rhs, depth: depth + 1)))"
+            case .unary(let op, let operand):
+                guard depth < 8 else { return "?" }
+                let inner = renderValue(operand, depth: depth + 1)
+                switch op {
+                case .negate: return "-\(inner)"
+                case .bitwiseNot: return "~\(inner)"
+                case .squareRoot: return "sqrt(\(inner))"
+                case .absoluteValue: return "abs(\(inner))"
+                }
             case .aggregate(let values):
                 return "(" + values.map { renderValue($0, depth: depth + 1) }.joined(separator: ", ") + ")"
             case .callResult(let addr):
@@ -1449,7 +1553,19 @@ public struct Disassembler: Sendable {
                     return idiom
                 }
                 let callValues = normalizedArguments(callee: callee, values: inner)
-                let arguments: [String] = renderArguments(callValues, depth: depth + 1)
+                let rawArguments: [String] = renderArguments(callValues, depth: depth + 1)
+                // A dynamic cast reads its target type from the metadata argument
+                // that the plumbing strip would remove, so match it on the raw
+                // arguments first — this is what lets `return x as? T` render as a
+                // cast rather than the raw `swift_dynamicCast…(…)` call.
+                if let cast = DisassembledFunction.swiftCastIdiom(callee: callee, arguments: rawArguments) {
+                    return cast
+                }
+                // Strip the implicit generic plumbing from the rendered arguments
+                // here, where they are still a clean per-argument list — the
+                // string-level fold can't, because a demangled closure/`throws`
+                // type embeds unbalanced parentheses that defeat its parser.
+                let arguments = DisassembledFunction.strippingGenericPlumbing(rawArguments)
                 if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {
                     return send.rendered
                 }
@@ -1581,6 +1697,8 @@ public struct Disassembler: Sendable {
             case .binary(_, let lhs, let rhs):
                 collectCallResults(in: lhs, into: &consumed)
                 collectCallResults(in: rhs, into: &consumed)
+            case .unary(_, let operand):
+                collectCallResults(in: operand, into: &consumed)
             case .aggregate(let values):
                 for value in values { collectCallResults(in: value, into: &consumed) }
             default:
@@ -1608,16 +1726,24 @@ public struct Disassembler: Sendable {
                     collectCallResults(in: value, into: &consumedCallResults)
                 }
             }
-            guard function.objcMethod.map({ !$0.returnsVoid }) == true,
-                  let value = analysis.exitValues[insn.address]
-            else { continue }
-            if insn.controlFlow == .return {
-                collectCallResults(in: value, into: &consumedCallResults)
-            } else if insn.controlFlow == .branch,
-                      let callee = DisassembledFunction.calleeName(of: insn),
-                      passthroughReturnHelpers.contains(where: callee.hasPrefix)
-                        || !DisassembledFunction.isRuntimeNoise(callee) {
-                collectCallResults(in: value, into: &consumedCallResults)
+            if function.objcMethod.map({ !$0.returnsVoid }) == true,
+               let value = analysis.exitValues[insn.address] {
+                if insn.controlFlow == .return {
+                    collectCallResults(in: value, into: &consumedCallResults)
+                } else if insn.controlFlow == .branch,
+                          let callee = DisassembledFunction.calleeName(of: insn),
+                          passthroughReturnHelpers.contains(where: callee.hasPrefix)
+                            || !DisassembledFunction.isRuntimeNoise(callee) {
+                    collectCallResults(in: value, into: &consumedCallResults)
+                }
+            } else if function.objcMethod == nil, insn.controlFlow == .return,
+                      let returnRegister = Self.swiftReturnRegister(of: function) {
+                // A Swift return that is a call's result consumes it, so the call
+                // isn't also printed as its own statement above the `return`.
+                let value = returnRegister == .floating
+                    ? analysis.exitFloatValues[insn.address]
+                    : analysis.exitValues[insn.address]
+                if let value { collectCallResults(in: value, into: &consumedCallResults) }
             }
         }
 
@@ -1652,6 +1778,24 @@ public struct Disassembler: Sendable {
                     } else if !DisassembledFunction.isRuntimeNoise(callee),
                               let values = argumentsByAddress[insn.address] {
                         sourceNotes.append("return \(callExpression(callee: callee, values: values))")
+                    }
+                }
+            }
+
+            // A Swift function surfaces its return value too — the reason a pure
+            // leaf like `Point.distance` otherwise shows nothing. Only a real
+            // `ret` (a tail-call branch's x0/v0 hold the callee's arguments, not a
+            // result) and only return types delivered in one value register, so a
+            // stale register is never printed as a fabricated return.
+            if function.objcMethod == nil, insn.controlFlow == .return,
+               let returnRegister = Self.swiftReturnRegister(of: function) {
+                let rawExit = returnRegister == .floating
+                    ? analysis.exitFloatValues[insn.address]
+                    : analysis.exitValues[insn.address]
+                if let rawExit {
+                    let exit = sanitizeValue(rawExit)
+                    if exit != .unknown {
+                        sourceNotes.append("return \(renderReturnValue(exit, before: insn.address))")
                     }
                 }
             }

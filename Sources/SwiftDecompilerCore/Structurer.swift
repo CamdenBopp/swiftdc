@@ -403,8 +403,13 @@ struct ControlFlowStructure {
     /// to the real producer rather than inlining `objc_retain(x)`.
     private static func callValueExpression(_ insn: Instruction) -> String? {
         guard let callee = DisassembledFunction.calleeName(of: insn) else { return nil }
-        if DisassembledFunction.isRuntimeNoise(callee) { return nil }
-        let arguments = insn.callArguments ?? []
+        let rawArguments = insn.callArguments ?? []
+        if let cast = DisassembledFunction.swiftCastIdiom(callee: callee, arguments: rawArguments) {
+            return cast
+        }
+        if DisassembledFunction.isRuntimeNoise(callee)
+            || DisassembledFunction.isGenericPlumbingCallee(callee) { return nil }
+        let arguments = DisassembledFunction.strippingGenericPlumbing(rawArguments)
         if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {
             return send.rendered
         }
