@@ -24,11 +24,16 @@ integer counters, so the swiftdc self-host named **0** loops (0 false positives)
 — the win shows on C-style counting loops, not this corpus. This is the
 foundational `.local`/recurrence infrastructure the follow-ups build on.
 
-**Follow-ups (deferred, not yet done):**
-1. Render the body update `i += c` — requires propagating `.local` from the
-   header into the loop body blocks (this step only names `inState[header]`).
-2. Restructure `while (true) { if (i >= n) return/break }` → `while (i < n)` in
-   the Structurer (recognize a header exit-test as the loop condition).
+**Follow-ups:**
+1. **(NEXT)** Render the body update `i += c` — requires propagating `.local`
+   from the header into the loop body blocks (step 1 only names
+   `inState[header]`) and rendering the induction store as a statement. This
+   fills the empty body: `while (i < n) { }` → `while (i < n) { i += 1 }`.
+2. **DONE (commit `4fa5b6b`)** — while-condition rotation. `ControlFlowStructure.
+   whileCondition` hoists+inverts a header that is purely a single exit test into
+   `while (i < n) { … }`; declines multi-exit / mid-body-exit / do-while / a
+   working header / irreducible (stays `while (true)`). Self-host: 50 loops
+   rotated, 387 kept `while (true)`, 0 crashes, structural braces balanced.
 3. Loop-carried accumulators (`total += i`) and multi/coupled induction vars.
 4. `do { } while` (exit test at the back-edge, not the header).
 
