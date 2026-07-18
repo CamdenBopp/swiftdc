@@ -19,6 +19,11 @@ public func addThree(_ a: Int, _ b: Int, _ c: Int) -> Int { a + b + c }
 public func hypotenuse(_ a: Double, _ b: Double) -> Double { (a * a + b * b).squareRoot() }
 public func scaleInt(_ n: Int, by f: Double) -> Double { Double(n) * f }
 
+// A floating-point constant inside an expression is stored as an IEEE bit
+// pattern; because the expression reaches a `Double` parameter it renders as
+// its decimal (`3.14`), not `0x40091eb851eb851f`.
+public func polynomial(_ x: Double) -> Double { x * x + 3.14 }
+
 // MARK: - HFA struct decomposition (self + by-value struct params)
 
 public struct Vec2 {

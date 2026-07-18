@@ -1434,6 +1434,47 @@ public struct Disassembler: Sendable {
         return indices
     }
 
+    /// The source-parameter indices that are floating-point, plus whether the
+    /// function's float type is double-precision. A float immediate is stored as
+    /// an IEEE bit pattern; recognizing a float-valued expression (one reaching a
+    /// float parameter) lets a literal operand in it render as `3.14` instead of
+    /// `0x40091eb851eb851f`. Nil when the function has no floating-point in its
+    /// signature, so a non-float body never reinterprets an integer as a float.
+    static func swiftFloatArgumentInfo(
+        of function: DisassembledFunction
+    ) -> (indices: Set<Int>, isDouble: Bool)? {
+        guard function.objcMethod == nil, let name = function.demangledName,
+              Self.isSwiftMangled(function.symbol),
+              let arrow = name.range(of: " -> ", options: .backwards)
+        else { return nil }
+        let doubles: Set<String> = [
+            "Swift.Double", "Swift.Float64", "Swift.CGFloat", "CoreGraphics.CGFloat",
+        ]
+        let floats: Set<String> = ["Swift.Float", "Swift.Float32", "Swift.Float16"]
+        func normalize(_ raw: Substring) -> String {
+            var type = String(raw)
+            if let colon = type.range(of: ": ", options: .backwards) {
+                type = String(type[colon.upperBound...])
+            }
+            return type.trimmingCharacters(in: .whitespaces)
+        }
+        var indices: Set<Int> = []
+        var sawDouble = false, sawFloat = false
+        let signature = name[..<arrow.lowerBound]
+        if let paramsRange = DisassembledFunction.outermostArgumentListRange(of: String(signature)) {
+            for (index, parameter) in DisassembledFunction.splitTopLevelArguments(signature[paramsRange]).enumerated() {
+                let type = normalize(parameter[...])
+                if doubles.contains(type) { indices.insert(index); sawDouble = true }
+                else if floats.contains(type) { indices.insert(index); sawFloat = true }
+            }
+        }
+        let returnType = name[arrow.upperBound...].trimmingCharacters(in: .whitespaces)
+        if doubles.contains(returnType) { sawDouble = true }
+        else if floats.contains(returnType) { sawFloat = true }
+        guard sawDouble || sawFloat else { return nil }
+        return (indices, sawDouble)
+    }
+
     /// The enum type owning a `…__derived_enum_equals` callee (the compiler's
     /// synthesized enum `Equatable.==`), or nil when the callee isn't that
     /// method. `static Module.Color.__derived_enum_equals` → `Module.Color`.
@@ -1656,6 +1697,11 @@ public struct Disassembler: Sendable {
         argumentEnumTypes: [Int: String] = [:],
         boolArguments: Set<Int> = []
     ) -> DisassembledFunction {
+        // Floating-point signature info: which arguments are float, and whether
+        // the function's float type is double-precision — so a literal operand
+        // in a float-valued expression renders as a decimal, not IEEE bits.
+        let floatInfo = Self.swiftFloatArgumentInfo(of: function)
+
         /// A source-level field path for this method convention.
         func fieldPath(_ name: String) -> String {
             objcFieldSyntax ? "self->\(name)" : "self.\(name)"
@@ -2067,6 +2113,24 @@ public struct Disassembler: Sendable {
             }
         }
 
+        /// Whether an expression is float-valued because it reaches a float
+        /// parameter — the signal that a bare `.immediate` beside it is an IEEE
+        /// bit pattern, not an integer. Only float ARGUMENTS anchor it: a bare
+        /// immediate is exactly the ambiguous case being resolved, so it is never
+        /// a base case, and an integer body (no float info) never matches.
+        func isFloatValued(_ value: AbstractValue) -> Bool {
+            switch value {
+            case .argument(let index):
+                return floatInfo?.indices.contains(index) ?? false
+            case .binary(_, let lhs, let rhs):
+                return isFloatValued(lhs) || isFloatValued(rhs)
+            case .unary(_, let operand):
+                return isFloatValued(operand)
+            default:
+                return false
+            }
+        }
+
         func renderValue(_ value: AbstractValue, depth: Int) -> String {
             if depth < 8, let boolean = renderBoolean(value, negated: false, depth: depth) {
                 return boolean
@@ -2120,11 +2184,23 @@ public struct Disassembler: Sendable {
                 return "(\(c) ? \(t) : \(f))"
             case .binary(let op, let lhs, let rhs):
                 guard depth < 8 else { return "?" }
+                // In a float-valued binary, a bare immediate operand is an IEEE
+                // bit pattern — render it as its decimal per the function's
+                // precision, not as a 16-digit integer.
+                let floatOp = floatInfo != nil && (isFloatValued(lhs) || isFloatValued(rhs))
+                func operand(_ value: AbstractValue) -> String {
+                    if floatOp, case .immediate(let bits) = value,
+                       let decimal = Self.renderTypedConstant(
+                           bits: bits, type: floatInfo!.isDouble ? "Swift.Double" : "Swift.Float") {
+                        return decimal
+                    }
+                    return renderValue(value, depth: depth + 1)
+                }
                 // `0 - x` is unary negation — the shape the compiler emits for a
                 // `-x` with no dedicated negate. (`x - 0` never occurs; the tracer
                 // folds the identity.)
                 if op == .subtract, case .immediate(0) = lhs {
-                    return "-\(renderValue(rhs, depth: depth + 1))"
+                    return "-\(operand(rhs))"
                 }
                 // Normalize `const op var` to `var mirror(op) const` so a
                 // comparison reads like source; only when the right side isn't
@@ -2132,9 +2208,9 @@ public struct Disassembler: Sendable {
                 if case .immediate = lhs, case .immediate = rhs {
                     // both constant — no reordering
                 } else if case .immediate = lhs, let mirror = mirroredComparison(op) {
-                    return "(\(renderValue(rhs, depth: depth + 1)) \(mirror.symbol) \(renderValue(lhs, depth: depth + 1)))"
+                    return "(\(operand(rhs)) \(mirror.symbol) \(operand(lhs)))"
                 }
-                return "(\(renderValue(lhs, depth: depth + 1)) \(op.symbol) \(renderValue(rhs, depth: depth + 1)))"
+                return "(\(operand(lhs)) \(op.symbol) \(operand(rhs)))"
             case .unary(let op, let operand):
                 guard depth < 8 else { return "?" }
                 let inner = renderValue(operand, depth: depth + 1)

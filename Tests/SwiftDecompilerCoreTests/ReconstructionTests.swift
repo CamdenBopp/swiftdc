@@ -51,6 +51,12 @@ private func reconstructionPseudo(
     // Mixed: an integer parameter in x0, a floating-point one in v0.
     guard let scaled = try await reconstructionPseudo("scaleInt") else { return }
     #expect(scaled.contains("return (arg0 * arg1)"))
+
+    // A floating-point constant in an expression renders as its decimal, not
+    // the raw IEEE-754 bit pattern, because the expression reaches a Double arg.
+    guard let poly = try await reconstructionPseudo("polynomial") else { return }
+    #expect(poly.contains("return ((arg0 * arg0) + 3.14)"))
+    #expect(!poly.contains("0x"))
 }
 
 // MARK: - HFA struct decomposition
