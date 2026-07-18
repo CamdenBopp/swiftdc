@@ -1440,6 +1440,27 @@ public struct Disassembler: Sendable {
         return "0x" + String(v, radix: 16)
     }
 
+    /// A constant rendered per its declared type: a `Bool` as `true`/`false`, a
+    /// floating-point value as its decimal. A float immediate holds the IEEE-754
+    /// bit pattern, which as raw hex (`0x400921f9f01b866e`) reads like a garbage
+    /// address; interpreting the bits per the type recovers `3.14159`. Nil when
+    /// the type isn't one whose constants need a typed reading — the caller then
+    /// falls back to the plain integer rendering.
+    static func renderTypedConstant(bits: UInt64, type: String) -> String? {
+        switch type {
+        case "Swift.Bool":
+            if bits == 0 { return "false" }
+            if bits == 1 { return "true" }
+            return nil
+        case "Swift.Double", "Swift.Float64", "Swift.CGFloat", "CoreGraphics.CGFloat":
+            return String(Double(bitPattern: bits))
+        case "Swift.Float", "Swift.Float32":
+            return String(Float(bitPattern: UInt32(truncatingIfNeeded: bits)))
+        default:
+            return nil
+        }
+    }
+
     /// For a nonmutating instance method of a small HFA-float struct, the SIMD
     /// register → `self` field-offset map to seed (plus the resolved self type
     /// and its field map, so the fields name). `self` arrives decomposed across
@@ -2182,7 +2203,7 @@ public struct Disassembler: Sendable {
 
         // The demangled result type, when it names a no-payload enum whose cases
         // this image publishes — so an immediate tag renders as `Type.case`.
-        let returnEnumType: String? = Self.swiftReturnTypeName(of: function)
+        let returnTypeName: String? = Self.swiftReturnTypeName(of: function)
 
         func renderReturnValue(_ rawValue: AbstractValue, before address: UInt64) -> String {
             let value = sanitizeValue(rawValue)
@@ -2190,10 +2211,17 @@ public struct Disassembler: Sendable {
             // case tag: name it (`return Color.green`) instead of printing the
             // raw discriminant. Declines — leaving the integer — for payload
             // enums, unknown/ambiguous enums, and out-of-range tags.
-            if case .immediate(let tag) = value, let returnEnumType,
+            if case .immediate(let tag) = value, let returnTypeName,
                tag <= UInt64(Int.max),
-               let caseName = enumCaseIndex.caseName(ofEnum: returnEnumType, tag: Int(tag)) {
-                return "\(returnEnumType).\(caseName)"
+               let caseName = enumCaseIndex.caseName(ofEnum: returnTypeName, tag: Int(tag)) {
+                return "\(returnTypeName).\(caseName)"
+            }
+            // A constant returned from a Bool- or floating-point-typed function
+            // reads per its type: `true`/`false`, or the float decimal instead of
+            // the raw IEEE-754 bit pattern.
+            if case .immediate(let bits) = value, let returnTypeName,
+               let typed = Self.renderTypedConstant(bits: bits, type: returnTypeName) {
+                return typed
             }
             // If this exact expression was just stored to a known ivar, return
             // the ivar's new value. This turns load/add/store/mov/ret into the

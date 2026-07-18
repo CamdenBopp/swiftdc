@@ -192,3 +192,11 @@ public func polarity(_ n: Int) -> Int {
 // Adversarial: a genuine large unsigned mask is NOT within the small-negative
 // window, so it must stay hex — never relabelled as a negative.
 public func highMask() -> UInt64 { 0xFF00_0000_0000_0000 }
+
+// A Bool literal result reads as `true`/`false`, not the raw `1`/`0` the
+// register holds — the return type drives the reading.
+public func alwaysTrue() -> Bool { true }
+
+// A floating-point constant reads as its decimal, not the raw IEEE-754 bit
+// pattern the immediate stores (loaded from the literal pool; not fmov-encodable).
+public func piValue() -> Double { 3.14159 }

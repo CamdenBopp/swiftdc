@@ -323,3 +323,15 @@ private func reconstructionPseudo(
     #expect(mask.contains("0xff00000000000000")) // not relabelled negative
     #expect(!mask.contains("return -"))
 }
+
+/// A constant returned from a Bool- or floating-point-typed function reads per
+/// its declared type: `true`/`false`, and a float decimal rather than the raw
+/// IEEE-754 bit pattern the immediate stores.
+@Test func rendersTypedReturnConstantsIfPresent() async throws {
+    guard let flag = try await reconstructionPseudo("alwaysTrue") else { return }
+    #expect(flag.contains("return true"))
+
+    guard let pi = try await reconstructionPseudo("piValue") else { return }
+    #expect(pi.contains("return 3.14159"))
+    #expect(!pi.contains("0x")) // not the raw bit pattern
+}
