@@ -25,17 +25,27 @@ integer counters, so the swiftdc self-host named **0** loops (0 false positives)
 foundational `.local`/recurrence infrastructure the follow-ups build on.
 
 **Follow-ups:**
-1. **(NEXT)** Render the body update `i += c` — requires propagating `.local`
-   from the header into the loop body blocks (step 1 only names
-   `inState[header]`) and rendering the induction store as a statement. This
-   fills the empty body: `while (i < n) { }` → `while (i < n) { i += 1 }`.
-2. **DONE (commit `4fa5b6b`)** — while-condition rotation. `ControlFlowStructure.
-   whileCondition` hoists+inverts a header that is purely a single exit test into
-   `while (i < n) { … }`; declines multi-exit / mid-body-exit / do-while / a
-   working header / irreducible (stays `while (true)`). Self-host: 50 loops
-   rotated, 387 kept `while (true)`, 0 crashes, structural braces balanced.
-3. Loop-carried accumulators (`total += i`) and multi/coupled induction vars.
+1. **DONE (commit `a47a313`)** — body update `i += c`. `resolveLoopInductions`
+   now identifies the *compared* slot (the `.local` in the re-transferred header
+   flags) and names only it (killing the -Onone phantom copies), records the
+   proven step as `FunctionAnalysis.loopUpdates`, the enrichment bakes a
+   `loop-update:` note (ignored by `pseudoStatement`, so `--pseudo` is
+   unaffected), and the structurer appends `i += c` at the body end — gated on
+   `bakedCondition != nil` so the increment's `i` always matches a named
+   condition (else a raw-register condition would leave `i` undefined; caught on
+   self-host). `sumTo`/`countTo` → `while (i < arg0) { i += 1 }`.
+2. **DONE (commit `4fa5b6b`)** — while-condition rotation.
+3. **(NEXT)** Loop-carried accumulators (`total += i`) and multi/coupled
+   induction vars — a *coupled* recurrence (`total_new = total_old + i`, where
+   `i` is itself an induction var), harder than the linear `i ± c` case. Would
+   complete `sumTo` to `while (i < n) { total += i; i += 1 }`.
 4. `do { } while` (exit test at the back-edge, not the header).
+
+**Honest state:** simple C-style counting loops now reconstruct as
+`while (i < n) { …; i += 1 }`. Idiomatic Swift favors iterator/higher-order
+loops, so swiftdc's own code shows 0 of these (0 false positives throughout) —
+the win is on C-style loops. The `.local`/recurrence/`loop-update` infrastructure
+is the foundation for the accumulator + coupled-IV work.
 
 ## The goal (recap)
 
