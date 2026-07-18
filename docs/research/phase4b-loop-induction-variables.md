@@ -5,6 +5,33 @@
 > the value tracer's loop handling (repo `13836ad`). Companion to
 > `decompiler-comparison.md` §8.
 
+## STATUS — step 1 DONE (commit `2be20dd`)
+
+Implemented as designed below: `AbstractValue.local(Int)` + a hard-gated
+post-fixpoint pass (`resolveLoopInductions`) that seeds a header slot with a
+proven constant initial value, re-transfers the loop body, and accepts only a
+proven `i ± c` linear recurrence. A counting loop's exit comparison now
+reconstructs `if (i >= arg0)` instead of `if (x9 >= x10)`. `meet` untouched;
+only `inState[header]` is modified (naming localized to the exit comparison).
+
+Verified declines (no fabrication): non-linear (`i *= 2`), collection/iterator
+for-in, `-O` vectorized. 98 tests; output-stable on existing `--pseudo`
+fixtures; self-host `--structured` EXIT 0 (540k lines, 0 crashes, **0 false
+positives**) and `--pseudo` EXIT 0.
+
+**Honest impact note:** idiomatic Swift favors iterator/higher-order loops over
+integer counters, so the swiftdc self-host named **0** loops (0 false positives)
+— the win shows on C-style counting loops, not this corpus. This is the
+foundational `.local`/recurrence infrastructure the follow-ups build on.
+
+**Follow-ups (deferred, not yet done):**
+1. Render the body update `i += c` — requires propagating `.local` from the
+   header into the loop body blocks (this step only names `inState[header]`).
+2. Restructure `while (true) { if (i >= n) return/break }` → `while (i < n)` in
+   the Structurer (recognize a header exit-test as the loop condition).
+3. Loop-carried accumulators (`total += i`) and multi/coupled induction vars.
+4. `do { } while` (exit test at the back-edge, not the header).
+
 ## The goal (recap)
 
 A loop today renders with an empty/opaque body:
