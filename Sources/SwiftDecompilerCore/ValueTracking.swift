@@ -102,6 +102,10 @@ public indirect enum AbstractValue: Equatable, Sendable {
     /// registers (an HFA). Renders as `arg<n>.field`; seeded for a nonmutating
     /// method whose parameter is a small floating-point aggregate.
     case argumentField(argument: Int, offset: Int)
+    /// The array `_allocateUninitializedArray` returns at this call address, with
+    /// its element count. The caller then stores the elements into it; those are
+    /// gathered (by store offset) so the literal renders as `[e0, e1, …]`.
+    case arrayLiteral(site: UInt64, count: Int)
     /// A pure symbolic expression whose inputs are themselves proven values.
     /// Expression construction is bounded by `ValueTracer.expression` so loops
     /// and long instruction chains cannot create unbounded trees.
@@ -228,6 +232,10 @@ public struct FunctionAnalysis: Sendable {
     public var exitFloatValues: [UInt64: AbstractValue] = [:]
     /// Instruction address → the access it makes into `self`.
     public var selfFieldAccesses: [UInt64: SelfFieldAccess] = [:]
+    /// Array-literal construction site → the values stored into it, by byte
+    /// offset. Reconstructs `[e0, e1, …]` from the `_allocateUninitializedArray` +
+    /// element-store + `_finalizeUninitializedArray` lowering.
+    public var arrayElements: [UInt64: [Int: AbstractValue]] = [:]
 }
 
 /// An abstract interpreter over a function's basic blocks. Propagates constants,
@@ -389,6 +397,7 @@ public struct ValueTracer: Sendable {
                     insn, into: &registers,
                     record: { result.callSites[$0] = $1 },
                     recordAccess: { result.selfFieldAccesses[$0] = $1 },
+                    recordArrayElement: { result.arrayElements[$0, default: [:]][$1] = $2 },
                     initializerEntry: entry?.isObjectiveCInitializer == true
                 )
             }
@@ -433,6 +442,7 @@ public struct ValueTracer: Sendable {
         into registers: inout State,
         record: ((UInt64, CallSite) -> Void)?,
         recordAccess: ((UInt64, SelfFieldAccess) -> Void)?,
+        recordArrayElement: ((UInt64, Int, AbstractValue) -> Void)? = nil,
         initializerEntry: Bool = false
     ) {
         if insn.controlFlow == .call {
@@ -457,6 +467,12 @@ public struct ValueTracer: Sendable {
             let callee = DisassembledFunction.calleeName(of: insn) ?? ""
             if Self.identityRuntimeCalls.contains(where: callee.hasPrefix) {
                 registers["x0"] = incomingX0
+            } else if callee.contains("_allocateUninitializedArray") {
+                // Returns the array in x0 (and its element buffer in x1); the
+                // caller fills it next, so tag it with this site and its count —
+                // the first argument — so those element stores can be gathered.
+                let count: Int = { if case .immediate(let n) = incomingX0 { return Int(n) } else { return -1 } }()
+                registers["x0"] = .arrayLiteral(site: insn.address, count: count)
             } else if initializerEntry, callee.hasPrefix("objc_msgSendSuper") {
                 // `self = [super init…]`: after the assignment, the returned
                 // object is the initializer's current self even if the runtime
@@ -474,7 +490,7 @@ public struct ValueTracer: Sendable {
             return
         }
         let hadSelf = registers[Self.selfFreshKey]
-        apply(insn, into: &registers, recordAccess: recordAccess)
+        apply(insn, into: &registers, recordAccess: recordAccess, recordArrayElement: recordArrayElement)
         if Self.writesSwiftSelf(insn) {
             registers[Self.selfFreshKey] = .immediate(1)
         } else {
@@ -584,7 +600,8 @@ public struct ValueTracer: Sendable {
     private func apply(
         _ insn: Instruction,
         into registers: inout State,
-        recordAccess: ((UInt64, SelfFieldAccess) -> Void)? = nil
+        recordAccess: ((UInt64, SelfFieldAccess) -> Void)? = nil,
+        recordArrayElement: ((UInt64, Int, AbstractValue) -> Void)? = nil
     ) {
         guard let detail = insn.detail else {
             // Capstone couldn't decode what objdump printed — data in __text, or
@@ -758,7 +775,7 @@ public struct ValueTracer: Sendable {
                 // read; a narrower load isn't a method pointer.
                 let isPointerLoad = detail.id == ARM64_INS_LDR || detail.id == ARM64_INS_LDUR
                 write(dest, isPointerLoad ? .selfVTableMethod(offset: offset) : .unknown, into: &registers)
-            case .none: write(dest, .unknown, into: &registers)
+            case .arrayElement, .none: write(dest, .unknown, into: &registers)
             }
 
         // A store writes memory, not a register — but it populates a stack slot,
@@ -774,6 +791,9 @@ public struct ValueTracer: Sendable {
                         let bytes = Self.accessBytes(detail) ?? 8
                         Self.storeStack(value, at: offset, bytes: bytes, outgoing: true, into: &registers)
                     }
+                }
+                if case .arrayElement(let site, let offset)? = target {
+                    recordArrayElement?(site, offset, value)
                 }
                 // A full-width store establishes a useful equality: its source
                 // register now also holds the current ivar value. Canonicalizing
@@ -809,6 +829,12 @@ public struct ValueTracer: Sendable {
                         write(register, .selfFieldValue(offset: offset + index * bytes), into: &registers)
                     }
                 }
+            } else if case .arrayElement(let site, let offset)? = target,
+                      let bytes = detail.operands.first?.operand.register.map({ $0.widthBits / 8 }) {
+                // A wide element (e.g. a 16-byte String) stored as a register pair.
+                for (index, operand) in detail.operands.prefix(2).enumerated() {
+                    recordArrayElement?(site, offset + index * bytes, source(operand, in: registers))
+                }
             }
             // Stores two registers; writes none. Writeback still applies —
             // `stp x29, x30, [sp, #-0x70]!` is the standard prologue, and missing
@@ -834,7 +860,7 @@ public struct ValueTracer: Sendable {
                     } ?? .unknown
                 case .selfField(let offset):
                     .selfFieldValue(offset: offset + index * registerBytes)
-                case .absolute, .vtableMethod, .none:
+                case .absolute, .vtableMethod, .arrayElement, .none:
                     .unknown
                 }
                 write(register, value, into: &registers)
@@ -1169,6 +1195,9 @@ public struct ValueTracer: Sendable {
         /// A byte offset into `self`'s class metadata vtable — a load through the
         /// metadata pointer that lives at `self + 0`.
         case vtableMethod(Int)
+        /// A store of an element into the array-literal built at `site`, at the
+        /// given byte offset within the array object.
+        case arrayElement(site: UInt64, offset: Int)
     }
 
     /// Where a memory operand points, when its base is a known frame offset or a
@@ -1189,6 +1218,8 @@ public struct ValueTracer: Sendable {
         // A load through the metadata pointer at `self + 0` (a class instance's
         // isa) reaches the vtable — the second `ldr` of a virtual dispatch.
         case .selfFieldValue(0): return .vtableMethod(Int(effective))
+        // A store into a freshly-allocated array literal, keyed by its site.
+        case .arrayLiteral(let site, _): return .arrayElement(site: site, offset: Int(effective))
         default: return nil
         }
     }

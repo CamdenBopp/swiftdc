@@ -1665,6 +1665,24 @@ public struct Disassembler: Sendable {
             return DisassembledFunction.objcRuntimeIdiom(callee: callee, arguments: Array(rendered))
         }
 
+        /// Reconstruct an array literal from the values stored into its allocation.
+        /// Only a homogeneous literal — exactly `count` element stores, no boxed
+        /// `[Any]` type-metadata interleaved — is rendered `[e0, …]`; anything else
+        /// (a boxed existential array, an unrecovered element) stays `[…]`, so the
+        /// contents are never fabricated.
+        func renderArrayLiteral(site: UInt64, count: Int, depth: Int) -> String {
+            let stored = analysis.arrayElements[site] ?? [:]
+            guard count > 0, stored.count == count, depth < 5 else { return "[…]" }
+            var elements: [String] = []
+            for (_, value) in stored.sorted(by: { $0.key < $1.key }) {
+                let rendered = renderValue(sanitizeValue(value), depth: depth + 1)
+                guard rendered != "?", !DisassembledFunction.isGenericPlumbingArgument(rendered)
+                else { return "[…]" }
+                elements.append(rendered)
+            }
+            return "[\(elements.joined(separator: ", "))]"
+        }
+
         func renderValue(_ value: AbstractValue, depth: Int) -> String {
             switch value {
             case .unknown:
@@ -1705,6 +1723,8 @@ public struct Disassembler: Sendable {
                 return resolveVTableMethod(offset).map { "\($0)" } ?? "?"
             case .argumentField(let argument, let offset):
                 return argumentFieldName(argument: argument, offset: offset)
+            case .arrayLiteral(let site, let count):
+                return renderArrayLiteral(site: site, count: count, depth: depth)
             case .binary(let op, let lhs, let rhs):
                 guard depth < 8 else { return "?" }
                 return "(\(renderValue(lhs, depth: depth + 1)) \(op.symbol) \(renderValue(rhs, depth: depth + 1)))"
@@ -1732,7 +1752,12 @@ public struct Disassembler: Sendable {
                 if DisassembledFunction.isRuntimeNoise(callee) {
                     return inner.first.map { renderValue($0, depth: depth + 1) } ?? unresolved
                 }
-                // A Swift array-literal / varargs construction collapses to `[…]`.
+                // `_finalizeUninitializedArray(array)` IS the array — render its
+                // argument, which carries the recovered elements.
+                if callee.contains("_finalizeUninitializedArray"), let first = inner.first {
+                    return renderValue(first, depth: depth + 1)
+                }
+                // Any other array-literal runtime call collapses to `[…]`.
                 if let literal = DisassembledFunction.arrayLiteralPlaceholder(callee: callee) {
                     return literal
                 }
@@ -1909,6 +1934,10 @@ public struct Disassembler: Sendable {
             switch value {
             case .callResult(let address):
                 consumed.insert(address)
+            case .arrayLiteral(let site, _):
+                // The `_allocateUninitializedArray` at `site` is folded into the
+                // literal, so drop its standalone `[…]` statement.
+                consumed.insert(site)
             case .binary(_, let lhs, let rhs):
                 collectCallResults(in: lhs, into: &consumed)
                 collectCallResults(in: rhs, into: &consumed)
