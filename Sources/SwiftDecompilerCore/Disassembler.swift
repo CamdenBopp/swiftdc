@@ -1897,6 +1897,19 @@ public struct Disassembler: Sendable {
                 sourceNotes.append(helper)
             }
 
+            // A vtable dispatch to one of `self`'s own setters is the assignment
+            // it performs — `self.prop = value` — where the new value is the
+            // call's first argument. Getters aren't baked here: their result is
+            // consumed inline (rendered as `self.prop` where it's used), so a
+            // statement note would duplicate them.
+            if let callee, let access = selfAccessors[callee], !access.isGetter,
+               let value = sites[insn.address]?.arguments.first {
+                let rendered = renderValue(sanitizeValue(value), depth: 0)
+                if rendered != "?" {
+                    sourceNotes.append("self.\(access.property) = \(rendered)")
+                }
+            }
+
             if function.objcMethod?.isInitializer == true,
                insn.controlFlow == .call,
                let callee, callee.hasPrefix("objc_msgSendSuper"),
