@@ -285,3 +285,31 @@ private func reconstructionPseudo(
         #expect(!north.contains("!= 0)"))
     }
 }
+
+// MARK: - Switch over a tag (N-way value merge → nested ternary)
+
+/// A switch over a no-payload enum reconstructs as a nested ternary with every
+/// case named and the fall-through as the final else. Asserted at `-Onone`,
+/// where the cascade is intact; at `-O` the optimizer collapses this particular
+/// switch to arithmetic (`(tag & 0xff) + 1`), which the arithmetic path already
+/// recovers — a different but equally faithful form.
+@Test func reconstructsEnumSwitchIfPresent() async throws {
+    guard let rank = try await reconstructionPseudo("rank") else { return }
+    #expect(rank.contains("return ((arg0 == Reconstruction.Direction.north) ? 1 "
+        + ": ((arg0 == Reconstruction.Direction.east) ? 2 "
+        + ": ((arg0 == Reconstruction.Direction.south) ? 3 : 4)))"))
+}
+
+/// A switch over an `Int` uses the `n != k` fall-through lowering rather than
+/// the enum's `tag == k` taken edge; the resolver's reaching-condition
+/// unification recovers the same nested ternary (raw constants, explicit
+/// default). Structural checks, since the `subs`-derived arms render the
+/// constant on the left (`1 == arg0`).
+@Test func reconstructsIntegerSwitchIfPresent() async throws {
+    guard let grade = try await reconstructionPseudo("gradeOf") else { return }
+    #expect(grade.contains(" ? 10 : "))   // case 0
+    #expect(grade.contains(" ? 20 : "))   // case 1
+    #expect(grade.contains(" ? 30 : "))   // case 2
+    #expect(grade.contains(": 99)"))      // default, innermost else
+    #expect(grade.contains("arg0"))
+}

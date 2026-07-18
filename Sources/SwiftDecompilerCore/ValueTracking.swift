@@ -375,6 +375,12 @@ public struct ValueTracer: Sendable {
             blocks: blocks, predecessors: predecessors,
             blockByStart: blockByStart, inState: &inState, outState: outState
         )
+        // The N-way generalization: a switch over a tag, whose merge has more
+        // than the two predecessors a diamond does.
+        resolveSwitchSelects(
+            blocks: blocks, predecessors: predecessors,
+            blockByStart: blockByStart, inState: &inState, outState: outState
+        )
 
         // Snapshot pass: replay from each block's fixed entry state, recording
         // call arguments and self-field accesses.
@@ -642,6 +648,147 @@ public struct ValueTracer: Sendable {
                       Self.expressionDepth(whenTrue) < 6, Self.expressionDepth(whenFalse) < 6
                 else { continue }
                 enriched[key] = .select(condition: condition, whenTrue: whenTrue, whenFalse: whenFalse)
+            }
+            inState[block.startAddress] = enriched
+        }
+    }
+
+    /// Value merging for a **switch over a tag** — the N-way generalization of a
+    /// diamond. A `switch e { case .a: v0; case .b: v1; … }` lowers to a cascade
+    /// of `tag == k` tests, each branching to a block that stores its case value
+    /// and jumps to a common merge; the merge's value is the nested select
+    /// `tag == k0 ? v0 : (tag == k1 ? v1 : … : default)`.
+    ///
+    /// Gated to the provably-correct shape: every case arm is reached by the
+    /// TAKEN edge of a distinct decider whose condition is `X == const` for one
+    /// common `X` and pairwise-distinct constants, plus exactly one fall-through
+    /// (default) arm. Distinct-constant equality guarantees the cases are
+    /// mutually exclusive, so the nested select is order-independent and faithful
+    /// regardless of block layout. Anything else — a mixed-operator cascade
+    /// (`x < 0` then `x == 0`), a shared decider, no clean default — declines,
+    /// leaving the value unmerged rather than guessing an ordering.
+    private func resolveSwitchSelects(
+        blocks: [BasicBlock],
+        predecessors: [UInt64: [UInt64]],
+        blockByStart: [UInt64: BasicBlock],
+        inState: inout [UInt64: State],
+        outState: [UInt64: State]
+    ) {
+        /// The nearest ancestor of `arm` whose terminator is a conditional branch,
+        /// reached by single-predecessor hops, plus whether `arm`'s chain leaves
+        /// that decider on its taken (branch-target) or fall-through edge.
+        func immediateDecider(of arm: UInt64) -> (decider: UInt64, viaTaken: Bool)? {
+            var current = arm, hops = 0
+            while let preds = predecessors[current], preds.count == 1, hops < 32 {
+                let pred = preds[0]
+                guard let predBlock = blockByStart[pred],
+                      let terminator = predBlock.instructions.last else { return nil }
+                if terminator.controlFlow == .conditionalBranch {
+                    return (pred, terminator.branchTarget == current)
+                }
+                current = pred
+                hops += 1
+            }
+            return nil
+        }
+
+        /// The `(comparedValue, constant)` of an `X == const` condition, immediate
+        /// on either side; nil for any other shape.
+        func equalityTest(_ condition: AbstractValue) -> (value: AbstractValue, constant: UInt64)? {
+            guard case .binary(.equal, let lhs, let rhs) = condition else { return nil }
+            if case .immediate(let k) = rhs { return (lhs, k) }
+            if case .immediate(let k) = lhs { return (rhs, k) }
+            return nil
+        }
+
+        /// The condition under which an arm is actually reached: the decider's
+        /// taken condition directly for a taken arm, negated for a fall-through
+        /// arm. This unifies the two switch lowerings — `case k` reached by
+        /// `tag == k` taken (enums) or by `tag != k` fall-through (integers) —
+        /// into one `tag == k` reaching condition.
+        func reachingCondition(_ taken: AbstractValue, viaTaken: Bool) -> AbstractValue {
+            if viaTaken { return taken }
+            guard case .binary(let op, let lhs, let rhs) = taken else { return taken }
+            let inverse: AbstractBinaryOperator?
+            switch op {
+            case .equal: inverse = .notEqual
+            case .notEqual: inverse = .equal
+            case .less: inverse = .greaterEqual
+            case .lessEqual: inverse = .greater
+            case .greater: inverse = .lessEqual
+            case .greaterEqual: inverse = .less
+            default: inverse = nil
+            }
+            return inverse.map { .binary($0, lhs, rhs) } ?? taken
+        }
+
+        for block in blocks {
+            guard let preds = predecessors[block.startAddress], preds.count >= 3,
+                  preds.count <= 16
+            else { continue }
+
+            // Classify each predecessor arm as a taken case (with its `X == k`
+            // condition and value source) or the single fall-through default.
+            struct CaseArm { let condition: AbstractValue; let comparedValue: AbstractValue; let constant: UInt64; let out: State }
+            var caseArms: [CaseArm] = []
+            var defaultArm: State?
+            var deciders = Set<UInt64>()
+            var comparedValue: AbstractValue?
+            var constants = Set<UInt64>()
+            var wellFormed = true
+
+            for pred in preds {
+                guard let decided = immediateDecider(of: pred),
+                      let deciderBlock = blockByStart[decided.decider],
+                      let terminator = deciderBlock.instructions.last,
+                      let deciderOut = outState[decided.decider],
+                      let out = outState[pred]
+                else { wellFormed = false; break }
+
+                // An arm is a `case k` when its reaching condition is `X == k`;
+                // the one arm that isn't is the `default`. This subsumes both the
+                // taken-edge (`tag == k`) and fall-through (`tag != k`) lowerings.
+                let reach = (branchTakenCondition(terminator, in: deciderOut))
+                    .map { reachingCondition($0, viaTaken: decided.viaTaken) }
+                if let reach, let test = equalityTest(reach) {
+                    // Distinct decider per case, one shared `X`, a fresh constant.
+                    guard deciders.insert(decided.decider).inserted,
+                          constants.insert(test.constant).inserted
+                    else { wellFormed = false; break }
+                    if let existing = comparedValue, existing != test.value { wellFormed = false; break }
+                    comparedValue = test.value
+                    caseArms.append(CaseArm(condition: reach, comparedValue: test.value,
+                                            constant: test.constant, out: out))
+                } else {
+                    guard defaultArm == nil else { wellFormed = false; break } // one default only
+                    defaultArm = out
+                }
+            }
+
+            guard wellFormed, let defaultOut = defaultArm, caseArms.count >= 2,
+                  caseArms.count == preds.count - 1
+            else { continue }
+
+            // Smallest constant outermost, matching source case order.
+            let ordered = caseArms.sorted { $0.constant < $1.constant }
+            var enriched = inState[block.startAddress] ?? [:]
+            let allKeys = ordered.reduce(into: Set(defaultOut.keys)) { $0.formUnion($1.out.keys) }
+            for key in allKeys {
+                let values = ordered.map { $0.out[key] ?? .unknown } + [defaultOut[key] ?? .unknown]
+                // Only a key that actually diverges across the arms is a merge.
+                guard values.contains(where: { $0 != values[0] }) else { continue }
+                guard let defaultValue = defaultOut[key], defaultValue != .unknown,
+                      Self.expressionDepth(defaultValue) < 6
+                else { continue }
+                var merged = defaultValue
+                var ok = true
+                for arm in ordered.reversed() {
+                    guard let value = arm.out[key], value != .unknown,
+                          Self.expressionDepth(value) < 6
+                    else { ok = false; break }
+                    merged = .select(condition: arm.condition, whenTrue: value, whenFalse: merged)
+                }
+                if ok { enriched[key] = merged }
             }
             inState[block.startAddress] = enriched
         }

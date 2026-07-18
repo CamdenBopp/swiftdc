@@ -154,3 +154,27 @@ public func northScore(_ d: Direction) -> Int {
     if d == .north { return 100 }
     return 0
 }
+
+// MARK: - Switch over a tag → nested ternary (N-way value merge)
+
+// A switch over a no-payload enum: the tag-comparison cascade reconstructs as a
+// nested ternary with every case named and the fall-through as the final else.
+public func rank(_ d: Direction) -> Int {
+    switch d {
+    case .north: return 1
+    case .east: return 2
+    case .south: return 3
+    case .west: return 4
+    }
+}
+
+// A switch over an Int (a different lowering: `n != k` fall-through arms) with
+// an explicit default — same nested-ternary reconstruction, raw constants.
+public func gradeOf(_ n: Int) -> Int {
+    switch n {
+    case 0: return 10
+    case 1: return 20
+    case 2: return 30
+    default: return 99
+    }
+}
