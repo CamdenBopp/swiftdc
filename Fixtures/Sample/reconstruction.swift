@@ -200,3 +200,7 @@ public func alwaysTrue() -> Bool { true }
 // A floating-point constant reads as its decimal, not the raw IEEE-754 bit
 // pattern the immediate stores (loaded from the literal pool; not fmov-encodable).
 public func piValue() -> Double { 3.14159 }
+
+// A Bool parameter is recognized as a boolean, so `!b` (lowered `(b ^ 1) & 1`)
+// folds to `!arg0` rather than a masked xor.
+public func negateFlag(_ b: Bool) -> Bool { !b }

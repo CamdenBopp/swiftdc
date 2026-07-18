@@ -412,7 +412,8 @@ public struct Disassembler: Sendable {
                 selfTypeName: selfTypeName, vtableIndex: vtableIndex,
                 argumentFieldMaps: valueSelf?.argumentFieldMaps ?? [:],
                 enumCaseIndex: enumCaseIndex,
-                argumentEnumTypes: Self.swiftEnumArgumentTypes(of: function, enumCaseIndex: enumCaseIndex)
+                argumentEnumTypes: Self.swiftEnumArgumentTypes(of: function, enumCaseIndex: enumCaseIndex),
+                boolArguments: Self.swiftBoolArgumentIndices(of: function)
             )
         }
 
@@ -1409,6 +1410,30 @@ public struct Disassembler: Sendable {
         return types
     }
 
+    /// The source-parameter indices that are `Swift.Bool`, keyed like
+    /// `.argument(index)`. A Bool argument is a 0/1 value, so recognizing it
+    /// lets `!b` (lowered `(arg ^ 1) & 1`) fold to `!arg` and `b == true`/`b`
+    /// used in a condition read cleanly rather than as a masked integer test.
+    static func swiftBoolArgumentIndices(of function: DisassembledFunction) -> Set<Int> {
+        guard function.objcMethod == nil, let name = function.demangledName,
+              Self.isSwiftMangled(function.symbol),
+              let arrow = name.range(of: " -> ", options: .backwards)
+        else { return [] }
+        let signature = name[..<arrow.lowerBound]
+        guard let paramsRange = DisassembledFunction.outermostArgumentListRange(of: String(signature))
+        else { return [] }
+        let parameters = DisassembledFunction.splitTopLevelArguments(signature[paramsRange])
+        var indices: Set<Int> = []
+        for (index, parameter) in parameters.enumerated() {
+            var type = parameter
+            if let colon = type.range(of: ": ", options: .backwards) {
+                type = String(type[colon.upperBound...])
+            }
+            if type.trimmingCharacters(in: .whitespaces) == "Swift.Bool" { indices.insert(index) }
+        }
+        return indices
+    }
+
     /// The enum type owning a `…__derived_enum_equals` callee (the compiler's
     /// synthesized enum `Equatable.==`), or nil when the callee isn't that
     /// method. `static Module.Color.__derived_enum_equals` → `Module.Color`.
@@ -1628,7 +1653,8 @@ public struct Disassembler: Sendable {
         vtableIndex: VTableIndex = VTableIndex(),
         argumentFieldMaps: [Int: FieldMap] = [:],
         enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
-        argumentEnumTypes: [Int: String] = [:]
+        argumentEnumTypes: [Int: String] = [:],
+        boolArguments: Set<Int> = []
     ) -> DisassembledFunction {
         /// A source-level field path for this method convention.
         func fieldPath(_ name: String) -> String {
@@ -1903,6 +1929,10 @@ public struct Disassembler: Sendable {
         /// improve, so ordinary comparisons render through the normal path.
         func renderBoolean(_ value: AbstractValue, negated: Bool, depth: Int) -> String? {
             switch value {
+            case .argument(let index) where boolArguments.contains(index):
+                // A Bool parameter is a boolean value (0/1); `!b` and truthiness
+                // tests fold against it, and its raw form is just `arg`.
+                return negated ? "!arg\(index)" : "arg\(index)"
             case .binary(.bitAnd, let lhs, .immediate(1)):
                 // Redundant boolean-normalization mask; unwrap.
                 return renderBoolean(lhs, negated: negated, depth: depth)

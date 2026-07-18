@@ -102,9 +102,11 @@ private func reconstructionPseudo(
     guard let maxOf = try await reconstructionPseudo("maxOf") else { return }
     #expect(maxOf.contains(" ? ") && maxOf.contains("arg0") && maxOf.contains("arg1"))
 
-    // A Bool condition arrives as a bit-0 test, rendered honestly.
+    // The `Bool` parameter `c` arrives as a bit-0 test `(c & 1) == 0`; Bool-arg
+    // recognition folds it to `!c`, so the ternary reads like the source
+    // `c ? a + 1 : a - 1` (the compiler tested the false arm first).
     guard let pick = try await reconstructionPseudo("pickInc") else { return }
-    #expect(pick.contains("return (((arg0 & 1) == 0) ? (arg1 - 1) : (arg1 + 1))"))
+    #expect(pick.contains("return (!arg0 ? (arg1 - 1) : (arg1 + 1))"))
 }
 
 /// The optimized build lowers the ternary to a branchless `csel`; it must
@@ -334,4 +336,12 @@ private func reconstructionPseudo(
     guard let pi = try await reconstructionPseudo("piValue") else { return }
     #expect(pi.contains("return 3.14159"))
     #expect(!pi.contains("0x")) // not the raw bit pattern
+}
+
+/// A `Bool` parameter is recognized as a boolean, so `!b` folds to `!arg0`
+/// instead of the lowered `(arg0 ^ 1) & 1`.
+@Test func foldsBoolArgumentNegationIfPresent() async throws {
+    guard let neg = try await reconstructionPseudo("negateFlag") else { return }
+    #expect(neg.contains("return !arg0"))
+    #expect(!neg.contains("^ 1")) // no leftover masked xor
 }
