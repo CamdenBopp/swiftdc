@@ -87,6 +87,27 @@ private func reconstructionPseudo(_ filter: String) async throws -> String? {
     #expect(string.contains("as? Swift.String"))
 }
 
+// MARK: - Robustness edge cases
+
+@Test func handlesArithmeticEdgeCasesIfPresent() async throws {
+    // A constant return.
+    guard let constant = try await reconstructionPseudo("constant") else { return }
+    #expect(constant.contains("return 42"))
+
+    // A deeply nested expression (exercises the bounded expression tree).
+    guard let deep = try await reconstructionPseudo("deepNest") else { return }
+    #expect(deep.contains("return (((arg0 + arg1) * (arg2 - arg3)) + ((arg0 - arg2) * (arg1 + arg3)))"))
+
+    // All eight integer argument registers.
+    guard let eight = try await reconstructionPseudo("eightArgs") else { return }
+    #expect(eight.contains("arg7"))
+
+    // Interleaved integer (x0/x1) and floating-point (v0/v1) parameters —
+    // the two Doubles are arg1 and arg3.
+    guard let mixed = try await reconstructionPseudo("interleaved") else { return }
+    #expect(mixed.contains("return (arg1 + arg3)"))
+}
+
 // MARK: - Homogeneous array literals
 
 @Test func recoversArrayLiteralsIfPresent() async throws {

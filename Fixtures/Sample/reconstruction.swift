@@ -71,3 +71,20 @@ public struct RGB {
     var b: Double
     public var luminance: Double { r + g + b }
 }
+
+// MARK: - Robustness edge cases (deep nesting, many args, mixed, constants)
+
+public func constant() -> Int { 42 }
+
+public func deepNest(_ a: Int, _ b: Int, _ c: Int, _ d: Int) -> Int {
+    ((a + b) * (c - d)) + ((a - c) * (b + d))
+}
+
+// All eight integer argument registers x0…x7.
+public func eightArgs(_ a: Int, _ b: Int, _ c: Int, _ d: Int,
+                      _ e: Int, _ f: Int, _ g: Int, _ h: Int) -> Int {
+    a + b + c + d + e + f + g + h
+}
+
+// Interleaved integer (x0, x1) and floating-point (v0, v1) parameters.
+public func interleaved(_ i: Int, _ d: Double, _ j: Int, _ e: Double) -> Double { d + e }
