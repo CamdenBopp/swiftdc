@@ -432,6 +432,10 @@ public extension DisassembledFunction {
             "default argument ",
         ]
         if prefixes.contains(where: callee.hasPrefix) { return true }
+        // The outlined `Any`/existential box ARC helpers (`__swift_project_/
+        // destroy_/allocate_boxed_opaque_existential…`) are bookkeeping around a
+        // boxed value, with no source-level statement of their own.
+        if callee.contains("boxed_opaque_existential") { return true }
         return genericPlumbingRuntimeNames.contains(where: callee.hasPrefix)
     }
 
