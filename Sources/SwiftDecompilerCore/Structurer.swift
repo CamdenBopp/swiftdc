@@ -233,6 +233,14 @@ struct ControlFlowStructure {
     private func condition(of block: BasicBlock) -> (text: String, consumed: Set<UInt64>) {
         var consumed: Set<UInt64> = []
         guard let terminator = block.instructions.last else { return ("?", consumed) }
+        // Prefer the value tracer's reconstructed comparison when the enrichment
+        // baked one (`cond:` note) — it names the operands (`arg0 >= arg1`) where
+        // the text back-substitution below can only reach raw registers. Only
+        // clean scalar comparisons are baked; message-send/boolean tests are left
+        // to the text path, which inlines them more readably.
+        if let baked = Self.bakedCondition(terminator.annotation) {
+            return (baked, consumed)
+        }
         let (mnemonic, operands) = Self.decode(terminator.text)
         let last = block.instructions.count - 1
         // A value reads as a boolean when it is a message send (a `[…]` idiom),
@@ -483,6 +491,37 @@ struct ControlFlowStructure {
         case "b.vc": return "no-overflow"
         default: return "?"
         }
+    }
+
+    /// The comparison the enrichment baked for this branch (`cond: (a >= b)`),
+    /// with its outer parentheses removed so it matches the text path's spacing
+    /// (which `inverted` and the `if (…)` wrapper both assume). Nil when absent.
+    private static func bakedCondition(_ annotation: String?) -> String? {
+        guard let annotation else { return nil }
+        for note in annotation.components(separatedBy: "  ") {
+            let trimmed = note.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("cond: ") else { continue }
+            return unwrapOuterParentheses(String(trimmed.dropFirst("cond: ".count)))
+        }
+        return nil
+    }
+
+    /// Strip a single balanced outer parenthesis pair, but only when the leading
+    /// `(` matches the trailing `)` — so `(a >= b)` unwraps while `(a) + (b)` does
+    /// not.
+    private static func unwrapOuterParentheses(_ text: String) -> String {
+        guard text.hasPrefix("("), text.hasSuffix(")") else { return text }
+        var depth = 0
+        for (offset, character) in text.enumerated() {
+            if character == "(" { depth += 1 }
+            else if character == ")" {
+                depth -= 1
+                if depth == 0 {
+                    return offset == text.count - 1 ? String(text.dropFirst().dropLast()) : text
+                }
+            }
+        }
+        return text
     }
 
     private static func inverted(_ condition: String) -> String {

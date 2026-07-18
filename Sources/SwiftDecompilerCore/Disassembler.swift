@@ -1237,6 +1237,23 @@ public struct Disassembler: Sendable {
         return String(owner)
     }
 
+    /// An `x == 0` / `x != 0` comparison — the truthiness/boolean-test form the
+    /// structurer's text path already renders well (a BOOL ivar as `if (self->_f)`,
+    /// a `cbz` as `if (!x)`). Baking the value tracer's raw comparison over it
+    /// would lose that simplification, so those conditions stay with the text path
+    /// and only genuine comparisons (`a >= b`, `x < 0`, `x == 5`) are baked.
+    static func isTruthinessTest(_ value: AbstractValue) -> Bool {
+        guard case .binary(let op, let lhs, let rhs) = value, op == .equal || op == .notEqual
+        else { return false }
+        // Equality against 0 or 1 is how a Bool is tested (`_enabled == 1`,
+        // `x != 0`); ordering against them (`n > 0`) is a real comparison and is
+        // still baked.
+        func isBooleanConstant(_ operand: AbstractValue) -> Bool {
+            operand == .immediate(0) || operand == .immediate(1)
+        }
+        return isBooleanConstant(lhs) || isBooleanConstant(rhs)
+    }
+
     /// The value register a Swift function returns in.
     enum SwiftReturnRegister { case integer, floating }
 
@@ -1797,6 +1814,23 @@ public struct Disassembler: Sendable {
                     if exit != .unknown {
                         sourceNotes.append("return \(renderReturnValue(exit, before: insn.address))")
                     }
+                }
+            }
+
+            // A flags-based conditional branch whose comparison the value tracer
+            // reconstructed with real operands — baked as a `cond:` note the
+            // structurer prefers over its raw-register text back-substitution.
+            // Only clean comparisons are baked: a call-result operand is left to
+            // the structurer's text path, which inlines the send (`[x isKind…]`)
+            // more readably than `([x isKind…] != 0)`.
+            if insn.controlFlow == .conditionalBranch,
+               let raw = analysis.branchConditions[insn.address] {
+                let condition = sanitizeValue(raw)
+                var callResults = Set<UInt64>()
+                collectCallResults(in: condition, into: &callResults)
+                if condition != .unknown, callResults.isEmpty,
+                   !Self.isTruthinessTest(condition) {
+                    sourceNotes.append("cond: \(renderValue(condition, depth: 0))")
                 }
             }
 

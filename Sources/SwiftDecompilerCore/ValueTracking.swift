@@ -195,6 +195,12 @@ public struct FunctionAnalysis: Sendable {
     /// Unconditional branches with a register snapshot. Once symbolization
     /// proves that the target is outside the function, these become tail calls.
     public var branchSites: [UInt64: CallSite] = [:]
+    /// The branch-taken comparison at a flags-based conditional branch (`b.eq`,
+    /// `b.lt`, …), reconstructed from the tracked NZCV flags and the branch's
+    /// condition code. Lets the structurer render a source-named condition
+    /// (`arg0 >= arg1`) in place of raw registers. Compare-and-branch forms
+    /// (`cbz`/`tbz`) carry no condition code and are absent here.
+    public var branchConditions: [UInt64: AbstractValue] = [:]
     /// x0 immediately before a return or unconditional branch. The enrichment
     /// pass uses Objective-C return types and resolved tail helpers to decide
     /// which of these are honest source-level returns.
@@ -351,6 +357,15 @@ public struct ValueTracer: Sendable {
                 if insn.controlFlow == .branch {
                     let site = Self.snapshot(registers)
                     if !site.isEmpty { result.branchSites[insn.address] = site }
+                }
+                // A flags-based conditional branch: reconstruct its branch-taken
+                // comparison from the tracked NZCV flags and the condition code.
+                if insn.controlFlow == .conditionalBranch,
+                   let cc = insn.detail?.conditionCode,
+                   let op = Self.comparisonOperator(cc),
+                   let flags = registers[Self.flagsKey] {
+                    let condition = comparisonValue(flags: flags, op)
+                    if condition != .unknown { result.branchConditions[insn.address] = condition }
                 }
                 transfer(
                     insn, into: &registers,
