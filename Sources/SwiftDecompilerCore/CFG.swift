@@ -70,8 +70,17 @@ public extension DisassembledFunction {
         case .conditionalBranch:
             return [last.branchTarget, next].compactMap { $0 }
         case .call, .sequential, .none:
+            // A trap (`brk`/`udf`) never returns or falls through; Capstone
+            // classifies it as sequential, so drop the spurious fall-through edge
+            // that would otherwise make the trap sink look like ordinary code.
+            if isTrapInstruction(last) { return [] }
             return next.map { [$0] } ?? []
         }
+    }
+
+    private static func isTrapInstruction(_ insn: Instruction) -> Bool {
+        let mnemonic = insn.text.prefix { $0 != " " && $0 != "\t" }
+        return mnemonic == "brk" || mnemonic == "udf" || mnemonic == "trap"
     }
 
     /// Render the function as a control-flow graph: basic blocks with `loc_<addr>`

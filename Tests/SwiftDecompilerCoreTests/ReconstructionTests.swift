@@ -24,6 +24,19 @@ private func reconstructionPseudo(
     return functions.map { $0.renderPseudo() }.joined(separator: "\n")
 }
 
+/// The recovered *structured* view (if/else/while) for every function matching
+/// `filter`, or nil when the fixture hasn't been built.
+private func reconstructionStructured(
+    _ filter: String, in fixture: String = reconstructionFixture
+) async throws -> String? {
+    guard FileManager.default.fileExists(atPath: fixture) else { return nil }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default)
+            .disassemble(path: fixture, functionFilter: filter)
+    }
+    return functions.map { $0.renderStructured() }.joined(separator: "\n")
+}
+
 // MARK: - Comparisons (NZCV + cset)
 
 @Test func recoversComparisonReturnsIfPresent() async throws {
@@ -440,4 +453,35 @@ private func reconstructionPseudo(
     // `&&` operand too, so it reads `(arg0 > 1)` not `(1 < arg0)`.
     guard let above = try await reconstructionPseudo("aboveOneBelowTen") else { return }
     #expect(above.contains("return ((arg0 > 1) && (arg0 < 10))"))
+}
+
+// MARK: - Checked-arithmetic overflow-trap folding (structured view)
+
+@Test func foldsOverflowTrapsInStructuredViewIfPresent() async throws {
+    // A checked `+=` loop: the `while` structure survives, but the two per-`+`
+    // overflow guards (`adds; cset vs; tbnz trap`) are folded away — no trap noise.
+    if let accumulate = try await reconstructionStructured("accumulate") {
+        #expect(accumulate.contains("while"))
+        #expect(!accumulate.contains("trap()"))
+        // Balanced braces — folding never produces structurally broken output.
+        #expect(accumulate.filter { $0 == "{" }.count == accumulate.filter { $0 == "}" }.count)
+    }
+    // Straight-line checked add: overflow guard folds, leaving no trap in the body.
+    if let checked = try await reconstructionStructured("checkedSum") {
+        #expect(!checked.contains("trap()"))
+    }
+}
+
+@Test func keepsGenuineTrapsUnfoldedIfPresent() async throws {
+    // Adversarial: a `precondition` is not an overflow check — at -O it lowers to
+    // a raw `brk` reached by a signed compare (`b.lt`), which the fold must NOT
+    // eat. The trap stays visible.
+    let optFixture = "Fixtures/Sample/libReconstruction.opt.dylib"
+    if let precond = try await reconstructionStructured("requirePositive", in: optFixture) {
+        #expect(precond.contains("trap()"))
+    }
+    // At -Onone the same precondition is a `_assertionFailure` call — also kept.
+    if let precond = try await reconstructionStructured("requirePositive") {
+        #expect(precond.contains("trap()") || precond.contains("assertionFailure"))
+    }
 }

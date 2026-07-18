@@ -250,3 +250,27 @@ public func withinRange(_ x: Int) -> Bool { x >= 0 && x < 10 }
 // applies inside the `&&`'s boolean-rendered operand too, so both read with the
 // constant on the right.
 public func aboveOneBelowTen(_ x: Int) -> Bool { x > 1 && x < 10 }
+
+// MARK: - Checked-arithmetic overflow-trap folding (structured view)
+
+// Swift's checked `+`/`+=` emit an overflow branch to a trap; it is an implicit
+// language safety check, not program logic, so the STRUCTURED view folds it away
+// rather than spraying `if (overflow) trap()` through every arithmetic body.
+// (Asserted via `renderStructured`, not `renderPseudo` — the pseudo path already
+// follows the non-trap edge.) A loop keeps the fold from clobbering real control
+// flow: the `while` structure survives, only the overflow guards vanish.
+public func accumulate(_ n: Int) -> Int {
+    var total = 0
+    var i = 0
+    while i < n { total = total + i; i = i + 1 }
+    return total
+}
+
+// Straight-line checked add: the overflow guard folds; the body carries no trap.
+public func checkedSum(_ a: Int, _ b: Int) -> Int { a + b }
+
+// Adversarial: a genuine `precondition` trap is NOT an arithmetic-overflow check
+// (it branches on a signed compare, not the V flag / an `adds` carry), so it must
+// SURVIVE the fold. At -O it lowers to a raw `brk` reached by `b.lt`; at -Onone
+// it is a `_assertionFailure` call. Either way the trap must remain visible.
+public func requirePositive(_ x: Int) -> Int { precondition(x > 0); return x }

@@ -642,8 +642,11 @@ private func assembledFunction(
     #expect(structured.contains("return"))
     // Conditions are reconstructed (back-substituted), not bare temp registers.
     #expect(structured.contains("& 0xff"))
-    // Trivial tails are duplicated: both inner branches are non-empty.
-    #expect(structured.contains("trap()"))
+    // The checked-arithmetic overflow trap on summing the two recursive results
+    // is an implicit language safety check, not program logic, so it is folded
+    // away — leaving a clean recursive body (the else branch is still non-empty).
+    #expect(!structured.contains("trap()"))
+    #expect(structured.contains("Tree.sum()"))
     // Never emits structurally broken output.
     #expect(structured.filter { $0 == "{" }.count == structured.filter { $0 == "}" }.count)
 }
