@@ -39,6 +39,33 @@ private func reconstructionPseudo(
     #expect(atLeast.contains("return (arg0 >= arg1)"))
 }
 
+// MARK: - U1: signed/unsigned comparison distinction (type lattice)
+
+/// A signed range check `x >= 0 && x < N` optimizes to a single UNSIGNED
+/// comparison; the type lattice recovers the range idiom rather than a bare
+/// signed `(x < N)` (which would be true for negative x, unlike the machine —
+/// proven equivalent to the unsigned machine compare by differential test). At
+/// `-Onone` the two source comparisons appear directly; at `-O` the unsigned
+/// lowering recovers `(0 <= x) && (x < N)`.
+@Test func recoversSignedRangeCheckIfPresent() async throws {
+    guard let onone = try await reconstructionPseudo("rangeCheck") else { return }
+    #expect(onone.contains("(arg0 >= 0)") && onone.contains("(arg0 < 100)"))
+
+    guard let opt = try await reconstructionPseudo(
+        "rangeCheck", in: "Fixtures/Sample/libReconstruction.opt.dylib") else { return }
+    #expect(opt.contains("return ((0 <= arg0) && (arg0 < 100))"))
+    #expect(!opt.contains("return (arg0 < 100)")) // the U1 defect must not reappear
+}
+
+/// Adversarial: a genuine signed comparison stays signed — the fix is scoped to
+/// unsigned condition codes and must not disturb ordinary signed `<`.
+@Test func keepsSignedComparisonSignedIfPresent() async throws {
+    for fixture in [reconstructionFixture, "Fixtures/Sample/libReconstruction.opt.dylib"] {
+        guard let s = try await reconstructionPseudo("signedLess", in: fixture) else { continue }
+        #expect(s.contains("return (arg0 < 100)"))
+    }
+}
+
 // MARK: - Argument seeding (integer + floating-point)
 
 @Test func recoversScalarArgumentsIfPresent() async throws {

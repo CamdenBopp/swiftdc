@@ -13,6 +13,13 @@ public func isPositive(_ x: Int) -> Bool { x > 0 }
 public func isEqual(_ a: Int, _ b: Int) -> Bool { a == b }
 public func atLeast(_ a: Int, _ b: Int) -> Bool { a >= b }
 
+// U1 (type lattice): a signed range check `x >= 0 && x < N` optimizes to a
+// single UNSIGNED comparison `UInt(x) <ᵤ N`. It must recover the range idiom,
+// never a bare signed `(x < N)` — which would be true for negative x, unlike
+// the machine. A genuine signed comparison must stay signed.
+public func rangeCheck(_ x: Int) -> Bool { x >= 0 && x < 100 }
+public func signedLess(_ x: Int) -> Bool { x < 100 }
+
 // MARK: - Integer + floating-point argument seeding
 
 public func addThree(_ a: Int, _ b: Int, _ c: Int) -> Int { a + b + c }

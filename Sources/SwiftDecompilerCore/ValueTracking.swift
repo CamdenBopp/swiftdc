@@ -16,14 +16,56 @@ public enum AbstractBinaryOperator: Equatable, Sendable {
     case shiftLeft
     case shiftRight
     case arithmeticShiftRight
-    // Comparisons, produced by a flag-setting compare + `cset`. Signed and
-    // unsigned condition codes are merged onto one symbol set for display.
+    // Comparisons, produced by a flag-setting compare + `cset`/`b.cond`.
+    // `equal`/`notEqual` are sign-agnostic. The signed vs unsigned distinction is
+    // preserved (not merged) because collapsing an unsigned machine comparison
+    // onto a signed operator misreads a range check — see U1 in
+    // docs/research/decompiler-comparison.md. The unsigned variants come from the
+    // ARM64 condition code (LO/HS/HI/LS); the signed ones from LT/GE/GT/LE.
     case equal
     case notEqual
     case less
     case lessEqual
     case greater
     case greaterEqual
+    case unsignedLess
+    case unsignedLessEqual
+    case unsignedGreater
+    case unsignedGreaterEqual
+
+    /// Whether this operator is any comparison (signed, unsigned, or equality).
+    public var isComparison: Bool {
+        switch self {
+        case .equal, .notEqual, .less, .lessEqual, .greater, .greaterEqual,
+             .unsignedLess, .unsignedLessEqual, .unsignedGreater, .unsignedGreaterEqual:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Whether this is an unsigned-only comparison (carries the machine's unsigned
+    /// semantics; renders specially so a signed reading is never fabricated).
+    public var isUnsignedComparison: Bool {
+        switch self {
+        case .unsignedLess, .unsignedLessEqual, .unsignedGreater, .unsignedGreaterEqual:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// The signed comparison with the same shape (`unsignedLess` → `less`), for
+    /// rendering when the operands' signedness makes the signed reading correct.
+    public var signedForm: AbstractBinaryOperator {
+        switch self {
+        case .unsignedLess: return .less
+        case .unsignedLessEqual: return .lessEqual
+        case .unsignedGreater: return .greater
+        case .unsignedGreaterEqual: return .greaterEqual
+        default: return self
+        }
+    }
 
     public var symbol: String {
         switch self {
@@ -43,6 +85,13 @@ public enum AbstractBinaryOperator: Equatable, Sendable {
         case .lessEqual: "<="
         case .greater: ">"
         case .greaterEqual: ">="
+        // Fallback symbols; the boolean-simplification path renders unsigned
+        // comparisons via the type-aware decision (range idiom / UInt cast) and
+        // rarely falls back here. These keep the operator honest if it does.
+        case .unsignedLess: "<"
+        case .unsignedLessEqual: "<="
+        case .unsignedGreater: ">"
+        case .unsignedGreaterEqual: ">="
         }
     }
 }
@@ -1367,6 +1416,13 @@ public struct ValueTracer: Sendable {
             case .lessEqual: Int64(bitPattern: left) <= Int64(bitPattern: right) ? 1 : 0
             case .greater: Int64(bitPattern: left) > Int64(bitPattern: right) ? 1 : 0
             case .greaterEqual: Int64(bitPattern: left) >= Int64(bitPattern: right) ? 1 : 0
+            // Unsigned comparisons fold over the raw bit patterns (which are
+            // already UInt64), so two constants collapse with the machine's own
+            // unsigned semantics.
+            case .unsignedLess: left < right ? 1 : 0
+            case .unsignedLessEqual: left <= right ? 1 : 0
+            case .unsignedGreater: left > right ? 1 : 0
+            case .unsignedGreaterEqual: left >= right ? 1 : 0
             }
             return folded.map(AbstractValue.immediate) ?? .unknown
         }
@@ -1377,7 +1433,8 @@ public struct ValueTracer: Sendable {
                 return lhs
             case .multiply, .bitAnd: return .immediate(0)
             case .divide, .remainder: return .unknown // by zero — don't simplify
-            case .equal, .notEqual, .less, .lessEqual, .greater, .greaterEqual:
+            case .equal, .notEqual, .less, .lessEqual, .greater, .greaterEqual,
+                 .unsignedLess, .unsignedLessEqual, .unsignedGreater, .unsignedGreaterEqual:
                 break // a comparison against 0 is meaningful; keep it symbolic
             }
         }
@@ -1447,10 +1504,17 @@ public struct ValueTracer: Sendable {
     private static func comparisonOperator(_ cc: arm64_cc) -> AbstractBinaryOperator? {
         if cc == ARM64_CC_EQ { return .equal }
         if cc == ARM64_CC_NE { return .notEqual }
-        if cc == ARM64_CC_GE || cc == ARM64_CC_HS || cc == ARM64_CC_PL { return .greaterEqual }
-        if cc == ARM64_CC_LT || cc == ARM64_CC_LO || cc == ARM64_CC_MI { return .less }
-        if cc == ARM64_CC_GT || cc == ARM64_CC_HI { return .greater }
-        if cc == ARM64_CC_LE || cc == ARM64_CC_LS { return .lessEqual }
+        // Signed ordered (LT/GE/GT/LE) and the sign-flag codes (MI/PL) map to the
+        // signed operators; the unsigned ordered codes (LO/HS/HI/LS) map to the
+        // unsigned operators — preserving, not merging, the machine's signedness.
+        if cc == ARM64_CC_GE || cc == ARM64_CC_PL { return .greaterEqual }
+        if cc == ARM64_CC_LT || cc == ARM64_CC_MI { return .less }
+        if cc == ARM64_CC_GT { return .greater }
+        if cc == ARM64_CC_LE { return .lessEqual }
+        if cc == ARM64_CC_HS { return .unsignedGreaterEqual }
+        if cc == ARM64_CC_LO { return .unsignedLess }
+        if cc == ARM64_CC_HI { return .unsignedGreater }
+        if cc == ARM64_CC_LS { return .unsignedLessEqual }
         return nil
     }
 

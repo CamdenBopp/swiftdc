@@ -1701,6 +1701,10 @@ public struct Disassembler: Sendable {
         // the function's float type is double-precision — so a literal operand
         // in a float-valued expression renders as a decimal, not IEEE bits.
         let floatInfo = Self.swiftFloatArgumentInfo(of: function)
+        // Per-argument recovered types (Phase-1 lattice), computed once from the
+        // signature. The typed source the boolean path consults to decide whether
+        // an unsigned machine comparison reads as a signed range check.
+        let argumentTypes = TypeInference.argumentTypes(of: function)
 
         /// A source-level field path for this method convention.
         func fieldPath(_ name: String) -> String {
@@ -1948,6 +1952,10 @@ public struct Disassembler: Sendable {
             case .lessEqual: return .greater
             case .greater: return .lessEqual
             case .greaterEqual: return .less
+            case .unsignedLess: return .unsignedGreaterEqual
+            case .unsignedLessEqual: return .unsignedGreater
+            case .unsignedGreater: return .unsignedLessEqual
+            case .unsignedGreaterEqual: return .unsignedLess
             default: return nil
             }
         }
@@ -1964,6 +1972,10 @@ public struct Disassembler: Sendable {
             case .lessEqual: return .greaterEqual
             case .greater: return .less
             case .greaterEqual: return .lessEqual
+            case .unsignedLess: return .unsignedGreater
+            case .unsignedLessEqual: return .unsignedGreaterEqual
+            case .unsignedGreater: return .unsignedLess
+            case .unsignedGreaterEqual: return .unsignedLessEqual
             default: return nil
             }
         }
@@ -2037,6 +2049,61 @@ public struct Disassembler: Sendable {
             return "(\(c) \(isOr ? "||" : "&&") \(o))"
         }
 
+        /// The exposed-unsigned operator notation for a comparison we cannot prove
+        /// a signed Swift meaning for — a distinct marker so the reader sees it is
+        /// an unsigned machine comparison, never a fabricated signed `<`.
+        func unsignedSymbol(_ op: AbstractBinaryOperator) -> String {
+            switch op {
+            case .unsignedLess: return "<\u{1D41}"          // <ᵁ
+            case .unsignedLessEqual: return "<=\u{1D41}"
+            case .unsignedGreater: return ">\u{1D41}"
+            case .unsignedGreaterEqual: return ">=\u{1D41}"
+            default: return op.symbol
+            }
+        }
+
+        /// Render an unsigned machine comparison (ARM64 cc LO/HS/HI/LS) per the
+        /// operand's recovered type — the U1 fix. Three outcomes, never a bare
+        /// signed comparison:
+        ///  · proven `UInt` operand → a plain `<` (correct for unsigned);
+        ///  · proven signed operand compared `<`/`<=` against a non-negative
+        ///    constant `N` → the proven range idiom `(0 <= x) && (x < N)`
+        ///    (`x <ᵤ N ⇔ 0<=x && x<N` for `N < 2^63`);
+        ///  · otherwise → the exposed unsigned operation `x <ᵁ y`.
+        func renderUnsignedComparison(
+            _ op: AbstractBinaryOperator, _ lhs: AbstractValue, _ rhs: AbstractValue,
+            negated: Bool, depth: Int
+        ) -> String {
+            let effectiveOp = negated ? invertedComparison(op)! : op
+            // Normalize to (variable side, constant?) with the variable on the left.
+            let varSide: AbstractValue, other: AbstractValue, viewOp: AbstractBinaryOperator
+            var constant: UInt64?
+            if case .immediate(let n) = rhs {
+                varSide = lhs; other = rhs; viewOp = effectiveOp; constant = n
+            } else if case .immediate(let n) = lhs, let mirror = mirroredComparison(effectiveOp) {
+                varSide = rhs; other = lhs; viewOp = mirror; constant = n
+            } else {
+                varSide = lhs; other = rhs; viewOp = effectiveOp
+            }
+            let varType = TypeInference.typeOf(varSide, arguments: argumentTypes)
+            let x = comparisonOperand(varSide, enumType: nil, depth: depth)
+
+            // Proven unsigned (UInt): the unsigned compare IS a plain Swift `<`.
+            if varType.isUnsignedInteger {
+                return "(\(x) \(viewOp.signedForm.symbol) "
+                    + "\(comparisonOperand(other, enumType: nil, depth: depth)))"
+            }
+            // Proven signed + non-negative constant + `<`/`<=`: the range idiom.
+            if varType.isSignedInteger, let n = constant, n <= UInt64(Int64.max),
+               viewOp == .unsignedLess || viewOp == .unsignedLessEqual {
+                let cmp = viewOp == .unsignedLess ? "<" : "<="
+                return "((0 <= \(x)) && (\(x) \(cmp) \(Self.renderImmediate(n))))"
+            }
+            // Signedness unknown / unprovable shape: expose the unsigned operation.
+            return "(\(x) \(unsignedSymbol(viewOp)) "
+                + "\(comparisonOperand(other, enumType: nil, depth: depth)))"
+        }
+
         /// Recognizes enum equality (`c == .case` / `!= .case`) and the boolean
         /// noise around it — the redundant `& 1` normalization mask and the
         /// `^ 1` logical-NOT the compiler emits for `!=`. Returns nil (declining
@@ -2061,6 +2128,11 @@ public struct Disassembler: Sendable {
                 // Only comparisons are boolean; `invertedComparison` returning
                 // non-nil is the gate (so `enumArg + 1` never names `1` a case).
                 guard invertedComparison(op) != nil else { return nil }
+                // An unsigned machine comparison never renders as a bare signed
+                // `<` — its Swift meaning depends on the operand's recovered type.
+                if op.isUnsignedComparison {
+                    return renderUnsignedComparison(op, lhs, rhs, negated: negated, depth: depth)
+                }
                 // Boolean falsity/truth test: `(bool == 0)` = !bool, `(bool != 0)`
                 // = bool, `(bool == 1)` = bool, `(bool != 1)` = !bool — but only
                 // when the other operand is itself a recognized boolean, so a
