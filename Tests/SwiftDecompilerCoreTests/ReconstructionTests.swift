@@ -115,6 +115,14 @@ private func reconstructionPseudo(_ filter: String) async throws -> String? {
     guard let div = try await reconstructionPseudo("intDivide") else { return }
     #expect(div.contains("return (arg0 / arg1)"))
 
+    // Remainder — folded from the sdiv/mul/sub the compiler emits.
+    guard let rem = try await reconstructionPseudo("remainder") else { return }
+    #expect(rem.contains("return (arg0 % arg1)"))
+
+    // Fused multiply-add (madd): `a + b * c`.
+    guard let fma = try await reconstructionPseudo("fusedMultiplyAdd") else { return }
+    #expect(fma.contains("return (arg0 + (arg1 * arg2))"))
+
     // A 3-field HFA struct decomposes self across d0, d1, d2.
     guard let luminance = try await reconstructionPseudo("luminance") else { return }
     #expect(luminance.contains("return ((self.r + self.g) + self.b)"))

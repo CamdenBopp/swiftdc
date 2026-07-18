@@ -61,6 +61,8 @@ public func doublesOf(_ a: Double, _ b: Double) -> [Double] { [a, b] }
 public func bitOps(_ a: Int, _ b: Int) -> Int { (a & b) | (a << 2) }
 public func floatMath(_ a: Float, _ b: Float) -> Float { a * b + a }
 public func intDivide(_ a: Int, _ b: Int) -> Int { a / b }
+public func remainder(_ a: Int, _ b: Int) -> Int { a % b }
+public func fusedMultiplyAdd(_ a: Int, _ b: Int, _ c: Int) -> Int { a + b * c }
 
 // A 3-field HFA struct: self decomposes across d0, d1, d2.
 public struct RGB {

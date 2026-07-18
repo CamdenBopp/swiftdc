@@ -9,6 +9,7 @@ public enum AbstractBinaryOperator: Equatable, Sendable {
     case subtract
     case multiply
     case divide
+    case remainder
     case bitAnd
     case bitOr
     case bitXor
@@ -30,6 +31,7 @@ public enum AbstractBinaryOperator: Equatable, Sendable {
         case .subtract: "-"
         case .multiply: "*"
         case .divide: "/"
+        case .remainder: "%"
         case .bitAnd: "&"
         case .bitOr: "|"
         case .bitXor: "^"
@@ -700,6 +702,21 @@ public struct ValueTracer: Sendable {
             write(dest, result, into: &registers)
             if detail.id == ARM64_INS_ANDS { registers[Self.flagsKey] = result }
 
+        case ARM64_INS_MADD, ARM64_INS_MSUB:
+            // Fused multiply-add/subtract: `madd d, n, m, a` = a + n*m,
+            // `msub d, n, m, a` = a - n*m — the common shape of `a + b*c` and of
+            // the `sdiv`/`msub` pair the compiler emits for `a % b`.
+            guard let dest = destinationRegister(detail), detail.operands.count >= 4 else {
+                clobber(detail, into: &registers); return
+            }
+            let product = expression(
+                .multiply, source(detail.operands[1], in: registers),
+                source(detail.operands[2], in: registers)
+            )
+            let addend = source(detail.operands[3], in: registers)
+            write(dest, expression(detail.id == ARM64_INS_MADD ? .add : .subtract, addend, product),
+                  into: &registers)
+
         case ARM64_INS_FADD, ARM64_INS_FSUB, ARM64_INS_FMUL, ARM64_INS_FDIV, ARM64_INS_FNMUL:
             guard let dest = destinationRegister(detail), detail.operands.count >= 3 else {
                 clobber(detail, into: &registers); return
@@ -1033,6 +1050,7 @@ public struct ValueTracer: Sendable {
             case .subtract: left &- right
             case .multiply: left &* right
             case .divide: right != 0 ? left / right : nil
+            case .remainder: right != 0 ? left % right : nil
             case .bitAnd: left & right
             case .bitOr: left | right
             case .bitXor: left ^ right
@@ -1057,10 +1075,18 @@ public struct ValueTracer: Sendable {
                  .arithmeticShiftRight:
                 return lhs
             case .multiply, .bitAnd: return .immediate(0)
-            case .divide: return .unknown // division by zero — don't simplify
+            case .divide, .remainder: return .unknown // by zero — don't simplify
             case .equal, .notEqual, .less, .lessEqual, .greater, .greaterEqual:
                 break // a comparison against 0 is meaningful; keep it symbolic
             }
+        }
+        // `a - (a / b) * b` is `a % b`, the shape the compiler lowers a remainder
+        // to (sdiv, then mul + sub or msub). Fold it back to the modulo.
+        if op == .subtract,
+           case .binary(.multiply, let quotient, let divisor) = rhs,
+           case .binary(.divide, let numerator, let denominator) = quotient,
+           numerator == lhs, denominator == divisor {
+            return .binary(.remainder, lhs, divisor)
         }
         guard Self.expressionDepth(lhs) < 8, Self.expressionDepth(rhs) < 8 else { return .unknown }
         return .binary(op, lhs, rhs)
