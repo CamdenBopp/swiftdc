@@ -677,7 +677,8 @@ public struct ValueTracer: Sendable {
             }
 
         case ARM64_INS_AND, ARM64_INS_ANDS, ARM64_INS_ORR, ARM64_INS_EOR,
-             ARM64_INS_MUL, ARM64_INS_LSL, ARM64_INS_LSR, ARM64_INS_ASR:
+             ARM64_INS_MUL, ARM64_INS_LSL, ARM64_INS_LSR, ARM64_INS_ASR,
+             ARM64_INS_SDIV, ARM64_INS_UDIV:
             guard let dest = destinationRegister(detail), detail.operands.count >= 3 else {
                 clobber(detail, into: &registers); return
             }
@@ -686,6 +687,7 @@ public struct ValueTracer: Sendable {
             case ARM64_INS_ORR: .bitOr
             case ARM64_INS_EOR: .bitXor
             case ARM64_INS_MUL: .multiply
+            case ARM64_INS_SDIV, ARM64_INS_UDIV: .divide
             case ARM64_INS_LSL: .shiftLeft
             case ARM64_INS_LSR: .shiftRight
             case ARM64_INS_ASR: .arithmeticShiftRight

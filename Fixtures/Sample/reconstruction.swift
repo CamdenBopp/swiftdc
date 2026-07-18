@@ -54,3 +54,18 @@ public func castToString(_ x: Any) -> String? { x as? String }
 
 public func triple() -> [Int] { [10, 20, 30] }
 public func pairOf(_ a: Int, _ b: Int) -> [Int] { [a, b] }
+public func doublesOf(_ a: Double, _ b: Double) -> [Double] { [a, b] }
+
+// MARK: - Wider constructs (edge cases)
+
+public func bitOps(_ a: Int, _ b: Int) -> Int { (a & b) | (a << 2) }
+public func floatMath(_ a: Float, _ b: Float) -> Float { a * b + a }
+public func intDivide(_ a: Int, _ b: Int) -> Int { a / b }
+
+// A 3-field HFA struct: self decomposes across d0, d1, d2.
+public struct RGB {
+    var r: Double
+    var g: Double
+    var b: Double
+    public var luminance: Double { r + g + b }
+}

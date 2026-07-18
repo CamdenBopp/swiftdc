@@ -95,4 +95,27 @@ private func reconstructionPseudo(_ filter: String) async throws -> String? {
 
     guard let pair = try await reconstructionPseudo("pairOf") else { return }
     #expect(pair.contains("return [arg0, arg1]"))
+
+    // A non-Int element type (Double stride) recovers too.
+    guard let doubles = try await reconstructionPseudo("doublesOf") else { return }
+    #expect(doubles.contains("return [arg0, arg1]"))
+}
+
+// MARK: - Wider arithmetic and layout edge cases
+
+@Test func recoversWiderArithmeticIfPresent() async throws {
+    guard let bits = try await reconstructionPseudo("bitOps") else { return }
+    #expect(bits.contains("return ((arg0 & arg1) | (arg0 << 2))"))
+
+    // Float parameters seed v-registers just as Double does.
+    guard let float = try await reconstructionPseudo("floatMath") else { return }
+    #expect(float.contains("return ((arg0 * arg1) + arg0)"))
+
+    // Integer division (sdiv), distinct from the FP divide path.
+    guard let div = try await reconstructionPseudo("intDivide") else { return }
+    #expect(div.contains("return (arg0 / arg1)"))
+
+    // A 3-field HFA struct decomposes self across d0, d1, d2.
+    guard let luminance = try await reconstructionPseudo("luminance") else { return }
+    #expect(luminance.contains("return ((self.r + self.g) + self.b)"))
 }
