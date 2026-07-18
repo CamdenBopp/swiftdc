@@ -204,3 +204,9 @@ public func piValue() -> Double { 3.14159 }
 // A Bool parameter is recognized as a boolean, so `!b` (lowered `(b ^ 1) & 1`)
 // folds to `!arg0` rather than a masked xor.
 public func negateFlag(_ b: Bool) -> Bool { !b }
+
+// Unary negation is emitted as `0 - x`; it folds back to `-x`. `absValue`
+// exercises it in a ternary (`x < 0 ? -x : x` → abs), while a genuine
+// subtraction from a constant (`100 - x`) is left alone.
+public func absValue(_ x: Int) -> Int { x < 0 ? -x : x }
+public func fromHundred(_ x: Int) -> Int { 100 - x }

@@ -345,3 +345,14 @@ private func reconstructionPseudo(
     #expect(neg.contains("return !arg0"))
     #expect(!neg.contains("^ 1")) // no leftover masked xor
 }
+
+/// Unary negation is emitted as `0 - x` and folds back to `-x`; a genuine
+/// subtraction from a constant keeps its `-`.
+@Test func foldsUnaryNegationIfPresent() async throws {
+    guard let abs = try await reconstructionPseudo("absValue") else { return }
+    #expect(abs.contains("return ((arg0 >= 0) ? arg0 : -arg0)"))
+    #expect(!abs.contains("(0 - arg0)")) // not the raw subtract-from-zero
+
+    guard let sub = try await reconstructionPseudo("fromHundred") else { return }
+    #expect(sub.contains("return (100 - arg0)")) // genuine subtraction untouched
+}

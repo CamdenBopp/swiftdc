@@ -2038,6 +2038,12 @@ public struct Disassembler: Sendable {
                 return "(\(c) ? \(t) : \(f))"
             case .binary(let op, let lhs, let rhs):
                 guard depth < 8 else { return "?" }
+                // `0 - x` is unary negation — the shape the compiler emits for a
+                // `-x` with no dedicated negate. (`x - 0` never occurs; the tracer
+                // folds the identity.)
+                if op == .subtract, case .immediate(0) = lhs {
+                    return "-\(renderValue(rhs, depth: depth + 1))"
+                }
                 // Normalize `const op var` to `var mirror(op) const` so a
                 // comparison reads like source; only when the right side isn't
                 // itself a constant (so `const op const` is left as-is).
