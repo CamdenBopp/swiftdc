@@ -41,12 +41,27 @@ back-substitution even produced a *wrong* always-false `if (0 != 0)`.
 `error != nil`/`== nil` 0 → **6,547**. EXIT 0, braces balanced, --pseudo
 unaffected (structurer-only).
 
+## Fixed #2: masked enum-tag `== 0/1` checks (commit `ea788b0`, SMALL)
+
+Probing the w8/x8 bucket found a real bug: `isTruthinessTest` excluded ANY
+`X == 0/1` from the `cond:` bake as a Bool test, but a no-payload enum's tag
+check is `(tag & 0xff) == N`, so cases 0/1 (`.red`/`.green`) were left raw while
+cases 2+ named. A masked byte `(X & 0xff)` is now excluded from the truthiness
+heuristic → baked and named (`arg0 == Direction.east`). **Impact: small** — raw
+w8 18,691 → 18,662; only a few hundred w8 conditions are masked enum tags the
+tracer already reconstructed. The probe clarified the real cause (below).
+
 ## Remaining, ranked for future work
 
-1. **w8/x8 value comparisons (~19k)** — the big one, but heterogeneous. Needs the
-   value tracer to reach more operands (loads through unresolved slots/fields,
-   call results, two-level loads). Best split by a finer trace of the specific
-   unknown sources.
+1. **w8/x8 value comparisons (~18.6k) — the big one, a value-coverage
+   prerequisite.** The probe showed the dominant form is an UNMASKED `w8 == N`
+   whose base the tracer never reconstructs (an unresolved load / computed value)
+   — NOT the truthiness bug. Naming these needs the value tracer to reach more
+   operands. KEY OPEN QUESTION for the next step: for a sample of unmasked
+   `w8 == N`, does `--pseudo` reconstruct w8's value (a *routing* gap — the
+   tracer knows it but it never reaches the condition/`cond:` bake, tractable) or
+   leave it `.unknown` (a *coverage* gap — loads through slots/fields, two-level
+   loads, call-result threading, a larger prerequisite)? Decide the fix by that.
 2. **`?` call arguments (22,213)** — same underlying cause (tracer coverage);
    likely overlaps with (1). A fix to a common load/slot cause lifts both.
 3. **do/catch value select still stale-reads x21** — the tracer renders
