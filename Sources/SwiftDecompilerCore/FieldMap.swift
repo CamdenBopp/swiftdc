@@ -251,21 +251,7 @@ public enum FieldMapBuilder {
     public static func build(in machO: MachOFile) throws -> [String: FieldMap] {
         let calculator = try StaticLayoutCalculator(machO: machO)
 
-        var maps: [String: FieldMap] = [:]
-        // Field maps are keyed by the descriptor's SIMPLE name, and `namedFieldMap`
-        // resolves a demangled self-type through a last-component fallback — so two
-        // distinct nominal types that share a simple name (`FatArch.Layout` vs
-        // `MachHeader.Layout`, a plain-struct `Options` vs a dependency's OptionSet
-        // `Options`) collide on one key. Whichever type is built last wins, and a
-        // getter for any of the others then names the WRONG type's fields
-        // (`Options.showCImportedTypes` → the OptionSet's `self.rawValue`). Track
-        // the layout each name resolved to; a name that resolves to two DIFFERENT
-        // layouts is ambiguous and is dropped below, so an ambiguous self-type
-        // declines rather than fabricating one claimant's fields under another's
-        // name. (A precise fix — qualified keys — is a scoped follow-up; see
-        // docs/research/field-map-name-collision.md.)
-        var layoutSignature: [String: String] = [:]
-        var ambiguous: Set<String> = []
+        var built: [(name: String, map: FieldMap)] = []
         for type in (try? machO.swift.types) ?? [] {
             guard let descriptor = Self.contextDescriptor(of: type),
                   let name = Self.name(of: type, in: machO)
@@ -274,14 +260,40 @@ public enum FieldMapBuilder {
             // the whole image with it.
             guard let layout = try? calculator.fieldLayout(of: descriptor), !layout.fields.isEmpty
             else { continue }
-            let signature = "\(layout.size):"
-                + layout.fields.map { "\($0.offset).\($0.fieldName)" }.joined(separator: ",")
-            if let previous = layoutSignature[name], previous != signature {
+            built.append((name, FieldMap(typeName: name, layout: layout)))
+        }
+        return resolvingSimpleNameCollisions(built)
+    }
+
+    /// Index the built maps by simple name, DROPPING any name that two distinct
+    /// nominal types claim with different layouts.
+    ///
+    /// Maps are keyed by the descriptor's SIMPLE name, and `namedFieldMap`
+    /// resolves a demangled self-type through a last-component fallback — so two
+    /// distinct types sharing a simple name (`FatArch.Layout` vs `MachHeader.Layout`,
+    /// a plain-struct `Options` vs a dependency's OptionSet `Options`) collide on one
+    /// key. Whichever is built last would otherwise win, and a getter for any of the
+    /// others then names the WRONG type's fields (`Options.showCImportedTypes` → the
+    /// OptionSet's `self.rawValue`). A name that resolves to two DIFFERENT layouts is
+    /// ambiguous and dropped, so an ambiguous self-type declines rather than
+    /// fabricating one claimant's fields under another's name. Isolated here so the
+    /// rule is testable without a binary. (A precise fix — qualified keys — is a
+    /// scoped follow-up; see docs/research/field-map-name-collision.md.)
+    static func resolvingSimpleNameCollisions(
+        _ built: [(name: String, map: FieldMap)]
+    ) -> [String: FieldMap] {
+        var maps: [String: FieldMap] = [:]
+        var signature: [String: String] = [:]
+        var ambiguous: Set<String> = []
+        for (name, map) in built {
+            let sig = "\(map.instanceSize):"
+                + map.fields.map { "\($0.offset).\($0.name)" }.joined(separator: ",")
+            if let previous = signature[name], previous != sig {
                 ambiguous.insert(name)
             } else {
-                layoutSignature[name] = signature
+                signature[name] = sig
             }
-            maps[name] = FieldMap(typeName: name, layout: layout)
+            maps[name] = map
         }
         for name in ambiguous { maps.removeValue(forKey: name) }
         return maps

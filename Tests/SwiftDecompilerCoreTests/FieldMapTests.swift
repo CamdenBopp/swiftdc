@@ -100,3 +100,46 @@ private func map(
     ])
     #expect(padded.lookup(offset: 4, bytes: 4) == .failure(.padding))
 }
+
+// MARK: - Simple-name collision guard
+
+/// Field maps are keyed by SIMPLE name, and the resolver falls back to a name's
+/// last component — so two distinct types sharing a simple name but with DIFFERENT
+/// layouts (a plain-struct `Options` vs an OptionSet `Options` whose offset 0 is
+/// `rawValue`) would hand one type's fields to the other. The ambiguous key is
+/// dropped so a colliding self-type declines rather than fabricating a wrong field.
+@Test func dropsCollidingSimpleNameWithDifferentLayouts() {
+    let a = map("Pair", size: 16, [("alpha", 0, 8, .computed), ("beta", 8, 8, .computed)])
+    let b = map("Pair", size: 24, [
+        ("gamma", 0, 8, .computed), ("delta", 8, 8, .computed), ("epsilon", 16, 8, .computed),
+    ])
+    let solo = map("Solo", size: 8, [("only", 0, 8, .computed)])
+    let maps = FieldMapBuilder.resolvingSimpleNameCollisions([("Pair", a), ("Pair", b), ("Solo", solo)])
+
+    #expect(maps["Pair"] == nil)   // ambiguous → dropped; neither claimant wins the key
+    #expect(maps["Solo"] != nil)   // uniquely named → kept
+    #expect(maps["Solo"]?.lookup(offset: 0, bytes: 8) == .success(.whole(name: "only", typeMangledName: "T")))
+}
+
+/// Two types that share a simple name AND an identical layout are not a
+/// fabrication risk — either resolves to the same fields — so the key is kept.
+@Test func keepsCollidingSimpleNameWithIdenticalLayout() {
+    let a = map("Twin", size: 8, [("x", 0, 8, .computed)])
+    let b = map("Twin", size: 8, [("x", 0, 8, .computed)])
+    let maps = FieldMapBuilder.resolvingSimpleNameCollisions([("Twin", a), ("Twin", b)])
+
+    #expect(maps["Twin"] != nil)
+    #expect(maps["Twin"]?.lookup(offset: 0, bytes: 8) == .success(.whole(name: "x", typeMangledName: "T")))
+}
+
+/// A three-way collision (the common `Layout`/`Iterator`/`Storage` case): the
+/// moment any two distinct layouts claim the name it is dropped, even if a third
+/// repeats one of them.
+@Test func dropsMultiwaySimpleNameCollision() {
+    let one = map("Layout", size: 8, [("a", 0, 8, .computed)])
+    let two = map("Layout", size: 16, [("b", 0, 8, .computed), ("c", 8, 8, .computed)])
+    let three = map("Layout", size: 8, [("a", 0, 8, .computed)])   // same as `one`
+    let maps = FieldMapBuilder.resolvingSimpleNameCollisions([("Layout", one), ("Layout", two), ("Layout", three)])
+
+    #expect(maps["Layout"] == nil)
+}
