@@ -541,6 +541,25 @@ private func reconstructionStructured(
     }
 }
 
+@Test func decomposesSmallIntegerStructSelfIfPresent() async throws {
+    // A small (<= 16 byte) integer struct passes `self` decomposed in x0/x1, so a
+    // getter names the fields (`self.a + self.b`) instead of a blank body.
+    if let sum = try await reconstructionPseudo("IntPair.sum") {
+        #expect(sum.contains("return (self.a + self.b)"))
+    }
+    // Adversarial: a sub-word field breaks the clean 2-word shape, so `self` is
+    // NOT decomposed — declines rather than mis-assigning registers.
+    if let mixed = try await reconstructionPseudo("MixedPair.justCount") {
+        #expect(mixed.contains("no non-runtime calls"))
+    }
+    // Adversarial: a method with parameters passes `self` AFTER the params in the
+    // shared GPR bank, an order we don't decompose — declines rather than
+    // mis-reconstruct a non-commutative body.
+    if let combine = try await reconstructionPseudo("IntPair.combine") {
+        #expect(combine.contains("no non-runtime calls"))
+    }
+}
+
 @Test func namesEnumTagCheckInBranchIfPresent() async throws {
     // A switch's enum-tag check in a structured `if` names the enum case
     // (`arg0 == Direction.east`) rather than a raw masked register. Case index 1

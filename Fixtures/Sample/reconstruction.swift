@@ -39,6 +39,26 @@ public func polynomial(_ x: Double) -> Double { x * x + 3.14 }
 // load; it is decoded from the `fmov` encoding and rendered as its decimal too.
 public func scaled(_ x: Double) -> Double { x * 2.5 }
 
+// MARK: - Small integer-struct self decomposition (self in x0/x1)
+
+// A small value struct (<= 16 bytes, `Int` fields) passes `self` decomposed into
+// general registers x0/x1, so a nonmutating method reads `self.a`/`self.b` rather
+// than rendering a blank "no non-runtime calls" body.
+public struct IntPair {
+    var a: Int
+    var b: Int
+    public var sum: Int { a + b }
+    public func combine(_ k: Int) -> Int { a * k + b }
+}
+
+// Adversarial: a struct with a sub-word field is not the clean 2-word GPR shape,
+// so `self` is NOT decomposed into registers (declines rather than mis-assigning).
+public struct MixedPair {
+    var flag: Bool
+    var count: Int
+    public var justCount: Int { count }
+}
+
 // MARK: - HFA struct decomposition (self + by-value struct params)
 
 public struct Vec2 {

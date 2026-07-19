@@ -1597,23 +1597,40 @@ public struct Disassembler: Sendable {
             parameters = []
         }
 
-        // The type must be a known HFA-float struct, and `self` must not be
-        // accessed through x20 (which would be the pointer form).
+        // The type must be a register-passed value struct — a float HFA (self in
+        // SIMD registers) or a small integer struct (self in x0[/x1]) — and `self`
+        // must not be accessed through x20 (which would be the pointer form).
         guard let selfMap = Self.namedFieldMap(selfTypeName, in: fieldMaps),
-              let selfOffsets = selfMap.homogeneousFloatFieldOffsets,
               !function.instructions.contains(where: { $0.text.contains("[x20") })
         else { return nil }
 
-        // `self`'s fields fill the first SIMD registers; parameters follow —
-        // integers in x0…, floats/HFAs in the remaining SIMD registers by their
-        // own counters. Any non-float-scalar, non-HFA parameter bails the whole
-        // decomposition so the register assignment can't drift.
+        // `self`'s fields fill the leading registers of the appropriate bank;
+        // parameters follow — integers in the remaining x…, floats/HFAs in the
+        // remaining SIMD registers by their own counters. Any non-float-scalar,
+        // non-HFA parameter bails the whole decomposition so the register
+        // assignment can't drift.
         var seeded: [String: AbstractValue] = [:]
-        for (index, offset) in selfOffsets.enumerated() {
-            seeded["v\(index)"] = .selfFieldValue(offset: offset)
-        }
-        var floatIndex = selfOffsets.count
+        var floatIndex = 0
         var integerIndex = 0
+        if let selfOffsets = selfMap.homogeneousFloatFieldOffsets {
+            for (index, offset) in selfOffsets.enumerated() {
+                seeded["v\(index)"] = .selfFieldValue(offset: offset)
+            }
+            floatIndex = selfOffsets.count
+        } else if let selfOffsets = selfMap.wordIntegerFieldOffsetsInRegisters, parameters.isEmpty {
+            // A small integer struct shares the general-register bank with its
+            // parameters, and (unlike a float HFA in its own SIMD bank) `self`
+            // there is passed AFTER the formal parameters — so seeding it as x0/x1
+            // is only safe when there are none. Restrict to getters; a method with
+            // parameters declines rather than mis-assign registers (which would
+            // mis-reconstruct a non-commutative body like `a * k + b`).
+            for offset in selfOffsets {
+                seeded["x\(offset / 8)"] = .selfFieldValue(offset: offset)
+            }
+            integerIndex = selfOffsets.count
+        } else {
+            return nil
+        }
         var argumentFieldMaps: [Int: FieldMap] = [:]
         for (parameter, index) in zip(parameters, parameters.indices) {
             switch Self.scalarParameterClass(parameter) {

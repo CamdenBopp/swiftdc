@@ -205,6 +205,24 @@ public struct FieldMap: Sendable {
         return members.map(\.offset)
     }
 
+    /// Field offsets when this type is a small struct passed in GENERAL registers:
+    /// 1–2 word-sized (8-byte) `Int`/`UInt` fields packed contiguously from offset
+    /// 0 (total ≤ 16 bytes). AAPCS64 passes such a value in `x0`[`/x1`], so a
+    /// nonmutating method can decompose `self` onto them (`Point.sum` reads
+    /// `self.x + self.y`). Nil for any other shape — sub-word packing, references
+    /// (ARC), floats (an HFA), or a struct too large for registers all bail, so
+    /// nothing outside this exact ABI shape triggers the decomposition.
+    public var wordIntegerFieldOffsetsInRegisters: [Int]? {
+        let members = fields.sorted { $0.offset < $1.offset }
+        guard (1...2).contains(members.count),
+              members.allSatisfy({ $0.bytes == 8 && ($0.typeMangledName == "Si" || $0.typeMangledName == "Su") })
+        else { return nil }
+        for (index, member) in members.enumerated() where member.offset != index * 8 {
+            return nil
+        }
+        return members.map(\.offset)
+    }
+
     private static func describe(_ resolution: FieldResolution) -> String {
         guard case .unknown(let reason) = resolution else { return "computed" }
         return "\(reason)"
