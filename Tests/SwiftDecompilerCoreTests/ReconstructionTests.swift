@@ -606,19 +606,22 @@ private func reconstructionStructured(
     }
 }
 
-@Test func doesNotFabricateFieldsAcrossSameSimpleNameTypesIfPresent() async throws {
+@Test func resolvesSameSimpleNameTypesToTheirOwnFieldsIfPresent() async throws {
     // Field maps are keyed by SIMPLE name, so two distinct nested `Pair` types
-    // (HolderA's 2-field, HolderB's 3-field) collide on one key. Without the
-    // collision guard a getter for one would decompose `self` with the OTHER's
-    // field map and fabricate its names. The guard drops the ambiguous key, so
-    // each getter must NEVER name the other type's fields.
+    // (HolderA's 2-field, HolderB's 3-field) collide on one key. Qualified-name
+    // keys let a resolved qualified self-type reach its OWN map: each getter names
+    // its own fields, and NEVER the other type's — the collision neither fabricates
+    // (the earlier bug) nor over-declines (the interim stopgap).
     if let sum = try await reconstructionPseudo("HolderA.Pair.sum") {
-        #expect(!sum.contains("self.gamma"))
+        #expect(sum.contains("return (self.alpha + self.beta)"))   // recovered, its own fields
+        #expect(!sum.contains("self.gamma"))                       // never HolderB's
         #expect(!sum.contains("self.delta"))
         #expect(!sum.contains("self.epsilon"))
     }
     if let total = try await reconstructionPseudo("HolderB.Pair.total") {
-        #expect(!total.contains("self.alpha"))
+        #expect(total.contains("self.gamma"))                      // recovered, its own fields
+        #expect(total.contains("self.epsilon"))
+        #expect(!total.contains("self.alpha"))                     // never HolderA's
         #expect(!total.contains("self.beta"))
     }
     // Control: a uniquely-named struct still resolves its own fields.

@@ -251,7 +251,7 @@ public enum FieldMapBuilder {
     public static func build(in machO: MachOFile) throws -> [String: FieldMap] {
         let calculator = try StaticLayoutCalculator(machO: machO)
 
-        var built: [(name: String, map: FieldMap)] = []
+        var built: [(name: String, qualified: String?, map: FieldMap)] = []
         for type in (try? machO.swift.types) ?? [] {
             guard let descriptor = Self.contextDescriptor(of: type),
                   let name = Self.name(of: type, in: machO)
@@ -260,9 +260,20 @@ public enum FieldMapBuilder {
             // the whole image with it.
             guard let layout = try? calculator.fieldLayout(of: descriptor), !layout.fields.isEmpty
             else { continue }
-            built.append((name, FieldMap(typeName: name, layout: layout)))
+            built.append((name, Self.qualifiedName(of: type, in: machO), FieldMap(typeName: name, layout: layout)))
         }
-        return resolvingSimpleNameCollisions(built)
+        var maps = resolvingSimpleNameCollisions(built.map { ($0.name, $0.map) })
+        // Also index each type by its FULLY-QUALIFIED name (`Module.Outer.Type`).
+        // Qualified names are unique, so a caller that already resolved a qualified
+        // self-type (the register-decomposition path names `Module.…​.Type`) finds
+        // its OWN map even when the simple name collided and was dropped above —
+        // recovering the correct fields the collision guard would otherwise decline.
+        // The bare/simple-name path is unchanged: it never keys on a dotted name.
+        for entry in built {
+            guard let qualified = entry.qualified else { continue }
+            maps[qualified] = entry.map
+        }
+        return maps
     }
 
     /// Index the built maps by simple name, DROPPING any name that two distinct
@@ -313,5 +324,38 @@ public enum FieldMapBuilder {
         case .struct(let model): return try? model.descriptor.name(in: machO)
         case .class(let model): return try? model.descriptor.name(in: machO)
         }
+    }
+
+    /// Fully-qualified name (`Module.Outer.Type`) by walking the descriptor's
+    /// parent context chain to the module. Nil when a link is a symbol, an
+    /// extension, or an anonymous/opaque context (no clean qualified name), so a
+    /// caller falls back to the simple name rather than a fabricated one.
+    static func qualifiedName(of type: TypeContextWrapper, in machO: MachOFile) -> String? {
+        guard let own = name(of: type, in: machO) else { return nil }
+        var components = [own]
+        var next: SymbolOrElement<ContextWrapper>?
+        switch type {
+        case .enum(let m): next = try? m.parent(in: machO)
+        case .struct(let m): next = try? m.parent(in: machO)
+        case .class(let m): next = try? m.parent(in: machO)
+        }
+        var hops = 0
+        while let link = next, hops < 16 {
+            hops += 1
+            guard case .element(let wrapper) = link else { return nil }
+            switch wrapper {
+            case .module(let module):
+                guard let name = try? module.descriptor.name(in: machO) else { return nil }
+                components.append(name)
+                return components.reversed().joined(separator: ".")
+            case .type(let parentType):
+                guard let name = name(of: parentType, in: machO) else { return nil }
+                components.append(name)
+                next = try? wrapper.parent(in: machO)
+            default:
+                return nil   // extension / anonymous / protocol / opaque — can't qualify
+            }
+        }
+        return nil
     }
 }
