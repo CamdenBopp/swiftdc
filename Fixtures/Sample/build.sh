@@ -32,6 +32,11 @@ $SWIFTC -parse-as-library -O -emit-library -module-name Reconstruction reconstru
 cp libReconstruction.opt.dylib libReconstruction.opt.stripped.dylib
 strip -x libReconstruction.opt.stripped.dylib 2>/dev/null || strip libReconstruction.opt.stripped.dylib
 
+echo "==> resilient reconstruction fixture (library evolution) — coroutine accessors"
+# Library evolution forces opaque accessors, so a public stored property gets a
+# synthesized `_modify`/`_read` yield_once coroutine (absent from a fragile build).
+$SWIFTC -parse-as-library -Onone -g -enable-library-evolution -emit-library -module-name Reconstruction reconstruction.swift -o libReconstruction.resilient.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release

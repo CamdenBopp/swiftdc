@@ -2651,6 +2651,23 @@ public struct Disassembler: Sendable {
             }
         }
 
+        // The property a `_modify` accessor's ramp exposes, when this function is
+        // one. A `yield_once` coroutine returns its yielded value in x1 (the ramp
+        // result is `{ continuation, yields… }`, continuation first); for a stored
+        // property that value is `&self.field`. The `.resume.N` continuation
+        // yields nothing, so it is excluded. Only the ramp of a `_modify` (never a
+        // `.read`, whose yield is a borrowed value, not an address) is recognized.
+        let modifyProperty: String? = {
+            guard let name = function.demangledName, !name.contains(".resume") else { return nil }
+            let base = name.range(of: " : ").map { String(name[..<$0.lowerBound]) } ?? name
+            guard base.hasSuffix(".modify") else { return nil }
+            let property = base.dropLast(".modify".count)
+            guard let dot = property.lastIndex(of: "."),
+                  case let leaf = String(property[property.index(after: dot)...]), !leaf.isEmpty
+            else { return nil }
+            return leaf
+        }()
+
         let instructions = function.instructions.map { insn -> Instruction in
             var sourceNotes: [String] = []
             var sourceType = insn.sourceType
@@ -2701,6 +2718,25 @@ public struct Disassembler: Sendable {
                     if exit != .unknown {
                         sourceNotes.append("return \(renderReturnValue(exit, before: insn.address))")
                     }
+                }
+            }
+
+            // A `_modify` accessor's ramp yields `&self.field` (the mutable
+            // storage) in x1. Surfacing it completes the get/set/modify trio and
+            // replaces the misleading "pure computation" blank. Rendered ONLY when
+            // the body-derived field (x1 at the yield) agrees with the accessor's
+            // own property name; a mismatch means the field map is not to be
+            // trusted here, so decline rather than name the wrong storage.
+            if let modifyProperty, insn.controlFlow == .return,
+               let rawYield = analysis.exitYieldValues[insn.address] {
+                let offset: Int? = switch rawYield {
+                case .selfField(let o): o
+                case .selfPointer: 0
+                default: nil
+                }
+                if let offset, let field = fieldInfo(at: offset, bytes: 1),
+                   field.names == [modifyProperty] {
+                    sourceNotes.append("yield &\(fieldPath(modifyProperty))")
                 }
             }
 

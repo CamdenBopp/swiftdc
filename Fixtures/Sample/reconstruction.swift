@@ -385,3 +385,34 @@ public final class DirectionTally {
         }
     }
 }
+
+// MARK: - _modify coroutine accessor (yield_once ABI)
+
+// A resilient (library-evolution) module emits a `_modify` coroutine accessor for
+// each public stored property. The ramp yields `&self.field` in x1 (the yield_once
+// result is `{ continuation, yields… }`, continuation first — see IRGen
+// `expandCoroutineResult`), so `count.modify` reconstructs as `yield &self.count`.
+// Only rendered from the resilient variant (a fragile build accesses storage
+// directly and emits no coroutine accessor).
+public struct Accessors {
+    public var count: Int
+    public var enabled: Bool
+    public init(count: Int, enabled: Bool) {
+        self.count = count
+        self.enabled = enabled
+    }
+}
+
+// Adversarial: an explicit `_modify` that yields a DIFFERENT backing field than
+// the property it implements. The accessor is `exposed.modify` but it yields
+// `&self._backing` — a name mismatch that means the field map cannot be trusted to
+// describe the yield, so the render must DECLINE rather than print the wrong
+// storage (or, worse, the right storage under the wrong property's name).
+public struct BackedWrapper {
+    var _backing: Int
+    public init(_ v: Int) { _backing = v }
+    public var exposed: Int {
+        get { _backing }
+        _modify { yield &_backing }
+    }
+}

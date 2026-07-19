@@ -585,6 +585,27 @@ private func reconstructionStructured(
     }
 }
 
+@Test func rendersModifyCoroutineYieldIfPresent() async throws {
+    // A resilient module's synthesized `_modify` accessor is a yield_once
+    // coroutine whose ramp yields the mutable storage address in x1 (the result
+    // is `{ continuation, yields… }`, continuation in x0). For a stored property
+    // that is `&self.field`, so `count.modify` renders `yield &self.count`.
+    let resilient = "Fixtures/Sample/libReconstruction.resilient.dylib"
+    if let count = try await reconstructionPseudo("Accessors.count.modify", in: resilient) {
+        #expect(count.contains("yield &self.count"))
+    }
+    if let enabled = try await reconstructionPseudo("Accessors.enabled.modify", in: resilient) {
+        #expect(enabled.contains("yield &self.enabled"))    // offset > 0 (add x1, x20, #n)
+    }
+    // Adversarial: an explicit `_modify` that yields a differently-named backing
+    // field (`exposed.modify` yields `&self._backing`). The property name and the
+    // yielded field disagree, so naming the storage would be a guess — decline.
+    if let exposed = try await reconstructionPseudo("BackedWrapper.exposed.modify", in: resilient) {
+        #expect(exposed.contains("no non-runtime calls"))
+        #expect(!exposed.contains("yield"))
+    }
+}
+
 @Test func namesEnumTagCheckInBranchIfPresent() async throws {
     // A switch's enum-tag check in a structured `if` names the enum case
     // (`arg0 == Direction.east`) rather than a raw masked register. Case index 1

@@ -300,6 +300,13 @@ public struct FunctionAnalysis: Sendable {
     /// return. A `Double`/`Float`-returning function delivers its result here,
     /// not in x0, so the enrichment pass reads this one for those return types.
     public var exitFloatValues: [UInt64: AbstractValue] = [:]
+    /// x1 immediately before a return. A `yield_once` coroutine (a `_modify` or
+    /// `_read` accessor) returns the continuation pointer in x0 and its first
+    /// yielded value in x1 (Swift lowers the ramp result as `{ continuation,
+    /// yields… }`, continuation first — see IRGen `expandCoroutineResult`). For a
+    /// stored-property `_modify` that value is `&self.field`, so the enrichment
+    /// pass reads this to render the yield.
+    public var exitYieldValues: [UInt64: AbstractValue] = [:]
     /// Instruction address → the access it makes into `self`.
     public var selfFieldAccesses: [UInt64: SelfFieldAccess] = [:]
     /// Array-literal construction site → the values stored into it, by byte
@@ -474,6 +481,13 @@ public struct ValueTracer: Sendable {
                 if insn.controlFlow == .return,
                    let value = registers["v0"], value != .unknown {
                     result.exitFloatValues[insn.address] = value
+                }
+                // x1 at a return is the first yielded value of a `yield_once`
+                // coroutine (`_modify`/`_read`); meaningless for an ordinary
+                // return, so the enrichment reads it only for those accessors.
+                if insn.controlFlow == .return,
+                   let value = registers["x1"], value != .unknown {
+                    result.exitYieldValues[insn.address] = value
                 }
                 if insn.controlFlow == .branch {
                     let site = Self.snapshot(registers)
