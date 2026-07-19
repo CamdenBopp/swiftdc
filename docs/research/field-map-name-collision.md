@@ -89,8 +89,44 @@ legitimately owned each collided name (it wins the key, renders correctly today)
 Qualified keys would keep those while still declining the rest. It also does not
 catch a name with a single *mapped* claimant plus layout-less claimers that fall
 back onto it (only distinct *mapped* layouts trigger the guard) — qualified keys
-fix that too. Next audit target after this: sweep for other fabrication classes, or
-the goto/structuring dimension (3,384 gotos).
+fix that too.
+
+## Follow-up verdict: qualified keys are too risky to force now
+
+Checked feasibility. The descriptor exposes `parent(in:)`, but it returns a
+`SymbolOrElement<ContextWrapper>` across type/protocol/anonymous/extension/module
+cases — a real walk. The blocker is the *lookup* side: the names that reach
+`namedFieldMap` are **inconsistent** — `selfTypeFromDemangledName` returns a single
+bare component, while `swiftValueTypeSelfFields` returns a dotted qualified string,
+and `SelfTypeIndex` bindings are their own thing. Qualified keys would require
+normalizing every one of those to a single qualified format that matches a
+parent-walk — a broad, regression-prone refactor. Per the loop's own guidance, do
+NOT force it; it stays an open follow-up.
+
+## Post-fix correctness sweep (this iteration, no new code)
+
+Swept the fixed self-host for getters whose rendered `return self.X` field ≠ the
+accessor's property name (the general fabrication signature). Findings:
+
+- **rawValue fabrication fully fixed** — the 17 remaining `self.rawValue` renders
+  are all legitimate rawValue owners (`ExitCode`, `DemangleOptions`, the `*Flags`
+  OptionSets, `MetadataRequest`). No residual there, so the **stricter count-based
+  guard (residual-(b)) is not warranted** — it would over-decline the winning
+  claimants with no confirmed fabrication to fix.
+- **`X → self.layout` (~40 getters)** — a *different, pre-existing* class:
+  LayoutWrapper structs (`MachHeader` is `layout: mach_header` spanning all 28
+  bytes) whose property reads `self.layout.<subfield>`, but the backing `__C`
+  struct has no Swift field metadata, so the sub-field can't be named and the whole
+  `self.layout` is rendered. Imprecise (wrong value/type), but a *real field name*,
+  not a fabricated one. Fixing it needs C-struct field data (a feature).
+- **Metadata union/offset mismatches** (`singletonMetadataInitialization →
+  self.foreignMetadataInitialization`) — Swift context-descriptor union members
+  that share (or neighbour) an offset; subtle, low-severity.
+
+**Verdict:** the one clear *fabrication* class (collision) is fixed; the remainder
+is imprecision/limitation, not wrong names. Correctness is in good shape. Next
+target: the goto/structuring dimension (3,384 gotos), or the C-struct nested-field
+resolution behind `→ self.layout`.
 
 ## Why this note exists: the conditions probe hit a plateau
 
