@@ -163,3 +163,40 @@ guess. If it needs the full frame/continuation model, that is the honest larger
 prerequisite to scope next. Alternatives the user may prefer: a shift from body-
 coverage to `--structured` control-flow readability, or accepting the current
 plateau as good coverage.
+
+## The `_modify` slice was NOT blocked — ABI research made it tractable (`a54f9cf`)
+
+The proposed research paid off and **overturned** the "prerequisite-blocked"
+verdict above. The authoritative source (`swiftlang/swift`
+`lib/IRGen/GenCall.cpp` `expandCoroutineResult`) builds the yield_once ramp
+result as `{ continuation, yields… }` — **continuation first**:
+
+```cpp
+SmallVector<llvm::Type*, 8> components;
+components.push_back(IGM.Int8PtrTy);            // the continuation pointer
+for (auto yield : FnType->getYields()) { … }   // yielded values follow
+```
+
+So on ARM64 the ramp returns **x0 = continuation** (→`.resume.0`) and **x1 = the
+first yield**. For a stored-property `_modify` that yield is `&self.field`. Three
+self-host disasm samples confirm it exactly (e.g. `Options.fieldOffsets.modify`:
+`add x1, x20, #1`, which swiftdc already tags `&self.…`). This is not a guess.
+
+**Implemented** (`a54f9cf`): `exitYieldValues` records x1 at each `ret`; a
+`_modify` ramp renders `yield &self.field`; `pseudoStatement` surfaces a `yield …`
+note. **−483 blank bodies** on a clean same-target self-host (MachOKit's resilient
+`layout`/`offset` accessors dominate) — the biggest single computational-body win
+of the session, and every render is correct.
+
+**The safety that made it honest — a match-gate.** Render only when the
+body-derived yielded field agrees with the accessor's own property name. This
+caught a real fabrication hazard: `InterfaceReconstructor.Options.fieldOffsets`
+mis-resolves `self` to a type with a bogus `rawValue` at offset 1, and an explicit
+`_modify` can yield a differently-named backing field. On any mismatch it declines
+rather than name the wrong storage. (`_read`, which yields a borrowed *value* not
+an address, is intentionally left alone.)
+
+**Lesson:** "prerequisite-blocked" is a claim to *test*, not assume. The block
+here was my own lack of the ABI, not a missing capability — authoritative research
+(the loop's own instruction) dissolved it. Only `_read` and the coroutine cases
+that truly need a frame remain; those are the next thing to probe the same way.
