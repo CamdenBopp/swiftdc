@@ -104,3 +104,62 @@ maps), not on swiftdc's rendering. That is a dependency-level prerequisite, out 
 scope for a "smallest general change." The remaining swiftdc-local computational
 blanks are plumbing (should stay blank) or coroutine accessors (`modify`/`read` —
 x20-pointer self + resume ABI), which are a separate, larger piece.
+
+## Re-survey — the tractable slices are mined (STOP + REPORT)
+
+Fresh frequency table of the 23,102 blank bodies (new tool, fixed target):
+
+| kind | count | verdict |
+|---|---|---|
+| protocol witness | 5,746 | plumbing — stay blank |
+| value witness | 5,563 | plumbing |
+| type metadata | 1,481 | plumbing |
+| outlined copy/consume/destroy | 1,056 | plumbing |
+| generic specialization | ~1,094 | plumbing |
+| **.getter** | 3,489 | ~112 local; dependency-blocked / String / Bool / enum |
+| **.modify / .read** | ~1,850 | coroutine `yield_once` ABI (below) |
+| **.setter** | 371 | dependency field-map / dynamic-offset — declines |
+| **== infix** | 261 | trivial single-compare — low information (below) |
+
+**~65% is compiler plumbing** that must stay blank. The non-plumbing remainder is
+each blocked or low-value:
+
+- **`.modify` / `.read` coroutine accessors (~1,850)** — a `_modify` for a stored
+  property is `mov x1, x20; adrp x0, →.resume.0; ret` (+ a `.resume.0: ret`). It
+  yields the field's address via the `yield_once` coroutine convention; **which
+  register carries the yielded `inout` address is the crux, and getting it from
+  the instruction stream alone is a guess.** Even the trivial (frame-less, stored-
+  property) sub-slice needs the authoritative yield_once ABI first — a prerequisite
+  to *research*, not a smallest-general-change. Payoff is also partly plumbing
+  (a stored-property `_modify` is compiler-synthesized, like its setter).
+- **`== infix` (261)** — the blank ones are single-compare bodies
+  (`ldrb w8,[x0]; ldrb w9,[x1]; cmp; cset w0,eq; ret`) on no-payload enums and
+  one-field wrappers (`Bucket`, `Index`, `_Word`). They reconstruct to
+  `return (arg0 == arg1)` — correct but ~zero information (it is the definition of
+  a synthesized `==`). Multi-field struct `==` has branches, so it is not blank
+  and already renders via the structured path.
+- **`.getter` (3,489)** — after the register-decompose fix, the local remainder is
+  String (16-byte / retainable), Bool (sub-word bitfield), enum, or collections;
+  the dependency remainder is the empty-`typeMangledName` / no-field-map cases
+  above. No clean local slice left.
+
+**Correctness spot-check** (a mis-render outranks a blank): the self-host has no
+fabrications — `(0 == 0)`/`(0 != 0)` (16) render a constant comparison literally
+(correct, just unsimplified), and `(? …)` (33) are diffuse value-coverage gaps.
+Folding tautologies and simplifying `(? …)` is cosmetic and low-value.
+
+**Conclusion:** the "fill blank computational bodies with a small general change"
+frontier is **mined**. Every remaining population is (a) plumbing that should stay
+blank, (b) prerequisite-blocked (coroutine `yield_once` ABI; MachOSwiftSection
+metadata quality), or (c) low-value (trivial `==`, cosmetic folds). Per the loop's
+own guidance, STOP and REPORT rather than force a low-value patch.
+
+**Proposed next area:** research the Swift `yield_once` coroutine ABI
+authoritatively (the compiler checkout at `/Users/camden/swift` documents the
+convention) to decide whether `_modify` / `_read` accessors — the single largest
+unblocked population (~1,850) and a genuine Swift construct, not plumbing-only —
+can be rendered without a full coroutine-frame model. Evidence-first, decline over
+guess. If it needs the full frame/continuation model, that is the honest larger
+prerequisite to scope next. Alternatives the user may prefer: a shift from body-
+coverage to `--structured` control-flow readability, or accepting the current
+plateau as good coverage.
