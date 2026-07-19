@@ -200,3 +200,44 @@ an address, is intentionally left alone.)
 here was my own lack of the ABI, not a missing capability — authoritative research
 (the loop's own instruction) dissolved it. Only `_read` and the coroutine cases
 that truly need a frame remain; those are the next thing to probe the same way.
+
+## `_read` is an empty slice; the blank frontier is exhausted (pivot)
+
+Probed `_read` the same way. It is the same yield_once shape as `_modify`
+(`UncheckedSendable.wrappedValue.read`: `mov x1, x20; adrp x0, →.resume.0; ret`, so
+x1 = `&self.field`). But the population is tiny and unreachable:
+
+- **9** blank `_read` ramps on the whole self-host; **0** are swiftdc-local.
+- All 9 are dependency generic / noncopyable wrappers (`ConcurrencyExtras`,
+  `AsyncAlgorithms`, `DequeModule`) whose generic layouts have no concrete field
+  map — the match-gate declines every one, so support would render **~0**.
+- A resilient stored `var` emits `get`+`_modify` but **no** `_read` (borrow-read is
+  only emitted where it avoids a copy), so it cannot even be fixtured cleanly.
+
+So `_read` is not worth a code path. **With `_modify` done, the computational-body
+blank frontier is exhausted for tractable swiftdc-local slices** — the remainder is
+compiler plumbing (must stay blank), dependency-metadata-blocked (getters/setters/
+`_read` on generic types with no field map), or low-value (trivial `==`).
+
+### Next quality dimension — `--structured` raw-register conditions
+
+A fresh `--structured` self-host survey points at the single biggest remaining
+readability gap, in a *different* dimension than blank bodies:
+
+| signal | count | note |
+|---|---|---|
+| `if (` total | 106,717 | |
+| **raw-register conditions** (`if (w8 == 0)`, `if (x8 > 2)`) | **73,977** | ~70% of all conditions |
+| `goto` | 3,384 | unstructured / depth-degraded control flow |
+| `?` in a condition | 3,094 | value-coverage holes |
+
+The raw-register conditions are the value-coverage frontier (the tracer left the
+compared register unnamed). The top clusters are telling: `if (w8 == 3)` (1,366),
+`if (w8 == 4)` (1,381), `if (w8 != 2)` (1,302) look like **enum-tag `switch`
+chains** — a switch on `self.someEnum` lowered to a chain of tag compares that we
+render with a raw `w8`. Naming the switched value (extending the enum-tag work,
+`ea788b0`) and/or reconstructing the `switch` is a concrete, swiftdc-local lead
+worth a concentrated root-cause probe — while remembering the earlier
+`value-unknown-causes.md` finding that the *general* condition-base gap is diffuse.
+If a concentrated probe finds no dominant tractable pattern, the honest call is to
+accept the current coverage as a plateau.
