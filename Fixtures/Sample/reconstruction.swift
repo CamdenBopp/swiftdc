@@ -416,3 +416,26 @@ public struct BackedWrapper {
         _modify { yield &_backing }
     }
 }
+
+// MARK: - Field-map simple-name collision (correctness)
+
+// Two DISTINCT nested types sharing the simple name `Pair`. Field maps are keyed by
+// simple name, so both claim the `Pair` key with DIFFERENT layouts (2 vs 3 Int
+// fields). The collision guard must drop the ambiguous key, so neither small-struct
+// getter fabricates the OTHER type's fields — `HolderA.Pair.sum` must never read
+// HolderB's `gamma`/`delta`, and vice versa.
+public struct HolderA {
+    public struct Pair {
+        var alpha: Int
+        var beta: Int
+        public var sum: Int { alpha + beta }
+    }
+}
+public struct HolderB {
+    public struct Pair {
+        var gamma: Int
+        var delta: Int
+        var epsilon: Int
+        public var total: Int { gamma + delta + epsilon }
+    }
+}

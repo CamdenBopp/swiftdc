@@ -606,6 +606,27 @@ private func reconstructionStructured(
     }
 }
 
+@Test func doesNotFabricateFieldsAcrossSameSimpleNameTypesIfPresent() async throws {
+    // Field maps are keyed by SIMPLE name, so two distinct nested `Pair` types
+    // (HolderA's 2-field, HolderB's 3-field) collide on one key. Without the
+    // collision guard a getter for one would decompose `self` with the OTHER's
+    // field map and fabricate its names. The guard drops the ambiguous key, so
+    // each getter must NEVER name the other type's fields.
+    if let sum = try await reconstructionPseudo("HolderA.Pair.sum") {
+        #expect(!sum.contains("self.gamma"))
+        #expect(!sum.contains("self.delta"))
+        #expect(!sum.contains("self.epsilon"))
+    }
+    if let total = try await reconstructionPseudo("HolderB.Pair.total") {
+        #expect(!total.contains("self.alpha"))
+        #expect(!total.contains("self.beta"))
+    }
+    // Control: a uniquely-named struct still resolves its own fields.
+    if let intPair = try await reconstructionPseudo("IntPair.sum") {
+        #expect(intPair.contains("return (self.a + self.b)"))
+    }
+}
+
 @Test func namesEnumTagCheckInBranchIfPresent() async throws {
     // A switch's enum-tag check in a structured `if` names the enum case
     // (`arg0 == Direction.east`) rather than a raw masked register. Case index 1
