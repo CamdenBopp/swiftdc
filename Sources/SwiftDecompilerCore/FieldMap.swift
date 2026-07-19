@@ -206,15 +206,21 @@ public struct FieldMap: Sendable {
     }
 
     /// Field offsets when this type is a small struct passed in GENERAL registers:
-    /// 1–2 word-sized (8-byte) `Int`/`UInt` fields packed contiguously from offset
-    /// 0 (total ≤ 16 bytes). AAPCS64 passes such a value in `x0`[`/x1`], so a
-    /// nonmutating method can decompose `self` onto them (`Point.sum` reads
-    /// `self.x + self.y`). Nil for any other shape — sub-word packing, references
-    /// (ARC), floats (an HFA), or a struct too large for registers all bail, so
-    /// nothing outside this exact ABI shape triggers the decomposition.
+    /// 1–4 word-sized (8-byte) `Int`/`UInt` fields packed contiguously from offset
+    /// 0 (total ≤ 32 bytes). The Swift convention explodes such an all-integer
+    /// value across the first four argument registers `x0…x3` — field at offset
+    /// `8·n` arrives in `x{n}` (confirmed: a 4-field struct's `.failed.getter`,
+    /// field +0x18, is `mov x0, x3; ret`). So a getter can read `self.field`
+    /// directly from its register, and `Point.sum` reads `self.x + self.y`. The
+    /// four-field cap is the ABI's own: a fifth word spills the whole value to an
+    /// indirect `x20` pointer, which the `[x20]` guard in the decomposer catches.
+    /// Nil for any other shape — sub-word packing, references (ARC), floats (an
+    /// HFA), mixed integer/float (which would mis-map `x{n}` onto the SIMD bank),
+    /// or a struct too large for registers all bail, so nothing outside this exact
+    /// ABI shape triggers the decomposition.
     public var wordIntegerFieldOffsetsInRegisters: [Int]? {
         let members = fields.sorted { $0.offset < $1.offset }
-        guard (1...2).contains(members.count),
+        guard (1...4).contains(members.count),
               members.allSatisfy({ $0.bytes == 8 && ($0.typeMangledName == "Si" || $0.typeMangledName == "Su") })
         else { return nil }
         for (index, member) in members.enumerated() where member.offset != index * 8 {

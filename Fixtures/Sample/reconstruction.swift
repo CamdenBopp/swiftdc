@@ -59,6 +59,36 @@ public struct MixedPair {
     public var justCount: Int { count }
 }
 
+// A value struct of 3–4 word-sized `Int` fields (<= 32 bytes) is passed decomposed
+// across the first FOUR general registers x0…x3 (field at offset 8·n in x{n}), so a
+// getter reads `self.field` straight from its register. Exercises the 4-register
+// decomposition that the 2-field `IntPair` (which only reaches x1) does not.
+public struct IntTriple {
+    var first: Int
+    var second: Int
+    var third: Int
+    public var readThird: Int { third }        // self.third — offset 0x10 -> x2
+    public var total: Int { first + second + third }
+}
+
+public struct IntQuad {
+    var a: Int
+    var b: Int
+    var c: Int
+    var d: Int
+    public var readD: Int { d }                // self.d — offset 0x18 -> x3
+}
+
+// Adversarial: a struct mixing an `Int` (general register) and a `Double` (SIMD
+// register) is neither a float HFA nor an all-integer GPR struct. The `x{n} =
+// offset/8` mapping would wrongly pull the Double out of the GPR bank, so `self`
+// must NOT be register-decomposed — the getter declines rather than fabricate.
+public struct IntThenDouble {
+    var n: Int
+    var d: Double
+    public var readN: Int { n }
+}
+
 // MARK: - HFA struct decomposition (self + by-value struct params)
 
 public struct Vec2 {

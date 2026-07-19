@@ -560,6 +560,31 @@ private func reconstructionStructured(
     }
 }
 
+@Test func decomposesThreeAndFourWordIntegerStructSelfIfPresent() async throws {
+    // The Swift convention explodes an all-integer struct across the first FOUR
+    // general registers x0…x3 (field at offset 8·n in x{n}), not just x0/x1. A
+    // getter reads its field straight from that register — third at x2, d at x3.
+    if let readThird = try await reconstructionPseudo("IntTriple.readThird") {
+        #expect(readThird.contains("return self.third"))
+    }
+    if let total = try await reconstructionPseudo("IntTriple.total") {
+        #expect(total.contains("self.first"))
+        #expect(total.contains("self.second"))
+        #expect(total.contains("self.third"))
+    }
+    if let readD = try await reconstructionPseudo("IntQuad.readD") {
+        #expect(readD.contains("return self.d"))    // 4th field, offset 0x18 -> x3
+    }
+    // Adversarial: mixing an `Int` (GPR) and a `Double` (SIMD) is neither a float
+    // HFA nor an all-integer struct. The `x{n} = offset/8` mapping would wrongly
+    // pull the Double from the GPR bank, so `self` is NOT decomposed — the getter
+    // declines (blank) rather than fabricate a field.
+    if let readN = try await reconstructionPseudo("IntThenDouble.readN") {
+        #expect(readN.contains("no non-runtime calls"))
+        #expect(!readN.contains("self."))
+    }
+}
+
 @Test func namesEnumTagCheckInBranchIfPresent() async throws {
     // A switch's enum-tag check in a structured `if` names the enum case
     // (`arg0 == Direction.east`) rather than a raw masked register. Case index 1
