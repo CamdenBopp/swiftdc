@@ -1292,6 +1292,15 @@ public struct Disassembler: Sendable {
         func isBooleanConstant(_ operand: AbstractValue) -> Bool {
             operand == .immediate(0) || operand == .immediate(1)
         }
+        // A masked value `(X & 0xff)` is a byte / no-payload-enum-tag extraction,
+        // not a Bool: `(tag & 0xff) == 1` is an enum-case check (`d == .green`)
+        // that must be baked and named, not deferred to the structurer's raw text
+        // path. Only an *unmasked* `X == 0/1` is the Bool truthiness idiom.
+        func isMaskedByte(_ operand: AbstractValue) -> Bool {
+            if case .binary(.bitAnd, _, .immediate(let mask)) = operand { return mask <= 0xff }
+            return false
+        }
+        if isMaskedByte(lhs) || isMaskedByte(rhs) { return false }
         return isBooleanConstant(lhs) || isBooleanConstant(rhs)
     }
 

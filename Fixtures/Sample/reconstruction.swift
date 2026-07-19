@@ -316,3 +316,22 @@ public func mightFail(_ x: Int) throws -> Int { if x < 0 { throw ReconError.fail
 public func tryOrDefault(_ x: Int) -> Int {
     do { return try mightFail(x) } catch { return -1 }
 }
+
+// MARK: - Enum-tag checks in structured branches (not selects)
+
+// A switch with side effects stays as if-branches (not a collapsed ternary), so
+// the tag checks appear as structured `if`s. Each case names the enum
+// (`arg0 == Direction.east`) rather than a raw masked register — including case
+// index 1 (`.east`), which the Bool-truthiness `== 1` exclusion used to leave as
+// `(w8 & 0xff) == 1`.
+public final class DirectionTally {
+    var n = 0
+    public func add(_ d: Direction) {
+        switch d {
+        case .north: n += 1
+        case .east: n += 2
+        case .south: n += 3
+        case .west: n += 4
+        }
+    }
+}

@@ -541,6 +541,17 @@ private func reconstructionStructured(
     }
 }
 
+@Test func namesEnumTagCheckInBranchIfPresent() async throws {
+    // A switch's enum-tag check in a structured `if` names the enum case
+    // (`arg0 == Direction.east`) rather than a raw masked register. Case index 1
+    // (`.east`) is the regression case: `(tag & 0xff) == 1` used to be excluded
+    // from naming as a Bool truthiness test.
+    if let tally = try await reconstructionStructured("DirectionTally") {
+        #expect(tally.contains("Direction.east"))
+        #expect(!tally.contains("(w8 & 0xff) == 1"))
+    }
+}
+
 @Test func keepsGenuineTrapsUnfoldedIfPresent() async throws {
     // Adversarial: a `precondition` is not an overflow check — at -O it lowers to
     // a raw `brk` reached by a signed compare (`b.lt`), which the fold must NOT
