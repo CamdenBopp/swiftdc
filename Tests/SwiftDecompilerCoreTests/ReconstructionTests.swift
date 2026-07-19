@@ -507,6 +507,26 @@ private func reconstructionStructured(
     }
 }
 
+@Test func recoversLoopAccumulatorIfPresent() async throws {
+    // A loop-carried accumulator (`total += i`, a coupled recurrence) reconstructs
+    // as a body update alongside the counter's advance — accumulate then advance:
+    //   while (i < n) { sum += i; i += 1 }
+    if let accumulate = try await reconstructionStructured("accumulate") {
+        #expect(accumulate.contains("sum += i"))
+        #expect(accumulate.contains("i += 1"))
+        // Order: accumulate before advance.
+        if let sum = accumulate.range(of: "sum += i"), let inc = accumulate.range(of: "i += 1") {
+            #expect(sum.lowerBound < inc.lowerBound)
+        }
+    }
+    // Adversarial: a non-linear loop (`i *= 2`) has no proven recurrence, so no
+    // accumulator or increment is fabricated.
+    if let doubleUntil = try await reconstructionStructured("doubleUntil") {
+        #expect(!doubleUntil.contains("sum "))
+        #expect(!doubleUntil.contains("+= "))
+    }
+}
+
 @Test func keepsGenuineTrapsUnfoldedIfPresent() async throws {
     // Adversarial: a `precondition` is not an overflow check — at -O it lowers to
     // a raw `brk` reached by a signed compare (`b.lt`), which the fold must NOT

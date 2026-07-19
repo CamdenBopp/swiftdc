@@ -255,14 +255,16 @@ struct ControlFlowStructure {
                     // redundant once the test is in the `while`. Drop it.
                     if body.last == "\(pad)    continue" { body.removeLast() }
                     lines += body
-                    // Append the proven induction update (`i += 1`) at the body end
-                    // — the Swift for/while increment position. Only when the loop
-                    // condition is the tracer-baked one (which names `i`); if the
-                    // condition fell back to raw registers, `i` would be undefined.
+                    // Append the proven induction body updates (`total += i`,
+                    // `i += 1`) at the body end — the Swift for/while update
+                    // position. Only when the loop condition is the tracer-baked
+                    // one (which names `i`); if the condition fell back to raw
+                    // registers, the names would be undefined.
                     let annotation = blocks[current].instructions.last?.annotation
-                    if Self.bakedCondition(annotation) != nil,
-                       let update = Self.bakedLoopUpdate(annotation) {
-                        lines.append("\(pad)    \(update)")
+                    if Self.bakedCondition(annotation) != nil {
+                        for update in Self.bakedLoopUpdate(annotation) {
+                            lines.append("\(pad)    \(update)")
+                        }
                     }
                     lines.append("\(pad)}")
                     current = rotated.exit   // resume at the loop's exit successor
@@ -654,15 +656,17 @@ struct ControlFlowStructure {
         return nil
     }
 
-    /// The loop induction body update (`i += 1`) the enrichment baked on a loop
-    /// header's branch, or nil.
-    private static func bakedLoopUpdate(_ annotation: String?) -> String? {
-        guard let annotation else { return nil }
+    /// The loop induction body updates (`total += i`, `i += 1`), in order, the
+    /// enrichment baked on a loop header's branch — or an empty array.
+    private static func bakedLoopUpdate(_ annotation: String?) -> [String] {
+        guard let annotation else { return [] }
         for note in annotation.components(separatedBy: "  ") {
             let trimmed = note.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("loop-update: ") { return String(trimmed.dropFirst("loop-update: ".count)) }
+            guard trimmed.hasPrefix("loop-update: ") else { continue }
+            return String(trimmed.dropFirst("loop-update: ".count))
+                .components(separatedBy: " | ").map { $0.trimmingCharacters(in: .whitespaces) }
         }
-        return nil
+        return []
     }
 
     /// Strip a single balanced outer parenthesis pair, but only when the leading

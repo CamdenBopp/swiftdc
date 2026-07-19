@@ -286,11 +286,12 @@ public struct FunctionAnalysis: Sendable {
     /// (`arg0 >= arg1`) in place of raw registers. Compare-and-branch forms
     /// (`cbz`/`tbz`) carry no condition code and are absent here.
     public var branchConditions: [UInt64: AbstractValue] = [:]
-    /// A proven loop induction body update, keyed by the loop header's branch
-    /// instruction — the text `i += 1` the structurer appends at the loop-body
-    /// end for a rotated `while (i < n) { … }`. Only set for a single, proven
-    /// linear induction variable (see `resolveLoopInductions`).
-    public var loopUpdates: [UInt64: String] = [:]
+    /// Proven loop induction body updates, keyed by the loop header's branch
+    /// instruction — the statements (`total += i`, `i += 1`) the structurer
+    /// appends, in order (accumulate then advance), inside a rotated
+    /// `while (i < n) { … }`. Only set for proven linear/accumulator recurrences
+    /// (see `resolveLoopInductions`).
+    public var loopUpdates: [UInt64: [String]] = [:]
     /// x0 immediately before a return or unconditional branch. The enrichment
     /// pass uses Objective-C return types and resolved tail helpers to decide
     /// which of these are honest source-level returns.
@@ -881,8 +882,8 @@ public struct ValueTracer: Sendable {
         blockByStart: [UInt64: BasicBlock],
         inState: inout [UInt64: State],
         outState: [UInt64: State]
-    ) -> [UInt64: String] {
-        var updates: [UInt64: String] = [:]
+    ) -> [UInt64: [String]] {
+        var updates: [UInt64: [String]] = [:]
         var sourcesByHeader: [UInt64: [UInt64]] = [:]
         for (from, header) in Self.backEdges(blocks: blocks, blockByStart: blockByStart) {
             sourcesByHeader[header, default: []].append(from)
@@ -921,20 +922,44 @@ public struct ValueTracer: Sendable {
             )
             guard let backOut = bodyOut[backFrom] else { continue }
             // The compared slot is the one the header's loop test references — the
-            // `.local` placeholder in the re-transferred compare flags. Naming ONLY
-            // it keeps `-Onone`'s redundant copies of the counter from becoming
-            // phantom variables, and matches the body update to the condition.
+            // `.local` placeholder in the re-transferred compare flags. It is the
+            // primary induction variable `i`; naming from it (not the `-Onone`
+            // redundant copies) keeps phantom variables out and matches the body
+            // updates to the condition. A genuine loop variable is a SELF-recurrence
+            // (its back-edge value references its own placeholder); the copies
+            // reference other placeholders and are ignored.
             guard let comparedPid = Self.comparedInductionId(in: bodyOut[header]?[Self.flagsKey]),
                   let comparedKey = placeholderId[comparedPid],
-                  let recurrence = backOut[comparedKey],
-                  Self.isInductionRecurrence(recurrence, id: comparedPid)
+                  let comparedRec = backOut[comparedKey],
+                  Self.isInductionRecurrence(comparedRec, id: comparedPid)
             else { continue }
-            let name = Disassembler.inductionVariableName(displayId)
+            // Only the primary induction variable is named in `inState` (the loop
+            // condition reads it); accumulators/secondaries are unread at the
+            // header and only contribute a baked body-update statement.
+            var names: [Int: String] = [comparedPid: Disassembler.inductionVariableName(displayId)]
             inState[header, default: [:]][comparedKey] = .local(displayId)
             displayId += 1
-            if let branchAddr = blockByStart[header]?.instructions.last?.address,
-               let update = Self.inductionUpdate(recurrence, id: comparedPid, name: name) {
-                updates[branchAddr] = update
+            // Loop-carried accumulators / secondary counters: other self-recurrence
+            // slots whose per-iteration addend renders in terms of already-named
+            // variables (`total += i`, `seen += 1`). Rendered BEFORE the primary
+            // increment (accumulate, then advance).
+            var accumulatorId = 0
+            var bodyUpdates: [String] = []
+            for pid in placeholderId.keys.sorted() where pid != comparedPid {
+                guard let key = placeholderId[pid], let rec = backOut[key],
+                      let (symbol, addend, isAccumulator) = Self.selfRecurrenceUpdate(rec, ownId: pid, names: names)
+                else { continue }
+                let varName: String
+                if isAccumulator { varName = Self.accumulatorName(accumulatorId); accumulatorId += 1 }
+                else { varName = Disassembler.inductionVariableName(displayId); displayId += 1 }
+                names[pid] = varName
+                bodyUpdates.append("\(varName) \(symbol) \(addend)")
+            }
+            if let primary = Self.inductionUpdate(comparedRec, id: comparedPid, name: names[comparedPid]!) {
+                bodyUpdates.append(primary)
+            }
+            if let branchAddr = blockByStart[header]?.instructions.last?.address, !bodyUpdates.isEmpty {
+                updates[branchAddr] = bodyUpdates
             }
         }
         return updates
@@ -963,6 +988,45 @@ public struct ValueTracer: Sendable {
         }
         guard let c = step, c != 0 else { return nil }
         return "\(name) \(add ? "+=" : "-=") \(c)"
+    }
+
+    /// A loop-carried accumulator / secondary counter as `(op, addend, isAccumulator)`
+    /// for a slot whose back-edge value is a SELF-recurrence `own ± addend`, where
+    /// the addend is either a constant (a secondary counter, `seen += 1`) or a
+    /// single already-named loop variable (an accumulator, `total += i`). Anything
+    /// else — a non-self recurrence (a copy), a complex addend (`i * 2`), or an
+    /// addend referencing an unnamed placeholder — returns nil (declined).
+    private static func selfRecurrenceUpdate(
+        _ recurrence: AbstractValue, ownId: Int, names: [Int: String]
+    ) -> (symbol: String, addend: String, isAccumulator: Bool)? {
+        guard case .binary(let op, let a, let b) = recurrence else { return nil }
+        func isOwn(_ v: AbstractValue) -> Bool { if case .local(let x) = v { return x == ownId }; return false }
+        let symbol: String
+        let addend: AbstractValue
+        switch op {
+        case .add:
+            symbol = "+="
+            if isOwn(a) { addend = b } else if isOwn(b) { addend = a } else { return nil }
+        case .subtract:
+            symbol = "-="
+            if isOwn(a) { addend = b } else { return nil }  // `own - x` only
+        default:
+            return nil
+        }
+        switch addend {
+        case .immediate(let c) where c != 0:
+            return (symbol, Disassembler.renderImmediate(c), false)
+        case .local(let pid):
+            guard let name = names[pid] else { return nil }  // decline an unnamed placeholder
+            return (symbol, name, true)
+        default:
+            return nil   // decline a complex addend (`i * 2`, a call result, …)
+        }
+    }
+
+    /// Name a loop-carried accumulator — `sum`, `acc`, then `sum2`, …
+    private static func accumulatorName(_ id: Int) -> String {
+        ["sum", "acc"].indices.contains(id) ? ["sum", "acc"][id] : "sum\(id)"
     }
 
     /// Back-edges `(from, header)`: DFS edges to a node still on the recursion
