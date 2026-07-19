@@ -15,7 +15,10 @@ public extension DisassembledFunction {
         guard blocks.count > 1 else { return renderPseudo() }
 
         let depth = maxStructuringDepth > 0 ? maxStructuringDepth : ControlFlowStructure.defaultMaxDepth
-        let cfg = ControlFlowStructure(blocks: blocks, objectiveCArguments: objcMethod != nil, maxDepth: depth)
+        let cfg = ControlFlowStructure(
+            blocks: blocks, objectiveCArguments: objcMethod != nil, maxDepth: depth,
+            isThrowing: displayName.contains(" throws")
+        )
         let header = "\(displayName) {"
         let objcLine = objcMethod.map { "    // \($0.signature)" }
 
@@ -51,12 +54,25 @@ struct ControlFlowStructure {
     private let loops: [Int: LoopInfo]         // foldable natural loops, by header
     private let objectiveCArguments: Bool
     let maxDepth: Int                          // recursion-depth guard (see emit)
+    private let usesSwiftError: Bool           // x21 is the error register here
 
-    init(blocks: [BasicBlock], objectiveCArguments: Bool = false, maxDepth: Int = ControlFlowStructure.defaultMaxDepth) {
+    init(blocks: [BasicBlock], objectiveCArguments: Bool = false, maxDepth: Int = ControlFlowStructure.defaultMaxDepth, isThrowing: Bool = false) {
         self.blocks = blocks
         self.exit = blocks.count
         self.objectiveCArguments = objectiveCArguments
         self.maxDepth = maxDepth
+        // The Swift error register (x21) is meaningful here when the function
+        // threads swifterror: it is declared `throws`, or it clears x21 (`mov x21,
+        // #0`) before a call to catch a thrown error. Only then is `x21 == 0` an
+        // error check rather than an incidental use of a callee-saved register.
+        self.usesSwiftError = isThrowing || blocks.contains { block in
+            block.instructions.contains { insn in
+                let (m, ops) = Self.decode(insn.text)
+                return m == "mov" && ops.count >= 2
+                    && Self.canonicalRegister(ops[0]) == "x21"
+                    && (Self.cleanImmediate(ops[1]) == "0" || ops[1] == "xzr")
+            }
+        }
         var indexByAddress: [UInt64: Int] = [:]
         for (index, block) in blocks.enumerated() { indexByAddress[block.startAddress] = index }
         self.indexByAddress = indexByAddress
@@ -372,6 +388,28 @@ struct ControlFlowStructure {
 
     // MARK: - Conditions
 
+    /// If the block's terminator is a Swift error check — a branch on the error
+    /// register x21 against zero (`cbnz x21`, `cbz x21`, or `cmp x21, #0; b.ne/eq`)
+    /// — return `error != nil` / `error == nil`. Nil when it is not that shape.
+    private func swiftErrorCondition(of block: BasicBlock) -> String? {
+        guard let terminator = block.instructions.last else { return nil }
+        let (mnemonic, operands) = Self.decode(terminator.text)
+        let firstReg = operands.first.flatMap(Self.canonicalRegister)
+        if mnemonic == "cbnz", firstReg == "x21" { return "error != nil" }
+        if mnemonic == "cbz", firstReg == "x21" { return "error == nil" }
+        guard mnemonic == "b.ne" || mnemonic == "b.eq" else { return nil }
+        let notEqual = mnemonic == "b.ne"
+        // The nearest preceding flag-setting compare must test x21 against zero.
+        for index in stride(from: block.instructions.count - 2, through: 0, by: -1) {
+            let (m, ops) = Self.decode(block.instructions[index].text)
+            guard ["cmp", "subs", "cmn"].contains(m), !ops.isEmpty else { continue }
+            let testsX21 = ops.contains { Self.canonicalRegister($0) == "x21" }
+            let versusZero = ops.contains { $0 == "xzr" || $0 == "wzr" || Self.cleanImmediate($0) == "0" }
+            return (testsX21 && versusZero) ? (notEqual ? "error != nil" : "error == nil") : nil
+        }
+        return nil
+    }
+
     /// Reconstruct a readable branch condition from the block's terminator,
     /// back-substituting compared registers through the block (`w8` →
     /// `(w1 & 0xff)`) so the condition reflects what's actually tested.
@@ -390,6 +428,13 @@ struct ControlFlowStructure {
         // to the text path, which inlines them more readably.
         if let baked = Self.bakedCondition(terminator.annotation) {
             return (baked, consumed)
+        }
+        // A test of the Swift error register (x21) against zero is an error check:
+        // `x21 != 0` means a call threw. Name it (`error != nil`) instead of a raw
+        // register — the compiler back-substitution below would otherwise mistake
+        // the pre-call `mov x21, #0` for the tested value.
+        if usesSwiftError, let errorCondition = swiftErrorCondition(of: block) {
+            return (errorCondition, consumed)
         }
         let (mnemonic, operands) = Self.decode(terminator.text)
         let last = block.instructions.count - 1

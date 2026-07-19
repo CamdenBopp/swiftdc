@@ -305,3 +305,14 @@ public func sumArray(_ a: [Int]) -> Int {
     for x in a { total = total + x }
     return total
 }
+
+// MARK: - Swift error handling (x21 error register)
+
+// A throwing call's error check compiles to a test of the Swift error register
+// (x21) against zero; it reconstructs as `error != nil` (the swifterror pattern —
+// a `throws` function, or a do/catch that clears x21 — gates the naming).
+public enum ReconError: Error { case failed }
+public func mightFail(_ x: Int) throws -> Int { if x < 0 { throw ReconError.failed }; return x }
+public func tryOrDefault(_ x: Int) -> Int {
+    do { return try mightFail(x) } catch { return -1 }
+}

@@ -527,6 +527,20 @@ private func reconstructionStructured(
     }
 }
 
+@Test func namesSwiftErrorCheckIfPresent() async throws {
+    // A throwing call's error check tests the Swift error register x21 against
+    // zero; it reconstructs as `error != nil` rather than a raw register.
+    if let tryOrDefault = try await reconstructionStructured("tryOrDefault") {
+        #expect(tryOrDefault.contains("error != nil") || tryOrDefault.contains("error == nil"))
+        #expect(!tryOrDefault.contains("(x21 "))
+    }
+    // Adversarial: a plain non-throwing function does not thread swifterror, so
+    // the gate does not fire and no `error` name is fabricated.
+    if let isPositive = try await reconstructionStructured("isPositive") {
+        #expect(!isPositive.contains("error"))
+    }
+}
+
 @Test func keepsGenuineTrapsUnfoldedIfPresent() async throws {
     // Adversarial: a `precondition` is not an overflow check — at -O it lowers to
     // a raw `brk` reached by a signed compare (`b.lt`), which the fold must NOT
