@@ -35,17 +35,28 @@ foundational `.local`/recurrence infrastructure the follow-ups build on.
    condition (else a raw-register condition would leave `i` undefined; caught on
    self-host). `sumTo`/`countTo` → `while (i < arg0) { i += 1 }`.
 2. **DONE (commit `4fa5b6b`)** — while-condition rotation.
-3. **(NEXT)** Loop-carried accumulators (`total += i`) and multi/coupled
-   induction vars — a *coupled* recurrence (`total_new = total_old + i`, where
-   `i` is itself an induction var), harder than the linear `i ± c` case. Would
-   complete `sumTo` to `while (i < n) { total += i; i += 1 }`.
-4. `do { } while` (exit test at the back-edge, not the header).
+3. **DONE (commit `40fc3a7`)** — loop-carried accumulators + secondary counters.
+   Probe insight: a genuine loop variable is a **self-recurrence** (back-edge
+   value references its own seeded placeholder); -Onone's copies reference other
+   placeholders and are ignored — so filtering to self-recurrences yields the
+   real variables with no phantoms. A constant addend → secondary counter
+   (`seen += 1` → `j += 1`); an already-named-variable addend → accumulator
+   (`total += i` → `sum += i`). Ordered updates (accumulate, then advance) baked
+   as a `loop-update:` list, appended in the rotated `while`. `sumTo`/`accumulate`
+   → `while (i < arg0) { sum += i; i += 1 }`.
+4. `do { } while` (exit test at the back-edge) and multi/coupled induction vars —
+   lower-frequency edge cases, not yet done.
 
-**Honest state:** simple C-style counting loops now reconstruct as
-`while (i < n) { …; i += 1 }`. Idiomatic Swift favors iterator/higher-order
-loops, so swiftdc's own code shows 0 of these (0 false positives throughout) —
-the win is on C-style loops. The `.local`/recurrence/`loop-update` infrastructure
-is the foundation for the accumulator + coupled-IV work.
+**Honest state — the counting-loop arc is essentially complete.** A simple
+C-style counting loop now reconstructs fully: `while (i < n) { sum += i; i += 1 }`.
+But **idiomatic Swift favors iterator/higher-order loops**, so swiftdc's own code
+renders **0** of these (0 false positives throughout — the decline discipline
+held at every step). The win is real for C-style/numeric code, but the
+diminishing-returns signal is clear: the remaining loop edge cases (do-while,
+multi-IV) are low-frequency. The next high-value investment is likely a
+**different, higher-frequency pattern** (optional binding `if let`/`guard let`,
+error handling, closures) — best chosen by an evidence probe of what the
+self-host most often fails to reconstruct, rather than more loop edge cases.
 
 ## The goal (recap)
 
