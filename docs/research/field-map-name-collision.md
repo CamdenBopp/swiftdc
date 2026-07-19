@@ -91,7 +91,32 @@ catch a name with a single *mapped* claimant plus layout-less claimers that fall
 back onto it (only distinct *mapped* layouts trigger the guard) — qualified keys
 fix that too.
 
-## Follow-up verdict: qualified keys are too risky to force now
+## Qualified keys — increment 1 shipped (`0237af1`)
+
+The earlier "too risky" verdict was re-examined and the *feasible* part shipped.
+`FieldMapBuilder.qualifiedName` walks the descriptor's parent chain to the module
+(`descriptor.parent(in:)` → `SymbolOrElement<ContextWrapper>`, naming each `.type`
+via `name(of:)` and the `.module`; bailing to the simple name on a symbol /
+extension / anonymous / opaque link). Verified the output matches the lookup format
+for the register-decomposition path: `SwiftDecompilerCore.AnalysisReport`,
+`MachOObjCSection.EntrySizeListHeader.Layout`, etc. — exactly what
+`swiftValueTypeSelfFields` extracts.
+
+The builder now **also indexes every type by its qualified name** (unique, so no
+collision). A caller that already resolved a qualified self-type finds its OWN map
+even when the simple name collided and was dropped — recovering the correct fields.
+`HolderA.Pair.sum` → `self.alpha + self.beta` and `HolderB.Pair.total` → its own
+fields, instead of declining. Self-host: blank 22,841 → 22,834, all changed lines
+are recoveries, zero new fabrications.
+
+**Increment 2 (next):** the class/pointer path resolves its self-type via
+`selfTypeFromDemangledName`, which returns a *bare* last component — so it can't hit
+the qualified keys, and the ~215 collided renders on that path (the `Iterator` /
+large-`Layout` structs) stay declined. Qualifying `selfTypeFromDemangledName` (and
+checking the `SelfTypeIndex` binding's format) is the next increment; it must stay
+output-stable and never fabricate.
+
+## (Historical) qualified keys are too risky to force now
 
 Checked feasibility. The descriptor exposes `parent(in:)`, but it returns a
 `SymbolOrElement<ContextWrapper>` across type/protocol/anonymous/extension/module
