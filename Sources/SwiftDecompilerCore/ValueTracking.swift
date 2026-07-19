@@ -482,11 +482,14 @@ public struct ValueTracer: Sendable {
                 // A flags-based conditional branch: reconstruct its branch-taken
                 // comparison from the tracked NZCV flags and the condition code.
                 if insn.controlFlow == .conditionalBranch,
-                   let cc = insn.detail?.conditionCode,
-                   let op = Self.comparisonOperator(cc),
-                   let flags = registers[Self.flagsKey] {
-                    let condition = comparisonValue(flags: flags, op)
-                    if condition != .unknown { result.branchConditions[insn.address] = condition }
+                   let condition = branchTakenCondition(insn, in: registers),
+                   condition != .unknown {
+                    // `branchTakenCondition` reconstructs cbz/cbnz/tbz (which carry
+                    // no condition code) from the tested register's tracked value,
+                    // as well as the flag-based `b.cond` forms — so a compare-and-
+                    // branch on a named value (`cbnz x8` where x8 is `self.next`)
+                    // reconstructs like the flag branches, not just as raw `x8`.
+                    result.branchConditions[insn.address] = condition
                 }
                 transfer(
                     insn, into: &registers,
