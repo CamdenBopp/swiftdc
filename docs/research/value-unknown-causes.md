@@ -53,15 +53,29 @@ tracer already reconstructed. The probe clarified the real cause (below).
 
 ## Remaining, ranked for future work
 
-1. **w8/x8 value comparisons (~18.6k) — the big one, a value-coverage
-   prerequisite.** The probe showed the dominant form is an UNMASKED `w8 == N`
-   whose base the tracer never reconstructs (an unresolved load / computed value)
-   — NOT the truthiness bug. Naming these needs the value tracer to reach more
-   operands. KEY OPEN QUESTION for the next step: for a sample of unmasked
-   `w8 == N`, does `--pseudo` reconstruct w8's value (a *routing* gap — the
-   tracer knows it but it never reaches the condition/`cond:` bake, tractable) or
-   leave it `.unknown` (a *coverage* gap — loads through slots/fields, two-level
-   loads, call-result threading, a larger prerequisite)? Decide the fix by that.
+1. **w8/x8/tbz value comparisons (~19k) — a value-COVERAGE prerequisite
+   (answered).** The routing-vs-coverage question is settled: it is COVERAGE.
+   - Routing sub-fix (commit `384a0e1`): the `cond:` bake used only the
+     flag-based `comparisonValue`; routed the complete `branchTakenCondition`
+     (cbz/cbnz/tbz + flags) into it. **Tiny** self-host effect (`bit N of` 5,251
+     → 5,190) — because `branchTakenCondition` returns nil when the tested value
+     is `.unknown`, and for almost all of these it IS unknown.
+   - So the base value is genuinely unreconstructed by the tracer (a load through
+     a slot/field, a two-level `ldr x8,[x8]`, a computed value, or clobbered
+     across a call). Naming these needs BROADER VALUE COVERAGE — the larger
+     prerequisite. **Recommendation:** the biggest remaining lever is a finer
+     probe of *why* the base loads are `.unknown` (which specific load/spill form
+     dominates), then a targeted coverage fix — but each such fix is incremental
+     (unlike x21, there is no single 80%-lever left here).
+   - Also proven: cbz/cbnz `== 0`/`!= 0` cannot be force-baked — bypassing
+     `isTruthinessTest` regressed the structurer's nicer text path (`error != nil`
+     for x21, `if (self->_enabled)` for an ObjC Bool). Cleanly routing those needs
+     a text-first / fall-back-to-baked mechanism in the structurer.
+
+**Session takeaway:** the high-leverage single cause was x21 (−83%, 6,547 named).
+The remaining condition-naming gap is coverage-bound and incremental. The next
+big win is likely a *different area* (not more condition naming) — or a deliberate
+value-coverage investment if that is the priority.
 2. **`?` call arguments (22,213)** — same underlying cause (tracer coverage);
    likely overlaps with (1). A fix to a common load/slot cause lifts both.
 3. **do/catch value select still stale-reads x21** — the tracer renders
