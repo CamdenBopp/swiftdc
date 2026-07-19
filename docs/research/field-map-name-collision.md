@@ -1,8 +1,9 @@
 # Field-map name collision fabricates wrong field names (correctness bug)
 
 > Found while probing the `--structured` raw-register conditions (which turned out
-> coverage-bound — see the bottom of this note). Repo state: `61d9d1b`. NOT yet
-> fixed — this documents the bug for the next iteration.
+> coverage-bound — see the bottom of this note). **FIXED with the decline-on-
+> collision stopgap at `c7d8be1`** (scope + result at the end); qualified keys
+> remain the precise follow-up.
 
 ## Symptom
 
@@ -60,6 +61,36 @@ context, else **(2)** as a safe stopgap. Add a positive fixture (two types with 
 same simple name, distinct fields — each getter names its own field) and an
 adversarial one (the collision must not fabricate). Sweep the self-host for other
 `self.rawValue`/wrong-field renders before and after.
+
+## Shipped: decline-on-collision stopgap (`c7d8be1`)
+
+Chose **(2)**: qualified keying needs a coordinated refactor of the *lookup* names
+too (they come inconsistently bare / qualified from `selfTypeFromDemangledName` and
+`swiftValueTypeSelfFields`), a broad regression risk — so it stays the follow-up.
+
+`FieldMapBuilder.build` now tracks the layout signature each simple name resolves
+to; a name that receives **two different layouts is dropped** from the map, so an
+ambiguous self-type declines instead of naming the wrong claimant's fields.
+
+**Scope measured on the self-host:** of 1,954 nominal types / 1,534 simple names,
+**95** names are claimed by >1 type and **38** by >1 with *distinct* layouts
+(`Options`, `Layout`, `Storage`, `Iterator`, `Index`, `Node`, `Element`, `State`,
+`Section`, `Symbol`, …). Clean same-target `--pseudo`: `self.rawValue` fabrications
+26 → 17, **+222 bodies decline**. Those declines are overwhelmingly *fabrications*,
+not correct renders — verified: the same field name was printed across many
+unrelated owners (`self.tableSize` appeared on `AsyncMerge2Sequence.Iterator`,
+`DequeModule.Deque.Iterator`, `_UnsafeBitSet.Iterator`, none of which have it). So
+the guard is net strongly correctness-positive. `--structured` also un-folds the
+raw calls (`os_unfair_lock_lock()`) that were previously hidden inside a fabricated
+`self.field = …` — more honest.
+
+**Residual for the follow-up:** the stopgap also drops the *one* claimant that
+legitimately owned each collided name (it wins the key, renders correctly today).
+Qualified keys would keep those while still declining the rest. It also does not
+catch a name with a single *mapped* claimant plus layout-less claimers that fall
+back onto it (only distinct *mapped* layouts trigger the guard) — qualified keys
+fix that too. Next audit target after this: sweep for other fabrication classes, or
+the goto/structuring dimension (3,384 gotos).
 
 ## Why this note exists: the conditions probe hit a plateau
 
