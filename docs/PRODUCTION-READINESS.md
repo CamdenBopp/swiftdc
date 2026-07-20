@@ -11,7 +11,7 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-07-19, at commit `bd61619`.
+Last audited: 2026-07-19, at commit `2af3e36`.
 
 ---
 
@@ -146,8 +146,14 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 - **MITIGATED — `MachOFile.symbols` fatalErrors on cache images** whose
   `__LINKEDIT` sits in another subcache. Uncatchable; avoided by reading the
   export trie instead, which is also semantically correct.
-- **UNKNOWN — fuzzing.** No corpus, no fuzz harness. Given that one hand-written
-  truncation found a crash in minutes, the expected yield is high.
+- **OPEN — no fuzz harness.** The prediction that hand-written malformed input
+  would have a high yield was tested and held: nine inputs, seven crashes. That
+  corpus is now a regression test, but it is *hand-written and header-shaped* —
+  it probes the Mach-O header and fat header only. Nothing exercises malformed
+  **load-command payloads**, section tables, or `__swift5_*` / `__objc_*`
+  metadata, which is where the remaining parsers are, and where the same
+  `try!`-in-a-dependency pattern is likely to recur. A real fuzzer over mutated
+  copies of the fixtures is the obvious next step and has never been run.
 - **UNKNOWN — behavior across optimization levels.** `-Onone` and `-O` lower
   differently and fixtures exist for both, but no systematic sweep asserts that
   a construct proven at one level holds at the other.
@@ -235,6 +241,7 @@ The meta-category. Every gap here weakens confidence in every claim above.
 | Field offsets | `__swift5_fieldmd`, computed offline | Runtime-exact by construction |
 | Cross-image symbols | export trie | Used as the primary source |
 | Recovered semantics | — | **None.** The largest gap. No differential execution, no SIL comparison in CI |
+| Malformed-input handling | the CLI's own exit status, checked from a subprocess | **In tests** — 9 header-shaped inputs; no fuzzer, no malformed metadata |
 | Whole-binary output | — | **None.** No golden-output corpus, so a silent regression on a real framework would not be noticed |
 
 The two decoders being cross-checkable against each other is the cheapest
