@@ -109,12 +109,38 @@ even when the simple name collided and was dropped — recovering the correct fi
 fields, instead of declining. Self-host: blank 22,841 → 22,834, all changed lines
 are recoveries, zero new fabrications.
 
-**Increment 2 (next):** the class/pointer path resolves its self-type via
-`selfTypeFromDemangledName`, which returns a *bare* last component — so it can't hit
-the qualified keys, and the ~215 collided renders on that path (the `Iterator` /
-large-`Layout` structs) stay declined. Qualifying `selfTypeFromDemangledName` (and
-checking the `SelfTypeIndex` binding's format) is the next increment; it must stay
-output-stable and never fabricate.
+## Increment 2 shipped (`1ec5872`) — feature complete
+
+The class/pointer path resolved its self type via `selfTypeFromDemangledName` (a
+*bare* last component), so it could not reach the qualified keys. Added
+`qualifiedSelfTypeFromDemangledName` (same components joined from the module) beside
+it over a shared `selfTypeComponents`, plus `selfFieldMap`, which prefers the
+qualified key and falls back to the simple one — requiring the qualified name to
+denote the SAME simple type, so a mismatch can never substitute another type's map.
+
+`selfType` still returns the SIMPLE name (`vtableIndex` is keyed by it — changing
+this would have broken vtable/self-accessor resolution); only its *resolution test*
+widened to "either key reaches a layout", so a collided type is seeded as `self`
+again instead of declining. `SelfTypeIndex` bindings were checked and are bare, but
+need no change since the qualified name comes from the demangled name.
+
+**Result — the collision thread is fully resolved, coverage *and* correctness:**
+
+| metric | pre-collision | stopgap | +inc 1 | +inc 2 |
+|---|---|---|---|---|
+| blank bodies | 22,619 | 22,841 | 22,834 | **22,597** |
+| getter field≠property mismatches | 135 | — | — | **95** |
+| `self.rawValue` | 26 (9 fake) | 17 | 17 | **17** |
+
+Blank bodies land *below* the original baseline: every over-decline recovered, plus
+~22 types that previously resolved to the WRONG map. The original fabrication is
+gone outright — `self.tableSize`, once printed across AsyncAlgorithms / DequeModule /
+`_UnsafeBitSet` / MachOKit iterators that have no such field, now has **zero**
+owners — and 40 further wrong-field getter renders became correct.
+
+Regression tests: two nested `Pair` structs (register-decompose path) and two nested
+`Holder` classes (class/pointer path) each resolve to their OWN fields, plus the
+`FieldMap` collision unit tests on the guard itself.
 
 ## (Historical) qualified keys are too risky to force now
 
