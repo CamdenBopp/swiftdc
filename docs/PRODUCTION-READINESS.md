@@ -11,7 +11,7 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-07-20, at commit `f939b73`.
+Last audited: 2026-07-20, at commit `77dadd3`.
 
 ---
 
@@ -473,9 +473,36 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   `for i in 1 2 3; do swiftdc disasm Fixtures/Sample/libReconstruction.dylib --structured | shasum; done`
   Tests additionally pin a shared symbol-index store (`withStableDependencies`),
   which suggests dependency-injection order once mattered.
-- **UNKNOWN — determinism under concurrency.** The pipeline is `async`. Nothing
-  asserts that iteration order over dictionaries/sets cannot leak into output on
-  a larger binary, where scheduling varies more.
+- **MITIGATED — determinism is enforced across processes, and the stated risk
+  was wrong.** This entry used to blame concurrency: "the pipeline is `async` …
+  scheduling varies more". Checked at HEAD: the decompiler has **no concurrent
+  fan-out at all** — no task groups, no `async let`, no `Task {}`, no
+  `concurrentPerform` — and the single large-stack worker thread is joined before
+  its result is read. `async` here is sequential I/O, not parallelism, so
+  scheduling is not a source of variation.
+
+  The actual dependency is **~16 explicit `.sorted()` calls** placed where an
+  unordered collection reaches output. Nothing enforced them, so emitting
+  straight from a `Dictionary` or `Set` in a future change would reorder output
+  silently.
+
+  `DeterminismTests` now compares four runs of six subcommands — Swift metadata,
+  the ObjC index, field layout, the call graph, and structured disassembly.
+  It must run them as **subprocesses**: Swift seeds `Hasher` per process, so
+  `Set`/`Dictionary` order is permuted *between* runs but constant *within* one.
+  Repeating a call in-process would reuse the seed, reorder nothing, and prove
+  nothing.
+
+  Proven to have power, not merely green. Deleting the real `.sorted()` from
+  `CallGraph.unreferenced()` fails it immediately, with the signature that
+  identifies reordering rather than a content change:
+
+      xrefs --unreferenced: run 2 differs from run 1 (29537 vs 29537 bytes)
+
+  A companion test asserts the premise itself — that iteration order really does
+  vary between processes on this toolchain. If a future toolchain made hashing
+  deterministic by default, the guard would keep passing while having lost all
+  of its power, and that should be visible rather than silent.
 
 ## 5. Performance and memory on large frameworks
 
