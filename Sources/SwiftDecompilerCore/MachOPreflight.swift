@@ -28,6 +28,22 @@ public enum MachOPreflight {
         static let minLoadCommand = 8
     }
 
+    /// The load commands whose payloads declare file ranges. Anything not listed
+    /// is walked for size consistency but its payload is left alone — an unknown
+    /// command is not evidence of a bad file.
+    private enum Command {
+        static let segment32: UInt32 = 0x1
+        static let segment64: UInt32 = 0x19
+        static let symtab: UInt32 = 0x2
+    }
+
+    /// Section types that occupy no bytes in the file: their `size` describes
+    /// memory to be zeroed, so it must NOT be bounds-checked against the file.
+    /// `__bss` is routinely larger than the binary that declares it.
+    private enum SectionType {
+        static let zerofill: Set<UInt32> = [0x1, 0xc, 0x13]
+    }
+
     private enum Magic {
         static let machO64LE: UInt32 = 0xfeed_facf
         static let machO64BE: UInt32 = 0xcffa_edfe
@@ -133,7 +149,7 @@ public enum MachOPreflight {
 
         try walkLoadCommands(
             prefix: prefix, start: headerSize, ncmds: Int(ncmds), sizeofcmds: Int(sizeofcmds),
-            bigEndian: bigEndian, fail: fail
+            fileSize: fileSize, is64: is64, bigEndian: bigEndian, fail: fail
         )
     }
 
@@ -142,14 +158,15 @@ public enum MachOPreflight {
     /// complaint — when the prefix runs out, since a short prefix is our own
     /// limitation, not evidence of a bad file.
     private static func walkLoadCommands(
-        prefix: Data, start: Int, ncmds: Int, sizeofcmds: Int, bigEndian: Bool,
-        fail: (String) -> BinaryLoadError
+        prefix: Data, start: Int, ncmds: Int, sizeofcmds: Int, fileSize: Int,
+        is64: Bool, bigEndian: Bool, fail: (String) -> BinaryLoadError
     ) throws {
         var offset = start
         var consumed = 0
         for index in 0..<ncmds {
             guard offset + Layout.minLoadCommand <= prefix.count else { return }
-            guard let cmdsize = prefix.u32(at: offset + 4, bigEndian: bigEndian) else { return }
+            guard let cmd = prefix.u32(at: offset, bigEndian: bigEndian),
+                  let cmdsize = prefix.u32(at: offset + 4, bigEndian: bigEndian) else { return }
 
             guard cmdsize >= UInt32(Layout.minLoadCommand) else {
                 throw fail("load command \(index) declares a size of \(cmdsize) bytes")
@@ -166,7 +183,150 @@ public enum MachOPreflight {
                     "load commands overrun their declared region (\(consumed) > \(sizeofcmds) bytes)"
                 )
             }
+            try validatePayload(
+                cmd: cmd, at: offset, prefix: prefix, fileSize: fileSize,
+                is64: is64, bigEndian: bigEndian, index: index, fail: fail
+            )
             offset += Int(cmdsize)
+        }
+    }
+
+    // MARK: - Load-command payloads
+
+    /// A command's own declared file ranges must lie inside the file.
+    ///
+    /// The header-level checks say the command *table* is coherent; they say
+    /// nothing about where a command points. MachOKit reads these ranges with
+    /// trapping accessors, so a segment or symbol table addressing bytes that do
+    /// not exist aborts the process — silently, with no diagnostic at all.
+    /// Confirmed live: `dump`, `layout`, `interface` and `objc` each died by
+    /// SIGTRAP on a segment `fileoff` past EOF, and `dump`/`interface` on all
+    /// four `LC_SYMTAB` range fields. (`disasm` survives only incidentally,
+    /// because llvm-objdump rejects the file first.)
+    ///
+    /// Only commands that declare file ranges are inspected; an unrecognised
+    /// command is left alone rather than treated as suspect.
+    private static func validatePayload(
+        cmd: UInt32, at offset: Int, prefix: Data, fileSize: Int, is64: Bool,
+        bigEndian: Bool, index: Int, fail: (String) -> BinaryLoadError
+    ) throws {
+        switch cmd {
+        case Command.segment64:
+            try validateSegment(
+                at: offset, prefix: prefix, fileSize: fileSize, is64: true,
+                bigEndian: bigEndian, index: index, fail: fail
+            )
+        case Command.segment32:
+            try validateSegment(
+                at: offset, prefix: prefix, fileSize: fileSize, is64: false,
+                bigEndian: bigEndian, index: index, fail: fail
+            )
+        case Command.symtab:
+            try validateSymtab(
+                at: offset, prefix: prefix, fileSize: fileSize, is64: is64,
+                bigEndian: bigEndian, fail: fail
+            )
+        default:
+            break
+        }
+    }
+
+    /// A segment's file range, and the file range of each of its sections.
+    private static func validateSegment(
+        at offset: Int, prefix: Data, fileSize: Int, is64: Bool, bigEndian: Bool,
+        index: Int, fail: (String) -> BinaryLoadError
+    ) throws {
+        let name = segmentName(at: offset, prefix: prefix) ?? "\(index)"
+        let fileoff: Int
+        let filesize: Int
+        let nsects: UInt32
+        if is64 {
+            guard let off = prefix.u64(at: offset + 40, bigEndian: bigEndian),
+                  let size = prefix.u64(at: offset + 48, bigEndian: bigEndian),
+                  let count = prefix.u32(at: offset + 64, bigEndian: bigEndian)
+            else { return }   // beyond the prefix — our limit, not a bad file
+            // Clamp rather than convert: `Int(_:)` traps above `Int.max`, which is
+            // exactly the input this validator exists to survive. A clamped value
+            // still fails the bounds check below.
+            (fileoff, filesize, nsects) = (Int(clamping: off), Int(clamping: size), count)
+        } else {
+            guard let off = prefix.u32(at: offset + 32, bigEndian: bigEndian),
+                  let size = prefix.u32(at: offset + 36, bigEndian: bigEndian),
+                  let count = prefix.u32(at: offset + 48, bigEndian: bigEndian)
+            else { return }
+            (fileoff, filesize, nsects) = (Int(off), Int(size), count)
+        }
+
+        guard fileoff <= fileSize, filesize <= fileSize - fileoff else {
+            throw fail(
+                "segment \(name) claims \(filesize) byte(s) at offset \(fileoff) of a \(fileSize)-byte file"
+            )
+        }
+
+        let sectionStart = offset + (is64 ? 72 : 56)
+        let sectionSize = is64 ? 80 : 68
+        for section in 0..<Int(nsects) {
+            let base = sectionStart + section * sectionSize
+            guard let flags = prefix.u32(at: base + (is64 ? 64 : 56), bigEndian: bigEndian)
+            else { return }
+            // A zero-fill section occupies no file bytes; its `size` is a memory
+            // extent and is routinely larger than the whole binary.
+            guard !SectionType.zerofill.contains(flags & 0xff) else { continue }
+
+            let sectOffset: Int
+            let sectSize: Int
+            if is64 {
+                guard let size = prefix.u64(at: base + 40, bigEndian: bigEndian),
+                      let off = prefix.u32(at: base + 48, bigEndian: bigEndian)
+                else { return }
+                (sectOffset, sectSize) = (Int(off), Int(clamping: size))
+            } else {
+                guard let size = prefix.u32(at: base + 36, bigEndian: bigEndian),
+                      let off = prefix.u32(at: base + 40, bigEndian: bigEndian)
+                else { return }
+                (sectOffset, sectSize) = (Int(off), Int(size))
+            }
+            guard sectOffset <= fileSize, sectSize <= fileSize - sectOffset else {
+                throw fail(
+                    "section \(section) of segment \(name) claims \(sectSize) byte(s) at offset \(sectOffset) of a \(fileSize)-byte file"
+                )
+            }
+        }
+    }
+
+    private static func segmentName(at offset: Int, prefix: Data) -> String? {
+        guard offset + 24 <= prefix.count else { return nil }
+        let bytes = prefix[(prefix.startIndex + offset + 8)..<(prefix.startIndex + offset + 24)]
+        let name = String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
+        return name.isEmpty ? nil : name
+    }
+
+    /// The symbol table and string table must lie inside the file.
+    ///
+    /// `nsyms` is checked through the size of one `nlist`, so an absurd count is
+    /// rejected on the same arithmetic as an out-of-range offset — no separate
+    /// notion of "too many symbols" is invented.
+    private static func validateSymtab(
+        at offset: Int, prefix: Data, fileSize: Int, is64: Bool, bigEndian: Bool,
+        fail: (String) -> BinaryLoadError
+    ) throws {
+        guard let symoff = prefix.u32(at: offset + 8, bigEndian: bigEndian),
+              let nsyms = prefix.u32(at: offset + 12, bigEndian: bigEndian),
+              let stroff = prefix.u32(at: offset + 16, bigEndian: bigEndian),
+              let strsize = prefix.u32(at: offset + 20, bigEndian: bigEndian)
+        else { return }
+
+        let entrySize = is64 ? 16 : 12   // nlist_64 / nlist
+        let symbolBytes = Int(nsyms) * entrySize   // both are <= UInt32.max, so no overflow
+        guard Int(symoff) <= fileSize, symbolBytes <= fileSize - Int(symoff) else {
+            throw fail(
+                "symbol table claims \(nsyms) symbol(s) (\(symbolBytes) bytes) at offset \(symoff) of a \(fileSize)-byte file"
+            )
+        }
+        guard Int(stroff) <= fileSize, Int(strsize) <= fileSize - Int(stroff) else {
+            throw fail(
+                "string table claims \(strsize) byte(s) at offset \(stroff) of a \(fileSize)-byte file"
+            )
         }
     }
 
