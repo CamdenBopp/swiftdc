@@ -288,8 +288,14 @@ public enum FieldMapBuilder {
     /// OptionSet's `self.rawValue`). A name that resolves to two DIFFERENT layouts is
     /// ambiguous and dropped, so an ambiguous self-type declines rather than
     /// fabricating one claimant's fields under another's name. Isolated here so the
-    /// rule is testable without a binary. (A precise fix — qualified keys — is a
-    /// scoped follow-up; see docs/research/field-map-name-collision.md.)
+    /// rule is testable without a binary.
+    ///
+    /// This is the simple-name half of the rule. The precise recovery shipped
+    /// alongside it: `buildMaps` also installs a QUALIFIED key per type, so a
+    /// receiver whose fully-qualified name is known resolves to its own layout
+    /// even when its simple name collided and was dropped here. Dropping is
+    /// therefore the fallback for an unqualified receiver, not the only outcome.
+    /// See docs/research/field-map-name-collision.md.
     static func resolvingSimpleNameCollisions(
         _ built: [(name: String, map: FieldMap)]
     ) -> [String: FieldMap] {

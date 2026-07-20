@@ -1,5 +1,15 @@
 # Investigation scratch notes (raw evidence — folded into the main doc)
 
+> **STATUS — historical.** This file records the evidence *as observed at
+> revision 36a08da*. Several findings below have since been fixed and are kept
+> only for the reasoning trail; do not read any of them as current behavior.
+>
+> | Finding | Status at HEAD |
+> |---|---|
+> | **U1** — unsigned comparisons render as signed | ✅ **FIXED** in `2be9e31` (Phase 1 type lattice). Signedness is preserved end to end: `AbstractBinaryOperator` carries distinct `unsigned*` cases decoded from the LO/HS/HI/LS condition codes, and rendering is type-aware — a proven `UInt` renders `<`, a signed operand compared unsigned against a non-negative constant recovers the source range idiom `((0 <= x) && (x < N))`, and unknown signedness renders an explicit `<ᵁ` rather than a fabricated signed compare. Verified at HEAD: `inRange` at `-O` (`cmp x0,#0xa; cset w0, lo`) renders `((0 <= arg0) && (arg0 < 10))`, while a genuinely signed `x < 10` renders `(arg0 < 10)`. The root-cause line numbers cited below (`ValueTracking.swift:1447-1453`) no longer refer to the merging logic, which is gone. |
+> | **L1** — stack locals inlined, not promoted | Open — design gap (no `HighVariable`/named-local concept). |
+> | **S1** — struct-param decomposition is method-only | Partially addressed: small integer structs decompose in getters (`e1a3b6a`, `73eaf73`). Free-function HFA params remain uncovered. |
+
 Revisions:
 - swiftdc project: 36a08da (HEAD at investigation start)
 - ghidra (decompiler cpp, sparse): 13a308a8f949010b64dd2799553e165136fefba6
