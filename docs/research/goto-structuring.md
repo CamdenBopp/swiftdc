@@ -140,6 +140,44 @@ two-exit loop reads idiomatically. That one DOES classify an exit, so it needs t
 care the original probe warned about — the body-bounding and label invariants above
 are now regression-tested, which is the safety net for attempting it.
 
+## Increment 2 SHIPPED: unambiguous fall-out promoted to `break` (`a7ae168`)
+
+Increment 1 chose no fall-out on purpose. Increment 2 promotes one exit to `break`
+only where the choice is forced: the header's immediate post-dominator is where
+control provably reconverges after the loop, so when that block is itself one of the
+exits it IS the fall-out. When control reconverges past the exits, no exit is
+privileged and all stay explicit gotos — decline over guess.
+
+| metric (same fixed target) | inc 1 | inc 2 |
+|---|---|---|
+| `break` | 2,052 | **2,160** (+108) |
+| `goto loc_` | 9,654 | 9,537 (−117) |
+| `while (true)` | 4,689 | 4,689 |
+| `continue` | 5,241 | 5,258 |
+| dangling gotos / duplicate labels | 0 / 0 | **0 / 0** |
+
+`LoopContext` now separates a `break` exit (`exitNode`) from whether emission must
+stay inside the loop's block set (`boundsBody`). They were conflated: body-bounding
+keyed on `exitNode == nil`, so granting a multi-exit loop a `break` would have
+switched its bounding OFF — the precise way this rewrite could have begun emitting
+blocks that do not belong to the loop. Splitting them is what makes the increment
+safe.
+
+Spot-verified end to end on a real conversion: an inner loop's `goto loc_100779d2c`
+became `break`, and that block is now emitted directly after the inner `while` —
+where `break` lands.
+
+### Known limitation, for the next increment
+
+The emitted body is a **subset** of `bodies[header]`, not exactly equal. Bounding
+guarantees nothing foreign is emitted inside a loop; it does not guarantee every
+body block is reached by the bounded walk. Blocks the walk cannot reach linearly are
+drained afterwards as labelled blocks, so they remain correct and reachable, but they
+sit outside the loop that owns them — and a fall-through annotation can then point
+from an outside block into a loop body, which reads awkwardly. Closing that gap
+(emitting each loop's full body inside it) is the natural increment 3, and the
+corpus-wide invariant test added here is the safety net for attempting it.
+
 ## Broader assessment: the small-change reconstruction frontier is a plateau
 
 Across this session the incremental frontier has been mined and the remaining
