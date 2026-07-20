@@ -726,6 +726,22 @@ public struct Disassembler: Sendable {
 
     // MARK: - Data sources
 
+    /// How many function boundaries the binary itself declares, from
+    /// `LC_FUNCTION_STARTS`.
+    ///
+    /// This is the independent oracle for recovery *completeness*: the linker
+    /// emits it, it survives stripping, and it is computed without decoding a
+    /// single instruction — so it cannot be wrong for the same reason a decoder
+    /// is wrong. Recovering far fewer functions than this is evidence of silent
+    /// truncation, which is the failure mode that reads exactly like a valid
+    /// answer. Callers should compare and say so.
+    ///
+    /// Zero means the load command is absent (some cache images), not that the
+    /// binary has no functions — an absent oracle proves nothing either way.
+    public func declaredFunctionCount(in machO: MachOFile) -> Int {
+        functionStarts(of: machO).count
+    }
+
     /// VM addresses of every function start from LC_FUNCTION_STARTS.
     private func functionStarts(of machO: MachOFile) -> [UInt64] {
         guard let starts = machO.functionStarts else { return [] }

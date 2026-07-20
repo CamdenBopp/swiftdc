@@ -390,12 +390,15 @@ struct DisasmCommand: AsyncParsableCommand {
         if listBinaries { try emit(binaryListing(for: path), to: output); return }
         let disassembler = Disassembler(preset: demangle)
         let functions: [DisassembledFunction]
+        // Declared by the binary itself; 0 when the load command is absent.
+        var declared = 0
         if image != nil || imagePath != nil || cache != nil {
             // dyld shared-cache image: no standalone file for llvm-objdump, so
             // decode in-process with Capstone.
             let machO = try BinaryLoader.loadMachO(
                 path: path, image: image, imagePath: imagePath, cachePath: cache, binary: binary
             )
+            declared = disassembler.declaredFunctionCount(in: machO)
             functions = await disassembler.disassemble(machO: machO, functionFilter: function)
         } else if let path {
             // Accept an .app/.framework/.ipa, resolving to a real Mach-O for llvm-objdump.
@@ -405,6 +408,21 @@ struct DisasmCommand: AsyncParsableCommand {
             )
         } else {
             throw BinaryLoadError("Provide a binary path, or --image <name> to disassemble a dyld shared-cache image.")
+        }
+        // The "unusually small" half of the empty-result rule (see CLAUDE.md).
+        // An empty parse already throws; a *partial* one is just as silent and
+        // far more plausible-looking, so an unfiltered run that recovers well
+        // under what the binary declares says so on stderr rather than printing
+        // a confident-looking excerpt. stderr, so stdout stays pipeable.
+        if (function ?? "").isEmpty, declared > 0, functions.count * 2 < declared {
+            let pct = functions.count * 100 / declared
+            FileHandle.standardError.write(Data("""
+                warning: recovered \(functions.count) of \(declared) function(s) \
+                declared by LC_FUNCTION_STARTS (\(pct)%). This listing is incomplete — \
+                treat it as a sample, not an inventory. Filtering with --function \
+                resolves through metadata and is unaffected.
+
+                """.utf8))
         }
         if json {
             try emit(functions.jsonString(), to: output)

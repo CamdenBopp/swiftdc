@@ -67,10 +67,23 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 - **FIXED — the guard against that class.** An empty parse is now cross-checked
   against `LC_FUNCTION_STARTS` and throws `DisassembleError.parsedNothing` with
   both counts rather than returning `[]`.
-- **OPEN — `disasm --image SwiftUI` unfiltered decodes only ~285 functions.**
-  Re-measured at HEAD: exactly 285. Undiagnosed. Given the defect above, the
-  working hypothesis is another silent truncation in the Capstone whole-image
-  path rather than an inherent limit. `--function` on the same image works.
+- **FIXED — the Capstone whole-image decode stopped at the first undecodable
+  byte.** `cs_disasm` halts at the first byte sequence it cannot decode and
+  returns the count so far; the engine called it *once* and took that as the
+  decode. `__text` is full of things that stall it — inline data, alignment
+  padding, jump tables, unknown arm64e forms — so every whole-image decode
+  truncated at the first one.
+
+  The prior entry here recorded "~285 functions" as a modest shortfall. Adding
+  the coverage metric reframed it: **285 of 105,647 declared functions, 0.27%**,
+  decoding 4,040 instructions over 16,160 contiguous bytes before stopping
+  silently. The listing looked entirely normal. ARM64's fixed 4-byte width makes
+  recovery exact rather than heuristic — on a stall, skip one instruction slot
+  and resume — so the fix carries no realignment guesswork.
+
+  Covered by `CapstoneResyncTests`, which pins the resync *stride* (a
+  wrong-sized skip still yields the right instruction count at wrong addresses),
+  and was observed failing against the single-call decode before being trusted.
 - **OPEN — names for statically-dispatched Swift on stripped binaries.** Free
   functions, closures, thunks, and struct/enum non-protocol methods render
   `sub_<addr>`. Boundaries recover; names have no metadata record to recover
@@ -79,10 +92,14 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   receiver vtables, and block pointers stay unresolved. `xrefs` reports the
   count, so this is *disclosed* rather than silent — but `--unreferenced` is
   therefore not a dead-code proof.
-- **UNKNOWN — instruction-level coverage.** No measurement of what fraction of
-  `__text` bytes decode, or how many functions are recovered versus
-  `LC_FUNCTION_STARTS`, on a large real binary. The oracle now exists in code;
-  nothing reports it as a metric.
+- **MITIGATED — recovery coverage is now reported.** An unfiltered run that
+  recovers under half of what `LC_FUNCTION_STARTS` declares warns on stderr with
+  both counts and a percentage (stdout stays pipeable). This is the
+  "unusually small" half of the empty-result rule; the empty case throws.
+  It is what turned the SwiftUI shortfall from a vague "~285" into a diagnosis.
+- **UNKNOWN — byte-level coverage.** Function-count coverage is reported, but
+  nothing measures what fraction of `__text` *bytes* decode, so a function
+  recovered with a truncated body still counts as recovered.
 
 ## 3. Robustness — what breaks it?
 
@@ -161,8 +178,8 @@ The meta-category. Every gap here weakens confidence in every claim above.
 
 | Subsystem | Oracle | Status |
 |---|---|---|
-| Function boundaries | `LC_FUNCTION_STARTS` | **In code** — now enforced on empty parse; not reported as a coverage metric |
-| Instruction decode | `llvm-objdump` vs in-process Capstone | Two independent decoders exist; **nothing cross-checks them** |
+| Function boundaries | `LC_FUNCTION_STARTS` | **Enforced** — throws on empty parse, warns below 50% recovery |
+| Instruction decode | `llvm-objdump` vs in-process Capstone | Two independent decoders exist; **nothing cross-checks them**. Both silent-truncation bugs found so far were in whichever decoder the other wasn't covering |
 | Enum tag → case index | SIL (`swiftc -emit-sil`) | Used once, manually, to confirm the `rank` lowering |
 | Field offsets | `__swift5_fieldmd`, computed offline | Runtime-exact by construction |
 | Cross-image symbols | export trie | Used as the primary source |

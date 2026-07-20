@@ -61,7 +61,11 @@ All of the following was verified against an iOS 27 host cache.
 
 - `objc --image` on a very large framework (Foundation, CoreLocation) is slow —
   it resolves every ObjC class through the cache. The other subcommands are fine.
-- **`disasm --image SwiftUI` unfiltered decodes only ~285 functions**
-  (re-measured at HEAD: exactly 285). Pre-existing and not yet diagnosed;
-  unrelated to field naming — identical before and after that work. Use
-  `--function` there, which resolves through metadata and works correctly.
+- **Fixed: `disasm --image SwiftUI` used to decode only 285 functions.** Long
+  recorded here as an undiagnosed shortfall, it was a silent truncation in the
+  shared Capstone decode loop, not anything cache-specific: `cs_disasm` stops at
+  the first undecodable byte, and the engine called it once. Measured against
+  `LC_FUNCTION_STARTS` the shortfall was 285 of 105,647 — 0.27%. Whole-image
+  decoding now resynchronises past undecodable bytes, and an unfiltered run
+  warns on stderr whenever recovery falls below half of what the binary
+  declares.

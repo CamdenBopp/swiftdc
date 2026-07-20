@@ -309,9 +309,12 @@ lose naming rather than gaining a wrong name.
   Store app had a SINF and every system/development-signed app had none.
   `BinaryLoader` still reads the real `cryptid` whenever it has a binary in hand.
 
-Known rough edges in cache images (including the undiagnosed
-`disasm --image SwiftUI` decode shortfall) are in
+Known rough edges in cache images are in
 [docs/dyld-shared-cache.md](docs/dyld-shared-cache.md).
+
+An unfiltered run that recovers well under what the binary's own
+`LC_FUNCTION_STARTS` declares prints a coverage warning to stderr. Treat such a
+listing as a sample, not an inventory — and please report it.
 
 ---
 

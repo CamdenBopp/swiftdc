@@ -49,19 +49,65 @@ final class CapstoneEngine {
     }
 
     /// Disassemble `code` as ARM64 starting at virtual address `address`.
+    /// Decode `code` in full, resynchronising past bytes Capstone cannot decode.
+    ///
+    /// `cs_disasm` stops at the FIRST undecodable instruction and reports how
+    /// many it managed — it does not skip and continue. A single call therefore
+    /// truncates the moment it meets anything that is not a valid instruction,
+    /// and `__text` is full of such things: inline data, alignment padding,
+    /// jump tables, and arm64e forms this build of Capstone may not know.
+    ///
+    /// Taking that first result as "the decode" is a silent-truncation bug of
+    /// exactly the shape the empty-result rule exists to catch. On SwiftUI it
+    /// stopped after 4,040 instructions — 285 of 105,647 functions, 0.27%,
+    /// with the output looking entirely normal.
+    ///
+    /// ARM64 instructions are fixed-width 4-byte aligned, so recovery is exact
+    /// rather than heuristic: on a stall, skip exactly one instruction slot and
+    /// resume. No guessing about where the stream realigns, because it cannot
+    /// drift.
     func disassemble(_ code: Data, address: UInt64) -> [DecodedInstruction] {
         guard opened, !code.isEmpty else { return [] }
         var results: [DecodedInstruction] = []
 
         code.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
-            var insns: UnsafeMutablePointer<cs_insn>?
-            let count = cs_disasm(handle, base, code.count, address, 0, &insns)
-            guard count > 0, let insns else { return }
-            defer { cs_free(insns, count) }
+            var offset = 0
+            while offset < code.count {
+                var insns: UnsafeMutablePointer<cs_insn>?
+                let count = cs_disasm(
+                    handle, base + offset, code.count - offset, address &+ UInt64(offset), 0, &insns
+                )
+                if count > 0, let insns {
+                    append(insns, count: count, into: &results)
+                    // Advance by what actually decoded, then step over the byte
+                    // that stalled it.
+                    let consumed = Int((insns + (count - 1)).pointee.address &- (address &+ UInt64(offset)))
+                        + Int((insns + (count - 1)).pointee.size)
+                    cs_free(insns, count)
+                    offset += max(consumed, Self.instructionSize)
+                } else {
+                    if let insns { cs_free(insns, 0) }
+                }
+                // Undecodable slot (or a stall): skip one instruction and resume.
+                if offset < code.count, count == 0 {
+                    offset += Self.instructionSize
+                }
+            }
+        }
+        return results
+    }
 
-            results.reserveCapacity(count)
-            for index in 0..<count {
+    /// ARM64's fixed instruction width — the resynchronisation stride.
+    private static let instructionSize = 4
+
+    private func append(
+        _ insns: UnsafeMutablePointer<cs_insn>,
+        count: Int,
+        into results: inout [DecodedInstruction]
+    ) {
+        results.reserveCapacity(results.count + count)
+        for index in 0..<count {
                 let pointer = insns + index
                 let insn = pointer.pointee
                 let detail = StructuredInsn.decode(insn)
@@ -83,9 +129,7 @@ final class CapstoneEngine {
                         detail: detail
                     )
                 )
-            }
         }
-        return results
     }
 
     // MARK: - Helpers
