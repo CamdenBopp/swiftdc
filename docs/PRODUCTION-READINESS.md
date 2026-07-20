@@ -11,7 +11,7 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-07-20, at commit `6ab07f7`.
+Last audited: 2026-07-20, at commit `ccf167a`.
 
 ---
 
@@ -339,14 +339,70 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 - **MITIGATED — `MachOFile.symbols` fatalErrors on cache images** whose
   `__LINKEDIT` sits in another subcache. Uncatchable; avoided by reading the
   export trie instead, which is also semantically correct.
+- **OPEN — metadata parsing crashes on corrupted `__swift5_*` / `__objc_*`
+  contents.** The prediction that the `try!`-in-a-dependency class would recur
+  has now been tested a **third** time and held again. `MachOPreflight` validates
+  the Mach-O *container*; it says nothing about section *contents*, which
+  MachOSwiftSection / MachOObjCSection parse.
+
+  Measured with `Tools/metadata-fuzz.py` (seeded, deterministic —
+  `libSample.dylib`, 100 mutants, seed 1234): **49 crashes in 800 runs, 6.1%**,
+  versus 2.5% for the container fuzz. All die with **empty stderr**:
+
+  | section | signal | subcommands killed |
+  |---|---|---|
+  | `__swift5_protos` | SIGTRAP | **all eight** — no entry point survives |
+  | `__swift5_assocty` | SIGTRAP + SIGSEGV | dump, interface, analyze |
+  | `__objc_methlist` | SIGSEGV | objc, objc --methods, disasm, xrefs, analyze |
+
+  `disasm` is among them. Container corruption never reached it because
+  llvm-objdump rejects the file first, but metadata is parsed in-process, so that
+  shield does not apply here.
+
+  **At least five sections are affected, not three.** A second seed (20 mutants,
+  seed 999) found `__swift5_types` — again killing all eight subcommands — and
+  `__swift5_fieldmd`, neither of which the first seed reached. Its yield was
+  21.9%, though on a much smaller sample. The section list below is therefore a
+  lower bound on the blast radius, not an inventory; whichever sections a seed
+  happens to hit is what it reports.
+
+  Two distinct dependency defects, from backtraces:
+
+  1. **A negative resolved offset traps instead of being rejected.**
+     `MangledName.resolve` → `MachOFile.readElement(offset:)` → `numericCast` →
+     `Negative value is not representable`. The bounds check *already exists* —
+     it is simply performed after an unsigned conversion. Proven by a controlled
+     test on one relative pointer: `+32767` (out of range) returns
+     `Error: offsetOutOfBounds` and exit 1, while `-32767` SIGTRAPs. Note the fix
+     is **not** "reject negative": `-1024` resolves in-bounds and exits 0,
+     because relative pointers legitimately point backwards. The check must
+     happen on the resolved absolute offset, before conversion.
+  2. **An unbounded string read walks off the mapping.**
+     `ObjCMethodList.indirectMethod` and `AssociatedTypeRecord.name` →
+     `readString(offset:)` → `strlen` → SIGSEGV.
+
+  Containment: both live inside the linked dependencies, so neither is catchable
+  from swiftdc. Defect 1 is a one-guard upstream fix on a path that already has
+  the right error case. Pre-validating section contents in `MachOPreflight` is
+  possible in principle but needs per-section layout knowledge for ~25 sections,
+  and carries the over-rejection risk this project treats as worse than the
+  crash. Not attempted here on that basis; the root cause is recorded precisely
+  enough to act on.
+- **MITIGATED — metadata fuzzing is now repeatable, not hand-run.**
+  `Tools/metadata-fuzz.py` is seeded and deterministic for a given
+  (binary, mutants, seed), covers all eight metadata-reading subcommands, and
+  exits nonzero when any mutant kills the CLI — so it can become a gate the
+  moment the class above is contained. It is not yet wired into CI.
 - **OPEN — fuzzing is bounded and manual; metadata parsers are unprobed.** The
   prediction that the `try!`-in-a-dependency pattern would recur in load-command
   payloads was tested and **held** — 12 crashes across four subcommands, now
   fixed. A 120-mutant fuzz over the load-command region has since been run
-  (2.5% crash yield, all in the uncontainable class). Still unprobed:
-  `__swift5_*` and `__objc_*` **metadata** parsing, malformed **fat slice
-  payloads** (fat slice *extents* are validated; the thin headers inside a slice
-  are not re-validated), and anything beyond the 1 MiB preflight read prefix.
+  (2.5% crash yield, all in the uncontainable class). `__swift5_*` and
+  `__objc_*` **metadata** parsing has since been probed and is crashing — see the
+  metadata entry above (6.1% yield, three sections, one of which kills every
+  subcommand). Still unprobed: malformed **fat slice payloads** (fat slice
+  *extents* are validated; the thin headers inside a slice are not
+  re-validated), and anything beyond the 1 MiB preflight read prefix.
   Nothing runs in CI.
 - **MITIGATED — behavior across optimization levels.** The differential oracle
   now runs at both `-Onone` and `-O` (318 comparisons each), executing the
