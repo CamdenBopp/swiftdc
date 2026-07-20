@@ -628,6 +628,18 @@ private func reconstructionStructured(
     if let intPair = try await reconstructionPseudo("IntPair.sum") {
         #expect(intPair.contains("return (self.a + self.b)"))
     }
+    // The same, on the INDIRECT-self path: two nested `Wide` types share a simple
+    // name and are >16 bytes, so `self` arrives as a pointer and the type is
+    // resolved from the demangled name rather than register decomposition. The
+    // qualified key must still reach each type's OWN layout.
+    if let firstW = try await reconstructionPseudo("OuterX.Wide.firstW") {
+        #expect(firstW.contains("return self.w1"))
+        #expect(!firstW.contains("self.v1"))       // never OuterY's
+    }
+    if let firstV = try await reconstructionPseudo("OuterY.Wide.firstV") {
+        #expect(firstV.contains("return self.v1"))
+        #expect(!firstV.contains("self.w1"))       // never OuterX's
+    }
 }
 
 @Test func resolvesSameSimpleNameClassesThroughQualifiedKeyIfPresent() async throws {

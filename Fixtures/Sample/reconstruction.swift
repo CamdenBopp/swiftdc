@@ -459,3 +459,27 @@ public struct BoxB {
         public var sum: Int { alpha + beta + gamma }
     }
 }
+
+// Two DISTINCT nested `Wide` types sharing a simple name, each LARGER than 16 bytes
+// so `self` arrives indirectly (the x20-pointer path, resolved via the demangled
+// self-type rather than register decomposition). The qualified key must let each
+// getter reach its OWN layout — `OuterX.Wide.firstW` names `w1`, never OuterY's `v1`.
+public struct OuterX {
+    public struct Wide {
+        var w1: Int
+        var w2: Int
+        var w3: Int
+        var w4: Int
+        public var firstW: Int { w1 }
+    }
+}
+public struct OuterY {
+    public struct Wide {
+        var v1: Int
+        var v2: Int
+        var v3: Int
+        var v4: Int
+        var v5: Int
+        public var firstV: Int { v1 }
+    }
+}
