@@ -741,6 +741,22 @@ private func reconstructionStructured(
     #expect(duplicateLabels(in: s).isEmpty)
 }
 
+/// Structural invariants across EVERY fixture function, not one hand-picked shape.
+/// Multi-exit loops fold into `while (true)` and one exit may be promoted to
+/// `break`; both rewrites move blocks around, so the guarantees that keep the
+/// output honest are checked over the whole corpus:
+///   * every `goto loc_X` resolves to an emitted `loc_X:` label,
+///   * no label is defined twice,
+///   * braces balance.
+/// A regression in loop folding or `break` promotion shows up here even when no
+/// single fixture was written to target it.
+@Test func structuredOutputKeepsItsInvariantsAcrossFixturesIfPresent() async throws {
+    guard let all = try await reconstructionStructured("Reconstruction") else { return }
+    #expect(danglingGotoTargets(in: all).isEmpty)
+    #expect(duplicateLabels(in: all).isEmpty)
+    #expect(all.filter { $0 == "{" }.count == all.filter { $0 == "}" }.count)
+}
+
 /// Labels defined more than once within the rendered output.
 private func duplicateLabels(in structured: String) -> [String] {
     var seen = Set<String>(), duplicated: [String] = []

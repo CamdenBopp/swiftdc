@@ -46,7 +46,16 @@ struct ControlFlowStructure {
     /// `exitNode` is the single structured exit, or nil for a MULTI-exit loop —
     /// which has no one way out to render as `break`, so every exit leaves through
     /// an explicit `goto` and `body` bounds what may be emitted inside the loop.
-    struct LoopContext { let header: Int; let exitNode: Int?; let body: Set<Int> }
+    /// `exitNode` is the exit that renders as `break`; `boundsBody` marks a
+    /// MULTI-exit loop, whose emission must stay inside `body` (every other exit
+    /// leaves by an explicit `goto`). The two are independent: granting a
+    /// multi-exit loop a `break` must NOT switch its body-bounding off.
+    struct LoopContext {
+        let header: Int
+        let exitNode: Int?
+        let body: Set<Int>
+        let boundsBody: Bool
+    }
 
     let blocks: [BasicBlock]
     let exit: Int
@@ -107,7 +116,8 @@ struct ControlFlowStructure {
         let backward = successors.enumerated().map { u, succ in succ.filter { back.contains([u, $0]) } }
         self.forwardSuccessors = forward
         self.backSuccessors = backward
-        self.ipdom = Self.postDominators(count: blocks.count, exit: exit, forward: forward)
+        let postDominators = Self.postDominators(count: blocks.count, exit: exit, forward: forward)
+        self.ipdom = postDominators
 
         // Natural loops: for each back-edge u→h, body = {h} ∪ predecessors of u
         // up to h. Fold only single-forward-exit loops (provably correct).
@@ -144,9 +154,21 @@ struct ControlFlowStructure {
             // exit leaving by an explicit `goto`. Choosing no primary exit is what
             // makes that safe: nothing is classified, so nothing can be
             // misrepresented.
-            loops[header] = LoopInfo(
-                body: body, exit: exits.count == 1 ? exits.first : nil, exits: exits
-            )
+            // One exit is the loop's `break`. For a single-exit loop that is the
+            // exit. For a MULTI-exit loop, take it only when the choice is
+            // unambiguous: the header's immediate post-dominator is where control
+            // provably reconverges after the loop, so if that block is itself one
+            // of the exits it IS the fall-out. When it is not (control reconverges
+            // somewhere past the exits), no exit is privileged — keep every one of
+            // them an explicit goto rather than guess which is the way out.
+            let fallOut: Int?
+            if exits.count <= 1 {
+                fallOut = exits.first
+            } else {
+                let reconvergence = postDominators[header]
+                fallOut = exits.contains(reconvergence) ? reconvergence : nil
+            }
+            loops[header] = LoopInfo(body: body, exit: fallOut, exits: exits)
         }
         self.loops = loops
     }
@@ -291,8 +313,9 @@ struct ControlFlowStructure {
                 if gotoTargets.contains(current) { lines.append("\(pad)loc_\(hex(blocks[current].startAddress)):") }
                 let context = LoopContext(
                     header: current,
-                    exitNode: info.exits.count <= 1 ? (info.exit ?? exit) : nil,
-                    body: info.body
+                    exitNode: info.exit ?? (info.exits.count <= 1 ? exit : nil),
+                    body: info.body,
+                    boundsBody: info.exits.count > 1
                 )
                 if let rotated = whileCondition(header: current, info: info) {
                     visited.insert(current)   // header consumed as the loop condition
@@ -390,7 +413,7 @@ struct ControlFlowStructure {
                     lines.append("\(pad)}")
                 }
                 if merge == exit { break }
-                if let loop, loop.exitNode == nil, !loop.body.contains(merge),
+                if let loop, loop.boundsBody, !loop.body.contains(merge),
                    !isTrivialTail(merge) {
                     gotoTargets.insert(merge)
                     lines.append("\(pad)goto loc_\(hex(blocks[merge].startAddress))")
@@ -413,7 +436,7 @@ struct ControlFlowStructure {
                 if let loop, let exitNode = loop.exitNode, only == exitNode {
                     lines.append("\(pad)break"); break
                 }
-                if let loop, loop.exitNode == nil, only != exit,
+                if let loop, loop.boundsBody, only != exit,
                    !loop.body.contains(only), !isTrivialTail(only) {
                     // Leaving a multi-exit loop: an explicit goto keeps the emitted
                     // body exactly the loop's blocks.
@@ -439,7 +462,7 @@ struct ControlFlowStructure {
             return ["\(pad)goto loc_\(hex(blocks[v].startAddress))  // loop"]
         }
         if let loop, let exitNode = loop.exitNode, v == exitNode { return ["\(pad)break"] }
-        if let loop, loop.exitNode == nil, v != exit,
+        if let loop, loop.boundsBody, v != exit,
            !loop.body.contains(v), !isTrivialTail(v) {
             gotoTargets.insert(v)
             return ["\(pad)goto loc_\(hex(blocks[v].startAddress))"]
