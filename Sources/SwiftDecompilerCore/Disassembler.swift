@@ -406,7 +406,9 @@ public struct Disassembler: Sendable {
             } else if let valueSelf {
                 valueSelf.fieldMap
             } else {
-                classSelfTypeName.flatMap { fieldMaps[$0] }
+                classSelfTypeName.flatMap {
+                    Self.selfFieldMap(of: function, simpleName: $0, fieldMaps: fieldMaps)
+                }
             }
             return enrichCallArguments(
                 in: function, resolver: resolver, swiftTargets: swiftTargets,
@@ -1138,13 +1140,21 @@ public struct Disassembler: Sendable {
         selfIndex: SelfTypeIndex,
         fieldMaps: [String: FieldMap]
     ) -> String? {
+        // A type whose SIMPLE name collided was dropped from the map by the
+        // collision guard, but its QUALIFIED key survives — so a self type counts
+        // as resolved when either key reaches a layout. The SIMPLE name is what is
+        // returned: `vtableIndex` is keyed by simple name, and only the field-map
+        // lookup prefers the qualified key.
+        func resolves(_ simpleName: String) -> Bool {
+            selfFieldMap(of: function, simpleName: simpleName, fieldMaps: fieldMaps) != nil
+        }
         if let binding = selfIndex.binding(for: function.startAddress) {
             // Authoritative, including when it says no.
-            guard binding.isInstance, fieldMaps[binding.selfTypeName] != nil else { return nil }
+            guard binding.isInstance, resolves(binding.selfTypeName) else { return nil }
             return binding.selfTypeName
         }
         guard let fromSymbol = selfTypeFromDemangledName(function.demangledName),
-              fieldMaps[fromSymbol] != nil
+              resolves(fromSymbol)
         else { return nil }
         return fromSymbol
     }
@@ -1195,6 +1205,23 @@ public struct Disassembler: Sendable {
     /// The `fieldMaps` membership check at the call site is the backstop:
     /// `sample.run() -> ()` also has a dot, but a module has no field map.
     static func selfTypeFromDemangledName(_ name: String?) -> String? {
+        selfTypeComponents(name).map { $0.parts[$0.typeIndex] }
+    }
+
+    /// The FULLY-QUALIFIED self type (`Module.Outer.Type`) — the same components
+    /// `selfTypeFromDemangledName` takes the last of. This matches the qualified
+    /// keys the field-map builder indexes, so a type whose SIMPLE name collided
+    /// (and was dropped by the collision guard) still resolves to its OWN map.
+    /// Nil when there is no module prefix to qualify with, so the caller falls
+    /// back to the simple name rather than inventing a path.
+    static func qualifiedSelfTypeFromDemangledName(_ name: String?) -> String? {
+        guard let (parts, typeIndex) = selfTypeComponents(name), typeIndex >= 1 else { return nil }
+        return parts[0...typeIndex].joined(separator: ".")
+    }
+
+    /// The demangled name's context components plus the index of the self type
+    /// among them, or nil when the name does not denote an instance member.
+    private static func selfTypeComponents(_ name: String?) -> (parts: [String], typeIndex: Int)? {
         guard let name else { return nil }
         // Cut the return clause and property type first, so `foo(a: Dog.Kind)`
         // and `... : Swift.String` are not mined for type names.
@@ -1210,7 +1237,24 @@ public struct Disassembler: Sendable {
         // `Type.method`            -> 2 from the end.
         let typeIndex = accessors.contains(parts.last ?? "") ? parts.count - 3 : parts.count - 2
         guard typeIndex >= 0, typeIndex < parts.count else { return nil }
-        return parts[typeIndex]
+        return (parts, typeIndex)
+    }
+
+    /// The field map for a resolved self type, preferring the QUALIFIED key so a
+    /// type whose simple name collided still reaches its OWN layout. The qualified
+    /// name must denote the same simple type, so a mismatch can never substitute a
+    /// different type's map.
+    static func selfFieldMap(
+        of function: DisassembledFunction,
+        simpleName: String,
+        fieldMaps: [String: FieldMap]
+    ) -> FieldMap? {
+        if let qualified = qualifiedSelfTypeFromDemangledName(function.demangledName),
+           qualified.split(separator: ".").last.map(String.init) == simpleName,
+           let map = fieldMaps[qualified] {
+            return map
+        }
+        return fieldMaps[simpleName]
     }
 
     /// Whether a symbol is Swift-mangled, and so uses the Swift calling

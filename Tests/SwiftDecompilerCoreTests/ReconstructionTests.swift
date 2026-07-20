@@ -630,6 +630,24 @@ private func reconstructionStructured(
     }
 }
 
+@Test func resolvesSameSimpleNameClassesThroughQualifiedKeyIfPresent() async throws {
+    // The same collision on the CLASS/POINTER (x20) path, which resolves its self
+    // type from the demangled name rather than by register decomposition. Two
+    // nested `Holder` classes share a simple key, so each getter must reach its OWN
+    // layout through the qualified key — never the other's fields, never declining.
+    if let total = try await reconstructionPseudo("BoxA.Holder.total") {
+        #expect(total.contains("return (self.first + self.second)"))
+        #expect(!total.contains("self.alpha"))
+        #expect(!total.contains("self.gamma"))
+    }
+    if let sum = try await reconstructionPseudo("BoxB.Holder.sum") {
+        #expect(sum.contains("self.alpha"))
+        #expect(sum.contains("self.gamma"))
+        #expect(!sum.contains("self.first"))
+        #expect(!sum.contains("self.second"))
+    }
+}
+
 @Test func namesEnumTagCheckInBranchIfPresent() async throws {
     // A switch's enum-tag check in a structured `if` names the enum case
     // (`arg0 == Direction.east`) rather than a raw masked register. Case index 1

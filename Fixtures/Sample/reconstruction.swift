@@ -439,3 +439,23 @@ public struct HolderB {
         public var total: Int { gamma + delta + epsilon }
     }
 }
+
+// Two DISTINCT nested CLASSES sharing the simple name `Holder`, reached through the
+// class/pointer (x20) path rather than register decomposition. They collide on the
+// simple field-map key, so each getter must resolve through its QUALIFIED key to its
+// OWN fields — never the other's, and never declining.
+public struct BoxA {
+    public final class Holder {
+        var first: Int = 1
+        var second: Int = 2
+        public var total: Int { first + second }
+    }
+}
+public struct BoxB {
+    public final class Holder {
+        var alpha: Int = 10
+        var beta: Int = 20
+        var gamma: Int = 30
+        public var sum: Int { alpha + beta + gamma }
+    }
+}
