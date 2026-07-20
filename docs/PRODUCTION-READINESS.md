@@ -11,7 +11,7 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-07-20, at commit `77dadd3`.
+Last audited: 2026-07-20, at commit `081f052`.
 
 ---
 
@@ -328,11 +328,31 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   reducing to the uncontainable class above. Before the payload fix the same
   class of input crashed on every mutation that touched a segment or symtab
   range. This is a harness run by hand, not a CI gate.
-- **OPEN — only the file path is guarded.** `MachOPreflight` sits on
-  `BinaryLoader.load(path:)`. The dyld-cache entry point (`loadMachO`) does not
-  validate, on the reasoning that the system cache is not attacker-supplied —
-  which holds for `--cache` omitted and is an assumption for an extracted cache
-  passed by path.
+- **FIXED — the `--cache` entry point trapped on a short file.** The recorded
+  reasoning ("the system cache is not attacker-supplied") held only for `--cache`
+  *omitted*; an extracted cache passed by path is user-supplied, and that
+  assumption was tested rather than trusted. `FullDyldCache(url:)` reads a whole
+  `dyld_cache_header` at offset 0 **before** checking the magic, via a `try!`, so
+  any file shorter than that struct trips
+  `precondition(data.count >= layoutSize)` and aborts — exit 133, empty stderr,
+  the same uncatchable-dependency class as the Mach-O path.
+
+  Probed: **5 of 7** malformed caches crashed, every one shorter than the header
+  (`MachOKit/DyldCache.swift:82`). And the residue is *zero*: every file at least
+  header-length — including valid-magic files with lying mapping/image
+  offsets — declines cleanly through MachOKit's own magic and cpu-type checks. So
+  the entire class closes with **one size guard** on the `cachePath` branch of
+  `openDyldCache`, throwing when the file is shorter than `DyldCacheHeader.layoutSize`
+  (read from the type, 552 bytes today, so it tracks the struct rather than
+  hardcoding it). The host-cache branch is left unguarded — it is the running
+  system's cache, not a user path.
+
+  Both directions proven. The end-to-end test drives the CLI as a subprocess and
+  was observed failing without the guard ("empty: killed by signal 5"); the
+  over-rejection test pins the one-byte boundary — a file of `layoutSize - 1` is
+  rejected *by the size guard* (which names the size), while `layoutSize` exactly
+  passes the guard and is declined *by MachOKit* on content. A real 737 KB
+  extracted cache still dumps Foundation through the guarded branch.
 - **FIXED — structurer stack overflow on deep CFGs** (`ca82d6f`).
 - **FIXED — spurious dyld-cache markers trapped ObjC index construction**
   (covered by `buildsObjCIndexWithoutTrappingOnSpuriousCacheMarkers`).

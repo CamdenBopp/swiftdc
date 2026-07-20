@@ -179,6 +179,27 @@ extension BinaryLoader {
             guard FileManager.default.fileExists(atPath: url.path) else {
                 throw BinaryLoadError("Dyld shared cache not found: \(cachePath)")
             }
+            // MachOKit reads a whole `dyld_cache_header` at offset 0 *before* it
+            // checks the magic, via a `try!`, so a file shorter than that struct
+            // trips its `precondition(data.count >= layoutSize)` and aborts the
+            // process — uncatchable, empty stderr, exactly the container-trap
+            // class the Mach-O preflight exists for. Probed: 5 of 7 malformed
+            // caches crashed, all shorter than the header; every file at least
+            // this long instead declines cleanly through MachOKit's own magic and
+            // cpu-type checks. So one size guard closes the whole class.
+            //
+            // The threshold is read from the type rather than hardcoded, so it
+            // tracks the struct if MachOKit's header grows. The host-cache branch
+            // below is left unguarded: it is the running system's cache, not a
+            // user-supplied path, so it cannot be short.
+            let headerSize = DyldCacheHeader.layoutSize
+            let fileSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil
+            if let fileSize, fileSize < headerSize {
+                throw BinaryLoadError(
+                    "Not a dyld shared cache: \(cachePath) — file is \(fileSize) byte(s), "
+                    + "shorter than a \(headerSize)-byte cache header"
+                )
+            }
             do {
                 return try FullDyldCache(url: url)
             } catch {
