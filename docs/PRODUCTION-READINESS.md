@@ -11,7 +11,7 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-07-20, at commit `c5626c6`.
+Last audited: 2026-07-20, at commit `f939b73`.
 
 ---
 
@@ -411,10 +411,36 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   into the file. A large count in a small binary would be rejected as an
   out-of-range pointer, refusing a valid input.
 
-  **Still OPEN**: `__swift5_assocty`, `__swift5_fieldmd`, `__objc_methlist` and
-  anything else with structured records. Both underlying defects remain in the
-  dependencies and are unreachable from swiftdc; defect 1 is a one-guard upstream
-  change on a path that already has the right error case.
+  **Still OPEN**, and the residue was measured rather than estimated. Across
+  four seeds (220 mutants) the sections still crashing are `__swift5_assocty`
+  (20), `__objc_methlist` (10), `__swift5_fieldmd` (8), `__swift5_builtin` (6)
+  and `__objc_const` (5) — **five sections, and more would surface with more
+  seeds**. Extending the section-by-section approach is therefore a treadmill
+  with no defined end, which is why it was not continued.
+
+  **The one-guard upstream fix was tested, not assumed.** Applying
+  `guard offset >= 0 else { throw ReadingError.invalidAddress(offset) }` to the
+  seven read entry points of `MachOSwiftSection` (via `swift package edit`, then
+  reverted) removes **49 → 21 crashes, ~57%**, with no regression on any fixture
+  or on a 36 MB real binary:
+
+  | seed | mutants | before | with the guard |
+  |---|---|---|---|
+  | 1234 | 100 | 22 (2.8%) | 10 (1.2%) |
+  | 999 | 40 | 8 (2.5%) | **0 (0.0%)** |
+  | 424242 | 40 | 14 (4.4%) | 6 (1.9%) |
+  | 7 | 40 | 5 (1.6%) | 5 (1.6%) |
+
+  Written up as [docs/upstream-negative-offset.md](upstream-negative-offset.md),
+  ready to file. Not fixed in-tree: the fix belongs in the dependency, and
+  forking would take swiftdc off upstream — a maintainer's decision, not a side
+  effect of a bug hunt.
+
+  The residue after that guard is two further defects, both distinct: an
+  **unbounded `strlen`** in `readString(offset:)` (SIGSEGV, needs a length bound
+  rather than a sign check), and **`MachOObjCSection`**, which has the same
+  unsigned-conversion shape and was not patched — every surviving SIGTRAP is in
+  `__objc_methlist` or `__objc_const`, which it parses.
 - **MITIGATED — metadata fuzzing is now repeatable, not hand-run.**
   `Tools/metadata-fuzz.py` is seeded and deterministic for a given
   (binary, mutants, seed), covers all eight metadata-reading subcommands, and
