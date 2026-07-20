@@ -11,7 +11,7 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-07-19, at commit `aa6d84b`.
+Last audited: 2026-07-19, at commit `87f3ea9`.
 
 ---
 
@@ -62,23 +62,44 @@ because it cannot be distinguished from a right one by reading the output.
   is resolved from swiftdc's *own reported symbol*, so the oracle cannot drift
   onto a different function than the one it analysed.
 
-  Currently **318 comparisons across 13 functions** — comparisons, ternaries,
-  arithmetic, bit operations, and the signed-range idiom, at edge inputs
-  including `Int.min`/`Int.max`.
+  Currently **636 comparisons — 318 at `-Onone` and 318 at `-O`**, 13 functions
+  at each level: comparisons, ternaries, arithmetic, bit operations, and the
+  signed-range idiom, at edge inputs including `Int.min`/`Int.max`.
+
+  The `-O` half is the part that matters most, because optimized lowering is
+  where U1 lived. It executes the recovered idiom
+  `((0 <= arg0) && (arg0 < 100))` against the machine's single unsigned compare
+  (`cmp x0, #100; cset w0, lo`) at `Int.min`, `-1`, `0`, `100` and `Int.max`.
+  **That is the first execution-based confirmation the U1 fix is correct** — it
+  had previously only been reasoned about. `-O` also covers a `csel` cascade
+  (`threeWay`) that `-Onone` cannot recover at all, and commuted operands
+  (`(arg1 & arg0)`) that `-Onone` renders in source order.
+
+  The two fixtures are separate builds of the same source, so they export
+  **byte-identical mangled symbols**. Resolved pointers are therefore verified
+  with `dladdr` to lie in the intended image; without that, `dlsym` collapsing
+  onto the first-loaded library would make the `-O` half silently re-test
+  `-Onone` code while reporting optimized coverage. Confirmed live: the same
+  symbol resolves to distinct addresses in distinct owners.
 
   Proven sensitive, not merely green: injecting U1's shape (`((arg0 >= 0) &&
   (arg0 < 100))` → `(arg0 < 100)`) fails at exactly the negative inputs where
   that defect manifests. The first injection attempt was a **no-op** — it
-  targeted the `-O` spelling, which this `-Onone` fixture never emits — and
-  passed misleadingly, so the harness now asserts a minimum comparison count and
-  a maximum skip count. An oracle that silently compares nothing is worse than
-  no oracle, because it reports success.
+  targeted the `-O` spelling, which the `-Onone` fixture never emits — and
+  passed misleadingly.
+
+  The guards that came out of that: a per-fixture comparison floor, and a
+  **named list of cases that must not be skipped** at each level. The named list
+  is not redundant with the count — simulating a loss of `-O` `rangeCheck`
+  recovery leaves 309 comparisons, which clears the floor of 200 while removing
+  the single case the oracle exists for. Only the named check catches it, and it
+  was confirmed firing.
 - **OPEN — the oracle's domain is narrow.** Pure integer/boolean functions with
   scalar arguments: the domain where "semantically equal" is decidable by
   sampling. It does not cover floating point, strings, enums with payloads,
   memory effects, or anything with side effects — and it samples rather than
-  proves. Extending it to `-O` fixtures is the cheapest next increment, since
-  optimized lowering is where U1 lived.
+  proves. Both optimization levels are covered; what remains uncovered is the
+  *value domain*, not the lowering.
 - **OPEN — a declined return value renders as a bare `return`.** A function
   whose recovered return value is unknown prints `return` with no operand, even
   when its signature says `-> Swift.Int` (`threeWay`, `accumulate`). It reads
@@ -187,9 +208,14 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   metadata, which is where the remaining parsers are, and where the same
   `try!`-in-a-dependency pattern is likely to recur. A real fuzzer over mutated
   copies of the fixtures is the obvious next step and has never been run.
-- **UNKNOWN — behavior across optimization levels.** `-Onone` and `-O` lower
-  differently and fixtures exist for both, but no systematic sweep asserts that
-  a construct proven at one level holds at the other.
+- **MITIGATED — behavior across optimization levels.** The differential oracle
+  now runs at both `-Onone` and `-O` (318 comparisons each), executing the
+  recovered expression against the real compiled function at each level. This is
+  the level where lowering genuinely diverges: `-O` turns a signed range check
+  into one unsigned compare, folds branches into `csel`, commutes operands, and
+  optimizes some functions away entirely. Scoped to the scalar domain the oracle
+  covers — it says nothing about optimized lowering of strings, payload enums,
+  or side-effecting code.
 
 ## 4. Determinism
 
@@ -273,7 +299,7 @@ The meta-category. Every gap here weakens confidence in every claim above.
 | Enum tag → case index | SIL (`swiftc -emit-sil`) | Used once, manually, to confirm the `rank` lowering |
 | Field offsets | `__swift5_fieldmd`, computed offline | Runtime-exact by construction |
 | Cross-image symbols | export trie | Used as the primary source |
-| Recovered semantics | the compiled function itself, called via `dlsym` | **In tests** — 318 comparisons over 13 pure scalar functions; proven to catch an injected U1. Narrow: no floats, strings, payload enums, or side effects |
+| Recovered semantics | the compiled function itself, called via `dlsym` | **In tests** — 636 comparisons over 13 pure scalar functions at both `-Onone` and `-O`; proven to catch an injected U1. Narrow: no floats, strings, payload enums, or side effects |
 | Malformed-input handling | the CLI's own exit status, checked from a subprocess | **In tests** — 9 header-shaped inputs; no fuzzer, no malformed metadata |
 | Whole-binary output | — | **None.** No golden-output corpus, so a silent regression on a real framework would not be noticed |
 

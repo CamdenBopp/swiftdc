@@ -241,13 +241,32 @@ private final class FixtureImage {
               let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL)
         else { return nil }
         self.handle = handle
+        self.path = path
     }
     deinit { dlclose(handle) }
 
+    let path: String
+
     /// Resolve by the RAW symbol swiftdc reported, so the oracle is guaranteed to
     /// be calling the same function it analysed.
+    ///
+    /// Then verify, via `dladdr`, that the address actually lies in THIS image.
+    /// The `-Onone` and `-O` fixtures are two builds of the same source, so they
+    /// export byte-identical mangled symbols — the objc runtime says so out loud
+    /// ("Class ... is implemented in both ..."). If `dlsym` resolved to the
+    /// first-loaded image, the `-O` half of this oracle would be silently
+    /// re-testing `-Onone` code while reporting optimized coverage. That is the
+    /// no-op-that-passes failure this harness exists to prevent, so it is
+    /// checked rather than assumed.
     func function(symbol: String) -> UnsafeMutableRawPointer? {
-        dlsym(handle, symbol.hasPrefix("_") ? String(symbol.dropFirst()) : symbol)
+        let name = symbol.hasPrefix("_") ? String(symbol.dropFirst()) : symbol
+        guard let pointer = dlsym(handle, name) else { return nil }
+        var info = Dl_info()
+        guard dladdr(pointer, &info) != 0, let owner = info.dli_fname else { return nil }
+        let resolved = URL(fileURLWithPath: String(cString: owner)).resolvingSymlinksInPath().path
+        let expected = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        guard resolved == expected else { return nil }
+        return pointer
     }
 }
 
@@ -312,10 +331,47 @@ private let oracleCases: [OracleCase] = [
 
 // MARK: - The test
 
-private let fixture = "Fixtures/Sample/libReconstruction.dylib"
+/// Both optimization levels are oracles in their own right.
+///
+/// `-O` is not a nice-to-have here: it lowers differently, and it is where U1
+/// actually lived. A signed range check becomes a single UNSIGNED compare
+/// (`cmp x0, #100; cset w0, lo`), which swiftdc renders as the source-level
+/// idiom `((0 <= arg0) && (arg0 < 100))`. Whether that idiom is genuinely
+/// equivalent to the machine's unsigned test has, until now, only ever been
+/// reasoned about — never executed. `csel` ternaries, commuted operands, and
+/// functions recovered at one level but not the other are all in the same
+/// position.
+private struct Fixture {
+    let path: String
+    let label: String
+    /// Cases that MUST be compared at this level. A skip here is a regression,
+    /// not a limitation — see the no-op injection lesson in the test below.
+    let required: Set<String>
+    /// Floor on comparisons for this level alone, so losing a whole fixture
+    /// cannot hide behind the other one's total.
+    let minimumComparisons: Int
+}
+
+private let fixtures = [
+    Fixture(
+        path: "Fixtures/Sample/libReconstruction.dylib", label: "-Onone",
+        required: ["isPositive", "isEqual", "atLeast", "rangeCheck", "addThree", "maxOf"],
+        minimumComparisons: 200
+    ),
+    Fixture(
+        path: "Fixtures/Sample/libReconstruction.opt.dylib", label: "-O",
+        // `rangeCheck` and `computedRange` are the U1 idiom itself; `threeWay`
+        // is a csel cascade that only survives at -O. If any stops being
+        // compared, the oracle has lost the coverage it exists for.
+        required: ["rangeCheck", "computedRange", "threeWay", "maxOf", "isPositive"],
+        minimumComparisons: 200
+    ),
+]
 
 /// Recover the rendered `return <expr>` and the raw symbol for `name`.
-private func recovered(_ name: String) async throws -> (expression: String, symbol: String)? {
+private func recovered(
+    _ name: String, in fixture: String
+) async throws -> (expression: String, symbol: String)? {
     let functions = try await withStableDependencies {
         try await Disassembler(preset: .default)
             .disassemble(path: fixture, functionFilter: name)
@@ -336,56 +392,73 @@ private func recovered(_ name: String) async throws -> (expression: String, symb
 }
 
 @Test func recoveredExpressionsAgreeWithTheCompiledCode() async throws {
-    guard let image = FixtureImage(path: fixture) else { return }  // fixture not built
+    for fixture in fixtures {
+        guard let image = FixtureImage(path: fixture.path) else { continue }  // not built
 
-    var compared = 0
-    var skipped: [String] = []
+        var compared = 0
+        var skipped: [String] = []
+        var comparedNames: Set<String> = []
 
-    for testCase in oracleCases {
-        guard let (expression, symbol) = try await recovered(testCase.name) else {
-            skipped.append("\(testCase.name): not recovered")
-            continue
-        }
-        var parser = ExpressionParser(expression)
-        guard let tree = try? parser.parseAll() else {
-            skipped.append("\(testCase.name): unparsed '\(expression)'")
-            continue
-        }
-        guard let pointer = image.function(symbol: symbol) else {
-            skipped.append("\(testCase.name): symbol \(symbol) not found")
-            continue
-        }
-
-        for args in testCase.inputs {
-            guard let predicted = try? evaluate(tree, args: args) else {
-                skipped.append("\(testCase.name): uneval '\(expression)'")
-                break
+        for testCase in oracleCases {
+            guard let (expression, symbol) = try await recovered(
+                testCase.name, in: fixture.path
+            ) else {
+                // Legitimate at -O: inlining and ICF can remove a function
+                // entirely. `required` below is what separates "optimized away"
+                // from "we stopped recovering it".
+                skipped.append("\(testCase.name): not recovered")
+                continue
             }
-            let raw = callInt(pointer, args)
-            let actual: EvalValue = testCase.returnsBool ? .bool((raw & 1) != 0) : .int(raw)
+            var parser = ExpressionParser(expression)
+            guard let tree = try? parser.parseAll() else {
+                skipped.append("\(testCase.name): unparsed '\(expression)'")
+                continue
+            }
+            guard let pointer = image.function(symbol: symbol) else {
+                skipped.append("\(testCase.name): symbol \(symbol) not found")
+                continue
+            }
 
-            #expect(
-                predicted.matches(actual),
-                """
-                \(testCase.name)(\(args.map(String.init).joined(separator: ", "))): \
-                swiftdc renders `\(expression)` → \(predicted), \
-                but the compiled function returns \(actual). \
-                The recovered expression is not supported by the binary.
-                """
-            )
-            compared += 1
+            for args in testCase.inputs {
+                guard let predicted = try? evaluate(tree, args: args) else {
+                    skipped.append("\(testCase.name): uneval '\(expression)'")
+                    break
+                }
+                let raw = callInt(pointer, args)
+                let actual: EvalValue = testCase.returnsBool ? .bool((raw & 1) != 0) : .int(raw)
+
+                #expect(
+                    predicted.matches(actual),
+                    """
+                    [\(fixture.label)] \
+                    \(testCase.name)(\(args.map(String.init).joined(separator: ", "))): \
+                    swiftdc renders `\(expression)` → \(predicted), \
+                    but the compiled function returns \(actual). \
+                    The recovered expression is not supported by the binary.
+                    """
+                )
+                compared += 1
+                comparedNames.insert(testCase.name)
+            }
         }
-    }
 
-    // The empty-result rule applies to the oracle itself: a harness that silently
-    // compares nothing is worse than no harness, because it reports success. If a
-    // parser or naming change stops these from being recovered, this fails.
-    #expect(
-        compared >= 200,
-        "differential oracle compared only \(compared) input(s); skipped: \(skipped)"
-    )
-    #expect(
-        skipped.count <= oracleCases.count / 2,
-        "over half the oracle cases were skipped: \(skipped)"
-    )
+        // The empty-result rule applies to the oracle itself: a harness that
+        // silently compares nothing is worse than no harness, because it reports
+        // success. Checked PER FIXTURE so an empty -O run cannot hide inside the
+        // -Onone total.
+        #expect(
+            compared >= fixture.minimumComparisons,
+            "[\(fixture.label)] compared only \(compared) input(s); skipped: \(skipped)"
+        )
+
+        // Named cases, not just a count. A count floor is satisfiable by the easy
+        // cases while the interesting ones quietly stop being recovered — which is
+        // exactly how the first sensitivity injection for this harness passed as a
+        // no-op. These are the cases the oracle exists for.
+        let missing = fixture.required.subtracting(comparedNames)
+        #expect(
+            missing.isEmpty,
+            "[\(fixture.label)] required cases were not compared: \(missing.sorted()); skipped: \(skipped)"
+        )
+    }
 }
