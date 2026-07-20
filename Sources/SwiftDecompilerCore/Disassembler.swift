@@ -742,10 +742,28 @@ public struct Disassembler: Sendable {
         functionStarts(of: machO).count
     }
 
-    /// VM addresses of every function start from LC_FUNCTION_STARTS.
+    /// VM addresses of every function start from LC_FUNCTION_STARTS, **deduped**.
+    ///
+    /// The load command is a ULEB128 list of *deltas*, zero-padded to alignment.
+    /// Each padding byte decodes as a delta of zero, which reads as "another
+    /// function at the same address as the last one", so the raw list ends in a
+    /// run of repeats. Measured on the fixtures: 453 raw vs 449 distinct, 182 vs
+    /// 176, 172 vs 171 — and the distinct count matches `dyld_info
+    /// -function_starts` exactly in every case.
+    ///
+    /// This matters because the count is used as the **oracle** for recovery
+    /// completeness (`declaredFunctionCount`), so an inflated denominator makes
+    /// the coverage warning compare against a number the binary does not
+    /// actually declare and prints a wrong figure in the `parsedNothing`
+    /// diagnostic. The boundary callers were always unaffected — they wrap this
+    /// in a `Set` — so deduping here changes counts only.
     private func functionStarts(of machO: MachOFile) -> [UInt64] {
         guard let starts = machO.functionStarts else { return [] }
-        return starts.map { UInt64($0.offset) }
+        var seen: Set<UInt64> = []
+        return starts.compactMap { entry in
+            let address = UInt64(entry.offset)
+            return seen.insert(address).inserted ? address : nil
+        }
     }
 
     /// Decode `__text` (or `span`) in-process with Capstone, returning a map of

@@ -11,7 +11,7 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-07-19, at commit `c13ae1c`.
+Last audited: 2026-07-20, at commit `6ab07f7`.
 
 ---
 
@@ -186,10 +186,15 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   recovery exact rather than heuristic — on a stall, skip one instruction slot
   and resume — so the fix carries no realignment guesswork.
 
-  Confirmed at full scale: SwiftUI now recovers **105,644 of 105,647 declared
-  functions (99.997%)** and 5,654,282 instructions, up from 285 and 4,040 — 371×
-  more functions, 1,400× more instructions. The three unrecovered functions are
-  worth a look but are not a truncation.
+  Confirmed at full scale: SwiftUI now recovers **105,644 of 105,644 declared
+  functions (100%)** and 5,654,282 instructions, up from 285 and 4,040 — 371×
+  more functions, 1,400× more instructions.
+
+  This entry previously read "105,644 of 105,647 … the three unrecovered
+  functions are worth a look". There were never three: the denominator was
+  inflated by `LC_FUNCTION_STARTS` padding (see the oracle fix in Completeness).
+  A residue reported against a wrong denominator is a phantom, and chasing it
+  would have been wasted work.
 
   Covered by `CapstoneResyncTests`, which pins the resync *stride* (a
   wrong-sized skip still yields the right instruction count at wrong addresses),
@@ -202,14 +207,44 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   receiver vtables, and block pointers stay unresolved. `xrefs` reports the
   count, so this is *disclosed* rather than silent — but `--unreferenced` is
   therefore not a dead-code proof.
+- **FIXED — the completeness oracle itself over-counted.**
+  `declaredFunctionCount` is what the empty-result rule compares against: an
+  empty parse throws when it disagrees, and an unfiltered run warns below 50% of
+  it. It was inflated. `LC_FUNCTION_STARTS` is a ULEB128 list of *deltas*,
+  zero-padded to alignment, and each padding byte decodes as a delta of zero —
+  "another function at the same address as the last". The raw list therefore ends
+  in a run of repeats.
+
+  Measured: 453 raw vs 449 distinct, 182 vs 176, 172 vs 171 — and the distinct
+  count matches `dyld_info -function_starts` **exactly** in every case. Now
+  deduped at the source. Boundary callers were always unaffected (they wrap it in
+  a `Set`), so the change moves counts only — verified by enumerating all five
+  call sites rather than assuming.
+
+  The visible consequence was a phantom: SwiftUI read as "105,644 of 105,647
+  recovered", and the missing three were padding entries, not functions.
 - **MITIGATED — recovery coverage is now reported.** An unfiltered run that
   recovers under half of what `LC_FUNCTION_STARTS` declares warns on stderr with
   both counts and a percentage (stdout stays pipeable). This is the
   "unusually small" half of the empty-result rule; the empty case throws.
   It is what turned the SwiftUI shortfall from a vague "~285" into a diagnosis.
-- **UNKNOWN — byte-level coverage.** Function-count coverage is reported, but
-  nothing measures what fraction of `__text` *bytes* decode, so a function
-  recovered with a truncated body still counts as recovered.
+- **MITIGATED — byte-level coverage measured; no truncated bodies found.**
+  Function-count coverage could not distinguish a fully-decoded function from one
+  recovered with a truncated body. Measured two ways, against
+  `dyld_info -function_starts` as an independent extent source:
+
+  - **Every declared 4-byte slot decodes**: 100.000% on `libReconstruction.dylib`
+    (7,624 slots) and `sample.release` (2,291) via the objdump path.
+  - **No holes inside recovered bodies**: 0 hole-bytes across the fixtures and
+    across `UserNotifications` (1,391 functions, 52,071 instructions) via the
+    Capstone path — the one that carried the resync truncation.
+
+  The first attempt at this measurement was **vacuous** and is worth recording:
+  it compared each function's decoded end against the *next recovered function's*
+  start, both of which come from the same decode. It reported a flawless 100%
+  with zero gaps across 1,391 functions — implausible, since real binaries have
+  alignment padding between functions. Comparing a decoder against itself proves
+  nothing; the numbers above use an external tool.
 
 ## 3. Robustness — what breaks it?
 
@@ -399,7 +434,8 @@ The meta-category. Every gap here weakens confidence in every claim above.
 
 | Subsystem | Oracle | Status |
 |---|---|---|
-| Function boundaries | `LC_FUNCTION_STARTS` | **Enforced** — throws on empty parse, warns below 50% recovery |
+| Function boundaries | `LC_FUNCTION_STARTS` | **Enforced** — throws on empty parse, warns below 50% recovery. The count is deduped and cross-checked against `dyld_info` in tests |
+| Byte-level decode coverage | `dyld_info -function_starts` extents | **In tests + measured by hand** — 100.000% of declared slots decode; no holes inside bodies on either decoder |
 | Instruction decode | `llvm-objdump` vs in-process Capstone | Two independent decoders exist; **nothing cross-checks them**. Both silent-truncation bugs found so far were in whichever decoder the other wasn't covering |
 | Enum tag → case index | SIL (`swiftc -emit-sil`) | Used once, manually, to confirm the `rank` lowering |
 | Field offsets | `__swift5_fieldmd`, computed offline | Runtime-exact by construction |
