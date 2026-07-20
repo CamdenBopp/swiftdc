@@ -98,6 +98,48 @@ render back-edges as `continue`, choose one exit as the fall-out `break`, and em
 the remaining exits as `goto loc_exitN` with the exit blocks after the loop. The
 correctness bar is that the emitted body contains exactly the loop's body blocks.
 
+## Increment 1 SHIPPED: multi-exit loops fold (`2a6fadb`)
+
+Every natural loop now folds. Single-exit loops keep the rotation/`break` path
+unchanged; a multi-exit loop becomes `while (true)` bounded to exactly
+`bodies[header]`, back-edge as `continue`, each exit leaving by an explicit `goto`.
+No exit is chosen as the fall-out, so nothing is classified and nothing can be
+misrepresented.
+
+| metric (same fixed target) | before | after |
+|---|---|---|
+| `loc_X: // loop header` (unfolded) | 3,140 | **0** |
+| `while (true)` | 1,549 | **4,689** (+3,140 exactly) |
+| `continue` | 2,464 | 5,241 |
+| `goto loc_` | 3,384 | 9,654 |
+| **dangling gotos** | 30 | **0** |
+| duplicate labels | 0 | 0 |
+
+The goto rise is expected and was predicted: a back-edge becomes `continue` while
+each exit becomes an explicit goto. The honest measure is loops made structurally
+explicit, which is 3,140 → all of them.
+
+**Two latent defects surfaced and were fixed**, both invisible before folding:
+
+1. Back-edge gotos never registered their target in `gotoTargets`. Harmless while a
+   header always printed `// loop header`; once folded that line is gone and the goto
+   dangles. Fixing it removed the 619 folding introduced *and* the 30 that already
+   existed.
+2. `gotoTargets` gates label printing but is populated *during* emission, so a goto
+   emitted after its target was written could not label it. Emission now runs a
+   discovery sweep first, then emits with the complete set.
+3. The non-rotated path re-enters the header block and printed its label twice. The
+   `while` line carries it; the inner repeat is suppressed.
+
+`foldsMultiExitLoopWithoutDanglingGotoIfPresent` consciously replaces the old
+"must not fold" test and asserts the honesty bar directly: every goto resolves, no
+label is defined twice.
+
+**Next increment:** promote one exit to `break` (fall-out selection) so the common
+two-exit loop reads idiomatically. That one DOES classify an exit, so it needs the
+care the original probe warned about — the body-bounding and label invariants above
+are now regression-tested, which is the safety net for attempting it.
+
 ## Broader assessment: the small-change reconstruction frontier is a plateau
 
 Across this session the incremental frontier has been mined and the remaining
