@@ -11,7 +11,7 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-07-20, at commit `943ac71`.
+Last audited: 2026-07-20, at commit `9de9b97`.
 
 ---
 
@@ -171,13 +171,40 @@ because it cannot be distinguished from a right one by reading the output.
   methods** rendered a bare `return` purely for this reason.
 
   Fixed by never setting `usesSwiftError` for an ObjC method (the same gate also
-  stops an incidental `x21 == 0` being mis-named `error != nil`). The `!ObjC`
-  gate leaves Swift functions untouched — verified both directions:
-  `ObjCValuelessReturnTests` (a population property over real system ObjC
-  methods: zero bare returns under a non-void signature, ≥10 `return ?` so it is
-  not vacuous) was observed failing without the gate, naming all 7 methods;
+  stops an incidental `x21 == 0` being mis-named `error != nil`). Verified both
+  directions: `ObjCValuelessReturnTests` (a population property over real system
+  ObjC methods: zero bare returns under a non-void signature, ≥10 `return ?` so
+  it is not vacuous) was observed failing without the gate, naming all 7 methods;
   and the existing `aThrowingFunctionsErrorExitKeepsItsBareReturn` confirms a
   genuine Swift `throws` error exit still renders a bare `return`.
+- **FIXED — the same misfire hit *Swift* functions too, and the heuristic itself
+  was wrong.** Auditing real Swift methods (Combine) for the analogous defect
+  confirmed it: **10 non-throwing, value-returning Swift functions** — Publisher
+  constructors like `compactMap`, `reduce`, `min(by:)`, `output(at:)` — rendered
+  a bare `return` because they zero x21 as incidental scratch. The ObjC `!ObjC`
+  gate could not help here (Swift functions genuinely can thread swifterror).
+
+  The real defect was the heuristic: "the body clears x21" is not swifterror
+  threading. Genuine threading **clears x21 before a throwing call *and* tests it
+  (`x21 == 0`) after** to catch the throw; a function that only zeroes x21 and
+  never reads it back is not error-checking. The heuristic now requires **both**,
+  which is also why it subsumes the ObjC case — `isEqual:` tests `cmp x21, x0`,
+  against a register, not zero.
+
+  This partitions cleanly on real code, measured on Combine: 28 functions that
+  clear *and* test x21 (genuine — the "Try" operators catching a closure's
+  throw) keep `usesSwiftError`; the 10 that clear without testing flip to
+  `return ?`. Both directions proven: the discriminators
+  (`clearsSwiftErrorRegister`/`testsSwiftErrorRegister`) are unit-tested
+  including the `cmp x21, x0`-is-not-a-zero-test case, and reverting the "and
+  tests" requirement was observed regressing exactly those 10 Combine functions
+  back to a bare `return` while a `throws` function (`mightFail`) stays bare via
+  the `isThrowing` override.
+
+  Along the way the audit *harness* was wrong twice before the tool was — a
+  return-type regex that read a parameter's `(A) -> Bool` as the return type, and
+  bare-return attribution across `merged` headers — each corrected before
+  trusting the count (18 → then a name-parse-free raw-disasm oracle → 10).
 
 ## 2. Completeness — what does it silently omit?
 

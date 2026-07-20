@@ -119,28 +119,29 @@ struct ControlFlowStructure {
         self.exit = blocks.count
         self.objectiveCArguments = objectiveCArguments
         self.maxDepth = maxDepth
-        // The Swift error register (x21) is meaningful here when the function
-        // threads swifterror: it is declared `throws`, or it clears x21 (`mov x21,
-        // #0`) before a call to catch a thrown error. Only then is `x21 == 0` an
-        // error check rather than an incidental use of a callee-saved register.
+        // The Swift error register (x21) is meaningful here only when the function
+        // actually threads swifterror. A `throws` function does. A non-throwing
+        // caller of a throwing callee does too: it clears x21 (`mov x21, #0`)
+        // before the call AND tests it (`x21 == 0`) after, to catch a thrown
+        // error. **Both** are required — a function that merely zeroes x21 and
+        // never reads it back is not error-checking; x21 is just an incidental
+        // callee-saved scratch there.
         //
-        // NEVER for an Objective-C method. ObjC does not use the Swift error-register
-        // convention (its errors bridge through an NSError** out-parameter), so x21
-        // is an ordinary register there — and a method that happens to zero it
-        // (`mov w21, #0` computing a BOOL, common in `isEqual:`) would otherwise be
-        // misread as swifterror-threading. That misfire suppressed the `return ?`
-        // for an unrecovered value (rendering a bare `return` instead) and would
-        // also mis-name an incidental `x21 == 0` as `error != nil`. Measured on
-        // UserNotifications: 7 non-void ObjC methods rendered a bare `return`
-        // purely because their BOOL computation cleared x21.
-        self.usesSwiftError = !objectiveCArguments && (isThrowing || blocks.contains { block in
-            block.instructions.contains { insn in
-                let (m, ops) = Self.decode(insn.text)
-                return m == "mov" && ops.count >= 2
-                    && Self.canonicalRegister(ops[0]) == "x21"
-                    && (Self.cleanImmediate(ops[1]) == "0" || ops[1] == "xzr")
-            }
-        })
+        // Requiring the test, not just the clear, fixes two measured misfires
+        // where the value was suppressed to a bare `return` (or `x21 == 0`
+        // mis-named `error != nil`) purely because a BOOL/pointer computation
+        // happened to zero x21:
+        //   • Objective-C `isEqual:` (7 in UserNotifications): clears x21, then
+        //     tests `cmp x21, x0` — against a register, not zero — so it is not a
+        //     swifterror test and no longer qualifies.
+        //   • Swift Publisher constructors (10 in Combine, e.g. `compactMap`,
+        //     `reduce`, `min(by:)`): clear x21 as scratch, never test it.
+        // The genuine cases (a `throws` function, or a Combine "Try" operator that
+        // clears-and-tests x21 to catch its closure's throw — 28 in Combine) still
+        // qualify. The `!objectiveCArguments` belt-and-suspenders stays: ObjC never
+        // threads swifterror even if it coincidentally clears-and-tests x21.
+        self.usesSwiftError = !objectiveCArguments && (isThrowing
+            || (Self.clearsSwiftErrorRegister(blocks) && Self.testsSwiftErrorRegister(blocks)))
         var indexByAddress: [UInt64: Int] = [:]
         for (index, block) in blocks.enumerated() { indexByAddress[block.startAddress] = index }
         self.indexByAddress = indexByAddress
@@ -566,6 +567,38 @@ struct ControlFlowStructure {
     /// If the block's terminator is a Swift error check — a branch on the error
     /// register x21 against zero (`cbnz x21`, `cbz x21`, or `cmp x21, #0; b.ne/eq`)
     /// — return `error != nil` / `error == nil`. Nil when it is not that shape.
+    /// Does any instruction zero x21 (`mov x21, #0` / `mov x21, xzr`)? The
+    /// swifterror setup before a throwing call.
+    static func clearsSwiftErrorRegister(_ blocks: [BasicBlock]) -> Bool {
+        blocks.contains { block in
+            block.instructions.contains { insn in
+                let (m, ops) = decode(insn.text)
+                return m == "mov" && ops.count >= 2
+                    && canonicalRegister(ops[0]) == "x21"
+                    && (cleanImmediate(ops[1]) == "0" || ops[1] == "xzr")
+            }
+        }
+    }
+
+    /// Does any instruction test x21 **against zero** (`cbz`/`cbnz x21`, or a
+    /// `cmp`/`subs`/`cmn` of x21 with zero)? The swifterror check after a call.
+    /// A test against another register (`cmp x21, x0`) does not count — that is
+    /// not reading the error register for a throw.
+    static func testsSwiftErrorRegister(_ blocks: [BasicBlock]) -> Bool {
+        blocks.contains { block in
+            block.instructions.contains { insn in
+                let (m, ops) = decode(insn.text)
+                if (m == "cbz" || m == "cbnz"), ops.first.flatMap(canonicalRegister) == "x21" {
+                    return true
+                }
+                guard ["cmp", "subs", "cmn"].contains(m) else { return false }
+                let hasX21 = ops.contains { canonicalRegister($0) == "x21" }
+                let hasZero = ops.contains { $0 == "xzr" || $0 == "wzr" || cleanImmediate($0) == "0" }
+                return hasX21 && hasZero
+            }
+        }
+    }
+
     private func swiftErrorCondition(of block: BasicBlock) -> String? {
         guard let terminator = block.instructions.last else { return nil }
         let (mnemonic, operands) = Self.decode(terminator.text)
