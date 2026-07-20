@@ -11,7 +11,7 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-07-19, at commit `2af3e36`.
+Last audited: 2026-07-19, at commit `aa6d84b`.
 
 ---
 
@@ -49,10 +49,43 @@ because it cannot be distinguished from a right one by reading the output.
   types render the whole `self.layout` because the backing C struct has no Swift
   field metadata. A *real* field name at the wrong granularity — imprecise, not
   fabricated. Needs C-struct field data.
-- **UNKNOWN — no differential oracle.** Nothing systematically compares recovered
-  semantics against ground truth (SIL, or executing both). Soundness is currently
-  established by targeted adversarial tests, which cannot prove absence of
-  fabrication. **This is the single largest gap in the category.**
+- **MITIGATED — a differential oracle now exists** (`DifferentialOracleTests`).
+  Every other soundness test compares recovered pseudocode against a string
+  someone wrote down, which cannot catch a plausible-but-wrong render: the
+  expectation was written by the same reasoning that produced the bug. U1
+  survived exactly that way.
+
+  This harness compares against the **binary** instead. It recovers the
+  expression swiftdc renders, parses it (the output is fully parenthesized, so
+  no precedence table is needed), evaluates it over chosen inputs, calls the
+  **real compiled function** via `dlsym`, and asserts they agree. Ground truth
+  is resolved from swiftdc's *own reported symbol*, so the oracle cannot drift
+  onto a different function than the one it analysed.
+
+  Currently **318 comparisons across 13 functions** — comparisons, ternaries,
+  arithmetic, bit operations, and the signed-range idiom, at edge inputs
+  including `Int.min`/`Int.max`.
+
+  Proven sensitive, not merely green: injecting U1's shape (`((arg0 >= 0) &&
+  (arg0 < 100))` → `(arg0 < 100)`) fails at exactly the negative inputs where
+  that defect manifests. The first injection attempt was a **no-op** — it
+  targeted the `-O` spelling, which this `-Onone` fixture never emits — and
+  passed misleadingly, so the harness now asserts a minimum comparison count and
+  a maximum skip count. An oracle that silently compares nothing is worse than
+  no oracle, because it reports success.
+- **OPEN — the oracle's domain is narrow.** Pure integer/boolean functions with
+  scalar arguments: the domain where "semantically equal" is decidable by
+  sampling. It does not cover floating point, strings, enums with payloads,
+  memory effects, or anything with side effects — and it samples rather than
+  proves. Extending it to `-O` fixtures is the cheapest next increment, since
+  optimized lowering is where U1 lived.
+- **OPEN — a declined return value renders as a bare `return`.** A function
+  whose recovered return value is unknown prints `return` with no operand, even
+  when its signature says `-> Swift.Int` (`threeWay`, `accumulate`). It reads
+  like a void return rather than an unrecovered one, which contradicts the
+  tool's own stated contract that unprovable values render `?`. Not a
+  fabrication — a declined value described misleadingly. Found by the oracle,
+  which had to skip `threeWay` for exactly this reason.
 
 ## 2. Completeness — what does it silently omit?
 
@@ -240,7 +273,7 @@ The meta-category. Every gap here weakens confidence in every claim above.
 | Enum tag → case index | SIL (`swiftc -emit-sil`) | Used once, manually, to confirm the `rank` lowering |
 | Field offsets | `__swift5_fieldmd`, computed offline | Runtime-exact by construction |
 | Cross-image symbols | export trie | Used as the primary source |
-| Recovered semantics | — | **None.** The largest gap. No differential execution, no SIL comparison in CI |
+| Recovered semantics | the compiled function itself, called via `dlsym` | **In tests** — 318 comparisons over 13 pure scalar functions; proven to catch an injected U1. Narrow: no floats, strings, payload enums, or side effects |
 | Malformed-input handling | the CLI's own exit status, checked from a subprocess | **In tests** — 9 header-shaped inputs; no fuzzer, no malformed metadata |
 | Whole-binary output | — | **None.** No golden-output corpus, so a silent regression on a real framework would not be noticed |
 
