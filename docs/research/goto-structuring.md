@@ -178,6 +178,38 @@ from an outside block into a loop body, which reads awkwardly. Closing that gap
 (emitting each loop's full body inside it) is the natural increment 3, and the
 corpus-wide invariant test added here is the safety net for attempting it.
 
+## Increment 3 (PARTIAL): the body-subset gap is measured, not closed (`1b802ad`)
+
+Measured the gap before touching anything. Of **142,364** loop-body blocks on the
+self-host, **28,870 (20%)** are emitted OUTSIDE the loop that owns them, across
+**2,538 of 11,400** folded loops — single-exit loops included (732 of them), so most
+of this predates increments 1–2.
+
+| miss kind | count | share of misses | movable? |
+|---|---|---|---|
+| already emitted BEFORE the loop | 10,346 | 35% | no — would duplicate |
+| still unemitted at loop close | 18,524 | 64% | yes, in principle |
+
+The increment drains the second group into its loop, but only when the chunk
+transfers control explicitly: a block pulled in before the closing brace would fall
+through to it and read as a loop-back. The emitter already marks that case with
+`// continues at`, so chunks carrying it are left at top level (the trial emission is
+rolled back).
+
+**That guard rejects nearly every candidate** — `// continues at` occurs 46,918
+times. Stranded top-level labels fall only **4,799 → 4,699 (−100)**, ~0.35% of the
+28,870. The gap is **not** closed. Secondary gains are real but modest: `continue`
+5,258 → 5,722 (+464, drained blocks now carry loop context), `break` 2,160 → 2,196,
+`goto` 9,537 → 9,509. All hard bars hold (dangling 0, duplicate labels 0, balanced,
+EXIT 0, single-exit unchanged).
+
+**Increment 4 — the actual fix.** The blocker is now identified rather than guessed:
+implicit fall-through. Rendering `// continues at loc_X` as an explicit `goto loc_X`
+*when draining into a loop* makes the chunk self-contained and unlocks most of the
+18,524. The 35% already emitted before their loop remain out of reach without node
+splitting / header duplication, which is a genuinely larger change and should not be
+attempted just to raise a coverage number.
+
 ## Broader assessment: the small-change reconstruction frontier is a plateau
 
 Across this session the incremental frontier has been mined and the remaining
