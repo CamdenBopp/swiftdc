@@ -374,8 +374,6 @@ public struct Disassembler: Sendable {
         }.map(\.startAddress))
         // A Swift-mangled Objective-C entry thunk still receives self in x0.
         swiftTargets.subtract(objcIndex.addresses)
-        functions = functions.map { annotateReferences(in: $0, resolver: resolver) }
-        functions = functions.map { annotateCallTargets(in: $0, resolver: resolver) }
         // The differentiator's two halves: what lives at an offset (FieldMap),
         // and whether the pointer in x20 is that type (SelfTypeIndex). Both are
         // metadata-sourced, so both survive stripping.
@@ -389,67 +387,12 @@ public struct Disassembler: Sendable {
         // (nil == 0) seeds like a scalar and its `!= nil` reconstructs, while a
         // value-typed (tagged) optional still declines.
         let classTypeIndex = ClassTypeIndex.build(in: machO)
-        functions = functions.map { function in
-            let objcMethod = function.objcMethod
-            // Runtime-added category IMPs (an accessibility bundle is almost all
-            // of them) frequently have no ObjC metadata binding, yet their symbol
-            // name carries the full method shape. Recover the receiver convention
-            // from the symbol so `self` survives — without it x0 is never seeded
-            // and every receiver renders `?`.
-            let symbolEntry = objcMethod == nil ? Self.objcEntryFromSymbol(function.symbol) : nil
-            let classSelfTypeName = objcMethod == nil && symbolEntry == nil && !fieldMaps.isEmpty
-                ? Self.selfType(of: function, selfIndex: selfIndex, fieldMaps: fieldMaps)
-                : nil
-            // A nonmutating HFA-struct instance method passes `self` decomposed in
-            // SIMD registers rather than through x20, so it needs the value-self
-            // path even when the name-based `selfType` already found the type (it
-            // would otherwise seed x20, which this ABI leaves as garbage). The
-            // HFA + no-`[x20]` guards inside confine it to exactly that shape.
-            let valueSelf = objcMethod == nil && symbolEntry == nil
-                ? Self.swiftValueTypeSelfFields(of: function, fieldMaps: fieldMaps)
-                : nil
-            let selfTypeName = classSelfTypeName ?? valueSelf?.typeName
-            let entry: MethodEntryConvention? = if let objcMethod {
-                objcMethod.isInitializer
-                    ? .objectiveCInitializer(argumentCount: objcMethod.argumentCount)
-                    : .objectiveC(argumentCount: objcMethod.argumentCount)
-            } else if let symbolEntry {
-                symbolEntry
-            } else if let valueSelf {
-                .swiftValueInstance(seededRegisters: valueSelf.seeded)
-            } else if classSelfTypeName != nil {
-                .swiftInstance(scalarArguments: Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) ?? [:])
-            } else if let scalarArgs = Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
-                .swiftFunction(scalarArguments: scalarArgs)
-            } else {
-                nil
-            }
-            let fieldMap: FieldMap? = if let objcMethod, !objcMethod.isClassMethod {
-                objcIndex.fieldMaps[objcMethod.className]
-            } else if let className = objcMethod == nil ? Self.objcClassName(fromSymbol: function.symbol) : nil {
-                // No binding, but the symbol names the owning class: its ivar
-                // layout may still be indexed, so `self->_ivar` can be named.
-                objcIndex.fieldMaps[className]
-            } else if let valueSelf {
-                valueSelf.fieldMap
-            } else {
-                classSelfTypeName.flatMap {
-                    Self.selfFieldMap(of: function, simpleName: $0, fieldMaps: fieldMaps)
-                }
-            }
-            return enrichCallArguments(
-                in: function, resolver: resolver, swiftTargets: swiftTargets,
-                entry: entry,
-                fieldMap: fieldMap,
-                objcFieldSyntax: objcMethod != nil || symbolEntry != nil,
-                selfTypeName: selfTypeName, vtableIndex: vtableIndex,
-                argumentFieldMaps: valueSelf?.argumentFieldMaps ?? [:],
-                enumCaseIndex: enumCaseIndex,
-                argumentEnumTypes: Self.swiftEnumArgumentTypes(of: function, enumCaseIndex: enumCaseIndex),
-                boolArguments: Self.swiftBoolArgumentIndices(of: function),
-                classTypeIndex: classTypeIndex
-            )
-        }
+        let context = PerFunctionContext(
+            resolver: resolver, swiftTargets: swiftTargets, objcIndex: objcIndex,
+            fieldMaps: fieldMaps, selfIndex: selfIndex, vtableIndex: vtableIndex,
+            enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex
+        )
+        functions = functions.map { analyzeFunction($0, context: context) }
 
         guard let needle = functionFilter?.lowercased(), !needle.isEmpty else {
             return functions
@@ -458,6 +401,91 @@ public struct Disassembler: Sendable {
             $0.symbol.lowercased().contains(needle)
                 || ($0.demangledName?.lowercased().contains(needle) ?? false)
         }
+    }
+
+    /// Cross-function state, built once for a whole image, that the per-function
+    /// analysis reads but never mutates. Bundled so the same `analyzeFunction`
+    /// runs from both the array path (`assemble`) and the streaming path.
+    struct PerFunctionContext {
+        let resolver: ReferenceResolver
+        let swiftTargets: Set<UInt64>
+        let objcIndex: ObjCMetadataIndex
+        let fieldMaps: [String: FieldMap]
+        let selfIndex: SelfTypeIndex
+        let vtableIndex: VTableIndex
+        let enumCaseIndex: EnumCaseIndex
+        let classTypeIndex: ClassTypeIndex
+    }
+
+    /// The complete per-function analysis: resolve references and call targets,
+    /// recover the receiver convention and field maps, and enrich call arguments.
+    /// Extracted verbatim from `assemble`'s map so both paths produce identical
+    /// output by construction; the streaming path calls it one function at a time.
+    func analyzeFunction(
+        _ rawFunction: DisassembledFunction, context: PerFunctionContext
+    ) -> DisassembledFunction {
+        var function = annotateReferences(in: rawFunction, resolver: context.resolver)
+        function = annotateCallTargets(in: function, resolver: context.resolver)
+
+        let objcMethod = function.objcMethod
+        // Runtime-added category IMPs (an accessibility bundle is almost all
+        // of them) frequently have no ObjC metadata binding, yet their symbol
+        // name carries the full method shape. Recover the receiver convention
+        // from the symbol so `self` survives — without it x0 is never seeded
+        // and every receiver renders `?`.
+        let symbolEntry = objcMethod == nil ? Self.objcEntryFromSymbol(function.symbol) : nil
+        let classSelfTypeName = objcMethod == nil && symbolEntry == nil && !context.fieldMaps.isEmpty
+            ? Self.selfType(of: function, selfIndex: context.selfIndex, fieldMaps: context.fieldMaps)
+            : nil
+        // A nonmutating HFA-struct instance method passes `self` decomposed in
+        // SIMD registers rather than through x20, so it needs the value-self
+        // path even when the name-based `selfType` already found the type (it
+        // would otherwise seed x20, which this ABI leaves as garbage). The
+        // HFA + no-`[x20]` guards inside confine it to exactly that shape.
+        let valueSelf = objcMethod == nil && symbolEntry == nil
+            ? Self.swiftValueTypeSelfFields(of: function, fieldMaps: context.fieldMaps)
+            : nil
+        let selfTypeName = classSelfTypeName ?? valueSelf?.typeName
+        let entry: MethodEntryConvention? = if let objcMethod {
+            objcMethod.isInitializer
+                ? .objectiveCInitializer(argumentCount: objcMethod.argumentCount)
+                : .objectiveC(argumentCount: objcMethod.argumentCount)
+        } else if let symbolEntry {
+            symbolEntry
+        } else if let valueSelf {
+            .swiftValueInstance(seededRegisters: valueSelf.seeded)
+        } else if classSelfTypeName != nil {
+            .swiftInstance(scalarArguments: Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex) ?? [:])
+        } else if let scalarArgs = Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex) {
+            .swiftFunction(scalarArguments: scalarArgs)
+        } else {
+            nil
+        }
+        let fieldMap: FieldMap? = if let objcMethod, !objcMethod.isClassMethod {
+            context.objcIndex.fieldMaps[objcMethod.className]
+        } else if let className = objcMethod == nil ? Self.objcClassName(fromSymbol: function.symbol) : nil {
+            // No binding, but the symbol names the owning class: its ivar
+            // layout may still be indexed, so `self->_ivar` can be named.
+            context.objcIndex.fieldMaps[className]
+        } else if let valueSelf {
+            valueSelf.fieldMap
+        } else {
+            classSelfTypeName.flatMap {
+                Self.selfFieldMap(of: function, simpleName: $0, fieldMaps: context.fieldMaps)
+            }
+        }
+        return enrichCallArguments(
+            in: function, resolver: context.resolver, swiftTargets: context.swiftTargets,
+            entry: entry,
+            fieldMap: fieldMap,
+            objcFieldSyntax: objcMethod != nil || symbolEntry != nil,
+            selfTypeName: selfTypeName, vtableIndex: context.vtableIndex,
+            argumentFieldMaps: valueSelf?.argumentFieldMaps ?? [:],
+            enumCaseIndex: context.enumCaseIndex,
+            argumentEnumTypes: Self.swiftEnumArgumentTypes(of: function, enumCaseIndex: context.enumCaseIndex),
+            boolArguments: Self.swiftBoolArgumentIndices(of: function),
+            classTypeIndex: context.classTypeIndex
+        )
     }
 
     /// `(vmaddr, size)` of the `__text` section.
@@ -546,15 +574,33 @@ public struct Disassembler: Sendable {
         names: [UInt64: String],
         resolver: CacheSymbolResolver?
     ) -> [UInt64: String] {
-        guard let resolver else { return names }
-        var names = names
+        guard resolver != nil else { return names }
         var targets = Set<UInt64>()
         for function in functions {
-            for insn in function.instructions
-            where insn.controlFlow == .call || insn.controlFlow == .branch {
-                if let target = insn.branchTarget, names[target] == nil { targets.insert(target) }
-            }
+            collectUnnamedCallTargets(in: function.instructions, names: names, into: &targets)
         }
+        return resolveCrossImageNames(targets, into: names, resolver: resolver)
+    }
+
+    /// Accumulate call/branch targets not already named, so the streaming path can
+    /// gather them one function at a time instead of holding the whole image's
+    /// instructions. Split out of `crossImageNames`; the two callers together
+    /// reproduce its exact behaviour.
+    private func collectUnnamedCallTargets(
+        in instructions: [Instruction], names: [UInt64: String], into targets: inout Set<UInt64>
+    ) {
+        for insn in instructions
+        where insn.controlFlow == .call || insn.controlFlow == .branch {
+            if let target = insn.branchTarget, names[target] == nil { targets.insert(target) }
+        }
+    }
+
+    /// Resolve accumulated cross-image call targets to names.
+    private func resolveCrossImageNames(
+        _ targets: Set<UInt64>, into names: [UInt64: String], resolver: CacheSymbolResolver?
+    ) -> [UInt64: String] {
+        guard let resolver else { return names }
+        var names = names
         for target in targets {
             if let name = resolver.name(forCallTarget: target) {
                 names[target] = demangle(name) ?? Self.stripLeadingUnderscore(name)
