@@ -11,7 +11,7 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-07-20, at commit `081f052`.
+Last audited: 2026-07-20, at commit `bd7ae4a`.
 
 ---
 
@@ -541,9 +541,40 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   one-call-per-4-bytes case on a large data region and UserNotifications shows
   none. It is the per-instruction analysis pipeline, run over ~75× more code.
   `--function` remains fast on any image, since it decodes only matched ranges.
-- **UNKNOWN — memory.** Peak RSS on a large framework has never been measured.
-  The whole-image path holds every instruction and every recovered function in
-  memory at once, with no streaming or chunking.
+- **OPEN — memory scales linearly with instruction count, and the largest
+  frameworks exceed a 16 GB machine.** Measured with `/usr/bin/time -l` (release
+  build, peak memory footprint — the malloc'd allocation, which is what must be
+  backed by RAM + swap; RSS also counts mapped cache pages and understates once
+  swapping starts):
+
+  | image | instructions | peak footprint | per-insn |
+  |---|---|---|---|
+  | UserNotifications | 52,103 | 141 MB | 2.7 KB |
+  | CoreLocation | 473,670 | 1,192 MB | 2.5 KB |
+  | SwiftUI | 5,654,282 | **13,794 MB** | 2.44 KB |
+
+  Cleanly linear at **~2.5 KB per recovered instruction**, no dominating fixed
+  cost. SwiftUI's **13.5 GB peak footprint exceeds this 16 GB host's usable
+  RAM** — it completes only by swapping (RSS capped at 4.3 GB, wall time
+  dominated by paging). On a smaller machine, or under memory pressure, an
+  unfiltered SwiftUI run would fail or thrash.
+
+  Cause is the same materialize-everything shape behind the time cost: the
+  whole-image path builds the entire `[DisassembledFunction]` before rendering,
+  and every held `Instruction` carries its `text` string plus a `detail`
+  (`StructuredInsn` with a heap `operands` array) that is needed only *during*
+  value-tracking and structuring, not after. Nothing is released until the whole
+  image is rendered.
+
+  The fix is structural and feature-sized — stream per function (render and
+  release each function's instructions before decoding the next), or drop
+  `detail` once a function is structured — so it is recorded rather than
+  attempted here. `--function` is unaffected: it decodes only matched ranges and
+  stays at the ~150 MB cache-mapping baseline.
+
+  Reproduce:
+  `/usr/bin/time -l swiftdc disasm --image CoreLocation >/dev/null` — read
+  `peak memory footprint`.
 - **UNKNOWN — no performance regression guard.** Nothing fails when a change
   makes decoding materially slower.
 
@@ -592,6 +623,7 @@ The meta-category. Every gap here weakens confidence in every claim above.
 |---|---|---|
 | Function boundaries | `LC_FUNCTION_STARTS` | **Enforced** — throws on empty parse, warns below 50% recovery. The count is deduped and cross-checked against `dyld_info` in tests |
 | Byte-level decode coverage | `dyld_info -function_starts` extents | **In tests + measured by hand** — 100.000% of declared slots decode; no holes inside bodies on either decoder |
+| Peak memory | `/usr/bin/time -l` peak footprint | **Measured by hand** — linear ~2.5 KB/instruction; SwiftUI 13.5 GB exceeds a 16 GB host |
 | Instruction decode | `llvm-objdump` vs in-process Capstone | Two independent decoders exist; **nothing cross-checks them**. Both silent-truncation bugs found so far were in whichever decoder the other wasn't covering |
 | Enum tag → case index | SIL (`swiftc -emit-sil`) | Used once, manually, to confirm the `rank` lowering |
 | Field offsets | `__swift5_fieldmd`, computed offline | Runtime-exact by construction |
