@@ -74,6 +74,118 @@ public enum MachOPreflight {
         // load-command walk simply stops at the end of what was read.
         let prefix = (try? handle.read(upToCount: min(fileSize, 1 << 20))) ?? Data()
         try validate(prefix: prefix, fileSize: fileSize, path: url.path)
+
+        // Section CONTENTS, which the checks above say nothing about. Only the
+        // flat relative-pointer tables (see `relativePointerTables`), and only
+        // for a thin little-endian image — a fat file's slices are validated
+        // when a slice is selected.
+        //
+        // Read per section rather than from `prefix`: metadata sits after the
+        // code, so in any real app it is far beyond the 1 MiB header window.
+        // Validating only what the prefix happened to cover would leave exactly
+        // the large binaries unprotected.
+        for table in relativePointerTables(prefix: prefix, fileSize: fileSize) {
+            guard table.size > 0, let _ = try? handle.seek(toOffset: UInt64(table.offset)),
+                  let bytes = try? handle.read(upToCount: table.size), bytes.count == table.size
+            else { continue }
+            try validateRelativePointerTable(
+                bytes: bytes, sectionOffset: table.offset, fileSize: fileSize,
+                name: table.name, path: url.path
+            )
+        }
+    }
+
+    /// Sections that are a flat array of 4-byte relative pointers and nothing
+    /// else, so their contents can be bounds-checked without modelling any
+    /// record layout.
+    ///
+    /// Deliberately a short list. Fuzzing crashed at least six metadata
+    /// sections, but the rest (`__swift5_assocty`, `__swift5_fieldmd`,
+    /// `__objc_methlist`, …) carry structured records whose layout would have to
+    /// be reimplemented here to find the pointers — with a real risk of
+    /// rejecting valid binaries, which this project treats as worse than the
+    /// crash. The ones covered here are the severe ones anyway: corrupting any
+    /// of them kills **every** subcommand.
+    private static func relativePointerTables(
+        prefix: Data, fileSize: Int
+    ) -> [(name: String, offset: Int, size: Int)] {
+        // Exactly the sections the Swift ABI defines as a bare array of relative
+        // pointers — protocol descriptors, protocol conformances, and nominal
+        // type descriptors. Nothing else in them to misread.
+        //
+        // The list was NOT widened by measurement, though it was tempting: on
+        // real binaries `__swift5_assocty` and `__swift5_capture` also have every
+        // int32 resolve in-file, which looks like the same shape. They are
+        // structured records, and some of those int32s are *counts*, not
+        // pointers. They resolve in-file here only because the counts are small
+        // and the sections sit far into the file; a large count in a small binary
+        // would be rejected as an out-of-range pointer, refusing a valid input.
+        // Over-rejection is worse than the crash, so those stay uncovered and
+        // documented rather than guessed at.
+        let wanted: Set<String> = [
+            "__swift5_protos", "__swift5_proto", "__swift5_types", "__swift5_types2",
+        ]
+        guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE else { return [] }
+        guard let ncmds = prefix.u32(at: 16), let sizeofcmds = prefix.u32(at: 20) else { return [] }
+
+        var found: [(name: String, offset: Int, size: Int)] = []
+        var cursor = Layout.machHeader64
+        let limit = min(Layout.machHeader64 + Int(sizeofcmds), prefix.count)
+        for _ in 0..<Int(ncmds) {
+            guard cursor + Layout.minLoadCommand <= limit,
+                  let cmd = prefix.u32(at: cursor), let cmdsize = prefix.u32(at: cursor + 4),
+                  cmdsize >= UInt32(Layout.minLoadCommand)
+            else { break }
+            if cmd == Command.segment64, let nsects = prefix.u32(at: cursor + 64) {
+                for section in 0..<Int(nsects) {
+                    let base = cursor + 72 + section * 80
+                    guard base + 80 <= limit,
+                          let size = prefix.u64(at: base + 40), let offset = prefix.u32(at: base + 48)
+                    else { break }
+                    let raw = prefix[(prefix.startIndex + base)..<(prefix.startIndex + base + 16)]
+                    let name = String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+                    guard wanted.contains(name) else { continue }
+                    let bytes = Int(clamping: size), start = Int(offset)
+                    // The section-bounds check in `validateSegment` already ran;
+                    // this guard only keeps a malformed entry from producing a
+                    // nonsensical read here.
+                    guard start <= fileSize, bytes <= fileSize - start else { continue }
+                    found.append((name, start, bytes))
+                }
+            }
+            cursor += Int(cmdsize)
+        }
+        return found
+    }
+
+    /// Every entry of a relative-pointer table must resolve inside the file.
+    ///
+    /// A Swift relative pointer is a **signed** 32-bit delta from the pointer's
+    /// own location, so `target = pointerOffset + value`. Negative is entirely
+    /// normal — verified on the fixtures, where every entry points *backwards*
+    /// into `__TEXT`. The defect this guards is not sign but range: a resolved
+    /// offset outside the file reaches
+    /// `readElement(offset:)`/`readString(offset:)` in the dependency, which
+    /// converts to unsigned before bounds-checking and so traps
+    /// (`Negative value is not representable`) or walks off the mapping with
+    /// `strlen` (SIGSEGV) — neither catchable from here.
+    static func validateRelativePointerTable(
+        bytes: Data, sectionOffset: Int, fileSize: Int, name: String, path: String = "<data>"
+    ) throws {
+        for index in stride(from: 0, to: bytes.count - (bytes.count % 4), by: 4) {
+            guard let raw = bytes.u32(at: index) else { break }
+            let delta = Int(Int32(bitPattern: raw))
+            let pointer = sectionOffset + index
+            let target = pointer + delta
+            guard target >= 0, target < fileSize else {
+                throw BinaryLoadError(
+                    """
+                    Malformed Mach-O: \(path) — \(name)[\(index / 4)] is a relative pointer to \
+                    offset \(target), outside the \(fileSize)-byte file
+                    """
+                )
+            }
+        }
     }
 
     /// The pure core, separated so it is testable without touching the disk —

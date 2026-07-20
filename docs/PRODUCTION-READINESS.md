@@ -11,7 +11,7 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-07-20, at commit `ccf167a`.
+Last audited: 2026-07-20, at commit `c5626c6`.
 
 ---
 
@@ -339,8 +339,9 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 - **MITIGATED — `MachOFile.symbols` fatalErrors on cache images** whose
   `__LINKEDIT` sits in another subcache. Uncatchable; avoided by reading the
   export trie instead, which is also semantically correct.
-- **OPEN — metadata parsing crashes on corrupted `__swift5_*` / `__objc_*`
-  contents.** The prediction that the `try!`-in-a-dependency class would recur
+- **PARTLY FIXED — metadata parsing crashes on corrupted `__swift5_*` /
+  `__objc_*` contents.** The flat relative-pointer tables are now validated;
+  the structured sections are not. Details of the fix are below the measurement. The prediction that the `try!`-in-a-dependency class would recur
   has now been tested a **third** time and held again. `MachOPreflight` validates
   the Mach-O *container*; it says nothing about section *contents*, which
   MachOSwiftSection / MachOObjCSection parse.
@@ -351,7 +352,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
   | section | signal | subcommands killed |
   |---|---|---|
-  | `__swift5_protos` | SIGTRAP | **all eight** — no entry point survives |
+  | `__swift5_protos` | SIGTRAP | **all eight** — no entry point survives (now contained) |
   | `__swift5_assocty` | SIGTRAP + SIGSEGV | dump, interface, analyze |
   | `__objc_methlist` | SIGSEGV | objc, objc --methods, disasm, xrefs, analyze |
 
@@ -381,13 +382,39 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
      `ObjCMethodList.indirectMethod` and `AssociatedTypeRecord.name` →
      `readString(offset:)` → `strlen` → SIGSEGV.
 
-  Containment: both live inside the linked dependencies, so neither is catchable
-  from swiftdc. Defect 1 is a one-guard upstream fix on a path that already has
-  the right error case. Pre-validating section contents in `MachOPreflight` is
-  possible in principle but needs per-section layout knowledge for ~25 sections,
-  and carries the over-rejection risk this project treats as worse than the
-  crash. Not attempted here on that basis; the root cause is recorded precisely
-  enough to act on.
+  **Contained for the flat pointer tables.** `MachOPreflight` now validates
+  `__swift5_protos`, `__swift5_proto`, `__swift5_types` and `__swift5_types2`:
+  each is a bare array of 4-byte relative pointers, so `target = pointerOffset +
+  value` must land inside the file. No record layout is modelled, and sign is not
+  the test — every entry in every real fixture is *negative*, pointing backwards
+  into `__TEXT`, so a validator that rejected negative deltas would refuse every
+  Swift binary in existence.
+
+  Measured across three seeds, before → after:
+
+  | seed | mutants | before | after |
+  |---|---|---|---|
+  | 1234 | 100 | 49 crashes (6.1%) | **22 (2.8%)** |
+  | 999 | 20 | 35 (21.9%) | **8 (5.0%)** |
+  | 424242 | 40 | 14 (4.4%) | 14 (4.4%) — hit only uncovered sections |
+
+  Sections are read individually rather than from the 1 MiB header prefix:
+  metadata sits after the code, so in any real app it lies far beyond that
+  window, and validating only the prefix would leave exactly the large binaries
+  unprotected. Verified on a 36 MB binary whose tables hold 4,033 entries.
+
+  **The covered list was not widened by measurement, though it was tempting.**
+  On real binaries `__swift5_assocty` and `__swift5_capture` also have every
+  int32 resolve in-file, which looks like the same flat shape. They are
+  structured records, and some of those int32s are *counts*, not pointers — they
+  resolve in-file here only because the counts are small and the sections sit far
+  into the file. A large count in a small binary would be rejected as an
+  out-of-range pointer, refusing a valid input.
+
+  **Still OPEN**: `__swift5_assocty`, `__swift5_fieldmd`, `__objc_methlist` and
+  anything else with structured records. Both underlying defects remain in the
+  dependencies and are unreachable from swiftdc; defect 1 is a one-guard upstream
+  change on a path that already has the right error case.
 - **MITIGATED — metadata fuzzing is now repeatable, not hand-run.**
   `Tools/metadata-fuzz.py` is seeded and deterministic for a given
   (binary, mutants, seed), covers all eight metadata-reading subcommands, and
