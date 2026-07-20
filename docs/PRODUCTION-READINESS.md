@@ -11,7 +11,7 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-07-19, at commit `d1ca94f`.
+Last audited: 2026-07-19, at commit `bd61619`.
 
 ---
 
@@ -135,7 +135,30 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   asserts that iteration order over dictionaries/sets cannot leak into output on
   a larger binary, where scheduling varies more.
 
-## 5. Usability — are commands, diagnostics, and docs accurate?
+## 5. Performance and memory on large frameworks
+
+- **OPEN — whole-image decoding does not scale to the largest frameworks.**
+  Measured after the resync fix: `disasm --image UserNotifications` recovers
+  1,391 functions / 52,103 instructions in **19s**, with no coverage warning.
+  SwiftUI declares 105,647 functions — roughly 75× more — and a full unfiltered
+  run takes many minutes.
+
+  This cost was previously *hidden by the truncation bug*: stopping after 4,040
+  instructions made SwiftUI look fast. Fixing completeness exposed the real
+  workload, which is the correct trade (a fast wrong answer is worth nothing)
+  but leaves unfiltered runs on the largest images impractical.
+
+  Not pathological — the resync loop was checked for a degenerate
+  one-call-per-4-bytes case on a large data region and UserNotifications shows
+  none. It is the per-instruction analysis pipeline, run over ~75× more code.
+  `--function` remains fast on any image, since it decodes only matched ranges.
+- **UNKNOWN — memory.** Peak RSS on a large framework has never been measured.
+  The whole-image path holds every instruction and every recovered function in
+  memory at once, with no streaming or chunking.
+- **UNKNOWN — no performance regression guard.** Nothing fails when a change
+  makes decoding materially slower.
+
+## 6. Usability — are commands, diagnostics, and docs accurate?
 
 - **FIXED — three README defects.** A documented command that errors
   (`--sections types,protocols` is space-separated); an entire undocumented
@@ -152,7 +175,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 - **UNKNOWN — no progress or timing feedback.** `objc --image Foundation` is
   documented as slow with no indication it is working.
 
-## 6. Reconstruction quality — how source-like is the output?
+## 7. Reconstruction quality — how source-like is the output?
 
 Real, but last. Everything above must hold first.
 
@@ -172,7 +195,7 @@ Real, but last. Everything above must hold first.
   coverage-bound in `docs/research/field-map-name-collision.md`. Not a tractable
   slice; do not re-mine it without new evidence.
 
-## 7. Validation — what independent oracle checks each subsystem?
+## 8. Validation — what independent oracle checks each subsystem?
 
 The meta-category. Every gap here weakens confidence in every claim above.
 
