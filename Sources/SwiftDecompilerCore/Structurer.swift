@@ -173,6 +173,33 @@ struct ControlFlowStructure {
         self.loops = loops
     }
 
+    /// Pull body blocks the linear walk never reached INSIDE their loop, so the
+    /// loop owns its body instead of leaving them stranded as top-level labelled
+    /// blocks. Only chunks that transfer control explicitly are moved: a chunk
+    /// carrying a `// continues at` marker falls through to whatever follows it,
+    /// and inside a loop that fall-through would read as looping back — a
+    /// misrepresentation. Those stay at top level, unchanged.
+    private func drainBodyInsideLoop(
+        info: LoopInfo, context: LoopContext, stop: Int, indent: Int,
+        visited: inout Set<Int>, gotoTargets: inout Set<Int>, depth: Int
+    ) -> [String] {
+        var lines: [String] = []
+        for block in info.body.sorted() where !visited.contains(block) {
+            var trialVisited = visited
+            var trialGotos = gotoTargets
+            let chunk = emit(
+                from: block, until: stop, indent: indent + 1,
+                visited: &trialVisited, gotoTargets: &trialGotos,
+                loop: context, depth: depth + 1
+            )
+            guard !chunk.contains(where: { $0.contains("// continues at") }) else { continue }
+            visited = trialVisited
+            gotoTargets = trialGotos
+            lines += chunk
+        }
+        return lines
+    }
+
     // MARK: - Structured emission
 
     /// Past `maxDepth` `emit`/`edge` recursion frames, `emit` degrades to a `goto`
@@ -336,11 +363,13 @@ struct ControlFlowStructure {
                             lines.append("\(pad)    \(update)")
                         }
                     }
+                    lines += drainBodyInsideLoop(info: info, context: context, stop: stop, indent: indent, visited: &visited, gotoTargets: &gotoTargets, depth: depth)
                     lines.append("\(pad)}")
                     current = rotated.exit   // resume at the loop's exit successor
                 } else {
                     lines.append("\(pad)while (true) {")
                     lines += emit(from: current, until: stop, indent: indent + 1, visited: &visited, gotoTargets: &gotoTargets, loop: context, depth: depth + 1)
+                    lines += drainBodyInsideLoop(info: info, context: context, stop: stop, indent: indent, visited: &visited, gotoTargets: &gotoTargets, depth: depth)
                     lines.append("\(pad)}")
                     current = info.exit ?? exit
                 }
