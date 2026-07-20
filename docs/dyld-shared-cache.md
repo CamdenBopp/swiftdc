@@ -66,6 +66,9 @@ All of the following was verified against an iOS 27 host cache.
   shared Capstone decode loop, not anything cache-specific: `cs_disasm` stops at
   the first undecodable byte, and the engine called it once. Measured against
   `LC_FUNCTION_STARTS` the shortfall was 285 of 105,647 — 0.27%. Whole-image
-  decoding now resynchronises past undecodable bytes, and an unfiltered run
-  warns on stderr whenever recovery falls below half of what the binary
-  declares.
+  decoding now resynchronises past undecodable bytes: SwiftUI recovers 105,644
+  of 105,647 functions (99.997%), and an unfiltered run warns on stderr whenever
+  recovery falls below half of what the binary declares.
+
+  It is correct now, but slow — a full SwiftUI run takes about six minutes.
+  `--function` remains fast, since it decodes only the matched ranges.

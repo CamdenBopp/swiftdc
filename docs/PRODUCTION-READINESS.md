@@ -81,6 +81,11 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   recovery exact rather than heuristic — on a stall, skip one instruction slot
   and resume — so the fix carries no realignment guesswork.
 
+  Confirmed at full scale: SwiftUI now recovers **105,644 of 105,647 declared
+  functions (99.997%)** and 5,654,282 instructions, up from 285 and 4,040 — 371×
+  more functions, 1,400× more instructions. The three unrecovered functions are
+  worth a look but are not a truncation.
+
   Covered by `CapstoneResyncTests`, which pins the resync *stride* (a
   wrong-sized skip still yields the right instruction count at wrong addresses),
   and was observed failing against the single-call decode before being trusted.
@@ -140,8 +145,8 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 - **OPEN — whole-image decoding does not scale to the largest frameworks.**
   Measured after the resync fix: `disasm --image UserNotifications` recovers
   1,391 functions / 52,103 instructions in **19s**, with no coverage warning.
-  SwiftUI declares 105,647 functions — roughly 75× more — and a full unfiltered
-  run takes many minutes.
+  SwiftUI, at 105,644 recovered functions and 5.65M instructions, takes
+  **6m03s** — correct, but impractical for interactive use.
 
   This cost was previously *hidden by the truncation bug*: stopping after 4,040
   instructions made SwiftUI look fast. Fixing completeness exposed the real
