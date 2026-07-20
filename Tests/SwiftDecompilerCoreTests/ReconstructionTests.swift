@@ -711,3 +711,22 @@ private func reconstructionStructured(
     // Addresses parsed from the right-aligned column must be the real ones.
     #expect(functions.allSatisfy { fn in fn.instructions.allSatisfy { insn in insn.address > 0 } })
 }
+
+// MARK: - Loop structuring honesty
+
+/// A `continue outer` gives the INNER loop a second exit, so it is multi-exit and
+/// the structurer must NOT fold it into a `while`. It renders honestly as a loop
+/// header label with a back-edge `goto`, while the single-exit OUTER loop does fold.
+/// This pins the invariant that matters if multi-exit folding is ever added: an
+/// unfoldable loop must degrade to an honest goto, never to a structure that
+/// misrepresents the control flow.
+@Test func rendersMultiExitLoopHonestlyIfPresent() async throws {
+    guard let s = try await reconstructionStructured("nestedLabelledContinue") else { return }
+    // The outer, single-exit loop folds.
+    #expect(s.contains("while (true)") || s.contains("while ("))
+    // The inner, multi-exit loop does not: it keeps a labelled header + back-edge.
+    #expect(s.contains("// loop header"))
+    #expect(s.contains("// loop"))
+    // Whatever it emits must be structurally balanced.
+    #expect(s.filter { $0 == "{" }.count == s.filter { $0 == "}" }.count)
+}

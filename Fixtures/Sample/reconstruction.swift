@@ -483,3 +483,18 @@ public struct OuterY {
         public var firstV: Int { v1 }
     }
 }
+
+// A labelled `continue` from an inner loop to the OUTER loop's header. The
+// back-edge targets an ENCLOSING loop, so it must render as a labelled continue
+// against that loop's label — not as a bare `goto`.
+public func nestedLabelledContinue(_ rows: Int, _ cols: Int) -> Int {
+    var total = 0
+    outer: for i in 0 ..< rows {
+        for j in 0 ..< cols {
+            if j == 2 { continue outer }
+            total &+= i &* j
+        }
+        total &+= 1
+    }
+    return total
+}

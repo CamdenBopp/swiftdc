@@ -48,6 +48,56 @@ That is a real multi-exit / labelled-loop structuring algorithm, a larger featur
 with correctness risk, not an incremental change. Per the loop's own guidance:
 STOP and REPORT rather than force it.
 
+## Feature-mode follow-up: there is NO safe incremental slice (measured)
+
+Deliberate-feature mode revisited this to find a tractable sub-slice. Instrumented
+the two back-edge emission sites and categorized all 3,384 back-edge gotos on the
+self-host:
+
+| category | count | share |
+|---|---|---|
+| **multi-exit loop** — not inside a folded loop, target not foldable | **3,030** | 89.5% |
+| back-edge while inside *some* folded loop, target a different header | 330 | 9.8% |
+| not in a loop context, target foldable | 24 | 0.7% |
+
+(2,464 further back-edges already render as `continue`, inside folded loops.)
+
+The 330 looked like labelled-`continue` candidates, so that was implemented: an
+enclosing-loop stack threaded through `emit`/`edge`, a back-edge to an ENCLOSING
+header emitted as `continue loc_<addr>`, and the loop's `while` line written after
+its body so the label could be attached. It works and is safe (self-host: 4 labels
+defined, 4 used, **zero dangling**, braces balanced, EXIT 0) — but it converts only
+**5** gotos, not 330.
+
+**Why the 330 collapsed to 5:** "inside some loop with a back-edge to a different
+header" is NOT the same as "back-edge to an ENCLOSING header". In 325 of those cases
+the target is a loop we are not lexically nested inside, where `continue` would be
+invalid and `goto` is the only honest rendering. The strict enclosing check is
+correct; the slice is simply tiny.
+
+**Worse, the idiom that would use it is self-defeating.** A Swift `continue outer`
+gives the INNER loop a second exit (its normal exit plus the jump to the outer
+header), so the inner loop is multi-exit, is not folded, and renders as
+`loc_HEADER: … goto loc_HEADER` — landing in the 3,030 bucket, not the
+labelled-continue bucket. The fixture `nestedLabelledContinue` demonstrates exactly
+this. So the feature is unreachable for the very construct it was meant to serve,
+and no fixture can exercise it.
+
+The change was therefore **reverted**: correct, but 5 incidental occurrences and no
+possible regression test do not earn threading two parameters through the core
+recursion. What was kept is `rendersMultiExitLoopHonestlyIfPresent`, pinning the
+invariant that an unfoldable loop degrades to an honest goto rather than a structure
+that misrepresents control flow — the guarantee any future multi-exit work must not
+break.
+
+**Conclusion: every meaningful goto reduction in this dimension requires multi-exit
+loop folding** (89.5% of the population). There is no safe incremental slice — this
+is now measured, not assumed. That feature must admit a multi-exit loop to `loops`,
+emit `while (true)` over exactly its body set (`bodies[header]`, already computed),
+render back-edges as `continue`, choose one exit as the fall-out `break`, and emit
+the remaining exits as `goto loc_exitN` with the exit blocks after the loop. The
+correctness bar is that the emitted body contains exactly the loop's body blocks.
+
 ## Broader assessment: the small-change reconstruction frontier is a plateau
 
 Across this session the incremental frontier has been mined and the remaining
