@@ -11,7 +11,7 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-07-20, at commit `0a11431`.
+Last audited: 2026-07-20, at commit `0800bb0`.
 
 ---
 
@@ -600,8 +600,34 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   Reproduce:
   `/usr/bin/time -l swiftdc disasm --image CoreLocation >/dev/null` — read
   `peak memory footprint`.
-- **UNKNOWN — no performance regression guard.** Nothing fails when a change
-  makes decoding materially slower.
+- **MITIGATED (memory) — a whole-image memory regression guard now exists**
+  (`MemoryRegressionTests`). The Performance limits above are OPEN by design
+  awaiting the streaming refactor, but nothing stopped them getting *worse*: an
+  added held field on `Instruction`, or an extra retained copy of the list,
+  would balloon per-instruction memory silently. The guard runs
+  `disasm --image UserNotifications --json` under `/usr/bin/time -l` — an
+  **external** oracle, process accounting rather than any number swiftdc reports
+  about itself — and asserts `peak footprint ÷ instruction count` stays under
+  **5,632 B** (~1.6× the measured ~3,400 B/instruction baseline, so it trips on a
+  doubling-class regression, not the ~4% run-to-run variance).
+
+  Proven to have teeth, and the proof taught the boundary. A first injection —
+  two extra `map { $0 }` copies of the instruction list — did **not** trip it,
+  because `Instruction`'s String/`detail` heap buffers are copy-on-write, so the
+  copies shared bytes rather than allocating them. That is correct: retaining
+  references to the same instructions is not a memory regression. Injecting a
+  genuine per-instruction allocation (3 KB of fresh bytes each) did trip it, at
+  6,025 B/instruction. So the guard catches the realistic regression — a new
+  held field carrying heap data — while ignoring reference retention.
+
+  Host-gated: it needs a system dyld cache image and skips cleanly without one
+  (a skip is instant; the passing run takes ~18 s, which confirms it measured).
+  It is also the **before/after oracle the streaming refactor needs**: after
+  streaming, per-instruction footprint should fall sharply and the bound tighten.
+- **UNKNOWN — no wall-time regression guard.** The memory guard above covers
+  allocation; nothing guards decode *time*, which is deliberately left to a
+  measured OPEN rather than a test — wall time is too machine- and load-dependent
+  to assert as a stable bound without flaking.
 
 ## 6. Usability — are commands, diagnostics, and docs accurate?
 
@@ -648,7 +674,7 @@ The meta-category. Every gap here weakens confidence in every claim above.
 |---|---|---|
 | Function boundaries | `LC_FUNCTION_STARTS` | **Enforced** — throws on empty parse, warns below 50% recovery. The count is deduped and cross-checked against `dyld_info` in tests |
 | Byte-level decode coverage | `dyld_info -function_starts` extents | **In tests + measured by hand** — 100.000% of declared slots decode; no holes inside bodies on either decoder |
-| Peak memory | `/usr/bin/time -l` peak footprint | **Measured by hand** — linear ~2.5 KB/instruction; SwiftUI 13.5 GB exceeds a 16 GB host |
+| Peak memory | `/usr/bin/time -l` peak footprint | **Measured + guarded** — linear ~2.5 KB/instruction; SwiftUI 13.5 GB exceeds a 16 GB host; `MemoryRegressionTests` bounds per-instruction footprint |
 | Instruction decode | `llvm-objdump` vs in-process Capstone | Two independent decoders exist; **nothing cross-checks them**. Both silent-truncation bugs found so far were in whichever decoder the other wasn't covering |
 | Enum tag → case index | SIL (`swiftc -emit-sil`) | Used once, manually, to confirm the `rank` lowering |
 | Field offsets | `__swift5_fieldmd`, computed offline | Runtime-exact by construction |
