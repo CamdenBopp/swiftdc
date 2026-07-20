@@ -23,6 +23,12 @@ public enum BinaryLoader {
             throw BinaryLoadError("File not found: \(path)")
         }
 
+        // MachOKit traps (`try!`, `precondition`) rather than throwing on
+        // malformed input, and a trap in a dependency cannot be caught — so the
+        // structure has to be checked before it is handed over. See
+        // MachOPreflight.
+        try MachOPreflight.validate(url: url)
+
         let file: File
         do {
             file = try MachOKit.loadFromFile(url: url)

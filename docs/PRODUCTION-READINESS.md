@@ -108,15 +108,38 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 3. Robustness — what breaks it?
 
-- **OPEN — a truncated Mach-O crashes.** A 204-byte file with a valid magic
-  aborts inside the dependency: `MachOKit/MachOFile.swift:61: Fatal error: 'try!'
-  expression unexpectedly raised an error`. Exit code 133 (SIGTRAP). A `try!` in
-  a dependency **cannot be caught** — mitigation must be validation *before* the
-  call, the same shape as the documented `MachOFile.symbols` trap.
-  Reproduce: `printf '\xcf\xfa\xed\xfe' > t; head -c 200 /dev/urandom >> t; swiftdc disasm t`
+- **FIXED — malformed input crashed the process.** The audit recorded this as
+  one case (a truncated Mach-O). Surveying nine hand-written malformed inputs
+  found **seven crashed** — six SIGTRAP, one **SIGSEGV** — including an *empty
+  file* (`MachOKit/FileHandle+.swift:188: Precondition failed: Invalid Data
+  Size`). Four distinct trap sites across MachOKit and `FileIOBinary`, all
+  `try!`/`precondition`, all in dependencies, therefore all uncatchable.
+
+  Fixed by `MachOPreflight`, a structural validator run before the file reaches
+  MachOKit. Every check compares two numbers the file itself declares — header
+  size vs file size, `sizeofcmds` vs bytes available, `ncmds` vs the 8-byte
+  minimum command, fat slice extents vs file length — so it encodes no
+  heuristic about what binaries "normally" look like. Nine of nine inputs now
+  exit 1 with a specific message; zero crash.
+
+  The over-rejection risk is guarded explicitly, because a validator that
+  refuses real binaries would be worse than the crash: tests assert acceptance
+  of well-formed headers, headers whose load commands extend past the read
+  prefix, every built fixture, and real fat system binaries (`/bin/ls`,
+  `/usr/lib/dyld`). Non-Mach-O files (a PNG) fall through to the existing
+  "Not a Mach-O file" path rather than being called malformed.
+
+  The end-to-end guard runs the CLI as a **subprocess** and asserts it exited
+  rather than died by signal — the crash cannot be observed in-process, since a
+  trap would take the test runner down with it.
 - **MITIGATED — other malformed inputs degrade cleanly.** Random bytes →
   `Error: Not a Mach-O file`, exit 1. A truncated-but-parseable binary →
   `llvm-objdump failed: …`, exit 1. Both correct.
+- **OPEN — only the file path is guarded.** `MachOPreflight` sits on
+  `BinaryLoader.load(path:)`. The dyld-cache entry point (`loadMachO`) does not
+  validate, on the reasoning that the system cache is not attacker-supplied —
+  which holds for `--cache` omitted and is an assumption for an extracted cache
+  passed by path.
 - **FIXED — structurer stack overflow on deep CFGs** (`ca82d6f`).
 - **FIXED — spurious dyld-cache markers trapped ObjC index construction**
   (covered by `buildsObjCIndexWithoutTrappingOnSpuriousCacheMarkers`).
