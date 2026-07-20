@@ -388,6 +388,14 @@ class and branch targets.
 
 ## Design notes and research
 
+**[docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md)** is the honest
+assessment of what stands between this and a decompiler you can trust without
+hand-checking — soundness, completeness, robustness, determinism, usability,
+reconstruction quality, and validation, each with evidence. Start there if you
+want to know what to *believe*, or what to work on next.
+[CLAUDE.md](CLAUDE.md) records the working agreement, including the
+empty-result rule that governs how a "nothing found" answer must be verified.
+
 `docs/research/` holds the engineering record — each file is a probe, a
 hypothesis, and what the evidence actually showed.
 

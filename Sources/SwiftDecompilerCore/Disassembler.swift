@@ -152,9 +152,22 @@ public struct Disassembler: Sendable {
 
     public enum DisassembleError: Error, CustomStringConvertible {
         case toolFailed(String)
+        /// The tool succeeded and produced output, but nothing in it parsed as an
+        /// instruction — while the binary's own `LC_FUNCTION_STARTS` says it has
+        /// functions. An empty result is only trustworthy when an independent
+        /// source agrees the binary is empty; here one does not, so this is an
+        /// analysis failure and must be reported as one rather than returned as
+        /// "no functions".
+        case parsedNothing(lines: Int, knownStarts: Int)
         public var description: String {
             switch self {
             case .toolFailed(let m): return "llvm-objdump failed: \(m)"
+            case .parsedNothing(let lines, let starts):
+                return """
+                    disassembly parse failed: llvm-objdump produced \(lines) lines but no \
+                    instruction was recognised, while LC_FUNCTION_STARTS lists \(starts) \
+                    function(s). This is a parser defect, not an empty binary.
+                    """
             }
         }
     }
@@ -194,7 +207,21 @@ public struct Disassembler: Sendable {
         // Flat instruction stream + objdump's symbol labels, enriched with
         // Capstone's control-flow class + branch target (data objdump doesn't show).
         let (parsed, labelByAddress) = parseObjdump(result.stdout)
-        guard !parsed.isEmpty else { return [] }
+        // Cross-check an empty parse against independent binary evidence before
+        // believing it. `LC_FUNCTION_STARTS` is emitted by the linker and survives
+        // stripping, so it is an oracle the disassembler cannot talk itself out of.
+        // Returning [] here unconditionally is what let a leading-whitespace parse
+        // bug masquerade as "no functions" on every low-based dylib.
+        if parsed.isEmpty {
+            let knownStarts = functionStarts(of: machO).count
+            guard knownStarts == 0 else {
+                throw DisassembleError.parsedNothing(
+                    lines: result.stdout.split(separator: "\n").count,
+                    knownStarts: knownStarts
+                )
+            }
+            return []
+        }
         let controlFlow = capstoneControlFlow(in: machO)
         let instructions = parsed.map { insn -> Instruction in
             guard let decoded = controlFlow[insn.address] else { return insn }

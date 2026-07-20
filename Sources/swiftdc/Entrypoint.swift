@@ -409,7 +409,14 @@ struct DisasmCommand: AsyncParsableCommand {
         if json {
             try emit(functions.jsonString(), to: output)
         } else if functions.isEmpty {
-            try emit("// No functions matched.", to: output)
+            // Distinguish "your filter matched nothing" from "this binary has no
+            // code" — the single ambiguous message used to cover both, and also
+            // covered a parser failure, which is how that defect stayed invisible.
+            if let function, !function.isEmpty {
+                try emit("// No function matched '\(function)'.", to: output)
+            } else {
+                try emit("// This binary contains no recoverable functions.", to: output)
+            }
         } else if structured {
             try emit(functions.map { $0.renderStructured() }.joined(separator: "\n\n"), to: output)
         } else if pseudo {
