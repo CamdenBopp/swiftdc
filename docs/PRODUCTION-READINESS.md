@@ -11,7 +11,7 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-07-20, at commit `9de9b97`.
+Last audited: 2026-07-20, at commit `156f651`.
 
 ---
 
@@ -625,12 +625,20 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   - **rendered output**: the whole listing is only **16 MB** of text. Not it.
   - **value-tracking / structuring**: skipped entirely (an env-gated early
     return before the analysis map) → **1,192 MB**. Not it.
+  - **the whole `assemble` step**: returning the raw decoded list immediately,
+    with *no* segmentation, annotation, or analysis at all → **1,192 MB**. Most
+    direct of all: the entire peak is present the instant `__text` is decoded.
 
   What remains is the **held whole-image instruction list itself** — every
-  function's decoded instructions resident at once, materialised before analysis
-  and independent of it. `--function` on the same image sits at ~150 MB (one
-  function plus the cache-mapping baseline), which is the floor a streaming
-  design would approach.
+  function's decoded instructions resident at once, present before `assemble`
+  even runs. `--function` on the same image sits at ~150 MB (one function plus
+  the cache-mapping baseline), which is the floor a streaming design would
+  approach. (For the record, the per-instruction footprint — ~2.5 KB — is larger
+  than the held `Instruction` struct accounts for; `MemoryLayout` puts it at
+  136 B inline plus small operand/string heap. The unaccounted bulk is likely
+  Capstone's per-instruction detail allocations retained across the whole decode.
+  It does not change the fix: streaming holds one function's worth, whatever the
+  constant.)
 
   This makes the fix a **streaming refactor with a measured ~8× headroom** on
   CoreLocation (1,192 MB → ~150 MB), not the detail-dropping tweak the earlier
