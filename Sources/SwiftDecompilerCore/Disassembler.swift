@@ -2969,9 +2969,18 @@ public struct Disassembler: Sendable {
     }
 
     /// Matches `100000e58:\tstp x29, x30, …` → (0x100000e58, "stp …").
+    ///
+    /// The address column is **right-aligned**, so it carries leading whitespace
+    /// whenever the binary's `__text` addresses are shorter than objdump's widest
+    /// one: an executable linked at `0x100000000` prints `100000e58:` flush left,
+    /// but a dylib based near zero prints `     b60:`. Trimming is therefore
+    /// mandatory, not cosmetic — without it every instruction line in such a
+    /// binary fails the hex test, `parsed` comes back empty, and the unfiltered
+    /// path reports "No functions matched" on a binary that disassembles fine
+    /// under `--function`.
     private func parseInstruction(_ line: String) -> (UInt64, String)? {
         guard let colon = line.firstIndex(of: ":") else { return nil }
-        let addrPart = line[line.startIndex..<colon]
+        let addrPart = line[line.startIndex..<colon].drop(while: { $0 == " " })
         guard !addrPart.isEmpty,
               addrPart.allSatisfy({ $0.isHexDigit }),
               let address = UInt64(addrPart, radix: 16)

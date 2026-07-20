@@ -684,3 +684,30 @@ private func reconstructionStructured(
         #expect(precond.contains("trap()") || precond.contains("assertionFailure"))
     }
 }
+
+// MARK: - Unfiltered whole-binary disassembly (llvm-objdump path)
+
+@Test func disassemblesAWholeDylibUnfilteredIfPresent() async throws {
+    // Regression: the unfiltered path shells out to `llvm-objdump`, whose address
+    // column is RIGHT-ALIGNED. A dylib based near zero therefore prints
+    // `     b60:\tsub …` — leading whitespace the instruction parser used to feed
+    // straight into an all-hex-digits test, which every such line failed. The
+    // result was a silent empty parse rendering "// No functions matched." on a
+    // binary that disassembled fine under `--function`.
+    //
+    // Every other test in this file passes a `functionFilter`, which takes the
+    // in-process Capstone path instead — which is precisely why this survived.
+    // This test exists to exercise the objdump path at all.
+    guard FileManager.default.fileExists(atPath: reconstructionFixture) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: reconstructionFixture)
+    }
+
+    #expect(!functions.isEmpty, "unfiltered disassembly of a low-based dylib recovered nothing")
+    // Not merely non-empty: the whole binary, not one stray function that
+    // happened to sit at a wide address.
+    #expect(functions.count > 100)
+    #expect(functions.contains { ($0.demangledName ?? $0.symbol).contains("isPositive") })
+    // Addresses parsed from the right-aligned column must be the real ones.
+    #expect(functions.allSatisfy { fn in fn.instructions.allSatisfy { insn in insn.address > 0 } })
+}
