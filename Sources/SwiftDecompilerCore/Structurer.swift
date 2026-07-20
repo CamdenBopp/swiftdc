@@ -17,7 +17,10 @@ public extension DisassembledFunction {
         let depth = maxStructuringDepth > 0 ? maxStructuringDepth : ControlFlowStructure.defaultMaxDepth
         let cfg = ControlFlowStructure(
             blocks: blocks, objectiveCArguments: objcMethod != nil, maxDepth: depth,
-            isThrowing: displayName.contains(" throws")
+            isThrowing: displayName.contains(" throws"),
+            returnsValue: Self.signatureReturnsValue(
+                displayName: displayName, objcSignature: objcMethod?.signature
+            )
         )
         let header = "\(displayName) {"
         let objcLine = objcMethod.map { "    // \($0.signature)" }
@@ -32,6 +35,43 @@ public extension DisassembledFunction {
             result.lines = cfg.renderLines(header: header, objcLine: objcLine)
         }
         return result.lines.joined(separator: "\n")
+    }
+
+    /// Whether a signature **proves** the function yields a value.
+    ///
+    /// Used only to choose between `return` and `return ?`, so it is deliberately
+    /// one-sided: it must never claim a value for a function that has none, and
+    /// when the signature is unrecognisable (`sub_<addr>`, a thunk, a witness
+    /// accessor) it returns false. Under-claiming prints a bare `return`, which
+    /// is merely uninformative; over-claiming would assert a value exists that
+    /// does not — the fabrication this project refuses to make.
+    static func signatureReturnsValue(displayName: String, objcSignature: String?) -> Bool {
+        // Objective-C is authoritative when present: the metadata carries a real
+        // return type, e.g. `- (long long)incrementBy:(long long)arg0;`.
+        if let objcSignature,
+           let open = objcSignature.firstIndex(of: "("),
+           let close = objcSignature[open...].firstIndex(of: ")") {
+            let type = objcSignature[objcSignature.index(after: open)..<close]
+                .trimmingCharacters(in: .whitespaces)
+            return type != "void" && type != "IBAction"
+        }
+
+        // Swift function type: take the LAST `->`, since a parameter can itself be
+        // a function type (`(A) -> B) -> C`).
+        if let arrow = displayName.range(of: "->", options: .backwards) {
+            let result = displayName[arrow.upperBound...].trimmingCharacters(in: .whitespaces)
+            return !result.isEmpty && result != "()" && result != "Void" && result != "Swift.Void"
+        }
+
+        // Accessor form, which uses a colon rather than an arrow:
+        // `Reconstruction.Priority.rawValue.getter : Swift.Int`. Only `.getter`
+        // qualifies — a `.setter` yields nothing, and an ObjC selector's colons
+        // must not be mistaken for this form.
+        if let range = displayName.range(of: ".getter : ") {
+            return !displayName[range.upperBound...].trimmingCharacters(in: .whitespaces).isEmpty
+        }
+
+        return false
     }
 }
 
@@ -57,6 +97,11 @@ struct ControlFlowStructure {
         let boundsBody: Bool
     }
 
+    /// Whether the function's signature PROVES it returns a value. Drives the
+    /// difference between `return` (void, or unknown) and `return ?` (a value we
+    /// could not recover). Default false: unknown declines.
+    let returnsValue: Bool
+
     let blocks: [BasicBlock]
     let exit: Int
     private let indexByAddress: [UInt64: Int]
@@ -68,7 +113,8 @@ struct ControlFlowStructure {
     let maxDepth: Int                          // recursion-depth guard (see emit)
     private let usesSwiftError: Bool           // x21 is the error register here
 
-    init(blocks: [BasicBlock], objectiveCArguments: Bool = false, maxDepth: Int = ControlFlowStructure.defaultMaxDepth, isThrowing: Bool = false) {
+    init(blocks: [BasicBlock], objectiveCArguments: Bool = false, maxDepth: Int = ControlFlowStructure.defaultMaxDepth, isThrowing: Bool = false, returnsValue: Bool = false) {
+        self.returnsValue = returnsValue
         self.blocks = blocks
         self.exit = blocks.count
         self.objectiveCArguments = objectiveCArguments
@@ -407,7 +453,12 @@ struct ControlFlowStructure {
                 }
             }
             if isReturn(block) {
-                if !emittedReturn { lines.append("\(pad)return") }
+                // Same rule as the tail site. MEASURED: on every fixture this
+                // site currently emits nothing but throwing-function error exits,
+                // so routing it through `valuelessReturn` changes no output today.
+                // It is here so the two emission sites cannot drift apart, not
+                // because it fixes an observed case.
+                if !emittedReturn { lines.append("\(pad)\(valuelessReturn)") }
                 break
             }
 
@@ -964,7 +1015,29 @@ struct ControlFlowStructure {
 
     private func tailStatement(_ block: BasicBlock) -> String {
         if let last = block.instructions.last, Self.isTrap(last) { return "trap()" }
-        return "return"
+        return valuelessReturn
+    }
+
+    /// How to render a `ret` whose value was not recovered.
+    ///
+    /// A bare `return` in a function that DOES return a value is misleading: it
+    /// reads as "returns nothing" when it means "we did not recover what it
+    /// returns". The tool's contract elsewhere is that an unprovable value
+    /// renders `?`, so it should say so here too.
+    ///
+    /// Two deliberate refusals, both in the declining direction:
+    ///
+    /// - An unrecognisable signature (`sub_<addr>`, a thunk, a witness accessor)
+    ///   keeps the bare form. Claiming a value exists would be a fabrication of
+    ///   exactly the kind the `?` convention is meant to avoid.
+    /// - A function that threads swifterror keeps it too. Its error exit really
+    ///   does yield no value — the result travels in x21 — and this is a
+    ///   per-function fact, so the two exits cannot be told apart here. Printing
+    ///   `return ?` on a throw path would assert a missing value that was never
+    ///   there. Where such a function's normal exit IS recovered it already
+    ///   prints `return <expr>`, so the cost of declining is small.
+    private var valuelessReturn: String {
+        returnsValue && !usesSwiftError ? "return ?" : "return"
     }
 
     private static func decode(_ text: String) -> (String, [String]) {

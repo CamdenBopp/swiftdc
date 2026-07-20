@@ -13,7 +13,10 @@ Most of this survives stripping, because Swift's `__swift5_*` and ObjC's
 
 **Core design rule: it declines rather than guesses.** A value the analysis
 cannot prove renders as `?`. There is no confidence score to second-guess — if a
-name or argument appears, metadata or data flow justified it.
+name or argument appears, metadata or data flow justified it. That extends to
+returns: `return ?` means the function returns something the analysis could not
+recover, while a bare `return` means it returns nothing — or that its signature
+was not recoverable enough to tell.
 
 ---
 

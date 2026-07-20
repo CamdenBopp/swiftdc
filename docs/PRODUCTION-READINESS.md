@@ -11,7 +11,7 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-07-19, at commit `3060d52`.
+Last audited: 2026-07-19, at commit `c13ae1c`.
 
 ---
 
@@ -124,13 +124,40 @@ because it cannot be distinguished from a right one by reading the output.
   memory effects, and anything with side effects are still uncovered, and it
   samples rather than proves. Both optimization levels and both numeric domains
   are now covered; what remains is aggregate and effectful values.
-- **OPEN — a declined return value renders as a bare `return`.** A function
-  whose recovered return value is unknown prints `return` with no operand, even
-  when its signature says `-> Swift.Int` (`threeWay`, `accumulate`). It reads
-  like a void return rather than an unrecovered one, which contradicts the
-  tool's own stated contract that unprovable values render `?`. Not a
-  fabrication — a declined value described misleadingly. Found by the oracle,
-  which had to skip `threeWay` for exactly this reason.
+- **FIXED — a declined return value rendered as a bare `return`.** A function
+  whose return value was not recovered printed `return` with no operand even when
+  its signature said `-> Swift.Int`, reading as "returns nothing" rather than
+  "we did not recover this". Not a fabrication, but a declined value described
+  misleadingly — and it contradicted the contract that unprovable values render
+  `?`. Not a corner case either: bare returns were **~45% of all returns** in the
+  fixture (121 bare vs 143 with a value).
+
+  Now `return ?`, but **only where the signature proves a value exists**. The
+  rule is one-sided by design, since over-claiming would assert a value that is
+  not there:
+
+  - **Void functions keep the bare form** — a void return really is just
+    `return`. Measured: 7 in the fixture, all correct before and after.
+  - **Unrecognisable signatures keep it too** (`sub_<addr>`, thunks, witness
+    accessors — 98 of them). Declining is the house rule.
+  - **Throwing functions keep it.** A throwing function's error exit genuinely
+    yields no value (the result travels in x21), and whether a given exit is the
+    error path is not known per-block, so asserting a missing value on a throw
+    path would be wrong. Where the normal exit *is* recovered it already prints
+    `return <expr>`, so little is lost.
+
+  Two emission sites had to change, not one; the second was found only by
+  re-measuring the whole fixture after fixing the first and noticing a throwing
+  function still classified oddly.
+
+  Both directions are proven. Reverting the fix fails the value-side tests
+  (including a floor that reported "only 0 function(s) rendered `return ?`");
+  over-applying it fails the void and throwing guards, with the population check
+  naming the four void functions it would have corrupted.
+- **OPEN — the Objective-C branch of the classifier is unit-tested only.** Every
+  ObjC method in the fixture already recovers its return value, so no bare return
+  reaches that path in observed output. The `- (void)` vs `- (id)` decision is
+  covered by unit tests but never exercised end to end.
 
 ## 2. Completeness — what does it silently omit?
 
