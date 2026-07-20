@@ -220,3 +220,219 @@ private func rejects(_ prefix: Data, fileSize: Int? = nil) -> Bool {
         )
     }
 }
+
+// MARK: - Load-command payloads
+//
+// The header checks above prove the command TABLE is coherent; these prove the
+// commands do not POINT outside the file. That distinction is not academic:
+// mutating a real fixture's segment and symbol-table fields crashed the CLI 12
+// times across `dump`, `layout`, `interface` and `objc` — silently, with empty
+// stderr. `disasm` survived only because llvm-objdump rejects the file first,
+// which is why the original header-shaped survey never found this class.
+
+/// `segment_command_64` (72 bytes) followed by `nsects` × `section_64` (80).
+private func segment64(
+    name: String = "__TEXT", fileoff: UInt64, filesize: UInt64, sections: [Data] = []
+) -> Data {
+    var data = Data()
+    withUnsafeBytes(of: UInt32(0x19).littleEndian) { data.append(contentsOf: $0) }
+    withUnsafeBytes(of: UInt32(72 + 80 * sections.count).littleEndian) { data.append(contentsOf: $0) }
+    var segname = Data(name.utf8); segname.append(Data(repeating: 0, count: 16 - segname.count))
+    data.append(segname)
+    withUnsafeBytes(of: UInt64(0).littleEndian) { data.append(contentsOf: $0) }   // vmaddr
+    withUnsafeBytes(of: UInt64(0).littleEndian) { data.append(contentsOf: $0) }   // vmsize
+    withUnsafeBytes(of: fileoff.littleEndian) { data.append(contentsOf: $0) }
+    withUnsafeBytes(of: filesize.littleEndian) { data.append(contentsOf: $0) }
+    for word: UInt32 in [7, 5, UInt32(sections.count), 0] {                       // prot, nsects, flags
+        withUnsafeBytes(of: word.littleEndian) { data.append(contentsOf: $0) }
+    }
+    for section in sections { data.append(section) }
+    return data
+}
+
+private func section64(size: UInt64, offset: UInt32, flags: UInt32 = 0) -> Data {
+    var data = Data(repeating: 0, count: 32)                                       // sectname + segname
+    withUnsafeBytes(of: UInt64(0).littleEndian) { data.append(contentsOf: $0) }     // addr
+    withUnsafeBytes(of: size.littleEndian) { data.append(contentsOf: $0) }
+    withUnsafeBytes(of: offset.littleEndian) { data.append(contentsOf: $0) }
+    for word: UInt32 in [0, 0, 0] { withUnsafeBytes(of: word.littleEndian) { data.append(contentsOf: $0) } }
+    withUnsafeBytes(of: flags.littleEndian) { data.append(contentsOf: $0) }
+    data.append(Data(repeating: 0, count: 12))                                     // reserved1…3
+    return data
+}
+
+private func symtab(symoff: UInt32, nsyms: UInt32, stroff: UInt32, strsize: UInt32) -> Data {
+    var data = Data()
+    for word: UInt32 in [0x2, 24, symoff, nsyms, stroff, strsize] {
+        withUnsafeBytes(of: word.littleEndian) { data.append(contentsOf: $0) }
+    }
+    return data
+}
+
+/// Wrap one load command in a header that declares exactly it.
+private func imageWith(_ command: Data, fileSize: Int) -> (Data, Int) {
+    let header = machHeader64(ncmds: 1, sizeofcmds: UInt32(command.count))
+    return (header + command, fileSize)
+}
+
+@Test func rejectsASegmentStartingBeyondTheFile() {
+    let (data, size) = imageWith(segment64(fileoff: 0xffff_0000, filesize: 16), fileSize: 4096)
+    #expect(rejects(data, fileSize: size))
+}
+
+@Test func rejectsASegmentWhoseContentsOverrunTheFile() {
+    let (data, size) = imageWith(segment64(fileoff: 0, filesize: 0xffff_0000), fileSize: 4096)
+    #expect(rejects(data, fileSize: size))
+}
+
+@Test func rejectsASegmentSizeThatWouldOverflowOnConversion() {
+    // UInt64.max would TRAP a plain Int() conversion — the hostile case the
+    // clamping exists for. It must be rejected, not crash the validator.
+    let (data, size) = imageWith(segment64(fileoff: 0, filesize: .max), fileSize: 4096)
+    #expect(rejects(data, fileSize: size))
+}
+
+@Test func rejectsASectionPointingBeyondTheFile() {
+    let segment = segment64(fileoff: 0, filesize: 16, sections: [section64(size: 16, offset: 0xffff_0000)])
+    let (data, size) = imageWith(segment, fileSize: 4096)
+    #expect(rejects(data, fileSize: size))
+}
+
+@Test func rejectsASectionWhoseContentsOverrunTheFile() {
+    let segment = segment64(fileoff: 0, filesize: 16, sections: [section64(size: 0xffff_0000, offset: 64)])
+    let (data, size) = imageWith(segment, fileSize: 4096)
+    #expect(rejects(data, fileSize: size))
+}
+
+@Test func rejectsASymbolTableBeyondTheFile() {
+    let (data, size) = imageWith(symtab(symoff: 0xffff_0000, nsyms: 4, stroff: 0, strsize: 0), fileSize: 4096)
+    #expect(rejects(data, fileSize: size))
+}
+
+@Test func rejectsASymbolCountThatCannotFitInTheFile() {
+    // No separate "too many symbols" rule: nsyms × sizeof(nlist_64) simply does
+    // not fit, which is the same arithmetic as an out-of-range offset.
+    let (data, size) = imageWith(symtab(symoff: 64, nsyms: 0x00ff_ffff, stroff: 0, strsize: 0), fileSize: 4096)
+    #expect(rejects(data, fileSize: size))
+}
+
+@Test func rejectsAStringTableBeyondTheFile() {
+    let (data, size) = imageWith(symtab(symoff: 0, nsyms: 0, stroff: 64, strsize: 0xffff_0000), fileSize: 4096)
+    #expect(rejects(data, fileSize: size))
+}
+
+// MARK: - Payload over-rejection guards
+
+@Test func acceptsAZeroFillSectionLargerThanTheFile() {
+    // `__bss` occupies NO file bytes: its size is a memory extent and is
+    // routinely larger than the whole binary. Bounds-checking it against the
+    // file would reject essentially every real linker output.
+    let bss = section64(size: 0x0010_0000, offset: 0, flags: 0x1)   // S_ZEROFILL
+    let segment = segment64(name: "__DATA", fileoff: 0, filesize: 16, sections: [bss])
+    let (data, size) = imageWith(segment, fileSize: 4096)
+    #expect(!rejects(data, fileSize: size))
+}
+
+@Test func acceptsAWellFormedSegmentAndSymbolTable() {
+    let segment = segment64(fileoff: 0, filesize: 1024, sections: [section64(size: 512, offset: 128)])
+    let header = machHeader64(ncmds: 2, sizeofcmds: UInt32(segment.count + 24))
+    let table = symtab(symoff: 2048, nsyms: 16, stroff: 3072, strsize: 512)
+    #expect(!rejects(header + segment + table, fileSize: 8192))
+}
+
+// MARK: - End-to-end: the payload crashes, reproduced
+
+/// The header-shaped corpus above is synthetic. This one mutates a REAL linked
+/// binary, which is what exposed this class in the first place: a hand-built
+/// header never reaches the code that reads a segment's contents.
+///
+/// Each mutation below was observed killing the CLI by SIGTRAP before the
+/// payload checks existed — 12 crashes over four subcommands, with EMPTY stderr,
+/// so the process vanished without a diagnostic. `disasm` is deliberately absent:
+/// it survived even then, because llvm-objdump rejects the file before MachOKit
+/// parses it, which is exactly why the earlier survey missed this.
+@Test func theCLISurvivesMalformedLoadCommandPayloads() throws {
+    let binary = URL(fileURLWithPath: ".build/debug/swiftdc")
+    let fixture = URL(fileURLWithPath: "Fixtures/Sample/libReconstruction.dylib")
+    guard FileManager.default.fileExists(atPath: binary.path),
+          FileManager.default.fileExists(atPath: fixture.path)
+    else { return }
+    var image = try Data(contentsOf: fixture)
+
+    func u32(_ offset: Int) -> UInt32 {
+        image[image.startIndex + offset ..< image.startIndex + offset + 4]
+            .reversed().reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
+    }
+    func patch(_ data: inout Data, _ offset: Int, _ value: UInt32) {
+        withUnsafeBytes(of: value.littleEndian) { bytes in
+            for (index, byte) in bytes.enumerated() { data[data.startIndex + offset + index] = byte }
+        }
+    }
+    func patch64(_ data: inout Data, _ offset: Int, _ value: UInt64) {
+        withUnsafeBytes(of: value.littleEndian) { bytes in
+            for (index, byte) in bytes.enumerated() { data[data.startIndex + offset + index] = byte }
+        }
+    }
+
+    // Locate the first section-bearing segment and the symbol table.
+    var segmentOffset: Int?, symtabOffset: Int?
+    var cursor = 32
+    for _ in 0 ..< Int(u32(16)) {
+        let cmd = u32(cursor), size = u32(cursor + 4)
+        if cmd == 0x19, segmentOffset == nil, u32(cursor + 64) > 0 { segmentOffset = cursor }
+        if cmd == 0x2 { symtabOffset = cursor }
+        cursor += Int(size)
+    }
+    guard let segment = segmentOffset, let symbols = symtabOffset else { return }
+
+    var cases: [String: Data] = [:]
+    for (name, mutate) in [
+        ("seg_fileoff", { (d: inout Data) in patch64(&d, segment + 40, 0xffff_ffff_0000_0000) }),
+        ("seg_filesize", { (d: inout Data) in patch64(&d, segment + 48, 0xffff_ffff_0000_0000) }),
+        ("sect_offset", { (d: inout Data) in patch(&d, segment + 72 + 48, 0xffff_f000) }),
+        ("symtab_symoff", { (d: inout Data) in patch(&d, symbols + 8, 0xffff_f000) }),
+        ("symtab_nsyms", { (d: inout Data) in patch(&d, symbols + 12, 0x00ff_ffff) }),
+        ("symtab_stroff", { (d: inout Data) in patch(&d, symbols + 16, 0xffff_f000) }),
+        ("symtab_strsize", { (d: inout Data) in patch(&d, symbols + 20, 0xffff_f000) }),
+    ] {
+        var mutated = image
+        mutate(&mutated)
+        cases[name] = mutated
+    }
+
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("swiftdc-payload-\(ProcessInfo.processInfo.processIdentifier)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    for (name, bytes) in cases {
+        let url = directory.appendingPathComponent(name)
+        try bytes.write(to: url)
+        // The four subcommands that reach MachOKit directly, i.e. the ones that died.
+        for subcommand in ["dump", "layout", "interface", "objc"] {
+            let output = Pipe()
+            let process = Process()
+            process.executableURL = binary
+            process.arguments = [subcommand, url.path]
+            process.standardOutput = output
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            let stdout = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+
+            #expect(
+                process.terminationReason == .exit,
+                "\(subcommand) \(name): killed by signal \(process.terminationStatus)"
+            )
+            #expect(
+                process.terminationStatus == 1,
+                "\(subcommand) \(name): exit \(process.terminationStatus), expected 1"
+            )
+            // A rejected file must not also emit output that could read as success.
+            #expect(
+                stdout.isEmpty,
+                "\(subcommand) \(name): produced \(stdout.count) bytes of stdout despite failing"
+            )
+        }
+    }
+}
