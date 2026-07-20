@@ -11,7 +11,7 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-07-20, at commit `bd7ae4a`.
+Last audited: 2026-07-20, at commit `b14fac3`.
 
 ---
 
@@ -559,18 +559,34 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   dominated by paging). On a smaller machine, or under memory pressure, an
   unfiltered SwiftUI run would fail or thrash.
 
-  Cause is the same materialize-everything shape behind the time cost: the
-  whole-image path builds the entire `[DisassembledFunction]` before rendering,
-  and every held `Instruction` carries its `text` string plus a `detail`
-  (`StructuredInsn` with a heap `operands` array) that is needed only *during*
-  value-tracking and structuring, not after. Nothing is released until the whole
-  image is rendered.
+  Cause, localised by experiment rather than reasoning (an earlier version of
+  this entry blamed `detail`; that was measured false). On CoreLocation, three
+  candidates were ruled out one at a time, each leaving the 1,192 MB footprint
+  unchanged:
 
-  The fix is structural and feature-sized — stream per function (render and
-  release each function's instructions before decoding the next), or drop
-  `detail` once a function is structured — so it is recorded rather than
-  attempted here. `--function` is unaffected: it decodes only matched ranges and
-  stays at the ~150 MB cache-mapping baseline.
+  - **`detail`** (the `StructuredInsn` operand arrays): stripped at decode so it
+    is never allocated → **1,192 MB**. Not it.
+  - **rendered output**: the whole listing is only **16 MB** of text. Not it.
+  - **value-tracking / structuring**: skipped entirely (an env-gated early
+    return before the analysis map) → **1,192 MB**. Not it.
+
+  What remains is the **held whole-image instruction list itself** — every
+  function's decoded instructions resident at once, materialised before analysis
+  and independent of it. `--function` on the same image sits at ~150 MB (one
+  function plus the cache-mapping baseline), which is the floor a streaming
+  design would approach.
+
+  This makes the fix a **streaming refactor with a measured ~8× headroom** on
+  CoreLocation (1,192 MB → ~150 MB), not the detail-dropping tweak the earlier
+  entry implied. A design probe confirmed it is structurally feasible: the three
+  cross-function passes (`referenceIndex`, `crossImageNames`, the `swiftTargets`
+  set) read only lightweight per-instruction fields — `controlFlow`,
+  `branchTarget` — and per-function summaries — `startAddress`, `symbol`,
+  `displayName`. **None needs `detail` or value-tracking state**, so the image
+  can be walked once cheaply to build the name resolver, then decoded and
+  rendered one function at a time and released. It stays feature-sized (it
+  changes the whole-image control flow), so it is recorded, not attempted here.
+  `--function` is already this shape and is unaffected.
 
   Reproduce:
   `/usr/bin/time -l swiftdc disasm --image CoreLocation >/dev/null` — read
