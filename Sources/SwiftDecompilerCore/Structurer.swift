@@ -42,8 +42,11 @@ final class ResultBox: @unchecked Sendable { var lines: [String] = [] }
 
 /// Internal CFG + post-dominator structuring for `renderStructured`.
 struct ControlFlowStructure {
-    struct LoopInfo { let body: Set<Int>; let exit: Int? }
-    struct LoopContext { let header: Int; let exitNode: Int }
+    struct LoopInfo { let body: Set<Int>; let exit: Int?; let exits: Set<Int> }
+    /// `exitNode` is the single structured exit, or nil for a MULTI-exit loop —
+    /// which has no one way out to render as `break`, so every exit leaves through
+    /// an explicit `goto` and `body` bounds what may be emitted inside the loop.
+    struct LoopContext { let header: Int; let exitNode: Int?; let body: Set<Int> }
 
     let blocks: [BasicBlock]
     let exit: Int
@@ -135,7 +138,15 @@ struct ControlFlowStructure {
             for n in body {
                 for s in forward[n] where !body.contains(s) && !isSinkTail(s) { exits.insert(s) }
             }
-            if exits.count <= 1 { loops[header] = LoopInfo(body: body, exit: exits.first) }
+            // Every natural loop folds. One structured exit keeps the existing
+            // rotation/`break` path unchanged; a MULTI-exit loop still becomes an
+            // explicit `while (true)` whose body is bounded to exactly `body`, each
+            // exit leaving by an explicit `goto`. Choosing no primary exit is what
+            // makes that safe: nothing is classified, so nothing can be
+            // misrepresented.
+            loops[header] = LoopInfo(
+                body: body, exit: exits.count == 1 ? exits.first : nil, exits: exits
+            )
         }
         self.loops = loops
     }
@@ -174,12 +185,26 @@ struct ControlFlowStructure {
 
     /// Build the structured body (the shared work run on the large-stack thread).
     func renderLines(header: String, objcLine: String?) -> [String] {
+        // Emission decides whether to print a block's `loc_<addr>:` label from
+        // `gotoTargets` — which it also POPULATES as it goes. A goto emitted after
+        // its target block was already written would therefore dangle. Run a
+        // discovery sweep first and emit with the complete set; labels do not
+        // affect control flow, so both sweeps produce the same structure.
+        var discovered = Set<Int>()
+        _ = emitSweep(gotoTargets: &discovered)
+        var gotoTargets = discovered
         var lines = [header]
         if let objcLine { lines.append(objcLine) }
+        lines += emitSweep(gotoTargets: &gotoTargets)
+        lines.append("}")
+        return lines
+    }
+
+    /// One full emission sweep: the walk from entry, then a drain of every block
+    /// it did not reach (landing pads, depth-deferred blocks, multi-exit targets).
+    private func emitSweep(gotoTargets: inout Set<Int>) -> [String] {
+        var lines: [String] = []
         var visited = Set<Int>()
-        // Blocks a depth-guarded `goto` points to: they must be emitted with a
-        // `loc_<addr>:` label wherever they land (see `emit`).
-        var gotoTargets = Set<Int>()
         lines += emit(from: 0, until: exit, indent: 1, visited: &visited, gotoTargets: &gotoTargets, loop: nil, depth: 0)
         // Anything unreachable from entry by forward edges (e.g. landing pads),
         // and any block deferred by the recursion-depth guard: emit honestly as
@@ -194,7 +219,6 @@ struct ControlFlowStructure {
                 progressed = true
             }
         }
-        lines.append("}")
         return lines
     }
 
@@ -210,6 +234,9 @@ struct ControlFlowStructure {
         let block = blocks[header]
         let succs = block.successors.compactMap { index(of: $0) }
         guard succs.count == 2 else { return nil }
+        // Rotation lifts the header test into the `while`, which presumes a single
+        // way out; a multi-exit loop stays `while (true)`.
+        guard info.exits.count <= 1 else { return nil }
         let branch = condition(of: block)
         guard branch.text != "?" else { return nil }
         // The header must carry the loop test only: a statement that must run each
@@ -262,7 +289,11 @@ struct ControlFlowStructure {
             // `while (true) { … }` with the test inside.
             if let info = loops[current], loop?.header != current {
                 if gotoTargets.contains(current) { lines.append("\(pad)loc_\(hex(blocks[current].startAddress)):") }
-                let context = LoopContext(header: current, exitNode: info.exit ?? exit)
+                let context = LoopContext(
+                    header: current,
+                    exitNode: info.exits.count <= 1 ? (info.exit ?? exit) : nil,
+                    body: info.body
+                )
                 if let rotated = whileCondition(header: current, info: info) {
                     visited.insert(current)   // header consumed as the loop condition
                     lines.append("\(pad)while (\(rotated.text)) {")
@@ -299,7 +330,10 @@ struct ControlFlowStructure {
             // guard deferred — so every emitted `goto loc_<addr>` resolves.
             if loops[current] == nil, isLoopHeader(current) {
                 lines.append("\(pad)loc_\(hex(block.startAddress)):  // loop header")
-            } else if gotoTargets.contains(current) {
+            } else if gotoTargets.contains(current), loop?.header != current {
+                // Not when this IS the header of the loop currently being emitted:
+                // the `while` line already carries that label, and repeating it
+                // inside the body would define the same label twice.
                 lines.append("\(pad)loc_\(hex(block.startAddress)):")
             }
             let succs = block.successors.compactMap { index(of: $0) }
@@ -356,15 +390,37 @@ struct ControlFlowStructure {
                     lines.append("\(pad)}")
                 }
                 if merge == exit { break }
+                if let loop, loop.exitNode == nil, !loop.body.contains(merge),
+                   !isTrivialTail(merge) {
+                    gotoTargets.insert(merge)
+                    lines.append("\(pad)goto loc_\(hex(blocks[merge].startAddress))")
+                    break
+                }
                 current = merge
             } else if succs.count == 1 {
                 let only = succs[0]
                 if backSuccessors[current].contains(only) {
                     if let loop, only == loop.header { lines.append("\(pad)continue") }
-                    else { lines.append("\(pad)goto loc_\(hex(blocks[only].startAddress))  // loop") }
+                    else {
+                        // The target header needs a label: once a loop folds it no
+                        // longer prints `// loop header`, so an unregistered
+                        // back-edge goto would dangle.
+                        gotoTargets.insert(only)
+                        lines.append("\(pad)goto loc_\(hex(blocks[only].startAddress))  // loop")
+                    }
                     break
                 }
-                if let loop, only == loop.exitNode { lines.append("\(pad)break"); break }
+                if let loop, let exitNode = loop.exitNode, only == exitNode {
+                    lines.append("\(pad)break"); break
+                }
+                if let loop, loop.exitNode == nil, only != exit,
+                   !loop.body.contains(only), !isTrivialTail(only) {
+                    // Leaving a multi-exit loop: an explicit goto keeps the emitted
+                    // body exactly the loop's blocks.
+                    gotoTargets.insert(only)
+                    lines.append("\(pad)goto loc_\(hex(blocks[only].startAddress))")
+                    break
+                }
                 current = only
             } else {
                 break
@@ -379,9 +435,15 @@ struct ControlFlowStructure {
         let pad = String(repeating: "    ", count: indent)
         if backSuccessors[u].contains(v) {
             if let loop, v == loop.header { return ["\(pad)continue"] }
+            gotoTargets.insert(v)
             return ["\(pad)goto loc_\(hex(blocks[v].startAddress))  // loop"]
         }
-        if let loop, v == loop.exitNode { return ["\(pad)break"] }
+        if let loop, let exitNode = loop.exitNode, v == exitNode { return ["\(pad)break"] }
+        if let loop, loop.exitNode == nil, v != exit,
+           !loop.body.contains(v), !isTrivialTail(v) {
+            gotoTargets.insert(v)
+            return ["\(pad)goto loc_\(hex(blocks[v].startAddress))"]
+        }
         if v == merge || v == exit { return [] }
         return emit(from: v, until: merge, indent: indent, visited: &visited, gotoTargets: &gotoTargets, loop: loop, depth: depth + 1)
     }

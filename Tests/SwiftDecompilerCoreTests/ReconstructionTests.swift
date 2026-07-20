@@ -714,19 +714,57 @@ private func reconstructionStructured(
 
 // MARK: - Loop structuring honesty
 
-/// A `continue outer` gives the INNER loop a second exit, so it is multi-exit and
-/// the structurer must NOT fold it into a `while`. It renders honestly as a loop
-/// header label with a back-edge `goto`, while the single-exit OUTER loop does fold.
-/// This pins the invariant that matters if multi-exit folding is ever added: an
-/// unfoldable loop must degrade to an honest goto, never to a structure that
-/// misrepresents the control flow.
-@Test func rendersMultiExitLoopHonestlyIfPresent() async throws {
+/// A `continue outer` gives the INNER loop a second exit, so it is multi-exit.
+/// Such a loop now FOLDS into an explicit `while (true)` whose body is bounded to
+/// exactly the loop's blocks, with the back-edge as `continue` and every exit
+/// leaving by an explicit `goto`. No exit is chosen as the fall-out, so nothing is
+/// classified and the rendering cannot misrepresent the control flow.
+///
+/// (This previously asserted the loop must NOT fold — consciously updated when
+/// multi-exit folding landed. The honesty bar it guards is unchanged and is now
+/// checked directly below: every goto must resolve.)
+@Test func foldsMultiExitLoopWithoutDanglingGotoIfPresent() async throws {
     guard let s = try await reconstructionStructured("nestedLabelledContinue") else { return }
-    // The outer, single-exit loop folds.
-    #expect(s.contains("while (true)") || s.contains("while ("))
-    // The inner, multi-exit loop does not: it keeps a labelled header + back-edge.
-    #expect(s.contains("// loop header"))
-    #expect(s.contains("// loop"))
-    // Whatever it emits must be structurally balanced.
+    // Both loops are explicit now; nothing is left as a bare labelled header.
+    #expect(s.contains("while (true)"))
+    #expect(!s.contains("// loop header"))
+    // Back-edges become `continue`.
+    #expect(s.contains("continue"))
+    // Structurally balanced.
     #expect(s.filter { $0 == "{" }.count == s.filter { $0 == "}" }.count)
+    // THE correctness bar: every `goto loc_X` resolves to an emitted `loc_X:`
+    // label. Folding removes a loop's `// loop header` line, so a back-edge that
+    // does not register its target would dangle — that regression is pinned here.
+    #expect(danglingGotoTargets(in: s).isEmpty)
+    // And no label is defined twice: the non-rotated path re-enters the header
+    // block, so the `while` line's label must not be repeated inside the body.
+    #expect(duplicateLabels(in: s).isEmpty)
+}
+
+/// Labels defined more than once within the rendered output.
+private func duplicateLabels(in structured: String) -> [String] {
+    var seen = Set<String>(), duplicated: [String] = []
+    for line in structured.split(separator: "\n", omittingEmptySubsequences: false) {
+        let text = line.trimmingCharacters(in: .whitespaces)
+        guard text.hasPrefix("loc_"), let colon = text.firstIndex(of: ":") else { continue }
+        let label = String(text[text.startIndex ..< colon])
+        if !seen.insert(label).inserted { duplicated.append(label) }
+    }
+    return duplicated
+}
+
+/// Goto targets in `structured` output that no emitted label defines.
+private func danglingGotoTargets(in structured: String) -> Set<String> {
+    var used = Set<String>(), defined = Set<String>()
+    for line in structured.split(separator: "\n", omittingEmptySubsequences: false) {
+        let text = line.trimmingCharacters(in: .whitespaces)
+        if let range = text.range(of: "goto ") {
+            let target = text[range.upperBound...].prefix { $0 == "_" || $0.isHexDigit || $0.isLetter }
+            if target.hasPrefix("loc_") { used.insert(String(target)) }
+        }
+        if text.hasPrefix("loc_"), let colon = text.firstIndex(of: ":") {
+            defined.insert(String(text[text.startIndex ..< colon]))
+        }
+    }
+    return used.subtracting(defined)
 }
