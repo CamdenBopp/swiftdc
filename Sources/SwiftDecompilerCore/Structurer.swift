@@ -123,14 +123,24 @@ struct ControlFlowStructure {
         // threads swifterror: it is declared `throws`, or it clears x21 (`mov x21,
         // #0`) before a call to catch a thrown error. Only then is `x21 == 0` an
         // error check rather than an incidental use of a callee-saved register.
-        self.usesSwiftError = isThrowing || blocks.contains { block in
+        //
+        // NEVER for an Objective-C method. ObjC does not use the Swift error-register
+        // convention (its errors bridge through an NSError** out-parameter), so x21
+        // is an ordinary register there — and a method that happens to zero it
+        // (`mov w21, #0` computing a BOOL, common in `isEqual:`) would otherwise be
+        // misread as swifterror-threading. That misfire suppressed the `return ?`
+        // for an unrecovered value (rendering a bare `return` instead) and would
+        // also mis-name an incidental `x21 == 0` as `error != nil`. Measured on
+        // UserNotifications: 7 non-void ObjC methods rendered a bare `return`
+        // purely because their BOOL computation cleared x21.
+        self.usesSwiftError = !objectiveCArguments && (isThrowing || blocks.contains { block in
             block.instructions.contains { insn in
                 let (m, ops) = Self.decode(insn.text)
                 return m == "mov" && ops.count >= 2
                     && Self.canonicalRegister(ops[0]) == "x21"
                     && (Self.cleanImmediate(ops[1]) == "0" || ops[1] == "xzr")
             }
-        }
+        })
         var indexByAddress: [UInt64: Int] = [:]
         for (index, block) in blocks.enumerated() { indexByAddress[block.startAddress] = index }
         self.indexByAddress = indexByAddress

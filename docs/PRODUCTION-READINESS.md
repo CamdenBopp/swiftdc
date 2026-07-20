@@ -11,7 +11,7 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-07-20, at commit `0800bb0`.
+Last audited: 2026-07-20, at commit `943ac71`.
 
 ---
 
@@ -154,10 +154,30 @@ because it cannot be distinguished from a right one by reading the output.
   (including a floor that reported "only 0 function(s) rendered `return ?`");
   over-applying it fails the void and throwing guards, with the population check
   naming the four void functions it would have corrupted.
-- **OPEN — the Objective-C branch of the classifier is unit-tested only.** Every
-  ObjC method in the fixture already recovers its return value, so no bare return
-  reaches that path in observed output. The `- (void)` vs `- (id)` decision is
-  covered by unit tests but never exercised end to end.
+- **FIXED — an ObjC method's unrecovered return rendered a bare `return`.**
+  Closing the "unit-tested only" gap on the classifier's ObjC branch — by
+  auditing real system methods rather than the fixture — surfaced a genuine
+  integration bug, exactly the kind a unit test could not see.
+
+  The structurer's `usesSwiftError` heuristic treats a body that clears x21
+  (`mov x21, #0`) as threading the Swift error register, which suppresses
+  `return ?` on the unrecovered path (rendering a bare `return`). But ObjC does
+  not use that ABI — its errors bridge through an `NSError**` out-parameter — so
+  an ObjC method that merely zeroes x21 while computing a `BOOL` (routine in
+  `isEqual:`) was misclassified. Confirmed by disassembly: the offending
+  `-[UNNotificationTopicRequest isEqual:]` contains `mov w21, #0`; a
+  near-identical `-[UNNotificationCategory isEqual:]` that does not clear x21
+  rendered `return ?` correctly. Measured on UserNotifications: **7 non-void ObjC
+  methods** rendered a bare `return` purely for this reason.
+
+  Fixed by never setting `usesSwiftError` for an ObjC method (the same gate also
+  stops an incidental `x21 == 0` being mis-named `error != nil`). The `!ObjC`
+  gate leaves Swift functions untouched — verified both directions:
+  `ObjCValuelessReturnTests` (a population property over real system ObjC
+  methods: zero bare returns under a non-void signature, ≥10 `return ?` so it is
+  not vacuous) was observed failing without the gate, naming all 7 methods;
+  and the existing `aThrowingFunctionsErrorExitKeepsItsBareReturn` confirms a
+  genuine Swift `throws` error exit still renders a bare `return`.
 
 ## 2. Completeness — what does it silently omit?
 
