@@ -73,6 +73,13 @@ Prettier output on a tool that silently under-recovers is worth nothing.
 
 - **Prove a test catches the bug.** Break the fix, watch the test fail, restore
   it. A regression test never seen red is an assumption.
+- **Survey every entry point, not the convenient one.** A robustness result on
+  one subcommand does not generalize, because a path may be *incidentally*
+  shielded. The malformed-input survey ran through `disasm`, which shells out to
+  llvm-objdump — llvm-objdump rejected the bad files first, so `disasm` looked
+  robust and the class was recorded FIXED. `dump`, `layout`, `interface` and
+  `objc` reach MachOKit directly and were still dying: 12 SIGTRAPs, silently,
+  with empty stderr. Enumerate the subcommands and run all of them.
 - **Measure, don't assert.** Numbers in docs get a reproducible command next to them.
 - **Check the previously-working path** after any shared-code change.
 - Fixture-based tests self-skip when the fixture is unbuilt (`…IfPresent`), so

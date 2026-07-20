@@ -240,6 +240,59 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 - **MITIGATED — other malformed inputs degrade cleanly.** Random bytes →
   `Error: Not a Mach-O file`, exit 1. A truncated-but-parseable binary →
   `llvm-objdump failed: …`, exit 1. Both correct.
+- **FIXED — malformed load-command PAYLOADS crashed four subcommands.** The
+  header survey above was recorded FIXED while this entire class was still live,
+  because it exercised `disasm` — which shells out to llvm-objdump, and
+  llvm-objdump rejects a bad file before MachOKit ever parses it. `dump`,
+  `layout`, `interface` and `objc` reach MachOKit directly.
+
+  Mutating a real fixture's load-command payloads produced **12 SIGTRAPs**: a
+  segment `fileoff` past EOF killed all four subcommands, and each of the four
+  `LC_SYMTAB` range fields (`symoff`, `nsyms`, `stroff`, `strsize`) killed `dump`
+  and `interface`. The process died **silently — empty stderr**, so it vanished
+  with no diagnostic at all. Some cases also emitted partial stdout before dying.
+
+  Fixed in `ae66f3e` by extending `MachOPreflight` to the payloads: segment
+  `fileoff`/`filesize`, per-section `offset`/`size`, and the `LC_SYMTAB` symbol
+  and string ranges must lie inside the file. Same philosophy as the header
+  checks — every comparison is between two numbers the file declares about
+  itself. Zero-fill sections (`S_ZEROFILL`, `S_GB_ZEROFILL`,
+  `S_THREAD_LOCAL_ZEROFILL`) are exempt because their `size` is a memory extent,
+  legitimately larger than the binary; bounds-checking them would reject real
+  `__bss`. 64-bit fields are clamped rather than converted, since `Int(_:)` traps
+  above `Int.max` — the exact hostile input this code exists to survive.
+
+  All 12 now exit 1 with a field-level diagnostic naming the segment or table,
+  the bytes claimed and the file size, and emit no stdout. Verified by
+  `MachOPreflightTests` (28 tests): 8 unit tests over the pure validator plus an
+  end-to-end test that mutates a real fixture and drives the CLI as a subprocess
+  across all four subcommands. Every one was observed failing against the
+  pre-fix validator — the end-to-end test on both `terminationStatus == 1` and
+  `stdout.isEmpty`.
+
+  Over-rejection re-checked: every fixture, `/bin/ls`, `/usr/lib/dyld` and an
+  object file still analyse normally.
+- **OPEN — a structurally VALID Mach-O missing an expected segment still traps.**
+  Found by fuzzing (below), then isolated: renaming `__TEXT` to `__TEXTX` — valid
+  ASCII, a structurally legal Mach-O — SIGTRAPs with empty stderr. Setting a load
+  command's `cmd` to an unrecognised value, so `__LINKEDIT` is no longer found,
+  SIGBUSes.
+
+  **This cannot be safely contained by structural validation**, and the reason is
+  worth recording rather than retrying: nothing about these files is
+  inconsistent, so there is no pair of self-declared numbers to compare. The
+  obvious guard — require a segment named `__TEXT` — would reject **object
+  files**, which carry a single *empty*-named segment and which swiftdc analyses
+  correctly today (verified: a built `.o` dumps at exit 0). Rejecting a real,
+  currently-working input class to prevent a crash on a hand-corrupted one is the
+  wrong trade under this project's own stated rule. Closing it needs either a
+  MachOKit fork or an upstream fix.
+- **MITIGATED — a bounded fuzz now exists, and its yield is measured.** 120
+  random mutants over the load-command region (fixed seed): **83 accepted, 34
+  clean nonzero exits, 3 crashes (2.5%)** — 2 SIGTRAP, 1 SIGBUS, all three
+  reducing to the uncontainable class above. Before the payload fix the same
+  class of input crashed on every mutation that touched a segment or symtab
+  range. This is a harness run by hand, not a CI gate.
 - **OPEN — only the file path is guarded.** `MachOPreflight` sits on
   `BinaryLoader.load(path:)`. The dyld-cache entry point (`loadMachO`) does not
   validate, on the reasoning that the system cache is not attacker-supplied —
@@ -251,14 +304,15 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 - **MITIGATED — `MachOFile.symbols` fatalErrors on cache images** whose
   `__LINKEDIT` sits in another subcache. Uncatchable; avoided by reading the
   export trie instead, which is also semantically correct.
-- **OPEN — no fuzz harness.** The prediction that hand-written malformed input
-  would have a high yield was tested and held: nine inputs, seven crashes. That
-  corpus is now a regression test, but it is *hand-written and header-shaped* —
-  it probes the Mach-O header and fat header only. Nothing exercises malformed
-  **load-command payloads**, section tables, or `__swift5_*` / `__objc_*`
-  metadata, which is where the remaining parsers are, and where the same
-  `try!`-in-a-dependency pattern is likely to recur. A real fuzzer over mutated
-  copies of the fixtures is the obvious next step and has never been run.
+- **OPEN — fuzzing is bounded and manual; metadata parsers are unprobed.** The
+  prediction that the `try!`-in-a-dependency pattern would recur in load-command
+  payloads was tested and **held** — 12 crashes across four subcommands, now
+  fixed. A 120-mutant fuzz over the load-command region has since been run
+  (2.5% crash yield, all in the uncontainable class). Still unprobed:
+  `__swift5_*` and `__objc_*` **metadata** parsing, malformed **fat slice
+  payloads** (fat slice *extents* are validated; the thin headers inside a slice
+  are not re-validated), and anything beyond the 1 MiB preflight read prefix.
+  Nothing runs in CI.
 - **MITIGATED — behavior across optimization levels.** The differential oracle
   now runs at both `-Onone` and `-O` (318 comparisons each), executing the
   recovered expression against the real compiled function at each level. This is
