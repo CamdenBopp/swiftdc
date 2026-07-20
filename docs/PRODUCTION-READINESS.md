@@ -11,7 +11,7 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-07-19, at commit `87f3ea9`.
+Last audited: 2026-07-19, at commit `3060d52`.
 
 ---
 
@@ -94,12 +94,36 @@ because it cannot be distinguished from a right one by reading the output.
   recovery leaves 309 comparisons, which clears the floor of 200 while removing
   the single case the oracle exists for. Only the named check catches it, and it
   was confirmed firing.
-- **OPEN — the oracle's domain is narrow.** Pure integer/boolean functions with
-  scalar arguments: the domain where "semantically equal" is decidable by
-  sampling. It does not cover floating point, strings, enums with payloads,
-  memory effects, or anything with side effects — and it samples rather than
-  proves. Both optimization levels are covered; what remains uncovered is the
-  *value domain*, not the lowering.
+- **MITIGATED — the oracle covers floating point too.** A further **628
+  comparisons** (314 per optimization level) over six functions: `Double` and
+  `Float` arithmetic, an intrinsic (`sqrt`), a literal-returning function, and
+  the mixed-register ABI. Zero skips at either level.
+
+  Doubles are compared **bit-exactly**, not approximately — that is the point.
+  A rendered constant like `3.14` is a claim about *which* of ~2^64 doubles the
+  binary holds, and an approximate comparison would accept a rounded or
+  truncated decimal. Proven at that resolution: injecting a **one-ULP**
+  perturbation (`3.14` → `3.1400000000000006`, a difference of 4.4e-16) fails at
+  both levels. So swiftdc's decoded constants round-trip exactly.
+
+  Edge inputs are the ones that break floats and not integers: signed zero,
+  subnormals (`leastNonzeroMagnitude`), both infinities, and NaN — with NaN
+  treated as agreeing with NaN, since NaN is not bit-stable across a
+  computation.
+
+  `floatMath` is `Float`-typed, so the oracle rounds every intermediate to
+  `Float` precision. Evaluating it in `Double` would disagree wherever the two
+  round differently and would have looked like a swiftdc defect rather than an
+  oracle defect.
+
+  `interleaved(Int, Double, Int, Double)` renders `(arg1 + arg3)`, which is an
+  **ABI claim** — integers in `x0`/`x1`, doubles in `d0`/`d1`, with `argN`
+  indexing source position rather than register order. Executing it confirms the
+  mapping rather than assuming it.
+- **OPEN — the oracle's remaining domain gaps.** Strings, enums with payloads,
+  memory effects, and anything with side effects are still uncovered, and it
+  samples rather than proves. Both optimization levels and both numeric domains
+  are now covered; what remains is aggregate and effectful values.
 - **OPEN — a declined return value renders as a bare `return`.** A function
   whose recovered return value is unknown prints `return` with no operand, even
   when its signature says `-> Swift.Int` (`threeWay`, `accumulate`). It reads
@@ -299,7 +323,7 @@ The meta-category. Every gap here weakens confidence in every claim above.
 | Enum tag → case index | SIL (`swiftc -emit-sil`) | Used once, manually, to confirm the `rank` lowering |
 | Field offsets | `__swift5_fieldmd`, computed offline | Runtime-exact by construction |
 | Cross-image symbols | export trie | Used as the primary source |
-| Recovered semantics | the compiled function itself, called via `dlsym` | **In tests** — 636 comparisons over 13 pure scalar functions at both `-Onone` and `-O`; proven to catch an injected U1. Narrow: no floats, strings, payload enums, or side effects |
+| Recovered semantics | the compiled function itself, called via `dlsym` | **In tests** — 1,264 comparisons at both `-Onone` and `-O`: 636 integer/boolean (catches an injected U1) and 628 floating point (catches a one-ULP constant error). Narrow: no strings, payload enums, or side effects |
 | Malformed-input handling | the CLI's own exit status, checked from a subprocess | **In tests** — 9 header-shaped inputs; no fuzzer, no malformed metadata |
 | Whole-binary output | — | **None.** No golden-output corpus, so a silent regression on a real framework would not be noticed |
 
