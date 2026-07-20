@@ -11,7 +11,7 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-07-20, at commit `b14fac3`.
+Last audited: 2026-07-20, at commit `0a11431`.
 
 ---
 
@@ -473,10 +473,19 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   (2.5% crash yield, all in the uncontainable class). `__swift5_*` and
   `__objc_*` **metadata** parsing has since been probed and is crashing — see the
   metadata entry above (6.1% yield, three sections, one of which kills every
-  subcommand). Still unprobed: malformed **fat slice payloads** (fat slice
-  *extents* are validated; the thin headers inside a slice are not
-  re-validated), and anything beyond the 1 MiB preflight read prefix.
-  Nothing runs in CI.
+  subcommand). **Fat slice thin headers** — flagged here as unprobed — were then
+  probed and **crashed**: a slice whose *extent* is in-bounds but whose thin
+  Mach-O header lies (`sizeofcmds` claiming load commands past the slice) passed
+  preflight and trapped in `MachOKit/MachOFile.swift:61` when `fat.machOFiles()`
+  parsed it. Confirmed by corrupting a real fat binary (`/bin/ls`). **Now
+  fixed**: `MachOPreflight` validates each slice's thin header against the
+  *slice* size, with the same two consistency checks `validateThin` applies to a
+  top-level header (`FatSlicePreflightTests`; both directions proven — the crash
+  test observed "killed by signal 5" without the fix, the over-rejection test
+  observed a valid `/bin/ls` slice being refused when the check was made
+  over-eager). Still unprobed: anything beyond the 1 MiB preflight read prefix
+  that is not a fat slice or a validated relative-pointer table. Nothing runs in
+  CI.
 - **MITIGATED — behavior across optimization levels.** The differential oracle
   now runs at both `-Onone` and `-O` (318 comparisons each), executing the
   recovered expression against the real compiled function at each level. This is

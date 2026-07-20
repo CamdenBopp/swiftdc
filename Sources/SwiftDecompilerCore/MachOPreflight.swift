@@ -75,10 +75,33 @@ public enum MachOPreflight {
         let prefix = (try? handle.read(upToCount: min(fileSize, 1 << 20))) ?? Data()
         try validate(prefix: prefix, fileSize: fileSize, path: url.path)
 
+        // A fat file's slices: the core `validateFat` above checks each slice's
+        // *extent* (offset/size within the file), but not the thin Mach-O header
+        // *inside* each slice. A slice whose extent is in-bounds but whose thin
+        // header lies (e.g. `sizeofcmds` claims load commands past the slice)
+        // sails through and then traps in MachOKit when `fat.machOFiles()` parses
+        // it — `MachOFile.swift:61: Fatal error: 'try!'`, the same uncatchable
+        // class. Confirmed by corrupting a real fat binary's slice header.
+        //
+        // Read each slice's header via the handle rather than from `prefix`: a
+        // slice can begin well past the 1 MiB window, and validating only the
+        // ones that happened to land in the prefix would leave large fat files
+        // exposed.
+        for slice in fatSliceExtents(prefix: prefix, fileSize: fileSize).enumerated() {
+            let (index, extent) = slice
+            guard extent.size >= Layout.machHeader32,
+                  (try? handle.seek(toOffset: UInt64(extent.offset))) != nil,
+                  let header = try? handle.read(upToCount: min(extent.size, 4096)),
+                  header.count >= Layout.machHeader32
+            else { continue }
+            try validateSliceThinHeader(
+                header: header, sliceSize: extent.size, index: index, path: url.path
+            )
+        }
+
         // Section CONTENTS, which the checks above say nothing about. Only the
         // flat relative-pointer tables (see `relativePointerTables`), and only
-        // for a thin little-endian image — a fat file's slices are validated
-        // when a slice is selected.
+        // for a thin little-endian image — a fat file's slices are handled above.
         //
         // Read per section rather than from `prefix`: metadata sits after the
         // code, so in any real app it is far beyond the 1 MiB header window.
@@ -92,6 +115,86 @@ public enum MachOPreflight {
                 bytes: bytes, sectionOffset: table.offset, fileSize: fileSize,
                 name: table.name, path: url.path
             )
+        }
+    }
+
+    /// `(offset, size)` of every slice in a fat file, or empty when the file is
+    /// not fat. Parses the same fields `validateFat` bounds-checks; the extent
+    /// checks there have already run by the time this is used, so the offsets are
+    /// known in-bounds.
+    static func fatSliceExtents(prefix: Data, fileSize: Int) -> [(offset: Int, size: Int)] {
+        guard let magic = prefix.u32(at: 0) else { return [] }
+        let is64: Bool, bigEndian: Bool
+        switch magic {
+        case Magic.fatBE: (is64, bigEndian) = (false, true)
+        case Magic.fatLE: (is64, bigEndian) = (false, false)
+        case Magic.fat64BE: (is64, bigEndian) = (true, true)
+        case Magic.fat64LE: (is64, bigEndian) = (true, false)
+        default: return []
+        }
+        guard let nfat = prefix.u32(at: 4, bigEndian: bigEndian) else { return [] }
+        let archSize = is64 ? Layout.fatArch64 : Layout.fatArch
+        guard Int(nfat) <= (Int.max - Layout.fatHeader) / max(archSize, 1) else { return [] }
+
+        var extents: [(offset: Int, size: Int)] = []
+        for index in 0..<Int(nfat) {
+            let offsetField = Layout.fatHeader + index * archSize + 8
+            let offset: Int, size: Int
+            if is64 {
+                guard let off = prefix.u64(at: offsetField, bigEndian: bigEndian),
+                      let sz = prefix.u64(at: offsetField + 8, bigEndian: bigEndian)
+                else { return extents }
+                (offset, size) = (Int(clamping: off), Int(clamping: sz))
+            } else {
+                guard let off = prefix.u32(at: offsetField, bigEndian: bigEndian),
+                      let sz = prefix.u32(at: offsetField + 4, bigEndian: bigEndian)
+                else { return extents }
+                (offset, size) = (Int(off), Int(sz))
+            }
+            // The extent must lie in the file (validateFat proved this for a valid
+            // file; guard again so a caller that skipped it cannot read wild).
+            guard offset >= 0, size >= 0, offset <= fileSize, size <= fileSize - offset else {
+                continue
+            }
+            extents.append((offset, size))
+        }
+        return extents
+    }
+
+    /// Validate the thin Mach-O header at the start of a fat slice, bounded by
+    /// the **slice** size (not the whole file). Same two consistency checks as
+    /// `validateThin`: the load commands must fit, and the command count cannot
+    /// exceed what its byte budget can hold. A non-Mach-O slice magic is left
+    /// alone — MachOKit declines it cleanly (an unknown magic is not the trap).
+    static func validateSliceThinHeader(
+        header: Data, sliceSize: Int, index: Int, path: String = "<data>"
+    ) throws {
+        func fail(_ why: String) -> BinaryLoadError {
+            BinaryLoadError("Malformed Mach-O: \(path) — slice \(index) \(why)")
+        }
+        guard let magic = header.u32(at: 0) else { return }
+        let is64: Bool, bigEndian: Bool
+        switch magic {
+        case Magic.machO64LE: (is64, bigEndian) = (true, false)
+        case Magic.machO64BE: (is64, bigEndian) = (true, true)
+        case Magic.machO32LE: (is64, bigEndian) = (false, false)
+        case Magic.machO32BE: (is64, bigEndian) = (false, true)
+        default: return  // not a thin Mach-O magic — not the crash class
+        }
+        let headerSize = is64 ? Layout.machHeader64 : Layout.machHeader32
+        guard sliceSize >= headerSize else {
+            throw fail("is \(sliceSize) byte(s), shorter than its \(headerSize)-byte header")
+        }
+        guard let ncmds = header.u32(at: 16, bigEndian: bigEndian),
+              let sizeofcmds = header.u32(at: 20, bigEndian: bigEndian)
+        else { return }  // header truncated within the read chunk; extent guard covers the rest
+
+        let available = sliceSize - headerSize
+        guard Int(sizeofcmds) <= available else {
+            throw fail("declares \(sizeofcmds) bytes of load commands but the slice holds \(available)")
+        }
+        guard Int(ncmds) <= Int(sizeofcmds) / Layout.minLoadCommand else {
+            throw fail("declares \(ncmds) load command(s), which cannot fit in \(sizeofcmds) byte(s)")
         }
     }
 
