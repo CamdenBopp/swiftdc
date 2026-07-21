@@ -11,7 +11,7 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-07-21, at commit `2272ea2`.
+Last audited: 2026-07-21, at commit `d1bc5a3`.
 
 ---
 
@@ -670,6 +670,24 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   (a skip is instant; the passing run takes ~18 s, which confirms it measured).
   It was the **before/after oracle for the streaming refactor** (measured
   10× on CoreLocation); it now guards the `--json` array path against regression.
+- **MITIGATED (memory) — the streaming text path has its own guard**
+  (`streamingWholeImageMemoryStaysLowIfPresent`). The `--json` guard above bounds
+  the array path; this bounds the path the refactor created —
+  `disasm --image CoreLocation` (no `--json`), which decodes, analyses, renders,
+  and **releases** one function at a time. Same external oracle
+  (`/usr/bin/time -l`), an absolute ceiling of **200 MB** on peak footprint.
+
+  The bound is calibrated by injection, not guesswork, and the calibration
+  corrected a wrong first threshold. Measured on CoreLocation (debug): clean
+  streaming **123 MB**; accumulating every analysed `DisassembledFunction` instead
+  of releasing it — the realistic regression — **261 MB**; the `--json` array path
+  **1,192 MB**. The array-path figure is a red herring here: it is dominated by
+  `JSONSerialization` boxing every field, *not* by held function objects, so a
+  "well under 1,192" bound (e.g. 500 MB) would sail past the actual failure mode,
+  which tops out at 261 MB. 200 MB splits the two — ~1.6× over the 123 MB baseline,
+  under the 261 MB a hold-every-function regression reaches. Proven both
+  directions: the injection trips it (262 MB), the clean path clears it (123 MB).
+  Host-gated on CoreLocation; ~60 s, skips cleanly without the cache.
 - **UNKNOWN — no wall-time regression guard.** The memory guard above covers
   allocation; nothing guards decode *time*, which is deliberately left to a
   measured OPEN rather than a test — wall time is too machine- and load-dependent

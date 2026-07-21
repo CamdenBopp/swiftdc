@@ -87,3 +87,42 @@ private func instructionCount(_ json: Data) -> Int? {
         """
     )
 }
+
+/// The streaming text path (`disasm --image X`, no `--json`) decodes, analyses,
+/// renders, and **releases** one function at a time. Its peak footprint must stay
+/// near that per-function working set, not scale with the whole image.
+///
+/// The bound is calibrated by injection, not guesswork. On CoreLocation (debug):
+///   • clean streaming ......................... ~123 MB
+///   • accumulating every `DisassembledFunction` (the real regression this
+///     guards — a per-function object that is retained instead of released) ~261 MB
+///   • the `--json` array path ................. ~1,192 MB
+/// The 1,192 MB figure is a red herring for *this* guard: it is dominated by
+/// `JSONSerialization` boxing every field into NSNumber/NSDictionary, not by the
+/// function objects. So a 500 MB "well under the array path" bound would sail past
+/// the actual failure mode (a 2× accumulation regression stops at 261 MB). The
+/// bound is set at **200 MB** — above the ~123 MB baseline with ~1.6× headroom for
+/// run-to-run variance, below the 261 MB a hold-every-function regression reaches.
+/// Verified both directions: the injection above trips it; the clean path clears
+/// it. Host-gated on CoreLocation; ~60 s, skips cleanly without the cache.
+@Test func streamingWholeImageMemoryStaysLowIfPresent() throws {
+    guard FileManager.default.fileExists(atPath: cli.path),
+          FileManager.default.fileExists(atPath: "/usr/bin/time")
+    else { return }
+
+    guard let streaming = timed(["disasm", "--image", "CoreLocation"]),
+          streaming.footprint > 0, streaming.stdout.count > 1_000_000  // image present + real output
+    else { return }
+
+    let megabytes = streaming.footprint >> 20
+    #expect(
+        megabytes < 200,
+        """
+        streaming CoreLocation used \(megabytes) MB — measured baseline is ~123 MB. Over \
+        200 MB means the streaming text path is retaining per-function state instead of \
+        releasing it (a hold-every-function regression measures ~261 MB). If a legitimate \
+        change raised the per-function working set, retune the bound with a fresh injection \
+        measurement rather than just raising the ceiling.
+        """
+    )
+}
