@@ -62,22 +62,34 @@ because it cannot be distinguished from a right one by reading the output.
   is resolved from swiftdc's *own reported symbol*, so the oracle cannot drift
   onto a different function than the one it analysed.
 
-  Currently **952 comparisons — 476 at `-Onone` and 476 at `-O`**, 15 functions
-  at each level: comparisons, ternaries, arithmetic, bit operations, the
-  signed-range idiom, and **integer division/remainder**, at edge inputs
-  including `Int.min`/`Int.max`.
+  Currently **979 comparisons — 493 at `-Onone` and 486 at `-O`**, 17 functions
+  at `-Onone` and 16 at `-O`: comparisons, ternaries, arithmetic, bit operations,
+  the signed-range idiom, **integer division/remainder**, and **multi-branch
+  switches**, at edge inputs including `Int.min`/`Int.max`.
 
-  Division and remainder are the sharpest additions: `a / b` is non-commutative,
-  so operand order is executed rather than assumed, and a `udiv` mistaken for
-  `sdiv` renders the same `/` yet disagrees at negative dividends — the U1
-  fabrication class, one operator over. Inputs are curated to the non-trapping
-  domain (`sdiv` traps on a zero divisor and on the single `Int.min / -1`
-  overflow), but deliberately keep `Int.min`/`Int.max` dividends against small
-  divisors, where a signedness confusion would surface. Proven sensitive: an
-  injected operand swap (`(arg1 / arg0)`) fails at every asymmetric input, and an
-  injected operator confusion (`/` ↔ `%`) fails at both levels for both cases —
-  before the injection, neither the `/` nor the `%` render had ever been executed
-  (the evaluator's division path existed but no case reached it).
+  Division and remainder are the sharpest arithmetic additions: `a / b` is
+  non-commutative, so operand order is executed rather than assumed, and a `udiv`
+  mistaken for `sdiv` renders the same `/` yet disagrees at negative dividends —
+  the U1 fabrication class, one operator over. Inputs are curated to the
+  non-trapping domain (`sdiv` traps on a zero divisor and on the single
+  `Int.min / -1` overflow), but deliberately keep `Int.min`/`Int.max` dividends
+  against small divisors, where a signedness confusion would surface. Proven
+  sensitive: an injected operand swap (`(arg1 / arg0)`) fails at every asymmetric
+  input, and an injected operator confusion (`/` ↔ `%`) fails at both levels for
+  both cases — before the injection, neither the `/` nor the `%` render had ever
+  been executed (the evaluator's division path existed but no case reached it).
+
+  The multi-branch switches (`gradeOf`, `polarity`) are where the two
+  optimization levels tell different stories the oracle must reconcile against the
+  same binary. At `-Onone` they recover as a chain of `==` ternaries; at `-O` the
+  optimizer collapses `gradeOf`'s dense cases into the **U1 unsigned-range idiom
+  plus arithmetic** — `((0 <= arg0) && (arg0 < 3)) ? (10 + (arg0 * 10)) : 99` — a
+  jump-table→arithmetic transform whose equivalence to the original switch had
+  only been reasoned about. Executed across every case value (0,1,2), the first
+  default (3), and the signed edges, it now agrees with the compiled switch at
+  each. Proven sensitive: corrupting the default arm (`99`→`98`) fails at both
+  levels; `polarity`'s negative-constant default (`-3`→`-4`) fails at `-Onone`
+  (it does not recover at `-O`, so it is required there alone).
 
   The `-O` half is the part that matters most, because optimized lowering is
   where U1 lived. It executes the recovered idiom

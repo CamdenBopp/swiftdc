@@ -432,6 +432,21 @@ private let oracleCases: [OracleCase] = [
     // compiled side (see `divisionPairs`).
     .init(name: "intDivide", arity: 2, returnsBool: false, inputs: divisionPairs()),
     .init(name: "remainder", arity: 2, returnsBool: false, inputs: divisionPairs()),
+    // Multi-branch integer switches. At `-Onone` these recover as a chain of
+    // `==` ternaries; at `-O` the optimizer collapses `gradeOf`'s dense cases
+    // into the **U1 unsigned-range idiom plus arithmetic**
+    // (`((0 <= arg0) && (arg0 < 3)) ? (10 + (arg0 * 10)) : 99)`), a
+    // jump-table→arithmetic transform that must still equal the switch at every
+    // input. Inputs hit every case value (0,1,2), the first default (3), and the
+    // signed edges — where a range check lowered from a switch could go wrong.
+    .init(name: "gradeOf", arity: 1, returnsBool: false,
+          inputs: [Int.min, -1_000, -1, 0, 1, 2, 3, 99, 1_000, Int.max].map { [$0] }),
+    // `polarity` returns negative constants (-1, -2, -3): a two's-complement
+    // immediate that must render as a signed decimal, exercised through a switch.
+    // It recovers only at `-Onone` (at `-O` swiftdc renders it as a bare leaf with
+    // no return expression), so it is required there alone.
+    .init(name: "polarity", arity: 1, returnsBool: false,
+          inputs: [Int.min, -1, 0, 1, 2, 1_000, Int.max].map { [$0] }),
 ]
 
 // MARK: - The test
@@ -461,7 +476,7 @@ private let fixtures = [
     Fixture(
         path: "Fixtures/Sample/libReconstruction.dylib", label: "-Onone",
         required: ["isPositive", "isEqual", "atLeast", "rangeCheck", "addThree", "maxOf",
-                   "intDivide", "remainder"],
+                   "intDivide", "remainder", "gradeOf", "polarity"],
         minimumComparisons: 200
     ),
     Fixture(
@@ -470,7 +485,7 @@ private let fixtures = [
         // is a csel cascade that only survives at -O. If any stops being
         // compared, the oracle has lost the coverage it exists for.
         required: ["rangeCheck", "computedRange", "threeWay", "maxOf", "isPositive",
-                   "intDivide", "remainder"],
+                   "intDivide", "remainder", "gradeOf"],
         minimumComparisons: 200
     ),
 ]
