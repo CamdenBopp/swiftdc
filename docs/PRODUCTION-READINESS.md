@@ -11,7 +11,7 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-07-21, at commit `d1bc5a3`.
+Last audited: 2026-07-21, at commit `6e3d1db`.
 
 ---
 
