@@ -425,7 +425,19 @@ struct DisasmCommand: AsyncParsableCommand {
                 : pseudo ? { $0.renderPseudo() }
                 : cfg ? { $0.renderCFG() }
                 : { $0.render() }
-            let blocks = await disassembler.disassembleStreamingRender(machO: machO, render: renderOne)
+            // A whole-image decode runs for minutes on a large framework. Show
+            // live progress on stderr — but only to a terminal, so a redirected
+            // or piped stderr stays clean for scripting. stdout is untouched.
+            let stderrIsTerminal = isatty(FileHandle.standardError.fileDescriptor) != 0
+            let progress: ((Int, Int) -> Void)? = stderrIsTerminal ? { done, total in
+                FileHandle.standardError.write(Data("\rdecompiling \(done)/\(total) functions…".utf8))
+            } : nil
+            let blocks = await disassembler.disassembleStreamingRender(
+                machO: machO, render: renderOne, progress: progress
+            )
+            // Erase the progress line (CR + ANSI clear-to-end) so it leaves no
+            // residue before the coverage warning or the prompt.
+            if stderrIsTerminal { FileHandle.standardError.write(Data("\r\u{1b}[K".utf8)) }
             emitCoverageWarning(recovered: blocks.count, declared: declared, filtered: false)
             if blocks.isEmpty {
                 try emit("// This binary contains no recoverable functions.", to: output)

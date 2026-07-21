@@ -288,7 +288,8 @@ public struct Disassembler: Sendable {
     /// whole-image case; callers wanting the `[DisassembledFunction]` array (JSON,
     /// xrefs, analyze) keep using `disassemble(machO:)`.
     public func disassembleStreamingRender(
-        machO: MachOFile, render: (DisassembledFunction) -> String
+        machO: MachOFile, render: (DisassembledFunction) -> String,
+        progress: ((_ done: Int, _ total: Int) -> Void)? = nil
     ) async -> [String] {
         let objcIndex = ObjCMetadataIndex.build(in: machO)
         let labelByAddress = symbolLabels(in: machO)
@@ -369,14 +370,21 @@ public struct Disassembler: Sendable {
         // span that decodes to nothing, so this does too.
         var rendered: [String] = []
         rendered.reserveCapacity(boundaries.count)
+        let total = boundaries.count
         for index in boundaries.indices {
             let instructions = capstoneInstructions(in: machO, span: span(index))
-            guard !instructions.isEmpty else { continue }
-            let function = makeFunction(
-                start: boundaries[index], instructions: instructions,
-                labelByAddress: labelByAddress, metadataNames: metadataNames, objcIndex: objcIndex
-            )
-            rendered.append(render(analyzeFunction(function, context: context)))
+            if !instructions.isEmpty {
+                let function = makeFunction(
+                    start: boundaries[index], instructions: instructions,
+                    labelByAddress: labelByAddress, metadataNames: metadataNames, objcIndex: objcIndex
+                )
+                rendered.append(render(analyzeFunction(function, context: context)))
+            }
+            // Throttled so the callback overhead is negligible on a 100k-function
+            // image; always report the final position so the display completes.
+            if let progress, index % 256 == 0 || index == total - 1 {
+                progress(index + 1, total)
+            }
         }
         return rendered
     }

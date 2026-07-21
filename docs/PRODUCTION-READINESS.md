@@ -11,7 +11,7 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-07-20, at commit `09d9026`.
+Last audited: 2026-07-21, at commit `2272ea2`.
 
 ---
 
@@ -689,8 +689,16 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   `CONFIRMED DEFECT`; a shipped feature still described as "a scoped follow-up".
 - **MITIGATED — exit codes are correct** except the crash above: success 0,
   bad input 1, filter-miss 0.
-- **UNKNOWN — no progress or timing feedback.** `objc --image Foundation` is
-  documented as slow with no indication it is working.
+- **MITIGATED — whole-image `disasm` shows live progress.** A `disasm --image X`
+  run is minutes long on a large framework and used to be silent, reading as a
+  hang. The streaming path now reports `decompiling <done>/<total> functions…` on
+  stderr, updated in place, and erases the line when done. Gated on
+  `isatty(stderr)`: a redirected or piped stderr stays clean for scripting
+  (verified: 0 stderr bytes when piped), and **stdout is untouched** (golden
+  hashes unchanged across all five modes). Verified through a pty that the line
+  advances to the total and clears. The other slow paths (`objc --image
+  Foundation`, and the array `disasm` modes) do not yet report progress — this
+  covers the streamed whole-image text modes only.
 
 ## 7. Reconstruction quality — how source-like is the output?
 
