@@ -271,6 +271,116 @@ public struct Disassembler: Sendable {
         )
     }
 
+    /// Render every function of a cache image **streaming** — decode, analyse,
+    /// render, and release one function at a time, never holding the whole
+    /// image's instructions. This is the memory fix for the whole-image path:
+    /// the array `disassemble(machO:)` holds all decoded instructions at once
+    /// (the measured peak), whereas this bounds resident memory to roughly one
+    /// function plus the cross-function name index.
+    ///
+    /// Output is identical to mapping `render` over `disassemble(machO:)` because
+    /// it reuses the same building blocks: boundaries are instruction-aligned, so
+    /// the spans between sorted boundaries are exactly the functions `segment`
+    /// would cut, and each is named by the same `makeFunction` and analysed by
+    /// the same `analyzeFunction`.
+    ///
+    /// Returns the rendered blocks in address order. Only for the unfiltered
+    /// whole-image case; callers wanting the `[DisassembledFunction]` array (JSON,
+    /// xrefs, analyze) keep using `disassemble(machO:)`.
+    public func disassembleStreamingRender(
+        machO: MachOFile, render: (DisassembledFunction) -> String
+    ) async -> [String] {
+        let objcIndex = ObjCMetadataIndex.build(in: machO)
+        let labelByAddress = symbolLabels(in: machO)
+        guard let text = textSectionBounds(in: machO) else { return [] }
+        let textStart = text.address
+        let textEnd = text.address + UInt64(text.size)
+
+        var boundarySet = Set(functionStarts(of: machO))
+        boundarySet.formUnion(labelByAddress.keys)
+        boundarySet.formUnion(objcIndex.addresses)
+        // `segment` starts the first function at the first decoded instruction
+        // (the text start), even when that address is not itself a boundary.
+        boundarySet.insert(textStart)
+        let boundaries = boundarySet.filter { $0 >= textStart && $0 < textEnd }.sorted()
+        guard !boundaries.isEmpty else { return [] }
+
+        // Metadata names, on the same gate `assemble`/`matchedRanges` use.
+        let unlabeled = Set(boundaries).subtracting(labelByAddress.keys)
+        var metadataNames: [UInt64: String] = [:]
+        if Double(unlabeled.count) > Double(max(boundaries.count, 1)) * 0.25 {
+            metadataNames = await MetadataSymbolizer(preset: preset).functionNames(in: machO)
+        }
+
+        func span(_ index: Int) -> (start: UInt64, stop: UInt64) {
+            (boundaries[index], index + 1 < boundaries.count ? boundaries[index + 1] : textEnd)
+        }
+
+        // Cross-function name index. `referenceIndex` and `swiftTargets` read only
+        // name-level fields, so name-only stubs (no instructions) suffice.
+        let stubs = boundaries.map {
+            makeFunction(start: $0, instructions: [], labelByAddress: labelByAddress,
+                         metadataNames: metadataNames, objcIndex: objcIndex)
+        }
+        let cacheSymbols = CacheSymbolResolver(machO: machO)
+        var names = referenceIndex(
+            functions: stubs, labelByAddress: labelByAddress,
+            metadataNames: metadataNames, objcIndex: objcIndex, in: machO
+        )
+        // Pass 1: gather cross-image call targets, one function's instructions at
+        // a time, then resolve once — reproduces `crossImageNames` without holding
+        // the whole image.
+        var targets = Set<UInt64>()
+        for index in boundaries.indices {
+            let instructions = capstoneInstructions(in: machO, span: span(index))
+            collectUnnamedCallTargets(in: instructions, names: names, into: &targets)
+        }
+        names = resolveCrossImageNames(targets, into: names, resolver: cacheSymbols)
+        let resolver = ReferenceResolver(
+            names: names,
+            stringRanges: stringSectionRanges(in: machO),
+            machO: machO,
+            demangleSymbol: { self.demangle($0) },
+            selectors: ObjCSelectors.selectorTable(in: machO),
+            cfStringRange: sectionRange(named: "__cfstring", in: machO),
+            cacheSymbols: cacheSymbols,
+            cacheReader: machO.fullCache.map { CacheReader(full: $0) }
+        )
+
+        var swiftTargets = Set(labelByAddress.compactMap { address, symbol in
+            Self.isSwiftMangled(symbol) ? address : nil
+        })
+        swiftTargets.formUnion(metadataNames.keys)
+        swiftTargets.formUnion(stubs.filter {
+            $0.objcMethod == nil && (Self.isSwiftMangled($0.symbol) || $0.source == .metadata)
+        }.map(\.startAddress))
+        swiftTargets.subtract(objcIndex.addresses)
+
+        let context = PerFunctionContext(
+            resolver: resolver, swiftTargets: swiftTargets, objcIndex: objcIndex,
+            fieldMaps: (try? FieldMapBuilder.build(in: machO)) ?? [:],
+            selfIndex: SelfTypeIndex.build(in: machO),
+            vtableIndex: VTableIndex.build(in: machO),
+            enumCaseIndex: EnumCaseIndex.build(in: machO),
+            classTypeIndex: ClassTypeIndex.build(in: machO)
+        )
+
+        // Pass 2: decode each span, analyse, render, release. `segment` skips a
+        // span that decodes to nothing, so this does too.
+        var rendered: [String] = []
+        rendered.reserveCapacity(boundaries.count)
+        for index in boundaries.indices {
+            let instructions = capstoneInstructions(in: machO, span: span(index))
+            guard !instructions.isEmpty else { continue }
+            let function = makeFunction(
+                start: boundaries[index], instructions: instructions,
+                labelByAddress: labelByAddress, metadataNames: metadataNames, objcIndex: objcIndex
+            )
+            rendered.append(render(analyzeFunction(function, context: context)))
+        }
+        return rendered
+    }
+
     /// Disassemble only the functions beginning at `addresses`, each decoded up
     /// to the next function boundary. Lets a caller classify a handful of
     /// Objective-C accessor IMPs without decoding the whole binary.

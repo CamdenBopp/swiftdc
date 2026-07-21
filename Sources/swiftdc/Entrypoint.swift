@@ -387,8 +387,54 @@ struct DisasmCommand: AsyncParsableCommand {
     var structured = false
 
     func run() async throws {
+        try await runDisasm()
+    }
+
+    /// The "unusually small" half of the empty-result rule (see CLAUDE.md). An
+    /// empty parse already throws; a *partial* one is just as silent and far more
+    /// plausible-looking, so an unfiltered run that recovers well under what the
+    /// binary declares says so on stderr — stdout stays pipeable. A no-op for a
+    /// filtered run (a filter is expected to match few functions).
+    private func emitCoverageWarning(recovered: Int, declared: Int, filtered: Bool) {
+        guard !filtered, declared > 0, recovered * 2 < declared else { return }
+        let pct = recovered * 100 / declared
+        FileHandle.standardError.write(Data("""
+            warning: recovered \(recovered) of \(declared) function(s) \
+            declared by LC_FUNCTION_STARTS (\(pct)%). This listing is incomplete — \
+            treat it as a sample, not an inventory. Filtering with --function \
+            resolves through metadata and is unaffected.
+
+            """.utf8))
+    }
+
+    private func runDisasm() async throws {
         if listBinaries { try emit(binaryListing(for: path), to: output); return }
         let disassembler = Disassembler(preset: demangle)
+
+        // Whole-image, unfiltered, text-like output: render streaming so peak
+        // memory stays bounded to one function rather than the entire image's
+        // decoded instructions (see disassembleStreamingRender). JSON, filtered,
+        // and standalone-file paths keep the array API unchanged.
+        if (image != nil || imagePath != nil || cache != nil), (function ?? "").isEmpty, !json {
+            let machO = try BinaryLoader.loadMachO(
+                path: path, image: image, imagePath: imagePath, cachePath: cache, binary: binary
+            )
+            let declared = disassembler.declaredFunctionCount(in: machO)
+            let renderOne: (DisassembledFunction) -> String =
+                structured ? { $0.renderStructured() }
+                : pseudo ? { $0.renderPseudo() }
+                : cfg ? { $0.renderCFG() }
+                : { $0.render() }
+            let blocks = await disassembler.disassembleStreamingRender(machO: machO, render: renderOne)
+            emitCoverageWarning(recovered: blocks.count, declared: declared, filtered: false)
+            if blocks.isEmpty {
+                try emit("// This binary contains no recoverable functions.", to: output)
+            } else {
+                try emit(blocks.joined(separator: "\n\n"), to: output)
+            }
+            return
+        }
+
         let functions: [DisassembledFunction]
         // Declared by the binary itself; 0 when the load command is absent.
         var declared = 0
@@ -409,21 +455,8 @@ struct DisasmCommand: AsyncParsableCommand {
         } else {
             throw BinaryLoadError("Provide a binary path, or --image <name> to disassemble a dyld shared-cache image.")
         }
-        // The "unusually small" half of the empty-result rule (see CLAUDE.md).
-        // An empty parse already throws; a *partial* one is just as silent and
-        // far more plausible-looking, so an unfiltered run that recovers well
-        // under what the binary declares says so on stderr rather than printing
-        // a confident-looking excerpt. stderr, so stdout stays pipeable.
-        if (function ?? "").isEmpty, declared > 0, functions.count * 2 < declared {
-            let pct = functions.count * 100 / declared
-            FileHandle.standardError.write(Data("""
-                warning: recovered \(functions.count) of \(declared) function(s) \
-                declared by LC_FUNCTION_STARTS (\(pct)%). This listing is incomplete — \
-                treat it as a sample, not an inventory. Filtering with --function \
-                resolves through metadata and is unaffected.
-
-                """.utf8))
-        }
+        emitCoverageWarning(recovered: functions.count, declared: declared,
+                            filtered: !(function ?? "").isEmpty)
         if json {
             try emit(functions.jsonString(), to: output)
         } else if functions.isEmpty {

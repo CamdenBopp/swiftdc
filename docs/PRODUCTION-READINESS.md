@@ -11,7 +11,7 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-07-20, at commit `156f651`.
+Last audited: 2026-07-20, at commit `09d9026`.
 
 ---
 
@@ -585,79 +585,70 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 - **OPEN — whole-image decoding does not scale to the largest frameworks.**
   Measured after the resync fix: `disasm --image UserNotifications` recovers
   1,391 functions / 52,103 instructions in **19s**, with no coverage warning.
-  SwiftUI, at 105,644 recovered functions and 5.65M instructions, takes
-  **6m03s** — correct, but impractical for interactive use.
+  SwiftUI, at 105,644 recovered functions and 5.65M instructions, took
+  **6m03s** before streaming — now **2m37s** (streaming no longer thrashes swap),
+  but still slow for interactive use. Streaming fixed the *memory* (see the FIXED
+  entry below), not the decode/analysis *time*.
 
   This cost was previously *hidden by the truncation bug*: stopping after 4,040
   instructions made SwiftUI look fast. Fixing completeness exposed the real
   workload, which is the correct trade (a fast wrong answer is worth nothing)
-  but leaves unfiltered runs on the largest images impractical.
+  but leaves unfiltered runs on the largest images slow.
 
   Not pathological — the resync loop was checked for a degenerate
   one-call-per-4-bytes case on a large data region and UserNotifications shows
   none. It is the per-instruction analysis pipeline, run over ~75× more code.
   `--function` remains fast on any image, since it decodes only matched ranges.
-- **OPEN — memory scales linearly with instruction count, and the largest
-  frameworks exceed a 16 GB machine.** Measured with `/usr/bin/time -l` (release
-  build, peak memory footprint — the malloc'd allocation, which is what must be
-  backed by RAM + swap; RSS also counts mapped cache pages and understates once
-  swapping starts):
+- **FIXED (memory) — whole-image text output is now streamed, ~8–10× less peak
+  memory, and the largest frameworks fit in RAM.** `disasm --image X` in the
+  text/`--structured`/`--pseudo`/`--cfg` modes now decodes, analyses, renders and
+  **releases one function at a time** (`disassembleStreamingRender`), instead of
+  holding the whole image's decoded instructions at once. Measured before → after
+  (`/usr/bin/time -l`, release, peak footprint):
 
-  | image | instructions | peak footprint | per-insn |
-  |---|---|---|---|
-  | UserNotifications | 52,103 | 141 MB | 2.7 KB |
-  | CoreLocation | 473,670 | 1,192 MB | 2.5 KB |
-  | SwiftUI | 5,654,282 | **13,794 MB** | 2.44 KB |
+  | image | instructions | before | after | factor |
+  |---|---|---|---|---|
+  | CoreLocation | 473,670 | 1,192 MB | **117 MB** | 10× |
+  | SwiftUI | 5,654,282 | 13,794 MB | **1,633 MB** | 8.4× |
 
-  Cleanly linear at **~2.5 KB per recovered instruction**, no dominating fixed
-  cost. SwiftUI's **13.5 GB peak footprint exceeds this 16 GB host's usable
-  RAM** — it completes only by swapping (RSS capped at 4.3 GB, wall time
-  dominated by paging). On a smaller machine, or under memory pressure, an
-  unfiltered SwiftUI run would fail or thrash.
+  SwiftUI **no longer exceeds a 16 GB host** — 1.6 GB fits in RAM, and it also
+  ran *faster* (2m37s vs 6m03s) because it no longer thrashes swap. The residual
+  is O(function count), not O(instructions): the cross-function name index
+  (~105 k demangled names + resolver for SwiftUI) is what remains resident, and
+  `--json`/`xrefs`/`analyze` — which genuinely need every function — keep the
+  array path and its old footprint (verified unchanged: CoreLocation `--json`
+  still 1,241 MB, the control).
 
-  Cause, localised by experiment rather than reasoning (an earlier version of
-  this entry blamed `detail`; that was measured false). On CoreLocation, three
-  candidates were ruled out one at a time, each leaving the 1,192 MB footprint
-  unchanged:
+  Output is **byte-identical** to the array path — verified on
+  `disasm --image UserNotifications` across all five modes (text, structured,
+  pseudo, cfg, json) against pre-refactor golden hashes — because the streaming
+  path reuses the same `makeFunction` naming and the same `analyzeFunction`
+  analysis, and boundaries are instruction-aligned so its spans are exactly the
+  functions `segment` cuts. The foundation (extracting `analyzeFunction`, so both
+  paths share one code path rather than a parallel reimplementation) landed
+  separately in `09d9026`, itself golden-verified.
 
-  - **`detail`** (the `StructuredInsn` operand arrays): stripped at decode so it
-    is never allocated → **1,192 MB**. Not it.
-  - **rendered output**: the whole listing is only **16 MB** of text. Not it.
-  - **value-tracking / structuring**: skipped entirely (an env-gated early
-    return before the analysis map) → **1,192 MB**. Not it.
-  - **the whole `assemble` step**: returning the raw decoded list immediately,
-    with *no* segmentation, annotation, or analysis at all → **1,192 MB**. Most
-    direct of all: the entire peak is present the instant `__text` is decoded.
-
-  What remains is the **held whole-image instruction list itself** — every
-  function's decoded instructions resident at once, present before `assemble`
-  even runs. `--function` on the same image sits at ~150 MB (one function plus
-  the cache-mapping baseline), which is the floor a streaming design would
-  approach. (For the record, the per-instruction footprint — ~2.5 KB — is larger
-  than the held `Instruction` struct accounts for; `MemoryLayout` puts it at
-  136 B inline plus small operand/string heap. The unaccounted bulk is likely
-  Capstone's per-instruction detail allocations retained across the whole decode.
-  It does not change the fix: streaming holds one function's worth, whatever the
-  constant.)
-
-  This makes the fix a **streaming refactor with a measured ~8× headroom** on
-  CoreLocation (1,192 MB → ~150 MB), not the detail-dropping tweak the earlier
-  entry implied. A design probe confirmed it is structurally feasible: the three
-  cross-function passes (`referenceIndex`, `crossImageNames`, the `swiftTargets`
-  set) read only lightweight per-instruction fields — `controlFlow`,
-  `branchTarget` — and per-function summaries — `startAddress`, `symbol`,
-  `displayName`. **None needs `detail` or value-tracking state**, so the image
-  can be walked once cheaply to build the name resolver, then decoded and
-  rendered one function at a time and released. It stays feature-sized (it
-  changes the whole-image control flow), so it is recorded, not attempted here.
-  `--function` is already this shape and is unaffected.
+  How the cause was localised, for the record (an earlier version of this entry
+  reasoned it was `detail`; that was measured false). Four candidates ruled out
+  on CoreLocation, each leaving 1,192 MB unchanged: stripping `detail` at decode;
+  the rendered output (only 16 MB); skipping value-tracking; and returning the
+  raw decoded list with no `assemble` at all — the last proving the entire peak
+  is present the instant `__text` is decoded. The held whole-image instruction
+  list was the cost; streaming holds one function's worth.
 
   Reproduce:
-  `/usr/bin/time -l swiftdc disasm --image CoreLocation >/dev/null` — read
-  `peak memory footprint`.
+  `/usr/bin/time -l swiftdc disasm --image CoreLocation >/dev/null` (streamed) vs
+  `… --json >/dev/null` (array) — read `peak memory footprint`.
+- **OPEN — time, and the array modes, still scale with the whole image.**
+  Streaming fixed peak *memory* for text output but not *time*: CoreLocation
+  still takes ~23 s (the decode + per-function analysis work is unchanged, just
+  no longer all resident). And `--json`/`xrefs`/`analyze` still materialise every
+  function, so their memory is unchanged by design — a streaming JSON writer, or
+  chunking the array modes, is the remaining scale work.
 - **MITIGATED (memory) — a whole-image memory regression guard now exists**
-  (`MemoryRegressionTests`). The Performance limits above are OPEN by design
-  awaiting the streaming refactor, but nothing stopped them getting *worse*: an
+  (`MemoryRegressionTests`). The memory limit above is now FIXED by
+  streaming, but nothing stopped it regressing meanwhile, and it still guards the
+  array path (`--json`) that keeps the old footprint: an
   added held field on `Instruction`, or an extra retained copy of the list,
   would balloon per-instruction memory silently. The guard runs
   `disasm --image UserNotifications --json` under `/usr/bin/time -l` — an
@@ -677,8 +668,8 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
   Host-gated: it needs a system dyld cache image and skips cleanly without one
   (a skip is instant; the passing run takes ~18 s, which confirms it measured).
-  It is also the **before/after oracle the streaming refactor needs**: after
-  streaming, per-instruction footprint should fall sharply and the bound tighten.
+  It was the **before/after oracle for the streaming refactor** (measured
+  10× on CoreLocation); it now guards the `--json` array path against regression.
 - **UNKNOWN — no wall-time regression guard.** The memory guard above covers
   allocation; nothing guards decode *time*, which is deliberately left to a
   measured OPEN rather than a test — wall time is too machine- and load-dependent
