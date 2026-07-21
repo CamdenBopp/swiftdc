@@ -62,9 +62,22 @@ because it cannot be distinguished from a right one by reading the output.
   is resolved from swiftdc's *own reported symbol*, so the oracle cannot drift
   onto a different function than the one it analysed.
 
-  Currently **636 comparisons — 318 at `-Onone` and 318 at `-O`**, 13 functions
-  at each level: comparisons, ternaries, arithmetic, bit operations, and the
-  signed-range idiom, at edge inputs including `Int.min`/`Int.max`.
+  Currently **952 comparisons — 476 at `-Onone` and 476 at `-O`**, 15 functions
+  at each level: comparisons, ternaries, arithmetic, bit operations, the
+  signed-range idiom, and **integer division/remainder**, at edge inputs
+  including `Int.min`/`Int.max`.
+
+  Division and remainder are the sharpest additions: `a / b` is non-commutative,
+  so operand order is executed rather than assumed, and a `udiv` mistaken for
+  `sdiv` renders the same `/` yet disagrees at negative dividends — the U1
+  fabrication class, one operator over. Inputs are curated to the non-trapping
+  domain (`sdiv` traps on a zero divisor and on the single `Int.min / -1`
+  overflow), but deliberately keep `Int.min`/`Int.max` dividends against small
+  divisors, where a signedness confusion would surface. Proven sensitive: an
+  injected operand swap (`(arg1 / arg0)`) fails at every asymmetric input, and an
+  injected operator confusion (`/` ↔ `%`) fails at both levels for both cases —
+  before the injection, neither the `/` nor the `%` render had ever been executed
+  (the evaluator's division path existed but no case reached it).
 
   The `-O` half is the part that matters most, because optimized lowering is
   where U1 lived. It executes the recovered idiom

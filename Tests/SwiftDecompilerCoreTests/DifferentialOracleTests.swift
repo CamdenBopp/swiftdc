@@ -384,6 +384,21 @@ private func pairs(_ values: [Int]) -> [[Int]] {
     values.flatMap { a in values.map { b in [a, b] } }
 }
 
+/// Dividend/divisor pairs for signed `/` and `%`, curated so the **compiled**
+/// side never traps. `sdiv`/its remainder trap on exactly two inputs: a zero
+/// divisor, and `Int.min / -1` (the one signed quotient that overflows). Both are
+/// excluded here. Everything else is fair game — and deliberately includes
+/// `Int.min` and `Int.max` as dividends against small divisors, because that is
+/// where a signed-vs-unsigned confusion would surface: if swiftdc rendered a
+/// `udiv` as `/`, `Int.min / 2` (high bit set) would disagree with the machine.
+private func divisionPairs() -> [[Int]] {
+    let dividends = [Int.min, -1_000, -7, -1, 0, 1, 7, 99, 1_000, Int.max]
+    let divisors = [-1_000, -7, -3, -1, 1, 3, 7, 1_000]  // never zero
+    return dividends.flatMap { a in
+        divisors.compactMap { b in (a == Int.min && b == -1) ? nil : [a, b] }
+    }
+}
+
 private let oracleCases: [OracleCase] = [
     // Comparisons: no arithmetic, so the full edge set including Int.min/max is
     // safe — and it is exactly where a signed/unsigned confusion shows up.
@@ -410,6 +425,13 @@ private let oracleCases: [OracleCase] = [
     .init(name: "constant", arity: 0, returnsBool: false, inputs: [[]]),
     .init(name: "deepNest", arity: 4, returnsBool: false,
           inputs: [[1, 2, 3, 4], [-1, -2, -3, -4], [0, 0, 0, 0], [7, -7, 7, -7]]),
+    // Integer division and remainder: the sharpest non-commutative arithmetic and
+    // signedness test in the suite. `a / b` is not `b / a`, and a `udiv` mistaken
+    // for `sdiv` renders the same `/` yet disagrees at negative dividends — the U1
+    // fabrication class, one operator over. Inputs curated to never trap the
+    // compiled side (see `divisionPairs`).
+    .init(name: "intDivide", arity: 2, returnsBool: false, inputs: divisionPairs()),
+    .init(name: "remainder", arity: 2, returnsBool: false, inputs: divisionPairs()),
 ]
 
 // MARK: - The test
@@ -438,7 +460,8 @@ private struct Fixture {
 private let fixtures = [
     Fixture(
         path: "Fixtures/Sample/libReconstruction.dylib", label: "-Onone",
-        required: ["isPositive", "isEqual", "atLeast", "rangeCheck", "addThree", "maxOf"],
+        required: ["isPositive", "isEqual", "atLeast", "rangeCheck", "addThree", "maxOf",
+                   "intDivide", "remainder"],
         minimumComparisons: 200
     ),
     Fixture(
@@ -446,7 +469,8 @@ private let fixtures = [
         // `rangeCheck` and `computedRange` are the U1 idiom itself; `threeWay`
         // is a csel cascade that only survives at -O. If any stops being
         // compared, the oracle has lost the coverage it exists for.
-        required: ["rangeCheck", "computedRange", "threeWay", "maxOf", "isPositive"],
+        required: ["rangeCheck", "computedRange", "threeWay", "maxOf", "isPositive",
+                   "intDivide", "remainder"],
         minimumComparisons: 200
     ),
 ]
