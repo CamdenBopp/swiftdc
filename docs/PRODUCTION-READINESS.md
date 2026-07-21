@@ -262,7 +262,18 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 - **OPEN — names for statically-dispatched Swift on stripped binaries.** Free
   functions, closures, thunks, and struct/enum non-protocol methods render
   `sub_<addr>`. Boundaries recover; names have no metadata record to recover
-  *from*. Partly inherent.
+  *from*. Measured, on CoreLocation: 2,018 of 4,126 recovered functions
+  (~49%) render `sub_<addr>` — the single dominant real-output gap.
+
+  The standard tool workaround — reading the dyld cache's **local-symbols
+  region**, which is what IDA/Hopper use to name internal functions — was checked
+  and **does not apply here**: on the shipping macOS cache `localSymbolsInfo` is
+  nil (the `localSymbolsSize` header field is zero) and there is no separate
+  `.symbols` subcache file. Local symbols are stripped from the production cache,
+  so there is nothing to recover. This upgrades "partly inherent" from a claim to
+  a measurement: for `--image` targets the names are *genuinely* absent, not
+  merely unread. (A standalone unstripped `.dylib` on disk keeps its local
+  nlist symbols; the gap is specific to cache images.)
 - **OPEN — unresolved indirect call edges.** Generic witness tables, unknown
   receiver vtables, and block pointers stay unresolved. `xrefs` reports the
   count, so this is *disclosed* rather than silent — but `--unreferenced` is
