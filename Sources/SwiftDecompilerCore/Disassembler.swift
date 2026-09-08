@@ -407,6 +407,7 @@ public struct Disassembler: Sendable {
             selfIndex: SelfTypeIndex.build(in: machO),
             vtableIndex: VTableIndex.build(in: machO),
             enumCaseIndex: EnumCaseIndex.build(in: machO),
+            payloadEnumIndex: PayloadEnumCaseIndex.build(in: machO),
             classTypeIndex: ClassTypeIndex.build(in: machO)
         )
 
@@ -552,6 +553,9 @@ public struct Disassembler: Sendable {
         // No-payload enum case names, so an immediate tag returned from an
         // enum-typed function renders as `.case` instead of a bare integer.
         let enumCaseIndex = EnumCaseIndex.build(in: machO)
+        // Payload-enum empty-case names, resolved only where the encoding is
+        // statically provable (see `PayloadEnumCaseIndex`).
+        let payloadEnumIndex = PayloadEnumCaseIndex.build(in: machO)
         // Class (reference) type names, so a single-register `Optional<SomeClass>`
         // (nil == 0) seeds like a scalar and its `!= nil` reconstructs, while a
         // value-typed (tagged) optional still declines.
@@ -559,7 +563,8 @@ public struct Disassembler: Sendable {
         let context = PerFunctionContext(
             resolver: resolver, swiftTargets: swiftTargets, objcIndex: objcIndex,
             fieldMaps: fieldMaps, selfIndex: selfIndex, vtableIndex: vtableIndex,
-            enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex
+            enumCaseIndex: enumCaseIndex, payloadEnumIndex: payloadEnumIndex,
+            classTypeIndex: classTypeIndex
         )
         functions = functions.map { analyzeFunction($0, context: context) }
 
@@ -583,6 +588,7 @@ public struct Disassembler: Sendable {
         let selfIndex: SelfTypeIndex
         let vtableIndex: VTableIndex
         let enumCaseIndex: EnumCaseIndex
+        let payloadEnumIndex: PayloadEnumCaseIndex
         let classTypeIndex: ClassTypeIndex
     }
 
@@ -651,6 +657,7 @@ public struct Disassembler: Sendable {
             selfTypeName: selfTypeName, vtableIndex: context.vtableIndex,
             argumentFieldMaps: valueSelf?.argumentFieldMaps ?? [:],
             enumCaseIndex: context.enumCaseIndex,
+            payloadEnumIndex: context.payloadEnumIndex,
             argumentEnumTypes: Self.swiftEnumArgumentTypes(of: function, enumCaseIndex: context.enumCaseIndex),
             boolArguments: Self.swiftBoolArgumentIndices(of: function),
             classTypeIndex: context.classTypeIndex
@@ -2116,6 +2123,7 @@ public struct Disassembler: Sendable {
         vtableIndex: VTableIndex = VTableIndex(),
         argumentFieldMaps: [Int: FieldMap] = [:],
         enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
+        payloadEnumIndex: PayloadEnumCaseIndex = PayloadEnumCaseIndex(),
         argumentEnumTypes: [Int: String] = [:],
         boolArguments: Set<Int> = [],
         classTypeIndex: ClassTypeIndex = ClassTypeIndex()
@@ -2939,6 +2947,25 @@ public struct Disassembler: Sendable {
                tag <= UInt64(Int.max),
                let caseName = enumCaseIndex.caseName(ofEnum: returnTypeName, tag: Int(tag)) {
                 return "\(returnTypeName).\(caseName)"
+            }
+            // A payload enum returned as a constant empty case: unlike a no-payload
+            // enum, the discriminant is NOT this single register — x0 holds the
+            // payload and the tag lives in x1 for a two-register direct return. The
+            // tracer already captured x1 at the `ret` (as `exitYieldValues`), so
+            // hand both to `PayloadEnumCaseIndex`, which names the case ONLY on an
+            // exact byte-pattern match against the statically-resolved encoding and
+            // declines otherwise — leaving the raw integer this method falls through
+            // to. That decline is the important half: it is why a payload case, an
+            // extra-inhabitant-encoded case, or an unknown enum never gets a name.
+            if case .immediate(let x0) = value, let returnTypeName {
+                let x1: UInt64? = {
+                    guard case .immediate(let value)? = analysis.exitYieldValues[address].map(sanitizeValue)
+                    else { return nil }
+                    return value
+                }()
+                if let caseName = payloadEnumIndex.caseName(ofEnum: returnTypeName, x0: x0, x1: x1) {
+                    return "\(returnTypeName).\(caseName)"
+                }
             }
             // A constant returned from a Bool- or floating-point-typed function
             // reads per its type: `true`/`false`, or the float decimal instead of

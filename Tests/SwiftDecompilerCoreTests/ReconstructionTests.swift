@@ -308,14 +308,28 @@ private func reconstructionStructured(
     #expect(urgency.contains("return Reconstruction.Priority.high"))
 }
 
-/// Adversarial: a PAYLOAD enum's tag does not index its cases in declaration
-/// order, so a returned immediate must stay a raw value — never a fabricated
-/// `.eof`. Holds under optimization too.
-@Test func declinesPayloadEnumCaseNamingIfPresent() async throws {
-    for fixture in [reconstructionFixture, "Fixtures/Sample/libReconstruction.opt.dylib"] {
+/// A PAYLOAD enum's empty case is named when — and only when — its encoding is
+/// statically PROVABLE. `Token.eof` is a tagged multi-payload empty case whose
+/// exact bytes `SwiftInspection.EnumLayoutCalculator` resolves offline (payload
+/// bytes 0, tag byte 2); swiftdc matches the returned registers (x0 = payload 0,
+/// x1 = tag 2) against that pattern and names it. This is not the fabrication a
+/// bare-tag heuristic would have been — a returned immediate does NOT index a
+/// payload enum's cases — it is an exact byte match, a proof. It therefore holds
+/// across `-Onone`, `-O`, and stripped (the field-reflection metadata the layout
+/// reads survives `strip`).
+///
+/// The decline half — refusing to name a case whose bytes are NOT statically
+/// resolvable (extra-inhabitant-encoded), an oversized (indirectly-returned)
+/// enum, or a non-matching value — is pinned adversarially in
+/// `PayloadEnumCaseIndexTests`, where the unprovable shapes the fixtures do not
+/// contain can be exercised directly.
+@Test func namesProvablePayloadEnumCaseIfPresent() async throws {
+    for fixture in [reconstructionFixture,
+                    "Fixtures/Sample/libReconstruction.opt.dylib",
+                    "Fixtures/Sample/libReconstruction.opt.stripped.dylib"] {
         guard let end = try await reconstructionPseudo("endToken", in: fixture) else { continue }
-        #expect(!end.contains(".eof"))   // no fabricated case name
-        #expect(end.contains("return 0")) // honest raw fallback
+        #expect(end.contains("Reconstruction.Token.eof"))   // proven, not guessed
+        #expect(!end.contains("return 0"))                   // no longer the raw fallback
     }
 }
 

@@ -147,6 +147,14 @@ let package = Package(
                 // capability Ghidra structurally cannot have. 100% public API —
                 // no SPI, no `package` walls.
                 .product(name: "SwiftLayout", package: "MachOSwiftSection"),
+                // Payload-enum case projection: `StaticLayoutCalculator`
+                // (SwiftLayout) returns an `EnumLayoutCalculator.LayoutResult`
+                // whose `EnumCaseProjection` type is vended here. Used to name a
+                // returned/compared payload-enum *empty* case ONLY when its byte
+                // pattern is statically resolved (`.exactBytes`) — the
+                // extra-inhabitant-dependent cases stay declined, since only the
+                // in-process runtime projector can resolve those.
+                .product(name: "SwiftInspection", package: "MachOSwiftSection"),
                 .product(name: "Semantic", package: "swift-semantic-string"),
                 .product(name: "Demangling", package: "swift-demangling"),
                 .product(name: "MachOObjCSection", package: "MachOObjCSection"),
