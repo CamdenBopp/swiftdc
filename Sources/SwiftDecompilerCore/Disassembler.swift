@@ -75,6 +75,12 @@ public enum RecoverySource: String, Sendable {
     case objcMetadata = "objc-metadata"
     /// Boundary known (LC_FUNCTION_STARTS) but no name — synthesized `sub_<addr>`.
     case address
+    /// Boundary known, but the symbol table lists two or more *distinct* symbols
+    /// at this address. The release linker's identical-code-folding pass merged
+    /// several unrelated declarations onto one instruction stream, and nothing in
+    /// their mangled names records the merge — so no single symbol can be
+    /// attributed. Rendered `sub_<addr>` with the candidates listed, never guessed.
+    case foldedSymbols = "folded-symbols"
 }
 
 /// A contiguous function body recovered from `__text`.
@@ -90,6 +96,10 @@ public struct DisassembledFunction: Sendable {
     public let source: RecoverySource
     /// Objective-C owner/selector/signature when this entry point is an IMP.
     public let objcMethod: ObjCMethodBinding?
+    /// When `source == .foldedSymbols`: the distinct symbol names (raw, sorted)
+    /// the symbol table places at this address, listed instead of one being
+    /// picked. Nil for every other source.
+    public let foldedCandidates: [String]?
 
     public init(
         symbol: String,
@@ -97,7 +107,8 @@ public struct DisassembledFunction: Sendable {
         startAddress: UInt64,
         instructions: [Instruction],
         source: RecoverySource,
-        objcMethod: ObjCMethodBinding? = nil
+        objcMethod: ObjCMethodBinding? = nil,
+        foldedCandidates: [String]? = nil
     ) {
         self.symbol = symbol
         self.demangledName = demangledName
@@ -105,6 +116,7 @@ public struct DisassembledFunction: Sendable {
         self.instructions = instructions
         self.source = source
         self.objcMethod = objcMethod
+        self.foldedCandidates = foldedCandidates
     }
 
     /// The name to show: demangled if available, else the raw symbol.
@@ -117,13 +129,16 @@ public struct DisassembledFunction: Sendable {
         let tag: String = switch source {
         case .metadata: "  [recovered from Swift metadata]"
         case .objcMetadata: "  [recovered from Objective-C metadata]"
-        case .symbol, .address: ""
+        case .symbol, .address, .foldedSymbols: ""
         }
         if let objcMethod {
             lines.append("  // \(objcMethod.signature)  @ 0x\(String(startAddress, radix: 16))\(tag)")
             if source == .symbol { lines.append("  // \(symbol)") }
         } else if demangledName != nil {
             lines.append("  // \(symbol)  @ 0x\(String(startAddress, radix: 16))\(tag)")
+        } else if source == .foldedSymbols, let foldedCandidates {
+            lines.append("  // \(foldedCandidates.count) symbols folded onto 0x\(String(startAddress, radix: 16)) by identical code folding; none can be attributed")
+            for candidate in foldedCandidates { lines.append("  //   \(candidate)") }
         } else if source == .address {
             lines.append("  // unnamed function  @ 0x\(String(startAddress, radix: 16))  [boundary from LC_FUNCTION_STARTS]")
         }
@@ -293,6 +308,7 @@ public struct Disassembler: Sendable {
     ) async -> [String] {
         let objcIndex = ObjCMetadataIndex.build(in: machO)
         let labelByAddress = symbolLabels(in: machO)
+        let foldedByAddress = foldedSymbolAddresses(in: machO)
         guard let text = textSectionBounds(in: machO) else { return [] }
         let textStart = text.address
         let textEnd = text.address + UInt64(text.size)
@@ -321,6 +337,7 @@ public struct Disassembler: Sendable {
         // name-level fields, so name-only stubs (no instructions) suffice.
         let stubs = boundaries.map {
             makeFunction(start: $0, instructions: [], labelByAddress: labelByAddress,
+                         foldedByAddress: foldedByAddress,
                          metadataNames: metadataNames, objcIndex: objcIndex)
         }
         let cacheSymbols = CacheSymbolResolver(machO: machO)
@@ -376,7 +393,8 @@ public struct Disassembler: Sendable {
             if !instructions.isEmpty {
                 let function = makeFunction(
                     start: boundaries[index], instructions: instructions,
-                    labelByAddress: labelByAddress, metadataNames: metadataNames, objcIndex: objcIndex
+                    labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
+                    metadataNames: metadataNames, objcIndex: objcIndex
                 )
                 rendered.append(render(analyzeFunction(function, context: context)))
             }
@@ -453,10 +471,16 @@ public struct Disassembler: Sendable {
             metadataNames = await MetadataSymbolizer(preset: preset).functionNames(in: machO)
         }
 
+        // Addresses the linker folded multiple distinct symbols onto (see
+        // `foldedSymbolAddresses`): computed from the symbol table, so it is the
+        // same on both front-ends regardless of what labels either produced.
+        let foldedByAddress = foldedSymbolAddresses(in: machO)
+
         var functions = segment(
             instructions,
             boundaries: boundaries,
             labelByAddress: labelByAddress,
+            foldedByAddress: foldedByAddress,
             metadataNames: metadataNames,
             objcIndex: objcIndex
         )
@@ -803,12 +827,43 @@ public struct Disassembler: Sendable {
         return labels
     }
 
+    /// Addresses in `__text` that two or more *distinct* symbols name.
+    ///
+    /// The release linker folds byte-identical function bodies onto one address
+    /// (`ld -icf`, on by default for Mach-O release builds): outlined value
+    /// witnesses, generic specializations, reabstraction thunks, and the many
+    /// trivial getters/destructors that compile to a bare `ret` all collapse
+    /// together under their separate mangled names. Nothing in a mangled name
+    /// records the merge, so the demangler prints a confident, specific name for
+    /// each — every one correct for at most one of the folded declarations.
+    /// Naming the address after whichever symbol the table happens to list first
+    /// (what `symbolLabels` does) silently misattributes the rest, so callers use
+    /// this to decline instead. Value is the distinct names, sorted for
+    /// determinism. Measured at 17% of `__text` symbols in one small `-O` fixture.
+    private func foldedSymbolAddresses(in machO: MachOFile) -> [UInt64: [String]] {
+        guard let text = machO.sections.first(where: {
+            $0.segmentName == "__TEXT" && $0.sectionName == "__text"
+        }) else { return [:] }
+        let textRange = UInt64(text.address) ..< UInt64(text.address + text.size)
+
+        var namesByAddress: [UInt64: Set<String>] = [:]
+        for symbol in machO.symbols where !symbol.name.isEmpty {
+            let address = UInt64(symbol.offset)
+            guard textRange.contains(address) else { continue }
+            namesByAddress[address, default: []].insert(symbol.name)
+        }
+        return namesByAddress
+            .filter { $0.value.count >= 2 }
+            .mapValues { $0.sorted() }
+    }
+
     // MARK: - Segmentation
 
     private func segment(
         _ instructions: [Instruction],
         boundaries: Set<UInt64>,
         labelByAddress: [UInt64: String],
+        foldedByAddress: [UInt64: [String]],
         metadataNames: [UInt64: String],
         objcIndex: ObjCMetadataIndex
     ) -> [DisassembledFunction] {
@@ -820,6 +875,7 @@ public struct Disassembler: Sendable {
             guard !current.isEmpty else { return }
             functions.append(makeFunction(start: start, instructions: current,
                                            labelByAddress: labelByAddress,
+                                           foldedByAddress: foldedByAddress,
                                            metadataNames: metadataNames,
                                            objcIndex: objcIndex))
             current = []
@@ -843,11 +899,27 @@ public struct Disassembler: Sendable {
         start: UInt64,
         instructions: [Instruction],
         labelByAddress: [UInt64: String],
+        foldedByAddress: [UInt64: [String]],
         metadataNames: [UInt64: String],
         objcIndex: ObjCMetadataIndex
     ) -> DisassembledFunction {
         let subName = "sub_\(String(start, radix: 16))"
         let objcMethod = objcIndex.binding(for: start)
+        // Identical code folding: the symbol table lists several distinct symbols
+        // at this address, so attributing any one of them misnames the rest.
+        // Decline — render `sub_<addr>` and carry the candidates. A bound ObjC IMP
+        // (below) is runtime-authoritative for a real source identity, so it still
+        // wins over the fold.
+        if objcMethod == nil, let folded = foldedByAddress[start] {
+            return DisassembledFunction(
+                symbol: subName,
+                demangledName: nil,
+                startAddress: start,
+                instructions: instructions,
+                source: .foldedSymbols,
+                foldedCandidates: folded
+            )
+        }
         if let rawLabel = labelByAddress[start] {
             return DisassembledFunction(
                 symbol: rawLabel,
@@ -1010,6 +1082,12 @@ public struct Disassembler: Sendable {
         // Keep the whole image's lightweight symbol/metadata index even when a
         // filtered disassembly decoded only one function. Its direct and
         // indirect calls can still target any other known function.
+        //
+        // Folded addresses are intentionally still named here: a metadata-resolved
+        // edge (a concrete witness-table or vtable dispatch) reaches its target
+        // through a specific type, so one of the folded symbols is the right label
+        // for that edge, and suppressing it loses a real call graph edge. The fold
+        // is declined where it matters — the function *heading* (see `makeFunction`).
         for (address, symbol) in labelByAddress {
             names[address] = objcIndex.binding(for: address)?.displayName
                 ?? demangle(symbol)
@@ -1094,7 +1172,8 @@ public struct Disassembler: Sendable {
             startAddress: function.startAddress,
             instructions: updated,
             source: function.source,
-            objcMethod: function.objcMethod
+            objcMethod: function.objcMethod,
+            foldedCandidates: function.foldedCandidates
         )
     }
 
@@ -1125,7 +1204,8 @@ public struct Disassembler: Sendable {
         return DisassembledFunction(
             symbol: function.symbol, demangledName: function.demangledName,
             startAddress: function.startAddress, instructions: instructions, source: function.source,
-            objcMethod: function.objcMethod
+            objcMethod: function.objcMethod,
+            foldedCandidates: function.foldedCandidates
         )
     }
 
@@ -1172,7 +1252,8 @@ public struct Disassembler: Sendable {
         return DisassembledFunction(
             symbol: function.symbol, demangledName: function.demangledName,
             startAddress: function.startAddress, instructions: instructions,
-            source: function.source, objcMethod: function.objcMethod
+            source: function.source, objcMethod: function.objcMethod,
+            foldedCandidates: function.foldedCandidates
         )
     }
 
@@ -3106,7 +3187,8 @@ public struct Disassembler: Sendable {
         return DisassembledFunction(
             symbol: function.symbol, demangledName: function.demangledName,
             startAddress: function.startAddress, instructions: instructions, source: function.source,
-            objcMethod: function.objcMethod
+            objcMethod: function.objcMethod,
+            foldedCandidates: function.foldedCandidates
         )
     }
 
