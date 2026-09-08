@@ -2,6 +2,29 @@ import Foundation
 import MachOKit
 import MachOSwiftSection
 import Demangling
+import Synchronization
+
+/// A per-run memoization cache for `Disassembler.demangle`.
+///
+/// Demangling a symbol builds and prints a node tree; the same symbol recurs
+/// many times in one run (a definition's own label, the names given to calls
+/// that target it, xref edges — ~2.5x on the fixtures, more on frameworks).
+/// The stored value is `String?`, so a symbol that demangles to nothing is
+/// cached too and a "present but nil" entry is distinguished from an absent one.
+/// A `Mutex` keeps it thread-safe so `Disassembler` stays `Sendable`; correct
+/// caching relies on demangling being a pure function of (symbol, preset), which
+/// is why `Disassembler.preset` is immutable per instance.
+final class DemangleCache: Sendable {
+    private let store = Mutex<[String: String?]>([:])
+
+    /// The cached result for `key`, computing and storing it on a miss.
+    func value(for key: String, compute: (String) -> String?) -> String? {
+        if let hit = store.withLock({ $0[key] }) { return hit }
+        let result = compute(key)
+        store.withLock { $0[key] = result }
+        return result
+    }
+}
 
 /// A single decoded ARM64 instruction.
 public struct Instruction: Sendable {
@@ -159,7 +182,11 @@ public struct DisassembledFunction: Sendable {
 /// `LC_FUNCTION_STARTS` (which survives stripping) and names them from the
 /// symbol table or, failing that, Swift metadata.
 public struct Disassembler: Sendable {
-    public var preset: DemanglePreset
+    // Immutable per instance: the demangle cache keys on the symbol alone, which
+    // is only sound because the preset it demangles under cannot change under it.
+    public let preset: DemanglePreset
+    /// Memoizes `demangle` for the lifetime of this instance (one run).
+    let demangleCache = DemangleCache()
 
     public init(preset: DemanglePreset = .default) {
         self.preset = preset
@@ -3316,13 +3343,23 @@ public struct Disassembler: Sendable {
         if s.hasPrefix("_$s") || s.hasPrefix("_$S") || s.hasPrefix("_$e") {
             s.removeFirst()
         }
+        // Fast-path reject before the cache: `annotate` calls this on every
+        // operand token, most of which are not Swift-mangled at all.
         guard s.hasPrefix("$s") || s.hasPrefix("$S") || s.hasPrefix("$e") || s.hasPrefix("_T") else {
             return nil
         }
-        // Sync context → the sync `print` overload is selected (no await).
-        guard let node = try? demangleAsNode(s) else { return nil }
-        let printed = node.print(using: preset.options)
-        return printed.isEmpty ? nil : printed
+        // Memoized on the normalized symbol `s`. The same symbol is demangled
+        // repeatedly across one run — a definition's own label, the names given
+        // to calls that target it, xref edges — measured at ~2.5x redundancy on
+        // the fixtures and higher on frameworks. Demangling is a pure function of
+        // (symbol, preset), so the cache cannot change output; it is scoped to
+        // this `Disassembler` instance, i.e. one run.
+        return demangleCache.value(for: s) { s in
+            // Sync context → the sync `print` overload is selected (no await).
+            guard let node = try? demangleAsNode(s) else { return nil }
+            let printed = node.print(using: preset.options)
+            return printed.isEmpty ? nil : printed
+        }
     }
 
     /// First Swift mangled token in an instruction's operands, demangled.
