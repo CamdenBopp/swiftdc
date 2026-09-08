@@ -17,8 +17,8 @@ final class CacheReader {
 
     func bytes(at address: UInt64, count: Int) -> Data? {
         guard let fullOffset = full.fileOffset(of: address),
-              let subcache = full.cache(forOffset: fullOffset),
-              let url = full.url(forOffset: fullOffset),
+              let subcache = full.cache(forFileOffset: fullOffset),
+              let url = full.url(forFileOffset: fullOffset),
               let localOffset = subcache.fileOffset(of: address)
         else { return nil }
         let handle: FileHandle

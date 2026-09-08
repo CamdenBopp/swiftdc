@@ -2,7 +2,7 @@ import Testing
 import Foundation
 import Dependencies
 import CCapstone
-@_spi(Internals) import MachOSwiftSection  // re-exports MachOSymbols → SymbolIndexStore
+@_spi(Internals) import MachOFoundation  // re-exports MachOSymbols → SymbolIndexStore, \.symbolIndexStore
 @testable import SwiftDecompilerCore
 
 private func operand(_ value: StructuredOperand) -> StructuredOperandInfo {

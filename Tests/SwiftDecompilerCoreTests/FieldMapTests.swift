@@ -18,7 +18,7 @@ private func map(
                     fieldName: $0.name,
                     offset: $0.offset,
                     typeMangledName: "T",
-                    layout: TypeLayoutInfo(
+                    layout: StaticTypeLayout(
                         size: $0.bytes, stride: $0.bytes, alignmentMask: 7,
                         extraInhabitantCount: 0, isBitwiseTakable: true
                     ),

@@ -12,50 +12,64 @@ let package = Package(
         .executable(name: "swiftdc", targets: ["swiftdc"]),
     ],
     dependencies: [
-        // `0.12.0` is the first *release tag* we can use: older tags like 0.9.1 do
-        // not compile under Swift 6.3 — SwiftDump's async dumpers call
-        // `Node.print()`, which has both sync and async overloads in
-        // swift-demangling >=0.3.0, and Swift prefers the async overload in an
-        // async context, so 0.9.1's missing `await` is a hard error. 0.12.0 carries
-        // those `await` fixes and pairs with async demangling 0.4.x.
-        //
-        // This previously pinned revision da7abcf with a comment calling it "the
-        // 0.12.0-beta.3 tag's commit". That was wrong twice over: beta.3 is
-        // 2477a00, and da7abcf was reachable from no branch or tag at all —
-        // upstream had rebased it away, leaving us on an orphaned commit that a
-        // GC upstream could have deleted out from under `swift package resolve`.
-        // Everything that pin carried (public SharedCache API, resilient-superclass
-        // dumping, associated-type/opaque-type symbolic-ref fixes) is in 0.12.0 by
-        // content — the commits were rebased, not dropped.
+        // Pinned to 0.19.0 (was 0.12.0). Seven upstream releases moved this engine
+        // squarely along swiftdc's own priority ladder, so its fixes are our fixes:
+        //   Soundness. 0.16.0 closed four silent wrong-result paths (opaque types
+        //   printing illegal Swift, a multi-payload enum cache falling back to a
+        //   wrong layout, reference-storage fields sized a word too narrow, first-hit
+        //   dyld-cache image matches). 0.19.0 attributes a class vtable slot by its
+        //   own method-descriptor symbol instead of the symbols at its implementation
+        //   address, which identical code folding makes ambiguous — SwiftUICore's
+        //   `Symbol not found` count went 358 to 0 with no line regressing to a
+        //   `sub_` address.
+        //   Completeness. 0.16.0 makes legacy LC_DYLD_INFO binaries (pre-macOS 12,
+        //   no chained fixups) parse at all; SwiftUI on the iOS 15.5 simulator went
+        //   from 139 to 81,157 interface lines. Exactly the near-empty-but-plausible
+        //   result the empty-result rule exists to catch.
+        //   Memory/perf. 0.16.0's NodeStore migration cut steady-state memory from
+        //   842 MB to 262 MB across five system images; 0.19.0's task-executor change
+        //   makes dump/interface ~15-20% faster.
+        // Exact-pinned, matching this project's reproducibility intent. Bumping it is
+        // a deliberate change, not a floating one: 0.16.0 is a breaking release, and
+        // it raises the swift-demangling floor to 0.6.3 (see below).
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection",
-            exact: "0.12.0"
+            exact: "0.19.0"
         ),
         // MachOKit is the Mach-O container parser MachOSwiftSection is built on.
         // It is NOT re-exported, so we depend on the same fork/identity directly
         // to name `MachOFile` / `loadFromFile` without a package-identity conflict.
         //
-        // 0.51.100 is mostly performance work on paths this tool leans on hard:
-        // chained-fixup caching (every GOT bind and selref resolution), dyld
-        // subcache file-handle reuse, and cached cache-mapping lookups.
+        // Floor raised to 0.52.101 to match what MachOSwiftSection 0.19.0 requires
+        // (0.52.101 ..< 0.53.0). The 0.51.x line was already mostly performance work
+        // on paths this tool leans on hard — chained-fixup caching (every GOT bind and
+        // selref resolution), dyld subcache file-handle reuse, cached cache-mapping
+        // lookups — and 0.52.101 adds an ObjC-header-info subcache-lookup fix for split
+        // dyld shared caches.
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/MachOKit.git",
-            from: "0.51.100"
+            from: "0.52.101"
         ),
         // `Semantic` provides SemanticString, the return type of SwiftDump's
-        // `.dump(...)`. Pinned to match MachOSwiftSection's own floor — 0.12.0
-        // requires >= 0.1.5 (it needs the Rows component), so this must move in
-        // lockstep with that dependency or resolution fails outright.
+        // `.dump(...)`. Moves in lockstep with MachOSwiftSection: 0.15.0 raised its
+        // floor to 0.3.0 (the transformer modules were re-homed across the two
+        // packages), so a lower pin here fails resolution outright. `from:` rather
+        // than `exact:` because MachOObjCSection also depends on it directly and two
+        // exact pins on one package deadlock.
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/swift-semantic-string",
-            exact: "0.1.5"
+            from: "0.3.0"
         ),
-        // Declared directly so our core can use the `Demangling` product for
-        // symbol annotation. `from: 0.4.0` provides the async `print` overload
-        // that MachOSwiftSection `main` now `await`s.
+        // Declared directly so our core can use the `Demangling` product for symbol
+        // annotation (Disassembler's `demangleAsNode` + `Node.print(using:)`).
+        // Bounded to 0.6.3 ..< 0.7.0: MachOSwiftSection 0.19.0 requires >= 0.6.3, and
+        // the 0.5.0 reshape of `NodePrinterTarget` (autoclosure witnesses, no default
+        // implementations, `Node` no longer `Codable`) makes an open upper bound
+        // unsafe. This is the pin that made a blind `swift package update` dangerous
+        // while MachOSwiftSection stayed at 0.12.0; both move together now.
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/swift-demangling",
-            from: "0.4.0"
+            "0.6.3" ..< "0.7.0"
         ),
         // Objective-C runtime metadata (classes/protocols/categories) for real
         // Swift+ObjC app binaries. Same fork URLs MachOSwiftSection resolves to,
@@ -63,7 +77,7 @@ let package = Package(
         // `@interface … @end` headers (with decoded type encodings).
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/MachOObjCSection.git",
-            from: "0.7.103"
+            from: "0.8.105"
         ),
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/swift-objc-dump",
@@ -152,10 +166,13 @@ let package = Package(
             dependencies: [
                 "SwiftDecompilerCore",
                 // For the swift-testing dependency-resolution workaround in
-                // SmokeTests. MachOSwiftSection re-exports MachOSymbols, whose
-                // `@_spi(Internals)` surface vends `SymbolIndexStore`.
+                // SmokeTests. As of MachOSwiftSection 0.16.0's self-contained ABI
+                // layer, the symbol index is no longer re-exported through the
+                // MachOSwiftSection umbrella; `MachOFoundation` is the library
+                // product that re-exports MachOSymbols, whose `@_spi(Internals)`
+                // surface vends `SymbolIndexStore` and `\.symbolIndexStore`.
                 .product(name: "Dependencies", package: "swift-dependencies"),
-                .product(name: "MachOSwiftSection", package: "MachOSwiftSection"),
+                .product(name: "MachOFoundation", package: "MachOSwiftSection"),
             ]
         ),
     ]

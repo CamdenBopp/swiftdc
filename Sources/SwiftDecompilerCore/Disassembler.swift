@@ -661,8 +661,8 @@ public struct Disassembler: Sendable {
     private func sectionBytes(address: UInt64, size: Int, in machO: MachOFile) -> Data? {
         if let full = machO.fullCache,
            let fullOffset = full.fileOffset(of: address),
-           let subcache = full.cache(forOffset: fullOffset),
-           let url = full.url(forOffset: fullOffset),
+           let subcache = full.cache(forFileOffset: fullOffset),
+           let url = full.url(forFileOffset: fullOffset),
            let localOffset = subcache.fileOffset(of: address),
            let handle = try? FileHandle(forReadingFrom: url) {
             defer { try? handle.close() }
