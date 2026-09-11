@@ -156,13 +156,18 @@ swiftdc xrefs Binary --unreferenced                # nothing statically calls th
 
 ### Devices
 
+`devices` and `apps` reach a USB-attached device natively. `<udid>` is a
+device identifier as printed by `devices`.
+
 ```bash
-swiftdc devices                       # 00008120-…  USB  iPhone (iPhone15,3, iOS 27.0)
+swiftdc devices                       # attached devices and their UDIDs
 swiftdc apps                          # user apps (default)
 swiftdc apps --type system            # user | system | internal | any
 swiftdc apps --encrypted-only
-swiftdc apps --udid 00008120-…        # required only with >1 device attached
+swiftdc apps --udid <udid>            # required only with >1 device attached
 ```
+
+Example output; the bundle IDs are illustrative:
 
 ```text
 iPhone (iPhone15,3, iOS 27.0) — 00008120-001122AABBCCDDEE
@@ -418,3 +423,9 @@ hypothesis, and what the evidence actually showed.
 | [value-unknown-causes.md](docs/research/value-unknown-causes.md) | Why the tracer leaves values unknown — the coverage frontier |
 | [goto-structuring.md](docs/research/goto-structuring.md) | The irreducible-CFG `goto` dimension |
 | [findings-scratch.md](docs/research/findings-scratch.md) | Raw probe evidence (historical; see its status header) |
+
+---
+
+## License
+
+MIT. See [LICENSE](LICENSE).
