@@ -6,35 +6,31 @@ thread. This is **tier-5 (conversation-memory) authority** per
 git history, and measurements. Verify each claim against HEAD before acting, and
 delete items from this file as they ship.
 
-_Last updated: 2026-09-12, at master `4be4ca1`._
+_Last updated: 2026-09-12, on branch `improve/source-findings` at `cfad110`
+(4 commits ahead of master `925a83e`; not yet merged)._
 
 ## Where things stand
 
-master carries, newest first:
+The branch carries, newest first:
 
+- `cfad110` evidence-backed `swift-version` subcommand (was the uncommitted WIP)
+- `d49a1af` add handoff.md and reference it from CLAUDE.md
 - `4be4ca1` content-assert the `layout` and `xrefs` commands
 - `ebede99` content-assert the `analyze` report
+
+master carries, newest first:
+
 - `925a83e` decoder-parity oracle (objdump vs Capstone, every shared function)
 - `4d78769` fixture-presence tripwire (an enforcing run can't be green-on-empty)
 - `73d5c6c` re-pin MachOKit to a fork that memoizes `MachOFile.cache` (perf)
 - `688252d` swiftdc-vs-ipsw benchmark (`Benchmarks/`)
 
-Suite is green: **207 tests on master, 212 with the uncommitted WIP below.** The
-enforcing form is `SWIFTDC_REQUIRE_FIXTURES=1 swift test` after
-`Fixtures/Sample/build.sh` and a `swift build` (the `layout`/`xrefs` tests spawn
-`.build/debug/swiftdc`, so they skip without it).
+Suite is green: **212 tests** on the branch. The enforcing form is
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test` after `Fixtures/Sample/build.sh` and a
+`swift build` (the `layout`/`xrefs` tests spawn `.build/debug/swiftdc`, so they
+skip without it).
 
-## Uncommitted WIP — not on master
-
-A `swift-version` subcommand lives in the working tree only:
-
-- `Sources/swiftdc/Entrypoint.swift` — `SwiftVersionCommand` wiring (modified)
-- `README.md` — its docs (modified)
-- `Sources/SwiftDecompilerCore/SwiftVersionDetector.swift` — untracked
-- `Tests/SwiftDecompilerCoreTests/SwiftVersionTests.swift` — untracked (5 tests)
-
-It compiles and those tests pass locally. Commit or set it aside before any git
-operation that assumes a clean tree.
+The tree is clean. The branch is unmerged; merge or open a PR when ready.
 
 ## Dependency fork pin — revert when upstream ships
 
