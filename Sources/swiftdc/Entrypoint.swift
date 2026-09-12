@@ -10,7 +10,8 @@ struct SwiftDC: AsyncParsableCommand {
         version: SwiftDecompiler.version,
         subcommands: [
             AnalyzeCommand.self, DumpCommand.self, InterfaceCommand.self, ObjCCommand.self,
-            DisasmCommand.self, XrefsCommand.self, LayoutCommand.self, DevicesCommand.self, AppsCommand.self,
+            DisasmCommand.self, XrefsCommand.self, LayoutCommand.self, SwiftVersionCommand.self,
+            DevicesCommand.self, AppsCommand.self,
         ],
         defaultSubcommand: AnalyzeCommand.self
     )
@@ -489,6 +490,61 @@ struct DisasmCommand: AsyncParsableCommand {
         } else {
             try emit(functions.map { $0.render() }.joined(separator: "\n\n"), to: output)
         }
+    }
+}
+
+struct SwiftVersionCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "swift-version",
+        abstract: "Detect the producing Swift version — reported only where the binary carries evidence."
+    )
+
+    @Argument(help: "Path to the Mach-O (or fat) binary. Omit when reading from the dyld shared cache with --image.")
+    var path: String?
+
+    @Option(name: [.short, .customLong("arch")], help: "Architecture slice for fat binaries (arm64, arm64e, x86_64).")
+    var architecture: String?
+
+    @Option(name: .customLong("image"), help: "Read this image from the dyld shared cache by name (e.g. Foundation).")
+    var image: String?
+
+    @Option(name: .customLong("image-path"), help: "Read this image from the dyld shared cache by full install path.")
+    var imagePath: String?
+
+    @Option(name: .customLong("cache"), help: "Path to a dyld_shared_cache_* file. Defaults to the running system's cache when --image is used.")
+    var cache: String?
+
+    @Flag(name: .customLong("list-images"), help: "List every image install path in the dyld shared cache and exit.")
+    var listImages = false
+
+    @Option(name: .customLong("binary"), help: "For an .app/.framework/.ipa: inspect this embedded binary by name. Default: the main executable.")
+    var binary: String?
+
+    @Flag(name: .customLong("list-binaries"), help: "List the Mach-O binaries inside an .app/.framework/.ipa (main + embedded frameworks/extensions) and exit.")
+    var listBinaries = false
+
+    @Option(name: [.short, .long], help: "Write output to a file instead of stdout.")
+    var output: String?
+
+    @Flag(name: .long, help: "Emit structured JSON (confidence, version, evidence).")
+    var json = false
+
+    func run() async throws {
+        if listBinaries { try emit(binaryListing(for: path), to: output); return }
+        if listImages {
+            try emit(BinaryLoader.dyldCacheImagePaths(cachePath: cache).joined(separator: "\n"), to: output)
+            return
+        }
+        let machO = try BinaryLoader.loadMachO(
+            path: path,
+            architecture: architecture,
+            image: image,
+            imagePath: imagePath,
+            cachePath: cache,
+            binary: binary
+        )
+        let report = SwiftVersionDetector.detect(machO)
+        try emit(json ? report.jsonString() : report.text, to: output)
     }
 }
 

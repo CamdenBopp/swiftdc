@@ -90,6 +90,7 @@ Exceptions: `devices` and `apps` take no path at all.
 | `disasm` | Annotated ARM64, with `--cfg` / `--pseudo` / `--structured` views |
 | `xrefs` | Callers and callees of a function, over the recovered call graph |
 | `layout` | Byte offset → Swift stored property, per type |
+| `swift-version` | The producing Swift version, where the binary carries evidence |
 | `devices` | Attached iPhones/iPads |
 | `apps` | Installed apps + FairPlay encryption status |
 
@@ -153,6 +154,32 @@ swiftdc xrefs Binary --unreferenced                # nothing statically calls th
 ```
 
 `-f` is short for `--function`; `-s` for `--sections`; `-t` for `--type`.
+
+### Swift version
+
+`swift-version` names the Swift toolchain that built a binary, and only where the
+binary proves it. The version comes from the `__objc_imageinfo` stable-ABI bits or
+an `LC_BUILD_VERSION` swift-tool record; with neither, it reports the ABI
+generation (`__swift5_*` metadata) or declines. The SDK is shown as context, never
+mistaken for the compiler.
+
+```bash
+swiftdc swift-version MyApp.app         # "Swift 6.4", with the evidence
+swiftdc swift-version Binary --json     # confidence, version, evidence[]
+swiftdc swift-version --image Foundation
+```
+
+```text
+Swift 6.4
+  confidence: exact
+  evidence:
+    - objc image-info stable-ABI version bits → 6.4
+    - __swift5 reflection metadata present (11 sections): __swift5_assocty, …
+  build environment (not proof of the Swift version): macOS, min OS 27.0.0, SDK 27.0.0
+```
+
+The evidence survives `strip`: the reflection sections and image-info are not the
+symbol table, so a stripped binary still names its Swift version.
 
 ### Devices
 
