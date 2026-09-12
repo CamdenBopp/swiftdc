@@ -78,10 +78,20 @@ big win is likely a *different area* (not more condition naming) — or a delibe
 value-coverage investment if that is the priority.
 2. **`?` call arguments (22,213)** — same underlying cause (tracer coverage);
    likely overlaps with (1). A fix to a common load/slot cause lifts both.
-3. **do/catch value select still stale-reads x21** — the tracer renders
-   `(0 != 0) ? …` in a returned expression (a wrong always-false). Not fixed
-   here: a universal x21 invalidation broke ObjC (x21 is general there); needs a
-   Swift-vs-ObjC gate in the tracer's `transfer`.
+3. **do/catch value select stale-read x21 → `(0 != 0)`. FIXED (commit
+   `e39f64b`).** The tracer rendered `(0 != 0) ? …` in a returned expression (a
+   wrong always-false): it preserved x21 across a throwing call (AAPCS64
+   callee-saved) and back-substituted the pre-call `mov x21,#0` into the
+   post-call error check. Fix: a throwing call — its demangled callee name
+   carries ` throws` — invalidates x21 in the transfer, since a Swift throwing
+   callee *returns* its error there. The Swift-vs-ObjC gate the earlier note
+   asked for: a C/ObjC call keeps x21 (general there), so the blanket
+   invalidation that broke ObjC before does not recur. The tracer then declines
+   the now-unrecoverable condition rather than fabricating one. Guarded by
+   `declinesDoCatchSelectRatherThanFabricatingIfPresent` on the `--pseudo` path,
+   where the fabrication lived (the `--structured` view was already named
+   `error != nil` by the structurer). Fabrications in libReconstruction.dylib
+   1 → 0.
 4. **`// continues at` (20,587)** — irreducible/duplicated merges the structurer
    can't fold; a structuring, not a value, problem.
 

@@ -6,13 +6,16 @@ thread. This is **tier-5 (conversation-memory) authority** per
 git history, and measurements. Verify each claim against HEAD before acting, and
 delete items from this file as they ship.
 
-_Last updated: 2026-09-12, on branch `improve/source-findings` at `cfad110`
-(4 commits ahead of master `925a83e`; not yet merged)._
+_Last updated: 2026-09-12, on branch `improve/source-findings` at `e39f64b`
+(6 commits ahead of master `925a83e`; not yet merged)._
 
 ## Where things stand
 
 The branch carries, newest first:
 
+- `e39f64b` stop the do/catch tracer fabricating `(0 != 0)` from a stale x21
+  (tier-1 soundness; was item 1 below)
+- `6a8468a` mark the swift-version WIP as shipped in handoff.md
 - `cfad110` evidence-backed `swift-version` subcommand (was the uncommitted WIP)
 - `d49a1af` add handoff.md and reference it from CLAUDE.md
 - `4be4ca1` content-assert the `layout` and `xrefs` commands
@@ -25,7 +28,7 @@ master carries, newest first:
 - `73d5c6c` re-pin MachOKit to a fork that memoizes `MachOFile.cache` (perf)
 - `688252d` swiftdc-vs-ipsw benchmark (`Benchmarks/`)
 
-Suite is green: **212 tests** on the branch. The enforcing form is
+Suite is green: **213 tests** on the branch. The enforcing form is
 `SWIFTDC_REQUIRE_FIXTURES=1 swift test` after `Fixtures/Sample/build.sh` and a
 `swift build` (the `layout`/`xrefs` tests spawn `.build/debug/swiftdc`, so they
 skip without it).
@@ -43,39 +46,35 @@ the fork. The rationale is in the Package.swift comment block.
 ## What's left, by risk tier
 
 The authoritative OPEN/UNKNOWN tracker is
-[docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md). Two items this
-session surfaced are **not yet recorded there** — add them when you take them on.
+[docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md).
 
-### 1. Soundness (tier 1): the do/catch `(0 != 0)` fabrication — not in the readiness doc
+### 1. Soundness (tier 1): the do/catch `(0 != 0)` fabrication — SHIPPED (`e39f64b`)
 
-Confirmed live at HEAD, `-Onone`. A do/catch that returns a value renders a
-fabricated always-false condition, i.e. a wrong render, the project's top
-severity:
-
-```
-main.classify(Swift.Int) -> Swift.Int {
-    return ((0 != 0) ? -1 : (main.mayThrow(Swift.Int) throws(arg0) + 1))
-}
-```
-
-Repro: build a `do { r = try f() } catch { r = ... }; return r` dylib at
-`-Onone`, then `swiftdc disasm --pseudo -f <fn>`. The value tracer stale-reads
-x21 (the Swift error register) as a live value in the select condition. Fix per
+Fixed. A throwing call now invalidates x21 in the tracer's transfer (the Swift
+error convention returns the error there), so the tracer no longer reads the
+pre-call `mov x21,#0` as a live value in the post-call error check. Gated to a
+throwing callee, so the ObjC path (x21 general) is untouched. Guarded by
+`declinesDoCatchSelectRatherThanFabricatingIfPresent`. Details in
 [docs/research/value-unknown-causes.md](docs/research/value-unknown-causes.md)
-("Remaining", item 3): gate the read Swift-vs-ObjC in the tracer's `transfer`.
-x21 is a general register in ObjC, and a blanket invalidation broke ObjC last
-time, so do it narrowly and re-check the ObjC path.
+("Remaining", item 3, now marked FIXED).
 
-Highest-value change on the board. Ship it together with the oracle extension
-below so it stays fixed.
+Checked while verifying (a negative result, recorded so it is not re-chased): at
+`-O`, `tryOrDefault` inlines `mightFail` and renders
+`return (((arg0 + 1) > 0) ? arg0 : ~0)`. This is **sound** — `(x+1) > 0` ≡
+`x >= 0`, true → `x` (mightFail returns `x`), false → `~0` = `-1`, exactly
+`tryOrDefault`. It is only unsimplified (`(x+1) > 0` rather than `x >= 0`), a
+readability nit at tier 9, not a soundness bug. No `(0 != 0)` fabrication on any
+optimization level for this fixture.
 
 ### 2. Validation
 
-- **Extend the differential oracle to throwing / do-catch.**
-  `DifferentialOracleTests` executes the compiled function over curated
-  *non-trapping* inputs, so error paths are uncovered, which is exactly why the
-  fabrication above slipped past it. Add inputs that take the catch path; the
-  oracle then goes red on item 1 until it is fixed, and stays a guard after.
+- **Extend the differential oracle to throwing / do-catch.** Item 1 is now
+  guarded by a fabrication-absence test, but the *stronger* guard the fix
+  deserves is execution-based. `DifferentialOracleTests` executes the compiled
+  function over curated *non-trapping* inputs, so error paths are uncovered —
+  which is exactly why the fabrication slipped past it. Add inputs that take the
+  catch path; the oracle then proves the recovered value matches the real one on
+  both paths, not just that no constant was invented.
 - **Whole-binary golden corpus.** There is no committed golden output for a real
   framework, so a silent whole-binary regression would pass unnoticed (the
   readiness doc's validation table lists this as the one subsystem with no
