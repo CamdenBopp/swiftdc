@@ -22,6 +22,12 @@ HEAD — and when it turns out stale, **fix the doc in the same change**. A
 "CONFIRMED DEFECT" in `docs/research/` had already been fixed for many commits;
 the trail is worth keeping, but its status header must be honest.
 
+Cross-session handoffs live in [handoff.md](handoff.md): a dated record of what
+is left to do and what just shipped, for picking work up in a new thread. It is
+tier-5 (conversation memory) — the weakest source, stale by default. Read it to
+orient, verify anything it claims against HEAD, and prune items from it as they
+land.
+
 ## The empty-result rule
 
 **Never treat an empty or unusually small result as valid until it has been
@@ -89,8 +95,10 @@ Prettier output on a tool that silently under-recovers is worth nothing.
 ## Build
 
 ```bash
-swift build            # → .build/debug/swiftdc
-swift test             # 111 tests
+Fixtures/Sample/build.sh                # build fixtures once (git-ignored)
+swift build                             # → .build/debug/swiftdc
+swift test                              # the suite; most tests gate on fixtures
+SWIFTDC_REQUIRE_FIXTURES=1 swift test   # enforcing: a missing fixture fails, not skips
 ```
 
 Requires Apple Silicon, Xcode 26 / Swift 6.3, `brew install capstone`
