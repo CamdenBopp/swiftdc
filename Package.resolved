@@ -1,5 +1,5 @@
 {
-  "originHash" : "2b8140ddead5bc3e7b9b91e0eb01e501175631b41ee35acfb76617c8dc64297a",
+  "originHash" : "b930439fd6ebcf1ebf0c581b86589e3e9f4eb8ef77f3ddace211979a9376688f",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -31,10 +31,9 @@
     {
       "identity" : "machokit",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/MxIris-Reverse-Engineering/MachOKit.git",
+      "location" : "https://github.com/CamdenBopp/MachOKit.git",
       "state" : {
-        "revision" : "e192990fbe7ad1af11926eb1eaf23a02e8e1468d",
-        "version" : "0.52.102"
+        "revision" : "07d7633c6d143e9ea344f1cdbb56bfa2afffd707"
       }
     },
     {

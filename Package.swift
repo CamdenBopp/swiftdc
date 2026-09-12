@@ -37,18 +37,24 @@ let package = Package(
             exact: "0.19.0"
         ),
         // MachOKit is the Mach-O container parser MachOSwiftSection is built on.
-        // It is NOT re-exported, so we depend on the same fork/identity directly
-        // to name `MachOFile` / `loadFromFile` without a package-identity conflict.
+        // It is NOT re-exported, so we depend on the same identity directly to name
+        // `MachOFile` / `loadFromFile` without a package-identity conflict.
         //
-        // Floor raised to 0.52.101 to match what MachOSwiftSection 0.19.0 requires
-        // (0.52.101 ..< 0.53.0). The 0.51.x line was already mostly performance work
-        // on paths this tool leans on hard — chained-fixup caching (every GOT bind and
-        // selref resolution), dyld subcache file-handle reuse, cached cache-mapping
-        // lookups — and 0.52.101 adds an ObjC-header-info subcache-lookup fix for split
-        // dyld shared caches.
+        // INTERIM FORK, pinned to a fork of the 0.52.102 tag carrying one upstream-PR'd
+        // change: MxIris-Reverse-Engineering/MachOKit#1 memoizes the negative result of
+        // `MachOFile.cache`. Without it a standalone (non-cache) binary re-runs
+        // `DyldCache.init(url:)` on every access, and the Swift symbol sweep touches
+        // `.cache` once per local symbol (~45k times on swiftdc itself), so ~8.5s of a
+        // 12.8s dump was re-opened-and-discarded dyld-cache loads. Memoized: dump
+        // 12.8s -> 4.3s, interface 19s -> 5.1s, output byte-identical on every fixture.
+        // As the root package this revision requirement overrides MachOSwiftSection's
+        // transitive `0.52.101 ..< 0.53.0` range; revert to an upstream version pin once
+        // #1 ships in a release. (Fork base 0.52.102 is the newest 0.52.x; the 0.52.x
+        // line is mostly perf work this tool leans on: chained-fixup caching, dyld
+        // subcache file-handle reuse, cached cache-mapping lookups.)
         .package(
-            url: "https://github.com/MxIris-Reverse-Engineering/MachOKit.git",
-            from: "0.52.101"
+            url: "https://github.com/CamdenBopp/MachOKit.git",
+            revision: "07d7633c6d143e9ea344f1cdbb56bfa2afffd707"
         ),
         // `Semantic` provides SemanticString, the return type of SwiftDump's
         // `.dump(...)`. Moves in lockstep with MachOSwiftSection: 0.15.0 raised its
