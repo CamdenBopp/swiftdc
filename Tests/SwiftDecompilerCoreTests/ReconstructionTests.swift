@@ -556,6 +556,30 @@ private func reconstructionStructured(
     }
 }
 
+/// Soundness regression (tracer / `--pseudo`). A do/catch that returns a value
+/// used to fabricate an always-false `(0 != 0)` select condition: the tracer
+/// back-substituted the Swift error register (x21), cleared to 0 by `mov x21,#0`
+/// before the throwing call, as a live value in the post-call error check. A
+/// wrong render — the project's top severity. A throwing call now invalidates
+/// x21 (it is the swifterror out-register the callee redefines), so the tracer
+/// declines the unrecoverable condition instead of inventing a constant one.
+///
+/// The sibling test above guards the `--structured` view (named by the
+/// structurer); this guards the `--pseudo` view (built by the tracer), where the
+/// fabrication actually lived and no test reached it.
+@Test func declinesDoCatchSelectRatherThanFabricatingIfPresent() async throws {
+    guard let pseudo = try await reconstructionPseudo("tryOrDefault") else { return }
+    // A condition comparing two constants is always invented — a real error
+    // check tests a value. These are the exact forms a stale, cleared x21
+    // produced: `(0 != 0)` from cbnz, `(0 == 0)` from cbz. The wrapping paren
+    // is load-bearing — matching bare `0 == 0` would also hit a legitimate
+    // `arg0 == 0` (the `0` ending `arg0` plus ` == 0`).
+    #expect(!pseudo.contains("(0 != 0)"), "fabricated always-false condition: \(pseudo)")
+    #expect(!pseudo.contains("(0 == 0)"), "fabricated always-true condition: \(pseudo)")
+    // The throwing call itself is still recovered, not dropped.
+    #expect(pseudo.contains("mightFail"))
+}
+
 @Test func decomposesSmallIntegerStructSelfIfPresent() async throws {
     // A small (<= 16 byte) integer struct passes `self` decomposed in x0/x1, so a
     // getter names the fields (`self.a + self.b`) instead of a blank body.

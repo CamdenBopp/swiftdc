@@ -577,6 +577,17 @@ public struct ValueTracer: Sendable {
             let outgoingKeys = registers.keys.filter { $0.hasPrefix(Self.outgoingPrefix) }
             for key in outgoingKeys { registers[key] = nil }
             let callee = DisassembledFunction.calleeName(of: insn) ?? ""
+            // Swift error convention: a throwing callee returns its error in x21
+            // (swifterror), so the call *redefines* x21 even though AAPCS64 marks
+            // it callee-saved. Without invalidating it, a pre-call `mov x21, #0`
+            // is read as a live value in the post-call error check and fabricates
+            // an always-false `(0 != 0)` — a wrong render, the top severity. Gated
+            // to a throwing callee (the demangled name carries ` throws`), so a C
+            // or Objective-C call, where x21 is an ordinary callee-saved register
+            // carrying a live value across the call, is untouched.
+            if callee.contains(" throws") {
+                registers["x21"] = .unknown
+            }
             if Self.identityRuntimeCalls.contains(where: callee.hasPrefix) {
                 registers["x0"] = incomingX0
             } else if callee.contains("_allocateUninitializedArray") {
