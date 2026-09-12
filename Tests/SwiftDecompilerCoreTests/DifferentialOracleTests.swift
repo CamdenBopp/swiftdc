@@ -447,6 +447,16 @@ private let oracleCases: [OracleCase] = [
     // no return expression), so it is required there alone.
     .init(name: "polarity", arity: 1, returnsBool: false,
           inputs: [Int.min, -1, 0, 1, 2, 1_000, Int.max].map { [$0] }),
+    // `tryOrDefault` is a do/catch that returns `try mightFail(x)` or `-1`. This
+    // is the error-path coverage the oracle previously lacked — the gap that let
+    // the `(0 != 0)` x21 fabrication slip past. At `-Onone` the false branch is a
+    // *call* to mightFail (unevaluatable → skipped), so it is validated at `-O`,
+    // where mightFail inlines and the whole thing renders as a pure ternary
+    // `(((arg0 + 1) > 0) ? arg0 : ~0)`. Inputs straddle the branch: negatives take
+    // the catch path (→ -1), non-negatives the success path (→ arg0). `Int.max` is
+    // excluded — the rendered `arg0 + 1` overflows the evaluator there.
+    .init(name: "tryOrDefault", arity: 1, returnsBool: false,
+          inputs: [Int.min, -1_000, -100, -2, -1, 0, 1, 2, 100, 1_000].map { [$0] }),
 ]
 
 // MARK: - The test
@@ -482,10 +492,11 @@ private let fixtures = [
     Fixture(
         path: "Fixtures/Sample/libReconstruction.opt.dylib", label: "-O",
         // `rangeCheck` and `computedRange` are the U1 idiom itself; `threeWay`
-        // is a csel cascade that only survives at -O. If any stops being
-        // compared, the oracle has lost the coverage it exists for.
+        // is a csel cascade that only survives at -O; `tryOrDefault` is the
+        // inlined do/catch — the error-path coverage the x21 fabrication needed.
+        // If any stops being compared, the oracle has lost the coverage it exists for.
         required: ["rangeCheck", "computedRange", "threeWay", "maxOf", "isPositive",
-                   "intDivide", "remainder", "gradeOf"],
+                   "intDivide", "remainder", "gradeOf", "tryOrDefault"],
         minimumComparisons: 200
     ),
 ]
