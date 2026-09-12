@@ -6,13 +6,15 @@ thread. This is **tier-5 (conversation-memory) authority** per
 git history, and measurements. Verify each claim against HEAD before acting, and
 delete items from this file as they ship.
 
-_Last updated: 2026-09-12, on branch `improve/source-findings` at `e39f64b`
-(6 commits ahead of master `925a83e`; not yet merged)._
+_Last updated: 2026-09-12, on branch `improve/source-findings` at `8018482`
+(8 commits ahead of master `925a83e`; not yet merged)._
 
 ## Where things stand
 
 The branch carries, newest first:
 
+- `8018482` cover the do/catch error path in the differential oracle (item 2)
+- `3d9e2f6` record the do/catch x21 fix in the research doc and handoff
 - `e39f64b` stop the do/catch tracer fabricating `(0 != 0)` from a stale x21
   (tier-1 soundness; was item 1 below)
 - `6a8468a` mark the swift-version WIP as shipped in handoff.md
@@ -68,13 +70,15 @@ optimization level for this fixture.
 
 ### 2. Validation
 
-- **Extend the differential oracle to throwing / do-catch.** Item 1 is now
-  guarded by a fabrication-absence test, but the *stronger* guard the fix
-  deserves is execution-based. `DifferentialOracleTests` executes the compiled
-  function over curated *non-trapping* inputs, so error paths are uncovered —
-  which is exactly why the fabrication slipped past it. Add inputs that take the
-  catch path; the oracle then proves the recovered value matches the real one on
-  both paths, not just that no constant was invented.
+- **Extend the differential oracle to throwing / do-catch. DONE (`8018482`).**
+  `DifferentialOracleTests` now includes `tryOrDefault`, required at `-O`, where
+  the inlined do/catch renders a pure ternary the oracle evaluates against the
+  compiled code over catch-path and success-path inputs. At `-Onone` the false
+  branch is an unevaluatable call, so that level keeps the fabrication-absence
+  string guard (`declinesDoCatchSelectRatherThanFabricatingIfPresent`) instead.
+  Remaining nuance: a `throws` case that stays a real *call* at `-O` (not
+  inlined) would still be skipped by the oracle — extending it to compare across
+  a call boundary is a larger, separate lever.
 - **Whole-binary golden corpus.** There is no committed golden output for a real
   framework, so a silent whole-binary regression would pass unnoticed (the
   readiness doc's validation table lists this as the one subsystem with no
