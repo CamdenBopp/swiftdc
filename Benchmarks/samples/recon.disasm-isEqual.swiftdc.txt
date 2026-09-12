@@ -1,0 +1,11 @@
+Reconstruction.isEqual(Swift.Int, Swift.Int) -> Swift.Bool:
+  // _$s14Reconstruction7isEqualySbSi_SitF  @ 0xb80
+  b80:  sub	sp, sp, #0x10
+  b84:  str	xzr, [sp, #0x8]
+  b88:  str	xzr, [sp]
+  b8c:  str	x0, [sp, #0x8]
+  b90:  str	x1, [sp]
+  b94:  subs	x8, x0, x1
+  b98:  cset	w0, eq
+  b9c:  add	sp, sp, #0x10
+  ba0:  ret  ; return (arg0 == arg1)

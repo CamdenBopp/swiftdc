@@ -1,0 +1,227 @@
+struct Reconstruction.IntPair {
+    var a: Int
+    var b: Int
+}
+
+struct Reconstruction.MixedPair {
+    var flag: Swift.Bool
+    var count: Int
+}
+
+struct Reconstruction.IntTriple {
+    var first: Int
+    var second: Int
+    var third: Int
+}
+
+struct Reconstruction.IntQuad {
+    var a: Int
+    var b: Int
+    var c: Int
+    var d: Int
+}
+
+struct Reconstruction.IntThenDouble {
+    var n: Int
+    var d: Double
+}
+
+struct Reconstruction.Vec2 {
+    var x: Double
+    var y: Double
+}
+
+class Reconstruction.Counter {
+  /* fields */
+    var value: Int
+    var step: Int
+  /* methods */
+    func Counter.value.getter
+    func Counter.value.setter
+    func Counter.value.modify
+    func Counter.step.getter
+    func Counter.step.setter
+    func Counter.step.modify
+    static func Counter.__allocating_init(value:step:)
+    func Counter.doubled.getter
+    func Counter.advance()
+    func Counter.reset()
+}
+
+class Reconstruction.Animal {
+  /* methods */
+    static func Animal.__allocating_init()
+}
+
+class Reconstruction.Dog: Reconstruction.Animal {}
+
+struct Reconstruction.RGB {
+    var r: Double
+    var g: Double
+    var b: Double
+}
+
+enum Reconstruction.Direction {
+    case north
+    case east
+    case south
+    case west
+}
+
+enum Reconstruction.Priority {
+    case low
+    case medium
+    case high
+}
+
+enum Reconstruction.Token {
+    case number: Int
+    case ident: Int
+    case eof
+}
+
+enum Reconstruction.Msg {
+    case data: Int
+    case ping
+}
+
+enum Reconstruction.ReconError {
+    case failed
+}
+
+class Reconstruction.DirectionTally {
+  /* fields */
+    var n: Int
+  /* methods */
+    static func DirectionTally.__allocating_init()
+}
+
+struct Reconstruction.Accessors {
+    var count: Int
+    var enabled: Swift.Bool
+}
+
+struct Reconstruction.BackedWrapper {
+    var _backing: Int
+}
+
+struct Reconstruction.HolderA {}
+
+struct Reconstruction.HolderA.Pair {
+    var alpha: Int
+    var beta: Int
+}
+
+struct Reconstruction.HolderB {}
+
+struct Reconstruction.HolderB.Pair {
+    var gamma: Int
+    var delta: Int
+    var epsilon: Int
+}
+
+struct Reconstruction.BoxA {}
+
+class Reconstruction.BoxA.Holder {
+  /* fields */
+    var first: Int
+    var second: Int
+  /* methods */
+    static func BoxA.Holder.__allocating_init()
+}
+
+struct Reconstruction.BoxB {}
+
+class Reconstruction.BoxB.Holder {
+  /* fields */
+    var alpha: Int
+    var beta: Int
+    var gamma: Int
+  /* methods */
+    static func BoxB.Holder.__allocating_init()
+}
+
+struct Reconstruction.OuterX {}
+
+struct Reconstruction.OuterX.Wide {
+    var w1: Int
+    var w2: Int
+    var w3: Int
+    var w4: Int
+}
+
+struct Reconstruction.OuterY {}
+
+struct Reconstruction.OuterY.Wide {
+    var v1: Int
+    var v2: Int
+    var v3: Int
+    var v4: Int
+    var v5: Int
+}
+
+protocol Reconstruction.Shape {}
+
+protocol conformance Reconstruction.Direction : protocol descriptor for Equatable {
+  /* resilient witnesses */
+    method descriptor for static Equatable.== infix(_:_:)
+}
+
+protocol conformance Reconstruction.Direction : protocol descriptor for Hashable {
+  /* resilient witnesses */
+    base conformance descriptor for Hashable: Equatable
+    method descriptor for Hashable.hashValue.getter
+    method descriptor for Hashable.hash(into:)
+    method descriptor for Hashable._rawHashValue(seed:)
+}
+
+protocol conformance Reconstruction.Priority : protocol descriptor for Equatable {
+  /* resilient witnesses */
+    method descriptor for static Equatable.== infix(_:_:)
+}
+
+protocol conformance Reconstruction.Priority : protocol descriptor for Hashable {
+  /* resilient witnesses */
+    base conformance descriptor for Hashable: Equatable
+    method descriptor for Hashable.hashValue.getter
+    method descriptor for Hashable.hash(into:)
+    method descriptor for Hashable._rawHashValue(seed:)
+}
+
+protocol conformance Reconstruction.Priority : protocol descriptor for RawRepresentable {
+  /* resilient witnesses */
+    associated type descriptor for RawRepresentable.RawValue
+    method descriptor for RawRepresentable.init(rawValue:)
+    method descriptor for RawRepresentable.rawValue.getter
+}
+
+protocol conformance Reconstruction.Msg : protocol descriptor for Equatable {
+  /* resilient witnesses */
+    method descriptor for static Equatable.== infix(_:_:)
+}
+
+protocol conformance Reconstruction.ReconError : protocol descriptor for Equatable {
+  /* resilient witnesses */
+    method descriptor for static Equatable.== infix(_:_:)
+}
+
+protocol conformance Reconstruction.ReconError : protocol descriptor for Hashable {
+  /* resilient witnesses */
+    base conformance descriptor for Hashable: Equatable
+    method descriptor for Hashable.hashValue.getter
+    method descriptor for Hashable.hash(into:)
+    method descriptor for Hashable._rawHashValue(seed:)
+}
+
+protocol conformance Reconstruction.ReconError : protocol descriptor for Error {
+  /* resilient witnesses */
+    method descriptor for Error._domain.getter
+    method descriptor for Error._code.getter
+    method descriptor for Error._userInfo.getter
+    method descriptor for Error._getEmbeddedNSError()
+}
+
+extension Reconstruction.Priority: RawRepresentable {
+    typealias RawValue = Int
+}
+

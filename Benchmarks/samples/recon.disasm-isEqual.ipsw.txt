@@ -1,0 +1,9 @@
+0x00000b80:  ff 43 00 d1   sub	sp, sp, #0x10
+0x00000b84:  ff 07 00 f9   str	xzr, [sp, #0x8]
+0x00000b88:  ff 03 00 f9   str	xzr, [sp]
+0x00000b8c:  e0 07 00 f9   str	x0, [sp, #0x8]
+0x00000b90:  e1 03 00 f9   str	x1, [sp]
+0x00000b94:  08 00 01 eb   subs	x8, x0, x1
+0x00000b98:  e0 17 9f 1a   cset	w0, eq
+0x00000b9c:  ff 43 00 91   add	sp, sp, #0x10
+0x00000ba0:  c0 03 5f d6   ret

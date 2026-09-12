@@ -1,0 +1,35 @@
+@interface _TtC14Reconstruction7Counter : _TtCs12_SwiftObject {
+    unknown value;
+    unknown step;
+}
+
+@end
+
+@interface _TtC14Reconstruction6Animal : _TtCs12_SwiftObject
+
+@end
+
+@interface _TtC14Reconstruction3Dog : _TtC14Reconstruction6Animal
+
+@end
+
+@interface _TtC14Reconstruction14DirectionTally : _TtCs12_SwiftObject {
+    unknown n;
+}
+
+@end
+
+@interface _TtCV14Reconstruction4BoxA6Holder : _TtCs12_SwiftObject {
+    unknown first;
+    unknown second;
+}
+
+@end
+
+@interface _TtCV14Reconstruction4BoxB6Holder : _TtCs12_SwiftObject {
+    unknown alpha;
+    unknown beta;
+    unknown gamma;
+}
+
+@end

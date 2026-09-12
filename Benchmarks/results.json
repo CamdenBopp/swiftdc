@@ -1,0 +1,927 @@
+{
+  "env": {
+    "date": "2026-09-12",
+    "machine": "arm64",
+    "cpu": "Apple M2 Pro",
+    "macos": "27.0",
+    "swiftdc_path": ".build/release/swiftdc",
+    "swiftdc_build": "release",
+    "swiftdc_commit": "c5efb09",
+    "ipsw_version": "Version: 3.1.660, BuildCommit: 34ccb5aba1d76abbf913146aedd91e2f22c06f1e",
+    "runs": 5
+  },
+  "results": [
+    {
+      "tool": "swiftdc",
+      "axis": "swift",
+      "binary": "recon.opt.stripped",
+      "argv": [
+        ".build/release/swiftdc",
+        "dump",
+        "Fixtures/Sample/libReconstruction.opt.stripped.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.052934042003471404,
+        0.04713641697890125,
+        0.046683749998919666,
+        0.04829312500078231,
+        0.046529625018592924
+      ],
+      "min_s": 0.046529625018592924,
+      "median_s": 0.04713641697890125,
+      "stdout_bytes": 9908,
+      "stdout_lines": 366,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "ipsw",
+      "axis": "swift",
+      "binary": "recon.opt.stripped",
+      "argv": [
+        "ipsw",
+        "macho",
+        "info",
+        "--swift",
+        "--demangle",
+        "--no-color",
+        "Fixtures/Sample/libReconstruction.opt.stripped.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.0418610000051558,
+        0.0428713750152383,
+        0.041415125015191734,
+        0.04154037497937679,
+        0.04132154199760407
+      ],
+      "min_s": 0.04132154199760407,
+      "median_s": 0.04154037497937679,
+      "stdout_bytes": 5036,
+      "stdout_lines": 227,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "swiftdc",
+      "axis": "swift",
+      "binary": "sample",
+      "argv": [
+        ".build/release/swiftdc",
+        "dump",
+        "Fixtures/Sample/libSample.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.03775237500667572,
+        0.03761883301194757,
+        0.037236458010738716,
+        0.03777491598157212,
+        0.03740208299132064
+      ],
+      "min_s": 0.037236458010738716,
+      "median_s": 0.03761883301194757,
+      "stdout_bytes": 7850,
+      "stdout_lines": 249,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "ipsw",
+      "axis": "swift",
+      "binary": "sample",
+      "argv": [
+        "ipsw",
+        "macho",
+        "info",
+        "--swift",
+        "--demangle",
+        "--no-color",
+        "Fixtures/Sample/libSample.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.041726124996785074,
+        0.04319633301929571,
+        0.04279908401076682,
+        0.04179679200751707,
+        0.041893042012816295
+      ],
+      "min_s": 0.041726124996785074,
+      "median_s": 0.041893042012816295,
+      "stdout_bytes": 2668,
+      "stdout_lines": 118,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "swiftdc",
+      "axis": "swift",
+      "binary": "recon.opt",
+      "argv": [
+        ".build/release/swiftdc",
+        "dump",
+        "Fixtures/Sample/libReconstruction.opt.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.062176625011488795,
+        0.06217766599729657,
+        0.0631949579983484,
+        0.06339362499420531,
+        0.06142416602233425
+      ],
+      "min_s": 0.06142416602233425,
+      "median_s": 0.06217766599729657,
+      "stdout_bytes": 19911,
+      "stdout_lines": 547,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "ipsw",
+      "axis": "swift",
+      "binary": "recon.opt",
+      "argv": [
+        "ipsw",
+        "macho",
+        "info",
+        "--swift",
+        "--demangle",
+        "--no-color",
+        "Fixtures/Sample/libReconstruction.opt.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.04143970800214447,
+        0.041520292026689276,
+        0.041773917007958516,
+        0.0414355419925414,
+        0.04025474999798462
+      ],
+      "min_s": 0.04025474999798462,
+      "median_s": 0.04143970800214447,
+      "stdout_bytes": 5116,
+      "stdout_lines": 227,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "swiftdc",
+      "axis": "swift",
+      "binary": "recon",
+      "argv": [
+        ".build/release/swiftdc",
+        "dump",
+        "Fixtures/Sample/libReconstruction.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.07329124998068437,
+        0.08041291698464192,
+        0.0758380000188481,
+        0.07404850001330487,
+        0.07271966699045151
+      ],
+      "min_s": 0.07271966699045151,
+      "median_s": 0.07404850001330487,
+      "stdout_bytes": 19911,
+      "stdout_lines": 547,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "ipsw",
+      "axis": "swift",
+      "binary": "recon",
+      "argv": [
+        "ipsw",
+        "macho",
+        "info",
+        "--swift",
+        "--demangle",
+        "--no-color",
+        "Fixtures/Sample/libReconstruction.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.042467958002816886,
+        0.04195837501902133,
+        0.04206612499547191,
+        0.04186341600143351,
+        0.04288175000692718
+      ],
+      "min_s": 0.04186341600143351,
+      "median_s": 0.04206612499547191,
+      "stdout_bytes": 5090,
+      "stdout_lines": 227,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "swiftdc",
+      "axis": "swift",
+      "binary": "recon.resilient",
+      "argv": [
+        ".build/release/swiftdc",
+        "dump",
+        "Fixtures/Sample/libReconstruction.resilient.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.0755042500095442,
+        0.07679541601100937,
+        0.07583916699513793,
+        0.07484041701536626,
+        0.07597312500001863
+      ],
+      "min_s": 0.07484041701536626,
+      "median_s": 0.07583916699513793,
+      "stdout_bytes": 19872,
+      "stdout_lines": 547,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "ipsw",
+      "axis": "swift",
+      "binary": "recon.resilient",
+      "argv": [
+        "ipsw",
+        "macho",
+        "info",
+        "--swift",
+        "--demangle",
+        "--no-color",
+        "Fixtures/Sample/libReconstruction.resilient.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.041204832989024,
+        0.04212399999960326,
+        0.041438457992626354,
+        0.04257829100242816,
+        0.041498292004689574
+      ],
+      "min_s": 0.041204832989024,
+      "median_s": 0.041498292004689574,
+      "stdout_bytes": 5090,
+      "stdout_lines": 227,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "swiftdc",
+      "axis": "swift",
+      "binary": "swiftdc.self",
+      "argv": [
+        ".build/release/swiftdc",
+        "dump",
+        ".build/release/swiftdc"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        16.105276458984008,
+        18.789637541020056,
+        12.841801667003892,
+        17.98466104202089,
+        18.221785249974346
+      ],
+      "min_s": 12.841801667003892,
+      "median_s": 17.98466104202089,
+      "stdout_bytes": 3419855,
+      "stdout_lines": 62558,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "ipsw",
+      "axis": "swift",
+      "binary": "swiftdc.self",
+      "argv": [
+        "ipsw",
+        "macho",
+        "info",
+        "--swift",
+        "--demangle",
+        "--no-color",
+        ".build/release/swiftdc"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.5752981249825098,
+        0.5846097079920582,
+        0.5780576249817386,
+        0.5821962079789955,
+        0.5779568750003818
+      ],
+      "min_s": 0.5752981249825098,
+      "median_s": 0.5780576249817386,
+      "stdout_bytes": 1313504,
+      "stdout_lines": 32051,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "swiftdc",
+      "axis": "objc",
+      "binary": "recon.opt.stripped",
+      "argv": [
+        ".build/release/swiftdc",
+        "objc",
+        "Fixtures/Sample/libReconstruction.opt.stripped.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.02057049999712035,
+        0.02049887500470504,
+        0.020571333006955683,
+        0.020688834018073976,
+        0.020933291991241276
+      ],
+      "min_s": 0.02049887500470504,
+      "median_s": 0.020571333006955683,
+      "stdout_bytes": 597,
+      "stdout_lines": 35,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "ipsw",
+      "axis": "objc",
+      "binary": "recon.opt.stripped",
+      "argv": [
+        "ipsw",
+        "macho",
+        "info",
+        "--objc",
+        "--no-color",
+        "Fixtures/Sample/libReconstruction.opt.stripped.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.042732666013762355,
+        0.04090625001117587,
+        0.0412981670233421,
+        0.04197162500349805,
+        0.04188974999124184
+      ],
+      "min_s": 0.04090625001117587,
+      "median_s": 0.04188974999124184,
+      "stdout_bytes": 698,
+      "stdout_lines": 40,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "swiftdc",
+      "axis": "objc",
+      "binary": "sample",
+      "argv": [
+        ".build/release/swiftdc",
+        "objc",
+        "Fixtures/Sample/libSample.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.057647000008728355,
+        0.05704433302162215,
+        0.05715387497912161,
+        0.05667858402011916,
+        0.057407917018281296
+      ],
+      "min_s": 0.05667858402011916,
+      "median_s": 0.05715387497912161,
+      "stdout_bytes": 1553,
+      "stdout_lines": 59,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "ipsw",
+      "axis": "objc",
+      "binary": "sample",
+      "argv": [
+        "ipsw",
+        "macho",
+        "info",
+        "--objc",
+        "--no-color",
+        "Fixtures/Sample/libSample.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.040446416998747736,
+        0.04170716702356003,
+        0.04144233401166275,
+        0.0404499160067644,
+        0.0415902910172008
+      ],
+      "min_s": 0.040446416998747736,
+      "median_s": 0.04144233401166275,
+      "stdout_bytes": 1413,
+      "stdout_lines": 70,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "swiftdc",
+      "axis": "objc",
+      "binary": "recon.opt",
+      "argv": [
+        ".build/release/swiftdc",
+        "objc",
+        "Fixtures/Sample/libReconstruction.opt.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.02104454199434258,
+        0.02089200000045821,
+        0.021030417003203183,
+        0.02163445798214525,
+        0.022087500023189932
+      ],
+      "min_s": 0.02089200000045821,
+      "median_s": 0.02104454199434258,
+      "stdout_bytes": 597,
+      "stdout_lines": 35,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "ipsw",
+      "axis": "objc",
+      "binary": "recon.opt",
+      "argv": [
+        "ipsw",
+        "macho",
+        "info",
+        "--objc",
+        "--no-color",
+        "Fixtures/Sample/libReconstruction.opt.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.04221699998015538,
+        0.04089270799886435,
+        0.04186629198375158,
+        0.0424349159875419,
+        0.04133912501856685
+      ],
+      "min_s": 0.04089270799886435,
+      "median_s": 0.04186629198375158,
+      "stdout_bytes": 698,
+      "stdout_lines": 40,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "swiftdc",
+      "axis": "objc",
+      "binary": "recon",
+      "argv": [
+        ".build/release/swiftdc",
+        "objc",
+        "Fixtures/Sample/libReconstruction.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.020429415977559984,
+        0.020889250008622184,
+        0.02068041599704884,
+        0.021395415998995304,
+        0.02051241698791273
+      ],
+      "min_s": 0.020429415977559984,
+      "median_s": 0.02068041599704884,
+      "stdout_bytes": 597,
+      "stdout_lines": 35,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "ipsw",
+      "axis": "objc",
+      "binary": "recon",
+      "argv": [
+        "ipsw",
+        "macho",
+        "info",
+        "--objc",
+        "--no-color",
+        "Fixtures/Sample/libReconstruction.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.04258554198895581,
+        0.04190804198151454,
+        0.04139004199532792,
+        0.04007345900754444,
+        0.04032091601402499
+      ],
+      "min_s": 0.04007345900754444,
+      "median_s": 0.04139004199532792,
+      "stdout_bytes": 698,
+      "stdout_lines": 40,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "swiftdc",
+      "axis": "objc",
+      "binary": "recon.resilient",
+      "argv": [
+        ".build/release/swiftdc",
+        "objc",
+        "Fixtures/Sample/libReconstruction.resilient.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.020330208004452288,
+        0.020558874995913357,
+        0.02061874998616986,
+        0.021982750011375174,
+        0.021225167001830414
+      ],
+      "min_s": 0.020330208004452288,
+      "median_s": 0.02061874998616986,
+      "stdout_bytes": 597,
+      "stdout_lines": 35,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "ipsw",
+      "axis": "objc",
+      "binary": "recon.resilient",
+      "argv": [
+        "ipsw",
+        "macho",
+        "info",
+        "--objc",
+        "--no-color",
+        "Fixtures/Sample/libReconstruction.resilient.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.04173329100012779,
+        0.04148287497810088,
+        0.04197349998867139,
+        0.0418890000146348,
+        0.04128079197835177
+      ],
+      "min_s": 0.04128079197835177,
+      "median_s": 0.04173329100012779,
+      "stdout_bytes": 698,
+      "stdout_lines": 40,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "swiftdc",
+      "axis": "objc",
+      "binary": "swiftdc.self",
+      "argv": [
+        ".build/release/swiftdc",
+        "objc",
+        ".build/release/swiftdc"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.1321094169979915,
+        0.13141808300861157,
+        0.13054941699374467,
+        0.12961366600939073,
+        0.1301733749860432
+      ],
+      "min_s": 0.12961366600939073,
+      "median_s": 0.13054941699374467,
+      "stdout_bytes": 16624,
+      "stdout_lines": 726,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "ipsw",
+      "axis": "objc",
+      "binary": "swiftdc.self",
+      "argv": [
+        "ipsw",
+        "macho",
+        "info",
+        "--objc",
+        "--no-color",
+        ".build/release/swiftdc"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.22795320799923502,
+        0.22578533401247114,
+        0.22342608298640698,
+        0.22992758301552385,
+        0.23249758299789391
+      ],
+      "min_s": 0.22342608298640698,
+      "median_s": 0.22795320799923502,
+      "stdout_bytes": 47742,
+      "stdout_lines": 808,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "swiftdc",
+      "axis": "disasm",
+      "binary": "recon.opt.stripped",
+      "argv": [
+        ".build/release/swiftdc",
+        "disasm",
+        "Fixtures/Sample/libReconstruction.opt.stripped.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.13244304101681337,
+        0.21266320900758728,
+        0.1317938340071123,
+        0.13096929198945872,
+        0.21127133301342838
+      ],
+      "min_s": 0.13096929198945872,
+      "median_s": 0.13244304101681337,
+      "stdout_bytes": 84768,
+      "stdout_lines": 2706,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "ipsw",
+      "axis": "disasm",
+      "binary": "recon.opt.stripped",
+      "argv": [
+        "ipsw",
+        "macho",
+        "disass",
+        "--section",
+        "__TEXT.__text",
+        "--no-color",
+        "Fixtures/Sample/libReconstruction.opt.stripped.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.052955124992877245,
+        0.05275000000256114,
+        0.05315883402363397,
+        0.052575457986677065,
+        0.05281050002668053
+      ],
+      "min_s": 0.052575457986677065,
+      "median_s": 0.05281050002668053,
+      "stdout_bytes": 94841,
+      "stdout_lines": 2570,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "swiftdc",
+      "axis": "disasm",
+      "binary": "sample",
+      "argv": [
+        ".build/release/swiftdc",
+        "disasm",
+        "Fixtures/Sample/libSample.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.11598204198526219,
+        0.19542462500976399,
+        0.11530824998044409,
+        0.11769045901019126,
+        0.19631637498969212
+      ],
+      "min_s": 0.11530824998044409,
+      "median_s": 0.11769045901019126,
+      "stdout_bytes": 111282,
+      "stdout_lines": 2843,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "ipsw",
+      "axis": "disasm",
+      "binary": "sample",
+      "argv": [
+        "ipsw",
+        "macho",
+        "disass",
+        "--section",
+        "__TEXT.__text",
+        "--no-color",
+        "Fixtures/Sample/libSample.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.05362770799547434,
+        0.05421150001347996,
+        0.05886383299366571,
+        0.055565625021699816,
+        0.056003833014983684
+      ],
+      "min_s": 0.05362770799547434,
+      "median_s": 0.055565625021699816,
+      "stdout_bytes": 114664,
+      "stdout_lines": 2712,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "swiftdc",
+      "axis": "disasm",
+      "binary": "recon.opt",
+      "argv": [
+        ".build/release/swiftdc",
+        "disasm",
+        "Fixtures/Sample/libReconstruction.opt.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.20164791599381715,
+        0.12316170800477266,
+        0.19899904102203436,
+        0.11625462499796413,
+        0.1165623749839142
+      ],
+      "min_s": 0.11625462499796413,
+      "median_s": 0.12316170800477266,
+      "stdout_bytes": 103767,
+      "stdout_lines": 2890,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "ipsw",
+      "axis": "disasm",
+      "binary": "recon.opt",
+      "argv": [
+        "ipsw",
+        "macho",
+        "disass",
+        "--section",
+        "__TEXT.__text",
+        "--no-color",
+        "Fixtures/Sample/libReconstruction.opt.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.0535348329867702,
+        0.05375141598051414,
+        0.05335400000330992,
+        0.05389712500618771,
+        0.05369708299986087
+      ],
+      "min_s": 0.05335400000330992,
+      "median_s": 0.05369708299986087,
+      "stdout_bytes": 99912,
+      "stdout_lines": 2570,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "swiftdc",
+      "axis": "disasm",
+      "binary": "recon",
+      "argv": [
+        ".build/release/swiftdc",
+        "disasm",
+        "Fixtures/Sample/libReconstruction.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.29275391600094736,
+        0.21287562500219792,
+        0.21389958399231546,
+        0.21556224999949336,
+        0.21208733299863525
+      ],
+      "min_s": 0.21208733299863525,
+      "median_s": 0.21389958399231546,
+      "stdout_bytes": 287711,
+      "stdout_lines": 8963,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "ipsw",
+      "axis": "disasm",
+      "binary": "recon",
+      "argv": [
+        "ipsw",
+        "macho",
+        "disass",
+        "--section",
+        "__TEXT.__text",
+        "--no-color",
+        "Fixtures/Sample/libReconstruction.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.14533462500548922,
+        0.1495310410100501,
+        0.14836058398941532,
+        0.14882662499439903,
+        0.14568754099309444
+      ],
+      "min_s": 0.14533462500548922,
+      "median_s": 0.14836058398941532,
+      "stdout_bytes": 396407,
+      "stdout_lines": 9555,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "swiftdc",
+      "axis": "disasm",
+      "binary": "recon.resilient",
+      "argv": [
+        ".build/release/swiftdc",
+        "disasm",
+        "Fixtures/Sample/libReconstruction.resilient.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.2539368750003632,
+        0.25230904199997894,
+        0.25324874999932945,
+        0.25135158299235627,
+        0.24352349998662248
+      ],
+      "min_s": 0.24352349998662248,
+      "median_s": 0.25230904199997894,
+      "stdout_bytes": 353887,
+      "stdout_lines": 11514,
+      "deterministic": true,
+      "note": ""
+    },
+    {
+      "tool": "ipsw",
+      "axis": "disasm",
+      "binary": "recon.resilient",
+      "argv": [
+        "ipsw",
+        "macho",
+        "disass",
+        "--section",
+        "__TEXT.__text",
+        "--no-color",
+        "Fixtures/Sample/libReconstruction.resilient.dylib"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "times_s": [
+        0.20003841698053293,
+        0.19861658400623128,
+        0.20200295897666365,
+        0.20197087500127964,
+        0.20211712500895374
+      ],
+      "min_s": 0.19861658400623128,
+      "median_s": 0.20197087500127964,
+      "stdout_bytes": 516937,
+      "stdout_lines": 12392,
+      "deterministic": true,
+      "note": ""
+    }
+  ]
+}

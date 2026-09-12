@@ -18,6 +18,12 @@ Fixtures/Sample/*.dSYM/
 Fixtures/Sample/*.swiftmodule
 Fixtures/Sample/*.swiftdoc
 Fixtures/Sample/*.o
+Fixtures/Sample/*.a2s
+
+# Benchmark harness output (regenerate with Benchmarks/benchmark.py).
+# The curated samples in Benchmarks/samples/ and the report are tracked; the
+# full per-binary dump in outputs/ is not.
+Benchmarks/outputs/
 
 # macOS
 .DS_Store

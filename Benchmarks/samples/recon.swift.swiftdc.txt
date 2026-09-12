@@ -1,0 +1,547 @@
+struct Reconstruction.IntPair {
+    var a: Swift.Int
+    var b: Swift.Int
+
+    /* Allocator */
+    Reconstruction.IntPair.init(a: Swift.Int, b: Swift.Int) -> Reconstruction.IntPair
+
+    /* Variable */
+    Reconstruction.IntPair.a.getter : Swift.Int
+    Reconstruction.IntPair.a.setter : Swift.Int
+    Reconstruction.IntPair.b.getter : Swift.Int
+    Reconstruction.IntPair.b.setter : Swift.Int
+    Reconstruction.IntPair.sum.getter : Swift.Int
+
+    /* Function */
+    Reconstruction.IntPair.combine(Swift.Int) -> Swift.Int
+}
+
+struct Reconstruction.MixedPair {
+    var flag: Swift.Bool
+    var count: Swift.Int
+
+    /* Allocator */
+    Reconstruction.MixedPair.init(flag: Swift.Bool, count: Swift.Int) -> Reconstruction.MixedPair
+
+    /* Variable */
+    Reconstruction.MixedPair.flag.getter : Swift.Bool
+    Reconstruction.MixedPair.flag.setter : Swift.Bool
+    Reconstruction.MixedPair.count.getter : Swift.Int
+    Reconstruction.MixedPair.count.setter : Swift.Int
+    Reconstruction.MixedPair.justCount.getter : Swift.Int
+}
+
+struct Reconstruction.IntTriple {
+    var first: Swift.Int
+    var second: Swift.Int
+    var third: Swift.Int
+
+    /* Allocator */
+    Reconstruction.IntTriple.init(first: Swift.Int, second: Swift.Int, third: Swift.Int) -> Reconstruction.IntTriple
+
+    /* Variable */
+    Reconstruction.IntTriple.first.getter : Swift.Int
+    Reconstruction.IntTriple.first.setter : Swift.Int
+    Reconstruction.IntTriple.second.getter : Swift.Int
+    Reconstruction.IntTriple.second.setter : Swift.Int
+    Reconstruction.IntTriple.third.getter : Swift.Int
+    Reconstruction.IntTriple.third.setter : Swift.Int
+    Reconstruction.IntTriple.readThird.getter : Swift.Int
+    Reconstruction.IntTriple.total.getter : Swift.Int
+}
+
+struct Reconstruction.IntQuad {
+    var a: Swift.Int
+    var b: Swift.Int
+    var c: Swift.Int
+    var d: Swift.Int
+
+    /* Allocator */
+    Reconstruction.IntQuad.init(a: Swift.Int, b: Swift.Int, c: Swift.Int, d: Swift.Int) -> Reconstruction.IntQuad
+
+    /* Variable */
+    Reconstruction.IntQuad.a.getter : Swift.Int
+    Reconstruction.IntQuad.a.setter : Swift.Int
+    Reconstruction.IntQuad.b.getter : Swift.Int
+    Reconstruction.IntQuad.b.setter : Swift.Int
+    Reconstruction.IntQuad.c.getter : Swift.Int
+    Reconstruction.IntQuad.c.setter : Swift.Int
+    Reconstruction.IntQuad.d.getter : Swift.Int
+    Reconstruction.IntQuad.d.setter : Swift.Int
+    Reconstruction.IntQuad.readD.getter : Swift.Int
+}
+
+struct Reconstruction.IntThenDouble {
+    var n: Swift.Int
+    var d: Swift.Double
+
+    /* Allocator */
+    Reconstruction.IntThenDouble.init(n: Swift.Int, d: Swift.Double) -> Reconstruction.IntThenDouble
+
+    /* Variable */
+    Reconstruction.IntThenDouble.n.getter : Swift.Int
+    Reconstruction.IntThenDouble.n.setter : Swift.Int
+    Reconstruction.IntThenDouble.d.getter : Swift.Double
+    Reconstruction.IntThenDouble.d.setter : Swift.Double
+    Reconstruction.IntThenDouble.readN.getter : Swift.Int
+}
+
+struct Reconstruction.Vec2 {
+    var x: Swift.Double
+    var y: Swift.Double
+
+    /* Allocator */
+    Reconstruction.Vec2.init(x: Swift.Double, y: Swift.Double) -> Reconstruction.Vec2
+
+    /* Variable */
+    Reconstruction.Vec2.x.getter : Swift.Double
+    Reconstruction.Vec2.x.setter : Swift.Double
+    Reconstruction.Vec2.y.getter : Swift.Double
+    Reconstruction.Vec2.y.setter : Swift.Double
+    Reconstruction.Vec2.magnitudeSquared.getter : Swift.Double
+
+    /* Function */
+    Reconstruction.Vec2.dot(Reconstruction.Vec2) -> Swift.Double
+    Reconstruction.Vec2.scale(Swift.Double) -> ()
+}
+
+class Reconstruction.Counter {
+    var value: Swift.Int
+    var step: Swift.Int
+
+    /* [Getter] */ Reconstruction.Counter.value.getter : Swift.Int
+    /* [Setter] */ Reconstruction.Counter.value.setter : Swift.Int
+    /* [Modify] */ Reconstruction.Counter.value.modify : Swift.Int
+    /* [Getter] */ Reconstruction.Counter.step.getter : Swift.Int
+    /* [Setter] */ Reconstruction.Counter.step.setter : Swift.Int
+    /* [Modify] */ Reconstruction.Counter.step.modify : Swift.Int
+    /* [ Init ] */ Reconstruction.Counter.__allocating_init(value: Swift.Int, step: Swift.Int) -> Reconstruction.Counter
+    /* [Getter] */ Reconstruction.Counter.doubled.getter : Swift.Int
+    /* [Method] */ func Reconstruction.Counter.advance() -> ()
+    /* [Method] */ func Reconstruction.Counter.reset() -> ()
+
+    /* Allocator */
+    Reconstruction.Counter.__allocating_init(value: Swift.Int, step: Swift.Int) -> Reconstruction.Counter
+
+    /* Deallocator */
+    Reconstruction.Counter.__deallocating_deinit
+
+    /* Constructor */
+    Reconstruction.Counter.init(value: Swift.Int, step: Swift.Int) -> Reconstruction.Counter
+
+    /* Destructor */
+    Reconstruction.Counter.deinit
+
+    /* Variable */
+    Reconstruction.Counter.value.getter : Swift.Int
+    Reconstruction.Counter.value.setter : Swift.Int
+    Reconstruction.Counter.step.getter : Swift.Int
+    Reconstruction.Counter.step.setter : Swift.Int
+    Reconstruction.Counter.doubled.getter : Swift.Int
+
+    /* Function */
+    Reconstruction.Counter.advance() -> ()
+    Reconstruction.Counter.reset() -> ()
+
+    /* [Method] Allocator */
+    method descriptor for Reconstruction.Counter.__allocating_init(value: Swift.Int, step: Swift.Int) -> Reconstruction.Counter
+
+    /* [Method] Variable */
+    method descriptor for Reconstruction.Counter.value.getter : Swift.Int
+    method descriptor for Reconstruction.Counter.value.setter : Swift.Int
+    method descriptor for Reconstruction.Counter.step.getter : Swift.Int
+    method descriptor for Reconstruction.Counter.step.setter : Swift.Int
+    method descriptor for Reconstruction.Counter.doubled.getter : Swift.Int
+
+    /* [Method] Function */
+    method descriptor for Reconstruction.Counter.advance() -> ()
+    method descriptor for Reconstruction.Counter.reset() -> ()
+}
+
+class Reconstruction.Animal {
+    /* [ Init ] */ Reconstruction.Animal.__allocating_init() -> Reconstruction.Animal
+
+    /* Allocator */
+    Reconstruction.Animal.__allocating_init() -> Reconstruction.Animal
+
+    /* Deallocator */
+    Reconstruction.Animal.__deallocating_deinit
+
+    /* Constructor */
+    Reconstruction.Animal.init() -> Reconstruction.Animal
+
+    /* Destructor */
+    Reconstruction.Animal.deinit
+
+    /* [Method] Allocator */
+    method descriptor for Reconstruction.Animal.__allocating_init() -> Reconstruction.Animal
+}
+
+class Reconstruction.Dog: Reconstruction.Animal {
+    /* [ Init ] */ override Reconstruction.Dog.__allocating_init() -> Reconstruction.Dog
+
+    /* Allocator */
+    Reconstruction.Dog.__allocating_init() -> Reconstruction.Dog
+
+    /* Deallocator */
+    Reconstruction.Dog.__deallocating_deinit
+
+    /* Constructor */
+    Reconstruction.Dog.init() -> Reconstruction.Dog
+
+    /* Destructor */
+    Reconstruction.Dog.deinit
+}
+
+struct Reconstruction.RGB {
+    var r: Swift.Double
+    var g: Swift.Double
+    var b: Swift.Double
+
+    /* Allocator */
+    Reconstruction.RGB.init(r: Swift.Double, g: Swift.Double, b: Swift.Double) -> Reconstruction.RGB
+
+    /* Variable */
+    Reconstruction.RGB.r.getter : Swift.Double
+    Reconstruction.RGB.r.setter : Swift.Double
+    Reconstruction.RGB.g.getter : Swift.Double
+    Reconstruction.RGB.g.setter : Swift.Double
+    Reconstruction.RGB.b.getter : Swift.Double
+    Reconstruction.RGB.b.setter : Swift.Double
+    Reconstruction.RGB.luminance.getter : Swift.Double
+}
+
+enum Reconstruction.Direction {
+    case north
+    case east
+    case south
+    case west
+
+    /* Variable */
+    Reconstruction.Direction.hashValue.getter : Swift.Int
+
+    /* Function */
+    Reconstruction.Direction.hash(into: inout Swift.Hasher) -> ()
+
+    /* Static Function */
+    static Reconstruction.Direction.__derived_enum_equals(Reconstruction.Direction, Reconstruction.Direction) -> Swift.Bool
+}
+
+enum Reconstruction.Priority {
+    case low
+    case medium
+    case high
+
+    /* Allocator */
+    Reconstruction.Priority.init(rawValue: Swift.Int) -> Swift.Optional<Reconstruction.Priority>
+
+    /* Variable */
+    Reconstruction.Priority.rawValue.getter : Swift.Int
+}
+
+enum Reconstruction.Token {
+    case number(Swift.Int)
+    case ident(Swift.Int)
+    case eof
+}
+
+enum Reconstruction.Msg {
+    case data(Swift.Int)
+    case ping
+
+    /* Static Function */
+    static Reconstruction.Msg.__derived_enum_equals(Reconstruction.Msg, Reconstruction.Msg) -> Swift.Bool
+}
+
+enum Reconstruction.ReconError {
+    case failed
+
+    /* Variable */
+    Reconstruction.ReconError.hashValue.getter : Swift.Int
+
+    /* Function */
+    Reconstruction.ReconError.hash(into: inout Swift.Hasher) -> ()
+
+    /* Static Function */
+    static Reconstruction.ReconError.__derived_enum_equals(Reconstruction.ReconError, Reconstruction.ReconError) -> Swift.Bool
+}
+
+class Reconstruction.DirectionTally {
+    final var n: Swift.Int
+
+    /* [ Init ] */ Reconstruction.DirectionTally.__allocating_init() -> Reconstruction.DirectionTally
+
+    /* Allocator */
+    Reconstruction.DirectionTally.__allocating_init() -> Reconstruction.DirectionTally
+
+    /* Deallocator */
+    Reconstruction.DirectionTally.__deallocating_deinit
+
+    /* Constructor */
+    Reconstruction.DirectionTally.init() -> Reconstruction.DirectionTally
+
+    /* Destructor */
+    Reconstruction.DirectionTally.deinit
+
+    /* Variable */
+    Reconstruction.DirectionTally.n.getter : Swift.Int
+    Reconstruction.DirectionTally.n.setter : Swift.Int
+
+    /* Function */
+    Reconstruction.DirectionTally.add(Reconstruction.Direction) -> ()
+
+    /* [Method] Allocator */
+    method descriptor for Reconstruction.DirectionTally.__allocating_init() -> Reconstruction.DirectionTally
+}
+
+struct Reconstruction.Accessors {
+    var count: Swift.Int
+    var enabled: Swift.Bool
+
+    /* Allocator */
+    Reconstruction.Accessors.init(count: Swift.Int, enabled: Swift.Bool) -> Reconstruction.Accessors
+
+    /* Variable */
+    Reconstruction.Accessors.count.getter : Swift.Int
+    Reconstruction.Accessors.count.setter : Swift.Int
+    Reconstruction.Accessors.enabled.getter : Swift.Bool
+    Reconstruction.Accessors.enabled.setter : Swift.Bool
+}
+
+struct Reconstruction.BackedWrapper {
+    var _backing: Swift.Int
+
+    /* Allocator */
+    Reconstruction.BackedWrapper.init(Swift.Int) -> Reconstruction.BackedWrapper
+
+    /* Variable */
+    Reconstruction.BackedWrapper._backing.getter : Swift.Int
+    Reconstruction.BackedWrapper._backing.setter : Swift.Int
+    Reconstruction.BackedWrapper.exposed.getter : Swift.Int
+    Reconstruction.BackedWrapper.exposed.setter : Swift.Int
+}
+
+struct Reconstruction.HolderA {
+    /* Allocator */
+    Reconstruction.HolderA.init() -> Reconstruction.HolderA
+}
+
+struct Reconstruction.HolderA.Pair {
+    var alpha: Swift.Int
+    var beta: Swift.Int
+
+    /* Allocator */
+    Reconstruction.HolderA.Pair.init(alpha: Swift.Int, beta: Swift.Int) -> Reconstruction.HolderA.Pair
+
+    /* Variable */
+    Reconstruction.HolderA.Pair.alpha.getter : Swift.Int
+    Reconstruction.HolderA.Pair.alpha.setter : Swift.Int
+    Reconstruction.HolderA.Pair.beta.getter : Swift.Int
+    Reconstruction.HolderA.Pair.beta.setter : Swift.Int
+    Reconstruction.HolderA.Pair.sum.getter : Swift.Int
+}
+
+struct Reconstruction.HolderB {
+    /* Allocator */
+    Reconstruction.HolderB.init() -> Reconstruction.HolderB
+}
+
+struct Reconstruction.HolderB.Pair {
+    var gamma: Swift.Int
+    var delta: Swift.Int
+    var epsilon: Swift.Int
+
+    /* Allocator */
+    Reconstruction.HolderB.Pair.init(gamma: Swift.Int, delta: Swift.Int, epsilon: Swift.Int) -> Reconstruction.HolderB.Pair
+
+    /* Variable */
+    Reconstruction.HolderB.Pair.gamma.getter : Swift.Int
+    Reconstruction.HolderB.Pair.gamma.setter : Swift.Int
+    Reconstruction.HolderB.Pair.delta.getter : Swift.Int
+    Reconstruction.HolderB.Pair.delta.setter : Swift.Int
+    Reconstruction.HolderB.Pair.epsilon.getter : Swift.Int
+    Reconstruction.HolderB.Pair.epsilon.setter : Swift.Int
+    Reconstruction.HolderB.Pair.total.getter : Swift.Int
+}
+
+struct Reconstruction.BoxA {
+    /* Allocator */
+    Reconstruction.BoxA.init() -> Reconstruction.BoxA
+}
+
+class Reconstruction.BoxA.Holder {
+    final var first: Swift.Int
+    final var second: Swift.Int
+
+    /* [ Init ] */ Reconstruction.BoxA.Holder.__allocating_init() -> Reconstruction.BoxA.Holder
+
+    /* Allocator */
+    Reconstruction.BoxA.Holder.__allocating_init() -> Reconstruction.BoxA.Holder
+
+    /* Deallocator */
+    Reconstruction.BoxA.Holder.__deallocating_deinit
+
+    /* Constructor */
+    Reconstruction.BoxA.Holder.init() -> Reconstruction.BoxA.Holder
+
+    /* Destructor */
+    Reconstruction.BoxA.Holder.deinit
+
+    /* Variable */
+    Reconstruction.BoxA.Holder.first.getter : Swift.Int
+    Reconstruction.BoxA.Holder.first.setter : Swift.Int
+    Reconstruction.BoxA.Holder.second.getter : Swift.Int
+    Reconstruction.BoxA.Holder.second.setter : Swift.Int
+    Reconstruction.BoxA.Holder.total.getter : Swift.Int
+
+    /* [Method] Allocator */
+    method descriptor for Reconstruction.BoxA.Holder.__allocating_init() -> Reconstruction.BoxA.Holder
+}
+
+struct Reconstruction.BoxB {
+    /* Allocator */
+    Reconstruction.BoxB.init() -> Reconstruction.BoxB
+}
+
+class Reconstruction.BoxB.Holder {
+    final var alpha: Swift.Int
+    final var beta: Swift.Int
+    final var gamma: Swift.Int
+
+    /* [ Init ] */ Reconstruction.BoxB.Holder.__allocating_init() -> Reconstruction.BoxB.Holder
+
+    /* Allocator */
+    Reconstruction.BoxB.Holder.__allocating_init() -> Reconstruction.BoxB.Holder
+
+    /* Deallocator */
+    Reconstruction.BoxB.Holder.__deallocating_deinit
+
+    /* Constructor */
+    Reconstruction.BoxB.Holder.init() -> Reconstruction.BoxB.Holder
+
+    /* Destructor */
+    Reconstruction.BoxB.Holder.deinit
+
+    /* Variable */
+    Reconstruction.BoxB.Holder.alpha.getter : Swift.Int
+    Reconstruction.BoxB.Holder.alpha.setter : Swift.Int
+    Reconstruction.BoxB.Holder.beta.getter : Swift.Int
+    Reconstruction.BoxB.Holder.beta.setter : Swift.Int
+    Reconstruction.BoxB.Holder.gamma.getter : Swift.Int
+    Reconstruction.BoxB.Holder.gamma.setter : Swift.Int
+    Reconstruction.BoxB.Holder.sum.getter : Swift.Int
+
+    /* [Method] Allocator */
+    method descriptor for Reconstruction.BoxB.Holder.__allocating_init() -> Reconstruction.BoxB.Holder
+}
+
+struct Reconstruction.OuterX {
+    /* Allocator */
+    Reconstruction.OuterX.init() -> Reconstruction.OuterX
+}
+
+struct Reconstruction.OuterX.Wide {
+    var w1: Swift.Int
+    var w2: Swift.Int
+    var w3: Swift.Int
+    var w4: Swift.Int
+
+    /* Allocator */
+    Reconstruction.OuterX.Wide.init(w1: Swift.Int, w2: Swift.Int, w3: Swift.Int, w4: Swift.Int) -> Reconstruction.OuterX.Wide
+
+    /* Variable */
+    Reconstruction.OuterX.Wide.w1.getter : Swift.Int
+    Reconstruction.OuterX.Wide.w1.setter : Swift.Int
+    Reconstruction.OuterX.Wide.w2.getter : Swift.Int
+    Reconstruction.OuterX.Wide.w2.setter : Swift.Int
+    Reconstruction.OuterX.Wide.w3.getter : Swift.Int
+    Reconstruction.OuterX.Wide.w3.setter : Swift.Int
+    Reconstruction.OuterX.Wide.w4.getter : Swift.Int
+    Reconstruction.OuterX.Wide.w4.setter : Swift.Int
+    Reconstruction.OuterX.Wide.firstW.getter : Swift.Int
+}
+
+struct Reconstruction.OuterY {
+    /* Allocator */
+    Reconstruction.OuterY.init() -> Reconstruction.OuterY
+}
+
+struct Reconstruction.OuterY.Wide {
+    var v1: Swift.Int
+    var v2: Swift.Int
+    var v3: Swift.Int
+    var v4: Swift.Int
+    var v5: Swift.Int
+
+    /* Allocator */
+    Reconstruction.OuterY.Wide.init(v1: Swift.Int, v2: Swift.Int, v3: Swift.Int, v4: Swift.Int, v5: Swift.Int) -> Reconstruction.OuterY.Wide
+
+    /* Variable */
+    Reconstruction.OuterY.Wide.v1.getter : Swift.Int
+    Reconstruction.OuterY.Wide.v1.setter : Swift.Int
+    Reconstruction.OuterY.Wide.v2.getter : Swift.Int
+    Reconstruction.OuterY.Wide.v2.setter : Swift.Int
+    Reconstruction.OuterY.Wide.v3.getter : Swift.Int
+    Reconstruction.OuterY.Wide.v3.setter : Swift.Int
+    Reconstruction.OuterY.Wide.v4.getter : Swift.Int
+    Reconstruction.OuterY.Wide.v4.setter : Swift.Int
+    Reconstruction.OuterY.Wide.v5.getter : Swift.Int
+    Reconstruction.OuterY.Wide.v5.setter : Swift.Int
+    Reconstruction.OuterY.Wide.firstV.getter : Swift.Int
+}
+
+protocol Reconstruction.Shape {}
+
+extension Reconstruction.Direction: Swift.Equatable {
+    protocol witness for static Swift.Equatable.== infix(A, A) -> Swift.Bool in conformance Reconstruction.Direction : Swift.Equatable in Reconstruction
+}
+
+extension Reconstruction.Direction: Swift.Hashable {
+    base conformance descriptor for Swift.Hashable: Swift.Equatable
+    protocol witness for Swift.Hashable.hashValue.getter : Swift.Int in conformance Reconstruction.Direction : Swift.Hashable in Reconstruction
+    protocol witness for Swift.Hashable.hash(into: inout Swift.Hasher) -> () in conformance Reconstruction.Direction : Swift.Hashable in Reconstruction
+    protocol witness for Swift.Hashable._rawHashValue(seed: Swift.Int) -> Swift.Int in conformance Reconstruction.Direction : Swift.Hashable in Reconstruction
+}
+
+extension Reconstruction.Priority: Swift.Equatable {
+    protocol witness for static Swift.Equatable.== infix(A, A) -> Swift.Bool in conformance Reconstruction.Priority : Swift.Equatable in Reconstruction
+}
+
+extension Reconstruction.Priority: Swift.Hashable {
+    base conformance descriptor for Swift.Hashable: Swift.Equatable
+    protocol witness for Swift.Hashable.hashValue.getter : Swift.Int in conformance Reconstruction.Priority : Swift.Hashable in Reconstruction
+    protocol witness for Swift.Hashable.hash(into: inout Swift.Hasher) -> () in conformance Reconstruction.Priority : Swift.Hashable in Reconstruction
+    protocol witness for Swift.Hashable._rawHashValue(seed: Swift.Int) -> Swift.Int in conformance Reconstruction.Priority : Swift.Hashable in Reconstruction
+}
+
+extension Reconstruction.Priority: Swift.RawRepresentable {
+    associated type descriptor for Swift.RawRepresentable.RawValue
+    protocol witness for Swift.RawRepresentable.init(rawValue: A.RawValue) -> Swift.Optional<A> in conformance Reconstruction.Priority : Swift.RawRepresentable in Reconstruction
+    protocol witness for Swift.RawRepresentable.rawValue.getter : A.RawValue in conformance Reconstruction.Priority : Swift.RawRepresentable in Reconstruction
+}
+
+extension Reconstruction.Msg: Swift.Equatable {
+    protocol witness for static Swift.Equatable.== infix(A, A) -> Swift.Bool in conformance Reconstruction.Msg : Swift.Equatable in Reconstruction
+}
+
+extension Reconstruction.ReconError: Swift.Equatable {
+    protocol witness for static Swift.Equatable.== infix(A, A) -> Swift.Bool in conformance Reconstruction.ReconError : Swift.Equatable in Reconstruction
+}
+
+extension Reconstruction.ReconError: Swift.Hashable {
+    base conformance descriptor for Swift.Hashable: Swift.Equatable
+    protocol witness for Swift.Hashable.hashValue.getter : Swift.Int in conformance Reconstruction.ReconError : Swift.Hashable in Reconstruction
+    protocol witness for Swift.Hashable.hash(into: inout Swift.Hasher) -> () in conformance Reconstruction.ReconError : Swift.Hashable in Reconstruction
+    protocol witness for Swift.Hashable._rawHashValue(seed: Swift.Int) -> Swift.Int in conformance Reconstruction.ReconError : Swift.Hashable in Reconstruction
+}
+
+extension Reconstruction.ReconError: Swift.Error {
+    protocol witness for Swift.Error._domain.getter : Swift.String in conformance Reconstruction.ReconError : Swift.Error in Reconstruction
+    protocol witness for Swift.Error._code.getter : Swift.Int in conformance Reconstruction.ReconError : Swift.Error in Reconstruction
+    protocol witness for Swift.Error._userInfo.getter : Swift.Optional<Swift.AnyObject> in conformance Reconstruction.ReconError : Swift.Error in Reconstruction
+    protocol witness for Swift.Error._getEmbeddedNSError() -> Swift.Optional<Swift.AnyObject> in conformance Reconstruction.ReconError : Swift.Error in Reconstruction
+}
+
+extension Reconstruction.Priority: Swift.RawRepresentable {
+    typealias RawValue = Swift.Int
+}
