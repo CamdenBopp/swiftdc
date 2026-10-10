@@ -221,3 +221,17 @@ private func statementsAfterThrow(_ body: String) -> [String] {
     #expect(!text.contains("swift_willThrow(swift_errorRelease"), "\(text)")
     #expect(text.contains("swift_willThrow((extension in _RegexParser):Swift.Error.addingLocation("), "\(text)")
 }
+
+/// A lazy protocol witness table accessor is `() -> WitnessTable`
+/// (swift/lib/IRGen/GenDecl.cpp:6384), so anything rendered as its argument is
+/// a stale register: `…ReconError : Swift.Error in Reconstruction(arg0)`. A
+/// *merged* accessor does take the differing constant as a real parameter,
+/// and keeps it.
+@Test func lazyWitnessTableAccessorTakesNoArgumentsIfPresent() async throws {
+    for (level, path) in reconstructionLevels {
+        guard let body = try await structured("Reconstruction.mightFail(", in: path) else { continue }
+        #expect(body.contains("Swift.Error in Reconstruction()"), "\(level): \(body)")
+        #expect(!body.contains("Swift.Error in Reconstruction(arg0)"), "\(level): \(body)")
+    }
+    #expect(DisassembledFunction.knownCArity(of: "merged lazy protocol witness table accessor for type M.T") == nil)
+}

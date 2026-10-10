@@ -363,6 +363,10 @@ public extension DisassembledFunction {
         default:
             // The formatted-emit os_log helpers: (dso, log, type, format, buf, size).
             if callee.hasPrefix("_os_log"), callee.hasSuffix("_impl") { return 6 }
+            // `() -> WitnessTable` (swift/lib/IRGen/GenDecl.cpp:6384,
+            // `FunctionType::get(WitnessTablePtrTy, false)`). A stale x0 used
+            // to print as its argument, often a whole unrelated call.
+            if callee.hasPrefix("lazy protocol witness table accessor for ") { return 0 }
             // Historical prefix match: some selectors resolve as
             // `objc_opt_isKindOfClass` with a trailing disambiguator.
             if callee.hasPrefix("objc_opt_isKindOfClass") { return 2 }
