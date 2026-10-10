@@ -940,3 +940,19 @@ private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
         #expect(!modified.contains("return arg0"))
     }
 }
+
+/// A payload enum wider than four scalars returns through x8: its tag byte
+/// store names the case exactly (the static enum-layout oracle), and a payload
+/// case's words come from its declared tuple type.
+@Test func namesIndirectPayloadEnumCasesIfPresent() async throws {
+    for fixture in [indirectFixture, "Fixtures/Sample/libIndirect.opt.dylib"] {
+        guard let box = try await reconstructionPseudo("makeBox", in: fixture) else { continue }
+        #expect(box.contains("return Indirect.Shape4.box(arg0, arg1, arg2, arg3)"), "in \(fixture)")
+        guard let empty = try await reconstructionPseudo("emptyShape", in: fixture) else { continue }
+        #expect(empty.contains("return Indirect.Shape4.empty"), "in \(fixture)")
+    }
+    // Negative: a `String` payload spans two words, so the tuple's scalar arity
+    // is not what the store count says; the case is not spelled out.
+    guard let tagged = try await reconstructionPseudo("makeTagged", in: indirectFixture) else { return }
+    #expect(!tagged.contains("return"))
+}

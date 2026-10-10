@@ -3183,6 +3183,29 @@ public struct Disassembler: Sendable {
                 return (rendered, [value])
             }
             guard exit.whole == nil, let returnTypeName else { return nil }
+            // A payload enum: the tag bytes name the case (exactly, or not at
+            // all), and a payload case's words come from its declared type.
+            if returnLayout == nil {
+                var observed: [Int: (bytes: Int, immediate: UInt64?)] = [:]
+                for (offset, store) in exit.stores {
+                    let value = sanitizeValue(store.value)
+                    if case .immediate(let bits) = value {
+                        observed[offset] = (store.bytes, bits)
+                    } else {
+                        observed[offset] = (store.bytes, nil)
+                    }
+                }
+                guard let enumCase = payloadEnumIndex.indirectCase(ofEnum: returnTypeName, stores: observed)
+                else { return nil }
+                if enumCase.payloadWordOffsets.isEmpty {
+                    return ("\(returnTypeName).\(enumCase.name)", [])
+                }
+                let values = enumCase.payloadWordOffsets.compactMap { exit.stores[$0]?.value }.map(sanitizeValue)
+                guard values.count == enumCase.payloadWordOffsets.count else { return nil }
+                let rendered = values.map { renderValue($0, depth: 0) }
+                guard rendered.contains(where: { $0 != "?" }) else { return nil }
+                return ("\(returnTypeName).\(enumCase.name)(\(rendered.joined(separator: ", ")))", values)
+            }
             guard let layout = returnLayout else { return nil }
             // Every store must land exactly on a field, and every field must be
             // stored: a partial set is declined, never padded.
