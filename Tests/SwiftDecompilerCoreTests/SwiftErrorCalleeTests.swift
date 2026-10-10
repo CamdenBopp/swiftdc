@@ -126,3 +126,76 @@ private func probeFunctions(_ filter: String, in path: String) async throws -> [
         }
     }
 }
+
+// MARK: - Throw exits
+
+/// A throwing function returns its error in x21 and leaves x0 meaningless (or,
+/// for a typed error small enough, holding the error's payload). Rendered as a
+/// `return`, a throw exit printed x0 as the result: `return 0` for
+/// `throw .negative`, `return swift_willThrow(…)`, and at -Onone a typed
+/// forwarder's error path `return (typedPick(arg0) & 255)`.
+
+private let reconstructionLevels = [
+    ("-Onone", "Fixtures/Sample/libReconstruction.dylib"),
+    ("-O", "Fixtures/Sample/libReconstruction.opt.dylib"),
+]
+
+private func structured(_ name: String, in path: String) async throws -> String? {
+    guard let functions = try await probeFunctions(name, in: path) else { return nil }
+    return functions.filter { $0.demangledName?.hasPrefix(name) == true }
+        .map { $0.renderStructured() + "\n" + $0.renderPseudo() }.joined(separator: "\n")
+}
+
+/// No statement follows a `throw` in its block: a trailing `return` would
+/// claim the exit also returns.
+private func statementsAfterThrow(_ body: String) -> [String] {
+    let lines = body.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+    return zip(lines, lines.dropFirst()).compactMap { line, next in
+        line.hasPrefix("throw ") && !next.hasPrefix("}") ? next : nil
+    }
+}
+
+@Test func typedThrowExitNamesTheErrorCaseIfPresent() async throws {
+    for (level, path) in reconstructionLevels {
+        guard let body = try await structured("Reconstruction.typedScale(", in: path) else { continue }
+        #expect(body.contains("throw Reconstruction.ReconTypedError.negative"), "\(level): \(body)")
+        #expect(!body.contains("return 0"), "\(level): \(body)")
+        #expect(!body.contains("ReconTypedError.tooBig"), "\(level): \(body)")
+        let structuredOnly = body.components(separatedBy: "\n}\n").first ?? body
+        #expect(statementsAfterThrow(structuredOnly).isEmpty, "\(level): \(body)")
+    }
+}
+
+@Test func untypedThrowExitIsNotAReturnIfPresent() async throws {
+    for (level, path) in reconstructionLevels {
+        guard let body = try await structured("Reconstruction.mightFail(", in: path) else { continue }
+        #expect(body.contains("throw ?"), "\(level): \(body)")
+        #expect(!body.contains("return swift_willThrow"), "\(level): \(body)")
+    }
+}
+
+@Test func forwardedTypedErrorIsNotReturnedIfPresent() async throws {
+    let (level, path) = reconstructionLevels[0]
+    guard let body = try await structured("Reconstruction.typedForward(", in: path) else { return }
+    #expect(body.contains("throw ?"), "\(level): \(body)")
+    #expect(!body.contains("& 255"), "\(level): \(body)")
+}
+
+@Test func aMergedExitIsNotClassifiedAsAThrowIfPresent() async throws {
+    // At -O the forwarder merges both exits (`csel x21, x21, x8, eq`), so no
+    // `ret` proves an error; it must not print a `throw`.
+    let (level, path) = reconstructionLevels[1]
+    guard let body = try await structured("Reconstruction.typedForward(", in: path) else { return }
+    #expect(!body.isEmpty, "\(level): typedForward not found")
+    let throwStatements = body.split(separator: "\n").filter {
+        $0.trimmingCharacters(in: .whitespaces).hasPrefix("throw ")
+    }
+    #expect(throwStatements.isEmpty, "\(level): \(body)")
+}
+
+@Test func splitSignatureReportsTheTypedError() {
+    #expect(DisassembledFunction.splitSignature("M.f(Swift.Int) throws(M.E) -> Swift.Int")?.thrownType == "M.E")
+    #expect(DisassembledFunction.splitSignature("M.f(Swift.Int) async throws(M.E) -> Swift.Int")?.thrownType == "M.E")
+    #expect(DisassembledFunction.splitSignature("M.f(Swift.Int) throws -> Swift.Int")?.thrownType == nil)
+    #expect(DisassembledFunction.splitSignature("M.f(() throws(M.E) -> ()) -> Swift.Int")?.thrownType == nil)
+}

@@ -76,7 +76,10 @@ private func structured(_ name: String, in path: String) async throws -> String?
     for (level, path) in reconstructionLevels {
         guard let body = try await structured("Reconstruction.typedScale(", in: path) else { continue }
         // `n` is the second parameter and lives in x0; the literal is an Int.
-        #expect(!body.contains("ReconTypedError.negative"), "\(level): \(body)")
+        // The defect named the literal as an error case inside the condition
+        // (`arg0 >= ReconTypedError.negative`); the thrown case itself is fine.
+        let conditions = body.split(separator: "\n").filter { $0.contains("if (") }
+        #expect(!conditions.contains { $0.contains("ReconTypedError") }, "\(level): \(body)")
         #expect(!body.contains("arg0 < ") && !body.contains("arg0 >= "), "\(level): \(body)")
         #expect(body.contains("arg1 < 0") || body.contains("arg1 >= 0"), "\(level): \(body)")
         // The success value is recovered from both real parameters.

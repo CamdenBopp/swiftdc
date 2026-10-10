@@ -3053,6 +3053,32 @@ public struct Disassembler: Sendable {
             }
         }
 
+        // The `ret`s of a throwing function that throw. Swift returns the error
+        // in x21 and the caller tests it; a normal exit leaves x21 as it came in,
+        // which the tracer never knows. So an exit throws only where x21 is
+        // proven set: a non-zero constant (typed throws sets `w21 = 1`) or a
+        // fresh `swift_allocError` box (untyped). A merged exit
+        // (`csel x21, x21, x8, eq`) proves neither, and keeps its `return`.
+        // Rendered as a return, a throw exit printed its x0 as the result: the
+        // typed error's payload (`return 0` for `.bad`), or a dead call's.
+        let throwsSignature = function.objcMethod == nil
+            ? function.demangledName.flatMap(DisassembledFunction.splitSignature) : nil
+        let throwExits: Set<UInt64> = {
+            guard throwsSignature?.isThrowing == true else { return [] }
+            return Set(analysis.exitErrorValues.compactMap { address, value in
+                switch value {
+                case .immediate(let flag) where flag != 0:
+                    return address
+                case .callResult(let site):
+                    let callee = function.instructions.first { $0.address == site }
+                        .flatMap(DisassembledFunction.calleeName(of:)) ?? ""
+                    return callee.hasPrefix("swift_allocError") ? address : nil
+                default:
+                    return nil
+                }
+            })
+        }()
+
         var consumedCallResults = Set<UInt64>()
         for access in analysis.selfFieldAccesses.values {
             if let value = access.storedValue {
@@ -3084,6 +3110,7 @@ public struct Disassembler: Sendable {
                     collectCallResults(in: value, into: &consumedCallResults)
                 }
             } else if function.objcMethod == nil, insn.controlFlow == .return,
+                      !throwExits.contains(insn.address),
                       let returnRegister = Self.swiftReturnRegister(of: function) {
                 // A Swift return that is a call's result consumes it, so the call
                 // isn't also printed as its own statement above the `return`.
@@ -3151,7 +3178,18 @@ public struct Disassembler: Sendable {
             // `ret` (a tail-call branch's x0/v0 hold the callee's arguments, not a
             // result) and only return types delivered in one value register, so a
             // stale register is never printed as a fabricated return.
-            if function.objcMethod == nil, insn.controlFlow == .return,
+            if throwExits.contains(insn.address) {
+                // A typed error small enough to travel in x0 names its case when
+                // the error type is a no-payload enum; anything else is `?`.
+                var thrown = "?"
+                if let errorType = throwsSignature?.thrownType,
+                   case .immediate(let tag)? = analysis.exitValues[insn.address].map(sanitizeValue),
+                   tag <= UInt64(Int.max),
+                   let caseName = enumCaseIndex.caseName(ofEnum: errorType, tag: Int(tag)) {
+                    thrown = "\(errorType).\(caseName)"
+                }
+                sourceNotes.append("throw \(thrown)")
+            } else if function.objcMethod == nil, insn.controlFlow == .return,
                let returnRegister = Self.swiftReturnRegister(of: function) {
                 let rawExit = returnRegister == .floating
                     ? analysis.exitFloatValues[insn.address]

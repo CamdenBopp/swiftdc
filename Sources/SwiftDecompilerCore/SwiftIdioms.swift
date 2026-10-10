@@ -157,7 +157,7 @@ extension DisassembledFunction {
     ///   result with ` in <context>`; that tail is not part of the result type.
     static func splitSignature(
         _ name: String
-    ) -> (head: String, result: String, isAsync: Bool, isThrowing: Bool)? {
+    ) -> (head: String, result: String, isAsync: Bool, isThrowing: Bool, thrownType: String?)? {
         guard let arrow = topLevelRange(of: " -> ", in: name) else { return nil }
         var result = String(name[arrow.upperBound...])
         if let context = topLevelRange(of: " in ", in: result) {
@@ -165,9 +165,13 @@ extension DisassembledFunction {
         }
         let declared = String(name[..<arrow.lowerBound]).trimmingCharacters(in: .whitespaces)
         let head = strippingEffects(declared)
-        let effects = declared.dropFirst(head.count)
+        let effects = String(declared.dropFirst(head.count))
+        var thrownType: String?
+        if let open = effects.range(of: "throws("), effects.hasSuffix(")") {
+            thrownType = String(effects[open.upperBound..<effects.index(before: effects.endIndex)])
+        }
         return (head, result.trimmingCharacters(in: .whitespaces),
-                effects.contains("async"), effects.contains("throws"))
+                effects.contains("async"), effects.contains("throws"), thrownType)
     }
 
     /// A signature head without its trailing effects specifiers. The demangler

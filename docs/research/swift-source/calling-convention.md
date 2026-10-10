@@ -403,9 +403,9 @@ Concrete gaps and decline conditions this mining surfaces:
    parameters, and every signature reader took it as the parameter list. x0 (the
    second argument) rendered as `arg0`, and the literal `0` as an `M.E` case.
    Fixed by `DisassembledFunction.splitSignature` (see
-   `docs/PRODUCTION-READINESS.md`, soundness). Still open: a small typed
-   error's throw exit renders `return 0` (the error payload in x0) as if it
-   were a successful return.
+   `docs/PRODUCTION-READINESS.md`, soundness). A small typed error's
+   throw exit, which rendered `return 0` (the payload in x0), now renders
+   `throw E.case` (also 2026-10-09).
 2. **Async functions still get `SwiftSelf` on `self`** at their synchronous
    entry (`GenCall.cpp:2338-2339`, inside `expandAsyncEntryType`), so x20 = self
    likely still holds for an async instance method. But an async function's
@@ -460,9 +460,8 @@ Concrete gaps and decline conditions this mining surfaces:
 
 1. ~~**Add a typed-throws detection gate before trusting an absent x21
    clear-and-test as "non-throwing."**~~ Premise measured false (§6.1): typed
-   throws keeps the x21 flag. The real typed-throws defect (the signature
-   parse) is fixed; the `return <error payload>` render on the throw exit is
-   open.
+   throws keeps the x21 flag. The real typed-throws defects (the signature
+   parse, and the throw exit rendered as `return <payload>`) are fixed.
 2. **(Return values: DONE 2026-10-09 — `swiftReturnRegister` declines async
    functions and their resume funclets; a funclet's `ret` rendered
    `return swift_task_dealloc()` in libswiftObservation.)**

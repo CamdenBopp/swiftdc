@@ -262,9 +262,7 @@ because it cannot be distinguished from a right one by reading the output.
   correctness was luck. Guarded by `SignatureSplitTests` (each of the four
   guards injected back to the old behaviour and watched fail).
 
-  Still OPEN in this area: a small typed error's throw exit renders
-  `return 0` (the error payload in x0, with `w21 = 1`) as if it were a
-  successful return.
+  The typed-throw exit that rendered `return 0` is FIXED below.
 
 - **FIXED — the swifterror arming value read as the callee's error.** A caller
   arms swifterror by loading x21 with its current error (zero, or a saved copy
@@ -292,6 +290,25 @@ because it cannot be distinguished from a right one by reading the output.
   The `(0 != 0)` that remains in `-Onone` value witnesses
   (`getEnumTagSinglePayload`) is faithful: the compiler emitted
   `mov w8, #0; cbnz w8`. Folding it would be a readability change.
+
+- **FIXED — a throw exit rendered as a successful return.** A throwing
+  function returns its error in x21; x0 at that `ret` is not a result. For a
+  small typed error it is the error's payload, so `throw .negative` rendered
+  `return 0`. Untyped throws rendered `return swift_willThrow(…)`, and a typed
+  forwarder's `-Onone` error path rendered `return (typedPick(arg0) & 255)`.
+  The tracer now records x21 at each `ret`. An exit is a throw only where x21
+  is *proven* set: a non-zero constant (typed throws sets `w21 = 1`) or a fresh
+  `swift_allocError` box. A normal exit leaves x21 as it came in, which the
+  tracer never knows. It renders `throw <E.case>` when the typed error is a
+  no-payload enum whose tag is in x0, else `throw ?`. A merged exit
+  (`csel x21, x21, x8, eq`) proves neither and keeps its `return`. Guarded by
+  `SwiftErrorCalleeTests` (two cases, so the tag→case mapping is pinned).
+
+  Coverage gap, declined rather than guessed: an error built by a helper
+  (`mov x21, x0` after `sub_…`) proves nothing, so SwiftData's throw paths
+  are unchanged (0/6506 functions). Strict and loose classification
+  ("any known x21") could not be told apart on any measured binary; the
+  strict form is kept because it cannot over-claim.
 
 ## 2. Completeness — what does it silently omit?
 

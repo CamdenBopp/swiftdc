@@ -296,6 +296,8 @@ public struct FunctionAnalysis: Sendable {
     /// pass uses Objective-C return types and resolved tail helpers to decide
     /// which of these are honest source-level returns.
     public var exitValues: [UInt64: AbstractValue] = [:]
+    /// x21 at each `ret`: in a throwing Swift function, the error it returns.
+    public var exitErrorValues: [UInt64: AbstractValue] = [:]
     /// v0 (the d0/s0 floating-point return register) immediately before a
     /// return. A `Double`/`Float`-returning function delivers its result here,
     /// not in x0, so the enrichment pass reads this one for those return types.
@@ -477,6 +479,10 @@ public struct ValueTracer: Sendable {
                 if insn.controlFlow == .return || insn.controlFlow == .branch,
                    let value = registers["x0"], value != .unknown {
                     result.exitValues[insn.address] = value
+                }
+                if insn.controlFlow == .return,
+                   let value = registers["x21"], value != .unknown {
+                    result.exitErrorValues[insn.address] = value
                 }
                 if insn.controlFlow == .return,
                    let value = registers["v0"], value != .unknown {

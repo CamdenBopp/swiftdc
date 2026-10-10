@@ -462,6 +462,7 @@ struct ControlFlowStructure {
                 if let statement = DisassembledFunction.pseudoStatement(of: insn, hideRuntime: true) {
                     lines.append("\(pad)\(statement)")
                     emittedReturn = emittedReturn || statement.hasPrefix("return ")
+                        || statement.hasPrefix("throw ")
                 }
             }
             if isReturn(block) {

@@ -31,7 +31,7 @@ public extension DisassembledFunction {
             let semantic = annotation.components(separatedBy: "  ")
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .first { note in
-                    if note.hasPrefix("return ") { return true }
+                    if note.hasPrefix("return ") || note.hasPrefix("throw ") { return true }
                     if note.hasPrefix("yield ") { return true }
                     if note.hasPrefix("self = ") { return true }
                     if note.hasPrefix("("), note.contains("self->"), note.contains(" = ") {
