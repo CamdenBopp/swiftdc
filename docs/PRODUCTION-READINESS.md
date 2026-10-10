@@ -11,7 +11,8 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-10-09, at commit `0c3bb54`.
+Last audited: 2026-10-10, on branch `upgrade/machoswiftsection` (MachOSwiftSection
+0.22.0, Capstone 6; the dependency section entries carry their own numbers).
 
 ---
 
@@ -587,7 +588,28 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   extracted cache still dumps Foundation through the guarded branch.
 - **FIXED — structurer stack overflow on deep CFGs** (`ca82d6f`).
 - **FIXED — spurious dyld-cache markers trapped ObjC index construction**
-  (covered by `buildsObjCIndexWithoutTrappingOnSpuriousCacheMarkers`).
+  (covered by `buildsObjCIndexWithoutTrappingOnSpuriousCacheMarkers`). The
+  markers were never real: the iOS simulator's frameworks are linked
+  `-interposable`, so a class-list slot pointing at an exported class holds a
+  bind to the image itself, and MachOObjCSection 0.8.105 resolved rebases only,
+  so those classes were read from the wrong place. The guard kept the process
+  alive but skipped them: `objc` on the iOS 18.3 simulator's
+  `UIKit.axbundle/UIKit` printed 6 of its 853 classes. MachOObjCSection 0.8.110
+  resolves the self-bind (its `f17ace7`); at the 0.22.0 pin the same command
+  prints all 853 (the `__objc_classlist` size, 0x1aa8 / 8) plus its 6
+  categories, and the guard filters nothing. The test now asserts that.
+- **FIXED — a dylib command's name offset outside its command trapped
+  `dump`/`interface` at the 0.22.0 pin.** New trap class, opened by the
+  upgrade: the class dumper's ObjC ancestor walk reads
+  `MachOFile.dependencies`, and MachOKit's `DylibCommand.dylib(in:)` reads
+  each name with `try! readString` at the command's `name.offset`.
+  `Tools/container-fuzz.py Fixtures/Sample/libSample.dylib 150 7` mutant 63
+  and `sample.release 150 7` mutant 104 died by SIGTRAP on 0.22.0 and failed
+  cleanly on 0.19.0 (0 crashes, same seeds). `MachOPreflight.validateDylib`
+  requires `24 <= name.offset < cmdsize` on the six dylib command kinds;
+  both mutants now decline with rc 1 on every subcommand. Covered by
+  `rejectsADylibNameOffsetOutsideItsCommand` (seen red) and
+  `acceptsAWellFormedDylibCommand`.
 - **MITIGATED — `MachOFile.symbols` fatalErrors on cache images** whose
   `__LINKEDIT` sits in another subcache. Uncatchable; avoided by reading the
   export trie instead, which is also semantically correct.
@@ -876,6 +898,27 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 5. Performance and memory on large frameworks
 
+- **OPEN — the MachOSwiftSection 0.22.0 pin makes `dump`/`interface`/`objc`
+  on standalone ObjC-heavy apps 7x to 40x slower, upstream.** Measured with
+  the same binary set before and after the pin (times under build load, so
+  indicative; the `sample` attributions are not): Keynote `dump` 1.35s to
+  20.2s, `interface` 1.36s to 24.4s, `objc` 60s to 2,424s; GoodLinks `dump`
+  7.4s to 54.5s, `objc` 10.4s to 106s; peak RSS roughly doubled. Two causes,
+  both in the dependencies: (a) 0.22's class dumper resolves each class's ObjC
+  ancestor chain inside the system dyld cache, and MachOKit's
+  `DyldCache.locateValue` re-reads `headerOptimizationRO64` / `mappingInfos`
+  on every call (3,235 of 5,225 samples under
+  `ObjCClassMethodIndex.ancestors` on Keynote `dump`); (b) MachOObjCSection
+  0.8.110's `info(in:)` resolves referenced protocol infos recursively, each
+  method slot through a fixup lookup (2,448 of 5,560 samples under
+  `referencedProtocolInfos` on Keynote `objc`). The dropped MachOKit fork
+  memoisation (`MachOFile.cache` re-opening the cache) is about 2.5% of a
+  `dump` now, not the two thirds it was at 0.19. Cache images are faster
+  (SwiftUICore `dump` 228s to 160s, `interface` 260s to 163s, `objc` 70s to
+  35s, same load caveat). Candidate fixes: memoise the `DyldCache` header
+  parsing in MachOKit; pass `ObjCInfoOptions.headerDump` from swiftdc's own
+  `objc` path if its output stays byte-identical. Profiles:
+  `sample <pid> 8` on `dump --arch arm64 Keynote` and `objc --arch arm64 Keynote`.
 - **OPEN — whole-image decoding does not scale to the largest frameworks.**
   Measured after the resync fix: `disasm --image UserNotifications` recovers
   1,391 functions / 52,103 instructions in **19s**, with no coverage warning.

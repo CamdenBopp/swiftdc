@@ -35,13 +35,50 @@ Suite: **239 tests**, green under `SWIFTDC_REQUIRE_FIXTURES=1 swift test` after
 
 The branch is unmerged and unpushed; merge or open a PR when ready.
 
-## Dependency fork pin — revert when upstream ships
+## Dependencies: MachOSwiftSection 0.22.0, upstream MachOKit 0.54.101, Capstone 6
 
-`Package.swift` pins MachOKit to `CamdenBopp/MachOKit@07d7633` (a fork of the
-0.52.102 tag) for one perf fix, submitted upstream as
-[MxIris-Reverse-Engineering/MachOKit#1](https://github.com/MxIris-Reverse-Engineering/MachOKit/pull/1).
-When #1 merges and ships in a release, revert to an upstream version pin and drop
-the fork. The rationale is in the Package.swift comment block.
+Branch `upgrade/machoswiftsection` (2026-10-10) moves the pins. What it bought
+and cost, all measured (the before/after sweep ran under build load, so the
+times are indicative; the profiles are not):
+
+- **Completeness.** `objc` on the iOS 18.3 simulator's `UIKit.axbundle/UIKit`
+  went from 6 to all 853 classes (MachOObjCSection 0.8.110 resolves the
+  `-interposable` self-binds). Main-executable vtable slots are named
+  (`sample.release`: `sub_100001688` is now `Animal.__allocating_init(name:)`;
+  stripped `sample.stripped` went 11 `sub_` slots to 5 through the ObjC thunk
+  symbols). `@objc(SDWidget)` is printed on renamed classes. Extensions of
+  C-imported types are named (`extension __C.NSAppearanceName:
+  @retroactive RawRepresentable` in GoodLinks, Keynote). Property wrappers are
+  synthesised (`@Combine.Published var`, `@ArgumentParser.Flag var`), 452 in
+  Developer's interface alone. Did not reproduce: an `init`/`init?` spelling
+  change (no such diff in any output) and field offsets for the renamed
+  `@objc` class (`layout` declines `sample.Widget` on both builds with
+  `objCAncestorUnresolved(NSObject)`; `layout` output is byte-identical
+  everywhere).
+- **Decoder.** Capstone 6 built from the `capstone` package replaces Homebrew
+  libcapstone 5; every `disasm`, `disasm --pseudo`, `xrefs` output is
+  byte-identical on standalone binaries. `docs/capstone6-migration.md` lists
+  every renamed identifier and the three shape normalisations.
+- **Robustness.** Fuzz is at 0 crashes again, but 0.22.0 opened one new trap
+  class first: its class dumper walks the ObjC ancestor chain, which reads
+  `MachOFile.dependencies`, which `try!`-reads each dylib command's name.
+  `container-fuzz.py libSample.dylib 150 7` mutant 63 and `sample.release 150
+  7` mutant 104 killed `dump`/`interface` by SIGTRAP (0.19.0: 0 crashes, same
+  mutants). The preflight now bounds dylib name offsets to their command.
+- **Performance, the open cost.** With the fork pin gone, `MachOFile.cache`
+  re-opens the dyld cache on each access again, but `sample` puts that at
+  about 2.5% now (0.22 no longer touches `.cache` per symbol). Two larger
+  upstream costs dominate on standalone ObjC-heavy apps: (a) `dump`/`interface`
+  resolve every class's ObjC ancestor chain inside the system dyld cache, and
+  MachOKit's `DyldCache.locateValue` re-reads `headerOptimizationRO64` and
+  `mappingInfos` on every call (3,235 of 5,225 samples on Keynote `dump`:
+  1.35 s to 20.2 s; GoodLinks 7.4 s to 54.5 s; the sampled self-dump is the
+  symbol-index demangling sweep as before). (b) `objc` resolves referenced
+  protocol infos recursively with per-slot `resolveString` fixup lookups
+  (Keynote `objc` 60 s to 2,424 s). Both are upstream defects to report or
+  patch in a fork (memoise `DyldCache` header parsing; memoise protocol
+  infos); swiftdc's own `objc` path could pass `ObjCInfoOptions.headerDump`
+  if that proves output-identical. Not done on this branch: no push.
 
 ## What's left, by risk tier
 
@@ -70,12 +107,9 @@ yet done in the 2026-10-09 session:
 - **In progress on side branches (2026-10-10):** `upgrade/machoswiftsection`,
   `improve/indirect-returns` (x8 results) and `improve/async-funclets`, each
   in its own worktree. Check their commit logs before redoing any of it.
-- **Upgrade decision pending:** MachOSwiftSection 0.19 → 0.22 (soundness
-  fixes for field offsets and vtable names, Swift 6.4, macOS 27 split-cache
-  speed). Costs: MachOKit fork fix (MachOKit#1 was closed unmerged; 0.54.101
-  lacks it), a possible duplicate-Capstone link with 0.20's swift-capstone,
-  API churn. Recommended as its own branch, gated on build, `dump` timing,
-  and a reviewed four-image diff.
+- **Performance after the 0.22 upgrade:** see the dependencies section above;
+  the merge decision for `upgrade/machoswiftsection` turns on whether the two
+  upstream costs are patched first.
 - **Readability:** the structurer's `cond <op>` fallback (an `fcmp`/`ccmp` or
   out-of-block flag setter) renders an opaque `if (cond ==)`.
 - **Research items not yet done** (docs/research/swift-source/README.md):
