@@ -6,7 +6,7 @@ thread. This is **tier-5 (conversation-memory) authority** per
 git history, and measurements. Verify each claim against HEAD before acting, and
 delete items from this file as they ship.
 
-_Last updated: 2026-10-10, on branch `improve/source-findings` at `1eb659d`
+_Last updated: 2026-10-10, on branch `improve/source-findings` at `ba10879`
 (unmerged; also carries `f6a4e0c`, the Swift-source research notes cherry-picked
 from `research/swift-source-mining`)._
 
@@ -56,11 +56,19 @@ yet done in the 2026-10-09 session:
   after `sub_…`) is not recognised as a throw exit; it declines.
 - **Robustness, next probe:** every fuzz set measured so far is at 0 crashes
   (container on `libSample.dylib`; metadata on `libSample.dylib` 1234,
-  `sample.release` 4242, `libReconstruction.opt.dylib` 777). Each new binary
+  `sample.release` 4242 and 99, `libReconstruction.opt.dylib` 777,
+  `libReconstruction.resilient.dylib` 31). Preflight now walks every fixup
+  chain (`ba10879`) and refuses misaligned descriptor-table targets
+  (`357bfa9`). A corrupt `next` that lands on an aligned slot only skips a
+  fixup; that is a possible soundness gap (a raw chained value read as a
+  plain pointer), not a crash. Each new binary
   or seed has found new classes, so more seeds and binaries (an arm64e image,
   a fat file, a large real framework) are the next probe. ObjC categories' and protocols' own fields are not yet
   walked (only the category-list slots), nor are pointer-based (entsize 24)
   method lists or arm64e chained formats, which decline.
+- **In progress on side branches (2026-10-10):** `upgrade/machoswiftsection`,
+  `improve/indirect-returns` (x8 results) and `improve/async-funclets`, each
+  in its own worktree. Check their commit logs before redoing any of it.
 - **Upgrade decision pending:** MachOSwiftSection 0.19 → 0.22 (soundness
   fixes for field offsets and vtable names, Swift 6.4, macOS 27 split-cache
   speed). Costs: MachOKit fork fix (MachOKit#1 was closed unmerged; 0.54.101
