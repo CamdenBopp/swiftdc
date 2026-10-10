@@ -449,11 +449,16 @@ control: the canonical Swift compiler's own English phrasing (which this documen
 changes per `Node::Kind` — e.g. `"@objc "` carries *no* substring in common with "thunk"
 even though `To` **is** a thunk per the grammar, `Mangling.rst:248` vs
 `NodePrinter.cpp:1863-1865`), *and* the third-party port's independent reimplementation
-of that phrasing. `nonInstanceMarkers` matching `"@objc "` but not `"@nonobjc "`
-(`Disassembler.swift:1413-1419` vs. `NodePrinter.cpp:1860-1862`) is exactly the shape of
-gap this produces: `TO`-thunked calls (ObjC-as-swift) are currently invisible to that
-non-instance check, silently, because the check is string-shaped instead of
-kind-shaped.
+of that phrasing. ~~`nonInstanceMarkers` matching `"@objc "` but not `"@nonobjc "` is exactly the shape of
+gap this produces.~~ **Checked 2026-10-09: not a defect.** A `@nonobjc` thunk (`TO`) is
+a Swift-convention wrapper whose `self` *is* in x20, so it must count as an instance
+member, and it does: `"@nonobjc "` does not contain the substring `"@objc "`. Only the
+`@objc` thunk (`To`, entered from Objective-C with `self` in x0) needs excluding. No
+rendered target (four dyld-cache images, every fixture) has a `@nonobjc` callee at
+all. `" of "` does exclude `dispatch thunk of …`, whose `self` is in x20, but that
+only declines `self` naming, the safe direction. So Node.Kind classification is a
+robustness change (independence from printed wording), with no measured soundness
+defect behind it; it ranks below the open soundness and completeness items.
 
 The vendored port's `Node.Kind` enum (`Sources/Demangling/Node/Node+Kind.swift` in the
 `swift-demangling` checkout) mirrors the canonical `Node::Kind` cases named throughout

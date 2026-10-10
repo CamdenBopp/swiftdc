@@ -30,8 +30,9 @@ robustness, speed), and by cost:
 1. **Same-address symbol-collision guard before naming** (soundness). The ICF
    measurement proves the current failure mode; the 0.19.0 vtable-by-descriptor
    fix is the upstream half. Cheap, high-leverage.
-2. **Classify symbol roles on `Node.Kind`, not printed text** (soundness +
-   robustness). Fixes the `Wy`→`WOy`-style staleness and the `@objc`/`@nonobjc`
+2. **Classify symbol roles on `Node.Kind`, not printed text** (robustness; the
+   `@nonobjc` soundness gap claimed for it was checked on 2026-10-09 and is not real,
+   see mangling-grammar.md §5.1). Fixes the `Wy`→`WOy`-style staleness and the `@objc`/`@nonobjc`
    gap, and de-risks the just-completed swift-demangling 0.4→0.6.3 move.
 3. ~~**Gate the x21 swifterror heuristic on typed-throws and async**~~ (soundness). Typed throws keeps x21 (measured); the real typed-throws defect was the signature parse, fixed with async return declines on 2026-10-09.
 4. **Wire in `SwiftInspection`** for enum spare-bits layout and arm64e-verified
