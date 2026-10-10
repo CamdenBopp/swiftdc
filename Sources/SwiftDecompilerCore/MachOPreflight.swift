@@ -71,14 +71,17 @@ public enum MachOPreflight {
     /// Only a prefix is read — enough for the header and, where it fits, the
     /// load commands. Nothing here needs the whole file.
     public static func validate(url: URL) throws {
-        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil
-        guard let fileSize = size else {
-            throw BinaryLoadError("Cannot determine size of \(url.path)")
-        }
         guard let handle = try? FileHandle(forReadingFrom: url) else {
             throw BinaryLoadError("Cannot open \(url.path)")
         }
         defer { try? handle.close() }
+        // The size of what the handle reads. `attributesOfItem` describes a
+        // symlink itself, so `/usr/bin/ex` (a link to `vim`) measured 3 bytes.
+        guard let end = try? handle.seekToEnd(), let fileSize = Int(exactly: end),
+              (try? handle.seek(toOffset: 0)) != nil
+        else {
+            throw BinaryLoadError("Cannot determine size of \(url.path)")
+        }
         // 1 MiB covers the header plus load commands of any binary in practice;
         // where it does not, the arithmetic checks still apply and the
         // load-command walk simply stops at the end of what was read.

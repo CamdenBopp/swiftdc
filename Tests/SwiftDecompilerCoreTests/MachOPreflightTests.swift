@@ -1113,3 +1113,16 @@ private func expectMutantsRejected(_ path: String, _ mutants: [(String, [(Int, U
         #expect(throws: (any Error).self, "\(what)") { try MachOPreflight.validate(url: url) }
     }
 }
+
+/// `validate(url:)` sized the file with `attributesOfItem`, which describes a
+/// symlink itself, not its target: `/usr/bin/ex` (a link to `vim`) was
+/// "3 byte(s); too short to contain a magic number", and 47 of the 1,434
+/// arm64e system binaries were refused the same way.
+@Test func validatesABinaryReachedThroughASymlinkIfPresent() throws {
+    let target = URL(fileURLWithPath: "Fixtures/Sample/sample.release").standardizedFileURL
+    guard FileManager.default.fileExists(atPath: target.path) else { return }
+    let link = FileManager.default.temporaryDirectory.appendingPathComponent("swiftdc-link-\(UUID().uuidString)")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+    defer { try? FileManager.default.removeItem(at: link) }
+    #expect(throws: Never.self) { try MachOPreflight.validate(url: link) }
+}
