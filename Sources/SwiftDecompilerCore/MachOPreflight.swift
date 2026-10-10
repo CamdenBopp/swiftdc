@@ -45,6 +45,20 @@ public enum MachOPreflight {
         static let segment64: UInt32 = 0x19
         static let symtab: UInt32 = 0x2
         static let chainedFixups: UInt32 = 0x8000_0034   // LC_DYLD_CHAINED_FIXUPS
+        /// Every command whose payload is a `struct dylib` (a name as an
+        /// `lc_str` offset into the command, then three version words).
+        static let dylibCommands: Set<UInt32> = [
+            0xc,            // LC_LOAD_DYLIB
+            0xd,            // LC_ID_DYLIB
+            0x20,           // LC_LAZY_LOAD_DYLIB
+            0x8000_0018,    // LC_LOAD_WEAK_DYLIB
+            0x8000_001f,    // LC_REEXPORT_DYLIB
+            0x8000_0023,    // LC_LOAD_UPWARD_DYLIB
+        ]
+        /// `sizeof(struct dylib_command)`: `cmd`, `cmdsize`, then `struct dylib`
+        /// (name offset, timestamp, current_version, compatibility_version).
+        /// The name string starts at or after this.
+        static let dylibCommandHeader = 24
     }
 
     /// Section types that occupy no bytes in the file: their `size` describes
@@ -1585,8 +1599,38 @@ public enum MachOPreflight {
                 at: offset, prefix: prefix, fileSize: fileSize, is64: is64,
                 bigEndian: bigEndian, fail: fail
             )
+        case let cmd where Command.dylibCommands.contains(cmd):
+            try validateDylib(at: offset, prefix: prefix, bigEndian: bigEndian, index: index, fail: fail)
         default:
             break
+        }
+    }
+
+    /// A dylib command's name must lie inside the command itself.
+    ///
+    /// `struct dylib.name` is an `lc_str`: an offset from the start of the
+    /// command to a NUL-terminated path that the command's own `cmdsize`
+    /// covers. MachOKit's `DylibCommand.dylib(in:)` reads that string with
+    /// `try! readString(offset: commandOffset + name.offset, size: cmdsize -
+    /// name.offset)`, so an offset past `cmdsize` is an uncatchable trap
+    /// (`FileIOBinary/_FileIOProtocol+.swift:242`, `offsetOutOfBounds`).
+    /// Confirmed live at the MachOSwiftSection 0.22.0 pin: its class dumper
+    /// walks the ObjC ancestor chain, which reads `MachOFile.dependencies`,
+    /// which decodes every dylib command. `container-fuzz.py libSample.dylib
+    /// 150 7` mutant 63 (LC_LOAD_WEAK_DYLIB name offset's top byte) and
+    /// `sample.release 150 7` mutant 104 (LC_LOAD_DYLIB name offset's third
+    /// byte) each killed `dump` and `interface` by SIGTRAP; 0.19.0 never read
+    /// dependencies on that path, so the same mutants only failed cleanly there.
+    private static func validateDylib(
+        at offset: Int, prefix: Data, bigEndian: Bool, index: Int, fail: (String) -> BinaryLoadError
+    ) throws {
+        guard let cmdsize = prefix.u32(at: offset + 4, bigEndian: bigEndian),
+              let nameOffset = prefix.u32(at: offset + 8, bigEndian: bigEndian)
+        else { return }   // beyond the prefix: our limit, not a bad file
+        guard nameOffset >= UInt32(Command.dylibCommandHeader), nameOffset < cmdsize else {
+            throw fail(
+                "load command \(index) puts its dylib name at offset \(nameOffset) of a \(cmdsize)-byte command"
+            )
         }
     }
 
