@@ -924,7 +924,8 @@ private let objcData: [(name: String, addr: UInt64, size: Int)] = [("__objc_data
 /// A one-class image in plain pointers: the class at 0x1000 (`__objc_data`),
 /// its read-only data at 0x2000 (`__objc_const`), a name at 0x3000.
 private func oneClassReader(
-    cache: UInt64 = 0, ivarList: UInt64 = 0, ivarHeader: (UInt32, UInt32) = (32, 1), ivarType: UInt64 = 0x3000
+    cache: UInt64 = 0, ivarList: UInt64 = 0, ivarHeader: (UInt32, UInt32) = (32, 1), ivarType: UInt64 = 0x3000,
+    methodList: UInt64 = 0, ivarName: UInt64 = 0x3000
 ) -> MachOPreflight.PointerReader {
     func words(_ values: [UInt64], size: Int) -> Data {
         var data = Data()
@@ -934,11 +935,11 @@ private func oneClassReader(
     // The class at 0x1000 and its own metaclass at 0x1080.
     var objcData = words([0x1080, 0, cache, 0, 0x2000], size: 0x80)
     objcData += words([0, 0, 0, 0, 0x2000], size: 0x80)
-    var objcConst = words([0, 0, 0, 0x3000, 0, 0, ivarList, 0, 0], size: 0x100)
+    var objcConst = words([0, 0, 0, 0x3000, methodList, 0, ivarList, 0, 0], size: 0x100)
     // An ivar list at 0x2080 with one 32-byte entry: offset, name, type.
     var list = Data()
     for word in [ivarHeader.0, ivarHeader.1] { withUnsafeBytes(of: word.littleEndian) { list.append(contentsOf: $0) } }
-    list += words([0x4000, 0x3000, ivarType, 0], size: 32)
+    list += words([0x4000, ivarName, ivarType, 0], size: 32)
     objcConst.replaceSubrange(0x80..<(0x80 + list.count), with: list)
     return MachOPreflight.PointerReader(
         sections: [
@@ -946,6 +947,7 @@ private func oneClassReader(
             ("__objc_const", 0x2000, 0x100, 0, objcConst),
             ("__cstring", 0x3000, 0x100, 0, nil),
             ("__objc_ivar", 0x4000, 0x10, 0, nil),
+            ("__const", 0x5000, 0x100, 0, nil),
         ],
         encodings: [0: .plain])
 }
@@ -967,6 +969,19 @@ private func oneClassReader(
     }
     #expect(throws: (any Error).self) {
         try MachOPreflight.validateObjCClasses([0x1000], reader: oneClassReader(ivarList: 0x2080, ivarHeader: (32, 500)))
+    }
+}
+
+/// x86_64 slices lay Objective-C metadata out differently from arm64: a
+/// pointer-based method list in `__objc_data` (86 in the arm64e sweep's fat
+/// system binaries) and ivar and property names in `__TEXT,__const` (7 in
+/// the universal binaries under /Applications).
+@Test func acceptsTheX86_64ObjCLayouts() throws {
+    try MachOPreflight.validateObjCClasses([0x1000], reader: oneClassReader(methodList: 0x10c0))
+    try MachOPreflight.validateObjCClasses([0x1000], reader: oneClassReader(ivarList: 0x2080, ivarName: 0x5000))
+    // A method list is still never in a string section.
+    #expect(throws: (any Error).self) {
+        try MachOPreflight.validateObjCClasses([0x1000], reader: oneClassReader(methodList: 0x3000))
     }
 }
 

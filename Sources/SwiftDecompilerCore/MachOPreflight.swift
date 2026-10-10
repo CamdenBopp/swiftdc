@@ -577,13 +577,17 @@ public enum MachOPreflight {
         }
         let classSections: Set<String> = ["__objc_data", "__data"]
         let strings: Set<String> = ["__objc_classname", "__cstring", "__const"]
-        let names: Set<String> = ["__objc_methname", "__cstring"]
+        // x86_64 slices also keep ivar and property names in `__TEXT,__const`
+        // (7 in the 1,609 universal binaries under /Applications).
+        let names: Set<String> = ["__objc_methname", "__cstring", "__const"]
         /// A `class_ro_t`, of a class or a metaclass. No field of one, and no
         /// list entry it reaches, is ever a bind in the measured binaries.
         func walkReadOnlyData(_ ro: UInt64) throws {
             try check(ro + 16, "ivar layout", in: ["__cstring", "__objc_classname"], bind: false, aligned: false)
             try check(ro + 24, "class name", in: strings, null: false, bind: false, aligned: false)
-            try check(ro + 32, "method list", in: ["__objc_methlist", "__objc_const", "__objc_methname"],
+            // x86_64 slices keep pointer-based method lists in `__objc_data`
+            // (all 86 such lists in the arm64e sweep's fat system binaries).
+            try check(ro + 32, "method list", in: ["__objc_methlist", "__objc_const", "__objc_methname", "__objc_data"],
                       bind: false, mask: 7)
             let protocols = try check(ro + 40, "protocol list", in: ["__objc_const"], bind: false)
             let ivars = try check(ro + 48, "ivar list", in: ["__objc_const"], bind: false)
