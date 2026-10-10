@@ -537,16 +537,29 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   Measured: every subcommand on the three mutants now exits 1 with dyld's
   reason. A sweep of 328 real on-disk Mach-O files (`/bin`, `/usr/bin`,
   `/usr/sbin`, Xcode dylibs, app and kext binaries) gave 0 rejections and 0
-  crashes. `Tools/container-fuzz.py Fixtures/Sample/libSample.dylib 120 7`:
-  3 crashes before (`0c3bb54`), 1 after; every mutant newly rejected is one
-  dyld also refuses (checked by `dlopen` after re-signing). Guarded by the
-  segment tests in `MachOPreflightTests`.
-- **MITIGATED — a bounded fuzz now exists, and its yield is measured.** 120
-  random mutants over the load-command region (fixed seed): **83 accepted, 34
-  clean nonzero exits, 3 crashes (2.5%)** — 2 SIGTRAP, 1 SIGBUS, all three
-  reducing to the uncontainable class above. Before the payload fix the same
-  class of input crashed on every mutation that touched a segment or symtab
-  range. This is a harness run by hand, not a CI gate.
+  crashes. Guarded by the segment tests in `MachOPreflightTests`.
+
+  Two more of dyld's rules close the rest of the class the fuzz still found:
+  "section '…' end address … is beyond containing segment's end address …"
+  (a flipped top byte of a section `addr`; SIGSEGV/SIGTRAP), and "chained
+  fixups, seg_count exceeds number of segments" (a flipped `cmd` byte turns a
+  segment into an unknown command and its memory vanishes; SIGSEGV). The
+  address rule skips unmapped segments and debug sections: a Go binary's
+  `__DWARF` (`vmsize` 0, `S_ATTR_DEBUG`, sections sized past its empty range)
+  loads under dyld, and the first version of the rule falsely rejected
+  `com.docker.build` in the real-binary sweep.
+
+  Measured with `Tools/container-fuzz.py Fixtures/Sample/libSample.dylib 120 7`
+  plus a second 120-mutant set drawn in a different RNG order: **6 + 3 crashes
+  before (`0c3bb54`), 0 now.** Every mutant rejected with a dyld-attributed
+  message (92) is one dyld also refuses after re-signing; 0 disagreements. A
+  real-binary sweep of 465 on-disk Mach-O files (system, Xcode, apps, kexts,
+  fat and thin): 0 rejected, 0 crashed.
+- **MITIGATED — a bounded container fuzz exists, and its yield is measured.**
+  It is now committed as `Tools/container-fuzz.py` (seeded, deterministic;
+  exits nonzero on any crash). History: 3 crashes in 120 (2.5%) after the
+  payload fix; 0 in 240 after the dyld-rule preflight above. Still run by
+  hand, not a CI gate.
 - **FIXED — the `--cache` entry point trapped on a short file.** The recorded
   reasoning ("the system cache is not attacker-supplied") held only for `--cache`
   *omitted*; an extracted cache passed by path is user-supplied, and that

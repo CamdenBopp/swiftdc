@@ -36,10 +36,15 @@ public enum MachOPreflight {
         static let loadable: Set<UInt32> = [0x2, 0x6, 0x8]
     }
 
+    private enum SectionAttribute {
+        static let debug: UInt32 = 0x0200_0000   // S_ATTR_DEBUG
+    }
+
     private enum Command {
         static let segment32: UInt32 = 0x1
         static let segment64: UInt32 = 0x19
         static let symtab: UInt32 = 0x2
+        static let chainedFixups: UInt32 = 0x8000_0034   // LC_DYLD_CHAINED_FIXUPS
     }
 
     /// Section types that occupy no bytes in the file: their `size` describes
@@ -112,6 +117,24 @@ public enum MachOPreflight {
         // code, so in any real app it is far beyond the 1 MiB header window.
         // Validating only what the prefix happened to cover would leave exactly
         // the large binaries unprotected.
+        // dyld: "chained fixups, seg_count exceeds number of segments". The
+        // fixups record how many segments the image has; when a segment's
+        // load command no longer reads as one (a flipped `cmd` byte), its
+        // memory is gone and metadata pointers into it read unmapped pages
+        // (SIGSEGV in `dump`/`interface`, measured by `container-fuzz.py`).
+        if let fixups = chainedFixups(prefix: prefix),
+           (try? handle.seek(toOffset: UInt64(fixups.dataoff))) != nil,
+           let header = try? handle.read(upToCount: 8), header.count == 8,
+           let startsOffset = header.u32(at: 4),
+           UInt64(startsOffset) + 4 <= UInt64(fixups.datasize),
+           (try? handle.seek(toOffset: UInt64(fixups.dataoff) + UInt64(startsOffset))) != nil,
+           let starts = try? handle.read(upToCount: 4), let segCount = starts.u32(at: 0),
+           Int(segCount) > fixups.segments {
+            throw BinaryLoadError(
+                "Malformed Mach-O: \(url.path) — chained fixups describe \(segCount) segment(s) but the image has \(fixups.segments); dyld refuses to load such an image"
+            )
+        }
+
         for table in relativePointerTables(prefix: prefix, fileSize: fileSize) {
             guard table.size > 0, let _ = try? handle.seek(toOffset: UInt64(table.offset)),
                   let bytes = try? handle.read(upToCount: table.size), bytes.count == table.size
@@ -214,6 +237,33 @@ public enum MachOPreflight {
     /// rejecting valid binaries, which this project treats as worse than the
     /// crash. The ones covered here are the severe ones anyway: corrupting any
     /// of them kills **every** subcommand.
+    /// The `LC_DYLD_CHAINED_FIXUPS` payload of a thin little-endian loadable
+    /// image, in bounds, with the number of segment commands beside it.
+    static func chainedFixups(prefix: Data) -> (dataoff: Int, datasize: Int, segments: Int)? {
+        guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE,
+              let filetype = prefix.u32(at: 12), FileType.loadable.contains(filetype),
+              let ncmds = prefix.u32(at: 16), let sizeofcmds = prefix.u32(at: 20)
+        else { return nil }
+        let limit = min(Layout.machHeader64 + Int(sizeofcmds), prefix.count)
+        var cursor = Layout.machHeader64
+        var segments = 0
+        var payload: (Int, Int)?
+        for _ in 0..<Int(ncmds) {
+            guard cursor + Layout.minLoadCommand <= limit,
+                  let cmd = prefix.u32(at: cursor), let cmdsize = prefix.u32(at: cursor + 4),
+                  cmdsize >= UInt32(Layout.minLoadCommand)
+            else { return nil }   // an unread command could be a segment: no count
+            if cmd == Command.segment64 { segments += 1 }
+            if cmd == Command.chainedFixups,
+               let dataoff = prefix.u32(at: cursor + 8), let datasize = prefix.u32(at: cursor + 12) {
+                payload = (Int(dataoff), Int(datasize))
+            }
+            cursor += Int(cmdsize)
+        }
+        guard let (dataoff, datasize) = payload, datasize >= 8 else { return nil }
+        return (dataoff, datasize, segments)
+    }
+
     private static func relativePointerTables(
         prefix: Data, fileSize: Int
     ) -> [(name: String, offset: Int, size: Int)] {
@@ -485,11 +535,17 @@ public enum MachOPreflight {
         let fileoff: Int
         let filesize: Int
         let nsects: UInt32
+        // The segment's memory range, which every section must lie inside.
+        let vmStart: UInt64
+        let vmEnd: UInt64
         if is64 {
             guard let off = prefix.u64(at: offset + 40, bigEndian: bigEndian),
                   let size = prefix.u64(at: offset + 48, bigEndian: bigEndian),
-                  let count = prefix.u32(at: offset + 64, bigEndian: bigEndian)
+                  let count = prefix.u32(at: offset + 64, bigEndian: bigEndian),
+                  let vmaddr = prefix.u64(at: offset + 24, bigEndian: bigEndian),
+                  let vmsize = prefix.u64(at: offset + 32, bigEndian: bigEndian)
             else { return }   // beyond the prefix — our limit, not a bad file
+            (vmStart, vmEnd) = (vmaddr, vmaddr.addingReportingOverflow(vmsize).partialValue)
             // Clamp rather than convert: `Int(_:)` traps above `Int.max`, which is
             // exactly the input this validator exists to survive. A clamped value
             // still fails the bounds check below.
@@ -497,9 +553,12 @@ public enum MachOPreflight {
         } else {
             guard let off = prefix.u32(at: offset + 32, bigEndian: bigEndian),
                   let size = prefix.u32(at: offset + 36, bigEndian: bigEndian),
-                  let count = prefix.u32(at: offset + 48, bigEndian: bigEndian)
+                  let count = prefix.u32(at: offset + 48, bigEndian: bigEndian),
+                  let vmaddr = prefix.u32(at: offset + 24, bigEndian: bigEndian),
+                  let vmsize = prefix.u32(at: offset + 28, bigEndian: bigEndian)
             else { return }
             (fileoff, filesize, nsects) = (Int(off), Int(size), count)
+            (vmStart, vmEnd) = (UInt64(vmaddr), UInt64(vmaddr) + UInt64(vmsize))
         }
 
         guard fileoff <= fileSize, filesize <= fileSize - fileoff else {
@@ -523,6 +582,32 @@ public enum MachOPreflight {
                     throw fail(
                         "section \(section) of segment '\(owner)' names segment '\(declared)'; dyld refuses to load such an image"
                     )
+                }
+                // dyld: "section '…' end address … is beyond containing
+                // segment's end address …". A section addressed outside its
+                // segment points every metadata read through it at unmapped
+                // memory (SIGSEGV in `dump`, SIGTRAP in `objc`, measured).
+                let addr: UInt64?
+                let size: UInt64?
+                if is64 {
+                    (addr, size) = (prefix.u64(at: base + 32, bigEndian: bigEndian),
+                                    prefix.u64(at: base + 40, bigEndian: bigEndian))
+                } else {
+                    (addr, size) = (prefix.u32(at: base + 32, bigEndian: bigEndian).map(UInt64.init),
+                                    prefix.u32(at: base + 36, bigEndian: bigEndian).map(UInt64.init))
+                }
+                // An unmapped segment (`vmsize` 0) and a debug section
+                // (`S_ATTR_DEBUG`) are never read through memory. A Go binary's
+                // `__DWARF` is both, with sections sized past its empty range,
+                // and dyld loads it (`com.docker.build`, measured).
+                let mapped = vmEnd > vmStart && flags & SectionAttribute.debug == 0
+                if mapped, let addr, let size {
+                    let (end, overflow) = addr.addingReportingOverflow(size)
+                    guard addr >= vmStart, !overflow, end <= vmEnd else {
+                        throw fail(
+                            "section \(section) of segment '\(owner)' spans 0x\(String(addr, radix: 16))..<0x\(String(end, radix: 16)), outside the segment's 0x\(String(vmStart, radix: 16))..<0x\(String(vmEnd, radix: 16)); dyld refuses to load such an image"
+                        )
+                    }
                 }
             }
             // A zero-fill section occupies no file bytes; its `size` is a memory

@@ -521,3 +521,61 @@ private func segmentNameOffsets(_ data: Data) -> [String: (segment: Int, section
     // One unnamed segment holding `__TEXT`, `__DATA` and `__LD` sections.
     #expect(!rejects(object))
 }
+
+private func u32(_ data: Data, _ at: Int) -> UInt32 {
+    data.subdata(in: at..<at + 4).withUnsafeBytes { $0.load(as: UInt32.self) }
+}
+
+private func setU64(_ data: inout Data, _ at: Int, _ value: UInt64) {
+    withUnsafeBytes(of: value.littleEndian) { data.replaceSubrange(at..<at + 8, with: $0) }
+}
+
+/// dyld: "section '__swift5_types' end address 0xF900000000004428 is beyond
+/// containing segment's end address 0x8000" (a fuzz mutant that flipped the top
+/// byte of a section's `addr`; it SIGSEGVed `dump` and `interface`).
+@Test func rejectsASectionAddressedOutsideItsSegmentIfPresent() throws {
+    guard var data = fixtureLoadCommands() else { return }
+    let text = try #require(segmentNameOffsets(data)["__TEXT"])
+    let addr = try #require(text.sections.first) + 16   // segname (+16) → addr (+32)
+    setU64(&data, addr, 0xF900_0000_0000_4000)
+    #expect(rejects(data))
+}
+
+/// A Go binary's `__DWARF` is an unmapped segment (`vmsize` 0) of debug
+/// sections sized past its empty range, and dyld loads it
+/// (`com.docker.build`): the address rule must not apply to it.
+@Test func acceptsDebugSectionsOfAnUnmappedSegmentIfPresent() throws {
+    guard var data = fixtureLoadCommands() else { return }
+    let segment = try #require(segmentNameOffsets(data)["__DATA"])
+    setU64(&data, segment.segment + 24, 0)               // segname (+8) → vmsize (+32)
+    for section in segment.sections {
+        let flags = section + 48                          // segname (+16) → flags (+64)
+        var value = u32(data, flags) | 0x0200_0000
+        withUnsafeBytes(of: &value) { data.replaceSubrange(flags..<flags + 4, with: $0) }
+    }
+    #expect(!rejects(data))
+}
+
+/// dyld: "chained fixups, seg_count exceeds number of segments". A flipped
+/// byte in a segment's `cmd` turns it into an unknown command, its memory
+/// vanishes, and metadata pointers into it read unmapped pages (SIGSEGV in
+/// `dump`/`interface`). The fixups payload sits in `__LINKEDIT`, so this goes
+/// through `validate(url:)`, which reads it from the file.
+@Test func rejectsAnImageThatLostASegmentItsFixupsCountIfPresent() throws {
+    guard var data = fixtureLoadCommands() else { return }
+    let segment = try #require(segmentNameOffsets(data)["__DATA"])
+    let cmd = segment.segment - 8
+    data[cmd + 3] = 0x1d                                  // LC_SEGMENT_64 → 0x1d000019
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("swiftdc-lost-segment-\(UUID().uuidString).dylib")
+    try data.write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+    #expect(throws: (any Error).self) { try MachOPreflight.validate(url: url) }
+
+    // The untouched image passes the same path.
+    let original = url.deletingLastPathComponent()
+        .appendingPathComponent("swiftdc-intact-\(UUID().uuidString).dylib")
+    try fixtureLoadCommands()?.write(to: original)
+    defer { try? FileManager.default.removeItem(at: original) }
+    try MachOPreflight.validate(url: original)
+}
