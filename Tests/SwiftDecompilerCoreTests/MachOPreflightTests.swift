@@ -1049,3 +1049,25 @@ private func oneClassReader(
         #expect(throws: (any Error).self, "\(what)") { try MachOPreflight.validate(url: url) }
     }
 }
+
+/// `metadata-fuzz.py libReconstruction.resilient.dylib 150 31`, mutants 64
+/// and 124: `__swift5_proto` entries aimed into the middle of a descriptor.
+@Test func rejectsTheFuzzedMisalignedConformanceMutantsIfPresent() throws {
+    try expectMutantsRejected("Fixtures/Sample/libReconstruction.resilient.dylib", [
+        ("proto mutant 64", [(0xcb28, 249), (0xcb1c, 246)]),
+        ("proto mutant 124", [(0xcb2c, 85)]),
+    ])
+}
+
+private func expectMutantsRejected(_ path: String, _ mutants: [(String, [(Int, UInt8)])]) throws {
+    guard let original = FileManager.default.contents(atPath: path) else { return }
+    for (what, edits) in mutants {
+        var data = original
+        for (offset, value) in edits { data[offset] = value }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("swiftdc-mutant-\(UUID().uuidString)")
+        try data.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        #expect(throws: (any Error).self, "\(what)") { try MachOPreflight.validate(url: url) }
+    }
+}

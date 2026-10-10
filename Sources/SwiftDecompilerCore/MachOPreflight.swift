@@ -1127,6 +1127,18 @@ public enum MachOPreflight {
                     """
                 )
             }
+            // Descriptors are 4-byte-aligned records: all 556,643 entries of
+            // these tables in 1,058 real binaries are. A misaligned one is the
+            // middle of a record (`metadata-fuzz.py
+            // libReconstruction.resilient.dylib 150 31`, mutants 64 and 124).
+            guard target % 4 == 0 else {
+                throw BinaryLoadError(
+                    """
+                    Malformed Mach-O: \(path) — \(name)[\(index / 4)] points at offset \(target), \
+                    not a 4-byte-aligned descriptor
+                    """
+                )
+            }
             // Each entry names a descriptor, which is data. One aimed into an
             // instruction section is parsed out of machine code, and the
             // pointers read from it trap (`resolveBind(fileOffset:)` on a

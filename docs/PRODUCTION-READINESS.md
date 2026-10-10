@@ -657,6 +657,13 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   `isa`/`superclass`), so they are refused there, and metaclass read-only data
   is walked like a class's.
 
+  **A resilient build (`libReconstruction.resilient.dylib 150 31`): 6 → 0.**
+  Two `__swift5_proto` mutants aimed a conformance entry into the middle of a
+  descriptor. Descriptors are 4-byte-aligned records: every entry of
+  `__swift5_proto`/`__swift5_types`/`__swift5_protos`/`__swift5_types2` in the
+  1,058 binaries (556,643 of them) targets an aligned word, so a misaligned
+  target is refused.
+
   Dead end, recorded so it is not retried: `__swift5_typeref` is **not** a
   plain table of mangled names. Current toolchains place 16-byte-aligned binary
   records between the names, and walking the section front to back misread
