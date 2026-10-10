@@ -783,3 +783,32 @@ private func rejectsFieldmd(_ bytes: Data) -> Bool {
     defer { try? FileManager.default.removeItem(at: url) }
     #expect(throws: (any Error).self) { try MachOPreflight.validate(url: url) }
 }
+
+// MARK: - Descriptor tables never point into code
+
+/// A `__swift5_proto` entry aimed into `__text` stays inside the file, so the
+/// bounds check passed, but the conformance descriptor was then parsed out of
+/// machine code and its protocol pointer trapped in `resolveBind(fileOffset:)`
+/// (`metadata-fuzz.py sample.release 150 4242`, mutant 31: one byte).
+@Test func rejectsADescriptorEntryPointingIntoCode() throws {
+    var table = Data()
+    withUnsafeBytes(of: Int32(-2000).littleEndian) { table.append(contentsOf: $0) }   // → 2096
+    #expect(throws: (any Error).self) {
+        try MachOPreflight.validateRelativePointerTable(
+            bytes: table, sectionOffset: 4096, fileSize: 8192, name: "__swift5_proto",
+            code: [1024..<3072])
+    }
+    try MachOPreflight.validateRelativePointerTable(
+        bytes: table, sectionOffset: 4096, fileSize: 8192, name: "__swift5_proto",
+        code: [3072..<4000])
+}
+
+@Test func rejectsTheFuzzedConformanceMutantIfPresent() throws {
+    guard var data = FileManager.default.contents(atPath: "Fixtures/Sample/sample.release") else { return }
+    data[0x44fd] = 218
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("swiftdc-proto-\(UUID().uuidString)")
+    try data.write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+    #expect(throws: (any Error).self) { try MachOPreflight.validate(url: url) }
+}

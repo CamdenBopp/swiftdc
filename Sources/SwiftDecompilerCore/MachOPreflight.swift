@@ -165,7 +165,7 @@ public enum MachOPreflight {
             } else {
                 try validateRelativePointerTable(
                     bytes: bytes, sectionOffset: table.offset, fileSize: fileSize,
-                    name: table.name, path: url.path
+                    name: table.name, path: url.path, code: codeRanges(prefix: prefix)
                 )
             }
         }
@@ -341,6 +341,37 @@ public enum MachOPreflight {
             }
             cursor += 8 + span
         }
+    }
+
+    /// File ranges of every section that holds instructions
+    /// (`S_ATTR_PURE_INSTRUCTIONS` or `S_ATTR_SOME_INSTRUCTIONS`) in a thin
+    /// little-endian image.
+    static func codeRanges(prefix: Data) -> [Range<Int>] {
+        guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE,
+              let ncmds = prefix.u32(at: 16), let sizeofcmds = prefix.u32(at: 20)
+        else { return [] }
+        let limit = min(Layout.machHeader64 + Int(sizeofcmds), prefix.count)
+        var cursor = Layout.machHeader64
+        var ranges: [Range<Int>] = []
+        for _ in 0..<Int(ncmds) {
+            guard cursor + Layout.minLoadCommand <= limit,
+                  let cmd = prefix.u32(at: cursor), let cmdsize = prefix.u32(at: cursor + 4),
+                  cmdsize >= UInt32(Layout.minLoadCommand)
+            else { break }
+            if cmd == Command.segment64, let nsects = prefix.u32(at: cursor + 64) {
+                for section in 0..<Int(nsects) {
+                    let base = cursor + 72 + section * 80
+                    guard base + 80 <= limit, let size = prefix.u64(at: base + 40),
+                          let offset = prefix.u32(at: base + 48), let flags = prefix.u32(at: base + 64)
+                    else { break }
+                    if flags & 0x8000_0400 != 0, size > 0, size < UInt64(Int.max) - UInt64(offset) {
+                        ranges.append(Int(offset)..<(Int(offset) + Int(size)))
+                    }
+                }
+            }
+            cursor += Int(cmdsize)
+        }
+        return ranges
     }
 
     /// The `LC_DYLD_CHAINED_FIXUPS` payload of a thin little-endian loadable
@@ -569,7 +600,8 @@ public enum MachOPreflight {
     /// (`Negative value is not representable`) or walks off the mapping with
     /// `strlen` (SIGSEGV) — neither catchable from here.
     static func validateRelativePointerTable(
-        bytes: Data, sectionOffset: Int, fileSize: Int, name: String, path: String = "<data>"
+        bytes: Data, sectionOffset: Int, fileSize: Int, name: String, path: String = "<data>",
+        code: [Range<Int>] = []
     ) throws {
         for index in stride(from: 0, to: bytes.count - (bytes.count % 4), by: 4) {
             guard let raw = bytes.u32(at: index) else { break }
@@ -581,6 +613,18 @@ public enum MachOPreflight {
                     """
                     Malformed Mach-O: \(path) — \(name)[\(index / 4)] is a relative pointer to \
                     offset \(target), outside the \(fileSize)-byte file
+                    """
+                )
+            }
+            // Each entry names a descriptor, which is data. One aimed into an
+            // instruction section is parsed out of machine code, and the
+            // pointers read from it trap (`resolveBind(fileOffset:)` on a
+            // negative offset; `metadata-fuzz.py sample.release 150 4242`).
+            if let range = code.first(where: { $0.contains(target) }) {
+                throw BinaryLoadError(
+                    """
+                    Malformed Mach-O: \(path) — \(name)[\(index / 4)] points at offset \(target), \
+                    inside instructions (\(range.lowerBound)..<\(range.upperBound)), not a descriptor
                     """
                 )
             }
