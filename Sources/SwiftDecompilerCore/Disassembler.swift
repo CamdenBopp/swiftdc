@@ -1419,6 +1419,24 @@ public struct Disassembler: Sendable {
 
         private static let classSymbolPrefix = "_OBJC_CLASS_$_"
 
+        /// The eight bytes at `address` when it lies inside a `__TEXT` literal
+        /// section (`__const`, `__literal4/8/16`): read-only data the linker never
+        /// fixes up, so the bytes on disk are the constant the code loads. Nil
+        /// anywhere else, including every writable or fixup-bearing section,
+        /// where the on-disk bytes are not what runs.
+        func literalWord(at address: UInt64) -> UInt64? {
+            let literalSections: Set<String> = ["__const", "__literal4", "__literal8", "__literal16"]
+            guard let section = machO.sections.first(where: {
+                $0.segmentName == "__TEXT" && literalSections.contains($0.sectionName)
+                    && UInt64($0.address) <= address && address + 8 <= UInt64($0.address) + UInt64($0.size)
+            }) else { return nil }
+            _ = section
+            guard let bytes: [UInt8] = try? machO.readElements(
+                offset: machO.resolveOffset(at: address), numberOfElements: 8
+            ), bytes.count == 8 else { return nil }
+            return bytes.enumerated().reduce(UInt64(0)) { $0 | (UInt64($1.element) << (8 * UInt64($1.offset))) }
+        }
+
         /// The imported symbol a slot binds to, via the chained-fixup imports.
         private func boundSymbol(at slot: UInt64) -> String? {
             guard let fixups = machO.dyldChainedFixups,
@@ -2286,6 +2304,10 @@ public struct Disassembler: Sendable {
         func sanitizeValue(_ value: AbstractValue) -> AbstractValue {
             switch value {
             case .loaded(let address) where resolver.loadedName(at: address) == nil:
+                // A load from the read-only literal pool is the constant itself
+                // (the compiler's lowering of a non-encodable immediate); any
+                // other unnamed load is unknown.
+                if let word = resolver.literalWord(at: address) { return .immediate(word) }
                 return .unknown
             case .binary(let op, let lhs, let rhs):
                 let lhs = sanitizeValue(lhs)

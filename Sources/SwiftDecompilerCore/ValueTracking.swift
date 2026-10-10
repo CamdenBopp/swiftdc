@@ -1910,6 +1910,17 @@ public struct ValueTracer: Sendable {
             }
             write(dest, source(detail.operands[1], in: registers), into: &registers)
 
+        case ARM64_INS_DUP:
+            // `dup v0.2d, x9` replicates a general register into both vector
+            // lanes: the two words the compiler then stores as a pair to fill a
+            // buffer with one repeated value.
+            guard let dest = destinationRegister(detail), detail.operands.count >= 2,
+                  let lane = detail.operands[1].operand.register, lane.kind == .gpr,
+                  dest.widthBits == 128
+            else { clobber(detail, into: &registers); return }
+            let value = source(detail.operands[1], in: registers)
+            write(dest, value == .unknown ? .unknown : .aggregate([value, value]), into: &registers)
+
         case ARM64_INS_MOVI:
             // `movi v0.2d, #0` zeroes a vector register: the two words the
             // compiler then stores as a pair (`stp q0, q0, [x8]`) to zero-fill a
@@ -1946,8 +1957,14 @@ public struct ValueTracer: Sendable {
                       into: &registers)
             case .absolute(let address):
                 // Only pointer-width loads can safely denote a selref/GOT slot.
+                // A 16-byte vector load from a fixed address is two such words
+                // (a literal-pool constant the enrichment pass may read).
                 let isPointerLoad = detail.id == ARM64_INS_LDR || detail.id == ARM64_INS_LDUR
-                write(dest, isPointerLoad ? .loaded(address) : .unknown, into: &registers)
+                if isPointerLoad, dest.kind == .vector, dest.widthBits == 128 {
+                    write(dest, .aggregate([.loaded(address), .loaded(address &+ 8)]), into: &registers)
+                } else {
+                    write(dest, isPointerLoad ? .loaded(address) : .unknown, into: &registers)
+                }
             case .selfField(let offset): write(dest, .selfFieldValue(offset: offset), into: &registers)
             case .vtableMethod(let offset):
                 // The dispatch loads the vtable slot only through a pointer-width

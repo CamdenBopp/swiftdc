@@ -847,7 +847,8 @@ private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
 }
 
 /// Stores through x8 that cover the result type's complete stored-property
-/// layout reconstruct field-wise.
+/// layout reconstruct field-wise: register stores at -Onone, pair/vector stores
+/// (with literal-pool and `dup`-replicated constants) at -O.
 @Test func recoversFieldwiseIndirectStructReturnIfPresent() async throws {
     guard let onone = try await reconstructionPseudo("Wide5.init", in: indirectFixture) else { return }
     #expect(onone.contains("return Indirect.Wide5(a: arg0, b: arg1, c: arg2, d: arg3, e: arg4)"))
@@ -855,6 +856,14 @@ private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
     guard let pair = try await reconstructionPseudo(
         "IntPair.init", in: "Fixtures/Sample/libReconstruction.resilient.dylib") else { return }
     #expect(pair.contains("return Reconstruction.IntPair(a: arg0, b: arg1)"))
+
+    guard let constant = try await reconstructionPseudo(
+        "constantWide", in: "Fixtures/Sample/libIndirect.opt.dylib") else { return }
+    #expect(constant.contains("return Indirect.Wide5(a: 1, b: 2, c: 3, d: 4, e: 5)"))
+
+    guard let replicated = try await reconstructionPseudo(
+        "otherWide", in: "Fixtures/Sample/libIndirect.opt.dylib") else { return }
+    #expect(replicated.contains("return Indirect.Wide5(a: 9, b: 9, c: 9, d: 9, e: 9)"))
 }
 
 /// At -Onone the body calls the memberwise initializer into a temporary and
