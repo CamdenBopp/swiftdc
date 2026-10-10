@@ -109,6 +109,32 @@ public enum MachOPreflight {
             )
         }
 
+        try validateImageContents(
+            prefix: prefix, image: ImageReader(handle: handle, base: 0, size: fileSize), path: url.path
+        )
+    }
+
+    /// One image's bytes: the whole file for a thin image, or one fat slice.
+    /// Offsets are relative to the image, as its load commands give them, and
+    /// a read that would leave the image returns nil.
+    struct ImageReader {
+        let handle: FileHandle
+        let base: Int
+        let size: Int
+
+        func read(offset: Int, count: Int) -> Data? {
+            guard offset >= 0, count >= 0, offset <= size, count <= size - offset,
+                  (try? handle.seek(toOffset: UInt64(base + offset))) != nil,
+                  let data = try? handle.read(upToCount: count), data.count == count
+            else { return nil }
+            return data
+        }
+    }
+
+    /// Section contents of one thin image, whose header and load commands
+    /// start `prefix`.
+    static func validateImageContents(prefix: Data, image: ImageReader, path: String) throws {
+        let fileSize = image.size
         // Section CONTENTS, which the checks above say nothing about. Only the
         // flat relative-pointer tables (see `relativePointerTables`), and only
         // for a thin little-endian image — a fat file's slices are handled above.
@@ -123,34 +149,30 @@ public enum MachOPreflight {
         // memory is gone and metadata pointers into it read unmapped pages
         // (SIGSEGV in `dump`/`interface`, measured by `container-fuzz.py`).
         if let fixups = chainedFixups(prefix: prefix),
-           (try? handle.seek(toOffset: UInt64(fixups.dataoff))) != nil,
-           let header = try? handle.read(upToCount: 8), header.count == 8,
+           let header = image.read(offset: fixups.dataoff, count: 8),
            let startsOffset = header.u32(at: 4),
            UInt64(startsOffset) + 4 <= UInt64(fixups.datasize),
-           (try? handle.seek(toOffset: UInt64(fixups.dataoff) + UInt64(startsOffset))) != nil,
-           let starts = try? handle.read(upToCount: 4), let segCount = starts.u32(at: 0),
+           let starts = image.read(offset: fixups.dataoff + Int(startsOffset), count: 4), let segCount = starts.u32(at: 0),
            Int(segCount) > fixups.segments {
             throw BinaryLoadError(
-                "Malformed Mach-O: \(url.path) — chained fixups describe \(segCount) segment(s) but the image has \(fixups.segments); dyld refuses to load such an image"
+                "Malformed Mach-O: \(path) — chained fixups describe \(segCount) segment(s) but the image has \(fixups.segments); dyld refuses to load such an image"
             )
         }
 
         let objc = sectionExtents(named: ["__objc_methlist", "__objc_selrefs"], prefix: prefix)
         if let methlist = objc["__objc_methlist"], let selrefs = objc["__objc_selrefs"],
            methlist.size > 0, methlist.offset <= fileSize, methlist.size <= fileSize - methlist.offset,
-           (try? handle.seek(toOffset: UInt64(methlist.offset))) != nil,
-           let bytes = try? handle.read(upToCount: methlist.size), bytes.count == methlist.size {
+           let bytes = image.read(offset: methlist.offset, count: methlist.size) {
             try validateObjCMethodLists(
                 bytes: bytes, sectionAddress: methlist.addr,
-                selrefs: (selrefs.addr, selrefs.size), path: url.path,
+                selrefs: (selrefs.addr, selrefs.size), path: path,
                 sectionOffset: methlist.offset, fileSize: fileSize
             )
         }
 
         // Every fixup chain stays inside its page.
         if let fixups = chainedFixups(prefix: prefix),
-           (try? handle.seek(toOffset: UInt64(fixups.dataoff))) != nil,
-           let blob = try? handle.read(upToCount: fixups.datasize), blob.count == fixups.datasize,
+           let blob = image.read(offset: fixups.dataoff, count: fixups.datasize),
            let startsOffset = blob.u32(at: 4), let segmentCount = blob.u32(at: Int(startsOffset)) {
             let segments = segmentFileRanges(prefix: prefix)
             try validateFixupChains(
@@ -158,12 +180,10 @@ public enum MachOPreflight {
                 readSegment: { index in
                     guard index < segments.count else { return nil }
                     let (offset, size) = segments[index]
-                    guard size > 0, size <= 512 << 20, offset <= fileSize, size <= fileSize - offset,
-                          (try? handle.seek(toOffset: UInt64(offset))) != nil
-                    else { return nil }
-                    return try? handle.read(upToCount: size)
+                    guard size > 0, size <= 512 << 20 else { return nil }
+                    return image.read(offset: offset, count: size)
                 },
-                path: url.path
+                path: path
             )
         }
 
@@ -174,8 +194,7 @@ public enum MachOPreflight {
             var imports: UInt32 = 0
             var chained = false
             if let fixups = chainedFixups(prefix: prefix),
-               (try? handle.seek(toOffset: UInt64(fixups.dataoff))) != nil,
-               let blob = try? handle.read(upToCount: fixups.datasize), blob.count == fixups.datasize,
+               let blob = image.read(offset: fixups.dataoff, count: fixups.datasize),
                let startsOffset = blob.u32(at: 4), let importCount = blob.u32(at: 16),
                let segCount = blob.u32(at: Int(startsOffset)) {
                 chained = true
@@ -209,11 +228,10 @@ public enum MachOPreflight {
                 let allowed = table.sections.filter { names.contains($0.name) }
                     .map { (name: $0.name, addr: $0.addr, size: $0.size) }
                 guard !allowed.isEmpty,
-                      (try? handle.seek(toOffset: UInt64(section.offset))) != nil,
-                      let bytes = try? handle.read(upToCount: section.size), bytes.count == section.size
+                      let bytes = image.read(offset: section.offset, count: section.size)
                 else { continue }
                 try validateObjCPointerArray(
-                    bytes: bytes, name: section.name, encoding: encoding, allowed: allowed, path: url.path
+                    bytes: bytes, name: section.name, encoding: encoding, allowed: allowed, path: path
                 )
             }
 
@@ -234,8 +252,7 @@ public enum MachOPreflight {
                 var bytes: Data?
                 if loaded.contains(section.name), section.size > 0, section.size <= 64 << 20,
                    section.offset <= fileSize, section.size <= fileSize - section.offset,
-                   (try? handle.seek(toOffset: UInt64(section.offset))) != nil,
-                   let read = try? handle.read(upToCount: section.size), read.count == section.size {
+                   let read = image.read(offset: section.offset, count: section.size) {
                     bytes = read
                 }
                 reader.sections.append((section.name, section.addr, section.size, section.segment, bytes))
@@ -246,35 +263,34 @@ public enum MachOPreflight {
                     if case .address(let cls)?? = reader.field(at: slot) { classes.append(cls) }
                 }
             }
-            try validateObjCClasses(classes, reader: reader, path: url.path)
+            try validateObjCClasses(classes, reader: reader, path: path)
         }
 
         var mangledNames: [Int] = []
         for table in relativePointerTables(prefix: prefix, fileSize: fileSize) {
-            guard table.size > 0, let _ = try? handle.seek(toOffset: UInt64(table.offset)),
-                  let bytes = try? handle.read(upToCount: table.size), bytes.count == table.size
+            guard table.size > 0, let bytes = image.read(offset: table.offset, count: table.size)
             else { continue }
             if table.name == "__swift5_assocty" {
                 mangledNames += try validateAssociatedTypeTable(
-                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: url.path
+                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: path
                 )
             } else if table.name == "__swift5_builtin" {
                 mangledNames += try validateBuiltinTypeTable(
-                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: url.path
+                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: path
                 )
 
             } else if table.name == "__swift5_fieldmd" {
                 mangledNames += try validateFieldDescriptorTable(
-                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: url.path
+                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: path
                 )
             } else if table.name == "__swift5_mpenum" {
                 mangledNames += try validateMultiPayloadEnumTable(
-                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: url.path
+                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: path
                 )
             } else {
                 try validateRelativePointerTable(
                     bytes: bytes, sectionOffset: table.offset, fileSize: fileSize,
-                    name: table.name, path: url.path, code: codeRanges(prefix: prefix)
+                    name: table.name, path: path, code: codeRanges(prefix: prefix)
                 )
             }
         }
@@ -283,11 +299,10 @@ public enum MachOPreflight {
         if !mangledNames.isEmpty,
            let typeref = sectionTable(prefix: prefix)?.sections.first(where: { $0.name == "__swift5_typeref" }),
            typeref.size > 0, typeref.offset <= fileSize, typeref.size <= fileSize - typeref.offset,
-           (try? handle.seek(toOffset: UInt64(typeref.offset))) != nil,
-           let bytes = try? handle.read(upToCount: typeref.size), bytes.count == typeref.size {
+           let bytes = image.read(offset: typeref.offset, count: typeref.size) {
             try validateMangledNames(
                 at: mangledNames, in: bytes, sectionOffset: typeref.offset, sectionAddress: typeref.addr,
-                segments: mappedSegments(prefix: prefix), name: "__swift5_typeref", path: url.path
+                segments: mappedSegments(prefix: prefix), name: "__swift5_typeref", path: path
             )
         }
     }
