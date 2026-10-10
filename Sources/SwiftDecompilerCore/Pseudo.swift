@@ -38,6 +38,7 @@ public extension DisassembledFunction {
                     // spelled out (executed) at every use.
                     if note.hasPrefix("let r") { return true }
                     if note.hasPrefix("yield ") { return true }
+                    if note.hasPrefix("await hop_to_executor(") { return true }
                     if note.hasPrefix("self = ") { return true }
                     if note.hasPrefix("("), note.contains("self->"), note.contains(" = ") {
                         return true
@@ -71,7 +72,22 @@ public extension DisassembledFunction {
         // A Swift method's receiver arrives in x20, not x0, so show it as an
         // explicit `self:` rather than letting it vanish from the call.
         let parts = insn.callSelf.map { ["self: \($0)"] + arguments } ?? arguments
-        return "\(strippedCallee(callee))(\(parts.joined(separator: ", ")))"
+        let call = "\(strippedCallee(callee))(\(parts.joined(separator: ", ")))"
+        // A suspension point: the tail call is an `await`, and its result is
+        // bound to the name the resume funclet reads it under, when proven.
+        guard let binding = awaitBinding(of: insn) else { return call }
+        return binding.isEmpty ? "await \(call)" : "let \(binding) = await \(call)"
+    }
+
+    /// The `await=<name>` note the analysis attaches to a suspension's tail call:
+    /// nil when the call is not a suspension, empty when it is one whose result
+    /// is not provable.
+    static func awaitBinding(of insn: Instruction) -> String? {
+        guard let annotation = insn.annotation else { return nil }
+        for note in annotation.components(separatedBy: "  ") where note.hasPrefix("await=") {
+            return String(note.dropFirst("await=".count))
+        }
+        return nil
     }
 
     /// ARC runtime helpers that are exact lowerings of a source message send,
@@ -296,17 +312,18 @@ public extension DisassembledFunction {
     private static func demangledName(from annotation: String?) -> String? {
         guard let annotation else { return nil }
         let base = stripNotes(annotation)
-        if base.isEmpty || base.hasPrefix("args(") || base.hasPrefix("self=") || base.hasPrefix("→") {
+        if base.isEmpty || base.hasPrefix("args(") || base.hasPrefix("self=") || base.hasPrefix("→")
+            || base.hasPrefix("await=") {
             return nil
         }
         return base
     }
 
     /// Drop the notes value-tracking appends to an annotation (`self=…`,
-    /// `args(…)`), leaving just the resolved name.
+    /// `args(…)`, `await=…`), leaving just the resolved name.
     private static func stripNotes(_ text: String) -> String {
         var cut = text.endIndex
-        for marker in ["  args(", "  self="] {
+        for marker in ["  args(", "  self=", "  await="] {
             if let range = text.range(of: marker), range.lowerBound < cut { cut = range.lowerBound }
         }
         return String(text[..<cut]).trimmingCharacters(in: .whitespaces)

@@ -491,16 +491,35 @@ public struct Disassembler: Sendable {
             instructions: { self.decodeFunction(at: $0, boundaries: boundaries, in: machO) },
             nameOf: { names[$0] }
         )
+        let enumCaseIndex = EnumCaseIndex.build(in: machO)
+        let classTypeIndex = ClassTypeIndex.build(in: machO)
+        // The chain pass decodes each chain's funclets once more, on demand, so
+        // it still holds nothing beyond one chain at a time.
+        let chainSlots = asyncChainSlots(
+            index: asyncIndex,
+            function: { address in
+                let instructions = self.decodeFunction(at: address, boundaries: boundaries, in: machO)
+                guard !instructions.isEmpty else { return nil }
+                let function = makeFunction(
+                    start: address, instructions: instructions,
+                    labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
+                    metadataNames: metadataNames, objcIndex: objcIndex
+                )
+                return asyncIndex.info(for: address, parentName: { names[$0] })
+                    .map(function.attachingAsyncFunclet) ?? function
+            },
+            enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex
+        )
         let context = PerFunctionContext(
             resolver: resolver, swiftTargets: swiftTargets, objcIndex: objcIndex,
             fieldMaps: (try? FieldMapBuilder.build(in: machO)) ?? [:],
             selfIndex: SelfTypeIndex.build(in: machO),
             vtableIndex: VTableIndex.build(in: machO),
-            enumCaseIndex: EnumCaseIndex.build(in: machO),
+            enumCaseIndex: enumCaseIndex,
             payloadEnumIndex: PayloadEnumCaseIndex.build(in: machO),
             classTypeIndex: ClassTypeIndex.build(in: machO),
             indirectResultUses: indirectResultUses,
-            asyncIndex: asyncIndex
+            asyncIndex: asyncIndex, asyncChainSlots: chainSlots
         )
 
         // Pass 2: decode each span, analyse, render, release. `segment` skips a
@@ -672,6 +691,12 @@ public struct Disassembler: Sendable {
         // (nil == 0) seeds like a scalar and its `!= nil` reconstructs, while a
         // value-typed (tagged) optional still declines.
         let classTypeIndex = ClassTypeIndex.build(in: machO)
+        let groupedByStart = Dictionary(functions.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
+        let chainSlots = asyncChainSlots(
+            index: asyncIndex,
+            function: { groupedByStart[$0] },
+            enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex
+        )
         let context = PerFunctionContext(
             resolver: resolver, swiftTargets: swiftTargets, objcIndex: objcIndex,
             fieldMaps: fieldMaps, selfIndex: selfIndex, vtableIndex: vtableIndex,
@@ -681,7 +706,7 @@ public struct Disassembler: Sendable {
                 functions.map { ($0.startAddress, Self.indirectResultUse(of: $0)) },
                 uniquingKeysWith: { a, _ in a }
             ),
-            asyncIndex: asyncIndex
+            asyncIndex: asyncIndex, asyncChainSlots: chainSlots
         )
         functions = functions.map { analyzeFunction($0, context: context) }
 
@@ -712,6 +737,9 @@ public struct Disassembler: Sendable {
         var indirectResultUses: [UInt64: IndirectResultUse] = [:]
         /// Async funclet chains and their suspension points.
         let asyncIndex: AsyncFuncletIndex
+        /// Per chain (keyed by entry address), the context slots proven to hold
+        /// one value for the whole chain. See `asyncChainSlots`.
+        let asyncChainSlots: [UInt64: [Int: AbstractValue]]
     }
 
     /// Build the async funclet index for an image. The hint sections are read
@@ -726,6 +754,13 @@ public struct Disassembler: Sendable {
         return AsyncFuncletIndex.build(
             hints: hints, functionStarts: boundaries, instructions: instructions, nameOf: nameOf
         )
+    }
+
+    /// `sectionBytes` for a file on disk, so a test can feed the hint-section
+    /// reader without reaching the private reader.
+    func sectionBytesForTesting(address: UInt64, size: Int, path: String) -> Data? {
+        guard let machO = try? BinaryLoader.load(path: path) else { return nil }
+        return sectionBytes(address: address, size: size, in: machO)
     }
 
     /// Decode one function on demand: from `address` to the next sorted boundary
@@ -810,9 +845,14 @@ public struct Disassembler: Sendable {
                 Self.selfFieldMap(of: function, simpleName: $0, fieldMaps: context.fieldMaps)
             }
         }
+        // An async funclet: layer what the async ABI fixes (x22, the awaited
+        // result) over the ordinary convention, and bring the context slots the
+        // chain pass proved.
+        let asyncEntry = Self.asyncConvention(for: function, base: entry, index: context.asyncIndex)
+        let chainSlots = function.asyncFunclet?.parent.flatMap { context.asyncChainSlots[$0] } ?? [:]
         return enrichCallArguments(
             in: function, resolver: context.resolver, swiftTargets: context.swiftTargets,
-            entry: entry,
+            entry: asyncEntry ?? entry,
             fieldMap: fieldMap,
             objcFieldSyntax: objcMethod != nil || symbolEntry != nil,
             selfTypeName: selfTypeName, vtableIndex: context.vtableIndex,
@@ -829,8 +869,126 @@ public struct Disassembler: Sendable {
                 in: function, indirectResultUses: context.indirectResultUses,
                 resolver: context.resolver, fieldMaps: context.fieldMaps,
                 classTypeIndex: context.classTypeIndex
-            )
+            ),
+            asyncContextSlots: chainSlots,
+            asyncSuspensions: Self.asyncSuspensionNotes(in: function, index: context.asyncIndex)
         )
+    }
+
+    // MARK: - Async funclets
+
+    /// The register state the async ABI fixes at a funclet's entry, layered
+    /// over `base` (the entry funclet's ordinary convention; ignored for a
+    /// resume funclet, whose registers carry none of the parameters).
+    ///
+    /// - entry / continuation: x22 is the function's own context.
+    /// - await-return: x22 is the awaited callee's context (its first word is
+    ///   the own context), and the callee's direct result is in x0 or v0,
+    ///   named `awaited<N>`, only when the callee's demangled signature proves a
+    ///   single-register result. An unknown callee seeds no result.
+    /// - unknown kind, or no recovered parent: nil, so nothing is claimed.
+    static func asyncConvention(
+        for function: DisassembledFunction, base: MethodEntryConvention?, index: AsyncFuncletIndex
+    ) -> MethodEntryConvention? {
+        guard let info = function.asyncFunclet, info.parent != nil else { return nil }
+        if info.isEntry {
+            return .asyncFunclet(base: base, seededRegisters: ["x22": .asyncContext])
+        }
+        switch info.kind {
+        case .continuation:
+            return .asyncFunclet(base: nil, seededRegisters: ["x22": .asyncContext])
+        case .awaitReturn:
+            var seeded: [String: AbstractValue] = ["x22": .asyncCalleeContext]
+            if let register = awaitedResultRegister(into: function.startAddress, index: index) {
+                seeded[register] = .awaitResult(info.ordinal)
+            }
+            return .asyncFunclet(base: nil, seededRegisters: seeded)
+        case .unknown, nil:
+            return nil
+        }
+    }
+
+    /// The register (`x0` / `v0`) the awaited call that `resume` continues
+    /// delivers its direct result in, or nil when the callee is unknown, void,
+    /// or returns through several registers.
+    static func awaitedResultRegister(into resume: UInt64, index: AsyncFuncletIndex) -> String? {
+        guard let (_, suspension) = index.suspension(into: resume), !suspension.isExecutorHop,
+              let callee = suspension.calleeName
+        else { return nil }
+        switch swiftReturnRegister(forDemangledName: callee) {
+        case .integer?: return "x0"
+        case .floating?: return "v0"
+        case nil: return nil
+        }
+    }
+
+    /// What to say at each suspension instruction of `function`: an executor
+    /// hop, or an awaited call with the name its result gets (empty when the
+    /// result is not provable, so the call renders as a bare `await`).
+    static func asyncSuspensionNotes(
+        in function: DisassembledFunction, index: AsyncFuncletIndex
+    ) -> [UInt64: AsyncSuspensionNote] {
+        guard function.asyncFunclet != nil else { return [:] }
+        var notes: [UInt64: AsyncSuspensionNote] = [:]
+        for insn in function.instructions {
+            guard let suspension = index.suspensions[insn.address] else { continue }
+            if suspension.isExecutorHop {
+                notes[insn.address] = .executorHop
+            } else {
+                let ordinal = index.funclets[suspension.resume]?.ordinal
+                let binding = awaitedResultRegister(into: suspension.resume, index: index) != nil
+                    ? ordinal.map(awaitResultName) : nil
+                notes[insn.address] = .awaitedCall(binding: binding)
+            }
+        }
+        return notes
+    }
+
+    enum AsyncSuspensionNote {
+        case executorHop
+        case awaitedCall(binding: String?)
+    }
+
+    /// Values proven to sit in each chain's own async context when its funclets
+    /// run: entry address → slot offset → value. A slot qualifies only when
+    /// exactly one store in the whole chain reaches it and the stored value is
+    /// meaningful outside the storing funclet (an argument, an awaited result,
+    /// a constant, or arithmetic over those). Anything else, including a slot
+    /// written twice, is left unproven and loads from it render `?`.
+    func asyncChainSlots(
+        index: AsyncFuncletIndex, function: (UInt64) -> DisassembledFunction?,
+        enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex
+    ) -> [UInt64: [Int: AbstractValue]] {
+        func isPortable(_ value: AbstractValue) -> Bool {
+            switch value {
+            case .argument, .awaitResult, .immediate: return true
+            case .binary(_, let lhs, let rhs): return isPortable(lhs) && isPortable(rhs)
+            case .unary(_, let operand): return isPortable(operand)
+            default: return false
+            }
+        }
+        var result: [UInt64: [Int: AbstractValue]] = [:]
+        for (entry, chain) in index.chains {
+            var stores: [Int: [AbstractValue]] = [:]
+            for address in chain {
+                guard let funclet = function(address) else { continue }
+                // The entry's parameters, under the same proof the main pass uses.
+                let base: MethodEntryConvention? = Self.swiftScalarArgumentRegisters(
+                    of: funclet, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex
+                ).map { .swiftFunction(scalarArguments: $0) }
+                let convention = Self.asyncConvention(for: funclet, base: base, index: index)
+                let analysis = ValueTracer().analyze(funclet, entry: convention)
+                for (slot, values) in analysis.asyncSlotStores {
+                    stores[slot, default: []] += values
+                }
+            }
+            let proven = stores.compactMapValues { values -> AbstractValue? in
+                guard values.count == 1, let value = values.first, isPortable(value) else { return nil }
+                return value
+            }
+            if !proven.isEmpty { result[entry] = proven }
+        }
+        return result
     }
 
     /// `(vmaddr, size)` of the `__text` section.
@@ -1926,7 +2084,28 @@ public struct Disassembler: Sendable {
     /// demangles as `Type.prop.getter : PropType`.
     static func swiftReturnTypeName(of function: DisassembledFunction) -> String? {
         guard function.objcMethod == nil, let name = function.demangledName else { return nil }
-        return swiftReturnTypeName(ofDemangled: name)
+        return swiftReturnTypeName(forDemangledName: name)
+    }
+
+    /// The name an await's result is given: `awaited<N>`, after the resume
+    /// funclet that receives it.
+    static func awaitResultName(_ ordinal: Int) -> String { "awaited\(ordinal)" }
+
+    /// `swiftReturnTypeName(of:)` on a bare demangled name (an awaited callee's).
+    static func swiftReturnTypeName(forDemangledName name: String) -> String? {
+        let returnType: String
+        if let arrow = name.range(of: " -> ", options: .backwards) {
+            returnType = String(name[arrow.upperBound...]).trimmingCharacters(in: .whitespaces)
+        } else if name.hasSuffix(".getter") == false, name.contains(".getter : "),
+                  let colon = name.range(of: " : ", options: .backwards) {
+            returnType = String(name[colon.upperBound...]).trimmingCharacters(in: .whitespaces)
+        } else {
+            return nil
+        }
+        guard !returnType.isEmpty, returnType != "()",
+              !returnType.contains(" with "), !returnType.contains(" for ")
+        else { return nil }
+        return returnType
     }
 
     /// Which single register a Swift function delivers its result in, inferred
@@ -1952,6 +2131,16 @@ public struct Disassembler: Sendable {
             || name.contains("resume partial function for ") {
             return nil
         }
+        return swiftReturnRegister(forReturnType: returnType)
+    }
+
+    /// `swiftReturnRegister(of:)` for an awaited callee known only by name.
+    static func swiftReturnRegister(forDemangledName name: String) -> SwiftReturnRegister? {
+        guard let returnType = Self.swiftReturnTypeName(forDemangledName: name) else { return nil }
+        return swiftReturnRegister(forReturnType: returnType)
+    }
+
+    private static func swiftReturnRegister(forReturnType returnType: String) -> SwiftReturnRegister? {
         // Double/Float come back in v0 (d0/s0), every other single value in x0.
         let floatingTypes: Set<String> = [
             "Swift.Double", "Swift.Float", "Swift.Float16", "Swift.Float32",
@@ -2362,7 +2551,9 @@ public struct Disassembler: Sendable {
         classTypeIndex: ClassTypeIndex = ClassTypeIndex(),
         indirectResultUse: IndirectResultUse = .unknown,
         typeFieldMaps: [String: FieldMap] = [:],
-        calleeConventions: [UInt64: CalleeResultConvention] = [:]
+        calleeConventions: [UInt64: CalleeResultConvention] = [:],
+        asyncContextSlots: [Int: AbstractValue] = [:],
+        asyncSuspensions: [UInt64: AsyncSuspensionNote] = [:]
     ) -> DisassembledFunction {
         // Floating-point signature info: which arguments are float, and whether
         // the function's float type is double-precision — so a literal operand
@@ -2449,6 +2640,10 @@ public struct Disassembler: Sendable {
                 // other unnamed load is unknown.
                 if let word = resolver.literalWord(at: address) { return .immediate(word) }
                 return .unknown
+            case .asyncContext, .asyncCalleeContext, .asyncResumeParent, .asyncContextSlot:
+                // Async plumbing: the context pointer, the continuation, and an
+                // unproven context slot are not source values.
+                return .unknown
             case .binary(let op, let lhs, let rhs):
                 let lhs = sanitizeValue(lhs)
                 let rhs = sanitizeValue(rhs)
@@ -2475,7 +2670,7 @@ public struct Disassembler: Sendable {
             ValueTracer.trimTrailingUnknown(values.map(sanitizeValue))
         }
 
-        let analysis = ValueTracer(calleeConventions: calleeConventions).analyze(function, entry: entry)
+        let analysis = ValueTracer(calleeConventions: calleeConventions, asyncContextSlots: asyncContextSlots).analyze(function, entry: entry)
         // An x8-indirect function's x0 at `ret` is whatever was last left there
         // (usually a stale argument), never its result. Both single-register
         // return paths below are gated on this so no fabricated `return arg0`
@@ -2491,6 +2686,19 @@ public struct Disassembler: Sendable {
             in: function, targets: analysis.indirectControlFlowTargets,
             resolver: resolver, selfTypeName: selfTypeName, vtableIndex: vtableIndex
         )
+        // An async function returns by branching through its own context's
+        // ResumeParent slot. Proven only when the tracer followed the pointer
+        // from the seeded context to the `br`; such a branch is treated as the
+        // `ret` it is, for the return value and for the structurer.
+        let asyncReturns = Set(function.instructions.compactMap { insn -> UInt64? in
+            guard insn.controlFlow == .branch, insn.branchTarget == nil,
+                  analysis.indirectControlFlowTargets[insn.address] == .asyncResumeParent
+            else { return nil }
+            return insn.address
+        })
+        func isReturn(_ insn: Instruction) -> Bool {
+            insn.controlFlow == .return || asyncReturns.contains(insn.address)
+        }
         var sites = analysis.callSites
         // A resolved unconditional branch outside this function is a tail call.
         // Keep internal CFG branches out: they have no callee name.
@@ -2928,6 +3136,11 @@ public struct Disassembler: Sendable {
                 return "arg\(index)"
             case .local(let id):
                 return Self.inductionVariableName(id)
+            case .awaitResult(let ordinal):
+                return Self.awaitResultName(ordinal)
+            case .asyncContext, .asyncCalleeContext, .asyncResumeParent, .asyncContextSlot:
+                // Sanitised to `.unknown` before rendering; plumbing, not a value.
+                return "?"
             case .address(let a):
                 return resolver.name(at: a) ?? "0x" + String(a, radix: 16)
             case .loaded(let a):
@@ -3511,7 +3724,7 @@ public struct Disassembler: Sendable {
                             || !DisassembledFunction.isRuntimeNoise(callee) {
                     collectCallResults(in: value, into: &consumedCallResults)
                 }
-            } else if function.objcMethod == nil, insn.controlFlow == .return,
+            } else if function.objcMethod == nil, isReturn(insn),
                       !throwExits.contains(insn.address), returnsDirectly,
                       let returnRegister = Self.swiftReturnRegister(of: function) {
                 // A Swift return that is a call's result consumes it, so the call
@@ -3611,7 +3824,7 @@ public struct Disassembler: Sendable {
                     thrown = "\(errorType).\(caseName)"
                 }
                 sourceNotes.append("throw \(thrown)")
-            } else if function.objcMethod == nil, insn.controlFlow == .return, returnsDirectly,
+            } else if function.objcMethod == nil, isReturn(insn), returnsDirectly,
                let returnRegister = Self.swiftReturnRegister(of: function) {
                 let rawExit = returnRegister == .floating
                     ? analysis.exitFloatValues[insn.address]
@@ -3633,6 +3846,27 @@ public struct Disassembler: Sendable {
             if function.objcMethod == nil, insn.controlFlow == .return, !returnsDirectly,
                let indirect = indirectReturn(at: insn.address) {
                 sourceNotes.append("return \(indirect.rendered)")
+            }
+
+            // A suspension point. An executor hop names the executor only when
+            // both operands prove it; an awaited call is marked for the pseudo
+            // renderer, with the name its result gets when that is provable.
+            if let suspension = asyncSuspensions[insn.address] {
+                switch suspension {
+                case .executorHop:
+                    let executor: String = {
+                        guard let values = sites[insn.address]?.arguments, values.count >= 3 else { return "?" }
+                        if values[1] == .immediate(0), values[2] == .immediate(0) { return "generic" }
+                        if case .callResult(let site) = values[1], values[2] == .callResult(site),
+                           calleeByAddress[site] == "swift_task_getMainExecutor" {
+                            return "MainActor"
+                        }
+                        return "?"
+                    }()
+                    sourceNotes.append("await hop_to_executor(\(executor))")
+                case .awaitedCall(let binding):
+                    sourceNotes.append("await=\(binding ?? "")")
+                }
             }
 
             // A `_modify` accessor's ramp yields `&self.field` (the mutable
@@ -3708,12 +3942,21 @@ public struct Disassembler: Sendable {
                 sourceNotes.append("let \(name) = \(callExpression(callee: callee, values: argumentsByAddress[insn.address] ?? []))")
             }
 
+            // A proven async return is the function's `ret`; the structurer and
+            // the CFG read it as one (it had no successors either way).
+            let flow: ControlFlow? = asyncReturns.contains(insn.address) ? .return : insn.controlFlow
+            let untouched = Instruction(
+                address: insn.address, text: insn.text, annotation: insn.annotation,
+                controlFlow: flow, branchTarget: insn.branchTarget,
+                callArguments: insn.callArguments, callSelf: insn.callSelf,
+                resultConsumed: insn.resultConsumed, sourceType: insn.sourceType, detail: insn.detail
+            )
             guard let site = sites[insn.address] else {
-                guard !sourceNotes.isEmpty || consumedCallResults.contains(insn.address) else { return insn }
+                guard !sourceNotes.isEmpty || consumedCallResults.contains(insn.address) else { return untouched }
                 let merged = ([insn.annotation] + sourceNotes).compactMap { $0 }.joined(separator: "  ")
                 return Instruction(
                     address: insn.address, text: insn.text, annotation: merged,
-                    controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
+                    controlFlow: flow, branchTarget: insn.branchTarget,
                     callArguments: insn.callArguments, callSelf: insn.callSelf,
                     resultConsumed: consumedCallResults.contains(insn.address),
                     sourceType: sourceType, detail: insn.detail
@@ -3739,7 +3982,7 @@ public struct Disassembler: Sendable {
             } ?? []
             guard !rendered.isEmpty || selfText != nil || !sourceNotes.isEmpty
                     || consumedCallResults.contains(insn.address)
-            else { return insn }
+            else { return untouched }
 
             var notes = sourceNotes
             if let selfText { notes.append("self=\(selfText)") }
@@ -3747,7 +3990,7 @@ public struct Disassembler: Sendable {
             let merged = ([insn.annotation] + notes).compactMap { $0 }.joined(separator: "  ")
             return Instruction(
                 address: insn.address, text: insn.text, annotation: merged,
-                controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
+                controlFlow: flow, branchTarget: insn.branchTarget,
                 callArguments: rendered.isEmpty ? nil : rendered,
                 callSelf: selfText, resultConsumed: consumedCallResults.contains(insn.address),
                 sourceType: sourceType, detail: insn.detail

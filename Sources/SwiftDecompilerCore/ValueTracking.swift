@@ -203,6 +203,25 @@ public indirect enum AbstractValue: Equatable, Sendable {
     /// load from that frame slot renders as a field of the call's result rather
     /// than as a stale local.
     case indirectCallResultWord(site: UInt64, offset: Int)
+    /// The async context pointer of the function being analysed (x22 at an
+    /// async entry or continuation funclet; the first word of x22 at an
+    /// await-return funclet). Seeded only for a function the async funclet
+    /// index placed in a chain with a known kind.
+    case asyncContext
+    /// At an await-return funclet, x22 holds the *callee's* context, whose
+    /// first word is the caller's own (`asyncContext`).
+    case asyncCalleeContext
+    /// The continuation loaded from `asyncContext + 8` (ResumeParent): the
+    /// address an async function returns to. A `br` through it is the
+    /// function's return.
+    case asyncResumeParent
+    /// A pointer-width value loaded from a slot of the function's own async
+    /// context whose stored value was not proven. Renders `?`.
+    case asyncContextSlot(Int)
+    /// The direct result of the await that the resume funclet numbered
+    /// `ordinal` continues: x0 (or v0) at that funclet's entry, seeded only when
+    /// the awaited callee's signature proves a single-register result.
+    case awaitResult(Int)
 }
 
 /// What is known about how a callee delivers its result, keyed by call site.
@@ -266,6 +285,11 @@ public enum MethodEntryConvention: Sendable, Equatable {
     /// pointer form (mutating/indirect), so a register never gets a fabricated
     /// field.
     case swiftValueInstance(seededRegisters: [String: AbstractValue])
+    /// An async funclet: `base` is the ordinary convention of the entry funclet
+    /// (its parameters really are in registers there; nil for a resume
+    /// funclet), and `seededRegisters` adds what the async ABI fixes: x22 as
+    /// the context, and the awaited result at an await-return funclet.
+    indirect case asyncFunclet(base: MethodEntryConvention?, seededRegisters: [String: AbstractValue])
 
     var isObjectiveCInitializer: Bool {
         if case .objectiveCInitializer = self { return true }
@@ -366,6 +390,10 @@ public struct FunctionAnalysis: Sendable {
     /// meaningful for a function that reads its incoming x8 (the enrichment pass
     /// checks that separately); for any other function the map is empty.
     public var exitIndirectResults: [UInt64: IndirectResultExit] = [:]
+    /// Every pointer-width store into a slot of the function's own async
+    /// context: slot byte offset → the values stored there, one per store site.
+    /// The chain pass keeps a slot only when exactly one store reaches it.
+    public var asyncSlotStores: [Int: [AbstractValue]] = [:]
 }
 
 /// An abstract interpreter over a function's basic blocks. Propagates constants,
@@ -378,8 +406,15 @@ public struct ValueTracer: Sendable {
     /// under x8 is clobbered from that offset up.
     public var calleeConventions: [UInt64: CalleeResultConvention]
 
-    public init(calleeConventions: [UInt64: CalleeResultConvention] = [:]) {
+    /// Values proven to sit in slots of the function's own async context when
+    /// a funclet is entered: slot byte offset → value. Built by a pass over the
+    /// whole funclet chain (see `Disassembler.asyncChainSlots`) and consulted
+    /// by a pointer-width load from `asyncContext + offset`.
+    let asyncContextSlots: [Int: AbstractValue]
+
+    public init(calleeConventions: [UInt64: CalleeResultConvention] = [:], asyncContextSlots: [Int: AbstractValue] = [:]) {
         self.calleeConventions = calleeConventions
+        self.asyncContextSlots = asyncContextSlots
     }
 
     /// Register and stack-slot values. Register keys are canonical names
@@ -426,6 +461,9 @@ public struct ValueTracer: Sendable {
             // `self` (and HFA parameters) arrive decomposed across SIMD registers;
             // each holds a field's value directly, so they read as `self.field` /
             // `arg<n>.field` with no x20 pointer.
+            for (register, value) in seededRegisters { state[register] = value }
+        case .asyncFunclet(let base, let seededRegisters):
+            state = initialState(entry: base)
             for (register, value) in seededRegisters { state[register] = value }
         case nil:
             break
@@ -549,7 +587,14 @@ public struct ValueTracer: Sendable {
                    let value = registers["x21"], value != .unknown {
                     result.exitErrorValues[insn.address] = value
                 }
-                if insn.controlFlow == .return,
+                // Also at a proven async return (a `br` through the context's
+                // ResumeParent): a Double-returning async function delivers in
+                // v0 there. Not at other branches: a recorded v0 would make the
+                // enrichment pass run on a function it otherwise skips, and v0
+                // before an ordinary tail call is the callee's argument.
+                let isAsyncReturn = insn.controlFlow == .branch
+                    && Self.indirectTarget(of: insn, in: registers) == .asyncResumeParent
+                if insn.controlFlow == .return || isAsyncReturn,
                    let value = registers["v0"], value != .unknown {
                     result.exitFloatValues[insn.address] = value
                 }
@@ -587,6 +632,7 @@ public struct ValueTracer: Sendable {
                     record: { result.callSites[$0] = $1 },
                     recordAccess: { result.selfFieldAccesses[$0] = $1 },
                     recordArrayElement: { result.arrayElements[$0, default: [:]][$1] = $2 },
+                    recordSlotStore: { result.asyncSlotStores[$0, default: []].append($1) },
                     initializerEntry: entry?.isObjectiveCInitializer == true,
                     addressTaken: addressTaken
                 )
@@ -715,6 +761,7 @@ public struct ValueTracer: Sendable {
         record: ((UInt64, CallSite) -> Void)?,
         recordAccess: ((UInt64, SelfFieldAccess) -> Void)?,
         recordArrayElement: ((UInt64, Int, AbstractValue) -> Void)? = nil,
+        recordSlotStore: ((Int, AbstractValue) -> Void)? = nil,
         initializerEntry: Bool = false,
         addressTaken: [Int64] = []
     ) {
@@ -823,7 +870,8 @@ public struct ValueTracer: Sendable {
             return
         }
         let hadSelf = registers[Self.selfFreshKey]
-        apply(insn, into: &registers, recordAccess: recordAccess, recordArrayElement: recordArrayElement)
+        apply(insn, into: &registers, recordAccess: recordAccess,
+              recordArrayElement: recordArrayElement, recordSlotStore: recordSlotStore)
         if Self.writesSwiftSelf(insn) {
             registers[Self.selfFreshKey] = .immediate(1)
         } else {
@@ -1728,7 +1776,8 @@ public struct ValueTracer: Sendable {
         _ insn: Instruction,
         into registers: inout State,
         recordAccess: ((UInt64, SelfFieldAccess) -> Void)? = nil,
-        recordArrayElement: ((UInt64, Int, AbstractValue) -> Void)? = nil
+        recordArrayElement: ((UInt64, Int, AbstractValue) -> Void)? = nil,
+        recordSlotStore: ((Int, AbstractValue) -> Void)? = nil
     ) {
         guard let detail = insn.detail else {
             // Capstone couldn't decode what objdump printed — data in __text, or
@@ -1976,6 +2025,14 @@ public struct ValueTracer: Sendable {
                 // store is known.
                 let bytes = Self.accessBytes(detail) ?? max(dest.widthBits / 8, 1)
                 write(dest, registers[Self.resultKey(offset, bytes: bytes)] ?? .unknown, into: &registers)
+            case .asyncSlot(let offset):
+                let isPointerLoad = detail.id == AARCH64_INS_LDR || detail.id == AARCH64_INS_LDUR
+                write(dest, isPointerLoad ? asyncSlotValue(at: offset) : .unknown, into: &registers)
+            case .asyncCalleeSlot(let offset):
+                // The callee context's first word is the caller's own context;
+                // nothing else in it is known here.
+                let isPointerLoad = detail.id == AARCH64_INS_LDR || detail.id == AARCH64_INS_LDUR
+                write(dest, isPointerLoad && offset == 0 ? .asyncContext : .unknown, into: &registers)
             case .arrayElement, .none: write(dest, .unknown, into: &registers)
             }
 
@@ -1999,6 +2056,11 @@ public struct ValueTracer: Sendable {
                 if case .resultSlot(let offset)? = target {
                     let bytes = Self.accessBytes(detail) ?? 8
                     Self.storeResult(value, at: offset, bytes: bytes, into: &registers)
+                }
+                if case .asyncSlot(let offset)? = target,
+                   detail.id == AARCH64_INS_STR || detail.id == AARCH64_INS_STUR,
+                   first.operand.register?.widthBits == 64 {
+                    recordSlotStore?(offset, value)
                 }
                 // A full-width store establishes a useful equality: its source
                 // register now also holds the current ivar value. Canonicalizing
@@ -2046,6 +2108,14 @@ public struct ValueTracer: Sendable {
                     Self.storeResult(source(operand, in: registers), at: offset + index * bytes,
                                      bytes: bytes, into: &registers)
                 }
+            } else if case .asyncSlot(let offset)? = target,
+                      detail.operands.first?.operand.register?.widthBits == 64 {
+                // `stp x22, x8, [x0]` is how the caller's context and the resume
+                // pointer are written into a fresh callee context; the same shape
+                // spills two locals into the function's own context.
+                for (index, operand) in detail.operands.prefix(2).enumerated() {
+                    recordSlotStore?(offset + index * 8, source(operand, in: registers))
+                }
             }
             // Stores two registers; writes none. Writeback still applies —
             // `stp x29, x30, [sp, #-0x70]!` is the standard prologue, and missing
@@ -2073,7 +2143,11 @@ public struct ValueTracer: Sendable {
                     .selfFieldValue(offset: offset + index * registerBytes)
                 case .resultSlot(let offset):
                     registers[Self.resultKey(offset + index * registerBytes, bytes: registerBytes)] ?? .unknown
-                case .absolute, .vtableMethod, .arrayElement, .none:
+                case .asyncSlot(let offset) where registerBytes == 8:
+                    asyncSlotValue(at: offset + index * 8)
+                case .asyncCalleeSlot(let offset) where registerBytes == 8 && offset + index * 8 == 0:
+                    .asyncContext
+                case .absolute, .vtableMethod, .arrayElement, .asyncSlot, .asyncCalleeSlot, .none:
                     .unknown
                 }
                 write(register, value, into: &registers)
@@ -2462,6 +2536,20 @@ public struct ValueTracer: Sendable {
         case arrayElement(site: UInt64, offset: Int)
         /// A byte offset into the incoming x8 result buffer.
         case resultSlot(Int)
+        /// A byte offset into the function's own async context.
+        case asyncSlot(Int)
+        /// A byte offset into the awaited callee's context (x22 at an
+        /// await-return funclet).
+        case asyncCalleeSlot(Int)
+    }
+
+    /// What a pointer-width load from the function's own async context yields:
+    /// offset 8 is the ABI's ResumeParent, the continuation an async function
+    /// returns through; any other slot is a spill, known only when the chain
+    /// pass proved its single store.
+    private func asyncSlotValue(at offset: Int) -> AbstractValue {
+        if offset == 8 { return .asyncResumeParent }
+        return asyncContextSlots[offset] ?? .asyncContextSlot(offset)
     }
 
     /// Where a memory operand points, when its base is a known frame offset or a
@@ -2486,6 +2574,8 @@ public struct ValueTracer: Sendable {
         case .arrayLiteral(let site, _): return .arrayElement(site: site, offset: Int(effective))
         case .indirectResultPointer: return .resultSlot(Int(effective))
         case .indirectResultField(let base): return .resultSlot(base + Int(effective))
+        case .asyncContext: return .asyncSlot(Int(effective))
+        case .asyncCalleeContext: return .asyncCalleeSlot(Int(effective))
         default: return nil
         }
     }

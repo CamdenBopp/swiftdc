@@ -265,6 +265,103 @@ func groupsFuncletsAsTheSymbolTableDoesIfPresent(path: String) async throws {
     #expect(raw.contains("swift_task_alloc"))
 }
 
+// MARK: - Awaits, async returns, and context slots (exact output, -O stripped)
+
+private func structured(_ path: String, _ filter: String) async throws -> String? {
+    guard let functions = try await disassemble(path, filter: filter) else { return nil }
+    return functions.map { $0.renderStructured() }.joined(separator: "\n")
+}
+
+/// The whole chain of `twoAwaits` on the stripped -O build, verbatim: the
+/// await binds its result, the second await consumes it, the async return
+/// (a `br` through the context's ResumeParent) is a `return`, and `awaited1`
+/// crosses the second suspension through a context slot whose single store
+/// and load are both proven.
+@Test func rendersAwaitChainVerbatimIfPresent() async throws {
+    guard let text = try await structured(strippedFixture, "twoAwaits") else { return }
+    #expect(text == """
+        AsyncFns.twoAwaits(Swift.Int) async -> Swift.Int {
+            // async function: 2 resume funclet(s): resume #1 @0xa34, resume #2 @0xa98
+            let awaited1 = await AsyncFns.fetchValue(arg0)
+        }
+        resume #1 of AsyncFns.twoAwaits(Swift.Int) async -> Swift.Int {
+            // resume #1 of the async function @0x9e8: entered when the await in 0x9e8 returns
+            let awaited2 = await AsyncFns.fetchOther(awaited1)
+        }
+        resume #2 of AsyncFns.twoAwaits(Swift.Int) async -> Swift.Int {
+            // resume #2 of the async function @0x9e8: entered when the await in 0xa34 returns
+            return (awaited1 + awaited2)
+        }
+        """)
+}
+
+/// A suspension-free async function returns through the same ResumeParent
+/// branch; its value is recovered like a synchronous leaf's.
+@Test func rendersAsyncLeafReturnIfPresent() async throws {
+    guard let text = try await structured(strippedFixture, "fetchOther") else { return }
+    #expect(text.contains("return (arg0 + 7)"))
+}
+
+/// An executor hop is named only when both executor operands prove it
+/// (`generic` for the null executor); otherwise it declines with `?`. The
+/// continuation reads the parameter back from the context slot the entry
+/// funclet spilled it to, so the throw condition names `arg0`.
+@Test func rendersExecutorHopsAndSpilledParametersIfPresent() async throws {
+    guard let throwing = try await structured(strippedFixture, "fetchOrThrow") else { return }
+    #expect(throwing.contains("await hop_to_executor(generic)"))
+    #expect(throwing.contains("if (arg0 < 0) {"))
+    #expect(throwing.contains("return arg0"))
+    guard let main = try await structured(strippedFixture, "onMainAwait") else { return }
+    #expect(main.contains("await hop_to_executor(?)"))
+    #expect(main.contains("return (awaited1 + 1)"))
+}
+
+/// Negative: at -Onone the funclets reload the context through stack spills
+/// the chain pass does not follow, so neither the async return's value nor a
+/// slot is claimed; a resume funclet renders no `return <value>` at all.
+@Test func declinesUnprovenAsyncReturnsAtOnoneIfPresent() async throws {
+    guard let functions = try await disassemble(debugFixture, filter: "twoAwaits") else { return }
+    let resumes = functions.filter { $0.asyncFunclet?.isEntry == false }
+    #expect(resumes.count == 2)
+    for resume in resumes {
+        let text = resume.renderStructured()
+        #expect(!text.contains("return ("), Comment(rawValue: text))
+        #expect(!text.contains("awaited1 +"), Comment(rawValue: text))
+    }
+    // The await itself is still provable there: the resume pointer store and
+    // the direct tail call do not depend on the stack.
+    guard let entry = functions.first(where: { $0.asyncFunclet?.isEntry == true }) else { return }
+    #expect(entry.renderPseudo().contains("let awaited1 = await AsyncFns.fetchValue(arg0)"))
+}
+
+/// Negative: the awaited result is seeded only from a callee whose signature
+/// proves a single-register result. A void callee, an unnamed one, and a
+/// String-returning one seed nothing; a Double seeds v0.
+@Test func seedsAwaitedResultOnlyFromAProvenSignatureIfPresent() async throws {
+    guard let functions = try await disassemble(optFixture) else { return }
+    let byStart = Dictionary(functions.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
+    guard let entry = functions.first(where: { $0.displayName.hasPrefix("AsyncFns.oneAwait") }),
+          let resume = entry.asyncFunclet?.chain.dropFirst().first,
+          let callee = functions.first(where: { $0.displayName.hasPrefix("AsyncFns.fetchValue") })
+    else { return }
+    let hints = AsyncFuncletIndex.hintSections(in: try BinaryLoader.load(path: optFixture)) { address, size in
+        Disassembler(preset: .default).sectionBytesForTesting(address: address, size: size, path: optFixture)
+    }
+    func register(calleeName: String?) -> String? {
+        let index = AsyncFuncletIndex.build(
+            hints: hints, functionStarts: Set(byStart.keys),
+            instructions: { byStart[$0]?.instructions ?? [] },
+            nameOf: { $0 == callee.startAddress ? calleeName : byStart[$0]?.displayName }
+        )
+        return Disassembler.awaitedResultRegister(into: resume, index: index)
+    }
+    #expect(register(calleeName: "AsyncFns.fetchValue(Swift.Int) async -> Swift.Int") == "x0")
+    #expect(register(calleeName: "AsyncFns.fetchValue(Swift.Int) async -> Swift.Double") == "v0")
+    #expect(register(calleeName: "AsyncFns.fetchValue(Swift.Int) async -> ()") == nil)
+    #expect(register(calleeName: "AsyncFns.fetchValue(Swift.Int) async -> Swift.String") == nil)
+    #expect(register(calleeName: nil) == nil)
+}
+
 // MARK: - Soundness: a resume funclet's registers are not the parameters
 
 /// x0 at a resume funclet's entry is the awaited callee's result, not the
