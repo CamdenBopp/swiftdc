@@ -310,6 +310,23 @@ because it cannot be distinguished from a right one by reading the output.
   ("any known x21") could not be told apart on any measured binary; the
   strict form is kept because it cannot over-claim.
 
+- **FIXED — negating a branch condition by text replacement.** When the arm
+  it renders is the fall-through, the structurer negates the condition. It
+  did that by replacing the first operator text it found, everywhere in the
+  string. Three measured failures: the `-O` range guard
+  `(0 <= x) && (x < 101)` negated to `(0 > x) && (x < 101)`, never true where
+  the `throw .tooBig` it guards runs; a ` == ` inside a demangled generic
+  clause was rewritten (`where A.Element == Swift.String` → `!=`, SwiftData);
+  and in 6 RegexParser functions that rewrite *replaced* the real negation, so
+  `if (!starts<… == …>(…))` kept its `!` with a corrupted name, inverting the
+  branch. `ControlFlowStructure.inverted` now rewrites an operator only for a
+  single comparison at paren and generic depth zero, and wraps anything else
+  as `!(…)`. Measured against `36b611e`: RegexParser 24/2734, Observation
+  16/713, Distributed 5/367, SwiftData 90/6506 functions changed; besides the
+  fixes above, every change is a precedence-correct wrap
+  (`!x23 overflow 1` → `!(x23 overflow 1)`). Guarded by
+  `ConditionInversionTests`.
+
 ## 2. Completeness — what does it silently omit?
 
 Silent omission is the worst failure mode: it is indistinguishable from a

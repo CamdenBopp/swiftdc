@@ -974,23 +974,75 @@ struct ControlFlowStructure {
         return text
     }
 
-    private static func inverted(_ condition: String) -> String {
-        for (op, inverse) in [
+    /// The negation of a rendered condition.
+    ///
+    /// An operator is rewritten in place only when the condition is a single
+    /// comparison at parenthesis depth zero. Anything with a top-level `&&` or
+    /// `||` is wrapped as `!(…)`: rewriting one operator text everywhere used
+    /// to negate a single conjunct, so the range test `(0 <= x) && (x < 101)`
+    /// inverted to `(0 > x) && (x < 101)` (measured on a typed-throws guard at
+    /// -O), a condition that is never true where the real branch is.
+    static func inverted(_ condition: String) -> String {
+        // Unsigned forms first so ` <=ᵁ ` is never read as ` <= `.
+        let comparisons: [(String, String)] = [
+            (" <=\u{1D41} ", " >\u{1D41} "), (" >=\u{1D41} ", " <\u{1D41} "),
+            (" <\u{1D41} ", " >=\u{1D41} "), (" >\u{1D41} ", " <=\u{1D41} "),
             (" != ", " == "), (" == ", " != "),
             (" <= ", " > "), (" >= ", " < "),
             (" < ", " >= "), (" > ", " <= "),
-        ] where condition.contains(op) {
-            return condition.replacingOccurrences(of: op, with: inverse)
+        ]
+        var topLevel: [(range: Range<String.Index>, inverse: String)] = []
+        var hasLogical = false
+        var hasTopLevelSpace = false
+        var depth = 0
+        var genericDepth = 0
+        var inQuote = false
+        var previous: Character = " "
+        var index = condition.startIndex
+        while index < condition.endIndex {
+            let character = condition[index]
+            defer { previous = character }
+            if character == "\"" {
+                inQuote.toggle()
+            } else if !inQuote {
+                // A generic clause's `<` hugs a name (`Collection<A>`,
+                // `Collection< where A.Element == B>`), where a comparison or a
+                // shift is spaced; its `>` closes only an open clause, so a
+                // top-level `>>` or an arrow's `>` never does.
+                if character == "(" || character == "[" {
+                    depth += 1
+                } else if character == ")" || character == "]" {
+                    depth -= 1
+                } else if character == "<", previous.isLetter || previous.isNumber || previous == "_" {
+                    genericDepth += 1
+                } else if character == ">", genericDepth > 0, previous != " ", previous != "-" {
+                    genericDepth -= 1
+                } else if depth == 0, genericDepth == 0 {
+                    if character == " " { hasTopLevelSpace = true }
+                    let rest = condition[index...]
+                    if rest.hasPrefix(" && ") || rest.hasPrefix(" || ") { hasLogical = true }
+                    if let (op, inverse) = comparisons.first(where: { rest.hasPrefix($0.0) }) {
+                        topLevel.append((index..<condition.index(index, offsetBy: op.count), inverse))
+                    }
+                }
+            }
+            index = condition.index(after: index)
         }
-        if condition.hasPrefix("!("), condition.hasSuffix(")") {
+        if hasLogical || topLevel.count > 1 { return "!(\(condition))" }
+        if let only = topLevel.first {
+            return condition.replacingCharacters(in: only.range, with: only.inverse)
+        }
+        if condition.hasPrefix("!("), unwrapOuterParentheses(String(condition.dropFirst())) != String(condition.dropFirst()) {
             return String(condition.dropFirst(2).dropLast())
         }
-        if condition.hasPrefix("!") { return String(condition.dropFirst()) }
+        if condition.hasPrefix("!"), !condition.hasPrefix("!(") { return String(condition.dropFirst()) }
         // A bit test inverts by flipping set/clear, not by prefixing `!` — which
         // would read as the double negative `!bit 0 of w8 clear`.
         if condition.hasSuffix(" clear") { return String(condition.dropLast(6)) + " set" }
         if condition.hasSuffix(" set") { return String(condition.dropLast(4)) + " clear" }
-        return "!\(condition)"
+        // `!` binds tighter than any infix operator, so an unparenthesized one
+        // (`x & 1`) needs wrapping; a call, send, or bare name does not.
+        return hasTopLevelSpace ? "!(\(condition))" : "!\(condition)"
     }
 
     // MARK: - Helpers
