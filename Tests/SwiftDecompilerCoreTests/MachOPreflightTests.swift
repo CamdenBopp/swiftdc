@@ -15,11 +15,15 @@ import Foundation
 
 // MARK: - Header construction
 
+/// `filetype` defaults to `MH_OBJECT` (1): these tests are about structure, and
+/// an object file is held to no segment requirements. A loadable image (2,
+/// `MH_EXECUTE`) must also carry `__TEXT` and `__LINKEDIT`, as dyld requires;
+/// see the segment tests at the end.
 private func machHeader64(
-    ncmds: UInt32, sizeofcmds: UInt32, magic: UInt32 = 0xfeed_facf
+    ncmds: UInt32, sizeofcmds: UInt32, magic: UInt32 = 0xfeed_facf, filetype: UInt32 = 1
 ) -> Data {
     var data = Data()
-    for word: UInt32 in [magic, 0x0100_000c, 0, 2, ncmds, sizeofcmds, 0, 0] {
+    for word: UInt32 in [magic, 0x0100_000c, 0, filetype, ncmds, sizeofcmds, 0, 0] {
         withUnsafeBytes(of: word.littleEndian) { data.append(contentsOf: $0) }
     }
     return data
@@ -435,4 +439,85 @@ private func imageWith(_ command: Data, fileSize: Int) -> (Data, Int) {
             )
         }
     }
+}
+
+// MARK: - Segments dyld requires of a loadable image
+
+/// A structurally valid file can still lack what dyld requires, and MachOKit
+/// aborted on it: renaming `__TEXT` to `__TEXTX` SIGTRAPped `dump`, `interface`,
+/// `disasm` and `analyze`; hiding `__LINKEDIT` did the same. Each rejection
+/// below is dyld's own (verified with `dlopen` on the re-signed mutant), and
+/// an object file, whose one unnamed segment holds sections of every segment
+/// name, must still pass.
+private func fixtureLoadCommands() -> Data? {
+    guard let data = FileManager.default.contents(atPath: "Fixtures/Sample/libSample.dylib") else { return nil }
+    return data
+}
+
+/// Overwrite the 16-byte name at `offset` (a segment's `segname`, or a
+/// section's `segname` at section + 16).
+private func renamed(_ data: Data, at offset: Int, to name: String) -> Data {
+    var copy = data
+    let bytes = Array(name.utf8) + Array(repeating: 0, count: 16 - name.utf8.count)
+    copy.replaceSubrange(offset..<(offset + 16), with: bytes)
+    return copy
+}
+
+/// File offsets of each `LC_SEGMENT_64` segname, by name, and of each of its
+/// sections' segnames.
+private func segmentNameOffsets(_ data: Data) -> [String: (segment: Int, sections: [Int])] {
+    func u32(_ at: Int) -> UInt32 { data.subdata(in: at..<at + 4).withUnsafeBytes { $0.load(as: UInt32.self) } }
+    var result: [String: (Int, [Int])] = [:]
+    var offset = 32
+    for _ in 0..<Int(u32(16)) {
+        let cmd = u32(offset), size = Int(u32(offset + 4))
+        if cmd == 0x19 {
+            let name = String(decoding: data[(offset + 8)..<(offset + 24)].prefix { $0 != 0 }, as: UTF8.self)
+            let sections = (0..<Int(u32(offset + 64))).map { offset + 72 + $0 * 80 + 16 }
+            result[name] = (offset + 8, sections)
+        }
+        offset += size
+    }
+    return result
+}
+
+@Test func rejectsASectionInASegmentItDoesNotNameIfPresent() throws {
+    guard let data = fixtureLoadCommands() else { return }
+    let text = try #require(segmentNameOffsets(data)["__TEXT"])
+    // `__TEXT` stays present; only one section disagrees about its segment
+    // (dyld: "section '__text' segment name '__TEXTX' does not match containing
+    // segment's name '__TEXT'").
+    let first = try #require(text.sections.first)
+    #expect(rejects(renamed(data, at: first, to: "__TEXTX")))
+}
+
+@Test func rejectsALoadableImageWithoutTextIfPresent() throws {
+    guard let data = fixtureLoadCommands() else { return }
+    let text = try #require(segmentNameOffsets(data)["__TEXT"])
+    // Rename the segment and every section's copy of the name, consistently:
+    // only the absence of `__TEXT` is left to catch.
+    var mutated = renamed(data, at: text.segment, to: "__TEXTX")
+    for section in text.sections { mutated = renamed(mutated, at: section, to: "__TEXTX") }
+    #expect(rejects(mutated))
+}
+
+@Test func rejectsALoadableImageWithoutLinkeditIfPresent() throws {
+    guard let data = fixtureLoadCommands() else { return }
+    let linkedit = try #require(segmentNameOffsets(data)["__LINKEDIT"])
+    #expect(rejects(renamed(data, at: linkedit.segment, to: "__LINKEDITX")))
+}
+
+@Test func rejectsAnExecutableHeaderWithNoSegments() {
+    // dyld: "missing __TEXT segment". The same bytes as an object file pass.
+    #expect(rejects(machHeader64(ncmds: 0, sizeofcmds: 0, filetype: 2)))
+    #expect(!rejects(machHeader64(ncmds: 0, sizeofcmds: 0, filetype: 1)))
+}
+
+@Test func acceptsTheRealImageAndAnObjectFileIfPresent() throws {
+    guard let data = fixtureLoadCommands(),
+          let object = FileManager.default.contents(atPath: "Fixtures/Sample/sample_objc.o")
+    else { return }
+    #expect(!rejects(data))
+    // One unnamed segment holding `__TEXT`, `__DATA` and `__LD` sections.
+    #expect(!rejects(object))
 }

@@ -516,21 +516,31 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
   Over-rejection re-checked: every fixture, `/bin/ls`, `/usr/lib/dyld` and an
   object file still analyse normally.
-- **OPEN — a structurally VALID Mach-O missing an expected segment still traps.**
-  Found by fuzzing (below), then isolated: renaming `__TEXT` to `__TEXTX` — valid
-  ASCII, a structurally legal Mach-O — SIGTRAPs with empty stderr. Setting a load
-  command's `cmd` to an unrecognised value, so `__LINKEDIT` is no longer found,
-  SIGBUSes.
+- **FIXED — a structurally valid Mach-O missing an expected segment trapped.**
+  Renaming `__TEXT` to `__TEXTX`, or letting an unknown `cmd` hide `__LINKEDIT`,
+  is valid ASCII in a legal layout, and MachOKit aborted on it: exit 133 from
+  `dump`, `interface`, `disasm` and `analyze` (and `objc` for the `__LINKEDIT`
+  case), with empty stderr.
 
-  **This cannot be safely contained by structural validation**, and the reason is
-  worth recording rather than retrying: nothing about these files is
-  inconsistent, so there is no pair of self-declared numbers to compare. The
-  obvious guard — require a segment named `__TEXT` — would reject **object
-  files**, which carry a single *empty*-named segment and which swiftdc analyses
-  correctly today (verified: a built `.o` dumps at exit 0). Rejecting a real,
-  currently-working input class to prevent a crash on a hand-corrupted one is the
-  wrong trade under this project's own stated rule. Closing it needs either a
-  MachOKit fork or an upstream fix.
+  This was recorded as uncontainable, on the grounds that "require a segment
+  named `__TEXT`" would reject object files, which carry one unnamed segment.
+  That holds for a blanket rule but not for dyld's own. `dlopen` on each
+  re-signed mutant names three distinct checks, applied to loadable images
+  only (`MH_EXECUTE`, `MH_DYLIB`, `MH_BUNDLE`): a section's `segname` must
+  match its containing segment ("section '__text' segment name '__TEXT' does
+  not match containing segment's name '__TEXTX'"), "missing __TEXT segment",
+  and "malformed mach-o has no LINKEDIT". `MachOPreflight` now applies exactly
+  those, after walking every load command. An object file is exempt: its one
+  unnamed segment holds `__TEXT`, `__DATA` and `__LD` sections, and it still
+  analyzes (exit 0).
+
+  Measured: every subcommand on the three mutants now exits 1 with dyld's
+  reason. A sweep of 328 real on-disk Mach-O files (`/bin`, `/usr/bin`,
+  `/usr/sbin`, Xcode dylibs, app and kext binaries) gave 0 rejections and 0
+  crashes. `Tools/container-fuzz.py Fixtures/Sample/libSample.dylib 120 7`:
+  3 crashes before (`0c3bb54`), 1 after; every mutant newly rejected is one
+  dyld also refuses (checked by `dlopen` after re-signing). Guarded by the
+  segment tests in `MachOPreflightTests`.
 - **MITIGATED — a bounded fuzz now exists, and its yield is measured.** 120
   random mutants over the load-command region (fixed seed): **83 accepted, 34
   clean nonzero exits, 3 crashes (2.5%)** — 2 SIGTRAP, 1 SIGBUS, all three

@@ -31,6 +31,11 @@ public enum MachOPreflight {
     /// The load commands whose payloads declare file ranges. Anything not listed
     /// is walked for size consistency but its payload is left alone — an unknown
     /// command is not evidence of a bad file.
+    /// `MH_EXECUTE`, `MH_DYLIB`, `MH_BUNDLE`: the images dyld loads.
+    private enum FileType {
+        static let loadable: Set<UInt32> = [0x2, 0x6, 0x8]
+    }
+
     private enum Command {
         static let segment32: UInt32 = 0x1
         static let segment64: UInt32 = 0x19
@@ -362,9 +367,13 @@ public enum MachOPreflight {
             )
         }
 
+        // An executable, dylib, or bundle is held to what dyld requires before
+        // it will load one; an object file is not (see `walkLoadCommands`).
+        let filetype = prefix.u32(at: 12, bigEndian: bigEndian) ?? 0
         try walkLoadCommands(
             prefix: prefix, start: headerSize, ncmds: Int(ncmds), sizeofcmds: Int(sizeofcmds),
-            fileSize: fileSize, is64: is64, bigEndian: bigEndian, fail: fail
+            fileSize: fileSize, is64: is64, bigEndian: bigEndian,
+            loadable: FileType.loadable.contains(filetype), fail: fail
         )
     }
 
@@ -372,12 +381,23 @@ public enum MachOPreflight {
     /// one's self-declared size for consistency. Stops early — without
     /// complaint — when the prefix runs out, since a short prefix is our own
     /// limitation, not evidence of a bad file.
+    ///
+    /// A loadable image must also have the segments dyld requires, and each
+    /// section must name the segment that contains it. A structurally valid
+    /// file can break these (rename `__TEXT` to `__TEXTX`, or let an unknown
+    /// `cmd` hide `__LINKEDIT`), and MachOKit then aborts the process. Each
+    /// check is dyld's own, verified by `dlopen` on the mutated fixture:
+    /// "section '__text' segment name '__TEXT' does not match containing
+    /// segment's name '__TEXTX'", "missing __TEXT segment", "malformed mach-o
+    /// has no LINKEDIT". An object file is exempt: it puts every section, of
+    /// any segment name, in one unnamed segment, and swiftdc reads those today.
     private static func walkLoadCommands(
         prefix: Data, start: Int, ncmds: Int, sizeofcmds: Int, fileSize: Int,
-        is64: Bool, bigEndian: Bool, fail: (String) -> BinaryLoadError
+        is64: Bool, bigEndian: Bool, loadable: Bool, fail: (String) -> BinaryLoadError
     ) throws {
         var offset = start
         var consumed = 0
+        var segments = Set<String>()
         for index in 0..<ncmds {
             guard offset + Layout.minLoadCommand <= prefix.count else { return }
             guard let cmd = prefix.u32(at: offset, bigEndian: bigEndian),
@@ -400,9 +420,19 @@ public enum MachOPreflight {
             }
             try validatePayload(
                 cmd: cmd, at: offset, prefix: prefix, fileSize: fileSize,
-                is64: is64, bigEndian: bigEndian, index: index, fail: fail
+                is64: is64, bigEndian: bigEndian, index: index, loadable: loadable, fail: fail
             )
+            if cmd == Command.segment64 || cmd == Command.segment32 {
+                guard offset + 24 <= prefix.count else { return }
+                segments.insert(segmentName(at: offset, prefix: prefix) ?? "")
+            }
             offset += Int(cmdsize)
+        }
+        // Reached only when every command was read, so an absence is proven.
+        if loadable {
+            for required in ["__TEXT", "__LINKEDIT"] where !segments.contains(required) {
+                throw fail("has no \(required) segment; dyld refuses to load such an image")
+            }
         }
     }
 
@@ -423,18 +453,18 @@ public enum MachOPreflight {
     /// command is left alone rather than treated as suspect.
     private static func validatePayload(
         cmd: UInt32, at offset: Int, prefix: Data, fileSize: Int, is64: Bool,
-        bigEndian: Bool, index: Int, fail: (String) -> BinaryLoadError
+        bigEndian: Bool, index: Int, loadable: Bool, fail: (String) -> BinaryLoadError
     ) throws {
         switch cmd {
         case Command.segment64:
             try validateSegment(
                 at: offset, prefix: prefix, fileSize: fileSize, is64: true,
-                bigEndian: bigEndian, index: index, fail: fail
+                bigEndian: bigEndian, index: index, loadable: loadable, fail: fail
             )
         case Command.segment32:
             try validateSegment(
                 at: offset, prefix: prefix, fileSize: fileSize, is64: false,
-                bigEndian: bigEndian, index: index, fail: fail
+                bigEndian: bigEndian, index: index, loadable: loadable, fail: fail
             )
         case Command.symtab:
             try validateSymtab(
@@ -449,7 +479,7 @@ public enum MachOPreflight {
     /// A segment's file range, and the file range of each of its sections.
     private static func validateSegment(
         at offset: Int, prefix: Data, fileSize: Int, is64: Bool, bigEndian: Bool,
-        index: Int, fail: (String) -> BinaryLoadError
+        index: Int, loadable: Bool, fail: (String) -> BinaryLoadError
     ) throws {
         let name = segmentName(at: offset, prefix: prefix) ?? "\(index)"
         let fileoff: Int
@@ -484,6 +514,17 @@ public enum MachOPreflight {
             let base = sectionStart + section * sectionSize
             guard let flags = prefix.u32(at: base + (is64 ? 64 : 56), bigEndian: bigEndian)
             else { return }
+            // `section.segname` (bytes 16..<32 of both layouts) must name the
+            // segment it sits in; `segmentName(at: base - 8)` reads that field.
+            if loadable {
+                let owner = segmentName(at: offset, prefix: prefix) ?? ""
+                let declared = segmentName(at: base + 8, prefix: prefix) ?? ""
+                guard declared == owner else {
+                    throw fail(
+                        "section \(section) of segment '\(owner)' names segment '\(declared)'; dyld refuses to load such an image"
+                    )
+                }
+            }
             // A zero-fill section occupies no file bytes; its `size` is a memory
             // extent and is routinely larger than the whole binary.
             guard !SectionType.zerofill.contains(flags & 0xff) else { continue }
