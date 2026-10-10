@@ -1225,3 +1225,37 @@ private func expectMutantsRejected(_ path: String, _ mutants: [(String, [(Int, U
     defer { try? FileManager.default.removeItem(at: url) }
     #expect(throws: (any Error).self) { try MachOPreflight.validate(url: url) }
 }
+
+/// A protocol at 0x6000 (`__data`), named by `__cstring` at 0x3000, with an
+/// instance method list at 0x2000 (`__objc_const`).
+private func oneProtocolReader(size: UInt32 = 96, name: UInt64 = 0x3000) -> MachOPreflight.PointerReader {
+    var proto = Data()
+    for value: UInt64 in [0, name, 0, 0x2000, 0, 0, 0, 0] {
+        withUnsafeBytes(of: value.littleEndian) { proto.append(contentsOf: $0) }
+    }
+    for word: UInt32 in [size, 0] { withUnsafeBytes(of: word.littleEndian) { proto.append(contentsOf: $0) } }
+    proto += Data(count: 0x100 - proto.count)
+    return MachOPreflight.PointerReader(
+        sections: [
+            ("__objc_const", 0x2000, 0x100, 0, Data(count: 0x100)),
+            ("__cstring", 0x3000, 0x100, 0, nil),
+            ("__data", 0x6000, 0x100, 0, proto),
+        ],
+        encodings: [0: .plain])
+}
+
+@Test func walksAProtocolThroughItsPointerFields() throws {
+    try MachOPreflight.validateObjCClasses([], protocols: [0x6000], reader: oneProtocolReader())
+    // A list slot aimed 8 bytes into the protocol: its "name" is the null
+    // protocol list (the Stickies mutant's shape).
+    #expect(throws: (any Error).self) {
+        try MachOPreflight.validateObjCClasses([], protocols: [0x6008], reader: oneProtocolReader())
+    }
+    // A name outside the string sections, and a size running past `__data`.
+    #expect(throws: (any Error).self) {
+        try MachOPreflight.validateObjCClasses([], protocols: [0x6000], reader: oneProtocolReader(name: 0x2000))
+    }
+    #expect(throws: (any Error).self) {
+        try MachOPreflight.validateObjCClasses([], protocols: [0x6000], reader: oneProtocolReader(size: 0x400))
+    }
+}

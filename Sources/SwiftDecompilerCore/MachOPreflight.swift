@@ -266,7 +266,9 @@ public enum MachOPreflight {
                     encodings[segment] = .chained(format: format, imageBase: table.textBase, imports: imports)
                 }
             }
-            let loaded: Set<String> = ["__objc_data", "__data", "__objc_const", "__objc_classlist", "__objc_nlclslist"]
+            let loaded: Set<String> = [
+                "__objc_data", "__data", "__objc_const", "__objc_classlist", "__objc_nlclslist", "__objc_protolist",
+            ]
             // (Other sections are named, not read: a field's target only has to
             // land in them.)
             var reader = PointerReader(sections: [], encodings: encodings, chainEntries: chainEntries)
@@ -285,7 +287,13 @@ public enum MachOPreflight {
                     if case .address(let cls)?? = reader.field(at: slot) { classes.append(cls) }
                 }
             }
-            try validateObjCClasses(classes, reader: reader, path: path)
+            var protocols: [UInt64] = []
+            for list in reader.sections where list.name == "__objc_protolist" {
+                for slot in stride(from: list.addr, to: list.addr &+ UInt64(list.size), by: 8) {
+                    if case .address(let proto)?? = reader.field(at: slot) { protocols.append(proto) }
+                }
+            }
+            try validateObjCClasses(classes, protocols: protocols, reader: reader, path: path)
         }
 
         var mangledNames: [Int] = []
@@ -569,7 +577,9 @@ public enum MachOPreflight {
     /// table in docs/PRODUCTION-READINESS.md). A corrupt one sent
     /// MachOObjCSection to parse a class, its data, or a name out of
     /// arbitrary memory (`metadata-fuzz.py sample.release 150 4242`).
-    static func validateObjCClasses(_ classes: [UInt64], reader: PointerReader, path: String = "<data>") throws {
+    static func validateObjCClasses(
+        _ classes: [UInt64], protocols: [UInt64] = [], reader: PointerReader, path: String = "<data>"
+    ) throws {
         func fail(_ why: String) -> BinaryLoadError {
             BinaryLoadError("Malformed Mach-O: \(path) — Objective-C \(why)")
         }
@@ -688,6 +698,39 @@ public enum MachOPreflight {
                 }
             }
             if let ro = data { try walkReadOnlyData(ro) }
+        }
+        // `protocol_t`: isa, name, protocols, four method lists, instance
+        // properties, then `size` and `flags`, then (when `size` reaches them)
+        // extended method types, demangled name, class properties. Measured
+        // over every protocol the 4,101 binaries' protocol lists name: isa
+        // always null, no field ever a bind, `size` 80, 88 or 96. A list slot
+        // aimed into the middle of a protocol had MachOObjCSection read its
+        // fields out of whatever lay there (`try!` in its file reader;
+        // `metadata-fuzz.py` on the arm64e slice of Stickies, 60 11, mutant 38).
+        let methodLists: Set<String> = ["__objc_methlist", "__objc_const", "__objc_data"]
+        for proto in protocols {
+            guard let size = reader.word(at: proto + 64) else { continue }
+            let section = reader.sections[size.section]
+            let end = section.addr &+ UInt64(section.size)
+            guard size.value >= 72, size.value <= 4096, proto + UInt64(size.value) <= end else {
+                throw fail("protocol at 0x\(String(proto, radix: 16)) declares \(size.value) bytes, not a protocol in its section")
+            }
+            try check(proto, "protocol isa", in: [])
+            try check(proto + 8, "protocol name", in: strings, null: false, bind: false, aligned: false)
+            try check(proto + 16, "protocol's protocol list", in: ["__objc_const"], bind: false)
+            for (offset, what) in [(24, "instance"), (32, "class"), (40, "optional instance"), (48, "optional class")] {
+                try check(proto + UInt64(offset), "protocol \(what) method list", in: methodLists, bind: false)
+            }
+            try check(proto + 56, "protocol instance properties", in: ["__objc_const"], bind: false)
+            if size.value >= 80 {
+                try check(proto + 72, "protocol extended method types", in: ["__objc_const"], bind: false)
+            }
+            if size.value >= 88 {
+                try check(proto + 80, "protocol demangled name", in: strings, bind: false, aligned: false)
+            }
+            if size.value >= 96 {
+                try check(proto + 88, "protocol class properties", in: ["__objc_const"], bind: false)
+            }
         }
     }
 
