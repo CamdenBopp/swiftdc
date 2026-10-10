@@ -610,6 +610,9 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   | `__swift5_mpenum` | SIGTRAP | objc, disasm, analyze (found 2026-10-10; contained the same day) |
   | `__swift5_fieldmd` | SIGTRAP | objc, layout, disasm, xrefs, analyze (found on `sample.release`, seed 4242; contained) |
   | `__swift5_proto` into code | SIGTRAP | dump, analyze (an in-file target inside `__text`; contained) |
+  | `__swift5_builtin` | SIGTRAP | dump, interface, objc, layout (found on `libReconstruction.opt`, seed 777; contained) |
+  | `__swift5_typeref` | SIGTRAP | dump, interface (symbolic references; contained, parsed only from names records point at) |
+  | `__swift5_mpenum` spare bits | SIGTRAP | analyze (`Index out of range` on a mask the record cannot hold; contained) |
   | `__objc_selrefs`, `__objc_classlist`, `__objc_nlclslist`, `__objc_catlist` | SIGSEGV/SIGTRAP | contained: each slot's decoded target must land, aligned, in the section that kind of slot names |
   | `__objc_const`, `__objc_data` | SIGSEGV/SIGTRAP | contained: classes walked through their pointer fields only (table below) |
 
@@ -644,7 +647,25 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   Measured: both metadata fuzz sets now 0 crashes (`libSample.dylib 100 1234`:
   0/800; `sample.release 150 4242`: 0/1200), the container fuzz 0/120, 0 false
   rejections on the 1,058 binaries, and every one of the 48 class-walk
-  rejections in the two fuzz sets names a field the mutation changed. Those slots are chained-fixup-encoded, and
+  rejections in the two fuzz sets names a field the mutation changed.
+
+  **A third binary and seed (`libReconstruction.opt.dylib 150 777`): 44 → 0.**
+  It found `__swift5_builtin`, `__swift5_typeref`, the multi-payload enum
+  spare-bit mask, a bind planted in a `class_ro_t` field, and a corrupt
+  metaclass `class_ro_t`. Binds never occur in any `class_ro_t` field or list
+  entry of the 1,058 binaries (only in `cache`, `superclass` and the metaclass
+  `isa`/`superclass`), so they are refused there, and metaclass read-only data
+  is walked like a class's.
+
+  Dead end, recorded so it is not retried: `__swift5_typeref` is **not** a
+  plain table of mangled names. Current toolchains place 16-byte-aligned binary
+  records between the names, and walking the section front to back misread
+  them as symbolic references, falsely rejecting 130 of 832 real binaries (in
+  both file and VM space). Names are parsed only from the starts the
+  field-descriptor, associated-type, builtin and multi-payload-enum records
+  point at, by the grammar in `docs/ABI/Mangling.rst`, with references
+  resolved in VM space (an indirect one names a GOT slot in `__DATA_CONST`,
+  16 MB from its file offset in Xcode's frameworks). Those slots are chained-fixup-encoded, and
   `__objc_const`/`__objc_data` interleave pointers with flags, sizes and
   ivar offsets, so a flat "every word is a pointer" scan would reject valid
   files. Containing them needs a struct-aware walk (`class_t`, `class_ro_t`,

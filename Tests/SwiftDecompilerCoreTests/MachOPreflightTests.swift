@@ -969,3 +969,83 @@ private func oneClassReader(
         try MachOPreflight.validateObjCClasses([0x1000], reader: oneClassReader(ivarList: 0x2080, ivarHeader: (32, 500)))
     }
 }
+
+// MARK: - __swift5_builtin, mangled names, spare-bit masks
+
+@Test func checksBuiltinTypeDescriptors() throws {
+    var table = Data()
+    for word: UInt32 in [UInt32(bitPattern: -100), 8, 8, 8, 0] {
+        withUnsafeBytes(of: word.littleEndian) { table.append(contentsOf: $0) }
+    }
+    try MachOPreflight.validateBuiltinTypeTable(bytes: table, sectionOffset: 4096, fileSize: 8192)
+    var bad = table
+    bad.replaceSubrange(0..<4, with: [0x00, 0x00, 0x00, 0x40])
+    #expect(throws: (any Error).self) {
+        try MachOPreflight.validateBuiltinTypeTable(bytes: bad, sectionOffset: 4096, fileSize: 8192)
+    }
+    #expect(throws: (any Error).self) {
+        try MachOPreflight.validateBuiltinTypeTable(bytes: table.prefix(16), sectionOffset: 4096, fileSize: 8192)
+    }
+}
+
+/// Names parse from the starts the records point at, by the symbolic-reference
+/// grammar; the rest of `__swift5_typeref` is never walked, because current
+/// toolchains place binary records between the names (walking it whole falsely
+/// rejected 130 of 832 real binaries).
+@Test func parsesMangledNamesFromTheirStartsOnly() throws {
+    let segments: [Range<UInt64>] = [0x1000..<0x3000]
+    // At +0: "S" then a direct reference whose payload holds a NUL, then "i",
+    // NUL. At +16: record bytes that would read as a wild reference.
+    var section = Data([0x53, 0x01]) + Data([0x00, 0x08, 0x00, 0x00]) + Data([0x69, 0x00])
+    section += Data(repeating: 0, count: 8)
+    section += Data([0x01, 0xff, 0xff, 0xff, 0x7f, 0x00])
+    try MachOPreflight.validateMangledNames(
+        at: [0x2000], in: section, sectionOffset: 0x2000, sectionAddress: 0x2000,
+        segments: segments, name: "__swift5_typeref")
+    // The same bytes, reached from +16, are rejected.
+    #expect(throws: (any Error).self) {
+        try MachOPreflight.validateMangledNames(
+            at: [0x2010], in: section, sectionOffset: 0x2000, sectionAddress: 0x2000,
+            segments: segments, name: "__swift5_typeref")
+    }
+}
+
+@Test func checksAMultiPayloadEnumSpareBitMask() {
+    func descriptor(_ words: [UInt32]) -> Data {
+        var data = Data()
+        for word in [UInt32(bitPattern: -100)] + words {
+            withUnsafeBytes(of: word.littleEndian) { data.append(contentsOf: $0) }
+        }
+        return data
+    }
+    func rejects(_ bytes: Data) -> Bool {
+        (try? MachOPreflight.validateMultiPayloadEnumTable(bytes: bytes, sectionOffset: 4096, fileSize: 8192)) == nil
+    }
+    // Flag 1 set: a mask-size word, then a 4-byte mask in one more word.
+    #expect(!rejects(descriptor([3 << 16 | 1, 4, 0xff])))
+    // Flag set, but only the size-flags word (fuzz mutant 88).
+    #expect(rejects(descriptor([1 << 16 | 1])))
+    // A 12-byte mask in a record with room for one word.
+    #expect(rejects(descriptor([3 << 16 | 1, 12, 0xff])))
+}
+
+@Test func rejectsTheFuzzedReconstructionMutantsIfPresent() throws {
+    guard let original = FileManager.default.contents(atPath: "Fixtures/Sample/libReconstruction.opt.dylib") else { return }
+    // `metadata-fuzz.py libReconstruction.opt.dylib 150 777`.
+    let mutants: [(String, [(Int, UInt8)])] = [
+        ("builtin type name", [(0x3db3, 144), (0x3da3, 252)]),
+        ("typeref symbolic reference", [(0x316d, 236), (0x318e, 243)]),
+        ("mpenum spare bits", [(0x3db8, 243)]),
+        ("class ro protocol list turned into a bind", [(0xc0bf, 216)]),
+        ("metaclass ro protocol list", [(0xc102, 39)]),
+    ]
+    for (what, edits) in mutants {
+        var data = original
+        for (offset, value) in edits { data[offset] = value }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("swiftdc-recon-\(UUID().uuidString)")
+        try data.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        #expect(throws: (any Error).self, "\(what)") { try MachOPreflight.validate(url: url) }
+    }
+}

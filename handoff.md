@@ -55,9 +55,10 @@ yet done in the 2026-10-09 session:
 - **Completeness:** a throw whose error is built by a helper (`mov x21, x0`
   after `sub_…`) is not recognised as a throw exit; it declines.
 - **Robustness, next probe:** every fuzz set measured so far is at 0 crashes
-  (container, and metadata on `libSample.dylib` and `sample.release`). Fresh
-  seeds and other binaries (an arm64e image, a fat file, `libReconstruction`)
-  are the next probe. ObjC categories' and protocols' own fields are not yet
+  (container on `libSample.dylib`; metadata on `libSample.dylib` 1234,
+  `sample.release` 4242, `libReconstruction.opt.dylib` 777). Each new binary
+  or seed has found new classes, so more seeds and binaries (an arm64e image,
+  a fat file, a large real framework) are the next probe. ObjC categories' and protocols' own fields are not yet
   walked (only the category-list slots), nor are pointer-based (entsize 24)
   method lists or arm64e chained formats, which decline.
 - **Upgrade decision pending:** MachOSwiftSection 0.19 → 0.22 (soundness
