@@ -432,13 +432,32 @@ public enum MachOPreflight {
         case .plain:
             return .address(raw)
         case .chained(let format, let imageBase, let imports):
-            guard format == 2 || format == 6 else { return .undecoded }
-            if raw >> 63 != 0 {
-                let ordinal = UInt32(raw & 0xff_ffff)
-                return ordinal < imports ? .bind : .badBind(ordinal)
+            switch format {
+            case 2, 6:
+                if raw >> 63 != 0 {
+                    let ordinal = UInt32(raw & 0xff_ffff)
+                    return ordinal < imports ? .bind : .badBind(ordinal)
+                }
+                let target = raw & 0xf_ffff_ffff
+                return .address(format == 2 ? target | ((raw >> 36) & 0xff) << 56 : imageBase &+ target)
+            case 1, 9, 12:
+                // arm64e (`fixup-chains.h`): bit 63 auth, bit 62 bind. A bind's
+                // ordinal is 16 bits, 24 in USERLAND24. An authenticated rebase
+                // holds a 32-bit offset from the image base; a plain one a
+                // 43-bit target (a vmaddr in DYLD_CHAINED_PTR_ARM64E, an offset
+                // in the USERLAND formats) with the top byte at bits 43-50.
+                let auth = raw >> 63 != 0
+                if (raw >> 62) & 1 != 0 {
+                    let ordinal = UInt32(raw & (format == 12 ? 0xff_ffff : 0xffff))
+                    return ordinal < imports ? .bind : .badBind(ordinal)
+                }
+                if auth { return .address(imageBase &+ (raw & 0xffff_ffff)) }
+                let target = raw & 0x7ff_ffff_ffff
+                let high8 = ((raw >> 43) & 0xff) << 56
+                return .address((format == 1 ? target : imageBase &+ target) | high8)
+            default:
+                return .undecoded
             }
-            let target = raw & 0xf_ffff_ffff
-            return .address(format == 2 ? target | ((raw >> 36) & 0xff) << 56 : imageBase &+ target)
         }
     }
 

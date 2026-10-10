@@ -841,8 +841,23 @@ private let chained6 = MachOPreflight.PointerEncoding.chained(format: 6, imageBa
     // A bind: bit 63, ordinal in the low 24 bits, checked against the imports.
     #expect(MachOPreflight.decodePointer(1 << 63 | 3, chained6) == .bind)
     #expect(MachOPreflight.decodePointer(1 << 63 | 9, chained6) == .badBind(9))
-    // An arm64e format this check does not decode declines.
-    #expect(MachOPreflight.decodePointer(0x1234, .chained(format: 12, imageBase: 0, imports: 4)) == .undecoded)
+    // A format this check does not decode declines (7: DYLD_CHAINED_PTR_32_FIRMWARE).
+    #expect(MachOPreflight.decodePointer(0x1234, .chained(format: 7, imageBase: 0, imports: 4)) == .undecoded)
+    // arm64e (`mach-o/fixup-chains.h`): bit 62 bind, bit 63 auth.
+    let base: UInt64 = 0x1_0000_0000
+    func e(_ format: UInt16, imports: UInt32 = 4) -> MachOPreflight.PointerEncoding {
+        .chained(format: format, imageBase: base, imports: imports)
+    }
+    // USERLAND24 binds carry a 24-bit ordinal; the other formats 16 bits.
+    #expect(MachOPreflight.decodePointer(1 << 62 | 0x1_0003, e(12, imports: 0x2_0000)) == .bind)
+    #expect(MachOPreflight.decodePointer(1 << 62 | 0x1_0003, e(12)) == .badBind(0x1_0003))
+    #expect(MachOPreflight.decodePointer(1 << 62 | 0x1_0003, e(9)) == .bind)
+    // An authenticated rebase: a 32-bit offset, the diversity bits above it ignored.
+    #expect(MachOPreflight.decodePointer(1 << 63 | 0xbeef << 32 | 0xc5e0, e(12)) == .address(base + 0xc5e0))
+    // A plain rebase: a 43-bit target with the top byte at bits 43-50; a vmaddr
+    // in DYLD_CHAINED_PTR_ARM64E, an offset from the base in USERLAND(24).
+    #expect(MachOPreflight.decodePointer(0xab << 43 | 0xc5e0, e(12)) == .address(0xab << 56 | (base + 0xc5e0)))
+    #expect(MachOPreflight.decodePointer(0x1_0000_c5e0, e(1)) == .address(0x1_0000_c5e0))
     #expect(MachOPreflight.decodePointer(0x1_0000_c5e0, .plain) == .address(0x1_0000_c5e0))
 }
 
