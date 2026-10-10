@@ -33,6 +33,9 @@ struct LayoutCommand: AsyncParsableCommand {
     @Option(name: .customLong("cache"), help: "Path to a dyld_shared_cache_* file.")
     var cache: String?
 
+    @Flag(name: .customLong("list-images"), help: "List every image install path in the dyld shared cache and exit.")
+    var listImages = false
+
     @Option(name: .customLong("binary"), help: "For an .app/.framework/.ipa: analyze this embedded binary by name.")
     var binary: String?
 
@@ -55,6 +58,10 @@ struct LayoutCommand: AsyncParsableCommand {
     var json = false
 
     func run() throws {
+        if listImages {
+            try emit(BinaryLoader.dyldCacheImagePaths(cachePath: cache).joined(separator: "\n"), to: output)
+            return
+        }
         let machO = try BinaryLoader.loadMachO(
             path: path, architecture: architecture, image: image, cachePath: cache, binary: binary
         )

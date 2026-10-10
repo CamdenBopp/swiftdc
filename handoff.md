@@ -54,8 +54,6 @@ yet done in the 2026-10-09 session:
   (`SyntaxOptions.init(rawValue:)` is `str x0, [x8]; ret`).
 - **Completeness:** a throw whose error is built by a helper (`mov x21, x0`
   after `sub_…`) is not recognised as a throw exit; it declines.
-- **Diagnostics:** `disasm`'s "image not found" error tells you to use
-  `--list-images`, which only `dump` accepts.
 - **Readability:** the structurer's `cond <op>` fallback (an `fcmp`/`ccmp` or
   out-of-block flag setter) renders an opaque `if (cond ==)`.
 - **Research items not yet done** (docs/research/swift-source/README.md):

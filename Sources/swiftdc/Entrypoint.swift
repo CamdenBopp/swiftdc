@@ -38,6 +38,9 @@ struct ObjCCommand: AsyncParsableCommand {
     @Option(name: .customLong("cache"), help: "Path to a dyld_shared_cache_* file. Defaults to the running system's cache when --image is used.")
     var cache: String?
 
+    @Flag(name: .customLong("list-images"), help: "List every image install path in the dyld shared cache and exit.")
+    var listImages = false
+
     @Option(name: .customLong("binary"), help: "For an .app/.framework/.ipa: analyze this embedded binary by name (e.g. a framework). Default: the main executable.")
     var binary: String?
 
@@ -63,6 +66,10 @@ struct ObjCCommand: AsyncParsableCommand {
     var function: String?
 
     func run() async throws {
+        if listImages {
+            try emit(BinaryLoader.dyldCacheImagePaths(cachePath: cache).joined(separator: "\n"), to: output)
+            return
+        }
         if listBinaries { try emit(binaryListing(for: path), to: output); return }
         let machO = try BinaryLoader.loadMachO(
             path: path,
@@ -150,6 +157,9 @@ struct AnalyzeCommand: AsyncParsableCommand {
     @Option(name: .customLong("cache"), help: "Path to a dyld_shared_cache_* file. Defaults to the running system's cache when --image is used.")
     var cache: String?
 
+    @Flag(name: .customLong("list-images"), help: "List every image install path in the dyld shared cache and exit.")
+    var listImages = false
+
     @Option(name: .long, help: "Demangle preset: default, simplified, interface.")
     var demangle: DemanglePreset = .default
 
@@ -166,6 +176,10 @@ struct AnalyzeCommand: AsyncParsableCommand {
     var json = false
 
     func run() async throws {
+        if listImages {
+            try emit(BinaryLoader.dyldCacheImagePaths(cachePath: cache).joined(separator: "\n"), to: output)
+            return
+        }
         if listBinaries { try emit(binaryListing(for: path), to: output); return }
         let report = AnalysisReport(preset: demangle)
         let text: String
@@ -281,6 +295,9 @@ struct InterfaceCommand: AsyncParsableCommand {
     @Option(name: .customLong("cache"), help: "Path to a dyld_shared_cache_* file. Defaults to the running system's cache when --image is used.")
     var cache: String?
 
+    @Flag(name: .customLong("list-images"), help: "List every image install path in the dyld shared cache and exit.")
+    var listImages = false
+
     @Flag(name: .long, help: "Include types imported from C.")
     var showCImportedTypes = false
 
@@ -315,6 +332,10 @@ struct InterfaceCommand: AsyncParsableCommand {
     var output: String?
 
     func run() async throws {
+        if listImages {
+            try emit(BinaryLoader.dyldCacheImagePaths(cachePath: cache).joined(separator: "\n"), to: output)
+            return
+        }
         if listBinaries { try emit(binaryListing(for: path), to: output); return }
         let machO = try BinaryLoader.loadMachO(
             path: path,
@@ -360,6 +381,9 @@ struct DisasmCommand: AsyncParsableCommand {
     @Option(name: .customLong("cache"), help: "Path to a dyld_shared_cache_* file. Defaults to the running system's cache when --image is used.")
     var cache: String?
 
+    @Flag(name: .customLong("list-images"), help: "List every image install path in the dyld shared cache and exit.")
+    var listImages = false
+
     @Option(name: [.short, .long], help: "Only show functions whose name (raw or demangled) contains this string.")
     var function: String?
 
@@ -388,6 +412,10 @@ struct DisasmCommand: AsyncParsableCommand {
     var structured = false
 
     func run() async throws {
+        if listImages {
+            try emit(BinaryLoader.dyldCacheImagePaths(cachePath: cache).joined(separator: "\n"), to: output)
+            return
+        }
         try await runDisasm()
     }
 

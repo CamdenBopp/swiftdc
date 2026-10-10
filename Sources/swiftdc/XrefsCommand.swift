@@ -33,6 +33,9 @@ struct XrefsCommand: AsyncParsableCommand {
     @Option(name: .customLong("cache"), help: "Path to a dyld_shared_cache_* file. Defaults to the running system's cache when --image is used.")
     var cache: String?
 
+    @Flag(name: .customLong("list-images"), help: "List every image install path in the dyld shared cache and exit.")
+    var listImages = false
+
     @Option(name: .customLong("binary"), help: "For an .app/.framework/.ipa: analyze this embedded binary by name. Default: the main executable.")
     var binary: String?
 
@@ -52,6 +55,10 @@ struct XrefsCommand: AsyncParsableCommand {
     var json = false
 
     func run() async throws {
+        if listImages {
+            try emit(BinaryLoader.dyldCacheImagePaths(cachePath: cache).joined(separator: "\n"), to: output)
+            return
+        }
         guard function != nil || unreferenced else {
             throw ValidationError("Pass --function <name> to cross-reference, or --unreferenced.")
         }
