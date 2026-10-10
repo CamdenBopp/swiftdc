@@ -629,3 +629,67 @@ private func rejectsAssocty(_ bytes: Data, at offset: Int = 4096, fileSize: Int 
     defer { try? FileManager.default.removeItem(at: url) }
     #expect(throws: (any Error).self) { try MachOPreflight.validate(url: url) }
 }
+
+// MARK: - __objc_methlist, list by list
+
+/// A relative method list at `0x1000`: header, then `names.count` 12-byte
+/// methods whose name offsets are `names` (types and imp offsets zero).
+private func methodList(_ names: [Int32], header: UInt32 = 0x8000_000c) -> Data {
+    var data = Data()
+    func put(_ word: UInt32) { withUnsafeBytes(of: word.littleEndian) { data.append(contentsOf: $0) } }
+    put(header); put(UInt32(names.count))
+    for name in names { put(UInt32(bitPattern: name)); put(0); put(0) }
+    return data
+}
+
+private let selrefs: (addr: UInt64, size: Int) = (0x2000, 64)
+
+/// The relative offset from method `method`'s name field (in a list at
+/// `0x1000`) to selector-reference slot `slot`.
+private func nameOffset(method: Int, slot: Int) -> Int32 {
+    let field: Int = 0x1000 + 8 + 12 * method
+    let target: Int = 0x2000 + 8 * slot
+    return Int32(target - field)
+}
+
+private func rejectsMethodLists(_ bytes: Data) -> Bool {
+    (try? MachOPreflight.validateObjCMethodLists(bytes: bytes, sectionAddress: 0x1000, selrefs: selrefs)) == nil
+}
+
+@Test func acceptsRelativeMethodListsNamingSelectorReferences() {
+    // Method i's name field sits at 0x1000 + 8 + 12i; aim each at a selref slot.
+    let names: [Int32] = (0..<3).map { nameOffset(method: $0, slot: $0) }
+    let first = methodList(names)
+    // Zero padding, then a second list (its fields start after the first + 4).
+    let secondStart = 0x1000 + first.count + 4
+    let second = methodList([Int32(0x2038) - Int32(secondStart + 8)])
+    #expect(!rejectsMethodLists(first + Data(repeating: 0, count: 4) + second))
+    // An unrecognised header ends the walk without a verdict.
+    #expect(!rejectsMethodLists(methodList([0x7fff_0000], header: 0x0000_0010)))
+}
+
+/// Fuzz mutant 13 redirected a name onto bytes that are not a selector
+/// reference; MachOObjCSection read them as a pointer and `strlen` SIGSEGVed
+/// `objc`, `disasm`, `xrefs` and `analyze`.
+@Test func rejectsAMethodNameThatIsNotASelectorReference() {
+    let names: [Int32] = (0..<2).map { nameOffset(method: $0, slot: $0) }
+    #expect(rejectsMethodLists(methodList([names[0], names[1] + 4])))     // misaligned slot
+    #expect(rejectsMethodLists(methodList([names[0], 0x00fd_c398])))      // far outside
+    #expect(rejectsMethodLists(methodList([names[0]]).prefix(16)))        // list cut short
+    var overrun = methodList([names[0]])
+    overrun.replaceSubrange(4..<8, with: [0xff, 0xff, 0, 0])               // 65535 methods
+    #expect(rejectsMethodLists(overrun))
+}
+
+@Test func rejectsTheFuzzedMethodListMutantIfPresent() throws {
+    guard var data = FileManager.default.contents(atPath: "Fixtures/Sample/libSample.dylib") else { return }
+    // `metadata-fuzz.py libSample.dylib 100 1234`, mutant 13.
+    for (offset, value) in [(0x3792, 253), (0x378e, 239), (0x37d3, 23), (0x37d1, 87)] {
+        data[offset] = UInt8(value)
+    }
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("swiftdc-methlist-\(UUID().uuidString).dylib")
+    try data.write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+    #expect(throws: (any Error).self) { try MachOPreflight.validate(url: url) }
+}

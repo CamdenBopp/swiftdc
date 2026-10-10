@@ -135,6 +135,17 @@ public enum MachOPreflight {
             )
         }
 
+        let objc = sectionExtents(named: ["__objc_methlist", "__objc_selrefs"], prefix: prefix)
+        if let methlist = objc["__objc_methlist"], let selrefs = objc["__objc_selrefs"],
+           methlist.size > 0, methlist.offset <= fileSize, methlist.size <= fileSize - methlist.offset,
+           (try? handle.seek(toOffset: UInt64(methlist.offset))) != nil,
+           let bytes = try? handle.read(upToCount: methlist.size), bytes.count == methlist.size {
+            try validateObjCMethodLists(
+                bytes: bytes, sectionAddress: methlist.addr,
+                selrefs: (selrefs.addr, selrefs.size), path: url.path
+            )
+        }
+
         for table in relativePointerTables(prefix: prefix, fileSize: fileSize) {
             guard table.size > 0, let _ = try? handle.seek(toOffset: UInt64(table.offset)),
                   let bytes = try? handle.read(upToCount: table.size), bytes.count == table.size
@@ -243,6 +254,87 @@ public enum MachOPreflight {
     /// rejecting valid binaries, which this project treats as worse than the
     /// crash. The ones covered here are the severe ones anyway: corrupting any
     /// of them kills **every** subcommand.
+    /// `(vmaddr, file offset, size)` of the named sections of a thin
+    /// little-endian image.
+    static func sectionExtents(
+        named names: Set<String>, prefix: Data
+    ) -> [String: (addr: UInt64, offset: Int, size: Int)] {
+        guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE,
+              let ncmds = prefix.u32(at: 16), let sizeofcmds = prefix.u32(at: 20)
+        else { return [:] }
+        let limit = min(Layout.machHeader64 + Int(sizeofcmds), prefix.count)
+        var cursor = Layout.machHeader64
+        var found: [String: (addr: UInt64, offset: Int, size: Int)] = [:]
+        for _ in 0..<Int(ncmds) {
+            guard cursor + Layout.minLoadCommand <= limit,
+                  let cmd = prefix.u32(at: cursor), let cmdsize = prefix.u32(at: cursor + 4),
+                  cmdsize >= UInt32(Layout.minLoadCommand)
+            else { break }
+            if cmd == Command.segment64, let nsects = prefix.u32(at: cursor + 64) {
+                for section in 0..<Int(nsects) {
+                    let base = cursor + 72 + section * 80
+                    guard base + 80 <= limit,
+                          let addr = prefix.u64(at: base + 32), let size = prefix.u64(at: base + 40),
+                          let offset = prefix.u32(at: base + 48)
+                    else { break }
+                    let raw = prefix[(prefix.startIndex + base)..<(prefix.startIndex + base + 16)]
+                    let name = String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+                    if names.contains(name) { found[name] = (addr, Int(offset), Int(clamping: size)) }
+                }
+            }
+            cursor += Int(cmdsize)
+        }
+        return found
+    }
+
+    /// `__objc_methlist`, walked list by list. In a *relative* method list
+    /// (`entsizeAndFlags & 0x80000000`, entsize 12) each method's name is a
+    /// relative offset to a selector reference in `__objc_selrefs`; the
+    /// runtime reads the pointer stored there. Redirected anywhere else, the
+    /// bytes it lands on are read as a pointer and `strlen` walks off the
+    /// mapping (SIGSEGV in `objc`, `disasm`, `xrefs`, `analyze`; fuzz mutant
+    /// 13). Offsets are in VM space: the list is in `__TEXT`, the selrefs in
+    /// `__DATA`.
+    ///
+    /// Strict only where the layout is unambiguous: a relative list must fit
+    /// the section and name only selref slots. A zero word between lists is
+    /// padding (no list has entsize 0); a pointer-based list (entsize 24, its
+    /// names rebased pointers) is stepped over unchecked; anything else ends
+    /// the walk without a verdict.
+    static func validateObjCMethodLists(
+        bytes: Data, sectionAddress: UInt64,
+        selrefs: (addr: UInt64, size: Int), path: String = "<data>"
+    ) throws {
+        func fail(_ why: String) -> BinaryLoadError {
+            BinaryLoadError("Malformed Mach-O: \(path) — __objc_methlist \(why)")
+        }
+        let selrefEnd = selrefs.addr &+ UInt64(selrefs.size)
+        var cursor = 0
+        while cursor + 8 <= bytes.count, let header = bytes.u32(at: cursor), let count = bytes.u32(at: cursor + 4) {
+            if header == 0 { cursor += 4; continue }        // padding
+            let entsize = Int(header & 0x0000_fffc)
+            let relative = header & 0x8000_0000 != 0
+            guard (relative && entsize == 12) || (!relative && entsize == 24) else { return }
+            let (span, overflow) = Int(count).multipliedReportingOverflow(by: entsize)
+            guard !overflow, span <= bytes.count - cursor - 8 else {
+                throw fail("list at +\(cursor) declares \(count) method(s), past the section's end")
+            }
+            if relative {
+                for method in 0..<Int(count) {
+                    let field = cursor + 8 + method * 12
+                    guard let raw = bytes.u32(at: field) else { break }
+                    let target = (sectionAddress &+ UInt64(field)) &+ UInt64(bitPattern: Int64(Int32(bitPattern: raw)))
+                    guard target >= selrefs.addr, target < selrefEnd, (target - selrefs.addr) % 8 == 0 else {
+                        throw fail(
+                            "list at +\(cursor) method \(method) names 0x\(String(target, radix: 16)), not a selector reference in __objc_selrefs"
+                        )
+                    }
+                }
+            }
+            cursor += 8 + span
+        }
+    }
+
     /// The `LC_DYLD_CHAINED_FIXUPS` payload of a thin little-endian loadable
     /// image, in bounds, with the number of segment commands beside it.
     static func chainedFixups(prefix: Data) -> (dataoff: Int, datasize: Int, segments: Int)? {
