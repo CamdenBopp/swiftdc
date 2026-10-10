@@ -147,6 +147,57 @@ public enum MachOPreflight {
             )
         }
 
+        // The Objective-C pointer arrays, decoded per their segment's
+        // chained-fixup pointer format (or as plain addresses without one).
+        if let table = sectionTable(prefix: prefix) {
+            var formats: [Int: UInt16] = [:]
+            var imports: UInt32 = 0
+            var chained = false
+            if let fixups = chainedFixups(prefix: prefix),
+               (try? handle.seek(toOffset: UInt64(fixups.dataoff))) != nil,
+               let blob = try? handle.read(upToCount: fixups.datasize), blob.count == fixups.datasize,
+               let startsOffset = blob.u32(at: 4), let importCount = blob.u32(at: 16),
+               let segCount = blob.u32(at: Int(startsOffset)) {
+                chained = true
+                imports = importCount
+                let starts = Int(startsOffset)
+                for index in 0..<Int(segCount) {
+                    let entry: Int = starts + 4 + 4 * index
+                    guard let start = blob.u32(at: entry), start != 0 else { continue }
+                    let formatOffset: Int = starts + Int(start) + 6
+                    if let format = blob.u16(at: formatOffset) { formats[index] = format }
+                }
+            }
+            let targets: [String: [String]] = [
+                "__objc_selrefs": ["__objc_methname"],
+                "__objc_classlist": ["__objc_data", "__data"],
+                "__objc_nlclslist": ["__objc_data", "__data"],
+                "__objc_catlist": ["__objc_const"],
+            ]
+            for section in table.sections {
+                guard let names = targets[section.name], section.size > 0,
+                      section.offset <= fileSize, section.size <= fileSize - section.offset
+                else { continue }
+                let encoding: PointerEncoding
+                if chained {
+                    // A segment with no fixups has no pointers to decode.
+                    guard let format = formats[section.segment] else { continue }
+                    encoding = .chained(format: format, imageBase: table.textBase, imports: imports)
+                } else {
+                    encoding = .plain
+                }
+                let allowed = table.sections.filter { names.contains($0.name) }
+                    .map { (name: $0.name, addr: $0.addr, size: $0.size) }
+                guard !allowed.isEmpty,
+                      (try? handle.seek(toOffset: UInt64(section.offset))) != nil,
+                      let bytes = try? handle.read(upToCount: section.size), bytes.count == section.size
+                else { continue }
+                try validateObjCPointerArray(
+                    bytes: bytes, name: section.name, encoding: encoding, allowed: allowed, path: url.path
+                )
+            }
+        }
+
         for table in relativePointerTables(prefix: prefix, fileSize: fileSize) {
             guard table.size > 0, let _ = try? handle.seek(toOffset: UInt64(table.offset)),
                   let bytes = try? handle.read(upToCount: table.size), bytes.count == table.size
@@ -263,6 +314,77 @@ public enum MachOPreflight {
     /// rejecting valid binaries, which this project treats as worse than the
     /// crash. The ones covered here are the severe ones anyway: corrupting any
     /// of them kills **every** subcommand.
+    /// How a pointer slot in one of the Objective-C pointer arrays is stored.
+    enum PointerEncoding: Equatable {
+        /// No chained fixups: the slot holds the unslid target address.
+        case plain
+        /// `DYLD_CHAINED_PTR_64` (2) or `DYLD_CHAINED_PTR_64_OFFSET` (6).
+        case chained(format: UInt16, imageBase: UInt64, imports: UInt32)
+    }
+
+    /// Where an Objective-C pointer-array slot points: the unslid address of
+    /// a rebase, `bind` for a bind within the import table, or nil when the
+    /// encoding is one this check does not decode (it then declines).
+    enum PointerTarget: Equatable { case address(UInt64), bind, badBind(UInt32), undecoded }
+
+    static func decodePointer(_ raw: UInt64, _ encoding: PointerEncoding) -> PointerTarget {
+        switch encoding {
+        case .plain:
+            return .address(raw)
+        case .chained(let format, let imageBase, let imports):
+            guard format == 2 || format == 6 else { return .undecoded }
+            if raw >> 63 != 0 {
+                let ordinal = UInt32(raw & 0xff_ffff)
+                return ordinal < imports ? .bind : .badBind(ordinal)
+            }
+            let target = raw & 0xf_ffff_ffff
+            return .address(format == 2 ? target | ((raw >> 36) & 0xff) << 56 : imageBase &+ target)
+        }
+    }
+
+    /// The Objective-C pointer arrays: `__objc_selrefs`, `__objc_classlist`,
+    /// `__objc_nlclslist` and `__objc_catlist`. Every slot is a pointer, so
+    /// unlike `__objc_const`/`__objc_data` (which interleave flags, sizes and
+    /// offsets) each can be checked without a struct walk. A rebase must land
+    /// in the section that kind of slot always names, and a bind's ordinal
+    /// must be inside the import table. Measured on 571 real thin binaries:
+    /// every selref lands in `__objc_methname` (453k slots), every class-list
+    /// entry in `__objc_data` or `__data`, every category in `__objc_const`.
+    /// A corrupt slot sent MachOObjCSection to parse a class or category out of
+    /// arbitrary memory (SIGSEGV/SIGTRAP in `objc`, `layout`, `disasm`,
+    /// `analyze`; `metadata-fuzz.py sample.release 150 4242`).
+    static func validateObjCPointerArray(
+        bytes: Data, name: String, encoding: PointerEncoding,
+        allowed: [(name: String, addr: UInt64, size: Int)], path: String = "<data>"
+    ) throws {
+        for index in stride(from: 0, to: bytes.count - bytes.count % 8, by: 8) {
+            guard let raw = bytes.u64(at: index) else { break }
+            switch decodePointer(raw, encoding) {
+            case .undecoded, .bind:
+                continue
+            case .badBind(let ordinal):
+                throw BinaryLoadError(
+                    "Malformed Mach-O: \(path) — \(name)[\(index / 8)] binds import \(ordinal), past the import table"
+                )
+            case .address(let target):
+                // Classes and categories are pointer-aligned objects; a
+                // misaligned target is the middle of one (fuzz mutants 19, 47).
+                // Selector strings carry no alignment.
+                if name != "__objc_selrefs", target % 8 != 0 {
+                    throw BinaryLoadError(
+                        "Malformed Mach-O: \(path) — \(name)[\(index / 8)] points at 0x\(String(target, radix: 16)), not pointer-aligned"
+                    )
+                }
+                guard allowed.contains(where: { target >= $0.addr && target < $0.addr &+ UInt64($0.size) }) else {
+                    let names = allowed.map(\.name).joined(separator: " or ")
+                    throw BinaryLoadError(
+                        "Malformed Mach-O: \(path) — \(name)[\(index / 8)] points at 0x\(String(target, radix: 16)), outside \(names)"
+                    )
+                }
+            }
+        }
+    }
+
     /// `(vmaddr, file offset, size)` of the named sections of a thin
     /// little-endian image.
     static func sectionExtents(
@@ -390,6 +512,43 @@ public enum MachOPreflight {
             cursor += Int(cmdsize)
         }
         return ranges
+    }
+
+    /// Every section's `(segment index, name, vmaddr, file offset, size)`,
+    /// and the `__TEXT` vmaddr, of a thin little-endian image.
+    static func sectionTable(prefix: Data) -> (sections: [(segment: Int, name: String, addr: UInt64, offset: Int, size: Int)], textBase: UInt64)? {
+        guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE,
+              let ncmds = prefix.u32(at: 16), let sizeofcmds = prefix.u32(at: 20)
+        else { return nil }
+        let limit = min(Layout.machHeader64 + Int(sizeofcmds), prefix.count)
+        var cursor = Layout.machHeader64
+        var sections: [(segment: Int, name: String, addr: UInt64, offset: Int, size: Int)] = []
+        var segment = 0
+        var textBase: UInt64 = 0
+        for _ in 0..<Int(ncmds) {
+            guard cursor + Layout.minLoadCommand <= limit,
+                  let cmd = prefix.u32(at: cursor), let cmdsize = prefix.u32(at: cursor + 4),
+                  cmdsize >= UInt32(Layout.minLoadCommand)
+            else { return nil }
+            if cmd == Command.segment64, let nsects = prefix.u32(at: cursor + 64) {
+                if segmentName(at: cursor, prefix: prefix) == "__TEXT", let vmaddr = prefix.u64(at: cursor + 24) {
+                    textBase = vmaddr
+                }
+                for section in 0..<Int(nsects) {
+                    let base = cursor + 72 + section * 80
+                    guard base + 80 <= limit,
+                          let addr = prefix.u64(at: base + 32), let size = prefix.u64(at: base + 40),
+                          let offset = prefix.u32(at: base + 48)
+                    else { return nil }
+                    let raw = prefix[(prefix.startIndex + base)..<(prefix.startIndex + base + 16)]
+                    let name = String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+                    sections.append((segment, name, addr, Int(offset), Int(clamping: size)))
+                }
+                segment += 1
+            }
+            cursor += Int(cmdsize)
+        }
+        return (sections, textBase)
     }
 
     /// The `LC_DYLD_CHAINED_FIXUPS` payload of a thin little-endian loadable
@@ -1037,6 +1196,11 @@ private extension Data {
     /// Read a `UInt32`, returning nil rather than trapping when out of bounds.
     /// `Data`'s own subscripting is exactly what traps in the dependency this
     /// file exists to protect against, so every read here is checked.
+    func u16(at offset: Int) -> UInt16? {
+        guard offset >= 0, offset + 2 <= count else { return nil }
+        return UInt16(self[startIndex + offset]) | UInt16(self[startIndex + offset + 1]) << 8
+    }
+
     func u32(at offset: Int, bigEndian: Bool = false) -> UInt32? {
         guard offset >= 0, offset + 4 <= count else { return nil }
         var value: UInt32 = 0

@@ -828,3 +828,67 @@ private func rejectsFieldmd(_ bytes: Data) -> Bool {
     try MachOPreflight.validateObjCMethodLists(
         bytes: list, sectionAddress: 0x1000, selrefs: selrefs, sectionOffset: 0x1000, fileSize: 8192)
 }
+
+// MARK: - Objective-C pointer arrays
+
+private let chained6 = MachOPreflight.PointerEncoding.chained(format: 6, imageBase: 0x1_0000_0000, imports: 4)
+
+@Test func decodesChainedAndPlainPointers() {
+    // Format 6: a 36-bit offset from the image base; format 2: the address.
+    #expect(MachOPreflight.decodePointer(0x0000_c5e0, chained6) == .address(0x1_0000_c5e0))
+    #expect(MachOPreflight.decodePointer(0x1_0000_c5e0,
+        .chained(format: 2, imageBase: 0, imports: 4)) == .address(0x1_0000_c5e0))
+    // A bind: bit 63, ordinal in the low 24 bits, checked against the imports.
+    #expect(MachOPreflight.decodePointer(1 << 63 | 3, chained6) == .bind)
+    #expect(MachOPreflight.decodePointer(1 << 63 | 9, chained6) == .badBind(9))
+    // An arm64e format this check does not decode declines.
+    #expect(MachOPreflight.decodePointer(0x1234, .chained(format: 12, imageBase: 0, imports: 4)) == .undecoded)
+    #expect(MachOPreflight.decodePointer(0x1_0000_c5e0, .plain) == .address(0x1_0000_c5e0))
+}
+
+private func slots(_ values: [UInt64]) -> Data {
+    var data = Data()
+    for value in values { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
+    return data
+}
+
+private let objcData: [(name: String, addr: UInt64, size: Int)] = [("__objc_data", 0x1_0000_c400, 0x200)]
+
+@Test func checksEachObjCPointerArraySlot() throws {
+    // In range, aligned, and a bind inside the import table: accepted.
+    try MachOPreflight.validateObjCPointerArray(
+        bytes: slots([0xc4a8, 0xc530, 1 << 63 | 2]), name: "__objc_classlist",
+        encoding: chained6, allowed: objcData)
+    let bad: [UInt64] = [
+        0xa430,             // outside __objc_data (fuzz mutant 6)
+        0xc52a,             // inside, but the middle of an object (mutant 47)
+        0x2_0000_c4a8,      // a flipped high byte (mutant 108)
+        1 << 63 | 40,       // a bind past the import table
+    ]
+    for value in bad {
+        #expect(throws: (any Error).self, "\(String(value, radix: 16))") {
+            try MachOPreflight.validateObjCPointerArray(
+                bytes: slots([value]), name: "__objc_classlist", encoding: chained6, allowed: objcData)
+        }
+    }
+    // Selector strings carry no alignment.
+    try MachOPreflight.validateObjCPointerArray(
+        bytes: slots([0xc401]), name: "__objc_selrefs", encoding: chained6,
+        allowed: [("__objc_methname", 0x1_0000_c400, 0x100)])
+}
+
+@Test func rejectsTheFuzzedObjCPointerMutantsIfPresent() throws {
+    guard let original = FileManager.default.contents(atPath: "Fixtures/Sample/sample.release") else { return }
+    // `metadata-fuzz.py sample.release 150 4242`: classlist 108, selrefs 21, catlist 12.
+    for edit in [(0x855c, 146), (0xc37b, 36), (0x8569, 216)] {
+        var data = original
+        data[edit.0] = UInt8(edit.1)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("swiftdc-objcptr-\(UUID().uuidString)")
+        try data.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        #expect(throws: (any Error).self, "edit at \(String(edit.0, radix: 16))") {
+            try MachOPreflight.validate(url: url)
+        }
+    }
+}
