@@ -812,3 +812,19 @@ private func rejectsFieldmd(_ bytes: Data) -> Bool {
     defer { try? FileManager.default.removeItem(at: url) }
     #expect(throws: (any Error).self) { try MachOPreflight.validate(url: url) }
 }
+
+/// A method's type-encoding offset flipped out of the file sent `strlen` off
+/// the mapping (`metadata-fuzz.py sample.release 150 4242`, mutant 105).
+@Test func rejectsAMethodTypeEncodingOutsideTheFile() throws {
+    var list = methodList([nameOffset(method: 0, slot: 0)])
+    // Method 0's types field is at +12; point it far past an 8192-byte file.
+    list.replaceSubrange(12..<16, with: [0x8b, 0x44, 0x00, 0x13])
+    #expect(throws: (any Error).self) {
+        try MachOPreflight.validateObjCMethodLists(
+            bytes: list, sectionAddress: 0x1000, selrefs: selrefs, sectionOffset: 0x1000, fileSize: 8192)
+    }
+    // The same list with an in-file type encoding passes.
+    list.replaceSubrange(12..<16, with: [0x00, 0x01, 0x00, 0x00])
+    try MachOPreflight.validateObjCMethodLists(
+        bytes: list, sectionAddress: 0x1000, selrefs: selrefs, sectionOffset: 0x1000, fileSize: 8192)
+}

@@ -142,7 +142,8 @@ public enum MachOPreflight {
            let bytes = try? handle.read(upToCount: methlist.size), bytes.count == methlist.size {
             try validateObjCMethodLists(
                 bytes: bytes, sectionAddress: methlist.addr,
-                selrefs: (selrefs.addr, selrefs.size), path: url.path
+                selrefs: (selrefs.addr, selrefs.size), path: url.path,
+                sectionOffset: methlist.offset, fileSize: fileSize
             )
         }
 
@@ -311,7 +312,8 @@ public enum MachOPreflight {
     /// the walk without a verdict.
     static func validateObjCMethodLists(
         bytes: Data, sectionAddress: UInt64,
-        selrefs: (addr: UInt64, size: Int), path: String = "<data>"
+        selrefs: (addr: UInt64, size: Int), path: String = "<data>",
+        sectionOffset: Int? = nil, fileSize: Int? = nil
     ) throws {
         func fail(_ why: String) -> BinaryLoadError {
             BinaryLoadError("Malformed Mach-O: \(path) — __objc_methlist \(why)")
@@ -336,6 +338,22 @@ public enum MachOPreflight {
                         throw fail(
                             "list at +\(cursor) method \(method) names 0x\(String(target, radix: 16)), not a selector reference in __objc_selrefs"
                         )
+                    }
+                    // The type encoding (a string in `__objc_methtype`) and the
+                    // IMP sit in `__TEXT` beside the list, so their offsets
+                    // resolve in file space. A types offset flipped out of the
+                    // file sent `strlen` off the mapping (`metadata-fuzz.py
+                    // sample.release 150 4242`, mutant 105).
+                    if let sectionOffset, let fileSize {
+                        for (slot, what) in [(4, "type encoding"), (8, "implementation")] {
+                            guard let delta = bytes.u32(at: field + slot) else { break }
+                            let resolved = sectionOffset + field + slot + Int(Int32(bitPattern: delta))
+                            guard resolved >= 0, resolved < fileSize else {
+                                throw fail(
+                                    "list at +\(cursor) method \(method)'s \(what) is a relative pointer to offset \(resolved), outside the \(fileSize)-byte file"
+                                )
+                            }
+                        }
                     }
                 }
             }
