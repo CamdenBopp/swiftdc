@@ -139,10 +139,16 @@ public enum MachOPreflight {
             guard table.size > 0, let _ = try? handle.seek(toOffset: UInt64(table.offset)),
                   let bytes = try? handle.read(upToCount: table.size), bytes.count == table.size
             else { continue }
-            try validateRelativePointerTable(
-                bytes: bytes, sectionOffset: table.offset, fileSize: fileSize,
-                name: table.name, path: url.path
-            )
+            if table.name == "__swift5_assocty" {
+                try validateAssociatedTypeTable(
+                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: url.path
+                )
+            } else {
+                try validateRelativePointerTable(
+                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize,
+                    name: table.name, path: url.path
+                )
+            }
         }
     }
 
@@ -282,6 +288,9 @@ public enum MachOPreflight {
         // documented rather than guessed at.
         let wanted: Set<String> = [
             "__swift5_protos", "__swift5_proto", "__swift5_types", "__swift5_types2",
+            // Not flat, but walked by its own record layout; see
+            // `validateAssociatedTypeTable`.
+            "__swift5_assocty",
         ]
         guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE else { return [] }
         guard let ncmds = prefix.u32(at: 16), let sizeofcmds = prefix.u32(at: 20) else { return [] }
@@ -314,6 +323,56 @@ public enum MachOPreflight {
             cursor += Int(cmdsize)
         }
         return found
+    }
+
+    /// `__swift5_assocty`, walked by its record layout rather than as a flat
+    /// table, so its counts are never mistaken for pointers (the reason it
+    /// was left out before). Each `AssociatedTypeDescriptor`
+    /// (swift/include/swift/RemoteInspection/Records.h:359) is two relative
+    /// pointers, `NumAssociatedTypes`, `AssociatedTypeRecordSize`, then that
+    /// many `AssociatedTypeRecord`s of two relative pointers each.
+    ///
+    /// One corrupted name pointer here killed every subcommand: SIGSEGV in
+    /// `strlen` past the end of the file, or `Negative value is not
+    /// representable` (6 of the 8 crashing mutants in `metadata-fuzz.py
+    /// libSample.dylib 100 1234`).
+    static func validateAssociatedTypeTable(
+        bytes: Data, sectionOffset: Int, fileSize: Int, path: String = "<data>"
+    ) throws {
+        func fail(_ why: String) -> BinaryLoadError {
+            BinaryLoadError("Malformed Mach-O: \(path) — __swift5_assocty \(why)")
+        }
+        func checkPointer(at offset: Int, _ what: String) throws {
+            guard let raw = bytes.u32(at: offset) else { throw fail("\(what) is truncated") }
+            let target = sectionOffset + offset + Int(Int32(bitPattern: raw))
+            guard target >= 0, target < fileSize else {
+                throw fail("\(what) is a relative pointer to offset \(target), outside the \(fileSize)-byte file")
+            }
+        }
+        var cursor = 0
+        var descriptor = 0
+        while cursor < bytes.count {
+            guard cursor + 16 <= bytes.count,
+                  let count = bytes.u32(at: cursor + 8), let recordSize = bytes.u32(at: cursor + 12)
+            else { throw fail("descriptor \(descriptor) is truncated") }
+            // The compiler emits `sizeof(AssociatedTypeRecord)`, two Int32s.
+            guard recordSize == 8 else {
+                throw fail("descriptor \(descriptor) declares \(recordSize)-byte records, not 8")
+            }
+            let (body, overflow) = Int(count).multipliedReportingOverflow(by: 8)
+            guard !overflow, body <= bytes.count - cursor - 16 else {
+                throw fail("descriptor \(descriptor) declares \(count) record(s), past the section's end")
+            }
+            try checkPointer(at: cursor, "descriptor \(descriptor)'s conforming type name")
+            try checkPointer(at: cursor + 4, "descriptor \(descriptor)'s protocol name")
+            for record in 0..<Int(count) {
+                let base = cursor + 16 + record * 8
+                try checkPointer(at: base, "descriptor \(descriptor) record \(record)'s name")
+                try checkPointer(at: base + 4, "descriptor \(descriptor) record \(record)'s type")
+            }
+            cursor += 16 + body
+            descriptor += 1
+        }
     }
 
     /// Every entry of a relative-pointer table must resolve inside the file.

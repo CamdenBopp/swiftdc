@@ -579,3 +579,53 @@ private func setU64(_ data: inout Data, _ at: Int, _ value: UInt64) {
     defer { try? FileManager.default.removeItem(at: original) }
     try MachOPreflight.validate(url: original)
 }
+
+// MARK: - __swift5_assocty, by record layout
+
+/// One `AssociatedTypeDescriptor`: two relative pointers, a record count, a
+/// record size, then `count` records of two relative pointers. `deltas` are
+/// the six (or more) pointer fields in order.
+private func assocty(count: UInt32, recordSize: UInt32 = 8, deltas: [Int32]) -> Data {
+    var data = Data()
+    func put(_ word: UInt32) { withUnsafeBytes(of: word.littleEndian) { data.append(contentsOf: $0) } }
+    put(UInt32(bitPattern: deltas[0])); put(UInt32(bitPattern: deltas[1]))
+    put(count); put(recordSize)
+    for delta in deltas.dropFirst(2) { put(UInt32(bitPattern: delta)) }
+    return data
+}
+
+private func rejectsAssocty(_ bytes: Data, at offset: Int = 4096, fileSize: Int = 8192) -> Bool {
+    (try? MachOPreflight.validateAssociatedTypeTable(bytes: bytes, sectionOffset: offset, fileSize: fileSize)) == nil
+}
+
+@Test func acceptsAWellFormedAssociatedTypeTable() {
+    // Pointers backwards into the file, as the compiler emits them.
+    #expect(!rejectsAssocty(assocty(count: 1, deltas: [-100, -200, -300, -400])))
+    #expect(!rejectsAssocty(assocty(count: 0, deltas: [-100, -200])))
+}
+
+/// Each of these crashed every subcommand when the mutated byte reached
+/// MachOSwiftSection (fuzz mutants 17, 30, 54, 65, 80, 81).
+@Test func rejectsAMalformedAssociatedTypeTable() {
+    // A count whose records run past the section (mutant 17: 4865 records).
+    #expect(rejectsAssocty(assocty(count: 4865, deltas: [-100, -200, -300, -400])))
+    // A name pointer before the file's start (mutant 30: offset -3796).
+    #expect(rejectsAssocty(assocty(count: 1, deltas: [-8000, -200, -300, -400])))
+    // A record pointer past the end of the file (mutant 54).
+    #expect(rejectsAssocty(assocty(count: 1, deltas: [-100, -200, 0x4000_0000, -400])))
+    // A record size the compiler never emits.
+    #expect(rejectsAssocty(assocty(count: 1, recordSize: 12, deltas: [-100, -200, -300, -400])))
+    // A descriptor cut off by the section's end.
+    #expect(rejectsAssocty(assocty(count: 1, deltas: [-100, -200, -300, -400]).prefix(12)))
+}
+
+@Test func rejectsTheFuzzedAssociatedTypeMutantIfPresent() throws {
+    // `metadata-fuzz.py libSample.dylib 100 1234`, mutant 17: one byte at 0x3e9d.
+    guard var data = FileManager.default.contents(atPath: "Fixtures/Sample/libSample.dylib") else { return }
+    data[0x3e9d] = 19
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("swiftdc-assocty-\(UUID().uuidString).dylib")
+    try data.write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+    #expect(throws: (any Error).self) { try MachOPreflight.validate(url: url) }
+}

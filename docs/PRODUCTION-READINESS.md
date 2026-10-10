@@ -605,7 +605,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   | section | signal | subcommands killed |
   |---|---|---|
   | `__swift5_protos` | SIGTRAP | **all eight** — no entry point survives (now contained) |
-  | `__swift5_assocty` | SIGTRAP + SIGSEGV | dump, interface, analyze |
+  | `__swift5_assocty` | SIGTRAP + SIGSEGV | dump, interface, analyze (now contained: walked by record layout, 2026-10-10) |
   | `__objc_methlist` | SIGSEGV | objc, objc --methods, disasm, xrefs, analyze |
 
   `disasm` is among them. Container corruption never reached it because
