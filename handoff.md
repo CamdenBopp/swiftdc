@@ -60,8 +60,9 @@ yet done in the 2026-10-09 session:
   `libReconstruction.resilient.dylib` 31). Preflight now walks every fixup
   chain (`ba10879`) and refuses misaligned descriptor-table targets
   (`357bfa9`). A corrupt `next` that lands on an aligned slot only skips a
-  fixup; that is a possible soundness gap (a raw chained value read as a
-  plain pointer), not a crash. Each new binary
+  fixup; it does not crash, and the hand-built `next` 2 → 4 selref mutant
+  renders the affected send as `/* unresolved call */ ?` (a decline, not a
+  wrong selector). Each new binary
   or seed has found new classes, so more seeds and binaries (an arm64e image,
   a fat file, a large real framework) are the next probe. ObjC categories' and protocols' own fields are not yet
   walked (only the category-list slots), nor are pointer-based (entsize 24)
