@@ -1050,36 +1050,65 @@ private func oneClassReader(
     }
 }
 
-/// One segment of one 64-byte page in `DYLD_CHAINED_PTR_64_OFFSET`, chain
-/// starting at +0, with each slot's `next` taken from `nexts`.
-private func chainedFixupsFixture(nexts: [UInt64]) -> (blob: Data, segment: Data) {
+/// One segment of 64-byte pages in `DYLD_CHAINED_PTR_64_OFFSET` with two
+/// imports, its chain starting at `pageStart` of page 0; `slots` are raw
+/// values by byte offset into the segment.
+private func chainedFixupsFixture(_ slots: [Int: UInt64], pageStart: UInt16 = 0) -> (blob: Data, segment: Data) {
     var blob = Data(count: 64)
     func put32(_ value: UInt32, _ at: Int) { withUnsafeBytes(of: value.littleEndian) { blob.replaceSubrange(at..<at + 4, with: $0) } }
     func put16(_ value: UInt16, _ at: Int) { withUnsafeBytes(of: value.littleEndian) { blob.replaceSubrange(at..<at + 2, with: $0) } }
-    put32(32, 4)                    // starts_offset
+    put32(32, 4); put32(2, 16)      // starts_offset, imports_count
     put32(1, 32); put32(8, 36)      // seg_count, seg_info_offset[0]
     put16(64, 44); put16(6, 46)     // page_size, pointer_format
-    put16(1, 60); put16(0, 62)      // page_count, page_start[0]
-    var segment = Data(count: 128)     // a second page, so a chain leaving the first still reads
-    var offset = 0
-    for next in nexts {
-        guard offset + 8 <= 64 else { break }
-        withUnsafeBytes(of: (next << 51 | 0x1000).littleEndian) { segment.replaceSubrange(offset..<offset + 8, with: $0) }
-        offset += Int(next) * 4
+    put16(1, 60); put16(pageStart, 62)  // page_count, page_start[0]
+    var segment = Data(count: 128)  // a second page, so a chain leaving the first still reads
+    for (offset, raw) in slots {
+        withUnsafeBytes(of: raw.littleEndian) { segment.replaceSubrange(offset..<offset + 8, with: $0) }
     }
     return (blob, segment)
 }
 
-@Test func walksFixupChainsAndRejectsOneThatLeavesItsSlots() {
-    func rejects(_ nexts: [UInt64]) -> Bool {
-        let (blob, segment) = chainedFixupsFixture(nexts: nexts)
-        return (try? MachOPreflight.validateFixupChains(
-            blob: blob, startsOffset: 32, segmentCount: 1, readSegment: { _ in segment }
-        )) == nil
+private func rebase(_ next: UInt64, to target: UInt64 = 0x1000) -> UInt64 { next << 51 | target }
+
+private func walkChains(_ slots: [Int: UInt64], pageStart: UInt16 = 0) throws -> MachOPreflight.ChainEntries {
+    let (blob, segment) = chainedFixupsFixture(slots, pageStart: pageStart)
+    return try MachOPreflight.validateFixupChains(
+        blob: blob, startsOffset: 32, segmentCount: 1, readSegment: { _ in (0x4000, segment) }
+    )
+}
+
+@Test func walksFixupChainsAndRecordsTheSlotsTheyReach() throws {
+    // +0, +8, +24, +32, ending in the page; one bind of import 1.
+    let entries = try walkChains([0: rebase(2), 8: rebase(4), 24: 1 << 63 | 2 << 51 | 1, 32: rebase(0)])
+    #expect([0, 8, 24, 32].allSatisfy { entries.contains(0x4000 + $0) })
+    #expect(![16, 40, 64].contains { entries.contains(0x4000 + $0) })
+    // Electron Framework's x86_64 slices put chained pointers at 4-byte offsets.
+    #expect(try walkChains([0: rebase(3), 12: rebase(0)]).contains(0x400c))
+}
+
+@Test func rejectsAChainDyldWouldNotWalk() {
+    func rejects(_ slots: [Int: UInt64], pageStart: UInt16 = 0) -> Bool {
+        (try? walkChains(slots, pageStart: pageStart)) == nil
     }
-    #expect(!rejects([2, 4, 2, 0]))     // +0, +8, +24, +32: every slot aligned, ends in the page
-    #expect(rejects([2, 3, 0]))         // +8 then +20: a `next` that lands inside a pointer
-    #expect(rejects([2, 2, 2, 2, 2, 2, 2, 2]))  // runs off the 64-byte page
+    #expect(rejects([0: 1 << 63 | 5]))                          // a bind past the two imports
+    #expect(rejects([2: rebase(0)], pageStart: 2))              // a chain starting mid-word
+    #expect(rejects(Dictionary(uniqueKeysWithValues: (0..<8).map { ($0 * 8, rebase(2)) })))  // off the page
+}
+
+@Test func rejectsAPointerSlotNoChainReaches() throws {
+    func validate(_ slots: [Int: UInt64]) throws {
+        var bytes = Data(count: 24)
+        for (offset, raw) in slots {
+            withUnsafeBytes(of: raw.littleEndian) { bytes.replaceSubrange(offset..<offset + 8, with: $0) }
+        }
+        try MachOPreflight.validateObjCPointerArray(
+            bytes: bytes, name: "__objc_selrefs", encoding: .chained(format: 6, imageBase: 0, imports: 2),
+            allowed: [("__objc_methname", 0x1000, 16)], address: 0x4000, chainEntries: try walkChains(slots)
+        )
+    }
+    try validate([0: rebase(2), 8: rebase(2), 16: rebase(0)])
+    // `next` 4 from +0 skips the slot at +8, as the fuzz mutants' flipped bits do.
+    #expect(throws: (any Error).self) { try validate([0: rebase(4), 8: rebase(2), 16: rebase(0)]) }
 }
 
 /// `metadata-fuzz.py sample.release 150 99`: each mutant flips `next` bits

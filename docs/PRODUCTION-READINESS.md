@@ -666,14 +666,22 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
   **A fresh seed on the executable (`sample.release 150 99`): 10 → 0.** Both
   mutants flipped `next` bits of a chained pointer (`__objc_selrefs`,
-  `__objc_data`), so MachOKit's chain walk landed mid-pointer and a
-  MachOObjCSection `try!` trapped. Preflight now walks every fixup chain the
-  way dyld does, from each page start, and refuses a chain that leaves its
-  page or lands on a misaligned slot. Measured over the 1,058 + 832 binaries:
-  10.6 million slots in 10,790 page chains (formats 6, 2 and 12), every one
-  inside its page and 8-byte aligned, even in the 4-byte-stride formats. A
-  corrupt `next` that still lands on an aligned slot only skips a fixup; it
-  does not crash (hand-built mutant, `next` 2 → 4 in `__objc_selrefs`).
+  `__objc_data`). The chain then skipped slots, and MachOKit read a skipped
+  slot's raw chained bits as a plain address, so a MachOObjCSection `try!`
+  trapped. Preflight walks every fixup chain the way dyld does, from each
+  page start, refusing one that leaves its page, lands on a slot that is not
+  4-byte aligned, or binds past the import table. It records the slots the
+  chains reach, and a nonzero Objective-C pointer slot or class field
+  outside them is refused. Measured: every one of 3.94 million ObjC
+  pointer-array slots in the chained images of four corpora (1,058 + 832
+  thin, 1,434 arm64e system binaries, 1,609 universal binaries under
+  /Applications) is a chain entry.
+
+  Dead ends, recorded so they are not retried. Requiring 8-byte-aligned slots
+  (true of all 10.6 million arm64 slots measured) refuses Electron
+  Framework, whose x86_64 slices pack pointers at 4-byte offsets. Requiring
+  rebase targets inside the image refuses `/usr/libexec/fairplaydeviceidentityd`,
+  which dyld loads with 690 rebases pointing outside it (`dyld_info -fixups`).
 
   Dead end, recorded so it is not retried: `__swift5_typeref` is **not** a
   plain table of mangled names. Current toolchains place 16-byte-aligned binary

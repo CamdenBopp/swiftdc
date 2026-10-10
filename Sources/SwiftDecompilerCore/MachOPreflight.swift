@@ -173,18 +173,22 @@ public enum MachOPreflight {
             )
         }
 
-        // Every fixup chain stays inside its page.
+        // Every fixup chain stays inside its page, and the slots the chains
+        // reach are what the pointer checks below decode.
+        var chainEntries: ChainEntries?
         if let fixups = chainedFixups(prefix: prefix),
            let blob = image.read(offset: fixups.dataoff, count: fixups.datasize),
            let startsOffset = blob.u32(at: 4), let segmentCount = blob.u32(at: Int(startsOffset)) {
-            let segments = segmentFileRanges(prefix: prefix)
-            try validateFixupChains(
+            let segments = segmentRanges(prefix: prefix)
+            chainEntries = try validateFixupChains(
                 blob: blob, startsOffset: Int(startsOffset), segmentCount: Int(segmentCount),
                 readSegment: { index in
                     guard index < segments.count else { return nil }
-                    let (offset, size) = segments[index]
-                    guard size > 0, size <= 512 << 20 else { return nil }
-                    return image.read(offset: offset, count: size)
+                    let segment = segments[index]
+                    guard segment.size > 0, segment.size <= 512 << 20,
+                          let data = image.read(offset: segment.offset, count: segment.size)
+                    else { return nil }
+                    return (segment.vmaddr, data)
                 },
                 path: path
             )
@@ -234,7 +238,8 @@ public enum MachOPreflight {
                       let bytes = image.read(offset: section.offset, count: section.size)
                 else { continue }
                 try validateObjCPointerArray(
-                    bytes: bytes, name: section.name, encoding: encoding, allowed: allowed, path: path
+                    bytes: bytes, name: section.name, encoding: encoding, allowed: allowed, path: path,
+                    address: section.addr, chainEntries: chainEntries
                 )
             }
 
@@ -250,7 +255,7 @@ public enum MachOPreflight {
             let loaded: Set<String> = ["__objc_data", "__data", "__objc_const", "__objc_classlist", "__objc_nlclslist"]
             // (Other sections are named, not read: a field's target only has to
             // land in them.)
-            var reader = PointerReader(sections: [], encodings: encodings)
+            var reader = PointerReader(sections: [], encodings: encodings, chainEntries: chainEntries)
             for section in table.sections {
                 var bytes: Data?
                 if loaded.contains(section.name), section.size > 0, section.size <= 64 << 20,
@@ -412,7 +417,7 @@ public enum MachOPreflight {
     /// Where an Objective-C pointer-array slot points: the unslid address of
     /// a rebase, `bind` for a bind within the import table, or nil when the
     /// encoding is one this check does not decode (it then declines).
-    enum PointerTarget: Equatable { case address(UInt64), bind, badBind(UInt32), undecoded }
+    enum PointerTarget: Equatable { case address(UInt64), bind, badBind(UInt32), undecoded, unchained(UInt64) }
 
     static func decodePointer(_ raw: UInt64, _ encoding: PointerEncoding) -> PointerTarget {
         switch encoding {
@@ -442,12 +447,20 @@ public enum MachOPreflight {
     /// `analyze`; `metadata-fuzz.py sample.release 150 4242`).
     static func validateObjCPointerArray(
         bytes: Data, name: String, encoding: PointerEncoding,
-        allowed: [(name: String, addr: UInt64, size: Int)], path: String = "<data>"
+        allowed: [(name: String, addr: UInt64, size: Int)], path: String = "<data>",
+        address: UInt64 = 0, chainEntries: ChainEntries? = nil
     ) throws {
         for index in stride(from: 0, to: bytes.count - bytes.count % 8, by: 8) {
             guard let raw = bytes.u64(at: index) else { break }
+            // In a chained image a pointer slot holds a fixup only if a chain
+            // reaches it; otherwise MachOKit reads its bits as a plain address.
+            if raw != 0, let chainEntries, !chainEntries.contains(address &+ UInt64(index)) {
+                throw BinaryLoadError(
+                    "Malformed Mach-O: \(path) — \(name)[\(index / 8)] holds 0x\(String(raw, radix: 16)) outside every fixup chain"
+                )
+            }
             switch decodePointer(raw, encoding) {
-            case .undecoded, .bind:
+            case .undecoded, .bind, .unchained:
                 continue
             case .badBind(let ordinal):
                 throw BinaryLoadError(
@@ -477,6 +490,7 @@ public enum MachOPreflight {
     struct PointerReader {
         var sections: [(name: String, addr: UInt64, size: Int, segment: Int, bytes: Data?)]
         var encodings: [Int: PointerEncoding]
+        var chainEntries: ChainEntries? = nil
 
         func section(containing address: UInt64) -> Int? {
             sections.firstIndex { address >= $0.addr && address < $0.addr &+ UInt64($0.size) }
@@ -490,7 +504,9 @@ public enum MachOPreflight {
                   let encoding = encodings[sections[index].segment],
                   let raw = bytes.u64(at: Int(address - sections[index].addr))
             else { return nil }
-            return raw == 0 ? .some(nil) : .some(MachOPreflight.decodePointer(raw, encoding))
+            if raw == 0 { return .some(nil) }
+            if let chainEntries, !chainEntries.contains(address) { return .some(.unchained(raw)) }
+            return .some(MachOPreflight.decodePointer(raw, encoding))
         }
 
         /// A raw 32-bit word at `address` with the section it lies in, nil when
@@ -529,6 +545,8 @@ public enum MachOPreflight {
             }
             switch target {
             case .undecoded: return nil
+            case .unchained(let raw):
+                throw fail("\(what) at 0x\(String(address, radix: 16)) holds 0x\(String(raw, radix: 16)) outside every fixup chain")
             case .bind: if bind { return nil }; throw fail("\(what) at 0x\(String(address, radix: 16)) is a bind")
             case .badBind(let ordinal): throw fail("\(what) at 0x\(String(address, radix: 16)) binds import \(ordinal), past the import table")
             case .address(let raw):
@@ -817,40 +835,64 @@ public enum MachOPreflight {
         return (sections, textBase)
     }
 
-    /// Each segment command's `(fileoff, filesize)`, in command order: the
-    /// order chained fixups index segments by.
-    static func segmentFileRanges(prefix: Data) -> [(offset: Int, size: Int)] {
+    /// Each segment command's `(vmaddr, fileoff, filesize)`, in command
+    /// order: the order chained fixups index segments by.
+    static func segmentRanges(prefix: Data) -> [(vmaddr: UInt64, offset: Int, size: Int)] {
         guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE,
               let ncmds = prefix.u32(at: 16), let sizeofcmds = prefix.u32(at: 20)
         else { return [] }
         let limit = min(Layout.machHeader64 + Int(sizeofcmds), prefix.count)
         var cursor = Layout.machHeader64
-        var ranges: [(offset: Int, size: Int)] = []
+        var ranges: [(vmaddr: UInt64, offset: Int, size: Int)] = []
         for _ in 0..<Int(ncmds) {
             guard cursor + Layout.minLoadCommand <= limit,
                   let cmd = prefix.u32(at: cursor), let cmdsize = prefix.u32(at: cursor + 4),
                   cmdsize >= UInt32(Layout.minLoadCommand)
             else { break }
-            if cmd == Command.segment64, let offset = prefix.u64(at: cursor + 40), let size = prefix.u64(at: cursor + 48) {
-                ranges.append((Int(clamping: offset), Int(clamping: size)))
+            if cmd == Command.segment64, let vmaddr = prefix.u64(at: cursor + 24),
+               let offset = prefix.u64(at: cursor + 40), let size = prefix.u64(at: cursor + 48) {
+                ranges.append((vmaddr, Int(clamping: offset), Int(clamping: size)))
             }
             cursor += Int(cmdsize)
         }
         return ranges
     }
 
+    /// The slots fixup chains reach, by unslid address: a bit per 4-byte
+    /// word of each segment that has chains.
+    struct ChainEntries {
+        var segments: [(vmaddr: UInt64, size: Int, bits: [UInt64])] = []
+
+        func contains(_ address: UInt64) -> Bool {
+            for segment in segments where address >= segment.vmaddr && address - segment.vmaddr < UInt64(segment.size) {
+                let word = Int((address - segment.vmaddr) / 4)
+                return segment.bits[word / 64] & (1 << UInt64(word % 64)) != 0
+            }
+            return false
+        }
+
+        mutating func insert(segment: Int, offset: Int) {
+            let word = offset / 4
+            segments[segment].bits[word / 64] |= 1 << UInt64(word % 64)
+        }
+    }
+
     /// Every fixup chain, walked the way dyld walks it: from each page's
     /// `page_start`, following `next` (12 bits, 4-byte stride, for
     /// `DYLD_CHAINED_PTR_64`/`_64_OFFSET`; 11 bits, 8-byte stride, for the
-    /// arm64e formats) until it is zero. A chain must end inside its page.
-    /// A flipped `next` bit sent MachOKit's chain walk off the page and into a
-    /// `try!` (`metadata-fuzz.py sample.release 150 99`, mutants 3 and 131).
-    /// Measured: 10.6 million slots in 10,790 page chains of 1,058 real
-    /// binaries, every chain inside its page.
+    /// arm64e formats) until it is zero. A chain must end inside its page,
+    /// reach only 4-byte-aligned slots, and bind only imports the table has.
+    /// Returns the slots it reached, which are the only ones dyld rewrites:
+    /// a nonzero pointer slot outside them is read by MachOKit as a plain
+    /// address. That is what the `metadata-fuzz.py sample.release 150 99`
+    /// mutants (3 and 131) do: a flipped `next` bit skips slots, and a
+    /// MachOObjCSection `try!` traps on the raw chained value in one.
     static func validateFixupChains(
         blob: Data, startsOffset: Int, segmentCount: Int,
-        readSegment: (Int) -> Data?, path: String = "<data>"
-    ) throws {
+        readSegment: (Int) -> (vmaddr: UInt64, data: Data)?, path: String = "<data>"
+    ) throws -> ChainEntries {
+        let imports = blob.u32(at: 16) ?? 0
+        var entries = ChainEntries()
         for segment in 0..<segmentCount {
             guard let start = blob.u32(at: startsOffset + 4 + 4 * segment), start != 0 else { continue }
             let base = startsOffset + Int(start)
@@ -864,17 +906,16 @@ public enum MachOPreflight {
             case 1, 9, 12: (stride, nextMask) = (8, 0x7ff)
             default: continue                       // a format this check does not walk
             }
-            guard let data = readSegment(segment) else { continue }
+            guard let (vmaddr, data) = readSegment(segment) else { continue }
+            entries.segments.append((vmaddr, data.count, Array(repeating: 0, count: data.count / 256 + 1)))
+            let index = entries.segments.count - 1
             for page in 0..<Int(pageCount) {
                 guard let first = blob.u16(at: base + 22 + 2 * page) else { break }
                 if first == 0xffff || first & 0x8000 != 0 { continue }   // none, or 32-bit multi-starts
                 var offset = Int(first)
                 while true {
                     let slot = page * Int(pageSize) + offset
-                    // Every slot of every chain in those binaries is 8-byte
-                    // aligned, even in the 4-byte-stride formats; a misaligned
-                    // one is a `next` that lands inside a pointer.
-                    guard offset % 8 == 0 else {
+                    guard offset % 4 == 0 else {
                         throw BinaryLoadError(
                             "Malformed Mach-O: \(path) — fixup chain in segment \(segment), page \(page) lands on misaligned +\(offset)"
                         )
@@ -884,12 +925,19 @@ public enum MachOPreflight {
                             "Malformed Mach-O: \(path) — fixup chain in segment \(segment), page \(page) runs past its page at +\(offset)"
                         )
                     }
+                    entries.insert(segment: index, offset: slot)
+                    if case .badBind(let ordinal) = decodePointer(raw, .chained(format: format, imageBase: 0, imports: imports)) {
+                        throw BinaryLoadError(
+                            "Malformed Mach-O: \(path) — fixup in segment \(segment), page \(page) at +\(offset) binds import \(ordinal), past the import table"
+                        )
+                    }
                     let next = Int((raw >> 51) & nextMask)
                     if next == 0 { break }
                     offset += next * stride
                 }
             }
         }
+        return entries
     }
 
     /// The `LC_DYLD_CHAINED_FIXUPS` payload of a thin little-endian loadable
