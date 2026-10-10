@@ -54,11 +54,12 @@ yet done in the 2026-10-09 session:
   (`SyntaxOptions.init(rawValue:)` is `str x0, [x8]; ret`).
 - **Completeness:** a throw whose error is built by a helper (`mov x21, x0`
   after `sub_…`) is not recognised as a throw exit; it declines.
-- **Robustness (OPEN, measured):** corrupt absolute ObjC pointer sections
-  (`__objc_classlist/const/data/selrefs/catlist`) still crash: 76 of 1200 runs
-  in `Tools/metadata-fuzz.py Fixtures/Sample/sample.release 150 4242`.
-  Needs chained-fixup decoding and a struct-aware ObjC walk; the Swift
-  sections and relative method lists are contained (see readiness doc).
+- **Robustness, next probe:** every fuzz set measured so far is at 0 crashes
+  (container, and metadata on `libSample.dylib` and `sample.release`). Fresh
+  seeds and other binaries (an arm64e image, a fat file, `libReconstruction`)
+  are the next probe. ObjC categories' and protocols' own fields are not yet
+  walked (only the category-list slots), nor are pointer-based (entsize 24)
+  method lists or arm64e chained formats, which decline.
 - **Upgrade decision pending:** MachOSwiftSection 0.19 → 0.22 (soundness
   fixes for field offsets and vtable names, Swift 6.4, macOS 27 split-cache
   speed). Costs: MachOKit fork fix (MachOKit#1 was closed unmerged; 0.54.101

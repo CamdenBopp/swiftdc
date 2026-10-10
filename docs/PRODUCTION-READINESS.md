@@ -611,7 +611,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   | `__swift5_fieldmd` | SIGTRAP | objc, layout, disasm, xrefs, analyze (found on `sample.release`, seed 4242; contained) |
   | `__swift5_proto` into code | SIGTRAP | dump, analyze (an in-file target inside `__text`; contained) |
   | `__objc_selrefs`, `__objc_classlist`, `__objc_nlclslist`, `__objc_catlist` | SIGSEGV/SIGTRAP | contained: each slot's decoded target must land, aligned, in the section that kind of slot names |
-  | `__objc_const`, `__objc_data` | SIGSEGV/SIGTRAP | **OPEN**: pointers interleaved with flags and sizes; see below |
+  | `__objc_const`, `__objc_data` | SIGSEGV/SIGTRAP | contained: classes walked through their pointer fields only (table below) |
 
   **`sample.release`, seed 4242, 150 mutants: 114 → 76 → 28 crashes in 1200
   runs (2026-10-10).** The pointer *arrays* are now checked slot by slot:
@@ -619,8 +619,32 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   table, other formats declined), plain pointers read as addresses, and each
   rebase required to land (8-aligned for classes and categories) in the section
   that kind of slot names on 1,058 real thin binaries (453k selrefs, all in
-  `__objc_methname`). Every remaining crash is in `__objc_const` or
-  `__objc_data`. Those slots are chained-fixup-encoded, and
+  `__objc_methname`).
+
+  **Then 28 → 0.** `__objc_const`/`__objc_data` interleave pointers with
+  flags, sizes and offsets, so each class named by a class list is walked
+  through the fields that are always pointers, and each must land where it
+  does in all 44,323 classes of those 1,058 binaries:
+
+  | field | lands in (rebase), else |
+  |---|---|
+  | class / metaclass `isa` | `__objc_data`, `__data` (8-aligned); metaclass also null/bind |
+  | `superclass` | `__objc_data`, `__data`; null; bind |
+  | `cache` / `vtable` | bind or null / null only |
+  | `data` (low 3 bits masked) | `__objc_const` or `__objc_data` (both hold `class_ro_t`) |
+  | `ro.name` | `__objc_classname`, `__cstring`, `__const` |
+  | `ro.baseMethods` | `__objc_methlist`, `__objc_const`, `__objc_methname`; null |
+  | `ro.ivars` / `baseProtocols` / `baseProperties` | `__objc_const`; null |
+  | ivar layouts | `__cstring`, `__objc_classname`; null |
+  | ivar list (entsize 32) | offset in `__objc_ivar`/`__const`/`__data`/`__common`/`__bss`; name in `__objc_methname`/`__cstring`; type in `__objc_methtype`/`__cstring` |
+  | property list (entsize 16) | name and attributes in `__objc_methname`/`__cstring` |
+
+  A raw zero is a null field outside every fixup chain, not a rebase to the
+  image base (the first prototype got this wrong and misread 3,000+ nulls).
+  Measured: both metadata fuzz sets now 0 crashes (`libSample.dylib 100 1234`:
+  0/800; `sample.release 150 4242`: 0/1200), the container fuzz 0/120, 0 false
+  rejections on the 1,058 binaries, and every one of the 48 class-walk
+  rejections in the two fuzz sets names a field the mutation changed. Those slots are chained-fixup-encoded, and
   `__objc_const`/`__objc_data` interleave pointers with flags, sizes and
   ivar offsets, so a flat "every word is a pointer" scan would reject valid
   files. Containing them needs a struct-aware walk (`class_t`, `class_ro_t`,

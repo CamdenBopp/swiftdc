@@ -196,6 +196,37 @@ public enum MachOPreflight {
                     bytes: bytes, name: section.name, encoding: encoding, allowed: allowed, path: url.path
                 )
             }
+
+            // The classes those lists name, through their pointer fields.
+            var encodings: [Int: PointerEncoding] = [:]
+            let segments = Set(table.sections.map(\.segment))
+            for segment in segments {
+                if !chained { encodings[segment] = .plain }
+                else if let format = formats[segment] {
+                    encodings[segment] = .chained(format: format, imageBase: table.textBase, imports: imports)
+                }
+            }
+            let loaded: Set<String> = ["__objc_data", "__data", "__objc_const", "__objc_classlist", "__objc_nlclslist"]
+            // (Other sections are named, not read: a field's target only has to
+            // land in them.)
+            var reader = PointerReader(sections: [], encodings: encodings)
+            for section in table.sections {
+                var bytes: Data?
+                if loaded.contains(section.name), section.size > 0, section.size <= 64 << 20,
+                   section.offset <= fileSize, section.size <= fileSize - section.offset,
+                   (try? handle.seek(toOffset: UInt64(section.offset))) != nil,
+                   let read = try? handle.read(upToCount: section.size), read.count == section.size {
+                    bytes = read
+                }
+                reader.sections.append((section.name, section.addr, section.size, section.segment, bytes))
+            }
+            var classes: [UInt64] = []
+            for list in reader.sections where list.name == "__objc_classlist" || list.name == "__objc_nlclslist" {
+                for slot in stride(from: list.addr, to: list.addr &+ UInt64(list.size), by: 8) {
+                    if case .address(let cls)?? = reader.field(at: slot) { classes.append(cls) }
+                }
+            }
+            try validateObjCClasses(classes, reader: reader, path: url.path)
         }
 
         for table in relativePointerTables(prefix: prefix, fileSize: fileSize) {
@@ -380,6 +411,136 @@ public enum MachOPreflight {
                     throw BinaryLoadError(
                         "Malformed Mach-O: \(path) — \(name)[\(index / 8)] points at 0x\(String(target, radix: 16)), outside \(names)"
                     )
+                }
+            }
+        }
+    }
+
+    /// Reads 8-byte pointer fields out of loaded sections by unslid address,
+    /// decoding them with the encoding of the segment each one sits in.
+    struct PointerReader {
+        var sections: [(name: String, addr: UInt64, size: Int, segment: Int, bytes: Data?)]
+        var encodings: [Int: PointerEncoding]
+
+        func section(containing address: UInt64) -> Int? {
+            sections.firstIndex { address >= $0.addr && address < $0.addr &+ UInt64($0.size) }
+        }
+
+        /// The decoded field at `address`, nil when it is not in a loaded
+        /// section or its segment's encoding is unknown. A raw zero is null: a
+        /// field outside every fixup chain.
+        func field(at address: UInt64) -> PointerTarget?? {
+            guard let index = section(containing: address), let bytes = sections[index].bytes,
+                  let encoding = encodings[sections[index].segment],
+                  let raw = bytes.u64(at: Int(address - sections[index].addr))
+            else { return nil }
+            return raw == 0 ? .some(nil) : .some(MachOPreflight.decodePointer(raw, encoding))
+        }
+
+        /// A raw 32-bit word at `address` with the section it lies in, nil when
+        /// outside the loaded sections.
+        func word(at address: UInt64) -> (value: UInt32, section: Int)? {
+            guard let index = section(containing: address), let bytes = sections[index].bytes,
+                  let value = bytes.u32(at: Int(address - sections[index].addr))
+            else { return nil }
+            return (value, index)
+        }
+    }
+
+    /// The Objective-C classes the class lists name, with their metaclasses
+    /// and read-only data, walked through the fields that are always pointers.
+    /// `__objc_const` and `__objc_data` interleave those with flags, sizes and
+    /// offsets, so only these fields are checked, each against the sections it
+    /// lands in across 44,323 classes in 1,058 real thin binaries (see the
+    /// table in docs/PRODUCTION-READINESS.md). A corrupt one sent
+    /// MachOObjCSection to parse a class, its data, or a name out of
+    /// arbitrary memory (`metadata-fuzz.py sample.release 150 4242`).
+    static func validateObjCClasses(_ classes: [UInt64], reader: PointerReader, path: String = "<data>") throws {
+        func fail(_ why: String) -> BinaryLoadError {
+            BinaryLoadError("Malformed Mach-O: \(path) — Objective-C \(why)")
+        }
+        /// Checks the pointer field at `address`; returns its (masked) target
+        /// when it is a rebase, nil for null, a bind, or an undecoded field.
+        @discardableResult
+        func check(
+            _ address: UInt64, _ what: String, in names: Set<String>,
+            null: Bool = true, bind: Bool = true, mask: UInt64 = 0, aligned: Bool = true
+        ) throws -> UInt64? {
+            guard let decoded = reader.field(at: address) else { return nil }
+            guard let target = decoded else {
+                if null { return nil }
+                throw fail("\(what) at 0x\(String(address, radix: 16)) is null")
+            }
+            switch target {
+            case .undecoded: return nil
+            case .bind: if bind { return nil }; throw fail("\(what) at 0x\(String(address, radix: 16)) is a bind")
+            case .badBind(let ordinal): throw fail("\(what) at 0x\(String(address, radix: 16)) binds import \(ordinal), past the import table")
+            case .address(let raw):
+                let value = raw & ~mask
+                guard let index = reader.section(containing: value), names.contains(reader.sections[index].name),
+                      !aligned || value % 8 == 0
+                else {
+                    throw fail("\(what) at 0x\(String(address, radix: 16)) points at 0x\(String(value, radix: 16)), not into \(names.sorted().joined(separator: " or "))")
+                }
+                return value
+            }
+        }
+        /// A list's header (`entsizeAndFlags`, `count`): the entry size this
+        /// kind of list always has, and every entry inside the list's section.
+        func listEntries(_ list: UInt64, _ what: String, entsize expected: Int) throws -> [UInt64] {
+            guard let header = reader.word(at: list), let count = reader.word(at: list + 4) else { return [] }
+            let entsize = Int(header.value & 0xfffc)
+            guard entsize == expected else {
+                throw fail("\(what) at 0x\(String(list, radix: 16)) declares \(entsize)-byte entries, not \(expected)")
+            }
+            let section = reader.sections[header.section]
+            let end = section.addr &+ UInt64(section.size)
+            let (span, overflow) = UInt64(count.value).multipliedReportingOverflow(by: UInt64(entsize))
+            guard !overflow, list + 8 <= end, span <= end - list - 8 else {
+                throw fail("\(what) at 0x\(String(list, radix: 16)) declares \(count.value) entries, past its section's end")
+            }
+            return (0..<UInt64(count.value)).map { list + 8 + $0 * UInt64(entsize) }
+        }
+        let classSections: Set<String> = ["__objc_data", "__data"]
+        let strings: Set<String> = ["__objc_classname", "__cstring", "__const"]
+        let names: Set<String> = ["__objc_methname", "__cstring"]
+        for cls in classes {
+            let isa = try check(cls, "class isa", in: classSections, null: false)
+            try check(cls + 8, "superclass", in: classSections)
+            // `cache` is always bound to `_objc_empty_cache` or null, `vtable`
+            // always null, in every measured class and metaclass.
+            try check(cls + 16, "class cache", in: [])
+            try check(cls + 24, "class vtable", in: [], bind: false)
+            let data = try check(cls + 32, "class data", in: ["__objc_const", "__objc_data"], null: false, mask: 7)
+            if let isa {
+                try check(isa, "metaclass isa", in: ["__objc_data"])
+                try check(isa + 8, "metaclass superclass", in: classSections)
+                try check(isa + 16, "metaclass cache", in: [])
+                try check(isa + 24, "metaclass vtable", in: [], bind: false)
+                try check(isa + 32, "metaclass data", in: ["__objc_const"], null: false, mask: 7)
+            }
+            guard let ro = data else { continue }
+            try check(ro + 16, "ivar layout", in: ["__cstring", "__objc_classname"], aligned: false)
+            try check(ro + 24, "class name", in: strings, null: false, aligned: false)
+            try check(ro + 32, "method list", in: ["__objc_methlist", "__objc_const", "__objc_methname"], mask: 7)
+            try check(ro + 40, "protocol list", in: ["__objc_const"])
+            let ivars = try check(ro + 48, "ivar list", in: ["__objc_const"])
+            try check(ro + 56, "weak ivar layout", in: ["__cstring", "__objc_classname"], aligned: false)
+            let properties = try check(ro + 64, "property list", in: ["__objc_const"])
+            // `ivar_t`: the offset variable, name, type (then alignment, size).
+            if let ivars {
+                for ivar in try listEntries(ivars, "ivar list", entsize: 32) {
+                    try check(ivar, "ivar offset", in: ["__objc_ivar", "__const", "__data", "__common", "__bss"],
+                              aligned: false)
+                    try check(ivar + 8, "ivar name", in: names, null: false, aligned: false)
+                    try check(ivar + 16, "ivar type", in: ["__objc_methtype", "__cstring"], aligned: false)
+                }
+            }
+            // `property_t`: name, attributes.
+            if let properties {
+                for property in try listEntries(properties, "property list", entsize: 16) {
+                    try check(property, "property name", in: names, null: false, aligned: false)
+                    try check(property + 8, "property attributes", in: names, aligned: false)
                 }
             }
         }

@@ -892,3 +892,80 @@ private let objcData: [(name: String, addr: UInt64, size: Int)] = [("__objc_data
         }
     }
 }
+
+// MARK: - Objective-C classes, through their pointer fields
+
+/// `metadata-fuzz.py sample.release 150 4242`: each mutant corrupts one layer
+/// of a class (class, metaclass, `class_ro_t` in `__objc_const` or
+/// `__objc_data`, ivar and property lists), and each crashed `objc` or
+/// `analyze` before the class walk.
+@Test func rejectsTheFuzzedObjCClassMutantsIfPresent() throws {
+    guard let original = FileManager.default.contents(atPath: "Fixtures/Sample/sample.release") else { return }
+    let mutants: [(Int, [(Int, UInt8)])] = [
+        (7, [(0xc49d, 176), (0xc57b, 248)]),                              // metaclass data
+        (10, [(0xc524, 238), (0xc539, 117), (0xc545, 114), (0xc47d, 228)]), // superclass bind
+        (84, [(0xc2fd, 26), (0xc090, 252)]),                               // method list
+        (111, [(0xc46f, 187), (0xc475, 59), (0xc4f3, 9), (0xc45c, 94)]),   // class_ro_t in __objc_data
+        (117, [(0xc16b, 225), (0xc329, 150)]),                             // property list
+        (119, [(0xc1ed, 67), (0xc280, 98), (0xc2c3, 29), (0xc279, 93)]),   // ivar entry
+        (141, [(0xc4aa, 51), (0xc4cf, 128), (0xc553, 38), (0xc4a9, 140)]), // class isa
+    ]
+    for (index, edits) in mutants {
+        var data = original
+        for (offset, value) in edits { data[offset] = value }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("swiftdc-objcclass-\(index)-\(UUID().uuidString)")
+        try data.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        #expect(throws: (any Error).self, "mutant \(index)") { try MachOPreflight.validate(url: url) }
+    }
+}
+
+/// A one-class image in plain pointers: the class at 0x1000 (`__objc_data`),
+/// its read-only data at 0x2000 (`__objc_const`), a name at 0x3000.
+private func oneClassReader(
+    cache: UInt64 = 0, ivarList: UInt64 = 0, ivarHeader: (UInt32, UInt32) = (32, 1), ivarType: UInt64 = 0x3000
+) -> MachOPreflight.PointerReader {
+    func words(_ values: [UInt64], size: Int) -> Data {
+        var data = Data()
+        for value in values { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
+        return data + Data(repeating: 0, count: max(0, size - data.count))
+    }
+    // The class at 0x1000 and its own metaclass at 0x1080.
+    var objcData = words([0x1080, 0, cache, 0, 0x2000], size: 0x80)
+    objcData += words([0, 0, 0, 0, 0x2000], size: 0x80)
+    var objcConst = words([0, 0, 0, 0x3000, 0, 0, ivarList, 0, 0], size: 0x100)
+    // An ivar list at 0x2080 with one 32-byte entry: offset, name, type.
+    var list = Data()
+    for word in [ivarHeader.0, ivarHeader.1] { withUnsafeBytes(of: word.littleEndian) { list.append(contentsOf: $0) } }
+    list += words([0x4000, 0x3000, ivarType, 0], size: 32)
+    objcConst.replaceSubrange(0x80..<(0x80 + list.count), with: list)
+    return MachOPreflight.PointerReader(
+        sections: [
+            ("__objc_data", 0x1000, 0x100, 0, objcData),
+            ("__objc_const", 0x2000, 0x100, 0, objcConst),
+            ("__cstring", 0x3000, 0x100, 0, nil),
+            ("__objc_ivar", 0x4000, 0x10, 0, nil),
+        ],
+        encodings: [0: .plain])
+}
+
+@Test func walksAClassThroughItsPointerFields() throws {
+    try MachOPreflight.validateObjCClasses([0x1000], reader: oneClassReader())
+    try MachOPreflight.validateObjCClasses([0x1000], reader: oneClassReader(ivarList: 0x2080))
+    // `cache` is only ever bound to `_objc_empty_cache` or null.
+    #expect(throws: (any Error).self) {
+        try MachOPreflight.validateObjCClasses([0x1000], reader: oneClassReader(cache: 0x2000))
+    }
+    // An ivar's type is an encoding string.
+    #expect(throws: (any Error).self) {
+        try MachOPreflight.validateObjCClasses([0x1000], reader: oneClassReader(ivarList: 0x2080, ivarType: 0x2000))
+    }
+    // An ivar list must use 32-byte entries and fit its section.
+    #expect(throws: (any Error).self) {
+        try MachOPreflight.validateObjCClasses([0x1000], reader: oneClassReader(ivarList: 0x2080, ivarHeader: (24, 1)))
+    }
+    #expect(throws: (any Error).self) {
+        try MachOPreflight.validateObjCClasses([0x1000], reader: oneClassReader(ivarList: 0x2080, ivarHeader: (32, 500)))
+    }
+}
