@@ -229,3 +229,25 @@ func groupsFuncletsAsTheSymbolTableDoesIfPresent(path: String) async throws {
     #expect(index.funclets[sync.startAddress]?.parent == nil)
     #expect(index.chains[entry.startAddress] == [entry.startAddress])
 }
+
+// MARK: - Soundness: a resume funclet's registers are not the parameters
+
+/// x0 at a resume funclet's entry is the awaited callee's result, not the
+/// parent's first parameter. The funclet's symbol demangles to the parent's
+/// full signature, which used to seed `arg0` from it, so the second await of
+/// `twoAwaits` rendered `fetchOther(arg0)` (the source passes `a`, the result
+/// of the first await). The parameters are not in any register here.
+@Test(arguments: [debugFixture, optFixture])
+func resumeFuncletsDoNotInheritTheSignatureArgumentsIfPresent(path: String) async throws {
+    guard let functions = try await disassemble(path, filter: "twoAwaits") else { return }
+    let resumes = functions.filter { $0.asyncFunclet?.isEntry == false }
+    #expect(resumes.count == 2)
+    for resume in resumes {
+        let pseudo = resume.renderPseudo()
+        #expect(!pseudo.contains("arg0"), Comment(rawValue: pseudo))
+        #expect(!pseudo.contains("self"), Comment(rawValue: pseudo))
+    }
+    // The entry funclet keeps its arguments: they really are in x0 there.
+    guard let entry = functions.first(where: { $0.asyncFunclet?.isEntry == true }) else { return }
+    #expect(entry.renderPseudo().contains("(arg0)"))
+}

@@ -760,7 +760,15 @@ public struct Disassembler: Sendable {
         // from the symbol so `self` survives — without it x0 is never seeded
         // and every receiver renders `?`.
         let symbolEntry = objcMethod == nil ? Self.objcEntryFromSymbol(function.symbol) : nil
-        let classSelfTypeName = objcMethod == nil && symbolEntry == nil && !context.fieldMaps.isEmpty
+        // A resume funclet is entered from the runtime, not called: its name
+        // carries the parent's signature, but none of the parent's parameters
+        // (nor `self`) is in a register here. Every live value was spilled to
+        // the async context before the suspension, and the ABI preserves no
+        // callee-saved register across it. Seeding `arg<n>` or x20 from the
+        // signature would label the awaited result (x0) as the first parameter.
+        let isResumeFunclet = function.asyncFunclet.map { !$0.isEntry } ?? false
+        let classSelfTypeName = objcMethod == nil && symbolEntry == nil && !isResumeFunclet
+            && !context.fieldMaps.isEmpty
             ? Self.selfType(of: function, selfIndex: context.selfIndex, fieldMaps: context.fieldMaps)
             : nil
         // A nonmutating HFA-struct instance method passes `self` decomposed in
@@ -768,11 +776,13 @@ public struct Disassembler: Sendable {
         // path even when the name-based `selfType` already found the type (it
         // would otherwise seed x20, which this ABI leaves as garbage). The
         // HFA + no-`[x20]` guards inside confine it to exactly that shape.
-        let valueSelf = objcMethod == nil && symbolEntry == nil
+        let valueSelf = objcMethod == nil && symbolEntry == nil && !isResumeFunclet
             ? Self.swiftValueTypeSelfFields(of: function, fieldMaps: context.fieldMaps)
             : nil
         let selfTypeName = classSelfTypeName ?? valueSelf?.typeName
-        let entry: MethodEntryConvention? = if let objcMethod {
+        let entry: MethodEntryConvention? = if isResumeFunclet {
+            nil
+        } else if let objcMethod {
             objcMethod.isInitializer
                 ? .objectiveCInitializer(argumentCount: objcMethod.argumentCount)
                 : .objectiveC(argumentCount: objcMethod.argumentCount)
