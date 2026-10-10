@@ -249,6 +249,22 @@ func groupsFuncletsAsTheSymbolTableDoesIfPresent(path: String) async throws {
     #expect(!pseudo.contains("async("))
 }
 
+// MARK: - Async context bookkeeping is lowering, not source
+
+@Test func hidesAsyncContextBookkeepingIfPresent() async throws {
+    guard let functions = try await disassemble(strippedFixture) else { return }
+    // The fixture must contain the calls for the test to mean anything.
+    let calls = functions.flatMap(\.instructions).compactMap { DisassembledFunction.calleeName(of: $0) }
+    #expect(calls.filter { $0 == "swift_task_alloc" }.count == 5)
+    #expect(calls.filter { $0 == "swift_task_dealloc" }.count == 5)
+    let pseudo = functions.map { $0.renderPseudo() }.joined(separator: "\n")
+    #expect(!pseudo.contains("swift_task_alloc"))
+    #expect(!pseudo.contains("swift_task_dealloc"))
+    // Hidden only under `hideRuntime`, like the ARC calls.
+    let raw = functions.map { $0.renderPseudo(hideRuntime: false) }.joined(separator: "\n")
+    #expect(raw.contains("swift_task_alloc"))
+}
+
 // MARK: - Soundness: a resume funclet's registers are not the parameters
 
 /// x0 at a resume funclet's entry is the awaited callee's result, not the

@@ -414,6 +414,10 @@ public extension DisassembledFunction {
             // returns an object; left in, it drowns out the actual sends.
             "objc_autorelease", "objc_claimAutoreleasedReturnValue",
             "objc_retainAutorelease", "objc_retainAutoreleasedReturnValue",
+            // Async context bookkeeping: every await allocates the callee's
+            // context before the call and frees it in the resume funclet. It is
+            // the lowering of the call, not a statement of the source.
+            "swift_task_alloc", "swift_task_dealloc",
         ]
         return prefixes.contains { callee.hasPrefix($0) }
     }
