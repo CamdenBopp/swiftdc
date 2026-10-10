@@ -324,6 +324,13 @@ public extension DisassembledFunction {
     static func strippedCallee(_ name: String) -> String {
         var s = name
         if let arrow = s.range(of: " -> ") { s = String(s[..<arrow.lowerBound]) }
+        // Effect specifiers follow the parameter list (`f(Swift.Int) async
+        // throws`); they are not part of the callee's name, and left in place
+        // they kept the parameter list from being recognised and stripped, so
+        // such a call rendered `f(Swift.Int) async(arg0)`.
+        while let effect = s.range(of: #" (async|throws|rethrows)(\([^()]*\))?$"#, options: .regularExpression) {
+            s = String(s[..<effect.lowerBound])
+        }
         guard s.hasSuffix(")") else { return s }
         var depth = 0
         for index in s.indices.reversed() {

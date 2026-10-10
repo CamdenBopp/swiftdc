@@ -230,6 +230,25 @@ func groupsFuncletsAsTheSymbolTableDoesIfPresent(path: String) async throws {
     #expect(index.chains[entry.startAddress] == [entry.startAddress])
 }
 
+// MARK: - Callee names: effect specifiers are not part of the name
+
+@Test func stripsEffectSpecifiersFromCalleeNames() {
+    #expect(DisassembledFunction.strippedCallee("AsyncFns.fetchValue(Swift.Int) async -> Swift.Int") == "AsyncFns.fetchValue")
+    #expect(DisassembledFunction.strippedCallee("AsyncFns.fetchOrThrow(Swift.Int) async throws -> Swift.Int") == "AsyncFns.fetchOrThrow")
+    #expect(DisassembledFunction.strippedCallee("main.mayThrow(Swift.Int) throws -> Swift.Int") == "main.mayThrow")
+    #expect(DisassembledFunction.strippedCallee("m.f(Swift.Int) throws(m.E) -> Swift.Int") == "m.f")
+    // Unchanged shapes: a plain function, and a name with no parameter list.
+    #expect(DisassembledFunction.strippedCallee("m.g(Swift.Int) -> Swift.Int") == "m.g")
+    #expect(DisassembledFunction.strippedCallee("swift_task_alloc") == "swift_task_alloc")
+}
+
+@Test func rendersAsyncCalleesWithoutTheSpecifierIfPresent() async throws {
+    guard let functions = try await disassemble(optFixture, filter: "oneAwait") else { return }
+    let pseudo = functions.map { $0.renderPseudo() }.joined(separator: "\n")
+    #expect(pseudo.contains("AsyncFns.fetchValue(arg0)"))
+    #expect(!pseudo.contains("async("))
+}
+
 // MARK: - Soundness: a resume funclet's registers are not the parameters
 
 /// x0 at a resume funclet's entry is the awaited callee's result, not the
