@@ -735,3 +735,51 @@ private func rejectsMPEnum(_ bytes: Data) -> Bool {
     }
     #expect(rejectsMPEnum(empty))
 }
+
+// MARK: - __swift5_fieldmd, by record layout
+
+/// One `FieldDescriptor`: relative type name and superclass, `Kind` and
+/// `FieldRecordSize` (u16s), `NumFields`, then 12-byte records of `Flags` and
+/// two relative pointers. `deltas` are the header's two pointers, then each
+/// record's two.
+private func fieldmd(count: UInt32, recordSize: UInt16 = 12, deltas: [Int32]) -> Data {
+    var data = Data()
+    func put(_ word: UInt32) { withUnsafeBytes(of: word.littleEndian) { data.append(contentsOf: $0) } }
+    put(UInt32(bitPattern: deltas[0])); put(UInt32(bitPattern: deltas[1]))
+    put(UInt32(recordSize) << 16 | 1); put(count)
+    var rest = deltas.dropFirst(2)
+    while let type = rest.popFirst() {
+        put(0); put(UInt32(bitPattern: type)); put(UInt32(bitPattern: rest.popFirst() ?? 0))
+    }
+    return data
+}
+
+private func rejectsFieldmd(_ bytes: Data) -> Bool {
+    (try? MachOPreflight.validateFieldDescriptorTable(bytes: bytes, sectionOffset: 4096, fileSize: 8192)) == nil
+}
+
+@Test func acceptsAWellFormedFieldDescriptorTable() {
+    // A null superclass (delta 0) points at itself, inside the file.
+    #expect(!rejectsFieldmd(fieldmd(count: 2, deltas: [-100, 0, -300, -400, -500, -600])))
+}
+
+@Test func rejectsAMalformedFieldDescriptorTable() {
+    #expect(rejectsFieldmd(fieldmd(count: 1, deltas: [-8000, 0, -300, -400])))          // type name
+    #expect(rejectsFieldmd(fieldmd(count: 1, deltas: [-100, 0x4000_0000, -300, -400])))  // superclass
+    #expect(rejectsFieldmd(fieldmd(count: 1, deltas: [-100, 0, -300, -8000])))           // field name
+    #expect(rejectsFieldmd(fieldmd(count: 9, deltas: [-100, 0, -300, -400])))            // past the end
+    #expect(rejectsFieldmd(fieldmd(count: 1, recordSize: 16, deltas: [-100, 0, -300, -400])))
+}
+
+/// `metadata-fuzz.py sample.release 150 4242`, mutant 5: two bytes in
+/// `__swift5_fieldmd` trapped five subcommands.
+@Test func rejectsTheFuzzedFieldDescriptorMutantIfPresent() throws {
+    guard var data = FileManager.default.contents(atPath: "Fixtures/Sample/sample.release") else { return }
+    data[0x3f7a] = 163
+    data[0x4140] = 86
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("swiftdc-fieldmd-\(UUID().uuidString)")
+    try data.write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+    #expect(throws: (any Error).self) { try MachOPreflight.validate(url: url) }
+}

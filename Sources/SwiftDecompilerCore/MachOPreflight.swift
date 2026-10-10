@@ -154,6 +154,10 @@ public enum MachOPreflight {
                 try validateAssociatedTypeTable(
                     bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: url.path
                 )
+            } else if table.name == "__swift5_fieldmd" {
+                try validateFieldDescriptorTable(
+                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: url.path
+                )
             } else if table.name == "__swift5_mpenum" {
                 try validateMultiPayloadEnumTable(
                     bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: url.path
@@ -386,7 +390,7 @@ public enum MachOPreflight {
             "__swift5_protos", "__swift5_proto", "__swift5_types", "__swift5_types2",
             // Not flat, but walked by their own record layouts; see
             // `validateAssociatedTypeTable` and `validateMultiPayloadEnumTable`.
-            "__swift5_assocty", "__swift5_mpenum",
+            "__swift5_assocty", "__swift5_mpenum", "__swift5_fieldmd",
         ]
         guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE else { return [] }
         guard let ncmds = prefix.u32(at: 16), let sizeofcmds = prefix.u32(at: 20) else { return [] }
@@ -465,6 +469,53 @@ public enum MachOPreflight {
                 let base = cursor + 16 + record * 8
                 try checkPointer(at: base, "descriptor \(descriptor) record \(record)'s name")
                 try checkPointer(at: base + 4, "descriptor \(descriptor) record \(record)'s type")
+            }
+            cursor += 16 + body
+            descriptor += 1
+        }
+    }
+
+    /// `__swift5_fieldmd`, walked by its record layout. Each `FieldDescriptor`
+    /// (swift/include/swift/RemoteInspection/Records.h:206) is relative
+    /// `MangledTypeName` and `Superclass` pointers, `Kind` (u16),
+    /// `FieldRecordSize` (u16, emitted as 12), `NumFields` (u32), then that
+    /// many `FieldRecord`s: `Flags`, relative `MangledTypeName` and
+    /// `FieldName`. A pointer resolving outside the file trapped `objc`,
+    /// `layout`, `disasm`, `xrefs` and `analyze` with `Negative value is not
+    /// representable` (`metadata-fuzz.py sample.release 150 4242`, mutant 5).
+    static func validateFieldDescriptorTable(
+        bytes: Data, sectionOffset: Int, fileSize: Int, path: String = "<data>"
+    ) throws {
+        func fail(_ why: String) -> BinaryLoadError {
+            BinaryLoadError("Malformed Mach-O: \(path) — __swift5_fieldmd \(why)")
+        }
+        func checkPointer(at offset: Int, _ what: String) throws {
+            guard let raw = bytes.u32(at: offset) else { throw fail("\(what) is truncated") }
+            let target = sectionOffset + offset + Int(Int32(bitPattern: raw))
+            guard target >= 0, target < fileSize else {
+                throw fail("\(what) is a relative pointer to offset \(target), outside the \(fileSize)-byte file")
+            }
+        }
+        var cursor = 0
+        var descriptor = 0
+        while cursor < bytes.count {
+            guard cursor + 16 <= bytes.count, let sizes = bytes.u32(at: cursor + 8),
+                  let count = bytes.u32(at: cursor + 12)
+            else { throw fail("descriptor \(descriptor) is truncated") }
+            let recordSize = Int(sizes >> 16)
+            guard recordSize == 12 else {
+                throw fail("descriptor \(descriptor) declares \(recordSize)-byte records, not 12")
+            }
+            let (body, overflow) = Int(count).multipliedReportingOverflow(by: 12)
+            guard !overflow, body <= bytes.count - cursor - 16 else {
+                throw fail("descriptor \(descriptor) declares \(count) field(s), past the section's end")
+            }
+            try checkPointer(at: cursor, "descriptor \(descriptor)'s type name")
+            try checkPointer(at: cursor + 4, "descriptor \(descriptor)'s superclass")
+            for field in 0..<Int(count) {
+                let base = cursor + 16 + field * 12
+                try checkPointer(at: base + 4, "descriptor \(descriptor) field \(field)'s type")
+                try checkPointer(at: base + 8, "descriptor \(descriptor) field \(field)'s name")
             }
             cursor += 16 + body
             descriptor += 1

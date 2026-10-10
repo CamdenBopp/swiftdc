@@ -608,6 +608,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   | `__swift5_assocty` | SIGTRAP + SIGSEGV | dump, interface, analyze (now contained: walked by record layout, 2026-10-10) |
   | `__objc_methlist` | SIGSEGV | objc, objc --methods, disasm, xrefs, analyze (now contained for relative lists, 2026-10-10) |
   | `__swift5_mpenum` | SIGTRAP | objc, disasm, analyze (found 2026-10-10; contained the same day) |
+  | `__swift5_fieldmd` | SIGTRAP | objc, layout, disasm, xrefs, analyze (found on `sample.release`, seed 4242; contained) |
 
   **2026-10-10: 0 crashes in 800 runs** at the same settings (`metadata-fuzz.py
   libSample.dylib 100 1234`), after `__swift5_assocty` and `__swift5_mpenum`
