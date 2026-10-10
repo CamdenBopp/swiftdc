@@ -10,11 +10,11 @@ import Foundation
 struct LayoutXrefsContentTests {
     private static let binary = URL(fileURLWithPath: ".build/debug/swiftdc")
 
-    private func run(_ arguments: [String]) throws -> String? {
-        guard FileManager.default.fileExists(atPath: Self.binary.path) else { return nil }
+    private func run(_ arguments: [String], executable: URL = binary) throws -> String? {
+        guard FileManager.default.fileExists(atPath: executable.path) else { return nil }
         let pipe = Pipe()
         let process = Process()
-        process.executableURL = Self.binary
+        process.executableURL = executable
         process.arguments = arguments
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
@@ -63,8 +63,11 @@ struct LayoutXrefsContentTests {
             Issue.record("xrefs --unreferenced produced no output"); return
         }
         // The pure leaf predicates have no in-image callers, so they are listed
-        // with their address.
-        #expect(output.contains("Reconstruction.isEqual"))
-        #expect(output.contains("0xb80"))
+        // with their address — checked against the symbol table, not a pinned
+        // literal that moves whenever the fixture source grows.
+        let symbols = try run(["/usr/bin/nm", fixture], executable: URL(fileURLWithPath: "/usr/bin/xcrun")) ?? ""
+        let line = try #require(symbols.split(separator: "\n").first { $0.hasSuffix(" _$s14Reconstruction7isEqualySbSi_SitF") })
+        let address = try #require(UInt64(line.prefix { $0 != " " }, radix: 16))
+        #expect(output.contains("0x\(String(address, radix: 16))  Reconstruction.isEqual"), "\(output)")
     }
 }

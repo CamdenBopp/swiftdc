@@ -17,10 +17,9 @@ public enum TypeInference {
     ) -> [Int: ValueType] {
         guard function.objcMethod == nil, let name = function.demangledName,
               Disassembler.isSwiftMangled(function.symbol),
-              let arrow = name.range(of: " -> ", options: .backwards)
+              let signature = DisassembledFunction.splitSignature(name)?.head
         else { return [:] }
-        let signature = name[..<arrow.lowerBound]
-        guard let paramsRange = DisassembledFunction.outermostArgumentListRange(of: String(signature))
+        guard let paramsRange = DisassembledFunction.outermostArgumentListRange(of: signature)
         else { return [:] }
         var types: [Int: ValueType] = [:]
         for (index, parameter) in DisassembledFunction

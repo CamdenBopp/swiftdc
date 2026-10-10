@@ -231,6 +231,41 @@ because it cannot be distinguished from a right one by reading the output.
   bare-return attribution across `merged` headers — each corrected before
   trusting the count (18 → then a name-parse-free raw-disasm oracle → 10).
 
+- **FIXED — signature parsing read the wrong parameter list and result type.**
+  Nine readers (argument registers, argument/enum/Bool/float types, the return
+  register, `returnsValue`, `isThrowing`) took the *last* ` -> ` and the *last*
+  `(...)` group. Three real demangled shapes defeat that:
+  `f(Swift.Double, Swift.Int) throws(M.E) -> Swift.Double` (the typed-throws
+  group read as one `M.E` parameter: x0, really the second argument, rendered
+  `arg0`, and `0` rendered `M.E.negative`); `f(Swift.Int) -> (Swift.Double) ->
+  Swift.Double` (the closure's types read as the function's; `return arg0`
+  printed a stale `d0`); and `closure #1 (…) -> () in g() -> Swift.Never` (the
+  enclosing function's result read as the closure's, so `return ?` on a Void
+  closure). `DisassembledFunction.splitSignature` now splits at the first
+  depth-0 arrow, cuts ` in <context>`, and strips `async`/`throws`/`throws(E)`.
+
+  Reading the *real* result type exposed results that never come back in x0:
+  a closure reabstracted to a generic convention returns through the x8 buffer,
+  and an async function delivers its result through its context. Both now
+  decline (`readsIncomingIndirectResult`, the async check in
+  `swiftReturnRegister`). That also removed older fabrications on ordinary
+  indirect returns, e.g. `OuterY.Wide.init` (40 bytes) printing `return arg0`,
+  `ObservationRegistrar.init()` printing `return _ManagedCriticalState.init(…)`
+  when it stores a different value through x8, and `-> String` witnesses
+  printing `return 0`.
+
+  Measured old→new with `disasm --structured` on four cache images:
+  libswift_RegexParser 102/2734 functions changed, libswiftObservation 38/713,
+  libswiftDistributed 4/367, SwiftData 0/6506. Every change was reviewed;
+  the one lost-looking label (`tryEat(self: arg0, …)` → `tryEat(…)`) had been
+  derived from the *enclosing* function's `(Bool, Bool)` parameters, so its
+  correctness was luck. Guarded by `SignatureSplitTests` (each of the four
+  guards injected back to the old behaviour and watched fail).
+
+  Still OPEN in this area: a small typed error's throw exit renders
+  `return 0` (the error payload in x0, with `w21 = 1`) as if it were a
+  successful return.
+
 ## 2. Completeness — what does it silently omit?
 
 Silent omission is the worst failure mode: it is indistinguishable from a

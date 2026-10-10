@@ -139,6 +139,80 @@ extension DisassembledFunction {
         return lastGroup
     }
 
+    /// A demangled function name split into its declaration head and its result
+    /// type, or nil when the name carries no ` -> ` signature.
+    ///
+    /// Two shapes used to fool the naive split (last ` -> `, then last `(...)`):
+    ///
+    /// - A **typed-throws clause** prints as a paren group after the parameter
+    ///   list: `f(Swift.Double, Swift.Int) throws(M.E) -> Swift.Double`. The
+    ///   last group is `(M.E)`, so the function read as taking one `M.E`, which
+    ///   seeded `x0` as `arg0` (the real `x0` is the second parameter) and named
+    ///   an integer literal as an `M.E` case. The `head` here has its trailing
+    ///   effects (`async`, `throws`, `throws(E)`) removed, so its last group is
+    ///   the parameter list.
+    /// - A **function returning a closure** has two arrows:
+    ///   `f(Swift.Int) -> (Swift.Double) -> Swift.Int`. The *first* depth-0
+    ///   arrow ends the declaration. A closure's own name continues after its
+    ///   result with ` in <context>`; that tail is not part of the result type.
+    static func splitSignature(
+        _ name: String
+    ) -> (head: String, result: String, isAsync: Bool, isThrowing: Bool)? {
+        guard let arrow = topLevelRange(of: " -> ", in: name) else { return nil }
+        var result = String(name[arrow.upperBound...])
+        if let context = topLevelRange(of: " in ", in: result) {
+            result = String(result[..<context.lowerBound])
+        }
+        let declared = String(name[..<arrow.lowerBound]).trimmingCharacters(in: .whitespaces)
+        let head = strippingEffects(declared)
+        let effects = declared.dropFirst(head.count)
+        return (head, result.trimmingCharacters(in: .whitespaces),
+                effects.contains("async"), effects.contains("throws"))
+    }
+
+    /// A signature head without its trailing effects specifiers. The demangler
+    /// prints `async`, `throws`, and a concrete typed error as `throws(E)`
+    /// (`rethrows` and `throws(any Error)` both print as plain `throws`).
+    static func strippingEffects(_ head: String) -> String {
+        var head = head.trimmingCharacters(in: .whitespaces)
+        while true {
+            if head.hasSuffix(" async") {
+                head.removeLast(" async".count)
+            } else if head.hasSuffix(" throws") {
+                head.removeLast(" throws".count)
+            } else if head.hasSuffix(")"), let group = outermostArgumentListRange(of: head),
+                      head[..<head.index(before: group.lowerBound)].hasSuffix(" throws") {
+                head = String(head[..<head.index(before: group.lowerBound)].dropLast(" throws".count))
+            } else {
+                return head
+            }
+        }
+    }
+
+    /// The first occurrence of `needle` outside any `()`/`[]`/`<>` nesting. The
+    /// `>` of an arrow is not a closing angle (see `splitTopLevelArguments`).
+    private static func topLevelRange(of needle: String, in text: String) -> Range<String.Index>? {
+        var depth = 0
+        var previous: Character = " "
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            if depth == 0, text[index...].hasPrefix(needle) {
+                return index..<text.index(index, offsetBy: needle.count)
+            }
+            if character == "(" || character == "[" || character == "<" {
+                depth += 1
+            } else if character == ">" && previous == "-" {
+                // an arrow inside a nested function type
+            } else if character == ")" || character == "]" || character == ">" {
+                depth -= 1
+            }
+            previous = character
+            index = text.index(after: index)
+        }
+        return nil
+    }
+
     /// Recursively drop trailing generic-plumbing arguments from every call group
     /// in a rendered expression, not just the outermost one — so nested builders
     /// like `Point.init(_allocateUninitializedArray(2, <mangled-name>))` lose the

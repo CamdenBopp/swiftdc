@@ -387,17 +387,25 @@ above, not new):
 
 Concrete gaps and decline conditions this mining surfaces:
 
-1. **Typed throws (`throws(E)`) may leave x21 completely unused.**
-   §3's `combineResultAndTypedErrorType` path
-   (`GenCall.cpp:2207-2231`) skips the swifterror parameter entirely when the
-   error type is small and direct. swiftdc's x21 clear-and-test heuristic
-   (`Structurer.swift:114-142`) will legitimately find nothing for such a
-   function and must not conclude "this function has no error path" — it
-   should check whether the mangled name encodes a typed-throws clause before
-   asserting non-throwing, and otherwise decline (render the function as
-   "may throw, error representation unrecovered" rather than silently
-   omitting the throw). I did not locate the exact mangling grammar for typed
-   throws in this pass — needs its own lookup before implementing.
+1. **Typed throws (`throws(E)`): CORRECTED 2026-10-09 by measurement — x21 is
+   still used.** The claim here was that the
+   `combineResultAndTypedErrorType` path (`GenCall.cpp:2207-2231`) leaves x21
+   unused for a small, direct error. Compiled (Swift 6.3, `-Onone` and `-O`),
+   `typedSmall(_:) throws(SmallErr) -> Int` does pack the *error value* into the
+   result register (`mov x0, #0` for `.bad`), but the callee still sets
+   `w21 = 1` on the throw exit, and the caller still clears x21 before the call
+   and tests it after (`mov x21, #0; bl …; cmp x21, #0; csinv x0, x0, xzr, eq`).
+   x21 is the *threw* flag; only the payload moved. So the clear-and-test
+   heuristic does see typed throws.
+
+   The defect typed throws actually caused was elsewhere: the demangled
+   `f(Swift.Double, Swift.Int) throws(M.E) -> …` has a paren group after the
+   parameters, and every signature reader took it as the parameter list. x0 (the
+   second argument) rendered as `arg0`, and the literal `0` as an `M.E` case.
+   Fixed by `DisassembledFunction.splitSignature` (see
+   `docs/PRODUCTION-READINESS.md`, soundness). Still open: a small typed
+   error's throw exit renders `return 0` (the error payload in x0) as if it
+   were a successful return.
 2. **Async functions still get `SwiftSelf` on `self`** at their synchronous
    entry (`GenCall.cpp:2338-2339`, inside `expandAsyncEntryType`), so x20 = self
    likely still holds for an async instance method. But an async function's
@@ -450,12 +458,15 @@ Concrete gaps and decline conditions this mining surfaces:
 
 ## 7. Ranked recommendations for swiftdc
 
-1. **Add a typed-throws detection gate before trusting an absent x21
-   clear-and-test as "non-throwing."** Highest priority: it's a soundness gap
-   (§6.1) — a function can throw and swiftdc's own documented heuristic
-   (`Structurer.swift:114-142`) has no signal for it. Needs the typed-throws
-   mangling grammar looked up first (not done in this pass).
-2. **Gate the entire x20/x21/exit-value convention behind an async check**,
+1. ~~**Add a typed-throws detection gate before trusting an absent x21
+   clear-and-test as "non-throwing."**~~ Premise measured false (§6.1): typed
+   throws keeps the x21 flag. The real typed-throws defect (the signature
+   parse) is fixed; the `return <error payload>` render on the throw exit is
+   open.
+2. **(Return values: DONE 2026-10-09 — `swiftReturnRegister` declines async
+   functions and their resume funclets; a funclet's `ret` rendered
+   `return swift_task_dealloc()` in libswiftObservation.)**
+   **Gate the entire x20/x21/exit-value convention behind an async check**,
    not just the Swift-mangled check `isSwiftMangled` already does
    (`Disassembler.swift:1487-1489`). Self may still be valid; return-value
    recovery (`exitValues`, `exitFloatValues`) is questionable at best for an

@@ -367,6 +367,29 @@ public func tryOrDefault(_ x: Int) -> Int {
     do { return try mightFail(x) } catch { return -1 }
 }
 
+// MARK: - Signature shapes that hide the parameter list
+
+// A typed-throws clause demangles as a paren group after the parameters:
+// `typedScale(Swift.Double, Swift.Int) throws(ReconTypedError) -> Swift.Double`.
+// Read as the parameter list, it made `n` (in x0) `arg0` and named the literal
+// `0` as a `ReconTypedError` case. The Double first parameter is what makes the
+// misattribution visible: the real x0 is the *second* argument.
+public enum ReconTypedError: Error { case negative, tooBig }
+@inline(never)
+public func typedScale(_ d: Double, _ n: Int) throws(ReconTypedError) -> Double {
+    if n < 0 { throw .negative }
+    return d * 2.0 + Double(n)
+}
+
+// A function returning a closure has two top-level arrows; the last one is the
+// closure's. Split there, the closure's `(Swift.Double)` read as this function's
+// parameters, so the Int literal below rendered as a subnormal double.
+@inline(never)
+public func thresholdGate(_ n: Int) -> (Double) -> Double {
+    if n > 100 { return { $0 * 2 } }
+    return { $0 }
+}
+
 // MARK: - Enum-tag checks in structured branches (not selects)
 
 // A switch with side effects stays as if-branches (not a collapsed ternary), so

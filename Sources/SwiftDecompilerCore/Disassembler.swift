@@ -1701,8 +1701,8 @@ public struct Disassembler: Sendable {
     static func swiftReturnTypeName(of function: DisassembledFunction) -> String? {
         guard function.objcMethod == nil, let name = function.demangledName else { return nil }
         let returnType: String
-        if let arrow = name.range(of: " -> ", options: .backwards) {
-            returnType = String(name[arrow.upperBound...]).trimmingCharacters(in: .whitespaces)
+        if let signature = DisassembledFunction.splitSignature(name) {
+            returnType = signature.result
         } else if name.hasSuffix(".getter") == false, name.contains(".getter : "),
                   let colon = name.range(of: " : ", options: .backwards) {
             returnType = String(name[colon.upperBound...]).trimmingCharacters(in: .whitespaces)
@@ -1724,6 +1724,20 @@ public struct Disassembler: Sendable {
     /// actually returned there.
     static func swiftReturnRegister(of function: DisassembledFunction) -> SwiftReturnRegister? {
         guard let returnType = Self.swiftReturnTypeName(of: function) else { return nil }
+        // The printed type is not the ABI. A closure reabstracted to a generic
+        // convention returns even a one-word value through the x8 buffer, and
+        // its x0 at `ret` is then whatever the last call left there (measured:
+        // a `Dictionary.Values` closure in libswiftObservation rendered
+        // `return Dictionary.removeAll(0)`).
+        if Self.readsIncomingIndirectResult(function) { return nil }
+        // An async function's result is delivered through its context's resume
+        // function, never in x0/v0 at a `ret`; the same holds for its resume
+        // funclets. Its x0 at a `ret` rendered `return swift_task_dealloc()`.
+        if let name = function.demangledName,
+           DisassembledFunction.splitSignature(name)?.isAsync == true
+            || name.contains("resume partial function for ") {
+            return nil
+        }
         // Double/Float come back in v0 (d0/s0), every other single value in x0.
         let floatingTypes: Set<String> = [
             "Swift.Double", "Swift.Float", "Swift.Float16", "Swift.Float32",
@@ -1736,6 +1750,35 @@ public struct Disassembler: Sendable {
         if returnType == "Swift.String" || returnType == "Swift.StaticString" { return nil }
         if returnType.contains(" -> ") { return nil } // returns a closure
         return .integer
+    }
+
+    /// Whether the function uses the x8 it was called with: the first reference
+    /// to x8/w8, in address order, reads it. Under the Swift and AAPCS64
+    /// conventions an incoming x8 is only ever the indirect-result buffer, so a
+    /// read means the result goes to memory, not x0/v0. The scan stops at the
+    /// first call, since x8 is caller-saved and a call clobbers it.
+    static func readsIncomingIndirectResult(_ function: DisassembledFunction) -> Bool {
+        for instruction in function.instructions {
+            let parts = instruction.text.split(maxSplits: 1, whereSeparator: { $0 == " " || $0 == "\t" })
+            let mnemonic = parts.first.map { $0.lowercased() } ?? ""
+            if instruction.controlFlow == .call || mnemonic == "bl" || mnemonic.hasPrefix("blr") {
+                return false
+            }
+            guard parts.count == 2 else { continue }
+            let operands = parts[1].split(separator: ",").map {
+                $0.trimmingCharacters(in: CharacterSet(charactersIn: " []!"))
+            }
+            let isX8 = { (operand: String) in operand == "x8" || operand == "w8" }
+            guard let first = operands.firstIndex(where: isX8) else { continue }
+            // Every operand of a store, compare, or register branch is a read;
+            // elsewhere the first operand is the destination, and x8 appearing
+            // again later (`ldr x8, [x8, #8]`) is still a read first.
+            let readsAll = mnemonic.hasPrefix("st") || mnemonic.hasPrefix("cb")
+                || mnemonic.hasPrefix("tb") || mnemonic.hasPrefix("br")
+                || ["cmp", "cmn", "tst", "ccmp", "ccmn"].contains(mnemonic)
+            return readsAll || first > 0 || operands.dropFirst().contains(where: isX8)
+        }
+        return false
     }
 
     /// The register→source-argument-index map to seed for a Swift free function
@@ -1753,10 +1796,9 @@ public struct Disassembler: Sendable {
               Self.isSwiftMangled(function.symbol),
               // A getter/setter/accessor or a name without a call signature has no
               // ordinary parameter list to seed.
-              let arrow = name.range(of: " -> ", options: .backwards)
+              let signature = DisassembledFunction.splitSignature(name)?.head
         else { return nil }
-        let signature = name[..<arrow.lowerBound]
-        guard let paramsRange = DisassembledFunction.outermostArgumentListRange(of: String(signature))
+        guard let paramsRange = DisassembledFunction.outermostArgumentListRange(of: signature)
         else { return nil }
         let parameters = DisassembledFunction.splitTopLevelArguments(signature[paramsRange])
         guard !parameters.isEmpty else { return nil }
@@ -1792,10 +1834,9 @@ public struct Disassembler: Sendable {
     ) -> [Int: String] {
         guard function.objcMethod == nil, let name = function.demangledName,
               Self.isSwiftMangled(function.symbol),
-              let arrow = name.range(of: " -> ", options: .backwards)
+              let signature = DisassembledFunction.splitSignature(name)?.head
         else { return [:] }
-        let signature = name[..<arrow.lowerBound]
-        guard let paramsRange = DisassembledFunction.outermostArgumentListRange(of: String(signature))
+        guard let paramsRange = DisassembledFunction.outermostArgumentListRange(of: signature)
         else { return [:] }
         let parameters = DisassembledFunction.splitTopLevelArguments(signature[paramsRange])
         var types: [Int: String] = [:]
@@ -1817,10 +1858,9 @@ public struct Disassembler: Sendable {
     static func swiftBoolArgumentIndices(of function: DisassembledFunction) -> Set<Int> {
         guard function.objcMethod == nil, let name = function.demangledName,
               Self.isSwiftMangled(function.symbol),
-              let arrow = name.range(of: " -> ", options: .backwards)
+              let signature = DisassembledFunction.splitSignature(name)?.head
         else { return [] }
-        let signature = name[..<arrow.lowerBound]
-        guard let paramsRange = DisassembledFunction.outermostArgumentListRange(of: String(signature))
+        guard let paramsRange = DisassembledFunction.outermostArgumentListRange(of: signature)
         else { return [] }
         let parameters = DisassembledFunction.splitTopLevelArguments(signature[paramsRange])
         var indices: Set<Int> = []
@@ -1845,7 +1885,7 @@ public struct Disassembler: Sendable {
     ) -> (indices: Set<Int>, isDouble: Bool)? {
         guard function.objcMethod == nil, let name = function.demangledName,
               Self.isSwiftMangled(function.symbol),
-              let arrow = name.range(of: " -> ", options: .backwards)
+              let split = DisassembledFunction.splitSignature(name)
         else { return nil }
         let doubles: Set<String> = [
             "Swift.Double", "Swift.Float64", "Swift.CGFloat", "CoreGraphics.CGFloat",
@@ -1860,15 +1900,15 @@ public struct Disassembler: Sendable {
         }
         var indices: Set<Int> = []
         var sawDouble = false, sawFloat = false
-        let signature = name[..<arrow.lowerBound]
-        if let paramsRange = DisassembledFunction.outermostArgumentListRange(of: String(signature)) {
+        let signature = split.head
+        if let paramsRange = DisassembledFunction.outermostArgumentListRange(of: signature) {
             for (index, parameter) in DisassembledFunction.splitTopLevelArguments(signature[paramsRange]).enumerated() {
                 let type = normalize(parameter[...])
                 if doubles.contains(type) { indices.insert(index); sawDouble = true }
                 else if floats.contains(type) { indices.insert(index); sawFloat = true }
             }
         }
-        let returnType = name[arrow.upperBound...].trimmingCharacters(in: .whitespaces)
+        let returnType = split.result
         if doubles.contains(returnType) { sawDouble = true }
         else if floats.contains(returnType) { sawFloat = true }
         guard sawDouble || sawFloat else { return nil }
@@ -1958,8 +1998,7 @@ public struct Disassembler: Sendable {
         // the x20 pointer, so they are excluded.
         let selfTypeName: String
         let parameters: [String]
-        if let arrow = name.range(of: " -> ", options: .backwards) {
-            let signature = String(name[..<arrow.lowerBound])
+        if let signature = DisassembledFunction.splitSignature(name)?.head {
             guard let paramsRange = DisassembledFunction.outermostArgumentListRange(of: signature)
             else { return nil }
             let qualifiedMethod = signature[..<signature.index(before: paramsRange.lowerBound)]

@@ -17,7 +17,7 @@ public extension DisassembledFunction {
         let depth = maxStructuringDepth > 0 ? maxStructuringDepth : ControlFlowStructure.defaultMaxDepth
         let cfg = ControlFlowStructure(
             blocks: blocks, objectiveCArguments: objcMethod != nil, maxDepth: depth,
-            isThrowing: displayName.contains(" throws"),
+            isThrowing: Self.splitSignature(displayName)?.isThrowing ?? false,
             returnsValue: Self.signatureReturnsValue(
                 displayName: displayName, objcSignature: objcMethod?.signature
             )
@@ -56,10 +56,11 @@ public extension DisassembledFunction {
             return type != "void" && type != "IBAction"
         }
 
-        // Swift function type: take the LAST `->`, since a parameter can itself be
-        // a function type (`(A) -> B) -> C`).
-        if let arrow = displayName.range(of: "->", options: .backwards) {
-            let result = displayName[arrow.upperBound...].trimmingCharacters(in: .whitespaces)
+        // Swift function type. `splitSignature` skips a parameter's nested
+        // arrow (`((A) -> B) -> C`) and stops at a closure's ` in <context>`,
+        // which the last `->` did not: a `-> ()` closure inside a `-> Never`
+        // function read as returning a value.
+        if let result = Self.splitSignature(displayName)?.result {
             return !result.isEmpty && result != "()" && result != "Void" && result != "Swift.Void"
         }
 
