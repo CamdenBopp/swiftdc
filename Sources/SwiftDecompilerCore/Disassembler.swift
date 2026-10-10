@@ -2324,6 +2324,14 @@ public struct Disassembler: Sendable {
         var argumentsByAddress: [UInt64: [AbstractValue]] = [:]
         for (address, site) in sites {
             var values = site.arguments
+            // `swift_willThrow(SWIFT_CONTEXT void *, SWIFT_ERROR_RESULT
+            // SwiftError **)` (swift/include/swift/Runtime/Error.h:71) takes
+            // the thrown error in x21 and nothing in x0. Rendering x0 printed
+            // a stale register as the thrown value (`swift_willThrow(0)`, 105
+            // times in SwiftData); the error box is x21's.
+            if calleeByAddress[address] == "swift_willThrow" {
+                values = site.errorValue == .unknown ? [] : [site.errorValue]
+            }
             if let callee = calleeByAddress[address],
                let selector = selectorName(callee: callee, arguments: values),
                !site.stackArguments.isEmpty {

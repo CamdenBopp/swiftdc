@@ -199,3 +199,25 @@ private func statementsAfterThrow(_ body: String) -> [String] {
     #expect(DisassembledFunction.splitSignature("M.f(Swift.Int) throws -> Swift.Int")?.thrownType == nil)
     #expect(DisassembledFunction.splitSignature("M.f(() throws(M.E) -> ()) -> Swift.Int")?.thrownType == nil)
 }
+
+
+// MARK: - swift_willThrow's operand
+
+/// `swift_willThrow(SWIFT_CONTEXT void *, SWIFT_ERROR_RESULT SwiftError **)`
+/// (swift/include/swift/Runtime/Error.h:71) takes the thrown error in x21 and
+/// nothing in x0. Rendering x0 showed whatever was last there: 20
+/// `swift_willThrow(0)` in SwiftData, and in RegexParser's
+/// `parseWithDelimiters` a release that ran between boxing the error and
+/// throwing it, `swift_willThrow(swift_errorRelease(?))`. The compiler only
+/// orders it that way in the shipping image, so this is host-gated on the
+/// dyld cache.
+@Test func willThrowShowsTheErrorInX21NotX0IfAvailable() async throws {
+    guard let machO = try? BinaryLoader.loadFromDyldCache(
+        cachePath: nil, selector: .name("libswift_RegexParser")) else { return }
+    let functions = await Disassembler(preset: .default)
+        .disassemble(machO: machO, functionFilter: "parseWithDelimiters")
+    let text = functions.map { $0.renderPseudo() + "\n" + $0.renderStructured() }.joined(separator: "\n")
+    guard text.contains("swift_willThrow(") else { return } // a different OS build
+    #expect(!text.contains("swift_willThrow(swift_errorRelease"), "\(text)")
+    #expect(text.contains("swift_willThrow((extension in _RegexParser):Swift.Error.addingLocation("), "\(text)")
+}

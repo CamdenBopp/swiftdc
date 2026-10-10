@@ -327,6 +327,16 @@ because it cannot be distinguished from a right one by reading the output.
   (`!x23 overflow 1` → `!(x23 overflow 1)`). Guarded by
   `ConditionInversionTests`.
 
+- **FIXED — `swift_willThrow`'s operand read from x0.** The runtime takes the
+  thrown error in x21 (`SWIFT_ERROR_RESULT`, swift/include/swift/Runtime/
+  Error.h:71) and nothing in x0, so the rendered argument was whatever x0
+  last held: `swift_willThrow(0)` 20 times in SwiftData, and
+  `swift_willThrow(swift_errorRelease(?))` in RegexParser, where a release ran
+  between boxing the error and throwing it. It now shows x21, or nothing when
+  x21 is unknown. SwiftData's throws now read
+  `swift_willThrow(swift_allocError(…))` (4 → 55) or the converted NSError.
+  Guarded host-gated by `willThrowShowsTheErrorInX21NotX0IfAvailable`.
+
 ## 2. Completeness — what does it silently omit?
 
 Silent omission is the worst failure mode: it is indistinguishable from a
