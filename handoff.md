@@ -6,7 +6,7 @@ thread. This is **tier-5 (conversation-memory) authority** per
 git history, and measurements. Verify each claim against HEAD before acting, and
 delete items from this file as they ship.
 
-_Last updated: 2026-10-09, on branch `improve/source-findings` at `0c3bb54`
+_Last updated: 2026-10-10, on branch `improve/source-findings` at `1eb659d`
 (unmerged; also carries `f6a4e0c`, the Swift-source research notes cherry-picked
 from `research/swift-source-mining`)._
 
@@ -54,6 +54,17 @@ yet done in the 2026-10-09 session:
   (`SyntaxOptions.init(rawValue:)` is `str x0, [x8]; ret`).
 - **Completeness:** a throw whose error is built by a helper (`mov x21, x0`
   after `sub_…`) is not recognised as a throw exit; it declines.
+- **Robustness (OPEN, measured):** corrupt absolute ObjC pointer sections
+  (`__objc_classlist/const/data/selrefs/catlist`) still crash: 76 of 1200 runs
+  in `Tools/metadata-fuzz.py Fixtures/Sample/sample.release 150 4242`.
+  Needs chained-fixup decoding and a struct-aware ObjC walk; the Swift
+  sections and relative method lists are contained (see readiness doc).
+- **Upgrade decision pending:** MachOSwiftSection 0.19 → 0.22 (soundness
+  fixes for field offsets and vtable names, Swift 6.4, macOS 27 split-cache
+  speed). Costs: MachOKit fork fix (MachOKit#1 was closed unmerged; 0.54.101
+  lacks it), a possible duplicate-Capstone link with 0.20's swift-capstone,
+  API churn. Recommended as its own branch, gated on build, `dump` timing,
+  and a reviewed four-image diff.
 - **Readability:** the structurer's `cond <op>` fallback (an `fcmp`/`ccmp` or
   out-of-block flag setter) renders an opaque `if (cond ==)`.
 - **Research items not yet done** (docs/research/swift-source/README.md):

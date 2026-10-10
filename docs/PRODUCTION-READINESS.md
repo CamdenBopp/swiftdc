@@ -609,6 +609,18 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   | `__objc_methlist` | SIGSEGV | objc, objc --methods, disasm, xrefs, analyze (now contained for relative lists, 2026-10-10) |
   | `__swift5_mpenum` | SIGTRAP | objc, disasm, analyze (found 2026-10-10; contained the same day) |
   | `__swift5_fieldmd` | SIGTRAP | objc, layout, disasm, xrefs, analyze (found on `sample.release`, seed 4242; contained) |
+  | `__swift5_proto` into code | SIGTRAP | dump, analyze (an in-file target inside `__text`; contained) |
+  | `__objc_classlist`, `__objc_const`, `__objc_data`, `__objc_selrefs`, `__objc_catlist` | SIGSEGV/SIGTRAP | **OPEN**: absolute, chained-fixup-encoded pointers; see below |
+
+  **`sample.release`, seed 4242, 150 mutants: 114 → 76 crashes in 1200 runs
+  (2026-10-10).** Every remaining crash is in an Objective-C section of
+  *absolute* pointers. Those slots are chained-fixup-encoded, and
+  `__objc_const`/`__objc_data` interleave pointers with flags, sizes and
+  ivar offsets, so a flat "every word is a pointer" scan would reject valid
+  files. Containing them needs a struct-aware walk (`class_t`, `class_ro_t`,
+  category, protocol lists) over decoded chained-fixup targets, a larger
+  piece than the relative-pointer layouts above. `libSample.dylib`, seed
+  1234: 0 crashes in 800.
 
   **2026-10-10: 0 crashes in 800 runs** at the same settings (`metadata-fuzz.py
   libSample.dylib 100 1234`), after `__swift5_assocty` and `__swift5_mpenum`
