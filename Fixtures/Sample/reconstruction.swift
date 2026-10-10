@@ -396,6 +396,13 @@ public func typedForward(_ n: Int) throws(ReconTypedError) -> Int {
     try typedPick(n) &+ 1
 }
 
+// `Int(d)` inlines a range check on the Double's bit pattern (`fmov x8, d0`,
+// then `>> 52` and `& 0x7ff`). The function has a float in its signature,
+// which used to make every literal in an expression over the argument render
+// as a float: `>> 52` read `>> 2.57e-322`, `& 0x7ff` read `& 1.0114e-320`.
+@inline(never)
+public func truncated(_ d: Double) -> Int { Int(d) }
+
 // A function returning a closure has two top-level arrows; the last one is the
 // closure's. Split there, the closure's `(Swift.Double)` read as this function's
 // parameters, so the Int literal below rendered as a subnormal double.

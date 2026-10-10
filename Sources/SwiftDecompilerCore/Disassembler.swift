@@ -2763,8 +2763,16 @@ public struct Disassembler: Sendable {
                 }
                 // In a float-valued binary, a bare immediate operand is an IEEE
                 // bit pattern — render it as its decimal per the function's
-                // precision, not as a 16-digit integer.
+                // precision, not as a 16-digit integer. Not for a bit-level
+                // operator: it works on a value reinterpreted as an integer
+                // (`fmov x8, d0; lsr x8, x8, #52`), and its literals are shift
+                // counts and masks. As floats they rendered `(arg0 >> 2.57e-322)`
+                // for `>> 52`.
+                let bitLevel: [AbstractBinaryOperator] = [
+                    .bitAnd, .bitOr, .bitXor, .shiftLeft, .shiftRight, .arithmeticShiftRight,
+                ]
                 let floatOp = floatInfo != nil && (isFloatValued(lhs) || isFloatValued(rhs))
+                    && !bitLevel.contains(op)
                 func operand(_ value: AbstractValue) -> String {
                     if floatOp, case .immediate(let bits) = value,
                        let decimal = Self.renderTypedConstant(
