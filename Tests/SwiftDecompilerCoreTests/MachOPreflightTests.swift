@@ -693,3 +693,45 @@ private func rejectsMethodLists(_ bytes: Data) -> Bool {
     defer { try? FileManager.default.removeItem(at: url) }
     #expect(throws: (any Error).self) { try MachOPreflight.validate(url: url) }
 }
+
+// MARK: - __swift5_mpenum, by record layout
+
+/// One `MultiPayloadEnumDescriptor`: a relative `TypeName`, then `words`
+/// content words, the first holding `words << 16`.
+private func mpenum(typeName: Int32, words: UInt32) -> Data {
+    var data = Data()
+    func put(_ word: UInt32) { withUnsafeBytes(of: word.littleEndian) { data.append(contentsOf: $0) } }
+    put(UInt32(bitPattern: typeName)); put(words << 16)
+    for _ in 1..<max(words, 1) { put(0) }
+    return data
+}
+
+private func rejectsMPEnum(_ bytes: Data) -> Bool {
+    (try? MachOPreflight.validateMultiPayloadEnumTable(bytes: bytes, sectionOffset: 4096, fileSize: 8192)) == nil
+}
+
+@Test func acceptsAWellFormedMultiPayloadEnumTable() {
+    #expect(!rejectsMPEnum(mpenum(typeName: -100, words: 1) + mpenum(typeName: -200, words: 3)))
+}
+
+/// Fuzz mutants 19, 21, 33, 42 and 90 each trapped `objc`, `disasm` and
+/// `analyze` with `Negative value is not representable`.
+@Test func rejectsAMalformedMultiPayloadEnumTable() {
+    // A type name before the file's start.
+    #expect(rejectsMPEnum(mpenum(typeName: -8000, words: 1)))
+    // A type name past its end.
+    #expect(rejectsMPEnum(mpenum(typeName: 0x4000_0000, words: 1)))
+    // Content words running past the section (mutant 19: 51 words).
+    var long = mpenum(typeName: -100, words: 1)
+    long.replaceSubrange(4..<8, with: [0, 0, 51, 0])
+    #expect(rejectsMPEnum(long))
+    // Zero content words, which the runtime asserts against. Read as a
+    // 4-byte descriptor, the next words would misparse into a valid-looking
+    // one (`0` as its type name, `1 << 16` as its size), so only the
+    // zero-words rule catches it.
+    var empty = Data()
+    for word: UInt32 in [UInt32(bitPattern: -100), 0, 1 << 16] {
+        withUnsafeBytes(of: word.littleEndian) { empty.append(contentsOf: $0) }
+    }
+    #expect(rejectsMPEnum(empty))
+}

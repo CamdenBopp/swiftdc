@@ -607,6 +607,14 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   | `__swift5_protos` | SIGTRAP | **all eight** — no entry point survives (now contained) |
   | `__swift5_assocty` | SIGTRAP + SIGSEGV | dump, interface, analyze (now contained: walked by record layout, 2026-10-10) |
   | `__objc_methlist` | SIGSEGV | objc, objc --methods, disasm, xrefs, analyze (now contained for relative lists, 2026-10-10) |
+  | `__swift5_mpenum` | SIGTRAP | objc, disasm, analyze (found 2026-10-10; contained the same day) |
+
+  **2026-10-10: 0 crashes in 800 runs** at the same settings (`metadata-fuzz.py
+  libSample.dylib 100 1234`), after `__swift5_assocty` and `__swift5_mpenum`
+  were walked by record layout and relative ObjC method names were checked
+  against `__objc_selrefs`. Each rule was swept against real thin binaries
+  carrying its section with 0 false rejections (401 / 432 / 571 binaries; the
+  method-list walk covered 504,037 relative names).
 
   `disasm` is among them. Container corruption never reached it because
   llvm-objdump rejects the file first, but metadata is parsed in-process, so that

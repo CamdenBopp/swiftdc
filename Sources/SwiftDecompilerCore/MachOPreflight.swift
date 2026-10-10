@@ -154,6 +154,10 @@ public enum MachOPreflight {
                 try validateAssociatedTypeTable(
                     bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: url.path
                 )
+            } else if table.name == "__swift5_mpenum" {
+                try validateMultiPayloadEnumTable(
+                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: url.path
+                )
             } else {
                 try validateRelativePointerTable(
                     bytes: bytes, sectionOffset: table.offset, fileSize: fileSize,
@@ -380,9 +384,9 @@ public enum MachOPreflight {
         // documented rather than guessed at.
         let wanted: Set<String> = [
             "__swift5_protos", "__swift5_proto", "__swift5_types", "__swift5_types2",
-            // Not flat, but walked by its own record layout; see
-            // `validateAssociatedTypeTable`.
-            "__swift5_assocty",
+            // Not flat, but walked by their own record layouts; see
+            // `validateAssociatedTypeTable` and `validateMultiPayloadEnumTable`.
+            "__swift5_assocty", "__swift5_mpenum",
         ]
         guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE else { return [] }
         guard let ncmds = prefix.u32(at: 16), let sizeofcmds = prefix.u32(at: 20) else { return [] }
@@ -463,6 +467,41 @@ public enum MachOPreflight {
                 try checkPointer(at: base + 4, "descriptor \(descriptor) record \(record)'s type")
             }
             cursor += 16 + body
+            descriptor += 1
+        }
+    }
+
+    /// `__swift5_mpenum`, walked by its record layout. Each
+    /// `MultiPayloadEnumDescriptor` (swift/include/swift/RemoteInspection/
+    /// Records.h:427) is a relative `TypeName` pointer, then
+    /// `contents[0] >> 16` 32-bit words (the runtime asserts that is
+    /// non-zero), so a descriptor is `4 + 4 * words` bytes. A `TypeName`
+    /// resolving outside the file trapped `objc`, `disasm` and `analyze` with
+    /// `Negative value is not representable` in `MangledName.resolve`
+    /// (fuzz mutant 19).
+    static func validateMultiPayloadEnumTable(
+        bytes: Data, sectionOffset: Int, fileSize: Int, path: String = "<data>"
+    ) throws {
+        func fail(_ why: String) -> BinaryLoadError {
+            BinaryLoadError("Malformed Mach-O: \(path) — __swift5_mpenum \(why)")
+        }
+        var cursor = 0
+        var descriptor = 0
+        while cursor < bytes.count {
+            guard cursor + 8 <= bytes.count, let typeName = bytes.u32(at: cursor),
+                  let sizeFlags = bytes.u32(at: cursor + 4)
+            else { throw fail("descriptor \(descriptor) is truncated") }
+            let words = Int(sizeFlags >> 16)
+            guard words > 0, 4 + 4 * words <= bytes.count - cursor else {
+                throw fail("descriptor \(descriptor) declares \(words) content word(s), not fitting the section")
+            }
+            let target = sectionOffset + cursor + Int(Int32(bitPattern: typeName))
+            guard target >= 0, target < fileSize else {
+                throw fail(
+                    "descriptor \(descriptor)'s type name is a relative pointer to offset \(target), outside the \(fileSize)-byte file"
+                )
+            }
+            cursor += 4 + 4 * words
             descriptor += 1
         }
     }
