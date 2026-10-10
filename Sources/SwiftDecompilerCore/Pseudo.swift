@@ -8,6 +8,7 @@ public extension DisassembledFunction {
     func renderPseudo(hideRuntime: Bool = true) -> String {
         var lines = ["\(displayName) {"]
         if let objcMethod { lines.append("    // \(objcMethod.signature)") }
+        if let asyncLine = asyncHeaderLine() { lines.append("    \(asyncLine)") }
         var statements: [String] = []
         for insn in instructions {
             guard let statement = Self.pseudoStatement(of: insn, hideRuntime: hideRuntime) else { continue }

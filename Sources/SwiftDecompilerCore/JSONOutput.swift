@@ -36,15 +36,30 @@ private struct ObjCMethodDTO: Encodable {
     let signature: String
 }
 
+private struct AsyncFuncletDTO: Encodable {
+    /// Entry funclet address; absent when no parent was recovered.
+    let parent: String?
+    /// 0 for the entry funclet, 1… for resume funclets in chain order.
+    let ordinal: Int
+    /// "await-return", "continuation", or "unknown"; absent for the entry.
+    let kind: String?
+    /// The funclet whose suspension this one continues.
+    let predecessor: String?
+    /// Every funclet of the chain, entry first.
+    let chain: [String]
+}
+
 private struct FunctionDTO: Encodable {
     let name: String
     let symbol: String
     let address: String
     /// How the name/boundary was recovered: "symbol", "metadata",
-    /// "objc-metadata", or "address".
+    /// "objc-metadata", "address", "folded-symbols", or "async-funclet".
     let source: String
     /// Runtime method identity/signature when this function is an ObjC IMP.
     let objectiveC: ObjCMethodDTO?
+    /// Place in an async function's funclet chain, when this is one.
+    let async: AsyncFuncletDTO?
     let instructions: [InstructionDTO]
     /// Basic blocks (control-flow graph) recovered via Capstone.
     let blocks: [BlockDTO]
@@ -88,6 +103,12 @@ private extension DisassembledFunction {
                     kind: $0.isClassMethod ? "class" : "instance",
                     typeEncoding: $0.typeEncoding,
                     signature: $0.signature
+                )
+            },
+            async: asyncFunclet.map {
+                AsyncFuncletDTO(
+                    parent: $0.parent.map(hex), ordinal: $0.ordinal, kind: $0.kind?.rawValue,
+                    predecessor: $0.predecessor.map(hex), chain: $0.chain.map(hex)
                 )
             },
             instructions: instructions.map {

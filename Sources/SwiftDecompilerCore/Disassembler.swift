@@ -104,6 +104,11 @@ public enum RecoverySource: String, Sendable {
     /// their mangled names records the merge — so no single symbol can be
     /// attributed. Rendered `sub_<addr>` with the candidates listed, never guessed.
     case foldedSymbols = "folded-symbols"
+    /// Boundary known (LC_FUNCTION_STARTS) and no symbol, but the address is a
+    /// resume funclet of an async function: it is stored as a resume pointer by
+    /// that function's chain, so it is titled after its parent
+    /// (`resume #N of <parent>`). See `AsyncFuncletIndex`.
+    case asyncFunclet = "async-funclet"
 }
 
 /// A contiguous function body recovered from `__text`.
@@ -123,6 +128,9 @@ public struct DisassembledFunction: Sendable {
     /// the symbol table places at this address, listed instead of one being
     /// picked. Nil for every other source.
     public let foldedCandidates: [String]?
+    /// This function's place in an async function's funclet chain, when it is
+    /// an async entry or resume funclet. Nil for a synchronous function.
+    public let asyncFunclet: AsyncFuncletInfo?
 
     public init(
         symbol: String,
@@ -131,7 +139,8 @@ public struct DisassembledFunction: Sendable {
         instructions: [Instruction],
         source: RecoverySource,
         objcMethod: ObjCMethodBinding? = nil,
-        foldedCandidates: [String]? = nil
+        foldedCandidates: [String]? = nil,
+        asyncFunclet: AsyncFuncletInfo? = nil
     ) {
         self.symbol = symbol
         self.demangledName = demangledName
@@ -140,6 +149,59 @@ public struct DisassembledFunction: Sendable {
         self.source = source
         self.objcMethod = objcMethod
         self.foldedCandidates = foldedCandidates
+        self.asyncFunclet = asyncFunclet
+    }
+
+    /// The same function with `instructions` replaced; every other field is
+    /// carried over, so an enrichment pass cannot drop one by omission.
+    func replacingInstructions(_ instructions: [Instruction]) -> DisassembledFunction {
+        DisassembledFunction(
+            symbol: symbol, demangledName: demangledName, startAddress: startAddress,
+            instructions: instructions, source: source, objcMethod: objcMethod,
+            foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet
+        )
+    }
+
+    /// The same function with the async-funclet grouping attached and, for a
+    /// nameless resume funclet, titled after its parent. A symbol- or
+    /// metadata-named funclet keeps its proven name; only the grouping is added.
+    func attachingAsyncFunclet(_ info: AsyncFuncletInfo) -> DisassembledFunction {
+        let title: String? = if source == .address, !info.isEntry, let parentName = info.parentName {
+            "resume #\(info.ordinal) of \(parentName)"
+        } else {
+            nil
+        }
+        return DisassembledFunction(
+            symbol: symbol,
+            demangledName: title ?? demangledName,
+            startAddress: startAddress, instructions: instructions,
+            source: title == nil ? source : .asyncFunclet, objcMethod: objcMethod,
+            foldedCandidates: foldedCandidates, asyncFunclet: info
+        )
+    }
+
+    /// The comment line placing this function in its async funclet chain, for
+    /// every renderer. Nil for a synchronous function.
+    func asyncHeaderLine() -> String? {
+        guard let info = asyncFunclet else { return nil }
+        func hex(_ a: UInt64) -> String { "0x" + String(a, radix: 16) }
+        if info.isEntry {
+            let resumes = info.chain.dropFirst()
+            if resumes.isEmpty { return "// async function: no suspension point" }
+            let list = resumes.enumerated().map { "resume #\($0.offset + 1) @\(hex($0.element))" }
+            return "// async function: \(resumes.count) resume funclet(s): \(list.joined(separator: ", "))"
+        }
+        guard let parent = info.parent else {
+            let kind = info.kind.map { " (\($0.rawValue))" } ?? ""
+            return "// async resume funclet\(kind); its parent async function was not recovered"
+        }
+        let from = hex(info.predecessor ?? parent)
+        let entered: String = switch info.kind {
+        case .awaitReturn: "entered when the await in \(from) returns"
+        case .continuation: "entered after the executor hop in \(from)"
+        case .unknown, nil: "entered from \(from); how is not recovered"
+        }
+        return "// resume #\(info.ordinal) of the async function @\(hex(parent)): \(entered)"
     }
 
     /// The name to show: demangled if available, else the raw symbol.
@@ -152,6 +214,7 @@ public struct DisassembledFunction: Sendable {
         let tag: String = switch source {
         case .metadata: "  [recovered from Swift metadata]"
         case .objcMetadata: "  [recovered from Objective-C metadata]"
+        case .asyncFunclet: "  [titled from its async parent; boundary from LC_FUNCTION_STARTS]"
         case .symbol, .address, .foldedSymbols: ""
         }
         if let objcMethod {
@@ -165,6 +228,7 @@ public struct DisassembledFunction: Sendable {
         } else if source == .address {
             lines.append("  // unnamed function  @ 0x\(String(startAddress, radix: 16))  [boundary from LC_FUNCTION_STARTS]")
         }
+        if let asyncLine = asyncHeaderLine() { lines.append("  \(asyncLine)") }
         for insn in instructions {
             let addr = String(insn.address, radix: 16)
             var line = "  \(addr):  \(insn.text)"
@@ -420,6 +484,13 @@ public struct Disassembler: Sendable {
         }.map(\.startAddress))
         swiftTargets.subtract(objcIndex.addresses)
 
+        // Async funclet chains, from the hint sections plus a decode of just the
+        // funclets' own spans, so the grouping costs no whole-image residency.
+        let asyncIndex = asyncFuncletIndex(
+            in: machO, boundaries: Set(boundaries),
+            instructions: { self.decodeFunction(at: $0, boundaries: boundaries, in: machO) },
+            nameOf: { names[$0] }
+        )
         let context = PerFunctionContext(
             resolver: resolver, swiftTargets: swiftTargets, objcIndex: objcIndex,
             fieldMaps: (try? FieldMapBuilder.build(in: machO)) ?? [:],
@@ -428,7 +499,8 @@ public struct Disassembler: Sendable {
             enumCaseIndex: EnumCaseIndex.build(in: machO),
             payloadEnumIndex: PayloadEnumCaseIndex.build(in: machO),
             classTypeIndex: ClassTypeIndex.build(in: machO),
-            indirectResultUses: indirectResultUses
+            indirectResultUses: indirectResultUses,
+            asyncIndex: asyncIndex
         )
 
         // Pass 2: decode each span, analyse, render, release. `segment` skips a
@@ -444,7 +516,9 @@ public struct Disassembler: Sendable {
                     labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
                     metadataNames: metadataNames, objcIndex: objcIndex
                 )
-                rendered.append(render(analyzeFunction(function, context: context)))
+                let grouped = asyncIndex.info(for: function.startAddress, parentName: { names[$0] })
+                    .map(function.attachingAsyncFunclet) ?? function
+                rendered.append(render(analyzeFunction(grouped, context: context)))
             }
             // Throttled so the callback overhead is negligible on a 100k-function
             // image; always report the final position so the display completes.
@@ -564,6 +638,24 @@ public struct Disassembler: Sendable {
         }.map(\.startAddress))
         // A Swift-mangled Objective-C entry thunk still receives self in x0.
         swiftTargets.subtract(objcIndex.addresses)
+        // Async funclet chains: group each resume funclet under its entry and
+        // title the nameless ones after it. A funclet outside this decode (a
+        // filtered run) is decoded on demand, so the grouping is whole-image.
+        let byStart = Dictionary(functions.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
+        let sortedBoundaries = boundaries.sorted()
+        let asyncIndex = asyncFuncletIndex(
+            in: machO, boundaries: boundaries,
+            instructions: { address in
+                byStart[address]?.instructions
+                    ?? self.decodeFunction(at: address, boundaries: sortedBoundaries, in: machO)
+            },
+            nameOf: { resolver.callTargetName(at: $0) }
+        )
+        functions = functions.map { function in
+            asyncIndex.info(for: function.startAddress, parentName: {
+                byStart[$0]?.displayName ?? resolver.callTargetName(at: $0)
+            }).map(function.attachingAsyncFunclet) ?? function
+        }
         // The differentiator's two halves: what lives at an offset (FieldMap),
         // and whether the pointer in x20 is that type (SelfTypeIndex). Both are
         // metadata-sourced, so both survive stripping.
@@ -585,12 +677,11 @@ public struct Disassembler: Sendable {
             fieldMaps: fieldMaps, selfIndex: selfIndex, vtableIndex: vtableIndex,
             enumCaseIndex: enumCaseIndex, payloadEnumIndex: payloadEnumIndex,
             classTypeIndex: classTypeIndex,
-            // Every function's x8 use, before any is analysed: a caller needs
-            // its callees' facts, whichever order they appear in.
             indirectResultUses: Dictionary(
                 functions.map { ($0.startAddress, Self.indirectResultUse(of: $0)) },
                 uniquingKeysWith: { a, _ in a }
-            )
+            ),
+            asyncIndex: asyncIndex
         )
         functions = functions.map { analyzeFunction($0, context: context) }
 
@@ -619,6 +710,37 @@ public struct Disassembler: Sendable {
         /// Function start → whether its body reads the incoming x8, so a call to
         /// it is known to write (or not write) through the caller's x8.
         var indirectResultUses: [UInt64: IndirectResultUse] = [:]
+        /// Async funclet chains and their suspension points.
+        let asyncIndex: AsyncFuncletIndex
+    }
+
+    /// Build the async funclet index for an image. The hint sections are read
+    /// through `sectionBytes`, so a dyld-cache image works too.
+    func asyncFuncletIndex(
+        in machO: MachOFile, boundaries: Set<UInt64>,
+        instructions: (UInt64) -> [Instruction], nameOf: (UInt64) -> String?
+    ) -> AsyncFuncletIndex {
+        let hints = AsyncFuncletIndex.hintSections(in: machO) { address, size in
+            self.sectionBytes(address: address, size: size, in: machO)
+        }
+        return AsyncFuncletIndex.build(
+            hints: hints, functionStarts: boundaries, instructions: instructions, nameOf: nameOf
+        )
+    }
+
+    /// Decode one function on demand: from `address` to the next sorted boundary
+    /// (or the end of `__text`).
+    func decodeFunction(at address: UInt64, boundaries: [UInt64], in machO: MachOFile) -> [Instruction] {
+        guard let text = textSectionBounds(in: machO) else { return [] }
+        let textEnd = text.address + UInt64(text.size)
+        guard address >= text.address, address < textEnd else { return [] }
+        var low = 0, high = boundaries.count
+        while low < high {
+            let mid = (low + high) / 2
+            if boundaries[mid] <= address { low = mid + 1 } else { high = mid }
+        }
+        let stop = low < boundaries.count ? boundaries[low] : textEnd
+        return capstoneInstructions(in: machO, span: (address, stop))
     }
 
     /// The complete per-function analysis: resolve references and call targets,
@@ -1143,6 +1265,20 @@ public struct Disassembler: Sendable {
         let textEnd = textSectionBounds(in: machO).map { $0.address + UInt64($0.size) }
             ?? (boundaries.last! + 0x4000)
 
+        // Async funclet chains, decoded from the funclets' own spans only. A
+        // nameless resume funclet is matched by the title it will be given
+        // (`resume #N of <parent>`), and a matched async function brings its
+        // whole chain: the resume funclets are the rest of its body.
+        let stubNames = symbolStubNames(in: machO)
+        func nameOf(_ address: UInt64) -> String? {
+            labels[address].flatMap { self.demangle($0) } ?? metadataNames[address] ?? stubNames[address]
+        }
+        let asyncIndex = asyncFuncletIndex(
+            in: machO, boundaries: boundarySet,
+            instructions: { self.decodeFunction(at: $0, boundaries: boundaries, in: machO) },
+            nameOf: nameOf
+        )
+
         func matches(_ start: UInt64) -> Bool {
             let symbol = labels[start] ?? "sub_\(String(start, radix: 16))"
             if symbol.lowercased().contains(needle) { return true }
@@ -1153,11 +1289,23 @@ public struct Disassembler: Sendable {
                 return true
             }
             let demangled = labels[start].flatMap { demangle($0) } ?? metadataNames[start]
-            return demangled?.lowercased().contains(needle) ?? false
+            if demangled?.lowercased().contains(needle) == true { return true }
+            if labels[start] == nil, metadataNames[start] == nil,
+               let info = asyncIndex.info(for: start, parentName: nameOf),
+               !info.isEntry, let parentName = info.parentName {
+                return "resume #\(info.ordinal) of \(parentName)".lowercased().contains(needle)
+            }
+            return false
+        }
+
+        var selected = Set(boundaries.filter(matches))
+        guard !selected.isEmpty else { return [] }
+        for start in selected {
+            if let chain = asyncIndex.chains[start] { selected.formUnion(chain) }
         }
 
         var ranges: [(start: UInt64, stop: UInt64)] = []
-        for (index, start) in boundaries.enumerated() where matches(start) {
+        for (index, start) in boundaries.enumerated() where selected.contains(start) {
             let stop = index + 1 < boundaries.count ? boundaries[index + 1] : textEnd
             if let last = ranges.last, start <= last.stop + 0x10000 {
                 ranges[ranges.count - 1].stop = max(last.stop, stop)
@@ -1268,15 +1416,7 @@ public struct Disassembler: Sendable {
             }
         }
 
-        return DisassembledFunction(
-            symbol: function.symbol,
-            demangledName: function.demangledName,
-            startAddress: function.startAddress,
-            instructions: updated,
-            source: function.source,
-            objcMethod: function.objcMethod,
-            foldedCandidates: function.foldedCandidates
-        )
+        return function.replacingInstructions(updated)
     }
 
     /// Annotate direct call/branch instructions with their resolved target
@@ -1303,12 +1443,7 @@ public struct Disassembler: Sendable {
                 callArguments: insn.callArguments, detail: insn.detail
             )
         }
-        return DisassembledFunction(
-            symbol: function.symbol, demangledName: function.demangledName,
-            startAddress: function.startAddress, instructions: instructions, source: function.source,
-            objcMethod: function.objcMethod,
-            foldedCandidates: function.foldedCandidates
-        )
+        return function.replacingInstructions(instructions)
     }
 
     /// Resolve register-indirect calls only when value tracking proves the
@@ -1351,12 +1486,7 @@ public struct Disassembler: Sendable {
                 detail: insn.detail
             )
         }
-        return DisassembledFunction(
-            symbol: function.symbol, demangledName: function.demangledName,
-            startAddress: function.startAddress, instructions: instructions,
-            source: function.source, objcMethod: function.objcMethod,
-            foldedCandidates: function.foldedCandidates
-        )
+        return function.replacingInstructions(instructions)
     }
 
     /// VM range of a named section, if present.
@@ -3613,12 +3743,7 @@ public struct Disassembler: Sendable {
                 sourceType: sourceType, detail: insn.detail
             )
         }
-        return DisassembledFunction(
-            symbol: function.symbol, demangledName: function.demangledName,
-            startAddress: function.startAddress, instructions: instructions, source: function.source,
-            objcMethod: function.objcMethod,
-            foldedCandidates: function.foldedCandidates
-        )
+        return function.replacingInstructions(instructions)
     }
 
     /// `adrp x8, 12 ; 0x10000c000` (llvm-objdump) or `adrp x8, 0x10000c000`

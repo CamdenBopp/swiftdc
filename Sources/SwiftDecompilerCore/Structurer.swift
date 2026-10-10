@@ -23,7 +23,10 @@ public extension DisassembledFunction {
             )
         )
         let header = "\(displayName) {"
+        // The ObjC signature and the async-chain line share one header slot: at
+        // most one applies (an ObjC IMP is never an async funclet).
         let objcLine = objcMethod.map { "    // \($0.signature)" }
+            ?? asyncHeaderLine().map { "    \($0)" }
 
         // The structurer recurses with the CFG's nesting depth, and each frame is
         // large; a deeply nested CFG (a giant switch → a long if-else-if cascade)
