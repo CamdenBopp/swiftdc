@@ -1185,3 +1185,43 @@ private func expectMutantsRejected(_ path: String, _ mutants: [(String, [(Int, U
     defer { try? FileManager.default.removeItem(at: link) }
     #expect(throws: Never.self) { try MachOPreflight.validate(url: link) }
 }
+
+@Test func checksTheProtocolAndReferenceArrays() throws {
+    let sections: [(name: String, addr: UInt64, size: Int)] = [
+        ("__data", 0x1_0000_d000, 0x100), ("__objc_data", 0x1_0000_c400, 0x200),
+    ]
+    func rejects(_ name: String, _ values: [UInt64], nullable: Bool = false) -> Bool {
+        (try? MachOPreflight.validateObjCPointerArray(
+            bytes: slots(values), name: name, encoding: chained6,
+            allowed: sections.filter { name == "__objc_protolist" ? $0.name == "__data" : $0.name == "__objc_data" },
+            nullable: nullable)) == nil
+    }
+    #expect(!rejects("__objc_protolist", [0xd040]))
+    #expect(rejects("__objc_protolist", [0xff_d040]))                // a protocol outside `__data`
+    #expect(rejects("__objc_protolist", [0]))                         // lists never hold nulls
+    #expect(!rejects("__objc_classrefs", [0xc4a8, 0, 1 << 63 | 1], nullable: true))
+}
+
+/// `metadata-fuzz.py` on the arm64e slice of Stickies (60 mutants, seed 11):
+/// one byte of an `__objc_protolist` slot trapped MachOObjCSection's file
+/// reader in every ObjC-reading subcommand. Located at run time, since the
+/// system binary's layout changes between OS versions.
+@Test func rejectsACorruptProtocolListSlotInASystemBinaryIfPresent() throws {
+    let path = "/System/Applications/Stickies.app/Contents/MacOS/Stickies"
+    guard var data = FileManager.default.contents(atPath: path) else { return }
+    var protolist: Int?
+    for slice in MachOPreflight.fatSliceExtents(prefix: data, fileSize: data.count) {
+        let thin = data.subdata(in: slice.offset..<slice.offset + slice.size)
+        if let section = MachOPreflight.sectionTable(prefix: thin)?.sections.first(where: { $0.name == "__objc_protolist" }) {
+            protolist = slice.offset + section.offset
+        }
+    }
+    guard let protolist else { return }
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("swiftdc-protolist-\(UUID().uuidString)")
+    try data.write(to: url)
+    #expect(throws: Never.self) { try MachOPreflight.validate(url: url) }
+    data[protolist + 2] ^= 0xff                                       // the target moves by up to 16 MB
+    try data.write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+    #expect(throws: (any Error).self) { try MachOPreflight.validate(url: url) }
+}

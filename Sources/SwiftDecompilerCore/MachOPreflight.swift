@@ -227,6 +227,11 @@ public enum MachOPreflight {
                 "__objc_classlist": ["__objc_data", "__data"],
                 "__objc_nlclslist": ["__objc_data", "__data"],
                 "__objc_catlist": ["__objc_const"],
+                "__objc_nlcatlist": ["__objc_const"],
+                "__objc_protolist": ["__data", "__objc_const"],
+                "__objc_protorefs": ["__data", "__objc_const"],
+                "__objc_classrefs": ["__objc_data"],
+                "__objc_superrefs": ["__objc_data", "__data"],
             ]
             for section in table.sections {
                 guard let names = targets[section.name], section.size > 0,
@@ -247,6 +252,7 @@ public enum MachOPreflight {
                 else { continue }
                 try validateObjCPointerArray(
                     bytes: bytes, name: section.name, encoding: encoding, allowed: allowed, path: path,
+                    nullable: section.name == "__objc_classrefs" || section.name == "__objc_superrefs",
                     address: section.addr, chainEntries: chainEntries
                 )
             }
@@ -472,13 +478,22 @@ public enum MachOPreflight {
     /// A corrupt slot sent MachOObjCSection to parse a class or category out of
     /// arbitrary memory (SIGSEGV/SIGTRAP in `objc`, `layout`, `disasm`,
     /// `analyze`; `metadata-fuzz.py sample.release 150 4242`).
+    /// The protocol, class-reference and non-lazy category arrays follow the
+    /// same rule, measured over 4,101 binaries including fat slices (objcsweep,
+    /// the 1,609 universal binaries under /Applications, the 1,434 arm64e
+    /// system binaries): protocols in `__data` or `__objc_const`, class and
+    /// superclass references in `__objc_data` (superclass refs also `__data`),
+    /// each 8-aligned. Only the two reference arrays hold nulls (`nullable`).
+    /// A corrupt `__objc_protolist` slot trapped MachOObjCSection's file
+    /// reader (`metadata-fuzz.py` on the arm64e slice of Stickies, 60 11).
     static func validateObjCPointerArray(
         bytes: Data, name: String, encoding: PointerEncoding,
         allowed: [(name: String, addr: UInt64, size: Int)], path: String = "<data>",
-        address: UInt64 = 0, chainEntries: ChainEntries? = nil
+        nullable: Bool = false, address: UInt64 = 0, chainEntries: ChainEntries? = nil
     ) throws {
         for index in stride(from: 0, to: bytes.count - bytes.count % 8, by: 8) {
             guard let raw = bytes.u64(at: index) else { break }
+            if raw == 0, nullable { continue }
             // In a chained image a pointer slot holds a fixup only if a chain
             // reaches it; otherwise MachOKit reads its bits as a plain address.
             if raw != 0, let chainEntries, !chainEntries.contains(address &+ UInt64(index)) {
