@@ -823,3 +823,120 @@ private func danglingGotoTargets(in structured: String) -> Set<String> {
     }
     return used.subtracting(defined)
 }
+
+// MARK: - Indirect results (the x8 result buffer)
+
+private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
+
+/// Soundness: a function that returns through the caller's x8 buffer leaves a
+/// STALE value in x0 at its `ret` (its first argument, usually). That register
+/// is never its result, so it must not print `return arg0`. The memberwise
+/// initializers of every struct wider than four words are the clearest
+/// specimens: five stores through x8, then `ret` with x0 untouched.
+@Test func declinesStaleRegisterReturnOfIndirectResultIfPresent() async throws {
+    for fixture in [reconstructionFixture, "Fixtures/Sample/libReconstruction.resilient.dylib"] {
+        guard let wide = try await reconstructionPseudo("OuterY.Wide.init", in: fixture) else { continue }
+        #expect(!wide.contains("return arg0"), "stale x0 printed as the result in \(fixture)")
+        #expect(wide.contains("return Reconstruction.OuterY.Wide(v1: arg0, v2: arg1, v3: arg2, v4: arg3, v5: arg4)"))
+    }
+    // A resilient module returns even a two-`Double` struct through x8; the
+    // values are the floating-point arguments, not x0.
+    guard let point = try await reconstructionPseudo("Point.init", in: "Fixtures/Sample/libSample.dylib") else { return }
+    #expect(point.contains("return Sample.Point(x: arg0, y: arg1)"))
+    #expect(!point.contains("return arg0"))
+}
+
+/// Stores through x8 that cover the result type's complete stored-property
+/// layout reconstruct field-wise.
+@Test func recoversFieldwiseIndirectStructReturnIfPresent() async throws {
+    guard let onone = try await reconstructionPseudo("Wide5.init", in: indirectFixture) else { return }
+    #expect(onone.contains("return Indirect.Wide5(a: arg0, b: arg1, c: arg2, d: arg3, e: arg4)"))
+
+    guard let pair = try await reconstructionPseudo(
+        "IntPair.init", in: "Fixtures/Sample/libReconstruction.resilient.dylib") else { return }
+    #expect(pair.contains("return Reconstruction.IntPair(a: arg0, b: arg1)"))
+}
+
+/// At -Onone the body calls the memberwise initializer into a temporary and
+/// `memcpy`s the temporary into its own x8 buffer: the result IS the callee's
+/// result, so the return is the call, and the copy is folded into it rather
+/// than printed as a statement (or, worse, as `return memcpy(…)`).
+@Test func recoversForwardedIndirectResultIfPresent() async throws {
+    guard let make = try await reconstructionPseudo("makeWide", in: indirectFixture) else { return }
+    #expect(make.contains("return Indirect.Wide5.init(arg0, arg1, arg2, arg3, arg4)"))
+    #expect(!make.contains("memcpy"))
+    #expect(!make.contains("return arg0"))
+
+    guard let constant = try await reconstructionPseudo("constantWide", in: indirectFixture) else { return }
+    #expect(constant.contains("return Indirect.Wide5.init(1, 2, 3, 4, 5)"))
+}
+
+/// Caller side: x8 pointed into the caller's frame when it called an x8-indirect
+/// callee, so the frame slots under it hold that call's result and a later load
+/// from one is a field of the result, not a stale local. The call is bound once
+/// (`let r0 = …`) and each field read is `r0.field`: spelling the call out at
+/// every read would show it executed once per field. (At -O the callee has
+/// been folded with an identical body, so its name is not asserted.)
+@Test func readsIndirectCallResultFromFrameSlotIfPresent() async throws {
+    guard let onone = try await reconstructionPseudo("wideSum", in: indirectFixture) else { return }
+    #expect(onone.contains("let r0 = Indirect.makeWide(arg0, arg1, arg2, arg3, arg4)"))
+    #expect(onone.contains("return (r0.a + r0.e)"))
+    #expect(onone.components(separatedBy: "makeWide(").count == 2, "the call must render once: \(onone)")
+
+    guard let opt = try await reconstructionPseudo(
+        "wideSum", in: "Fixtures/Sample/libIndirect.opt.dylib") else { return }
+    #expect(opt.contains("let r0 = ") && opt.contains("(arg0, arg1, arg2, arg3, arg4)"))
+    #expect(opt.contains("return (r0.a + r0.e)"))
+    #expect(!opt.contains("return ?"))
+}
+
+/// Negative: a field stored on only one path does not meet at the shared `ret`,
+/// so that field is unprovable (`?`) while the fields every path stores keep
+/// their values; the stale x0 is never printed.
+@Test func declinesIndirectFieldStoredOnOnePathIfPresent() async throws {
+    guard let opt = try await reconstructionPseudo(
+        "wideMaybeSet", in: "Fixtures/Sample/libIndirect.opt.dylib") else { return }
+    #expect(opt.contains("return Indirect.Wide5(a: ?, b: 0, c: 0, d: 0, e: 0)"))
+    #expect(!opt.contains("return arg0"))
+
+    guard let onone = try await reconstructionPseudo("wideMaybeSet", in: indirectFixture) else { return }
+    #expect(onone.contains("let r0 = Indirect.Wide5.init(0, 0, 0, 0, 0)"))
+    #expect(onone.contains("return Indirect.Wide5(a: ?, b: r0.b, c: r0.c, d: r0.d, e: r0.e)"))
+    #expect(!onone.contains("return arg0"))
+}
+
+/// Negative: a result pointer that escapes into a call argument (a generic
+/// result written by the value witness) or a result with no stored-property
+/// layout (an existential) prints no return at all.
+@Test func declinesEscapedOrUnlaidOutIndirectResultIfPresent() async throws {
+    guard let generic = try await reconstructionPseudo("identity<", in: indirectFixture) else { return }
+    #expect(!generic.contains("return"))
+    for fixture in [indirectFixture, "Fixtures/Sample/libIndirect.opt.dylib"] {
+        guard let existential = try await reconstructionPseudo("asAny", in: fixture) else { continue }
+        #expect(!existential.contains("return"), "existential result rendered in \(fixture)")
+    }
+}
+
+/// Negative: the address of the local that will become the result escapes into
+/// a callee that writes through it, so the local's zero-initialised slots are
+/// stale after the call. The copy into x8 must not print those zeros (nor the
+/// initializer that produced them) as the result.
+@Test func declinesIndirectResultCopiedFromAnEscapedLocalIfPresent() async throws {
+    for fixture in [indirectFixture, "Fixtures/Sample/libIndirect.opt.dylib"] {
+        guard let escaped = try await reconstructionPseudo("escapedWide", in: fixture) else { continue }
+        #expect(!escaped.contains("return Indirect.Wide5"), "stale local printed as the result in \(fixture)")
+        #expect(!escaped.contains("return arg0"))
+    }
+}
+
+/// A callee's result partially overwritten afterwards is neither the call nor a
+/// set of plain stores: the overwritten field is the new value and the rest are
+/// read back as fields of the call's result.
+@Test func recoversPartiallyOverwrittenIndirectResultIfPresent() async throws {
+    for fixture in [indirectFixture, "Fixtures/Sample/libIndirect.opt.dylib"] {
+        guard let modified = try await reconstructionPseudo("modifiedWide", in: fixture) else { continue }
+        #expect(modified.contains("let r0 = Indirect.otherWide("), "in \(fixture)")
+        #expect(modified.contains("return Indirect.Wide5(a: arg0, b: r0.b, c: r0.c, d: r0.d, e: r0.e)"), "in \(fixture)")
+        #expect(!modified.contains("return arg0"))
+    }
+}

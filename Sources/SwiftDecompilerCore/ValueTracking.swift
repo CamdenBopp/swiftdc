@@ -188,6 +188,53 @@ public indirect enum AbstractValue: Equatable, Sendable {
     /// header condition reconstruct with a name (`i < n`) instead of raw
     /// registers.
     case local(Int)
+    /// The incoming x8: the address of the caller-owned buffer an indirectly
+    /// returned value (a struct wider than four words, a large payload enum, a
+    /// generic or existential result) is written into. Seeded at every entry,
+    /// because x8 means exactly this in every ARM64 convention; it carries
+    /// information only once the body reads it, and a body that writes x8 first
+    /// simply overwrites the seed.
+    case indirectResultPointer
+    /// `x8 + constant`: the address of a byte offset inside the result buffer.
+    case indirectResultField(offset: Int)
+    /// The eight bytes at `offset` of the value the call at `site` returned
+    /// indirectly into the caller's frame. Produced only when the callee is
+    /// proven to read its incoming x8 and its result size is known, so a later
+    /// load from that frame slot renders as a field of the call's result rather
+    /// than as a stale local.
+    case indirectCallResultWord(site: UInt64, offset: Int)
+}
+
+/// What is known about how a callee delivers its result, keyed by call site.
+/// Decides what a call does to the caller's frame when x8 points into it, and
+/// whether a call that forwards the caller's own x8 fills the caller's result.
+public enum CalleeResultConvention: Equatable, Sendable {
+    /// The callee provably never reads its incoming x8 (its whole body was
+    /// inspected, or it is a fixed-ABI runtime/libc entry point), so x8 at the
+    /// call is a scratch value and nothing under it is written.
+    case direct
+    /// The callee provably reads its incoming x8 and writes its result through
+    /// it; `sizeBytes` is the result's size when metadata gives it.
+    case indirect(sizeBytes: Int?)
+}
+
+/// The result-buffer state reaching one `ret` of an x8-indirect function.
+public struct IndirectResultExit: Equatable, Sendable {
+    /// One store through the incoming x8 that reaches the exit on every path.
+    public struct Store: Equatable, Sendable {
+        public var bytes: Int
+        public var value: AbstractValue
+    }
+    /// Set when the whole buffer was filled by the call at this site (the caller
+    /// forwarded its own x8 to a callee proven to write through it).
+    public var whole: UInt64? = nil
+    /// Byte offset → the store reaching the exit. Partial on purpose: a field
+    /// stored on only one path is absent, and the consumer must decline.
+    public var stores: [Int: Store] = [:]
+    /// The result pointer escaped (into a call argument, into memory, into
+    /// untracked arithmetic), or a whole-buffer fill was partially overwritten,
+    /// so nothing about the buffer's contents is provable at this exit.
+    public var poisoned: Bool = false
 }
 
 /// Register state that metadata proves at a method's entry point.
@@ -315,13 +362,25 @@ public struct FunctionAnalysis: Sendable {
     /// offset. Reconstructs `[e0, e1, …]` from the `_allocateUninitializedArray` +
     /// element-store + `_finalizeUninitializedArray` lowering.
     public var arrayElements: [UInt64: [Int: AbstractValue]] = [:]
+    /// `ret` address → the stores through the incoming x8 that reach it. Only
+    /// meaningful for a function that reads its incoming x8 (the enrichment pass
+    /// checks that separately); for any other function the map is empty.
+    public var exitIndirectResults: [UInt64: IndirectResultExit] = [:]
 }
 
 /// An abstract interpreter over a function's basic blocks. Propagates constants,
 /// addresses, frame-relative stack slots, and `self` through registers, and
 /// snapshots the argument registers at each call.
 public struct ValueTracer: Sendable {
-    public init() {}
+    /// Per-call-site callee result conventions (see `CalleeResultConvention`).
+    /// A site absent from the map has an unknown callee, which is treated
+    /// pessimistically: a forwarded x8 poisons the result, and a frame slot
+    /// under x8 is clobbered from that offset up.
+    public var calleeConventions: [UInt64: CalleeResultConvention]
+
+    public init(calleeConventions: [UInt64: CalleeResultConvention] = [:]) {
+        self.calleeConventions = calleeConventions
+    }
 
     /// Register and stack-slot values. Register keys are canonical names
     /// (`x3`, `sp`); stack slots are keyed by frame offset (see `stackKey`), so
@@ -332,7 +391,10 @@ public struct ValueTracer: Sendable {
     /// registers are seeded only when runtime or Swift metadata establishes the
     /// method convention for this exact implementation address.
     private static func initialState(entry: MethodEntryConvention?) -> State {
-        var state: State = ["sp": .frame(0)]
+        // x8 is the indirect-result address in every ARM64 convention, so the
+        // seed is a fact about the ABI, not about this function; see
+        // `AbstractValue.indirectResultPointer`.
+        var state: State = ["sp": .frame(0), "x8": .indirectResultPointer]
         switch entry {
         case .swiftInstance(let scalarArguments):
             state["x20"] = .selfPointer
@@ -498,6 +560,12 @@ public struct ValueTracer: Sendable {
                    let value = registers["x1"], value != .unknown {
                     result.exitYieldValues[insn.address] = value
                 }
+                if insn.controlFlow == .return {
+                    let exit = Self.indirectResultExit(registers)
+                    if exit.poisoned || exit.whole != nil || !exit.stores.isEmpty {
+                        result.exitIndirectResults[insn.address] = exit
+                    }
+                }
                 if insn.controlFlow == .branch {
                     let site = Self.snapshot(registers)
                     if !site.isEmpty { result.branchSites[insn.address] = site }
@@ -656,6 +724,13 @@ public struct ValueTracer: Sendable {
                 if !site.isEmpty { record(insn.address, site) }
             }
             let incomingX0 = registers["x0"] ?? .unknown
+            // `memcpy`/`memset` and the outlined value-witness copies are modelled
+            // as the stores they perform (see `applyMemoryHelper`): their source
+            // must be read before the invalidation below forgets it, and their
+            // destination is written exactly, so the generic invalidation does
+            // not apply to them.
+            let calleeName = DisassembledFunction.calleeName(of: insn) ?? ""
+            let handledAsMemoryHelper = applyMemoryHelper(callee: calleeName, site: site, into: &registers)
             // A local whose address the call receives may be written by it: an
             // NSError out-parameter (`str xzr, [sp]; mov x3, sp; bl …error:`),
             // an `inout` struct, an x8 result buffer, a `mutating` self in x20.
@@ -680,7 +755,7 @@ public struct ValueTracer: Sendable {
             // (guarded by `resolvesConcreteWitnessTableDispatchIfPresent`).
             let readsOnly = DisassembledFunction.calleeName(of: insn)
                 .map(Self.readOnlyPointerCallees.contains) ?? false
-            for escaped in readsOnly ? [] : Set(escapedOffsets) {
+            for escaped in (readsOnly || handledAsMemoryHelper) ? [] : Set(escapedOffsets) {
                 let end = escaped >= 0 ? Int64.max : (addressTaken.first { $0 > escaped } ?? 0)
                 for key in registers.keys where key.hasPrefix("stack@") {
                     if let offset = Int64(key.dropFirst("stack@".count)), escaped <= offset, offset < end {
@@ -688,6 +763,7 @@ public struct ValueTracer: Sendable {
                     }
                 }
             }
+            if !handledAsMemoryHelper { applyCallToResultBuffers(insn, site: site, into: &registers) }
             // AAPCS64: x0–x17 are caller-saved, so a call clobbers them. x18 is
             // reserved, x19–x28 are callee-saved — and preserving those is what
             // carries `self` and locals across a call.
@@ -779,7 +855,9 @@ public struct ValueTracer: Sendable {
             arguments: trimTrailingUnknown(args) ?? [],
             stackArguments: stackArguments,
             // Only when freshly set for *this* Swift call — see selfFreshKey.
-            selfValue: registers[selfFreshKey] != nil
+            // The result pointer parked in callee-saved x20 (`mov x20, x8`) is
+            // never a receiver, however fresh the write.
+            selfValue: registers[selfFreshKey] != nil && !isResultPointer(registers["x20"])
                 ? (registers["x20"] ?? .unknown) : .unknown,
             errorValue: registers["x21"] ?? .unknown,
             indirectResult: registers["x8"] ?? .unknown
@@ -815,12 +893,294 @@ public struct ValueTracer: Sendable {
 
     /// Meet (∧) of predecessor states: a register keeps its value only when all
     /// predecessors agree; otherwise it becomes unknown (absent).
+    ///
+    /// The one exception is the result-buffer poison marker, which is a union:
+    /// a result pointer that escaped on ANY incoming path leaves the buffer
+    /// unprovable at the join, even where the other paths agree on its contents.
     private static func meet(_ states: [State]) -> State {
         guard var accumulator = states.first else { return [:] }
         for state in states.dropFirst() {
             accumulator = accumulator.filter { state[$0.key] == $0.value }
         }
+        if states.contains(where: { $0[resultPoisonKey] != nil }) {
+            accumulator[resultPoisonKey] = .immediate(1)
+        }
         return accumulator
+    }
+
+    // MARK: - Indirect result buffers
+
+    /// The buffer-contents keys: `result@<offset>/<bytes>` for a store through the
+    /// incoming x8, plus the whole-buffer and poison markers. They live in the
+    /// register map so the block meet treats them like any other slot.
+    private static let resultPrefix = "result@"
+    private static let resultWholeKey = "result.whole"
+    private static let resultPoisonKey = "result.poison"
+    private static func resultKey(_ offset: Int, bytes: Int) -> String { "\(resultPrefix)\(offset)/\(bytes)" }
+    private static func resultOffset(from key: String) -> (offset: Int, bytes: Int)? {
+        guard key.hasPrefix(resultPrefix) else { return nil }
+        let parts = key.dropFirst(resultPrefix.count).split(separator: "/")
+        guard parts.count == 2, let offset = Int(parts[0]), let bytes = Int(parts[1]) else { return nil }
+        return (offset, bytes)
+    }
+
+    /// Whether a value is (an alias of) the incoming result pointer.
+    private static func isResultPointer(_ value: AbstractValue?) -> Bool {
+        switch value {
+        case .indirectResultPointer?, .indirectResultField?: return true
+        default: return false
+        }
+    }
+
+    private static func poisonResult(_ registers: inout State) {
+        registers[resultPoisonKey] = .immediate(1)
+    }
+
+    /// Record a store of `bytes` bytes at `offset` of the result buffer. A store
+    /// wider than a word (a `q` register) is split into words; one whose value is
+    /// not word-decomposable fills its words with `.unknown`, which still counts
+    /// as covering the field (its VALUE is unknown, the write is not). A store
+    /// over a whole-buffer call fill is a partial overwrite: the buffer is then
+    /// neither the call's result nor a complete set of stores, so it poisons.
+    private static func storeResult(_ value: AbstractValue, at offset: Int, bytes: Int, into registers: inout State) {
+        if registers[resultWholeKey] != nil {
+            registers[resultWholeKey] = nil
+            poisonResult(&registers)
+        }
+        // An overlapping earlier store is superseded (a word store over a byte
+        // store, or the reverse).
+        let range = offset ..< (offset + bytes)
+        for key in registers.keys {
+            guard let existing = resultOffset(from: key),
+                  (existing.offset ..< (existing.offset + existing.bytes)).overlaps(range)
+            else { continue }
+            registers[key] = nil
+        }
+        if bytes > 8 {
+            let words: [AbstractValue]
+            if case .aggregate(let packed) = value { words = packed } else { words = [] }
+            for index in 0 ..< (bytes / 8) {
+                registers[resultKey(offset + index * 8, bytes: 8)] = index < words.count ? words[index] : .unknown
+            }
+        } else {
+            registers[resultKey(offset, bytes: bytes)] = value
+        }
+    }
+
+    /// The buffer state at a `ret`.
+    private static func indirectResultExit(_ registers: State) -> IndirectResultExit {
+        var exit = IndirectResultExit()
+        exit.poisoned = registers[resultPoisonKey] != nil
+        if case .callResult(let site)? = registers[resultWholeKey] { exit.whole = site }
+        for (key, value) in registers {
+            guard let location = resultOffset(from: key) else { continue }
+            exit.stores[location.offset] = IndirectResultExit.Store(bytes: location.bytes, value: value)
+        }
+        return exit
+    }
+
+    /// Whether this instruction uses a result-pointer register in a role the
+    /// tracker does not model: anything other than a copy (`mov`), a constant
+    /// offset (`add`/`sub` immediate), a memory base with a constant
+    /// displacement, or a spill of the pointer itself to the stack. Any other
+    /// use (`csel`, a register-indexed address, arithmetic with a register, a
+    /// shifted operand, …) derives an alias the tracker then cannot see stores
+    /// through, so the buffer must be treated as unprovable from here on.
+    private func derivesUntrackedResultAlias(_ detail: StructuredInsn, in registers: State) -> Bool {
+        let holdsPointer: (StructuredOperandInfo) -> Bool = { operand in
+            guard let register = operand.operand.register else { return false }
+            return Self.isResultPointer(registers[register.key])
+        }
+        let operands = detail.operands
+        // Memory operands: a result-pointer base is modelled only with no index
+        // register; a result pointer as the INDEX is never modelled.
+        for operand in operands {
+            if case .memory(let base, let index, _) = operand.operand {
+                if let index, Self.isResultPointer(registers[index.key]) { return true }
+                if let base, Self.isResultPointer(registers[base.key]) {
+                    if index != nil { return true }
+                    if detail.writeback { return true } // pre/post-index rewrites the pointer
+                }
+            }
+        }
+        let registerSources = operands.enumerated().filter { $0.element.operand.register != nil }
+        guard registerSources.contains(where: { holdsPointer($0.element) }) else { return false }
+        switch detail.id {
+        case ARM64_INS_MOV:
+            return false
+        case ARM64_INS_ADD, ARM64_INS_SUB:
+            // `add xd, xptr, #imm` is a field address (modelled); the destination
+            // merely having held the pointer is an overwrite. A register addend
+            // or a pointer on the right-hand side derives an untracked alias.
+            guard operands.count >= 3 else { return true }
+            if operands[2].shiftedImmediate != nil { return false }
+            return holdsPointer(operands[1]) || holdsPointer(operands[2])
+        case ARM64_INS_STR, ARM64_INS_STUR, ARM64_INS_STP, ARM64_INS_STNP,
+             ARM64_INS_STRB, ARM64_INS_STURB, ARM64_INS_STRH, ARM64_INS_STURH:
+            // Storing the pointer itself is fine only into a stack slot (a spill
+            // the tracker reloads by key); into any other memory it escapes.
+            // A pointer used only as the base is the modelled case.
+            let storesPointerValue = operands.prefix(detail.id == ARM64_INS_STP || detail.id == ARM64_INS_STNP ? 2 : 1)
+                .contains(where: holdsPointer)
+            guard storesPointerValue else { return false }
+            if case .stackSlot? = memoryTarget(detail, in: registers) { return false }
+            return true
+        case ARM64_INS_LDR, ARM64_INS_LDUR, ARM64_INS_LDP, ARM64_INS_LDNP,
+             ARM64_INS_LDRB, ARM64_INS_LDURB, ARM64_INS_LDRH, ARM64_INS_LDURH,
+             ARM64_INS_LDRSB, ARM64_INS_LDURSB, ARM64_INS_LDRSH, ARM64_INS_LDURSH,
+             ARM64_INS_LDRSW, ARM64_INS_LDURSW:
+            // A load through the pointer is modelled; the destination register
+            // merely having held the pointer is an overwrite.
+            return false
+        case ARM64_INS_CMP, ARM64_INS_CMN, ARM64_INS_TST, ARM64_INS_CCMP, ARM64_INS_CCMN:
+            // Comparing the pointer derives nothing stored through.
+            return false
+        default:
+            // Any other instruction reading the pointer (a `csel`, `orr`, `lsl`,
+            // `madd`, …) derives an alias; one that only WRITES a register that
+            // held it is an overwrite and harmless.
+            let reads = registerSources.dropFirst()
+            if detail.id == ARM64_INS_LDP || detail.id == ARM64_INS_LDNP { return false }
+            return reads.contains(where: { holdsPointer($0.element) })
+        }
+    }
+
+    /// What a call does to the result buffers in play:
+    ///
+    /// - The caller's OWN result pointer in an argument register escapes (the
+    ///   callee may write anything through it), except for the fixed-ABI memory
+    ///   helpers, which are modelled as the copies they are.
+    /// - The caller's own result pointer forwarded in x8 means the callee writes
+    ///   the caller's result: the whole buffer becomes that call's result, but
+    ///   only for a callee proven to write through x8. A callee proven direct
+    ///   ignores x8; an unknown callee poisons, since x8 may be a scratch value
+    ///   or a real forward and the two cannot be told apart.
+    /// - x8 pointing into the caller's frame means a proven indirect callee
+    ///   writes its result there: those slots become words of the call's result
+    ///   when the size is known. (The escaped-local invalidation in `transfer`
+    ///   has already forgotten the slots any callee could have written.)
+    private func applyCallToResultBuffers(_ insn: Instruction, site: CallSite, into registers: inout State) {
+        // Only the argument registers can hand the pointer to a callee: Swift
+        // never passes an indirect-result address on the stack, so a spill of
+        // it at `[sp]` (which the snapshot speculatively lists as a possible
+        // stack argument) is a frame slot, not an escape.
+        if site.arguments.contains(where: { Self.isResultPointer($0) }) { Self.poisonResult(&registers) }
+
+        let convention = calleeConventions[insn.address]
+        switch registers["x8"] {
+        case .indirectResultPointer?:
+            switch convention {
+            case .indirect?:
+                for key in registers.keys where Self.resultOffset(from: key) != nil { registers[key] = nil }
+                registers[Self.resultWholeKey] = .callResult(insn.address)
+            case .direct?:
+                break
+            case nil:
+                Self.poisonResult(&registers)
+            }
+        case .indirectResultField?:
+            // A callee filling only part of the buffer is not reconstructed.
+            if convention != .direct { Self.poisonResult(&registers) }
+        case .frame(let base)?:
+            switch convention {
+            case .direct?:
+                break
+            case .indirect(let size?)?:
+                Self.clearStack(from: base, to: base + Int64(size), in: &registers)
+                for offset in stride(from: 0, to: size, by: 8) {
+                    registers[Self.stackKey(base + Int64(offset))] =
+                        .indirectCallResultWord(site: insn.address, offset: offset)
+                }
+            case .indirect(nil)?, nil:
+                break // already forgotten by the escaped-local invalidation above
+            }
+        default:
+            break
+        }
+    }
+
+    /// Drop the stack slots in `[from, to)` (`to == nil`: every slot at or above
+    /// `from`), the region a callee may have written through x8.
+    private static func clearStack(from: Int64, to: Int64?, in registers: inout State) {
+        for key in registers.keys {
+            guard let offset = stackOffset(from: key), offset >= from else { continue }
+            if let to, offset >= to { continue }
+            registers[key] = nil
+        }
+    }
+
+    /// Model `memcpy`/`memmove`/`memset` (and the compiler's outlined
+    /// `__swift_memcpyN_M` value-witness copies) as the stores they perform, so a
+    /// result assembled in a local and then copied into the x8 buffer, or a
+    /// buffer zeroed with `memset`, is tracked rather than lost. Only a constant
+    /// length is modelled; anything else falls through to the generic call
+    /// handling, where a result pointer in an argument poisons the buffer.
+    private func applyMemoryHelper(callee: String, site: CallSite, into registers: inout State) -> Bool {
+        let name = callee.hasPrefix("_") ? String(callee.drop(while: { $0 == "_" })) : callee
+        guard site.arguments.count >= 2 else { return false }
+        let destination = site.arguments[0]
+        let length: Int?
+        let isCopy: Bool
+        if name == "memcpy" || name == "memmove" {
+            guard site.arguments.count >= 3, case .immediate(let n) = site.arguments[2] else { return false }
+            length = Int(exactly: n); isCopy = true
+        } else if name == "memset" {
+            guard site.arguments.count >= 3, case .immediate(let n) = site.arguments[2] else { return false }
+            length = Int(exactly: n); isCopy = false
+        } else if name.hasPrefix("swift_memcpy"),
+                  let n = Int(name.dropFirst("swift_memcpy".count).split(separator: "_").first ?? "") {
+            length = n; isCopy = true
+        } else {
+            return false
+        }
+        guard let length, length >= 0, length <= 4096 else { return false }
+
+        // The bytes being written, as (offsetInRegion, bytes, value).
+        var chunks: [(offset: Int, bytes: Int, value: AbstractValue)] = []
+        var offset = 0
+        while offset < length {
+            let bytes = min(8, length - offset)
+            let value: AbstractValue
+            if isCopy {
+                switch site.arguments[1] {
+                case .frame(let source):
+                    value = registers[Self.stackKey(source + Int64(offset))] ?? .unknown
+                case .indirectResultPointer:
+                    value = registers[Self.resultKey(offset, bytes: bytes)] ?? .unknown
+                case .indirectResultField(let base):
+                    value = registers[Self.resultKey(base + offset, bytes: bytes)] ?? .unknown
+                default:
+                    value = .unknown
+                }
+            } else if case .immediate(let byte) = site.arguments[1] {
+                let pattern = (byte & 0xFF) &* 0x0101_0101_0101_0101
+                value = .immediate(bytes == 8 ? pattern : pattern & ((1 << (UInt64(bytes) * 8)) - 1))
+            } else {
+                value = .unknown
+            }
+            chunks.append((offset, bytes, value))
+            offset += bytes
+        }
+
+        switch destination {
+        case .indirectResultPointer:
+            for chunk in chunks { Self.storeResult(chunk.value, at: chunk.offset, bytes: chunk.bytes, into: &registers) }
+        case .indirectResultField(let base):
+            for chunk in chunks { Self.storeResult(chunk.value, at: base + chunk.offset, bytes: chunk.bytes, into: &registers) }
+        case .frame(let base):
+            Self.clearStack(from: base, to: base + Int64(length), in: &registers)
+            for chunk in chunks {
+                Self.storeStack(chunk.value, at: base + Int64(chunk.offset), bytes: chunk.bytes,
+                                outgoing: false, into: &registers)
+            }
+        default:
+            // An untracked destination: if the SOURCE is the result buffer the
+            // contents merely leak out (harmless to provability); a result
+            // pointer anywhere else in the arguments already escaped.
+            if Self.isResultPointer(destination) { Self.poisonResult(&registers) }
+            return false
+        }
+        return true
     }
 
     /// Reconstruct the select at each control-flow diamond: a join with two
@@ -1391,6 +1751,13 @@ public struct ValueTracer: Sendable {
             registers[Self.flagsKey] = nil
         }
 
+        // A result pointer flowing into anything but a modelled copy, offset,
+        // access, or spill derives an alias whose stores would be invisible, so
+        // the buffer is unprovable from here on (see `derivesUntrackedResultAlias`).
+        if derivesUntrackedResultAlias(detail, in: registers) {
+            Self.poisonResult(&registers)
+        }
+
         switch detail.id {
         case ARM64_INS_ADRP, ARM64_INS_ADR:
             // Capstone resolves the page/PC-relative target into the immediate.
@@ -1430,6 +1797,13 @@ public struct ValueTracer: Sendable {
                         offset: base + Int(delta), bytes: 0, isWrite: false, isAddressOf: true
                     ))
                     write(dest, .selfField(offset: base + Int(delta)), into: &registers)
+                    return
+                // `add x9, x8, #0x10` forms the address of result byte 0x10.
+                case .indirectResultPointer where adding:
+                    write(dest, .indirectResultField(offset: Int(delta)), into: &registers)
+                    return
+                case .indirectResultField(let base) where adding:
+                    write(dest, .indirectResultField(offset: base + Int(delta)), into: &registers)
                     return
                 default:
                     break
@@ -1536,6 +1910,17 @@ public struct ValueTracer: Sendable {
             }
             write(dest, source(detail.operands[1], in: registers), into: &registers)
 
+        case ARM64_INS_MOVI:
+            // `movi v0.2d, #0` zeroes a vector register: the two words the
+            // compiler then stores as a pair (`stp q0, q0, [x8]`) to zero-fill a
+            // buffer. Only the all-zero form is modelled; any other replicated
+            // byte pattern is left unknown.
+            guard let dest = destinationRegister(detail), detail.operands.count >= 2,
+                  detail.operands[1].operand.immediateValue == 0
+            else { clobber(detail, into: &registers); return }
+            write(dest, dest.widthBits > 64
+                  ? .aggregate([.immediate(0), .immediate(0)]) : .immediate(0), into: &registers)
+
         case ARM64_INS_MOVK:
             // MOVK's shift is NOT pre-folded, and it merges into the existing value.
             guard let dest = destinationRegister(detail), detail.operands.count >= 2,
@@ -1569,6 +1954,11 @@ public struct ValueTracer: Sendable {
                 // read; a narrower load isn't a method pointer.
                 let isPointerLoad = detail.id == ARM64_INS_LDR || detail.id == ARM64_INS_LDUR
                 write(dest, isPointerLoad ? .selfVTableMethod(offset: offset) : .unknown, into: &registers)
+            case .resultSlot(let offset):
+                // Reading the buffer back: only an exact-width match of a tracked
+                // store is known.
+                let bytes = Self.accessBytes(detail) ?? max(dest.widthBits / 8, 1)
+                write(dest, registers[Self.resultKey(offset, bytes: bytes)] ?? .unknown, into: &registers)
             case .arrayElement, .none: write(dest, .unknown, into: &registers)
             }
 
@@ -1588,6 +1978,10 @@ public struct ValueTracer: Sendable {
                 }
                 if case .arrayElement(let site, let offset)? = target {
                     recordArrayElement?(site, offset, value)
+                }
+                if case .resultSlot(let offset)? = target {
+                    let bytes = Self.accessBytes(detail) ?? 8
+                    Self.storeResult(value, at: offset, bytes: bytes, into: &registers)
                 }
                 // A full-width store establishes a useful equality: its source
                 // register now also holds the current ivar value. Canonicalizing
@@ -1629,6 +2023,12 @@ public struct ValueTracer: Sendable {
                 for (index, operand) in detail.operands.prefix(2).enumerated() {
                     recordArrayElement?(site, offset + index * bytes, source(operand, in: registers))
                 }
+            } else if case .resultSlot(let offset)? = target,
+                      let bytes = detail.operands.first?.operand.register.map({ $0.widthBits / 8 }) {
+                for (index, operand) in detail.operands.prefix(2).enumerated() {
+                    Self.storeResult(source(operand, in: registers), at: offset + index * bytes,
+                                     bytes: bytes, into: &registers)
+                }
             }
             // Stores two registers; writes none. Writeback still applies —
             // `stp x29, x30, [sp, #-0x70]!` is the standard prologue, and missing
@@ -1654,6 +2054,8 @@ public struct ValueTracer: Sendable {
                     } ?? .unknown
                 case .selfField(let offset):
                     .selfFieldValue(offset: offset + index * registerBytes)
+                case .resultSlot(let offset):
+                    registers[Self.resultKey(offset + index * registerBytes, bytes: registerBytes)] ?? .unknown
                 case .absolute, .vtableMethod, .arrayElement, .none:
                     .unknown
                 }
@@ -2041,6 +2443,8 @@ public struct ValueTracer: Sendable {
         /// A store of an element into the array-literal built at `site`, at the
         /// given byte offset within the array object.
         case arrayElement(site: UInt64, offset: Int)
+        /// A byte offset into the incoming x8 result buffer.
+        case resultSlot(Int)
     }
 
     /// Where a memory operand points, when its base is a known frame offset or a
@@ -2063,6 +2467,8 @@ public struct ValueTracer: Sendable {
         case .selfFieldValue(0): return .vtableMethod(Int(effective))
         // A store into a freshly-allocated array literal, keyed by its site.
         case .arrayLiteral(let site, _): return .arrayElement(site: site, offset: Int(effective))
+        case .indirectResultPointer: return .resultSlot(Int(effective))
+        case .indirectResultField(let base): return .resultSlot(base + Int(effective))
         default: return nil
         }
     }
