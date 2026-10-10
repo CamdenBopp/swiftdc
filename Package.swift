@@ -89,6 +89,19 @@ let package = Package(
             url: "https://github.com/MxIris-Reverse-Engineering/swift-objc-dump",
             from: "0.8.101"
         ),
+        // Capstone 6, compiled from source by MxIris's SwiftPM packaging of
+        // capstone. MachOSwiftSection 0.20+ links this same package through
+        // swift-capstone (SwiftDump -> SwiftThunkAnalysis -> Capstone), and two
+        // Capstones in one module graph do not compile (both clang modules
+        // define `cs_insn`) and would otherwise link one C symbol table against
+        // the other's headers. So the in-process ARM64 decoder uses this one
+        // copy, replacing the Homebrew libcapstone 5 system library. Only the
+        // AARCH64 backend is enabled, matching MachOSwiftSection's trait.
+        .package(
+            url: "https://github.com/MxIris-Reverse-Engineering/capstone",
+            from: "6.0.100",
+            traits: [.trait(name: "AARCH64")]
+        ),
         .package(
             url: "https://github.com/apple/swift-argument-parser",
             from: "1.5.0"
@@ -104,15 +117,8 @@ let package = Package(
         ),
     ],
     targets: [
-        // Homebrew-installed Capstone (`brew install capstone`), surfaced via its
-        // pkg-config file. Used for structured in-process ARM64 decoding.
-        .systemLibrary(
-            name: "CCapstone",
-            pkgConfig: "capstone",
-            providers: [.brew(["capstone"])]
-        ),
-        // Homebrew-installed OpenSSL (`brew install openssl@3`), same
-        // pkg-config pattern as CCapstone above.
+        // Homebrew-installed OpenSSL (`brew install openssl@3`), surfaced via its
+        // pkg-config file.
         //
         // Needed because lockdown upgrades a live plaintext socket to TLS
         // mid-stream, presenting a client certificate that exists only as a
@@ -136,7 +142,7 @@ let package = Package(
         .target(
             name: "SwiftDecompilerCore",
             dependencies: [
-                "CCapstone",
+                .product(name: "Ccapstone", package: "capstone"),
                 .product(name: "MachOKit", package: "MachOKit"),
                 .product(name: "MachOSwiftSection", package: "MachOSwiftSection"),
                 .product(name: "SwiftDump", package: "MachOSwiftSection"),

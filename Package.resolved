@@ -1,5 +1,5 @@
 {
-  "originHash" : "b930439fd6ebcf1ebf0c581b86589e3e9f4eb8ef77f3ddace211979a9376688f",
+  "originHash" : "12aa07e89b383de85258b76aed8c63a7b2da105871829aab17aa5ed3d76d51bf",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -8,6 +8,15 @@
       "state" : {
         "revision" : "f358e1ccf6761b9d1d53136022a65c601cdc4da3",
         "version" : "0.15.0"
+      }
+    },
+    {
+      "identity" : "capstone",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/MxIris-Reverse-Engineering/capstone",
+      "state" : {
+        "revision" : "81d9ca83416426a5cd05fcd95c6fba3ef5492e27",
+        "version" : "6.0.100"
       }
     },
     {
