@@ -67,6 +67,13 @@ yet done in the 2026-10-09 session:
   a fat file, a large real framework) are the next probe. ObjC categories' and protocols' own fields are not yet
   walked (only the category-list slots), nor are pointer-based (entsize 24)
   method lists or arm64e chained formats, which decline.
+- **Preflight, 2026-10-10 (later):** `improve/preflight-arm64e` (off
+  `0c8550e`) adds arm64e pointer decoding, the protocol and class-reference
+  arrays, and a protocol walk. Meanwhile ChatGPT/Codex has been integrating
+  branches and its own Ghidra-correctness work into the main checkout,
+  uncommitted (see `docs/research/branch-integration-2026-10-10.md` there).
+  Merge order matters: commit that tree, then merge this branch (its only
+  overlap is the arm64e decoder, identical in both).
 - **In progress on side branches (2026-10-10):** `upgrade/machoswiftsection`,
   `improve/indirect-returns` (x8 results) and `improve/async-funclets`, each
   in its own worktree. Check their commit logs before redoing any of it.

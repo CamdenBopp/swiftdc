@@ -688,6 +688,16 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   and a symlink-sizing bug that refused `/usr/bin/ex` and 46 other system
   binaries. 0 rejections over the 4,933-binary sweep afterwards.
 
+  **arm64e images were walked for the first time on 2026-10-10.** Preflight
+  decoded only the 64-bit pointer formats 2 and 6, so the ObjC checks skipped
+  every arm64e image (formats 1, 9, 12). With the decoder in place, the first
+  metadata fuzz of an arm64e binary (the arm64e slice of Stickies,
+  `metadata-fuzz.py ... 60 11`) found 17 crashes, all in `__objc_protolist`,
+  which was never checked. The protocol and reference arrays are now checked
+  slot by slot, and each protocol the lists name is walked through its
+  pointer fields like a class. 17 → 0, with 0 rejections over the 4,933
+  binaries.
+
   Dead ends, recorded so they are not retried. Requiring 8-byte-aligned slots
   (true of all 10.6 million arm64 slots measured) refuses Electron
   Framework, whose x86_64 slices pack pointers at 4-byte offsets. Requiring
