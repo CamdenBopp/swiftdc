@@ -1050,6 +1050,48 @@ private func oneClassReader(
     }
 }
 
+/// One segment of one 64-byte page in `DYLD_CHAINED_PTR_64_OFFSET`, chain
+/// starting at +0, with each slot's `next` taken from `nexts`.
+private func chainedFixupsFixture(nexts: [UInt64]) -> (blob: Data, segment: Data) {
+    var blob = Data(count: 64)
+    func put32(_ value: UInt32, _ at: Int) { withUnsafeBytes(of: value.littleEndian) { blob.replaceSubrange(at..<at + 4, with: $0) } }
+    func put16(_ value: UInt16, _ at: Int) { withUnsafeBytes(of: value.littleEndian) { blob.replaceSubrange(at..<at + 2, with: $0) } }
+    put32(32, 4)                    // starts_offset
+    put32(1, 32); put32(8, 36)      // seg_count, seg_info_offset[0]
+    put16(64, 44); put16(6, 46)     // page_size, pointer_format
+    put16(1, 60); put16(0, 62)      // page_count, page_start[0]
+    var segment = Data(count: 128)     // a second page, so a chain leaving the first still reads
+    var offset = 0
+    for next in nexts {
+        guard offset + 8 <= 64 else { break }
+        withUnsafeBytes(of: (next << 51 | 0x1000).littleEndian) { segment.replaceSubrange(offset..<offset + 8, with: $0) }
+        offset += Int(next) * 4
+    }
+    return (blob, segment)
+}
+
+@Test func walksFixupChainsAndRejectsOneThatLeavesItsSlots() {
+    func rejects(_ nexts: [UInt64]) -> Bool {
+        let (blob, segment) = chainedFixupsFixture(nexts: nexts)
+        return (try? MachOPreflight.validateFixupChains(
+            blob: blob, startsOffset: 32, segmentCount: 1, readSegment: { _ in segment }
+        )) == nil
+    }
+    #expect(!rejects([2, 4, 2, 0]))     // +0, +8, +24, +32: every slot aligned, ends in the page
+    #expect(rejects([2, 3, 0]))         // +8 then +20: a `next` that lands inside a pointer
+    #expect(rejects([2, 2, 2, 2, 2, 2, 2, 2]))  // runs off the 64-byte page
+}
+
+/// `metadata-fuzz.py sample.release 150 99`: each mutant flips `next` bits
+/// of a chained pointer, so MachOKit's walk lands mid-pointer and a
+/// MachOObjCSection `try!` traps.
+@Test func rejectsTheFuzzedFixupChainMutantsIfPresent() throws {
+    try expectMutantsRejected("Fixtures/Sample/sample.release", [
+        ("selref next 2 -> 29", [(0xc37e, 236)]),
+        ("class data next", [(0xc57e, 155), (0xc53d, 0)]),
+    ])
+}
+
 /// `metadata-fuzz.py libReconstruction.resilient.dylib 150 31`, mutants 64
 /// and 124: `__swift5_proto` entries aimed into the middle of a descriptor.
 @Test func rejectsTheFuzzedMisalignedConformanceMutantsIfPresent() throws {

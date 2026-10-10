@@ -664,6 +664,17 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   1,058 binaries (556,643 of them) targets an aligned word, so a misaligned
   target is refused.
 
+  **A fresh seed on the executable (`sample.release 150 99`): 10 → 0.** Both
+  mutants flipped `next` bits of a chained pointer (`__objc_selrefs`,
+  `__objc_data`), so MachOKit's chain walk landed mid-pointer and a
+  MachOObjCSection `try!` trapped. Preflight now walks every fixup chain the
+  way dyld does, from each page start, and refuses a chain that leaves its
+  page or lands on a misaligned slot. Measured over the 1,058 + 832 binaries:
+  10.6 million slots in 10,790 page chains (formats 6, 2 and 12), every one
+  inside its page and 8-byte aligned, even in the 4-byte-stride formats. A
+  corrupt `next` that still lands on an aligned slot only skips a fixup; it
+  does not crash (hand-built mutant, `next` 2 → 4 in `__objc_selrefs`).
+
   Dead end, recorded so it is not retried: `__swift5_typeref` is **not** a
   plain table of mangled names. Current toolchains place 16-byte-aligned binary
   records between the names, and walking the section front to back misread

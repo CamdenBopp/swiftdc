@@ -147,6 +147,26 @@ public enum MachOPreflight {
             )
         }
 
+        // Every fixup chain stays inside its page.
+        if let fixups = chainedFixups(prefix: prefix),
+           (try? handle.seek(toOffset: UInt64(fixups.dataoff))) != nil,
+           let blob = try? handle.read(upToCount: fixups.datasize), blob.count == fixups.datasize,
+           let startsOffset = blob.u32(at: 4), let segmentCount = blob.u32(at: Int(startsOffset)) {
+            let segments = segmentFileRanges(prefix: prefix)
+            try validateFixupChains(
+                blob: blob, startsOffset: Int(startsOffset), segmentCount: Int(segmentCount),
+                readSegment: { index in
+                    guard index < segments.count else { return nil }
+                    let (offset, size) = segments[index]
+                    guard size > 0, size <= 512 << 20, offset <= fileSize, size <= fileSize - offset,
+                          (try? handle.seek(toOffset: UInt64(offset))) != nil
+                    else { return nil }
+                    return try? handle.read(upToCount: size)
+                },
+                path: url.path
+            )
+        }
+
         // The Objective-C pointer arrays, decoded per their segment's
         // chained-fixup pointer format (or as plain addresses without one).
         if let table = sectionTable(prefix: prefix) {
@@ -777,6 +797,81 @@ public enum MachOPreflight {
             cursor += Int(cmdsize)
         }
         return (sections, textBase)
+    }
+
+    /// Each segment command's `(fileoff, filesize)`, in command order: the
+    /// order chained fixups index segments by.
+    static func segmentFileRanges(prefix: Data) -> [(offset: Int, size: Int)] {
+        guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE,
+              let ncmds = prefix.u32(at: 16), let sizeofcmds = prefix.u32(at: 20)
+        else { return [] }
+        let limit = min(Layout.machHeader64 + Int(sizeofcmds), prefix.count)
+        var cursor = Layout.machHeader64
+        var ranges: [(offset: Int, size: Int)] = []
+        for _ in 0..<Int(ncmds) {
+            guard cursor + Layout.minLoadCommand <= limit,
+                  let cmd = prefix.u32(at: cursor), let cmdsize = prefix.u32(at: cursor + 4),
+                  cmdsize >= UInt32(Layout.minLoadCommand)
+            else { break }
+            if cmd == Command.segment64, let offset = prefix.u64(at: cursor + 40), let size = prefix.u64(at: cursor + 48) {
+                ranges.append((Int(clamping: offset), Int(clamping: size)))
+            }
+            cursor += Int(cmdsize)
+        }
+        return ranges
+    }
+
+    /// Every fixup chain, walked the way dyld walks it: from each page's
+    /// `page_start`, following `next` (12 bits, 4-byte stride, for
+    /// `DYLD_CHAINED_PTR_64`/`_64_OFFSET`; 11 bits, 8-byte stride, for the
+    /// arm64e formats) until it is zero. A chain must end inside its page.
+    /// A flipped `next` bit sent MachOKit's chain walk off the page and into a
+    /// `try!` (`metadata-fuzz.py sample.release 150 99`, mutants 3 and 131).
+    /// Measured: 10.6 million slots in 10,790 page chains of 1,058 real
+    /// binaries, every chain inside its page.
+    static func validateFixupChains(
+        blob: Data, startsOffset: Int, segmentCount: Int,
+        readSegment: (Int) -> Data?, path: String = "<data>"
+    ) throws {
+        for segment in 0..<segmentCount {
+            guard let start = blob.u32(at: startsOffset + 4 + 4 * segment), start != 0 else { continue }
+            let base = startsOffset + Int(start)
+            guard let pageSize = blob.u16(at: base + 4), let format = blob.u16(at: base + 6),
+                  let pageCount = blob.u16(at: base + 20), pageSize >= 8
+            else { continue }
+            let stride: Int
+            let nextMask: UInt64
+            switch format {
+            case 2, 6: (stride, nextMask) = (4, 0xfff)
+            case 1, 9, 12: (stride, nextMask) = (8, 0x7ff)
+            default: continue                       // a format this check does not walk
+            }
+            guard let data = readSegment(segment) else { continue }
+            for page in 0..<Int(pageCount) {
+                guard let first = blob.u16(at: base + 22 + 2 * page) else { break }
+                if first == 0xffff || first & 0x8000 != 0 { continue }   // none, or 32-bit multi-starts
+                var offset = Int(first)
+                while true {
+                    let slot = page * Int(pageSize) + offset
+                    // Every slot of every chain in those binaries is 8-byte
+                    // aligned, even in the 4-byte-stride formats; a misaligned
+                    // one is a `next` that lands inside a pointer.
+                    guard offset % 8 == 0 else {
+                        throw BinaryLoadError(
+                            "Malformed Mach-O: \(path) — fixup chain in segment \(segment), page \(page) lands on misaligned +\(offset)"
+                        )
+                    }
+                    guard offset + 8 <= Int(pageSize), let raw = data.u64(at: slot) else {
+                        throw BinaryLoadError(
+                            "Malformed Mach-O: \(path) — fixup chain in segment \(segment), page \(page) runs past its page at +\(offset)"
+                        )
+                    }
+                    let next = Int((raw >> 51) & nextMask)
+                    if next == 0 { break }
+                    offset += next * stride
+                }
+            }
+        }
     }
 
     /// The `LC_DYLD_CHAINED_FIXUPS` payload of a thin little-endian loadable
