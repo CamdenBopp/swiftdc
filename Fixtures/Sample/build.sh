@@ -37,6 +37,10 @@ echo "==> resilient reconstruction fixture (library evolution) — coroutine acc
 # synthesized `_modify`/`_read` yield_once coroutine (absent from a fragile build).
 $SWIFTC -parse-as-library -Onone -g -enable-library-evolution -emit-library -module-name Reconstruction reconstruction.swift -o libReconstruction.resilient.dylib
 
+echo "==> indirect-result fixture (-Onone -g, and -O) — x8 result buffers"
+$SWIFTC -parse-as-library -Onone -g -emit-library -module-name Indirect indirect.swift -o libIndirect.dylib
+$SWIFTC -parse-as-library -O -emit-library -module-name Indirect indirect.swift -o libIndirect.opt.dylib
+
 echo "==> swifterror probe (-O, and stripped) — callees with no name to say they throw"
 $SWIFTC -parse-as-library -O -emit-library -module-name SwiftErrorProbe swifterror.swift -o libSwiftErrorProbe.dylib
 cp libSwiftErrorProbe.dylib libSwiftErrorProbe.stripped.dylib
