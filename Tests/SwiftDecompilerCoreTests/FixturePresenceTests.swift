@@ -28,6 +28,8 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libReconstruction.opt.dylib",
         "Fixtures/Sample/libReconstruction.opt.stripped.dylib",
         "Fixtures/Sample/libReconstruction.resilient.dylib",
+        "Fixtures/Sample/libSwiftErrorProbe.dylib",
+        "Fixtures/Sample/libSwiftErrorProbe.stripped.dylib",
     ]
 
     /// True on a run that must actually exercise the fixtures. `CI` is set by

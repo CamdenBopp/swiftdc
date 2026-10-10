@@ -266,6 +266,33 @@ because it cannot be distinguished from a right one by reading the output.
   `return 0` (the error payload in x0, with `w21 = 1`) as if it were a
   successful return.
 
+- **FIXED — the swifterror arming value read as the callee's error.** A caller
+  arms swifterror by loading x21 with its current error (zero, or a saved copy
+  of the error it was handed) before a throwing call, then tests x21 after. The
+  do/catch fix (`e39f64b`) invalidated x21 only when the callee's demangled name
+  said ` throws`, and only in the tracer. Two consequences, both measured in
+  SwiftData (`disasm --structured`/`--pseudo --image-path …/SwiftData`):
+  an `@objc` thunk calling a stripped throwing method rendered `if (0 != 0)`,
+  `return 1` (really `return (error == nil)`) and `swift_errorRelease(0)`; and
+  the structurer's text walk-back crossed *every* call for x21, so 164
+  functions rendered a post-call `cbz x21` as a test of the register x21 was
+  re-armed from (`x19 != 0`), even for callees named ` throws`.
+
+  Now the tracer invalidates an armed (zero) x21 at any callee not
+  `provablyDoesNotThrow` (a C-level symbol, a value-witness/metadata helper,
+  or a full Swift signature without `throws`; an unnamed callee, a
+  signature-less metadata label like `Type.method`, and an accessor, whose
+  demangling never shows `throws`, all may throw). The structurer stops its
+  x21 walk at the same callees, except when x21 holds a call's result
+  (`bl f; mov w21, w0`), which an armed x21 never is. 181 SwiftData functions
+  changed in `--structured`, 10 in `--pseudo`; the other three cache images and
+  every fixture are unchanged. Guarded by `SwiftErrorCalleeTests` against a new
+  fixture, `Fixtures/Sample/swifterror.swift` (`-O`, plain and `strip -x`).
+
+  The `(0 != 0)` that remains in `-Onone` value witnesses
+  (`getEnumTagSinglePayload`) is faithful: the compiler emitted
+  `mov w8, #0; cbnz w8`. Folding it would be a readability change.
+
 ## 2. Completeness — what does it silently omit?
 
 Silent omission is the worst failure mode: it is indistinguishable from a

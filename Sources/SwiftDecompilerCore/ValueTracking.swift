@@ -517,6 +517,28 @@ public struct ValueTracer: Sendable {
         return result
     }
 
+    /// Whether a call cannot return a Swift error in x21: a C-level symbol (no
+    /// `.` in its name: libc, the ObjC and Swift runtimes), or a demangled
+    /// Swift function signature without `throws`. Everything else may throw:
+    /// an unnamed callee (`sub_`, an indirect `blr`), a metadata-derived label
+    /// with no signature (`Module.Type.method`), and an accessor, whose
+    /// demangling never shows `throws` (`T.p.getter : Swift.Int` is printed
+    /// the same for `get throws(E)`). Compiler-emitted value-witness helpers
+    /// (`outlined copy of`, `outlined destroy of`, …) and metadata accessors
+    /// cannot throw.
+    private static let nonThrowingHelperPrefixes = [
+        "outlined ", "merged outlined ", "type metadata accessor for ",
+        "lazy protocol witness table accessor for ",
+    ]
+
+    static func provablyDoesNotThrow(_ callee: String) -> Bool {
+        guard !callee.isEmpty, !callee.hasPrefix("sub_") else { return false }
+        guard callee.contains(".") else { return true }
+        if nonThrowingHelperPrefixes.contains(where: callee.hasPrefix) { return true }
+        guard let signature = DisassembledFunction.splitSignature(callee) else { return false }
+        return !signature.isThrowing
+    }
+
     /// The abstract value in the register an indirect `blr`/`br`/pointer-auth
     /// variant branches through. Direct branches have an immediate operand and
     /// therefore return nil here.
@@ -586,6 +608,15 @@ public struct ValueTracer: Sendable {
             // or Objective-C call, where x21 is an ordinary callee-saved register
             // carrying a live value across the call, is untouched.
             if callee.contains(" throws") {
+                registers["x21"] = .unknown
+            }
+            // The same convention when the name cannot say. Zeroing x21 right
+            // before a call is how a caller arms swifterror, so unless the
+            // callee provably does not throw, the post-call x21 is its error,
+            // not that 0. Measured in SwiftData: an `@objc` thunk calling a
+            // stripped throwing method rendered its error check `if (0 != 0)`
+            // and its result `return 1`.
+            if registers["x21"] == .immediate(0), !Self.provablyDoesNotThrow(callee) {
                 registers["x21"] = .unknown
             }
             if Self.identityRuntimeCalls.contains(where: callee.hasPrefix) {

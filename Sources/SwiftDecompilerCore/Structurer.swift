@@ -600,6 +600,19 @@ struct ControlFlowStructure {
         }
     }
 
+    /// Whether the nearest definition of x21 before `index` copies x0 out of
+    /// the call just before it: a call result kept live in a callee-saved
+    /// register, not an armed swifterror slot.
+    static func holdsCallResult(x21Before index: Int, in block: BasicBlock) -> Bool {
+        for earlier in stride(from: index - 1, through: 0, by: -1) {
+            let (mnemonic, ops) = decode(block.instructions[earlier].text)
+            guard let dest = ops.first, canonicalRegister(dest) == "x21" else { continue }
+            return mnemonic == "mov" && ops.count >= 2 && canonicalRegister(ops[1]) == "x0"
+                && earlier > 0 && block.instructions[earlier - 1].controlFlow == .call
+        }
+        return false
+    }
+
     private func swiftErrorCondition(of block: BasicBlock) -> String? {
         guard let terminator = block.instructions.last else { return nil }
         let (mnemonic, operands) = Self.decode(terminator.text)
@@ -780,6 +793,21 @@ struct ControlFlowStructure {
                 }
                 return token
             }
+            // A callee that may throw returns its error in x21 (Swift's
+            // swifterror), so no definition before the call is the value tested
+            // after it. Walking past one rendered a post-call error test as a
+            // test of whatever armed x21: the zero (`0 != 0`), or the register
+            // the caller re-armed it from (`x19 != 0`, 180 functions in
+            // SwiftData). So stop at any callee not proven non-throwing, unless
+            // x21 holds a call's result: an armed x21 is the caller's current
+            // error (null, or one it was handed), never a fresh x0, so a
+            // result kept in x21 means the call between is not a swifterror
+            // call (`bl f; mov w21, w0; bl g; tbz w21` still reads `!f()`).
+            if instruction.controlFlow == .call, register == "x21",
+               !ValueTracer.provablyDoesNotThrow(DisassembledFunction.calleeName(of: instruction) ?? ""),
+               !Self.holdsCallResult(x21Before: index, in: block) {
+                return token
+            }
             let (mnemonic, ops) = Self.decode(instruction.text)
             guard let dest = ops.first, Self.canonicalRegister(dest) == register else { continue }
             if let annotation = instruction.annotation,
@@ -803,7 +831,11 @@ struct ControlFlowStructure {
                 // Follow a copy out of the ABI return register, so a boolean moved
                 // aside before a clobbering call still resolves to its source send.
                 if Self.canonicalRegister(ops[1]) == "x0" {
-                    return resolve(ops[1], before: index, in: block, consumed: &consumed)
+                    // When the producing call can't be expressed, keep the tested
+                    // register: a bare `w0` would read as x0 *now* (a later
+                    // call's result), not the earlier one this copy saved.
+                    let source = resolve(ops[1], before: index, in: block, consumed: &consumed)
+                    return source == ops[1] ? token : source
                 }
                 return sourceName(ops[1])
             default: return sourceName(token)
