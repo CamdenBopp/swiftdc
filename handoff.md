@@ -6,39 +6,23 @@ thread. This is **tier-5 (conversation-memory) authority** per
 git history, and measurements. Verify each claim against HEAD before acting, and
 delete items from this file as they ship.
 
-_Last updated: 2026-10-10, on branch `improve/indirect-returns` at `854ffc5`,
-rebased onto `improve/source-findings` at `0c8550e` (both unmerged)._
+_Last updated: 2026-10-11, unified merge of all feature branches into master._
 
-## This branch: x8 indirect results (`improve/indirect-returns`)
+## Just merged (2026-10-11)
 
-Four commits on top of `0c8550e`, each with a red/green proof by injection:
+All five feature branches unified into master in one pass:
 
-- `1052f83` the `Indirect` fixture module (`libIndirect.dylib`, `.opt`); kept
-  out of `reconstruction.swift` so the fuzz-mutant byte offsets stay valid
-- `3dc93d0` the x8 model: `IndirectResultUse` (CFG classifier, replaces the
-  text scan behind `readsIncomingIndirectResult`), result-buffer tracking in
-  `ValueTracer` with escape poisoning, `memcpy`/`memset`/outlined-copy
-  modelling, field-wise and forwarded returns, caller-side result words bound
-  once as `let r0 = …`, the witness `in conformance` result-type fix
-- `17efe56` payload-enum cases from the stored tag (`PayloadEnumCaseIndex.
-  indirectCase`, arity from the field record's mangled text, no demangling)
-- `854ffc5` -O constants from the `__TEXT` literal pool and `dup`
-
-Suite: **302 tests** green under `SWIFTDC_REQUIRE_FIXTURES=1 swift test`.
-Review items from `docs/research/branch-integration-2026-10-10.md` (main
-checkout) are addressed: the `Substring`-as-16-bytes size table is gone (no
-size table remains; Substring measures 32 bytes here), and a call read back
-by word renders once.
-
-Found while doing it, not done: MachOKit's zero `seg_info_offset` over-read
-(Robustness, OPEN in the readiness doc; it is why the fixture carries a
-mutable global). Still declining by design: generic and existential results,
-results copied from an escaped local, non-word-tuple enum payloads, buffers
-filled by an unknown callee. A stripped same-image helper given a frame
-address (`sub_2634(local_b0, …)` in `libSample.stripped`) now loses its
-metadata argument to the escaped-local invalidation, a decline where main
-rendered the call; proving a callee never writes through its pointer
-arguments from its body would recover it.
+- **Robustness (source-findings, preflight-arm64e):** fixup-chain walker,
+  fat-slice validation, arm64e pointer decoding, protocol/class-reference
+  arrays, ObjC method bounds, Swift metadata section validation
+- **Dependencies (upgrade/machoswiftsection):** MachOSwiftSection 0.22.0,
+  Capstone 6, dylib-name bounds check
+- **x8 indirect returns (improve/indirect-returns):** `IndirectResultUse` CFG
+  classifier, result-buffer tracking, literal-pool constants, payload-enum
+  case naming from stored tags
+- **Async funclets (improve/async-funclets):** `AsyncFuncletIndex`, resume
+  funclet grouping, await/return rendering, context-slot naming, effect
+  specifier stripping, runtime bookkeeping hiding
 
 ## Where things stand
 
@@ -116,37 +100,49 @@ The authoritative OPEN/UNKNOWN tracker is
 [docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md). Found but not
 yet done in the 2026-10-09 session:
 
-- **Completeness:** an indirect (x8) return renders from its proven stores
-  (`improve/indirect-returns`, above); `SyntaxOptions.init(rawValue:)`'s
-  `str x0, [x8]; ret` is the one-field case. Generic and existential results
-  still decline.
-- **Completeness:** a throw whose error is built by a helper (`mov x21, x0`
-  after `sub_…`) is not recognised as a throw exit; it declines.
-- **Robustness, next probe:** every fuzz set measured so far is at 0 crashes
-  (container on `libSample.dylib`; metadata on `libSample.dylib` 1234,
-  `sample.release` 4242 and 99, `libReconstruction.opt.dylib` 777,
-  `libReconstruction.resilient.dylib` 31). Preflight now walks every fixup
-  chain (`ba10879`) and refuses misaligned descriptor-table targets
-  (`357bfa9`). A corrupt `next` that lands on an aligned slot only skips a
-  fixup; it does not crash, and the hand-built `next` 2 → 4 selref mutant
-  renders the affected send as `/* unresolved call */ ?` (a decline, not a
-  wrong selector). Each new binary
-  or seed has found new classes, so more seeds and binaries (an arm64e image,
-  a fat file, a large real framework) are the next probe. ObjC categories' and protocols' own fields are not yet
-  walked (only the category-list slots), nor are pointer-based (entsize 24)
-  method lists or arm64e chained formats, which decline.
-- **Unified merge, 2026-10-11:** all feature branches merged into master:
-  arm64e preflight, MachOSwiftSection 0.22.0 / Capstone 6, x8 indirect
-  returns, and async funclets. The `improve/async-funclets` branch is the
-  last to merge.
-- **Readability:** the structurer's `cond <op>` fallback (an `fcmp`/`ccmp` or
-  out-of-block flag setter) renders an opaque `if (cond ==)`.
-- **Research items not yet done** (docs/research/swift-source/README.md):
-  classify symbol roles on `Node.Kind` instead of printed text; enumerate
-  async funclets from `__swift_as_entry/_ret/_cont`.
-- Older items (stripped-binary `sub_` naming, the upstream negative-offset
-  trap, `objc` ivar types, whole-image `disasm` time, L1 locals) stand as
-  recorded in the readiness doc.
+### 1. Soundness (tier 1): the do/catch `(0 != 0)` fabrication
+
+Confirmed live at HEAD, `-Onone`. A do/catch that returns a value renders a
+fabricated always-false condition, i.e. a wrong render, the project's top
+severity:
+
+```
+main.classify(Swift.Int) -> Swift.Int {
+    return ((0 != 0) ? -1 : (main.mayThrow(Swift.Int) throws(arg0) + 1))
+}
+```
+
+Repro: build a `do { r = try f() } catch { r = ... }; return r` dylib at
+`-Onone`, then `swiftdc disasm --pseudo -f <fn>`. The value tracer stale-reads
+x21 (the Swift error register) as a live value in the select condition. Fix per
+[docs/research/value-unknown-causes.md](docs/research/value-unknown-causes.md)
+("Remaining", item 3): gate the read Swift-vs-ObjC in the tracer's `transfer`.
+Highest-value change on the board.
+
+### 2. Validation
+
+- **Extend the differential oracle to throwing / do-catch.**
+  `DifferentialOracleTests` executes the compiled function over curated
+  *non-trapping* inputs, so error paths are uncovered. Add inputs that take the
+  catch path; the oracle then goes red on item 1 until it is fixed.
+- **Whole-binary golden corpus.** No committed golden output for a real
+  framework exists, so a silent whole-binary regression would pass unnoticed.
+
+### 3. Everything else
+
+- **Completeness:** generic and existential indirect results still decline
+  (the x8 path handles concrete types). A throw whose error is built by a
+  helper (`mov x21, x0` after `sub_…`) is not recognised as a throw exit.
+- **Robustness:** 0 crashes across all fuzz sets. Next probes: an arm64e
+  image, a fat file, a large real framework; pointer-based (entsize 24) method
+  lists; ObjC categories' and protocols' own fields beyond category-list slots.
+- **Readability:** the structurer's `cond <op>` fallback renders an opaque
+  `if (cond ==)`.
+- **Async gaps (deliberate declines):** `-Onone` context reloads through stack
+  spills; error register at await-return renders raw `x20 == 0`; executor from
+  actor's `unownedExecutor` renders `hop_to_executor(?)`.
+- Older items (stripped-binary `sub_` naming, `objc` ivar types, whole-image
+  `disasm` time, L1 locals) stand as recorded in the readiness doc.
 
 ## How to run
 

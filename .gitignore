@@ -31,3 +31,4 @@ Benchmarks/outputs/
 # Note: Package.resolved is intentionally tracked. We pin MachOSwiftSection to
 # `branch: main` (0.9.1 is broken on Swift 6.3), so Package.resolved is the only
 # record of the exact commit that builds.
+work/

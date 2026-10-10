@@ -12,7 +12,7 @@ Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
 Last audited: 2026-10-11, unified merge of all feature branches (MachOSwiftSection
-0.22.0, Capstone 6, x8 indirect returns, arm64e preflight).
+0.22.0, Capstone 6, x8 indirect returns, arm64e preflight, async funclets).
 
 ---
 
@@ -32,6 +32,16 @@ because it cannot be distinguished from a right one by reading the output.
   simple name let one type's layout name the other's fields. Ambiguous simple
   names are now dropped, and qualified keys recover the precise layout
   (`0237af1`, `1ec5872`, `f423666`).
+- **FIXED — an async resume funclet's registers were seeded from its parent's
+  signature.** The funclet's symbol demangles to the parent's full signature,
+  so x0 at its entry was labelled `arg0`; it holds the awaited callee's result,
+  and no parameter is in any register there (every live value is spilled to
+  the async context, and the ABI preserves no callee-saved register across a
+  suspension). It rendered: `twoAwaits`'s second await printed
+  `fetchOther(arg0)` for a call whose argument is the first await's result.
+  A grouped resume funclet now gets no signature-derived convention
+  (`86b35be`); `resumeFuncletsDoNotInheritTheSignatureArgumentsIfPresent`
+  was seen red with the seeding restored.
 - **MITIGATED — the decline-rather-than-guess rule.** Verified as systematic, not
   incidental: `.unknown` renders `?` (`Disassembler.swift:2322`); the structurer
   refuses to structure an unprovable branch (`Structurer.swift:214`); `clobber`
@@ -445,6 +455,30 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   a measurement: for `--image` targets the names are *genuinely* absent, not
   merely unread. (A standalone unstripped `.dylib` on disk keeps its local
   nlist symbols; the gap is specific to cache images.)
+- **FIXED — async resume funclets were anonymous, ungrouped functions.** The
+  compiler splits an async function at each suspension point into an entry
+  funclet plus one resume funclet per `await` (`…TQ<n>_`) or executor hop
+  (`…TY<n>_`). Those are local symbols, so a stripped binary listed each as an
+  unrelated `sub_<addr>` with nothing recording that it is the second half of
+  some `await`. `AsyncFuncletIndex` (`3368fc8`) recovers the grouping from two
+  cross-checked sources: the `__TEXT,__swift_as_entry` / `__swift_as_ret` /
+  `__swift_as_cont` relative-pointer tables the compiler emits for the
+  backtracer (present on a stripped system app, Stocks), and the resume-pointer
+  stores in the code (a funclet materialises its successor's address before
+  suspending). Without the tables it falls back to the code evidence with a
+  stricter test (context allocation or a hop in the same function), so a
+  synchronous function storing a plain function pointer is never grouped, and a
+  suspension-free async leaf is then undetectable by construction. A declared
+  funclet nothing reaches is an orphan, attached to no parent.
+
+  Measured on `libAsyncFns` (7 async functions, 7 resume funclets, 5 await-
+  return and 2 continuation): all 14 grouped with the parent, ordinal and kind
+  the unstripped symbol table gives, on `-Onone`, `-O` and stripped `-O`; the
+  stripped listing recovers 34 of 34 `LC_FUNCTION_STARTS` functions; the nine
+  synchronous fixtures change zero output lines. A nameless funclet is titled
+  `resume #N of <parent>` (source `async-funclet`), `--function` on an async
+  function brings its whole chain, and the JSON carries the chain. Oracle:
+  `AsyncFuncletTests.groupsFuncletsAsTheSymbolTableDoesIfPresent`.
 - **OPEN — unresolved indirect call edges.** Generic witness tables, unknown
   receiver vtables, and block pointers stay unresolved. `xrefs` reports the
   count, so this is *disclosed* rather than silent — but `--unreferenced` is
@@ -1125,12 +1159,30 @@ Real, but last. Everything above must hold first.
 - **OPEN — S1: struct-parameter decomposition is method-only.** Small integer
   structs decompose in getters (`e1a3b6a`, `73eaf73`); free-function HFA params
   (`dot(p: Point, q: Point)`) still decline.
-- **OPEN — closures, existentials, generic witnesses, `throws`, `async`** render
-  as low-level runtime calls rather than reconstructed control flow. Honest
+- **OPEN — closures, existentials, generic witnesses, `throws`** render as
+  low-level runtime calls rather than reconstructed control flow. Honest
   declines; large surface. A generic or existential *result* in particular
   still declines its `return`: the x8 pointer escapes into the value-witness
   call, or the type has no stored-property layout to cover (`identity<A>`,
   `asAny` in the indirect fixture).
+- **MITIGATED — `async` functions.** Each funclet of an async function is
+  grouped under its entry (see Completeness), and on the `-O` build the body
+  reads as source: `let awaited1 = await AsyncFns.fetchValue(arg0)` in the
+  entry, `return (awaited1 + awaited2)` in the last funclet, an executor hop
+  as `await hop_to_executor(generic)`, and a parameter reloaded from the async
+  context as `arg0` (`04682ec`). Every claim carries a proof: the return is a
+  `br` through the context's ResumeParent that the tracer followed from the
+  seeded x22; the awaited result is seeded only when the callee's signature
+  proves a single-register result; a context slot is named only when exactly
+  one store in the whole chain reaches it and the value is portable. What is
+  still declined, by design: `-Onone` funclets reload the context through
+  stack spills the chain pass does not follow, so their returns print no
+  value (pinned by `declinesUnprovenAsyncReturnsAtOnoneIfPresent`); the error
+  register at an await-return funclet is left as a raw register (`x20 == 0`);
+  an executor obtained from an actor's `unownedExecutor` renders
+  `hop_to_executor(?)`; and a value spilled twice to the same slot is never
+  named. Repro: `swiftdc disasm --structured -f twoAwaits
+  Fixtures/Sample/libAsyncFns.opt.stripped.dylib`.
 - **PLATEAU — condition naming.** ~70% of raw-register conditions are compiler
   plumbing (value witnesses, generic specializations, Codable machinery) with no
   source-level named value to recover. Investigated and documented as
@@ -1151,6 +1203,7 @@ The meta-category. Every gap here weakens confidence in every claim above.
 | Field offsets | `__swift5_fieldmd`, computed offline | Runtime-exact by construction |
 | Cross-image symbols | export trie | Used as the primary source |
 | Recovered semantics | the compiled function itself, called via `dlsym` | **In tests** — 1,264 comparisons at both `-Onone` and `-O`: 636 integer/boolean (catches an injected U1) and 628 floating point (catches a one-ULP constant error). Narrow: no strings, payload enums, or side effects |
+| Async funclet grouping | the unstripped symbol table (`…TQ<n>_` / `…TY<n>_` suffixes) | **In tests** — parent, ordinal and kind of all 14 funclets on three builds, and the stripped build must match address for address; the code-only fallback is checked against the same oracle |
 | Malformed-input handling | the CLI's own exit status, checked from a subprocess | **In tests** — 9 header-shaped inputs; no fuzzer, no malformed metadata |
 | Whole-binary output | — | **None.** No golden-output corpus, so a silent regression on a real framework would not be noticed |
 
