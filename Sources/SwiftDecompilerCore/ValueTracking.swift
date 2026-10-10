@@ -394,6 +394,7 @@ public struct ValueTracer: Sendable {
         let blocks = function.basicBlocks()
         guard !blocks.isEmpty else { return FunctionAnalysis() }
         let blockByStart = Dictionary(blocks.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
+        let addressTaken = Self.addressTakenFrameOffsets(function.instructions)
 
         var predecessors: [UInt64: [UInt64]] = [:]
         for block in blocks {
@@ -426,7 +427,8 @@ public struct ValueTracer: Sendable {
             for insn in block.instructions {
                 transfer(
                     insn, into: &registers, record: nil, recordAccess: nil,
-                    initializerEntry: entry?.isObjectiveCInitializer == true
+                    initializerEntry: entry?.isObjectiveCInitializer == true,
+                    addressTaken: addressTaken
                 )
             }
             if outState[addr] != registers {
@@ -460,7 +462,8 @@ public struct ValueTracer: Sendable {
         // recorded. Declines anything unproven.
         let loopUpdates = resolveLoopInductions(
             blocks: blocks, predecessors: predecessors,
-            blockByStart: blockByStart, inState: &inState, outState: outState
+            blockByStart: blockByStart, inState: &inState, outState: outState,
+            addressTaken: addressTaken
         )
 
         // Snapshot pass: replay from each block's fixed entry state, recording
@@ -516,11 +519,66 @@ public struct ValueTracer: Sendable {
                     record: { result.callSites[$0] = $1 },
                     recordAccess: { result.selfFieldAccesses[$0] = $1 },
                     recordArrayElement: { result.arrayElements[$0, default: [:]][$1] = $2 },
-                    initializerEntry: entry?.isObjectiveCInitializer == true
+                    initializerEntry: entry?.isObjectiveCInitializer == true,
+                    addressTaken: addressTaken
                 )
             }
         }
         return result
+    }
+
+    /// The frame offsets of every local whose address the function computes
+    /// (`add xN, sp|x29, #k`, `sub xN, x29, #k`, `mov xN, sp`), sorted. Each is
+    /// a distinct variable, so it bounds how far a write through an earlier
+    /// escaped address can reach. A linear scan, tracking sp and x29 through
+    /// the prologue the way the tracer does; a base it misses only widens the
+    /// invalidation, the safe direction.
+    static func addressTakenFrameOffsets(_ instructions: [Instruction]) -> [Int64] {
+        func immediate(_ text: Substring) -> Int64? {
+            var t = text.trimmingCharacters(in: CharacterSet(charactersIn: " #]!"))
+            let negative = t.hasPrefix("-")
+            if negative { t.removeFirst() }
+            let value = t.hasPrefix("0x") ? Int64(t.dropFirst(2), radix: 16) : Int64(t)
+            return value.map { negative ? -$0 : $0 }
+        }
+        var sp: Int64 = 0
+        var fp: Int64?
+        var offsets = Set<Int64>()
+        for instruction in instructions {
+            let parts = instruction.text.split(maxSplits: 1, whereSeparator: { $0 == " " || $0 == "\t" })
+            guard parts.count == 2 else { continue }
+            let mnemonic = parts[0].lowercased()
+            let operandText = parts[1].split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)[0]
+            let ops = operandText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            // sp writeback: `[sp, #-0x20]!` and `[sp], #0x20`.
+            if let bracket = ops.firstIndex(where: { $0.hasPrefix("[sp") }) {
+                if ops[bracket].hasSuffix("]!") == false, ops.count > bracket + 1,
+                   operandText.contains("!"), let delta = immediate(Substring(ops[bracket + 1])) {
+                    sp += delta
+                } else if ops[bracket] == "[sp]", ops.count > bracket + 1,
+                          let delta = immediate(Substring(ops[bracket + 1])) {
+                    sp += delta
+                }
+                continue
+            }
+            guard ops.count >= 2 else { continue }
+            let (dest, source) = (ops[0], ops[1])
+            let delta = ops.count >= 3 ? immediate(Substring(ops[2])) : nil
+            switch (mnemonic, dest, source) {
+            case ("sub", "sp", "sp"): if let delta { sp -= delta }
+            case ("add", "sp", "sp"): if let delta { sp += delta }
+            case ("add", "x29", "sp"): fp = sp + (delta ?? 0)
+            case ("mov", "x29", "sp"): fp = sp
+            case ("mov", _, "sp") where dest != "sp": offsets.insert(sp)
+            case ("add", _, "sp") where dest != "sp": offsets.insert(sp + (delta ?? 0))
+            case ("add", _, "x29") where dest != "sp" && dest != "x29":
+                if let fp { offsets.insert(fp + (delta ?? 0)) }
+            case ("sub", _, "x29") where dest != "sp" && dest != "x29":
+                if let fp, let delta { offsets.insert(fp - delta) }
+            default: break
+            }
+        }
+        return offsets.sorted()
     }
 
     /// Whether a call cannot return a Swift error in x21: a C-level symbol (no
@@ -532,6 +590,12 @@ public struct ValueTracer: Sendable {
     /// the same for `get throws(E)`). Compiler-emitted value-witness helpers
     /// (`outlined copy of`, `outlined destroy of`, …) and metadata accessors
     /// cannot throw.
+    /// Callees that read through the frame addresses they receive and never
+    /// write them.
+    private static let readOnlyPointerCallees: Set<String> = [
+        "__swift_project_boxed_opaque_existential_1",
+    ]
+
     private static let nonThrowingHelperPrefixes = [
         "outlined ", "merged outlined ", "type metadata accessor for ",
         "lazy protocol witness table accessor for ",
@@ -583,7 +647,8 @@ public struct ValueTracer: Sendable {
         record: ((UInt64, CallSite) -> Void)?,
         recordAccess: ((UInt64, SelfFieldAccess) -> Void)?,
         recordArrayElement: ((UInt64, Int, AbstractValue) -> Void)? = nil,
-        initializerEntry: Bool = false
+        initializerEntry: Bool = false,
+        addressTaken: [Int64] = []
     ) {
         if insn.controlFlow == .call {
             let site = Self.snapshot(registers)
@@ -591,6 +656,38 @@ public struct ValueTracer: Sendable {
                 if !site.isEmpty { record(insn.address, site) }
             }
             let incomingX0 = registers["x0"] ?? .unknown
+            // A local whose address the call receives may be written by it: an
+            // NSError out-parameter (`str xzr, [sp]; mov x3, sp; bl …error:`),
+            // an `inout` struct, an x8 result buffer, a `mutating` self in x20.
+            // Keeping the pre-call value rendered the error a failed call
+            // reported as the `nil` stored before it
+            // (`_convertNSErrorToError(0)`, SwiftData). The callee may write a
+            // whole aggregate through the pointer, of a size the binary does
+            // not record, so each escaped local is forgotten up to the next
+            // local whose address the function takes separately (a distinct
+            // variable; `addressTakenFrameOffsets`), or to the frame top.
+            // Incoming stack arguments (offsets >= 0) sit in the caller's area,
+            // which a pointer into this frame cannot reach (`[super init…]`
+            // passes `&objc_super`, and `self->_count = arg6` must survive it).
+            let escapedOffsets: [Int64] = (["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x20"]
+                .compactMap { registers[$0] }
+                + registers.filter { $0.key.hasPrefix(Self.outgoingPrefix) }.map(\.value))
+                .compactMap { if case .frame(let offset) = $0 { return offset } else { return nil } }
+            // A helper that only reads through its pointer leaves the local
+            // intact: projecting an existential container yields a pointer to
+            // its payload and must not erase the container's type and witness
+            // words, or the witness-table call through them goes unresolved
+            // (guarded by `resolvesConcreteWitnessTableDispatchIfPresent`).
+            let readsOnly = DisassembledFunction.calleeName(of: insn)
+                .map(Self.readOnlyPointerCallees.contains) ?? false
+            for escaped in readsOnly ? [] : Set(escapedOffsets) {
+                let end = escaped >= 0 ? Int64.max : (addressTaken.first { $0 > escaped } ?? 0)
+                for key in registers.keys where key.hasPrefix("stack@") {
+                    if let offset = Int64(key.dropFirst("stack@".count)), escaped <= offset, offset < end {
+                        registers[key] = nil
+                    }
+                }
+            }
             // AAPCS64: x0–x17 are caller-saved, so a call clobbers them. x18 is
             // reserved, x19–x28 are callee-saved — and preserving those is what
             // carries `self` and locals across a call.
@@ -946,7 +1043,8 @@ public struct ValueTracer: Sendable {
         predecessors: [UInt64: [UInt64]],
         blockByStart: [UInt64: BasicBlock],
         inState: inout [UInt64: State],
-        outState: [UInt64: State]
+        outState: [UInt64: State],
+        addressTaken: [Int64]
     ) -> [UInt64: [String]] {
         var updates: [UInt64: [String]] = [:]
         var sourcesByHeader: [UInt64: [UInt64]] = [:]
@@ -983,7 +1081,8 @@ public struct ValueTracer: Sendable {
             }
             let bodyOut = retransferBody(
                 body: body, header: header, headerSeed: seed,
-                blockByStart: blockByStart, predecessors: predecessors
+                blockByStart: blockByStart, predecessors: predecessors,
+                addressTaken: addressTaken
             )
             guard let backOut = bodyOut[backFrom] else { continue }
             // The compared slot is the one the header's loop test references — the
@@ -1143,7 +1242,8 @@ public struct ValueTracer: Sendable {
     /// body predecessors. Returns each body block's exit state.
     private func retransferBody(
         body: Set<UInt64>, header: UInt64, headerSeed: State,
-        blockByStart: [UInt64: BasicBlock], predecessors: [UInt64: [UInt64]]
+        blockByStart: [UInt64: BasicBlock], predecessors: [UInt64: [UInt64]],
+        addressTaken: [Int64]
     ) -> [UInt64: State] {
         var outS: [UInt64: State] = [:]
         var worklist = [header]
@@ -1164,7 +1264,7 @@ public struct ValueTracer: Sendable {
             }
             var registers = entry
             for insn in block.instructions {
-                transfer(insn, into: &registers, record: nil, recordAccess: nil)
+                transfer(insn, into: &registers, record: nil, recordAccess: nil, addressTaken: addressTaken)
             }
             if outS[addr] != registers {
                 outS[addr] = registers

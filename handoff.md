@@ -49,9 +49,6 @@ The authoritative OPEN/UNKNOWN tracker is
 [docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md). Found but not
 yet done in the 2026-10-09 session:
 
-- **Soundness, to investigate:** `Foundation._convertNSErrorToError(0)` in
-  SwiftData error paths. The `0` may be another stale argument (the NSError
-  usually comes back through an out-pointer). Check against the machine code.
 - **Completeness:** an indirect (x8) return now declines (`return ?`). The
   value stored through the incoming x8 is the result and could be rendered
   (`SyntaxOptions.init(rawValue:)` is `str x0, [x8]; ret`).

@@ -30,3 +30,11 @@ public class Validator: NSObject {
         if limit < 0 { throw ProbeError.negative }
     }
 }
+
+// An Objective-C `error:` out-parameter. The bridge stores nil into a local,
+// passes its address (`str xzr, [sp]; mov x3, sp; bl …error:`), and on
+// failure reloads it. The reload is the callee's NSError, not the nil stored
+// before the call, which rendered `_convertNSErrorToError(0)`.
+public func listingCount(_ path: String) -> Int {
+    (try? FileManager.default.contentsOfDirectory(atPath: path).count) ?? -1
+}

@@ -337,6 +337,26 @@ because it cannot be distinguished from a right one by reading the output.
   `swift_willThrow(swift_allocError(…))` (4 → 55) or the converted NSError.
   Guarded host-gated by `willThrowShowsTheErrorInX21NotX0IfAvailable`.
 
+- **FIXED — a local passed by address kept its pre-call value.** A call that
+  receives a local's address may write it, but the tracer kept the value
+  stored before the call. Measured: an NSError out-parameter rendered a
+  failure's error as `_convertNSErrorToError(0)` (20× in SwiftData); a value
+  mutated in place through `self` in x20 rendered as its original
+  (`Stack.count.getter(Stack.init())` after pushes; `String.append("Optional")`
+  for a string already extended to `"Optional {"`; `self.entries =
+  self.entries` across an `inout` call). A call now forgets each escaped
+  local (any frame address in x0–x8, x20, or an outgoing stack argument) up to
+  the next local whose address the function takes separately
+  (`ValueTracer.addressTakenFrameOffsets`), never the incoming stack
+  arguments, and not for `__swift_project_boxed_opaque_existential_1`, which
+  only reads its container. Measured against `0c3bb54` (`--pseudo`):
+  RegexParser 35/2734, Observation 3/713, Distributed 12/367, SwiftData
+  250/6506 functions changed; a token scan found no changed function gaining
+  a new value, only stale values removed or declined. Known imprecision: a
+  spill slot inside an escaped extent that is not separately address-taken
+  is also forgotten (`self: self` lost in `Event.cancel`), a decline.
+  Guarded by `EscapedLocalTests` and `resolvesConcreteWitnessTableDispatch`.
+
 ## 2. Completeness — what does it silently omit?
 
 Silent omission is the worst failure mode: it is indistinguishable from a

@@ -39,6 +39,17 @@ extension DisassembledFunction {
         var components = ""
         var index = start
         var sawInterpolation = false
+        // The builder's own `DefaultStringInterpolation.init(capacity, count)`.
+        // The appends mutate it in place (`self` in x20 is its address), so the
+        // tracer rightly does not carry the init's value to the final
+        // `String(stringInterpolation:)`; seeing the init here is what ties the
+        // closing `String.init(…)` to this run instead.
+        var sawBuilderInit = false
+        if statements[index].contains("DefaultStringInterpolation.init("),
+           !statements[index].contains("String.init(") {
+            sawBuilderInit = true
+            index += 1
+        }
         while index < statements.count {
             let statement = statements[index]
             if statement.contains("DefaultStringInterpolation.appendLiteral") {
@@ -60,7 +71,8 @@ extension DisassembledFunction {
         // same lowering, so fold it away if it trails the run.
         if index < statements.count,
            statements[index].contains("String.init"),
-           statements[index].contains("DefaultStringInterpolation.init") {
+           statements[index].contains("DefaultStringInterpolation.init")
+            || (sawBuilderInit && ["Swift.String.init()", "Swift.String.init(?)"].contains(statements[index])) {
             index += 1
         }
         // A run with no interpolation is just a literal; leave that to the
