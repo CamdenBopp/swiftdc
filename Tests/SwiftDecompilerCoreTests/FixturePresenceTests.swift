@@ -32,6 +32,9 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libSwiftErrorProbe.stripped.dylib",
         "Fixtures/Sample/libIndirect.dylib",
         "Fixtures/Sample/libIndirect.opt.dylib",
+        "Fixtures/Sample/libAsyncFns.dylib",
+        "Fixtures/Sample/libAsyncFns.opt.dylib",
+        "Fixtures/Sample/libAsyncFns.opt.stripped.dylib",
     ]
 
     /// True on a run that must actually exercise the fixtures. `CI` is set by

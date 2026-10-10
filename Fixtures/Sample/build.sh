@@ -46,6 +46,14 @@ $SWIFTC -parse-as-library -O -emit-library -module-name SwiftErrorProbe swifterr
 cp libSwiftErrorProbe.dylib libSwiftErrorProbe.stripped.dylib
 strip -x libSwiftErrorProbe.stripped.dylib 2>/dev/null || strip libSwiftErrorProbe.stripped.dylib
 
+echo "==> async fixture (-Onone -g dylib) — entry + resume funclets"
+$SWIFTC -parse-as-library -Onone -g -emit-library -module-name AsyncFns asyncfns.swift -o libAsyncFns.dylib
+
+echo "==> async fixture (-O), plus a stripped copy — funclets only in LC_FUNCTION_STARTS"
+$SWIFTC -parse-as-library -O -emit-library -module-name AsyncFns asyncfns.swift -o libAsyncFns.opt.dylib
+cp libAsyncFns.opt.dylib libAsyncFns.opt.stripped.dylib
+strip -x libAsyncFns.opt.stripped.dylib 2>/dev/null || strip libAsyncFns.opt.stripped.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release
