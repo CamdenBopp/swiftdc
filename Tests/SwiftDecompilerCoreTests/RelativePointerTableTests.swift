@@ -24,11 +24,13 @@ private func table(_ deltas: [Int32]) -> Data {
     return data
 }
 
-private func rejects(_ deltas: [Int32], sectionOffset: Int, fileSize: Int) -> Bool {
+private func rejects(
+    _ deltas: [Int32], sectionOffset: Int, fileSize: Int, name: String = "__swift5_types"
+) -> Bool {
     do {
         try MachOPreflight.validateRelativePointerTable(
             bytes: table(deltas), sectionOffset: sectionOffset, fileSize: fileSize,
-            name: "__swift5_types"
+            name: name
         )
         return false
     } catch {
@@ -77,9 +79,19 @@ private func rejects(_ deltas: [Int32], sectionOffset: Int, fileSize: Int) -> Bo
     #expect(rejects([4_000], sectionOffset: 1_000, fileSize: 5_000))     // → 5000
 }
 
-@Test func rejectsAPointerIntoTheMiddleOfADescriptor() {
-    // Descriptors are 4-byte-aligned records; a target 1 past one is a byte of it.
-    #expect(rejects([-999], sectionOffset: 1_000, fileSize: 5_000))      // → 1
+@Test func rejectsAConformancePointerIntoTheMiddleOfADescriptor() {
+    // Descriptors are 4-byte-aligned records; a conformance record has no tag
+    // bits, so a target 1 past one is a byte of it.
+    #expect(rejects([-999], sectionOffset: 1_000, fileSize: 5_000, name: "__swift5_proto"))  // → 1
+}
+
+@Test func acceptsTheTagBitsOfTypeAndProtocolRecords() {
+    // TypeReferenceKind (types) and the indirect/reserved bits (protocols) sit
+    // in the low two bits; Music.app's `__swift5_types[4]` sets them.
+    for kind: Int32 in 1...3 {
+        #expect(!rejects([-1_000 + kind], sectionOffset: 1_000, fileSize: 5_000, name: "__swift5_types"))
+        #expect(!rejects([-1_000 + kind], sectionOffset: 1_000, fileSize: 5_000, name: "__swift5_protos"))
+    }
 }
 
 @Test func acceptsAnEmptyTable() {

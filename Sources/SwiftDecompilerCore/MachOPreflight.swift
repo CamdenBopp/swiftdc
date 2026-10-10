@@ -1237,11 +1237,17 @@ public enum MachOPreflight {
                     """
                 )
             }
-            // Descriptors are 4-byte-aligned records: all 556,643 entries of
-            // these tables in 1,058 real binaries are. A misaligned one is the
-            // middle of a record (`metadata-fuzz.py
-            // libReconstruction.resilient.dylib 150 31`, mutants 64 and 124).
-            guard target % 4 == 0 else {
+            // Descriptors are 4-byte-aligned records. A conformance record is
+            // a plain relative pointer, so a misaligned one is the middle of a
+            // descriptor (`metadata-fuzz.py libReconstruction.resilient.dylib
+            // 150 31`, mutants 64 and 124). Type and protocol records carry
+            // tag bits in the low two (`TargetTypeMetadataRecord`'s
+            // TypeReferenceKind; `TargetProtocolRecord`'s indirect and
+            // reserved bits, ABI/Metadata.h), set in system binaries such as
+            // Music.app, so only the bits above them are checked there.
+            let tagBits = name == "__swift5_proto" ? 0 : 3
+            let descriptor = target & ~tagBits
+            guard descriptor % 4 == 0 else {
                 throw BinaryLoadError(
                     """
                     Malformed Mach-O: \(path) — \(name)[\(index / 4)] points at offset \(target), \
@@ -1253,7 +1259,7 @@ public enum MachOPreflight {
             // instruction section is parsed out of machine code, and the
             // pointers read from it trap (`resolveBind(fileOffset:)` on a
             // negative offset; `metadata-fuzz.py sample.release 150 4242`).
-            if let range = code.first(where: { $0.contains(target) }) {
+            if let range = code.first(where: { $0.contains(descriptor) }) {
                 throw BinaryLoadError(
                     """
                     Malformed Mach-O: \(path) — \(name)[\(index / 4)] points at offset \(target), \
