@@ -677,6 +677,17 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   thin, 1,434 arm64e system binaries, 1,609 universal binaries under
   /Applications) is a chain entry.
 
+  **Universal binaries were not checked at all until 2026-10-10.** Every
+  section-content check ran only for thin files, so a fat file's slices
+  reached MachOKit with nothing but their headers validated: the selref
+  mutant above, wrapped by `lipo -create`, still trapped in
+  `objc --arch arm64` (exit 133). Each 64-bit slice now goes through the
+  same checks as a thin image. Sweeping fat files surfaced three false
+  rejections in the thin-only rules (tagged `__swift5_types` entries,
+  x86_64 ObjC layouts, packed x86_64 chains), each fixed in its own commit,
+  and a symlink-sizing bug that refused `/usr/bin/ex` and 46 other system
+  binaries. 0 rejections over the 4,933-binary sweep afterwards.
+
   Dead ends, recorded so they are not retried. Requiring 8-byte-aligned slots
   (true of all 10.6 million arm64 slots measured) refuses Electron
   Framework, whose x86_64 slices pack pointers at 4-byte offsets. Requiring

@@ -155,3 +155,33 @@ private func rejectsSlice(_ header: Data, sliceSize: Int) -> Bool {
         }
     }
 }
+
+// MARK: - Slice contents
+
+/// `thin` as the only slice of a 32-bit fat file, at a 16 KB-aligned offset
+/// (what `lipo -create` writes for arm64).
+private func fatWrapping(_ thin: Data) -> Data {
+    var data = Data()
+    for word: UInt32 in [0xcafe_babe, 1, 0x0100_000c, 0, 0x4000, UInt32(thin.count), 14] {
+        withUnsafeBytes(of: word.bigEndian) { data.append(contentsOf: $0) }
+    }
+    data.append(Data(count: 0x4000 - data.count))
+    data.append(thin)
+    return data
+}
+
+/// The metadata checks ran only for thin files, so a universal binary reached
+/// MachOKit unchecked: the `metadata-fuzz.py sample.release 150 99` selref
+/// mutant, rejected thin, still trapped as a slice (`objc --arch arm64`).
+@Test func validatesTheContentsOfEachFatSliceIfPresent() throws {
+    guard var thin = FileManager.default.contents(atPath: "Fixtures/Sample/sample.release") else { return }
+    func validates(_ data: Data) throws -> Bool {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("swiftdc-fat-\(UUID().uuidString)")
+        try data.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        return (try? MachOPreflight.validate(url: url)) != nil
+    }
+    #expect(try validates(fatWrapping(thin)))       // the unmutated slice is fine
+    thin[0xc37e] = 236                              // fixup chain `next` 2 -> 29
+    #expect(try !validates(fatWrapping(thin)))
+}

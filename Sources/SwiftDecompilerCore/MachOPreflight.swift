@@ -110,6 +110,15 @@ public enum MachOPreflight {
             try validateSliceThinHeader(
                 header: header, sliceSize: extent.size, index: index, path: url.path
             )
+            // And its contents, exactly as a thin file's: MachOKit parses the
+            // chosen slice's metadata just as it would a thin image, so without
+            // this every universal binary reached it unchecked (the
+            // `sample.release 150 99` selref mutant, wrapped by `lipo -create`,
+            // still trapped in `objc --arch arm64`).
+            let image = ImageReader(handle: handle, base: extent.offset, size: extent.size)
+            if let slicePrefix = image.read(offset: 0, count: min(extent.size, 1 << 20)) {
+                try validateImageContents(prefix: slicePrefix, image: image, path: "\(url.path) (slice \(index))")
+            }
         }
 
         try validateImageContents(
@@ -138,9 +147,8 @@ public enum MachOPreflight {
     /// start `prefix`.
     static func validateImageContents(prefix: Data, image: ImageReader, path: String) throws {
         let fileSize = image.size
-        // Section CONTENTS, which the checks above say nothing about. Only the
-        // flat relative-pointer tables (see `relativePointerTables`), and only
-        // for a thin little-endian image — a fat file's slices are handled above.
+        // Section CONTENTS, for a thin little-endian image. A fat file's
+        // slices come through here one at a time from `validate(url:)`.
         //
         // Read per section rather than from `prefix`: metadata sits after the
         // code, so in any real app it is far beyond the 1 MiB header window.
