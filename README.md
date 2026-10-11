@@ -23,7 +23,6 @@ was not recoverable enough to tell.
 ## Quickstart
 
 ```bash
-brew install capstone            # required
 swift build -c release           # → .build/release/swiftdc
 
 # Point it at anything: a binary, a .app, a .framework, or an .ipa.
@@ -357,8 +356,9 @@ listing as a sample, not an inventory — and please report it.
 
 - macOS on **Apple Silicon (arm64)**
 - **Xcode 26 / Swift 6.3** toolchain (`swiftc`, `llvm-objdump`, `swift-demangle`)
-- **Capstone** — `brew install capstone` (linked via pkg-config). Required for
-  structured decoding and CFG recovery.
+- **Capstone 6** is built from source as a SwiftPM dependency (the
+  `capstone` package MachOSwiftSection also links), so nothing to install.
+  It is the structured decoder behind CFG recovery.
 - **OpenSSL** — `brew install openssl@3`. Only needed for `devices` / `apps`.
 
 ```bash

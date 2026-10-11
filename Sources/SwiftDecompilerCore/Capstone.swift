@@ -1,5 +1,5 @@
 import Foundation
-import CCapstone
+import Ccapstone
 
 /// Control-flow classification of an instruction, from Capstone's instruction
 /// groups. This is the structural information `llvm-objdump` text doesn't give.
@@ -38,10 +38,10 @@ final class CapstoneEngine {
     private let opened: Bool
 
     init?() {
-        opened = cs_open(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, &handle) == CS_ERR_OK
+        opened = cs_open(CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN, &handle) == CS_ERR_OK
         guard opened else { return nil }
         // Detail mode is required for cs_insn_group (control-flow groups).
-        _ = cs_option(handle, CS_OPT_DETAIL, Int(CS_OPT_ON.rawValue))
+        _ = cs_option(handle, CS_OPT_DETAIL, UInt(CS_OPT_ON.rawValue))
     }
 
     deinit {
@@ -150,7 +150,7 @@ final class CapstoneEngine {
     /// the default for shipping Apple binaries, so this was wrong nearly
     /// everywhere it mattered.
     private static let compareAndBranch: Set<UInt32> = [
-        ARM64_INS_CBZ, ARM64_INS_CBNZ, ARM64_INS_TBZ, ARM64_INS_TBNZ,
+        AARCH64_INS_CBZ, AARCH64_INS_CBNZ, AARCH64_INS_TBZ, AARCH64_INS_TBNZ,
     ].map(\.rawValue).reduce(into: Set()) { $0.insert($1) }
 
     private func controlFlow(of pointer: UnsafePointer<cs_insn>, detail: StructuredInsn?) -> ControlFlow {
@@ -160,7 +160,7 @@ final class CapstoneEngine {
         guard let detail else { return .conditionalBranch } // no detail: assume the weaker claim
         if Self.compareAndBranch.contains(detail.id.rawValue) { return .conditionalBranch }
         let cc = detail.conditionCode
-        let conditional = cc != ARM64_CC_INVALID && cc != ARM64_CC_AL && cc != ARM64_CC_NV
+        let conditional = cc != AArch64CC_Invalid && cc != AArch64CC_AL && cc != AArch64CC_NV
         return conditional ? .conditionalBranch : .branch
     }
 

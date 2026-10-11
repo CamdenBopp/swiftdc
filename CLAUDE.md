@@ -101,5 +101,6 @@ swift test                              # the suite; most tests gate on fixtures
 SWIFTDC_REQUIRE_FIXTURES=1 swift test   # enforcing: a missing fixture fails, not skips
 ```
 
-Requires Apple Silicon, Xcode 26 / Swift 6.3, `brew install capstone`
-(and `openssl@3` for the device commands only).
+Requires Apple Silicon, Xcode 26 / Swift 6.3 (and `brew install openssl@3`
+for the device commands only). Capstone 6 is a SwiftPM dependency, built from
+source; there is no Homebrew capstone to install.

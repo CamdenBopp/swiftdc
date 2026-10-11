@@ -1,21 +1,21 @@
 import Testing
 import Foundation
 import Dependencies
-import CCapstone
+import Ccapstone
 @_spi(Internals) import MachOFoundation  // re-exports MachOSymbols → SymbolIndexStore, \.symbolIndexStore
 @testable import SwiftDecompilerCore
 
 private func operand(_ value: StructuredOperand) -> StructuredOperandInfo {
     StructuredOperandInfo(
         operand: value,
-        shift: (ARM64_SFT_INVALID, 0),
-        extender: ARM64_EXT_INVALID
+        shift: (AARCH64_SFT_INVALID, 0),
+        extender: AARCH64_EXT_INVALID
     )
 }
 
-private func detail(_ id: arm64_insn, _ operands: [StructuredOperandInfo]) -> StructuredInsn {
+private func detail(_ id: aarch64_insn, _ operands: [StructuredOperandInfo]) -> StructuredInsn {
     StructuredInsn(
-        id: id, conditionCode: ARM64_CC_INVALID, updatesFlags: false,
+        id: id, conditionCode: AArch64CC_Invalid, updatesFlags: false,
         writeback: false, postIndex: false, operands: operands
     )
 }
@@ -25,11 +25,11 @@ private func detail(_ id: arm64_insn, _ operands: [StructuredOperandInfo]) -> St
     let instructions = [
         Instruction(
             address: 0x1000, text: "adrp x1, 0x2000",
-            detail: detail(ARM64_INS_ADRP, [operand(.register(x1)), operand(.immediate(0x2000))])
+            detail: detail(AARCH64_INS_ADRP, [operand(.register(x1)), operand(.immediate(0x2000))])
         ),
         Instruction(
             address: 0x1004, text: "add x1, x1, #0x118",
-            detail: detail(ARM64_INS_ADD, [
+            detail: detail(AARCH64_INS_ADD, [
                 operand(.register(x1)), operand(.register(x1)), operand(.immediate(0x118)),
             ])
         ),
@@ -215,24 +215,24 @@ private func assembledFunction(
         instructions: [
             Instruction(
                 address: 0x1000, text: "adrp x23, 0x8000",
-                detail: detail(ARM64_INS_ADRP, [operand(.register(x23)), operand(.immediate(0x8000))])
+                detail: detail(AARCH64_INS_ADRP, [operand(.register(x23)), operand(.immediate(0x8000))])
             ),
             Instruction(
                 address: 0x1004, text: "add x23, x23, #0xc0",
-                detail: detail(ARM64_INS_ADD, [
+                detail: detail(AARCH64_INS_ADD, [
                     operand(.register(x23)), operand(.register(x23)), operand(.immediate(0xc0)),
                 ])
             ),
             Instruction(
                 address: 0x1008, text: "ldr x8, [x23, #8]",
-                detail: detail(ARM64_INS_LDR, [
+                detail: detail(AARCH64_INS_LDR, [
                     operand(.register(x8)),
                     operand(.memory(base: x23, index: nil, displacement: 8)),
                 ])
             ),
             Instruction(
                 address: 0x100c, text: "blr x8", controlFlow: .call,
-                detail: detail(ARM64_INS_BLR, [operand(.register(x8))])
+                detail: detail(AARCH64_INS_BLR, [operand(.register(x8))])
             ),
         ],
         source: .symbol
@@ -305,11 +305,11 @@ private func assembledFunction(
         instructions: [
             Instruction(
                 address: 0x1000, text: "ldp q0, q1, [sp]",
-                detail: detail(ARM64_INS_LDP, [operand(.register(q0)), operand(.register(q1)), memory])
+                detail: detail(AARCH64_INS_LDP, [operand(.register(q0)), operand(.register(q1)), memory])
             ),
             Instruction(
                 address: 0x1004, text: "stp q0, q1, [sp]",
-                detail: detail(ARM64_INS_STP, [operand(.register(q0)), operand(.register(q1)), memory])
+                detail: detail(AARCH64_INS_STP, [operand(.register(q0)), operand(.register(q1)), memory])
             ),
             Instruction(
                 address: 0x1008, text: "bl 0x2000", controlFlow: .call,

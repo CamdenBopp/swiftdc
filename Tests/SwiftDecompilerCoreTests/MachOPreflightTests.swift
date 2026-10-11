@@ -273,6 +273,17 @@ private func symtab(symoff: UInt32, nsyms: UInt32, stroff: UInt32, strsize: UInt
     return data
 }
 
+/// An `LC_LOAD_DYLIB` (or sibling) command: `struct dylib` then the path.
+private func dylibCommand(cmd: UInt32 = 0xc, nameOffset: UInt32, path: String = "/usr/lib/libSystem.B.dylib") -> Data {
+    var body = Data()
+    for word: UInt32 in [nameOffset, 2, 0x0001_0000, 0x0001_0000] {
+        withUnsafeBytes(of: word.littleEndian) { body.append(contentsOf: $0) }
+    }
+    body.append(contentsOf: Array(path.utf8) + [0])
+    while (body.count + 8) % 8 != 0 { body.append(0) }
+    return loadCommand(cmd: cmd, size: UInt32(body.count + 8)).prefix(8) + body
+}
+
 /// Wrap one load command in a header that declares exactly it.
 private func imageWith(_ command: Data, fileSize: Int) -> (Data, Int) {
     let header = machHeader64(ncmds: 1, sizeofcmds: UInt32(command.count))
@@ -323,6 +334,34 @@ private func imageWith(_ command: Data, fileSize: Int) -> (Data, Int) {
 @Test func rejectsAStringTableBeyondTheFile() {
     let (data, size) = imageWith(symtab(symoff: 0, nsyms: 0, stroff: 64, strsize: 0xffff_0000), fileSize: 4096)
     #expect(rejects(data, fileSize: size))
+}
+
+/// A dylib command's name is an offset into the command; MachOKit reads it with
+/// `try!`. At the MachOSwiftSection 0.22.0 pin `dump`/`interface` decode every
+/// dylib command (the ObjC ancestor walk reads `dependencies`), so container-fuzz
+/// mutants 63 (libSample, LC_LOAD_WEAK_DYLIB) and 104 (sample.release,
+/// LC_LOAD_DYLIB) that only failed cleanly at 0.19.0 became SIGTRAPs.
+@Test func rejectsADylibNameOffsetOutsideItsCommand() {
+    // Mutant 104's shape: the offset's third byte flipped (0x18 -> 0x370018).
+    let (past, size) = imageWith(dylibCommand(nameOffset: 0x0037_0018), fileSize: 4096)
+    #expect(rejects(past, fileSize: size))
+    // Mutant 63's shape, on LC_LOAD_WEAK_DYLIB: the top byte flipped.
+    let (weak, weakSize) = imageWith(dylibCommand(cmd: 0x8000_0018, nameOffset: 0x8400_0018), fileSize: 4096)
+    #expect(rejects(weak, fileSize: weakSize))
+    // Exactly cmdsize is also outside the command (the string would start past it).
+    let command = dylibCommand(nameOffset: 0)
+    let (atEnd, endSize) = imageWith(dylibCommand(nameOffset: UInt32(command.count)), fileSize: 4096)
+    #expect(rejects(atEnd, fileSize: endSize))
+    // An offset inside the fixed header overlaps the version words.
+    let (inHeader, headerSize) = imageWith(dylibCommand(nameOffset: 8), fileSize: 4096)
+    #expect(rejects(inHeader, fileSize: headerSize))
+}
+
+@Test func acceptsAWellFormedDylibCommand() {
+    for cmd: UInt32 in [0xc, 0xd, 0x20, 0x8000_0018, 0x8000_001f, 0x8000_0023] {
+        let (data, size) = imageWith(dylibCommand(cmd: cmd, nameOffset: 24), fileSize: 4096)
+        #expect(!rejects(data, fileSize: size), "command \(String(cmd, radix: 16)) with its name at 24 must pass")
+    }
 }
 
 // MARK: - Payload over-rejection guards

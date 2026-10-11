@@ -1,4 +1,4 @@
-import CCapstone
+import Ccapstone
 import Foundation
 
 /// Operators retained in source-level symbolic expressions. These are kept
@@ -256,7 +256,7 @@ public struct SelfFieldAccess: Sendable, Equatable {
     /// Byte offset from the start of the instance.
     public var offset: Int
     /// Access width. Comes from the instruction id and register width —
-    /// `arm64_op_mem` carries no width at all.
+    /// `aarch64_op_mem` carries no width at all.
     public var bytes: Int
     public var isWrite: Bool
     /// The value stored by a write, when the data-flow lattice can prove it.
@@ -802,11 +802,11 @@ public struct ValueTracer: Sendable {
         // Branches write no general register.
         if let flow = insn.controlFlow, flow != .sequential { return false }
         switch detail.id {
-        case ARM64_INS_STR, ARM64_INS_STUR, ARM64_INS_STP, ARM64_INS_STNP,
-             ARM64_INS_CMP, ARM64_INS_CMN, ARM64_INS_TST, ARM64_INS_CCMP, ARM64_INS_CCMN:
+        case AARCH64_INS_STR, AARCH64_INS_STUR, AARCH64_INS_STP, AARCH64_INS_STNP,
+             AARCH64_INS_ALIAS_CMP, AARCH64_INS_ALIAS_CMN, AARCH64_INS_ALIAS_TST, AARCH64_INS_CCMP, AARCH64_INS_CCMN:
             // These name a register first but read it.
             return false
-        case ARM64_INS_LDP, ARM64_INS_LDNP:
+        case AARCH64_INS_LDP, AARCH64_INS_LDNP:
             return detail.operands.prefix(2).contains { $0.operand.register?.key == "x20" }
         default:
             return detail.operands.first?.operand.register?.key == "x20"
@@ -1305,11 +1305,11 @@ public struct ValueTracer: Sendable {
             return value == .unknown ? nil : value
         }
         switch detail.id {
-        case ARM64_INS_CBZ:
+        case AARCH64_INS_CBZ:
             return operandValue(0).map { .binary(.equal, $0, .immediate(0)) }
-        case ARM64_INS_CBNZ:
+        case AARCH64_INS_CBNZ:
             return operandValue(0).map { .binary(.notEqual, $0, .immediate(0)) }
-        case ARM64_INS_TBZ, ARM64_INS_TBNZ:
+        case AARCH64_INS_TBZ, AARCH64_INS_TBNZ:
             guard let value = operandValue(0), detail.operands.count >= 2,
                   let bit = detail.operands[1].operand.immediateValue,
                   (0..<64).contains(bit)
@@ -1317,14 +1317,14 @@ public struct ValueTracer: Sendable {
             let width = detail.operands[0].operand.register.map({ $0.widthBits }) ?? 64
             if bit == width - 1 {
                 // Sign bit: tbz taken = non-negative, tbnz taken = negative.
-                return .binary(detail.id == ARM64_INS_TBZ ? .greaterEqual : .less,
+                return .binary(detail.id == AARCH64_INS_TBZ ? .greaterEqual : .less,
                                value, .immediate(0))
             }
             // Any other bit is an honest mask test — `(v & (1<<bit)) == 0` for
             // tbz (bit clear taken), `!= 0` for tbnz. This is how a `Bool` (bit 0)
             // condition arrives.
             let masked = AbstractValue.binary(.bitAnd, value, .immediate(1 << bit))
-            return .binary(detail.id == ARM64_INS_TBZ ? .equal : .notEqual, masked, .immediate(0))
+            return .binary(detail.id == AARCH64_INS_TBZ ? .equal : .notEqual, masked, .immediate(0))
         default:
             guard let op = Self.comparisonOperator(detail.conditionCode),
                   let flags = registers[Self.flagsKey]
@@ -1392,20 +1392,20 @@ public struct ValueTracer: Sendable {
         }
 
         switch detail.id {
-        case ARM64_INS_ADRP, ARM64_INS_ADR:
+        case AARCH64_INS_ADRP, AARCH64_INS_ADR:
             // Capstone resolves the page/PC-relative target into the immediate.
             guard let dest = destinationRegister(detail),
                   let target = detail.operands.count >= 2 ? detail.operands[1].operand.immediateValue : nil
             else { clobber(detail, into: &registers); return }
             write(dest, .address(UInt64(bitPattern: target)), into: &registers)
 
-        case ARM64_INS_ADD, ARM64_INS_ADDS, ARM64_INS_SUB, ARM64_INS_SUBS:
+        case AARCH64_INS_ADD, AARCH64_INS_ADDS, AARCH64_INS_SUB, AARCH64_INS_SUBS:
             guard let dest = destinationRegister(detail), detail.operands.count >= 3 else {
                 clobber(detail, into: &registers); return
             }
             let lhs = source(detail.operands[1], in: registers)
             let rhs = source(detail.operands[2], in: registers)
-            let op: AbstractBinaryOperator = (detail.id == ARM64_INS_ADD || detail.id == ARM64_INS_ADDS)
+            let op: AbstractBinaryOperator = (detail.id == AARCH64_INS_ADD || detail.id == AARCH64_INS_ADDS)
                 ? .add : .subtract
             // `shiftedImmediate` is the fix for `sub sp, sp, #0x2, lsl #12`:
             // reading the immediate alone yields 2 where the real value is 8192.
@@ -1439,25 +1439,25 @@ public struct ValueTracer: Sendable {
             write(dest, result, into: &registers)
             // The S-variants (`adds`/`subs`) also set NZCV — the compiler emits
             // `subs x8, x8, x0; cset …` for a comparison as readily as `cmp`.
-            if detail.id == ARM64_INS_ADDS || detail.id == ARM64_INS_SUBS {
+            if detail.id == AARCH64_INS_ADDS || detail.id == AARCH64_INS_SUBS {
                 registers[Self.flagsKey] = result
             }
 
-        case ARM64_INS_AND, ARM64_INS_ANDS, ARM64_INS_ORR, ARM64_INS_EOR,
-             ARM64_INS_MUL, ARM64_INS_LSL, ARM64_INS_LSR, ARM64_INS_ASR,
-             ARM64_INS_SDIV, ARM64_INS_UDIV:
+        case AARCH64_INS_AND, AARCH64_INS_ANDS, AARCH64_INS_ORR, AARCH64_INS_EOR,
+             AARCH64_INS_MUL, AARCH64_INS_LSL, AARCH64_INS_LSR, AARCH64_INS_ASR,
+             AARCH64_INS_SDIV, AARCH64_INS_UDIV:
             guard let dest = destinationRegister(detail), detail.operands.count >= 3 else {
                 clobber(detail, into: &registers); return
             }
             let op: AbstractBinaryOperator = switch detail.id {
-            case ARM64_INS_AND, ARM64_INS_ANDS: .bitAnd
-            case ARM64_INS_ORR: .bitOr
-            case ARM64_INS_EOR: .bitXor
-            case ARM64_INS_MUL: .multiply
-            case ARM64_INS_SDIV, ARM64_INS_UDIV: .divide
-            case ARM64_INS_LSL: .shiftLeft
-            case ARM64_INS_LSR: .shiftRight
-            case ARM64_INS_ASR: .arithmeticShiftRight
+            case AARCH64_INS_AND, AARCH64_INS_ANDS: .bitAnd
+            case AARCH64_INS_ORR: .bitOr
+            case AARCH64_INS_EOR: .bitXor
+            case AARCH64_INS_MUL: .multiply
+            case AARCH64_INS_SDIV, AARCH64_INS_UDIV: .divide
+            case AARCH64_INS_LSL: .shiftLeft
+            case AARCH64_INS_LSR: .shiftRight
+            case AARCH64_INS_ASR: .arithmeticShiftRight
             default: .add // unreachable: the outer case is exhaustive
             }
             let result = expression(
@@ -1465,9 +1465,9 @@ public struct ValueTracer: Sendable {
                 source(detail.operands[2], in: registers)
             )
             write(dest, result, into: &registers)
-            if detail.id == ARM64_INS_ANDS { registers[Self.flagsKey] = result }
+            if detail.id == AARCH64_INS_ANDS { registers[Self.flagsKey] = result }
 
-        case ARM64_INS_MADD, ARM64_INS_MSUB:
+        case AARCH64_INS_MADD, AARCH64_INS_MSUB:
             // Fused multiply-add/subtract: `madd d, n, m, a` = a + n*m,
             // `msub d, n, m, a` = a - n*m — the common shape of `a + b*c` and of
             // the `sdiv`/`msub` pair the compiler emits for `a % b`.
@@ -1479,38 +1479,38 @@ public struct ValueTracer: Sendable {
                 source(detail.operands[2], in: registers)
             )
             let addend = source(detail.operands[3], in: registers)
-            write(dest, expression(detail.id == ARM64_INS_MADD ? .add : .subtract, addend, product),
+            write(dest, expression(detail.id == AARCH64_INS_MADD ? .add : .subtract, addend, product),
                   into: &registers)
 
-        case ARM64_INS_FADD, ARM64_INS_FSUB, ARM64_INS_FMUL, ARM64_INS_FDIV, ARM64_INS_FNMUL:
+        case AARCH64_INS_FADD, AARCH64_INS_FSUB, AARCH64_INS_FMUL, AARCH64_INS_FDIV, AARCH64_INS_FNMUL:
             guard let dest = destinationRegister(detail), detail.operands.count >= 3 else {
                 clobber(detail, into: &registers); return
             }
             let op: AbstractBinaryOperator = switch detail.id {
-            case ARM64_INS_FADD: .add
-            case ARM64_INS_FSUB: .subtract
-            case ARM64_INS_FDIV: .divide
+            case AARCH64_INS_FADD: .add
+            case AARCH64_INS_FSUB: .subtract
+            case AARCH64_INS_FDIV: .divide
             default: .multiply // FMUL, FNMUL
             }
             let product = floatBinary(op, source(detail.operands[1], in: registers),
                                       source(detail.operands[2], in: registers))
             // FNMUL negates the product: `-(a * b)`.
-            write(dest, detail.id == ARM64_INS_FNMUL ? floatUnary(.negate, product) : product,
+            write(dest, detail.id == AARCH64_INS_FNMUL ? floatUnary(.negate, product) : product,
                   into: &registers)
 
-        case ARM64_INS_FNEG, ARM64_INS_FSQRT, ARM64_INS_FABS:
+        case AARCH64_INS_FNEG, AARCH64_INS_FSQRT, AARCH64_INS_FABS:
             guard let dest = destinationRegister(detail), detail.operands.count >= 2 else {
                 clobber(detail, into: &registers); return
             }
             let op: AbstractUnaryOperator = switch detail.id {
-            case ARM64_INS_FSQRT: .squareRoot
-            case ARM64_INS_FABS: .absoluteValue
+            case AARCH64_INS_FSQRT: .squareRoot
+            case AARCH64_INS_FABS: .absoluteValue
             default: .negate // FNEG
             }
             write(dest, floatUnary(op, source(detail.operands[1], in: registers)), into: &registers)
 
-        case ARM64_INS_FMOV, ARM64_INS_FCVT, ARM64_INS_SCVTF, ARM64_INS_UCVTF,
-             ARM64_INS_FCVTZS, ARM64_INS_FCVTZU:
+        case AARCH64_INS_FMOV, AARCH64_INS_FCVT, AARCH64_INS_SCVTF, AARCH64_INS_UCVTF,
+             AARCH64_INS_FCVTZS, AARCH64_INS_FCVTZU:
             // A register-to-register FP move or width/int conversion carries the
             // value through unchanged for display.
             guard let dest = destinationRegister(detail), detail.operands.count >= 2 else {
@@ -1529,26 +1529,26 @@ public struct ValueTracer: Sendable {
             }
             write(dest, source(detail.operands[1], in: registers), into: &registers)
 
-        case ARM64_INS_MOV, ARM64_INS_MOVZ:
+        case AARCH64_INS_MOV, AARCH64_INS_MOVZ:
             // Capstone pre-folds MOVZ's shift into the immediate.
             guard let dest = destinationRegister(detail), detail.operands.count >= 2 else {
                 clobber(detail, into: &registers); return
             }
             write(dest, source(detail.operands[1], in: registers), into: &registers)
 
-        case ARM64_INS_MOVK:
+        case AARCH64_INS_MOVK:
             // MOVK's shift is NOT pre-folded, and it merges into the existing value.
             guard let dest = destinationRegister(detail), detail.operands.count >= 2,
                   let imm = detail.operands[1].operand.immediateValue
             else { clobber(detail, into: &registers); return }
-            let shift = detail.operands[1].shift.type == ARM64_SFT_LSL ? UInt64(detail.operands[1].shift.amount) : 0
+            let shift = detail.operands[1].shift.type == AARCH64_SFT_LSL ? UInt64(detail.operands[1].shift.amount) : 0
             let base: UInt64 = { if case .immediate(let v) = registers[dest.key] { return v } else { return 0 } }()
             let mask = ~(UInt64(0xffff) << shift)
             write(dest, .immediate((base & mask) | (UInt64(bitPattern: imm) << shift)), into: &registers)
 
-        case ARM64_INS_LDR, ARM64_INS_LDUR, ARM64_INS_LDRB, ARM64_INS_LDURB,
-             ARM64_INS_LDRH, ARM64_INS_LDURH, ARM64_INS_LDRSB, ARM64_INS_LDURSB,
-             ARM64_INS_LDRSH, ARM64_INS_LDURSH, ARM64_INS_LDRSW, ARM64_INS_LDURSW:
+        case AARCH64_INS_LDR, AARCH64_INS_LDUR, AARCH64_INS_LDRB, AARCH64_INS_LDURB,
+             AARCH64_INS_LDRH, AARCH64_INS_LDURH, AARCH64_INS_LDRSB, AARCH64_INS_LDURSB,
+             AARCH64_INS_LDRSH, AARCH64_INS_LDURSH, AARCH64_INS_LDRSW, AARCH64_INS_LDURSW:
             guard let dest = destinationRegister(detail) else { clobber(detail, into: &registers); return }
             noteFieldAccess(insn, detail, in: registers, recordAccess)
             let target = memoryTarget(detail, in: registers)
@@ -1561,21 +1561,21 @@ public struct ValueTracer: Sendable {
                       into: &registers)
             case .absolute(let address):
                 // Only pointer-width loads can safely denote a selref/GOT slot.
-                let isPointerLoad = detail.id == ARM64_INS_LDR || detail.id == ARM64_INS_LDUR
+                let isPointerLoad = detail.id == AARCH64_INS_LDR || detail.id == AARCH64_INS_LDUR
                 write(dest, isPointerLoad ? .loaded(address) : .unknown, into: &registers)
             case .selfField(let offset): write(dest, .selfFieldValue(offset: offset), into: &registers)
             case .vtableMethod(let offset):
                 // The dispatch loads the vtable slot only through a pointer-width
                 // read; a narrower load isn't a method pointer.
-                let isPointerLoad = detail.id == ARM64_INS_LDR || detail.id == ARM64_INS_LDUR
+                let isPointerLoad = detail.id == AARCH64_INS_LDR || detail.id == AARCH64_INS_LDUR
                 write(dest, isPointerLoad ? .selfVTableMethod(offset: offset) : .unknown, into: &registers)
             case .arrayElement, .none: write(dest, .unknown, into: &registers)
             }
 
         // A store writes memory, not a register — but it populates a stack slot,
         // which is how a value materialised before a branch reaches a call after it.
-        case ARM64_INS_STR, ARM64_INS_STUR, ARM64_INS_STRB, ARM64_INS_STURB,
-             ARM64_INS_STRH, ARM64_INS_STURH:
+        case AARCH64_INS_STR, AARCH64_INS_STUR, AARCH64_INS_STRB, AARCH64_INS_STURB,
+             AARCH64_INS_STRH, AARCH64_INS_STURH:
             noteFieldAccess(insn, detail, in: registers, recordAccess)
             let target = memoryTarget(detail, in: registers)
             if let first = detail.operands.first {
@@ -1595,7 +1595,7 @@ public struct ValueTracer: Sendable {
                 // lets paths such as
                 // `if (enabled) _count += delta; return _count` meet back at the
                 // return even though one path performed arithmetic.
-                if (detail.id == ARM64_INS_STR || detail.id == ARM64_INS_STUR),
+                if (detail.id == AARCH64_INS_STR || detail.id == AARCH64_INS_STUR),
                    value != .unknown, case .selfField(let offset)? = target,
                    let sourceRegister = first.operand.register {
                     write(sourceRegister, .selfFieldValue(offset: offset), into: &registers)
@@ -1603,7 +1603,7 @@ public struct ValueTracer: Sendable {
             }
             applyWriteback(detail, into: &registers)
 
-        case ARM64_INS_STP, ARM64_INS_STNP:
+        case AARCH64_INS_STP, AARCH64_INS_STNP:
             noteFieldAccess(insn, detail, in: registers, recordAccess)
             let target = memoryTarget(detail, in: registers)
             if case .stackSlot(let key)? = target,
@@ -1635,7 +1635,7 @@ public struct ValueTracer: Sendable {
             // it desynchronises the frame for every stack slot that follows.
             applyWriteback(detail, into: &registers)
 
-        case ARM64_INS_LDP, ARM64_INS_LDNP:
+        case AARCH64_INS_LDP, AARCH64_INS_LDNP:
             // A 16-byte Swift.String field arrives exactly here. Pair loads are
             // also how optimized Objective-C methods pull arguments 6+ back out
             // of their entry stack area.
@@ -1661,7 +1661,7 @@ public struct ValueTracer: Sendable {
             }
             applyWriteback(detail, into: &registers)
 
-        case ARM64_INS_CMP, ARM64_INS_CMN, ARM64_INS_TST, ARM64_INS_CCMP, ARM64_INS_CCMN:
+        case AARCH64_INS_ALIAS_CMP, AARCH64_INS_ALIAS_CMN, AARCH64_INS_ALIAS_TST, AARCH64_INS_CCMP, AARCH64_INS_CCMN:
             // These write only NZCV, never a general register — critically they
             // must NOT reach the default, since Capstone renders `cmp x1, #1` with
             // x1 as its first operand (it aliases `subs xzr, x1, #1`) and a
@@ -1672,16 +1672,16 @@ public struct ValueTracer: Sendable {
                 let lhs = source(detail.operands[0], in: registers)
                 let rhs = source(detail.operands[1], in: registers)
                 switch detail.id {
-                case ARM64_INS_CMP: registers[Self.flagsKey] = expression(.subtract, lhs, rhs)
-                case ARM64_INS_CMN: registers[Self.flagsKey] = expression(.add, lhs, rhs)
-                case ARM64_INS_TST: registers[Self.flagsKey] = expression(.bitAnd, lhs, rhs)
+                case AARCH64_INS_ALIAS_CMP: registers[Self.flagsKey] = expression(.subtract, lhs, rhs)
+                case AARCH64_INS_ALIAS_CMN: registers[Self.flagsKey] = expression(.add, lhs, rhs)
+                case AARCH64_INS_ALIAS_TST: registers[Self.flagsKey] = expression(.bitAnd, lhs, rhs)
                 default: registers[Self.flagsKey] = nil // CCMP/CCMN: conditional
                 }
             } else {
                 registers[Self.flagsKey] = nil
             }
 
-        case ARM64_INS_CSET, ARM64_INS_CSETM:
+        case AARCH64_INS_ALIAS_CSET, AARCH64_INS_ALIAS_CSETM:
             // `cset wd, <cc>` materialises the flags as a boolean. Reconstruct the
             // comparison from the recorded flags value and the condition code.
             guard let dest = destinationRegister(detail),
@@ -1690,7 +1690,7 @@ public struct ValueTracer: Sendable {
             else { clobber(detail, into: &registers); return }
             write(dest, comparisonValue(flags: flags, op), into: &registers)
 
-        case ARM64_INS_CSEL, ARM64_INS_CSINC, ARM64_INS_CSINV, ARM64_INS_CSNEG:
+        case AARCH64_INS_CSEL, AARCH64_INS_CSINC, AARCH64_INS_CSINV, AARCH64_INS_CSNEG:
             // The branchless ternary: `csel d, n, m, cc` = cc ? n : m. The
             // `inc`/`inv`/`neg` variants apply +1 / bitwise-not / negate to the
             // false operand. This is how `-O` lowers a ternary, so it produces the
@@ -1703,9 +1703,9 @@ public struct ValueTracer: Sendable {
             let whenTrue = source(detail.operands[1], in: registers)
             let falseOperand = source(detail.operands[2], in: registers)
             let whenFalse: AbstractValue = switch detail.id {
-            case ARM64_INS_CSINC: expression(.add, falseOperand, .immediate(1))
-            case ARM64_INS_CSINV: falseOperand == .unknown ? .unknown : .unary(.bitwiseNot, falseOperand)
-            case ARM64_INS_CSNEG: falseOperand == .unknown ? .unknown : .unary(.negate, falseOperand)
+            case AARCH64_INS_CSINC: expression(.add, falseOperand, .immediate(1))
+            case AARCH64_INS_CSINV: falseOperand == .unknown ? .unknown : .unary(.bitwiseNot, falseOperand)
+            case AARCH64_INS_CSNEG: falseOperand == .unknown ? .unknown : .unary(.negate, falseOperand)
             default: falseOperand
             }
             let result: AbstractValue = (condition == .unknown || whenTrue == .unknown || whenFalse == .unknown)
@@ -1757,29 +1757,29 @@ public struct ValueTracer: Sendable {
     /// The old text path matched `hasPrefix("st")` and clobbered nothing for
     /// them, leaving a stale value to render as a later call argument.
     private static let storesWithoutRegisterWrite: Set<UInt32> = Set([
-        ARM64_INS_ST1, ARM64_INS_ST1B, ARM64_INS_ST1D, ARM64_INS_ST1H, ARM64_INS_ST1Q,
-        ARM64_INS_ST1W, ARM64_INS_ST2, ARM64_INS_ST2B, ARM64_INS_ST2D, ARM64_INS_ST2G,
-        ARM64_INS_ST2H, ARM64_INS_ST2W, ARM64_INS_ST3, ARM64_INS_ST3B, ARM64_INS_ST3D,
-        ARM64_INS_ST3H, ARM64_INS_ST3W, ARM64_INS_ST4, ARM64_INS_ST4B, ARM64_INS_ST4D,
-        ARM64_INS_ST4H, ARM64_INS_ST4W, ARM64_INS_ST64B, ARM64_INS_ST64BV, ARM64_INS_ST64BV0,
-        ARM64_INS_STADD, ARM64_INS_STADDB, ARM64_INS_STADDH, ARM64_INS_STADDL,
-        ARM64_INS_STADDLB, ARM64_INS_STADDLH, ARM64_INS_STCLR, ARM64_INS_STCLRB,
-        ARM64_INS_STCLRH, ARM64_INS_STCLRL, ARM64_INS_STCLRLB, ARM64_INS_STCLRLH,
-        ARM64_INS_STEOR, ARM64_INS_STEORB, ARM64_INS_STEORH, ARM64_INS_STEORL,
-        ARM64_INS_STEORLB, ARM64_INS_STEORLH, ARM64_INS_STG, ARM64_INS_STGM, ARM64_INS_STGP,
-        ARM64_INS_STLLR, ARM64_INS_STLLRB, ARM64_INS_STLLRH, ARM64_INS_STLR, ARM64_INS_STLRB,
-        ARM64_INS_STLRH, ARM64_INS_STLUR, ARM64_INS_STLURB, ARM64_INS_STLURH, ARM64_INS_STNP,
-        ARM64_INS_STNT1B, ARM64_INS_STNT1D, ARM64_INS_STNT1H, ARM64_INS_STNT1W, ARM64_INS_STP,
-        ARM64_INS_STR, ARM64_INS_STRB, ARM64_INS_STRH, ARM64_INS_STSET, ARM64_INS_STSETB,
-        ARM64_INS_STSETH, ARM64_INS_STSETL, ARM64_INS_STSETLB, ARM64_INS_STSETLH,
-        ARM64_INS_STSMAX, ARM64_INS_STSMAXB, ARM64_INS_STSMAXH, ARM64_INS_STSMAXL,
-        ARM64_INS_STSMAXLB, ARM64_INS_STSMAXLH, ARM64_INS_STSMIN, ARM64_INS_STSMINB,
-        ARM64_INS_STSMINH, ARM64_INS_STSMINL, ARM64_INS_STSMINLB, ARM64_INS_STSMINLH,
-        ARM64_INS_STTR, ARM64_INS_STTRB, ARM64_INS_STTRH, ARM64_INS_STUMAX, ARM64_INS_STUMAXB,
-        ARM64_INS_STUMAXH, ARM64_INS_STUMAXL, ARM64_INS_STUMAXLB, ARM64_INS_STUMAXLH,
-        ARM64_INS_STUMIN, ARM64_INS_STUMINB, ARM64_INS_STUMINH, ARM64_INS_STUMINL,
-        ARM64_INS_STUMINLB, ARM64_INS_STUMINLH, ARM64_INS_STUR, ARM64_INS_STURB,
-        ARM64_INS_STURH, ARM64_INS_STZ2G, ARM64_INS_STZG, ARM64_INS_STZGM
+        AARCH64_INS_ST1, AARCH64_INS_ST1B, AARCH64_INS_ST1D, AARCH64_INS_ST1H, AARCH64_INS_ST1Q,
+        AARCH64_INS_ST1W, AARCH64_INS_ST2, AARCH64_INS_ST2B, AARCH64_INS_ST2D, AARCH64_INS_ST2G,
+        AARCH64_INS_ST2H, AARCH64_INS_ST2W, AARCH64_INS_ST3, AARCH64_INS_ST3B, AARCH64_INS_ST3D,
+        AARCH64_INS_ST3H, AARCH64_INS_ST3W, AARCH64_INS_ST4, AARCH64_INS_ST4B, AARCH64_INS_ST4D,
+        AARCH64_INS_ST4H, AARCH64_INS_ST4W, AARCH64_INS_ST64B, AARCH64_INS_ST64BV, AARCH64_INS_ST64BV0,
+        AARCH64_INS_ALIAS_STADD, AARCH64_INS_ALIAS_STADDB, AARCH64_INS_ALIAS_STADDH, AARCH64_INS_ALIAS_STADDL,
+        AARCH64_INS_ALIAS_STADDLB, AARCH64_INS_ALIAS_STADDLH, AARCH64_INS_ALIAS_STCLR, AARCH64_INS_ALIAS_STCLRB,
+        AARCH64_INS_ALIAS_STCLRH, AARCH64_INS_ALIAS_STCLRL, AARCH64_INS_ALIAS_STCLRLB, AARCH64_INS_ALIAS_STCLRLH,
+        AARCH64_INS_ALIAS_STEOR, AARCH64_INS_ALIAS_STEORB, AARCH64_INS_ALIAS_STEORH, AARCH64_INS_ALIAS_STEORL,
+        AARCH64_INS_ALIAS_STEORLB, AARCH64_INS_ALIAS_STEORLH, AARCH64_INS_STG, AARCH64_INS_STGM, AARCH64_INS_STGP,
+        AARCH64_INS_STLLR, AARCH64_INS_STLLRB, AARCH64_INS_STLLRH, AARCH64_INS_STLR, AARCH64_INS_STLRB,
+        AARCH64_INS_STLRH, AARCH64_INS_STLUR, AARCH64_INS_STLURB, AARCH64_INS_STLURH, AARCH64_INS_STNP,
+        AARCH64_INS_STNT1B, AARCH64_INS_STNT1D, AARCH64_INS_STNT1H, AARCH64_INS_STNT1W, AARCH64_INS_STP,
+        AARCH64_INS_STR, AARCH64_INS_STRB, AARCH64_INS_STRH, AARCH64_INS_ALIAS_STSET, AARCH64_INS_ALIAS_STSETB,
+        AARCH64_INS_ALIAS_STSETH, AARCH64_INS_ALIAS_STSETL, AARCH64_INS_ALIAS_STSETLB, AARCH64_INS_ALIAS_STSETLH,
+        AARCH64_INS_ALIAS_STSMAX, AARCH64_INS_ALIAS_STSMAXB, AARCH64_INS_ALIAS_STSMAXH, AARCH64_INS_ALIAS_STSMAXL,
+        AARCH64_INS_ALIAS_STSMAXLB, AARCH64_INS_ALIAS_STSMAXLH, AARCH64_INS_ALIAS_STSMIN, AARCH64_INS_ALIAS_STSMINB,
+        AARCH64_INS_ALIAS_STSMINH, AARCH64_INS_ALIAS_STSMINL, AARCH64_INS_ALIAS_STSMINLB, AARCH64_INS_ALIAS_STSMINLH,
+        AARCH64_INS_STTR, AARCH64_INS_STTRB, AARCH64_INS_STTRH, AARCH64_INS_ALIAS_STUMAX, AARCH64_INS_ALIAS_STUMAXB,
+        AARCH64_INS_ALIAS_STUMAXH, AARCH64_INS_ALIAS_STUMAXL, AARCH64_INS_ALIAS_STUMAXLB, AARCH64_INS_ALIAS_STUMAXLH,
+        AARCH64_INS_ALIAS_STUMIN, AARCH64_INS_ALIAS_STUMINB, AARCH64_INS_ALIAS_STUMINH, AARCH64_INS_ALIAS_STUMINL,
+        AARCH64_INS_ALIAS_STUMINLB, AARCH64_INS_ALIAS_STUMINLH, AARCH64_INS_STUR, AARCH64_INS_STURB,
+        AARCH64_INS_STURH, AARCH64_INS_STZ2G, AARCH64_INS_STZG, AARCH64_INS_STZGM
     ].map(\.rawValue))
 
     /// Atomic read-modify-write. The destination is operand **1**, not 0, and
@@ -1788,41 +1788,41 @@ public struct ValueTracer: Sendable {
     /// every register operand: imprecise, since operand 0 is only read, but
     /// never a lie. 583 sites in CoreLocation's __text.
     private static let atomicReadModifyWrite: Set<UInt32> = Set([
-        ARM64_INS_CAS, ARM64_INS_CASA, ARM64_INS_CASAB, ARM64_INS_CASAH, ARM64_INS_CASAL,
-        ARM64_INS_CASALB, ARM64_INS_CASALH, ARM64_INS_CASB, ARM64_INS_CASH, ARM64_INS_CASL,
-        ARM64_INS_CASLB, ARM64_INS_CASLH, ARM64_INS_CASP, ARM64_INS_CASPA, ARM64_INS_CASPAL,
-        ARM64_INS_CASPL, ARM64_INS_LDADD, ARM64_INS_LDADDA, ARM64_INS_LDADDAB,
-        ARM64_INS_LDADDAH, ARM64_INS_LDADDAL, ARM64_INS_LDADDALB, ARM64_INS_LDADDALH,
-        ARM64_INS_LDADDB, ARM64_INS_LDADDH, ARM64_INS_LDADDL, ARM64_INS_LDADDLB,
-        ARM64_INS_LDADDLH, ARM64_INS_LDCLR, ARM64_INS_LDCLRA, ARM64_INS_LDCLRAB,
-        ARM64_INS_LDCLRAH, ARM64_INS_LDCLRAL, ARM64_INS_LDCLRALB, ARM64_INS_LDCLRALH,
-        ARM64_INS_LDCLRB, ARM64_INS_LDCLRH, ARM64_INS_LDCLRL, ARM64_INS_LDCLRLB,
-        ARM64_INS_LDCLRLH, ARM64_INS_LDEOR, ARM64_INS_LDEORA, ARM64_INS_LDEORAB,
-        ARM64_INS_LDEORAH, ARM64_INS_LDEORAL, ARM64_INS_LDEORALB, ARM64_INS_LDEORALH,
-        ARM64_INS_LDEORB, ARM64_INS_LDEORH, ARM64_INS_LDEORL, ARM64_INS_LDEORLB,
-        ARM64_INS_LDEORLH, ARM64_INS_LDSET, ARM64_INS_LDSETA, ARM64_INS_LDSETAB,
-        ARM64_INS_LDSETAH, ARM64_INS_LDSETAL, ARM64_INS_LDSETALB, ARM64_INS_LDSETALH,
-        ARM64_INS_LDSETB, ARM64_INS_LDSETH, ARM64_INS_LDSETL, ARM64_INS_LDSETLB,
-        ARM64_INS_LDSETLH, ARM64_INS_LDSMAX, ARM64_INS_LDSMAXA, ARM64_INS_LDSMAXAB,
-        ARM64_INS_LDSMAXAH, ARM64_INS_LDSMAXAL, ARM64_INS_LDSMAXALB, ARM64_INS_LDSMAXALH,
-        ARM64_INS_LDSMAXB, ARM64_INS_LDSMAXH, ARM64_INS_LDSMAXL, ARM64_INS_LDSMAXLB,
-        ARM64_INS_LDSMAXLH, ARM64_INS_LDSMIN, ARM64_INS_LDSMINA, ARM64_INS_LDSMINAB,
-        ARM64_INS_LDSMINAH, ARM64_INS_LDSMINAL, ARM64_INS_LDSMINALB, ARM64_INS_LDSMINALH,
-        ARM64_INS_LDSMINB, ARM64_INS_LDSMINH, ARM64_INS_LDSMINL, ARM64_INS_LDSMINLB,
-        ARM64_INS_LDSMINLH, ARM64_INS_LDUMAX, ARM64_INS_LDUMAXA, ARM64_INS_LDUMAXAB,
-        ARM64_INS_LDUMAXAH, ARM64_INS_LDUMAXAL, ARM64_INS_LDUMAXALB, ARM64_INS_LDUMAXALH,
-        ARM64_INS_LDUMAXB, ARM64_INS_LDUMAXH, ARM64_INS_LDUMAXL, ARM64_INS_LDUMAXLB,
-        ARM64_INS_LDUMAXLH, ARM64_INS_LDUMIN, ARM64_INS_LDUMINA, ARM64_INS_LDUMINAB,
-        ARM64_INS_LDUMINAH, ARM64_INS_LDUMINAL, ARM64_INS_LDUMINALB, ARM64_INS_LDUMINALH,
-        ARM64_INS_LDUMINB, ARM64_INS_LDUMINH, ARM64_INS_LDUMINL, ARM64_INS_LDUMINLB,
-        ARM64_INS_LDUMINLH, ARM64_INS_SWP, ARM64_INS_SWPA, ARM64_INS_SWPAB, ARM64_INS_SWPAH,
-        ARM64_INS_SWPAL, ARM64_INS_SWPALB, ARM64_INS_SWPALH, ARM64_INS_SWPB, ARM64_INS_SWPH,
-        ARM64_INS_SWPL, ARM64_INS_SWPLB, ARM64_INS_SWPLH
+        AARCH64_INS_CAS, AARCH64_INS_CASA, AARCH64_INS_CASAB, AARCH64_INS_CASAH, AARCH64_INS_CASAL,
+        AARCH64_INS_CASALB, AARCH64_INS_CASALH, AARCH64_INS_CASB, AARCH64_INS_CASH, AARCH64_INS_CASL,
+        AARCH64_INS_CASLB, AARCH64_INS_CASLH, AARCH64_INS_CASP, AARCH64_INS_CASPA, AARCH64_INS_CASPAL,
+        AARCH64_INS_CASPL, AARCH64_INS_LDADD, AARCH64_INS_LDADDA, AARCH64_INS_LDADDAB,
+        AARCH64_INS_LDADDAH, AARCH64_INS_LDADDAL, AARCH64_INS_LDADDALB, AARCH64_INS_LDADDALH,
+        AARCH64_INS_LDADDB, AARCH64_INS_LDADDH, AARCH64_INS_LDADDL, AARCH64_INS_LDADDLB,
+        AARCH64_INS_LDADDLH, AARCH64_INS_LDCLR, AARCH64_INS_LDCLRA, AARCH64_INS_LDCLRAB,
+        AARCH64_INS_LDCLRAH, AARCH64_INS_LDCLRAL, AARCH64_INS_LDCLRALB, AARCH64_INS_LDCLRALH,
+        AARCH64_INS_LDCLRB, AARCH64_INS_LDCLRH, AARCH64_INS_LDCLRL, AARCH64_INS_LDCLRLB,
+        AARCH64_INS_LDCLRLH, AARCH64_INS_LDEOR, AARCH64_INS_LDEORA, AARCH64_INS_LDEORAB,
+        AARCH64_INS_LDEORAH, AARCH64_INS_LDEORAL, AARCH64_INS_LDEORALB, AARCH64_INS_LDEORALH,
+        AARCH64_INS_LDEORB, AARCH64_INS_LDEORH, AARCH64_INS_LDEORL, AARCH64_INS_LDEORLB,
+        AARCH64_INS_LDEORLH, AARCH64_INS_LDSET, AARCH64_INS_LDSETA, AARCH64_INS_LDSETAB,
+        AARCH64_INS_LDSETAH, AARCH64_INS_LDSETAL, AARCH64_INS_LDSETALB, AARCH64_INS_LDSETALH,
+        AARCH64_INS_LDSETB, AARCH64_INS_LDSETH, AARCH64_INS_LDSETL, AARCH64_INS_LDSETLB,
+        AARCH64_INS_LDSETLH, AARCH64_INS_LDSMAX, AARCH64_INS_LDSMAXA, AARCH64_INS_LDSMAXAB,
+        AARCH64_INS_LDSMAXAH, AARCH64_INS_LDSMAXAL, AARCH64_INS_LDSMAXALB, AARCH64_INS_LDSMAXALH,
+        AARCH64_INS_LDSMAXB, AARCH64_INS_LDSMAXH, AARCH64_INS_LDSMAXL, AARCH64_INS_LDSMAXLB,
+        AARCH64_INS_LDSMAXLH, AARCH64_INS_LDSMIN, AARCH64_INS_LDSMINA, AARCH64_INS_LDSMINAB,
+        AARCH64_INS_LDSMINAH, AARCH64_INS_LDSMINAL, AARCH64_INS_LDSMINALB, AARCH64_INS_LDSMINALH,
+        AARCH64_INS_LDSMINB, AARCH64_INS_LDSMINH, AARCH64_INS_LDSMINL, AARCH64_INS_LDSMINLB,
+        AARCH64_INS_LDSMINLH, AARCH64_INS_LDUMAX, AARCH64_INS_LDUMAXA, AARCH64_INS_LDUMAXAB,
+        AARCH64_INS_LDUMAXAH, AARCH64_INS_LDUMAXAL, AARCH64_INS_LDUMAXALB, AARCH64_INS_LDUMAXALH,
+        AARCH64_INS_LDUMAXB, AARCH64_INS_LDUMAXH, AARCH64_INS_LDUMAXL, AARCH64_INS_LDUMAXLB,
+        AARCH64_INS_LDUMAXLH, AARCH64_INS_LDUMIN, AARCH64_INS_LDUMINA, AARCH64_INS_LDUMINAB,
+        AARCH64_INS_LDUMINAH, AARCH64_INS_LDUMINAL, AARCH64_INS_LDUMINALB, AARCH64_INS_LDUMINALH,
+        AARCH64_INS_LDUMINB, AARCH64_INS_LDUMINH, AARCH64_INS_LDUMINL, AARCH64_INS_LDUMINLB,
+        AARCH64_INS_LDUMINLH, AARCH64_INS_SWP, AARCH64_INS_SWPA, AARCH64_INS_SWPAB, AARCH64_INS_SWPAH,
+        AARCH64_INS_SWPAL, AARCH64_INS_SWPALB, AARCH64_INS_SWPALH, AARCH64_INS_SWPB, AARCH64_INS_SWPH,
+        AARCH64_INS_SWPL, AARCH64_INS_SWPLB, AARCH64_INS_SWPLH
     ].map(\.rawValue))
 
     /// Two destinations: operands 0 and 1.
     private static let pairLoads: Set<UInt32> = Set([
-        ARM64_INS_LDAXP, ARM64_INS_LDNP, ARM64_INS_LDP, ARM64_INS_LDPSW, ARM64_INS_LDXP
+        AARCH64_INS_LDAXP, AARCH64_INS_LDNP, AARCH64_INS_LDP, AARCH64_INS_LDPSW, AARCH64_INS_LDXP
     ].map(\.rawValue))
 
 
@@ -1925,9 +1925,9 @@ public struct ValueTracer: Sendable {
     /// arithmetic (`adds`/`subs`/`ands` and friends). A `cset` after one of these
     /// must not read a stale integer comparison, so they invalidate the flags.
     private static let unmodeledFlagWriters: Set<UInt32> = Set([
-        ARM64_INS_FCMP, ARM64_INS_FCMPE, ARM64_INS_FCCMP, ARM64_INS_FCCMPE,
-        ARM64_INS_CCMP, ARM64_INS_CCMN, ARM64_INS_BICS, ARM64_INS_ADCS,
-        ARM64_INS_SBCS,
+        AARCH64_INS_FCMP, AARCH64_INS_FCMPE, AARCH64_INS_FCCMP, AARCH64_INS_FCCMPE,
+        AARCH64_INS_CCMP, AARCH64_INS_CCMN, AARCH64_INS_BICS, AARCH64_INS_ADCS,
+        AARCH64_INS_SBCS,
     ].map(\.rawValue))
 
     /// Reconstruct a boolean comparison from a flags value and a comparison
@@ -1949,20 +1949,20 @@ public struct ValueTracer: Sendable {
     /// The comparison a condition code denotes after a subtract-based compare.
     /// Signed and unsigned variants collapse to one symbol set; the unordered,
     /// overflow, and always/never codes are left unmodelled.
-    private static func comparisonOperator(_ cc: arm64_cc) -> AbstractBinaryOperator? {
-        if cc == ARM64_CC_EQ { return .equal }
-        if cc == ARM64_CC_NE { return .notEqual }
+    private static func comparisonOperator(_ cc: AArch64CC_CondCode) -> AbstractBinaryOperator? {
+        if cc == AArch64CC_EQ { return .equal }
+        if cc == AArch64CC_NE { return .notEqual }
         // Signed ordered (LT/GE/GT/LE) and the sign-flag codes (MI/PL) map to the
         // signed operators; the unsigned ordered codes (LO/HS/HI/LS) map to the
         // unsigned operators — preserving, not merging, the machine's signedness.
-        if cc == ARM64_CC_GE || cc == ARM64_CC_PL { return .greaterEqual }
-        if cc == ARM64_CC_LT || cc == ARM64_CC_MI { return .less }
-        if cc == ARM64_CC_GT { return .greater }
-        if cc == ARM64_CC_LE { return .lessEqual }
-        if cc == ARM64_CC_HS { return .unsignedGreaterEqual }
-        if cc == ARM64_CC_LO { return .unsignedLess }
-        if cc == ARM64_CC_HI { return .unsignedGreater }
-        if cc == ARM64_CC_LS { return .unsignedLessEqual }
+        if cc == AArch64CC_GE || cc == AArch64CC_PL { return .greaterEqual }
+        if cc == AArch64CC_LT || cc == AArch64CC_MI { return .less }
+        if cc == AArch64CC_GT { return .greater }
+        if cc == AArch64CC_LE { return .lessEqual }
+        if cc == AArch64CC_HS { return .unsignedGreaterEqual }
+        if cc == AArch64CC_LO { return .unsignedLess }
+        if cc == AArch64CC_HI { return .unsignedGreater }
+        if cc == AArch64CC_LS { return .unsignedLessEqual }
         return nil
     }
 
@@ -2014,11 +2014,11 @@ public struct ValueTracer: Sendable {
         if reg.kind == .zero { return .immediate(0) }
         let value = registers[reg.key] ?? .unknown
         switch operand.shift.type {
-        case ARM64_SFT_INVALID: return value
-        case ARM64_SFT_LSL:
+        case AARCH64_SFT_INVALID: return value
+        case AARCH64_SFT_LSL:
             return expression(.shiftLeft, value, .immediate(UInt64(operand.shift.amount)))
-        case ARM64_SFT_LSR, ARM64_SFT_ASR:
-            let op: AbstractBinaryOperator = operand.shift.type == ARM64_SFT_ASR
+        case AARCH64_SFT_LSR, AARCH64_SFT_ASR:
+            let op: AbstractBinaryOperator = operand.shift.type == AARCH64_SFT_ASR
                 ? .arithmeticShiftRight : .shiftRight
             return expression(op, value, .immediate(UInt64(operand.shift.amount)))
         default:
@@ -2069,24 +2069,24 @@ public struct ValueTracer: Sendable {
 
     /// Access width in bytes.
     ///
-    /// `arm64_op_mem` carries no width, so it comes from the instruction id plus
+    /// `aarch64_op_mem` carries no width, so it comes from the instruction id plus
     /// the destination register's width: `ldr w0` reads 4 bytes, `ldr x0` reads
     /// 8, and `ldp x19, x20` reads 16 — which is exactly how a 16-byte
     /// `Swift.String` field is loaded.
     private static func accessBytes(_ detail: StructuredInsn) -> Int? {
         let registerBytes = detail.operands.first?.operand.register.map { $0.widthBits / 8 }
         switch detail.id {
-        case ARM64_INS_LDRB, ARM64_INS_LDURB, ARM64_INS_STRB, ARM64_INS_STURB,
-             ARM64_INS_LDRSB, ARM64_INS_LDURSB:
+        case AARCH64_INS_LDRB, AARCH64_INS_LDURB, AARCH64_INS_STRB, AARCH64_INS_STURB,
+             AARCH64_INS_LDRSB, AARCH64_INS_LDURSB:
             return 1
-        case ARM64_INS_LDRH, ARM64_INS_LDURH, ARM64_INS_STRH, ARM64_INS_STURH,
-             ARM64_INS_LDRSH, ARM64_INS_LDURSH:
+        case AARCH64_INS_LDRH, AARCH64_INS_LDURH, AARCH64_INS_STRH, AARCH64_INS_STURH,
+             AARCH64_INS_LDRSH, AARCH64_INS_LDURSH:
             return 2
-        case ARM64_INS_LDRSW, ARM64_INS_LDURSW:
+        case AARCH64_INS_LDRSW, AARCH64_INS_LDURSW:
             return 4
-        case ARM64_INS_LDR, ARM64_INS_LDUR, ARM64_INS_STR, ARM64_INS_STUR:
+        case AARCH64_INS_LDR, AARCH64_INS_LDUR, AARCH64_INS_STR, AARCH64_INS_STUR:
             return registerBytes
-        case ARM64_INS_LDP, ARM64_INS_LDNP, ARM64_INS_STP, ARM64_INS_STNP:
+        case AARCH64_INS_LDP, AARCH64_INS_LDNP, AARCH64_INS_STP, AARCH64_INS_STNP:
             return registerBytes.map { $0 * 2 }
         default:
             return nil
@@ -2094,8 +2094,8 @@ public struct ValueTracer: Sendable {
     }
 
     private static let storeIDs: Set<UInt32> = Set([
-        ARM64_INS_STR, ARM64_INS_STUR, ARM64_INS_STRB, ARM64_INS_STURB,
-        ARM64_INS_STRH, ARM64_INS_STURH, ARM64_INS_STP, ARM64_INS_STNP,
+        AARCH64_INS_STR, AARCH64_INS_STUR, AARCH64_INS_STRB, AARCH64_INS_STURB,
+        AARCH64_INS_STRH, AARCH64_INS_STURH, AARCH64_INS_STP, AARCH64_INS_STNP,
     ].map(\.rawValue))
 
     /// Record a `self` field access, when this instruction makes one.
@@ -2111,7 +2111,7 @@ public struct ValueTracer: Sendable {
         else { return }
         let isWrite = Self.storeIDs.contains(detail.id.rawValue)
         let storedValues: [AbstractValue]? = if isWrite,
-            detail.id == ARM64_INS_STP || detail.id == ARM64_INS_STNP {
+            detail.id == AARCH64_INS_STP || detail.id == AARCH64_INS_STNP {
             detail.operands.prefix(2).map { source($0, in: registers) }
         } else {
             nil

@@ -12,29 +12,34 @@ let package = Package(
         .executable(name: "swiftdc", targets: ["swiftdc"]),
     ],
     dependencies: [
-        // Pinned to 0.19.0 (was 0.12.0). Seven upstream releases moved this engine
-        // squarely along swiftdc's own priority ladder, so its fixes are our fixes:
+        // Pinned to 0.22.0 (was 0.19.0, before that 0.12.0). Each bump followed
+        // swiftdc's own priority ladder, so upstream's fixes are our fixes:
         //   Soundness. 0.16.0 closed four silent wrong-result paths (opaque types
         //   printing illegal Swift, a multi-payload enum cache falling back to a
         //   wrong layout, reference-storage fields sized a word too narrow, first-hit
         //   dyld-cache image matches). 0.19.0 attributes a class vtable slot by its
-        //   own method-descriptor symbol instead of the symbols at its implementation
-        //   address, which identical code folding makes ambiguous — SwiftUICore's
-        //   `Symbol not found` count went 358 to 0 with no line regressing to a
-        //   `sub_` address.
-        //   Completeness. 0.16.0 makes legacy LC_DYLD_INFO binaries (pre-macOS 12,
-        //   no chained fixups) parse at all; SwiftUI on the iOS 15.5 simulator went
-        //   from 139 to 81,157 interface lines. Exactly the near-empty-but-plausible
-        //   result the empty-result rule exists to catch.
+        //   own method-descriptor symbol (SwiftUICore's `Symbol not found` count
+        //   went 358 to 0). 0.21.0 names a type declared in another module's
+        //   extension through the extended type, and builds class vtable members
+        //   from their method descriptors, so a main executable's vtable slots are
+        //   named. 0.22.0 reads an optional-returning accessor at the field's own
+        //   width and lays out Swift 6.4's raw-layout and Builtin.Borrow storage.
+        //   Completeness. 0.16.0 makes legacy LC_DYLD_INFO binaries parse at all;
+        //   0.21.0 prints `@objc(Name)` on classes renamed for the ObjC runtime
+        //   and recovers their field offsets; 0.22.0 reads the ObjC classes a
+        //   simulator runtime binds to itself.
         //   Memory/perf. 0.16.0's NodeStore migration cut steady-state memory from
-        //   842 MB to 262 MB across five system images; 0.19.0's task-executor change
-        //   makes dump/interface ~15-20% faster.
+        //   842 MB to 262 MB across five system images; 0.22.0 opens the system
+        //   dyld cache once per process and builds each sub-cache once.
         // Exact-pinned, matching this project's reproducibility intent. Bumping it is
-        // a deliberate change, not a floating one: 0.16.0 is a breaking release, and
-        // it raises the swift-demangling floor to 0.6.3 (see below).
+        // a deliberate change, not a floating one: 0.20.0 brought swift-capstone
+        // (Capstone 6 built from source) into the graph, which is why swiftdc's own
+        // decoder links the same `capstone` package below rather than Homebrew's
+        // libcapstone 5; 0.22.0 raised the swift-demangling floor to 0.7.1 and
+        // MachOKit's to 0.54.101 (see below).
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection",
-            exact: "0.19.0"
+            exact: "0.22.0"
         ),
         // MachOKit is the Mach-O container parser MachOSwiftSection is built on.
         // It is NOT re-exported, so we depend on the same identity directly to name
@@ -53,8 +58,8 @@ let package = Package(
         // line is mostly perf work this tool leans on: chained-fixup caching, dyld
         // subcache file-handle reuse, cached cache-mapping lookups.)
         .package(
-            url: "https://github.com/CamdenBopp/MachOKit.git",
-            revision: "07d7633c6d143e9ea344f1cdbb56bfa2afffd707"
+            url: "https://github.com/MxIris-Reverse-Engineering/MachOKit.git",
+            from: "0.54.101"
         ),
         // `Semantic` provides SemanticString, the return type of SwiftDump's
         // `.dump(...)`. Moves in lockstep with MachOSwiftSection: 0.15.0 raised its
@@ -75,7 +80,7 @@ let package = Package(
         // while MachOSwiftSection stayed at 0.12.0; both move together now.
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/swift-demangling",
-            "0.6.3" ..< "0.7.0"
+            "0.7.1" ..< "0.8.0"
         ),
         // Objective-C runtime metadata (classes/protocols/categories) for real
         // Swift+ObjC app binaries. Same fork URLs MachOSwiftSection resolves to,
@@ -88,6 +93,19 @@ let package = Package(
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/swift-objc-dump",
             from: "0.8.101"
+        ),
+        // Capstone 6, compiled from source by MxIris's SwiftPM packaging of
+        // capstone. This is the same package MachOSwiftSection 0.20+ links through
+        // swift-capstone (SwiftDump -> SwiftThunkAnalysis -> Capstone), so the
+        // in-process ARM64 decoder uses the one copy the process already carries.
+        // It replaced the Homebrew libcapstone 5 system library: two Capstones in
+        // one module graph fail to compile (both clang modules define `cs_insn`),
+        // and would otherwise link one C symbol table against the other's headers.
+        // Only the AARCH64 backend is enabled, matching MachOSwiftSection's trait.
+        .package(
+            url: "https://github.com/MxIris-Reverse-Engineering/capstone",
+            from: "6.0.100",
+            traits: [.trait(name: "AARCH64")]
         ),
         .package(
             url: "https://github.com/apple/swift-argument-parser",
@@ -104,15 +122,8 @@ let package = Package(
         ),
     ],
     targets: [
-        // Homebrew-installed Capstone (`brew install capstone`), surfaced via its
-        // pkg-config file. Used for structured in-process ARM64 decoding.
-        .systemLibrary(
-            name: "CCapstone",
-            pkgConfig: "capstone",
-            providers: [.brew(["capstone"])]
-        ),
-        // Homebrew-installed OpenSSL (`brew install openssl@3`), same
-        // pkg-config pattern as CCapstone above.
+        // Homebrew-installed OpenSSL (`brew install openssl@3`), surfaced via its
+        // pkg-config file.
         //
         // Needed because lockdown upgrades a live plaintext socket to TLS
         // mid-stream, presenting a client certificate that exists only as a
@@ -136,7 +147,7 @@ let package = Package(
         .target(
             name: "SwiftDecompilerCore",
             dependencies: [
-                "CCapstone",
+                .product(name: "Ccapstone", package: "capstone"),
                 .product(name: "MachOKit", package: "MachOKit"),
                 .product(name: "MachOSwiftSection", package: "MachOSwiftSection"),
                 .product(name: "SwiftDump", package: "MachOSwiftSection"),

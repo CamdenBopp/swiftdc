@@ -1,4 +1,4 @@
-import CCapstone
+import Ccapstone
 import Foundation
 import MachOKit
 
@@ -117,7 +117,7 @@ enum ObjCSelectors {
         let tracer = ValueTracer()
         var result: [UInt64: String] = [:]
         for (index, insn) in instructions.enumerated() {
-            guard let detail = insn.detail, detail.id == ARM64_INS_ADRP,
+            guard let detail = insn.detail, detail.id == AARCH64_INS_ADRP,
                   detail.operands.first?.operand.register?.key == "x1"
             else { continue }
             let window = Array(instructions[index ..< min(index + 2, instructions.count)])

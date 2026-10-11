@@ -1,5 +1,5 @@
 {
-  "originHash" : "b930439fd6ebcf1ebf0c581b86589e3e9f4eb8ef77f3ddace211979a9376688f",
+  "originHash" : "86e623f71c38c937808cebd51e16918c84c130bd97520ced53fc59678fd4b10b",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -8,6 +8,15 @@
       "state" : {
         "revision" : "f358e1ccf6761b9d1d53136022a65c601cdc4da3",
         "version" : "0.15.0"
+      }
+    },
+    {
+      "identity" : "capstone",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/MxIris-Reverse-Engineering/capstone",
+      "state" : {
+        "revision" : "81d9ca83416426a5cd05fcd95c6fba3ef5492e27",
+        "version" : "6.0.100"
       }
     },
     {
@@ -31,9 +40,10 @@
     {
       "identity" : "machokit",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/CamdenBopp/MachOKit.git",
+      "location" : "https://github.com/MxIris-Reverse-Engineering/MachOKit.git",
       "state" : {
-        "revision" : "07d7633c6d143e9ea344f1cdbb56bfa2afffd707"
+        "revision" : "ecae5d19ab6d8771d589e6c45677e4ba86acd352",
+        "version" : "0.54.101"
       }
     },
     {
@@ -41,8 +51,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/MxIris-Reverse-Engineering/MachOKitExtensions",
       "state" : {
-        "revision" : "5623c702a29c48c7c61579f745ee36a83ed56a15",
-        "version" : "0.1.1"
+        "revision" : "39bdf745ad729c798395beb4dca12587ea5686c9",
+        "version" : "1.2.0"
       }
     },
     {
@@ -50,8 +60,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/MxIris-Reverse-Engineering/MachOObjCSection.git",
       "state" : {
-        "revision" : "442fb7e84e4cff70fa3db487c2bb6f7eb8c7e635",
-        "version" : "0.8.105"
+        "revision" : "ea14b1da4560af3aa9c54ed16d3a9f8e88c3539b",
+        "version" : "0.8.110"
       }
     },
     {
@@ -59,8 +69,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection",
       "state" : {
-        "revision" : "61f062841d5990775b64b4007fefaade0ee0fc6e",
-        "version" : "0.19.0"
+        "revision" : "f2dfcf5e5d27b6ccccaf184fbfa25c945b51fc72",
+        "version" : "0.22.0"
       }
     },
     {
@@ -140,8 +150,17 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/p-x9/swift-binary-parse-support.git",
       "state" : {
-        "revision" : "5fb96b503672ea4752eded6b4e301fd87214b03b",
-        "version" : "0.2.1"
+        "revision" : "b4042df3819fde93ce952a111607ec8ffc4ee704",
+        "version" : "0.3.0"
+      }
+    },
+    {
+      "identity" : "swift-capstone",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/MxIris-Reverse-Engineering/swift-capstone",
+      "state" : {
+        "revision" : "8ef4766f2526aac7faf80379f3cc5dbdb4d321a2",
+        "version" : "6.0.1"
       }
     },
     {
@@ -176,8 +195,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-crypto.git",
       "state" : {
-        "revision" : "95ba0316a9b733e92bb6b071255ff46263bbe7dc",
-        "version" : "3.15.1"
+        "revision" : "bb4ba815dab96d4edc1e0b86d7b9acf9ff973a84",
+        "version" : "4.3.1"
       }
     },
     {
@@ -185,8 +204,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/MxIris-Reverse-Engineering/swift-demangling",
       "state" : {
-        "revision" : "8f32e30bfdc9c9cc0d3aeb010739dd7e74ccdbed",
-        "version" : "0.6.3"
+        "revision" : "0b5a939e107d18284bb986873e54880370b05b3a",
+        "version" : "0.7.1"
       }
     },
     {
@@ -257,8 +276,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/MxIris-Reverse-Engineering/swift-semantic-string",
       "state" : {
-        "revision" : "1021589b85fc647435b383307aa6aea2af1079ce",
-        "version" : "0.3.0"
+        "revision" : "9c01fc2d37623fd3bd146cf72b811f3702857f76",
+        "version" : "0.4.0"
       }
     },
     {
@@ -266,8 +285,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swiftlang/swift-syntax.git",
       "state" : {
-        "revision" : "f99ae8aa18f0cf0d53481901f88a0991dc3bd4a2",
-        "version" : "601.0.1"
+        "revision" : "79e4b74a295b6eb74a8b585e3a39d29e70c1dbd1",
+        "version" : "603.0.2"
       }
     },
     {
