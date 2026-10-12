@@ -31,3 +31,13 @@ open class FoldRight {
     open var total = 0
     public init() {}
 }
+
+// Unsigned division on Int-typed operands: `udiv` where the Swift types are
+// signed. A bare `/` would claim signed division, which disagrees at every
+// negative input; the render must carry the unsigned operation.
+public func unsignedQuotient(_ a: Int, _ b: Int) -> Int {
+    Int(bitPattern: UInt(bitPattern: a) / UInt(bitPattern: b))
+}
+public func unsignedRemainderOf(_ a: Int, _ b: Int) -> Int {
+    Int(bitPattern: UInt(bitPattern: a) % UInt(bitPattern: b))
+}

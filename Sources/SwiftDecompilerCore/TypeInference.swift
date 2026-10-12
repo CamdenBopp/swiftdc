@@ -121,6 +121,10 @@ public enum TypeInference {
                         : ValueType(category: .integer, width: width, signedness: .unknownSign)
                 }
                 return ValueType(category: .integer, width: nil, signedness: .unknownSign)
+            case .unsignedDivide, .unsignedRemainder:
+                // `udiv` computes an unsigned quotient whatever the operands
+                // were declared as.
+                return .unsignedInteger(nil)
             case .bitOr, .bitXor, .shiftLeft, .shiftRight, .arithmeticShiftRight:
                 return ValueType(category: .integer, width: nil, signedness: .unknownSign)
             default:

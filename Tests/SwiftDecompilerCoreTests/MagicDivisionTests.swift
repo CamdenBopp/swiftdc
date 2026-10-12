@@ -47,7 +47,7 @@ import Testing
     /// umulh x8, x0, M; lsr x0, x8, #3
     @Test func unsignedTen() {
         let hi = fold(.unsignedMultiplyHigh, x, .immediate(0xCCCC_CCCC_CCCC_CCCD))
-        #expect(fold(.shiftRight, hi, .immediate(3)) == .binary(.divide, x, .immediate(10)))
+        #expect(fold(.shiftRight, hi, .immediate(3)) == .binary(.unsignedDivide, x, .immediate(10)))
     }
 
     /// umulh x8, x0, M; sub x9, x0, x8; add x8, x8, x9, lsr #1; lsr x0, x8, #2
@@ -55,14 +55,14 @@ import Testing
         let hi = fold(.unsignedMultiplyHigh, x, .immediate(0x2492_4924_9249_2493))
         let half = fold(.shiftRight, fold(.subtract, x, hi), .immediate(1))
         let result = fold(.shiftRight, fold(.add, hi, half), .immediate(2))
-        #expect(result == .binary(.divide, x, .immediate(7)))
+        #expect(result == .binary(.unsignedDivide, x, .immediate(7)))
     }
 
     /// lsr x8, x0, #3; umulh x8, x8, M; lsr x0, x8, #4 (pre-shift)
     @Test func unsignedThousandPreShift() {
         let hi = fold(.unsignedMultiplyHigh, fold(.shiftRight, x, .immediate(3)),
                       .immediate(0x20C4_9BA5_E353_F7CF))
-        #expect(fold(.shiftRight, hi, .immediate(4)) == .binary(.divide, x, .immediate(1000)))
+        #expect(fold(.shiftRight, hi, .immediate(4)) == .binary(.unsignedDivide, x, .immediate(1000)))
     }
 
     /// The x / 7 sequence, then sub x8, x8, x8, lsl #3; add x0, x0, x8:

@@ -88,7 +88,7 @@ private struct ExpressionParser {
         // Longest-first so `<=` and `&&` win over `<` and `&`. The unsigned
         // markers carry U+1D41 and must be matched before their bare forms.
         let operators = [
-            "<=\u{1D41}", ">=\u{1D41}", "<\u{1D41}", ">\u{1D41}",
+            "<=\u{1D41}", ">=\u{1D41}", "<\u{1D41}", ">\u{1D41}", "/\u{1D41}", "%\u{1D41}",
             "<<", ">>", "<=", ">=", "==", "!=", "&&", "||",
             "+", "-", "*", "/", "%", "&", "|", "^", "<", ">", "!", "~", "?", ":", "(", ")",
         ]
@@ -293,6 +293,8 @@ private func integerBinary(_ op: String, _ a: Int, _ b: Int) throws -> EvalValue
         case "*": return .int(a &* b)
         case "/": return b == 0 ? .int(0) : .int(a == Int.min && b == -1 ? Int.min : a / b)
         case "%": return b == 0 ? .int(0) : .int(a == Int.min && b == -1 ? 0 : a % b)
+        case "/\u{1D41}": return b == 0 ? .int(0) : .int(Int(bitPattern: UInt(bitPattern: a) / UInt(bitPattern: b)))
+        case "%\u{1D41}": return b == 0 ? .int(0) : .int(Int(bitPattern: UInt(bitPattern: a) % UInt(bitPattern: b)))
         case "&": return .int(a & b)
         case "|": return .int(a | b)
         case "^": return .int(a ^ b)
@@ -452,6 +454,11 @@ private let oracleCases: [OracleCase] = [
           inputs: constantDivisionInputs.filter { $0[0] >= 0 }),
     .init(name: "unsignedDivideByThousand", arity: 1, returnsBool: false,
           inputs: constantDivisionInputs.filter { $0[0] >= 0 }),
+    // `udiv` on Int-typed operands. A plain `/` renders a signed claim the
+    // machine does not make; the negative dividends in `divisionPairs` are
+    // exactly where the two disagree.
+    .init(name: "unsignedQuotient", arity: 2, returnsBool: false, inputs: divisionPairs()),
+    .init(name: "unsignedRemainderOf", arity: 2, returnsBool: false, inputs: divisionPairs()),
     // Multi-branch integer switches. At `-Onone` these recover as a chain of
     // `==` ternaries; at `-O` the optimizer collapses `gradeOf`'s dense cases
     // into the **U1 unsigned-range idiom plus arithmetic**
@@ -526,7 +533,8 @@ private let fixtures = [
 private let codegenFixture = Fixture(
     path: "Fixtures/Sample/libCodegen.opt.dylib", label: "-O codegen",
     required: ["divideBySeven", "divideByThree", "divideByFifteen", "divideByMinusSeven",
-               "remainderBySeven", "unsignedDivideBySeven", "unsignedDivideByThousand"],
+               "remainderBySeven", "unsignedDivideBySeven", "unsignedDivideByThousand",
+               "unsignedQuotient", "unsignedRemainderOf"],
     minimumComparisons: 150
 )
 

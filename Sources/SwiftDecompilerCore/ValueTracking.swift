@@ -8,8 +8,14 @@ public enum AbstractBinaryOperator: Equatable, Sendable {
     case add
     case subtract
     case multiply
+    /// Signed integer division (`sdiv`), or float division.
     case divide
     case remainder
+    /// `udiv` and its remainder. Kept apart from `divide` so an unsigned
+    /// division is never rendered as the signed `/` it disagrees with at every
+    /// negative input; the renderer marks it unless the operand is a proven UInt.
+    case unsignedDivide
+    case unsignedRemainder
     case bitAnd
     case bitOr
     case bitXor
@@ -74,8 +80,8 @@ public enum AbstractBinaryOperator: Equatable, Sendable {
         case .add: "+"
         case .subtract: "-"
         case .multiply: "*"
-        case .divide: "/"
-        case .remainder: "%"
+        case .divide, .unsignedDivide: "/"
+        case .remainder, .unsignedRemainder: "%"
         case .bitAnd: "&"
         case .bitOr: "|"
         case .bitXor: "^"
@@ -1890,7 +1896,8 @@ public struct ValueTracer: Sendable {
             case AARCH64_INS_MUL: .multiply
             case AARCH64_INS_SMULH: .multiplyHigh
             case AARCH64_INS_UMULH: .unsignedMultiplyHigh
-            case AARCH64_INS_SDIV, AARCH64_INS_UDIV: .divide
+            case AARCH64_INS_SDIV: .divide
+            case AARCH64_INS_UDIV: .unsignedDivide
             case AARCH64_INS_LSL: .shiftLeft
             case AARCH64_INS_LSR: .shiftRight
             case AARCH64_INS_ASR: .arithmeticShiftRight
@@ -2380,8 +2387,18 @@ public struct ValueTracer: Sendable {
             case .add: left &+ right
             case .subtract: left &- right
             case .multiply: left &* right
-            case .divide: right != 0 ? left / right : nil
-            case .remainder: right != 0 ? left % right : nil
+            // sdiv semantics on the bit patterns: Int.min / -1 wraps to Int.min
+            // (and its remainder is 0), as the instruction does.
+            case .divide:
+                right != 0
+                    ? UInt64(bitPattern: Int64(bitPattern: left).dividedReportingOverflow(by: Int64(bitPattern: right)).partialValue)
+                    : nil
+            case .remainder:
+                right != 0
+                    ? UInt64(bitPattern: Int64(bitPattern: left).remainderReportingOverflow(dividingBy: Int64(bitPattern: right)).partialValue)
+                    : nil
+            case .unsignedDivide: right != 0 ? left / right : nil
+            case .unsignedRemainder: right != 0 ? left % right : nil
             case .bitAnd: left & right
             case .bitOr: left | right
             case .bitXor: left ^ right
@@ -2417,7 +2434,8 @@ public struct ValueTracer: Sendable {
                  .arithmeticShiftRight:
                 return lhs
             case .multiply, .bitAnd, .multiplyHigh, .unsignedMultiplyHigh: return .immediate(0)
-            case .divide, .remainder: return .unknown // by zero — don't simplify
+            case .divide, .remainder, .unsignedDivide, .unsignedRemainder:
+                return .unknown // by zero — don't simplify
             case .equal, .notEqual, .less, .lessEqual, .greater, .greaterEqual,
                  .unsignedLess, .unsignedLessEqual, .unsignedGreater, .unsignedGreaterEqual:
                 break // a comparison against 0 is meaningful; keep it symbolic
@@ -2427,9 +2445,10 @@ public struct ValueTracer: Sendable {
         // to (sdiv, then mul + sub or msub). Fold it back to the modulo.
         if op == .subtract,
            case .binary(.multiply, let quotient, let divisor) = rhs,
-           case .binary(.divide, let numerator, let denominator) = quotient,
+           case .binary(let division, let numerator, let denominator) = quotient,
+           division == .divide || division == .unsignedDivide,
            numerator == lhs, denominator == divisor {
-            return .binary(.remainder, lhs, divisor)
+            return .binary(division == .divide ? .remainder : .unsignedRemainder, lhs, divisor)
         }
         if let folded = MagicDivision.fold(op, lhs, rhs) {
             return folded

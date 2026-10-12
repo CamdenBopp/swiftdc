@@ -47,7 +47,7 @@ enum MagicDivision {
         let x = atoms[0]
         let q: (UInt64) -> UInt64? = { evaluate(tree, bindings: [(x, $0)]) }
         guard let divisor = signed ? signedDivisor(q) : unsignedDivisor(q) else { return nil }
-        return .binary(.divide, x, .immediate(divisor))
+        return .binary(signed ? .divide : .unsignedDivide, x, .immediate(divisor))
     }
 
     /// |D| is the smallest positive x whose quotient is non-zero, and that
@@ -98,14 +98,15 @@ enum MagicDivision {
         collectAtoms(tree, into: &atoms)
         guard atoms.count == 2 else { return nil }
         for (index, atom) in atoms.enumerated() {
-            guard case .binary(.divide, let x, .immediate(let divisor)) = atom,
+            guard case .binary(let division, let x, .immediate(let divisor)) = atom,
+                  division == .divide || division == .unsignedDivide,
                   x == atoms[1 - index]
             else { continue }
             let pairs = zip(unsignedProbes(divisor: max(divisor, 2)), unsignedProbes(divisor: 3).reversed())
             for (a, b) in pairs {
                 guard evaluate(tree, bindings: [(x, a), (atom, b)]) == a &- divisor &* b else { return nil }
             }
-            return .binary(.remainder, x, .immediate(divisor))
+            return .binary(division == .divide ? .remainder : .unsignedRemainder, x, .immediate(divisor))
         }
         return nil
     }

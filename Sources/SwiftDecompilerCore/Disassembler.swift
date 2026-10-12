@@ -3362,6 +3362,14 @@ public struct Disassembler: Sendable {
                 if op == .subtract, case .immediate(0) = lhs {
                     return "-\(operand(rhs))"
                 }
+                // `udiv`: a plain `/` or `%` only when the dividend is a proven
+                // UInt; otherwise the U1 marker, never the signed operator it
+                // disagrees with at every negative input.
+                if op == .unsignedDivide || op == .unsignedRemainder {
+                    let proven = TypeInference.typeOf(lhs, arguments: argumentTypes).isUnsignedInteger
+                    let symbol = proven ? op.symbol : op.symbol + "\u{1D41}"
+                    return "(\(operand(lhs)) \(symbol) \(operand(rhs)))"
+                }
                 // Normalize `const op var` to `var mirror(op) const` so a
                 // comparison reads like source; only when the right side isn't
                 // itself a constant (so `const op const` is left as-is).
