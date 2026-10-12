@@ -17,8 +17,13 @@ Fixtures/Sample/*.dylib
 Fixtures/Sample/*.dSYM/
 Fixtures/Sample/*.swiftmodule
 Fixtures/Sample/*.swiftdoc
+Fixtures/Sample/*.swiftsourceinfo
+Fixtures/Sample/*.abi.json
 Fixtures/Sample/*.o
 Fixtures/Sample/*.a2s
+Fixtures/Sample/abi-source-oracle
+Fixtures/Sample/abi-source-resilient-oracle
+Fixtures/Sample/exception-cleanup-oracle
 
 # Benchmark harness output (regenerate with Benchmarks/benchmark.py).
 # The curated samples in Benchmarks/samples/ and the report are tracked; the
