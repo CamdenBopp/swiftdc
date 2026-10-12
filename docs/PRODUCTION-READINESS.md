@@ -1259,8 +1259,11 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 5. Performance and memory on large frameworks
 
-- **OPEN — Fiery Feeds whole-binary `xrefs` is still 6× origin/master, at an
-  11 GB footprint.** At `74b7b06`, release build, `/usr/bin/time -l swiftdc
+- **OPEN — Fiery Feeds whole-binary `xrefs` is 1.8× origin/master, at an
+  11.8 GB footprint.** At `5e8cb53` (after the bind table below): 275.3 s,
+  peak footprint 11.81 GB, output byte-identical to `74b7b06`'s (`cmp`).
+  Origin/master: 153.5 s. The footprint is now the larger problem: past the
+  8 GB ceiling this host's runs are held to. Earlier record: At `74b7b06`, release build, `/usr/bin/time -l swiftdc
   xrefs "/Applications/Fiery Feeds.app/Contents/MacOS/Fiery Feeds" --arch arm64
   --unreferenced`: 953 s, max RSS 5.47 GB, **peak footprint 11.05 GB**, 126,173
   output lines, exit 0. origin/master took 153.5 s (below). The symbolizer fix
@@ -1271,8 +1274,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   `disasm --pseudo -f Article` from 222.2 s / 224.5 s to 57.0 s / 57.2 s
   (alternating runs, footprint +35 MB, output byte-identical), Clarc `disasm
   --pseudo` 35.5 s to 28.6 s, Macs Fan Control and UTM unchanged (few bound
-  loads), all six outputs `cmp`-identical. The whole-binary rerun and the
-  11 GB footprint remain open. The RSS
+  loads), all six outputs `cmp`-identical. The RSS
   watcher used for this run sampled `ps -o rss` every 5 s, saw at most 4.0 GB,
   and never tripped its 8 GB kill: compressed pages leave RSS but count in the
   footprint. A memory guard on this host must read the footprint
