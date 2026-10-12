@@ -37,6 +37,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libRuntimeIvars.dylib",
         "Fixtures/Sample/libCow.dylib",
         "Fixtures/Sample/libSameName.dylib",
+        "Fixtures/Sample/libAsyncInout.dylib",
         "Fixtures/Sample/libAsyncFns.dylib",
         "Fixtures/Sample/libAsyncFns.opt.dylib",
         "Fixtures/Sample/libAsyncFns.opt.stripped.dylib",

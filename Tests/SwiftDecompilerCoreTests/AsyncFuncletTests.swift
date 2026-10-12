@@ -392,3 +392,16 @@ func resumeFuncletsDoNotInheritTheSignatureArgumentsIfPresent(path: String) asyn
     guard let entry = functions.first(where: { $0.asyncFunclet?.isEntry == true }) else { return }
     #expect(entry.renderPseudo().contains("(arg0)"))
 }
+
+/// A slot whose address goes to a callee (`inout`) can be written by it, so a
+/// single store in the chain no longer proves its value. Read as proven, the
+/// final resume of `inoutSync` rendered `return (arg0 + (arg0 << 1))`: the
+/// value before `syncBump(&n)` added 11.
+@Test func declinesAnEscapedContextSlotIfPresent() async throws {
+    let path = "Fixtures/Sample/libAsyncInout.dylib"
+    for name in ["inoutSync", "inoutAcross"] {
+        guard let text = try await structured(path, name) else { return }
+        #expect(text.contains(name), Comment(rawValue: text))
+        #expect(!text.contains("return (arg0"), Comment(rawValue: text))
+    }
+}

@@ -54,6 +54,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name Cow cow.swift -o libCow.
 echo "==> same-name classes fixture (-O) — vtable dispatch must not cross classes"
 $SWIFTC -parse-as-library -O -emit-library -module-name SameName samename.swift -o libSameName.dylib
 
+echo "==> async inout fixture (-O) — a context slot whose address escapes"
+$SWIFTC -parse-as-library -O -emit-library -module-name AsyncInout asyncinout.swift -o libAsyncInout.dylib
+
 echo "==> swifterror probe (-O, and stripped) — callees with no name to say they throw"
 $SWIFTC -parse-as-library -O -emit-library -module-name SwiftErrorProbe swifterror.swift -o libSwiftErrorProbe.dylib
 cp libSwiftErrorProbe.dylib libSwiftErrorProbe.stripped.dylib

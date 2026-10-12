@@ -3,6 +3,7 @@ import MachOKit
 import MachOSwiftSection
 import Demangling
 import Synchronization
+import Ccapstone
 
 /// A per-run memoization cache for `Disassembler.demangle`.
 ///
@@ -969,11 +970,45 @@ public struct Disassembler: Sendable {
             default: return false
             }
         }
+        // The lowest context offset whose address any funclet computes into a
+        // register (`add x0, x22, #0x10`; a plain `mov x0, x22` is offset 0).
+        // That address goes to a callee (an `inout` argument, an indirect
+        // result), which can write the slot and everything after it, so a
+        // single store in the chain no longer proves the slot's value. Measured:
+        // `var n = a &* 3; await Task.yield(); syncBump(&n); return n` rendered
+        // `return (arg0 + (arg0 << 1))`; the function returns 3a + 11.
+        func lowestEscapedOffset(_ funclet: DisassembledFunction) -> Int? {
+            var lowest: Int?
+            for insn in funclet.instructions {
+                guard let detail = insn.detail, detail.operands.count >= 2,
+                      let dest = detail.operands[0].operand.register, dest.kind == .gpr,
+                      dest.number != 22, dest.number != 29, dest.number != 31,
+                      let source = detail.operands[1].operand.register,
+                      source.kind == .gpr, source.number == 22
+                else { continue }
+                let offset: Int
+                switch detail.id {
+                case AARCH64_INS_ADD:
+                    offset = detail.operands.count == 3
+                        ? Int(clamping: detail.operands[2].operand.immediateValue ?? 0) : 0
+                case AARCH64_INS_MOV, AARCH64_INS_ORR, AARCH64_INS_SUB:
+                    offset = 0
+                default:
+                    continue
+                }
+                lowest = min(lowest ?? offset, offset)
+            }
+            return lowest
+        }
         var result: [UInt64: [Int: AbstractValue]] = [:]
         for (entry, chain) in index.chains {
             var stores: [Int: [AbstractValue]] = [:]
+            var escapedFrom: Int?
             for address in chain {
                 guard let funclet = function(address) else { continue }
+                if let offset = lowestEscapedOffset(funclet) {
+                    escapedFrom = min(escapedFrom ?? offset, offset)
+                }
                 // The entry's parameters, under the same proof the main pass uses.
                 let base: MethodEntryConvention? = Self.swiftScalarArgumentRegisters(
                     of: funclet, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex
@@ -984,10 +1019,11 @@ public struct Disassembler: Sendable {
                     stores[slot, default: []] += values
                 }
             }
-            let proven = stores.compactMapValues { values -> AbstractValue? in
-                guard values.count == 1, let value = values.first, isPortable(value) else { return nil }
-                return value
-            }
+            let proven = stores.filter { slot, _ in escapedFrom.map { slot < $0 } ?? true }
+                .compactMapValues { values -> AbstractValue? in
+                    guard values.count == 1, let value = values.first, isPortable(value) else { return nil }
+                    return value
+                }
             if !proven.isEmpty { result[entry] = proven }
         }
         return result
