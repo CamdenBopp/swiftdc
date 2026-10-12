@@ -122,7 +122,9 @@ private func reconstructionStructured(
 
     // A method taking a by-value struct parameter: arg0.x / arg0.y recovered.
     guard let dot = try await reconstructionPseudo("Vec2.dot") else { return }
-    #expect(dot.contains("return ((arg0.x * self.x) + (arg0.y * self.y))"))
+    // `self` follows the formal arguments: d0/d1 = other, d2/d3 = self. The
+    // old pin had them swapped (ABISourceLoweringTests runs the same shape).
+    #expect(dot.contains("return ((self.x * arg0.x) + (self.y * arg0.y))"), "\(dot)")
 }
 
 // MARK: - Class vtable property access

@@ -49,6 +49,9 @@ $CLANG -O1 -dynamiclib switches.c -o libSwitches.dylib
 # arm64e lowers the same switches to the hardened form (csel clamp, ldrsw entries).
 $CLANG -arch arm64e -O1 -dynamiclib switches.c -o libSwitches.arm64e.dylib
 
+echo "==> ABI-source fixtures and native oracles (result and value-self registers)"
+./build-abi-source.sh
+
 echo "==> resilient reconstruction fixture (library evolution) — coroutine accessors"
 # Library evolution forces opaque accessors, so a public stored property gets a
 # synthesized `_modify`/`_read` yield_once coroutine (absent from a fragile build).

@@ -2199,7 +2199,12 @@ public struct Disassembler: Sendable {
     static func awaitResultName(_ ordinal: Int) -> String { "awaited\(ordinal)" }
 
     /// `swiftReturnTypeName(of:)` on a bare demangled name (an awaited callee's).
-    static func swiftReturnTypeName(forDemangledName name: String) -> String? {
+    static func swiftReturnTypeName(forDemangledName fullName: String) -> String? {
+        // A protocol witness prints its conformance after the signature
+        // (`… : Swift.Int in conformance M.T : Swift.Hashable in M`), and its
+        // ` : ` would otherwise be taken for the getter's type separator. The
+        // witness returns the requirement's declared type.
+        let name = fullName.range(of: " in conformance ").map { String(fullName[..<$0.lowerBound]) } ?? fullName
         let returnType: String
         if let arrow = name.range(of: " -> ", options: .backwards) {
             returnType = String(name[arrow.upperBound...]).trimmingCharacters(in: .whitespaces)
@@ -2223,7 +2228,8 @@ public struct Disassembler: Sendable {
     /// `x0`/`v0` from being printed as a fabricated return for a type that isn't
     /// actually returned there.
     static func swiftReturnRegister(
-        of function: DisassembledFunction, classTypeIndex: ClassTypeIndex = ClassTypeIndex()
+        of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
+        classTypeIndex: ClassTypeIndex = ClassTypeIndex()
     ) -> SwiftReturnRegister? {
         guard let returnType = Self.swiftReturnTypeName(of: function) else { return nil }
         // The printed type is not the ABI. A closure reabstracted to a generic
@@ -2240,7 +2246,8 @@ public struct Disassembler: Sendable {
             || name.contains("resume partial function for ") {
             return nil
         }
-        return swiftReturnRegister(forReturnType: returnType, classTypeIndex: classTypeIndex)
+        return swiftReturnRegister(forReturnType: returnType, enumCaseIndex: enumCaseIndex,
+                                   classTypeIndex: classTypeIndex)
     }
 
     /// `swiftReturnRegister(of:)` for an awaited callee known only by name.
@@ -2250,27 +2257,43 @@ public struct Disassembler: Sendable {
     }
 
     static func swiftReturnRegister(
-        forReturnType returnType: String, classTypeIndex: ClassTypeIndex = ClassTypeIndex()
+        forReturnType returnType: String, enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
+        classTypeIndex: ClassTypeIndex = ClassTypeIndex()
     ) -> SwiftReturnRegister? {
-        // Double/Float come back in v0 (d0/s0), every other single value in x0.
+        // Double/Float come back in v0 (d0/s0).
         let floatingTypes: Set<String> = [
             "Swift.Double", "Swift.Float", "Swift.Float16", "Swift.Float32",
             "Swift.Float64", "Swift.CGFloat", "CoreGraphics.CGFloat",
         ]
         if floatingTypes.contains(returnType) { return .floating }
-        // Multi-register / indirect returns — don't read a single register.
-        // `String` is two words; a tuple or a metatype/existential is several.
-        if returnType.hasPrefix("("), returnType != "()" { return nil }
-        if returnType == "Swift.String" || returnType == "Swift.StaticString" { return nil }
-        if returnType.contains(" -> ") { return nil } // returns a closure
         // An optional of a value type marks nil outside x0: a tag in x1 (`Int?`)
         // or an extra inhabitant of the payload (`3` for a three-case enum).
         // Read alone, x0 printed nil as `0`. Only a pointer or class payload,
         // whose nil is the null pointer, is the one register.
         if let payload = Self.optionalPayload(returnType) {
-            return Self.isSingleRegisterPointer(payload) || classTypeIndex.isClass(payload) ? .integer : nil
+            return Self.isSingleRegisterPointer(payload) || classTypeIndex.isClass(payload)
+                || payload == "Swift.AnyObject" ? .integer : nil
         }
-        return .integer
+        // A printed nominal type does not determine its register class: a
+        // one-Double struct returns in v0, a two-word struct in x0 and x1, a
+        // larger one through x8. Read x0 only for layouts the signature or the
+        // image's metadata proves are one integer register. Defaulting every
+        // other type to x0 rendered a stale register as the result
+        // (`abiOneDoubleFromInt` returned its callee's Int; recovered from the
+        // pre-merge stash 983aa25 with its ABISource execution oracle).
+        let integerTypes: Set<String> = [
+            "Swift.Bool", "Swift.Int", "Swift.UInt", "Swift.Int8", "Swift.UInt8",
+            "Swift.Int16", "Swift.UInt16", "Swift.Int32", "Swift.UInt32",
+            "Swift.Int64", "Swift.UInt64",
+        ]
+        if integerTypes.contains(returnType) || Self.isSingleRegisterPointer(returnType)
+            || returnType == "Swift.AnyObject"
+            // Array's native value is one storage pointer.
+            || (returnType.hasPrefix("Swift.Array<") && returnType.hasSuffix(">"))
+            || enumCaseIndex.isNoPayloadEnum(returnType) || classTypeIndex.isClass(returnType) {
+            return .integer
+        }
+        return nil
     }
 
     /// The wrapped type of `Swift.Optional<T>`, `T?` or `T!`, or nil.
@@ -2601,19 +2624,18 @@ public struct Disassembler: Sendable {
               !function.instructions.contains(where: { $0.text.contains("[x20") })
         else { return nil }
 
-        // `self`'s fields fill the leading registers of the appropriate bank;
-        // parameters follow — integers in the remaining x…, floats/HFAs in the
-        // remaining SIMD registers by their own counters. Any non-float-scalar,
+        // A nonmutating value `self` is the last ordinary parameter: the formal
+        // arguments fill each register bank first, and an HFA `self` follows
+        // them in the SIMD bank. Seeding it first labelled `scaled(_ factor:)`'s
+        // d0 as self.x (native: d0 = factor, d1/d2 = self). Any non-float-scalar,
         // non-HFA parameter bails the whole decomposition so the register
-        // assignment can't drift.
+        // assignment can't drift. (Recovered from the pre-merge stash 983aa25.)
         var seeded: [String: AbstractValue] = [:]
         var floatIndex = 0
         var integerIndex = 0
-        if let selfOffsets = selfMap.homogeneousFloatFieldOffsets {
-            for (index, offset) in selfOffsets.enumerated() {
-                seeded["v\(index)"] = .selfFieldValue(offset: offset)
-            }
-            floatIndex = selfOffsets.count
+        let floatingSelfOffsets = selfMap.homogeneousFloatFieldOffsets
+        if floatingSelfOffsets != nil {
+            // Seeded after the formal arguments, below.
         } else if let selfOffsets = selfMap.wordIntegerFieldOffsetsInRegisters, parameters.isEmpty {
             // A small integer struct shares the general-register bank with its
             // parameters, and (unlike a float HFA in its own SIMD bank) `self`
@@ -2648,6 +2670,13 @@ public struct Disassembler: Sendable {
                     floatIndex += 1
                 }
                 argumentFieldMaps[index] = map
+            }
+        }
+        if let floatingSelfOffsets {
+            guard floatIndex + floatingSelfOffsets.count <= 8 else { return nil }
+            for offset in floatingSelfOffsets {
+                seeded["v\(floatIndex)"] = .selfFieldValue(offset: offset)
+                floatIndex += 1
             }
         }
         return (selfMap.typeName, selfMap, seeded, argumentFieldMaps)
@@ -4055,7 +4084,8 @@ public struct Disassembler: Sendable {
                 }
             } else if function.objcMethod == nil, isReturn(insn),
                       !throwExits.contains(insn.address), returnsDirectly,
-                      let returnRegister = Self.swiftReturnRegister(of: function, classTypeIndex: classTypeIndex) {
+                      let returnRegister = Self.swiftReturnRegister(
+                          of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
                 // A Swift return that is a call's result consumes it, so the call
                 // isn't also printed as its own statement above the `return`.
                 let value = returnRegister == .floating
@@ -4160,7 +4190,8 @@ public struct Disassembler: Sendable {
                 }
                 sourceNotes.append("throw \(thrown)")
             } else if function.objcMethod == nil, isReturn(insn), returnsDirectly,
-               let returnRegister = Self.swiftReturnRegister(of: function, classTypeIndex: classTypeIndex) {
+               let returnRegister = Self.swiftReturnRegister(
+                   of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
                 let rawExit = returnRegister == .floating
                     ? analysis.exitFloatValues[insn.address]
                     : analysis.exitValues[insn.address]
@@ -4169,6 +4200,20 @@ public struct Disassembler: Sendable {
                     if exit != .unknown {
                         sourceNotes.append("return \(renderReturnValue(exit, before: insn.address))")
                     }
+                }
+            } else if function.objcMethod == nil, isReturn(insn), returnsDirectly, let returnTypeName,
+                      case .immediate(let x0)? = analysis.exitValues[insn.address].map(sanitizeValue) {
+                // Not a proven single-register type, but a payload enum returned
+                // in x0/x1 is named by its exact byte pattern over both registers
+                // (`PayloadEnumCaseIndex`), which proves its own layout. Nothing
+                // else about x0 is read here.
+                let x1: UInt64? = {
+                    guard case .immediate(let value)? = analysis.exitYieldValues[insn.address].map(sanitizeValue)
+                    else { return nil }
+                    return value
+                }()
+                if let caseName = payloadEnumIndex.caseName(ofEnum: returnTypeName, x0: x0, x1: x1) {
+                    sourceNotes.append("return \(returnTypeName).\(caseName)")
                 }
             } else if asyncReturns.contains(insn.address), let returnRegister = asyncReturnRegister {
                 let rawExit = returnRegister == .floating
