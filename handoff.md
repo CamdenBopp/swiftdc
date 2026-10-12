@@ -152,7 +152,62 @@ Do not adopt: majority-vote signedness (reintroduces U1), callee-saved
 suppression (deletes swiftcc's x20/x21/x22), any "pick one arbitrarily" ABI
 mode, ReDyne's pseudocode (`b.lo` -> `<`, the U1 defect) and its silent caps.
 
-### 6. Everything else
+### 6. Mined from kuna, koute/ghidra-decompiler and glaurung (2026-10-12)
+
+All three are Apache-2.0 (code portable with NOTICE attribution). Additions and
+refinements to section 5's plan:
+
+- **Variadic calls, soundly.** kuna (`docs/features/varargstackargs/`): on Apple
+  arm64 empty x1–x7 at a variadic call is the ABI, not the end of the list; with
+  a resolved format string, take the fixed parameters plus one 8-byte stack slot
+  per conversion from `CallSite.stackArguments`, `?` for any missing. glaurung's
+  `ir/printf_format.rs` is a fail-closed format parser (positional `$`, `*`, and
+  ambiguous conversions decline). Re-derive Darwin's stack layout; both tools
+  model other ABIs. Effort S–M.
+- **Jump tables, better than a shape match.** kuna `p2_lift/jumptable.rs` and
+  Ghidra `rangeutil.rs` / `jumptable.rs`: pull the index range back from the
+  dominating guards (strided, wrapping intervals), then emulate the address
+  computation per in-range value on the existing tracer. Keep the sound core;
+  decline where Ghidra guesses (range halving above 0x10000, the 256-entry byte
+  fallback, cutting at the first gap). Every unresolved `br xN` reports a typed
+  coverage gap, never an empty successor list (glaurung `analysis/dispatch.rs`).
+- **Structure accounting in production** (glaurung
+  `ir/structure_accounting.rs`): before emitting, check the region tree against
+  the CFG both ways (unexpressed edges, invented edges, duplicated blocks) and
+  fall back to labelled gotos when it fails. Stronger than the test-only flow
+  oracle. Its named failure shapes (multi-latch rotated loops, joins beyond the
+  loop) are ready fixtures.
+- **Loop body extension** (Ghidra `blockaction.rs` `LoopBody::extend`,
+  `label_exit_edges`) for the measured gap of loop-body blocks emitted outside
+  their loop; and kuna's capped SAILR passes (tail duplication with at most one
+  call, cross-jump reverting, guard-clause flattening) plus lowered compare-tree
+  to switch (`kuna_loweredswitch.rs`, for -O enum switches).
+- **Arity refinements for the register-usage plan:** bits that reach no
+  observable effect are not reads (glaurung `ir/definedness.rs`; `movk`/`bfi`
+  preserved lanes, padding); a register holding the caller's own callee-saved
+  input or an earlier call's killed result is provably not an argument (Ghidra
+  `AncestorRealistic`, negative half only).
+- **Magic-number division** (Ghidra `ruleaction/division.rs`): fold
+  `umulh`/`smulh` + shifts back to `x / d`, declining unless the error bound holds
+  for every input of the width. swiftdc has no `umulh` handling.
+- **Oracles:** koute's pure-Rust Ghidra port (no C++/Java, raw-bytes entry
+  `Program::from_raw_bytes(…, "AARCH64:LE:64:AppleSilicon:default", …)`) can serve
+  as an instruction-semantics oracle (run its p-code emulator and swiftdc's
+  transfer functions on random inputs; it would have caught `cmn` and U1) and as
+  a jump-table oracle. Not as a Swift output oracle: its Apple cspec treats
+  x20/x21/x22 as callee-saved. Qualify every oracle with glaurung's mutation
+  method (`tools/metric_mutation.py`): measured sensitivity and specificity,
+  not assumed.
+- Also: kuna's closed-function gate for caller type votes (exclude vtable,
+  witness, method-list entries); its byte-identical-to-serial `--jobs` contract
+  if parallel decode is ever added (profile first); PAC instructions as identity
+  on the pointer (check whether arm64e loses values in the tracer first).
+
+Do not adopt: positional "gap ends the list" arity, arity from earlier calls to
+the same callee, type votes as arity evidence, any cspec as a swiftcc model,
+glaurung's keyword-matching LLM naming, WARP hashing for identity.
+
+### 7. Everything else
 
 - A float argument to a call is not tracked (`Swift.Double.init()` for
   `Double(f)` at -Onone).
