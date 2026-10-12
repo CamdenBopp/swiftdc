@@ -6,6 +6,12 @@ import Foundation
 /// statements that the CFG + value-tracking already recover.
 public extension DisassembledFunction {
     func renderPseudo(hideRuntime: Bool = true) -> String {
+        Probe.inFunction(startAddress, displayName) {
+            Probe.timed(.renderTime) { renderPseudoBody(hideRuntime: hideRuntime) }
+        }
+    }
+
+    private func renderPseudoBody(hideRuntime: Bool) -> String {
         var lines = ["\(displayName) {"]
         if let objcMethod { lines.append("    // \(objcMethod.signature)") }
         if let asyncLine = asyncHeaderLine() { lines.append("    \(asyncLine)") }

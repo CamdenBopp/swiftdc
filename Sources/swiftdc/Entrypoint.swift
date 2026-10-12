@@ -177,12 +177,18 @@ struct AnalyzeCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Emit structured JSON instead of text.")
     var json = false
 
+    @OptionGroup var probe: ProbeOptions
+
     func run() async throws {
         if listImages {
             try emit(BinaryLoader.dyldCacheImagePaths(cachePath: cache).joined(separator: "\n"), to: output)
             return
         }
         if listBinaries { try emit(binaryListing(for: path), to: output); return }
+        try await probe.run { try await runAnalyze() }
+    }
+
+    private func runAnalyze() async throws {
         let report = AnalysisReport(preset: demangle)
         let text: String
         if image != nil || imagePath != nil || cache != nil {
@@ -415,12 +421,14 @@ struct DisasmCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Like --pseudo, but folds the CFG into if/else structure (goto for loops).")
     var structured = false
 
+    @OptionGroup var probe: ProbeOptions
+
     func run() async throws {
         if listImages {
             try emit(BinaryLoader.dyldCacheImagePaths(cachePath: cache).joined(separator: "\n"), to: output)
             return
         }
-        try await runDisasm()
+        try await probe.run { try await runDisasm() }
     }
 
     /// The "unusually small" half of the empty-result rule (see CLAUDE.md). An

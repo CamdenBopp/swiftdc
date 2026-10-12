@@ -65,7 +65,13 @@ struct XrefsCommand: AsyncParsableCommand {
         return notes.isEmpty ? "" : "  (\(notes.joined(separator: "; ")))"
     }
 
+    @OptionGroup var probe: ProbeOptions
+
     func run() async throws {
+        try await probe.run { try await runXrefs() }
+    }
+
+    private func runXrefs() async throws {
         if listImages {
             try emit(BinaryLoader.dyldCacheImagePaths(cachePath: cache).joined(separator: "\n"), to: output)
             return

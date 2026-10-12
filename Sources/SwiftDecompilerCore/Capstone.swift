@@ -96,6 +96,7 @@ final class CapstoneEngine {
                 }
                 // Undecodable slot (or a stall): skip one instruction and resume.
                 if offset < code.count, count == 0 {
+                    Probe.record(.decodeSkippedSlot, at: address &+ UInt64(offset))
                     offset += Self.instructionSize
                 }
             }
@@ -172,7 +173,11 @@ final class CapstoneEngine {
         if inGroup(pointer, CS_GRP_RET) { return .return }
         if inGroup(pointer, CS_GRP_CALL) { return .call }
         guard inGroup(pointer, CS_GRP_JUMP) else { return .sequential }
-        guard let detail else { return .conditionalBranch } // no detail: assume the weaker claim
+        guard let detail else {
+            // No detail: assume the weaker claim.
+            Probe.record(.decodeJumpWithoutDetail, at: pointer.pointee.address)
+            return .conditionalBranch
+        }
         if Self.compareAndBranch.contains(detail.id.rawValue) { return .conditionalBranch }
         let cc = detail.conditionCode
         let conditional = cc != AArch64CC_Invalid && cc != AArch64CC_AL && cc != AArch64CC_NV

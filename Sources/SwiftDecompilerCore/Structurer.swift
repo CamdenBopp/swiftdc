@@ -11,6 +11,12 @@ public extension DisassembledFunction {
     /// `ControlFlowStructure.emit`); pass `0` (the default) to use the built-in
     /// limit. Exposed so tests can inject a small value.
     func renderStructured(maxStructuringDepth: Int = 0) -> String {
+        Probe.inFunction(startAddress, displayName) {
+            Probe.timed(.renderTime) { renderStructuredBody(maxStructuringDepth: maxStructuringDepth) }
+        }
+    }
+
+    private func renderStructuredBody(maxStructuringDepth: Int) -> String {
         let blocks = basicBlocks()
         guard blocks.count > 1 else { return renderPseudo() }
 
@@ -283,8 +289,11 @@ struct ControlFlowStructure {
     /// (non-server) rendering.
     static func onLargeStack(_ work: @escaping @Sendable () -> Void) {
         let done = DispatchSemaphore(value: 0)
+        // Task-locals do not cross a raw thread: carry the probe context over,
+        // or every event the structurer records is silently lost.
+        let context = Probe.context
         let thread = Thread {
-            work()
+            Probe.withContext(context, work)
             done.signal()
         }
         thread.stackSize = workerStackSize
@@ -300,7 +309,8 @@ struct ControlFlowStructure {
         // discovery sweep first and emit with the complete set; labels do not
         // affect control flow, so both sweeps produce the same structure.
         var discovered = Set<Int>()
-        _ = emitSweep(gotoTargets: &discovered)
+        // Muted: it walks the same blocks as the emitting sweep below.
+        Probe.muted { _ = emitSweep(gotoTargets: &discovered) }
         var gotoTargets = discovered
         var lines = [header]
         if let objcLine { lines.append(objcLine) }
@@ -326,6 +336,7 @@ struct ControlFlowStructure {
             for index in blocks.indices where !visited.contains(index) && !isTrivialTail(index) {
                 // A detached block keeps its address identity: code after a
                 // trap is not the straight-line body of what precedes it.
+                Probe.record(.structureDetachedBlock, at: blocks[index].startAddress)
                 gotoTargets.insert(index)
                 lines += emit(from: index, until: exit, indent: 1, visited: &visited, gotoTargets: &gotoTargets, loop: nil, depth: 0)
                 progressed = true
@@ -376,6 +387,7 @@ struct ControlFlowStructure {
     func emit(from start: Int, until stop: Int, indent: Int, visited: inout Set<Int>, gotoTargets: inout Set<Int>, loop: LoopContext?, depth: Int) -> [String] {
         if depth > maxDepth,
            start != stop, start != exit, !visited.contains(start), !isTrivialTail(start) {
+            Probe.record(.structureDepthGoto, at: blocks[start].startAddress, ["depth": .int(depth)])
             gotoTargets.insert(start)
             return ["\(String(repeating: "    ", count: indent))goto loc_\(hex(blocks[start].startAddress))"]
         }
@@ -505,6 +517,7 @@ struct ControlFlowStructure {
                     if labels[target] == nil { order.append(target) }
                     labels[target, default: []].append(caseIndex)
                 }
+                Probe.record(.structureUnknownSwitchIndex, at: blocks[current].startAddress, ["cases": .int(cases.count)])
                 lines.append("\(pad)switch (?) {")
                 for target in order {
                     guard let arm = index(of: target), let caseLabels = labels[target] else { continue }
@@ -530,6 +543,7 @@ struct ControlFlowStructure {
                     ? edge(from: current, to: succs[1], until: merge, indent: indent + 1, visited: &visited, gotoTargets: &gotoTargets, loop: loop, depth: depth + 1)
                     : []
                 let cond = branch?.text ?? "?"
+                if cond == "?" { Probe.record(.structureUnknownCondition, at: blocks[current].startAddress) }
                 // Collapse empty branches: drop a no-op `if`, invert when only the
                 // `then` side is empty.
                 if thenLines.isEmpty, elseLines.isEmpty {

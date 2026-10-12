@@ -472,7 +472,8 @@ public struct Disassembler: Sendable {
         var indirectResultUses: [UInt64: IndirectResultUse] = [:]
         var registerSummaries: [UInt64: CalleeRegisterSummary] = [:]
         for index in boundaries.indices {
-            let instructions = capstoneInstructions(in: machO, span: span(index))
+            // Muted: pass 2 decodes the same span again and records its events.
+            let instructions = Probe.muted { capstoneInstructions(in: machO, span: span(index)) }
             collectUnnamedCallTargets(in: instructions, names: names, into: &targets)
             // The callee-side x8 fact every caller's analysis consults (see
             // `PerFunctionContext.indirectResultUses`); decoded here so pass 2
@@ -825,11 +826,28 @@ public struct Disassembler: Sendable {
         return capstoneInstructions(in: machO, span: (address, stop))
     }
 
+    static func fieldFailureLabel(_ failure: FieldLookupFailure) -> String {
+        switch failure {
+        case .pastInstanceSize: "past-instance-size"
+        case .pastTrustedPrefix(_, let reason): "past-trusted-prefix: \(reason)"
+        case .padding: "padding"
+        case .noLayout(let reason): "no-layout: \(reason)"
+        }
+    }
+
     /// The complete per-function analysis: resolve references and call targets,
     /// recover the receiver convention and field maps, and enrich call arguments.
     /// Extracted verbatim from `assemble`'s map so both paths produce identical
     /// output by construction; the streaming path calls it one function at a time.
     func analyzeFunction(
+        _ rawFunction: DisassembledFunction, context: PerFunctionContext
+    ) -> DisassembledFunction {
+        Probe.inFunction(rawFunction.startAddress, rawFunction.displayName) {
+            Probe.timed(.analysisTime) { analyzeFunctionBody(rawFunction, context: context) }
+        }
+    }
+
+    private func analyzeFunctionBody(
         _ rawFunction: DisassembledFunction, context: PerFunctionContext
     ) -> DisassembledFunction {
         var function = annotateReferences(in: rawFunction, resolver: context.resolver)
@@ -1518,7 +1536,10 @@ public struct Disassembler: Sendable {
                 let mid = (low + high) / 2
                 if decoded[mid].address < insn.address { low = mid + 1 } else { high = mid }
             }
-            guard low < decoded.count, decoded[low].address == insn.address else { continue }
+            guard low < decoded.count, decoded[low].address == insn.address else {
+                Probe.record(.decodeUnmatched, at: insn.address, ["text": .name(insn.text)])
+                continue
+            }
             let match = decoded[low]
             instructions[index] = Instruction(
                 address: insn.address, text: insn.text, annotation: insn.annotation,
@@ -3009,12 +3030,28 @@ public struct Disassembler: Sendable {
             guard let fieldMap else { return nil }
             switch fieldMap.lookup(offset: offset, bytes: max(bytes, 1)) {
             case .success(.whole(let name, let type)):
+                Probe.record(.fieldNamed, [
+                    "type": .name(fieldMap.typeName), "offset": .int(offset), "bytes": .int(bytes),
+                    "field": .name(name), "fieldType": .name(type ?? "?"), "coverage": .label("whole"),
+                ])
                 return ([name], type)
             case .success(.part(let name, let type, _, _)):
+                Probe.record(.fieldNamed, [
+                    "type": .name(fieldMap.typeName), "offset": .int(offset), "bytes": .int(bytes),
+                    "field": .name(name), "fieldType": .name(type ?? "?"), "coverage": .label("part"),
+                ])
                 return ([name], type)
             case .success(.spans(let names)):
+                Probe.record(.fieldNamed, [
+                    "type": .name(fieldMap.typeName), "offset": .int(offset), "bytes": .int(bytes),
+                    "field": .name(names.joined(separator: "+")), "coverage": .label("spans"),
+                ])
                 return (names, nil)
-            case .failure:
+            case .failure(let failure):
+                Probe.record(.fieldUnnamed, [
+                    "type": .name(fieldMap.typeName), "offset": .int(offset), "bytes": .int(bytes),
+                    "reason": .label(Self.fieldFailureLabel(failure)),
+                ])
                 return nil
             }
         }
@@ -3098,6 +3135,18 @@ public struct Disassembler: Sendable {
             in: function, targets: analysis.indirectControlFlowTargets,
             resolver: resolver, selfTypeName: selfTypeName, vtableIndex: vtableIndex
         )
+        if Probe.isActive {
+            for insn in function.instructions where insn.branchTarget == nil
+                && (insn.controlFlow == .call || insn.controlFlow == .branch)
+                && function.switchTargets[insn.address] == nil
+                && analysis.indirectControlFlowTargets[insn.address] == nil {
+                Probe.record(insn.controlFlow == .call ? .unresolvedIndirectCall : .unresolvedIndirectBranch,
+                             at: insn.address, ["text": .name(insn.text)])
+            }
+            for (address, targets) in function.switchTargets.sorted(by: { $0.key < $1.key }) {
+                Probe.record(.jumpTable, at: address, ["cases": .int(targets.count)])
+            }
+        }
         let selfDispatchSites = Set(function.instructions.filter(DisassembledFunction.isSelfDispatch).map(\.address))
         /// A call through self's own vtable slot is `self.member(…)`: the named
         /// implementation is only the one that runs when self is exactly its class.
@@ -3182,6 +3231,16 @@ public struct Disassembler: Sendable {
         var unprovenVariadicSites: Set<UInt64> = []
         for (address, site) in sites {
             var values = site.arguments
+            // Which layout decided this site's arguments. `positional` (the
+            // registers as the call found them, trimmed of trailing unknowns)
+            // is the one stale values have historically come through.
+            var strategy = "positional"
+            defer {
+                Probe.record(.argumentLayout, at: address, [
+                    "strategy": .label(strategy), "callee": .name(calleeByAddress[address] ?? "?"),
+                    "count": .int(argumentsByAddress[address]?.count ?? 0),
+                ])
+            }
             // `swift_willThrow(SWIFT_CONTEXT void *, SWIFT_ERROR_RESULT
             // SwiftError **)` (swift/include/swift/Runtime/Error.h:71) takes
             // the thrown error in x21 and nothing in x0. Rendering x0 printed
@@ -3189,6 +3248,7 @@ public struct Disassembler: Sendable {
             // times in SwiftData); the error box is x21's.
             if calleeByAddress[address] == "swift_willThrow" {
                 values = site.errorValue == .unknown ? [] : [site.errorValue]
+                strategy = "will-throw"
             }
             // A Swift callee with a proven layout gets exactly its parameters:
             // integer slots from x0… and float slots from v0…, each in order on
@@ -3211,6 +3271,7 @@ public struct Disassembler: Sendable {
                     argumentsByAddress[address] = laidOut.map(sanitizeValue)
                     laidOutTypes[address] = slots.map(\.type)
                 }
+                strategy = "swift-signature"
                 continue
             }
             // A C printf-family call passes its variadic arguments on the stack
@@ -3234,9 +3295,11 @@ public struct Disassembler: Sendable {
                         $0 < site.stackArguments.count ? site.stackArguments[$0] : AbstractValue.unknown
                     }
                     argumentsByAddress[address] = (fixed + variadicValues).map(sanitizeValue)
+                    strategy = "c-format"
                 } else {
                     argumentsByAddress[address] = fixed.map(sanitizeValue)
                     unprovenVariadicSites.insert(address)
+                    strategy = "c-format-unread"
                 }
                 continue
             }
@@ -3253,6 +3316,7 @@ public struct Disassembler: Sendable {
                    let count = DisassembledFunction.MessageSend.formatArgumentCount(literal) {
                     let variadic = (0 ..< count).map { $0 < site.stackArguments.count ? site.stackArguments[$0] : .unknown }
                     argumentsByAddress[address] = (Array(values.prefix(fixed)) + variadic).map(sanitizeValue)
+                    strategy = "objc-format"
                     continue
                 }
             }
@@ -3308,15 +3372,18 @@ public struct Disassembler: Sendable {
                         default: ""
                         }
                     }
+                    strategy = "objc-signature"
                     continue
                 case .declined:
                     argumentsByAddress[address] = ([receiver, selectorValue]
                         + Array(repeating: AbstractValue.unknown, count: colons)).map(sanitizeValue)
+                    strategy = "objc-signature-disputed"
                     continue
                 case .unavailable:
                     if receiverClass == nil, colons > 0, objcIndex.selectorMayUseFloatingArguments(selector) {
                         argumentsByAddress[address] = ([receiver, selectorValue]
                             + Array(repeating: AbstractValue.unknown, count: colons)).map(sanitizeValue)
+                        strategy = "objc-maybe-float"
                         continue
                     }
                 }
@@ -3348,6 +3415,7 @@ public struct Disassembler: Sendable {
                         unprovenVariadicSites.insert(address)
                     }
                     argumentsByAddress[address] = laidOut.map(sanitizeValue)
+                    strategy = "objc-variadic"
                     continue
                 }
                 let fixedStackCount = max(0, colons - 6)
@@ -3368,6 +3436,7 @@ public struct Disassembler: Sendable {
                calleeByAddress[address].flatMap({ selectorName(callee: $0, arguments: values) }) == nil,
                calleeByAddress[address].flatMap(DisassembledFunction.knownCArity(of:)) == nil {
                 values = Array(values.prefix(summary.argumentCount))
+                strategy = "body-reads"
             }
             if let values = sanitize(values) { argumentsByAddress[address] = values }
         }

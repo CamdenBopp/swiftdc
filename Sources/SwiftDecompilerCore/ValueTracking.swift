@@ -564,7 +564,10 @@ public struct ValueTracer: Sendable {
             worklist.removeFirst()
             queued.remove(addr)
             iterations += 1
-            if iterations > cap { break }
+            if iterations > cap {
+                Probe.record(.tracerFixpointCap, ["blocks": .int(blocks.count), "cap": .int(cap)])
+                break
+            }
             guard let block = blockByStart[addr] else { continue }
             let preds = predecessors[addr] ?? []
             // Only the function's entry receives the caller's ABI state. A block
@@ -684,7 +687,9 @@ public struct ValueTracer: Sendable {
                     // reconstructs like the flag branches, not just as raw `x8`.
                     result.branchConditions[insn.address] = condition
                 }
-                transfer(
+                let before = Probe.isActive ? registers : nil
+                let writes = before == nil ? nil : TracerWriteLog()
+                TracerWriteLog.$current.withValue(writes) { transfer(
                     insn, into: &registers,
                     record: { result.callSites[$0] = $1 },
                     recordAccess: { result.selfFieldAccesses[$0] = $1 },
@@ -692,7 +697,8 @@ public struct ValueTracer: Sendable {
                     recordSlotStore: { result.asyncSlotStores[$0, default: []].append($1) },
                     initializerEntry: entry?.isObjectiveCInitializer == true,
                     addressTaken: addressTaken
-                )
+                ) }
+                if let before, let writes { Self.checkWritesModelled(insn, before: before, written: writes.keys) }
             }
         }
         for block in blocks where block.instructions.contains(where: { $0.controlFlow == .return }) {
@@ -1755,7 +1761,10 @@ public struct ValueTracer: Sendable {
         while let addr = worklist.first {
             worklist.removeFirst(); queued.remove(addr)
             iterations += 1
-            if iterations > cap { break }
+            if iterations > cap {
+                Probe.record(.tracerLoopBodyCap, at: header, ["blocks": .int(body.count), "cap": .int(cap)])
+                break
+            }
             guard let block = blockByStart[addr] else { continue }
             let entry: State
             if addr == header {
@@ -2367,6 +2376,25 @@ public struct ValueTracer: Sendable {
     /// which is callee-saved and routinely holds a receiver across a call —
     /// silently drops arguments that were previously recovered.
     ///
+    /// Validation: a register the instruction writes (by Capstone's access
+    /// flags) that held a proven value and that the transfer never wrote was
+    /// not modelled, and its stale value can render as a confident argument.
+    /// Calls are exempt (the ABI, not the instruction, says what survives).
+    private static func checkWritesModelled(_ insn: Instruction, before: State, written modelled: Set<String>) {
+        guard insn.controlFlow != .call, let detail = insn.detail else { return }
+        var written = Set<String>()
+        for info in detail.operands {
+            if case .register(let register) = info.operand, info.isWritten, register.kind == .gpr {
+                written.insert(register.key)
+            }
+        }
+        for key in written.subtracting(modelled).sorted() {
+            guard let old = before[key], old != .unknown else { continue }
+            Probe.record(.tracerUnmodelledWrite, at: insn.address,
+                         ["register": .label(key), "instruction": .label(insn.text), "kept": .label("\(old)")])
+        }
+    }
+
     /// Being wrong here is asymmetric, and the tables reflect that. Over-
     /// clobbering costs precision (a `?` where a value was known). Under-
     /// clobbering leaves a stale value that renders as a confident, fabricated
@@ -2469,6 +2497,7 @@ public struct ValueTracer: Sendable {
 
     private func write(_ reg: PhysReg, _ value: AbstractValue, into registers: inout State) {
         guard reg.kind != .zero else { return }   // writes to xzr are discarded
+        if Probe.isActive, let log = TracerWriteLog.current { log.keys.insert(reg.key) }
         // A truncated copy (`mov w9, w22`) or a floating register cannot hold
         // an async context or continuation pointer, though its key aliases xN.
         switch value {
@@ -2889,4 +2918,11 @@ public struct ValueTracer: Sendable {
     ) -> AbstractValue {
         expression(op, lhs, rhs)
     }
+}
+
+/// The registers `ValueTracer.write` touched during one instruction's
+/// transfer, kept only while a probe checks that every write was modelled.
+final class TracerWriteLog: @unchecked Sendable {
+    @TaskLocal static var current: TracerWriteLog?
+    var keys = Set<String>()
 }

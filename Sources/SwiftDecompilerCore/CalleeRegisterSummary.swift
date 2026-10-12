@@ -56,7 +56,11 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             visits += 1
             // A pathological CFG must not hang the summary; giving up claims
             // nothing (every caller keeps its positional arguments).
-            guard visits <= 64 * max(blocks.count, 1), let block = blockAt[start] else { return nil }
+            guard visits <= 64 * max(blocks.count, 1) else {
+                Probe.record(.summaryCap, at: function.startAddress, ["pass": .label("argument-reads")])
+                return nil
+            }
+            guard let block = blockAt[start] else { return nil }
             var written = inState[start] ?? []
             for insn in block.instructions {
                 guard let detail = insn.detail else { return nil }
@@ -149,8 +153,11 @@ private enum Preservation {
         var visits = 0
         while let start = worklist.popLast() {
             visits += 1
-            guard visits <= 64 * max(blocks.count, 1), let block = blockAt[start], var state = inState[start]
-            else { return written }
+            guard visits <= 64 * max(blocks.count, 1) else {
+                Probe.record(.summaryCap, at: entry, ["pass": .label("preservation")])
+                return written
+            }
+            guard let block = blockAt[start], var state = inState[start] else { return written }
             for insn in block.instructions {
                 guard let detail = insn.detail else { return written }
                 let internalBranch = insn.branchTarget.map(addresses.contains) == true
