@@ -883,6 +883,8 @@ public struct ValueTracer: Sendable {
                 registers["v0"] = .callResult(insn.address)
             }
             registers[Self.selfFreshKey] = nil
+            // AAPCS64 does not preserve NZCV across a call.
+            registers[Self.flagsKey] = nil
             return
         }
         let hadSelf = registers[Self.selfFreshKey]
