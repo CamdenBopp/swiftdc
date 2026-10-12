@@ -76,6 +76,9 @@ $CLANG -arch arm64 -dynamiclib widthflags.s -o libWidthFlagProbes.dylib
 echo "==> an awaited typed-throws callee (typedthrowsawait.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name TypedThrowsAwait typedthrowsawait.swift -o libTypedThrowsAwait.opt.dylib
 
+echo "==> a context slot escaping through a reloaded context pointer (staleslot.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name StaleSlot staleslot.swift -o libStaleSlot.opt.dylib
+
 echo "==> C callees without signatures (callreads.c, -O0 and -O1)"
 for level in O0 O1; do
     xcrun clang -arch arm64 -$level -dynamiclib callreads.c -o libCallReads.$level.dylib

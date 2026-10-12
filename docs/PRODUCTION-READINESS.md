@@ -142,6 +142,13 @@ because it cannot be distinguished from a right one by reading the output.
   an existing negation. Comparing with 0 stays a truth test. On three
   release apps, 60, 435 and 176 bit-0 tests and 14, 41 and 26 `== 1`
   comparisons are now explicit.
+- **FIXED — a context slot changed through a reloaded context pointer kept
+  its stale value.** A resume funclet reloads its own context
+  (`ldr x19, [x22]`) and passes a slot's address from that copy; the
+  chain-slot proof watched only addresses computed from x22 (audit B4:
+  `return (7 + awaited1)` for a program returning 24). A register loaded
+  from a context register's first word is now a context register too. No
+  fixture or OpenMHz render changed.
 - **FIXED — a typed-throws error was named as the await's result.** A
   callee declared `async throws(Code)` returns its thrown payload in x0
   (x20 = 1), and both paths resume in one funclet, so `awaited1` named the

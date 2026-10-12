@@ -250,3 +250,19 @@ func structuredLoops(_ text: String) -> [(header: String, body: [String], after:
     let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
     #expect(text.contains("let awaited1 = await AsyncFns.fetchOrThrow(arg0)"), Comment(rawValue: text))
 }
+
+/// `var n = 7; let r = await g(a); bump(&n); return n + r`: after the
+/// await, the resume funclet reloads its own context (`ldr x19, [x22]`) and
+/// passes `&n` as `x19 + 0x10`. The chain-slot pass only saw addresses
+/// computed from x22, so it kept n's single store as proof and rendered
+/// `return (7 + awaited1)`. The program returns 24, not 13.
+@Test func aSlotEscapingThroughAReloadedContextIsNotProvenIfPresent() async throws {
+    let path = "Fixtures/Sample/libStaleSlot.opt.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "StaleSlot.f1")
+    }
+    let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(text.contains("StaleSlot.bump("), Comment(rawValue: text))
+    #expect(!text.contains("(7 + awaited1)"), Comment(rawValue: text))
+}

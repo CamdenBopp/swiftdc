@@ -1088,26 +1088,57 @@ public struct Disassembler: Sendable {
         // single store in the chain no longer proves the slot's value. Measured:
         // `var n = a &* 3; await Task.yield(); syncBump(&n); return n` rendered
         // `return (arg0 + (arg0 << 1))`; the function returns 3a + 11.
+        //
+        // The context is not only x22. A resume funclet reloads its own context
+        // from the callee's (`ldr x19, [x22]`) and computes the slot's address
+        // from that copy (`add x0, x19, #0x10`): `var n = 7; let r = await g(a);
+        // bump(&n); return n + r` rendered `return (7 + awaited1)`, and the
+        // program returns 24, not 13. Any register loaded from a context
+        // register's first word, or copied from one, is a context register too.
         func lowestEscapedOffset(_ funclet: DisassembledFunction) -> Int? {
             var lowest: Int?
+            var contexts: Set<Int> = [22]
             for insn in funclet.instructions {
-                guard let detail = insn.detail, detail.operands.count >= 2,
-                      let dest = detail.operands[0].operand.register, dest.kind == .gpr,
-                      dest.number != 22, dest.number != 29, dest.number != 31,
-                      let source = detail.operands[1].operand.register,
-                      source.kind == .gpr, source.number == 22
-                else { continue }
-                let offset: Int
-                switch detail.id {
-                case AARCH64_INS_ADD:
-                    offset = detail.operands.count == 3
-                        ? Int(clamping: detail.operands[2].operand.immediateValue ?? 0) : 0
-                case AARCH64_INS_MOV, AARCH64_INS_ORR, AARCH64_INS_SUB:
-                    offset = 0
-                default:
+                guard let detail = insn.detail else { continue }
+                if insn.controlFlow == .call {
+                    // Caller-saved registers do not survive a call.
+                    contexts = contexts.filter { (19...28).contains($0) }
                     continue
                 }
-                lowest = min(lowest ?? offset, offset)
+                // An address computed from a context register escapes.
+                if detail.operands.count >= 2,
+                   let dest = detail.operands[0].operand.register, dest.kind == .gpr,
+                   dest.number != 22, dest.number != 29, dest.number != 31,
+                   let source = detail.operands[1].operand.register,
+                   source.kind == .gpr, contexts.contains(source.number) {
+                    var offset: Int?
+                    switch detail.id {
+                    case AARCH64_INS_ADD:
+                        offset = detail.operands.count == 3
+                            ? Int(clamping: detail.operands[2].operand.immediateValue ?? 0) : 0
+                    case AARCH64_INS_MOV, AARCH64_INS_ORR, AARCH64_INS_SUB:
+                        offset = 0
+                    default:
+                        offset = nil
+                    }
+                    if let offset { lowest = min(lowest ?? offset, offset) }
+                }
+                // Then the register it writes: a context register again when
+                // it loads a context register's first word, otherwise not.
+                guard let written = detail.operands.first?.operand.register, written.kind == .gpr,
+                      detail.writtenRegisterKeys.contains(written.key)
+                else { continue }
+                var loadsContext = false
+                if detail.id == AARCH64_INS_LDR || detail.id == AARCH64_INS_LDUR, detail.operands.count >= 2,
+                   case .memory(let base?, nil, 0) = detail.operands[1].operand,
+                   base.kind == .gpr, contexts.contains(base.number) {
+                    loadsContext = true
+                }
+                if written.widthBits == 64, loadsContext {
+                    contexts.insert(written.number)
+                } else if written.number != 22 {
+                    contexts.remove(written.number)
+                }
             }
             return lowest
         }
