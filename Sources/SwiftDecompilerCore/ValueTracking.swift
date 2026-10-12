@@ -864,6 +864,7 @@ public struct ValueTracer: Sendable {
                 if !site.isEmpty { record(insn.address, site) }
             }
             let incomingX0 = registers["x0"] ?? .unknown
+            let beforeCall = registers
             // `memcpy`/`memset` and the outlined value-witness copies are modelled
             // as the stores they perform (see `applyMemoryHelper`): their source
             // must be read before the invalidation below forgets it, and their
@@ -947,8 +948,15 @@ public struct ValueTracer: Sendable {
             if registers["x21"] == .immediate(0), !Self.provablyDoesNotThrow(callee) {
                 registers["x21"] = .unknown
             }
-            if Self.identityRuntimeCalls.contains(where: callee.hasPrefix) {
+            let runtimeName = callee.hasPrefix("_") ? String(callee.dropFirst()) : callee
+            if Self.identityRuntimeCalls.contains(runtimeName) {
                 registers["x0"] = incomingX0
+            } else if let source = Self.retainedRegister(runtimeName) {
+                // `objc_retain_xN` retains the object in xN and returns it
+                // in x0 (libobjc's first instruction is `ands x0, xN, xN`).
+                // Matched as a prefix of `objc_retain`, it returned the stale
+                // x0: an `@objc` thunk passed the wrong receiver and `self`.
+                registers["x0"] = beforeCall["x\(source)"] ?? .unknown
             } else if callee.contains("_allocateUninitializedArray") {
                 // Returns the array in x0 (and its element buffer in x1); the
                 // caller fills it next, so tag it with this site and its count —
@@ -994,11 +1002,16 @@ public struct ValueTracer: Sendable {
         }
     }
 
-    private static var identityRuntimeCalls: [String] {
-        [
-            "objc_retain", "objc_claimAutoreleasedReturnValue",
-            "objc_retainAutoreleasedReturnValue", "objc_autoreleaseReturnValue",
-        ]
+    private static let identityRuntimeCalls: Set<String> = [
+        "objc_retain", "objc_claimAutoreleasedReturnValue",
+        "objc_retainAutoreleasedReturnValue", "objc_autoreleaseReturnValue",
+    ]
+
+    /// N for `objc_retain_xN`, the register-specific retain stub.
+    static func retainedRegister(_ name: String) -> Int? {
+        let prefix = "objc_retain_x"
+        guard name.hasPrefix(prefix), let n = Int(name.dropFirst(prefix.count)), (0...28).contains(n) else { return nil }
+        return n
     }
 
     /// AAPCS64 register snapshot shared by normal calls and possible tail-call

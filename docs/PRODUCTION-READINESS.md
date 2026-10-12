@@ -109,8 +109,12 @@ because it cannot be distinguished from a right one by reading the output.
   parse, which skips the body-reads bound. The parked-x20 `self:` on an
   ordinary qualified Swift free function is fixed (`49f42ce`); the
   accessor/private/value-type layout cases remain open.
-- **OPEN — `objc_retain_xN` is modelled as returning x0.** It returns xN;
-  in `@objc` thunks that names the wrong receiver.
+- **FIXED — `objc_retain_xN` is modelled as returning x0.** It returns xN;
+  in `@objc` thunks that named the wrong receiver. Identity runtime calls
+  now match by exact name, and `objc_retain_xN` yields xN's pre-call value.
+  On OpenMHz -O (396 such sites) `[r0 deselectRowAtIndexPath:…]` reads
+  `[arg0 …]`, the table view; 23 receivers loaded through unknown pointers
+  now decline where the stale x0 was printed.
 - **OPEN — a rethrow after a cleanup call renders `return`.** The async
   throw check treats every call as overwriting x20, which is callee-saved.
 - **OPEN — a 32-bit destination's constant is not truncated.** `csel w0`

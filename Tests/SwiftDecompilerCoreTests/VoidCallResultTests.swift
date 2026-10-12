@@ -37,3 +37,38 @@ import Testing
         #expect(text.contains("return ?"), Comment(rawValue: text))
     }
 }
+
+/// `objc_retain_xN` returns the object it retains, from xN. Matched as a
+/// prefix of `objc_retain`, it was taken to return x0 unchanged: an `@objc`
+/// thunk's `bl objc_retain_x20; mov x20, x0` rendered the stale x0 as both
+/// the argument and `self` (`enroll(self: arg0, arg0)`).
+///
+///     mov x20, x1; bl objc_retain_x20; ret
+@Test func aRegisterRetainStubReturnsItsRegister() throws {
+    let engine = try #require(CapstoneEngine())
+    let words: [UInt32] = [0xaa0103f4, 0x94000002, 0xd65f03c0]
+    let bytes = words.flatMap { word in (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) } }
+    let body = engine.disassemble(Data(bytes), address: 0x1000).map {
+        Instruction(address: $0.address, text: $0.text,
+                    annotation: $0.controlFlow == .call ? "→ objc_retain_x20" : nil,
+                    controlFlow: $0.controlFlow, branchTarget: $0.branchTarget, detail: $0.detail)
+    }
+    let function = DisassembledFunction(symbol: "f", demangledName: nil, startAddress: 0x1000,
+                                        instructions: body, source: .symbol)
+    let result = ValueTracer().analyze(function, entry: .swiftFunction(scalarArguments: ["x0": 0, "x1": 1]))
+    #expect(result.exitValues[0x1008] == .argument(1))
+    #expect(ValueTracer.retainedRegister("objc_retain_x20") == 20)
+    #expect(ValueTracer.retainedRegister("objc_retain") == nil)
+}
+
+@Test func aRegisterRetainStubNamesNoStaleReceiverIfPresent() async throws {
+    let path = "Fixtures/Sample/libRetainRegister.sim.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "Node.join")
+    }
+    let text = try #require(functions.first).renderStructured()
+    #expect(text.contains("RetainRegister.enroll("), Comment(rawValue: text))
+    #expect(!text.contains("enroll(self: arg0"), Comment(rawValue: text))
+    #expect(!text.contains("enroll(arg0"), Comment(rawValue: text))
+}
