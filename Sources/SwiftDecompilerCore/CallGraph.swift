@@ -106,6 +106,25 @@ public struct CallGraph: Sendable {
         self.callersByCallee = Dictionary(grouping: edges, by: \.callee)
     }
 
+    /// What the graph reads of `function`: its names, its call and branch
+    /// sites (text and annotation, for callee names) and its last
+    /// instruction (its span). Everything else, the structured detail and
+    /// the recovered arguments, is dropped, so a whole-image graph built while
+    /// streaming holds sites, not instructions: about 1 KB per instruction
+    /// held at once put Swiftcord's 12.4M past 8 GB.
+    public static func sites(of function: DisassembledFunction) -> DisassembledFunction {
+        let instructions = function.instructions
+        var kept: [Instruction] = []
+        for (index, insn) in instructions.enumerated()
+        where insn.controlFlow == .call || insn.controlFlow == .branch || index == instructions.count - 1 {
+            kept.append(Instruction(
+                address: insn.address, text: insn.text, annotation: insn.annotation,
+                controlFlow: insn.controlFlow, branchTarget: insn.branchTarget
+            ))
+        }
+        return function.replacingInstructions(kept)
+    }
+
     /// Display name for an address, or a synthesized `sub_<addr>`.
     public func name(of address: UInt64) -> String {
         names[address] ?? "sub_\(String(address, radix: 16))"

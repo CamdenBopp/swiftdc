@@ -1338,8 +1338,9 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 5. Performance and memory on large frameworks
 
-- **OPEN — Fiery Feeds whole-binary `xrefs` is 1.3× origin/master, at a
-  7.0 GB footprint.** Current: 204.9 s, 7.04 GB, output byte-identical, after
+- **OPEN — Fiery Feeds whole-binary `xrefs` is 1.17× origin/master.**
+  Current (streaming, entry below): 179.6 s, 580 MB. Before that: 204.9 s,
+  7.04 GB, output byte-identical, after
   three more profiled fixes, each measured alone (release, guarded):
   Objective-C bindings indexed by selector (`50625b3`, 272.6 s to 254.0 s),
   jump-table ranges built once (`bf5782b`, to 235.8 s), and chained-fixup
@@ -1372,9 +1373,28 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   and never tripped its 8 GB kill: compressed pages leave RSS but count in the
   footprint. A memory guard on this host must read the footprint
   (`footprint <pid>` or `/usr/bin/time -l`), not RSS.
-- **OPEN — `xrefs` on Swiftcord exceeds 8 GB.** The ship2 sweep stopped
-  `xrefs --unreferenced` at the RSS ceiling after 112.8 s (8,636 MB); the
-  earlier merge sweep peaked at ~7.8 GB. Unprofiled.
+- **FIXED — whole-image `xrefs` held every instruction of the image.** On
+  Swiftcord (49.7 MB of `__text`, about 12.4M instructions) a footprint guard
+  killed `xrefs --unreferenced` at 7.5 GB after 69 s, still climbing about
+  1 GB every 5 s; `heap` at 3 GB found one 1.1 GB `[Instruction]`, 3.36M
+  instruction strings (626 MB) and 553 MB of objdump's split lines. Fiery
+  Feeds' 7.2M instructions peaked at 7.15 GB: about 1 KB per instruction held
+  at once. `xrefs` now streams the image the way cache-image `disasm` does
+  (`disassembleStreaming`) and keeps only each function's call and branch
+  sites and its last instruction (`CallGraph.sites(of:)`). Release, guarded,
+  `/usr/bin/time -l swiftdc xrefs <app> --arch arm64 --unreferenced`:
+  Fiery Feeds 213.3 s / 7.15 GB to **179.6 s / 580 MB**, output
+  byte-identical (`cmp`); Swiftcord, never finished before, **227.4 s /
+  429 MB**, 106,790 functions. The graph over every fixture matches the
+  objdump path's on `--unreferenced` and on `--json --function` for eight
+  needles (385 outputs), once two naming corrections are allowed for: imports
+  whose C name starts with an underscore keep it (`_Unwind_Resume`,
+  `__stack_chk_fail`; the objdump path stripped every leading underscore),
+  and notes no longer leak into names (fixed separately).
+  `aStreamedCallGraphMatchesTheWholeImageGraphIfPresent` and
+  `aSitesOnlyFunctionKeepsItsSpan` were seen red (sites without branches;
+  sites without the last instruction). Earlier record: the ship2 sweep
+  stopped it at 8,636 MB RSS after 112.8 s.
 - **FIXED — a standalone binary re-opened itself as a dyld cache on every
   `MachOFile.cache` access.** The 0.22 upgrade dropped the fork that memoized
   the failed load, estimating it at about 2.5% of a Keynote `dump`. On a
@@ -1514,9 +1534,10 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 - **OPEN — time, and the array modes, still scale with the whole image.**
   Streaming fixed peak *memory* for text output but not *time*: CoreLocation
   still takes ~23 s (the decode + per-function analysis work is unchanged, just
-  no longer all resident). And `--json`/`xrefs`/`analyze` still materialise every
-  function, so their memory is unchanged by design — a streaming JSON writer, or
-  chunking the array modes, is the remaining scale work.
+  no longer all resident). `xrefs` now streams too (keeping call sites only);
+  `--json`, `analyze`, and standalone unfiltered `disasm` (objdump path) still
+  materialise every function — a streaming JSON writer, or chunking the array
+  modes, is the remaining scale work.
 - **MITIGATED (memory) — a whole-image memory regression guard now exists**
   (`MemoryRegressionTests`). The memory limit above is now FIXED by
   streaming, but nothing stopped it regressing meanwhile, and it still guards the

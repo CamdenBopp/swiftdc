@@ -413,6 +413,17 @@ public struct Disassembler: Sendable {
         machO: MachOFile, render: (DisassembledFunction) -> String,
         progress: ((_ done: Int, _ total: Int) -> Void)? = nil
     ) async -> [String] {
+        await disassembleStreaming(machO: machO, transform: render, progress: progress)
+    }
+
+    /// Every function of the image, analysed one at a time and handed to
+    /// `transform` before the next is decoded; what `transform` returns is all
+    /// that stays resident. `disassembleStreamingRender` keeps the rendered
+    /// text; the call graph keeps only call sites.
+    public func disassembleStreaming<T>(
+        machO: MachOFile, transform: (DisassembledFunction) -> T,
+        progress: ((_ done: Int, _ total: Int) -> Void)? = nil
+    ) async -> [T] {
         let objcIndex = ObjCMetadataIndex.build(in: machO)
         let labelByAddress = symbolLabels(in: machO)
         var foldedByAddress = foldedSymbolAddresses(in: machO)
@@ -540,7 +551,7 @@ public struct Disassembler: Sendable {
 
         // Pass 2: decode each span, analyse, render, release. `segment` skips a
         // span that decodes to nothing, so this does too.
-        var rendered: [String] = []
+        var rendered: [T] = []
         rendered.reserveCapacity(boundaries.count)
         let total = boundaries.count
         for index in boundaries.indices {
@@ -553,7 +564,7 @@ public struct Disassembler: Sendable {
                 )
                 let grouped = asyncIndex.info(for: function.startAddress, parentName: { names[$0] })
                     .map(function.attachingAsyncFunclet) ?? function
-                rendered.append(render(analyzeFunction(grouped, context: context)))
+                rendered.append(transform(analyzeFunction(grouped, context: context)))
             }
             // Throttled so the callback overhead is negligible on a 100k-function
             // image; always report the final position so the display completes.

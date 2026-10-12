@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import MachOKit
 import SwiftDecompilerCore
 
 struct XrefsCommand: AsyncParsableCommand {
@@ -74,18 +75,20 @@ struct XrefsCommand: AsyncParsableCommand {
         }
 
         let disassembler = Disassembler(preset: demangle)
-        let functions: [DisassembledFunction]
+        let machO: MachOFile
         if image != nil || imagePath != nil || cache != nil {
-            let machO = try BinaryLoader.loadMachO(
+            machO = try BinaryLoader.loadMachO(
                 path: path, image: image, imagePath: imagePath, cachePath: cache, binary: binary
             )
-            functions = await disassembler.disassemble(machO: machO)
         } else if let path {
             let resolved = try BinaryLoader.resolveBinaryInput(path, binary: binary)
-            functions = try await disassembler.disassemble(path: resolved, architecture: architecture)
+            machO = try BinaryLoader.load(path: resolved, architecture: architecture)
         } else {
             throw BinaryLoadError("Provide a binary path, or --image <name> to read a dyld shared-cache image.")
         }
+        // One function at a time, keeping only its call sites: holding the
+        // whole image's instructions took about 1 KB each.
+        let functions = await disassembler.disassembleStreaming(machO: machO, transform: CallGraph.sites(of:))
 
         let graph = CallGraph(functions: functions)
         if unreferenced {
