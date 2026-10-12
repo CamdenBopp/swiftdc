@@ -3030,6 +3030,11 @@ public struct Disassembler: Sendable {
         // would show it executed once per field. Filled once the values that
         // will render are known (below); read by `renderValue`.
         var boundResultSites: [UInt64: String] = [:]
+        /// Bound because its direct result is read in several places (as
+        /// opposed to word by word): its `let` renders as the value would.
+        var reusedResultSites = Set<UInt64>()
+        /// The site whose `let` is being rendered, which spells itself out.
+        var definingSite: UInt64?
         let function = annotateIndirectControlFlowTargets(
             in: function, targets: analysis.indirectControlFlowTargets,
             resolver: resolver, selfTypeName: selfTypeName, vtableIndex: vtableIndex
@@ -3801,7 +3806,7 @@ public struct Disassembler: Sendable {
             case .callResult(let addr):
                 // A call bound to a name for its field reads is that name
                 // everywhere, so it is never spelled out a second time.
-                if let name = boundResultSites[addr] { return name }
+                if let name = boundResultSites[addr], addr != definingSite { return name }
                 let inner = argumentsByAddress[addr] ?? []
                 let unresolved = "/* unresolved call @ 0x\(String(addr, radix: 16)) */ ?"
                 // Deeply nested message chains (`[[[[self a] b] c] d]`) are common
@@ -4241,7 +4246,62 @@ public struct Disassembler: Sendable {
             guard exit.whole == nil, wholeCallResult(from: exit.stores) == nil else { continue }
             for store in exit.stores.values { collectWordSites(in: store.value, into: &wordSites) }
         }
-        for (index, site) in wordSites.sorted().enumerated() { boundResultSites[site] = "r\(index)" }
+        // A direct call result rendered in more than one place (a branch
+        // condition and the return, two arguments) is one evaluation; spelled
+        // out at each use it reads as the call running once per use:
+        // `if ((sink(arg0) + …) < 0) { trap() } else { return (sink(arg0) << 1) }`
+        // for one `bl sink`. Bound like a word-read result, it is `let rN`
+        // once and `rN` everywhere. The idea is the pre-merge stash's
+        // (983aa25, `let call_<addr>`); the binding is the existing one.
+        var directUses: [UInt64: Int] = [:]
+        func countDirectUses(_ value: AbstractValue) {
+            switch value {
+            case .callResult(let site): directUses[site, default: 0] += 1
+            case .binary(_, let lhs, let rhs): countDirectUses(lhs); countDirectUses(rhs)
+            case .unary(_, let operand): countDirectUses(operand)
+            case .select(let condition, let whenTrue, let whenFalse):
+                countDirectUses(condition); countDirectUses(whenTrue); countDirectUses(whenFalse)
+            case .aggregate(let values): values.forEach(countDirectUses)
+            default: break
+            }
+        }
+        for (address, values) in argumentsByAddress {
+            guard let callee = calleeByAddress[address], !DisassembledFunction.isRuntimeNoise(callee) else { continue }
+            normalizedArguments(callee: callee, values: values).forEach(countDirectUses)
+        }
+        for value in analysis.branchConditions.values { countDirectUses(value) }
+        for access in analysis.selfFieldAccesses.values {
+            if let values = access.storedValues { values.forEach(countDirectUses) }
+            else if let value = access.storedValue { countDirectUses(value) }
+        }
+        if function.objcMethod.map({ !$0.returnsVoid }) == true {
+            for insn in function.instructions where insn.controlFlow == .return {
+                analysis.exitValues[insn.address].map(countDirectUses)
+            }
+        } else if function.objcMethod == nil, returnsDirectly,
+                  let register = Self.swiftReturnRegister(of: function, enumCaseIndex: enumCaseIndex,
+                                                          classTypeIndex: classTypeIndex) {
+            for insn in function.instructions where isReturn(insn) && !throwExits.contains(insn.address) {
+                (register == .floating ? analysis.exitFloatValues : analysis.exitValues)[insn.address]
+                    .map(countDirectUses)
+            }
+        }
+        let reusedCalls = directUses.compactMap { site, uses -> UInt64? in
+            guard uses > 1, let callee = calleeByAddress[site],
+                  !DisassembledFunction.isRuntimeNoise(callee),
+                  !DisassembledFunction.isGenericPlumbingCallee(callee),
+                  DisassembledFunction.arrayLiteralPlaceholder(callee: callee) == nil,
+                  DisassembledFunction.castPassthroughIndex(of: callee) == nil,
+                  selfAccessors[callee] == nil,
+                  // Rendered as `a == b` by renderBoolean before any binding is
+                  // read: the synthesized equality is pure, and a `let` for it
+                  // would never be used.
+                  !callee.contains("__derived_enum_equals")
+            else { return nil }
+            return site
+        }
+        reusedResultSites = Set(reusedCalls).subtracting(wordSites)
+        for (index, site) in wordSites.union(reusedCalls).sorted().enumerated() { boundResultSites[site] = "r\(index)" }
 
         var consumedCallResults = Set<UInt64>()
         for access in analysis.selfFieldAccesses.values {
@@ -4520,7 +4580,17 @@ public struct Disassembler: Sendable {
 
             // The one place a call bound for its field reads is spelled out.
             if insn.controlFlow == .call, let name = boundResultSites[insn.address], let callee {
-                sourceNotes.append("let \(name) = \(callExpression(callee: callee, values: argumentsByAddress[insn.address] ?? [], site: insn.address))")
+                let expression: String
+                if reusedResultSites.contains(insn.address) {
+                    // As each use would have spelled it (`? as? Dog`, a send).
+                    definingSite = insn.address
+                    expression = renderValue(.callResult(insn.address), depth: 0)
+                    definingSite = nil
+                } else {
+                    expression = callExpression(callee: callee, values: argumentsByAddress[insn.address] ?? [],
+                                                site: insn.address)
+                }
+                sourceNotes.append("let \(name) = \(expression)")
             }
 
             // A proven async return is the function's `ret`; the structurer and

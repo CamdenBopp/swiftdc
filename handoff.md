@@ -395,7 +395,6 @@ Still in the stash, by the audit's priority:
   `@loader_path` dylib): rests on `ImageUniverse.dependencyClosure`, which
   FieldMap.swift records as trapping on resilient fields. Measure the trap on
   MachOSwiftSection 0.22 before porting.
-- Call-result materialization (`let call_<addr>`). M.
 - W-register width, full NZCV, CCMP/FCMP/FCSEL, subword stack extents (four
   new modules, 84k native vectors). L.
 - LSDA cleanup-pad tests. S.

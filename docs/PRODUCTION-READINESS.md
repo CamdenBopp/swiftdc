@@ -169,11 +169,19 @@ because it cannot be distinguished from a right one by reading the output.
   call passes its own type's cache in x2; every call prints the VStack name.
 - **OPEN — `awaitedN` is bound for a generic or indirect async result.** The
   result is written into a context buffer, so x0 at the resume is not it.
-- **OPEN — one call can read as two.** A call consumed by both a branch
-  condition and the return prints in both: `if ((Compares.sink(arg0) + …) < 0)
-  { trap() } else { return (Compares.sink(arg0) << 1) }`. The machine calls
-  `sink` once; binding it (`let r0 = …`) as indirect results already do would
-  fix it.
+- **FIXED — one call could read as two.** A call consumed by both a branch
+  condition and the return printed in both: `if ((Compares.sink(arg0) + …) <
+  0) { trap() } else { return (Compares.sink(arg0) << 1) }` for one `bl sink`.
+  A direct result rendered in more than one place is now bound like an
+  indirect one (`let r0 = Compares.sink(arg0)`), its `let` spelled as the use
+  would have been (`let r0 = (? as? Dog)`), and a bit-0 test of the name reads
+  as the `Bool` it is (`if (r0)`). Synthesized `==` (`__derived_enum_equals`)
+  stays inline: it is pure, and renders as a comparison before any binding is
+  read. Measured: 8 fixture dylibs change (each a duplicate collapsing to one
+  `let`); the system libswift_Concurrency gains 184 bindings, of which 8
+  (`--structured`) are never read by name because the structurer's text path
+  renders their uses as registers: one evaluation either way.
+  `aReusedCallResultIsEvaluatedOnceIfPresent` was seen red.
 - **FIXED — the uniqueness check was read as the object it checks.**
   `swift_isUniquelyReferenced_nonNull_native` (the lowering of
   `isKnownUniquelyReferenced`) returns a Bool, but the renderer read every

@@ -1049,3 +1049,14 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
     #expect(text.contains("+ 0x4000000000000000) < 0)"), Comment(rawValue: text))
     #expect(!text.contains("< 0 //"), Comment(rawValue: text))
 }
+
+/// One `bl sink` whose result feeds both the overflow check and the return:
+/// spelled out at each use, it read as two calls (`if ((sink(arg0) + …) < 0)
+/// … return (sink(arg0) << 1)`). Bound once, every use names the binding.
+@Test func aReusedCallResultIsEvaluatedOnceIfPresent() async throws {
+    let fixture = "Fixtures/Sample/libCompares.dylib"
+    guard let text = try await structuredText("Compares.doubledSink", in: fixture) else { return }
+    #expect(text.components(separatedBy: "Compares.sink(").count == 2, Comment(rawValue: text))
+    #expect(text.contains("let r0 = Compares.sink(arg0)"), Comment(rawValue: text))
+    #expect(text.contains("return (r0 << 1)"), Comment(rawValue: text))
+}

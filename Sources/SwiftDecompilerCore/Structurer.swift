@@ -712,6 +712,7 @@ struct ControlFlowStructure {
         // mistake the compare itself for the definition).
         func isBoolean(_ value: String, operand: String, before: Int) -> Bool {
             value.hasPrefix("[") || value.hasPrefix("!") || Self.looksLikeCall(value)
+                || Self.isResultBinding(value)
                 || isBooleanSource(operand, before: before, in: block)
         }
         switch mnemonic {
@@ -829,6 +830,13 @@ struct ControlFlowStructure {
                         .contains(where: { $0.hasPrefix("self = ") }) == true {
                         return "self"
                     }
+                    // A result bound because it has several uses is tested by
+                    // its name; inlining the call would show it run again.
+                    if let binding = instruction.annotation?.components(separatedBy: "  ")
+                        .first(where: { $0.hasPrefix("let r") }),
+                       let assignment = binding.range(of: " = ") {
+                        return String(binding[binding.index(binding.startIndex, offsetBy: 4)..<assignment.lowerBound])
+                    }
                     // The branch tests the value this call returned. Inline the
                     // send so the condition reads as source (`[x isKindOfClass:…]`),
                     // and record the call so the body drops its now-dead statement.
@@ -927,6 +935,12 @@ struct ControlFlowStructure {
         // explicitly the way the statement form does rather than dropping it.
         let parts = insn.callSelf.map { ["self: \($0)"] + arguments } ?? arguments
         return "\(DisassembledFunction.strippedCallee(callee))(\(parts.joined(separator: ", ")))"
+    }
+
+    /// Whether a rendered value is a bound call result's name (`r0`): a call
+    /// result tested by name, which a bit-0 test treats as the call itself.
+    static func isResultBinding(_ value: String) -> Bool {
+        value.range(of: #"^r[0-9]+$"#, options: .regularExpression) != nil
     }
 
     /// Whether a rendered value is an identifier-led call expression `name(args)`
