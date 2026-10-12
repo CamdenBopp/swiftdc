@@ -43,10 +43,16 @@ private struct AsyncFuncletDTO: Encodable {
     let ordinal: Int
     /// "await-return", "continuation", or "unknown"; absent for the entry.
     let kind: String?
-    /// The funclet whose suspension this one continues.
+    /// The funclet whose suspension this one continues; absent when several
+    /// suspensions of the chain continue into it.
     let predecessor: String?
     /// Every funclet of the chain, entry first.
     let chain: [String]
+    /// The runtime wait that resumes this continuation, when not a hop.
+    let resumedBy: String?
+    /// Entries of every chain that resumes into this funclet, when more than
+    /// one does (identical code folding) and so none owns it.
+    let sharedBy: [String]?
 }
 
 private struct FunctionDTO: Encodable {
@@ -108,7 +114,8 @@ private extension DisassembledFunction {
             async: asyncFunclet.map {
                 AsyncFuncletDTO(
                     parent: $0.parent.map(hex), ordinal: $0.ordinal, kind: $0.kind?.rawValue,
-                    predecessor: $0.predecessor.map(hex), chain: $0.chain.map(hex)
+                    predecessor: $0.predecessor.map(hex), chain: $0.chain.map(hex),
+                    resumedBy: $0.resumedBy, sharedBy: $0.sharedBy.isEmpty ? nil : $0.sharedBy.map(hex)
                 )
             },
             instructions: instructions.map {

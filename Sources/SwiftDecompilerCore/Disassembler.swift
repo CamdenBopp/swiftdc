@@ -211,13 +211,30 @@ public struct DisassembledFunction: Sendable {
         }
         guard let parent = info.parent else {
             let kind = info.kind.map { " (\($0.rawValue))" } ?? ""
+            if !info.sharedBy.isEmpty {
+                let owners = info.sharedBy.map { "@" + hex($0) }.joined(separator: ", ")
+                return "// async resume funclet\(kind) shared by \(info.sharedBy.count) async functions "
+                    + "(\(owners)); it has no single parent"
+            }
             return "// async resume funclet\(kind); its parent async function was not recovered"
         }
-        let from = hex(info.predecessor ?? parent)
-        let entered: String = switch info.kind {
-        case .awaitReturn: "entered when the await in \(from) returns"
-        case .continuation: "entered after the executor hop in \(from)"
-        case .unknown, nil: "entered from \(from); how is not recovered"
+        let entered: String
+        if let predecessor = info.predecessor {
+            let from = hex(predecessor)
+            entered = switch info.kind {
+            case .awaitReturn: "entered when the await in \(from) returns"
+            case .continuation:
+                info.resumedBy.map { "entered when \($0) in \(from) resumes it" }
+                    ?? "entered after the executor hop in \(from)"
+            case .unknown, nil: "entered from \(from); how is not recovered"
+            }
+        } else {
+            // Several suspensions of this chain continue here (a loop).
+            entered = switch info.kind {
+            case .awaitReturn: "entered when one of several awaits returns"
+            case .continuation: "entered after one of several executor hops"
+            case .unknown, nil: "entered from several suspensions; how is not recovered"
+            }
         }
         return "// resume #\(info.ordinal) of the async function @\(hex(parent)): \(entered)"
     }

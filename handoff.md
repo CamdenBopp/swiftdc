@@ -89,6 +89,13 @@ Then, continuing the same day (each with a reproduction and a red/green
   `ed4f157`/`0c92a85` typed Objective-C argument ABI (entry, sends to self and
   to typed ivars), `8014828` qualified enum/class/payload identity, `2ee0578`
   qualified field-map identity
+- Async ownership (2026-10-12): `07918b2` a function-typed or closure result
+  read from the signature's own arrow, `db8484a` async context pointers only in
+  full-width integer registers, and the async index rewrite after them: the
+  stash's context-slot handoff plus every arm64e shape that defeated it on the
+  system libswift_Concurrency (0 → 586 resume lines of 610; the other 16 lines
+  name a funclet folded across two functions, now "shared by N async
+  functions"). See the readiness entry "async ownership was first-wins".
 
 Reverted before commit: a callee arity cap by parameter *count*. It dropped a
 real argument (`sink(_: String, _: Int)`: the String fills x0 and x1, the Int
@@ -127,10 +134,12 @@ vanish and a scratch x1 is read as one.
 
 ### 3. Performance
 
-- Shipped (`c00e5a7`): the vtable-slot naming no longer renders a class dump.
-  Re-measure whole-command Fiery Feeds `xrefs` (153 s on origin/master, 966 s
-  before the fix) to see what remains; the MachOKit `DyldCache` memo is likely
-  moot for this path.
+- Fiery Feeds whole-binary `xrefs --unreferenced` re-measured 2026-10-12 at
+  `74b7b06`: 953 s, 11.05 GB peak footprint (5.47 GB max RSS), against 153 s on
+  origin/master. The symbolizer fix (`c00e5a7`) took out only ~35 s. Profile
+  it (`sample` a release build) before anything else here. A memory watcher
+  must read the footprint, not `ps -o rss`: an RSS watcher saw 4.0 GB and
+  never tripped while the footprint passed 11 GB.
 - Prime Video (296 MB) whole-image `xrefs --unreferenced` and `disasm
   --structured` exceed 30 minutes (5.7 / 6.8 GB). Early `sample`: Capstone
   decode (`matchAliasPatterns`) plus malloc. Capstone 6 vs 5 decode speed is
@@ -380,9 +389,6 @@ Still in the stash, by the audit's priority:
   `@loader_path` dylib): rests on `ImageUniverse.dependencyClosure`, which
   FieldMap.swift records as trapping on resilient fields. Measure the trap on
   MachOSwiftSection 0.22 before porting.
-- Async index hardening (unique claims, hint boundaries, 64-bit widths). S–M.
-  Decide the context-slot policy first: the stash declines all slots, HEAD
-  accepts a unique store plus an escape check.
 - Call-result materialization (`let call_<addr>`). M.
 - W-register width, full NZCV, CCMP/FCMP/FCSEL, subword stack extents (four
   new modules, 84k native vectors). L.

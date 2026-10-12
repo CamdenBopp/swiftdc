@@ -699,6 +699,40 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   `resume #N of <parent>` (source `async-funclet`), `--function` on an async
   function brings its whole chain, and the JSON carries the chain. Oracle:
   `AsyncFuncletTests.groupsFuncletsAsTheSymbolTableDoesIfPresent`.
+- **FIXED — async ownership was first-wins, and suspensions sat on internal
+  branches.** Any store of a declared resume address, anywhere, made its
+  function the funclet's predecessor, and the first claimant won. The
+  suspension was the last instruction of the basic block holding the address,
+  so in a diamond it was the arm's `b` to the join. Measured on the system
+  `libswift_Concurrency.dylib` (`disasm --image-path … --pseudo`): 16
+  identical-code-folded funclets attached to whichever function came first,
+  252 continuations rendered "how is not recovered" because their "suspension"
+  was an internal `b`, and 40 loop targets named one of several awaits as their
+  predecessor.
+
+  The pre-merge stash (`983aa25`) held the strict replacement: only a resume
+  pointer stored in the ResumeParent word (+8) of a `swift_task_alloc` context
+  that then reaches x22 is a handoff, a funclet claimed twice is declined, and
+  hint entries must be 4-aligned declared function starts. Ported alone, it
+  recovered **0** of that dylib's 610 resume links. Each arm64e shape that
+  defeated it is now modelled: in-place PAC signing (`pacia x16, x17`,
+  `pacia1716`), the return-address check before a tail call (`tbz x16, #62;
+  brk #0xc471`) splitting the call into its own block, straight-line paths
+  through unconditional joins and back through unique predecessors, byte loads
+  and frame stores that cannot touch a context, continuation contexts inside
+  the own context (`add x22, x22, #0x10`, handed to `swift_continuation_init`),
+  and the runtime waits that take the resume function as an argument
+  (`swift_taskGroup_wait_next_throwing` x2, `swift_taskGroup_waitAll` x3, …,
+  from `include/swift/Runtime/Concurrency.h`). Ownership is per chain: several
+  sites of one chain (a loop) keep the parent but report no predecessor and no
+  awaited result; two chains decline it and render "shared by N async
+  functions". After: 0 orphans, 16 shared, no funclet's parent changed except
+  those 16, 12 continuations name their runtime wait. The value tracer's async
+  context loads and copies now require a full-width integer register
+  (`AsyncPointerWidthTests`), and a function-typed result
+  (`f() -> (Int) -> Int`) no longer reads as the Int its last arrow names.
+  Tests: `AsyncAmbiguityTests`, `AsyncPointerWidthTests` (ported), and
+  `AsyncHandoffShapeTests`, one assembled arm64e shape per rule.
 - **OPEN — unresolved indirect call edges.** Generic witness tables, unknown
   receiver vtables, and block pointers stay unresolved. `xrefs` reports the
   count, so this is *disclosed* rather than silent — but `--unreferenced` is
@@ -1225,6 +1259,16 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 5. Performance and memory on large frameworks
 
+- **OPEN — Fiery Feeds whole-binary `xrefs` is still 6× origin/master, at an
+  11 GB footprint.** At `74b7b06`, release build, `/usr/bin/time -l swiftdc
+  xrefs "/Applications/Fiery Feeds.app/Contents/MacOS/Fiery Feeds" --arch arm64
+  --unreferenced`: 953 s, max RSS 5.47 GB, **peak footprint 11.05 GB**, 126,173
+  output lines, exit 0. origin/master took 153.5 s (below). The symbolizer fix
+  (`c00e5a7`) removed about 35 s of it; the rest is unprofiled. The RSS
+  watcher used for this run sampled `ps -o rss` every 5 s, saw at most 4.0 GB,
+  and never tripped its 8 GB kill: compressed pages leave RSS but count in the
+  footprint. A memory guard on this host must read the footprint
+  (`footprint <pid>` or `/usr/bin/time -l`), not RSS.
 - **OPEN — `xrefs` on Swiftcord exceeds 8 GB.** The ship2 sweep stopped
   `xrefs --unreferenced` at the RSS ceiling after 112.8 s (8,636 MB); the
   earlier merge sweep peaked at ~7.8 GB. Unprofiled.
