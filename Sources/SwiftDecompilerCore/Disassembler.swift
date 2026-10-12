@@ -739,9 +739,16 @@ public struct Disassembler: Sendable {
         guard let needle = functionFilter?.lowercased(), !needle.isEmpty else {
             return functions
         }
+        // A folded address declines to pick one of its symbols, so each of them
+        // selects it: `-f` on any folded symbol printed "No function matched"
+        // for a symbol the binary exports.
         return functions.filter {
             $0.symbol.lowercased().contains(needle)
                 || ($0.demangledName?.lowercased().contains(needle) ?? false)
+                || ($0.foldedCandidates ?? []).contains { candidate in
+                    candidate.lowercased().contains(needle)
+                        || (self.demangle(candidate)?.lowercased().contains(needle) ?? false)
+                }
         }
     }
 
@@ -1578,9 +1585,16 @@ public struct Disassembler: Sendable {
             nameOf: nameOf
         )
 
+        let folded = foldedSymbolAddresses(in: machO)
         func matches(_ start: UInt64) -> Bool {
             let symbol = labels[start] ?? "sub_\(String(start, radix: 16))"
             if symbol.lowercased().contains(needle) { return true }
+            if (folded[start] ?? []).contains(where: { candidate in
+                candidate.lowercased().contains(needle)
+                    || (demangle(candidate)?.lowercased().contains(needle) ?? false)
+            }) {
+                return true
+            }
             if let objc = objcIndex.binding(for: start),
                objc.displayName.lowercased().contains(needle)
                 || objc.signature.lowercased().contains(needle)

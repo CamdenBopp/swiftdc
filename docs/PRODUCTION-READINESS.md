@@ -261,8 +261,12 @@ because it cannot be distinguished from a right one by reading the output.
   the TinyCC probe, `printf("%s %ld %ld\n", greet(), add3(1,2,3), sum_to(10))`
   renders `printf(0x100004020, greet())`: x1 held `greet()` only on its way to
   `[sp]`, and the `add3`/`sum_to` calls vanish from the structured view.
-- **OPEN — `-f` cannot select a folded function, and its callers ignore the
-  fold.** The definition declines as `sub_5d8` with its candidates
+- **PARTLY FIXED — `-f` cannot select a folded function, and its callers ignore the
+  fold.** Selection is fixed: every symbol folded onto an address, raw or
+  demangled, now selects it, on both the range matcher and the final filter
+  (`everyFoldedSymbolSelectsItsFunctionIfPresent`, seen red; five fixture
+  symbols had printed "No function matched"). Still open: naming a direct call
+  into a folded address (needs the decline/list/rank decision). Original: The definition declines as `sub_5d8` with its candidates
   (`foldedByAddress`), but call sites name an arbitrary alias, and `disasm -f
   '$s1P7secondsySiAA7SecondsVF'` prints "No function matched" for a symbol in
   the export table: the empty-result class this project's rules forbid.

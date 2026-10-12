@@ -39,3 +39,17 @@ private let fixtures = ["Fixtures/Sample/libCodegen.opt.dylib", "Fixtures/Sample
     // Unshared bodies keep theirs, so the check is not vacuous.
     #expect(index.count >= 4)
 }
+
+/// A folded address declines to pick a name, so every symbol folded onto it
+/// selects it under `-f`, raw or demangled. Each printed "No function
+/// matched" for a symbol the binary exports (the empty-result class).
+@Test func everyFoldedSymbolSelectsItsFunctionIfPresent() async throws {
+    let fixture = "Fixtures/Sample/libReconstruction.opt.dylib"
+    guard FileManager.default.fileExists(atPath: fixture) else { return }
+    for filter in ["$s14Reconstruction7urgencyAA8PriorityOyF", "Reconstruction.heading", "IntQuad.a.setter"] {
+        let functions = try await withStableDependencies {
+            try await Disassembler(preset: .default).disassemble(path: fixture, functionFilter: filter)
+        }
+        #expect(functions.contains { $0.source == .foldedSymbols }, "\(filter): \(functions.map(\.displayName))")
+    }
+}
