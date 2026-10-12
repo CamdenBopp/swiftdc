@@ -40,6 +40,23 @@ struct LayoutXrefsContentTests {
         #expect(output.contains("+0x8"))    // the second field's offset
     }
 
+    /// A layout that stopped at a field it could not resolve has an
+    /// understated size. `layout` printed it as fact: `Widget // instance size
+    /// 0 bytes` for a class whose ObjC ancestor is unresolved (an app had a
+    /// 32-byte type at 0 and a 152-byte one at 97). It is unknown, in JSON too.
+    @Test func layoutDoesNotStateAnUntrustedSizeIfPresent() throws {
+        let fixture = "Fixtures/Sample/sample.debug"
+        guard FileManager.default.fileExists(atPath: fixture),
+              let text = try run(["layout", fixture]),
+              let json = try run(["layout", fixture, "--json"]) else { return }
+        #expect(text.contains("sample.Widget  // instance size unknown"), Comment(rawValue: text))
+        #expect(!text.contains("sample.Widget  // instance size 0 bytes"), Comment(rawValue: text))
+        #expect(text.contains("sample.Stack  // instance size 8 bytes"), Comment(rawValue: text))
+        let types = try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]])
+        let widget = try #require(types.first { $0["type"] as? String == "sample.Widget" })
+        #expect(widget["instanceSize"] is NSNull, "\(widget)")
+    }
+
     @Test func xrefsResolvesConcreteCallEdgesIfPresent() throws {
         let fixture = "Fixtures/Sample/sample.release"
         guard FileManager.default.fileExists(atPath: fixture) else { return }

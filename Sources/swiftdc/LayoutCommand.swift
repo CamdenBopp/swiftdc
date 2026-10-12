@@ -136,7 +136,15 @@ struct LayoutCommand: AsyncParsableCommand {
     private func renderText(_ maps: [String: FieldMap]) -> String {
         var blocks: [String] = []
         for (name, map) in maps.sorted(by: { $0.key < $1.key }) {
-            var lines = ["\(name)  // instance size \(map.instanceSize) bytes"]
+            // A layout that stopped at a field it could not resolve has an
+            // understated size: `Widget // instance size 0 bytes` for a class
+            // whose ObjC ancestor is unresolved, 97 for a 152-byte struct.
+            let size = map.trustLimitReason == nil
+                ? "instance size \(map.instanceSize) bytes"
+                : map.trustedOffsetLimit > 0
+                    ? "instance size unknown (at least \(map.trustedOffsetLimit) bytes)"
+                    : "instance size unknown"
+            var lines = ["\(name)  // \(size)"]
             for field in map.fields {
                 let offset = "0x" + String(field.offset, radix: 16)
                 lines.append("  +\(offset.padding(toLength: max(6, offset.count), withPad: " ", startingAt: 0)) \(field.bytes)B  \(field.name): \(field.typeMangledName)")
@@ -153,7 +161,7 @@ struct LayoutCommand: AsyncParsableCommand {
         let payload = maps.sorted { $0.key < $1.key }.map { name, map in
             [
                 "type": name,
-                "instanceSize": map.instanceSize,
+                "instanceSize": map.trustLimitReason == nil ? map.instanceSize as Any : NSNull(),
                 "trustedOffsetLimit": map.trustedOffsetLimit,
                 "trustLimitReason": map.trustLimitReason as Any,
                 "fields": map.fields.map {

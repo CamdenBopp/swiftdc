@@ -1740,6 +1740,13 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   keeps its declarations, states `disassembly failed: …` (JSON
   `disassemblyError`), and the command exits 1 with the error on stderr.
 
+- **FIXED — `layout` printed an understated instance size as fact.** A
+  layout that stops at a field it cannot resolve has a size covering only
+  the trusted prefix: `instance size 0 bytes` for a class with an
+  unresolved ObjC ancestor, 97 for an app's 152-byte struct (audit A6, E-1:
+  28 to 652 such types per binary). Such a type now reads `instance size
+  unknown (at least N bytes)`, and JSON `instanceSize` is null.
+
 ## 6. Usability — are commands, diagnostics, and docs accurate?
 
 - **FIXED — three README defects.** A documented command that errors
