@@ -223,3 +223,30 @@ func structuredLoops(_ text: String) -> [(header: String, body: [String], after:
     #expect(one.contains("Swift.String.append(self: "), Comment(rawValue: one))
     #expect(one == all, "filtered:\n\(one)\nwhole:\n\(all)")
 }
+
+/// A callee declared `async throws(Code)` hands its thrown payload back in
+/// x0 (with x20 = 1), and the success and error paths resume in the same
+/// funclet. Binding x0 as the awaited result made the catch block read
+/// `TT.onError((awaited1 + 1000))`, the error as if it were the value.
+@Test func aTypedThrowsAwaitBindsNoResultIfPresent() async throws {
+    let path = "Fixtures/Sample/libTypedThrowsAwait.opt.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "TypedThrowsAwait.useCode")
+    }
+    let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(text.contains("await TypedThrowsAwait.codeAsync(arg0)"), Comment(rawValue: text))
+    #expect(!text.contains("awaited1"), Comment(rawValue: text))
+}
+
+/// The control: plain `throws` returns its error in x20, so x0 at the
+/// resume is the result and keeps its name.
+@Test func anUntypedThrowsAwaitKeepsItsBindingIfPresent() async throws {
+    let path = "Fixtures/Sample/libAsyncFns.opt.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "awaitThrowing")
+    }
+    let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(text.contains("let awaited1 = await AsyncFns.fetchOrThrow(arg0)"), Comment(rawValue: text))
+}

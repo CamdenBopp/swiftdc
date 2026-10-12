@@ -1020,6 +1020,15 @@ public struct Disassembler: Sendable {
         guard let (_, suspension) = index.suspension(into: resume), !suspension.isExecutorHop,
               let callee = suspension.calleeName
         else { return nil }
+        // A typed-throws callee delivers its thrown payload in the same
+        // register on the error path (with x20 = 1), and both paths resume
+        // here: x0 is the result or the error. Naming it the result made a
+        // catch block read `onError((awaited1 + 1000))`. Plain `throws` (or
+        // `throws(any Error)`) returns its error in x20 and keeps the name.
+        if let thrown = DisassembledFunction.splitSignature(callee)?.thrownType,
+           !["any Swift.Error", "Swift.Error", "Error", "any Error"].contains(thrown) {
+            return nil
+        }
         switch swiftReturnRegister(forDemangledName: callee) {
         case .integer?: return "x0"
         case .floating?: return "v0"

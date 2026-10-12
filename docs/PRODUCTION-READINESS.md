@@ -142,6 +142,12 @@ because it cannot be distinguished from a right one by reading the output.
   an existing negation. Comparing with 0 stays a truth test. On three
   release apps, 60, 435 and 176 bit-0 tests and 14, 41 and 26 `== 1`
   comparisons are now explicit.
+- **FIXED — a typed-throws error was named as the await's result.** A
+  callee declared `async throws(Code)` returns its thrown payload in x0
+  (x20 = 1), and both paths resume in one funclet, so `awaited1` named the
+  error in the catch block (audit B3: `TT.onError((awaited1 + 1000))`). An
+  await of a typed-throws callee now binds no result; plain `throws` keeps
+  `let awaitedN`.
 - **FIXED (`756f27e`) — an -O `for x in array` renders as an infinite loop.**
   Return blocks are retained as loop exits, and edges to a join pass through
   the loop's transfer handler before being suppressed. The compiled
