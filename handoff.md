@@ -6,7 +6,9 @@ thread. This is **tier-5 (conversation-memory) authority** per
 git history, and measurements. Verify each claim against HEAD before acting, and
 delete items from this file as they ship.
 
-_Last updated: 2026-10-12. The unified merge and the fixes below are on the
+_Last updated: 2026-10-12, second session (see "Shipped in the second session"
+and sections 7 and 8, which hold the second mining wave and the ranked plan).
+The unified merge and the fixes below are on the
 `dev` branch on GitHub, not on master. A sweep of every subcommand over 7 large
 apps and 5 dyld-cache frameworks was still running when this was written (Prime
 Video, Fiery Feeds and part of Swiftcord done); merge `dev` into master once it
@@ -49,7 +51,29 @@ concurrency, compiler posts) and probed each lowering fact against swiftdc.
 Their probes live in the session scratchpad; the remaining findings are OPEN
 entries in the readiness doc.
 
-Suite: **334 tests**, green under `SWIFTDC_REQUIRE_FIXTURES=1 swift test` after
+### Shipped in the second session (2026-10-12)
+
+Each with a measured or reproduced defect and a red/green `Verified:` line:
+
+- `1837f3b` chained-fixup rebases walked once (`ChainedRebases`), not per slot:
+  Keynote's selector table was quadratic per page
+- `3d2c9cc` + `dbb51a3` MachOKit fork pinned to the fat64 fix, and the lockfile
+  committed to match (3d2c9cc had left Package.resolved on the old revision)
+- `48d20d6` magic-number division and remainder folded back to `x / D`, `x % D`
+  (new fixture `libCodegen`, its own image so libReconstruction's fuzz offsets
+  stay put)
+- `c00e5a7` stripped class methods named from method descriptors and override
+  tables: Fiery Feeds symbolizer 36.3 s to 1.03 s, no names lost
+- `e3ed073` a body two classes share at -O is a fold, never one owner's name
+- `22df212` `udiv` kept apart from `sdiv` (`/ᵁ` unless the dividend is a proven
+  UInt); signed constants fold signed
+- `3fbbff5` a call forgets the tracked NZCV flags
+
+Reverted before commit: a callee arity cap by parameter *count*. It dropped a
+real argument (`sink(_: String, _: Int)`: the String fills x0 and x1, the Int
+is x2). The sound version is the register-footprint plan in section 8.
+
+Suite: **361 tests** (334 before this session), green under `SWIFTDC_REQUIRE_FIXTURES=1 swift test` after
 `Fixtures/Sample/build.sh` (new fixtures: libConversions, libRuntimeIvars,
 libCow; `maybeNext` in asyncfns, `nextUnlessZero`/`rankUnlessZero` in indirect).
 
@@ -82,12 +106,10 @@ vanish and a scratch x1 is read as one.
 
 ### 3. Performance
 
-- `xrefs`/`disasm` name vtable slots by rendering a full Swift class dump
-  (`MetadataSymbolizer.classMethodNames`), and 0.22's dumper walks each class's
-  ObjC ancestors through the dyld cache: Fiery Feeds `xrefs` 153 s on
-  origin/master, 966 s now. Read the method descriptors directly instead, and
-  memoize `DyldCache._machO(at:)` / `_headerOptimizationRO64` /
-  `_objcOptimization` in the MachOKit fork. Profile in the readiness doc.
+- Shipped (`c00e5a7`): the vtable-slot naming no longer renders a class dump.
+  Re-measure whole-command Fiery Feeds `xrefs` (153 s on origin/master, 966 s
+  before the fix) to see what remains; the MachOKit `DyldCache` memo is likely
+  moot for this path.
 - Prime Video (296 MB) whole-image `xrefs --unreferenced` and `disasm
   --structured` exceed 30 minutes (5.7 / 6.8 GB). Early `sample`: Capstone
   decode (`matchAliasPatterns`) plus malloc. Capstone 6 vs 5 decode speed is
@@ -97,9 +119,9 @@ vanish and a scratch x1 is read as one.
 
 ### 4. Soundness found by the Tech Tavern probes, still open
 
-All in the readiness doc with repros. Highest value: cap a Swift callee's
-arguments at its demangled arity and lay float / `T?` arguments out from the
-signature (one root cause behind stale-argument renders, SwiftUI raw CGFloat
+All in the readiness doc with repros. Highest value: bound a Swift callee's
+arguments by its demangled signature's register footprint (not its parameter
+count; see section 8) and lay float / `T?` arguments out from it (one root cause behind stale-argument renders, SwiftUI raw CGFloat
 bits, and `sink(arg0, arg1)` for a one-parameter function). Then: async
 throws via x20 rendered as bare `return`; a throw merged into the epilogue
 rendered as `return (… ? swift_willThrow(…) : …)`; `Tm` merged helpers naming
@@ -187,9 +209,9 @@ refinements to section 5's plan:
   preserved lanes, padding); a register holding the caller's own callee-saved
   input or an earlier call's killed result is provably not an argument (Ghidra
   `AncestorRealistic`, negative half only).
-- **Magic-number division** (Ghidra `ruleaction/division.rs`): fold
-  `umulh`/`smulh` + shifts back to `x / d`, declining unless the error bound holds
-  for every input of the width. swiftdc has no `umulh` handling.
+- **Magic-number division** (Ghidra `ruleaction/division.rs`): shipped as
+  `48d20d6`, verified on boundary probes. Still owed: the every-input proof
+  (section 8, item 3).
 - **Oracles:** koute's pure-Rust Ghidra port (no C++/Java, raw-bytes entry
   `Program::from_raw_bytes(…, "AARCH64:LE:64:AppleSilicon:default", …)`) can serve
   as an instruction-semantics oracle (run its p-code emulator and swiftdc's
@@ -207,7 +229,126 @@ Do not adopt: positional "gap ends the list" arity, arity from earlier calls to
 the same callee, type votes as arity evidence, any cspec as a swiftcc model,
 glaurung's keyword-matching LLM naming, WARP hashing for identity.
 
-### 7. Everything else
+### 7. Mined in the second wave (2026-10-12)
+
+Seven agents read eleven more projects; every swiftdc claim below was checked
+against HEAD by reading code unless it says "reproduced".
+
+- **unwasm** (MIT/Apache-2.0) and **asmlift** (MIT core, `apps/web` GPL-2.0).
+  (1) Prove the magic-division fold: regenerate the compiler's own magic
+  constants for the recovered divisor (LLVM's `SignedDivisionByConstantInfo` /
+  `UnsignedDivisionByConstantInfo`) and require a match (asmlift
+  `raise/magicdiv.ts`). (2) Compile the rendered expression with swiftc and
+  compare value and trap in a child process (unwasm `tests/differential.rs`),
+  because the oracle's evaluator is our own. (3) A per-instruction hardware
+  oracle: one-instruction fixtures called on edge inputs against the tracer's
+  transfer function (unwasm `tests/opcodes.rs`). (4) A decline census: a reason
+  id on every `?` and structurer fallback, counted over a corpus (asmlift
+  `docs/measurement-discipline.md`). (5) Ambiguity names nothing (unwasm). (6)
+  Promote stack slots only when the frame address never escapes. (7) Hazard
+  checks before re-rendering: load past store, trapping op where it did not run
+  (asmlift `structure/hazards.ts`). (8) Split `xrefs --unreferenced` into
+  exported, address-taken, neither. (9) A width quarantine assertion: no 32/64
+  mix without an extend (asmlift `ir/verify.ts`). (10) Stripped C/ObjC names
+  from `__assert_rtn`'s `__func__` argument. asmlift's IR (second pass): the
+  "call printed twice" defect is effect ordering, not typing; extend the
+  `let rN =` temp to every `.callResult` with more than one render position
+  (asmlift `structure/analysis.ts`). Block parameters at loop headers only, plus
+  a test-time SSA verifier. Do not adopt its typed L2 boundary (it refuses
+  whole functions).
+- **w1tn3ss** (no license: ideas only; the dependency would be QBDI,
+  Apache-2.0). In-process QBDI is the only mode usable here (spawn and attach
+  are defeated by the hardened runtime). Uses: a call-site capture oracle (a
+  PREINST callback on `BL`/`BLR` comparing x0–x7, d0–d7, x8, x20–x22 and stack
+  bytes with the `CallSite` prediction), and a dynamic edge oracle for jump
+  tables and `blr` targets (every observed edge must be in the static CFG).
+  QBDI embeds LLVM: look for a prebuilt before building on this host. Its own
+  ABI model is wrong for Darwin (stack slots at `sp + 8*(i-8)`).
+- **sleuthre** (MIT) and **Aether** (MIT). Shipped from it: `3fbbff5`. Also:
+  `__TEXT,__unwind_info` as a one-way boundary check (every entry start must be
+  a known function start; never enumerate from it, ld64 folds entries); a
+  `swiftc -parse` syntax gate on rendered output. Aether: nothing to port.
+- **angr** (BSD-2), calling convention. The `CallSignature` design in section 8
+  comes from here: provenance tiers (`function.py` `PrototypeSource`),
+  read-before-write facts (`fact_collector.py`), and the known-void rule (a call
+  to a `-> ()` callee should leave x0 and v0 unknown, not `.callResult`).
+  Possible hole, unverified: `IndirectResults.swift` treats a `bl` reached
+  while x8 still holds the entry value as not reading x8.
+- **GhidraApple** (GPL-3.0, ideas only), **FOX** (MIT), **Binary Ninja's ObjC
+  docs**. A message send is three facts: selector, proven receiver type, and
+  candidate implementations; candidates never rename the call. Predicted by
+  reading, all to reproduce first: `setAlpha:0.5` renders a stale x2 (floats go
+  to d-registers); CGRect arguments are wrong; a variadic send can print stale
+  x3–x7 before its stack values; a user method named `…WithFormat:` gets extra
+  variadic arguments (variadic is decided by selector name, `Pseudo.swift`
+  around 257). Fix: an encoding-driven ABI classifier (integer/pointer to x,
+  `f`/`d` to v, HFA to consecutive v, small composites to 1–2 x, larger by
+  pointer; Darwin packs stack arguments; variadics always on the stack;
+  decline on bitfields, unions and `?`). `xrefs` gains a possible-edge layer
+  ranked by evidence (exact lookup, cone of overrides, declared type,
+  selector only), never capped silently. Blocks: global block literals give
+  proven edges to their invoke functions; stack blocks need dominating header
+  stores.
+- **ghidra-nativeaot** (MIT), **ghidra-decomp** (MIT), Frida, Ghidra's Swift
+  support. A fold-aware type graph keyed by descriptor offset, with a reverse
+  map from implementation address to every descriptor pointing at it, built
+  once per image (`machO.swift.types` re-parses on every access and about nine
+  builders walk it). It also resolves inherited vtable slots (an ancestor's
+  slot range plus the most-derived override). A runtime metadata oracle with
+  only `dlopen`/`dlsym`: call each type's metadata accessor and read field
+  offsets, live vtables, `destructiveInjectEnumTag` per case, and
+  `swift_conformsToProtocol` witness tables. Bounded-memory `xrefs`/JSON: make
+  the streaming render a visitor, reduce each function to its call edges, and
+  write NDJSON with a final summary record via a temp file and rename. Do not
+  adopt: Frida (it knows no more than swiftdc on stripped code), headless
+  Ghidra (its Swift cspec drops x21/x22), persistent analysis caches before
+  measuring.
+
+### 8. Next plan, ranked across all mining
+
+Soundness first, then completeness. Repro before any fix marked "unverified".
+
+1. **Callee arguments from a `CallSignature`.** Per slot: location (x0–x7,
+   v0–v7, x8, x20, x21, stack), role (formal, self, metadata, witness table,
+   context, error, indirect result), provenance (Swift mangled signature, ObjC
+   encoding, SDK prototype, callee read-before-write summary), and
+   completeness; two proven sources that disagree decline. First slice: Swift
+   callees with a mangled symbol, no generics, async or coroutines, every
+   parameter a proven single-register scalar (`scalarParameterClass`); apply
+   once where `argumentsByAddress` is built in `Disassembler.swift`. Fixture
+   `callarity.swift` at -Onone and -O: `one(Int)` called with x1 live must
+   render `one(arg0)`; `mixed(Int, Double, Int)` must render
+   `mixed(arg0, ?, arg1)`; a generic callee stays unchanged. Then the
+   known-void rule, then float arguments (snapshot v0–v7), then the ObjC
+   encoding classifier. M.
+2. **Fold-aware identity everywhere**, starting with `SelfTypeIndex` and
+   vtable-dispatch naming (first-writer-wins today), then the type graph. S
+   then M.
+3. **Prove magic division** by regenerating LLVM's constants for the
+   recovered divisor; keep the probes as a second check. S.
+4. **Demote the self-vtable edge** to a possible edge unless final
+   (unverified; repro first), then the possible-edge layer in `xrefs`. S, M.
+5. **Jump tables** with a typed coverage gap for an unresolved `br`. M.
+6. **Oracles**: per-instruction hardware oracle (M); runtime metadata oracle
+   via `dlsym` (S–M); `__unwind_info` boundary check (S–M); compile the render
+   with swiftc (M); decline census (M).
+7. **Bounded-memory `xrefs` and JSON** (M).
+8. Smaller: `mulh` renders as a pseudo-operator (render
+   `multipliedFullWidth(by:).high`); 32-bit `smull`/`umull`; variadic
+   arguments from the stack only; `__assert_rtn` names; `xrefs --unreferenced`
+   split.
+
+### 9. Everything else
+
+- Findings in `docs/research/decompiler-comparison.md` that never reached this
+  file or the readiness doc (found by the 2026-10-12 audit): the named-rule
+  pool; a bit-level known-zero / consumed-bits lattice; a "not settling" cap on
+  type propagation; a cross-optimization semantic-invariance harness;
+  signedness property tests; standing over-firing scans; mapping witness
+  offsets to protocol requirement names; a headless-Ghidra comparison of
+  concrete output (rejected in section 7); Malimite's library skip by
+  namespace. And from `findings-scratch.md`: seeding a function's own `Int?`
+  parameter (the `orZero` case).
 
 - A float argument to a call is not tracked (`Swift.Double.init()` for
   `Double(f)` at -Onone).

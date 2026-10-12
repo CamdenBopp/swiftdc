@@ -14,7 +14,9 @@ re-run. Claims without one are marked UNKNOWN by definition.
 Last audited: 2026-10-12, unified merge of all feature branches (MachOSwiftSection
 0.22.0, Capstone 6, x8 indirect returns, arm64e preflight, async funclets), then a
 sweep of every subcommand over 7 large apps and 5 dyld-cache frameworks (partial
-when written: Prime Video, Fiery Feeds, part of Swiftcord).
+when written: Prime Video, Fiery Feeds, part of Swiftcord). Re-audited the same
+day against HEAD by an agent that read this file, `handoff.md` and the research
+docs against the source; its stale-claim findings are corrected below.
 
 ---
 
@@ -22,6 +24,40 @@ when written: Prime Video, Fiery Feeds, part of Swiftcord).
 
 The highest-severity category. A wrong render is worse than a missing one,
 because it cannot be distinguished from a right one by reading the output.
+
+- **FIXED — `udiv` rendered as the signed `/`, and signed constants folded
+  unsigned.** sdiv and udiv were one operator, `.divide`, folded on raw bit
+  patterns: `Int(bitPattern: UInt(bitPattern: a) / UInt(bitPattern: b))`
+  rendered `(arg0 / arg1)`, wrong at every negative dividend, and -7 / 2 folded
+  to 0x7ffffffffffffffc. `udiv` is now `.unsignedDivide`, rendered `/` only for a
+  proven UInt dividend and `/ᵁ` otherwise; `.divide` folds with sdiv semantics
+  (`22df212`). The oracle's `unsignedQuotient` / `unsignedRemainderOf` failed on
+  every negative input before it.
+- **FIXED — the tracked flags survived a call.** `cmp; bl; cset` read the
+  pre-call comparison although AAPCS64 does not preserve NZCV (`3fbbff5`,
+  `FlagsAcrossCallTests` seen red). No compiled fixture reads flags across a
+  call; the exposure is hand-written input.
+- **FIXED — a stripped body two classes share was named after one.** At -O
+  function merging gives identical methods one body; metadata named it after the
+  first class read. An address claimed by two owners now goes to the existing
+  fold path (`sub_…`, "N symbols folded … none can be attributed") (`e3ed073`,
+  `MetadataNameOracleTests`, red with first-claim-wins restored).
+- **OPEN — a metadata name cannot see a fold partner that has no metadata
+  record.** libReconstruction -O: `Counter.value.getter` shares its body with the
+  accessors of the `final` classes `BoxA.Holder` / `BoxB.Holder`, which have no
+  vtable entries, so a stripped binary keeps no trace of them and the address is
+  named `Counter.getter`. True of the body (the bytes are identical), but a call
+  from `Holder` code reads as a `Counter` call. No metadata-only fix exists.
+- **OPEN (reading, not reproduced) — other first-writer-wins maps at folded
+  addresses.** `SelfTypeIndex` (`bindings[address] == nil`) and the vtable
+  dispatch naming in `resolveVTableMethod` keep whichever owner reaches an
+  address first, so a folded getter can bind `self` to the wrong class's fields.
+  Same fix as `e3ed073`: collect every claim and decline on disagreement.
+- **OPEN (reading, not reproduced) — a `self` vtable dispatch becomes a proven
+  call edge.** `Disassembler.swift` (around 1688–1706) sets `branchTarget` to
+  the receiver class's own slot, but a subclass override in the image can run
+  instead, and `CallGraph` records the edge as proven. Should be a possible
+  edge unless the class or method is final.
 
 - **FIXED — unsigned comparisons rendered as signed.** `cset w0, lo` (unsigned)
   used to render `(arg0 < 10)`, which evaluates differently from the machine at
@@ -83,7 +119,16 @@ because it cannot be distinguished from a right one by reading the output.
   The demangled signature gives the count; plain float parameters (d0–d7) and
   `T?` pairs (payload, isNil) also need laying out from it, which is why
   `.frame(width: 120)` shows `_FrameLayout.init(0x405e…, 0, …)` and
-  `takeOpt(nil, 420, nil)` shows six arguments.
+  `takeOpt(nil, 420, nil)` shows six arguments. **A count cap is unsound**: it
+  was tried on 2026-10-12 and reverted after a reproduction. A `String` takes x0
+  and x1, so capping `sink(_: String, _: Int)` at two registers dropped the Int
+  in x2 (`sink(String.init(…), ?)` instead of `sink(…, ?, arg0)`). The cap has
+  to be the summed register footprint of each parameter (lib/IRGen/GenCall.cpp:
+  indirect conventions 1 GPR, loadable values one register per scalar, Float and
+  Double in FPRs on an independent counter, `Int?` 2 GPRs, closures 2), then
+  generic metadata and witness tables, with self in x20 only for class or thick
+  metatype self, and declined for any parameter whose footprint is unproven.
+  The plan is in `handoff.md` section 8.
 - **OPEN — an async function's throw renders as a bare `return`.** It returns
   its error in x20 through ResumeParent (`mov x20, x21; br x1`): `sleepy() async
   throws -> Int` collapses to `return`, and a rethrowing resume shows `else {
@@ -159,8 +204,9 @@ because it cannot be distinguished from a right one by reading the output.
   refuses to structure an unprovable branch (`Structurer.swift:214`); `clobber`
   is deliberately over-pessimistic because under-clobbering "leaves a stale value
   that renders as a confident, fabricated" one (`ValueTracking.swift:1583`);
-  fixed-ABI callee args are clamped to real arity so a stale register cannot
-  surface as a trailing argument.
+  the C runtime helpers in the hand list `knownCArity` (`Pseudo.swift`) are
+  clamped to their arity. Swift callees and every other C callee are not: see
+  the OPEN arity entries above.
 - **MITIGATED — `self` is conservative.** x20 is read as `self` only for a
   Swift-mangled callee and only when freshly written (`Disassembler.swift:2847`,
   `ValueTracking.swift:636`). Deliberate false-negative-over-false-positive.
@@ -493,6 +539,20 @@ because it cannot be distinguished from a right one by reading the output.
 
 Silent omission is the worst failure mode: it is indistinguishable from a
 correct empty answer. See the empty-result rule in `CLAUDE.md`.
+
+- **MITIGATED — division by a constant rendered `?`.** `smulh`/`umulh` were
+  unmodelled, so every -O `x / 7` lost its value. `MagicDivision` folds the
+  multiply-high lowering back to `x / D` and `x % D` (`48d20d6`, seven shapes in
+  libCodegen checked by the differential oracle). Remaining: the fold is checked
+  on boundary probes, not proven for every input (the forward magic-constant
+  check is planned); 32-bit `smull`/`umull` are untracked; an unfolded
+  multiply-high renders as the pseudo-operator `mulh`.
+- **OPEN — a `br xN` has no successors.** `CFG.swift` (`successors(of:)`, around
+  line 69) gives an indirect branch none, so a jump table's arms are orphaned
+  from the CFG and the structurer never sees them, and nothing reports the gap.
+  Plan in `handoff.md` sections 5 and 6: bound the index by the dominating guard,
+  emulate the address computation per value, and report an unresolved `br` as a
+  typed coverage gap.
 
 - **FIXED — whole-binary disassembly returned nothing on most dylibs.**
   llvm-objdump right-aligns its address column; the parser required
@@ -1142,8 +1202,12 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   4.4s, `dump` 168s to 77s, `interface` 240s to 74s, `objc` 610s to 375s, all
   byte-identical (`cmp`). SwiftPM warns the fork and MachOObjCSection's upstream
   URL share the identity `machokit` and says it will become an error.
-- **OPEN — `xrefs`/`disasm` pay for a full Swift class dump to name vtable
-  slots, and 0.22 made that dump walk every class's ObjC ancestors.**
+- **FIXED (`c00e5a7`) — `xrefs`/`disasm` paid for a full Swift class dump to name vtable
+  slots, and 0.22 made that dump walk every class's ObjC ancestors.** The
+  symbolizer now reads method descriptors and override tables directly: on Fiery
+  Feeds 36.3 s to 1.03 s for the symbolizer alone, 7042 names both ways, none
+  lost. The `DyldCache` memo below is likely moot for this path; unmeasured for
+  others. Original record:
   `MetadataSymbolizer.classMethodNames(in:)` renders the whole `.types` dump and
   scans it for `sub_` addresses. Under 0.22, `ClassDumper.body` resolves each
   class's ObjC ancestor chain unconditionally (no configuration skips it). Fiery
@@ -1393,6 +1457,7 @@ The meta-category. Every gap here weakens confidence in every claim above.
 | Enum tag → case index | SIL (`swiftc -emit-sil`) | Used once, manually, to confirm the `rank` lowering |
 | Field offsets | `__swift5_fieldmd`, computed offline | Runtime-exact by construction |
 | Cross-image symbols | export trie | Used as the primary source |
+| Stripped-binary names from metadata | the unstripped twin's symbol at the same address, demangled by `xcrun swift-demangle` | **In tests** — `MetadataNameOracleTests`, four stripped fixtures, overrides, same-simple-name classes, and folds required |
 | Recovered semantics | the compiled function itself, called via `dlsym` | **In tests** — 1,264 comparisons at both `-Onone` and `-O`: 636 integer/boolean (catches an injected U1) and 628 floating point (catches a one-ULP constant error). Narrow: no strings, payload enums, or side effects |
 | Async funclet grouping | the unstripped symbol table (`…TQ<n>_` / `…TY<n>_` suffixes) | **In tests** — parent, ordinal and kind of all 14 funclets on three builds, and the stripped build must match address for address; the code-only fallback is checked against the same oracle |
 | Malformed-input handling | the CLI's own exit status, checked from a subprocess | **In tests** — 9 header-shaped inputs; no fuzzer, no malformed metadata |

@@ -51,7 +51,7 @@ Mach-O (MachOKit / MachOSwiftSection)
   │     · MetadataSymbolizer           witness/metadata addresses → Type: Protocol.kind
   │     · ObjCMetadataIndex            ObjC classes/ivars/selectors
   │
-  ├─ Disassembler.swift  (enrichCallArguments, 2,782 LOC — the largest file)
+  ├─ Disassembler.swift  (enrichCallArguments, 2,782 LOC when written; 4,300 on 2026-10-12)
   │     · renderValue / renderBoolean  AbstractValue → Swift-ish TEXT
   │     · all the recent "folds" live here: enum case naming, ==/!=, &&/||, !, ternary,
   │       constant typing, negation, operand normalization, casts, array literals
@@ -340,7 +340,7 @@ literally.**
 - **S1 — struct parameters decompose only for instance methods.** HFA (`dot`) and GPR (`sum`) struct
   *parameters* of free functions decline; decomposition fires only in the value-self path. Real
   limitation.
-- **O1 — single-register (nil-pointer) Optionals are not seeded.** `refOrNil (Ref?) → declines`,
+- **O1 (fixed since; see `scalarParameterClass` in Disassembler.swift) — single-register (nil-pointer) Optionals are not seeded.** `refOrNil (Ref?) → declines`,
   though `r != nil` is just `(arg0 != 0)`. `scalarParameterClass` treats only `Unsafe*` pointers as
   single-register; class/reference optionals (nil==0) are tractable to add (analogous to the pointer
   nil-coalescing already shipped).
