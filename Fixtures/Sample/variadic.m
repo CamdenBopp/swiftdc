@@ -9,3 +9,14 @@ NSString *describe(long a, long b, long c, long d) {
     long k = churn(a, b, c, d);
     return [NSString stringWithFormat:@"%ld %ld", k, a];
 }
+
+// The format is a parameter, so its conversions are unknown. At -O0 the two
+// variadic arguments sit at [sp] and [sp, #8] with spills right above them.
+NSString *describeWith(NSString *format, long a, long b) {
+    return [NSString stringWithFormat:format, a, b];
+}
+
+// nil-terminated: the arguments end at the first nil.
+NSArray *listOf(id a, id b) {
+    return [NSArray arrayWithObjects:a, b, nil];
+}

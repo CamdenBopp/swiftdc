@@ -2958,6 +2958,9 @@ public struct Disassembler: Sendable {
         var argumentsByAddress: [UInt64: [AbstractValue]] = [:]
         /// Parameter types of the sites laid out from a signature.
         var laidOutTypes: [UInt64: [String]] = [:]
+        /// Variadic sends whose variadic argument count is not provable: their
+        /// fixed arguments render, followed by `…`.
+        var unprovenVariadicSites: Set<UInt64> = []
         for (address, site) in sites {
             var values = site.arguments
             // `swift_willThrow(SWIFT_CONTEXT void *, SWIFT_ERROR_RESULT
@@ -3007,14 +3010,39 @@ public struct Disassembler: Sendable {
                     continue
                 }
             }
+            // Stack values follow the register arguments by position, so the
+            // registers are padded to their full count first: appended after a
+            // trimmed list they slid into the fixed positions, and
+            // `[NSArray arrayWithObjects:a, b, nil]` rendered its nil sentinel as
+            // the first object (`arrayWithObjects:0`).
             if let callee = calleeByAddress[address],
-               let selector = selectorName(callee: callee, arguments: values),
-               !site.stackArguments.isEmpty {
+               let selector = selectorName(callee: callee, arguments: values) {
+                let colons = selector.filter { $0 == ":" }.count
                 if isVariadicObjCSelector(selector) {
-                    values += site.stackArguments
-                } else {
-                    let fixedStackCount = max(0, selector.filter({ $0 == ":" }).count - 6)
-                    values += site.stackArguments.prefix(fixedStackCount)
+                    let fixed = min(2 + colons, 8)
+                    var laidOut = (0 ..< fixed).map { $0 < values.count ? values[$0] : .unknown }
+                    if selector.hasSuffix("WithObjects:") || selector.hasSuffix("WithObjectsAndKeys:") {
+                        // nil-terminated: the list ends at the first nil, and an
+                        // empty list ends at the fixed one.
+                        if laidOut.last != .immediate(0) {
+                            if let end = site.stackArguments.firstIndex(of: .immediate(0)) {
+                                laidOut += site.stackArguments[...end]
+                            } else {
+                                unprovenVariadicSites.insert(address)
+                            }
+                        }
+                    } else {
+                        // A format whose conversions are not readable: the count
+                        // is unknown, and contiguous stack slots may be spills.
+                        unprovenVariadicSites.insert(address)
+                    }
+                    argumentsByAddress[address] = laidOut.map(sanitizeValue)
+                    continue
+                }
+                let fixedStackCount = max(0, colons - 6)
+                if fixedStackCount > 0, !site.stackArguments.isEmpty {
+                    values = (0 ..< 8).map { $0 < values.count ? values[$0] : .unknown }
+                        + site.stackArguments.prefix(fixedStackCount)
                 }
             }
             if let values = sanitize(values) { argumentsByAddress[address] = values }
@@ -3662,6 +3690,7 @@ public struct Disassembler: Sendable {
                     index += 1
                 }
             }
+            if let site, unprovenVariadicSites.contains(site) { parts.append("…") }
             return parts
         }
         func renderArguments(_ values: [AbstractValue], depth: Int) -> String {

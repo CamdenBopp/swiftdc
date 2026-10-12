@@ -30,3 +30,25 @@ import Foundation
     #expect(count(#"@"%d and more text…""#) == nil)
     #expect(count(#"@"%k""#) == nil)
 }
+
+/// Stack values follow the register arguments by position. With x2 unknown
+/// the register list was trimmed to x0, so `[NSArray arrayWithObjects:a, b,
+/// nil]` received its stack values in the `_cmd` and first-object positions
+/// and rendered `arrayWithObjects:0`: the nil sentinel as the first object.
+/// The list now ends at its nil, and a format whose conversions are not
+/// readable (a parameter) renders `…` instead of guessing a count from
+/// contiguous stack slots, which may be spills.
+@Test func variadicStackValuesKeepTheirPositionsIfPresent() async throws {
+    let fixture = "Fixtures/Sample/libVariadic.dylib"
+    guard FileManager.default.fileExists(atPath: fixture) else { return }
+    func pseudo(_ name: String) async throws -> String {
+        let functions = try await withStableDependencies {
+            try await Disassembler(preset: .default).disassemble(path: fixture, functionFilter: name)
+        }
+        return functions.map { $0.renderPseudo() }.joined(separator: "\n")
+    }
+    let list = try await pseudo("listOf")
+    #expect(list.contains("[NSArray arrayWithObjects:?, ?, 0]"), "\(list)")
+    let formatted = try await pseudo("describeWith")
+    #expect(formatted.contains("[NSString stringWithFormat:?, …]"), "\(formatted)")
+}
