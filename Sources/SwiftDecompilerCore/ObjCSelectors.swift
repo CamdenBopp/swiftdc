@@ -41,12 +41,16 @@ enum ObjCSelectors {
         let cacheReader = machO.fullCache.map { CacheReader(full: $0) }
         let fileRanges = FileBackedRanges(standalone: machO)
         let pointerSize = MemoryLayout<UInt64>.size
+        let rebases: ChainedRebases? = cacheReader != nil ? nil : machO.fileOffset(of: selrefs.address).flatMap {
+            ChainedRebases(fileOffsets: Int($0) ..< Int($0) + selrefs.size, in: machO)
+        }
         var table = SelectorTable()
 
         for slot in stride(from: selrefs.address,
                            to: selrefs.address + UInt64(selrefs.size),
                            by: pointerSize) {
-            guard let target = pointerTarget(at: slot, in: machO, cacheReader: cacheReader) else { continue }
+            guard let target = pointerTarget(at: slot, in: machO, cacheReader: cacheReader, rebases: rebases)
+            else { continue }
             if let methnameRange, !methnameRange.contains(target) { continue }
             guard let name = selectorText(at: target, in: machO, cacheReader: cacheReader, fileRanges: fileRanges),
                   isSelectorShaped(name)
@@ -67,11 +71,13 @@ enum ObjCSelectors {
     private static func pointerTarget(
         at slot: UInt64,
         in machO: MachOFile,
-        cacheReader: CacheReader?
+        cacheReader: CacheReader?,
+        rebases: ChainedRebases?
     ) -> UInt64? {
         if let cacheReader { return cacheReader.pointer(at: slot) }
         guard let fileOffset = machO.fileOffset(of: slot),
-              let runtimeOffset = machO.resolveRebase(at: UInt64(fileOffset))
+              let runtimeOffset = rebases.map({ $0.targets[Int(fileOffset)] })
+                ?? machO.resolveRebase(at: UInt64(fileOffset))
         else { return nil }
         return machO.address(forOffset: 0) &+ runtimeOffset
     }
