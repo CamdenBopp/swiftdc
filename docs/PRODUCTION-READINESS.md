@@ -1326,6 +1326,14 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   fixes: name vtable slots from the method descriptors directly (no dump), and
   memoize those `DyldCache` derivations in the MachOKit fork (both the old and
   new ObjC-optimization formats).
+- **DEAD END — capturing `MachOFile.fullCache` once in the resolver.**
+  MachOKit memoises `fullCache` only on success, so a standalone binary
+  re-attempts opening a cache on every read, and `sample` at 50 s on Fiery
+  Feeds `xrefs` put 224 of 5,855 analysis samples under it (through
+  `pointerTarget(at:)`). Reading it once per resolver measured nothing,
+  alternating runs at `39eb91b`: baseline 204.6 s and 203.1 s, candidate
+  203.8 s and 203.6 s, output identical. The sample's share was one thread's
+  view of a short early phase. Reverted; do not retry for speed.
 - **DEAD END — reserving the decode array once at the text bound.** A memory
   sample at 7 GB in Swiftcord `xrefs` put every frame in `decodeText` ->
   `CapstoneEngine.append` -> `_ArrayBuffer._consumeAndCreateNew`, and
