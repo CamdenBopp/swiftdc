@@ -981,6 +981,7 @@ public struct ValueTracer: Sendable {
             registers[Self.selfFreshKey] = nil
             // AAPCS64 does not preserve NZCV across a call.
             registers[Self.flagsKey] = nil
+            registers[Self.flagsWidthKey] = nil
             return
         }
         let hadSelf = registers[Self.selfFreshKey]
@@ -1874,10 +1875,9 @@ public struct ValueTracer: Sendable {
             let masked = AbstractValue.binary(.bitAnd, value, .immediate(1 << bit))
             return .binary(detail.id == AARCH64_INS_TBZ ? .equal : .notEqual, masked, .immediate(0))
         default:
-            guard let op = Self.comparisonOperator(detail.conditionCode),
-                  let flags = registers[Self.flagsKey]
+            guard let flags = registers[Self.flagsKey]
             else { return nil }
-            return comparisonValue(flags: flags, op)
+            return flagCondition(flags, code: detail.conditionCode, width: registers[Self.flagsWidthKey])
         }
     }
 
@@ -1938,8 +1938,11 @@ public struct ValueTracer: Sendable {
         // `ngcs` and `negs`, and a path that returned early out of `adds`
         // left the previous comparison standing, so a later branch read a
         // stale comparison and rendered the wrong condition.
+        let incomingFlags = registers[Self.flagsKey]
+        let incomingFlagsWidth = registers[Self.flagsWidthKey]
         if detail.updatesFlags || Self.unmodeledFlagWriters.contains(detail.id.rawValue) {
             registers[Self.flagsKey] = nil
+            registers[Self.flagsWidthKey] = nil
         }
 
         // A result pointer flowing into anything but a modelled copy, offset,
@@ -2005,7 +2008,10 @@ public struct ValueTracer: Sendable {
             // The S-variants (`adds`/`subs`) also set NZCV — the compiler emits
             // `subs x8, x8, x0; cset …` for a comparison as readily as `cmp`.
             if detail.id == AARCH64_INS_ADDS || detail.id == AARCH64_INS_SUBS {
-                registers[Self.flagsKey] = result
+                // A subtraction keeps its operands for a conditional compare
+                // to read; a sum folds like any other value.
+                registers[Self.flagsKey] = detail.id == AARCH64_INS_SUBS ? .binary(op, lhs, rhs) : result
+                registers[Self.flagsWidthKey] = .immediate(UInt64(dest.widthBits))
             }
 
         case AARCH64_INS_AND, AARCH64_INS_ANDS, AARCH64_INS_ORR, AARCH64_INS_EOR,
@@ -2034,7 +2040,10 @@ public struct ValueTracer: Sendable {
                 source(detail.operands[2], in: registers)
             )
             write(dest, result, into: &registers)
-            if detail.id == AARCH64_INS_ANDS { registers[Self.flagsKey] = result }
+            if detail.id == AARCH64_INS_ANDS {
+                registers[Self.flagsKey] = result
+                registers[Self.flagsWidthKey] = .immediate(UInt64(dest.widthBits))
+            }
 
         case AARCH64_INS_MADD, AARCH64_INS_MSUB:
             // Fused multiply-add/subtract: `madd d, n, m, a` = a + n*m,
@@ -2360,10 +2369,36 @@ public struct ValueTracer: Sendable {
                 let lhs = source(detail.operands[0], in: registers)
                 let rhs = source(detail.operands[1], in: registers)
                 switch detail.id {
-                case AARCH64_INS_ALIAS_CMP: registers[Self.flagsKey] = expression(.subtract, lhs, rhs)
-                case AARCH64_INS_ALIAS_CMN: registers[Self.flagsKey] = expression(.add, lhs, rhs)
-                case AARCH64_INS_ALIAS_TST: registers[Self.flagsKey] = expression(.bitAnd, lhs, rhs)
-                default: registers[Self.flagsKey] = nil // CCMP/CCMN: conditional
+                case AARCH64_INS_ALIAS_CMP:
+                    // Keep the operands: folding the difference loses overflow
+                    // and register width before a conditional compare reads it.
+                    registers[Self.flagsKey] = .binary(.subtract, lhs, rhs)
+                    registers[Self.flagsWidthKey] = .immediate(UInt64(detail.operands[0].operand.register?.widthBits ?? 64))
+                case AARCH64_INS_ALIAS_CMN:
+                    registers[Self.flagsKey] = expression(.add, lhs, rhs)
+                    registers[Self.flagsWidthKey] = .immediate(UInt64(detail.operands[0].operand.register?.widthBits ?? 64))
+                case AARCH64_INS_ALIAS_TST:
+                    registers[Self.flagsKey] = expression(.bitAnd, lhs, rhs)
+                    registers[Self.flagsWidthKey] = .immediate(UInt64(detail.operands[0].operand.register?.widthBits ?? 64))
+                case AARCH64_INS_CCMP:
+                    guard detail.operands.count >= 3,
+                          let fallback = detail.operands[2].operand.immediateValue, (0..<16).contains(fallback),
+                          let incomingFlags,
+                          let condition = flagCondition(incomingFlags, code: detail.conditionCode, width: incomingFlagsWidth, requireComplete: true),
+                          condition != .unknown, lhs != .unknown, rhs != .unknown
+                    else { return }
+                    let width = detail.operands[0].operand.register?.widthBits ?? 64
+                    let conditions = Self.flagCodes.map { code -> AbstractValue in
+                        let compared = subtractionCondition(lhs, rhs, code: code, width: width)
+                        let alternate = AbstractValue.immediate(Self.literalFlagCondition(UInt64(fallback), code: code) ? 1 : 0)
+                        if case .immediate(let taken) = condition { return taken != 0 ? compared : alternate }
+                        guard compared != .unknown, Self.expressionDepth(condition) < 8,
+                              Self.expressionDepth(compared) < 8 else { return .unknown }
+                        if compared == alternate { return alternate }
+                        return .select(condition: condition, whenTrue: compared, whenFalse: alternate)
+                    }
+                    registers[Self.flagsKey] = .aggregate(conditions)
+                default: registers[Self.flagsKey] = nil // CCMN remains declined.
                 }
             } else {
                 registers[Self.flagsKey] = nil
@@ -2373,10 +2408,18 @@ public struct ValueTracer: Sendable {
             // `cset wd, <cc>` materialises the flags as a boolean. Reconstruct the
             // comparison from the recorded flags value and the condition code.
             guard let dest = destinationRegister(detail),
-                  let op = Self.comparisonOperator(detail.conditionCode),
-                  let flags = registers[Self.flagsKey]
+                  let flags = registers[Self.flagsKey],
+                  let condition = flagCondition(flags, code: detail.conditionCode, width: registers[Self.flagsWidthKey]),
+                  condition != .unknown
             else { clobber(detail, into: &registers); return }
-            write(dest, comparisonValue(flags: flags, op), into: &registers)
+            var result = condition
+            if detail.id == AARCH64_INS_ALIAS_CSETM {
+                // All ones when the condition holds: `0 - c`, masked to a
+                // 32-bit destination. A constant condition folds.
+                result = expression(.subtract, .immediate(0), condition)
+                if dest.widthBits == 32 { result = expression(.bitAnd, result, .immediate(0xffff_ffff)) }
+            }
+            write(dest, result, into: &registers)
 
         case AARCH64_INS_CSEL, AARCH64_INS_CSINC, AARCH64_INS_CSINV, AARCH64_INS_CSNEG:
             // The branchless ternary: `csel d, n, m, cc` = cc ? n : m. The
@@ -2384,10 +2427,10 @@ public struct ValueTracer: Sendable {
             // false operand. This is how `-O` lowers a ternary, so it produces the
             // same `.select` a `-Onone` diamond does.
             guard let dest = destinationRegister(detail), detail.operands.count >= 3,
-                  let op = Self.comparisonOperator(detail.conditionCode),
-                  let flags = registers[Self.flagsKey]
+                  let flags = registers[Self.flagsKey],
+                  let condition = flagCondition(flags, code: detail.conditionCode, width: registers[Self.flagsWidthKey]),
+                  condition != .unknown
             else { clobber(detail, into: &registers); return }
-            let condition = comparisonValue(flags: flags, op)
             let whenTrue = source(detail.operands[1], in: registers)
             let falseOperand = source(detail.operands[2], in: registers)
             let whenFalse: AbstractValue = switch detail.id {
@@ -2657,11 +2700,88 @@ public struct ValueTracer: Sendable {
     /// The tracked flags value from the most recent modelled compare, keyed so it
     /// flows through the register map and the block meet like any other state.
     private static let flagsKey = "nzcv.flags"
+    private static let flagsWidthKey = "nzcv.width"
 
-    /// Instruction ids that write NZCV but that we do NOT reconstruct into a
-    /// comparison — float and conditional compares, and the flag-setting
-    /// arithmetic (`adds`/`subs`/`ands` and friends). A `cset` after one of these
-    /// must not read a stale integer comparison, so they invalidate the flags.
+    private static let flagCodes: [AArch64CC_CondCode] = [
+        AArch64CC_EQ, AArch64CC_NE, AArch64CC_HS, AArch64CC_LO,
+        AArch64CC_MI, AArch64CC_PL, AArch64CC_VS, AArch64CC_VC,
+        AArch64CC_HI, AArch64CC_LS, AArch64CC_GE, AArch64CC_LT,
+        AArch64CC_GT, AArch64CC_LE,
+    ]
+
+    private static func literalFlagCondition(_ flags: UInt64, code: AArch64CC_CondCode) -> Bool {
+        let n = flags & 8 != 0, z = flags & 4 != 0, c = flags & 2 != 0, v = flags & 1 != 0
+        switch code {
+        case AArch64CC_EQ: return z
+        case AArch64CC_NE: return !z
+        case AArch64CC_HS: return c
+        case AArch64CC_LO: return !c
+        case AArch64CC_MI: return n
+        case AArch64CC_PL: return !n
+        case AArch64CC_VS: return v
+        case AArch64CC_VC: return !v
+        case AArch64CC_HI: return c && !z
+        case AArch64CC_LS: return !c || z
+        case AArch64CC_GE: return n == v
+        case AArch64CC_LT: return n != v
+        case AArch64CC_GT: return !z && n == v
+        case AArch64CC_LE: return z || n != v
+        default: return false
+        }
+    }
+
+    private func flagCondition(_ flags: AbstractValue, code: AArch64CC_CondCode, width: AbstractValue?, requireComplete: Bool = false) -> AbstractValue? {
+        if case .aggregate(let conditions) = flags,
+           let index = Self.flagCodes.firstIndex(of: code), index < conditions.count {
+            return conditions[index]
+        }
+        if case .binary(.subtract, let lhs, let rhs) = flags {
+            if requireComplete {
+                return subtractionCondition(lhs, rhs, code: code, width: width == .immediate(32) ? 32 : 64)
+            }
+            guard let op = Self.comparisonOperator(code) else { return nil }
+            return comparisonValue(flags: flags, op)
+        }
+        if code == AArch64CC_EQ || code == AArch64CC_NE {
+            let result = requireComplete && width == .immediate(32) ? expression(.bitAnd, flags, .immediate(0xffff_ffff)) : flags
+            return expression(code == AArch64CC_EQ ? .equal : .notEqual, result, .immediate(0))
+        }
+        // Conditional compares may build on a flag producer only when the
+        // particular incoming condition is exact. A sum's sign alone does not
+        // prove signed ordering, since its overflow flag also participates.
+        guard !requireComplete else { return nil }
+        // Other flag producers retain their existing conservative model.
+        guard let op = Self.comparisonOperator(code) else { return nil }
+        return comparisonValue(flags: flags, op)
+    }
+
+    private func subtractionCondition(_ lhs: AbstractValue, _ rhs: AbstractValue, code: AArch64CC_CondCode, width: Int) -> AbstractValue {
+        func unsigned(_ value: AbstractValue) -> AbstractValue {
+            width == 32 ? expression(.bitAnd, value, .immediate(0xffff_ffff)) : value
+        }
+        func signed(_ value: AbstractValue) -> AbstractValue {
+            width == 32 ? expression(.arithmeticShiftRight, expression(.shiftLeft, value, .immediate(32)), .immediate(32)) : value
+        }
+        let a = unsigned(lhs), b = unsigned(rhs)
+        if code == AArch64CC_MI || code == AArch64CC_PL {
+            let n = expression(.less, signed(expression(.subtract, lhs, rhs)), .immediate(0))
+            return code == AArch64CC_MI ? n : expression(.bitXor, n, .immediate(1))
+        }
+        if code == AArch64CC_VS || code == AArch64CC_VC {
+            let leftSign = expression(.less, signed(lhs), .immediate(0))
+            let rightSign = expression(.less, signed(rhs), .immediate(0))
+            let resultSign = expression(.less, signed(expression(.subtract, lhs, rhs)), .immediate(0))
+            let v = expression(.bitAnd, expression(.notEqual, leftSign, rightSign), expression(.notEqual, resultSign, leftSign))
+            return code == AArch64CC_VS ? v : expression(.bitXor, v, .immediate(1))
+        }
+        guard let op = Self.comparisonOperator(code) else { return .unknown }
+        return expression(op, op.isUnsignedComparison || op == .equal || op == .notEqual ? a : signed(lhs),
+                          op.isUnsignedComparison || op == .equal || op == .notEqual ? b : signed(rhs))
+    }
+
+    /// Explicit NZCV writers, including decoder versions that omit the flags
+    /// bit. A modelled writer (CCMP) reinstates its new state below; the others
+    /// must not leave a stale integer comparison available to a consumer.
     private static let unmodeledFlagWriters: Set<UInt32> = Set([
         AARCH64_INS_FCMP, AARCH64_INS_FCMPE, AARCH64_INS_FCCMP, AARCH64_INS_FCCMPE,
         AARCH64_INS_CCMP, AARCH64_INS_CCMN, AARCH64_INS_BICS, AARCH64_INS_ADCS,
@@ -2685,8 +2805,8 @@ public struct ValueTracer: Sendable {
     }
 
     /// The comparison a condition code denotes after a subtract-based compare.
-    /// Signed and unsigned variants collapse to one symbol set; the unordered,
-    /// overflow, and always/never codes are left unmodelled.
+    /// Signed and unsigned variants remain distinct; overflow and always/never
+    /// codes are handled only where an exact flag model is available.
     private static func comparisonOperator(_ cc: AArch64CC_CondCode) -> AbstractBinaryOperator? {
         if cc == AArch64CC_EQ { return .equal }
         if cc == AArch64CC_NE { return .notEqual }

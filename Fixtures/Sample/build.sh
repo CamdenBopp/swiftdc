@@ -61,6 +61,7 @@ $SWIFTC -parse-as-library -O -emit-library -module-name IndirectAwait indirectaw
 echo "==> audit semantic reductions (auditsemantics.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name AuditSemantics auditsemantics.swift -o libAuditSemantics.opt.dylib
 $CLANG -arch arm64 -O1 -dynamiclib -framework Foundation auditvoid.m -o libAuditVoid.dylib
+$CLANG -arch arm64 -dynamiclib conditionalflags.s -o libConditionalFlags.dylib
 
 echo "==> C callees without signatures (callreads.c, -O0 and -O1)"
 for level in O0 O1; do

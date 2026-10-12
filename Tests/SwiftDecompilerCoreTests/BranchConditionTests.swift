@@ -11,8 +11,9 @@ import Testing
 ///     selThenFloat      cmp x0, #5; fcsel; fcmp d0, d2; b.pl     rendered `(x0 - 5) < 0`
 ///     setStatus         cmp x0, x21; ccmp x1, x19, #0, eq; b.eq  rendered `self.status != x21`
 ///
-/// Each now declines (`?`): the true condition needs the conditional compare
-/// modelled, and a wrong one is worse than none.
+/// None may borrow the earlier one-word comparison. CCMP now reconstructs
+/// when all its inputs are proven; unmodelled floating flag setters still
+/// decline (`?`). ConditionalCompareOracleTests supplies the native oracle.
 @Test func aBranchOnAnUnmodelledFlagSetterDeclinesIfPresent() async throws {
     for level in ["opt", "osize"] {
         let path = "Fixtures/Sample/libConditions.\(level).dylib"
