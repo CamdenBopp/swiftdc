@@ -2972,6 +2972,22 @@ public struct Disassembler: Sendable {
                 }
                 continue
             }
+            // A format selector's variadic arguments are exactly its format's
+            // conversions, one stack slot each: `?` where a slot is unknown,
+            // none dropped as trailing unknowns, no stale x3–x7 before them.
+            if let callee = calleeByAddress[address],
+               let selector = selectorName(callee: callee, arguments: values),
+               isVariadicObjCSelector(selector), selector.hasSuffix("Format:") {
+                let fixed = 2 + selector.filter { $0 == ":" }.count
+                if fixed <= 8, values.count >= fixed,
+                   case .address(let formatAddress) = values[fixed - 1],
+                   let literal = resolver.name(at: formatAddress),
+                   let count = DisassembledFunction.MessageSend.formatArgumentCount(literal) {
+                    let variadic = (0 ..< count).map { $0 < site.stackArguments.count ? site.stackArguments[$0] : .unknown }
+                    argumentsByAddress[address] = (Array(values.prefix(fixed)) + variadic).map(sanitizeValue)
+                    continue
+                }
+            }
             if let callee = calleeByAddress[address],
                let selector = selectorName(callee: callee, arguments: values),
                !site.stackArguments.isEmpty {

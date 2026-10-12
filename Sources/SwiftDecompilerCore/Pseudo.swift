@@ -259,6 +259,41 @@ public extension DisassembledFunction {
 
         /// Foundation selector families whose final source arguments continue
         /// after the colon-delimited fixed parameters.
+        /// How many variadic arguments a printf-style format consumes, from its
+        /// rendered literal (`@"%ld %@"`), or nil when that is not provable: a
+        /// truncated literal, a `*` width or precision (an extra argument), a
+        /// positional `%1$d`, or any specifier this parser does not know. On
+        /// Apple arm64 each variadic argument is one 8-byte stack slot.
+        static func formatArgumentCount(_ literal: String) -> Int? {
+            var text = Substring(literal)
+            if text.hasPrefix("@") { text = text.dropFirst() }
+            guard text.hasPrefix("\""), text.hasSuffix("\""), !text.hasSuffix("…\""), text.count >= 2
+            else { return nil }
+            let characters = Array(text.dropFirst().dropLast())
+            var count = 0, index = 0
+            while index < characters.count {
+                guard characters[index] == "%" else { index += 1; continue }
+                index += 1
+                guard index < characters.count else { return nil }
+                if characters[index] == "%" { index += 1; continue }
+                while index < characters.count, "-+ #0'".contains(characters[index]) { index += 1 }
+                while index < characters.count, characters[index].isNumber { index += 1 }
+                if index < characters.count, characters[index] == "." {
+                    index += 1
+                    while index < characters.count, characters[index].isNumber { index += 1 }
+                }
+                // `*` takes an argument; `$` reorders them. Neither is counted soundly.
+                guard index < characters.count, characters[index] != "*", characters[index] != "$"
+                else { return nil }
+                while index < characters.count, "hlqLjzt".contains(characters[index]) { index += 1 }
+                guard index < characters.count, "diouxXfFeEgGaAcsSpn@C".contains(characters[index])
+                else { return nil }
+                count += 1
+                index += 1
+            }
+            return count
+        }
+
         static func isVariadicSelector(_ selector: String) -> Bool {
             guard !selector.contains("arguments:") else { return false }
             return selector.hasSuffix("WithFormat:")
