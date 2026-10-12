@@ -136,6 +136,14 @@ public struct StructuredOperandInfo: Sendable {
     public let shift: (type: aarch64_shifter, amount: UInt32)
     /// Register extension on an index operand (`uxtw`, `sxtw`, …).
     public let extender: aarch64_extender
+    /// Capstone's access flags (`CS_AC_READ` 1, `CS_AC_WRITE` 2). For a
+    /// register operand they say whether the register is read, written or
+    /// both (`movk` reads the register it writes). For a memory operand they
+    /// describe the memory; its base and index registers are always read.
+    public var access: UInt8 = 0
+
+    public var isRead: Bool { access & 1 != 0 }
+    public var isWritten: Bool { access & 2 != 0 }
 
     public var shiftedImmediate: Int64? {
         guard case .immediate(let value) = operand else { return nil }
@@ -158,6 +166,43 @@ public struct StructuredInsn: Sendable {
     /// Only meaningful with `writeback`: post-index rather than pre-index.
     public let postIndex: Bool
     public let operands: [StructuredOperandInfo]
+
+    /// Every register this instruction reads, by key, from the operands'
+    /// access flags plus the base and index of a memory operand. Implicit
+    /// registers (a call's arguments, `ret`'s x30) are not operands and are
+    /// not included.
+    public var readRegisterKeys: Set<String> {
+        var keys = Set<String>()
+        for info in operands {
+            switch info.operand {
+            case .register(let register) where info.isRead && register.kind == .gpr:
+                keys.insert(register.key)
+            case .memory(let base, let index, _):
+                if let base, base.kind == .gpr { keys.insert(base.key) }
+                if let index, index.kind == .gpr { keys.insert(index.key) }
+            default:
+                break
+            }
+        }
+        return keys
+    }
+
+    /// Every general register this instruction writes, by key: written
+    /// register operands, and a writeback memory operand's base.
+    public var writtenRegisterKeys: Set<String> {
+        var keys = Set<String>()
+        for info in operands {
+            switch info.operand {
+            case .register(let register) where info.isWritten && (register.kind == .gpr || register.kind == .stackPointer):
+                keys.insert(register.key)
+            case .memory(let base?, _, _) where writeback:
+                keys.insert(base.key)
+            default:
+                break
+            }
+        }
+        return keys
+    }
 
     /// The last immediate operand — the target of a direct branch in every form
     /// (`b 0x…`, `cbz x0, 0x…`, `tbz w0, #3, 0x…`). Nil for indirect branches.
@@ -209,7 +254,8 @@ public struct StructuredInsn: Sendable {
                     StructuredOperandInfo(
                         operand: value,
                         shift: (op.shift.type, op.shift.value),
-                        extender: op.ext
+                        extender: op.ext,
+                        access: UInt8(truncatingIfNeeded: op.access.rawValue)
                     )
                 )
             }
@@ -254,9 +300,11 @@ public struct StructuredInsn: Sendable {
         operands[1] = StructuredOperandInfo(
             operand: source.operand,
             shift: (AARCH64_SFT_INVALID, 0),
-            extender: source.extender
+            extender: source.extender,
+            access: source.access
         )
-        operands.append(StructuredOperandInfo(operand: amount, shift: (AARCH64_SFT_INVALID, 0), extender: AARCH64_EXT_INVALID))
+        operands.append(StructuredOperandInfo(operand: amount, shift: (AARCH64_SFT_INVALID, 0),
+                                              extender: AARCH64_EXT_INVALID, access: 1))
     }
 
     /// Capstone 6 folds a post-index amount into the memory operand's
@@ -275,7 +323,8 @@ public struct StructuredInsn: Sendable {
         operands[index] = StructuredOperandInfo(
             operand: .memory(base: base, index: indexRegister, displacement: 0),
             shift: memory.shift,
-            extender: memory.extender
+            extender: memory.extender,
+            access: memory.access
         )
         operands.append(StructuredOperandInfo(operand: .immediate(displacement), shift: (AARCH64_SFT_INVALID, 0), extender: AARCH64_EXT_INVALID))
     }
