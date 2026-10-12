@@ -1259,8 +1259,13 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 5. Performance and memory on large frameworks
 
-- **OPEN — Fiery Feeds whole-binary `xrefs` is 1.8× origin/master, at a
-  7.0 GB footprint.** At `5e8cb53` (after the bind table below): 275.3 s,
+- **OPEN — Fiery Feeds whole-binary `xrefs` is 1.3× origin/master, at a
+  7.0 GB footprint.** Current: 204.9 s, 7.04 GB, output byte-identical, after
+  three more profiled fixes, each measured alone (release, guarded):
+  Objective-C bindings indexed by selector (`50625b3`, 272.6 s to 254.0 s),
+  jump-table ranges built once (`bf5782b`, to 235.8 s), and chained-fixup
+  rebases from the same table as binds (to 204.9 s; back-to-back with the
+  previous binary at 235.1 s). At `5e8cb53` (after the bind table below): 275.3 s,
   peak footprint 11.81 GB, output byte-identical to `74b7b06`'s (`cmp`).
   Origin/master: 153.5 s. The footprint came from the decode: `heap` at
   6.4 GB found 1,114,404 Capstone `cs_detail` blocks (2.8 GB) held by one

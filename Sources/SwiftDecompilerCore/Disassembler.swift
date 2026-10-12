@@ -1875,12 +1875,12 @@ public struct Disassembler: Sendable {
         /// The imported symbol a slot binds to, via the chained-fixup imports.
         private func boundSymbol(at slot: UInt64) -> String? {
             guard let fileOffset = machO.fileOffset(of: slot) else { return nil }
-            return boundSymbols.symbol(at: UInt64(fileOffset), in: machO)
+            return chainedFixups.symbol(at: UInt64(fileOffset), in: machO)
         }
 
-        /// Every chained-fixup bind of the image, by file offset, built on the
-        /// first lookup and shared by every copy of the resolver.
-        let boundSymbols = BoundSymbolTable()
+        /// Every chained-fixup bind and rebase of the image, by file offset,
+        /// built on the first lookup and shared by every copy of the resolver.
+        let chainedFixups = ChainedFixupTable()
 
         /// `@"literal"` for a `__cfstring` entry.
         ///
@@ -1962,7 +1962,9 @@ public struct Disassembler: Sendable {
                 return full.resolveRebase(at: fileOffset)
             }
             guard let fileOffset = machO.fileOffset(of: slot),
-                  let runtimeOffset = machO.resolveRebase(at: UInt64(fileOffset))
+                  let runtimeOffset = machO.isLoadedFromDyldCache
+                    ? machO.resolveRebase(at: UInt64(fileOffset))
+                    : chainedFixups.rebaseTarget(at: UInt64(fileOffset), in: machO)
             else { return nil }
             return machO.address(forOffset: 0) &+ runtimeOffset
         }
@@ -1987,46 +1989,60 @@ public struct Disassembler: Sendable {
         }
     }
 
-    /// The chained-fixup binds of one image: file offset → imported symbol.
+    /// The chained fixups of one standalone image, by file offset: the import
+    /// each bind names and the runtime offset each rebase targets.
     ///
     /// MachOKit's `resolveBind(at:)` materialises every pointer of every
-    /// segment's chains and searches them linearly, and its `imports` is
-    /// recomputed on each access, so one lookup costs a walk of the whole
-    /// image. Argument rendering asks once per loaded slot: on Fiery Feeds
-    /// `xrefs`, `sample` put 7,903 of 13,878 analysis samples under
-    /// `loadedName(at:)`. The table answers as `resolveBind` does (the first
-    /// segment whose chain holds the offset decides; a rebase there is no
-    /// bind) after one walk. Built lazily, so an image that never loads a
-    /// bound slot never walks its chains, as before.
-    final class BoundSymbolTable: @unchecked Sendable {
+    /// segment's chains and searches them linearly (its `imports` recomputed
+    /// on each access), and `resolveRebase(at:)` walks every page chain of the
+    /// segment until it meets the offset: each lookup costs a walk of the
+    /// image or segment. Argument rendering asks once per loaded slot. On Fiery
+    /// Feeds `xrefs`, `sample` put 7,903 of 13,878 analysis samples under
+    /// `loadedName(at:)` (binds), and, once that was fixed, 1,748 of 8,875 under
+    /// `pointerTarget(at:)` (rebases). The table answers as MachOKit does (the
+    /// first segment whose chain holds the offset decides; a rebase there is
+    /// no bind and a bind no rebase) after one walk. Built lazily, so an image
+    /// that never asks never walks its chains, as before.
+    final class ChainedFixupTable: @unchecked Sendable {
         private let lock = NSLock()
-        private var symbols: [UInt64: String]?
+        private var binds: [UInt64: String] = [:]
+        private var rebases: [UInt64: UInt64] = [:]
+        private var built = false
 
         func symbol(at fileOffset: UInt64, in machO: MachOFile) -> String? {
             lock.lock()
             defer { lock.unlock() }
-            if symbols == nil { symbols = Self.build(machO) }
-            return symbols?[fileOffset]
+            build(machO)
+            return binds[fileOffset]
         }
 
-        private static func build(_ machO: MachOFile) -> [UInt64: String] {
-            guard let fixups = machO.dyldChainedFixups, let startsInImage = fixups.startsInImage
-            else { return [:] }
+        func rebaseTarget(at fileOffset: UInt64, in machO: MachOFile) -> UInt64? {
+            lock.lock()
+            defer { lock.unlock() }
+            build(machO)
+            return rebases[fileOffset]
+        }
+
+        private func build(_ machO: MachOFile) {
+            guard !built else { return }
+            built = true
+            guard let fixups = machO.dyldChainedFixups, let startsInImage = fixups.startsInImage else { return }
             let imports = fixups.imports
-            var symbols: [UInt64: String] = [:]
             var seen: Set<UInt64> = []
             for segment in fixups.startsInSegments(of: startsInImage) {
                 for pointer in fixups.pointers(of: segment, in: machO) {
                     let offset = UInt64(pointer.offset)
-                    guard seen.insert(offset).inserted, pointer.fixupInfo.bind != nil,
-                          let (ordinal, _) = pointer.bindOrdinalAndAddend(for: machO),
-                          imports.indices.contains(ordinal),
-                          let name = fixups.symbolName(for: imports[ordinal].info.nameOffset)
-                    else { continue }
-                    symbols[offset] = name
+                    guard seen.insert(offset).inserted else { continue }
+                    if pointer.fixupInfo.rebase != nil {
+                        if let target = pointer.rebaseTargetRuntimeOffset(for: machO) { rebases[offset] = target }
+                    } else if pointer.fixupInfo.bind != nil,
+                              let (ordinal, _) = pointer.bindOrdinalAndAddend(for: machO),
+                              imports.indices.contains(ordinal),
+                              let name = fixups.symbolName(for: imports[ordinal].info.nameOffset) {
+                        binds[offset] = name
+                    }
                 }
             }
-            return symbols
         }
     }
 

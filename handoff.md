@@ -139,7 +139,9 @@ vanish and a scratch x1 is read as one.
   origin/master. The symbolizer fix (`c00e5a7`) took out only ~35 s; the
   chained-fixup bind table (`3840616`) took the whole run to 275 s, output
   byte-identical; the lean decode then took the peak footprint from 11.8 GB
-  to 7.0 GB. Next: the remaining 1.8× against origin/master. Every big run
+  to 7.0 GB; the selector index, jump-table ranges and rebase table took it
+  to 204.9 s. Next: profile again for the remaining 1.3× against
+  origin/master's 153.5 s. Every big run
   goes under a footprint guard (`memprobe2.sh` pattern: `footprint -p` of
   the real child, 1 s poll, kill well under 8 GB; spikes outrun the poll). A memory watcher
   must read the footprint, not `ps -o rss`: an RSS watcher saw 4.0 GB and
