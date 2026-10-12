@@ -2111,6 +2111,12 @@ public struct ValueTracer: Sendable {
                 if case .arrayElement(let site, let offset)? = target {
                     recordArrayElement?(site, offset, value)
                 }
+                if case .selfField = target {
+                    // A register holding a prior field load is a snapshot.
+                    // Keeping `.selfFieldValue` through the write would render
+                    // that old register as the field's new value.
+                    Self.invalidateSelfFieldAliases(in: &registers)
+                }
                 if case .resultSlot(let offset)? = target {
                     let bytes = Self.accessBytes(detail) ?? 8
                     Self.storeResult(value, at: offset, bytes: bytes, into: &registers)
@@ -2149,6 +2155,7 @@ public struct ValueTracer: Sendable {
                 }
             } else if case .selfField(let offset)? = target,
                       let bytes = detail.operands.first?.operand.register.map({ $0.widthBits / 8 }) {
+                Self.invalidateSelfFieldAliases(in: &registers)
                 for (index, operand) in detail.operands.prefix(2).enumerated() {
                     if let register = operand.operand.register {
                         write(register, .selfFieldValue(offset: offset + index * bytes), into: &registers)
@@ -2543,6 +2550,28 @@ public struct ValueTracer: Sendable {
         case .select(let condition, let whenTrue, let whenFalse):
             return 1 + max(expressionDepth(condition), expressionDepth(whenTrue), expressionDepth(whenFalse))
         default: return 0
+        }
+    }
+
+    /// Forget every register or slot whose value was read from a self field:
+    /// after a store through self it is a snapshot, not the field. Recovered
+    /// from the pre-merge stash (983aa25), with its native-execution oracle.
+    private static func invalidateSelfFieldAliases(in registers: inout State) {
+        let keys = registers.compactMap { key, value in containsSelfFieldValue(value) ? key : nil }
+        for key in keys { registers[key] = nil }
+    }
+
+    private static func containsSelfFieldValue(_ value: AbstractValue) -> Bool {
+        switch value {
+        case .selfFieldValue: return true
+        case .unary(_, let operand): return containsSelfFieldValue(operand)
+        case .binary(_, let lhs, let rhs):
+            return containsSelfFieldValue(lhs) || containsSelfFieldValue(rhs)
+        case .select(let condition, let yes, let no):
+            return containsSelfFieldValue(condition) || containsSelfFieldValue(yes)
+                || containsSelfFieldValue(no)
+        case .aggregate(let values): return values.contains(where: containsSelfFieldValue)
+        default: return false
         }
     }
 
