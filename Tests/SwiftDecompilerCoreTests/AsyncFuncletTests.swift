@@ -240,6 +240,13 @@ func groupsFuncletsAsTheSymbolTableDoesIfPresent(path: String) async throws {
     // Unchanged shapes: a plain function, and a name with no parameter list.
     #expect(DisassembledFunction.strippedCallee("m.g(Swift.Int) -> Swift.Int") == "m.g")
     #expect(DisassembledFunction.strippedCallee("swift_task_alloc") == "swift_task_alloc")
+    // A function-typed parameter's arrow is not the signature's (measured in
+    // libswift_Concurrency: 3 calls rendered with a cut-off parameter list).
+    #expect(DisassembledFunction.strippedCallee(
+        "merged Swift.AsyncCompactMapSequence.Iterator.init(_: A.AsyncIterator, transform: "
+            + "(A.Element) async -> Swift.Optional<B>) -> Swift.AsyncCompactMapSequence<A, B>.Iterator")
+        == "merged Swift.AsyncCompactMapSequence.Iterator.init")
+    #expect(DisassembledFunction.strippedCallee("m.apply(_: (Swift.Int) -> Swift.Int) -> ()") == "m.apply")
 }
 
 @Test func rendersAsyncCalleesWithoutTheSpecifierIfPresent() async throws {

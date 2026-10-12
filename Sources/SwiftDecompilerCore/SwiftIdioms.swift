@@ -207,7 +207,7 @@ extension DisassembledFunction {
 
     /// The first occurrence of `needle` outside any `()`/`[]`/`<>` nesting. The
     /// `>` of an arrow is not a closing angle (see `splitTopLevelArguments`).
-    private static func topLevelRange(of needle: String, in text: String) -> Range<String.Index>? {
+    static func topLevelRange(of needle: String, in text: String) -> Range<String.Index>? {
         var depth = 0
         var previous: Character = " "
         var index = text.startIndex

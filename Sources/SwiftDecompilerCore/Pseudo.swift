@@ -405,7 +405,10 @@ public extension DisassembledFunction {
     /// `String.append(_:)` → `String.append`, `Tree.sum()` → `Tree.sum`.
     static func strippedCallee(_ name: String) -> String {
         var s = name
-        if let arrow = s.range(of: " -> ") { s = String(s[..<arrow.lowerBound]) }
+        // The signature's own arrow, not one inside a function-typed
+        // parameter: `init(_:transform: (A.Element) async -> B?) -> Iterator`
+        // cut at the first arrow rendered `init(_: A.AsyncIterator, transform: ()`.
+        if let arrow = topLevelRange(of: " -> ", in: s) { s = String(s[..<arrow.lowerBound]) }
         // Effect specifiers follow the parameter list (`f(Swift.Int) async
         // throws`); they are not part of the callee's name, and left in place
         // they kept the parameter list from being recognised and stripped, so

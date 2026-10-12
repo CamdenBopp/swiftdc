@@ -14,6 +14,10 @@ import Foundation
     #expect(Disassembler.selfTypeFromDemangledName("lay.Dog.breed.modify : Swift.String") == "Dog")
     // Nested type.
     #expect(Disassembler.selfTypeFromDemangledName("m.Outer.Inner.go() -> ()") == "Inner")
+    // A function-typed parameter's arrow is not the signature's: cut there,
+    // the qualified parameter before it split into `apply(_: M` and `Other`.
+    #expect(Disassembler.selfTypeFromDemangledName(
+        "m.Holder.apply(_: m.Other, _: (Swift.Int) -> ()) -> ()") == "Holder")
 }
 
 /// x20 is not an instance in any of these. Naming `self.field` in them would

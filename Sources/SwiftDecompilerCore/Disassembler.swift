@@ -2121,7 +2121,9 @@ public struct Disassembler: Sendable {
         // Cut the return clause and property type first, so `foo(a: Dog.Kind)`
         // and `... : Swift.String` are not mined for type names.
         var head = name
-        if let arrow = head.range(of: " -> ") { head = String(head[..<arrow.lowerBound]) }
+        if let arrow = DisassembledFunction.topLevelRange(of: " -> ", in: head) {
+            head = String(head[..<arrow.lowerBound])
+        }
         if let colon = head.range(of: " : ") { head = String(head[..<colon.lowerBound]) }
         head = stripSignature(head)
         guard !nonInstanceMarkers.contains(where: head.contains) else { return nil }
