@@ -317,6 +317,9 @@ public enum MethodEntryConvention: Sendable, Equatable {
 public struct CallSite: Equatable, Sendable {
     /// x0–x7, trailing unknowns trimmed.
     public var arguments: [AbstractValue] = []
+    /// v0–v7, untrimmed. Read only where the callee's signature lays a
+    /// floating-point parameter out (see `swiftCallArgumentSlots`).
+    public var floatArguments: [AbstractValue] = []
     /// Fresh contiguous scalar values written at the current stack pointer
     /// before the call. These are possible AAPCS64 stack arguments; consumers
     /// add them only when a resolved variadic call shape proves they belong to
@@ -333,7 +336,8 @@ public struct CallSite: Equatable, Sendable {
 
     /// Whether nothing at all was inferred (so there's nothing worth showing).
     public var isEmpty: Bool {
-        arguments.isEmpty && stackArguments.isEmpty && selfValue == .unknown
+        arguments.isEmpty && floatArguments.allSatisfy { $0 == .unknown }
+            && stackArguments.isEmpty && selfValue == .unknown
             && errorValue == .unknown && indirectResult == .unknown
     }
 }
@@ -919,6 +923,7 @@ public struct ValueTracer: Sendable {
         }
         return CallSite(
             arguments: trimTrailingUnknown(args) ?? [],
+            floatArguments: (0...7).map { registers["v\($0)"] ?? .unknown },
             stackArguments: stackArguments,
             // Only when freshly set for *this* Swift call — see selfFreshKey.
             // The result pointer parked in callee-saved x20 (`mov x20, x8`) is

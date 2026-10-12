@@ -2,7 +2,7 @@ import Testing
 import Foundation
 @testable import SwiftDecompilerCore
 
-/// A call site snapshots x0–x7 positionally, so a register the callee never
+/// A call site snapshotted x0–x7 positionally, so a register the callee never
 /// reads rendered as an argument, and an integer passed after a Double read in
 /// the Double's position. Arguments of a Swift callee whose every parameter is
 /// a proven one-register scalar are now laid out from its signature. Each
@@ -28,7 +28,9 @@ private func pseudo(_ filter: String, in fixture: String) async throws -> String
         #expect(!callOne.contains("CallArity.one(arg0, "), "\(fixture): \(callOne)")
 
         let callMixed = try await pseudo("CallArity.callMixed", in: fixture)
-        #expect(callMixed.contains("CallArity.mixed(arg0, ?, arg1)"), "\(fixture): \(callMixed)")
+        // The Double is in d0, the second Int in x1; the constant renders as the
+        // Double the signature says it is.
+        #expect(callMixed.contains("CallArity.mixed(arg0, 2.5, arg1)"), "\(fixture): \(callMixed)")
         checked += 1
     }
     // At -Onone `callNone` keeps both calls; `none` takes nothing, so `one`'s
@@ -63,4 +65,14 @@ private func pseudo(_ filter: String, in fixture: String) async throws -> String
     #expect(layout("M.S.scaled(Swift.Int) -> M.S") == nil)
     #expect(layout("closure #1 (Swift.Int) -> () in M.f() -> ()") == nil)
     #expect(layout("M.Holder.value.getter : Swift.Int") == nil)
+}
+
+/// The readiness doc's float-argument entry: -Onone `Double(f) * 1.5` passes
+/// the Float in s0, which call sites did not read, so the conversion rendered
+/// `Swift.Double.init(?)` (and before that `Swift.Double.init()`).
+@Test func aFloatArgumentReachesItsCalleeIfPresent() async throws {
+    let fixture = "Fixtures/Sample/libConversions.dylib"
+    guard FileManager.default.fileExists(atPath: fixture) else { return }
+    let text = try await pseudo("widenedTimesConstant", in: fixture)
+    #expect(text.contains("Swift.Double.init(arg0)"), "\(text)")
 }

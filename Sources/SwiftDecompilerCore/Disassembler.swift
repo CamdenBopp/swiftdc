@@ -2334,6 +2334,15 @@ public struct Disassembler: Sendable {
     static func swiftCallArgumentLayout(
         callee: String, enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex
     ) -> [ScalarParameterClass]? {
+        swiftCallArgumentSlots(callee: callee, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)?
+            .map(\.kind)
+    }
+
+    /// `swiftCallArgumentLayout` with each parameter's demangled type, which
+    /// renders a constant in that slot (`2.5` for a Double, `true` for a Bool).
+    static func swiftCallArgumentSlots(
+        callee: String, enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex
+    ) -> [(kind: ScalarParameterClass, type: String)]? {
         guard let signature = DisassembledFunction.splitSignature(callee), !signature.isAsync,
               let range = DisassembledFunction.outermostArgumentListRange(of: signature.head)
         else { return nil }
@@ -2352,7 +2361,7 @@ public struct Disassembler: Sendable {
         else { return nil }
 
         let parameters = DisassembledFunction.splitTopLevelArguments(signature.head[range])
-        var layout: [ScalarParameterClass] = []
+        var layout: [(kind: ScalarParameterClass, type: String)] = []
         var integers = 0, floats = 0
         for parameter in parameters {
             guard let kind = scalarParameterClass(parameter, enumCaseIndex: enumCaseIndex,
@@ -2363,7 +2372,8 @@ public struct Disassembler: Sendable {
             case .floating: floats += 1
             }
             guard integers <= 8, floats <= 8 else { return nil }
-            layout.append(kind)
+            let type = parameter.range(of: ": ", options: .backwards).map { String(parameter[$0.upperBound...]) } ?? parameter
+            layout.append((kind, type.trimmingCharacters(in: .whitespaces)))
         }
         return layout
     }
@@ -2927,6 +2937,8 @@ public struct Disassembler: Sendable {
         }
 
         var argumentsByAddress: [UInt64: [AbstractValue]] = [:]
+        /// Parameter types of the sites laid out from a signature.
+        var laidOutTypes: [UInt64: [String]] = [:]
         for (address, site) in sites {
             var values = site.arguments
             // `swift_willThrow(SWIFT_CONTEXT void *, SWIFT_ERROR_RESULT
@@ -2938,18 +2950,26 @@ public struct Disassembler: Sendable {
                 values = site.errorValue == .unknown ? [] : [site.errorValue]
             }
             // A Swift callee with a proven layout gets exactly its parameters:
-            // integer slots from x0… in order, float slots `?` (call sites do
-            // not capture v0–v7 yet), and no trailing trim, so its arity shows.
+            // integer slots from x0… and float slots from v0…, each in order on
+            // its own counter, with no trailing trim, so its arity shows.
             if let callee = calleeByAddress[address],
-               let layout = Self.swiftCallArgumentLayout(
+               let slots = Self.swiftCallArgumentSlots(
                    callee: callee, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
-                var integer = 0
-                let laidOut: [AbstractValue] = layout.map { kind in
-                    guard kind == .integer else { return .unknown }
-                    defer { integer += 1 }
-                    return integer < values.count ? values[integer] : .unknown
+                var integer = 0, floating = 0
+                let laidOut: [AbstractValue] = slots.map { slot in
+                    switch slot.kind {
+                    case .integer:
+                        defer { integer += 1 }
+                        return integer < values.count ? values[integer] : .unknown
+                    case .floating:
+                        defer { floating += 1 }
+                        return floating < site.floatArguments.count ? site.floatArguments[floating] : .unknown
+                    }
                 }
-                if !laidOut.isEmpty { argumentsByAddress[address] = laidOut.map(sanitizeValue) }
+                if !laidOut.isEmpty {
+                    argumentsByAddress[address] = laidOut.map(sanitizeValue)
+                    laidOutTypes[address] = slots.map(\.type)
+                }
                 continue
             }
             if let callee = calleeByAddress[address],
@@ -3560,7 +3580,7 @@ public struct Disassembler: Sendable {
                     return idiom
                 }
                 let callValues = normalizedArguments(callee: callee, values: inner)
-                let rawArguments: [String] = renderArguments(callValues, depth: depth + 1)
+                let rawArguments: [String] = renderArguments(callValues, depth: depth + 1, site: addr)
                 // A dynamic cast reads its target type from the metadata argument
                 // that the plumbing strip would remove, so match it on the raw
                 // arguments first — this is what lets `return x as? T` render as a
@@ -3582,7 +3602,17 @@ public struct Disassembler: Sendable {
 
         // Render an argument list, collapsing the two-register pairs that encode
         // a Swift small string into a single quoted literal.
-        func renderArguments(_ values: [AbstractValue], depth: Int) -> [String] {
+        func renderArguments(_ values: [AbstractValue], depth: Int, site: UInt64? = nil) -> [String] {
+            // A laid-out site: each slot is one parameter of a known type, so a
+            // constant renders as that type and no pair is a small string.
+            if let types = site.flatMap({ laidOutTypes[$0] }), types.count == values.count {
+                return zip(values, types).map { value, type in
+                    if case .immediate(let bits) = value, let constant = Self.renderTypedConstant(bits: bits, type: type) {
+                        return constant
+                    }
+                    return renderValue(value, depth: depth)
+                }
+            }
             var parts: [String] = []
             var index = 0
             while index < values.count {
@@ -3611,7 +3641,7 @@ public struct Disassembler: Sendable {
                 return idiom
             }
             let arguments: [String] = renderArguments(
-                normalizedArguments(callee: callee, values: values), depth: depth
+                normalizedArguments(callee: callee, values: values), depth: depth, site: site
             )
             if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {
                 return send.rendered
@@ -4229,7 +4259,7 @@ public struct Disassembler: Sendable {
                 // rendering the top-level statement, so a stale live register does
                 // not surface as a fabricated trailing argument (`abort([? x])`).
                 let clamped = callee.map { normalizedArguments(callee: $0, values: values) } ?? values
-                return renderArguments(clamped, depth: 0)
+                return renderArguments(clamped, depth: 0, site: insn.address)
             } ?? []
             guard !rendered.isEmpty || selfText != nil || !sourceNotes.isEmpty
                     || consumedCallResults.contains(insn.address)

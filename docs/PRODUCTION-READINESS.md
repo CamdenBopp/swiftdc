@@ -111,7 +111,11 @@ because it cannot be distinguished from a right one by reading the output.
   `lhs < 0 // rhs`. `cmn`/`adds` now compare with the negated operand and
   `b.mi`/`b.pl` render the sign of the difference or sum (`5d6c7b7`); both seen
   red.
-- **OPEN — a Swift callee's arguments are not capped at its demangled arity.**
+- **MITIGATED — a Swift callee's arguments are not capped at its demangled arity.**
+  Since `c18e6b4`, a callee whose every parameter is a proven one-register
+  scalar is laid out from its signature (stale registers dropped, float slots
+  from v0–v7); everything below still holds for callees outside that layout
+  (String, aggregate, generic, `T?`, value-type methods, ObjC, C).
   Leftover registers show up as arguments: `static Alignment.center.getter`
   (no parameters) renders `Alignment.center.getter(SwiftUI.Text.init(…))`,
   `sink(Int)` renders `P.sink(arg0, arg1)`, and a non-generic metadata accessor,
@@ -195,10 +199,13 @@ because it cannot be distinguished from a right one by reading the output.
   and friends on `add3`'s address; the function header declines
   (`sub_100001000`) but the call is annotated `→ _init_array_end`. Same class as
   the deduplicated-function alias entry above.
-- **OPEN — a float argument to a call is not tracked.** -Onone
-  `Double(f) * 1.5` renders `(Swift.Double.init() * 1.5)`: the Float argument
-  is in s0, call-site tracking reads only general registers, and the trailing
-  unknown is trimmed, so the call reads as a zero-argument init.
+- **FIXED — a float argument to a call was not tracked.** -Onone
+  `Double(f) * 1.5` rendered `(Swift.Double.init() * 1.5)`: the Float argument
+  is in s0 and call sites read only general registers. Call sites now snapshot
+  v0–v7, and a Swift callee whose parameters are proven one-register scalars
+  takes its float slots from them (`Swift.Double.init(arg0)`,
+  `mixed(arg0, 2.5, arg1)`; `CallArityTests`). Callees outside that layout
+  (ObjC sends, C functions, multi-register parameters) still read x0–x7 only.
 - **MITIGATED — the decline-rather-than-guess rule.** Verified as systematic, not
   incidental: `.unknown` renders `?` (`Disassembler.swift:2322`); the structurer
   refuses to structure an unprovable branch (`Structurer.swift:214`); `clobber`
