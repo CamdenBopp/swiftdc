@@ -2101,12 +2101,14 @@ public struct ValueTracer: Sendable {
                 let bytes = Self.accessBytes(detail) ?? max(dest.widthBits / 8, 1)
                 write(dest, registers[Self.resultKey(offset, bytes: bytes)] ?? .unknown, into: &registers)
             case .asyncSlot(let offset):
-                let isPointerLoad = detail.id == AARCH64_INS_LDR || detail.id == AARCH64_INS_LDUR
+                // Only a full-width integer load carries a pointer: `ldr w9`
+                // drops its upper bits and `ldr d0` is a floating value.
+                let isPointerLoad = dest.kind == .gpr && dest.widthBits == 64
                 write(dest, isPointerLoad ? asyncSlotValue(at: offset) : .unknown, into: &registers)
             case .asyncCalleeSlot(let offset):
                 // The callee context's first word is the caller's own context;
                 // nothing else in it is known here.
-                let isPointerLoad = detail.id == AARCH64_INS_LDR || detail.id == AARCH64_INS_LDUR
+                let isPointerLoad = dest.kind == .gpr && dest.widthBits == 64
                 write(dest, isPointerLoad && offset == 0 ? .asyncContext : .unknown, into: &registers)
             case .arrayElement, .none: write(dest, .unknown, into: &registers)
             }
@@ -2225,9 +2227,10 @@ public struct ValueTracer: Sendable {
                     .selfFieldValue(offset: offset + index * registerBytes)
                 case .resultSlot(let offset):
                     registers[Self.resultKey(offset + index * registerBytes, bytes: registerBytes)] ?? .unknown
-                case .asyncSlot(let offset) where registerBytes == 8:
+                case .asyncSlot(let offset) where register.kind == .gpr && registerBytes == 8:
                     asyncSlotValue(at: offset + index * 8)
-                case .asyncCalleeSlot(let offset) where registerBytes == 8 && offset + index * 8 == 0:
+                case .asyncCalleeSlot(let offset) where register.kind == .gpr && registerBytes == 8
+                    && offset + index * 8 == 0:
                     .asyncContext
                 case .absolute, .vtableMethod, .arrayElement, .asyncSlot, .asyncCalleeSlot, .none:
                     .unknown
@@ -2404,6 +2407,17 @@ public struct ValueTracer: Sendable {
 
     private func write(_ reg: PhysReg, _ value: AbstractValue, into registers: inout State) {
         guard reg.kind != .zero else { return }   // writes to xzr are discarded
+        // A truncated copy (`mov w9, w22`) or a floating register cannot hold
+        // an async context or continuation pointer, though its key aliases xN.
+        switch value {
+        case .asyncContext, .asyncCalleeContext, .asyncResumeParent:
+            guard reg.kind == .gpr, reg.widthBits == 64 else {
+                registers[reg.key] = .unknown
+                return
+            }
+        default:
+            break
+        }
         registers[reg.key] = value
     }
 
