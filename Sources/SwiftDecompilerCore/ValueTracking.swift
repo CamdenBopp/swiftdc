@@ -2023,7 +2023,8 @@ public struct ValueTracer: Sendable {
             if detail.id == AARCH64_INS_ADDS || detail.id == AARCH64_INS_SUBS {
                 // A subtraction keeps its operands for a conditional compare
                 // to read; a sum folds like any other value.
-                registers[Self.flagsKey] = detail.id == AARCH64_INS_SUBS ? .binary(op, lhs, rhs) : result
+                registers[Self.flagsKey] = detail.id == AARCH64_INS_SUBS ? .binary(op, lhs, rhs)
+                    : constantFlags(op, lhs, rhs) ?? result
                 registers[Self.flagsWidthKey] = .immediate(UInt64(dest.widthBits))
             }
 
@@ -2048,13 +2049,17 @@ public struct ValueTracer: Sendable {
             case AARCH64_INS_ASR: .arithmeticShiftRight
             default: .add // unreachable: the outer case is exhaustive
             }
-            let result = expression(
-                op, source(detail.operands[1], in: registers),
-                source(detail.operands[2], in: registers)
-            )
+            var shifted = source(detail.operands[1], in: registers)
+            // A 32-bit arithmetic shift shifts in the 32-bit sign: `asr w0,
+            // w8, #31` of 0x80000001 is 0xffffffff, not 1.
+            if op == .arithmeticShiftRight, dest.widthBits == 32, case .immediate(let bits) = shifted {
+                shifted = .immediate(UInt64(bitPattern: Int64(Int32(truncatingIfNeeded: bits))))
+            }
+            let result = expression(op, shifted, source(detail.operands[2], in: registers))
             write(dest, result, into: &registers)
             if detail.id == AARCH64_INS_ANDS {
-                registers[Self.flagsKey] = result
+                registers[Self.flagsKey] = constantFlags(.bitAnd, source(detail.operands[1], in: registers),
+                                                         source(detail.operands[2], in: registers)) ?? result
                 registers[Self.flagsWidthKey] = .immediate(UInt64(dest.widthBits))
             }
 
@@ -2388,10 +2393,10 @@ public struct ValueTracer: Sendable {
                     registers[Self.flagsKey] = .binary(.subtract, lhs, rhs)
                     registers[Self.flagsWidthKey] = .immediate(UInt64(detail.operands[0].operand.register?.widthBits ?? 64))
                 case AARCH64_INS_ALIAS_CMN:
-                    registers[Self.flagsKey] = expression(.add, lhs, rhs)
+                    registers[Self.flagsKey] = constantFlags(.add, lhs, rhs) ?? expression(.add, lhs, rhs)
                     registers[Self.flagsWidthKey] = .immediate(UInt64(detail.operands[0].operand.register?.widthBits ?? 64))
                 case AARCH64_INS_ALIAS_TST:
-                    registers[Self.flagsKey] = expression(.bitAnd, lhs, rhs)
+                    registers[Self.flagsKey] = constantFlags(.bitAnd, lhs, rhs) ?? expression(.bitAnd, lhs, rhs)
                     registers[Self.flagsWidthKey] = .immediate(UInt64(detail.operands[0].operand.register?.widthBits ?? 64))
                 case AARCH64_INS_CCMP:
                     guard detail.operands.count >= 3,
@@ -2446,15 +2451,32 @@ public struct ValueTracer: Sendable {
             else { clobber(detail, into: &registers); return }
             let whenTrue = source(detail.operands[1], in: registers)
             let falseOperand = source(detail.operands[2], in: registers)
-            let whenFalse: AbstractValue = switch detail.id {
+            var whenFalse: AbstractValue = switch detail.id {
             case AARCH64_INS_CSINC: expression(.add, falseOperand, .immediate(1))
-            case AARCH64_INS_CSINV: falseOperand == .unknown ? .unknown : .unary(.bitwiseNot, falseOperand)
-            case AARCH64_INS_CSNEG: falseOperand == .unknown ? .unknown : .unary(.negate, falseOperand)
+            case AARCH64_INS_CSINV:
+                if case .immediate(let bits) = falseOperand { .immediate(~bits) }
+                else if falseOperand == .unknown { .unknown } else { .unary(.bitwiseNot, falseOperand) }
+            case AARCH64_INS_CSNEG:
+                if case .immediate(let bits) = falseOperand { .immediate(0 &- bits) }
+                else if falseOperand == .unknown { .unknown } else { .unary(.negate, falseOperand) }
             default: falseOperand
             }
-            let result: AbstractValue = (condition == .unknown || whenTrue == .unknown || whenFalse == .unknown)
-                ? .unknown
-                : .select(condition: condition, whenTrue: whenTrue, whenFalse: whenFalse)
+            // The arms are what the 32-bit destination holds: `csinc w0, …` of
+            // 0xffffffff is 0, not 0x1_0000_0000.
+            var whenTrueValue = whenTrue
+            if dest.widthBits == 32 {
+                if case .immediate(let bits) = whenTrueValue { whenTrueValue = .immediate(bits & 0xffff_ffff) }
+                if case .immediate(let bits) = whenFalse { whenFalse = .immediate(bits & 0xffff_ffff) }
+            }
+            let result: AbstractValue
+            if case .immediate(let taken) = condition {
+                // A constant condition selects one arm: `(1 ? 11 : 22)` is 11.
+                result = taken != 0 ? whenTrueValue : whenFalse
+            } else {
+                result = (condition == .unknown || whenTrueValue == .unknown || whenFalse == .unknown)
+                    ? .unknown
+                    : .select(condition: condition, whenTrue: whenTrueValue, whenFalse: whenFalse)
+            }
             write(dest, result, into: &registers)
 
         default:
@@ -2604,6 +2626,12 @@ public struct ValueTracer: Sendable {
         default:
             break
         }
+        // A 32-bit write zero-extends into the 64-bit register: a constant
+        // keeps only its low word. `csel w0` of 0x200000016 returns 22.
+        if reg.kind == .gpr, reg.widthBits == 32, case .immediate(let bits) = value {
+            registers[reg.key] = .immediate(bits & 0xffff_ffff)
+            return
+        }
         registers[reg.key] = value
     }
 
@@ -2722,6 +2750,44 @@ public struct ValueTracer: Sendable {
         AArch64CC_GT, AArch64CC_LE,
     ]
 
+    /// Flags from two constant operands, kept unfolded so their NZCV can be
+    /// computed exactly; nil when either operand is not a constant.
+    private func constantFlags(_ op: AbstractBinaryOperator, _ lhs: AbstractValue, _ rhs: AbstractValue) -> AbstractValue? {
+        guard case .immediate = lhs, case .immediate = rhs else { return nil }
+        return .binary(op, lhs, rhs)
+    }
+
+    /// NZCV of `lhs op rhs` at `width` bits, for constant operands of a
+    /// compare (`subtract`), a compare-negative or flag-setting add (`add`),
+    /// or a test (`bitAnd`). The carry of an add is its unsigned carry-out
+    /// and of a subtract its absence of borrow; a test clears C and V. A
+    /// comparison read off the folded value got these wrong: `cmn w8, w9` of
+    /// 0 and 0 leaves C clear, so `hs` is false.
+    static func constantNZCV(_ flags: AbstractValue, width: Int) -> UInt64? {
+        guard case .binary(let op, .immediate(let rawA), .immediate(let rawB)) = flags else { return nil }
+        let mask: UInt64 = width == 32 ? 0xffff_ffff : .max
+        let sign: UInt64 = width == 32 ? 0x8000_0000 : 0x8000_0000_0000_0000
+        let a = rawA & mask, b = rawB & mask
+        let result: UInt64, carry: Bool, overflow: Bool
+        switch op {
+        case .subtract:
+            result = (a &- b) & mask
+            carry = a >= b
+            overflow = (a & sign) != (b & sign) && (result & sign) != (a & sign)
+        case .add:
+            result = (a &+ b) & mask
+            carry = width == 32 ? (a + b) > mask : a.addingReportingOverflow(b).overflow
+            overflow = (a & sign) == (b & sign) && (result & sign) != (a & sign)
+        case .bitAnd:
+            result = a & b
+            carry = false
+            overflow = false
+        default:
+            return nil
+        }
+        return (result & sign != 0 ? 8 : 0) | (result == 0 ? 4 : 0) | (carry ? 2 : 0) | (overflow ? 1 : 0)
+    }
+
     private static func literalFlagCondition(_ flags: UInt64, code: AArch64CC_CondCode) -> Bool {
         let n = flags & 8 != 0, z = flags & 4 != 0, c = flags & 2 != 0, v = flags & 1 != 0
         switch code {
@@ -2748,8 +2814,16 @@ public struct ValueTracer: Sendable {
            let index = Self.flagCodes.firstIndex(of: code), index < conditions.count {
             return conditions[index]
         }
+        if let nzcv = Self.constantNZCV(flags, width: width == .immediate(32) ? 32 : 64) {
+            return .immediate(Self.literalFlagCondition(nzcv, code: code) ? 1 : 0)
+        }
         if case .binary(.subtract, let lhs, let rhs) = flags {
-            if requireComplete {
+            // Constants fold exactly, at the compare's width and with its
+            // overflow: `cmp w8, w9` of 0xffffffff and 1 is negative, so
+            // `pl` is false, though the 64-bit difference is positive.
+            var constants = false
+            if case .immediate = lhs, case .immediate = rhs { constants = true }
+            if requireComplete || constants {
                 return subtractionCondition(lhs, rhs, code: code, width: width == .immediate(32) ? 32 : 64)
             }
             guard let op = Self.comparisonOperator(code) else { return nil }
@@ -2905,7 +2979,22 @@ public struct ValueTracer: Sendable {
         if let shifted = operand.shiftedImmediate { return .immediate(UInt64(bitPattern: shifted)) }
         guard let reg = operand.operand.register else { return .unknown }
         if reg.kind == .zero { return .immediate(0) }
-        let value = registers[reg.key] ?? .unknown
+        var value = registers[reg.key] ?? .unknown
+        // A 32-bit register is the low word of its 64-bit key. `cmp w8, w9`
+        // with x8 = 0x1_0000_0001 compares 1, not the whole value. A known
+        // constant is cut exactly, and sign- or zero-extended when the
+        // operand says so (`add x0, x1, w2, sxtw`).
+        if reg.kind == .gpr, reg.widthBits == 32, case .immediate(let bits) = value {
+            let low = bits & 0xffff_ffff
+            switch operand.extender {
+            case AARCH64_EXT_SXTW: value = .immediate(UInt64(bitPattern: Int64(Int32(truncatingIfNeeded: low))))
+            case AARCH64_EXT_SXTH: value = .immediate(UInt64(bitPattern: Int64(Int16(truncatingIfNeeded: low))))
+            case AARCH64_EXT_SXTB: value = .immediate(UInt64(bitPattern: Int64(Int8(truncatingIfNeeded: low))))
+            case AARCH64_EXT_UXTH: value = .immediate(low & 0xffff)
+            case AARCH64_EXT_UXTB: value = .immediate(low & 0xff)
+            default: value = .immediate(low)
+            }
+        }
         switch operand.shift.type {
         case AARCH64_SFT_INVALID: return value
         case AARCH64_SFT_LSL:
