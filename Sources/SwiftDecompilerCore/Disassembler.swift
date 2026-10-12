@@ -2650,13 +2650,48 @@ public struct Disassembler: Sendable {
 
     /// `swiftCallArgumentLayout` with each parameter's demangled type, which
     /// renders a constant in that slot (`2.5` for a Double, `true` for a Bool).
+    /// `Module.(tick in _0A1B2C)` as `Module.tick`: a private declaration's
+    /// discriminator is not part of how it is called.
+    static func withoutPrivateDiscriminators(_ name: String) -> String {
+        guard name.contains(" in _") else { return name }
+        return name.replacingOccurrences(of: #"\(([A-Za-z_][A-Za-z0-9_]*) in _[0-9A-F]+\)"#,
+                                         with: "$1", options: .regularExpression)
+    }
+
+    /// Whether a property getter takes nothing in x0–x7: a static property's
+    /// (the metatype rides in x20), a class instance property's (self in
+    /// x20) or a global's. A value type's instance getter does not qualify,
+    /// since a small struct's `self` travels in x0 onward. Subscripts take
+    /// their index. Generic metadata, which a getter may also receive, is
+    /// plumbing the renderer hides anyway.
+    static func getterTakesNoArguments(_ callee: String, classTypeIndex: ClassTypeIndex) -> Bool {
+        // A specialization of a qualifying getter only drops or re-owns
+        // parameters (`<Arg[0] = Dead>` is the unused metatype).
+        var name = callee
+        for prefix in ["function signature specialization <", "generic specialization <"] where name.hasPrefix(prefix) {
+            guard let of = name.range(of: "> of ") else { return false }
+            name = String(name[of.upperBound...])
+        }
+        guard let colon = name.range(of: " : ") else { return false }
+        var base = withoutPrivateDiscriminators(String(name[..<colon.lowerBound]))
+        guard base.hasSuffix(".getter") else { return false }
+        base.removeLast(".getter".count)
+        let isStatic = base.hasPrefix("static ")
+        if isStatic { base.removeFirst("static ".count) }
+        guard !base.isEmpty, base.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }),
+              let dot = base.lastIndex(of: "."), !base[base.index(after: dot)...].isEmpty
+        else { return false }
+        let context = String(base[..<dot])
+        return isStatic || !context.contains(".") || classTypeIndex.isClass(context)
+    }
+
     static func swiftCallArgumentSlots(
         callee: String, enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex
     ) -> [(kind: ScalarParameterClass, type: String)]? {
         guard let signature = DisassembledFunction.splitSignature(callee), !signature.isAsync,
               let range = DisassembledFunction.outermostArgumentListRange(of: signature.head)
         else { return nil }
-        var name = Substring(signature.head[..<range.lowerBound].dropLast())
+        var name = Substring(Self.withoutPrivateDiscriminators(String(signature.head[..<range.lowerBound].dropLast())))
         let isStatic = name.hasPrefix("static ")
         if isStatic { name = name.dropFirst("static ".count) }
         // An ordinary qualified identifier only: no generic clause, no
@@ -3366,6 +3401,15 @@ public struct Disassembler: Sendable {
             if calleeByAddress[address] == "swift_willThrow" {
                 values = site.errorValue == .unknown ? [] : [site.errorValue]
                 strategy = "will-throw"
+            }
+            // A getter that takes no explicit argument shows none, whatever
+            // x0 held: `static DispatchQoS.unspecified.getter(r0)` was a stale
+            // register (55 static getters in one app).
+            if let callee = calleeByAddress[address],
+               Self.getterTakesNoArguments(callee, classTypeIndex: classTypeIndex) {
+                argumentsByAddress[address] = []
+                strategy = "no-parameters"
+                continue
             }
             // A Swift callee with a proven layout gets exactly its parameters:
             // integer slots from x0… and float slots from v0…, each in order on

@@ -35,3 +35,22 @@ public func parked(_ a: AnyObject) -> [AnyObject] {
     keepBox(b, 3)
     return [a, b, a]
 }
+
+// Callees that take nothing in x0–x7, each called while x0 holds a value:
+// a class instance getter (self in x20), a static getter on a struct (the
+// metatype rides in x20) and a private method (named `(tick in _HASH)`).
+public final class Gauge {
+    var raw: Int = 3
+    public var reading: Int { @inline(never) get { raw &* 2 } }
+    @inline(never) private func tick() { log(raw &+ 1) }
+    public func run() -> Int {
+        let a = next(1)
+        tick()
+        return a &+ reading
+    }
+}
+public struct Units { public static var scale: Int { @inline(never) get { Int.random(in: 1..<9) } } }
+public func scaled(_ g: Gauge) -> Int {
+    let a = next(2)
+    return a &* Units.scale &+ g.reading
+}

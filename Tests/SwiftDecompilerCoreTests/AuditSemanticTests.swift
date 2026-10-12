@@ -128,3 +128,21 @@ func structuredLoops(_ text: String) -> [(header: String, body: [String], after:
     #expect(!text.contains("keepBox(self:"), Comment(rawValue: text))
     #expect(text.components(separatedBy: "AuditSemantics.makeBox(").count == 2, Comment(rawValue: text))
 }
+
+/// A getter of a class or static property, and a private method with no
+/// parameters, take nothing in x0–x7, but their names kept them out of the
+/// signature layout, so whatever x0 held printed as an argument:
+/// `Gauge.(tick in _…)(r0)`, `Units.scale.getter(r0)`, `reading.getter(r1)`.
+@Test func calleesWithoutParametersShowNoArgumentsIfPresent() async throws {
+    let path = "Fixtures/Sample/libAuditSemantics.opt.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "AuditSemantics")
+    }
+    let text = functions.filter { $0.displayName.hasPrefix("AuditSemantics.Gauge.run(") || $0.displayName.hasPrefix("AuditSemantics.scaled(") }
+        .map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(text.range(of: #"\(tick in _[0-9A-F]+\)\(\)"#, options: .regularExpression) != nil, Comment(rawValue: text))
+    #expect(text.contains("Units.scale.getter : Swift.Int()"), Comment(rawValue: text))
+    #expect(!text.contains("reading.getter : Swift.Int(r"), Comment(rawValue: text))
+    #expect(Disassembler.withoutPrivateDiscriminators("M.(tick in _0A1B)") == "M.tick")
+}

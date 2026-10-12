@@ -107,8 +107,12 @@ because it cannot be distinguished from a right one by reading the output.
 - **OPEN — arguments a callee does not take.** Getters, private methods
   and value-type methods have names that decline the signature layout but
   parse, which skips the body-reads bound. The parked-x20 `self:` on an
-  ordinary qualified Swift free function is fixed (`49f42ce`); the
-  accessor/private/value-type layout cases remain open.
+  ordinary qualified Swift free function is fixed (`49f42ce`). Getters of
+  static, class and global properties (specializations included) now take
+  no arguments, and private `(name in _HASH)` callees get the signature
+  layout. Getters printed with an argument fell from 605 to 531, 321 to
+  251 and 816 to 785 on three release apps. Value-type instance methods
+  and getters, whose small `self` travels in x0 onward, remain positional.
 - **FIXED — `objc_retain_xN` is modelled as returning x0.** It returns xN;
   in `@objc` thunks that named the wrong receiver. Identity runtime calls
   now match by exact name, and `objc_retain_xN` yields xN's pre-call value.
