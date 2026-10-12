@@ -30,6 +30,9 @@ open class FoldMiddle {
 open class FoldRight {
     open var total = 0
     public init() {}
+    // Reads `total` through the vtable (the class is open), landing on the
+    // body FoldLeft.count shares: the dispatch must not be named after FoldLeft.
+    open func twiceTotal() -> Int { total &* 2 }
 }
 
 // Unsigned division on Int-typed operands: `udiv` where the Swift types are

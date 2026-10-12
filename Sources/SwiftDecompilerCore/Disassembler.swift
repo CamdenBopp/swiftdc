@@ -476,7 +476,8 @@ public struct Disassembler: Sendable {
             cfStringRange: sectionRange(named: "__cfstring", in: machO),
             cacheSymbols: cacheSymbols,
             cacheReader: machO.fullCache.map { CacheReader(full: $0) },
-            fileRanges: FileBackedRanges(standalone: machO)
+            fileRanges: FileBackedRanges(standalone: machO),
+            foldedCandidates: foldedByAddress
         )
 
         var swiftTargets = Set(labelByAddress.compactMap { address, symbol in
@@ -653,7 +654,8 @@ public struct Disassembler: Sendable {
             cfStringRange: sectionRange(named: "__cfstring", in: machO),
             cacheSymbols: cacheSymbols,
             cacheReader: machO.fullCache.map { CacheReader(full: $0) },
-            fileRanges: FileBackedRanges(standalone: machO)
+            fileRanges: FileBackedRanges(standalone: machO),
+            foldedCandidates: foldedByAddress
         )
         // Addresses whose callee uses the Swift calling convention, so `self` in
         // x20 is meaningful there.
@@ -1688,7 +1690,7 @@ public struct Disassembler: Sendable {
             if case .selfVTableMethod(let offset) = value,
                let selfTypeName,
                let address = vtableIndex.methodAddress(type: selfTypeName, offset: offset),
-               let name = resolver.name(at: address) {
+               let name = resolver.name(at: address, ownedBy: selfTypeName) {
                 return (address, name)
             }
             return resolver.indirectCallTarget(for: value)
@@ -1752,6 +1754,25 @@ public struct Disassembler: Sendable {
         var cacheReader: CacheReader?
         /// File-backed byte ranges of a standalone image; nil inside a cache.
         var fileRanges: FileBackedRanges?
+        /// Every name identical code folding put at an address (symbols or
+        /// metadata candidates). `names` holds one of them; a consumer that knows
+        /// which owner it reached the address through picks from these instead.
+        var foldedCandidates: [UInt64: [String]] = [:]
+
+        /// The candidate at `address` that belongs to `typeName` (its simple
+        /// name is a component of the member's qualified context), or nil. At a
+        /// folded address `names` holds an arbitrary owner's symbol.
+        func name(at address: UInt64, ownedBy typeName: String) -> String? {
+            let candidates = (foldedCandidates[address] ?? []).map { demangleSymbol($0) ?? $0 }
+                + [name(at: address)].compactMap { $0 }
+            return candidates.first { Self.isMember($0, of: typeName) }
+        }
+
+        static func isMember(_ name: String, of typeName: String) -> Bool {
+            let qualified = name.prefix { $0 != "(" && $0 != " " }
+            return qualified.split(separator: ".").dropLast().contains { $0 == typeName }
+        }
+
         /// The selector a loaded address denotes, when that address is a selref
         /// slot. Nil for every other load.
         func selector(at slot: UInt64) -> String? { selectors.bySelref[slot] }
@@ -2730,7 +2751,9 @@ public struct Disassembler: Sendable {
             guard let selfTypeName,
                   let address = vtableIndex.methodAddress(type: selfTypeName, offset: offset)
             else { return nil }
-            return resolver.name(at: address)
+            // The slot is self's own, so the name must be: at a folded address
+            // `name(at:)` may be another class's symbol for the same bytes.
+            return resolver.name(at: address, ownedBy: selfTypeName)
         }
 
         /// `self`'s own getters/setters, keyed by resolved method name, so a
@@ -2740,7 +2763,7 @@ public struct Disassembler: Sendable {
             guard let selfTypeName else { return [:] }
             var map: [String: (String, Bool)] = [:]
             for address in vtableIndex.methodAddresses(type: selfTypeName) {
-                guard let name = resolver.name(at: address),
+                guard let name = resolver.name(at: address, ownedBy: selfTypeName),
                       let access = DisassembledFunction.swiftAccessorProperty(name)
                 else { continue }
                 map[name] = access
