@@ -8,6 +8,9 @@ public struct BasicBlock: Sendable {
     /// Start addresses this block can transfer control to (branch target and/or
     /// fall-through). External (out-of-function) targets are included as-is.
     public let successors: [UInt64]
+    /// For a block ending in a recovered jump table: the target of each case,
+    /// in case order (`successors` holds them deduplicated). Nil otherwise.
+    public var switchCases: [UInt64]? = nil
 }
 
 public extension DisassembledFunction {
@@ -30,6 +33,9 @@ public extension DisassembledFunction {
                 if let target = insn.branchTarget, internalAddresses.contains(target) {
                     leaders.insert(target)
                 }
+                for target in switchTargets[insn.address] ?? [] where internalAddresses.contains(target) {
+                    leaders.insert(target)
+                }
             case .call, .sequential, .none:
                 break
             }
@@ -41,11 +47,15 @@ public extension DisassembledFunction {
 
         func flush(fallthrough next: UInt64?) {
             guard let first = current.first, let last = current.last else { return }
+            let cases = switchTargets[last.address]
+            var unique: [UInt64] = []
+            for target in cases ?? [] where !unique.contains(target) { unique.append(target) }
             blocks.append(
                 BasicBlock(
                     startAddress: first.address,
                     instructions: current,
-                    successors: Self.successors(of: last, fallthrough: next)
+                    successors: cases == nil ? Self.successors(of: last, fallthrough: next) : unique,
+                    switchCases: cases
                 )
             )
             current = []

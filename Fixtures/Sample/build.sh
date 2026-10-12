@@ -44,6 +44,11 @@ $SWIFTC -parse-as-library -O -emit-library -module-name CallArity callarity.swif
 echo "==> variadic ObjC fixture (-O1) — format arguments on the stack"
 $CLANG -O1 -fobjc-arc -framework Foundation -dynamiclib variadic.m -o libVariadic.dylib
 
+echo "==> jump-table fixture (C, -O1) — compressed byte and halfword tables"
+$CLANG -O1 -dynamiclib switches.c -o libSwitches.dylib
+# arm64e lowers the same switches to the hardened form (csel clamp, ldrsw entries).
+$CLANG -arch arm64e -O1 -dynamiclib switches.c -o libSwitches.arm64e.dylib
+
 echo "==> resilient reconstruction fixture (library evolution) — coroutine accessors"
 # Library evolution forces opaque accessors, so a public stored property gets a
 # synthesized `_modify`/`_read` yield_once coroutine (absent from a fragile build).

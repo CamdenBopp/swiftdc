@@ -332,7 +332,10 @@ Soundness first, then completeness. Repro before any fix marked "unverified".
    lowering with its own constants; exact linear check for the remainder).
 4. **Demote the self-vtable edge** to a possible edge unless final
    (unverified; repro first), then the possible-edge layer in `xrefs`. S, M.
-5. **Jump tables** with a typed coverage gap for an unresolved `br`. M.
+5. ~~Jump tables~~: compressed and hardened forms shipped (`JumpTables.swift`).
+   Still owed: the switch index expression, a typed gap for an unrecovered
+   `br`, and dyld-cache images. The stash (`git show d921fc1:Sources/SwiftDecompilerCore/JumpTableIndex.swift`)
+   targeted only the hardened form, Capstone 5; it is superseded.
 6. **Oracles**: per-instruction hardware oracle (M); runtime metadata oracle
    via `dlsym` (S–M); `__unwind_info` boundary check (S–M); compile the render
    with swiftc (M); decline census (M).

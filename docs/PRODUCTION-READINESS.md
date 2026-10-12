@@ -558,12 +558,17 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   `smull`/`umull` are untracked; an unfolded multiply-high renders as the
   pseudo-operator `mulh`; a correct sequence LLVM would not emit stays
   unfolded.
-- **OPEN — a `br xN` has no successors.** `CFG.swift` (`successors(of:)`, around
-  line 69) gives an indirect branch none, so a jump table's arms are orphaned
-  from the CFG and the structurer never sees them, and nothing reports the gap.
-  Plan in `handoff.md` sections 5 and 6: bound the index by the dominating guard,
-  emulate the address computation per value, and report an unresolved `br` as a
-  typed coverage gap.
+- **MITIGATED — a `br xN` had no successors.** A jump table's arms were
+  orphaned from the CFG (`pickByte` rendered nine `// continues at` lines and no
+  case bodies). `JumpTables` now recovers LLVM's two AArch64 lowerings where the
+  bound is proven: the compressed table (`ldrb`/`ldrh` entries, bounded by a
+  `cmp; b.hi` whose fall-through is the table block's only entry) and arm64e's
+  hardened table (`ldrsw` entries, bounded by a `csel …, ls` clamp). The
+  structurer emits `switch (?) { case …: }`. Measured: 22 of 22 `br x16` tables
+  in `/bin/zsh` (arm64e); Fiery Feeds has about 331 compressed tables among its
+  4,790 `br`s (most of the rest are async returns). Remaining: the switch index
+  renders `?`; an unrecovered `br` still has no successors and reports no gap;
+  dyld-cache images decline (no file-backed table bytes).
 
 - **FIXED — whole-binary disassembly returned nothing on most dylibs.**
   llvm-objdump right-aligns its address column; the parser required

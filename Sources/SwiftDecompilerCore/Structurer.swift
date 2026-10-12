@@ -454,11 +454,12 @@ struct ControlFlowStructure {
             // implicit language safety check, not program logic. Fold it away and
             // fall through to the non-trap path, so `+=`/loop bodies aren't sprayed
             // with `if (overflow) trap()`.
-            let overflowContinuation = succs.count == 2 ? overflowGuardContinuation(current) : nil
+            let isSwitch = block.switchCases != nil
+            let overflowContinuation = succs.count == 2 && !isSwitch ? overflowGuardContinuation(current) : nil
             // Resolve the branch condition first: a boolean-returning call whose
             // result only feeds the test is inlined into the condition, so it is
             // dropped from the straight-line statements to avoid printing it twice.
-            let branch = (succs.count >= 2 && overflowContinuation == nil) ? condition(of: block) : nil
+            let branch = (succs.count >= 2 && overflowContinuation == nil && !isSwitch) ? condition(of: block) : nil
             var emittedReturn = false
             for insn in block.instructions {
                 if branch?.consumed.contains(insn.address) == true { continue }
@@ -484,7 +485,36 @@ struct ControlFlowStructure {
                 continue
             }
 
-            if succs.count >= 2 {
+            if let cases = block.switchCases {
+                // A recovered jump table: one arm per distinct target, labelled
+                // with every case index that reaches it. The index expression is
+                // not tracked yet, so it reads `?`.
+                let merge = ipdom[current]
+                var order: [UInt64] = []
+                var labels: [UInt64: [Int]] = [:]
+                for (caseIndex, target) in cases.enumerated() {
+                    if labels[target] == nil { order.append(target) }
+                    labels[target, default: []].append(caseIndex)
+                }
+                lines.append("\(pad)switch (?) {")
+                for target in order {
+                    guard let arm = index(of: target), let caseLabels = labels[target] else { continue }
+                    lines.append("\(pad)case \(caseLabels.map(String.init).joined(separator: ", ")):")
+                    let body = arm == merge
+                        ? []
+                        : edge(from: current, to: arm, until: merge, indent: indent + 1, visited: &visited, gotoTargets: &gotoTargets, loop: loop, depth: depth + 1)
+                    lines += body.isEmpty ? ["\(pad)    break"] : body
+                }
+                lines.append("\(pad)}")
+                if merge == exit { break }
+                if let loop, loop.boundsBody, !loop.body.contains(merge),
+                   !isTrivialTail(merge) {
+                    gotoTargets.insert(merge)
+                    lines.append("\(pad)goto loc_\(hex(blocks[merge].startAddress))")
+                    break
+                }
+                current = merge
+            } else if succs.count >= 2 {
                 let merge = ipdom[current]
                 let thenLines = edge(from: current, to: succs[0], until: merge, indent: indent + 1, visited: &visited, gotoTargets: &gotoTargets, loop: loop, depth: depth + 1)
                 let elseLines = succs[1] != merge

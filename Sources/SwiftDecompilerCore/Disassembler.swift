@@ -132,6 +132,9 @@ public struct DisassembledFunction: Sendable {
     /// This function's place in an async function's funclet chain, when it is
     /// an async entry or resume funclet. Nil for a synchronous function.
     public let asyncFunclet: AsyncFuncletInfo?
+    /// Recovered jump tables: `br` address → the target of each case, in case
+    /// order (`JumpTables`). Empty when none was proven.
+    public let switchTargets: [UInt64: [UInt64]]
 
     public init(
         symbol: String,
@@ -141,7 +144,8 @@ public struct DisassembledFunction: Sendable {
         source: RecoverySource,
         objcMethod: ObjCMethodBinding? = nil,
         foldedCandidates: [String]? = nil,
-        asyncFunclet: AsyncFuncletInfo? = nil
+        asyncFunclet: AsyncFuncletInfo? = nil,
+        switchTargets: [UInt64: [UInt64]] = [:]
     ) {
         self.symbol = symbol
         self.demangledName = demangledName
@@ -151,6 +155,7 @@ public struct DisassembledFunction: Sendable {
         self.objcMethod = objcMethod
         self.foldedCandidates = foldedCandidates
         self.asyncFunclet = asyncFunclet
+        self.switchTargets = switchTargets
     }
 
     /// The same function with `instructions` replaced; every other field is
@@ -159,7 +164,18 @@ public struct DisassembledFunction: Sendable {
         DisassembledFunction(
             symbol: symbol, demangledName: demangledName, startAddress: startAddress,
             instructions: instructions, source: source, objcMethod: objcMethod,
-            foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet
+            foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet,
+            switchTargets: switchTargets
+        )
+    }
+
+    /// The same function with its recovered jump tables attached.
+    func attachingSwitchTargets(_ tables: [UInt64: [UInt64]]) -> DisassembledFunction {
+        DisassembledFunction(
+            symbol: symbol, demangledName: demangledName, startAddress: startAddress,
+            instructions: instructions, source: source, objcMethod: objcMethod,
+            foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet,
+            switchTargets: tables
         )
     }
 
@@ -177,7 +193,8 @@ public struct DisassembledFunction: Sendable {
             demangledName: title ?? demangledName,
             startAddress: startAddress, instructions: instructions,
             source: title == nil ? source : .asyncFunclet, objcMethod: objcMethod,
-            foldedCandidates: foldedCandidates, asyncFunclet: info
+            foldedCandidates: foldedCandidates, asyncFunclet: info,
+            switchTargets: switchTargets
         )
     }
 
@@ -798,6 +815,8 @@ public struct Disassembler: Sendable {
     ) -> DisassembledFunction {
         var function = annotateReferences(in: rawFunction, resolver: context.resolver)
         function = annotateCallTargets(in: function, resolver: context.resolver)
+        let tables = JumpTables.recognize(in: function, machO: context.resolver.machO)
+        if !tables.isEmpty { function = function.attachingSwitchTargets(tables) }
 
         let objcMethod = function.objcMethod
         // Runtime-added category IMPs (an accessibility bundle is almost all
