@@ -109,6 +109,141 @@ struct ObjCMetadataSnapshot {
             || marked(numericCast(ro.layout.baseProtocols))
     }
 
+    /// The offset recorded for an ivar whose offset variable is zero-fill. A
+    /// Swift class's stored property that follows a resilient-size one (a
+    /// Foundation `Date`) gets its offset at load time, so the image holds no
+    /// value for it. Never a field-map entry.
+    public static let runtimeIvarOffset = -1
+
+    /// Where an image's bytes are, to tell a static ivar offset from a
+    /// runtime-computed one.
+    struct FileBackedRanges {
+        let base: UInt64
+        /// Each segment's VM range and the end of its file-backed prefix.
+        let segments: [(vm: Range<UInt64>, fileEnd: UInt64)]
+        let zeroFill: [Range<UInt64>]
+        let chained: Bool
+        /// Chained-fixup rebase targets (runtime offsets) of every class's ivar
+        /// offset slots, from one walk over the chains. MachOKit's
+        /// `resolveRebase(at:)` re-walks a page's chain on each call: per ivar,
+        /// that was 75% of `objc` on Prime Video (`sample`, 1142 of 1515).
+        let rebaseTargets: [Int: UInt64]
+
+        init(_ machO: MachOFile, classes: [ObjCClass64]) {
+            let segments = machO.segments64
+            base = UInt64(segments.first { $0.segmentName == "__TEXT" }?.virtualMemoryAddress ?? 0)
+            self.segments = segments.map { segment in
+                let start = UInt64(segment.virtualMemoryAddress)
+                return (start..<start + UInt64(segment.virtualMemorySize), start + UInt64(segment.fileSize))
+            }
+            zeroFill = machO.sections64.compactMap { section in
+                switch section.flags.type {
+                case .zerofill?, .gb_zerofill?, .thread_local_zerofill?:
+                    let start = UInt64(section.address)
+                    return start..<start + UInt64(section.size)
+                default:
+                    return nil
+                }
+            }
+            let fixups = machO.dyldChainedFixups
+            chained = fixups != nil
+            var targets: [Int: UInt64] = [:]
+            if let fixups, let starts = fixups.startsInImage {
+                var slots = Set<Int>()
+                for raw in classes {
+                    for ivar in raw.classROData(in: machO)?.ivarList(in: machO)?.ivars(in: machO) ?? [] {
+                        slots.insert(ivar.unresolvedValue(of: .offset).fieldOffset)
+                    }
+                }
+                if !slots.isEmpty {
+                    for segment in fixups.startsInSegments(of: starts) {
+                        for pointer in fixups.pointers(of: segment, in: machO)
+                        where slots.contains(pointer.offset) && pointer.fixupInfo.rebase != nil {
+                            targets[pointer.offset] = pointer.rebaseTargetRuntimeOffset(for: machO)
+                        }
+                    }
+                }
+            }
+            rebaseTargets = targets
+        }
+
+        func holdsBytes(at address: UInt64, count: UInt64) -> Bool {
+            guard let segment = segments.first(where: { $0.vm.contains(address) }),
+                  address + count <= segment.fileEnd
+            else { return false }
+            return !zeroFill.contains { $0.contains(address) }
+        }
+    }
+
+    /// Indices of the ivars whose offset variable has no bytes in the file.
+    /// ObjCDump reads it anyway, through a `try!`: past the end of the file
+    /// that traps (Prime Video's `AmazonVideo.DownloadPageDataSource` killed
+    /// `objc` and `xrefs`), inside the file it returns whatever bytes are
+    /// there (zero-fill padding read as offset 0).
+    static func runtimeOffsetIvarIndices(
+        _ ivars: [ObjCIvar64], in machO: MachOFile, ranges: FileBackedRanges
+    ) -> Set<Int> {
+        var result = Set<Int>()
+        for (index, ivar) in ivars.enumerated() {
+            let slot = ivar.unresolvedValue(of: .offset)
+            let address: UInt64
+            if let runtimeOffset = ranges.rebaseTargets[slot.fieldOffset] {
+                address = ranges.base &+ runtimeOffset
+            } else if !ranges.chained, slot.value != 0 {
+                // LC_DYLD_INFO: a rebased slot holds the unslid address itself.
+                address = slot.value
+            } else {
+                // A bind or a null slot: ObjCDump resolves or declines it itself.
+                continue
+            }
+            if !ranges.holdsBytes(at: address, count: 4) { result.insert(index) }
+        }
+        return result
+    }
+
+    /// `ObjCClassProtocol.info(in:)`, except that an ivar whose offset is
+    /// computed at load time is recorded at `runtimeIvarOffset` instead of
+    /// being read. Only outside a shared cache (`ranges` nil inside one).
+    static func classInfo(
+        _ raw: ObjCClass64, in machO: MachOFile, ranges: FileBackedRanges?
+    ) -> ObjCClassInfo? {
+        guard let ranges, let data = raw.classROData(in: machO) else { return raw.info(in: machO) }
+        let ivars = data.ivarList(in: machO)?.ivars(in: machO) ?? []
+        let runtime = runtimeOffsetIvarIndices(ivars, in: machO, ranges: ranges)
+        guard !runtime.isEmpty else { return raw.info(in: machO) }
+        // The rest mirrors ObjCDump for a file outside a shared cache, which
+        // has no relative method lists (`readsCacheOnlyRelativeLists` filtered
+        // the classes that look as if they do), with protocols expanded
+        // recursively, its default.
+        guard let (targetMachO, meta) = raw.metaClass(in: machO),
+              let metaData = meta.classROData(in: targetMachO),
+              let name = data.name(in: machO)
+        else { return nil }
+        let ivarInfos = ivars.enumerated().compactMap { index, ivar -> ObjCIvarInfo? in
+            guard runtime.contains(index) else { return ivar.info(in: machO) }
+            guard let name = ivar.name(in: machO), let type = ivar.type(in: machO) else { return nil }
+            return ObjCIvarInfo(name: name, typeEncoding: type, offset: runtimeIvarOffset)
+        }
+        return ObjCClassInfo(
+            name: name,
+            version: raw.version(for: data),
+            imageName: machO.imagePath,
+            instanceSize: numericCast(data.instanceSize),
+            superClassName: raw.superClassName(in: machO),
+            protocols: data.protocolList(in: machO)?.protocols(in: machO)?
+                .compactMap { $1.info(in: $0) } ?? [],
+            ivars: ivarInfos,
+            classProperties: metaData.propertyList(in: targetMachO)?.properties(in: targetMachO)
+                .map { $0.info(isClassProperty: true) } ?? [],
+            properties: data.propertyList(in: machO)?.properties(in: machO)
+                .map { $0.info(isClassProperty: false) } ?? [],
+            classMethods: metaData.methodList(in: targetMachO)?.methods(in: targetMachO)?
+                .map { $0.info(isClassMethod: true) } ?? [],
+            methods: data.methodList(in: machO)?.methods(in: machO)?
+                .map { $0.info(isClassMethod: false) } ?? []
+        )
+    }
+
     static func build(
         in machO: MachOFile,
         includeProtocols: Bool = true
@@ -121,9 +256,10 @@ struct ObjCMetadataSnapshot {
             let boundSlots = machO.cache == nil ? externalBindSlots(in: machO) : [:]
             // Keep each raw class paired with its decoded info: the raw struct's
             // file offset is what locates the superclass field for bind recovery.
-            let pairs = (objc.classes64 ?? [])
-                .filter { !readsCacheOnlyRelativeLists(machO, $0) }
-                .compactMap { raw in raw.info(in: machO).map { (raw, $0) } }
+            let candidates = (objc.classes64 ?? []).filter { !readsCacheOnlyRelativeLists(machO, $0) }
+            let ranges = machO.cache == nil ? FileBackedRanges(machO, classes: candidates) : nil
+            let pairs = candidates
+                .compactMap { raw in classInfo(raw, in: machO, ranges: ranges).map { (raw, $0) } }
             snapshot.classes = pairs.map(\.1)
             snapshot.superclassBinds = resolveExternalSuperclasses(
                 classes: pairs, boundSlots: boundSlots, in: machO
@@ -403,7 +539,7 @@ public struct ObjCMetadataIndex: Sendable {
             var visiting = visiting
             visiting.insert(className)
             var result = cls.superClassName.map { ivars(of: $0, visiting: visiting) } ?? []
-            result.append(contentsOf: cls.ivars)
+            result.append(contentsOf: cls.ivars.filter { $0.offset != ObjCMetadataSnapshot.runtimeIvarOffset })
             // A corrupt image should not create overlapping ranges. Prefer the
             // most-derived declaration at a duplicate absolute offset.
             var byOffset: [Int: ObjCIvarInfo] = [:]
