@@ -210,8 +210,8 @@ refinements to section 5's plan:
   input or an earlier call's killed result is provably not an argument (Ghidra
   `AncestorRealistic`, negative half only).
 - **Magic-number division** (Ghidra `ruleaction/division.rs`): shipped as
-  `48d20d6`, verified on boundary probes. Still owed: the every-input proof
-  (section 8, item 3).
+  `48d20d6`, then proven for every input (structural match against LLVM's own
+  lowering).
 - **Oracles:** koute's pure-Rust Ghidra port (no C++/Java, raw-bytes entry
   `Program::from_raw_bytes(…, "AARCH64:LE:64:AppleSilicon:default", …)`) can serve
   as an instruction-semantics oracle (run its p-code emulator and swiftdc's
@@ -302,7 +302,11 @@ against HEAD by reading code unless it says "reproduced".
   write NDJSON with a final summary record via a temp file and rename. Do not
   adopt: Frida (it knows no more than swiftdc on stripped code), headless
   Ghidra (its Swift cspec drops x21/x22), persistent analysis caches before
-  measuring.
+  measuring. Ghidra issue #8607 (read 2026-10-12) closed for 12.1 with markup
+  of Swift's trailing objects only; building types from them is "not on my
+  short-term radar". GhidraApple's team plans that on top of Ghidra's parser,
+  which would make it, not stock Ghidra, the independent Swift second opinion
+  to watch.
 
 ### 8. Next plan, ranked across all mining
 
@@ -324,8 +328,8 @@ Soundness first, then completeness. Repro before any fix marked "unverified".
 2. **Fold-aware identity everywhere**, starting with `SelfTypeIndex` and
    vtable-dispatch naming (first-writer-wins today), then the type graph. S
    then M.
-3. **Prove magic division** by regenerating LLVM's constants for the
-   recovered divisor; keep the probes as a second check. S.
+3. ~~Prove magic division~~: shipped (structural match against LLVM's
+   lowering with its own constants; exact linear check for the remainder).
 4. **Demote the self-vtable edge** to a possible edge unless final
    (unverified; repro first), then the possible-edge layer in `xrefs`. S, M.
 5. **Jump tables** with a typed coverage gap for an unresolved `br`. M.

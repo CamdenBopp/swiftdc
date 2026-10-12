@@ -543,10 +543,14 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 - **MITIGATED — division by a constant rendered `?`.** `smulh`/`umulh` were
   unmodelled, so every -O `x / 7` lost its value. `MagicDivision` folds the
   multiply-high lowering back to `x / D` and `x % D` (`48d20d6`, seven shapes in
-  libCodegen checked by the differential oracle). Remaining: the fold is checked
-  on boundary probes, not proven for every input (the forward magic-constant
-  check is planned); 32-bit `smull`/`umull` are untracked; an unfolded
-  multiply-high renders as the pseudo-operator `mulh`.
+  libCodegen checked by the differential oracle). Since the next commit the
+  fold is proven, not sampled: the tree must be the sequence LLVM emits for the
+  recovered divisor with LLVM's own constants (ported from
+  `DivisionByConstantInfo.cpp`, pinned to eleven compiler-emitted constants),
+  and a remainder must reduce exactly to `x - D*q`. Remaining: 32-bit
+  `smull`/`umull` are untracked; an unfolded multiply-high renders as the
+  pseudo-operator `mulh`; a correct sequence LLVM would not emit stays
+  unfolded.
 - **OPEN — a `br xN` has no successors.** `CFG.swift` (`successors(of:)`, around
   line 69) gives an indirect branch none, so a jump table's arms are orphaned
   from the CFG and the structurer never sees them, and nothing reports the gap.

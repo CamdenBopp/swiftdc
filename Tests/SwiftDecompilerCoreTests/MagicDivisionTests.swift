@@ -83,6 +83,17 @@ import Testing
         #expect(partial == .binary(.arithmeticShiftRight, hi, .immediate(1)))
     }
 
+    /// Correct for every input, and passes every probe: `(x >> 1) / 5` via the
+    /// reciprocal of 5 is `x / 10`. But it is not the sequence LLVM emits for
+    /// 10 (`umulh` by 0xCCCC…CD, `lsr #3`, no pre-shift), so the proof does not
+    /// cover it and the fold must not claim it. Sampling alone would.
+    @Test func aProbePassingSequenceLLVMDoesNotEmitStaysSymbolic() {
+        let hi = fold(.unsignedMultiplyHigh, fold(.shiftRight, x, .immediate(1)),
+                      .immediate(0xCCCC_CCCC_CCCC_CCCD))
+        let result = fold(.shiftRight, hi, .immediate(2))
+        #expect(result == .binary(.shiftRight, hi, .immediate(2)))
+    }
+
     /// A constant that is no divisor's reciprocal must not fold.
     @Test func unrecognizedMagicStaysSymbolic() {
         let hi = fold(.unsignedMultiplyHigh, x, .immediate(0xDEAD_BEEF_DEAD_BEEF))
