@@ -509,6 +509,7 @@ public struct Disassembler: Sendable {
         swiftTargets.formUnion(stubs.filter {
             $0.objcMethod == nil && (Self.isSwiftMangled($0.symbol) || $0.source == .metadata)
         }.map(\.startAddress))
+        swiftTargets.formUnion(swiftStubAddresses(in: machO))
         swiftTargets.subtract(objcIndex.addresses)
 
         // Async funclet chains, from the hint sections plus a decode of just the
@@ -690,6 +691,7 @@ public struct Disassembler: Sendable {
             $0.objcMethod == nil && (Self.isSwiftMangled($0.symbol) || $0.source == .metadata)
         }.map(\.startAddress))
         // A Swift-mangled Objective-C entry thunk still receives self in x0.
+        swiftTargets.formUnion(swiftStubAddresses(in: machO))
         swiftTargets.subtract(objcIndex.addresses)
         // Async funclet chains: group each resume funclet under its entry and
         // title the nameless ones after it. A funclet outside this decode (a
@@ -1285,6 +1287,21 @@ public struct Disassembler: Sendable {
     /// naming them is essential for recognizing runtime tail calls such as
     /// `objc_autoreleaseReturnValue` and `objc_setProperty_nonatomic_copy`.
     private func symbolStubNames(in machO: MachOFile) -> [UInt64: String] {
+        symbolStubSymbols(in: machO).mapValues { raw in demangle(raw) ?? Self.stripLeadingUnderscore(raw) }
+    }
+
+    /// Symbol stubs whose import is a Swift function. objdump's listing names
+    /// the import behind a stub (`symbol stub for: _$s…`), which is how a call
+    /// was known to follow the Swift convention; Capstone's text has no such
+    /// comment. On every in-process path, a call to an imported Swift method
+    /// lost its `self:` (`Hasher._combine(self: local_68)` became
+    /// `_combine()`), and a filtered run disagreed with the full listing.
+    private func swiftStubAddresses(in machO: MachOFile) -> Set<UInt64> {
+        Set(symbolStubSymbols(in: machO).compactMap { Self.isSwiftMangled($0.value) ? $0.key : nil })
+    }
+
+    /// Stub address → the raw symbol of the import it jumps to.
+    private func symbolStubSymbols(in machO: MachOFile) -> [UInt64: String] {
         guard let table = machO.indirectSymbols else { return [:] }
         let indirect = Array(table)
         let symbols = Array(machO.symbols)
@@ -1305,7 +1322,7 @@ public struct Disassembler: Sendable {
                 let raw = symbols[symbolIndex].name
                 guard !raw.isEmpty else { continue }
                 let address = UInt64(section.address + slot * stubSize)
-                names[address] = demangle(raw) ?? Self.stripLeadingUnderscore(raw)
+                names[address] = raw
             }
         }
         return names

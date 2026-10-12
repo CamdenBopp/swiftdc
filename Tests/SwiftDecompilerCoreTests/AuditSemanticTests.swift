@@ -203,3 +203,23 @@ func structuredLoops(_ text: String) -> [(header: String, body: [String], after:
     #expect(text.contains("throw ?"), Comment(rawValue: text))
     #expect(!text.contains("} else {\n        return\n"), Comment(rawValue: text))
 }
+
+/// Which calls follow the Swift convention (and so take `self` in x20) was
+/// read from objdump's `symbol stub for: _$s…` comment. The in-process
+/// decoder has no such text, so a filtered run, a cache image, or a
+/// streamed listing dropped `self:` from every call to an imported Swift
+/// method: `-f Dog.speak` rendered `String.append(" the ")` where the full
+/// listing had `String.append(self: local_40, " the ")`.
+@Test func aFilteredRunKeepsSelfOnImportedSwiftCallsIfPresent() async throws {
+    let path = "Fixtures/Sample/libSample.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let (filtered, whole) = try await withStableDependencies {
+        let disassembler = Disassembler(preset: .default)
+        return (try await disassembler.disassemble(path: path, functionFilter: "Dog.speak"),
+                try await disassembler.disassemble(path: path))
+    }
+    let one = try #require(filtered.first { $0.displayName.contains("Dog.speak") }).renderStructured()
+    let all = try #require(whole.first { $0.displayName.contains("Dog.speak") }).renderStructured()
+    #expect(one.contains("Swift.String.append(self: "), Comment(rawValue: one))
+    #expect(one == all, "filtered:\n\(one)\nwhole:\n\(all)")
+}
