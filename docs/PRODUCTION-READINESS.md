@@ -25,6 +25,70 @@ docs against the source; its stale-claim findings are corrected below.
 The highest-severity category. A wrong render is worse than a missing one,
 because it cannot be distinguished from a right one by reading the output.
 
+- **App audit, 2026-10-12.** Five independent audits ran against four of
+  the author's iOS apps, each built at a recorded revision at -Onone and -O,
+  each finding checked against objdump, DWARF, the source, SIL or a run of
+  the reduced program. The harness is [Tools/audit](../Tools/audit/README.md);
+  the full report stays local because it quotes the apps' code. Fixed so
+  far: the entries below dated 2026-10-12. The remaining confirmed
+  semantic errors follow as OPEN entries.
+- **FIXED (`2d71612`) — a branch condition came from the wrong compare.**
+  The structurer's text path stepped over flag setters it does not model
+  (ccmp, ccmn, fcmp, fccmp, sbcs, ngcs, ands, bics) to an earlier `cmp`.
+  - Every Swift String `==` fast path compared one word.
+  - A range check compared one bound.
+  - Three fixtures were rendering false claims: -Osize `intDivide`'s
+    `if (x0 == Int.min) trap()` (the trap also needs x1 == -1),
+    `_consumeAndCreateNew`'s `x21 >= x19`, and `flagProbe1060`'s
+    `return 1` (an `msr NZCV` zeroes the flags; it returns 0).
+  - The tracer invalidated flags from a list that missed ngcs and negs; it
+    now uses Capstone's update_flags.
+  - Such branches decline (`?`): 237, 705 and 430 on three release apps.
+  - Modelling ccmp exactly is OPEN (completeness).
+- **FIXED (`a17906e`) — carry-flag branches rendered as signed
+  comparisons.** b.hi/hs/lo/ls read as `> >= < <=`, so a `sub; cmp; b.hi`
+  range check was false for every input below the range. They now render
+  `>ᵁ >=ᵁ <ᵁ <=ᵁ`.
+- **FIXED (`2292132`) — the value tracer replayed an unconverged state.**
+  - Found by the first probe run: `values.fixpoint-cap` on one app function
+    (20 blocks, past 1,296 iterations).
+  - Cause: an unknown register is spelled both `.unknown` and absent, and
+    a literal state comparison saw x9 flip between them forever.
+  - Past the bound, the snapshot pass replayed optimistic meets as proof.
+  - The convergence test now compares facts, and past the bound the
+    analysis claims nothing.
+- **OPEN — long Swift string literals render as a different literal.**
+  - At -O a literal of 16 bytes or more is passed as
+    `(address − 32) | 1<<63`, and swiftdc quotes the C string at
+    `address − 32`.
+  - A compare against one literal rendered whichever literal the linker
+    placed 32 bytes earlier.
+  - In one app, 0 of 151 sites rendered the true literal.
+- **OPEN — an indirect tail call or indirect await produces no statement.**
+  `callStatement` returns nil for an unresolved `br`. An `await` through a
+  closure, witness or class method disappears (0 of 15, 0 of 42 and 0 of 16
+  rendered in three binaries), and a function whose only call is `br x1`
+  is labelled a leaf.
+- **OPEN — a single-use call result is printed at its use, across other
+  calls or a branch.** `let a = next(); log(); return a` renders `log()`
+  then `return next()`. Across a branch, the call disappears from one path.
+- **OPEN — a call that returns nothing still "returns" x0.** Only a
+  demangled `-> ()` marks a call void, so a `.setter` or an ObjC `set…:`
+  send produces a value that becomes another call's argument.
+- **OPEN — arguments a callee does not take.** Getters, private methods
+  and value-type methods have names that decline the signature layout but
+  parse, which skips the body-reads bound. A parked x20 renders as `self:`
+  on a free function.
+- **OPEN — `objc_retain_xN` is modelled as returning x0.** It returns xN;
+  in `@objc` thunks that names the wrong receiver.
+- **OPEN — a rethrow after a cleanup call renders `return`.** The async
+  throw check treats every call as overwriting x20, which is callee-saved.
+- **OPEN — a non-Bool call result compared with 1 is folded to
+  truthiness.** `if case .paused = state` (tag 1) renders
+  `if (swift_getEnumCaseMultiPayload(?))`.
+- **OPEN — an -O `for x in array` renders as an infinite loop.** The CFG
+  has the exit edge, but the structurer drops it.
+
 - **FIXED (`ed4f157`, `0c92a85`) — Objective-C arguments were read positionally
   from x2–x7.** A `double` shifted every later argument: `[self whole:11
   fraction:2.5 object:nil tail:33]` rendered `fraction:0 object:33`, and a
@@ -1300,6 +1364,16 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 4. Determinism
 
+- **FIXED (`294dce7`) — the structurer broke a post-dominator tie by
+  hash order.**
+  - A loop inside a landing pad is never visited by the entry's DFS, so its
+    cycle stays in the forward graph and its nodes tie.
+  - `max(by:)` over a Set then picked by per-process hash seed. One app's
+    `disasm --structured` gave six different outputs in six runs.
+  - Ties now go to the lowest block index.
+  - `landingpadloop.cpp` gave five outputs in six runs before the fix, one
+    after. The cross-process determinism test now includes it.
+
 - **MITIGATED — output is stable across runs.** Three consecutive
   `disasm --structured` runs over the fixture hash identically:
   `for i in 1 2 3; do swiftdc disasm Fixtures/Sample/libReconstruction.dylib --structured | shasum; done`
@@ -1672,6 +1746,8 @@ The meta-category. Every gap here weakens confidence in every claim above.
 
 | Subsystem | Oracle | Status |
 |---|---|---|
+| Analysis decisions | `--probe` claims (`types.field-named`, `values.unmodelled-write`) checked by validators or DWARF | **New (`7d3fd29`)**: the tracer's write check is silent on every fixture and three apps, and is seen red under a clobber mutation. Field-name claims are ready for a DWARF validator |
+| Source semantics | The app-audit harness (`Tools/audit`): the source at a recorded revision, objdump, DWARF, SIL, runtime | **Run once, 2026-10-12**: about 20 confirmed semantic errors, each reduced |
 | Function boundaries | `LC_FUNCTION_STARTS` | **Enforced** — throws on empty parse, warns below 50% recovery. The count is deduped and cross-checked against `dyld_info` in tests |
 | Byte-level decode coverage | `dyld_info -function_starts` extents | **In tests + measured by hand** — 100.000% of declared slots decode; no holes inside bodies on either decoder |
 | Peak memory | `/usr/bin/time -l` peak footprint | **Measured + guarded** — linear ~2.5 KB/instruction; SwiftUI 13.5 GB exceeds a 16 GB host; `MemoryRegressionTests` bounds per-instruction footprint |
