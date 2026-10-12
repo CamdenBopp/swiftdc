@@ -223,6 +223,19 @@ private func reconstructionStructured(
     }
 }
 
+/// Adversarial: a tagged optional RETURN keeps its nil outside x0 (a tag in w1
+/// for `Int?`, an extra inhabitant for an enum's optional). Read as the whole
+/// result, x0 printed nil as `0` and `Tier?`'s nil as its raw tag.
+@Test func declinesTaggedOptionalReturnIfPresent() async throws {
+    for fixture in ["Fixtures/Sample/libIndirect.dylib", "Fixtures/Sample/libIndirect.opt.dylib"] {
+        for name in ["nextUnlessZero", "rankUnlessZero"] {
+            guard let text = try await reconstructionPseudo(name, in: fixture) else { continue }
+            #expect(text.contains(name))
+            #expect(!text.contains("return ("), Comment(rawValue: "\(fixture)\n\(text)"))
+        }
+    }
+}
+
 // MARK: - Robustness edge cases
 
 @Test func handlesArithmeticEdgeCasesIfPresent() async throws {

@@ -2115,7 +2115,9 @@ public struct Disassembler: Sendable {
     /// signature. Restricting to single-register returns is what keeps a stale
     /// `x0`/`v0` from being printed as a fabricated return for a type that isn't
     /// actually returned there.
-    static func swiftReturnRegister(of function: DisassembledFunction) -> SwiftReturnRegister? {
+    static func swiftReturnRegister(
+        of function: DisassembledFunction, classTypeIndex: ClassTypeIndex = ClassTypeIndex()
+    ) -> SwiftReturnRegister? {
         guard let returnType = Self.swiftReturnTypeName(of: function) else { return nil }
         // The printed type is not the ABI. A closure reabstracted to a generic
         // convention returns even a one-word value through the x8 buffer, and
@@ -2131,7 +2133,7 @@ public struct Disassembler: Sendable {
             || name.contains("resume partial function for ") {
             return nil
         }
-        return swiftReturnRegister(forReturnType: returnType)
+        return swiftReturnRegister(forReturnType: returnType, classTypeIndex: classTypeIndex)
     }
 
     /// `swiftReturnRegister(of:)` for an awaited callee known only by name.
@@ -2140,7 +2142,9 @@ public struct Disassembler: Sendable {
         return swiftReturnRegister(forReturnType: returnType)
     }
 
-    private static func swiftReturnRegister(forReturnType returnType: String) -> SwiftReturnRegister? {
+    static func swiftReturnRegister(
+        forReturnType returnType: String, classTypeIndex: ClassTypeIndex = ClassTypeIndex()
+    ) -> SwiftReturnRegister? {
         // Double/Float come back in v0 (d0/s0), every other single value in x0.
         let floatingTypes: Set<String> = [
             "Swift.Double", "Swift.Float", "Swift.Float16", "Swift.Float32",
@@ -2152,7 +2156,23 @@ public struct Disassembler: Sendable {
         if returnType.hasPrefix("("), returnType != "()" { return nil }
         if returnType == "Swift.String" || returnType == "Swift.StaticString" { return nil }
         if returnType.contains(" -> ") { return nil } // returns a closure
+        // An optional of a value type marks nil outside x0: a tag in x1 (`Int?`)
+        // or an extra inhabitant of the payload (`3` for a three-case enum).
+        // Read alone, x0 printed nil as `0`. Only a pointer or class payload,
+        // whose nil is the null pointer, is the one register.
+        if let payload = Self.optionalPayload(returnType) {
+            return Self.isSingleRegisterPointer(payload) || classTypeIndex.isClass(payload) ? .integer : nil
+        }
         return .integer
+    }
+
+    /// The wrapped type of `Swift.Optional<T>`, `T?` or `T!`, or nil.
+    static func optionalPayload(_ type: String) -> String? {
+        if type.hasPrefix("Swift.Optional<"), type.hasSuffix(">") {
+            return String(type.dropFirst("Swift.Optional<".count).dropLast())
+        }
+        if type.hasSuffix("?") || type.hasSuffix("!") { return String(type.dropLast()) }
+        return nil
     }
 
     /// Whether the function reads the x8 it was called with on some path before
@@ -2707,7 +2727,6 @@ public struct Disassembler: Sendable {
         let asyncReturnRegister: SwiftReturnRegister? = {
             guard !asyncReturns.isEmpty, function.objcMethod == nil,
                   let type = Self.swiftReturnTypeName(of: function),
-                  !type.hasPrefix("Swift.Optional<"),
                   Self.isKnownDirectReturnType(type, classTypeIndex: classTypeIndex)
             else { return nil }
             return Self.swiftReturnRegister(forReturnType: type)
@@ -3739,7 +3758,7 @@ public struct Disassembler: Sendable {
                 }
             } else if function.objcMethod == nil, isReturn(insn),
                       !throwExits.contains(insn.address), returnsDirectly,
-                      let returnRegister = Self.swiftReturnRegister(of: function) {
+                      let returnRegister = Self.swiftReturnRegister(of: function, classTypeIndex: classTypeIndex) {
                 // A Swift return that is a call's result consumes it, so the call
                 // isn't also printed as its own statement above the `return`.
                 let value = returnRegister == .floating
@@ -3844,7 +3863,7 @@ public struct Disassembler: Sendable {
                 }
                 sourceNotes.append("throw \(thrown)")
             } else if function.objcMethod == nil, isReturn(insn), returnsDirectly,
-               let returnRegister = Self.swiftReturnRegister(of: function) {
+               let returnRegister = Self.swiftReturnRegister(of: function, classTypeIndex: classTypeIndex) {
                 let rawExit = returnRegister == .floating
                     ? analysis.exitFloatValues[insn.address]
                     : analysis.exitValues[insn.address]

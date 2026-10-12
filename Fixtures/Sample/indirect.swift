@@ -106,3 +106,11 @@ public func emptyShape() -> Shape4 { .empty }
 // words) has no provable scalar arity, so the case is named but its payload
 // is not spelled out: the return declines rather than guessing `tagged(a, b, c, d)`.
 public func makeTagged(_ s: String, _ n: Int, _ m: Int) -> Shape4 { .tagged(s, n, m) }
+
+// An optional of a value type returns its payload in x0 and its nil tag in w1
+// (-O lowers this to `cset w1, eq; csinc x0, xzr, x0, eq`), so x0 alone is not
+// the result. Neither is a no-payload enum's optional, whose nil is an extra
+// inhabitant of the tag byte.
+public enum Tier { case low, mid, high }
+public func nextUnlessZero(_ x: Int) -> Int? { x == 0 ? nil : x &+ 1 }
+public func rankUnlessZero(_ x: Int) -> Tier? { x == 0 ? nil : (x > 5 ? .high : .low) }
