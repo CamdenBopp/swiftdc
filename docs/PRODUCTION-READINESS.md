@@ -18,6 +18,12 @@ when written: Prime Video, Fiery Feeds, part of Swiftcord). Re-audited the same
 day against HEAD by an agent that read this file, `handoff.md` and the research
 docs against the source; its stale-claim findings are corrected below.
 
+The 2026-10-12 semantic follow-up (`0ace2da`…`4140b8c`) ends at **485
+passing tests with fixture presence enforced**, including 217,728 native CCMP
+comparisons and 486 native CSETM executions. Each fix's test was seen red with
+that fix disabled. This is measured regression coverage of the reductions; no
+overall decompilation-accuracy percentage is claimed.
+
 ---
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
@@ -44,7 +50,12 @@ because it cannot be distinguished from a right one by reading the output.
   - The tracer invalidated flags from a list that missed ngcs and negs; it
     now uses Capstone's update_flags.
   - Such branches decline (`?`): 237, 705 and 430 on three release apps.
-  - Modelling ccmp exactly is OPEN (completeness).
+  - **FIXED (`fd6b868`) — bounded CCMP chains** preserve the conditional
+    compare and its literal fallback NZCV, with 32/64-bit width, unsigned
+    conditions and signed overflow. `ConditionalCompareOracleTests` checks
+    217,728 evaluations against native ARM64. An unproven incoming condition
+    or an expression past the depth bound still declines. CCMN and floating
+    comparisons (FCMP/FCMPE/FCCMP/FCCMPE) remain OPEN for completeness.
 - **FIXED (`a17906e`) — carry-flag branches rendered as signed
   comparisons.** b.hi/hs/lo/ls read as `> >= < <=`, so a `sub; cmp; b.hi`
   range check was false for every input below the range. They now render
@@ -68,30 +79,66 @@ because it cannot be distinguished from a right one by reading the output.
   - A compare against one literal rendered whichever literal the linker
     placed 32 bytes earlier.
   - In one app, 0 of 151 sites rendered the true literal.
-- **OPEN — an indirect tail call or indirect await produces no statement.**
-  `callStatement` returns nil for an unresolved `br`. An `await` through a
+- **FIXED (`0ace2da`) — an indirect tail call or indirect await produces no statement.**
+  Unresolved register branches now render `indirect_jump(target)` or a proven
+  `await indirect_call(target)`; recovered jump tables and async returns keep
+  their own semantics. `AuditSemanticTests` exercises closure, witness and
+  class awaits, C tail transfers, and a call-produced target evaluated once.
+  Previously, `callStatement` returned nil for an unresolved `br`. An `await` through a
   closure, witness or class method disappears (0 of 15, 0 of 42 and 0 of 16
   rendered in three binaries), and a function whose only call is `br x1`
   is labelled a leaf.
-- **OPEN — a single-use call result is printed at its use, across other
+- **FIXED (`857c3c3`) — a single-use call result is printed at its use, across other
   calls or a branch.** `let a = next(); log(); return a` renders `log()`
   then `return next()`. Across a branch, the call disappears from one path.
-- **OPEN — a call that returns nothing still "returns" x0.** Only a
+  Results now bind at the original call whenever inlining crosses a block,
+  another call, a store outside the frame, or an unknown instruction. Loads
+  are not effects: counting the epilogue's `ldp` bound 158 fixture returns
+  (`return _finalize()` became `let r0 = …; return r0`). `AuditSemanticTests`
+  checks call count and order; exact literal conversions remain foldable.
+- **MITIGATED (`c2ee3e1`) — a call that returns nothing still "returns" x0.** Only a
   demangled `-> ()` marks a call void, so a `.setter` or an ObjC `set…:`
-  send produces a value that becomes another call's argument.
+  send produces a value that becomes another call's argument. Swift setters
+  now invalidate x0/v0, including newly resolved vtable setters. Objective-C
+  sends do the same when a proven receiver's metadata declares a void result;
+  selector spelling alone does not decide it. `VoidCallResultTests` includes a
+  compiled void send whose unspecified x0 previously rendered as its value.
+  Callees without a proven return convention remain unknown.
 - **OPEN — arguments a callee does not take.** Getters, private methods
   and value-type methods have names that decline the signature layout but
-  parse, which skips the body-reads bound. A parked x20 renders as `self:`
-  on a free function.
+  parse, which skips the body-reads bound. The parked-x20 `self:` on an
+  ordinary qualified Swift free function is fixed (`49f42ce`); the
+  accessor/private/value-type layout cases remain open.
 - **OPEN — `objc_retain_xN` is modelled as returning x0.** It returns xN;
   in `@objc` thunks that names the wrong receiver.
 - **OPEN — a rethrow after a cleanup call renders `return`.** The async
   throw check treats every call as overwriting x20, which is callee-saved.
+- **OPEN — a 32-bit destination's constant is not truncated.** `csel w0`
+  of 0x10000000b/0x200000016 renders the 64-bit value; the function returns
+  22. Natively executing a local 1,061-probe width library leaves 330 wrong
+  constant renders, all predating `fd6b868` (which fixed 37 and broke none).
 - **OPEN — a non-Bool call result compared with 1 is folded to
   truthiness.** `if case .paused = state` (tag 1) renders
   `if (swift_getEnumCaseMultiPayload(?))`.
-- **OPEN — an -O `for x in array` renders as an infinite loop.** The CFG
-  has the exit edge, but the structurer drops it.
+- **FIXED (`756f27e`) — an -O `for x in array` renders as an infinite loop.**
+  Return blocks are retained as loop exits, and edges to a join pass through
+  the loop's transfer handler before being suppressed. The compiled
+  `AuditSemantics.walk` reduction now retains its conditional `break`. With
+  return blocks as exits, a loop rotated on its overflow `b.vs` printed its
+  normal exit as `break` into the `trap()` after it (`accumulate`); a
+  trivial tail now rotates a loop only when it has no other exit.
+
+- **FIXED (`4140b8c`) — long literal recovery declined Unicode and NUL.**
+  The counted representation now reads complete, strictly valid UTF-8 from
+  `__cstring` or read-only `__TEXT.__const`, checks its terminating byte and
+  section bounds, and escapes controls and backslashes. No character-count
+  assumption or display truncation changes the recovered literal. The tests
+  cover combining marks, emoji/CJK, embedded NUL and repeated/pooled literals.
+  On three release apps, all 37 object words left as hex now render.
+  Reproduce these entries with
+  `Tools/audit/semantic-regressions.sh`; the corpus has independent native
+  flag oracles and objdump evidence, and does not establish an app-wide
+  decompilation-accuracy percentage.
 
 - **FIXED (`ed4f157`, `0c92a85`) — Objective-C arguments were read positionally
   from x2–x7.** A `double` shifted every later argument: `[self whole:11

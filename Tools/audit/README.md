@@ -84,3 +84,25 @@ Every difference gets exactly one class:
    `structure.unreadable-flags`, is a cheap way to measure that.
 
 Reports that quote an app's code stay outside this repository.
+
+## 6. Re-run the fixed semantic regression corpus
+
+```bash
+Tools/audit/semantic-regressions.sh work/audit-semantic
+```
+
+This builds the authored reductions and verifies indirect transfers/awaits,
+call ordering, void results, array-loop exits, and long literals with Unicode,
+combining marks, embedded NUL/control characters and pooling. The CCMP oracle
+executes 896 native ARM64 functions over 243 inputs each (217,728 comparisons),
+covering all fallback NZCV patterns and all fourteen condition codes in both
+register widths, including signed-overflow boundaries.
+Two additional native consumers verify CSETM masks and the zero-extension of
+a 32-bit destination over 486 inputs.
+
+The output includes source/toolchain provenance, binary hashes and UUIDs,
+independent objdump listings, structured renders, probe summaries and the test
+log. An assertion failure exits nonzero before writing a passing validation
+record. These measurements cover the stated reductions; representative app
+accuracy still requires the source-grounded app protocol above. Probe counts
+alone do not validate a claim.
