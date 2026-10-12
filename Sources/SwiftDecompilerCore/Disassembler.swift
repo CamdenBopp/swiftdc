@@ -1191,6 +1191,14 @@ public struct Disassembler: Sendable {
         return names
     }
 
+    /// C variadic functions whose variadic arguments a printf-style format
+    /// describes: the fixed parameter count and the format's position.
+    static let cFormatVariadics: [String: (fixed: Int, format: Int)] = [
+        "printf": (1, 0), "fprintf": (2, 1), "dprintf": (2, 1), "sprintf": (2, 1),
+        "snprintf": (3, 2), "asprintf": (2, 1), "syslog": (2, 1),
+        "NSLog": (1, 0), "CFStringCreateWithFormat": (3, 2),
+    ]
+
     private static func stripLeadingUnderscore(_ symbol: String) -> String {
         symbol.hasPrefix("_") ? String(symbol.dropFirst()) : symbol
     }
@@ -3191,6 +3199,33 @@ public struct Disassembler: Sendable {
                 if !laidOut.isEmpty {
                     argumentsByAddress[address] = laidOut.map(sanitizeValue)
                     laidOutTypes[address] = slots.map(\.type)
+                }
+                continue
+            }
+            // A C printf-family call passes its variadic arguments on the stack
+            // (Apple arm64), one 8-byte slot each, in format order: x1 at the
+            // call is scratch. `printf("%ld\n", x)` rendered `printf(0x534)`,
+            // dropping x, and a stale x1 could read as the first value. The
+            // count comes from the format's own bytes; an unreadable format
+            // shows the fixed arguments, then `…`.
+            if let callee = calleeByAddress[address],
+               let variadic = Self.cFormatVariadics[Self.stripLeadingUnderscore(callee)] {
+                let fixed = (0 ..< variadic.fixed).map { $0 < values.count ? values[$0] : AbstractValue.unknown }
+                var count: Int?
+                if case .address(let format) = fixed[variadic.format] {
+                    let text: String? = resolver.cfString(at: format)
+                        ?? ReferenceResolver.rawCString(at: format, in: resolver.machO, ranges: resolver.fileRanges)
+                            .map { "\"\($0)\"" }
+                    count = text.flatMap(DisassembledFunction.MessageSend.formatArgumentCount)
+                }
+                if let count {
+                    let variadicValues = (0 ..< count).map {
+                        $0 < site.stackArguments.count ? site.stackArguments[$0] : AbstractValue.unknown
+                    }
+                    argumentsByAddress[address] = (fixed + variadicValues).map(sanitizeValue)
+                } else {
+                    argumentsByAddress[address] = fixed.map(sanitizeValue)
+                    unprovenVariadicSites.insert(address)
                 }
                 continue
             }

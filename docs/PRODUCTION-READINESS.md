@@ -256,8 +256,17 @@ because it cannot be distinguished from a right one by reading the output.
   OUTLINED_FUNCTION_35())` where the source is `Hasher(_seed: 0)`, `_combine`,
   `_finalize`; inlining each fragment's few instructions into its caller would
   read as source. Fixtures `libReconstruction.osize{,.stripped}.dylib`.
-- **OPEN — a variadic call's stack arguments are dropped, and a scratch x1 is
-  read as one.** Apple's arm64 ABI passes variadic arguments on the stack. On
+- **FIXED for the printf family — a variadic call's stack arguments were
+  dropped, and a scratch x1 read as one.** `printf`, `fprintf`, `dprintf`,
+  `sprintf`, `snprintf`, `asprintf`, `syslog`, `NSLog` and
+  `CFStringCreateWithFormat` now take their fixed arguments from registers and
+  one stack slot per format conversion, counted from the format's own bytes
+  (a `\n` kept the display resolver from rendering it); an unreadable format
+  shows the fixed arguments and `…`. Fixture `libCallReads` (`printTwo`);
+  `aPrintfCallShowsOneArgumentPerConversionIfPresent` seen red. The values of a
+  C function's own parameters still render `?`: without a signature, x0 is the
+  first integer argument, not necessarily source argument 0, so they are not
+  named. Other variadics (`open`, `fcntl`, `ioctl`) are untouched. Original: Apple's arm64 ABI passes variadic arguments on the stack. On
   the TinyCC probe, `printf("%s %ld %ld\n", greet(), add3(1,2,3), sum_to(10))`
   renders `printf(0x100004020, greet())`: x1 held `greet()` only on its way to
   `[sp]`, and the `add3`/`sum_to` calls vanish from the structured view.

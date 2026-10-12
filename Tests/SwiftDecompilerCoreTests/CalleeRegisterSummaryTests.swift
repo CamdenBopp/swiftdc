@@ -161,3 +161,18 @@ private func structured(_ filter: String, in fixture: String) async throws -> St
     #expect(clobbers["onePath"] == ["x19"], "reloaded on one path only")
     #expect(clobbers["subFrame"] == [], "saved off sp, reloaded off x29")
 }
+
+/// printf's variadic arguments are stack slots in format order (Apple arm64):
+/// the format's conversions say how many. `printf("%ld\n", x)` rendered
+/// `printf(0x…)`, dropping x; a stale x1 could read as the first value.
+@Test func aPrintfCallShowsOneArgumentPerConversionIfPresent() async throws {
+    for level in ["O0", "O1"] {
+        let fixture = "Fixtures/Sample/libCallReads.\(level).dylib"
+        guard let one = try await structured("afterPrint", in: fixture),
+              let two = try await structured("printTwo", in: fixture) else { continue }
+        let oneCall = one.split(separator: "\n").first { $0.contains("printf(") }.map(String.init) ?? ""
+        let twoCall = two.split(separator: "\n").first { $0.contains("printf(") }.map(String.init) ?? ""
+        #expect(oneCall.filter { $0 == "," }.count == 1, "\(level): \(oneCall)")
+        #expect(twoCall.filter { $0 == "," }.count == 2, "\(level): \(twoCall)")
+    }
+}

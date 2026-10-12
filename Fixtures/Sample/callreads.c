@@ -19,3 +19,10 @@ long chained(long x) {
     long y = twice(x);
     return pick(y, 7, x) + bump();
 }
+
+// Variadic arguments travel on the stack (Apple arm64): printf takes the format
+// in x0 and every value after it from [sp], [sp+8], …
+long printTwo(long a, long b) {
+    printf("%ld and %ld\n", a, b);
+    return a;
+}
