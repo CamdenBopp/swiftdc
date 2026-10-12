@@ -1177,7 +1177,7 @@ public struct Disassembler: Sendable {
     }
 
     /// `stub address → objc_msgSend$selector` for this image's selector stubs.
-    private func objcStubNames(in machO: MachOFile) -> [UInt64: String] {
+    func objcStubNames(in machO: MachOFile) -> [UInt64: String] {
         let selectors = ObjCSelectors.selectorTable(in: machO).bySelref
         guard !selectors.isEmpty, let engine = CapstoneEngine() else { return [:] }
         return ObjCSelectors.stubNames(in: machO, selectors: selectors) { address, size in
