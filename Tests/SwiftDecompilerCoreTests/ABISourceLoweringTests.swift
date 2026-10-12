@@ -139,4 +139,16 @@ struct ABISourceLoweringTests {
             #expect(!pseudo.contains("ABISource.abiMakeFive(arg0, arg1)"), "Pseudo: \(pseudo)")
         }
     }
+
+    /// The last ` -> ` names a function-typed result's own result, not the
+    /// signature's: `f() -> (Swift.Int) -> Swift.Int` returns a two-word closure.
+    @Test func functionTypedResultsHaveNoReturnRegister() {
+        let register = Disassembler.swiftReturnRegister(forDemangledName:)
+        #expect(register("m.f() -> (Swift.Int) -> Swift.Int") == nil)
+        #expect(register("m.f() async -> (Swift.Int) -> Swift.Int") == nil)
+        #expect(register("m.T.handler.getter : (Swift.Int) -> Swift.Int") == nil)
+        #expect(register("m.f() -> Swift.Int") == .integer)
+        #expect(register("m.T.count.getter : Swift.Int") == .integer)
+        #expect(register("m.f() -> Swift.Double") == .floating)
+    }
 }

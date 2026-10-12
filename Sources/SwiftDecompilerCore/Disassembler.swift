@@ -2222,6 +2222,14 @@ public struct Disassembler: Sendable {
         let returnType: String
         if let arrow = name.range(of: " -> ", options: .backwards) {
             returnType = String(name[arrow.upperBound...]).trimmingCharacters(in: .whitespaces)
+            // The last arrow is the result's only when the result is not itself
+            // a function type: `f() -> (Swift.Int) -> Swift.Int` returns a
+            // two-word closure, not the Int its last arrow names. A getter of
+            // a function-typed property spells the same arrow after its ` : `.
+            if let getter = name.range(of: ".getter : "), getter.upperBound <= arrow.lowerBound { return nil }
+            if let declared = DisassembledFunction.splitSignature(name)?.result, declared != returnType {
+                return nil
+            }
         } else if name.hasSuffix(".getter") == false, name.contains(".getter : "),
                   let colon = name.range(of: " : ", options: .backwards) {
             returnType = String(name[colon.upperBound...]).trimmingCharacters(in: .whitespaces)
