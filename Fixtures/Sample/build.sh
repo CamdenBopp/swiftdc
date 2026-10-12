@@ -57,6 +57,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name SameName samename.swift 
 echo "==> async inout fixture (-O) — a context slot whose address escapes"
 $SWIFTC -parse-as-library -O -emit-library -module-name AsyncInout asyncinout.swift -o libAsyncInout.dylib
 
+echo "==> compares fixture (-O) — cmn compares with the negated operand"
+$SWIFTC -parse-as-library -O -emit-library -module-name Compares compares.swift -o libCompares.dylib
+
 echo "==> swifterror probe (-O, and stripped) — callees with no name to say they throw"
 $SWIFTC -parse-as-library -O -emit-library -module-name SwiftErrorProbe swifterror.swift -o libSwiftErrorProbe.dylib
 cp libSwiftErrorProbe.dylib libSwiftErrorProbe.stripped.dylib

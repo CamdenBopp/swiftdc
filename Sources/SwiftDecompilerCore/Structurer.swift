@@ -712,16 +712,27 @@ struct ControlFlowStructure {
                     let rhsIndex = hasDestination ? 2 : 1
                     let lhs = resolve(ops[lhsIndex], before: index, in: block, consumed: &consumed)
                     let rhs = resolve(ops[rhsIndex], before: index, in: block, consumed: &consumed)
+                    // `cmn`/`adds` set the flags from `lhs + rhs`: they compare lhs
+                    // with -rhs. Read like `cmp`, `cmn x0, #1; b.eq` (x == -1)
+                    // rendered `x0 == 1`. `b.mi`/`b.pl` test the sign of that
+                    // difference or sum, not of lhs.
+                    let sums = m == "cmn" || m == "adds"
+                    func compare(_ l: String, _ r: String) -> String {
+                        if op == "< 0 //" || op == ">= 0 //" {
+                            return "(\(l) \(sums ? "+" : "-") \(r)) \(op == "< 0 //" ? "<" : ">=") 0"
+                        }
+                        return "\(l) \(op) \(sums ? Self.negatedOperand(r) : r)"
+                    }
                     // If back-substitution collapsed distinct operands to the same
                     // text, it lost information — show the raw registers instead.
                     if lhs == rhs, ops[lhsIndex] != ops[rhsIndex] {
-                        return ("\(ops[lhsIndex]) \(op) \(Self.cleanImmediate(ops[rhsIndex]))", consumed)
+                        return (compare(ops[lhsIndex], Self.cleanImmediate(ops[rhsIndex])), consumed)
                     }
-                    if isBoolean(lhs, operand: ops[lhsIndex], before: index),
+                    if !sums, isBoolean(lhs, operand: ops[lhsIndex], before: index),
                        let simplified = Self.booleanComparison(lhs: lhs, op: op, rhs: rhs) {
                         return (simplified, consumed)
                     }
-                    return ("\(lhs) \(op) \(rhs)", consumed)
+                    return (compare(lhs, rhs), consumed)
                 }
                 if m == "tst", ops.count >= 2 {
                     return ("(\(resolve(ops[0], before: index, in: block, consumed: &consumed)) & \(Self.cleanImmediate(ops[1]))) \(op) 0", consumed)
@@ -905,6 +916,15 @@ struct ControlFlowStructure {
     }
 
     /// `#0x1` → `1`, `#0xff` → `0xff` (keep masks hex), `#5` → `5`.
+    /// `-operand`: a numeric literal flips its sign, anything else is wrapped.
+    private static func negatedOperand(_ operand: String) -> String {
+        let t = operand.trimmingCharacters(in: .whitespaces)
+        if t.hasPrefix("-") { return String(t.dropFirst()) }
+        if let first = t.first, first.isNumber { return "-" + t }
+        if t.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) { return "-" + t }
+        return "-(\(t))"
+    }
+
     private static func cleanImmediate(_ token: String) -> String {
         var s = token.hasPrefix("#") ? String(token.dropFirst()) : token
         if s.hasPrefix("0x"), let value = UInt64(s.dropFirst(2), radix: 16), value < 10 {

@@ -1016,3 +1016,32 @@ private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
     #expect(!work.contains("Alpha"), Comment(rawValue: work))
     #expect(!work.contains("launchMissiles"), Comment(rawValue: work))
 }
+
+// MARK: - Compare-and-branch read from text
+
+private func structuredText(_ name: String, in fixture: String) async throws -> String? {
+    guard FileManager.default.fileExists(atPath: fixture) else { return nil }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: fixture, functionFilter: name)
+    }
+    return functions.map { $0.renderStructured() }.joined(separator: "\n")
+}
+
+/// `cmn a, b` sets the flags from `a + b`, comparing a with -b. Read like
+/// `cmp`, `if x == -1` (`cmn x0, #1; b.eq`) rendered `if (x0 == 1)`.
+@Test func readsCmnAsAComparisonWithTheNegatedOperandIfPresent() async throws {
+    let fixture = "Fixtures/Sample/libCompares.dylib"
+    guard let minusOne = try await structuredText("Compares.onMinusOne", in: fixture) else { return }
+    #expect(minusOne.contains("if (x0 == -1) {"), Comment(rawValue: minusOne))
+    guard let minusTen = try await structuredText("Compares.onMinusTen", in: fixture) else { return }
+    #expect(minusTen.contains("if (x0 != -0xa) {"), Comment(rawValue: minusTen))
+}
+
+/// `b.mi` after `cmn a, b` tests the sign of `a + b`. The text path rendered
+/// `a < 0 // b`, which reads as a test of `a` alone.
+@Test func readsMinusBranchAsTheSignOfTheSumIfPresent() async throws {
+    let fixture = "Fixtures/Sample/libCompares.dylib"
+    guard let text = try await structuredText("Compares.doubledSink", in: fixture) else { return }
+    #expect(text.contains("+ 0x4000000000000000) < 0)"), Comment(rawValue: text))
+    #expect(!text.contains("< 0 //"), Comment(rawValue: text))
+}
