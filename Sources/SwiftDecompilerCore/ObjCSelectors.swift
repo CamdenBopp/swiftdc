@@ -39,6 +39,7 @@ enum ObjCSelectors {
         let methnameRange = sectionBounds(named: "__objc_methname", in: machO)
             .map { $0.address ..< ($0.address + UInt64($0.size)) }
         let cacheReader = machO.fullCache.map { CacheReader(full: $0) }
+        let fileRanges = FileBackedRanges(standalone: machO)
         let pointerSize = MemoryLayout<UInt64>.size
         var table = SelectorTable()
 
@@ -47,7 +48,7 @@ enum ObjCSelectors {
                            by: pointerSize) {
             guard let target = pointerTarget(at: slot, in: machO, cacheReader: cacheReader) else { continue }
             if let methnameRange, !methnameRange.contains(target) { continue }
-            guard let name = selectorText(at: target, in: machO, cacheReader: cacheReader),
+            guard let name = selectorText(at: target, in: machO, cacheReader: cacheReader, fileRanges: fileRanges),
                   isSelectorShaped(name)
             else { continue }
             table.bySelref[slot] = name
@@ -132,13 +133,14 @@ enum ObjCSelectors {
     private static func selectorText(
         at address: UInt64,
         in machO: MachOFile,
-        cacheReader: CacheReader?
+        cacheReader: CacheReader?,
+        fileRanges: FileBackedRanges?
     ) -> String? {
         let text: String?
         if let cacheReader {
             text = cacheReader.cString(at: address)
         } else {
-            text = machO.fileOffset(of: address).flatMap { try? machO.readString(offset: Int($0)) }
+            text = Disassembler.ReferenceResolver.rawCString(at: address, in: machO, ranges: fileRanges)
         }
         guard let text, !text.isEmpty, text.count <= 200 else { return nil }
         return text

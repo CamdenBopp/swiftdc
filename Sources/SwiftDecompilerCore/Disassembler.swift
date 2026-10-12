@@ -472,7 +472,8 @@ public struct Disassembler: Sendable {
             selectors: ObjCSelectors.selectorTable(in: machO),
             cfStringRange: sectionRange(named: "__cfstring", in: machO),
             cacheSymbols: cacheSymbols,
-            cacheReader: machO.fullCache.map { CacheReader(full: $0) }
+            cacheReader: machO.fullCache.map { CacheReader(full: $0) },
+            fileRanges: FileBackedRanges(standalone: machO)
         )
 
         var swiftTargets = Set(labelByAddress.compactMap { address, symbol in
@@ -644,7 +645,8 @@ public struct Disassembler: Sendable {
             selectors: ObjCSelectors.selectorTable(in: machO),
             cfStringRange: sectionRange(named: "__cfstring", in: machO),
             cacheSymbols: cacheSymbols,
-            cacheReader: machO.fullCache.map { CacheReader(full: $0) }
+            cacheReader: machO.fullCache.map { CacheReader(full: $0) },
+            fileRanges: FileBackedRanges(standalone: machO)
         )
         // Addresses whose callee uses the Swift calling convention, so `self` in
         // x20 is meaningful there.
@@ -1695,6 +1697,8 @@ public struct Disassembler: Sendable {
         /// header, so `machO.fileOffset(of:)` returns nil for those addresses and
         /// every read has to go through the full cache instead.
         var cacheReader: CacheReader?
+        /// File-backed byte ranges of a standalone image; nil inside a cache.
+        var fileRanges: FileBackedRanges?
 
         /// The selector a loaded address denotes, when that address is a selref
         /// slot. Nil for every other load.
@@ -1765,7 +1769,7 @@ public struct Disassembler: Sendable {
                 else { return nil }
                 return text.count > 48 ? String(text.prefix(48)) + "…" : text
             }
-            return Self.cString(at: address, in: machO)
+            return Self.cString(at: address, in: machO, ranges: fileRanges)
         }
 
         func name(at target: UInt64) -> String? {
@@ -1775,11 +1779,10 @@ public struct Disassembler: Sendable {
             if let selector = selectors.byStringAddress[target] { return "@selector(\(selector))" }
             if let literal = cfString(at: target) { return literal }
             if stringRanges.contains(where: { $0.contains(target) }),
-               let string = Self.cString(at: target, in: machO) {
+               let string = Self.cString(at: target, in: machO, ranges: fileRanges) {
                 return "\"\(string)\""
             }
-            if let fileOffset = machO.fileOffset(of: target),
-               let string = try? machO.readString(offset: Int(fileOffset)), !string.isEmpty,
+            if let string = Self.rawCString(at: target, in: machO, ranges: fileRanges), !string.isEmpty,
                let demangled = demangleSymbol(string) {
                 return demangled
             }
@@ -1830,9 +1833,19 @@ public struct Disassembler: Sendable {
             return machO.address(forOffset: 0) &+ runtimeOffset
         }
 
-        private static func cString(at target: UInt64, in machO: MachOFile) -> String? {
-            guard let fileOffset = machO.fileOffset(of: target),
-                  let s = try? machO.readString(offset: Int(fileOffset)), !s.isEmpty,
+        /// The C string at `target`. A standalone image is read only through
+        /// the bytes its file holds there (`fileBackedCString`): MachOKit maps
+        /// a zero-fill address past the end of the file, and `readString`'s
+        /// `strlen` then ran off the mapping (SIGSEGV on Prime Video, from an
+        /// `adrp` to a `__common` global, in some runs and not others).
+        static func rawCString(at target: UInt64, in machO: MachOFile, ranges: FileBackedRanges?) -> String? {
+            if let ranges { return machO.fileBackedCString(at: target, ranges: ranges) }
+            guard let fileOffset = machO.fileOffset(of: target) else { return nil }
+            return try? machO.readString(offset: Int(fileOffset))
+        }
+
+        private static func cString(at target: UInt64, in machO: MachOFile, ranges: FileBackedRanges?) -> String? {
+            guard let s = rawCString(at: target, in: machO, ranges: ranges), !s.isEmpty,
                   s.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value < 0x7f })
             else { return nil }
             let truncated = s.count > 48 ? String(s.prefix(48)) + "…" : s
