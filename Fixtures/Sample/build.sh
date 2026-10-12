@@ -37,6 +37,10 @@ $SWIFTC -parse-as-library -O -emit-library -module-name Codegen codegen.swift -o
 cp libCodegen.opt.dylib libCodegen.opt.stripped.dylib
 strip -x libCodegen.opt.stripped.dylib 2>/dev/null || strip libCodegen.opt.stripped.dylib
 
+echo "==> call-arity fixture (-Onone and -O) — arguments laid out from the callee's signature"
+$SWIFTC -parse-as-library -Onone -emit-library -module-name CallArity callarity.swift -o libCallArity.dylib
+$SWIFTC -parse-as-library -O -emit-library -module-name CallArity callarity.swift -o libCallArity.opt.dylib
+
 echo "==> resilient reconstruction fixture (library evolution) — coroutine accessors"
 # Library evolution forces opaque accessors, so a public stored property gets a
 # synthesized `_modify`/`_read` yield_once coroutine (absent from a fragile build).

@@ -1752,7 +1752,6 @@ public struct Disassembler: Sendable {
         var cacheReader: CacheReader?
         /// File-backed byte ranges of a standalone image; nil inside a cache.
         var fileRanges: FileBackedRanges?
-
         /// The selector a loaded address denotes, when that address is a selref
         /// slot. Nil for every other load.
         func selector(at slot: UInt64) -> String? { selectors.bySelref[slot] }
@@ -2292,6 +2291,60 @@ public struct Disassembler: Sendable {
         return registers
     }
 
+    /// The register class of each source parameter of a Swift callee, in order,
+    /// from its demangled name, or nil when that layout is not proven.
+    ///
+    /// A call site snapshots x0–x7 positionally, so a register the callee never
+    /// reads renders as an argument (`one(arg0, arg1)` for `one(_: Int)`), and an
+    /// integer after a Double reads in the Double's position. Laying the
+    /// arguments out from the signature fixes both, but only where the footprint
+    /// of every parameter is proven: integer-class and float-class scalars of
+    /// one register each, on independent counters (`scalarParameterClass`).
+    /// Declined: a parameter of any other type (a String is two registers, an
+    /// aggregate several, a generic or resilient one indirect), a generic or
+    /// specialized or closure or thunk name (trailing metadata and witness
+    /// tables, other conventions), `async` (the context and continuation), and
+    /// an instance method whose `self` may be a value type, which travels after
+    /// the formals. A class method's `self` is in x20, an initializer's or a
+    /// static method's metatype is in x20 or nowhere, so their formals start at
+    /// x0 and are accepted.
+    static func swiftCallArgumentLayout(
+        callee: String, enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex
+    ) -> [ScalarParameterClass]? {
+        guard let signature = DisassembledFunction.splitSignature(callee), !signature.isAsync,
+              let range = DisassembledFunction.outermostArgumentListRange(of: signature.head)
+        else { return nil }
+        var name = Substring(signature.head[..<range.lowerBound].dropLast())
+        let isStatic = name.hasPrefix("static ")
+        if isStatic { name = name.dropFirst("static ".count) }
+        // An ordinary qualified identifier only: no generic clause, no
+        // `closure #1 in`, `specialization <…> of`, `(X in _HASH)` or thunk prose.
+        guard !name.isEmpty,
+              name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }),
+              let dot = name.lastIndex(of: ".")
+        else { return nil }
+        let context = String(name[..<dot]), member = name[name.index(after: dot)...]
+        let isFreeFunction = !context.contains(".")
+        guard isFreeFunction || isStatic || member == "init" || classTypeIndex.isClass(context)
+        else { return nil }
+
+        let parameters = DisassembledFunction.splitTopLevelArguments(signature.head[range])
+        var layout: [ScalarParameterClass] = []
+        var integers = 0, floats = 0
+        for parameter in parameters {
+            guard let kind = scalarParameterClass(parameter, enumCaseIndex: enumCaseIndex,
+                                                  classTypeIndex: classTypeIndex)
+            else { return nil }
+            switch kind {
+            case .integer: integers += 1
+            case .floating: floats += 1
+            }
+            guard integers <= 8, floats <= 8 else { return nil }
+            layout.append(kind)
+        }
+        return layout
+    }
+
     /// Maps each source-parameter index that is a no-payload enum to that enum's
     /// demangled type name, keyed the same way `.argument(index)` is numbered.
     /// This is what lets a `c == .case` comparison over an enum parameter name
@@ -2562,7 +2615,7 @@ public struct Disassembler: Sendable {
         fieldMaps[typeName] ?? typeName.split(separator: ".").last.flatMap { fieldMaps[String($0)] }
     }
 
-    private enum ScalarParameterClass { case integer, floating }
+    enum ScalarParameterClass { case integer, floating }
 
     /// The register class of a demangled parameter, or nil when it isn't provably
     /// a single-register scalar. Deliberately an under-approximation: an unlisted
@@ -2850,6 +2903,21 @@ public struct Disassembler: Sendable {
             // times in SwiftData); the error box is x21's.
             if calleeByAddress[address] == "swift_willThrow" {
                 values = site.errorValue == .unknown ? [] : [site.errorValue]
+            }
+            // A Swift callee with a proven layout gets exactly its parameters:
+            // integer slots from x0… in order, float slots `?` (call sites do
+            // not capture v0–v7 yet), and no trailing trim, so its arity shows.
+            if let callee = calleeByAddress[address],
+               let layout = Self.swiftCallArgumentLayout(
+                   callee: callee, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
+                var integer = 0
+                let laidOut: [AbstractValue] = layout.map { kind in
+                    guard kind == .integer else { return .unknown }
+                    defer { integer += 1 }
+                    return integer < values.count ? values[integer] : .unknown
+                }
+                if !laidOut.isEmpty { argumentsByAddress[address] = laidOut.map(sanitizeValue) }
+                continue
             }
             if let callee = calleeByAddress[address],
                let selector = selectorName(callee: callee, arguments: values),
