@@ -537,11 +537,15 @@ public struct ValueTracer: Sendable {
             if iterations > cap { break }
             guard let block = blockByStart[addr] else { continue }
             let preds = predecessors[addr] ?? []
-            // No predecessors: the entry block (or unreachable code) — start from
-            // the frame anchor rather than an empty state.
-            let blockEntry = preds.isEmpty
-                ? Self.initialState(entry: entry)
-                : Self.meet(preds.compactMap { outState[$0] })
+            // Only the function's entry receives the caller's ABI state. A block
+            // with no predecessor may be an exception landing pad: its x0 is the
+            // exception and its frame is the prologue's, not the entry's, so it
+            // starts with nothing proven. And the entry keeps the caller as an
+            // incoming edge when a loop branches back to it; met only with its
+            // back edges, it lost its arguments and self.
+            var incoming = preds.compactMap { outState[$0] }
+            if addr == function.startAddress { incoming.append(Self.initialState(entry: entry)) }
+            let blockEntry = Self.meet(incoming)
             inState[addr] = blockEntry
             var registers = blockEntry
             for insn in block.instructions {
