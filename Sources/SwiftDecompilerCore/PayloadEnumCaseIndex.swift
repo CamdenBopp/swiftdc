@@ -165,10 +165,12 @@ public struct PayloadEnumCaseIndex: Sendable {
     }
 
     private func resolve(_ typeName: String) -> Entry? {
-        if let exact = byQualifiedName[typeName] { return exact }
-        let simple = typeName.split(separator: ".").last.map(String.init) ?? typeName
-        guard let entry = byName[simple] else { return nil }
-        return entry   // may be nil (ambiguous) → decline
+        // The qualified return type can live in a dependency whose enum layout
+        // is absent from this image. A local enum with the same simple name is
+        // not evidence for that foreign type's case encoding or names.
+        // (Recovered from the pre-merge stash 983aa25.)
+        if typeName.contains(".") { return byQualifiedName[typeName] }
+        return byName[typeName] ?? nil   // may be nil (ambiguous) → decline
     }
 
     public static func build(in machO: MachOFile) -> PayloadEnumCaseIndex {
@@ -178,6 +180,7 @@ public struct PayloadEnumCaseIndex: Sendable {
         var seen: [String: Entry] = [:]
         var ambiguous: Set<String> = []
         var byQualified: [String: Entry] = [:]
+        var ambiguousQualifiedNames: Set<String> = []
 
         for type in (try? machO.swift.types) ?? [] {
             guard case .enum(let model) = type else { continue }
@@ -215,6 +218,9 @@ public struct PayloadEnumCaseIndex: Sendable {
                 seen[name] = entry
             }
             if let qualified = FieldMapBuilder.qualifiedName(of: type, in: machO) {
+                if let existing = byQualified[qualified], !entriesEquivalent(existing, entry) {
+                    ambiguousQualifiedNames.insert(qualified)
+                }
                 byQualified[qualified] = entry
             }
         }
@@ -223,6 +229,7 @@ public struct PayloadEnumCaseIndex: Sendable {
         for (name, entry) in seen {
             byName[name] = ambiguous.contains(name) ? nil : entry
         }
+        for name in ambiguousQualifiedNames { byQualified.removeValue(forKey: name) }
         return PayloadEnumCaseIndex(byName: byName, byQualifiedName: byQualified)
     }
 

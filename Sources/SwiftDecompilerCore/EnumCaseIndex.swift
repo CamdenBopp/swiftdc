@@ -22,8 +22,21 @@ public struct EnumCaseIndex: Sendable {
     /// share the simple name with different case lists — which forces a decline
     /// rather than a coin-flip between two candidates.
     private let byName: [String: [String]?]
+    /// Full descriptor identity, including module and enclosing types.
+    private let byQualifiedName: [String: [String]]
 
-    public init(byName: [String: [String]?] = [:]) { self.byName = byName }
+    public init(byName: [String: [String]?] = [:], byQualifiedName: [String: [String]] = [:]) {
+        self.byName = byName
+        self.byQualifiedName = byQualifiedName
+    }
+
+    private func cases(for typeName: String) -> [String]? {
+        // A qualified type may belong to another image. Falling back to a
+        // same-named local enum would attach that enum's cases to the foreign
+        // type, even though the return signature names the foreign module.
+        if typeName.contains(".") { return byQualifiedName[typeName] }
+        return byName[typeName] ?? nil
+    }
 
     /// The case name for `tag` of the enum named by `typeName` (which may be
     /// module-qualified, e.g. `Module.Color` or `Module.Outer.Color`), or `nil`
@@ -32,8 +45,7 @@ public struct EnumCaseIndex: Sendable {
     /// happens to sit in the result register of an enum-typed function must not
     /// be dressed up as a case.
     public func caseName(ofEnum typeName: String, tag: Int) -> String? {
-        let simple = typeName.split(separator: ".").last.map(String.init) ?? typeName
-        guard let entry = byName[simple], let cases = entry else { return nil }
+        guard let cases = cases(for: typeName) else { return nil }
         guard tag >= 0, tag < cases.count else { return nil }
         return cases[tag]
     }
@@ -43,9 +55,15 @@ public struct EnumCaseIndex: Sendable {
     /// name. A no-payload enum is a trivial integer tag in a single register, so
     /// this is also the safe gate for seeding such a parameter as a scalar.
     public func isNoPayloadEnum(_ typeName: String) -> Bool {
-        let simple = typeName.split(separator: ".").last.map(String.init) ?? typeName
-        guard let entry = byName[simple] else { return false }
-        return entry != nil
+        cases(for: typeName) != nil
+    }
+
+    /// All valid tags must survive a proposed integer projection before that
+    /// projection can be hidden in source-level enum comparisons.
+    func tagsFit(_ typeName: String, unsignedBits: Int) -> Bool {
+        guard unsignedBits > 0, unsignedBits <= 64 else { return false }
+        guard let cases = cases(for: typeName), !cases.isEmpty else { return false }
+        return unsignedBits == 64 || UInt64(cases.count - 1) < (UInt64(1) << unsignedBits)
     }
 
     /// The number of enums indexed (unambiguous + ambiguous), for diagnostics.
@@ -54,6 +72,8 @@ public struct EnumCaseIndex: Sendable {
     public static func build(in machO: MachOFile) -> EnumCaseIndex {
         var seen: [String: [String]] = [:]
         var ambiguous: Set<String> = []
+        var byQualifiedName: [String: [String]] = [:]
+        var ambiguousQualifiedNames: Set<String> = []
         for type in (try? machO.swift.types) ?? [] {
             guard case .enum(let model) = type else { continue }
             let descriptor = model.descriptor
@@ -76,11 +96,18 @@ public struct EnumCaseIndex: Sendable {
             } else {
                 seen[name] = cases
             }
+            if let qualified = FieldMapBuilder.qualifiedName(of: type, in: machO) {
+                if let existing = byQualifiedName[qualified], existing != cases {
+                    ambiguousQualifiedNames.insert(qualified)
+                }
+                byQualifiedName[qualified] = cases
+            }
         }
         var byName: [String: [String]?] = [:]
         for (name, cases) in seen {
             byName[name] = ambiguous.contains(name) ? nil : cases
         }
-        return EnumCaseIndex(byName: byName)
+        for name in ambiguousQualifiedNames { byQualifiedName.removeValue(forKey: name) }
+        return EnumCaseIndex(byName: byName, byQualifiedName: byQualifiedName)
     }
 }

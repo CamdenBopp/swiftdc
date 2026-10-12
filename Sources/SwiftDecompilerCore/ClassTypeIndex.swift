@@ -16,14 +16,21 @@ import MachOSwiftSection
 public struct ClassTypeIndex: Sendable {
     /// Simple names that are unambiguously a class in this image.
     private let classNames: Set<String>
+    /// Full names whose descriptor in this image identifies a class.
+    private let qualifiedClassNames: Set<String>
 
-    public init(classNames: Set<String> = []) { self.classNames = classNames }
+    public init(classNames: Set<String> = [], qualifiedClassNames: Set<String> = []) {
+        self.classNames = classNames
+        self.qualifiedClassNames = qualifiedClassNames
+    }
 
     /// Whether `typeName` (possibly module-qualified, e.g. `Module.Ref`) names a
     /// class this image defines unambiguously.
     public func isClass(_ typeName: String) -> Bool {
-        let simple = typeName.split(separator: ".").last.map(String.init) ?? typeName
-        return classNames.contains(simple)
+        // A qualified name may refer to a different module's struct or enum.
+        // Only this image's matching class descriptor proves pointer layout.
+        if typeName.contains(".") { return qualifiedClassNames.contains(typeName) }
+        return classNames.contains(typeName)
     }
 
     /// The inner type of `Optional<Inner>` when `Inner` is a single-register
@@ -39,17 +46,31 @@ public struct ClassTypeIndex: Sendable {
     public static func build(in machO: MachOFile) -> ClassTypeIndex {
         var classes: Set<String> = []
         var nonClasses: Set<String> = []
+        var qualifiedClasses: Set<String> = []
+        var qualifiedNonClasses: Set<String> = []
         for type in (try? machO.swift.types) ?? [] {
             switch type {
             case .class(let model):
                 if let name = try? model.descriptor.name(in: machO) { classes.insert(name) }
+                if let qualified = FieldMapBuilder.qualifiedName(of: type, in: machO) {
+                    qualifiedClasses.insert(qualified)
+                }
             case .struct(let model):
                 if let name = try? model.descriptor.name(in: machO) { nonClasses.insert(name) }
+                if let qualified = FieldMapBuilder.qualifiedName(of: type, in: machO) {
+                    qualifiedNonClasses.insert(qualified)
+                }
             case .enum(let model):
                 if let name = try? model.descriptor.name(in: machO) { nonClasses.insert(name) }
+                if let qualified = FieldMapBuilder.qualifiedName(of: type, in: machO) {
+                    qualifiedNonClasses.insert(qualified)
+                }
             }
         }
         // A name shared with a struct/enum is ambiguous → not treated as a class.
-        return ClassTypeIndex(classNames: classes.subtracting(nonClasses))
+        return ClassTypeIndex(
+            classNames: classes.subtracting(nonClasses),
+            qualifiedClassNames: qualifiedClasses.subtracting(qualifiedNonClasses)
+        )
     }
 }

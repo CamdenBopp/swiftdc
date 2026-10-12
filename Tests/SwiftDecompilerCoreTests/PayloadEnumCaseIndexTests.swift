@@ -40,10 +40,17 @@ private func index(
 private let eof = emptyCase("eof", fixedBytes: [0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 2])
 
 @Test func namesAnExactUniqueMatch() {
-    let i = index(name: "Token", size: 9, cases: [eof])
+    let i = index(name: "Token", size: 9, cases: [eof], qualified: "Reconstruction.Token")
     #expect(i.caseName(ofEnum: "Token", x0: 0, x1: 2) == "eof")
-    // Module-qualified names resolve through the simple-name fallback too.
+    // A qualified name resolves only through its own descriptor identity.
     #expect(i.caseName(ofEnum: "Reconstruction.Token", x0: 0, x1: 2) == "eof")
+}
+
+/// A foreign type sharing the simple name is not this image's enum: its case
+/// encoding and names are unknown here. (From the pre-merge stash 983aa25.)
+@Test func declinesForeignQualifiedPayloadEnumWithSameSimpleName() {
+    let i = index(name: "Token", size: 9, cases: [eof], qualified: "Reconstruction.Token")
+    #expect(i.caseName(ofEnum: "Other.Token", x0: 0, x1: 2) == nil)
 }
 
 @Test func declinesWhenAnyFixedByteMismatches() {
