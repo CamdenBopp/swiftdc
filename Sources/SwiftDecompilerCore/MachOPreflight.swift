@@ -64,8 +64,10 @@ public enum MachOPreflight {
     /// Section types that occupy no bytes in the file: their `size` describes
     /// memory to be zeroed, so it must NOT be bounds-checked against the file.
     /// `__bss` is routinely larger than the binary that declares it.
+    /// S_ZEROFILL, S_GB_ZEROFILL, S_THREAD_LOCAL_ZEROFILL; not 0x13
+    /// (S_THREAD_LOCAL_VARIABLES, the file-backed TLV descriptors).
     private enum SectionType {
-        static let zerofill: Set<UInt32> = [0x1, 0xc, 0x13]
+        static let zerofill: Set<UInt32> = [0x1, 0xc, 0x12]
     }
 
     private enum Magic {

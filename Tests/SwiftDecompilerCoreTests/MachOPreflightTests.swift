@@ -376,6 +376,24 @@ private func imageWith(_ command: Data, fileSize: Int) -> (Data, Int) {
     #expect(!rejects(data, fileSize: size))
 }
 
+/// The thread-local pair is easy to swap: `S_THREAD_LOCAL_ZEROFILL` (0x12,
+/// `__thread_bss`) has no file bytes, `S_THREAD_LOCAL_VARIABLES` (0x13,
+/// `__thread_vars`, the TLV descriptors) does. <mach-o/loader.h>; Prime Video
+/// carries both, at those flags.
+@Test func acceptsAThreadLocalZeroFillSectionLargerThanTheFile() {
+    let tbss = section64(size: 0x0010_0000, offset: 0, flags: 0x12)   // S_THREAD_LOCAL_ZEROFILL
+    let segment = segment64(name: "__DATA", fileoff: 0, filesize: 16, sections: [tbss])
+    let (data, size) = imageWith(segment, fileSize: 4096)
+    #expect(!rejects(data, fileSize: size))
+}
+
+@Test func rejectsAThreadLocalVariablesSectionPastTheFile() {
+    let tlv = section64(size: 0x0010_0000, offset: 128, flags: 0x13)  // S_THREAD_LOCAL_VARIABLES
+    let segment = segment64(name: "__DATA", fileoff: 0, filesize: 16, sections: [tlv])
+    let (data, size) = imageWith(segment, fileSize: 4096)
+    #expect(rejects(data, fileSize: size))
+}
+
 @Test func acceptsAWellFormedSegmentAndSymbolTable() {
     let segment = segment64(fileoff: 0, filesize: 1024, sections: [section64(size: 512, offset: 128)])
     let header = machHeader64(ncmds: 2, sizeofcmds: UInt32(segment.count + 24))
