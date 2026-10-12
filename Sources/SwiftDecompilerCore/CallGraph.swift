@@ -11,6 +11,10 @@ public struct CallEdge: Sendable, Hashable {
     /// The site is a `b` out of the caller rather than a `bl`: the callee
     /// returns to the caller's caller.
     public let isTailCall: Bool
+    /// The site dispatches through `self`'s own vtable slot. The callee is the
+    /// implementation that runs when self is exactly its class; a subclass
+    /// override runs instead otherwise, so the edge is possible, not proven.
+    public var isSelfDispatch: Bool = false
 }
 
 /// Caller/callee relationships across a set of disassembled functions.
@@ -88,7 +92,8 @@ public struct CallGraph: Sendable {
                     names[target] = name
                 }
                 edges.append(CallEdge(
-                    site: insn.address, caller: function.startAddress, callee: target, isTailCall: isTailCall
+                    site: insn.address, caller: function.startAddress, callee: target, isTailCall: isTailCall,
+                    isSelfDispatch: DisassembledFunction.isSelfDispatch(insn)
                 ))
             }
         }

@@ -1690,7 +1690,7 @@ public struct Disassembler: Sendable {
                let selfTypeName,
                let address = vtableIndex.methodAddress(type: selfTypeName, offset: offset),
                let name = resolver.name(at: address, ownedBy: selfTypeName) {
-                return (address, name)
+                return (address, name + DisassembledFunction.selfDispatchMarker)
             }
             return resolver.indirectCallTarget(for: value)
         }
@@ -2850,6 +2850,14 @@ public struct Disassembler: Sendable {
             in: function, targets: analysis.indirectControlFlowTargets,
             resolver: resolver, selfTypeName: selfTypeName, vtableIndex: vtableIndex
         )
+        let selfDispatchSites = Set(function.instructions.filter(DisassembledFunction.isSelfDispatch).map(\.address))
+        /// A call through self's own vtable slot is `self.member(…)`: the named
+        /// implementation is only the one that runs when self is exactly its class.
+        func displayCallee(_ callee: String, at site: UInt64) -> String {
+            selfDispatchSites.contains(site)
+                ? DisassembledFunction.selfDispatchCall(callee)
+                : DisassembledFunction.strippedCallee(callee)
+        }
         // An async function returns by branching through its own context's
         // ResumeParent slot. Proven only when the tracer followed the pointer
         // from the seeded context to the `br`; such a branch is treated as the
@@ -3568,7 +3576,7 @@ public struct Disassembler: Sendable {
                 if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {
                     return send.rendered
                 }
-                return "\(DisassembledFunction.strippedCallee(callee))(\(arguments.joined(separator: ", ")))"
+                return "\(displayCallee(callee, at: addr))(\(arguments.joined(separator: ", ")))"
             }
         }
 
@@ -3595,7 +3603,7 @@ public struct Disassembler: Sendable {
             renderArguments(values, depth: depth).joined(separator: ", ")
         }
 
-        func callExpression(callee: String, values: [AbstractValue], depth: Int = 0) -> String {
+        func callExpression(callee: String, values: [AbstractValue], depth: Int = 0, site: UInt64? = nil) -> String {
             // Same rewrite as the nested path: a runtime helper that is an exact
             // lowering of a source send renders as that send, whether it is the
             // statement itself or an argument to one.
@@ -3608,7 +3616,7 @@ public struct Disassembler: Sendable {
             if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {
                 return send.rendered
             }
-            return "\(DisassembledFunction.strippedCallee(callee))(\(arguments.joined(separator: ", ")))"
+            return "\(site.map { displayCallee(callee, at: $0) } ?? DisassembledFunction.strippedCallee(callee))(\(arguments.joined(separator: ", ")))"
         }
 
         func fieldWrite(
@@ -4036,7 +4044,7 @@ public struct Disassembler: Sendable {
                         sourceNotes.append("return \(renderReturnValue(exit, before: insn.address))")
                     } else if !DisassembledFunction.isRuntimeNoise(callee),
                               let values = argumentsByAddress[insn.address] {
-                        sourceNotes.append("return \(callExpression(callee: callee, values: values))")
+                        sourceNotes.append("return \(callExpression(callee: callee, values: values, site: insn.address))")
                     }
                 }
             }
@@ -4182,7 +4190,7 @@ public struct Disassembler: Sendable {
 
             // The one place a call bound for its field reads is spelled out.
             if insn.controlFlow == .call, let name = boundResultSites[insn.address], let callee {
-                sourceNotes.append("let \(name) = \(callExpression(callee: callee, values: argumentsByAddress[insn.address] ?? []))")
+                sourceNotes.append("let \(name) = \(callExpression(callee: callee, values: argumentsByAddress[insn.address] ?? [], site: insn.address))")
             }
 
             // A proven async return is the function's `ret`; the structurer and

@@ -56,6 +56,14 @@ struct XrefsCommand: AsyncParsableCommand {
 
     func validate() throws { try validateFunctionFilter(function) }
 
+    /// The text-mode qualifier on one edge.
+    static func edgeNote(_ edge: CallEdge) -> String {
+        var notes: [String] = []
+        if edge.isTailCall { notes.append("tail call") }
+        if edge.isSelfDispatch { notes.append("dispatch through self: a subclass override may run instead") }
+        return notes.isEmpty ? "" : "  (\(notes.joined(separator: "; ")))"
+    }
+
     func run() async throws {
         if listImages {
             try emit(BinaryLoader.dyldCacheImagePaths(cachePath: cache).joined(separator: "\n"), to: output)
@@ -116,10 +124,12 @@ struct XrefsCommand: AsyncParsableCommand {
                     "address": hex(address),
                     "name": graph.name(of: address),
                     "callers": graph.callers(of: address).map {
-                        ["site": hex($0.site), "function": graph.name(of: $0.caller), "tailCall": $0.isTailCall] as [String: Any]
+                        ["site": hex($0.site), "function": graph.name(of: $0.caller), "tailCall": $0.isTailCall,
+                         "selfDispatch": $0.isSelfDispatch] as [String: Any]
                     },
                     "callees": graph.callees(of: address).map {
-                        ["site": hex($0.site), "function": graph.name(of: $0.callee), "tailCall": $0.isTailCall] as [String: Any]
+                        ["site": hex($0.site), "function": graph.name(of: $0.callee), "tailCall": $0.isTailCall,
+                         "selfDispatch": $0.isSelfDispatch] as [String: Any]
                     },
                 ] as [String: Any]
             })
@@ -136,7 +146,7 @@ struct XrefsCommand: AsyncParsableCommand {
                 lines.append("    <none — an entry point, an export, or called only through unresolved dispatch>")
             }
             for edge in callers {
-                lines.append("    \(hex(edge.site))  \(graph.name(of: edge.caller))\(edge.isTailCall ? "  (tail call)" : "")")
+                lines.append("    \(hex(edge.site))  \(graph.name(of: edge.caller))\(Self.edgeNote(edge))")
             }
 
             // Deduplicate: a callee hit from several sites is one relationship,
@@ -144,7 +154,7 @@ struct XrefsCommand: AsyncParsableCommand {
             lines.append("  callees (\(Set(callees.map(\.callee)).count)):")
             var seen = Set<UInt64>()
             for edge in callees where seen.insert(edge.callee).inserted {
-                lines.append("    \(hex(edge.site))  \(graph.name(of: edge.callee))\(edge.isTailCall ? "  (tail call)" : "")")
+                lines.append("    \(hex(edge.site))  \(graph.name(of: edge.callee))\(Self.edgeNote(edge))")
             }
             blocks.append(lines.joined(separator: "\n"))
         }

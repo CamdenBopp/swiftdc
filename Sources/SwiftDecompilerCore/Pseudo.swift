@@ -71,6 +71,11 @@ public extension DisassembledFunction {
         if let idiom = objcRuntimeIdiom(callee: callee, arguments: arguments) { return idiom }
         // A Swift method's receiver arrives in x20, not x0, so show it as an
         // explicit `self:` rather than letting it vanish from the call.
+        if isSelfDispatch(insn) {
+            let call = "\(selfDispatchCall(callee))(\(arguments.joined(separator: ", ")))"
+            guard let binding = awaitBinding(of: insn) else { return call }
+            return binding.isEmpty ? "await \(call)" : "let \(binding) = await \(call)"
+        }
         let parts = insn.callSelf.map { ["self: \($0)"] + arguments } ?? arguments
         let call = "\(strippedCallee(callee))(\(parts.joined(separator: ", ")))"
         // A suspension point: the tail call is an `await`, and its result is
@@ -319,11 +324,28 @@ public extension DisassembledFunction {
         return base
     }
 
+    /// Marks a call reached through `self`'s own vtable slot. The named
+    /// implementation is self's class's; an override in a subclass runs
+    /// instead when self is one, so the call is `self.member(…)`, not a static
+    /// call to that implementation, and its call-graph edge is not proven.
+    static let selfDispatchMarker = "  dispatch=self"
+
+    static func isSelfDispatch(_ insn: Instruction) -> Bool {
+        insn.annotation?.contains(selfDispatchMarker) == true
+    }
+
+    /// `self.member` for a self dispatch to `callee`.
+    static func selfDispatchCall(_ callee: String) -> String {
+        let stripped = strippedCallee(callee)
+        let member = stripped.split(separator: ".").last.map(String.init) ?? stripped
+        return "self.\(member)"
+    }
+
     /// Drop the notes value-tracking appends to an annotation (`self=…`,
     /// `args(…)`, `await=…`), leaving just the resolved name.
     private static func stripNotes(_ text: String) -> String {
         var cut = text.endIndex
-        for marker in ["  args(", "  self=", "  await="] {
+        for marker in ["  args(", "  self=", "  await=", Self.selfDispatchMarker] {
             if let range = text.range(of: marker), range.lowerBound < cut { cut = range.lowerBound }
         }
         return String(text[..<cut]).trimmingCharacters(in: .whitespaces)
