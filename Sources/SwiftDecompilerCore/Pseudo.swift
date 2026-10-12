@@ -401,12 +401,13 @@ public extension DisassembledFunction {
     }
 
     /// Drop the notes value-tracking appends to an annotation (`self=…`,
-    /// `args(…)`, `await=…`), leaving just the resolved name.
+    /// `args(…)`, `await=…`, `let r0 = …`, `return …`), leaving just the
+    /// resolved name. Every note follows two spaces, which no name contains;
+    /// cutting at four known markers let the semantic ones through, and the
+    /// call graph named `swift_dynamicCastClass` as
+    /// `swift_dynamicCastClass  let r0 = (? as? Reconstruction.Dog)`.
     private static func stripNotes(_ text: String) -> String {
-        var cut = text.endIndex
-        for marker in ["  args(", "  self=", "  await=", Self.selfDispatchMarker] {
-            if let range = text.range(of: marker), range.lowerBound < cut { cut = range.lowerBound }
-        }
+        let cut = text.range(of: "  ")?.lowerBound ?? text.endIndex
         return String(text[..<cut]).trimmingCharacters(in: .whitespaces)
     }
 

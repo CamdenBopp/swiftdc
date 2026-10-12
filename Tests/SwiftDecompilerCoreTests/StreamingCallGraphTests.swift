@@ -56,3 +56,28 @@ private let graphFixtures = [
     #expect(whole.edges.isEmpty, "a branch into callee's body is a shared tail")
     #expect(Set(slim.edges) == Set(whole.edges))
 }
+
+/// A callee's name is its name, not the analysis notes after it. Notes follow
+/// two spaces; only four known ones were cut, so `castOptional`'s callee was
+/// named `swift_dynamicCastClass  let r0 = (? as? Reconstruction.Dog)` and a
+/// `--function` search matched text from the notes.
+@Test func callGraphNamesCarryNoAnalysisNotesIfPresent() async throws {
+    for path in graphFixtures where FileManager.default.fileExists(atPath: path) {
+        let machO = try BinaryLoader.load(path: path)
+        let graph = await withStableDependencies {
+            CallGraph(functions: await Disassembler(preset: .default)
+                .disassembleStreaming(machO: machO, transform: CallGraph.sites(of:)))
+        }
+        let noted = graph.names.values.filter { $0.contains("  ") }
+        #expect(noted.isEmpty, "\(path): \(noted.sorted())")
+    }
+    let path = "Fixtures/Sample/libReconstruction.opt.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let machO = try BinaryLoader.load(path: path)
+    let graph = await withStableDependencies {
+        CallGraph(functions: await Disassembler(preset: .default)
+            .disassembleStreaming(machO: machO, transform: CallGraph.sites(of:)))
+    }
+    // The stub `castOptional` calls (`xcrun nm -m`: 0x2cb0 is its symbol stub).
+    #expect(graph.name(of: 0x2cb0) == "swift_dynamicCastClass")
+}

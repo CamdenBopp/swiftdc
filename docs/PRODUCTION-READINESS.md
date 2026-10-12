@@ -1390,11 +1390,19 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   needles (385 outputs), once two naming corrections are allowed for: imports
   whose C name starts with an underscore keep it (`_Unwind_Resume`,
   `__stack_chk_fail`; the objdump path stripped every leading underscore),
-  and notes no longer leak into names (fixed separately).
+  and notes no longer leak into names (next entry).
   `aStreamedCallGraphMatchesTheWholeImageGraphIfPresent` and
   `aSitesOnlyFunctionKeepsItsSpan` were seen red (sites without branches;
   sites without the last instruction). Earlier record: the ship2 sweep
   stopped it at 8,636 MB RSS after 112.8 s.
+- **FIXED — call-graph names carried analysis notes.** A callee's name was
+  cut from its annotation at four known note markers, so semantic notes
+  survived: `castOptional`'s callee was named `swift_dynamicCastClass  let r0
+  = (? as? Reconstruction.Dog)` and `objc_msgSend$twice:  return
+  [self->_target twice:arg0]`, in both the objdump and Capstone paths, and a
+  `--function` search matched text inside the notes. Every note follows two
+  spaces, which no name contains; names are now cut there. No render changed
+  on any fixture. `callGraphNamesCarryNoAnalysisNotesIfPresent` was seen red.
 - **FIXED — a standalone binary re-opened itself as a dyld cache on every
   `MachOFile.cache` access.** The 0.22 upgrade dropped the fork that memoized
   the failed load, estimating it at about 2.5% of a Keynote `dump`. On a
