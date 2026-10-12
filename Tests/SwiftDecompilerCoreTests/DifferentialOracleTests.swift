@@ -399,6 +399,11 @@ private func divisionPairs() -> [[Int]] {
     }
 }
 
+private let constantDivisionInputs: [[Int]] = [
+    Int.min, Int.min + 1, -15_001, -1_000, -105, -16, -15, -14, -8, -7, -6, -3, -2, -1,
+    0, 1, 2, 3, 6, 7, 8, 14, 15, 16, 105, 999, 1_000, 1_001, 15_001, Int.max - 1, Int.max,
+].map { [$0] }
+
 private let oracleCases: [OracleCase] = [
     // Comparisons: no arithmetic, so the full edge set including Int.min/max is
     // safe — and it is exactly where a signed/unsigned confusion shows up.
@@ -432,6 +437,21 @@ private let oracleCases: [OracleCase] = [
     // compiled side (see `divisionPairs`).
     .init(name: "intDivide", arity: 2, returnsBool: false, inputs: divisionPairs()),
     .init(name: "remainder", arity: 2, returnsBool: false, inputs: divisionPairs()),
+    // Division by a constant. At -O each is a multiply-high by a magic
+    // reciprocal that MagicDivision folds back to `arg0 / D`; a wrong divisor,
+    // a floor-for-truncate slip, or a lost sign correction shows up at the
+    // negative dividends and at the multiples of D and their neighbours.
+    .init(name: "divideBySeven", arity: 1, returnsBool: false, inputs: constantDivisionInputs),
+    .init(name: "divideByThree", arity: 1, returnsBool: false, inputs: constantDivisionInputs),
+    .init(name: "divideByFifteen", arity: 1, returnsBool: false, inputs: constantDivisionInputs),
+    .init(name: "divideByMinusSeven", arity: 1, returnsBool: false, inputs: constantDivisionInputs),
+    .init(name: "remainderBySeven", arity: 1, returnsBool: false, inputs: constantDivisionInputs),
+    // The evaluator's `/` is signed, so the UInt cases take non-negative
+    // inputs only; MagicDivisionTests covers the high half.
+    .init(name: "unsignedDivideBySeven", arity: 1, returnsBool: false,
+          inputs: constantDivisionInputs.filter { $0[0] >= 0 }),
+    .init(name: "unsignedDivideByThousand", arity: 1, returnsBool: false,
+          inputs: constantDivisionInputs.filter { $0[0] >= 0 }),
     // Multi-branch integer switches. At `-Onone` these recover as a chain of
     // `==` ternaries; at `-O` the optimizer collapses `gradeOf`'s dense cases
     // into the **U1 unsigned-range idiom plus arithmetic**
@@ -501,6 +521,15 @@ private let fixtures = [
     ),
 ]
 
+/// Integer-only: the magic-number division shapes, one per lowering. Its own
+/// image, so the float oracle (which walks `fixtures`) does not visit it.
+private let codegenFixture = Fixture(
+    path: "Fixtures/Sample/libCodegen.opt.dylib", label: "-O codegen",
+    required: ["divideBySeven", "divideByThree", "divideByFifteen", "divideByMinusSeven",
+               "remainderBySeven", "unsignedDivideBySeven", "unsignedDivideByThousand"],
+    minimumComparisons: 150
+)
+
 /// Recover the rendered `return <expr>` and the raw symbol for `name`.
 private func recovered(
     _ name: String, in fixture: String
@@ -525,7 +554,7 @@ private func recovered(
 }
 
 @Test func recoveredExpressionsAgreeWithTheCompiledCode() async throws {
-    for fixture in fixtures {
+    for fixture in fixtures + [codegenFixture] {
         guard let image = FixtureImage(path: fixture.path) else { continue }  // not built
 
         var compared = 0

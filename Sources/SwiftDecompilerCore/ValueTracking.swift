@@ -16,6 +16,8 @@ public enum AbstractBinaryOperator: Equatable, Sendable {
     case shiftLeft
     case shiftRight
     case arithmeticShiftRight
+    case multiplyHigh
+    case unsignedMultiplyHigh
     // Comparisons, produced by a flag-setting compare + `cset`/`b.cond`.
     // `equal`/`notEqual` are sign-agnostic. The signed vs unsigned distinction is
     // preserved (not merged) because collapsing an unsigned machine comparison
@@ -79,6 +81,7 @@ public enum AbstractBinaryOperator: Equatable, Sendable {
         case .bitXor: "^"
         case .shiftLeft: "<<"
         case .shiftRight, .arithmeticShiftRight: ">>"
+        case .multiplyHigh, .unsignedMultiplyHigh: "mulh"
         case .equal: "=="
         case .notEqual: "!="
         case .less: "<"
@@ -1874,7 +1877,8 @@ public struct ValueTracer: Sendable {
             }
 
         case AARCH64_INS_AND, AARCH64_INS_ANDS, AARCH64_INS_ORR, AARCH64_INS_EOR,
-             AARCH64_INS_MUL, AARCH64_INS_LSL, AARCH64_INS_LSR, AARCH64_INS_ASR,
+             AARCH64_INS_MUL, AARCH64_INS_SMULH, AARCH64_INS_UMULH,
+             AARCH64_INS_LSL, AARCH64_INS_LSR, AARCH64_INS_ASR,
              AARCH64_INS_SDIV, AARCH64_INS_UDIV:
             guard let dest = destinationRegister(detail), detail.operands.count >= 3 else {
                 clobber(detail, into: &registers); return
@@ -1884,6 +1888,8 @@ public struct ValueTracer: Sendable {
             case AARCH64_INS_ORR: .bitOr
             case AARCH64_INS_EOR: .bitXor
             case AARCH64_INS_MUL: .multiply
+            case AARCH64_INS_SMULH: .multiplyHigh
+            case AARCH64_INS_UMULH: .unsignedMultiplyHigh
             case AARCH64_INS_SDIV, AARCH64_INS_UDIV: .divide
             case AARCH64_INS_LSL: .shiftLeft
             case AARCH64_INS_LSR: .shiftRight
@@ -2385,6 +2391,10 @@ public struct ValueTracer: Sendable {
                 right < 64
                     ? UInt64(bitPattern: Int64(bitPattern: left) >> Int64(right))
                     : nil
+            case .multiplyHigh:
+                UInt64(bitPattern: Int64(bitPattern: left).multipliedFullWidth(by: Int64(bitPattern: right)).high)
+            case .unsignedMultiplyHigh:
+                left.multipliedFullWidth(by: right).high
             case .equal: left == right ? 1 : 0
             case .notEqual: left != right ? 1 : 0
             case .less: Int64(bitPattern: left) < Int64(bitPattern: right) ? 1 : 0
@@ -2406,7 +2416,7 @@ public struct ValueTracer: Sendable {
             case .add, .subtract, .bitOr, .bitXor, .shiftLeft, .shiftRight,
                  .arithmeticShiftRight:
                 return lhs
-            case .multiply, .bitAnd: return .immediate(0)
+            case .multiply, .bitAnd, .multiplyHigh, .unsignedMultiplyHigh: return .immediate(0)
             case .divide, .remainder: return .unknown // by zero — don't simplify
             case .equal, .notEqual, .less, .lessEqual, .greater, .greaterEqual,
                  .unsignedLess, .unsignedLessEqual, .unsignedGreater, .unsignedGreaterEqual:
@@ -2420,6 +2430,9 @@ public struct ValueTracer: Sendable {
            case .binary(.divide, let numerator, let denominator) = quotient,
            numerator == lhs, denominator == divisor {
             return .binary(.remainder, lhs, divisor)
+        }
+        if let folded = MagicDivision.fold(op, lhs, rhs) {
+            return folded
         }
         guard Self.expressionDepth(lhs) < 8, Self.expressionDepth(rhs) < 8 else { return .unknown }
         return .binary(op, lhs, rhs)
@@ -2707,5 +2720,11 @@ public struct ValueTracer: Sendable {
     static func trimTrailingUnknown(_ values: [AbstractValue]) -> [AbstractValue]? {
         guard let last = values.lastIndex(where: { $0 != .unknown }) else { return nil }
         return Array(values[0...last])
+    }
+
+    func testExpression(
+        _ op: AbstractBinaryOperator, _ lhs: AbstractValue, _ rhs: AbstractValue
+    ) -> AbstractValue {
+        expression(op, lhs, rhs)
     }
 }

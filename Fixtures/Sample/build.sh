@@ -32,6 +32,11 @@ $SWIFTC -parse-as-library -O -emit-library -module-name Reconstruction reconstru
 cp libReconstruction.opt.dylib libReconstruction.opt.stripped.dylib
 strip -x libReconstruction.opt.stripped.dylib 2>/dev/null || strip libReconstruction.opt.stripped.dylib
 
+echo "==> codegen fixture (-O), plus a stripped copy — compiler idioms in an image of their own"
+$SWIFTC -parse-as-library -O -emit-library -module-name Codegen codegen.swift -o libCodegen.opt.dylib
+cp libCodegen.opt.dylib libCodegen.opt.stripped.dylib
+strip -x libCodegen.opt.stripped.dylib 2>/dev/null || strip libCodegen.opt.stripped.dylib
+
 echo "==> resilient reconstruction fixture (library evolution) — coroutine accessors"
 # Library evolution forces opaque accessors, so a public stored property gets a
 # synthesized `_modify`/`_read` yield_once coroutine (absent from a fragile build).
