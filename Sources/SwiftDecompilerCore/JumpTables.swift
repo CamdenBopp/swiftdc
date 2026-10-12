@@ -31,12 +31,17 @@ import MachOKit
 /// else declines and the `br` keeps no successors, as before.
 enum JumpTables {
     /// `br` address → target of each case, in case order.
+    ///
+    /// `ranges` are the image's file-backed ranges when the caller already has
+    /// them; building them walks every section (630 of 7,965 analysis samples
+    /// on Fiery Feeds `xrefs` when built per function).
     static func recognize(
-        in function: DisassembledFunction, machO: MachOFile
+        in function: DisassembledFunction, machO: MachOFile, ranges known: FileBackedRanges? = nil
     ) -> [UInt64: [UInt64]] {
-        guard let ranges = FileBackedRanges(standalone: machO) else { return [:] }
         let instructions = function.instructions
-        guard instructions.contains(where: { $0.detail?.id == AARCH64_INS_BR }) else { return [:] }
+        guard instructions.contains(where: { $0.detail?.id == AARCH64_INS_BR }),
+              let ranges = known ?? FileBackedRanges(standalone: machO)
+        else { return [:] }
         let addresses = Set(instructions.map(\.address))
         let internalTargets = Set(instructions.compactMap(\.branchTarget).filter(addresses.contains))
         var tables: [UInt64: [UInt64]] = [:]

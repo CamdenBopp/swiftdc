@@ -805,7 +805,8 @@ public struct Disassembler: Sendable {
     ) -> DisassembledFunction {
         var function = annotateReferences(in: rawFunction, resolver: context.resolver)
         function = annotateCallTargets(in: function, resolver: context.resolver)
-        let tables = JumpTables.recognize(in: function, machO: context.resolver.machO)
+        let tables = JumpTables.recognize(
+            in: function, machO: context.resolver.machO, ranges: context.resolver.fileRanges)
         if !tables.isEmpty { function = function.attachingSwitchTargets(tables) }
 
         let objcMethod = function.objcMethod
