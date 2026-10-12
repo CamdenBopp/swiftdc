@@ -66,7 +66,11 @@ final class CapstoneEngine {
     /// rather than heuristic: on a stall, skip exactly one instruction slot and
     /// resume. No guessing about where the stream realigns, because it cannot
     /// drift.
-    func disassemble(_ code: Data, address: UInt64) -> [DecodedInstruction] {
+    ///
+    /// `includeText: false` leaves `mnemonic` and `operands` empty, for a caller
+    /// that takes its text from elsewhere (the objdump path): two strings per
+    /// instruction, most too long for Swift's inline form.
+    func disassemble(_ code: Data, address: UInt64, includeText: Bool = true) -> [DecodedInstruction] {
         guard opened, !code.isEmpty else { return [] }
         var results: [DecodedInstruction] = []
 
@@ -76,10 +80,11 @@ final class CapstoneEngine {
             while offset < code.count {
                 var insns: UnsafeMutablePointer<cs_insn>?
                 let count = cs_disasm(
-                    handle, base + offset, code.count - offset, address &+ UInt64(offset), 0, &insns
+                    handle, base + offset, code.count - offset, address &+ UInt64(offset),
+                    Self.batchSize, &insns
                 )
                 if count > 0, let insns {
-                    append(insns, count: count, into: &results)
+                    append(insns, count: count, includeText: includeText, into: &results)
                     // Advance by what actually decoded, then step over the byte
                     // that stalled it.
                     let consumed = Int((insns + (count - 1)).pointee.address &- (address &+ UInt64(offset)))
@@ -101,12 +106,22 @@ final class CapstoneEngine {
     /// ARM64's fixed instruction width — the resynchronisation stride.
     private static let instructionSize = 4
 
+    /// Instructions per `cs_disasm` call. A count of 0 means "until the first
+    /// stall", and Capstone holds a `cs_insn` plus a ~2.5 KB `cs_detail` for
+    /// each until the call returns: `heap` on Fiery Feeds `xrefs` at 6.4 GB
+    /// found 1,114,404 such 2.5 KB blocks (2.8 GB) mid-decode, and the run
+    /// peaked at an 11.8 GB footprint. A full batch is not a stall; the loop
+    /// resumes right after it.
+    static let batchSize = 4096
+
     private func append(
         _ insns: UnsafeMutablePointer<cs_insn>,
         count: Int,
+        includeText: Bool,
         into results: inout [DecodedInstruction]
     ) {
-        results.reserveCapacity(results.count + count)
+        // No reserveCapacity here: it allocates exactly what it is asked for,
+        // so reserving per batch copies the whole result array once per batch.
         for index in 0..<count {
                 let pointer = insns + index
                 let insn = pointer.pointee
@@ -122,8 +137,8 @@ final class CapstoneEngine {
                     DecodedInstruction(
                         address: insn.address,
                         size: Int(insn.size),
-                        mnemonic: Self.string(insn.mnemonic),
-                        operands: Self.string(insn.op_str),
+                        mnemonic: includeText ? Self.string(insn.mnemonic) : "",
+                        operands: includeText ? Self.string(insn.op_str) : "",
                         controlFlow: flow,
                         branchTarget: target,
                         detail: detail

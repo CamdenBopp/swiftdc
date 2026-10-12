@@ -138,9 +138,10 @@ vanish and a scratch x1 is read as one.
   `74b7b06`: 953 s, 11.05 GB peak footprint (5.47 GB max RSS), against 153 s on
   origin/master. The symbolizer fix (`c00e5a7`) took out only ~35 s; the
   chained-fixup bind table (`3840616`) took the whole run to 275 s, output
-  byte-identical. Next: where the 11.8 GB peak footprint goes (unguarded
-  runs reach it; keep every run under a footprint guard), then the remaining
-  1.8× against origin/master. A memory watcher
+  byte-identical; the lean decode then took the peak footprint from 11.8 GB
+  to 7.0 GB. Next: the remaining 1.8× against origin/master. Every big run
+  goes under a footprint guard (`memprobe2.sh` pattern: `footprint -p` of
+  the real child, 1 s poll, kill well under 8 GB; spikes outrun the poll). A memory watcher
   must read the footprint, not `ps -o rss`: an RSS watcher saw 4.0 GB and
   never tripped while the footprint passed 11 GB.
 - Prime Video (296 MB) whole-image `xrefs --unreferenced` and `disasm

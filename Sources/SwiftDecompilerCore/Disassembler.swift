@@ -340,38 +340,11 @@ public struct Disassembler: Sendable {
         }
         args.append(path)
 
-        let result = try Shell.xcrun("llvm-objdump", args)
-        guard result.status == 0 else {
-            throw DisassembleError.toolFailed(result.stderr.isEmpty ? result.stdout : result.stderr)
-        }
-
         // Flat instruction stream + objdump's symbol labels, enriched with
         // Capstone's control-flow class + branch target (data objdump doesn't show).
-        let (parsed, labelByAddress) = parseObjdump(result.stdout)
-        // Cross-check an empty parse against independent binary evidence before
-        // believing it. `LC_FUNCTION_STARTS` is emitted by the linker and survives
-        // stripping, so it is an oracle the disassembler cannot talk itself out of.
-        // Returning [] here unconditionally is what let a leading-whitespace parse
-        // bug masquerade as "no functions" on every low-based dylib.
-        if parsed.isEmpty {
-            let knownStarts = functionStarts(of: machO).count
-            guard knownStarts == 0 else {
-                throw DisassembleError.parsedNothing(
-                    lines: result.stdout.split(separator: "\n").count,
-                    knownStarts: knownStarts
-                )
-            }
-            return []
-        }
-        let controlFlow = capstoneControlFlow(in: machO)
-        let instructions = parsed.map { insn -> Instruction in
-            guard let decoded = controlFlow[insn.address] else { return insn }
-            return Instruction(
-                address: insn.address, text: insn.text, annotation: insn.annotation,
-                controlFlow: decoded.controlFlow, branchTarget: decoded.branchTarget,
-                detail: decoded.detail
-            )
-        }
+        var (instructions, labelByAddress) = try objdumpInstructions(args, machO: machO)
+        if instructions.isEmpty { return [] }
+        attachCapstoneControlFlow(to: &instructions, in: machO)
 
         return await assemble(
             instructions: instructions,
@@ -1087,7 +1060,9 @@ public struct Disassembler: Sendable {
     /// Capstone. Restricting to a span is what makes `disasm --function` fast on
     /// a large binary — only the matched function's code is decoded, not the
     /// whole text section.
-    private func decodeText(in machO: MachOFile, span: (start: UInt64, stop: UInt64)?) -> [DecodedInstruction] {
+    private func decodeText(
+        in machO: MachOFile, span: (start: UInt64, stop: UInt64)?, includeText: Bool = true
+    ) -> [DecodedInstruction] {
         guard let engine = CapstoneEngine(), let text = textSectionBounds(in: machO) else { return [] }
         let start: UInt64
         let size: Int
@@ -1102,7 +1077,7 @@ public struct Disassembler: Sendable {
             size = text.size
         }
         guard let bytes = sectionBytes(address: start, size: size, in: machO) else { return [] }
-        return engine.disassemble(bytes, address: start)
+        return engine.disassemble(bytes, address: start, includeText: includeText)
     }
 
     /// Decode `__text` (or `span`) into an ordered instruction stream carrying
@@ -1458,14 +1433,60 @@ public struct Disassembler: Sendable {
         }
     }
 
-    /// Decode `__text` (or `span`) in-process with Capstone, returning a map of
-    /// address → structured instruction (control-flow class + branch target).
-    private func capstoneControlFlow(in machO: MachOFile, span: (start: UInt64, stop: UInt64)? = nil) -> [UInt64: DecodedInstruction] {
-        var map: [UInt64: DecodedInstruction] = [:]
-        for decoded in decodeText(in: machO, span: span) {
-            map[decoded.address] = decoded
+    /// objdump's instruction stream and symbol labels. Its text (gigabytes on a
+    /// large app) is released on return, before the Capstone decode.
+    ///
+    /// An empty parse is cross-checked against independent binary evidence
+    /// before it is believed. `LC_FUNCTION_STARTS` is emitted by the linker and
+    /// survives stripping, so it is an oracle the disassembler cannot talk
+    /// itself out of. Returning [] here unconditionally is what let a
+    /// leading-whitespace parse bug masquerade as "no functions" on every
+    /// low-based dylib.
+    private func objdumpInstructions(
+        _ args: [String], machO: MachOFile
+    ) throws -> (instructions: [Instruction], labels: [UInt64: String]) {
+        let result = try Shell.xcrun("llvm-objdump", args)
+        guard result.status == 0 else {
+            throw DisassembleError.toolFailed(result.stderr.isEmpty ? result.stdout : result.stderr)
         }
-        return map
+        let (parsed, labelByAddress) = parseObjdump(result.stdout)
+        if parsed.isEmpty {
+            let knownStarts = functionStarts(of: machO).count
+            guard knownStarts == 0 else {
+                throw DisassembleError.parsedNothing(
+                    lines: result.stdout.split(separator: "\n").count,
+                    knownStarts: knownStarts
+                )
+            }
+        }
+        return (parsed, labelByAddress)
+    }
+
+    /// Attach Capstone's control-flow class, branch target and detail to each
+    /// objdump instruction at an address Capstone decoded.
+    ///
+    /// Capstone's output is strictly ascending, so a binary search finds each
+    /// address; an address-keyed dictionary over the whole image held a
+    /// second copy of every decoded instruction (Fiery Feeds: 3.2 GB before
+    /// the decode, past 7.8 GB two seconds into it). The text is objdump's,
+    /// so Capstone's is not built.
+    private func attachCapstoneControlFlow(to instructions: inout [Instruction], in machO: MachOFile) {
+        let decoded = decodeText(in: machO, span: nil, includeText: false)
+        for index in instructions.indices {
+            let insn = instructions[index]
+            var low = 0, high = decoded.count
+            while low < high {
+                let mid = (low + high) / 2
+                if decoded[mid].address < insn.address { low = mid + 1 } else { high = mid }
+            }
+            guard low < decoded.count, decoded[low].address == insn.address else { continue }
+            let match = decoded[low]
+            instructions[index] = Instruction(
+                address: insn.address, text: insn.text, annotation: insn.annotation,
+                controlFlow: match.controlFlow, branchTarget: match.branchTarget,
+                detail: match.detail
+            )
+        }
     }
 
     /// The `[start, stop)` ranges of every function whose raw symbol or demangled

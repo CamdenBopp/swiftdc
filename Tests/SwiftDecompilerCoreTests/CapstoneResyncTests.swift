@@ -93,3 +93,20 @@ private func code(_ words: [UInt32]) -> Data {
     #expect(decoded.count == words.count)
     #expect(decoded.map(\.address) == (0..<words.count).map { base + UInt64($0 * 4) })
 }
+
+/// Decoding runs in bounded `cs_disasm` batches (Capstone holds ~2.5 KB of
+/// detail per instruction until a call returns). A full batch is not a stall:
+/// across batch boundaries, and with garbage on one, every instruction comes
+/// back once, at its own address.
+@Test func decodesAcrossBatchBoundariesExactly() throws {
+    let engine = try #require(CapstoneEngine())
+    let base: UInt64 = 0x10000
+    let batch = CapstoneEngine.batchSize
+    var words = Array(repeating: nop, count: 2 * batch + 5)
+    words[batch] = undecodable[0]          // the first word of the second batch
+    let decoded = engine.disassemble(code(words), address: base)
+
+    let expected = words.indices.filter { $0 != batch }.map { base + UInt64($0 * 4) }
+    #expect(decoded.count == expected.count)
+    #expect(decoded.map(\.address) == expected)
+}

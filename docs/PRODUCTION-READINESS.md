@@ -1259,11 +1259,20 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 5. Performance and memory on large frameworks
 
-- **OPEN — Fiery Feeds whole-binary `xrefs` is 1.8× origin/master, at an
-  11.8 GB footprint.** At `5e8cb53` (after the bind table below): 275.3 s,
+- **OPEN — Fiery Feeds whole-binary `xrefs` is 1.8× origin/master, at a
+  7.0 GB footprint.** At `5e8cb53` (after the bind table below): 275.3 s,
   peak footprint 11.81 GB, output byte-identical to `74b7b06`'s (`cmp`).
-  Origin/master: 153.5 s. The footprint is now the larger problem: past the
-  8 GB ceiling this host's runs are held to. Earlier record: At `74b7b06`, release build, `/usr/bin/time -l swiftdc
+  Origin/master: 153.5 s. The footprint came from the decode: `heap` at
+  6.4 GB found 1,114,404 Capstone `cs_detail` blocks (2.8 GB) held by one
+  `cs_disasm(…, count: 0)` call, then a `[DecodedInstruction]`, an
+  address-keyed dictionary of it, and the `[Instruction]` built from it all
+  alive at once, plus the objdump text. Decoding in 4,096-instruction batches
+  without Capstone's text, attaching to objdump's stream in place by binary
+  search, and freeing objdump's text first: 272.6 s, **7.04 GB**, output
+  byte-identical. A footprint sampler polling every second saw only 5.5 GB:
+  the decode spike is shorter than that, so a guard must kill well below
+  the ceiling. Remaining: the 1.8× time, and the decode still holds the
+  image about twice over. Earlier record: At `74b7b06`, release build, `/usr/bin/time -l swiftdc
   xrefs "/Applications/Fiery Feeds.app/Contents/MacOS/Fiery Feeds" --arch arm64
   --unreferenced`: 953 s, max RSS 5.47 GB, **peak footprint 11.05 GB**, 126,173
   output lines, exit 0. origin/master took 153.5 s (below). The symbolizer fix
