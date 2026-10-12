@@ -1580,6 +1580,21 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   fixes: name vtable slots from the method descriptors directly (no dump), and
   memoize those `DyldCache` derivations in the MachOKit fork (both the old and
   new ObjC-optimization formats).
+- **FIXED — a filtered query demangled the whole symbol table one symbol
+  at a time.** `disasm -f ChatView.body --structured` on Enchanted's
+  release build (3.66M instructions) took 47.7 s / 48.1 s, 57% of it in
+  `matchedRanges` demangling every label and folded symbol (audit E-5).
+  The demangle cache is now filled across the cores first; demangling is
+  pure and the cache is behind a `Mutex`. 12.45 s / 11.88 s, output
+  identical on that query and on 268 filtered fixture renders.
+  Reproduce: `/usr/bin/time -l swiftdc disasm <app> -f ChatView.body
+  --structured`.
+- **DEAD END — prefetching async funclet bodies in parallel for a filtered
+  query.** The funclet index's sequential decode looked like the next
+  38%. Decoding the hinted funclets across the cores first measured 11.42
+  to 11.95 s against 11.82 to 11.90 s (three alternating runs each) for
+  65 MB more peak footprint. Reverted; do not retry without parallelising
+  the scan itself.
 - **DEAD END — capturing `MachOFile.fullCache` once in the resolver.**
   MachOKit memoises `fullCache` only on success, so a standalone binary
   re-attempts opening a cache on every read, and `sample` at 50 s on Fiery

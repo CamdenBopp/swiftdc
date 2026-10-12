@@ -1658,6 +1658,12 @@ public struct Disassembler: Sendable {
         )
 
         let folded = foldedSymbolAddresses(in: machO)
+        // Matching demangles every label and folded symbol, one at a time: 57%
+        // of a 47 s filtered query on a 3.7M-instruction app. Demangling is a
+        // pure function of the symbol and the cache is thread-safe, so the
+        // cache is filled across the cores first; the match below reads it.
+        let symbols = Array(Set(labels.values).union(folded.values.joined()))
+        Parallel.forEach(symbols) { _ = self.demangle($0) }
         func matches(_ start: UInt64) -> Bool {
             let symbol = labels[start] ?? "sub_\(String(start, radix: 16))"
             if symbol.lowercased().contains(needle) { return true }
