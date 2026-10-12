@@ -1032,10 +1032,17 @@ struct ControlFlowStructure {
         switch mnemonic {
         case "b.eq": return "=="
         case "b.ne": return "!="
-        case "b.lt", "b.cc", "b.lo": return "<"
-        case "b.le", "b.ls": return "<="
-        case "b.gt", "b.hi": return ">"
-        case "b.ge", "b.cs", "b.hs": return ">="
+        // The carry conditions compare unsigned. `b.hs` after `sub; cmp`
+        // is a range check, and read as a signed `>=` it is false for every
+        // input below the range.
+        case "b.lt": return "<"
+        case "b.le": return "<="
+        case "b.gt": return ">"
+        case "b.ge": return ">="
+        case "b.cc", "b.lo": return "<\u{1D41}"
+        case "b.ls": return "<=\u{1D41}"
+        case "b.hi": return ">\u{1D41}"
+        case "b.cs", "b.hs": return ">=\u{1D41}"
         case "b.mi": return "< 0 //"
         case "b.pl": return ">= 0 //"
         case "b.vs": return "overflow"

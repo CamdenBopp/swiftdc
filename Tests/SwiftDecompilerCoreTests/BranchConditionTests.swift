@@ -35,6 +35,28 @@ import Testing
     }
 }
 
+/// `b.hi`/`b.hs`/`b.lo`/`b.ls` compare unsigned. `(10...20).contains(p[3])`
+/// lowers to `sub x8, x8, #10; cmp x8, #10; b.hi`, which rendered `x8 > 0xa`:
+/// as a signed test it is false for every p[3] below 10, where the binary
+/// takes the branch.
+@Test func aCarryConditionRendersUnsignedIfPresent() async throws {
+    for level in ["opt", "osize"] {
+        let path = "Fixtures/Sample/libConditions.\(level).dylib"
+        guard FileManager.default.fileExists(atPath: path) else { continue }
+        let functions = try await withStableDependencies {
+            try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "Conditions.rng")
+        }
+        let text = try #require(functions.first).renderStructured()
+        #expect(text.contains("x8 >\u{1D41} 0xa") || text.contains("x8 <=\u{1D41} 0xa"), "\(level): \(text)")
+        #expect(!text.contains("x8 > 0xa"), "\(level): \(text)")
+    }
+}
+
+@Test func theCarryConditionsMapToUnsignedOperators() {
+    #expect(ControlFlowStructure.inverted("a >\u{1D41} b") == "a <=\u{1D41} b")
+    #expect(ControlFlowStructure.inverted("?") == "?")
+}
+
 /// The tracer invalidates the flags on every instruction that writes them
 /// (Capstone's `updatesFlags`), not on a list: the list missed `ngcs` and
 /// `negs`, so `cmp x0, #1; ngcs xzr, x2; cset w0, lt` (a 128-bit compare)
