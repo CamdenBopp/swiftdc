@@ -426,7 +426,7 @@ public struct Disassembler: Sendable {
         let unlabeled = Set(boundaries).subtracting(labelByAddress.keys)
         var metadataNames: [UInt64: String] = [:]
         if Double(unlabeled.count) > Double(max(boundaries.count, 1)) * 0.25 {
-            metadataNames = await MetadataSymbolizer(preset: preset).functionNames(in: machO)
+            metadataNames = MetadataSymbolizer().functionNames(in: machO)
         }
 
         func span(_ index: Int) -> (start: UInt64, stop: UInt64) {
@@ -611,7 +611,7 @@ public struct Disassembler: Sendable {
         let unlabeled = boundaries.subtracting(labelByAddress.keys)
         var metadataNames: [UInt64: String] = [:]
         if Double(unlabeled.count) > Double(max(boundaries.count, 1)) * 0.25 {
-            metadataNames = await MetadataSymbolizer(preset: preset).functionNames(in: machO)
+            metadataNames = MetadataSymbolizer().functionNames(in: machO)
         }
 
         // Addresses the linker folded multiple distinct symbols onto (see
@@ -1465,7 +1465,7 @@ public struct Disassembler: Sendable {
         let unlabeled = boundarySet.subtracting(labels.keys)
         var metadataNames: [UInt64: String] = [:]
         if Double(unlabeled.count) > Double(max(boundarySet.count, 1)) * 0.25 {
-            metadataNames = await MetadataSymbolizer(preset: preset).functionNames(in: machO)
+            metadataNames = MetadataSymbolizer().functionNames(in: machO)
         }
 
         let textEnd = textSectionBounds(in: machO).map { $0.address + UInt64($0.size) }
