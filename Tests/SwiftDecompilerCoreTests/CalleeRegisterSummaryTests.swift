@@ -113,3 +113,51 @@ private func structured(_ filter: String, in fixture: String) async throws -> St
         #expect(!chained.contains("bump(pick"), "\(level): \(chained)")
     }
 }
+
+/// Preservation, not storage, decides a clobber. Assembled the same way,
+/// decoded at 0x2000:
+///
+///     spillsNoReload: str x19, [sp, #-16]!; mov x19, x0; add sp, sp, #16; ret
+///     viaRegister:    mov x9, x19; mov x19, x0; mov x19, x9; ret
+///     framed:         stp x20, x19, [sp, #-32]!; stp x29, x30, [sp, #16];
+///                     add x29, sp, #16; mov x19, x0; mov x20, x1; bl framed;
+///                     ldp x29, x30, [sp, #16]; ldp x20, x19, [sp], #32; ret
+///     onePath:        str x19, [sp, #-16]!; mov x19, x0; cbz x0, 1f;
+///                     ldr x19, [sp]; 1: add sp, sp, #16; ret
+///     subFrame:       sub sp, sp, #0x40; stp x29, x30, [sp, #0x30];
+///                     str x21, [sp, #0x20]; add x29, sp, #0x30; mov x21, x2;
+///                     ldur x21, [x29, #-0x10]; ldp x29, x30, [sp, #0x30];
+///                     add sp, sp, #0x40; ret
+@Test func calleeSavedClobbersComeFromPreservationNotStorage() throws {
+    let words: [UInt32] = [
+        0xf81f0ff3, 0xaa0003f3, 0x910043ff, 0xd65f03c0, 0xaa1303e9, 0xaa0003f3,
+        0xaa0903f3, 0xd65f03c0, 0xa9be4ff4, 0xa9017bfd, 0x910043fd, 0xaa0003f3,
+        0xaa0103f4, 0x97fffffb, 0xa9417bfd, 0xa8c24ff4, 0xd65f03c0, 0xf81f0ff3,
+        0xaa0003f3, 0xb4000040, 0xf94003f3, 0x910043ff, 0xd65f03c0, 0xd10103ff,
+        0xa9037bfd, 0xf90013f5, 0x9100c3fd, 0xaa0203f5, 0xf85f03b5, 0xa9437bfd,
+        0x910103ff, 0xd65f03c0,
+    ]
+    let layout: [(String, UInt64)] = [
+        ("spillsNoReload", 0x0), ("viaRegister", 0x10), ("framed", 0x20), ("onePath", 0x44), ("subFrame", 0x5c),
+    ]
+    let engine = try #require(CapstoneEngine())
+    let bytes = words.flatMap { word in (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) } }
+    let decoded = engine.disassemble(Data(bytes), address: 0x2000)
+    try #require(decoded.count == words.count)
+    var clobbers: [String: Set<String>] = [:]
+    for (index, (name, offset)) in layout.enumerated() {
+        let end = index + 1 < layout.count ? 0x2000 + layout[index + 1].1 : UInt64.max
+        let body = decoded.filter { $0.address >= 0x2000 + offset && $0.address < end }.map {
+            Instruction(address: $0.address, text: $0.text, controlFlow: $0.controlFlow,
+                        branchTarget: $0.branchTarget, detail: $0.detail)
+        }
+        let function = DisassembledFunction(symbol: name, demangledName: nil, startAddress: 0x2000 + offset,
+                                            instructions: body, source: .symbol)
+        clobbers[name] = try #require(CalleeRegisterSummary.of(function)).clobberedCalleeSaved
+    }
+    #expect(clobbers["spillsNoReload"] == ["x19"], "stored but never reloaded")
+    #expect(clobbers["viaRegister"] == [], "restored through x9")
+    #expect(clobbers["framed"] == [], "the standard frame")
+    #expect(clobbers["onePath"] == ["x19"], "reloaded on one path only")
+    #expect(clobbers["subFrame"] == [], "saved off sp, reloaded off x29")
+}

@@ -226,10 +226,17 @@ because it cannot be distinguished from a right one by reading the output.
   `OUTLINED_FUNCTION_n` fragments reached by `bl` that keep no calling
   convention: inputs in w8, results in x1, x19/x20/x29 rewritten, a caller's
   epilogue popped. The Reconstruction fixture at -Osize has 39; 10 write a
-  callee-saved register. Fixed for soundness: a callee that writes x19–x29
-  without ever storing them has them forgotten after the call (the tracer kept
-  `self` in x20 across `add x20, sp, #8`), and the arity and Void rules above
-  stop invented data flow. Not fixed: readability. `ReconError.hashValue` reads
+  callee-saved register. Fixed for soundness: a callee-saved register a callee
+  does not provably hand back (its entry value at every `ret` and tail branch
+  out, tracked through moves, sp/x29 arithmetic and stack saves and reloads) is
+  forgotten after a call to it (the tracer kept `self` in x20 across `add x20,
+  sp, #8`), and the arity and Void rules above stop invented data flow. On the
+  system libswift_Concurrency it flags 23 of 3,079 non-async functions (x21 for
+  swifterror, C++ adapters on the swiftasync convention, the dylib's own
+  `OUTLINED_FUNCTION`s); async funclets are flagged too but are never `bl`ed. In
+  -Osize code a function whose epilogue is itself a fragment (`b
+  OUTLINED_FUNCTION_9` restores x19/x20) is flagged as well: sound, imprecise,
+  and fixed by following fragments (below). Not fixed: readability. `ReconError.hashValue` reads
   `OUTLINED_FUNCTION_36(); Hasher._combine(0); OUTLINED_FUNCTION_9(
   OUTLINED_FUNCTION_35())` where the source is `Hasher(_seed: 0)`, `_combine`,
   `_finalize`; inlining each fragment's few instructions into its caller would
