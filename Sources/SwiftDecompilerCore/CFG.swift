@@ -25,6 +25,12 @@ public extension DisassembledFunction {
         //    following any block-terminating control flow.
         var leaders: Set<UInt64> = [instructions[0].address]
         for (index, insn) in instructions.enumerated() {
+            // A trap ends its block like a return, though Capstone classes
+            // BRK/UDF as sequential; function-start extents can hold
+            // unreachable instructions after it, which are not its body.
+            if insn.isTrap, index + 1 < instructions.count {
+                leaders.insert(instructions[index + 1].address)
+            }
             switch insn.controlFlow {
             case .branch, .conditionalBranch, .return:
                 if index + 1 < instructions.count {
@@ -83,14 +89,9 @@ public extension DisassembledFunction {
             // A trap (`brk`/`udf`) never returns or falls through; Capstone
             // classifies it as sequential, so drop the spurious fall-through edge
             // that would otherwise make the trap sink look like ordinary code.
-            if isTrapInstruction(last) { return [] }
+            if last.isTrap { return [] }
             return next.map { [$0] } ?? []
         }
-    }
-
-    private static func isTrapInstruction(_ insn: Instruction) -> Bool {
-        let mnemonic = insn.text.prefix { $0 != " " && $0 != "\t" }
-        return mnemonic == "brk" || mnemonic == "udf" || mnemonic == "trap"
     }
 
     /// Render the function as a control-flow graph: basic blocks with `loc_<addr>`
@@ -113,5 +114,13 @@ public extension DisassembledFunction {
             }
         }
         return lines.joined(separator: "\n")
+    }
+}
+
+extension Instruction {
+    /// Trap termination, shared by the CFG and both pseudocode renderers.
+    var isTrap: Bool {
+        let mnemonic = text.prefix { $0 != " " && $0 != "\t" }
+        return mnemonic == "brk" || mnemonic == "udf" || mnemonic == "trap"
     }
 }

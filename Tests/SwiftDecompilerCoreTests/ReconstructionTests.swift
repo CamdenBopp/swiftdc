@@ -610,7 +610,9 @@ private func reconstructionStructured(
     // shared GPR bank, an order we don't decompose — declines rather than
     // mis-reconstruct a non-commutative body.
     if let combine = try await reconstructionPseudo("IntPair.combine") {
-        #expect(combine.contains("no non-runtime calls"))
+        // Its overflow traps render (`trap()`); its arithmetic does not.
+        #expect(!combine.contains("self."), "\(combine)")
+        #expect(!combine.contains("return ("), "\(combine)")
     }
 }
 

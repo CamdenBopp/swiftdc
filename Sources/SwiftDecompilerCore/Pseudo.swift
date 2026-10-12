@@ -28,6 +28,7 @@ public extension DisassembledFunction {
     /// their richer message-send rendering; direct stores to a known Swift
     /// field or Objective-C ivar reuse the field annotation from disassembly.
     static func pseudoStatement(of insn: Instruction, hideRuntime: Bool) -> String? {
+        if insn.isTrap { return "trap()" }
         if let annotation = insn.annotation {
             let semantic = annotation.components(separatedBy: "  ")
                 .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -55,10 +56,17 @@ public extension DisassembledFunction {
     /// (`callee(args)`, or `[receiver doThing:]` for a message send), or nil if
     /// `insn` is not a call boundary or is hidden runtime bookkeeping.
     static func callStatement(of insn: Instruction, hideRuntime: Bool) -> String? {
-        guard !insn.resultConsumed,
-              insn.controlFlow == .call || insn.controlFlow == .branch,
-              let callee = calleeName(of: insn)
-        else { return nil }
+        guard insn.controlFlow == .call || insn.controlFlow == .branch else { return nil }
+        guard let callee = calleeName(of: insn) else {
+            // An unknown target does not make the call pure: it is an effect,
+            // and its arguments may be the only rendering of earlier calls'
+            // results. The observed register values are not a claimed
+            // signature, so they are listed as recovered values, not arguments.
+            guard insn.controlFlow == .call else { return nil }
+            let arguments = (insn.callArguments ?? []).joined(separator: ", ")
+            return "/* unresolved call @ 0x\(String(insn.address, radix: 16)) */ indirect_call(?, recovered_args: [\(arguments)])"
+        }
+        guard !insn.resultConsumed else { return nil }
         let rawArguments = insn.callArguments ?? []
         // A dynamic cast reads its target type from the metadata argument that the
         // plumbing strip below would remove, so recognize it on the raw arguments

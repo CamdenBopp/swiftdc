@@ -253,7 +253,6 @@ struct ControlFlowStructure {
                 visited: &trialVisited, gotoTargets: &trialGotos,
                 loop: context, depth: depth + 1
             )
-            guard !chunk.contains(where: { $0.contains("// continues at") }) else { continue }
             visited = trialVisited
             gotoTargets = trialGotos
             lines += chunk
@@ -325,6 +324,9 @@ struct ControlFlowStructure {
         while progressed {
             progressed = false
             for index in blocks.indices where !visited.contains(index) && !isTrivialTail(index) {
+                // A detached block keeps its address identity: code after a
+                // trap is not the straight-line body of what precedes it.
+                gotoTargets.insert(index)
                 lines += emit(from: index, until: exit, indent: 1, visited: &visited, gotoTargets: &gotoTargets, loop: nil, depth: 0)
                 progressed = true
             }
@@ -390,7 +392,13 @@ struct ControlFlowStructure {
             }
             if visited.contains(current) {
                 if let loop, current == loop.header { lines.append("\(pad)continue") }
-                else { lines.append("\(pad)// continues at loc_\(hex(blocks[current].startAddress))") }
+                else {
+                    // A shared continuation emitted in another branch: a comment
+                    // here silently replaced the transfer with fall-through, so
+                    // jump to it, and label it even when its body came first.
+                    gotoTargets.insert(current)
+                    lines.append("\(pad)goto loc_\(hex(blocks[current].startAddress))")
+                }
                 break
             }
 
@@ -1114,14 +1122,14 @@ struct ControlFlowStructure {
               let last = blocks[node].instructions.last
         else { return false }
         let hasStatements = blocks[node].instructions.contains {
-            DisassembledFunction.pseudoStatement(of: $0, hideRuntime: true) != nil
+            !$0.isTrap && DisassembledFunction.pseudoStatement(of: $0, hideRuntime: true) != nil
         }
         guard !hasStatements else { return false }
         return last.controlFlow == .return || Self.isTrap(last)
     }
 
     private static func isTrap(_ insn: Instruction) -> Bool {
-        ["brk", "udf", "trap"].contains(decode(insn.text).0)
+        insn.isTrap
     }
 
     /// A pure trap sink: a block that only traps, with no recovered statements —
@@ -1130,7 +1138,7 @@ struct ControlFlowStructure {
     private func isTrivialTrapTail(_ node: Int) -> Bool {
         guard let last = blocks[node].instructions.last, Self.isTrap(last) else { return false }
         return !blocks[node].instructions.contains {
-            DisassembledFunction.pseudoStatement(of: $0, hideRuntime: true) != nil
+            !$0.isTrap && DisassembledFunction.pseudoStatement(of: $0, hideRuntime: true) != nil
         }
     }
 
