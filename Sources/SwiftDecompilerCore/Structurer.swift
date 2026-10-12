@@ -1288,8 +1288,17 @@ struct ControlFlowStructure {
                 if meet != pd[node] { pd[node] = meet; changed = true }
             }
         }
+        // The closest post-dominator has the largest set. On a DAG those sets
+        // are nested, so it is unique. A cycle the entry's DFS never visits
+        // (a loop inside a landing pad, which only the unwinder enters) stays
+        // in the forward graph, and the nodes on it can tie. The tie went to
+        // whichever the per-process hash seed iterated first, so the same
+        // binary rendered differently run to run. Ties now go to the lowest
+        // block index: address order.
         return (0..<count).map { node in
-            pd[node].subtracting([node]).max(by: { pd[$0].count < pd[$1].count }) ?? exit
+            pd[node].subtracting([node]).max(by: {
+                (pd[$0].count, -$0) < (pd[$1].count, -$1)
+            }) ?? exit
         }
     }
 }

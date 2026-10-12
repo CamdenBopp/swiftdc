@@ -35,6 +35,9 @@ private let cases: [(label: String, arguments: [String])] = [
     // difference.
     ("xrefs --unreferenced", ["xrefs", "Fixtures/Sample/libReconstruction.dylib", "--unreferenced"]),
     ("disasm --structured", ["disasm", "Fixtures/Sample/libSample.dylib", "--structured"]),
+    // Loops in catch handlers tie for immediate post-dominator; the tie was
+    // broken by hash order (five outputs in six runs before the fix).
+    ("disasm --structured landing pads", ["disasm", "Fixtures/Sample/libLandingPadLoop.dylib", "--structured"]),
 ]
 
 private func capture(_ arguments: [String]) throws -> Data {
