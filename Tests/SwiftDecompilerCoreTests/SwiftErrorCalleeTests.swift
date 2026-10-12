@@ -219,7 +219,8 @@ private func statementsAfterThrow(_ body: String) -> [String] {
     let text = functions.map { $0.renderPseudo() + "\n" + $0.renderStructured() }.joined(separator: "\n")
     guard text.contains("swift_willThrow(") else { return } // a different OS build
     #expect(!text.contains("swift_willThrow(swift_errorRelease"), "\(text)")
-    #expect(text.contains("swift_willThrow((extension in _RegexParser):Swift.Error.addingLocation("), "\(text)")
+    let expressions = expandingResultBindingsForAssertions(text)
+    #expect(expressions.contains("swift_willThrow((extension in _RegexParser):Swift.Error.addingLocation("), "\(text)")
 }
 
 /// A lazy protocol witness table accessor is `() -> WitnessTable`

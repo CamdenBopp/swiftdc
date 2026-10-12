@@ -115,7 +115,7 @@ import Testing
     }
 
     func pseudo(_ selector: String) -> String {
-        functions.first(where: { $0.objcMethod?.selector == selector })?.renderPseudo() ?? ""
+        expandingResultBindingsForAssertions(functions.first(where: { $0.objcMethod?.selector == selector })?.renderPseudo() ?? "")
     }
 
     let initializer = pseudo("initWithName:count:")

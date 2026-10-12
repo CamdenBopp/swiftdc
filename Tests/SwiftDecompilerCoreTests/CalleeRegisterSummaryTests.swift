@@ -109,7 +109,7 @@ private func structured(_ filter: String, in fixture: String) async throws -> St
         #expect(printed.contains("bump()"), "\(level): \(printed)")
         #expect(!printed.contains("bump(printf"), "\(level): \(printed)")
         #expect(printed.contains("printf("), "\(level): \(printed)")
-        #expect(chained.contains("pick(twice("), "\(level): \(chained)")
+        #expect(expandingResultBindingsForAssertions(chained).contains("pick(twice("), "\(level): \(chained)")
         #expect(!chained.contains("bump(pick"), "\(level): \(chained)")
     }
 }

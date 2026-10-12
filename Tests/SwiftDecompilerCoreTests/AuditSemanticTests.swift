@@ -76,3 +76,39 @@ func structuredLoops(_ text: String) -> [(header: String, body: [String], after:
         #expect(loops > 0, "\(path): no loops rendered")
     }
 }
+
+@Test func singleUseCallsStayBeforeEffectsAndBranchesIfPresent() async throws {
+    let path = "Fixtures/Sample/libAuditSemantics.opt.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "AuditSemantics")
+    }
+    for name in ["ordered", "branched"] {
+        let function = try #require(functions.first { $0.displayName.hasPrefix("AuditSemantics.\(name)(") })
+        for (structured, text) in [(false, function.renderPseudo()), (true, function.renderStructured())] {
+            let producer = try #require(text.range(of: "let r0 = AuditSemantics.next("), Comment(rawValue: text))
+            let effect = try #require(text.range(of: name == "branched" && structured ? "if (" : "AuditSemantics.log("), Comment(rawValue: text))
+            #expect(producer.lowerBound < effect.lowerBound, Comment(rawValue: text))
+            #expect(text.contains("return r0"), Comment(rawValue: text))
+            #expect(text.components(separatedBy: "AuditSemantics.next(").count == 2, Comment(rawValue: text))
+        }
+    }
+    let adjacent = try #require(functions.first { $0.displayName.hasPrefix("AuditSemantics.adjacent(") }).renderStructured()
+    #expect(adjacent.contains("AuditSemantics.next(arg0)"), Comment(rawValue: adjacent))
+    #expect(!adjacent.contains("let r"), Comment(rawValue: adjacent))
+}
+
+/// Loads between a call and its use reorder nothing a reader sees. Treating
+/// the epilogue's `ldp x29, x30` between `bl Hasher._finalize` and `ret` as
+/// an effect turned `return Swift.Hasher._finalize()` into
+/// `let r0 = Swift.Hasher._finalize(); return r0` (158 fixture lines).
+@Test func aResultReturnedPastTheEpilogueStaysInlineIfPresent() async throws {
+    let path = "Fixtures/Sample/libReconstruction.opt.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "hashValue")
+    }
+    let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(text.contains("return Swift.Hasher._finalize("), Comment(rawValue: text))
+    #expect(!text.contains("= Swift.Hasher._finalize("), Comment(rawValue: text))
+}

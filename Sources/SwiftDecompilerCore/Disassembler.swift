@@ -826,6 +826,26 @@ public struct Disassembler: Sendable {
         return capstoneInstructions(in: machO, span: (address, stop))
     }
 
+    /// Whether an instruction between a call and the use of its result would
+    /// be reordered by printing the call at the use: another call or any
+    /// control flow, an instruction without detail, or a write to memory
+    /// other than the frame. Loads are not: the epilogue's `ldp x29, x30`
+    /// between `bl _finalize` and `ret` turned `return _finalize()` into
+    /// `let r0 = _finalize(); return r0` in 158 fixture lines.
+    static func isOrderingEffect(_ insn: Instruction) -> Bool {
+        guard insn.controlFlow == nil || insn.controlFlow == .sequential, let detail = insn.detail else { return true }
+        let mnemonic = insn.text.prefix { !$0.isWhitespace }
+        let writesMemory = mnemonic.hasPrefix("st") || mnemonic.hasPrefix("swp") || mnemonic.hasPrefix("cas")
+            || ["ldadd", "ldclr", "ldeor", "ldset", "ldsmax", "ldsmin", "ldumax", "ldumin"].contains { mnemonic.hasPrefix($0) }
+        guard writesMemory else { return false }
+        for info in detail.operands {
+            if case .memory(let base?, _, _) = info.operand, base.key == "sp" || base.key == "x29" {
+                return false
+            }
+        }
+        return true
+    }
+
     /// The address a Swift String object word `(address − 32) | 1<<63`
     /// holds, for a literal's object (see `swiftLargeStringLiteral`).
     static func largeStringObjectAddress(_ value: AbstractValue) -> UInt64? {
@@ -4562,50 +4582,86 @@ public struct Disassembler: Sendable {
         // once and `rN` everywhere. The idea is the pre-merge stash's
         // (983aa25, `let call_<addr>`); the binding is the existing one.
         var directUses: [UInt64: Int] = [:]
-        func countDirectUses(_ value: AbstractValue) {
+        var directConsumers: [UInt64: Set<UInt64>] = [:]
+        func countDirectUses(_ value: AbstractValue, at consumer: UInt64) {
             switch value {
-            case .callResult(let site): directUses[site, default: 0] += 1
-            case .binary(_, let lhs, let rhs): countDirectUses(lhs); countDirectUses(rhs)
-            case .unary(_, let operand): countDirectUses(operand)
+            case .callResult(let site):
+                directUses[site, default: 0] += 1
+                directConsumers[site, default: []].insert(consumer)
+            case .binary(_, let lhs, let rhs): countDirectUses(lhs, at: consumer); countDirectUses(rhs, at: consumer)
+            case .unary(_, let operand): countDirectUses(operand, at: consumer)
             case .select(let condition, let whenTrue, let whenFalse):
-                countDirectUses(condition); countDirectUses(whenTrue); countDirectUses(whenFalse)
-            case .aggregate(let values): values.forEach(countDirectUses)
+                countDirectUses(condition, at: consumer); countDirectUses(whenTrue, at: consumer); countDirectUses(whenFalse, at: consumer)
+            case .aggregate(let values): values.forEach { countDirectUses($0, at: consumer) }
             default: break
             }
         }
         for (address, values) in argumentsByAddress {
             guard let callee = calleeByAddress[address], !DisassembledFunction.isRuntimeNoise(callee) else { continue }
-            normalizedArguments(callee: callee, values: values).forEach(countDirectUses)
+            normalizedArguments(callee: callee, values: values).forEach { countDirectUses($0, at: address) }
         }
-        for value in analysis.branchConditions.values { countDirectUses(value) }
-        for access in analysis.selfFieldAccesses.values {
-            if let values = access.storedValues { values.forEach(countDirectUses) }
-            else if let value = access.storedValue { countDirectUses(value) }
+        for (address, value) in analysis.branchConditions { countDirectUses(value, at: address) }
+        for insn in function.instructions where insn.controlFlow == .branch && insn.branchTarget == nil
+            && function.switchTargets[insn.address] == nil && !asyncReturns.contains(insn.address) {
+            if let target = analysis.indirectControlFlowTargets[insn.address] { countDirectUses(target, at: insn.address) }
+        }
+        for (address, access) in analysis.selfFieldAccesses {
+            if let values = access.storedValues { values.forEach { countDirectUses($0, at: address) } }
+            else if let value = access.storedValue { countDirectUses(value, at: address) }
         }
         if function.objcMethod.map({ !$0.returnsVoid }) == true {
             for insn in function.instructions where insn.controlFlow == .return {
-                analysis.exitValues[insn.address].map(countDirectUses)
+                analysis.exitValues[insn.address].map { countDirectUses($0, at: insn.address) }
             }
         } else if function.objcMethod == nil, returnsDirectly,
                   let register = Self.swiftReturnRegister(of: function, enumCaseIndex: enumCaseIndex,
                                                           classTypeIndex: classTypeIndex) {
             for insn in function.instructions where isReturn(insn) && !throwExits.contains(insn.address) {
                 (register == .floating ? analysis.exitFloatValues : analysis.exitValues)[insn.address]
-                    .map(countDirectUses)
+                    .map { countDirectUses($0, at: insn.address) }
+            }
+        }
+        for address in asyncReturns where !throwExits.contains(address) {
+            let value = asyncReturnRegister == .floating ? analysis.exitFloatValues[address] : analysis.exitValues[address]
+            if asyncReturnRegister != nil, let value { countDirectUses(value, at: address) }
+        }
+        // A single use may inline only inside the same basic block without
+        // crossing another call, a memory access, or an unknown instruction.
+        // Otherwise moving an evaluation to its use changes when (or whether)
+        // it runs. Bind it at the original instruction instead.
+        var location: [UInt64: (block: Int, index: Int)] = [:]
+        let bindingBlocks = function.basicBlocks()
+        for (block, body) in bindingBlocks.enumerated() {
+            for (index, insn) in body.instructions.enumerated() { location[insn.address] = (block, index) }
+        }
+        func crossesEffect(_ site: UInt64) -> Bool {
+            guard let producer = location[site] else { return true }
+            return (directConsumers[site] ?? []).contains { address in
+                guard let consumer = location[address], consumer.block == producer.block,
+                      consumer.index > producer.index else { return true }
+                return bindingBlocks[producer.block].instructions[(producer.index + 1)..<consumer.index].contains(where: Self.isOrderingEffect)
             }
         }
         let reusedCalls = directUses.compactMap { site, uses -> UInt64? in
-            guard uses > 1, let callee = calleeByAddress[site],
+            guard uses > 1 || crossesEffect(site), let callee = calleeByAddress[site],
                   !DisassembledFunction.isRuntimeNoise(callee),
                   !DisassembledFunction.isGenericPlumbingCallee(callee),
                   DisassembledFunction.arrayLiteralPlaceholder(callee: callee) == nil,
                   DisassembledFunction.castPassthroughIndex(of: callee) == nil,
-                  selfAccessors[callee] == nil,
                   // Rendered as `a == b` by renderBoolean before any binding is
                   // read: the synthesized equality is pure, and a `let` for it
                   // would never be used.
                   !callee.contains("__derived_enum_equals")
             else { return nil }
+            // A literal-to-String conversion is pure compiler lowering. Keep
+            // it visible to the interpolation folder; arbitrary String
+            // initializers, including user conversions, are still bound.
+            if callee.hasPrefix("Swift.String.init("),
+               let values = argumentsByAddress[site], values.count == 3,
+               case .address(let address) = values[0], case .immediate(let count) = values[1],
+               case .immediate(1) = values[2],
+               let literal = ReferenceResolver.rawCString(at: address, in: resolver.machO, ranges: resolver.fileRanges),
+               UInt64(literal.utf8.count) == count { return nil }
             return site
         }
         reusedResultSites = Set(reusedCalls).subtracting(wordSites)

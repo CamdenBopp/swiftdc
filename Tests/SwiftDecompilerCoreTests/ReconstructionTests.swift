@@ -131,10 +131,10 @@ private func reconstructionStructured(
 
 @Test func namesVTablePropertyAccessIfPresent() async throws {
     guard let doubled = try await reconstructionPseudo("doubled") else { return }
-    #expect(doubled.contains("return (self.value + self.value)"))
+    #expect(expandingResultBindingsForAssertions(doubled).contains("return (self.value + self.value)"))
 
     guard let advance = try await reconstructionPseudo("advance") else { return }
-    #expect(advance.contains("self.value = (self.value + self.step)"))
+    #expect(expandingResultBindingsForAssertions(advance).contains("self.value = (self.value + self.step)"))
 
     guard let reset = try await reconstructionPseudo("reset") else { return }
     #expect(reset.contains("self.value = 0"))
