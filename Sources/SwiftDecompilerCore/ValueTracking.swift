@@ -432,6 +432,11 @@ public struct ValueTracer: Sendable {
     /// by a pointer-width load from `asyncContext + offset`.
     let asyncContextSlots: [Int: AbstractValue]
 
+    /// Callee address → the callee-saved registers its body writes without
+    /// saving (`CalleeRegisterSummary`): an outlined fragment reached by `bl`
+    /// does not preserve them, so they are forgotten after a call to it.
+    var calleeClobbers: [UInt64: Set<String>] = [:]
+
     public init(calleeConventions: [UInt64: CalleeResultConvention] = [:], asyncContextSlots: [Int: AbstractValue] = [:]) {
         self.calleeConventions = calleeConventions
         self.asyncContextSlots = asyncContextSlots
@@ -857,6 +862,9 @@ public struct ValueTracer: Sendable {
             // carries `self` and locals across a call.
             for index in 1...17 { registers["x\(index)"] = .unknown }
             registers["x30"] = .unknown
+            if let target = insn.branchTarget, let clobbered = calleeClobbers[target] {
+                for key in clobbered { registers[key] = .unknown }
+            }
             // The vector/floating-point bank: v0–v7 and v16–v31 are caller-saved
             // (only the low 64 bits of v8–v15 survive a call). Clobbering them is
             // what stops a stale `d0` from before the call being read as the
@@ -894,6 +902,13 @@ public struct ValueTracer: Sendable {
                 // the first argument — so those element stores can be gathered.
                 let count: Int = { if case .immediate(let n) = incomingX0 { return Int(n) } else { return -1 } }()
                 registers["x0"] = .arrayLiteral(site: insn.address, count: count)
+            } else if DisassembledFunction.splitSignature(callee)?.result == "()" {
+                // A Swift callee returning Void leaves x0 holding whatever it
+                // last computed. As a result, it rendered a value flowing on:
+                // `OUTLINED_FUNCTION_35(Swift.Hasher._combine(0))` for a fragment
+                // that takes nothing after `_combine(Swift.UInt) -> ()`.
+                registers["x0"] = .unknown
+                registers["v0"] = nil
             } else if initializerEntry, callee.hasPrefix("objc_msgSendSuper") {
                 // `self = [super init…]`: after the assignment, the returned
                 // object is the initializer's current self even if the runtime

@@ -459,6 +459,7 @@ public struct Disassembler: Sendable {
         // the whole image.
         var targets = Set<UInt64>()
         var indirectResultUses: [UInt64: IndirectResultUse] = [:]
+        var registerSummaries: [UInt64: CalleeRegisterSummary] = [:]
         for index in boundaries.indices {
             let instructions = capstoneInstructions(in: machO, span: span(index))
             collectUnnamedCallTargets(in: instructions, names: names, into: &targets)
@@ -466,11 +467,13 @@ public struct Disassembler: Sendable {
             // `PerFunctionContext.indirectResultUses`); decoded here so pass 2
             // need not look ahead.
             if !instructions.isEmpty {
-                indirectResultUses[boundaries[index]] = Self.indirectResultUse(of: makeFunction(
+                let function = makeFunction(
                     start: boundaries[index], instructions: instructions,
                     labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
                     metadataNames: metadataNames, objcIndex: objcIndex
-                ))
+                )
+                indirectResultUses[boundaries[index]] = Self.indirectResultUse(of: function)
+                registerSummaries[boundaries[index]] = CalleeRegisterSummary.of(function)
             }
         }
         names = resolveCrossImageNames(targets, into: names, resolver: cacheSymbols)
@@ -531,6 +534,7 @@ public struct Disassembler: Sendable {
             payloadEnumIndex: PayloadEnumCaseIndex.build(in: machO),
             classTypeIndex: ClassTypeIndex.build(in: machO),
             indirectResultUses: indirectResultUses,
+            registerSummaries: registerSummaries,
             asyncIndex: asyncIndex, asyncChainSlots: chainSlots
         )
 
@@ -724,6 +728,10 @@ public struct Disassembler: Sendable {
                 functions.map { ($0.startAddress, Self.indirectResultUse(of: $0)) },
                 uniquingKeysWith: { a, _ in a }
             ),
+            registerSummaries: Dictionary(
+                functions.compactMap { function in CalleeRegisterSummary.of(function).map { (function.startAddress, $0) } },
+                uniquingKeysWith: { a, _ in a }
+            ),
             asyncIndex: asyncIndex, asyncChainSlots: chainSlots
         )
         functions = functions.map { analyzeFunction($0, context: context) }
@@ -753,6 +761,9 @@ public struct Disassembler: Sendable {
         /// Function start → whether its body reads the incoming x8, so a call to
         /// it is known to write (or not write) through the caller's x8.
         var indirectResultUses: [UInt64: IndirectResultUse] = [:]
+        /// Function start → what its body proves about the registers a call to
+        /// it reads and clobbers, for callees no signature describes.
+        var registerSummaries: [UInt64: CalleeRegisterSummary] = [:]
         /// Async funclet chains and their suspension points.
         let asyncIndex: AsyncFuncletIndex
         /// Per chain (keyed by entry address), the context slots proven to hold
@@ -894,7 +905,8 @@ public struct Disassembler: Sendable {
             ),
             asyncContextSlots: chainSlots,
             asyncSuspensions: Self.asyncSuspensionNotes(in: function, index: context.asyncIndex),
-            objcIndex: context.objcIndex
+            objcIndex: context.objcIndex,
+            registerSummaries: context.registerSummaries
         )
     }
 
@@ -1496,7 +1508,7 @@ public struct Disassembler: Sendable {
     /// Adjacent matches (gap < 64 KB) are coalesced so a cluster is one decode.
     /// A filtered disasm decodes only these ranges instead of all of `__text`.
     /// The `[start, stop)` spans of the functions `instructions` call directly
-    /// (by `bl` to a known function boundary) that `covered` does not already
+    /// (by `bl`, or a tail `b`, to a known function boundary) that `covered` does not already
     /// include. One level only: the callee facts a caller's analysis needs are
     /// about the callee's own body, not the callee's callees.
     private func calleeRanges(
@@ -1512,7 +1524,9 @@ public struct Disassembler: Sendable {
         guard let text = textSectionBounds(in: machO) else { return [] }
         let textEnd = text.address + UInt64(text.size)
         var targets = Set<UInt64>()
-        for insn in instructions where insn.controlFlow == .call {
+        // A tail branch to a function start is a call too: its callee's body
+        // bounds the arguments it renders (`b bump` after `printf`).
+        for insn in instructions where insn.controlFlow == .call || insn.controlFlow == .branch {
             guard let target = insn.branchTarget, boundarySet.contains(target),
                   target >= text.address, target < textEnd,
                   !covered.contains(where: { $0.start <= target && target < $0.stop })
@@ -2899,7 +2913,8 @@ public struct Disassembler: Sendable {
         calleeConventions: [UInt64: CalleeResultConvention] = [:],
         asyncContextSlots: [Int: AbstractValue] = [:],
         asyncSuspensions: [UInt64: AsyncSuspensionNote] = [:],
-        objcIndex: ObjCMetadataIndex? = nil
+        objcIndex: ObjCMetadataIndex? = nil,
+        registerSummaries: [UInt64: CalleeRegisterSummary] = [:]
     ) -> DisassembledFunction {
         // Floating-point signature info: which arguments are float, and whether
         // the function's float type is double-precision — so a literal operand
@@ -3018,7 +3033,18 @@ public struct Disassembler: Sendable {
             ValueTracer.trimTrailingUnknown(values.map(sanitizeValue))
         }
 
-        let analysis = ValueTracer(calleeConventions: calleeConventions, asyncContextSlots: asyncContextSlots).analyze(function, entry: entry)
+        var tracer = ValueTracer(calleeConventions: calleeConventions, asyncContextSlots: asyncContextSlots)
+        var callTargets: [UInt64: UInt64] = [:]
+        for insn in function.instructions where insn.controlFlow == .call || insn.controlFlow == .branch {
+            guard let target = insn.branchTarget, registerSummaries[target] != nil else { continue }
+            // A tail branch passes its arguments the same way a call does.
+            callTargets[insn.address] = target
+            if insn.controlFlow == .call, let clobbered = registerSummaries[target]?.clobberedCalleeSaved,
+               !clobbered.isEmpty {
+                tracer.calleeClobbers[target] = clobbered
+            }
+        }
+        let analysis = tracer.analyze(function, entry: entry)
         // An x8-indirect function's x0 at `ret` is whatever was last left there
         // (usually a stale argument), never its result. Both single-register
         // return paths below are gated on this so no fabricated `return arg0`
@@ -3269,6 +3295,19 @@ public struct Disassembler: Sendable {
                     values = (0 ..< 8).map { $0 < values.count ? values[$0] : .unknown }
                         + site.stackArguments.prefix(fixedStackCount)
                 }
+            }
+            // An in-image callee no signature describes passes what its body
+            // reads: `bump(void)` after `printf` rendered `bump(printf(…))`,
+            // and an outlined fragment that reads no argument register took
+            // whatever x0 held.
+            // A Swift signature names its parameters even where the -O body
+            // ignores them (`gen<A>(arg0, arg1)`), so only a callee with none
+            // (C, `sub_…`, an outlined fragment) is bounded by its body.
+            if let target = callTargets[address], let summary = registerSummaries[target],
+               calleeByAddress[address].flatMap({ DisassembledFunction.splitSignature($0) }) == nil,
+               calleeByAddress[address].flatMap({ selectorName(callee: $0, arguments: values) }) == nil,
+               calleeByAddress[address].flatMap(DisassembledFunction.knownCArity(of:)) == nil {
+                values = Array(values.prefix(summary.argumentCount))
             }
             if let values = sanitize(values) { argumentsByAddress[address] = values }
         }
@@ -4313,13 +4352,14 @@ public struct Disassembler: Sendable {
             }
         }
         for insn in function.instructions {
-            if let site = sites[insn.address],
+            // A call result is consumed by a call that renders it, so only
+            // the arguments that render count. Read from the raw registers, a
+            // result the callee does not take was marked consumed and printed
+            // nowhere: `bump(void)` dropping a stale x0 erased `pick(twice(x))`.
+            if sites[insn.address] != nil,
                DisassembledFunction.calleeName(of: insn)
                 .map({ !DisassembledFunction.isRuntimeNoise($0) }) ?? true {
-                for value in site.arguments {
-                    collectCallResults(in: value, into: &consumedCallResults)
-                }
-                for value in site.stackArguments {
+                for value in argumentsByAddress[insn.address] ?? [] {
                     collectCallResults(in: value, into: &consumedCallResults)
                 }
             }

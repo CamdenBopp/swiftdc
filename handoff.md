@@ -401,6 +401,17 @@ Still in the stash, by the audit's priority:
 - Do not recover as written: the ObjC ivar-offset provenance (`try!` file
   read, per-slot `resolveRebase`); the `work/` binaries and Ghidra projects.
 
+### 8b. -Osize fragments (from the 2026-10-12 compiler-differential probe)
+
+Inline `OUTLINED_FUNCTION_n` bodies into their callers (tracer: run the
+fragment's instructions in the caller's state; a fragment ending in `b X` is
+a call to X; one reached by `b` is the caller's return). Soundness is already
+handled by `CalleeRegisterSummary`; this is readability. On a stripped build
+the fragments are `sub_` functions, so detect them by shape (no prologue,
+writes or reads outside the convention), not by name. Also worth a second
+compiler/linker for differential fixtures (ld64.lld, an older Swift): not
+installed on this host.
+
 ### 9. Everything else
 
 - Findings in `docs/research/decompiler-comparison.md` that never reached this

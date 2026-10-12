@@ -31,6 +31,17 @@ echo "==> reconstruction fixture (-O) — optimized/branchless lowerings"
 $SWIFTC -parse-as-library -O -emit-library -module-name Reconstruction reconstruction.swift -o libReconstruction.opt.dylib
 cp libReconstruction.opt.dylib libReconstruction.opt.stripped.dylib
 strip -x libReconstruction.opt.stripped.dylib 2>/dev/null || strip libReconstruction.opt.stripped.dylib
+# -Osize turns on LLVM's machine outliner: `OUTLINED_FUNCTION_n` fragments,
+# reached by `bl`, that read and write registers outside the calling
+# convention. The stripped copy keeps only their LC_FUNCTION_STARTS entries.
+$SWIFTC -parse-as-library -Osize -emit-library -module-name Reconstruction reconstruction.swift -o libReconstruction.osize.dylib
+cp libReconstruction.osize.dylib libReconstruction.osize.stripped.dylib
+strip -x libReconstruction.osize.stripped.dylib 2>/dev/null || strip libReconstruction.osize.stripped.dylib
+
+echo "==> C callees without signatures (callreads.c, -O0 and -O1)"
+for level in O0 O1; do
+    xcrun clang -arch arm64 -$level -dynamiclib callreads.c -o libCallReads.$level.dylib
+done
 
 echo "==> codegen fixture (-O), plus a stripped copy — compiler idioms in an image of their own"
 $SWIFTC -parse-as-library -O -emit-library -module-name Codegen codegen.swift -o libCodegen.opt.dylib

@@ -206,14 +206,34 @@ because it cannot be distinguished from a right one by reading the output.
   Repro: `nm libX.dylib | awk '$1=="<addr>"'` lists the aliases. The rendering
   needs a decision: decline (`sub_…` with a "folded: N functions" note), list the
   aliases, or prefer the one a specialization names.
-- **OPEN — an unknown-arity C call is shown consuming the previous call's
-  result.** A C callee has no signature, so x0 left over from the last call is
-  rendered as its argument: clang -O0 `printf(…); return bump();` with
-  `long bump(void)` renders `bump(printf(0x100000847))`. Found by compiling a C
-  probe with TinyCC (0.9.28rc, its own Mach-O linker) and confirmed on clang.
-  A sound fix: for a callee in the same image, classify which argument
-  registers its body reads before writing them (as `IndirectResultUse` does for
-  x8); decline for an external one unless a signature table names it.
+- **FIXED — an unknown-arity call was shown consuming the previous call's
+  result.** A callee with no signature rendered x0 left over from the last call
+  as its argument: `bump(printf(…))` for `long bump(void)`. Three causes, three
+  fixes. An in-image callee with no Swift signature takes the argument
+  registers its body may read before writing them (`CalleeRegisterSummary`, a
+  must-write dataflow over its CFG; a call or tail call inside reads them all);
+  the filtered path now decodes tail-branch callees for it. A Swift callee
+  returning `()` leaves x0 unknown: every synthesized `hashValue` rendered
+  `Hasher._finalize(Hasher._combine(0))`. And a call counts as consumed only by
+  arguments that render: once `bump` stopped taking the stale x0, `pick(twice(x),
+  7, x)` was printed nowhere. In libswift_Concurrency, `swift_task_getCurrent(r0)`
+  is now `swift_task_getCurrent()`. Fixture `libCallReads.{O0,O1}`;
+  `aCalleeWithoutASignatureTakesWhatItsBodyReadsIfPresent`,
+  `aVoidCalleesResultFlowsNowhereIfPresent` seen red. An external callee with
+  no signature still shows every live argument register.
+- **OPEN — `-Osize` outlined fragments render as calls.** LLVM's machine
+  outliner (Swift `-Osize`, C `-Oz`) moves repeated sequences into
+  `OUTLINED_FUNCTION_n` fragments reached by `bl` that keep no calling
+  convention: inputs in w8, results in x1, x19/x20/x29 rewritten, a caller's
+  epilogue popped. The Reconstruction fixture at -Osize has 39; 10 write a
+  callee-saved register. Fixed for soundness: a callee that writes x19–x29
+  without ever storing them has them forgotten after the call (the tracer kept
+  `self` in x20 across `add x20, sp, #8`), and the arity and Void rules above
+  stop invented data flow. Not fixed: readability. `ReconError.hashValue` reads
+  `OUTLINED_FUNCTION_36(); Hasher._combine(0); OUTLINED_FUNCTION_9(
+  OUTLINED_FUNCTION_35())` where the source is `Hasher(_seed: 0)`, `_combine`,
+  `_finalize`; inlining each fragment's few instructions into its caller would
+  read as source. Fixtures `libReconstruction.osize{,.stripped}.dylib`.
 - **OPEN — a variadic call's stack arguments are dropped, and a scratch x1 is
   read as one.** Apple's arm64 ABI passes variadic arguments on the stack. On
   the TinyCC probe, `printf("%s %ld %ld\n", greet(), add3(1,2,3), sum_to(10))`
