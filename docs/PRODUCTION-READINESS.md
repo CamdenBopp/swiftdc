@@ -25,6 +25,17 @@ docs against the source; its stale-claim findings are corrected below.
 The highest-severity category. A wrong render is worse than a missing one,
 because it cannot be distinguished from a right one by reading the output.
 
+- **FIXED (`096868b`) — any nominal return type read x0 as its result.** A
+  one-Double struct returns in v0 and a multi-word struct in x0/x1 or x8; every
+  memberwise init of a two- to four-word struct rendered `return arg0`. x0/v0
+  is now read only for proven single-register types (ABISource native oracle).
+- **FIXED (`096868b`) — an HFA value self was seeded before the float formals.**
+- **FIXED (`e26feb7`) — variadic stack arguments slid into fixed positions.**
+  `[NSArray arrayWithObjects:a, b, nil]` rendered `arrayWithObjects:0`.
+- **FIXED (`ea5e58e`, `c6f23b2`, `7e9a8c7`)** — a landing pad inherited the
+  entry's `self` (`Unwind_Resume(self)`); a field snapshot rendered as the
+  field after a store through self; a field was named from an access's first
+  byte only. Recovered from the pre-merge stash.
 - **FIXED — `udiv` rendered as the signed `/`, and signed constants folded
   unsigned.** sdiv and udiv were one operator, `.divide`, folded on raw bit
   patterns: `Int(bitPattern: UInt(bitPattern: a) / UInt(bitPattern: b))`
@@ -48,13 +59,14 @@ because it cannot be distinguished from a right one by reading the output.
   vtable entries, so a stripped binary keeps no trace of them and the address is
   named `Counter.getter`. True of the body (the bytes are identical), but a call
   from `Holder` code reads as a `Counter` call. No metadata-only fix exists.
-- **OPEN (reading, not reproduced) — other first-writer-wins maps at folded
-  addresses.** `SelfTypeIndex` (`bindings[address] == nil`) and the vtable
+- **FIXED (`6018c78`) — other first-writer-wins maps at folded
+  addresses.** Reproduced: `FoldRight.twiceTotal()` rendered `self.count`. `SelfTypeIndex` (`bindings[address] == nil`) and the vtable
   dispatch naming in `resolveVTableMethod` keep whichever owner reaches an
   address first, so a folded getter can bind `self` to the wrong class's fields.
   Same fix as `e3ed073`: collect every claim and decline on disagreement.
-- **OPEN (reading, not reproduced) — a `self` vtable dispatch becomes a proven
-  call edge.** `Disassembler.swift` (around 1688–1706) sets `branchTarget` to
+- **FIXED (`6621442`) — a `self` vtable dispatch became a proven call edge.**
+  It now renders `self.member(…)` and its edge is marked self dispatch; edges
+  to overrides are still absent. `Disassembler.swift` (around 1688–1706) sets `branchTarget` to
   the receiver class's own slot, but a subclass override in the image can run
   instead, and `CallGraph` records the edge as proven. Should be a possible
   edge unless the class or method is final.

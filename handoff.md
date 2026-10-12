@@ -69,11 +69,29 @@ Each with a measured or reproduced defect and a red/green `Verified:` line:
   UInt); signed constants fold signed
 - `3fbbff5` a call forgets the tracked NZCV flags
 
+Then, continuing the same day (each with a reproduction and a red/green
+`Verified:` line):
+
+- `d28689b` magic division proven by matching LLVM's own constants
+- `c18e6b4`, `ecf353e` Swift callee arguments laid out from the signature
+  (stale registers dropped; float slots from v0–v7; `Double(f)` fixed)
+- `6018c78`, `206ab79`, `6621442` folded vtable slots named for self's class;
+  self seeded for layout-less classes; a self dispatch renders `self.m()` and
+  its `xrefs` edge is marked possible
+- `e068140`, `e26feb7` variadic sends: format-counted arguments, positions
+  kept (nil was rendered as the first object), nil-terminated lists, `…` when
+  unprovable
+- `cb702aa` jump tables (compressed and arm64e hardened) into the CFG, `switch`
+- Recovered from the pre-merge stash (see "The pre-merge stash" below):
+  `ea5e58e` entry state only at the entry, `7e9a8c7` field lookup bounds,
+  `c6f23b2` self-field snapshots, `8d92415` traps/`goto`/unresolved calls,
+  `096868b` return register allowlist and HFA self order, `a2ef33c` hygiene
+
 Reverted before commit: a callee arity cap by parameter *count*. It dropped a
 real argument (`sink(_: String, _: Int)`: the String fills x0 and x1, the Int
 is x2). The sound version is the register-footprint plan in section 8.
 
-Suite: **361 tests** (334 before this session), green under `SWIFTDC_REQUIRE_FIXTURES=1 swift test` after
+Suite: **400 tests** (334 before this session), green under `SWIFTDC_REQUIRE_FIXTURES=1 swift test` after
 `Fixtures/Sample/build.sh` (new fixtures: libConversions, libRuntimeIvars,
 libCow; `maybeNext` in asyncfns, `nextUnlessZero`/`rankUnlessZero` in indirect).
 
@@ -312,7 +330,8 @@ against HEAD by reading code unless it says "reproduced".
 
 Soundness first, then completeness. Repro before any fix marked "unverified".
 
-1. **Callee arguments from a `CallSignature`.** Per slot: location (x0–x7,
+1. **Callee arguments from a `CallSignature`** (first slice shipped,
+   `c18e6b4`/`ecf353e`; next: the ObjC encoding classifier, known-void, `T?`). Per slot: location (x0–x7,
    v0–v7, x8, x20, x21, stack), role (formal, self, metadata, witness table,
    context, error, indirect result), provenance (Swift mangled signature, ObjC
    encoding, SDK prototype, callee read-before-write summary), and
@@ -325,13 +344,12 @@ Soundness first, then completeness. Repro before any fix marked "unverified".
    `mixed(arg0, ?, arg1)`; a generic callee stays unchanged. Then the
    known-void rule, then float arguments (snapshot v0–v7), then the ObjC
    encoding classifier. M.
-2. **Fold-aware identity everywhere**, starting with `SelfTypeIndex` and
-   vtable-dispatch naming (first-writer-wins today), then the type graph. S
-   then M.
+2. **Fold-aware identity**: `SelfTypeIndex` and vtable naming shipped
+   (`6018c78`); the type graph remains. M.
 3. ~~Prove magic division~~: shipped (structural match against LLVM's
    lowering with its own constants; exact linear check for the remainder).
-4. **Demote the self-vtable edge** to a possible edge unless final
-   (unverified; repro first), then the possible-edge layer in `xrefs`. S, M.
+4. ~~Demote the self-vtable edge~~ (`6621442`); the possible-edge layer in
+   `xrefs` (edges to overrides, selector candidates) remains. M.
 5. ~~Jump tables~~: compressed and hardened forms shipped (`JumpTables.swift`).
    Still owed: the switch index expression, a typed gap for an unrecovered
    `br`, and dyld-cache images. The stash (`git show d921fc1:Sources/SwiftDecompilerCore/JumpTableIndex.swift`)
@@ -344,6 +362,29 @@ Soundness first, then completeness. Repro before any fix marked "unverified".
    `multipliedFullWidth(by:).high`); 32-bit `smull`/`umull`; variadic
    arguments from the stack only; `__assert_rtn` names; `xrefs --unreferenced`
    split.
+
+### The pre-merge stash (stash@{0} = 983aa25, untracked half d921fc1)
+
+Taken on `improve/source-findings` before the unified merge; the merge
+carried that branch's commits but not this dirty tree. An audit
+(2026-10-12) found real, tested, unmerged work in it; it is Capstone 5, so
+every recovery is a port. Recovered so far: see the shipped list above.
+Still in the stash, by the audit's priority:
+
+- Typed Objective-C GP/FP/stack argument ABI, entry and outgoing
+  (`d921fc1:Sources/SwiftDecompilerCore/ObjCArgumentABI.swift`, its tests and
+  `objc_outgoing*.m` fixtures; mutation-proven). M.
+- Qualified identity for enum, class and payload-enum indexes and field maps
+  (two-module fixtures red/green). M.
+- Async index hardening (unique claims, hint boundaries, 64-bit widths). S–M.
+  Decide the context-slot policy first: the stash declines all slots, HEAD
+  accepts a unique store plus an escape check.
+- Call-result materialization (`let call_<addr>`). M.
+- W-register width, full NZCV, CCMP/FCMP/FCSEL, subword stack extents (four
+  new modules, 84k native vectors). L.
+- `@loader_path` external field maps. M. LSDA cleanup-pad tests. S.
+- Do not recover as written: the ObjC ivar-offset provenance (`try!` file
+  read, per-slot `resolveRebase`); the `work/` binaries and Ghidra projects.
 
 ### 9. Everything else
 
