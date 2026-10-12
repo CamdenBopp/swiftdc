@@ -434,3 +434,22 @@ func resumeFuncletsDoNotInheritTheSignatureArgumentsIfPresent(path: String) asyn
     #expect(rethrower.contains("} else {\n        throw ?"), Comment(rawValue: rethrower))
     #expect(!rethrower.contains("} else {\n        return\n"), Comment(rawValue: rethrower))
 }
+
+/// At -Onone a resume funclet stores its context into a slot of itself and
+/// reaches ResumeParent through that slot at each exit. Forwarding the store
+/// to the load proves those exits async returns: the result and the throw
+/// both rendered nothing.
+@Test func ononeAsyncExitsAreProvenThroughTheContextSlotIfPresent() async throws {
+    let fixture = "Fixtures/Sample/libAsyncFns.dylib"
+    guard FileManager.default.fileExists(atPath: fixture) else { return }
+    func structured(_ filter: String) async throws -> String {
+        let functions = try await withStableDependencies {
+            try await Disassembler(preset: .default).disassemble(path: fixture, functionFilter: filter)
+        }
+        return functions.map { $0.renderStructured() }.joined(separator: "\n")
+    }
+    let oneAwait = try await structured("oneAwait")
+    #expect(oneAwait.contains("return (awaited1 + 1)"), Comment(rawValue: oneAwait))
+    let thrower = try await structured("fetchOrThrow")
+    #expect(thrower.contains("throw ?"), Comment(rawValue: thrower))
+}

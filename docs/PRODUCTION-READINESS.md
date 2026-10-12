@@ -163,9 +163,15 @@ because it cannot be distinguished from a right one by reading the output.
   passing on the error it received). `fetchOrThrow` now reads `if (arg0 < 0) {
   …; throw ? } else { return arg0 }` and `awaitThrowing`'s resume `if (x20 == 0)
   { return (awaited1 << 1) } else { throw ? }`; 24 bare returns in
-  libswift_Concurrency became throws. Still open at -Onone, where the funclets'
-  context reloads through stack spills keep their exits from being proven async
-  returns at all. `asyncThrowsRenderAsThrowsIfPresent` was seen red.
+  libswift_Concurrency became throws. `asyncThrowsRenderAsThrowsIfPresent` was
+  seen red. At -Onone a funclet stores x22 into a slot of its own context and
+  reaches ResumeParent through it at each exit; the tracer now forwards that
+  store to the load (cleared at a call handed the context), so `oneAwait`'s
+  resume reads `return (awaited1 + 1)` and `fetchOrThrow` both its exits
+  (`ononeAsyncExitsAreProvenThroughTheContextSlotIfPresent`, seen red). Still
+  open at -Onone: an exit reached through a pointer *into* the context
+  (`str x9, [x8, #0x10]!` spilling `ctx + 0x10`, as `awaitThrowing`'s resume
+  does), which needs a context-plus-offset pointer value.
 - **FIXED — a throw merged into the normal epilogue rendered as a return.**
   At -O a throwing path can fall into the shared epilogue, one `ret` for both
   outcomes, so the merged x21 proved nothing and the path read `if (r0 < 0) {

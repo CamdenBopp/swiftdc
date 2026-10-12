@@ -891,6 +891,12 @@ public struct ValueTracer: Sendable {
             // carries `self` and locals across a call.
             for index in 1...17 { registers["x\(index)"] = .unknown }
             registers["x30"] = .unknown
+            // A callee handed the context (in an argument register; a call
+            // reached with `bl` gets x22 only as callee-saved state) may write
+            // it. `site` is the argument snapshot taken above.
+            if site.arguments.contains(.asyncContext) || site.selfValue == .asyncContext {
+                for key in registers.keys where key.hasPrefix(Self.contextSlotPrefix) { registers[key] = nil }
+            }
             if let target = insn.branchTarget, let clobbered = calleeClobbers[target] {
                 for key in clobbered { registers[key] = .unknown }
             }
@@ -2146,9 +2152,11 @@ public struct ValueTracer: Sendable {
                 write(dest, registers[Self.resultKey(offset, bytes: bytes)] ?? .unknown, into: &registers)
             case .asyncSlot(let offset):
                 // Only a full-width integer load carries a pointer: `ldr w9`
-                // drops its upper bits and `ldr d0` is a floating value.
+                // drops its upper bits and `ldr d0` is a floating value. A value
+                // this funclet itself stored there earlier comes back first.
                 let isPointerLoad = dest.kind == .gpr && dest.widthBits == 64
-                write(dest, isPointerLoad ? asyncSlotValue(at: offset) : .unknown, into: &registers)
+                let stored = registers[Self.contextSlotKey(offset)]
+                write(dest, isPointerLoad ? (stored ?? asyncSlotValue(at: offset)) : .unknown, into: &registers)
             case .asyncCalleeSlot(let offset):
                 // The callee context's first word is the caller's own context;
                 // nothing else in it is known here.
@@ -2184,10 +2192,18 @@ public struct ValueTracer: Sendable {
                     let bytes = Self.accessBytes(detail) ?? 8
                     Self.storeResult(value, at: offset, bytes: bytes, into: &registers)
                 }
-                if case .asyncSlot(let offset)? = target,
-                   detail.id == AARCH64_INS_STR || detail.id == AARCH64_INS_STUR,
-                   first.operand.register?.widthBits == 64 {
-                    recordSlotStore?(offset, value)
+                if case .asyncSlot(let offset)? = target {
+                    // -Onone stores x22 into its own context (`str x9, [x22,
+                    // #0x10]`) and reaches ResumeParent through it at each exit;
+                    // forwarding the store is what proves those exits returns.
+                    for key in Self.contextSlotKeys(overlapping: offset, bytes: Self.accessBytes(detail) ?? 8) {
+                        registers[key] = nil
+                    }
+                    if detail.id == AARCH64_INS_STR || detail.id == AARCH64_INS_STUR,
+                       first.operand.register?.widthBits == 64 {
+                        recordSlotStore?(offset, value)
+                        if value != .unknown { registers[Self.contextSlotKey(offset)] = value }
+                    }
                 }
                 // A full-width store establishes a useful equality: its source
                 // register now also holds the current ivar value. Canonicalizing
@@ -2242,6 +2258,8 @@ public struct ValueTracer: Sendable {
                 // pointer are written into a fresh callee context; the same shape
                 // spills two locals into the function's own context.
                 for (index, operand) in detail.operands.prefix(2).enumerated() {
+                    let value = source(operand, in: registers)
+                    registers[Self.contextSlotKey(offset + index * 8)] = value == .unknown ? nil : value
                     recordSlotStore?(offset + index * 8, source(operand, in: registers))
                 }
             }
@@ -2822,6 +2840,16 @@ public struct ValueTracer: Sendable {
     /// Stack slots share the register map, under a key no register can collide with.
     private static func stackKey(_ frameOffset: Int64) -> String { "stack@\(frameOffset)" }
     private static let outgoingPrefix = "outgoing@"
+
+    /// The register-state key for a word of the function's own async context
+    /// this funclet stored, by byte offset.
+    private static let contextSlotPrefix = "ownctx@"
+    static func contextSlotKey(_ offset: Int) -> String { "\(contextSlotPrefix)\(offset)" }
+    /// The 8-byte words a store of `bytes` at `offset` touches.
+    static func contextSlotKeys(overlapping offset: Int, bytes: Int) -> [String] {
+        let first = offset - ((offset % 8) + 8) % 8
+        return stride(from: first - 8, to: offset + bytes, by: 8).map(contextSlotKey)
+    }
     private static func outgoingKey(_ frameOffset: Int64) -> String { "\(outgoingPrefix)\(frameOffset)" }
     private static func stackOffset(from key: String) -> Int64? {
         guard key.hasPrefix("stack@") else { return nil }
