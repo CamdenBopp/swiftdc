@@ -58,6 +58,9 @@ echo "==> indirect tail calls and awaits (indirecttail.c -O2, indirectawait.swif
 xcrun clang -arch arm64 -O2 -dynamiclib indirecttail.c -o libIndirectTail.dylib
 $SWIFTC -parse-as-library -O -emit-library -module-name IndirectAwait indirectawait.swift -o libIndirectAwait.opt.dylib
 
+echo "==> audit semantic reductions (auditsemantics.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name AuditSemantics auditsemantics.swift -o libAuditSemantics.opt.dylib
+
 echo "==> C callees without signatures (callreads.c, -O0 and -O1)"
 for level in O0 O1; do
     xcrun clang -arch arm64 -$level -dynamiclib callreads.c -o libCallReads.$level.dylib

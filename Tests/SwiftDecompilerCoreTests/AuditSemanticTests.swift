@@ -30,3 +30,49 @@ import Testing
         }
     }
 }
+
+/// The loops a structured render contains, as (opening line, body lines,
+/// the line after the loop's closing brace).
+func structuredLoops(_ text: String) -> [(header: String, body: [String], after: String?)] {
+    let lines = text.components(separatedBy: "\n")
+    var loops: [(String, [String], String?)] = []
+    for (index, line) in lines.enumerated() where line.trimmingCharacters(in: .whitespaces).hasPrefix("while (") {
+        let indent = line.prefix { $0 == " " }.count
+        guard let close = lines[(index + 1)...].firstIndex(where: {
+            $0.prefix { $0 == " " }.count == indent && $0.trimmingCharacters(in: .whitespaces) == "}"
+        }) else { continue }
+        loops.append((line, Array(lines[(index + 1)..<close]), close + 1 < lines.count ? lines[close + 1] : nil))
+    }
+    return loops
+}
+
+/// An -O `for x in array` rendered `while (true) { log(); if (x19 != 1)
+/// { continue } }`: the CFG had the exit edge, but the structurer excluded
+/// the return block from the loop's exits and the exit vanished. And a
+/// loop's normal exit must lead where the code goes: rotating an
+/// overflow-checked loop on its `b.vs` printed the exit as `break` into the
+/// `trap()` after it (`accumulate`, whose loop returns when it ends).
+@Test func optimizedLoopsKeepTheirExitsIfPresent() async throws {
+    for path in ["Fixtures/Sample/libAuditSemantics.opt.dylib", "Fixtures/Sample/libReconstruction.opt.dylib",
+                 "Fixtures/Sample/libReconstruction.osize.dylib"] {
+        guard FileManager.default.fileExists(atPath: path) else { continue }
+        let functions = try await withStableDependencies {
+            try await Disassembler(preset: .default).disassemble(path: path)
+        }
+        var loops = 0
+        for function in functions {
+            let text = function.renderStructured()
+            for loop in structuredLoops(text) {
+                loops += 1
+                let exits = loop.body.contains { line in
+                    ["break", "return", "goto ", "throw", "trap()"].contains { line.contains($0) }
+                }
+                #expect(!loop.header.contains("while (true)") || exits, "\(path): no exit\n\(text)")
+                let breaks = loop.body.contains { $0.trimmingCharacters(in: .whitespaces) == "break" }
+                #expect(!(breaks && loop.after?.trimmingCharacters(in: .whitespaces) == "trap()"),
+                        "\(path): a break falls into a trap\n\(text)")
+            }
+        }
+        #expect(loops > 0, "\(path): no loops rendered")
+    }
+}

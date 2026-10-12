@@ -201,13 +201,13 @@ struct ControlFlowStructure {
             }
             bodies[h, default: [h]].formUnion(body)
         }
-        // A sink that ends in return/trap is abnormal/structured termination, not
-        // a loop's structured exit — exclude it so a loop whose body can trap
-        // still folds (the trap renders inline as `trap()`).
+        // A trap is abnormal termination, not the loop's structured exit.
+        // A return block can be its ordinary fall-out: excluding it left no
+        // exit to translate to `break` for optimized array iteration.
         func isSinkTail(_ s: Int) -> Bool {
             guard forward[s].isEmpty, backward[s].isEmpty, let last = blocks[s].instructions.last
             else { return false }
-            return last.controlFlow == .return || Self.isTrap(last)
+            return Self.isTrap(last)
         }
         var loops: [Int: LoopInfo] = [:]
         for (header, body) in bodies {
@@ -376,7 +376,13 @@ struct ControlFlowStructure {
         let exitSucc = takenInBody ? succs[1] : succs[0]
         // The exit must be the loop's structured exit or a `return`/`trap` tail the
         // loop falls out to — so control resumes cleanly there after the `while`.
-        guard exitSucc == (info.exit ?? exit) || isTrivialTail(exitSucc) else { return nil }
+        // A tail is the fall-out only when the loop has no other structured
+        // exit: a `break` resumes after the `while` too. An overflow-checked
+        // loop rotated on its `b.vs` printed its normal exit as `break` into
+        // the `trap()` that follows, claiming every run ends in a trap.
+        guard exitSucc == (info.exit ?? exit)
+                || (isTrivialTail(exitSucc) && (info.exit == nil || info.exit == exitSucc))
+        else { return nil }
         let bodyStart = takenInBody ? succs[0] : succs[1]
         // `succs[0]` is the branch-taken target. If taking the branch stays in the
         // loop, that condition keeps it running; otherwise invert the exit test.
@@ -539,9 +545,10 @@ struct ControlFlowStructure {
             } else if succs.count >= 2 {
                 let merge = ipdom[current]
                 let thenLines = edge(from: current, to: succs[0], until: merge, indent: indent + 1, visited: &visited, gotoTargets: &gotoTargets, loop: loop, depth: depth + 1)
-                let elseLines = succs[1] != merge
-                    ? edge(from: current, to: succs[1], until: merge, indent: indent + 1, visited: &visited, gotoTargets: &gotoTargets, loop: loop, depth: depth + 1)
-                    : []
+                // Even an edge to the join can leave the current loop. Let
+                // `edge` spell that transfer as `break` before suppressing an
+                // ordinary join edge; skipping it erased a rotated loop's exit.
+                let elseLines = edge(from: current, to: succs[1], until: merge, indent: indent + 1, visited: &visited, gotoTargets: &gotoTargets, loop: loop, depth: depth + 1)
                 let cond = branch?.text ?? "?"
                 if cond == "?" { Probe.record(.structureUnknownCondition, at: blocks[current].startAddress) }
                 // Collapse empty branches: drop a no-op `if`, invert when only the

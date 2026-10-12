@@ -44,6 +44,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libAsyncFns.opt.stripped.dylib",
         "Fixtures/Sample/libIndirectTail.dylib",
         "Fixtures/Sample/libIndirectAwait.opt.dylib",
+        "Fixtures/Sample/libAuditSemantics.opt.dylib",
     ]
 
     /// True on a run that must actually exercise the fixtures. `CI` is set by
