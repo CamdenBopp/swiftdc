@@ -80,6 +80,16 @@ public extension DisassembledFunction {
             // and its arguments may be the only rendering of earlier calls'
             // results. The observed register values are not a claimed
             // signature, so they are listed as recovered values, not arguments.
+            if insn.controlFlow == .branch, let target = indirectJumpTarget(of: insn) {
+                // A suspension is a call; any other indirect `br` may be a
+                // tail call or an unrecovered jump table, so it is a jump.
+                if let binding = awaitBinding(of: insn) {
+                    let call = "indirect_call(\(target))"
+                    return binding.isEmpty ? "await \(call)" : "let \(binding) = await \(call)"
+                }
+                let comment = target == "?" ? "/* unresolved indirect branch @ 0x\(String(insn.address, radix: 16)) */ " : ""
+                return "\(comment)indirect_jump(\(target))"
+            }
             guard insn.controlFlow == .call else { return nil }
             let arguments = (insn.callArguments ?? []).joined(separator: ", ")
             return "/* unresolved call @ 0x\(String(insn.address, radix: 16)) */ indirect_call(?, recovered_args: [\(arguments)])"
@@ -117,6 +127,19 @@ public extension DisassembledFunction {
         guard let annotation = insn.annotation else { return nil }
         for note in annotation.components(separatedBy: "  ") where note.hasPrefix("await=") {
             return String(note.dropFirst("await=".count))
+        }
+        return nil
+    }
+
+    /// The note on a `br` through a register to no known function, followed
+    /// by the rendered register value or `?` (see `enrichCallArguments`).
+    static let indirectJumpNote = "jump="
+
+    /// The rendered target of an indirect `br` the analysis marked, if any.
+    static func indirectJumpTarget(of insn: Instruction) -> String? {
+        guard let annotation = insn.annotation else { return nil }
+        for note in annotation.components(separatedBy: "  ") where note.hasPrefix(indirectJumpNote) {
+            return String(note.dropFirst(indirectJumpNote.count))
         }
         return nil
     }
@@ -383,7 +406,7 @@ public extension DisassembledFunction {
         guard let annotation else { return nil }
         let base = stripNotes(annotation)
         if base.isEmpty || base.hasPrefix("args(") || base.hasPrefix("self=") || base.hasPrefix("→")
-            || base.hasPrefix("await=") {
+            || base.hasPrefix("await=") || base.hasPrefix(indirectJumpNote) {
             return nil
         }
         return base

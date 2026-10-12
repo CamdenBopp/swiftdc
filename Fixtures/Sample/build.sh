@@ -54,6 +54,10 @@ $SWIFTC -parse-as-library -Osize -emit-library -module-name Conditions condition
 echo "==> Swift literals of 16 bytes or more (largestrings.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name LargeStrings largestrings.swift -o libLargeStrings.opt.dylib
 
+echo "==> indirect tail calls and awaits (indirecttail.c -O2, indirectawait.swift -O)"
+xcrun clang -arch arm64 -O2 -dynamiclib indirecttail.c -o libIndirectTail.dylib
+$SWIFTC -parse-as-library -O -emit-library -module-name IndirectAwait indirectawait.swift -o libIndirectAwait.opt.dylib
+
 echo "==> C callees without signatures (callreads.c, -O0 and -O1)"
 for level in O0 O1; do
     xcrun clang -arch arm64 -$level -dynamiclib callreads.c -o libCallReads.$level.dylib

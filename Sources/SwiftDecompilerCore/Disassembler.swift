@@ -3224,9 +3224,12 @@ public struct Disassembler: Sendable {
         // A property getter is often `ldr x0, [x20, #n]; ret` — no calls at all.
         // Bailing on `sites.isEmpty` alone would skip field naming for precisely
         // the functions it is most useful in.
+        // So is a function whose only transfer out is a `br` through a
+        // register: it needs its `jump=` note, or it reads as a leaf.
         guard !sites.isEmpty || !analysis.selfFieldAccesses.isEmpty
                 || !analysis.exitValues.isEmpty || !analysis.exitFloatValues.isEmpty
                 || !analysis.exitIndirectResults.isEmpty
+                || function.instructions.contains(where: { $0.controlFlow == .branch && $0.branchTarget == nil })
         else { return function }
 
         // Callee name per call/tail-call address, for nesting result expressions.
@@ -4609,6 +4612,10 @@ public struct Disassembler: Sendable {
         for (index, site) in wordSites.union(reusedCalls).sorted().enumerated() { boundResultSites[site] = "r\(index)" }
 
         var consumedCallResults = Set<UInt64>()
+        for insn in function.instructions where insn.controlFlow == .branch && insn.branchTarget == nil
+            && function.switchTargets[insn.address] == nil && !asyncReturns.contains(insn.address) {
+            if let target = analysis.indirectControlFlowTargets[insn.address] { collectCallResults(in: target, into: &consumedCallResults) }
+        }
         for access in analysis.selfFieldAccesses.values {
             if let value = access.storedValue {
                 collectCallResults(in: value, into: &consumedCallResults)
@@ -4817,6 +4824,23 @@ public struct Disassembler: Sendable {
                 case .awaitedCall(let binding):
                     sourceNotes.append("await=\(binding ?? "")")
                 }
+            }
+
+            // A `br` through a register that no jump table, tracer target or
+            // async return explains: control leaves for an unknown place (a
+            // tail call through a pointer, an awaited closure or witness, or a
+            // jump table not recovered). Without a statement the path simply
+            // ended: an `await` through a closure vanished, and a function
+            // whose only call was `br x1` read as a leaf.
+            if insn.controlFlow == .branch, insn.branchTarget == nil,
+               DisassembledFunction.calleeName(of: insn) == nil,
+               function.switchTargets[insn.address] == nil,
+               !asyncReturns.contains(insn.address) {
+                // The tracer may have proven the register (`br x2` through a
+                // function-pointer argument renders `indirect_jump(arg2)`).
+                let target = analysis.indirectControlFlowTargets[insn.address]
+                    .map(sanitizeValue).map { renderValue($0, depth: 0) } ?? "?"
+                sourceNotes.append(DisassembledFunction.indirectJumpNote + target)
             }
 
             // A `_modify` accessor's ramp yields `&self.field` (the mutable
