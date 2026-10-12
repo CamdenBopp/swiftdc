@@ -1,0 +1,1368 @@
+{
+  "ABIRoot": {
+    "kind": "Root",
+    "name": "ABISource",
+    "printedName": "ABISource",
+    "children": [
+      {
+        "kind": "TypeDecl",
+        "name": "ABIOneDouble",
+        "printedName": "ABIOneDouble",
+        "children": [
+          {
+            "kind": "Var",
+            "name": "value",
+            "printedName": "value",
+            "children": [
+              {
+                "kind": "TypeNominal",
+                "name": "Double",
+                "printedName": "Swift.Double",
+                "usr": "s:Sd"
+              }
+            ],
+            "declKind": "Var",
+            "usr": "s:9ABISource12ABIOneDoubleV5valueSdvp",
+            "mangledName": "$s9ABISource12ABIOneDoubleV5valueSdvp",
+            "moduleName": "ABISource",
+            "declAttributes": [
+              "HasStorage",
+              "AccessControl"
+            ],
+            "hasStorage": true,
+            "accessors": [
+              {
+                "kind": "Accessor",
+                "name": "Get",
+                "printedName": "Get()",
+                "children": [
+                  {
+                    "kind": "TypeNominal",
+                    "name": "Double",
+                    "printedName": "Swift.Double",
+                    "usr": "s:Sd"
+                  }
+                ],
+                "declKind": "Accessor",
+                "usr": "s:9ABISource12ABIOneDoubleV5valueSdvg",
+                "mangledName": "$s9ABISource12ABIOneDoubleV5valueSdvg",
+                "moduleName": "ABISource",
+                "implicit": true,
+                "accessorKind": "get"
+              },
+              {
+                "kind": "Accessor",
+                "name": "Set",
+                "printedName": "Set()",
+                "children": [
+                  {
+                    "kind": "TypeNominal",
+                    "name": "Void",
+                    "printedName": "()"
+                  },
+                  {
+                    "kind": "TypeNominal",
+                    "name": "Double",
+                    "printedName": "Swift.Double",
+                    "usr": "s:Sd"
+                  }
+                ],
+                "declKind": "Accessor",
+                "usr": "s:9ABISource12ABIOneDoubleV5valueSdvs",
+                "mangledName": "$s9ABISource12ABIOneDoubleV5valueSdvs",
+                "moduleName": "ABISource",
+                "implicit": true,
+                "accessorKind": "set"
+              },
+              {
+                "kind": "Accessor",
+                "name": "Modify",
+                "printedName": "Modify()",
+                "children": [
+                  {
+                    "kind": "TypeNominal",
+                    "name": "Void",
+                    "printedName": "()"
+                  }
+                ],
+                "declKind": "Accessor",
+                "usr": "s:9ABISource12ABIOneDoubleV5valueSdvM",
+                "mangledName": "$s9ABISource12ABIOneDoubleV5valueSdvM",
+                "moduleName": "ABISource",
+                "implicit": true,
+                "accessorKind": "_modify"
+              }
+            ]
+          },
+          {
+            "kind": "Constructor",
+            "name": "init",
+            "printedName": "init(_:)",
+            "children": [
+              {
+                "kind": "TypeNominal",
+                "name": "ABIOneDouble",
+                "printedName": "ABISource.ABIOneDouble",
+                "usr": "s:9ABISource12ABIOneDoubleV"
+              },
+              {
+                "kind": "TypeNominal",
+                "name": "Double",
+                "printedName": "Swift.Double",
+                "usr": "s:Sd"
+              }
+            ],
+            "declKind": "Constructor",
+            "usr": "s:9ABISource12ABIOneDoubleVyACSdcfc",
+            "mangledName": "$s9ABISource12ABIOneDoubleVyACSdcfc",
+            "moduleName": "ABISource",
+            "declAttributes": [
+              "AccessControl"
+            ],
+            "init_kind": "Designated"
+          }
+        ],
+        "declKind": "Struct",
+        "usr": "s:9ABISource12ABIOneDoubleV",
+        "mangledName": "$s9ABISource12ABIOneDoubleV",
+        "moduleName": "ABISource",
+        "declAttributes": [
+          "AccessControl",
+          "RawDocComment"
+        ],
+        "conformances": [
+          {
+            "kind": "Conformance",
+            "name": "Copyable",
+            "printedName": "Copyable",
+            "usr": "s:s8CopyableP",
+            "mangledName": "$ss8CopyableP"
+          },
+          {
+            "kind": "Conformance",
+            "name": "Escapable",
+            "printedName": "Escapable",
+            "usr": "s:s9EscapableP",
+            "mangledName": "$ss9EscapableP"
+          }
+        ]
+      },
+      {
+        "kind": "Function",
+        "name": "abiAddOne",
+        "printedName": "abiAddOne(_:)",
+        "children": [
+          {
+            "kind": "TypeNominal",
+            "name": "Int",
+            "printedName": "Swift.Int",
+            "usr": "s:Si"
+          },
+          {
+            "kind": "TypeNominal",
+            "name": "Int",
+            "printedName": "Swift.Int",
+            "usr": "s:Si"
+          }
+        ],
+        "declKind": "Func",
+        "usr": "s:9ABISource9abiAddOneyS2iF",
+        "mangledName": "$s9ABISource9abiAddOneyS2iF",
+        "moduleName": "ABISource",
+        "declAttributes": [
+          "AccessControl",
+          "Inline"
+        ],
+        "funcSelfKind": "NonMutating"
+      },
+      {
+        "kind": "Function",
+        "name": "abiOneDoubleFromInt",
+        "printedName": "abiOneDoubleFromInt(_:)",
+        "children": [
+          {
+            "kind": "TypeNominal",
+            "name": "ABIOneDouble",
+            "printedName": "ABISource.ABIOneDouble",
+            "usr": "s:9ABISource12ABIOneDoubleV"
+          },
+          {
+            "kind": "TypeNominal",
+            "name": "Int",
+            "printedName": "Swift.Int",
+            "usr": "s:Si"
+          }
+        ],
+        "declKind": "Func",
+        "usr": "s:9ABISource19abiOneDoubleFromIntyAA06ABIOneD0VSiF",
+        "mangledName": "$s9ABISource19abiOneDoubleFromIntyAA06ABIOneD0VSiF",
+        "moduleName": "ABISource",
+        "declAttributes": [
+          "AccessControl",
+          "Inline"
+        ],
+        "funcSelfKind": "NonMutating"
+      },
+      {
+        "kind": "TypeDecl",
+        "name": "ABIVec2",
+        "printedName": "ABIVec2",
+        "children": [
+          {
+            "kind": "Var",
+            "name": "x",
+            "printedName": "x",
+            "children": [
+              {
+                "kind": "TypeNominal",
+                "name": "Double",
+                "printedName": "Swift.Double",
+                "usr": "s:Sd"
+              }
+            ],
+            "declKind": "Var",
+            "usr": "s:9ABISource7ABIVec2V1xSdvp",
+            "mangledName": "$s9ABISource7ABIVec2V1xSdvp",
+            "moduleName": "ABISource",
+            "declAttributes": [
+              "HasStorage",
+              "AccessControl"
+            ],
+            "hasStorage": true,
+            "accessors": [
+              {
+                "kind": "Accessor",
+                "name": "Get",
+                "printedName": "Get()",
+                "children": [
+                  {
+                    "kind": "TypeNominal",
+                    "name": "Double",
+                    "printedName": "Swift.Double",
+                    "usr": "s:Sd"
+                  }
+                ],
+                "declKind": "Accessor",
+                "usr": "s:9ABISource7ABIVec2V1xSdvg",
+                "mangledName": "$s9ABISource7ABIVec2V1xSdvg",
+                "moduleName": "ABISource",
+                "implicit": true,
+                "accessorKind": "get"
+              },
+              {
+                "kind": "Accessor",
+                "name": "Set",
+                "printedName": "Set()",
+                "children": [
+                  {
+                    "kind": "TypeNominal",
+                    "name": "Void",
+                    "printedName": "()"
+                  },
+                  {
+                    "kind": "TypeNominal",
+                    "name": "Double",
+                    "printedName": "Swift.Double",
+                    "usr": "s:Sd"
+                  }
+                ],
+                "declKind": "Accessor",
+                "usr": "s:9ABISource7ABIVec2V1xSdvs",
+                "mangledName": "$s9ABISource7ABIVec2V1xSdvs",
+                "moduleName": "ABISource",
+                "implicit": true,
+                "accessorKind": "set"
+              },
+              {
+                "kind": "Accessor",
+                "name": "Modify",
+                "printedName": "Modify()",
+                "children": [
+                  {
+                    "kind": "TypeNominal",
+                    "name": "Void",
+                    "printedName": "()"
+                  }
+                ],
+                "declKind": "Accessor",
+                "usr": "s:9ABISource7ABIVec2V1xSdvM",
+                "mangledName": "$s9ABISource7ABIVec2V1xSdvM",
+                "moduleName": "ABISource",
+                "implicit": true,
+                "accessorKind": "_modify"
+              }
+            ]
+          },
+          {
+            "kind": "Var",
+            "name": "y",
+            "printedName": "y",
+            "children": [
+              {
+                "kind": "TypeNominal",
+                "name": "Double",
+                "printedName": "Swift.Double",
+                "usr": "s:Sd"
+              }
+            ],
+            "declKind": "Var",
+            "usr": "s:9ABISource7ABIVec2V1ySdvp",
+            "mangledName": "$s9ABISource7ABIVec2V1ySdvp",
+            "moduleName": "ABISource",
+            "declAttributes": [
+              "HasStorage",
+              "AccessControl"
+            ],
+            "hasStorage": true,
+            "accessors": [
+              {
+                "kind": "Accessor",
+                "name": "Get",
+                "printedName": "Get()",
+                "children": [
+                  {
+                    "kind": "TypeNominal",
+                    "name": "Double",
+                    "printedName": "Swift.Double",
+                    "usr": "s:Sd"
+                  }
+                ],
+                "declKind": "Accessor",
+                "usr": "s:9ABISource7ABIVec2V1ySdvg",
+                "mangledName": "$s9ABISource7ABIVec2V1ySdvg",
+                "moduleName": "ABISource",
+                "implicit": true,
+                "accessorKind": "get"
+              },
+              {
+                "kind": "Accessor",
+                "name": "Set",
+                "printedName": "Set()",
+                "children": [
+                  {
+                    "kind": "TypeNominal",
+                    "name": "Void",
+                    "printedName": "()"
+                  },
+                  {
+                    "kind": "TypeNominal",
+                    "name": "Double",
+                    "printedName": "Swift.Double",
+                    "usr": "s:Sd"
+                  }
+                ],
+                "declKind": "Accessor",
+                "usr": "s:9ABISource7ABIVec2V1ySdvs",
+                "mangledName": "$s9ABISource7ABIVec2V1ySdvs",
+                "moduleName": "ABISource",
+                "implicit": true,
+                "accessorKind": "set"
+              },
+              {
+                "kind": "Accessor",
+                "name": "Modify",
+                "printedName": "Modify()",
+                "children": [
+                  {
+                    "kind": "TypeNominal",
+                    "name": "Void",
+                    "printedName": "()"
+                  }
+                ],
+                "declKind": "Accessor",
+                "usr": "s:9ABISource7ABIVec2V1ySdvM",
+                "mangledName": "$s9ABISource7ABIVec2V1ySdvM",
+                "moduleName": "ABISource",
+                "implicit": true,
+                "accessorKind": "_modify"
+              }
+            ]
+          },
+          {
+            "kind": "Constructor",
+            "name": "init",
+            "printedName": "init(_:_:)",
+            "children": [
+              {
+                "kind": "TypeNominal",
+                "name": "ABIVec2",
+                "printedName": "ABISource.ABIVec2",
+                "usr": "s:9ABISource7ABIVec2V"
+              },
+              {
+                "kind": "TypeNominal",
+                "name": "Double",
+                "printedName": "Swift.Double",
+                "usr": "s:Sd"
+              },
+              {
+                "kind": "TypeNominal",
+                "name": "Double",
+                "printedName": "Swift.Double",
+                "usr": "s:Sd"
+              }
+            ],
+            "declKind": "Constructor",
+            "usr": "s:9ABISource7ABIVec2VyACSd_Sdtcfc",
+            "mangledName": "$s9ABISource7ABIVec2VyACSd_Sdtcfc",
+            "moduleName": "ABISource",
+            "declAttributes": [
+              "AccessControl"
+            ],
+            "init_kind": "Designated"
+          },
+          {
+            "kind": "Function",
+            "name": "scaled",
+            "printedName": "scaled(_:)",
+            "children": [
+              {
+                "kind": "TypeNominal",
+                "name": "Double",
+                "printedName": "Swift.Double",
+                "usr": "s:Sd"
+              },
+              {
+                "kind": "TypeNominal",
+                "name": "Double",
+                "printedName": "Swift.Double",
+                "usr": "s:Sd"
+              }
+            ],
+            "declKind": "Func",
+            "usr": "s:9ABISource7ABIVec2V6scaledyS2dF",
+            "mangledName": "$s9ABISource7ABIVec2V6scaledyS2dF",
+            "moduleName": "ABISource",
+            "declAttributes": [
+              "AccessControl",
+              "Inline"
+            ],
+            "funcSelfKind": "NonMutating"
+          },
+          {
+            "kind": "Function",
+            "name": "dot",
+            "printedName": "dot(_:)",
+            "children": [
+              {
+                "kind": "TypeNominal",
+                "name": "Double",
+                "printedName": "Swift.Double",
+                "usr": "s:Sd"
+              },
+              {
+                "kind": "TypeNominal",
+                "name": "ABIVec2",
+                "printedName": "ABISource.ABIVec2",
+                "usr": "s:9ABISource7ABIVec2V"
+              }
+            ],
+            "declKind": "Func",
+            "usr": "s:9ABISource7ABIVec2V3dotySdACF",
+            "mangledName": "$s9ABISource7ABIVec2V3dotySdACF",
+            "moduleName": "ABISource",
+            "declAttributes": [
+              "AccessControl",
+              "Inline"
+            ],
+            "funcSelfKind": "NonMutating"
+          }
+        ],
+        "declKind": "Struct",
+        "usr": "s:9ABISource7ABIVec2V",
+        "mangledName": "$s9ABISource7ABIVec2V",
+        "moduleName": "ABISource",
+        "declAttributes": [
+          "AccessControl"
+        ],
+        "conformances": [
+          {
+            "kind": "Conformance",
+            "name": "Copyable",
+            "printedName": "Copyable",
+            "usr": "s:s8CopyableP",
+            "mangledName": "$ss8CopyableP"
+          },
+          {
+            "kind": "Conformance",
+            "name": "Escapable",
+            "printedName": "Escapable",
+            "usr": "s:s9EscapableP",
+            "mangledName": "$ss9EscapableP"
+          }
+        ]
+      },
+      {
+        "kind": "TypeDecl",
+        "name": "ABIOneWord",
+        "printedName": "ABIOneWord",
+        "children": [
+          {
+            "kind": "Var",
+            "name": "a",
+            "printedName": "a",
+            "children": [
+              {
+                "kind": "TypeNominal",
+                "name": "Int",
+                "printedName": "Swift.Int",
+                "usr": "s:Si"
+              }
+            ],
+            "declKind": "Var",
+            "usr": "s:9ABISource10ABIOneWordV1aSivp",
+            "mangledName": "$s9ABISource10ABIOneWordV1aSivp",
+            "moduleName": "ABISource",
+            "declAttributes": [
+              "HasStorage",
+              "AccessControl"
+            ],
+            "isLet": true,
+            "hasStorage": true,
+            "accessors": [
+              {
+                "kind": "Accessor",
+                "name": "Get",
+                "printedName": "Get()",
+                "children": [
+                  {
+                    "kind": "TypeNominal",
+                    "name": "Int",
+                    "printedName": "Swift.Int",
+                    "usr": "s:Si"
+                  }
+                ],
+                "declKind": "Accessor",
+                "usr": "s:9ABISource10ABIOneWordV1aSivg",
+                "mangledName": "$s9ABISource10ABIOneWordV1aSivg",
+                "moduleName": "ABISource",
+                "implicit": true,
+                "accessorKind": "get"
+              }
+            ]
+          },
+          {
+            "kind": "Constructor",
+            "name": "init",
+            "printedName": "init(_:)",
+            "children": [
+              {
+                "kind": "TypeNominal",
+                "name": "ABIOneWord",
+                "printedName": "ABISource.ABIOneWord",
+                "usr": "s:9ABISource10ABIOneWordV"
+              },
+              {
+                "kind": "TypeNominal",
+                "name": "Int",
+                "printedName": "Swift.Int",
+                "usr": "s:Si"
+              }
+            ],
+            "declKind": "Constructor",
+            "usr": "s:9ABISource10ABIOneWordVyACSicfc",
+            "mangledName": "$s9ABISource10ABIOneWordVyACSicfc",
+            "moduleName": "ABISource",
+            "declAttributes": [
+              "AccessControl"
+            ],
+            "init_kind": "Designated"
+          }
+        ],
+        "declKind": "Struct",
+        "usr": "s:9ABISource10ABIOneWordV",
+        "mangledName": "$s9ABISource10ABIOneWordV",
+        "moduleName": "ABISource",
+        "declAttributes": [
+          "AccessControl",
+          "RawDocComment"
+        ],
+        "conformances": [
+          {
+            "kind": "Conformance",
+            "name": "Copyable",
+            "printedName": "Copyable",
+            "usr": "s:s8CopyableP",
+            "mangledName": "$ss8CopyableP"
+          },
+          {
+            "kind": "Conformance",
+            "name": "Escapable",
+            "printedName": "Escapable",
+            "usr": "s:s9EscapableP",
+            "mangledName": "$ss9EscapableP"
+          }
+        ]
+      },
+      {
+        "kind": "TypeDecl",
+        "name": "ABITwoWords",
+        "printedName": "ABITwoWords",
+        "children": [
+          {
+            "kind": "Var",
+            "name": "a",
+            "printedName": "a",
+            "children": [
+              {
+                "kind": "TypeNominal",
+                "name": "Int",
+                "printedName": "Swift.Int",
+                "usr": "s:Si"
+              }
+            ],
+            "declKind": "Var",
+            "usr": "s:9ABISource11ABITwoWordsV1aSivp",
+            "mangledName": "$s9ABISource11ABITwoWordsV1aSivp",
+            "moduleName": "ABISource",
+            "declAttributes": [
+              "HasStorage",
+              "AccessControl"
+            ],
+            "isLet": true,
+            "hasStorage": true,
+            "accessors": [
+              {
+                "kind": "Accessor",
+                "name": "Get",
+                "printedName": "Get()",
+                "children": [
+                  {
+                    "kind": "TypeNominal",
+                    "name": "Int",
+                    "printedName": "Swift.Int",
+                    "usr": "s:Si"
+                  }
+                ],
+                "declKind": "Accessor",
+                "usr": "s:9ABISource11ABITwoWordsV1aSivg",
+                "mangledName": "$s9ABISource11ABITwoWordsV1aSivg",
+                "moduleName": "ABISource",
+                "implicit": true,
+                "accessorKind": "get"
+              }
+            ]
+          },
+          {
+            "kind": "Var",
+            "name": "b",
+            "printedName": "b",
+            "children": [
+              {
+                "kind": "TypeNominal",
+                "name": "Int",
+                "printedName": "Swift.Int",
+                "usr": "s:Si"
+              }
+            ],
+            "declKind": "Var",
+            "usr": "s:9ABISource11ABITwoWordsV1bSivp",
+            "mangledName": "$s9ABISource11ABITwoWordsV1bSivp",
+            "moduleName": "ABISource",
+            "declAttributes": [
+              "HasStorage",
+              "AccessControl"
+            ],
+            "isLet": true,
+            "hasStorage": true,
+            "accessors": [
+              {
+                "kind": "Accessor",
+                "name": "Get",
+                "printedName": "Get()",
+                "children": [
+                  {
+                    "kind": "TypeNominal",
+                    "name": "Int",
+                    "printedName": "Swift.Int",
+                    "usr": "s:Si"
+                  }
+                ],
+                "declKind": "Accessor",
+                "usr": "s:9ABISource11ABITwoWordsV1bSivg",
+                "mangledName": "$s9ABISource11ABITwoWordsV1bSivg",
+                "moduleName": "ABISource",
+                "implicit": true,
+                "accessorKind": "get"
+              }
+            ]
+          },
+          {
+            "kind": "Constructor",
+            "name": "init",
+            "printedName": "init(_:_:)",
+            "children": [
+              {
+                "kind": "TypeNominal",
+                "name": "ABITwoWords",
+                "printedName": "ABISource.ABITwoWords",
+                "usr": "s:9ABISource11ABITwoWordsV"
+              },
+              {
+                "kind": "TypeNominal",
+                "name": "Int",
+                "printedName": "Swift.Int",
+                "usr": "s:Si"
+              },
+              {
+                "kind": "TypeNominal",
+                "name": "Int",
+                "printedName": "Swift.Int",
+                "usr": "s:Si"
+              }
+            ],
+            "declKind": "Constructor",
+            "usr": "s:9ABISource11ABITwoWordsVyACSi_Sitcfc",
+            "mangledName": "$s9ABISource11ABITwoWordsVyACSi_Sitcfc",
+            "moduleName": "ABISource",
+            "declAttributes": [
+              "AccessControl"
+            ],
+            "init_kind": "Designated"
+          }
+        ],
+        "declKind": "Struct",
+        "usr": "s:9ABISource11ABITwoWordsV",
+        "mangledName": "$s9ABISource11ABITwoWordsV",
+        "moduleName": "ABISource",
+        "declAttributes": [
+          "AccessControl"
+        ],
+        "conformances": [
+          {
+            "kind": "Conformance",
+            "name": "Copyable",
+            "printedName": "Copyable",
+            "usr": "s:s8CopyableP",
+            "mangledName": "$ss8CopyableP"
+          },
+          {
+            "kind": "Conformance",
+            "name": "Escapable",
+            "printedName": "Escapable",
+            "usr": "s:s9EscapableP",
+            "mangledName": "$ss9EscapableP"
+          }
+        ]
+      },
+      {
+        "kind": "TypeDecl",
+        "name": "ABIFiveWords",
+        "printedName": "ABIFiveWords",
+        "children": [
+          {
+            "kind": "Var",
+            "name": "a",
+            "printedName": "a",
+            "children": [
+              {
+                "kind": "TypeNominal",
+                "name": "Int",
+                "printedName": "Swift.Int",
+                "usr": "s:Si"
+              }
+            ],
+            "declKind": "Var",
+            "usr": "s:9ABISource12ABIFiveWordsV1aSivp",
+            "mangledName": "$s9ABISource12ABIFiveWordsV1aSivp",
+            "moduleName": "ABISource",
+            "declAttributes": [
+              "HasStorage",
+              "AccessControl"
+            ],
+            "isLet": true,
+            "hasStorage": true,
+            "accessors": [
+              {
+                "kind": "Accessor",
+                "name": "Get",
+                "printedName": "Get()",
+                "children": [
+                  {
+                    "kind": "TypeNominal",
+                    "name": "Int",
+                    "printedName": "Swift.Int",
+                    "usr": "s:Si"
+                  }
+                ],
+                "declKind": "Accessor",
+                "usr": "s:9ABISource12ABIFiveWordsV1aSivg",
+                "mangledName": "$s9ABISource12ABIFiveWordsV1aSivg",
+                "moduleName": "ABISource",
+                "implicit": true,
+                "accessorKind": "get"
+              }
+            ]
+          },
+          {
+            "kind": "Var",
+            "name": "b",
+            "printedName": "b",
+            "children": [
+              {
+                "kind": "TypeNominal",
+                "name": "Int",
+                "printedName": "Swift.Int",
+                "usr": "s:Si"
+              }
+            ],
+            "declKind": "Var",
+            "usr": "s:9ABISource12ABIFiveWordsV1bSivp",
+            "mangledName": "$s9ABISource12ABIFiveWordsV1bSivp",
+            "moduleName": "ABISource",
+            "declAttributes": [
+              "HasStorage",
+              "AccessControl"
+            ],
+            "isLet": true,
+            "hasStorage": true,
+            "accessors": [
+              {
+                "kind": "Accessor",
+                "name": "Get",
+                "printedName": "Get()",
+                "children": [
+                  {
+                    "kind": "TypeNominal",
+                    "name": "Int",
+                    "printedName": "Swift.Int",
+                    "usr": "s:Si"
+                  }
+                ],
+                "declKind": "Accessor",
+                "usr": "s:9ABISource12ABIFiveWordsV1bSivg",
+                "mangledName": "$s9ABISource12ABIFiveWordsV1bSivg",
+                "moduleName": "ABISource",
+                "implicit": true,
+                "accessorKind": "get"
+              }
+            ]
+          },
+          {
+            "kind": "Var",
+            "name": "c",
+            "printedName": "c",
+            "children": [
+              {
+                "kind": "TypeNominal",
+                "name": "Int",
+                "printedName": "Swift.Int",
+                "usr": "s:Si"
+              }
+            ],
+            "declKind": "Var",
+            "usr": "s:9ABISource12ABIFiveWordsV1cSivp",
+            "mangledName": "$s9ABISource12ABIFiveWordsV1cSivp",
+            "moduleName": "ABISource",
+            "declAttributes": [
+              "HasStorage",
+              "AccessControl"
+            ],
+            "isLet": true,
+            "hasStorage": true,
+            "accessors": [
+              {
+                "kind": "Accessor",
+                "name": "Get",
+                "printedName": "Get()",
+                "children": [
+                  {
+                    "kind": "TypeNominal",
+                    "name": "Int",
+                    "printedName": "Swift.Int",
+                    "usr": "s:Si"
+                  }
+                ],
+                "declKind": "Accessor",
+                "usr": "s:9ABISource12ABIFiveWordsV1cSivg",
+                "mangledName": "$s9ABISource12ABIFiveWordsV1cSivg",
+                "moduleName": "ABISource",
+                "implicit": true,
+                "accessorKind": "get"
+              }
+            ]
+          },
+          {
+            "kind": "Var",
+            "name": "d",
+            "printedName": "d",
+            "children": [
+              {
+                "kind": "TypeNominal",
+                "name": "Int",
+                "printedName": "Swift.Int",
+                "usr": "s:Si"
+              }
+            ],
+            "declKind": "Var",
+            "usr": "s:9ABISource12ABIFiveWordsV1dSivp",
+            "mangledName": "$s9ABISource12ABIFiveWordsV1dSivp",
+            "moduleName": "ABISource",
+            "declAttributes": [
+              "HasStorage",
+              "AccessControl"
+            ],
+            "isLet": true,
+            "hasStorage": true,
+            "accessors": [
+              {
+                "kind": "Accessor",
+                "name": "Get",
+                "printedName": "Get()",
+                "children": [
+                  {
+                    "kind": "TypeNominal",
+                    "name": "Int",
+                    "printedName": "Swift.Int",
+                    "usr": "s:Si"
+                  }
+                ],
+                "declKind": "Accessor",
+                "usr": "s:9ABISource12ABIFiveWordsV1dSivg",
+                "mangledName": "$s9ABISource12ABIFiveWordsV1dSivg",
+                "moduleName": "ABISource",
+                "implicit": true,
+                "accessorKind": "get"
+              }
+            ]
+          },
+          {
+            "kind": "Var",
+            "name": "e",
+            "printedName": "e",
+            "children": [
+              {
+                "kind": "TypeNominal",
+                "name": "Int",
+                "printedName": "Swift.Int",
+                "usr": "s:Si"
+              }
+            ],
+            "declKind": "Var",
+            "usr": "s:9ABISource12ABIFiveWordsV1eSivp",
+            "mangledName": "$s9ABISource12ABIFiveWordsV1eSivp",
+            "moduleName": "ABISource",
+            "declAttributes": [
+              "HasStorage",
+              "AccessControl"
+            ],
+            "isLet": true,
+            "hasStorage": true,
+            "accessors": [
+              {
+                "kind": "Accessor",
+                "name": "Get",
+                "printedName": "Get()",
+                "children": [
+                  {
+                    "kind": "TypeNominal",
+                    "name": "Int",
+                    "printedName": "Swift.Int",
+                    "usr": "s:Si"
+                  }
+                ],
+                "declKind": "Accessor",
+                "usr": "s:9ABISource12ABIFiveWordsV1eSivg",
+                "mangledName": "$s9ABISource12ABIFiveWordsV1eSivg",
+                "moduleName": "ABISource",
+                "implicit": true,
+                "accessorKind": "get"
+              }
+            ]
+          },
+          {
+            "kind": "Constructor",
+            "name": "init",
+            "printedName": "init(_:_:_:_:_:)",
+            "children": [
+              {
+                "kind": "TypeNominal",
+                "name": "ABIFiveWords",
+                "printedName": "ABISource.ABIFiveWords",
+                "usr": "s:9ABISource12ABIFiveWordsV"
+              },
+              {
+                "kind": "TypeNominal",
+                "name": "Int",
+                "printedName": "Swift.Int",
+                "usr": "s:Si"
+              },
+              {
+                "kind": "TypeNominal",
+                "name": "Int",
+                "printedName": "Swift.Int",
+                "usr": "s:Si"
+              },
+              {
+                "kind": "TypeNominal",
+                "name": "Int",
+                "printedName": "Swift.Int",
+                "usr": "s:Si"
+              },
+              {
+                "kind": "TypeNominal",
+                "name": "Int",
+                "printedName": "Swift.Int",
+                "usr": "s:Si"
+              },
+              {
+                "kind": "TypeNominal",
+                "name": "Int",
+                "printedName": "Swift.Int",
+                "usr": "s:Si"
+              }
+            ],
+            "declKind": "Constructor",
+            "usr": "s:9ABISource12ABIFiveWordsVyACSi_S4itcfc",
+            "mangledName": "$s9ABISource12ABIFiveWordsVyACSi_S4itcfc",
+            "moduleName": "ABISource",
+            "declAttributes": [
+              "AccessControl"
+            ],
+            "init_kind": "Designated"
+          }
+        ],
+        "declKind": "Struct",
+        "usr": "s:9ABISource12ABIFiveWordsV",
+        "mangledName": "$s9ABISource12ABIFiveWordsV",
+        "moduleName": "ABISource",
+        "declAttributes": [
+          "AccessControl"
+        ],
+        "conformances": [
+          {
+            "kind": "Conformance",
+            "name": "Copyable",
+            "printedName": "Copyable",
+            "usr": "s:s8CopyableP",
+            "mangledName": "$ss8CopyableP"
+          },
+          {
+            "kind": "Conformance",
+            "name": "Escapable",
+            "printedName": "Escapable",
+            "usr": "s:s9EscapableP",
+            "mangledName": "$ss9EscapableP"
+          }
+        ]
+      },
+      {
+        "kind": "TypeDecl",
+        "name": "ABIRef",
+        "printedName": "ABIRef",
+        "children": [
+          {
+            "kind": "Var",
+            "name": "value",
+            "printedName": "value",
+            "children": [
+              {
+                "kind": "TypeNominal",
+                "name": "Int",
+                "printedName": "Swift.Int",
+                "usr": "s:Si"
+              }
+            ],
+            "declKind": "Var",
+            "usr": "s:9ABISource6ABIRefC5valueSivp",
+            "mangledName": "$s9ABISource6ABIRefC5valueSivp",
+            "moduleName": "ABISource",
+            "declAttributes": [
+              "Final",
+              "HasStorage",
+              "AccessControl"
+            ],
+            "isLet": true,
+            "hasStorage": true,
+            "accessors": [
+              {
+                "kind": "Accessor",
+                "name": "Get",
+                "printedName": "Get()",
+                "children": [
+                  {
+                    "kind": "TypeNominal",
+                    "name": "Int",
+                    "printedName": "Swift.Int",
+                    "usr": "s:Si"
+                  }
+                ],
+                "declKind": "Accessor",
+                "usr": "s:9ABISource6ABIRefC5valueSivg",
+                "mangledName": "$s9ABISource6ABIRefC5valueSivg",
+                "moduleName": "ABISource",
+                "implicit": true,
+                "declAttributes": [
+                  "Final"
+                ],
+                "accessorKind": "get"
+              }
+            ]
+          },
+          {
+            "kind": "Constructor",
+            "name": "init",
+            "printedName": "init(_:)",
+            "children": [
+              {
+                "kind": "TypeNominal",
+                "name": "ABIRef",
+                "printedName": "ABISource.ABIRef",
+                "usr": "s:9ABISource6ABIRefC"
+              },
+              {
+                "kind": "TypeNominal",
+                "name": "Int",
+                "printedName": "Swift.Int",
+                "usr": "s:Si"
+              }
+            ],
+            "declKind": "Constructor",
+            "usr": "s:9ABISource6ABIRefCyACSicfc",
+            "mangledName": "$s9ABISource6ABIRefCyACSicfc",
+            "moduleName": "ABISource",
+            "declAttributes": [
+              "AccessControl"
+            ],
+            "init_kind": "Designated"
+          }
+        ],
+        "declKind": "Class",
+        "usr": "s:9ABISource6ABIRefC",
+        "mangledName": "$s9ABISource6ABIRefC",
+        "moduleName": "ABISource",
+        "declAttributes": [
+          "Final",
+          "AccessControl"
+        ],
+        "conformances": [
+          {
+            "kind": "Conformance",
+            "name": "Copyable",
+            "printedName": "Copyable",
+            "usr": "s:s8CopyableP",
+            "mangledName": "$ss8CopyableP"
+          },
+          {
+            "kind": "Conformance",
+            "name": "Escapable",
+            "printedName": "Escapable",
+            "usr": "s:s9EscapableP",
+            "mangledName": "$ss9EscapableP"
+          }
+        ]
+      },
+      {
+        "kind": "Function",
+        "name": "abiMakeOne",
+        "printedName": "abiMakeOne(_:)",
+        "children": [
+          {
+            "kind": "TypeNominal",
+            "name": "ABIOneWord",
+            "printedName": "ABISource.ABIOneWord",
+            "usr": "s:9ABISource10ABIOneWordV"
+          },
+          {
+            "kind": "TypeNominal",
+            "name": "Int",
+            "printedName": "Swift.Int",
+            "usr": "s:Si"
+          }
+        ],
+        "declKind": "Func",
+        "usr": "s:9ABISource10abiMakeOneyAA10ABIOneWordVSiF",
+        "mangledName": "$s9ABISource10abiMakeOneyAA10ABIOneWordVSiF",
+        "moduleName": "ABISource",
+        "declAttributes": [
+          "AccessControl",
+          "Inline"
+        ],
+        "funcSelfKind": "NonMutating"
+      },
+      {
+        "kind": "Function",
+        "name": "abiMakeTwo",
+        "printedName": "abiMakeTwo(_:)",
+        "children": [
+          {
+            "kind": "TypeNominal",
+            "name": "ABITwoWords",
+            "printedName": "ABISource.ABITwoWords",
+            "usr": "s:9ABISource11ABITwoWordsV"
+          },
+          {
+            "kind": "TypeNominal",
+            "name": "Int",
+            "printedName": "Swift.Int",
+            "usr": "s:Si"
+          }
+        ],
+        "declKind": "Func",
+        "usr": "s:9ABISource10abiMakeTwoyAA11ABITwoWordsVSiF",
+        "mangledName": "$s9ABISource10abiMakeTwoyAA11ABITwoWordsVSiF",
+        "moduleName": "ABISource",
+        "declAttributes": [
+          "AccessControl",
+          "Inline"
+        ],
+        "funcSelfKind": "NonMutating"
+      },
+      {
+        "kind": "Function",
+        "name": "abiMakeFive",
+        "printedName": "abiMakeFive(_:)",
+        "children": [
+          {
+            "kind": "TypeNominal",
+            "name": "ABIFiveWords",
+            "printedName": "ABISource.ABIFiveWords",
+            "usr": "s:9ABISource12ABIFiveWordsV"
+          },
+          {
+            "kind": "TypeNominal",
+            "name": "Int",
+            "printedName": "Swift.Int",
+            "usr": "s:Si"
+          }
+        ],
+        "declKind": "Func",
+        "usr": "s:9ABISource11abiMakeFiveyAA12ABIFiveWordsVSiF",
+        "mangledName": "$s9ABISource11abiMakeFiveyAA12ABIFiveWordsVSiF",
+        "moduleName": "ABISource",
+        "declAttributes": [
+          "AccessControl",
+          "Inline"
+        ],
+        "funcSelfKind": "NonMutating"
+      },
+      {
+        "kind": "Function",
+        "name": "abiMaybeFive",
+        "printedName": "abiMaybeFive(_:_:)",
+        "children": [
+          {
+            "kind": "TypeNominal",
+            "name": "Optional",
+            "printedName": "ABISource.ABIFiveWords?",
+            "children": [
+              {
+                "kind": "TypeNominal",
+                "name": "ABIFiveWords",
+                "printedName": "ABISource.ABIFiveWords",
+                "usr": "s:9ABISource12ABIFiveWordsV"
+              }
+            ],
+            "usr": "s:Sq"
+          },
+          {
+            "kind": "TypeNominal",
+            "name": "Int",
+            "printedName": "Swift.Int",
+            "usr": "s:Si"
+          },
+          {
+            "kind": "TypeNominal",
+            "name": "Bool",
+            "printedName": "Swift.Bool",
+            "usr": "s:Sb"
+          }
+        ],
+        "declKind": "Func",
+        "usr": "s:9ABISource12abiMaybeFiveyAA12ABIFiveWordsVSgSi_SbtF",
+        "mangledName": "$s9ABISource12abiMaybeFiveyAA12ABIFiveWordsVSgSi_SbtF",
+        "moduleName": "ABISource",
+        "declAttributes": [
+          "AccessControl",
+          "Inline"
+        ],
+        "funcSelfKind": "NonMutating"
+      },
+      {
+        "kind": "Function",
+        "name": "abiMakeRef",
+        "printedName": "abiMakeRef(_:)",
+        "children": [
+          {
+            "kind": "TypeNominal",
+            "name": "ABIRef",
+            "printedName": "ABISource.ABIRef",
+            "usr": "s:9ABISource6ABIRefC"
+          },
+          {
+            "kind": "TypeNominal",
+            "name": "Int",
+            "printedName": "Swift.Int",
+            "usr": "s:Si"
+          }
+        ],
+        "declKind": "Func",
+        "usr": "s:9ABISource10abiMakeRefyAA6ABIRefCSiF",
+        "mangledName": "$s9ABISource10abiMakeRefyAA6ABIRefCSiF",
+        "moduleName": "ABISource",
+        "declAttributes": [
+          "AccessControl",
+          "Inline"
+        ],
+        "funcSelfKind": "NonMutating"
+      },
+      {
+        "kind": "Function",
+        "name": "abiEraseInt",
+        "printedName": "abiEraseInt(_:)",
+        "children": [
+          {
+            "kind": "TypeNominal",
+            "name": "ProtocolComposition",
+            "printedName": "Any"
+          },
+          {
+            "kind": "TypeNominal",
+            "name": "Int",
+            "printedName": "Swift.Int",
+            "usr": "s:Si"
+          }
+        ],
+        "declKind": "Func",
+        "usr": "s:9ABISource11abiEraseIntyypSiF",
+        "mangledName": "$s9ABISource11abiEraseIntyypSiF",
+        "moduleName": "ABISource",
+        "declAttributes": [
+          "AccessControl",
+          "Inline"
+        ],
+        "funcSelfKind": "NonMutating"
+      },
+      {
+        "kind": "Function",
+        "name": "abiMakeSubstring",
+        "printedName": "abiMakeSubstring(_:)",
+        "children": [
+          {
+            "kind": "TypeNominal",
+            "name": "Substring",
+            "printedName": "Swift.Substring",
+            "usr": "s:Ss"
+          },
+          {
+            "kind": "TypeNominal",
+            "name": "String",
+            "printedName": "Swift.String",
+            "usr": "s:SS"
+          }
+        ],
+        "declKind": "Func",
+        "usr": "s:9ABISource16abiMakeSubstringySsSSF",
+        "mangledName": "$s9ABISource16abiMakeSubstringySsSSF",
+        "moduleName": "ABISource",
+        "declAttributes": [
+          "AccessControl",
+          "Inline"
+        ],
+        "funcSelfKind": "NonMutating"
+      }
+    ],
+    "json_format_version": 8
+  },
+  "ConstValues": []
+}

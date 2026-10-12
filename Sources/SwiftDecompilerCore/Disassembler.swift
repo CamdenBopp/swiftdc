@@ -299,7 +299,15 @@ public struct Disassembler: Sendable {
         if let filter = functionFilter, !filter.isEmpty {
             let ranges = await matchedRanges(filter: filter, in: machO, objcIndex: objcIndex)
             guard !ranges.isEmpty else { return [] }
-            instructions = ranges.flatMap { capstoneInstructions(in: machO, span: $0) }
+            let matched = ranges.flatMap { capstoneInstructions(in: machO, span: $0) }
+            // The matched functions' direct callees are decoded too (one level),
+            // because a caller's analysis consults each callee's body for whether
+            // it returns through x8 (`PerFunctionContext.indirectResultUses`).
+            // Without them a filtered run would see fewer facts than the whole-
+            // binary run and render the same function differently.
+            let callees = calleeRanges(of: matched, excluding: ranges, in: machO, objcIndex: objcIndex)
+            instructions = (matched + callees.flatMap { capstoneInstructions(in: machO, span: $0) })
+                .sorted { $0.address < $1.address }
         } else {
             instructions = capstoneInstructions(in: machO, span: nil)
         }
@@ -376,9 +384,20 @@ public struct Disassembler: Sendable {
         // a time, then resolve once — reproduces `crossImageNames` without holding
         // the whole image.
         var targets = Set<UInt64>()
+        var indirectResultUses: [UInt64: IndirectResultUse] = [:]
         for index in boundaries.indices {
             let instructions = capstoneInstructions(in: machO, span: span(index))
             collectUnnamedCallTargets(in: instructions, names: names, into: &targets)
+            // The callee-side x8 fact every caller's analysis consults (see
+            // `PerFunctionContext.indirectResultUses`); decoded here so pass 2
+            // need not look ahead.
+            if !instructions.isEmpty {
+                indirectResultUses[boundaries[index]] = Self.indirectResultUse(of: makeFunction(
+                    start: boundaries[index], instructions: instructions,
+                    labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
+                    metadataNames: metadataNames, objcIndex: objcIndex
+                ))
+            }
         }
         names = resolveCrossImageNames(targets, into: names, resolver: cacheSymbols)
         let resolver = ReferenceResolver(
@@ -408,7 +427,8 @@ public struct Disassembler: Sendable {
             vtableIndex: VTableIndex.build(in: machO),
             enumCaseIndex: EnumCaseIndex.build(in: machO),
             payloadEnumIndex: PayloadEnumCaseIndex.build(in: machO),
-            classTypeIndex: ClassTypeIndex.build(in: machO)
+            classTypeIndex: ClassTypeIndex.build(in: machO),
+            indirectResultUses: indirectResultUses
         )
 
         // Pass 2: decode each span, analyse, render, release. `segment` skips a
@@ -564,7 +584,13 @@ public struct Disassembler: Sendable {
             resolver: resolver, swiftTargets: swiftTargets, objcIndex: objcIndex,
             fieldMaps: fieldMaps, selfIndex: selfIndex, vtableIndex: vtableIndex,
             enumCaseIndex: enumCaseIndex, payloadEnumIndex: payloadEnumIndex,
-            classTypeIndex: classTypeIndex
+            classTypeIndex: classTypeIndex,
+            // Every function's x8 use, before any is analysed: a caller needs
+            // its callees' facts, whichever order they appear in.
+            indirectResultUses: Dictionary(
+                functions.map { ($0.startAddress, Self.indirectResultUse(of: $0)) },
+                uniquingKeysWith: { a, _ in a }
+            )
         )
         functions = functions.map { analyzeFunction($0, context: context) }
 
@@ -590,6 +616,9 @@ public struct Disassembler: Sendable {
         let enumCaseIndex: EnumCaseIndex
         let payloadEnumIndex: PayloadEnumCaseIndex
         let classTypeIndex: ClassTypeIndex
+        /// Function start → whether its body reads the incoming x8, so a call to
+        /// it is known to write (or not write) through the caller's x8.
+        var indirectResultUses: [UInt64: IndirectResultUse] = [:]
     }
 
     /// The complete per-function analysis: resolve references and call targets,
@@ -660,7 +689,15 @@ public struct Disassembler: Sendable {
             payloadEnumIndex: context.payloadEnumIndex,
             argumentEnumTypes: Self.swiftEnumArgumentTypes(of: function, enumCaseIndex: context.enumCaseIndex),
             boolArguments: Self.swiftBoolArgumentIndices(of: function),
-            classTypeIndex: context.classTypeIndex
+            classTypeIndex: context.classTypeIndex,
+            indirectResultUse: context.indirectResultUses[function.startAddress]
+                ?? Self.indirectResultUse(of: function),
+            typeFieldMaps: context.fieldMaps,
+            calleeConventions: Self.calleeResultConventions(
+                in: function, indirectResultUses: context.indirectResultUses,
+                resolver: context.resolver, fieldMaps: context.fieldMaps,
+                classTypeIndex: context.classTypeIndex
+            )
         )
     }
 
@@ -1051,6 +1088,37 @@ public struct Disassembler: Sendable {
     /// `LC_FUNCTION_STARTS`, the symbol table, and Swift-metadata names).
     /// Adjacent matches (gap < 64 KB) are coalesced so a cluster is one decode.
     /// A filtered disasm decodes only these ranges instead of all of `__text`.
+    /// The `[start, stop)` spans of the functions `instructions` call directly
+    /// (by `bl` to a known function boundary) that `covered` does not already
+    /// include. One level only: the callee facts a caller's analysis needs are
+    /// about the callee's own body, not the callee's callees.
+    private func calleeRanges(
+        of instructions: [Instruction],
+        excluding covered: [(start: UInt64, stop: UInt64)],
+        in machO: MachOFile,
+        objcIndex: ObjCMetadataIndex
+    ) -> [(start: UInt64, stop: UInt64)] {
+        var boundarySet = Set(functionStarts(of: machO))
+        boundarySet.formUnion(symbolLabels(in: machO).keys)
+        boundarySet.formUnion(objcIndex.addresses)
+        let boundaries = boundarySet.sorted()
+        guard let text = textSectionBounds(in: machO) else { return [] }
+        let textEnd = text.address + UInt64(text.size)
+        var targets = Set<UInt64>()
+        for insn in instructions where insn.controlFlow == .call {
+            guard let target = insn.branchTarget, boundarySet.contains(target),
+                  target >= text.address, target < textEnd,
+                  !covered.contains(where: { $0.start <= target && target < $0.stop })
+            else { continue }
+            targets.insert(target)
+        }
+        return targets.sorted().map { start in
+            let next = boundaries.firstIndex(of: start).map { $0 + 1 }
+            let stop = next.flatMap { $0 < boundaries.count ? boundaries[$0] : nil } ?? textEnd
+            return (start, stop)
+        }
+    }
+
     private func matchedRanges(
         filter: String,
         in machO: MachOFile,
@@ -1350,6 +1418,24 @@ public struct Disassembler: Sendable {
         }
 
         private static let classSymbolPrefix = "_OBJC_CLASS_$_"
+
+        /// The eight bytes at `address` when it lies inside a `__TEXT` literal
+        /// section (`__const`, `__literal4/8/16`): read-only data the linker never
+        /// fixes up, so the bytes on disk are the constant the code loads. Nil
+        /// anywhere else, including every writable or fixup-bearing section,
+        /// where the on-disk bytes are not what runs.
+        func literalWord(at address: UInt64) -> UInt64? {
+            let literalSections: Set<String> = ["__const", "__literal4", "__literal8", "__literal16"]
+            guard let section = machO.sections.first(where: {
+                $0.segmentName == "__TEXT" && literalSections.contains($0.sectionName)
+                    && UInt64($0.address) <= address && address + 8 <= UInt64($0.address) + UInt64($0.size)
+            }) else { return nil }
+            _ = section
+            guard let bytes: [UInt8] = try? machO.readElements(
+                offset: machO.resolveOffset(at: address), numberOfElements: 8
+            ), bytes.count == 8 else { return nil }
+            return bytes.enumerated().reduce(UInt64(0)) { $0 | (UInt64($1.element) << (8 * UInt64($1.offset))) }
+        }
 
         /// The imported symbol a slot binds to, via the chained-fixup imports.
         private func boundSymbol(at slot: UInt64) -> String? {
@@ -1700,19 +1786,7 @@ public struct Disassembler: Sendable {
     /// demangles as `Type.prop.getter : PropType`.
     static func swiftReturnTypeName(of function: DisassembledFunction) -> String? {
         guard function.objcMethod == nil, let name = function.demangledName else { return nil }
-        let returnType: String
-        if let signature = DisassembledFunction.splitSignature(name) {
-            returnType = signature.result
-        } else if name.hasSuffix(".getter") == false, name.contains(".getter : "),
-                  let colon = name.range(of: " : ", options: .backwards) {
-            returnType = String(name[colon.upperBound...]).trimmingCharacters(in: .whitespaces)
-        } else {
-            return nil
-        }
-        guard !returnType.isEmpty, returnType != "()",
-              !returnType.contains(" with "), !returnType.contains(" for ")
-        else { return nil }
-        return returnType
+        return swiftReturnTypeName(ofDemangled: name)
     }
 
     /// Which single register a Swift function delivers its result in, inferred
@@ -1752,33 +1826,13 @@ public struct Disassembler: Sendable {
         return .integer
     }
 
-    /// Whether the function uses the x8 it was called with: the first reference
-    /// to x8/w8, in address order, reads it. Under the Swift and AAPCS64
-    /// conventions an incoming x8 is only ever the indirect-result buffer, so a
-    /// read means the result goes to memory, not x0/v0. The scan stops at the
-    /// first call, since x8 is caller-saved and a call clobbers it.
+    /// Whether the function reads the x8 it was called with on some path before
+    /// writing it (`IndirectResultUse.reads`, a CFG walk over Capstone's operand
+    /// roles). Under the Swift and AAPCS64 conventions an incoming x8 is only
+    /// ever the indirect-result buffer, so a read means the result goes to
+    /// memory, not x0/v0.
     static func readsIncomingIndirectResult(_ function: DisassembledFunction) -> Bool {
-        for instruction in function.instructions {
-            let parts = instruction.text.split(maxSplits: 1, whereSeparator: { $0 == " " || $0 == "\t" })
-            let mnemonic = parts.first.map { $0.lowercased() } ?? ""
-            if instruction.controlFlow == .call || mnemonic == "bl" || mnemonic.hasPrefix("blr") {
-                return false
-            }
-            guard parts.count == 2 else { continue }
-            let operands = parts[1].split(separator: ",").map {
-                $0.trimmingCharacters(in: CharacterSet(charactersIn: " []!"))
-            }
-            let isX8 = { (operand: String) in operand == "x8" || operand == "w8" }
-            guard let first = operands.firstIndex(where: isX8) else { continue }
-            // Every operand of a store, compare, or register branch is a read;
-            // elsewhere the first operand is the destination, and x8 appearing
-            // again later (`ldr x8, [x8, #8]`) is still a read first.
-            let readsAll = mnemonic.hasPrefix("st") || mnemonic.hasPrefix("cb")
-                || mnemonic.hasPrefix("tb") || mnemonic.hasPrefix("br")
-                || ["cmp", "cmn", "tst", "ccmp", "ccmn"].contains(mnemonic)
-            return readsAll || first > 0 || operands.dropFirst().contains(where: isX8)
-        }
-        return false
+        indirectResultUse(of: function) == .reads
     }
 
     /// The register→source-argument-index map to seed for a Swift free function
@@ -2165,7 +2219,10 @@ public struct Disassembler: Sendable {
         payloadEnumIndex: PayloadEnumCaseIndex = PayloadEnumCaseIndex(),
         argumentEnumTypes: [Int: String] = [:],
         boolArguments: Set<Int> = [],
-        classTypeIndex: ClassTypeIndex = ClassTypeIndex()
+        classTypeIndex: ClassTypeIndex = ClassTypeIndex(),
+        indirectResultUse: IndirectResultUse = .unknown,
+        typeFieldMaps: [String: FieldMap] = [:],
+        calleeConventions: [UInt64: CalleeResultConvention] = [:]
     ) -> DisassembledFunction {
         // Floating-point signature info: which arguments are float, and whether
         // the function's float type is double-precision — so a literal operand
@@ -2247,6 +2304,10 @@ public struct Disassembler: Sendable {
         func sanitizeValue(_ value: AbstractValue) -> AbstractValue {
             switch value {
             case .loaded(let address) where resolver.loadedName(at: address) == nil:
+                // A load from the read-only literal pool is the constant itself
+                // (the compiler's lowering of a non-encodable immediate); any
+                // other unnamed load is unknown.
+                if let word = resolver.literalWord(at: address) { return .immediate(word) }
                 return .unknown
             case .binary(let op, let lhs, let rhs):
                 let lhs = sanitizeValue(lhs)
@@ -2274,7 +2335,18 @@ public struct Disassembler: Sendable {
             ValueTracer.trimTrailingUnknown(values.map(sanitizeValue))
         }
 
-        let analysis = ValueTracer().analyze(function, entry: entry)
+        let analysis = ValueTracer(calleeConventions: calleeConventions).analyze(function, entry: entry)
+        // An x8-indirect function's x0 at `ret` is whatever was last left there
+        // (usually a stale argument), never its result. Both single-register
+        // return paths below are gated on this so no fabricated `return arg0`
+        // is printed for a function that returns through the caller's buffer.
+        let returnsDirectly = indirectResultUse != .reads
+        // Call sites whose indirect result is read back word by word, each bound
+        // to one name (`let r0 = callee(args)`) so the call is spelled out once
+        // and every field read is `r0.field`; rendering the call at each read
+        // would show it executed once per field. Filled once the values that
+        // will render are known (below); read by `renderValue`.
+        var boundResultSites: [UInt64: String] = [:]
         let function = annotateIndirectControlFlowTargets(
             in: function, targets: analysis.indirectControlFlowTargets,
             resolver: resolver, selfTypeName: selfTypeName, vtableIndex: vtableIndex
@@ -2293,6 +2365,7 @@ public struct Disassembler: Sendable {
         // the functions it is most useful in.
         guard !sites.isEmpty || !analysis.selfFieldAccesses.isEmpty
                 || !analysis.exitValues.isEmpty || !analysis.exitFloatValues.isEmpty
+                || !analysis.exitIndirectResults.isEmpty
         else { return function }
 
         // Callee name per call/tail-call address, for nesting result expressions.
@@ -2749,6 +2822,33 @@ public struct Disassembler: Sendable {
                 return argumentFieldName(argument: argument, offset: offset)
             case .arrayLiteral(let site, let count):
                 return renderArrayLiteral(site: site, count: count, depth: depth)
+            case .indirectResultPointer:
+                // The caller-owned buffer this function returns into.
+                return "&result"
+            case .indirectResultField(let offset):
+                if let layout = returnLayout,
+                   let field = layout.fields.first(where: { $0.offset == offset }) {
+                    return "&result.\(field.name)"
+                }
+                return "&result+0x\(String(offset, radix: 16))"
+            case .indirectCallResultWord(let site, let offset):
+                // A word of a callee's indirect result, read back from the frame
+                // slot it was returned into: `r0.field` (the call bound once at
+                // its site) when the callee's result type is laid out here, else
+                // the raw offset.
+                guard depth < 6 else { return "?" }
+                let call = boundResultSites[site] ?? renderValue(.callResult(site), depth: depth + 1)
+                if let callee = calleeByAddress[site],
+                   let type = Self.swiftReturnTypeName(ofDemangled: callee),
+                   let layout = Self.completeValueLayout(of: type, fieldMaps: typeFieldMaps, classTypeIndex: classTypeIndex),
+                   case .success(let hit) = layout.lookup(offset: offset, bytes: 8) {
+                    switch hit {
+                    case .whole(let name, _): return "\(call).\(name)"
+                    case .part(let name, _, _, _): return "\(call).\(name)"
+                    case .spans: break
+                    }
+                }
+                return "\(call)[0x\(String(offset, radix: 16))]"
             case .select(let condition, let whenTrue, let whenFalse):
                 guard depth < 8 else { return "?" }
                 let c = renderValue(condition, depth: depth + 1)
@@ -2816,6 +2916,9 @@ public struct Disassembler: Sendable {
             case .aggregate(let values):
                 return "(" + values.map { renderValue($0, depth: depth + 1) }.joined(separator: ", ") + ")"
             case .callResult(let addr):
+                // A call bound to a name for its field reads is that name
+                // everywhere, so it is never spelled out a second time.
+                if let name = boundResultSites[addr] { return name }
                 let inner = argumentsByAddress[addr] ?? []
                 let unresolved = "/* unresolved call @ 0x\(String(addr, radix: 16)) */ ?"
                 // Deeply nested message chains (`[[[[self a] b] c] d]`) are common
@@ -3045,9 +3148,113 @@ public struct Disassembler: Sendable {
             return renderValue(value, depth: 0)
         }
 
+        // The return type's complete stored-property layout, when it is a struct
+        // this image lays out in full: what an x8-indirect return is checked
+        // against field by field.
+        let returnLayout: FieldMap? = returnTypeName.flatMap {
+            Self.completeValueLayout(of: $0, fieldMaps: typeFieldMaps, classTypeIndex: classTypeIndex)
+        }
+
+        /// A stored field's value, read per the field's own type: a `Bool` or
+        /// floating-point constant as its literal, anything else as the value.
+        func renderFieldValue(_ value: AbstractValue, mangledType: String) -> String {
+            let typeName: String? = switch mangledType {
+            case "Sb": "Swift.Bool"
+            case "Sd": "Swift.Double"
+            case "Sf": "Swift.Float"
+            default: nil
+            }
+            if case .immediate(let bits) = value, let typeName,
+               let typed = Self.renderTypedConstant(bits: bits, type: typeName) {
+                return typed
+            }
+            return renderValue(value, depth: 0)
+        }
+
+        /// The call whose indirect result the stores are, verbatim: every store is
+        /// the word at its own offset of ONE call's result, in order, covering
+        /// that result's whole size. The shape a `-Onone` body produces when it
+        /// calls an initializer into a temporary and then copies the temporary
+        /// into its own result buffer.
+        func wholeCallResult(from stores: [Int: IndirectResultExit.Store]) -> UInt64? {
+            var site: UInt64?
+            for (offset, store) in stores {
+                guard store.bytes == 8, case .indirectCallResultWord(let s, let wordOffset) = store.value,
+                      wordOffset == offset, site == nil || site == s
+                else { return nil }
+                site = s
+            }
+            guard let site, case .indirect(let size?)? = calleeConventions[site],
+                  stores.count == size / 8, stores.keys.allSatisfy({ $0 % 8 == 0 && $0 < size })
+            else { return nil }
+            return site
+        }
+
+        /// The rendered return of an x8-indirect function at this `ret`, with the
+        /// values it embeds (so the calls they came from are consumed), or nil
+        /// when nothing about the buffer is provable there.
+        func indirectReturn(at address: UInt64) -> (rendered: String, consumedValues: [AbstractValue])? {
+            guard let exit = analysis.exitIndirectResults[address], !exit.poisoned else { return nil }
+            // The whole buffer is one callee's result: `return callee(args)`.
+            let wholeSite: UInt64? = exit.whole != nil && exit.stores.isEmpty
+                ? exit.whole : wholeCallResult(from: exit.stores)
+            if let wholeSite {
+                let value = AbstractValue.callResult(wholeSite)
+                let rendered = renderValue(value, depth: 0)
+                guard rendered != "?", !rendered.hasPrefix("/* unresolved") else { return nil }
+                return (rendered, [value])
+            }
+            guard exit.whole == nil, let returnTypeName else { return nil }
+            // A payload enum: the tag bytes name the case (exactly, or not at
+            // all), and a payload case's words come from its declared type.
+            if returnLayout == nil {
+                var observed: [Int: (bytes: Int, immediate: UInt64?)] = [:]
+                for (offset, store) in exit.stores {
+                    let value = sanitizeValue(store.value)
+                    if case .immediate(let bits) = value {
+                        observed[offset] = (store.bytes, bits)
+                    } else {
+                        observed[offset] = (store.bytes, nil)
+                    }
+                }
+                guard let enumCase = payloadEnumIndex.indirectCase(ofEnum: returnTypeName, stores: observed)
+                else { return nil }
+                if enumCase.payloadWordOffsets.isEmpty {
+                    return ("\(returnTypeName).\(enumCase.name)", [])
+                }
+                let values = enumCase.payloadWordOffsets.compactMap { exit.stores[$0]?.value }.map(sanitizeValue)
+                guard values.count == enumCase.payloadWordOffsets.count else { return nil }
+                let rendered = values.map { renderValue($0, depth: 0) }
+                guard rendered.contains(where: { $0 != "?" }) else { return nil }
+                return ("\(returnTypeName).\(enumCase.name)(\(rendered.joined(separator: ", ")))", values)
+            }
+            guard let layout = returnLayout else { return nil }
+            // Every store must land exactly on a field, and every field must be
+            // stored: a partial set is declined, never padded.
+            let fields = layout.fields
+            for (offset, store) in exit.stores {
+                guard fields.contains(where: { $0.offset == offset && $0.bytes == store.bytes }) else { return nil }
+            }
+            var parts: [String] = []
+            var values: [AbstractValue] = []
+            var known = 0
+            for field in fields {
+                guard let store = exit.stores[field.offset], store.bytes == field.bytes else { return nil }
+                let value = sanitizeValue(store.value)
+                let text = renderFieldValue(value, mangledType: field.typeMangledName)
+                if text != "?" { known += 1 }
+                parts.append("\(field.name): \(text)")
+                values.append(value)
+            }
+            // Stores whose values are all unknown say nothing a bare `return ?`
+            // does not; the field-wise form is kept for where it adds a value.
+            guard known > 0 else { return nil }
+            return ("\(returnTypeName)(\(parts.joined(separator: ", ")))", values)
+        }
+
         func collectCallResults(in value: AbstractValue, into consumed: inout Set<UInt64>) {
             switch value {
-            case .callResult(let address):
+            case .callResult(let address), .indirectCallResultWord(let address, _):
                 consumed.insert(address)
             case .arrayLiteral(let site, _):
                 // The `_allocateUninitializedArray` at `site` is folded into the
@@ -3095,6 +3302,45 @@ public struct Disassembler: Sendable {
             })
         }()
 
+        // Which calls' indirect results are read back by word anywhere that
+        // renders: a return value, a call argument, a condition, a field store,
+        // or a field-wise indirect return. Each such call is bound once.
+        func collectWordSites(in value: AbstractValue, into sites: inout Set<UInt64>) {
+            switch value {
+            case .indirectCallResultWord(let site, _):
+                sites.insert(site)
+            case .binary(_, let lhs, let rhs):
+                collectWordSites(in: lhs, into: &sites)
+                collectWordSites(in: rhs, into: &sites)
+            case .unary(_, let operand):
+                collectWordSites(in: operand, into: &sites)
+            case .select(let condition, let whenTrue, let whenFalse):
+                collectWordSites(in: condition, into: &sites)
+                collectWordSites(in: whenTrue, into: &sites)
+                collectWordSites(in: whenFalse, into: &sites)
+            case .aggregate(let values):
+                for value in values { collectWordSites(in: value, into: &sites) }
+            default:
+                break
+            }
+        }
+        var wordSites = Set<UInt64>()
+        for value in analysis.exitValues.values where returnsDirectly { collectWordSites(in: value, into: &wordSites) }
+        for value in analysis.exitFloatValues.values where returnsDirectly { collectWordSites(in: value, into: &wordSites) }
+        for value in analysis.branchConditions.values { collectWordSites(in: value, into: &wordSites) }
+        for values in argumentsByAddress.values { for value in values { collectWordSites(in: value, into: &wordSites) } }
+        for access in analysis.selfFieldAccesses.values {
+            if let value = access.storedValue { collectWordSites(in: value, into: &wordSites) }
+            for value in access.storedValues ?? [] { collectWordSites(in: value, into: &wordSites) }
+        }
+        for exit in analysis.exitIndirectResults.values where !returnsDirectly && !exit.poisoned {
+            // Words that reassemble one whole call result render as that call,
+            // not field by field, so they bind nothing.
+            guard exit.whole == nil, wholeCallResult(from: exit.stores) == nil else { continue }
+            for store in exit.stores.values { collectWordSites(in: store.value, into: &wordSites) }
+        }
+        for (index, site) in wordSites.sorted().enumerated() { boundResultSites[site] = "r\(index)" }
+
         var consumedCallResults = Set<UInt64>()
         for access in analysis.selfFieldAccesses.values {
             if let value = access.storedValue {
@@ -3126,7 +3372,7 @@ public struct Disassembler: Sendable {
                     collectCallResults(in: value, into: &consumedCallResults)
                 }
             } else if function.objcMethod == nil, insn.controlFlow == .return,
-                      !throwExits.contains(insn.address),
+                      !throwExits.contains(insn.address), returnsDirectly,
                       let returnRegister = Self.swiftReturnRegister(of: function) {
                 // A Swift return that is a call's result consumes it, so the call
                 // isn't also printed as its own statement above the `return`.
@@ -3134,8 +3380,28 @@ public struct Disassembler: Sendable {
                     ? analysis.exitFloatValues[insn.address]
                     : analysis.exitValues[insn.address]
                 if let value { collectCallResults(in: value, into: &consumedCallResults) }
+            } else if function.objcMethod == nil, insn.controlFlow == .return, !returnsDirectly,
+                      let indirect = indirectReturn(at: insn.address) {
+                // Likewise an indirect return built from a call's result (the
+                // whole buffer, or its words) consumes that call, and the memory
+                // helpers that copied or zeroed the result buffer are the return
+                // statement's own plumbing, not statements of their own.
+                for value in indirect.consumedValues { collectCallResults(in: value, into: &consumedCallResults) }
+                for (address, site) in sites where address < insn.address {
+                    guard let callee = calleeByAddress[address], Self.isMemoryHelper(callee),
+                          let destination = site.arguments.first
+                    else { continue }
+                    switch destination {
+                    case .indirectResultPointer, .indirectResultField: consumedCallResults.insert(address)
+                    default: break
+                    }
+                }
             }
         }
+
+        // A bound call is materialized by its `let` statement, never folded into
+        // a use, so it stays out of the consumed set whatever referenced it.
+        consumedCallResults.subtract(boundResultSites.keys)
 
         // The property a `_modify` accessor's ramp exposes, when this function is
         // one. A `yield_once` coroutine returns its yielded value in x1 (the ramp
@@ -3205,7 +3471,7 @@ public struct Disassembler: Sendable {
                     thrown = "\(errorType).\(caseName)"
                 }
                 sourceNotes.append("throw \(thrown)")
-            } else if function.objcMethod == nil, insn.controlFlow == .return,
+            } else if function.objcMethod == nil, insn.controlFlow == .return, returnsDirectly,
                let returnRegister = Self.swiftReturnRegister(of: function) {
                 let rawExit = returnRegister == .floating
                     ? analysis.exitFloatValues[insn.address]
@@ -3216,6 +3482,17 @@ public struct Disassembler: Sendable {
                         sourceNotes.append("return \(renderReturnValue(exit, before: insn.address))")
                     }
                 }
+            }
+
+            // An x8-indirect function's return: the stores through the incoming
+            // x8 that reach this `ret` on every path, rendered as the whole
+            // callee result the buffer was filled with, or field by field when
+            // they cover the result type's complete layout. Anything less
+            // (an escaped pointer, a field missing on one path, a type with no
+            // layout) prints nothing, and the structurer's `return ?` stands.
+            if function.objcMethod == nil, insn.controlFlow == .return, !returnsDirectly,
+               let indirect = indirectReturn(at: insn.address) {
+                sourceNotes.append("return \(indirect.rendered)")
             }
 
             // A `_modify` accessor's ramp yields `&self.field` (the mutable
@@ -3284,6 +3561,11 @@ public struct Disassembler: Sendable {
                let callee, callee.hasPrefix("objc_msgSendSuper"),
                let values = argumentsByAddress[insn.address] {
                 sourceNotes.append("self = \(callExpression(callee: callee, values: values))")
+            }
+
+            // The one place a call bound for its field reads is spelled out.
+            if insn.controlFlow == .call, let name = boundResultSites[insn.address], let callee {
+                sourceNotes.append("let \(name) = \(callExpression(callee: callee, values: argumentsByAddress[insn.address] ?? []))")
             }
 
             guard let site = sites[insn.address] else {

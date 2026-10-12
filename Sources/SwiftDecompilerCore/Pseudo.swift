@@ -32,6 +32,10 @@ public extension DisassembledFunction {
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .first { note in
                     if note.hasPrefix("return ") || note.hasPrefix("throw ") { return true }
+                    // `let r0 = call(...)`: a call whose indirect result is read
+                    // back field by field later, bound once so the call is not
+                    // spelled out (executed) at every use.
+                    if note.hasPrefix("let r") { return true }
                     if note.hasPrefix("yield ") { return true }
                     if note.hasPrefix("self = ") { return true }
                     if note.hasPrefix("("), note.contains("self->"), note.contains(" = ") {

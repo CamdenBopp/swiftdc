@@ -6,9 +6,39 @@ thread. This is **tier-5 (conversation-memory) authority** per
 git history, and measurements. Verify each claim against HEAD before acting, and
 delete items from this file as they ship.
 
-_Last updated: 2026-10-10, on branch `improve/source-findings` at `ba10879`
-(unmerged; also carries `f6a4e0c`, the Swift-source research notes cherry-picked
-from `research/swift-source-mining`)._
+_Last updated: 2026-10-10, on branch `improve/indirect-returns` at `854ffc5`,
+rebased onto `improve/source-findings` at `0c8550e` (both unmerged)._
+
+## This branch: x8 indirect results (`improve/indirect-returns`)
+
+Four commits on top of `0c8550e`, each with a red/green proof by injection:
+
+- `1052f83` the `Indirect` fixture module (`libIndirect.dylib`, `.opt`); kept
+  out of `reconstruction.swift` so the fuzz-mutant byte offsets stay valid
+- `3dc93d0` the x8 model: `IndirectResultUse` (CFG classifier, replaces the
+  text scan behind `readsIncomingIndirectResult`), result-buffer tracking in
+  `ValueTracer` with escape poisoning, `memcpy`/`memset`/outlined-copy
+  modelling, field-wise and forwarded returns, caller-side result words bound
+  once as `let r0 = …`, the witness `in conformance` result-type fix
+- `17efe56` payload-enum cases from the stored tag (`PayloadEnumCaseIndex.
+  indirectCase`, arity from the field record's mangled text, no demangling)
+- `854ffc5` -O constants from the `__TEXT` literal pool and `dup`
+
+Suite: **302 tests** green under `SWIFTDC_REQUIRE_FIXTURES=1 swift test`.
+Review items from `docs/research/branch-integration-2026-10-10.md` (main
+checkout) are addressed: the `Substring`-as-16-bytes size table is gone (no
+size table remains; Substring measures 32 bytes here), and a call read back
+by word renders once.
+
+Found while doing it, not done: MachOKit's zero `seg_info_offset` over-read
+(Robustness, OPEN in the readiness doc; it is why the fixture carries a
+mutable global). Still declining by design: generic and existential results,
+results copied from an escaped local, non-word-tuple enum payloads, buffers
+filled by an unknown callee. A stripped same-image helper given a frame
+address (`sub_2634(local_b0, …)` in `libSample.stripped`) now loses its
+metadata argument to the escaped-local invalidation, a decline where main
+rendered the call; proving a callee never writes through its pointer
+arguments from its body would recover it.
 
 ## Where things stand
 
@@ -86,9 +116,10 @@ The authoritative OPEN/UNKNOWN tracker is
 [docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md). Found but not
 yet done in the 2026-10-09 session:
 
-- **Completeness:** an indirect (x8) return now declines (`return ?`). The
-  value stored through the incoming x8 is the result and could be rendered
-  (`SyntaxOptions.init(rawValue:)` is `str x0, [x8]; ret`).
+- **Completeness:** an indirect (x8) return renders from its proven stores
+  (`improve/indirect-returns`, above); `SyntaxOptions.init(rawValue:)`'s
+  `str x0, [x8]; ret` is the one-field case. Generic and existential results
+  still decline.
 - **Completeness:** a throw whose error is built by a helper (`mov x21, x0`
   after `sub_…`) is not recognised as a throw exit; it declines.
 - **Robustness, next probe:** every fuzz set measured so far is at 0 crashes
@@ -104,19 +135,10 @@ yet done in the 2026-10-09 session:
   a fat file, a large real framework) are the next probe. ObjC categories' and protocols' own fields are not yet
   walked (only the category-list slots), nor are pointer-based (entsize 24)
   method lists or arm64e chained formats, which decline.
-- **Preflight, 2026-10-10 (later):** `improve/preflight-arm64e` (off
-  `0c8550e`) adds arm64e pointer decoding, the protocol and class-reference
-  arrays, and a protocol walk. Meanwhile ChatGPT/Codex has been integrating
-  branches and its own Ghidra-correctness work into the main checkout,
-  uncommitted (see `docs/research/branch-integration-2026-10-10.md` there).
-  Merge order matters: commit that tree, then merge this branch (its only
-  overlap is the arm64e decoder, identical in both).
-- **In progress on side branches (2026-10-10):** `upgrade/machoswiftsection`,
-  `improve/indirect-returns` (x8 results) and `improve/async-funclets`, each
-  in its own worktree. Check their commit logs before redoing any of it.
-- **Performance after the 0.22 upgrade:** see the dependencies section above;
-  the merge decision for `upgrade/machoswiftsection` turns on whether the two
-  upstream costs are patched first.
+- **Unified merge, 2026-10-11:** all feature branches merged into master:
+  arm64e preflight, MachOSwiftSection 0.22.0 / Capstone 6, x8 indirect
+  returns, and async funclets. The `improve/async-funclets` branch is the
+  last to merge.
 - **Readability:** the structurer's `cond <op>` fallback (an `fcmp`/`ccmp` or
   out-of-block flag setter) renders an opaque `if (cond ==)`.
 - **Research items not yet done** (docs/research/swift-source/README.md):

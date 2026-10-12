@@ -11,8 +11,8 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-10-10, on branch `upgrade/machoswiftsection` (MachOSwiftSection
-0.22.0, Capstone 6; the dependency section entries carry their own numbers).
+Last audited: 2026-10-11, unified merge of all feature branches (MachOSwiftSection
+0.22.0, Capstone 6, x8 indirect returns, arm64e preflight).
 
 ---
 
@@ -255,6 +255,15 @@ because it cannot be distinguished from a right one by reading the output.
   when it stores a different value through x8, and `-> String` witnesses
   printing `return 0`.
 
+  The decline is now the fallback, not the answer (`3dc93d0`): x8 use is
+  classified on the CFG from Capstone's operand roles (`IndirectResultUse`),
+  the tracer follows the stores through the incoming x8 (and through
+  `memcpy`/`memset` and the outlined copies into it), and a `ret` renders
+  `return Type(field: value, ...)` only when the stores cover the result
+  type's complete layout exactly, `return callee(args)` when a callee proven
+  to read its own x8 filled the buffer, and nothing at all when the pointer
+  escaped or a field is stored on one path only. See the Completeness entry.
+
   Measured old→new with `disasm --structured` on four cache images:
   libswift_RegexParser 102/2734 functions changed, libswiftObservation 38/713,
   libswiftDistributed 4/367, SwiftData 0/6506. Every change was reviewed;
@@ -371,6 +380,29 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 - **FIXED — the guard against that class.** An empty parse is now cross-checked
   against `LC_FUNCTION_STARTS` and throws `DisassembleError.parsedNothing` with
   both counts rather than returning `[]`.
+- **FIXED — an x8-indirect return rendered `return ?` (or a stale x0).**
+  `3dc93d0`, `17efe56`, `854ffc5`. Callee side: the stores through the
+  incoming x8 that reach a `ret` on every path render field-wise against the
+  result type's complete FieldMap (`OuterY.Wide.init` → `return
+  Reconstruction.OuterY.Wide(v1: arg0, …)`; the resilient `IntPair.init`,
+  `Vec2.init`, `Point.init` likewise), a forwarded buffer renders the callee
+  (`makeWide` at -Onone → `return Indirect.Wide5.init(arg0, …)`, its `memcpy`
+  folded), and a payload enum of more than four scalars names its case from
+  the stored tag and its declared word-tuple payload (`return
+  Indirect.Shape4.box(arg0, arg1, arg2, arg3)`, `return Indirect.Shape4.empty`).
+  Caller side: a proven x8 reader of known size called with x8 into the frame
+  leaves words of its result in those slots, bound once (`let r0 = makeWide(…)`;
+  `return (r0.a + r0.e)`), never spelled out per field. -O constant fills
+  through `ldr q`/`dup` read the `__TEXT` literal pool and nothing else.
+  Measured on the shared fixtures (0c8550e tool vs `854ffc5`, `--structured`):
+  libReconstruction 6 lines, .opt 2, .resilient 30, libSample 2, sample.debug
+  7, every one a stale-x0 return replaced or declined. Still declines, by
+  design: a generic result (its pointer escapes into the value witness), an
+  existential (no stored-property layout), a result copied from a local whose
+  address escaped (`escapedWide`), a payload whose scalar arity is not a
+  word-tuple's (`tagged(String, Int, Int)`), and a buffer filled by an
+  unknown callee. Guarded by the indirect-result section of
+  `ReconstructionTests`, `PayloadEnumCaseIndexTests`, `ReturnTypeNameTests`.
 - **FIXED — the Capstone whole-image decode stopped at the first undecodable
   byte.** `cs_disasm` halts at the first byte sequence it cannot decode and
   returns the count so far; the engine called it *once* and took that as the
@@ -458,6 +490,23 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 3. Robustness — what breaks it?
 
+- **OPEN — MachOKit reads an empty `seg_info_offset` as a segment's starts.**
+  `dyld_chained_starts_in_image.seg_info_offset[i] == 0` means "no fixups in
+  segment i" (dyld's rule); the pinned MachOKit (`CamdenBopp/MachOKit@07d7633`)
+  resolves it as a `dyld_chained_starts_in_segment` at offset 0, i.e. over the
+  starts-in-image header itself. In a dylib with exactly three segments the
+  bytes aliased as `page_count` are the real segment's `page_size` (0x4000),
+  and `DyldChainedFixups.pages(of:)` reads 32 KB past the end of the file
+  mapping: SIGSEGV whenever the next page is unmapped (3 of 4 runs of a
+  40-iteration `FieldMapBuilder.build` loop over a three-segment
+  `libIndirect.dylib`; 0 of 10 CLI runs, which only means the CLI's heap was
+  luckier). With four segments the aliased count is 0x18 and the over-read
+  stays in-file, which is why no other fixture ever showed it. Reproduce:
+  build `Fixtures/Sample/indirect.swift` without its `indirectCallCount`
+  global and run the fixture tests. Any small production dylib without a
+  `__DATA` segment is exposed. Fix belongs in MachOKit (skip zero offsets in
+  `startsInSegments`); until then `MachOPreflight` cannot help, since the
+  file is valid.
 - **FIXED — malformed input crashed the process.** The audit recorded this as
   one case (a truncated Mach-O). Surveying nine hand-written malformed inputs
   found **seven crashed** — six SIGTRAP, one **SIGSEGV** — including an *empty
@@ -1078,7 +1127,10 @@ Real, but last. Everything above must hold first.
   (`dot(p: Point, q: Point)`) still decline.
 - **OPEN — closures, existentials, generic witnesses, `throws`, `async`** render
   as low-level runtime calls rather than reconstructed control flow. Honest
-  declines; large surface.
+  declines; large surface. A generic or existential *result* in particular
+  still declines its `return`: the x8 pointer escapes into the value-witness
+  call, or the type has no stored-property layout to cover (`identity<A>`,
+  `asAny` in the indirect fixture).
 - **PLATEAU — condition naming.** ~70% of raw-register conditions are compiler
   plumbing (value witnesses, generic specializations, Codable machinery) with no
   source-level named value to recover. Investigated and documented as
