@@ -12,7 +12,7 @@ public extension DisassembledFunction {
         var statements: [String] = []
         for insn in instructions {
             guard let statement = Self.pseudoStatement(of: insn, hideRuntime: hideRuntime) else { continue }
-            statements.append(statement)
+            statements += statement.components(separatedBy: "\n")
         }
         if hideRuntime { statements = Self.foldSwiftIdioms(statements) }
         if statements.isEmpty {
@@ -28,6 +28,18 @@ public extension DisassembledFunction {
     /// their richer message-send rendering; direct stores to a known Swift
     /// field or Objective-C ivar reuse the field annotation from disassembly.
     static func pseudoStatement(of insn: Instruction, hideRuntime: Bool) -> String? {
+        // A path that throws after this instruction (a throw merged into the
+        // shared epilogue): its own statement, then the throw.
+        if let annotation = insn.annotation, annotation.contains(Self.thenThrowNote) {
+            let rest = annotation.replacingOccurrences(of: "  " + Self.thenThrowNote, with: "")
+                .replacingOccurrences(of: Self.thenThrowNote, with: "")
+            let base = Instruction(
+                address: insn.address, text: insn.text, annotation: rest.isEmpty ? nil : rest,
+                controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
+                callArguments: insn.callArguments, callSelf: insn.callSelf,
+                resultConsumed: insn.resultConsumed, sourceType: insn.sourceType, detail: insn.detail)
+            return pseudoStatement(of: base, hideRuntime: hideRuntime).map { "\($0)\nthrow ?" } ?? "throw ?"
+        }
         if insn.isTrap { return "trap()" }
         if let annotation = insn.annotation {
             let semantic = annotation.components(separatedBy: "  ")
@@ -102,6 +114,10 @@ public extension DisassembledFunction {
         }
         return nil
     }
+
+    /// The note on the last instruction of a path that throws into a shared
+    /// epilogue.
+    static let thenThrowNote = "then throw ?"
 
     /// ARC runtime helpers that are exact lowerings of a source message send,
     /// rendered back as that send.

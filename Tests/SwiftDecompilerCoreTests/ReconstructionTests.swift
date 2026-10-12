@@ -1060,3 +1060,13 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
     #expect(text.contains("let r0 = Compares.sink(arg0)"), Comment(rawValue: text))
     #expect(text.contains("return (r0 << 1)"), Comment(rawValue: text))
 }
+
+/// A throw that falls into the normal epilogue shares its `ret` with the
+/// return; per path into that `ret`, x21 tells them apart.
+@Test func aThrowMergedIntoTheEpilogueStillThrowsIfPresent() async throws {
+    guard let text = try await structuredText("untypedCall", in: "Fixtures/Sample/libMergedThrow.opt.dylib")
+    else { return }
+    #expect(text.contains("swift_willThrow(") , Comment(rawValue: text))
+    #expect(text.contains("throw ?"), Comment(rawValue: text))
+    #expect(text.contains("return r0") || text.contains("return MergedThrow.sink(arg0)"), Comment(rawValue: text))
+}

@@ -4286,19 +4286,40 @@ public struct Disassembler: Sendable {
             }
             return exits
         }()
+        /// Whether x21 at an exit is a proven thrown error: a non-zero flag
+        /// (typed throws) or a fresh `swift_allocError` box.
+        func isThrownError(_ value: AbstractValue) -> Bool {
+            switch value {
+            case .immediate(let flag): return flag != 0
+            case .callResult(let site):
+                let callee = function.instructions.first { $0.address == site }
+                    .flatMap(DisassembledFunction.calleeName(of:)) ?? ""
+                return callee.hasPrefix("swift_allocError")
+            default: return false
+            }
+        }
+        // A throw that falls into the normal epilogue shares its `ret` with
+        // the return: `if (r0 < 0) { swift_willThrow(…) }; return r0` for a
+        // function that throws on that path. Per path into the `ret`, a proven
+        // error makes that path end in a throw, at the end of its predecessor
+        // block; when every path throws, the `ret` itself does.
+        var mergedThrowEnds = Set<UInt64>()
+        var mergedThrowExits = Set<UInt64>()
+        if throwsSignature?.isThrowing == true {
+            for (exit, paths) in analysis.exitErrorValuesByPredecessor {
+                let throwing = paths.filter { isThrownError($0.value) }.map(\.key)
+                guard !throwing.isEmpty else { continue }
+                if throwing.count == paths.count {
+                    mergedThrowExits.insert(exit)
+                } else {
+                    mergedThrowEnds.formUnion(throwing)
+                }
+            }
+        }
         let throwExits: Set<UInt64> = {
             guard throwsSignature?.isThrowing == true else { return [] }
-            return asyncThrowExits.union(analysis.exitErrorValues.compactMap { address, value in
-                switch value {
-                case .immediate(let flag) where flag != 0:
-                    return address
-                case .callResult(let site):
-                    let callee = function.instructions.first { $0.address == site }
-                        .flatMap(DisassembledFunction.calleeName(of:)) ?? ""
-                    return callee.hasPrefix("swift_allocError") ? address : nil
-                default:
-                    return nil
-                }
+            return asyncThrowExits.union(mergedThrowExits).union(analysis.exitErrorValues.compactMap { address, value in
+                isThrownError(value) ? address : nil
             })
         }()
 
@@ -4523,6 +4544,9 @@ public struct Disassembler: Sendable {
             // `ret` (a tail-call branch's x0/v0 hold the callee's arguments, not a
             // result) and only return types delivered in one value register, so a
             // stale register is never printed as a fabricated return.
+            if mergedThrowEnds.contains(insn.address) {
+                sourceNotes.append(DisassembledFunction.thenThrowNote)
+            }
             if throwExits.contains(insn.address) {
                 // A typed error small enough to travel in x0 names its case when
                 // the error type is a no-payload enum; anything else is `?`.

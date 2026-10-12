@@ -389,6 +389,11 @@ public struct FunctionAnalysis: Sendable {
     public var exitValues: [UInt64: AbstractValue] = [:]
     /// x21 at each `ret`: in a throwing Swift function, the error it returns.
     public var exitErrorValues: [UInt64: AbstractValue] = [:]
+    /// For a `ret` whose block several paths reach: x21 at the `ret` along each
+    /// path, keyed by the last instruction of the predecessor block it comes
+    /// from. A throw that falls into the normal epilogue merges with the
+    /// return there, and only the per-path value tells them apart.
+    public var exitErrorValuesByPredecessor: [UInt64: [UInt64: AbstractValue]] = [:]
     /// x20 at each proven async return (a `br` through ResumeParent): an
     /// async throwing function hands its error back in x20, zero for none.
     public var exitAsyncErrorValues: [UInt64: AbstractValue] = [:]
@@ -688,6 +693,24 @@ public struct ValueTracer: Sendable {
                     initializerEntry: entry?.isObjectiveCInitializer == true,
                     addressTaken: addressTaken
                 )
+            }
+        }
+        for block in blocks where block.instructions.contains(where: { $0.controlFlow == .return }) {
+            let preds = predecessors[block.startAddress] ?? []
+            guard preds.count > 1 else { continue }
+            for predecessor in preds {
+                guard var registers = outState[predecessor],
+                      let end = blockByStart[predecessor]?.instructions.last?.address else { continue }
+                for insn in block.instructions {
+                    if insn.controlFlow == .return {
+                        // Every path is recorded, unknown included, so a
+                        // consumer can tell "all paths throw" from "some do".
+                        result.exitErrorValuesByPredecessor[insn.address, default: [:]][end] = registers["x21"] ?? .unknown
+                        break
+                    }
+                    transfer(insn, into: &registers, record: nil, recordAccess: nil,
+                             initializerEntry: entry?.isObjectiveCInitializer == true, addressTaken: addressTaken)
+                }
             }
         }
         return result

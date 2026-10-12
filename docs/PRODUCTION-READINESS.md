@@ -166,11 +166,19 @@ because it cannot be distinguished from a right one by reading the output.
   libswift_Concurrency became throws. Still open at -Onone, where the funclets'
   context reloads through stack spills keep their exits from being proven async
   returns at all. `asyncThrowsRenderAsThrowsIfPresent` was seen red.
-- **OPEN — a throw merged into the normal epilogue renders as a return.**
-  `untyped` renders `return ((arg0 < 0) ? swift_willThrow(swift_allocError(…)) :
-  (arg0 << 1))`; `swift_willThrow` returns nothing and x21 carries the error.
-  Typed `throws(Err)` copied out through the value-witness table renders no
-  throw at all.
+- **FIXED — a throw merged into the normal epilogue rendered as a return.**
+  At -O a throwing path can fall into the shared epilogue, one `ret` for both
+  outcomes, so the merged x21 proved nothing and the path read `if (r0 < 0) {
+  swift_willThrow(…) }; return r0`. The value tracer now records x21 at a
+  multi-predecessor `ret` along each path; a path where it is a fresh
+  `swift_allocError` box or a non-zero flag (typed throws, including the
+  `str x21, [x19]; mov w21, #1` copy-out) ends `throw ?` after its last
+  statement, and a `ret` every path throws to is a throw exit. Fixture
+  `libMergedThrow.opt`; also `typedPick`'s shared throw block and
+  `Validator.validate()`; 8 sites in libswift_Concurrency.
+  `aThrowMergedIntoTheEpilogueStillThrowsIfPresent` was seen red. (The
+  `return ((arg0 < 0) ? swift_willThrow(…) : …)` select form from the original
+  probe no longer reproduces at HEAD.)
 - **OPEN — `Tm` merged outlined helpers name one type for all callers.** A
   merged `…WOcTm` demangles as "outlined init with copy of VStack<…>", but each
   call passes its own type's cache in x2; every call prints the VStack name.

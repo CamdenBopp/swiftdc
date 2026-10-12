@@ -472,9 +472,10 @@ struct ControlFlowStructure {
             for insn in block.instructions {
                 if branch?.consumed.contains(insn.address) == true { continue }
                 if let statement = DisassembledFunction.pseudoStatement(of: insn, hideRuntime: true) {
-                    lines.append("\(pad)\(statement)")
-                    emittedReturn = emittedReturn || statement.hasPrefix("return ")
-                        || statement.hasPrefix("throw ")
+                    for line in statement.components(separatedBy: "\n") {
+                        lines.append("\(pad)\(line)")
+                        emittedReturn = emittedReturn || line.hasPrefix("return ") || line.hasPrefix("throw ")
+                    }
                 }
             }
             if isReturn(block) {

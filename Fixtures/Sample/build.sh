@@ -38,6 +38,9 @@ $SWIFTC -parse-as-library -Osize -emit-library -module-name Reconstruction recon
 cp libReconstruction.osize.dylib libReconstruction.osize.stripped.dylib
 strip -x libReconstruction.osize.stripped.dylib 2>/dev/null || strip libReconstruction.osize.stripped.dylib
 
+echo "==> a throw merged into the normal epilogue (mergedthrow.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name MergedThrow mergedthrow.swift -o libMergedThrow.opt.dylib
+
 echo "==> C callees without signatures (callreads.c, -O0 and -O1)"
 for level in O0 O1; do
     xcrun clang -arch arm64 -$level -dynamiclib callreads.c -o libCallReads.$level.dylib
