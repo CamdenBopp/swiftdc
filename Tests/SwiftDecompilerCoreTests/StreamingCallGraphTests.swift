@@ -81,3 +81,20 @@ private let graphFixtures = [
     // The stub `castOptional` calls (`xcrun nm -m`: 0x2cb0 is its symbol stub).
     #expect(graph.name(of: 0x2cb0) == "swift_dynamicCastClass")
 }
+
+/// A `blr` through a bound GOT slot names its import: it is an external
+/// call, not an unresolved one. Counting it as unresolved put 5,864 of an
+/// app's sites in the "no provable target" note where 4,023 had one.
+@Test func aNamedCallWithoutAnAddressIsExternalNotUnresolved() {
+    let function = DisassembledFunction(
+        symbol: "f", demangledName: nil, startAddress: 0x1000,
+        instructions: [
+            Instruction(address: 0x1000, text: "blr x8", annotation: "→ objc_retainAutorelease", controlFlow: .call),
+            Instruction(address: 0x1004, text: "blr x9", controlFlow: .call),
+            Instruction(address: 0x1008, text: "ret", controlFlow: .return),
+        ],
+        source: .symbol)
+    let graph = CallGraph(functions: [function])
+    #expect(graph.unresolvedCallSites == 1)
+    #expect(graph.externalCallSites == 1)
+}

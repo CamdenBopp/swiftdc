@@ -1747,6 +1747,14 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   28 to 652 such types per binary). Such a type now reads `instance size
   unknown (at least N bytes)`, and JSON `instanceSize` is null.
 
+- **FIXED — `xrefs` counted named GOT calls as unresolved.** A `blr`
+  through a bound GOT slot has a proven import name but no address in the
+  image. It is now an external call (`CallGraph.externalCallSites`), not an
+  unresolved one. On OpenMHz -Onone, 1,841 of 5,864 `blr` remain
+  unresolved, matching the 4,023 GOT-bound sites the audit counted
+  independently (E-2). `--unreferenced` now prints the unresolved count
+  next to its dead-code caveat.
+
 ## 6. Usability — are commands, diagnostics, and docs accurate?
 
 - **FIXED — three README defects.** A documented command that errors

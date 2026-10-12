@@ -35,6 +35,10 @@ public struct CallGraph: Sendable {
     public let edges: [CallEdge]
     /// Call instructions whose target isn't statically known (indirect dispatch).
     public let unresolvedCallSites: Int
+    /// Calls with no address in this image but a proven callee: an import
+    /// called through its GOT slot. Not unresolved, and not edges either,
+    /// since the callee has no address here.
+    public let externalCallSites: Int
 
     private let calleesByCaller: [UInt64: [CallEdge]]
     private let callersByCallee: [UInt64: [CallEdge]]
@@ -57,6 +61,7 @@ public struct CallGraph: Sendable {
 
         var edges: [CallEdge] = []
         var unresolved = 0
+        var external = 0
         for function in functions {
             let first = function.startAddress
             let last = function.instructions.last?.address ?? first
@@ -65,7 +70,10 @@ public struct CallGraph: Sendable {
                 switch insn.controlFlow {
                 case .call:
                     guard insn.branchTarget != nil else {
-                        unresolved += 1
+                        // A `blr` through a bound GOT slot names its import;
+                        // counted as unresolved it inflated the count (69% of
+                        // one app's "unresolved" sites had a proven target).
+                        if DisassembledFunction.calleeName(of: insn) != nil { external += 1 } else { unresolved += 1 }
                         continue
                     }
                     isTailCall = false
@@ -102,6 +110,7 @@ public struct CallGraph: Sendable {
         self.functionAddresses = starts
         self.edges = edges
         self.unresolvedCallSites = unresolved
+        self.externalCallSites = external
         self.calleesByCaller = Dictionary(grouping: edges, by: \.caller)
         self.callersByCallee = Dictionary(grouping: edges, by: \.callee)
     }

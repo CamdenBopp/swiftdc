@@ -118,6 +118,12 @@ struct XrefsCommand: AsyncParsableCommand {
         caller in this image — entry points, exported symbols, and anything reached only \
         by unresolved indirect dispatch look the same as dead code here.
         """)
+        if graph.unresolvedCallSites > 0 {
+            lines.append("""
+            \(graph.unresolvedCallSites) call sites dispatch indirectly without a provable target; \
+            any of these functions may be reached through one.
+            """)
+        }
         return lines.joined(separator: "\n")
     }
 
