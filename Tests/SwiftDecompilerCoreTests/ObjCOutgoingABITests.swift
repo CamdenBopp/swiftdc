@@ -92,3 +92,25 @@ func objcEntryArgumentsFollowTheirBanks(path: String) async throws {
     #expect(text.contains("[arg0 twice:?]"), Comment(rawValue: text))
     #expect(!text.contains("twice:arg0"), Comment(rawValue: text))
 }
+
+/// Several implementations of one selector on one class (category aliases)
+/// that agree on the argument ABI: the declaration reported is the
+/// lowest-addressed one, every run. The index used to search a dictionary's
+/// values, whose order is a per-process hash seed.
+@Test func objcOutgoingDeclarationIsTheLowestAddressed() {
+    var methods: [UInt64: [ObjCMethodBinding]] = [:]
+    for slot in 0..<50 {
+        // Same types (an object argument), a different frame size per binding.
+        methods[UInt64(0x1000 + slot * 4)] = [ObjCMethodBinding(
+            className: "Base", selector: "take:", typeEncoding: "v\(24 + slot)@0:8@16",
+            isClassMethod: false, signature: "")]
+    }
+    let index = ObjCMetadataIndex(methods: methods, fieldMaps: [:])
+    guard case .known(let encoding, let types) = index.outgoingSignature(
+        selector: "take:", className: "Base", isClassMethod: false) else {
+        Issue.record("Agreeing implementations must recover argument types")
+        return
+    }
+    #expect(types == ["@"])
+    #expect(encoding == "v24@0:8@16")
+}

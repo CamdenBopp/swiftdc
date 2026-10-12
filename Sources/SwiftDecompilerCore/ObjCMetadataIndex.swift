@@ -383,10 +383,23 @@ struct ObjCMetadataSnapshot {
 public struct ObjCMetadataIndex: Sendable {
     private let methods: [UInt64: [ObjCMethodBinding]]
     let fieldMaps: [String: FieldMap]
+    /// Every binding of each selector, in implementation-address order. A send
+    /// asks for its selector's implementations; scanning every method of the
+    /// image per send was 2,521 of 8,875 analysis samples on Fiery Feeds
+    /// `xrefs`, and its dictionary order made "the first declaration" vary
+    /// between runs.
+    private let bySelector: [String: [ObjCMethodBinding]]
 
     init(methods: [UInt64: [ObjCMethodBinding]], fieldMaps: [String: FieldMap]) {
         self.methods = methods
         self.fieldMaps = fieldMaps
+        var bySelector: [String: [ObjCMethodBinding]] = [:]
+        for address in methods.keys.sorted() {
+            for binding in methods[address] ?? [] {
+                bySelector[binding.selector, default: []].append(binding)
+            }
+        }
+        self.bySelector = bySelector
     }
 
     /// Primary binding at an implementation address. Multiple selectors may
@@ -424,7 +437,7 @@ public struct ObjCMetadataIndex: Sendable {
     /// declaration is not an all-integer signature, and a disagreement
     /// declines. Recovered from the pre-merge stash (983aa25).
     func outgoingSignature(selector: String, className: String, isClassMethod: Bool) -> OutgoingSignature {
-        let matching = methods.values.joined().filter { $0.selector == selector && $0.isClassMethod == isClassMethod }
+        let matching = (bySelector[selector] ?? []).filter { $0.isClassMethod == isClassMethod }
         guard let declared = matching.first(where: { $0.className == className }) else { return .unavailable }
         guard let types = ObjCArgumentABI.parameterTypes(encoding: declared.typeEncoding,
                                                         argumentCount: declared.argumentCount),
@@ -438,9 +451,8 @@ public struct ObjCMetadataIndex: Sendable {
     /// floating-point argument is enough to doubt that x2… carry the send's
     /// arguments: the value may arrive in v0 while x2 holds something stale.
     func selectorMayUseFloatingArguments(_ selector: String) -> Bool {
-        methods.values.joined().contains { method in
-            guard method.selector == selector,
-                  let types = ObjCArgumentABI.parameterTypes(encoding: method.typeEncoding,
+        (bySelector[selector] ?? []).contains { method in
+            guard let types = ObjCArgumentABI.parameterTypes(encoding: method.typeEncoding,
                                                             argumentCount: method.argumentCount)
             else { return false }
             return types.contains { ["f", "d", "D"].contains($0) }
