@@ -425,9 +425,18 @@ public extension DisassembledFunction {
     /// `self.member` for a self dispatch to `callee`.
     static func selfDispatchCall(_ callee: String) -> String {
         let stripped = strippedCallee(callee)
-        let member = stripped.split(separator: ".").last.map(String.init) ?? stripped
-        return "self.\(member)"
+        let parts = stripped.split(separator: ".").map(String.init)
+        // An accessor keeps its property: `self.value.getter`, never the
+        // accessor keyword alone.
+        if parts.count >= 2, accessorKeywords.contains(parts[parts.count - 1]) {
+            return "self.\(parts[parts.count - 2]).\(parts[parts.count - 1])"
+        }
+        return "self.\(parts.last ?? stripped)"
     }
+
+    private static let accessorKeywords: Set<String> = [
+        "getter", "setter", "modify", "read", "unsafeAddressor", "unsafeMutableAddressor", "willset", "didset",
+    ]
 
     /// Drop the notes value-tracking appends to an annotation (`self=…`,
     /// `args(…)`, `await=…`, `let r0 = …`, `return …`), leaving just the
@@ -455,6 +464,18 @@ public extension DisassembledFunction {
         // parameter: `init(_:transform: (A.Element) async -> B?) -> Iterator`
         // cut at the first arrow rendered `init(_: A.AsyncIterator, transform: ()`.
         if let arrow = topLevelRange(of: " -> ", in: s) { s = String(s[..<arrow.lowerBound]) }
+        // A property accessor's ` : Type` is the property's type, not part of
+        // the call: `Foo.value.getter : Swift.Int()` read as a call through a
+        // type, and a self dispatch to it was named `self.Int`. A protocol
+        // witness keeps its `in conformance … : P` clause.
+        if !s.contains(" in conformance "), let colon = topLevelRange(of: " : ", in: s),
+           let keyword = s[..<colon.lowerBound].split(separator: ".").last,
+           accessorKeywords.contains(String(keyword)) {
+            // Keep a suffix that names a different function: the `.resume.0`
+            // half of a `modify` coroutine is not its ramp.
+            let suffix = s[colon.upperBound...].range(of: " with unmangled suffix ").map { String(s[$0.lowerBound...]) } ?? ""
+            s = String(s[..<colon.lowerBound]) + suffix
+        }
         // Effect specifiers follow the parameter list (`f(Swift.Int) async
         // throws`); they are not part of the callee's name, and left in place
         // they kept the parameter list from being recognised and stripped, so

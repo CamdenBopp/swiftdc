@@ -142,7 +142,26 @@ func structuredLoops(_ text: String) -> [(header: String, body: [String], after:
     let text = functions.filter { $0.displayName.hasPrefix("AuditSemantics.Gauge.run(") || $0.displayName.hasPrefix("AuditSemantics.scaled(") }
         .map { $0.renderStructured() }.joined(separator: "\n")
     #expect(text.range(of: #"\(tick in _[0-9A-F]+\)\(\)"#, options: .regularExpression) != nil, Comment(rawValue: text))
-    #expect(text.contains("Units.scale.getter : Swift.Int()"), Comment(rawValue: text))
-    #expect(!text.contains("reading.getter : Swift.Int(r"), Comment(rawValue: text))
+    #expect(text.contains("Units.scale.getter()"), Comment(rawValue: text))
+    #expect(text.contains("Gauge.reading.getter()"), Comment(rawValue: text))
     #expect(Disassembler.withoutPrivateDiscriminators("M.(tick in _0A1B)") == "M.tick")
+}
+
+/// An accessor's ` : Type` is its property's type. Left on the callee it
+/// read as a call through the type (`Foo.value.getter : Swift.Int()`), and a
+/// self dispatch to the getter was named after the type: `self.Int()`.
+@Test func anAccessorCallNamesItsPropertyNotItsTypeIfPresent() async throws {
+    #expect(DisassembledFunction.strippedCallee("M.Box.value.getter : Swift.Int") == "M.Box.value.getter")
+    #expect(DisassembledFunction.selfDispatchCall("M.Box.value.getter : Swift.Int") == "self.value.getter")
+    #expect(DisassembledFunction.strippedCallee("M.f(Swift.Int) -> Swift.Int") == "M.f")
+    #expect(DisassembledFunction.strippedCallee("M.P.a.modify : Swift.Int with unmangled suffix \".resume.0\"")
+        == "M.P.a.modify with unmangled suffix \".resume.0\"")
+    let path = "Fixtures/Sample/libReconstruction.osize.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path)
+    }
+    let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(!text.contains("self.Int("), Comment(rawValue: text))
+    #expect(!text.contains(".getter : Swift.Int("), Comment(rawValue: text))
 }
