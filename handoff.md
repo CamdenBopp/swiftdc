@@ -85,7 +85,10 @@ Then, continuing the same day (each with a reproduction and a red/green
 - Recovered from the pre-merge stash (see "The pre-merge stash" below):
   `ea5e58e` entry state only at the entry, `7e9a8c7` field lookup bounds,
   `c6f23b2` self-field snapshots, `8d92415` traps/`goto`/unresolved calls,
-  `096868b` return register allowlist and HFA self order, `a2ef33c` hygiene
+  `096868b` return register allowlist and HFA self order, `a2ef33c` hygiene,
+  `ed4f157`/`0c92a85` typed Objective-C argument ABI (entry, sends to self and
+  to typed ivars), `8014828` qualified enum/class/payload identity, `2ee0578`
+  qualified field-map identity
 
 Reverted before commit: a callee arity cap by parameter *count*. It dropped a
 real argument (`sink(_: String, _: Int)`: the String fills x0 and x1, the Int
@@ -371,18 +374,19 @@ carried that branch's commits but not this dirty tree. An audit
 every recovery is a port. Recovered so far: see the shipped list above.
 Still in the stash, by the audit's priority:
 
-- Typed Objective-C GP/FP/stack argument ABI, entry and outgoing
-  (`d921fc1:Sources/SwiftDecompilerCore/ObjCArgumentABI.swift`, its tests and
-  `objc_outgoing*.m` fixtures; mutation-proven). M.
-- Qualified identity for enum, class and payload-enum indexes and field maps
-  (two-module fixtures red/green). M.
+- ObjC ABI leftovers: packed sub-8-byte stack arguments and the structurer's
+  metadata register naming (both need the width work below).
+- `buildIncludingLoaderPathDependencies` (foreign field names through the
+  `@loader_path` dylib): rests on `ImageUniverse.dependencyClosure`, which
+  FieldMap.swift records as trapping on resilient fields. Measure the trap on
+  MachOSwiftSection 0.22 before porting.
 - Async index hardening (unique claims, hint boundaries, 64-bit widths). S–M.
   Decide the context-slot policy first: the stash declines all slots, HEAD
   accepts a unique store plus an escape check.
 - Call-result materialization (`let call_<addr>`). M.
 - W-register width, full NZCV, CCMP/FCMP/FCSEL, subword stack extents (four
   new modules, 84k native vectors). L.
-- `@loader_path` external field maps. M. LSDA cleanup-pad tests. S.
+- LSDA cleanup-pad tests. S.
 - Do not recover as written: the ObjC ivar-offset provenance (`try!` file
   read, per-slot `resolveRebase`); the `work/` binaries and Ghidra projects.
 

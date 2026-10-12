@@ -25,6 +25,16 @@ docs against the source; its stale-claim findings are corrected below.
 The highest-severity category. A wrong render is worse than a missing one,
 because it cannot be distinguished from a right one by reading the output.
 
+- **FIXED (`ed4f157`, `0c92a85`) — Objective-C arguments were read positionally
+  from x2–x7.** A `double` shifted every later argument: `[self whole:11
+  fraction:2.5 object:nil tail:33]` rendered `fraction:0 object:33`, and a
+  method stored its `tail` from the wrong register. Arguments now follow the
+  type encoding's x/v banks at entry and at sends to self or a typed ivar; a
+  conflicting or unknown receiver renders `?`.
+- **FIXED (`8014828`, `2ee0578`) — a qualified type borrowed a same-named local
+  type's facts.** Case names (`EnumIdentityExternal.Shade.amber`), payload
+  encodings, class-ness and field names (`arg0.wrongFirst`) came from a local
+  type sharing only the simple name.
 - **FIXED (`096868b`) — any nominal return type read x0 as its result.** A
   one-Double struct returns in v0 and a multi-word struct in x0/x1 or x8; every
   memberwise init of a two- to four-word struct rendered `return arg0`. x0/v0
