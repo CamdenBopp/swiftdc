@@ -10,3 +10,13 @@ public func labels() {
 }
 
 public func matches(_ s: String) -> Bool { s == "A literal laid out 32 bytes later" }
+
+public func unicodeLabels() {
+    show("Été 🌧️ 東京 — naïve")
+    show("e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}")
+    show("long\0embedded\n\"quote\"\\tail")
+    show("a pooled prefix — shared Unicode suffix 🌧️")
+    show("shared Unicode suffix 🌧️")
+}
+
+public func pooledUnicode() { show("shared Unicode suffix 🌧️") }

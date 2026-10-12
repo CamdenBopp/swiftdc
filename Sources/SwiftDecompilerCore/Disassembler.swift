@@ -2034,12 +2034,37 @@ public struct Disassembler: Sendable {
         /// and on one app 0 of 151 such sites showed the true text. With
         /// `count`, the bytes must be exactly that long.
         func swiftLargeStringLiteral(objectAddress: UInt64, count: Int? = nil) -> String? {
-            let target = objectAddress &+ 32
-            guard stringRanges.contains(where: { $0.contains(target) }),
-                  let raw = Self.rawCString(at: target, in: machO, ranges: fileRanges), !raw.isEmpty,
-                  count.map({ raw.utf8.count == $0 }) ?? true,
-                  let text = Self.cString(at: target, in: machO, ranges: fileRanges)
+            let (target, overflow) = objectAddress.addingReportingOverflow(32)
+            let constantRanges: [Range<UInt64>] = count == nil ? [] : machO.sections.compactMap {
+                guard $0.segmentName == "__TEXT", $0.sectionName == "__const" else { return nil }
+                return UInt64($0.address)..<(UInt64($0.address) + UInt64($0.size))
+            }
+            guard !overflow, let range = (stringRanges + constantRanges).first(where: { $0.contains(target) }),
+                  let length = count ?? Self.rawCString(at: target, in: machO, ranges: fileRanges)?.utf8.count,
+                  length > 0, UInt64(length) < range.upperBound - target,
+                  fileRanges.map({ $0.holdsBytes(at: target, count: length + 1) }) ?? true,
+                  let bytes: [UInt8] = try? machO.readElements(offset: machO.resolveOffset(at: target), numberOfElements: length + 1),
+                  bytes.count == length + 1, bytes.last == 0,
+                  let raw = String(bytes: bytes.dropLast(), encoding: .utf8)
             else { return nil }
+            // Count UTF-8 bytes, not characters; retain combining sequences and
+            // pooled suffix addresses. A Swift literal can contain NUL, so a
+            // C-string scan is insufficient when the representation gives a
+            // byte count. Escape the complete value instead of truncating it
+            // into a different literal.
+            var text = ""
+            for scalar in raw.unicodeScalars {
+                switch scalar.value {
+                case 0: text += "\\0"
+                case 9: text += "\\t"
+                case 10: text += "\\n"
+                case 13: text += "\\r"
+                case 34: text += "\\\""
+                case 92: text += "\\\\"
+                case 1...31, 127, 0x2028, 0x2029: text += "\\u{\(String(scalar.value, radix: 16))}"
+                default: text.unicodeScalars.append(scalar)
+                }
+            }
             return "\"\(text)\""
         }
 

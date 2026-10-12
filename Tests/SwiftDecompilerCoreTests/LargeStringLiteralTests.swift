@@ -25,3 +25,20 @@ import Testing
     #expect(matches.contains("\"A literal laid out 32 bytes later\""), Comment(rawValue: matches))
     #expect(!matches.contains("Seventeen"), Comment(rawValue: matches))
 }
+
+@Test func largeLiteralsPreserveUTF8ControlsAndPoolingIfPresent() async throws {
+    let path = "Fixtures/Sample/libLargeStrings.opt.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "LargeStrings")
+    }
+    let labels = try #require(functions.first { $0.displayName.hasPrefix("LargeStrings.unicodeLabels(") })
+    for text in [labels.renderPseudo(), labels.renderStructured()] {
+        for literal in ["Été 🌧️ 東京 — naïve", "e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}",
+                        "long\\0embedded\\n\\\"quote\\\"\\\\tail", "a pooled prefix — shared Unicode suffix 🌧️", "shared Unicode suffix 🌧️"] {
+            #expect(text.contains("LargeStrings.show(\"\(literal)\")"), Comment(rawValue: text))
+        }
+    }
+    let pooled = try #require(functions.first { $0.displayName.hasPrefix("LargeStrings.pooledUnicode(") }).renderStructured()
+    #expect(pooled.contains("LargeStrings.show(\"shared Unicode suffix 🌧️\")"), Comment(rawValue: pooled))
+}
