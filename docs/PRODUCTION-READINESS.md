@@ -185,9 +185,19 @@ because it cannot be distinguished from a right one by reading the output.
   `aThrowMergedIntoTheEpilogueStillThrowsIfPresent` was seen red. (The
   `return ((arg0 < 0) ? swift_willThrow(…) : …)` select form from the original
   probe no longer reproduces at HEAD.)
-- **OPEN — `Tm` merged outlined helpers name one type for all callers.** A
-  merged `…WOcTm` demangles as "outlined init with copy of VStack<…>", but each
-  call passes its own type's cache in x2; every call prints the VStack name.
+- **FIXED — a call into a merged (`Tm`) function named whichever type LLVM
+  kept.** Function merging keeps one body for functions that differ only in
+  constants and names it after one of them, so `storeEnumTagSinglePayload
+  value witness for Reconstruction.OuterX.Wide` rendered a call to `merged
+  storeEnumTagSinglePayload value witness for Reconstruction.IntQuad()`, and
+  a merged `…WOcTm` printed one VStack type for every caller. A call site now
+  keeps the kind and drops the type: `merged storeEnumTagSinglePayload value
+  witness for …()`, `merged ….hashValue.getter : Swift.Int()`, `in
+  conformance … : Swift.Hashable`. The merged function's own header keeps its
+  symbol. Blast radius over every fixture's `--structured`/`--pseudo`, the
+  plain listing and three filtered runs: only those call lines.
+  `aCallIntoAMergedFunctionNamesNoTypeIfPresent` and
+  `aMergedCalleeDoesNotNameItsRepresentativeType` were seen red.
 - **OPEN — `awaitedN` is bound for a generic or indirect async result.** The
   result is written into a context buffer, so x0 at the resume is not it.
 - **FIXED — one call could read as two.** A call consumed by both a branch

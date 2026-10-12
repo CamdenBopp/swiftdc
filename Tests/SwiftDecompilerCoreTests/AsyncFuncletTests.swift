@@ -245,7 +245,7 @@ func groupsFuncletsAsTheSymbolTableDoesIfPresent(path: String) async throws {
     #expect(DisassembledFunction.strippedCallee(
         "merged Swift.AsyncCompactMapSequence.Iterator.init(_: A.AsyncIterator, transform: "
             + "(A.Element) async -> Swift.Optional<B>) -> Swift.AsyncCompactMapSequence<A, B>.Iterator")
-        == "merged Swift.AsyncCompactMapSequence.Iterator.init")
+        == "merged ….init")  // a merged body names no one type (MergedCallNameTests)
     #expect(DisassembledFunction.strippedCallee("m.apply(_: (Swift.Int) -> Swift.Int) -> ()") == "m.apply")
 }
 

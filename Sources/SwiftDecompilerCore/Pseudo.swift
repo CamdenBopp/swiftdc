@@ -420,7 +420,7 @@ public extension DisassembledFunction {
     /// signature so the recovered `(args)` reads cleanly:
     /// `String.append(_:)` → `String.append`, `Tree.sum()` → `Tree.sum`.
     static func strippedCallee(_ name: String) -> String {
-        var s = name
+        var s = mergedCallName(name)
         // The signature's own arrow, not one inside a function-typed
         // parameter: `init(_:transform: (A.Element) async -> B?) -> Iterator`
         // cut at the first arrow rendered `init(_: A.AsyncIterator, transform: ()`.
@@ -442,6 +442,56 @@ public extension DisassembledFunction {
             }
         }
         return s
+    }
+
+    /// A call to a merged (`Tm`) function, without the type its symbol happens
+    /// to name.
+    ///
+    /// LLVM's function merging keeps one body for functions that differ only
+    /// in constants, which it now takes as arguments, and names it after
+    /// whichever it kept: `storeEnumTagSinglePayload value witness for
+    /// Reconstruction.OuterX.Wide` tail-called `merged
+    /// storeEnumTagSinglePayload value witness for Reconstruction.IntQuad`, a
+    /// type it has nothing to do with. The kind of function is shared by every
+    /// caller; the type is not, so it reads `…`:
+    ///
+    ///     merged storeEnumTagSinglePayload value witness for …
+    ///     merged protocol witness for Swift.Hashable.hashValue.getter : Swift.Int in conformance … : Swift.Hashable in M
+    ///     merged ….hashValue.getter : Swift.Int
+    ///
+    /// The merged function's own header keeps its real symbol.
+    static func mergedCallName(_ name: String) -> String {
+        let prefix = "merged "
+        guard name.hasPrefix(prefix) else { return name }
+        var body = String(name.dropFirst(prefix.count))
+        if let conformance = body.range(of: " in conformance "),
+           let colon = body.range(of: " : ", range: conformance.upperBound..<body.endIndex) {
+            body.replaceSubrange(conformance.upperBound..<colon.lowerBound, with: "…")
+            return prefix + body
+        }
+        // `… value witness for T`, `outlined copy of T`: the type ends the name.
+        if let subject = body.range(of: " for ", options: .backwards) ?? body.range(of: " of ", options: .backwards),
+           !body[subject.upperBound...].contains("(") {
+            body.replaceSubrange(subject.upperBound..., with: "…")
+            return prefix + body
+        }
+        // `Context.member[.accessor][(parameters)][ : Type]`.
+        let headEnd = [body.firstIndex(of: "("), body.range(of: " : ")?.lowerBound]
+            .compactMap { $0 }.min() ?? body.endIndex
+        let head = body[..<headEnd]
+        guard var dot = head.lastIndex(of: ".") else { return name }
+        let accessors: Set<Substring> = [
+            "getter", "setter", "modify", "read", "willset", "didset", "unsafeAddressor", "unsafeMutableAddressor",
+        ]
+        if accessors.contains(head[head.index(after: dot)...]) {
+            guard let memberDot = head[..<dot].lastIndex(of: ".") else { return name }
+            dot = memberDot
+        }
+        let member = head[head.index(after: dot)...]
+        guard !member.isEmpty, member.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." })
+        else { return name }
+        body.replaceSubrange(body.startIndex..<dot, with: "…")
+        return prefix + body
     }
 
     /// Fixed-ABI runtime/libc entry points whose argument count is publicly
