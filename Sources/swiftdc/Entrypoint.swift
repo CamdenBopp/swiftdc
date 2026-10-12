@@ -461,10 +461,18 @@ struct DisasmCommand: AsyncParsableCommand {
         // memory stays bounded to one function rather than the entire image's
         // decoded instructions (see disassembleStreamingRender). JSON, filtered,
         // and standalone-file paths keep the array API unchanged.
-        if (image != nil || imagePath != nil || cache != nil), (function ?? "").isEmpty, !json {
-            let machO = try BinaryLoader.loadMachO(
-                path: path, image: image, imagePath: imagePath, cachePath: cache, binary: binary
-            )
+        let isCacheImage = image != nil || imagePath != nil || cache != nil
+        // A standalone file streams too for the pseudocode views, which print
+        // no instruction text: holding the whole image cost about 1 KB per
+        // instruction, so a 7M-instruction debug app could not render in 4 GB.
+        // The plain listing and --cfg print objdump's instruction text.
+        let streamsStandalone = !isCacheImage && path != nil && (structured || pseudo)
+        if isCacheImage || streamsStandalone, (function ?? "").isEmpty, !json {
+            let machO = isCacheImage
+                ? try BinaryLoader.loadMachO(
+                    path: path, image: image, imagePath: imagePath, cachePath: cache, binary: binary)
+                : try BinaryLoader.load(path: BinaryLoader.resolveBinaryInput(path ?? "", binary: binary),
+                                        architecture: architecture)
             let declared = disassembler.declaredFunctionCount(in: machO)
             let renderOne: (DisassembledFunction) -> String =
                 structured ? { $0.renderStructured() }

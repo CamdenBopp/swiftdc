@@ -1704,10 +1704,13 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 - **OPEN — time, and the array modes, still scale with the whole image.**
   Streaming fixed peak *memory* for text output but not *time*: CoreLocation
   still takes ~23 s (the decode + per-function analysis work is unchanged, just
-  no longer all resident). `xrefs` now streams too (keeping call sites only);
-  `--json`, `analyze`, and standalone unfiltered `disasm` (objdump path) still
-  materialise every function — a streaming JSON writer, or chunking the array
-  modes, is the remaining scale work.
+  no longer all resident). `xrefs` now streams too (keeping call sites only),
+  and so do `disasm --structured`/`--pseudo` on a standalone file: Enchanted
+  -Onone (7.02M instructions), killed at a 4 GB guard after 45 s before, now
+  renders in 284 s at 416 MB, and its -O build in 157 s at 369 MB. The plain
+  listing and `--cfg` (objdump's instruction text), `--json` and `analyze`
+  still materialise every function; a streaming JSON writer, or chunking the
+  array modes, is the remaining scale work.
 - **MITIGATED (memory) — a whole-image memory regression guard now exists**
   (`MemoryRegressionTests`). The memory limit above is now FIXED by
   streaming, but nothing stopped it regressing meanwhile, and it still guards the

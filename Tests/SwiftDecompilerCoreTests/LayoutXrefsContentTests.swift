@@ -57,6 +57,27 @@ struct LayoutXrefsContentTests {
         #expect(widget["instanceSize"] is NSNull, "\(widget)")
     }
 
+    /// `disasm --structured` and `--pseudo` on a standalone file stream one
+    /// function at a time (holding the whole image cost about 1 KB per
+    /// instruction; a 7M-instruction app could not render in 4 GB). The
+    /// stream must render every function the array path (`--json`) recovers.
+    @Test func aStreamedListingRendersEveryFunctionIfPresent() throws {
+        for fixture in ["Fixtures/Sample/libSample.dylib", "Fixtures/Sample/sample.release",
+                        "Fixtures/Sample/libReconstruction.opt.dylib"] {
+            guard FileManager.default.fileExists(atPath: fixture),
+                  let json = try run(["disasm", fixture, "--json"]) else { continue }
+            let functions = try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]])
+            for mode in ["--structured", "--pseudo"] {
+                guard let text = try run(["disasm", fixture, mode]) else { continue }
+                let headers = text.split(separator: "\n").filter { line in
+                    guard let first = line.first, !first.isWhitespace, line.hasSuffix(" {") else { return false }
+                    return true
+                }
+                #expect(headers.count == functions.count, "\(fixture) \(mode): \(headers.count) rendered, \(functions.count) recovered")
+            }
+        }
+    }
+
     @Test func xrefsResolvesConcreteCallEdgesIfPresent() throws {
         let fixture = "Fixtures/Sample/sample.release"
         guard FileManager.default.fileExists(atPath: fixture) else { return }
