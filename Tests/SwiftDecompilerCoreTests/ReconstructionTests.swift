@@ -95,9 +95,11 @@ private func reconstructionStructured(
     guard let hypot = try await reconstructionPseudo("hypotenuse") else { return }
     #expect(hypot.contains("return sqrt(((arg0 * arg0) + (arg1 * arg1)))"))
 
-    // Mixed: an integer parameter in x0, a floating-point one in v0.
+    // Mixed: an integer parameter in x0, a floating-point one in v0. The
+    // `scvtf` is part of the value (`Double(n) * f`); dropped, it read
+    // `(arg0 * arg1)`, an Int times a Double.
     guard let scaled = try await reconstructionPseudo("scaleInt") else { return }
-    #expect(scaled.contains("return (arg0 * arg1)"))
+    #expect(scaled.contains("return (Double(arg0) * arg1)"))
 
     // A floating-point constant in an expression renders as its decimal, not
     // the raw IEEE-754 bit pattern, because the expression reaches a Double arg.

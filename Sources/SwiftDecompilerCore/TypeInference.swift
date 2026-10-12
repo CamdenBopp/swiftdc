@@ -135,6 +135,10 @@ public enum TypeInference {
                 return ValueType(category: .integer, width: nil, signedness: .unknownSign)
             case .squareRoot, .absoluteValue:
                 return .floating(nil)
+            case .toFloat(let bits):
+                return .floating(bits)
+            case .toInteger(let signed, let bits):
+                return signed ? .signedInteger(bits) : .unsignedInteger(bits)
             }
         default:
             return .unknown

@@ -32,6 +32,8 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libSwiftErrorProbe.stripped.dylib",
         "Fixtures/Sample/libIndirect.dylib",
         "Fixtures/Sample/libIndirect.opt.dylib",
+        "Fixtures/Sample/libConversions.dylib",
+        "Fixtures/Sample/libConversions.opt.dylib",
         "Fixtures/Sample/libAsyncFns.dylib",
         "Fixtures/Sample/libAsyncFns.opt.dylib",
         "Fixtures/Sample/libAsyncFns.opt.stripped.dylib",

@@ -82,8 +82,9 @@ private func structured(_ name: String, in path: String) async throws -> String?
         #expect(!conditions.contains { $0.contains("ReconTypedError") }, "\(level): \(body)")
         #expect(!body.contains("arg0 < ") && !body.contains("arg0 >= "), "\(level): \(body)")
         #expect(body.contains("arg1 < 0") || body.contains("arg1 >= 0"), "\(level): \(body)")
-        // The success value is recovered from both real parameters.
-        #expect(body.contains("+ arg1)"), "\(level): \(body)")
+        // The success value is recovered from both real parameters, the Int
+        // one through its conversion (`d * 2.0 + Double(n)`).
+        #expect(body.contains("+ Double(arg1))"), "\(level): \(body)")
     }
 }
 

@@ -3137,21 +3137,35 @@ public struct Disassembler: Sendable {
             }
         }
 
-        /// Whether an expression is float-valued because it reaches a float
-        /// parameter — the signal that a bare `.immediate` beside it is an IEEE
-        /// bit pattern, not an integer. Only float ARGUMENTS anchor it: a bare
-        /// immediate is exactly the ambiguous case being resolved, so it is never
-        /// a base case, and an integer body (no float info) never matches.
-        func isFloatValued(_ value: AbstractValue) -> Bool {
+        /// The float width (64 or 32) an expression is anchored to — the signal
+        /// that a bare `.immediate` beside it is an IEEE bit pattern, not an
+        /// integer. Only a float ARGUMENT, a conversion to float, or a call whose
+        /// callee's signature returns a float anchors it: a bare immediate is
+        /// exactly the ambiguous case being resolved, so it is never a base
+        /// case, and an integer body never matches. A conversion to integer ends
+        /// the float context below it.
+        func floatWidth(_ value: AbstractValue) -> Int? {
             switch value {
             case .argument(let index):
-                return floatInfo?.indices.contains(index) ?? false
+                guard let floatInfo, floatInfo.indices.contains(index) else { return nil }
+                return floatInfo.isDouble ? 64 : 32
+            case .callResult(let site):
+                // -Onone calls `Double.init(_:)` where -O emits `scvtf`.
+                switch calleeByAddress[site].flatMap(Self.swiftReturnTypeName(ofDemangled:)) {
+                case "Swift.Double"?, "Swift.Float64"?, "Swift.CGFloat"?, "CoreGraphics.CGFloat"?: return 64
+                case "Swift.Float"?, "Swift.Float32"?: return 32
+                default: return nil
+                }
             case .binary(_, let lhs, let rhs):
-                return isFloatValued(lhs) || isFloatValued(rhs)
+                return floatWidth(lhs) ?? floatWidth(rhs)
+            case .unary(.toFloat(let bits), _):
+                return bits
+            case .unary(.toInteger, _):
+                return nil
             case .unary(_, let operand):
-                return isFloatValued(operand)
+                return floatWidth(operand)
             default:
-                return false
+                return nil
             }
         }
 
@@ -3264,12 +3278,14 @@ public struct Disassembler: Sendable {
                 let bitLevel: [AbstractBinaryOperator] = [
                     .bitAnd, .bitOr, .bitXor, .shiftLeft, .shiftRight, .arithmeticShiftRight,
                 ]
-                let floatOp = floatInfo != nil && (isFloatValued(lhs) || isFloatValued(rhs))
-                    && !bitLevel.contains(op)
+                let floatType: String? = switch bitLevel.contains(op) ? nil : floatWidth(lhs) ?? floatWidth(rhs) {
+                case 64?: "Swift.Double"
+                case 32?: "Swift.Float"
+                default: nil
+                }
                 func operand(_ value: AbstractValue) -> String {
-                    if floatOp, case .immediate(let bits) = value,
-                       let decimal = Self.renderTypedConstant(
-                           bits: bits, type: floatInfo!.isDouble ? "Swift.Double" : "Swift.Float") {
+                    if let floatType, case .immediate(let bits) = value,
+                       let decimal = Self.renderTypedConstant(bits: bits, type: floatType) {
                         return decimal
                     }
                     return renderValue(value, depth: depth + 1)
@@ -3297,6 +3313,10 @@ public struct Disassembler: Sendable {
                 case .bitwiseNot: return "~\(inner)"
                 case .squareRoot: return "sqrt(\(inner))"
                 case .absoluteValue: return "abs(\(inner))"
+                case .toFloat(let bits):
+                    return "\(bits == 64 ? "Double" : bits == 32 ? "Float" : "Float\(bits)")(\(inner))"
+                case .toInteger(let signed, let bits):
+                    return "\(signed ? "Int" : "UInt")\(bits == 64 ? "" : String(bits))(\(inner))"
                 }
             case .aggregate(let values):
                 return "(" + values.map { renderValue($0, depth: depth + 1) }.joined(separator: ", ") + ")"

@@ -41,6 +41,10 @@ echo "==> indirect-result fixture (-Onone -g, and -O) — x8 result buffers"
 $SWIFTC -parse-as-library -Onone -g -emit-library -module-name Indirect indirect.swift -o libIndirect.dylib
 $SWIFTC -parse-as-library -O -emit-library -module-name Indirect indirect.swift -o libIndirect.opt.dylib
 
+echo "==> conversions fixture (-Onone -g dylib, and -O) — int/float conversions"
+$SWIFTC -parse-as-library -Onone -g -emit-library -module-name Conversions conversions.swift -o libConversions.dylib
+$SWIFTC -parse-as-library -O -emit-library -module-name Conversions conversions.swift -o libConversions.opt.dylib
+
 echo "==> swifterror probe (-O, and stripped) — callees with no name to say they throw"
 $SWIFTC -parse-as-library -O -emit-library -module-name SwiftErrorProbe swifterror.swift -o libSwiftErrorProbe.dylib
 cp libSwiftErrorProbe.dylib libSwiftErrorProbe.stripped.dylib

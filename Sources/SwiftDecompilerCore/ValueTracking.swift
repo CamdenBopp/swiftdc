@@ -98,13 +98,20 @@ public enum AbstractBinaryOperator: Equatable, Sendable {
 
 /// Unary operators retained in symbolic expressions — the floating-point and
 /// bitwise inversions the compiler emits as single instructions (`fneg`,
-/// `fsqrt`, `fabs`, `mvn`). Like the binary set this stays small and pure; an
-/// unmodelled instruction still degrades to `.unknown`.
+/// `fsqrt`, `fabs`, `mvn`), and the numeric conversions (`scvtf`, `fcvtzs`,
+/// `fcvt`). Like the binary set this stays small and pure; an unmodelled
+/// instruction still degrades to `.unknown`.
 public enum AbstractUnaryOperator: Equatable, Sendable {
     case negate
     case squareRoot
     case absoluteValue
     case bitwiseNot
+    /// An integer or a float converted to a float of `bits` width (`scvtf`,
+    /// `ucvtf`, `fcvt`): `Double(x)` at 64, `Float(x)` at 32.
+    case toFloat(bits: Int)
+    /// A float truncated toward zero to an integer of `bits` width (`fcvtzs`,
+    /// `fcvtzu`): `Int(x)`, `UInt32(x)`.
+    case toInteger(signed: Bool, bits: Int)
 }
 
 /// A small abstract-value lattice for CFG-aware data-flow. Alongside constants
@@ -1932,10 +1939,37 @@ public struct ValueTracer: Sendable {
             }
             write(dest, floatUnary(op, source(detail.operands[1], in: registers)), into: &registers)
 
-        case AARCH64_INS_FMOV, AARCH64_INS_FCVT, AARCH64_INS_SCVTF, AARCH64_INS_UCVTF,
+        case AARCH64_INS_FCVT, AARCH64_INS_SCVTF, AARCH64_INS_UCVTF,
              AARCH64_INS_FCVTZS, AARCH64_INS_FCVTZU:
-            // A register-to-register FP move or width/int conversion carries the
-            // value through unchanged for display.
+            // A numeric conversion is part of the value: carried through bare,
+            // `Double(n) * 1.5` rendered `(arg0 * 0x3ff8000000000000)`, an Int
+            // times a 4.6e18 integer. Scalar forms only; a vector form is not
+            // modelled.
+            guard let dest = destinationRegister(detail),
+                  detail.operands.count == 2 || detail.operands.count == 3,
+                  detail.operands[1].operand.register != nil,
+                  [16, 32, 64].contains(dest.widthBits)
+            else { clobber(detail, into: &registers); return }
+            let op: AbstractUnaryOperator = switch detail.id {
+            case AARCH64_INS_FCVTZS: .toInteger(signed: true, bits: dest.widthBits)
+            case AARCH64_INS_FCVTZU: .toInteger(signed: false, bits: dest.widthBits)
+            default: .toFloat(bits: dest.widthBits)
+            }
+            let converted = floatUnary(op, source(detail.operands[1], in: registers))
+            guard detail.operands.count == 3 else { write(dest, converted, into: &registers); return }
+            // Fixed point: `ucvtf d0, x0, #2` is `Double(x0) / 4`, the compiler's
+            // folding of `* 0.25`. Only the int-to-float direction is modelled.
+            guard case .toFloat = op, dest.widthBits == 64 || dest.widthBits == 32,
+                  let fractionBits = detail.operands[2].operand.immediateValue,
+                  (1...64).contains(fractionBits)
+            else { clobber(detail, into: &registers); return }
+            let scale = Double(sign: .plus, exponent: Int(fractionBits), significand: 1)
+            let scaleBits = dest.widthBits == 64 ? scale.bitPattern : UInt64(Float(scale).bitPattern)
+            write(dest, floatBinary(.divide, converted, .immediate(scaleBits)), into: &registers)
+
+        case AARCH64_INS_FMOV:
+            // A register-to-register FP move carries the bits through unchanged
+            // (`fmov x8, d0` reinterprets them; the bit-level rendering relies on that).
             guard let dest = destinationRegister(detail), detail.operands.count >= 2 else {
                 clobber(detail, into: &registers); return
             }

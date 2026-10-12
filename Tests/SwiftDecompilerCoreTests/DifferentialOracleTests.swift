@@ -717,6 +717,8 @@ private func evaluateDouble(_ tree: Expr, args: [Double]) throws -> EvalValue {
         switch name {
         case "sqrt": return .double(v.squareRoot())
         case "abs", "fabs": return .double(Swift.abs(v))
+        case "Double": return .double(v)
+        case "Float": return .double(Double(Float(v)))
         default: throw Unsupported(reason: "call \(name)")
         }
     case let .binary(op, lhs, rhs):
@@ -747,6 +749,7 @@ private func evaluateFloat32(_ tree: Expr, args: [Float]) throws -> Float {
         switch name {
         case "sqrt": return v.squareRoot()
         case "abs", "fabs": return Swift.abs(v)
+        case "Float": return v
         default: throw Unsupported(reason: "call \(name)")
         }
     case let .binary(op, lhs, rhs):
@@ -832,4 +835,102 @@ private let requiredFloatCases: Set<String> = [
             "[\(fixture.label)] required float cases not compared: \(missing.sorted()); skipped: \(skipped)"
         )
     }
+}
+
+// MARK: - Numeric conversions
+//
+// `scvtf`, `ucvtf` and `fcvt` are part of the value, and the float constant
+// beside one decodes only once the conversion is known. Carried through as if
+// absent, `Double(n) * 1.5` rendered `(arg0 * 0x3ff8000000000000)`: executed,
+// n times 4.6e18. A fixed-point convert (`ucvtf d0, x0, #2`, the compiler's
+// `* 0.25`) is `Double(n) / 4.0`. Only -O lowers each conversion to one instruction
+// (-Onone calls `Double.init(_:)`), so the -O build is the one executed.
+
+private enum ConversionSignature { case i_d, u_d, f_d, d_f, i_f }
+
+private struct ConversionCase {
+    let name: String
+    let signature: ConversionSignature
+    let inputs: [Double]
+}
+
+private let conversionCases: [ConversionCase] = [
+    // Integers exactly representable as Double, so the oracle's input is the
+    // machine's input.
+    .init(name: "intTimesConstant", signature: .i_d,
+          inputs: [0, 1, -1, 7, -12345, 9_007_199_254_740_992, -9_223_372_036_854_775_808]),
+    .init(name: "unsignedTimesConstant", signature: .u_d,
+          inputs: [0, 1, 3, 12345, 9_007_199_254_740_992, 9_223_372_036_854_775_808]),
+    // Float-representable values, so widening the input is exact.
+    .init(name: "widenedTimesConstant", signature: .f_d,
+          inputs: [0, -0.0, 1, Double(Float(0.1)), Double(Float.greatestFiniteMagnitude),
+                   Double(Float.leastNonzeroMagnitude), .infinity, .nan]),
+    // Float-width fixed point (`scvtf s0, x0, #1`); integers exact in Float.
+    .init(name: "intTimesHalfFloat", signature: .i_f,
+          inputs: [0, 1, -1, 7, -12345, 16_777_216, -9_223_372_036_854_775_808]),
+    // Narrowing rounds, overflows to infinity and flushes tiny values to zero.
+    .init(name: "narrowedTimesConstant", signature: .d_f,
+          inputs: [0, -0.0, 1, 0.1, 1e300, -1e-300, 3.4028235677973366e38, .infinity, .nan]),
+]
+
+/// Each must be recovered and executed; a skip would silently drop the claim.
+private let requiredConversionCases: Set<String> = [
+    "intTimesConstant", "unsignedTimesConstant", "widenedTimesConstant",
+    "narrowedTimesConstant", "intTimesHalfFloat",
+]
+
+private func callConversion(
+    _ pointer: UnsafeMutableRawPointer, _ signature: ConversionSignature, _ x: Double
+) -> EvalValue {
+    switch signature {
+    case .i_d:
+        return .double(unsafeBitCast(pointer, to: (@convention(c) (Int) -> Double).self)(Int(x)))
+    case .u_d:
+        return .double(unsafeBitCast(pointer, to: (@convention(c) (UInt) -> Double).self)(UInt(x)))
+    case .f_d:
+        return .double(unsafeBitCast(pointer, to: (@convention(c) (Float) -> Double).self)(Float(x)))
+    case .d_f:
+        return .double(Double(unsafeBitCast(pointer, to: (@convention(c) (Double) -> Float).self)(x)))
+    case .i_f:
+        return .double(Double(unsafeBitCast(pointer, to: (@convention(c) (Int) -> Float).self)(Int(x))))
+    }
+}
+
+@Test func recoveredConversionsAgreeWithTheCompiledCode() async throws {
+    let path = "Fixtures/Sample/libConversions.opt.dylib"
+    guard let image = FixtureImage(path: path) else { return }
+    var comparedNames: Set<String> = []
+    var skipped: [String] = []
+    for testCase in conversionCases {
+        guard let (expression, symbol) = try await recovered(testCase.name, in: path) else {
+            skipped.append("\(testCase.name): not recovered")
+            continue
+        }
+        var parser = ExpressionParser(expression)
+        guard let tree = try? parser.parseAll(),
+              let pointer = image.function(symbol: symbol)
+        else {
+            skipped.append("\(testCase.name): unparsed or unresolved '\(expression)'")
+            continue
+        }
+        for input in testCase.inputs {
+            guard let predicted = try? evaluateFloat(
+                tree, args: [input], asFloat: testCase.signature == .d_f || testCase.signature == .i_f
+            ) else {
+                skipped.append("\(testCase.name): uneval '\(expression)'")
+                break
+            }
+            let actual = callConversion(pointer, testCase.signature, input)
+            #expect(
+                predicted.matches(actual),
+                """
+                \(testCase.name)(\(input)): swiftdc renders `\(expression)` → \(predicted), \
+                but the compiled function returns \(actual).
+                """
+            )
+            comparedNames.insert(testCase.name)
+        }
+    }
+    let missing = requiredConversionCases.subtracting(comparedNames)
+    #expect(missing.isEmpty, "conversion cases not compared: \(missing.sorted()); skipped: \(skipped)")
 }
