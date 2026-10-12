@@ -1264,7 +1264,15 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   xrefs "/Applications/Fiery Feeds.app/Contents/MacOS/Fiery Feeds" --arch arm64
   --unreferenced`: 953 s, max RSS 5.47 GB, **peak footprint 11.05 GB**, 126,173
   output lines, exit 0. origin/master took 153.5 s (below). The symbolizer fix
-  (`c00e5a7`) removed about 35 s of it; the rest is unprofiled. The RSS
+  (`c00e5a7`) removed about 35 s of it. `sample` at 60 s and 200 s then put
+  7,903 of 13,878 analysis samples under `ReferenceResolver.loadedName(at:)`:
+  MachOKit's `resolveBind(at:)` walks every chained pointer of the image on
+  each lookup. A bind table built once (`BoundSymbolTable`) took a filtered
+  `disasm --pseudo -f Article` from 222.2 s / 224.5 s to 57.0 s / 57.2 s
+  (alternating runs, footprint +35 MB, output byte-identical), Clarc `disasm
+  --pseudo` 35.5 s to 28.6 s, Macs Fan Control and UTM unchanged (few bound
+  loads), all six outputs `cmp`-identical. The whole-binary rerun and the
+  11 GB footprint remain open. The RSS
   watcher used for this run sampled `ps -o rss` every 5 s, saw at most 4.0 GB,
   and never tripped its 8 GB kill: compressed pages leave RSS but count in the
   footprint. A memory guard on this host must read the footprint

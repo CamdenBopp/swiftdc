@@ -136,8 +136,10 @@ vanish and a scratch x1 is read as one.
 
 - Fiery Feeds whole-binary `xrefs --unreferenced` re-measured 2026-10-12 at
   `74b7b06`: 953 s, 11.05 GB peak footprint (5.47 GB max RSS), against 153 s on
-  origin/master. The symbolizer fix (`c00e5a7`) took out only ~35 s. Profile
-  it (`sample` a release build) before anything else here. A memory watcher
+  origin/master. The symbolizer fix (`c00e5a7`) took out only ~35 s; the
+  chained-fixup bind table took a filtered decompile 3.9× faster (readiness
+  doc). Next: rerun whole-binary under a footprint guard, profile what remains,
+  and find where the 11 GB goes. A memory watcher
   must read the footprint, not `ps -o rss`: an RSS watcher saw 4.0 GB and
   never tripped while the footprint passed 11 GB.
 - Prime Video (296 MB) whole-image `xrefs --unreferenced` and `disasm
