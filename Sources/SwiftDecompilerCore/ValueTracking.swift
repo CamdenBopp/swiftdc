@@ -448,6 +448,12 @@ public struct ValueTracer: Sendable {
     /// does not preserve them, so they are forgotten after a call to it.
     var calleeClobbers: [UInt64: Set<String>] = [:]
 
+    /// Additional results proven void by a resolved indirect target or an
+    /// Objective-C receiver's declared signature. A selector name alone is
+    /// never proof of its return convention.
+    var voidCallSites = Set<UInt64>()
+    var callReturnsVoid: (@Sendable (Instruction, CallSite) -> Bool)?
+
     public init(calleeConventions: [UInt64: CalleeResultConvention] = [:], asyncContextSlots: [Int: AbstractValue] = [:]) {
         self.calleeConventions = calleeConventions
         self.asyncContextSlots = asyncContextSlots
@@ -949,7 +955,10 @@ public struct ValueTracer: Sendable {
                 // the first argument — so those element stores can be gathered.
                 let count: Int = { if case .immediate(let n) = incomingX0 { return Int(n) } else { return -1 } }()
                 registers["x0"] = .arrayLiteral(site: insn.address, count: count)
-            } else if DisassembledFunction.splitSignature(callee)?.result == "()" {
+            } else if DisassembledFunction.splitSignature(callee)?.result == "()"
+                        || DisassembledFunction.swiftAccessorProperty(callee)?.isGetter == false
+                        || voidCallSites.contains(insn.address)
+                        || callReturnsVoid?(insn, site) == true {
                 // A Swift callee returning Void leaves x0 holding whatever it
                 // last computed. As a result, it rendered a value flowing on:
                 // `OUTLINED_FUNCTION_35(Swift.Hasher._combine(0))` for a fragment

@@ -447,6 +447,16 @@ public struct ObjCMetadataIndex: Sendable {
         return .known(encoding: declared.typeEncoding, types: types)
     }
 
+    /// Return agreement is independent of argument layout: two declarations
+    /// can pass the same parameters but disagree on whether there is a result.
+    /// Require the receiver's declaration and every indexed implementation to
+    /// say void, including category aliases and dynamic overrides.
+    func outgoingReturnsVoid(selector: String, className: String, isClassMethod: Bool) -> Bool {
+        let matching = (bySelector[selector] ?? []).filter { $0.isClassMethod == isClassMethod }
+        guard matching.contains(where: { $0.className == className && $0.returnsVoid }) else { return false }
+        return matching.allSatisfy(\.returnsVoid)
+    }
+
     /// With no receiver identity, one indexed implementation that takes a
     /// floating-point argument is enough to doubt that x2… carry the send's
     /// arguments: the value may arrive in v0 while x2 holds something stale.

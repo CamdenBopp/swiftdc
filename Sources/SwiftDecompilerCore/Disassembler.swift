@@ -3156,6 +3156,28 @@ public struct Disassembler: Sendable {
         }
 
         var tracer = ValueTracer(calleeConventions: calleeConventions, asyncContextSlots: asyncContextSlots)
+        if let objcIndex {
+            let selectors = resolver.selectors.bySelref
+            let method = function.objcMethod
+            tracer.callReturnsVoid = { insn, site in
+                guard let callee = DisassembledFunction.calleeName(of: insn), callee.hasPrefix("objc_msgSend") else { return false }
+                let selector: String?
+                if let marker = callee.firstIndex(of: "$") { selector = String(callee[callee.index(after: marker)...]) }
+                else if site.arguments.count > 1, case .loaded(let slot) = site.arguments[1] { selector = selectors[slot] }
+                else { selector = nil }
+                guard let selector, let receiver = site.arguments.first else { return false }
+                let receiverClass: (String, Bool)?
+                if receiver == .selfPointer, let method { receiverClass = (method.className, method.isClassMethod) }
+                else if objcFieldSyntax, case .selfFieldValue(let offset) = receiver, let fieldMap,
+                        case .success(.whole(_, let encoding)) = fieldMap.lookup(offset: offset, bytes: 8),
+                        encoding.hasPrefix("@\""), encoding.hasSuffix("\"") {
+                    let name = String(encoding.dropFirst(2).dropLast())
+                    receiverClass = !name.isEmpty && !name.contains("<") && !name.contains("\"") ? (name, false) : nil
+                } else { receiverClass = nil }
+                guard let (name, isClass) = receiverClass else { return false }
+                return objcIndex.outgoingReturnsVoid(selector: selector, className: name, isClassMethod: isClass)
+            }
+        }
         var callTargets: [UInt64: UInt64] = [:]
         for insn in function.instructions where insn.controlFlow == .call || insn.controlFlow == .branch {
             guard let target = insn.branchTarget, registerSummaries[target] != nil else { continue }
@@ -3166,7 +3188,7 @@ public struct Disassembler: Sendable {
                 tracer.calleeClobbers[target] = clobbered
             }
         }
-        let analysis = tracer.analyze(function, entry: entry)
+        var analysis = tracer.analyze(function, entry: entry)
         // An x8-indirect function's x0 at `ret` is whatever was last left there
         // (usually a stale argument), never its result. Both single-register
         // return paths below are gated on this so no fabricated `return arg0`
@@ -3187,6 +3209,21 @@ public struct Disassembler: Sendable {
             in: function, targets: analysis.indirectControlFlowTargets,
             resolver: resolver, selfTypeName: selfTypeName, vtableIndex: vtableIndex
         )
+        // Vtable targets become named only after the first trace. A newly
+        // resolved setter must invalidate its result before downstream values
+        // are recovered; rendering-time suppression leaves fabricated values
+        // inside later expressions.
+        let resolvedVoidCalls = Set(function.instructions.compactMap { insn -> UInt64? in
+            guard insn.controlFlow == .call,
+                  let callee = DisassembledFunction.calleeName(of: insn),
+                  DisassembledFunction.swiftAccessorProperty(callee)?.isGetter == false
+            else { return nil }
+            return insn.address
+        })
+        if !resolvedVoidCalls.isEmpty {
+            tracer.voidCallSites = resolvedVoidCalls
+            analysis = Probe.muted { tracer.analyze(function, entry: entry) }
+        }
         if Probe.isActive {
             for insn in function.instructions where insn.branchTarget == nil
                 && (insn.controlFlow == .call || insn.controlFlow == .branch)
@@ -4791,6 +4828,10 @@ public struct Disassembler: Sendable {
                         sourceNotes.append("return \(callExpression(callee: callee, values: values, site: insn.address))")
                     }
                 }
+            }
+            if isObjCNonVoid, insn.controlFlow == .return,
+               !sourceNotes.contains(where: { $0.hasPrefix("return ") }) {
+                sourceNotes.append("return ?")
             }
 
             // A Swift function surfaces its return value too — the reason a pure
