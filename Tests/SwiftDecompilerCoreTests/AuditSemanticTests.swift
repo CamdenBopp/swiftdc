@@ -112,3 +112,19 @@ func structuredLoops(_ text: String) -> [(header: String, body: [String], after:
     #expect(text.contains("return Swift.Hasher._finalize("), Comment(rawValue: text))
     #expect(!text.contains("= Swift.Hasher._finalize("), Comment(rawValue: text))
 }
+
+/// x20 freshly written before a call is `self` only for a callee that has
+/// one. Parked there for a value live across the call, it rendered as the
+/// receiver of a free function, and spelled one call twice:
+/// `keepBox(self: makeBox(), makeBox(), 3)`.
+@Test func aFreeFunctionTakesNoSelfIfPresent() async throws {
+    let path = "Fixtures/Sample/libAuditSemantics.opt.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "AuditSemantics.parked")
+    }
+    let text = try #require(functions.first).renderStructured()
+    #expect(text.contains("AuditSemantics.keepBox("), Comment(rawValue: text))
+    #expect(!text.contains("keepBox(self:"), Comment(rawValue: text))
+    #expect(text.components(separatedBy: "AuditSemantics.makeBox(").count == 2, Comment(rawValue: text))
+}

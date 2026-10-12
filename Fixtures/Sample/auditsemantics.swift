@@ -25,3 +25,13 @@ open class Counter {
     open var value: Int = 0
     public func storeThenLog(_ x: Int) { value = x; log(x) }
 }
+
+// x20 parked for a value live across the call (here `b`, reused below)
+// is a callee-saved home, not `self`: `keep` is a free function.
+@inline(never) public func keepBox(_ o: AnyObject, _ n: Int) { print(o, n) }
+@inline(never) public func makeBox() -> AnyObject { [Int]() as AnyObject }
+public func parked(_ a: AnyObject) -> [AnyObject] {
+    let b = makeBox()
+    keepBox(b, 3)
+    return [a, b, a]
+}

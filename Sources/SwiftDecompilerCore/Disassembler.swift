@@ -5051,6 +5051,12 @@ public struct Disassembler: Sendable {
                 guard Self.isSwiftCall(insn, swiftTargets: swiftTargets),
                       site.selfValue != .unknown
                 else { return nil }
+                if let callee, let signature = DisassembledFunction.splitSignature(callee),
+                   let range = DisassembledFunction.outermostArgumentListRange(of: signature.head) {
+                    let name = signature.head[..<range.lowerBound].dropLast()
+                    if name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }),
+                       name.filter({ $0 == "." }).count == 1 { return nil }
+                }
                 return renderValue(site.selfValue, depth: 0)
             }()
 
