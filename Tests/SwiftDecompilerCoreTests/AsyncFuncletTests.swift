@@ -68,8 +68,8 @@ func groupsFuncletsAsTheSymbolTableDoesIfPresent(path: String) async throws {
           let functions = try await disassemble(path)
     else { return }
     // The fixture must actually exhibit the shapes under test, or this proves
-    // nothing: 7 async functions, 5 await-return and 2 continuation funclets.
-    #expect(expected.values.filter { $0.ordinal == 0 }.count == 7)
+    // nothing: 8 async functions, 5 await-return and 2 continuation funclets.
+    #expect(expected.values.filter { $0.ordinal == 0 }.count == 8)
     #expect(expected.values.filter { $0.kind == .awaitReturn }.count == 5)
     #expect(expected.values.filter { $0.kind == .continuation }.count == 2)
 
@@ -117,7 +117,7 @@ func groupsFuncletsAsTheSymbolTableDoesIfPresent(path: String) async throws {
     // empty-result rule's oracle); grouping must not lose or merge any.
     let machO = try BinaryLoader.load(path: strippedFixture)
     #expect(stripped.count == Disassembler(preset: .default).declaredFunctionCount(in: machO))
-    #expect(stripped.count == 34)
+    #expect(stripped.count == 35)
 
     let byAddress = Dictionary(stripped.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
     for (address, expected) in oracle where expected.ordinal > 0 {
@@ -135,7 +135,7 @@ func groupsFuncletsAsTheSymbolTableDoesIfPresent(path: String) async throws {
                 "\(function.displayName)")
     }
     // The synchronous functions are untouched.
-    #expect(stripped.filter { $0.asyncFunclet != nil }.count == 14)
+    #expect(stripped.filter { $0.asyncFunclet != nil }.count == 15)
 }
 
 /// `--function` on a stripped binary brings the whole chain: the resume
@@ -199,7 +199,7 @@ func groupsFuncletsAsTheSymbolTableDoesIfPresent(path: String) async throws {
     let leafEntries = Set(oracle.filter { entry in
         entry.value.ordinal == 0 && !oracle.values.contains { $0.ordinal > 0 && $0.parentSymbol == entry.value.parentSymbol }
     }.keys)
-    #expect(leafEntries.count == 2)
+    #expect(leafEntries.count == 3)
     #expect(Set(index.funclets.keys) == Set(oracle.keys).subtracting(leafEntries))
     for (address, expected) in oracle where !leafEntries.contains(address) {
         let funclet = index.funclets[address]
@@ -300,6 +300,15 @@ private func structured(_ path: String, _ filter: String) async throws -> String
 @Test func rendersAsyncLeafReturnIfPresent() async throws {
     guard let text = try await structured(strippedFixture, "fetchOther") else { return }
     #expect(text.contains("return (arg0 + 7)"))
+}
+
+/// An async `Int?` returns its payload in x0 and its nil tag in x1, so x0 at
+/// the return branch is not the result. Read as one, `nil` rendered as `0`:
+/// `return ((arg0 == 0) ? 0 : (arg0 + 1))`.
+@Test func declinesTwoRegisterAsyncReturnIfPresent() async throws {
+    guard let text = try await structured(strippedFixture, "maybeNext") else { return }
+    #expect(text.contains("maybeNext"))
+    #expect(!text.contains("return ("), Comment(rawValue: text))
 }
 
 /// An executor hop is named only when both executor operands prove it

@@ -1,4 +1,4 @@
-import CCapstone
+import Ccapstone
 import Foundation
 
 /// Whether a function reads the x8 it was entered with.
@@ -142,7 +142,7 @@ extension Disassembler {
             AARCH64_INS_STLR, AARCH64_INS_STLRB, AARCH64_INS_STLRH, AARCH64_INS_STLUR,
         ].map(\.rawValue))
         let compareIDs: Set<UInt32> = Set([
-            AARCH64_INS_CMP, AARCH64_INS_CMN, AARCH64_INS_TST, AARCH64_INS_CCMP, AARCH64_INS_CCMN,
+            AARCH64_INS_ALIAS_CMP, AARCH64_INS_ALIAS_CMN, AARCH64_INS_ALIAS_TST, AARCH64_INS_CCMP, AARCH64_INS_CCMN,
         ].map(\.rawValue))
         let pairLoadIDs: Set<UInt32> = Set([
             AARCH64_INS_LDP, AARCH64_INS_LDNP, AARCH64_INS_LDPSW, AARCH64_INS_LDXP, AARCH64_INS_LDAXP,

@@ -1,6 +1,6 @@
 import Foundation
 import MachOKit
-import CCapstone
+import Ccapstone
 
 /// How a resume funclet is entered, which fixes what its registers mean.
 public enum AsyncResumeKind: String, Sendable, Equatable {
@@ -274,13 +274,13 @@ struct AsyncFuncletIndex: Sendable {
                     }
                     let operands = detail.operands
                     switch detail.id {
-                    case ARM64_INS_ADRP:
+                    case AARCH64_INS_ADRP:
                         if let reg = operands.first?.operand.register,
                            let page = operands.dropFirst().first?.operand.immediateValue {
                             pages[reg.key] = UInt64(bitPattern: page)
                             held[reg.key] = nil
                         }
-                    case ARM64_INS_ADR:
+                    case AARCH64_INS_ADR:
                         if let reg = operands.first?.operand.register,
                            let imm = operands.dropFirst().first?.operand.immediateValue {
                             let address = UInt64(bitPattern: imm)
@@ -291,7 +291,7 @@ struct AsyncFuncletIndex: Sendable {
                                 pending.append((reg.key, address, false))
                             }
                         }
-                    case ARM64_INS_ADD:
+                    case AARCH64_INS_ADD:
                         if operands.count == 3,
                            let dst = operands[0].operand.register,
                            let src = operands[1].operand.register,
@@ -308,7 +308,7 @@ struct AsyncFuncletIndex: Sendable {
                         } else if let dst = operands.first?.operand.register {
                             pages[dst.key] = nil; held[dst.key] = nil
                         }
-                    case ARM64_INS_MOV, ARM64_INS_ORR:
+                    case AARCH64_INS_MOV, AARCH64_INS_ORR:
                         if let dst = operands.first?.operand.register,
                            let src = operands.last?.operand.register, operands.count == 2 {
                             held[dst.key] = held[src.key]
@@ -316,9 +316,9 @@ struct AsyncFuncletIndex: Sendable {
                         } else if let dst = operands.first?.operand.register {
                             pages[dst.key] = nil; held[dst.key] = nil
                         }
-                    case ARM64_INS_STR, ARM64_INS_STUR, ARM64_INS_STP:
+                    case AARCH64_INS_STR, AARCH64_INS_STUR, AARCH64_INS_STP:
                         // The stored registers are the first one (str) or two (stp).
-                        let count = detail.id == ARM64_INS_STP ? 2 : 1
+                        let count = detail.id == AARCH64_INS_STP ? 2 : 1
                         for operand in operands.prefix(count) {
                             if let reg = operand.operand.register, let address = held[reg.key],
                                let slot = pending.firstIndex(where: { $0.address == address }) {
@@ -335,7 +335,7 @@ struct AsyncFuncletIndex: Sendable {
                             pages[dst.key] = nil; held[dst.key] = nil
                         }
                         // Pair loads also write their second register.
-                        if detail.id == ARM64_INS_LDP, operands.count > 1,
+                        if detail.id == AARCH64_INS_LDP, operands.count > 1,
                            let second = operands[1].operand.register {
                             pages[second.key] = nil; held[second.key] = nil
                         }

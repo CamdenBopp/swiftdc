@@ -73,3 +73,8 @@ public func onMainAwait(_ x: Int) async -> Int {
 public func syncNeighbour(_ x: Int) -> Int { x &* 3 }
 
 public func syncCaller(_ x: Int) -> Int { syncNeighbour(x) &+ 1 }
+
+// MARK: - Two-register result: the nil tag travels in x1, so x0 alone is not it
+
+@inline(never)
+public func maybeNext(_ x: Int) async -> Int? { x == 0 ? nil : x &+ 1 }

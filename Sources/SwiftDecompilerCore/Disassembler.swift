@@ -2699,6 +2699,19 @@ public struct Disassembler: Sendable {
         func isReturn(_ insn: Instruction) -> Bool {
             insn.controlFlow == .return || asyncReturns.contains(insn.address)
         }
+        // `swiftReturnRegister(of:)` declines every async function, because x0 at
+        // its `ret` is stale. At a proven async return the result is in x0/v0,
+        // but only for a type proven to travel in one register: an indirect
+        // result arrives as a buffer pointer in x0, and the compiler then
+        // branches through x0 itself (`ldr x0, [x22, #8]; br x0`).
+        let asyncReturnRegister: SwiftReturnRegister? = {
+            guard !asyncReturns.isEmpty, function.objcMethod == nil,
+                  let type = Self.swiftReturnTypeName(of: function),
+                  !type.hasPrefix("Swift.Optional<"),
+                  Self.isKnownDirectReturnType(type, classTypeIndex: classTypeIndex)
+            else { return nil }
+            return Self.swiftReturnRegister(forReturnType: type)
+        }()
         var sites = analysis.callSites
         // A resolved unconditional branch outside this function is a tail call.
         // Keep internal CFG branches out: they have no callee name.
@@ -3733,6 +3746,12 @@ public struct Disassembler: Sendable {
                     ? analysis.exitFloatValues[insn.address]
                     : analysis.exitValues[insn.address]
                 if let value { collectCallResults(in: value, into: &consumedCallResults) }
+            } else if asyncReturns.contains(insn.address), !throwExits.contains(insn.address),
+                      let returnRegister = asyncReturnRegister {
+                let value = returnRegister == .floating
+                    ? analysis.exitFloatValues[insn.address]
+                    : analysis.exitValues[insn.address]
+                if let value { collectCallResults(in: value, into: &consumedCallResults) }
             } else if function.objcMethod == nil, insn.controlFlow == .return, !returnsDirectly,
                       let indirect = indirectReturn(at: insn.address) {
                 // Likewise an indirect return built from a call's result (the
@@ -3826,6 +3845,16 @@ public struct Disassembler: Sendable {
                 sourceNotes.append("throw \(thrown)")
             } else if function.objcMethod == nil, isReturn(insn), returnsDirectly,
                let returnRegister = Self.swiftReturnRegister(of: function) {
+                let rawExit = returnRegister == .floating
+                    ? analysis.exitFloatValues[insn.address]
+                    : analysis.exitValues[insn.address]
+                if let rawExit {
+                    let exit = sanitizeValue(rawExit)
+                    if exit != .unknown {
+                        sourceNotes.append("return \(renderReturnValue(exit, before: insn.address))")
+                    }
+                }
+            } else if asyncReturns.contains(insn.address), let returnRegister = asyncReturnRegister {
                 let rawExit = returnRegister == .floating
                     ? analysis.exitFloatValues[insn.address]
                     : analysis.exitValues[insn.address]

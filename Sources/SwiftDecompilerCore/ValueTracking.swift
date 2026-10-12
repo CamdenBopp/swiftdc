@@ -1080,7 +1080,7 @@ public struct ValueTracer: Sendable {
             // A load through the pointer is modelled; the destination register
             // merely having held the pointer is an overwrite.
             return false
-        case AARCH64_INS_CMP, AARCH64_INS_CMN, AARCH64_INS_TST, AARCH64_INS_CCMP, AARCH64_INS_CCMN:
+        case AARCH64_INS_ALIAS_CMP, AARCH64_INS_ALIAS_CMN, AARCH64_INS_ALIAS_TST, AARCH64_INS_CCMP, AARCH64_INS_CCMN:
             // Comparing the pointer derives nothing stored through.
             return false
         default:
