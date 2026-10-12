@@ -408,7 +408,7 @@ public struct Disassembler: Sendable {
     ) async -> [String] {
         let objcIndex = ObjCMetadataIndex.build(in: machO)
         let labelByAddress = symbolLabels(in: machO)
-        let foldedByAddress = foldedSymbolAddresses(in: machO)
+        var foldedByAddress = foldedSymbolAddresses(in: machO)
         guard let text = textSectionBounds(in: machO) else { return [] }
         let textStart = text.address
         let textEnd = text.address + UInt64(text.size)
@@ -426,7 +426,9 @@ public struct Disassembler: Sendable {
         let unlabeled = Set(boundaries).subtracting(labelByAddress.keys)
         var metadataNames: [UInt64: String] = [:]
         if Double(unlabeled.count) > Double(max(boundaries.count, 1)) * 0.25 {
-            metadataNames = MetadataSymbolizer().functionNames(in: machO)
+            let metadata = MetadataSymbolizer().functionNames(in: machO)
+            metadataNames = metadata.unique
+            Self.mergeMetadataFolds(metadata.folded, into: &foldedByAddress, labels: labelByAddress)
         }
 
         func span(_ index: Int) -> (start: UInt64, stop: UInt64) {
@@ -610,14 +612,18 @@ public struct Disassembler: Sendable {
         // or an in-process decode with few/no symbols).
         let unlabeled = boundaries.subtracting(labelByAddress.keys)
         var metadataNames: [UInt64: String] = [:]
+        var metadataFolds: [UInt64: [String]] = [:]
         if Double(unlabeled.count) > Double(max(boundaries.count, 1)) * 0.25 {
-            metadataNames = MetadataSymbolizer().functionNames(in: machO)
+            let metadata = MetadataSymbolizer().functionNames(in: machO)
+            metadataNames = metadata.unique
+            metadataFolds = metadata.folded
         }
 
         // Addresses the linker folded multiple distinct symbols onto (see
         // `foldedSymbolAddresses`): computed from the symbol table, so it is the
         // same on both front-ends regardless of what labels either produced.
-        let foldedByAddress = foldedSymbolAddresses(in: machO)
+        var foldedByAddress = foldedSymbolAddresses(in: machO)
+        Self.mergeMetadataFolds(metadataFolds, into: &foldedByAddress, labels: labelByAddress)
 
         var functions = segment(
             instructions,
@@ -1239,6 +1245,17 @@ public struct Disassembler: Sendable {
     /// (what `symbolLabels` does) silently misattributes the rest, so callers use
     /// this to decline instead. Value is the distinct names, sorted for
     /// determinism. Measured at 17% of `__text` symbols in one small `-O` fixture.
+    /// Metadata that names one address once per owner is a fold the symbol
+    /// table cannot show in a stripped binary. A symbol label, where there is
+    /// one, already decided the address, so only unlabeled ones are added.
+    static func mergeMetadataFolds(
+        _ folds: [UInt64: [String]], into folded: inout [UInt64: [String]], labels: [UInt64: String]
+    ) {
+        for (address, candidates) in folds where labels[address] == nil && folded[address] == nil {
+            folded[address] = candidates
+        }
+    }
+
     private func foldedSymbolAddresses(in machO: MachOFile) -> [UInt64: [String]] {
         guard let text = machO.sections.first(where: {
             $0.segmentName == "__TEXT" && $0.sectionName == "__text"
@@ -1465,7 +1482,7 @@ public struct Disassembler: Sendable {
         let unlabeled = boundarySet.subtracting(labels.keys)
         var metadataNames: [UInt64: String] = [:]
         if Double(unlabeled.count) > Double(max(boundarySet.count, 1)) * 0.25 {
-            metadataNames = MetadataSymbolizer().functionNames(in: machO)
+            metadataNames = MetadataSymbolizer().functionNames(in: machO).unique
         }
 
         let textEnd = textSectionBounds(in: machO).map { $0.address + UInt64($0.size) }

@@ -13,7 +13,8 @@ import Foundation
 /// The required names are the ones a text scrape of SwiftDump output used to
 /// find and a first descriptor-only rewrite lost: an override of a superclass
 /// method (`Dog.speak`, `Dog.init`) and two classes that share a simple name
-/// (`BoxA.Holder`, `BoxB.Holder`).
+/// (`BoxA.Holder`, `BoxB.Holder`). The required folds are bodies two vtables
+/// share at -O (`FoldLeft`/`FoldRight`), which must never be credited to one.
 ///
 /// What metadata cannot see: a fold partner with no metadata record. At -O
 /// `Counter.value.getter` shares its body with the accessors of the `final`
@@ -21,19 +22,22 @@ import Foundation
 /// stripped binary keeps no trace of them. The address is named for the one
 /// owner metadata knows, a name true of the body, and the test accepts it when
 /// it matches one of the symbols there.
-private let pairs: [(stripped: String, symbols: String, required: [String])] = [
+private let pairs: [(stripped: String, symbols: String, required: [String], requiredFolds: [String])] = [
     ("Fixtures/Sample/sample.stripped", "Fixtures/Sample/sample.release",
-     ["sample.Dog.method", "sample.Dog.init", "sample.Animal.method", "sample.Widget.getter"]),
+     ["sample.Dog.method", "sample.Dog.init", "sample.Animal.method", "sample.Widget.getter"], []),
     ("Fixtures/Sample/libSample.stripped.dylib", "Fixtures/Sample/libSample.dylib",
-     ["Sample.Dog.method", "Sample.Dog.init"]),
+     ["Sample.Dog.method", "Sample.Dog.init"], []),
     ("Fixtures/Sample/libReconstruction.opt.stripped.dylib", "Fixtures/Sample/libReconstruction.opt.dylib",
-     ["Reconstruction.BoxA.Holder.init", "Reconstruction.BoxB.Holder.init", "Reconstruction.Dog.init"]),
+     ["Reconstruction.BoxA.Holder.init", "Reconstruction.BoxB.Holder.init", "Reconstruction.Dog.init"], []),
+    ("Fixtures/Sample/libCodegen.opt.stripped.dylib", "Fixtures/Sample/libCodegen.opt.dylib",
+     [], ["Codegen.FoldLeft.getter", "Codegen.FoldRight.getter",
+          "Codegen.FoldLeft.setter", "Codegen.FoldRight.setter"]),
     ("Fixtures/Sample/libSwiftErrorProbe.stripped.dylib", "Fixtures/Sample/libSwiftErrorProbe.dylib",
-     ["SwiftErrorProbe.Validator.method"]),
+     ["SwiftErrorProbe.Validator.method"], []),
 ]
 
 @Test func metadataNamesAgreeWithTheUnstrippedSymbolsIfPresent() throws {
-    var checked = 0
+    var checked = 0, foldsChecked = 0
     for pair in pairs {
         guard FileManager.default.fileExists(atPath: pair.stripped),
               let truth = demangledTextSymbols(pair.symbols)
@@ -41,20 +45,38 @@ private let pairs: [(stripped: String, symbols: String, required: [String])] = [
         let machO = try BinaryLoader.load(path: pair.stripped)
         let names = MetadataSymbolizer().functionNames(in: machO)
 
-        for (address, name) in names {
+        for (address, name) in names.unique {
             let real = try #require(truth[address], "\(pair.stripped): no symbol at 0x\(String(address, radix: 16)) for \(name)")
             #expect(real.contains { agrees(name, with: $0) },
                     "\(pair.stripped) 0x\(String(address, radix: 16)): named \(name), symbols are \(real)")
             checked += 1
         }
-        let produced = Set(names.values)
+        // A fold must be real (several owners' symbols at the address), and
+        // every candidate must be one of them.
+        for (address, candidates) in names.folded {
+            let real = try #require(truth[address], "\(pair.stripped): fold at 0x\(String(address, radix: 16)) has no symbol")
+            #expect(real.count > 1, "\(pair.stripped) 0x\(String(address, radix: 16)): folded \(candidates) but only \(real) is there")
+            for candidate in candidates {
+                #expect(real.contains { agrees(candidate, with: $0) },
+                        "\(pair.stripped) 0x\(String(address, radix: 16)): candidate \(candidate) is none of \(real)")
+            }
+            foldsChecked += 1
+        }
+        let produced = Set(names.unique.values).union(names.folded.values.joined())
         for required in pair.required {
             #expect(produced.contains(required), "\(pair.stripped): \(required) not named; got \(produced.sorted())")
+        }
+        let uniqueNames = Set(names.unique.values)
+        let foldCandidates = Set(names.folded.values.joined())
+        for required in pair.requiredFolds {
+            #expect(foldCandidates.contains(required) && !uniqueNames.contains(required),
+                    "\(pair.stripped): \(required) must be a fold candidate and never a unique name")
         }
     }
     // The empty-result rule: an oracle that compared nothing passes vacuously.
     if FileManager.default.fileExists(atPath: pairs[0].stripped) {
         #expect(checked >= 40, "only \(checked) names compared")
+        #expect(foldsChecked >= 4, "only \(foldsChecked) folds compared")
     }
 }
 

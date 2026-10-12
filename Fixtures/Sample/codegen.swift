@@ -13,3 +13,21 @@ public func remainderBySeven(_ a: Int) -> Int { a % 7 }
 public func unsignedDivideBySeven(_ a: UInt) -> UInt { a / 7 }
 public func unsignedDivideByThousand(_ a: UInt) -> UInt { a / 1000 }
 
+// Identical code folding across vtables. At -O these classes' accessors are the
+// same bytes, and LLVM's function merging gives them one body per accessor kind,
+// which every class's method descriptors point at. Metadata then names one
+// address once per class; a stripped binary must decline to pick one
+// (MetadataNameOracleTests). With only two classes this compiler (Swift 6.3)
+// keeps the bodies apart; the third makes the merge happen.
+open class FoldLeft {
+    open var count = 0
+    public init() {}
+}
+open class FoldMiddle {
+    open var amount = 0
+    public init() {}
+}
+open class FoldRight {
+    open var total = 0
+    public init() {}
+}

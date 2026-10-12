@@ -17,7 +17,16 @@ import Demangling
 /// dispatch they have no metadata record, so they can't be named from a
 /// stripped binary (only their boundaries are recovered, via function-starts).
 struct MetadataSymbolizer: Sendable {
-    /// One metadata record naming an implementation address.
+    /// Names for the addresses metadata attributes to exactly one owner, and the
+    /// candidates for the addresses identical code folding gave several.
+    struct Names {
+        var unique: [UInt64: String] = [:]
+        var folded: [UInt64: [String]] = [:]
+    }
+
+    /// One metadata record naming an implementation address. `owner` is the
+    /// type's simple name, the one spelling a class method and a witness for
+    /// that class share; `isWitness` tells the two sources apart.
     private struct Claim {
         let address: UInt64
         let name: String
@@ -25,13 +34,40 @@ struct MetadataSymbolizer: Sendable {
         var isWitness = false
     }
 
-    /// Full `address → name` map, classes first (witnesses don't overwrite).
-    func functionNames(in machO: MachOFile) -> [UInt64: String] {
-        var map: [UInt64: String] = [:]
-        for claim in classMethodClaims(in: machO) + witnessClaims(in: machO) where map[claim.address] == nil {
-            map[claim.address] = claim.name
+    /// Every address metadata names, classes before witnesses.
+    ///
+    /// At -O the linker folds identical bodies (`Counter.step.modify` and
+    /// `BoxA.Holder.second.modify` share one address), and metadata then names
+    /// that address once per owner. Crediting the first reader misnames the
+    /// rest, so an address claimed by two owners is folded: no heading or call
+    /// is named after either, and the candidates are carried instead. A class
+    /// method that is also its own class's witness is one function with two
+    /// descriptions, and keeps the class name.
+    func functionNames(in machO: MachOFile) -> Names {
+        var claims: [UInt64: [Claim]] = [:]
+        for claim in classMethodClaims(in: machO) + witnessClaims(in: machO) {
+            claims[claim.address, default: []].append(claim)
         }
-        return map
+        var names = Names()
+        for (address, list) in claims {
+            let methods = list.filter { !$0.isWitness }
+            let witnesses = list.filter(\.isWitness)
+            let methodNames = Set(methods.map(\.name))
+            let attributable: String? = if let method = methods.first {
+                // One class method name (two slots of one kind in one class
+                // read the same), and every witness is that class's own.
+                methodNames.count == 1 && witnesses.allSatisfy { $0.owner == method.owner }
+                    ? method.name : nil
+            } else {
+                Set(witnesses.map(\.name)).count == 1 ? witnesses[0].name : nil
+            }
+            if let attributable {
+                names.unique[address] = attributable
+            } else {
+                names.folded[address] = Array(Set(list.map(\.name))).sorted()
+            }
+        }
+        return names
     }
 
     // MARK: - Class vtable methods (via method descriptors)
