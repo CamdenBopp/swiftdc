@@ -826,6 +826,18 @@ public struct Disassembler: Sendable {
         return capstoneInstructions(in: machO, span: (address, stop))
     }
 
+    /// The address a Swift String object word `(address − 32) | 1<<63`
+    /// holds, for a literal's object (see `swiftLargeStringLiteral`).
+    static func largeStringObjectAddress(_ value: AbstractValue) -> UInt64? {
+        guard case .binary(.bitOr, let lhs, let rhs) = value else { return nil }
+        for (word, flag) in [(lhs, rhs), (rhs, lhs)] {
+            if case .immediate(0x8000_0000_0000_0000) = flag, case .address(let address) = word {
+                return address
+            }
+        }
+        return nil
+    }
+
     static func fieldFailureLabel(_ failure: FieldLookupFailure) -> String {
         switch failure {
         case .pastInstanceSize: "past-instance-size"
@@ -1989,6 +2001,26 @@ public struct Disassembler: Sendable {
                 return demangled
             }
             return nil
+        }
+
+        /// The quoted text of a Swift literal of 16 bytes or more, given the
+        /// address its String object word holds.
+        ///
+        /// At -O such a literal is the pair (count and flags, `(address − 32) |
+        /// 1<<63`): the object word points 32 bytes before the bytes, where
+        /// the native-string header would sit. Naming the address itself quoted
+        /// whatever C string the linker placed there, another literal or the
+        /// tail of one: a compare against one literal rendered a different one,
+        /// and on one app 0 of 151 such sites showed the true text. With
+        /// `count`, the bytes must be exactly that long.
+        func swiftLargeStringLiteral(objectAddress: UInt64, count: Int? = nil) -> String? {
+            let target = objectAddress &+ 32
+            guard stringRanges.contains(where: { $0.contains(target) }),
+                  let raw = Self.rawCString(at: target, in: machO, ranges: fileRanges), !raw.isEmpty,
+                  count.map({ raw.utf8.count == $0 }) ?? true,
+                  let text = Self.cString(at: target, in: machO, ranges: fileRanges)
+            else { return nil }
+            return "\"\(text)\""
         }
 
         /// `→ name` form for inline operand annotation.
@@ -3899,6 +3931,13 @@ public struct Disassembler: Sendable {
                 return "(\(c) ? \(t) : \(f))"
             case .binary(let op, let lhs, let rhs):
                 guard depth < 8 else { return "?" }
+                // A String object word: the literal sits 32 bytes past the
+                // address. The address itself is never named; what is there is
+                // some other string.
+                if let address = Self.largeStringObjectAddress(value) {
+                    return resolver.swiftLargeStringLiteral(objectAddress: address)
+                        ?? "(0x\(String(address, radix: 16)) | 0x8000000000000000)"
+                }
                 // A single-register optional compared against 0 is a nil check:
                 // `r != 0` reads `r != nil`. Only when the other operand's
                 // recovered type is `.optional` (a reference optional we seeded),
@@ -4061,18 +4100,41 @@ public struct Disassembler: Sendable {
         func renderArguments(_ values: [AbstractValue], depth: Int, site: UInt64? = nil) -> [String] {
             // A laid-out site: each slot is one parameter of a known type, so a
             // constant renders as that type and no pair is a small string.
+            /// A large literal's two words, (count and flags, object), as one
+            /// string when the count is the literal's length.
+            func largeString(at index: Int) -> String? {
+                guard index + 1 < values.count, case .immediate(let countAndFlags) = values[index],
+                      let address = Self.largeStringObjectAddress(values[index + 1])
+                else { return nil }
+                return resolver.swiftLargeStringLiteral(
+                    objectAddress: address, count: Int(countAndFlags & 0x0000_FFFF_FFFF_FFFF))
+            }
             if let types = site.flatMap({ laidOutTypes[$0] }), types.count == values.count {
-                return zip(values, types).map { value, type in
-                    if case .immediate(let bits) = value, let constant = Self.renderTypedConstant(bits: bits, type: type) {
-                        return constant
+                var parts: [String] = []
+                var index = 0
+                while index < values.count {
+                    if let literal = largeString(at: index) {
+                        parts.append(literal)
+                        index += 2
+                        continue
                     }
-                    return renderValue(value, depth: depth)
+                    if case .immediate(let bits) = values[index],
+                       let constant = Self.renderTypedConstant(bits: bits, type: types[index]) {
+                        parts.append(constant)
+                    } else {
+                        parts.append(renderValue(values[index], depth: depth))
+                    }
+                    index += 1
                 }
+                return parts
             }
             var parts: [String] = []
             var index = 0
             while index < values.count {
-                if index + 1 < values.count,
+                if let literal = largeString(at: index) {
+                    parts.append(literal)
+                    index += 2
+                } else if index + 1 < values.count,
                    case .immediate(let lo) = values[index],
                    case .immediate(let hi) = values[index + 1],
                    let string = ValueTracer.decodeSmallString(lo: lo, hi: hi) {

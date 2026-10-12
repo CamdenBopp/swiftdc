@@ -57,7 +57,11 @@ because it cannot be distinguished from a right one by reading the output.
   - Past the bound, the snapshot pass replayed optimistic meets as proof.
   - The convergence test now compares facts, and past the bound the
     analysis claims nothing.
-- **OPEN — long Swift string literals render as a different literal.**
+- **FIXED — long Swift string literals render as a different literal.**
+  The object word's literal is read 32 bytes past its address, the
+  count-and-flags word folds in when its count is the literal's length, and
+  an object word with no string there stays raw hex. On three release apps
+  the 125, 89 and 83 wrong renders are gone; 37 object words stay hex. Was:
   - At -O a literal of 16 bytes or more is passed as
     `(address − 32) | 1<<63`, and swiftdc quotes the C string at
     `address − 32`.

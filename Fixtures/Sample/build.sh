@@ -51,6 +51,9 @@ echo "==> branch conditions from ccmp/fcmp and unsigned range checks (conditions
 $SWIFTC -parse-as-library -O -emit-library -module-name Conditions conditions.swift -o libConditions.opt.dylib
 $SWIFTC -parse-as-library -Osize -emit-library -module-name Conditions conditions.swift -o libConditions.osize.dylib
 
+echo "==> Swift literals of 16 bytes or more (largestrings.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name LargeStrings largestrings.swift -o libLargeStrings.opt.dylib
+
 echo "==> C callees without signatures (callreads.c, -O0 and -O1)"
 for level in O0 O1; do
     xcrun clang -arch arm64 -$level -dynamiclib callreads.c -o libCallReads.$level.dylib
