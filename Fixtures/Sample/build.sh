@@ -59,6 +59,7 @@ echo "==> Objective-C outgoing-send fixtures (mixed x/v argument banks)"
 echo "==> two-module identity fixtures (enum and class named in another module)"
 ./build-enum-identity.sh
 ./build-class-identity.sh
+./build-field-identity.sh
 
 echo "==> resilient reconstruction fixture (library evolution) — coroutine accessors"
 # Library evolution forces opaque accessors, so a public stored property gets a

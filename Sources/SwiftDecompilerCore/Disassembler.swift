@@ -2083,10 +2083,12 @@ public struct Disassembler: Sendable {
         simpleName: String,
         fieldMaps: [String: FieldMap]
     ) -> FieldMap? {
-        if let qualified = qualifiedSelfTypeFromDemangledName(function.demangledName),
-           qualified.split(separator: ".").last.map(String.init) == simpleName,
-           let map = fieldMaps[qualified] {
-            return map
+        // A qualified self type needs its own descriptor's map: falling back to
+        // the simple name could borrow another type's fields. (Recovered from
+        // the pre-merge stash 983aa25.)
+        if let qualified = qualifiedSelfTypeFromDemangledName(function.demangledName) {
+            guard qualified.split(separator: ".").last.map(String.init) == simpleName else { return nil }
+            return fieldMaps[qualified]
         }
         return fieldMaps[simpleName]
     }
@@ -2704,8 +2706,10 @@ public struct Disassembler: Sendable {
 
     /// A field map for a demangled type name, trying the qualified name then its
     /// last (unqualified) component, since `FieldMap` is keyed unqualified.
+    /// A qualified type name requires its own descriptor's map; simple keys
+    /// serve genuinely unqualified names.
     private static func namedFieldMap(_ typeName: String, in fieldMaps: [String: FieldMap]) -> FieldMap? {
-        fieldMaps[typeName] ?? typeName.split(separator: ".").last.flatMap { fieldMaps[String($0)] }
+        fieldMaps[typeName]
     }
 
     enum ScalarParameterClass { case integer, floating }

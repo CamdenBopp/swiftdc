@@ -83,5 +83,12 @@ import Foundation
     let cfgMaps: [String: FieldMap] = [
         "Cfg": FieldMap(typeName: "Cfg", layout: .init(fields: [], size: 16, stride: 16, alignment: 8, extraInhabitantCount: 0)),
     ]
-    #expect(Disassembler.selfType(of: structFunction, selfIndex: SelfTypeIndex(bindings: [:]), fieldMaps: cfgMaps) == "Cfg")
+    // A qualified symbol cannot borrow a simple-only map from a different
+    // module's Cfg. An exact descriptor key restores the known receiver.
+    // (From the pre-merge stash 983aa25.)
+    #expect(Disassembler.selfType(of: structFunction, selfIndex: SelfTypeIndex(bindings: [:]), fieldMaps: cfgMaps) == nil)
+    #expect(Disassembler.selfType(
+        of: structFunction, selfIndex: SelfTypeIndex(bindings: [:]),
+        fieldMaps: cfgMaps.merging(["st.Cfg": cfgMaps["Cfg"]!]) { _, exact in exact }
+    ) == "Cfg")
 }
