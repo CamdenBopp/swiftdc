@@ -79,15 +79,16 @@ func objcEntryArgumentsFollowTheirBanks(path: String) async throws {
     #expect(text.contains("self->_tail = arg3"), Comment(rawValue: text))
 }
 
-/// A receiver of unknown class, sending a selector some implementation in the
-/// image takes a double for: x2 may be stale while the value is in d0.
+/// A receiver of unknown class (`forwardUntyped:(id)target value:(double)`),
+/// sending a selector some implementation in the image takes a double for:
+/// x2 may be stale while the value is in d0.
 @Test func objcSendToUnknownReceiverWithFloatSelectorDeclinesIfPresent() async throws {
     let path = "Fixtures/Sample/libObjCNonselfOutgoing.dylib"
     guard FileManager.default.fileExists(atPath: path) else { return }
     let functions = try await withStableDependencies {
-        try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "forwardTwice")
+        try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "forwardUntyped")
     }
     let text = functions.map { $0.renderPseudo() }.joined(separator: "\n")
-    #expect(text.contains("twice:?"), Comment(rawValue: text))
+    #expect(text.contains("[arg0 twice:?]"), Comment(rawValue: text))
     #expect(!text.contains("twice:arg0"), Comment(rawValue: text))
 }
