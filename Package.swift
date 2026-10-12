@@ -45,18 +45,22 @@ let package = Package(
         // It is NOT re-exported, so we depend on the same identity directly to name
         // `MachOFile` / `loadFromFile` without a package-identity conflict.
         //
-        // INTERIM FORK: upstream 0.54.101 plus one change, the memoized negative
-        // result of `MachOFile.cache` (as 07d7633 was on 0.52.102; upstream
-        // MxIris-Reverse-Engineering/MachOKit#1 closed unmerged). Without it a
-        // standalone binary re-opens and maps itself as a would-be dyld cache on
-        // every `cache` access, which 0.22's class dumper makes once per relative
-        // pointer: 71.5% of a Prime Video `dump` under Time Profiler. Memoized:
-        // layout 69.9s -> 4.4s, dump 168s -> 77s, interface 240s -> 74s, output
-        // byte-identical. As the root package this revision overrides the
-        // transitive range; return to an upstream version pin once the fix ships.
+        // INTERIM FORK: upstream 0.54.101 plus two changes:
+        //   1. Memoized negative result of `MachOFile.cache` (as 07d7633 was on
+        //      0.52.102; upstream MxIris-Reverse-Engineering/MachOKit#1 closed
+        //      unmerged). Without it a standalone binary re-opens and maps itself
+        //      as a would-be dyld cache on every `cache` access, which 0.22's
+        //      class dumper makes once per relative pointer. Memoized: layout
+        //      69.9s -> 4.4s, dump 168s -> 77s, interface 240s -> 74s.
+        //   2. 64-bit fat header support (cherry-picked p-x9 #340): fat_arch_64
+        //      entries were read with the 20-byte 32-bit layout, truncating
+        //      offsets >= 4 GiB. A two-slice file with arm64 past 4 GiB reported
+        //      "Available: x86_64, x86_64".
+        // As the root package this revision overrides the transitive range;
+        // return to an upstream version pin once both fixes ship.
         .package(
             url: "https://github.com/CamdenBopp/MachOKit.git",
-            revision: "4c4738fb0d27c07f97a464f37095a4c9caf8f973"
+            revision: "4076fdaa526857d62217f28e76f3f2a92eb4b6d6"
         ),
         // `Semantic` provides SemanticString, the return type of SwiftDump's
         // `.dump(...)`. Moves in lockstep with MachOSwiftSection: 0.15.0 raised its
