@@ -4567,8 +4567,16 @@ public struct Disassembler: Sendable {
                                      uniquingKeysWith: { a, _ in a })
             var predecessors: [UInt64: [BasicBlock]] = [:]
             for block in blocks { for successor in Set(block.successors) { predecessors[successor, default: []].append(block) } }
+            // x20 is callee-saved: a call keeps it unless the callee's own body
+            // proves otherwise (an outlined fragment, `calleeClobbers`).
+            // Counting every call as a write turned a rethrow after a cleanup
+            // `bl swift_release` into `return`, though the binary tests x20
+            // right after such calls itself.
             func writesX20(_ insn: Instruction) -> Bool {
-                insn.controlFlow == .call || insn.detail?.writtenRegisterKeys.contains("x20") != false
+                if insn.controlFlow == .call {
+                    return insn.branchTarget.flatMap { tracer.calleeClobbers[$0] }?.contains("x20") ?? false
+                }
+                return insn.detail?.writtenRegisterKeys.contains("x20") != false
             }
             /// Whether every path into `block` (up to `address`) leaves the
             /// non-zero edge of a test of x20 with x20 untouched since.

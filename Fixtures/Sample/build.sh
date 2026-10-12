@@ -67,6 +67,9 @@ echo "==> objc_retain_xN stubs (retainregister.swift, -O, arm64 iOS simulator)"
 $SWIFTC -O -emit-library -module-name RetainRegister -target arm64-apple-ios17.0-simulator \
     -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" retainregister.swift -o libRetainRegister.sim.dylib
 
+echo "==> a rethrow after a cleanup call (rethrowcleanup.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name RethrowCleanup rethrowcleanup.swift -o libRethrowCleanup.opt.dylib
+
 echo "==> C callees without signatures (callreads.c, -O0 and -O1)"
 for level in O0 O1; do
     xcrun clang -arch arm64 -$level -dynamiclib callreads.c -o libCallReads.$level.dylib

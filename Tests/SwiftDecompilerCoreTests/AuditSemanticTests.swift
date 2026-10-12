@@ -186,3 +186,20 @@ func structuredLoops(_ text: String) -> [(header: String, body: [String], after:
     let ready = try render("isReady")
     #expect(ready.contains("if (AuditSemantics.ready(arg0))") || ready.contains("if (!AuditSemantics.ready(arg0))"), Comment(rawValue: ready))
 }
+
+/// After `try await store.apply(ops)` the await-return funclet tests the
+/// callee's error in x20 and, on the error path, releases `ops` before
+/// branching to its ResumeParent with x20 untouched: a rethrow. The throw
+/// check counted every call as writing x20, which is callee-saved, so the
+/// path read `else { return }`.
+@Test func aRethrowAfterACleanupCallStillThrowsIfPresent() async throws {
+    let path = "Fixtures/Sample/libRethrowCleanup.opt.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "RethrowCleanup.A2.persist")
+    }
+    let resumes = functions.filter { $0.displayName.hasPrefix("(2) await resume partial function for RethrowCleanup.A2.persist") }
+    let text = try #require(resumes.first).renderStructured()
+    #expect(text.contains("throw ?"), Comment(rawValue: text))
+    #expect(!text.contains("} else {\n        return\n"), Comment(rawValue: text))
+}

@@ -119,8 +119,10 @@ because it cannot be distinguished from a right one by reading the output.
   On OpenMHz -O (396 such sites) `[r0 deselectRowAtIndexPath:…]` reads
   `[arg0 …]`, the table view; 23 receivers loaded through unknown pointers
   now decline where the stale x0 was printed.
-- **OPEN — a rethrow after a cleanup call renders `return`.** The async
-  throw check treats every call as overwriting x20, which is callee-saved.
+- **FIXED — a rethrow after a cleanup call renders `return`.** The async
+  throw check treated every call as overwriting x20, which is callee-saved;
+  a call now writes it only when its callee summary says so. OpenMHz -O
+  shows 45 throws, up from 42: the three sites the audit found.
 - **OPEN — a 32-bit destination's constant is not truncated.** `csel w0`
   of 0x10000000b/0x200000016 renders the 64-bit value; the function returns
   22. Natively executing a local 1,061-probe width library leaves 330 wrong

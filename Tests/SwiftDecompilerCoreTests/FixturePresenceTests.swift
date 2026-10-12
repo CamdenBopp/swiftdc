@@ -49,6 +49,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libConditionalFlags.dylib",
         "Fixtures/Sample/libLargeStrings.opt.dylib",
         "Fixtures/Sample/libRetainRegister.sim.dylib",
+        "Fixtures/Sample/libRethrowCleanup.opt.dylib",
     ]
 
     /// True on a run that must actually exercise the fixtures. `CI` is set by
