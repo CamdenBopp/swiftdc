@@ -1002,3 +1002,17 @@ private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
     // A void runtime call (`swift_beginAccess`) has no result to read.
     #expect(!append.contains("(swift_beginAccess("), Comment(rawValue: append))
 }
+
+// MARK: - Vtable dispatch across same-named classes
+
+/// The vtable index is keyed by simple name. With `Alpha.Node` and `Beta.Node`
+/// in one image, first writer won the shared key, and `Beta.Node.work()`
+/// rendered `return (SameName.Alpha.Node.launchMissiles() + self.count)`: both
+/// calls attributed to the other class. A colliding name now declines.
+@Test func doesNotDispatchThroughAnotherClassesVtableIfPresent() async throws {
+    let fixture = "Fixtures/Sample/libSameName.dylib"
+    guard let work = try await reconstructionPseudo("Beta.Node.work", in: fixture) else { return }
+    #expect(work.contains("SameName.Beta.Node.work"), Comment(rawValue: work))
+    #expect(!work.contains("Alpha"), Comment(rawValue: work))
+    #expect(!work.contains("launchMissiles"), Comment(rawValue: work))
+}

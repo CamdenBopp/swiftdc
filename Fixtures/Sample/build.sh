@@ -51,6 +51,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name RuntimeIvars runtimeivar
 echo "==> copy-on-write fixture (-O) — the uniqueness check is a Bool"
 $SWIFTC -parse-as-library -O -emit-library -module-name Cow cow.swift -o libCow.dylib
 
+echo "==> same-name classes fixture (-O) — vtable dispatch must not cross classes"
+$SWIFTC -parse-as-library -O -emit-library -module-name SameName samename.swift -o libSameName.dylib
+
 echo "==> swifterror probe (-O, and stripped) — callees with no name to say they throw"
 $SWIFTC -parse-as-library -O -emit-library -module-name SwiftErrorProbe swifterror.swift -o libSwiftErrorProbe.dylib
 cp libSwiftErrorProbe.dylib libSwiftErrorProbe.stripped.dylib

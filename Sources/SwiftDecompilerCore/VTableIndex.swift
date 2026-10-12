@@ -46,10 +46,23 @@ public struct VTableIndex: Sendable {
         let pointerSize = MemoryLayout<UInt64>.size
 
         var methods: [String: [Int: UInt64]] = [:]
+        // Keyed by simple name, so two classes that share one (`Alpha.Node`,
+        // `Beta.Node`) would share a slot table: first writer won, and a dispatch
+        // in `Beta.Node.work()` rendered `Alpha.Node.launchMissiles()`. A
+        // colliding name is dropped instead, so its dispatches decline, as the
+        // field-map collision guard does for layouts.
+        var descriptorsByName: [String: Set<Int>] = [:]
+        for type in (try? machO.swift.types) ?? [] {
+            guard case .class(let model) = type,
+                  let typeName = try? model.descriptor.name(in: machO)
+            else { continue }
+            descriptorsByName[typeName, default: []].insert(model.descriptor.offset)
+        }
         for type in (try? machO.swift.types) ?? [] {
             guard case .class(let model) = type,
                   let header = model.vTableDescriptorHeader,
-                  let typeName = try? model.descriptor.name(in: machO)
+                  let typeName = try? model.descriptor.name(in: machO),
+                  descriptorsByName[typeName, default: []].count == 1
             else { continue }
 
             let base = Int(header.layout.vTableOffset)
@@ -62,7 +75,6 @@ public struct VTableIndex: Sendable {
                 guard address != 0 else { continue }
                 let byteOffset = (base + slot) * pointerSize
                 if methods[typeName] == nil { methods[typeName] = [:] }
-                // First writer wins, mirroring the address→name indexes.
                 if methods[typeName]?[byteOffset] == nil {
                     methods[typeName]?[byteOffset] = address
                 }
