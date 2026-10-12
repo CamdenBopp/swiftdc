@@ -11,8 +11,10 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-10-11, unified merge of all feature branches (MachOSwiftSection
-0.22.0, Capstone 6, x8 indirect returns, arm64e preflight, async funclets).
+Last audited: 2026-10-12, unified merge of all feature branches (MachOSwiftSection
+0.22.0, Capstone 6, x8 indirect returns, arm64e preflight, async funclets), then a
+sweep of every subcommand over 7 large apps and 5 dyld-cache frameworks (partial
+when written: Prime Video, Fiery Feeds, part of Swiftcord).
 
 ---
 
@@ -42,6 +44,116 @@ because it cannot be distinguished from a right one by reading the output.
   A grouped resume funclet now gets no signature-derived convention
   (`86b35be`); `resumeFuncletsDoNotInheritTheSignatureArgumentsIfPresent`
   was seen red with the seeding restored.
+- **FIXED — an optional return of a value type was read from x0 alone.** Its
+  nil lives elsewhere: a tag in w1 for `Int?`, an extra inhabitant for an
+  enum's optional. `return ((arg0 == 0) ? 0 : (arg0 + 1))` printed nil as 0,
+  and a `Tier?` printed nil as its raw tag `3`. An optional return is one
+  register now only for a pointer or class payload (`8feed90`), in both the
+  `Swift.Optional<T>` and `T?` spellings. `declinesTaggedOptionalReturnIfPresent`
+  was seen red.
+- **FIXED — int/float conversions were dropped.** `scvtf`/`ucvtf`/`fcvt`/
+  `fcvtzs` passed the value through, so `Double(n) * 1.5` rendered
+  `(arg0 * 0x3ff8000000000000)`, which executes as n times 4.6e18 (`b3a8510`).
+  Conversions render as `Double(x)`/`Float(x)`/`Int(x)`, anchor float context
+  for the constant beside them, and the int-to-float fixed-point form
+  (`ucvtf d0, x0, #2`) renders `(Double(arg0) / 4.0)`.
+  `recoveredConversionsAgreeWithTheCompiledCode` executes five -O conversions
+  bit-exactly and was seen red.
+- **FIXED — a vtable dispatch named another class's method.** The vtable index
+  is keyed by simple name, so `Alpha.Node` and `Beta.Node` shared one slot table
+  and `Beta.Node.work()` rendered `return (Alpha.Node.launchMissiles() +
+  self.count)`. A colliding simple name now declines (`d6d0e90`);
+  `doesNotDispatchThroughAnotherClassesVtableIfPresent` was seen red. Keying by
+  qualified name would recover the names (needs the qualified self type).
+- **FIXED — an async context slot whose address escaped was still "proven".**
+  `var n = a &* 3; await Task.yield(); syncBump(&n); return n` rendered `return
+  (arg0 + (arg0 << 1))` for 3a + 11: the slot's address (`add x0, x22, #0x10`)
+  went to an `inout` callee. Slots from the lowest escaped offset up are no
+  longer proven (`f403603`); `declinesAnEscapedContextSlotIfPresent` was seen red.
+- **FIXED — `cmn` was read like `cmp`.** The structurer's text path rendered
+  `if x == -1` (`cmn x0, #1; b.eq`) as `if (x0 == 1)`, and `b.mi`/`b.pl` as
+  `lhs < 0 // rhs`. `cmn`/`adds` now compare with the negated operand and
+  `b.mi`/`b.pl` render the sign of the difference or sum (`5d6c7b7`); both seen
+  red.
+- **OPEN — a Swift callee's arguments are not capped at its demangled arity.**
+  Leftover registers show up as arguments: `static Alignment.center.getter`
+  (no parameters) renders `Alignment.center.getter(SwiftUI.Text.init(…))`,
+  `sink(Int)` renders `P.sink(arg0, arg1)`, and a non-generic metadata accessor,
+  whose body never reads x0, renders `type metadata accessor for P.Box(arg0)`.
+  The demangled signature gives the count; plain float parameters (d0–d7) and
+  `T?` pairs (payload, isNil) also need laying out from it, which is why
+  `.frame(width: 120)` shows `_FrameLayout.init(0x405e…, 0, …)` and
+  `takeOpt(nil, 420, nil)` shows six arguments.
+- **OPEN — an async function's throw renders as a bare `return`.** It returns
+  its error in x20 through ResumeParent (`mov x20, x21; br x1`): `sleepy() async
+  throws -> Int` collapses to `return`, and a rethrowing resume shows `else {
+  return }`. Name x20 at await-returns and render the error path as `throw ?`.
+- **OPEN — a throw merged into the normal epilogue renders as a return.**
+  `untyped` renders `return ((arg0 < 0) ? swift_willThrow(swift_allocError(…)) :
+  (arg0 << 1))`; `swift_willThrow` returns nothing and x21 carries the error.
+  Typed `throws(Err)` copied out through the value-witness table renders no
+  throw at all.
+- **OPEN — `Tm` merged outlined helpers name one type for all callers.** A
+  merged `…WOcTm` demangles as "outlined init with copy of VStack<…>", but each
+  call passes its own type's cache in x2; every call prints the VStack name.
+- **OPEN — `awaitedN` is bound for a generic or indirect async result.** The
+  result is written into a context buffer, so x0 at the resume is not it.
+- **OPEN — one call can read as two.** A call consumed by both a branch
+  condition and the return prints in both: `if ((Compares.sink(arg0) + …) < 0)
+  { trap() } else { return (Compares.sink(arg0) << 1) }`. The machine calls
+  `sink` once; binding it (`let r0 = …`) as indirect results already do would
+  fix it.
+- **FIXED — the uniqueness check was read as the object it checks.**
+  `swift_isUniquelyReferenced_nonNull_native` (the lowering of
+  `isKnownUniquelyReferenced`) returns a Bool, but the renderer read every
+  `isRuntimeNoise` call's result as its argument: a `-> Bool` CoW method
+  rendered `return self.storage`, and the CoW branch tested a bit of the storage
+  pointer. Only the retain/autorelease family is read through now; a uniqueness
+  check renders `isKnownUniquelyReferenced(x)`, any other runtime result `?`
+  (`07ec716`). `rendersTheUniquenessCheckAsABoolIfPresent` was seen red.
+- **FIXED — an async return could print a two-register or indirect result.**
+  An async function returns by branching through its context's ResumeParent,
+  and the result is in x0 there only for a type proven to travel in one
+  register; an indirect result arrives as a buffer pointer in x0 and the
+  compiler branches through x0 itself (`7b20cfc`).
+  `declinesTwoRegisterAsyncReturnIfPresent` was seen red on the `Int?` case.
+- **OPEN — a call into a linker-deduplicated function is named after an
+  arbitrary alias.** ld folds identical functions by default in a release link,
+  so one address carries every folded symbol. In an -O probe (`func optK(_ k:
+  K?) -> K? { k }` beside struct accessors), 11 symbols share one bare `ret` at
+  0xa78; `optK`'s specialization calls it, and swiftdc renders that call as
+  `Sync3.pair(arg0)` under `--pseudo` and `Sync3.P2.a.modify … .resume.0` under
+  `disasm`. Neither is what the source called, and the two modes disagree.
+  Repro: `nm libX.dylib | awk '$1=="<addr>"'` lists the aliases. The rendering
+  needs a decision: decline (`sub_…` with a "folded: N functions" note), list the
+  aliases, or prefer the one a specialization names.
+- **OPEN — an unknown-arity C call is shown consuming the previous call's
+  result.** A C callee has no signature, so x0 left over from the last call is
+  rendered as its argument: clang -O0 `printf(…); return bump();` with
+  `long bump(void)` renders `bump(printf(0x100000847))`. Found by compiling a C
+  probe with TinyCC (0.9.28rc, its own Mach-O linker) and confirmed on clang.
+  A sound fix: for a callee in the same image, classify which argument
+  registers its body reads before writing them (as `IndirectResultUse` does for
+  x8); decline for an external one unless a signature table names it.
+- **OPEN — a variadic call's stack arguments are dropped, and a scratch x1 is
+  read as one.** Apple's arm64 ABI passes variadic arguments on the stack. On
+  the TinyCC probe, `printf("%s %ld %ld\n", greet(), add3(1,2,3), sum_to(10))`
+  renders `printf(0x100004020, greet())`: x1 held `greet()` only on its way to
+  `[sp]`, and the `add3`/`sum_to` calls vanish from the structured view.
+- **OPEN — `-f` cannot select a folded function, and its callers ignore the
+  fold.** The definition declines as `sub_5d8` with its candidates
+  (`foldedByAddress`), but call sites name an arbitrary alias, and `disasm -f
+  '$s1P7secondsySiAA7SecondsVF'` prints "No function matched" for a symbol in
+  the export table: the empty-result class this project's rules forbid.
+- **OPEN — a call to an address that also carries linker marker symbols is
+  named after the marker.** TinyCC places `__start_text`, `__init_array_start`
+  and friends on `add3`'s address; the function header declines
+  (`sub_100001000`) but the call is annotated `→ _init_array_end`. Same class as
+  the deduplicated-function alias entry above.
+- **OPEN — a float argument to a call is not tracked.** -Onone
+  `Double(f) * 1.5` renders `(Swift.Double.init() * 1.5)`: the Float argument
+  is in s0, call-site tracking reads only general registers, and the trailing
+  unknown is trimmed, so the call reads as a zero-argument init.
 - **MITIGATED — the decline-rather-than-guess rule.** Verified as systematic, not
   incidental: `.unknown` renders `?` (`Disassembler.swift:2322`); the structurer
   refuses to structure an unprovable branch (`Structurer.swift:214`); `clobber`
@@ -524,23 +636,37 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 3. Robustness — what breaks it?
 
-- **OPEN — MachOKit reads an empty `seg_info_offset` as a segment's starts.**
-  `dyld_chained_starts_in_image.seg_info_offset[i] == 0` means "no fixups in
-  segment i" (dyld's rule); the pinned MachOKit (`CamdenBopp/MachOKit@07d7633`)
-  resolves it as a `dyld_chained_starts_in_segment` at offset 0, i.e. over the
-  starts-in-image header itself. In a dylib with exactly three segments the
-  bytes aliased as `page_count` are the real segment's `page_size` (0x4000),
-  and `DyldChainedFixups.pages(of:)` reads 32 KB past the end of the file
-  mapping: SIGSEGV whenever the next page is unmapped (3 of 4 runs of a
-  40-iteration `FieldMapBuilder.build` loop over a three-segment
-  `libIndirect.dylib`; 0 of 10 CLI runs, which only means the CLI's heap was
-  luckier). With four segments the aliased count is 0x18 and the over-read
-  stays in-file, which is why no other fixture ever showed it. Reproduce:
-  build `Fixtures/Sample/indirect.swift` without its `indirectCallCount`
-  global and run the fixture tests. Any small production dylib without a
-  `__DATA` segment is exposed. Fix belongs in MachOKit (skip zero offsets in
-  `startsInSegments`); until then `MachOPreflight` cannot help, since the
-  file is valid.
+- **FIXED (upstream) — MachOKit read an empty `seg_info_offset` as a segment's
+  starts.** Recorded against the 0.52.102 fork (`07d7633`): a zero
+  `seg_info_offset` ("no fixups in this segment") was resolved as a starts
+  record at offset 0, and a three-segment dylib read 32 KB past its mapping.
+  MachOKit 0.54.101 skips it (`guard offset != 0` in
+  `MachOFile+DyldChainedFixups.swift` `startsInSegments(of:)`, mirrored for
+  `MachOImage`), and the current fork (`4c4738f`) is 0.54.101 plus one unrelated
+  change. Verified against the source, not by re-running the original
+  40-iteration loop.
+- **FIXED — an ivar whose offset is computed at load time trapped `objc`,
+  `xrefs`, `disasm` and `analyze`.** A Swift class whose stored properties
+  follow a resilient-size one (a Foundation `Date`) keeps its field offsets in
+  zero-fill `__common`, and ObjCDump `try!`-reads them as if file-backed. On
+  Prime Video the slot maps past the end of the file: at origin/master four of
+  eight subcommands died by SIGTRAP with no output (`objc` at 0.5 s; `xrefs`,
+  `disasm --structured`, `analyze` after 488–569 s and 4–6 GB). Inside the file
+  the read returns padding (offset 0). Such ivars are now recorded at
+  `ObjCMetadataSnapshot.runtimeIvarOffset` and never named in a field map
+  (`267e341`); `recordsLoadTimeIvarOffsetsAsRuntimeIfPresent` was seen red.
+- **FIXED — a C string read at a zero-fill address ran `strlen` off the
+  mapping.** `ReferenceResolver.name(at:)` read a string at any unnamed operand
+  address through `fileOffset(of:)` + `readString`; an `adrp` to a `__common`
+  global on Prime Video pointed past the end of the file, and the scan faulted
+  whenever the next page was unmapped (`objc` SIGSEGV after 282 s in one run,
+  exit 0 under lldb). Standalone images now read strings only from file-backed,
+  non-zero-fill bytes, bounded by the segment and 4 KB, at all three sites
+  (`1741748`).
+- **FIXED — the preflight's zero-fill table had 0x13 for 0x12.** 0x13 is
+  `S_THREAD_LOCAL_VARIABLES` (file-backed TLV descriptors), 0x12 is
+  `S_THREAD_LOCAL_ZEROFILL`, so a large `__thread_bss` would have been refused and
+  an overrunning `__thread_vars` passed (`bc344aa`, both directions tested red).
 - **FIXED — malformed input crashed the process.** The audit recorded this as
   one case (a truncated Mach-O). Surveying nine hand-written malformed inputs
   found **seven crashed** — six SIGTRAP, one **SIGSEGV** — including an *empty
@@ -991,6 +1117,52 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 5. Performance and memory on large frameworks
 
+- **FIXED — a standalone binary re-opened itself as a dyld cache on every
+  `MachOFile.cache` access.** The 0.22 upgrade dropped the fork that memoized
+  the failed load, estimating it at about 2.5% of a Keynote `dump`. On a
+  Swift-heavy app it dominated: Time Profiler, attached 90 s to `dump --arch
+  arm64` on Prime Video (296 MB), put 71.5% of samples under
+  `MachOFile.cache.getter` -> `DyldCache.init(url:)` (`__open` 37.5%, `__munmap`
+  19.4% self), reached once per relative-pointer resolve in 0.22's class
+  dumper. Re-pinned to `CamdenBopp/MachOKit` 4c4738f (0.54.101 plus the
+  three-line memo, `3608e37`). Back to back at matched load: `layout` 69.9s to
+  4.4s, `dump` 168s to 77s, `interface` 240s to 74s, `objc` 610s to 375s, all
+  byte-identical (`cmp`). SwiftPM warns the fork and MachOObjCSection's upstream
+  URL share the identity `machokit` and says it will become an error.
+- **OPEN — `xrefs`/`disasm` pay for a full Swift class dump to name vtable
+  slots, and 0.22 made that dump walk every class's ObjC ancestors.**
+  `MetadataSymbolizer.classMethodNames(in:)` renders the whole `.types` dump and
+  scans it for `sub_` addresses. Under 0.22, `ClassDumper.body` resolves each
+  class's ObjC ancestor chain unconditionally (no configuration skips it). Fiery
+  Feeds `xrefs --unreferenced`: origin/master 153.5 s, HEAD 966.5 s, same
+  output size class. `sample` (20 s, 60 s in): 3,850 of 6,884 command-thread
+  samples under `classMethodNames`, 1,429 under
+  `ObjCClassMethodIndex.ancestors`, whose hot frames are MachOKit re-deriving
+  cache structures per call: `DyldCache._machO(at:)` 685,
+  `_headerOptimizationRO64` 619, `_objcOptimization` 261. Two independent
+  fixes: name vtable slots from the method descriptors directly (no dump), and
+  memoize those `DyldCache` derivations in the MachOKit fork (both the old and
+  new ObjC-optimization formats).
+- **DEAD END — reserving the decode array once at the text bound.** A memory
+  sample at 7 GB in Swiftcord `xrefs` put every frame in `decodeText` ->
+  `CapstoneEngine.append` -> `_ArrayBuffer._consumeAndCreateNew`, and
+  `append` reserves `results.count + batch` per Capstone batch. Hypothesis: the
+  exact-size reserve defeats geometric growth. Replacing it with one
+  `reserveCapacity(code.count / 4)` was worse at matched settings, alternating
+  runs, `disasm --structured --arch arm64` UTM: baseline 47.7 s / 1.9 GB and
+  45.8 s / 2.7 GB, candidate 53.2 s / 2.9 GB and 48.7 s / 3.0 GB, output
+  byte-identical. The up-front bound allocates for every word, data included.
+  Reverted; do not retry. The Swiftcord peak itself (7.8 GB, sawtooth between
+  ~2 and ~7.6 GB) matches origin/master's 7.85 GB.
+- **OPEN — whole-image `xrefs`/`disasm`/`analyze` exceed 30 minutes on a 296 MB
+  app.** Prime Video, release build: `xrefs --unreferenced` and `disasm
+  --structured` both hit the sweep's 30-minute cap (5.7 GB and 6.8 GB peak).
+  origin/master never finished either (it trapped at 488 s and 569 s, see
+  Robustness), so there is no baseline. `sample` early in `xrefs`: whole-image
+  Capstone decoding (`CapstoneEngine.append`, Capstone 6's `matchAliasPatterns`)
+  plus malloc/free. Whether Capstone 6 decodes slower than the Homebrew
+  Capstone 5 it replaced is **UNKNOWN**: the migration measured byte-identical
+  output, not speed.
 - **OPEN — the MachOSwiftSection 0.22.0 pin makes `dump`/`interface`/`objc`
   on standalone ObjC-heavy apps 7x to 40x slower, upstream.** Measured with
   the same binary set before and after the pin (times under build load, so
@@ -1005,8 +1177,8 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   0.8.110's `info(in:)` resolves referenced protocol infos recursively, each
   method slot through a fixup lookup (2,448 of 5,560 samples under
   `referencedProtocolInfos` on Keynote `objc`). The dropped MachOKit fork
-  memoisation (`MachOFile.cache` re-opening the cache) is about 2.5% of a
-  `dump` now, not the two thirds it was at 0.19. Cache images are faster
+  memoisation was estimated here at about 2.5% of a `dump`; on Prime Video it
+  was 71.5%, and it is restored (see the FIXED entry above). Cache images are faster
   (SwiftUICore `dump` 228s to 160s, `interface` 260s to 163s, `objc` 70s to
   35s, same load caveat). Candidate fixes: memoise the `DyldCache` header
   parsing in MachOKit; pass `ObjCInfoOptions.headerDump` from swiftdc's own
