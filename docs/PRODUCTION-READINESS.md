@@ -155,10 +155,17 @@ because it cannot be distinguished from a right one by reading the output.
   generic metadata and witness tables, with self in x20 only for class or thick
   metatype self, and declined for any parameter whose footprint is unproven.
   The plan is in `handoff.md` section 8.
-- **OPEN — an async function's throw renders as a bare `return`.** It returns
-  its error in x20 through ResumeParent (`mov x20, x21; br x1`): `sleepy() async
-  throws -> Int` collapses to `return`, and a rethrowing resume shows `else {
-  return }`. Name x20 at await-returns and render the error path as `throw ?`.
+- **FIXED at -O — an async function's throw rendered as a bare `return`.** It
+  returns through ResumeParent with its error in x20, zero for none. An exit
+  where x20 is `swift_allocError`'s result or a non-zero constant (typed throws
+  return a flag there) is a throw, and so is one reached only through the
+  non-zero edge of `cbz`/`cbnz x20` with nothing writing x20 since (a resume
+  passing on the error it received). `fetchOrThrow` now reads `if (arg0 < 0) {
+  …; throw ? } else { return arg0 }` and `awaitThrowing`'s resume `if (x20 == 0)
+  { return (awaited1 << 1) } else { throw ? }`; 24 bare returns in
+  libswift_Concurrency became throws. Still open at -Onone, where the funclets'
+  context reloads through stack spills keep their exits from being proven async
+  returns at all. `asyncThrowsRenderAsThrowsIfPresent` was seen red.
 - **OPEN — a throw merged into the normal epilogue renders as a return.**
   `untyped` renders `return ((arg0 < 0) ? swift_willThrow(swift_allocError(…)) :
   (arg0 << 1))`; `swift_willThrow` returns nothing and x21 carries the error.

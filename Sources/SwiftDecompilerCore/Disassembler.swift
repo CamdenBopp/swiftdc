@@ -4232,9 +4232,63 @@ public struct Disassembler: Sendable {
         // typed error's payload (`return 0` for `.bad`), or a dead call's.
         let throwsSignature = function.objcMethod == nil
             ? function.demangledName.flatMap(DisassembledFunction.splitSignature) : nil
+        // An async throwing function returns through its context's
+        // ResumeParent with the error in x20, zero for none: `swift_allocError`
+        // then `mov x20, x0; br x0` throws, `mov x20, #0; br x1` returns. A
+        // rethrow passes on the error an await-return funclet received in x20:
+        // the exit is reached only through the non-zero edge of `cbz`/`cbnz
+        // x20` with nothing writing x20 since. Both rendered as a bare
+        // `return` (`if (x20 == 0) { return (awaited1 << 1) } else { return }`).
+        let asyncThrowExits: Set<UInt64> = {
+            guard throwsSignature?.isThrowing == true, !asyncReturns.isEmpty else { return [] }
+            var exits = Set<UInt64>()
+            let blocks = function.basicBlocks()
+            let blockOf = Dictionary(blocks.flatMap { block in block.instructions.map { ($0.address, block) } },
+                                     uniquingKeysWith: { a, _ in a })
+            var predecessors: [UInt64: [BasicBlock]] = [:]
+            for block in blocks { for successor in Set(block.successors) { predecessors[successor, default: []].append(block) } }
+            func writesX20(_ insn: Instruction) -> Bool {
+                insn.controlFlow == .call || insn.detail?.writtenRegisterKeys.contains("x20") != false
+            }
+            /// Whether every path into `block` (up to `address`) leaves the
+            /// non-zero edge of a test of x20 with x20 untouched since.
+            func guardedNonZero(_ block: BasicBlock, before address: UInt64, depth: Int) -> Bool {
+                guard depth < 8 else { return false }
+                if block.instructions.contains(where: { $0.address < address && writesX20($0) }) { return false }
+                guard let into = predecessors[block.startAddress], into.count == 1, let previous = into.first,
+                      let test = previous.instructions.last, let detail = test.detail
+                else { return false }
+                if detail.id == AARCH64_INS_CBZ || detail.id == AARCH64_INS_CBNZ,
+                   detail.operands.first?.operand.register?.key == "x20",
+                   detail.operands.first?.operand.register?.widthBits == 64 {
+                    let taken = test.branchTarget == block.startAddress
+                    let nonZero = detail.id == AARCH64_INS_CBNZ ? taken : !taken
+                    if previous.successors.count == 2 && Set(previous.successors).count == 2 { return nonZero }
+                    return false
+                }
+                // An unconditional or fall-through hop: keep walking back.
+                guard test.controlFlow != .conditionalBranch, !writesX20(test) else { return false }
+                return guardedNonZero(previous, before: UInt64.max, depth: depth + 1)
+            }
+            for address in asyncReturns {
+                switch analysis.exitAsyncErrorValues[address] {
+                case .immediate(let value)?:
+                    if value != 0 { exits.insert(address) }
+                case .callResult(let site)?:
+                    let callee = function.instructions.first { $0.address == site }
+                        .flatMap(DisassembledFunction.calleeName(of:)) ?? ""
+                    if callee.hasPrefix("swift_allocError") { exits.insert(address) }
+                default:
+                    if let block = blockOf[address], guardedNonZero(block, before: address, depth: 0) {
+                        exits.insert(address)
+                    }
+                }
+            }
+            return exits
+        }()
         let throwExits: Set<UInt64> = {
             guard throwsSignature?.isThrowing == true else { return [] }
-            return Set(analysis.exitErrorValues.compactMap { address, value in
+            return asyncThrowExits.union(analysis.exitErrorValues.compactMap { address, value in
                 switch value {
                 case .immediate(let flag) where flag != 0:
                     return address

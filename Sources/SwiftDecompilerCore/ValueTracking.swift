@@ -389,6 +389,9 @@ public struct FunctionAnalysis: Sendable {
     public var exitValues: [UInt64: AbstractValue] = [:]
     /// x21 at each `ret`: in a throwing Swift function, the error it returns.
     public var exitErrorValues: [UInt64: AbstractValue] = [:]
+    /// x20 at each proven async return (a `br` through ResumeParent): an
+    /// async throwing function hands its error back in x20, zero for none.
+    public var exitAsyncErrorValues: [UInt64: AbstractValue] = [:]
     /// v0 (the d0/s0 floating-point return register) immediately before a
     /// return. A `Double`/`Float`-returning function delivers its result here,
     /// not in x0, so the enrichment pass reads this one for those return types.
@@ -640,6 +643,9 @@ public struct ValueTracer: Sendable {
                 // before an ordinary tail call is the callee's argument.
                 let isAsyncReturn = insn.controlFlow == .branch
                     && Self.indirectTarget(of: insn, in: registers) == .asyncResumeParent
+                if isAsyncReturn, let value = registers["x20"], value != .unknown {
+                    result.exitAsyncErrorValues[insn.address] = value
+                }
                 if insn.controlFlow == .return || isAsyncReturn,
                    let value = registers["v0"], value != .unknown {
                     result.exitFloatValues[insn.address] = value

@@ -412,3 +412,25 @@ func resumeFuncletsDoNotInheritTheSignatureArgumentsIfPresent(path: String) asyn
         #expect(!text.contains("return (arg0"), Comment(rawValue: text))
     }
 }
+
+/// An async throwing function returns through ResumeParent with its error in
+/// x20, zero for none. `swift_allocError` then `mov x20, x0; br x0` is a throw,
+/// and so is a resume that passes on the error it received in x20 (reached
+/// only through `cbz x20`'s non-zero edge). Both rendered a bare `return`.
+@Test func asyncThrowsRenderAsThrowsIfPresent() async throws {
+    let fixture = "Fixtures/Sample/libAsyncFns.opt.dylib"
+    guard FileManager.default.fileExists(atPath: fixture) else { return }
+    func structured(_ filter: String) async throws -> String {
+        let functions = try await withStableDependencies {
+            try await Disassembler(preset: .default).disassemble(path: fixture, functionFilter: filter)
+        }
+        return functions.map { $0.renderStructured() }.joined(separator: "\n")
+    }
+    let thrower = try await structured("fetchOrThrow")
+    #expect(thrower.contains("throw ?"), Comment(rawValue: thrower))
+    #expect(thrower.contains("return arg0"), Comment(rawValue: thrower))
+    let rethrower = try await structured("awaitThrowing")
+    #expect(rethrower.contains("return (awaited1 << 1)"), Comment(rawValue: rethrower))
+    #expect(rethrower.contains("} else {\n        throw ?"), Comment(rawValue: rethrower))
+    #expect(!rethrower.contains("} else {\n        return\n"), Comment(rawValue: rethrower))
+}
