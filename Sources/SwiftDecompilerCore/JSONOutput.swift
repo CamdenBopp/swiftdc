@@ -75,6 +75,8 @@ private struct ReportDTO: Encodable {
     let declarations: [String]
     let objc: [String]
     let functions: [FunctionDTO]
+    /// Why disassembly failed, when it did: never an empty `functions` alone.
+    let disassemblyError: String?
 }
 
 private struct ObjCReportDTO: Encodable {
@@ -151,8 +153,10 @@ public func declarationBlocks(_ dump: String) -> [String] {
 }
 
 /// JSON object combining Swift declarations, ObjC headers, and functions.
-public func reportJSON(declarations: String, objc: [String], functions: [DisassembledFunction]) -> String {
-    jsonEncode(ReportDTO(declarations: declarationBlocks(declarations), objc: objc, functions: functions.map(\.dto)))
+public func reportJSON(declarations: String, objc: [String], functions: [DisassembledFunction],
+                       disassemblyError: String? = nil) -> String {
+    jsonEncode(ReportDTO(declarations: declarationBlocks(declarations), objc: objc, functions: functions.map(\.dto),
+                         disassemblyError: disassemblyError))
 }
 
 /// Objective-C headers plus their recovered IMP implementations.

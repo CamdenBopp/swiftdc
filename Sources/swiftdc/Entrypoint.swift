@@ -199,9 +199,14 @@ struct AnalyzeCommand: AsyncParsableCommand {
         } else if let path {
             // Accept an .app/.framework/.ipa, resolving to a real Mach-O for llvm-objdump.
             let resolved = try BinaryLoader.resolveBinaryInput(path, binary: binary)
-            text = json
-                ? try await report.generateJSON(path: resolved, architecture: architecture)
-                : try await report.generate(path: resolved, architecture: architecture)
+            let result = try await report.report(path: resolved, architecture: architecture, json: json)
+            try emit(result.text, to: output)
+            // The declarations printed; the failure must still fail the run.
+            if let failure = result.disassemblyError {
+                FileHandle.standardError.write(Data("error: disassembly failed: \(failure)\n".utf8))
+                throw ExitCode.failure
+            }
+            return
         } else {
             throw BinaryLoadError("Provide a binary path, or --image <name> to analyze a dyld shared-cache image.")
         }

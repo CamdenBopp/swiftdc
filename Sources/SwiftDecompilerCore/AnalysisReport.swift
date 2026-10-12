@@ -14,18 +14,35 @@ public struct AnalysisReport: Sendable {
 
     /// Structured JSON: `{ declarations: [...], objc: [...], functions: [...] }`.
     public func generateJSON(path: String, architecture: String? = nil) async throws -> String {
-        let machO = try BinaryLoader.load(path: path, architecture: architecture)
-        let functions = (try? await Disassembler(preset: preset)
-            .disassemble(path: path, architecture: architecture)) ?? []
-        return await json(machO: machO, functions: functions)
+        try await report(path: path, architecture: architecture, json: true).text
     }
 
     public func generate(path: String, architecture: String? = nil) async throws -> String {
+        try await report(path: path, architecture: architecture, json: false).text
+    }
+
+    /// The report, and the reason disassembly failed if it did. The
+    /// declarations still print: a failed disassembly should not sink them.
+    /// But the failure is stated, never shown as an empty result. With
+    /// `try?` here, `analyze` printed `(no functions recovered)` and exited 0
+    /// when llvm-objdump could not run, while `disasm` on the same file
+    /// exited 1.
+    public func report(path: String, architecture: String? = nil, json: Bool)
+        async throws -> (text: String, disassemblyError: String?) {
         let machO = try BinaryLoader.load(path: path, architecture: architecture)
-        // Disassembly is best-effort; a missing/odd binary shouldn't sink the report.
-        let functions = (try? await Disassembler(preset: preset)
-            .disassemble(path: path, architecture: architecture)) ?? []
-        return await text(machO: machO, functions: functions)
+        let functions: [DisassembledFunction]
+        let failure: String?
+        do {
+            functions = try await Disassembler(preset: preset).disassemble(path: path, architecture: architecture)
+            failure = nil
+        } catch {
+            functions = []
+            failure = String(describing: error)
+        }
+        let text = json
+            ? await self.json(machO: machO, functions: functions, failure: failure)
+            : await self.text(machO: machO, functions: functions, failure: failure)
+        return (text, failure)
     }
 
     // MARK: - Pre-loaded image input (in-process Capstone disassembly)
@@ -45,13 +62,13 @@ public struct AnalysisReport: Sendable {
 
     // MARK: - Rendering (shared by both input paths)
 
-    private func json(machO: MachOFile, functions: [DisassembledFunction]) async -> String {
+    private func json(machO: MachOFile, functions: [DisassembledFunction], failure: String? = nil) async -> String {
         let declarations = await SwiftDeclarationDumper(preset: preset).dump(machO)
         let objc = ObjCDumper().blocks(machO)
-        return reportJSON(declarations: declarations, objc: objc, functions: functions)
+        return reportJSON(declarations: declarations, objc: objc, functions: functions, disassemblyError: failure)
     }
 
-    private func text(machO: MachOFile, functions: [DisassembledFunction]) async -> String {
+    private func text(machO: MachOFile, functions: [DisassembledFunction], failure: String? = nil) async -> String {
         let declarations = await SwiftDeclarationDumper(preset: preset).dump(machO)
         let objc = ObjCDumper().dump(machO)
 
@@ -65,7 +82,9 @@ public struct AnalysisReport: Sendable {
         }
 
         out += "\n" + banner("DISASSEMBLY")
-        if functions.isEmpty {
+        if let failure {
+            out += "// disassembly failed: \(failure)\n"
+        } else if functions.isEmpty {
             out += "// (no functions recovered)\n"
         } else {
             for group in Self.groupByOwner(functions) {

@@ -68,3 +68,34 @@ struct CLIDiagnosticsTests {
         #expect(withFilter >= 3, "found \(withFilter) --function commands")
     }
 }
+
+/// The empty-result rule for `analyze`. Disassembly was `try?`-ed into an
+/// empty list, so when llvm-objdump could not run, `analyze` printed
+/// `(no functions recovered)` and exited 0, while `disasm` on the same file
+/// exited 1. The declarations still print; the failure is stated and fails
+/// the run.
+@Test func analyzeReportsAFailedDisassemblyAsAFailureIfPresent() throws {
+    let binary = URL(fileURLWithPath: ".build/debug/swiftdc")
+    let fixture = "Fixtures/Sample/libSample.dylib"
+    guard FileManager.default.fileExists(atPath: binary.path),
+          FileManager.default.fileExists(atPath: fixture) else { return }
+    for arguments in [["analyze", fixture], ["analyze", fixture, "--json"]] {
+        let out = Pipe(), err = Pipe()
+        let process = Process()
+        process.executableURL = binary
+        process.arguments = arguments
+        var environment = ProcessInfo.processInfo.environment
+        environment["DEVELOPER_DIR"] = "/nonexistent"  // xcrun cannot find llvm-objdump
+        process.environment = environment
+        process.standardOutput = out
+        process.standardError = err
+        try process.run()
+        let stdout = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let stderr = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        process.waitUntilExit()
+        #expect(process.terminationStatus != 0, "\(arguments): exit 0\n\(stdout)")
+        #expect(stderr.contains("disassembly failed"), "\(arguments): \(stderr)")
+        #expect(!stdout.contains("(no functions recovered)"), "\(arguments): \(stdout)")
+        #expect(stdout.contains("disassembly failed") || stdout.contains("\"disassemblyError\""), "\(arguments): \(stdout)")
+    }
+}

@@ -1734,6 +1734,12 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   measured OPEN rather than a test — wall time is too machine- and load-dependent
   to assert as a stable bound without flaking.
 
+- **FIXED — `analyze` reported a failed disassembly as an empty one.**
+  `try?` turned an llvm-objdump failure into `(no functions recovered)` with
+  exit 0, while `disasm` on the same file exited 1 (audit E-3). The report
+  keeps its declarations, states `disassembly failed: …` (JSON
+  `disassemblyError`), and the command exits 1 with the error on stderr.
+
 ## 6. Usability — are commands, diagnostics, and docs accurate?
 
 - **FIXED — three README defects.** A documented command that errors
