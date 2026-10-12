@@ -54,3 +54,11 @@ public func scaled(_ g: Gauge) -> Int {
     let a = next(2)
     return a &* Units.scale &+ g.reading
 }
+
+// An Int-returning call compared with 1 or tested on bit 0 is not a truth
+// test; a Bool-returning one is.
+@inline(never) public func level(_ n: Int) -> Int { n &* 3 }
+@inline(never) public func ready(_ n: Int) -> Bool { n > 4 }
+public func isOne(_ n: Int) { if level(n) == 1 { log(1) }; log(0) }
+public func isEven(_ n: Int) { if level(n) % 2 == 0 { log(2) }; log(0) }
+public func isReady(_ n: Int) { if ready(n) { log(3) }; log(0) }

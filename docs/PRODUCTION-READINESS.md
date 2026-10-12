@@ -125,9 +125,14 @@ because it cannot be distinguished from a right one by reading the output.
   of 0x10000000b/0x200000016 renders the 64-bit value; the function returns
   22. Natively executing a local 1,061-probe width library leaves 330 wrong
   constant renders, all predating `fd6b868` (which fixed 37 and broke none).
-- **OPEN — a non-Bool call result compared with 1 is folded to
-  truthiness.** `if case .paused = state` (tag 1) renders
-  `if (swift_getEnumCaseMultiPayload(?))`.
+- **FIXED — a non-Bool call result compared with 1 is folded to
+  truthiness.** `if case .paused = state` (tag 1) rendered
+  `if (swift_getEnumCaseMultiPayload(?))`. Comparing with 1, or testing
+  bit 0, now folds only for a proven Bool: a call declaring `Swift.Bool`
+  or `Builtin.Int1`, a runtime uniqueness check, a metadata BOOL field, or
+  an existing negation. Comparing with 0 stays a truth test. On three
+  release apps, 60, 435 and 176 bit-0 tests and 14, 41 and 26 `== 1`
+  comparisons are now explicit.
 - **FIXED (`756f27e`) — an -O `for x in array` renders as an infinite loop.**
   Return blocks are retained as loop exits, and edges to a join pass through
   the loop's transfer handler before being suppressed. The compiled

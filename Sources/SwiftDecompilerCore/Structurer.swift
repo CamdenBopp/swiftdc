@@ -737,6 +737,13 @@ struct ControlFlowStructure {
                 || Self.isResultBinding(value)
                 || isBooleanSource(operand, before: before, in: block)
         }
+        // Comparing with 0 is a truth test whatever the value. Comparing with
+        // 1, or testing bit 0, is one only for a Bool: an Int-returning call
+        // tested `== 1` rendered `if (level())`, true for 2 as well, and
+        // `level % 2 == 0` (`tbz x0, #0`) rendered `if (!level())`.
+        func isProvenBoolean(_ value: String, operand: String, before: Int) -> Bool {
+            value.hasPrefix("!") || isBooleanSource(operand, before: before, in: block)
+        }
         switch mnemonic {
         case "cbz":
             let operand = operands.first ?? "?"
@@ -751,13 +758,13 @@ struct ControlFlowStructure {
             let bit = Self.cleanImmediate(operands.count > 1 ? operands[1] : "?")
             let value = resolve(operand, before: last, in: block, consumed: &consumed)
             // Bit 0 is the boolean bit: `tbz X, #0` branches when X is false.
-            if bit == "0", isBoolean(value, operand: operand, before: last) { return ("!\(value)", consumed) }
+            if bit == "0", isProvenBoolean(value, operand: operand, before: last) { return ("!\(value)", consumed) }
             return ("bit \(bit) of \(value) clear", consumed)
         case "tbnz":
             let operand = operands.first ?? "?"
             let bit = Self.cleanImmediate(operands.count > 1 ? operands[1] : "?")
             let value = resolve(operand, before: last, in: block, consumed: &consumed)
-            if bit == "0", isBoolean(value, operand: operand, before: last) { return (value, consumed) }
+            if bit == "0", isProvenBoolean(value, operand: operand, before: last) { return (value, consumed) }
             return ("bit \(bit) of \(value) set", consumed)
         default:
             let op = Self.conditionOperator(mnemonic)
@@ -800,7 +807,8 @@ struct ControlFlowStructure {
                     if lhs == rhs, ops[lhsIndex] != ops[rhsIndex] {
                         return (compare(ops[lhsIndex], Self.cleanImmediate(ops[rhsIndex])), consumed)
                     }
-                    if !sums, isBoolean(lhs, operand: ops[lhsIndex], before: index),
+                    if !sums, rhs == "0" ? isBoolean(lhs, operand: ops[lhsIndex], before: index)
+                                         : isProvenBoolean(lhs, operand: ops[lhsIndex], before: index),
                        let simplified = Self.booleanComparison(lhs: lhs, op: op, rhs: rhs) {
                         return (simplified, consumed)
                     }
@@ -825,8 +833,15 @@ struct ControlFlowStructure {
         guard let register = Self.canonicalRegister(token) else { return false }
         for index in stride(from: before - 1, through: 0, by: -1) {
             let instruction = block.instructions[index]
-            if instruction.controlFlow == .call,
-               let number = Int(register.dropFirst()), number <= 17 { return false }
+            if instruction.controlFlow == .call {
+                // A call's declared `-> Swift.Bool` result is a Bool in x0.
+                if register == "x0", let callee = DisassembledFunction.calleeName(of: instruction),
+                   ["Swift.Bool", "Builtin.Int1"].contains(DisassembledFunction.splitSignature(callee)?.result ?? "")
+                    || DisassembledFunction.isUniquenessCheck(callee) {
+                    return true
+                }
+                if let number = Int(register.dropFirst()), number <= 17 { return false }
+            }
             let (mnemonic, operands) = Self.decode(instruction.text)
             guard let destination = operands.first,
                   Self.canonicalRegister(destination) == register

@@ -165,3 +165,24 @@ func structuredLoops(_ text: String) -> [(header: String, body: [String], after:
     #expect(!text.contains("self.Int("), Comment(rawValue: text))
     #expect(!text.contains(".getter : Swift.Int("), Comment(rawValue: text))
 }
+
+/// Comparing with 1, or testing bit 0, is a truth test only for a Bool.
+/// `level(n) == 1` for an Int-returning `level` rendered `if (level())`,
+/// which also holds for 2; `level(n) % 2 == 0` (`tbz x0, #0`) rendered
+/// `if (!level())`. A Bool-returning call still reads as a condition.
+@Test func onlyABoolFoldsToATruthTestIfPresent() async throws {
+    let path = "Fixtures/Sample/libAuditSemantics.opt.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "AuditSemantics.is")
+    }
+    func render(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("AuditSemantics.\(name)(") }).renderStructured()
+    }
+    let one = expandingResultBindingsForAssertions(try render("isOne"))
+    #expect(one.contains("AuditSemantics.level(arg0) == 1") || one.contains("AuditSemantics.level(arg0) != 1"), Comment(rawValue: one))
+    let even = try render("isEven")
+    #expect(even.contains("bit 0 of AuditSemantics.level(arg0)"), Comment(rawValue: even))
+    let ready = try render("isReady")
+    #expect(ready.contains("if (AuditSemantics.ready(arg0))") || ready.contains("if (!AuditSemantics.ready(arg0))"), Comment(rawValue: ready))
+}
