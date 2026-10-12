@@ -3066,12 +3066,22 @@ public struct Disassembler: Sendable {
                 let receiver = values.first ?? .unknown
                 let selectorValue = values.count > 1 ? values[1] : .unknown
                 let colons = selector.filter { $0 == ":" }.count
-                let signature: ObjCMetadataIndex.OutgoingSignature = if receiver == .selfPointer, let method = function.objcMethod {
-                    objcIndex.outgoingSignature(selector: selector, className: method.className,
-                                                isClassMethod: method.isClassMethod)
-                } else {
-                    .unavailable
-                }
+                // The receiver's class: self's, or a typed ivar's (`@"Target"`).
+                let receiverClass: (name: String, isClass: Bool)? = {
+                    if receiver == .selfPointer, let method = function.objcMethod {
+                        return (method.className, method.isClassMethod)
+                    }
+                    guard objcFieldSyntax, case .selfFieldValue(let offset) = receiver, let fieldMap,
+                          case .success(.whole(_, let encoding)) = fieldMap.lookup(offset: offset, bytes: 8),
+                          encoding.hasPrefix("@\""), encoding.hasSuffix("\""), encoding.count > 3
+                    else { return nil }
+                    let name = String(encoding.dropFirst(2).dropLast())
+                    guard !name.isEmpty, !name.contains("<"), !name.contains("\"") else { return nil }
+                    return (name, false)
+                }()
+                let signature: ObjCMetadataIndex.OutgoingSignature = receiverClass.map {
+                    objcIndex.outgoingSignature(selector: selector, className: $0.name, isClassMethod: $0.isClass)
+                } ?? .unavailable
                 switch signature {
                 case .known(let encoding, let types):
                     var explicit = Array(repeating: AbstractValue.unknown, count: types.count)
@@ -3100,7 +3110,7 @@ public struct Disassembler: Sendable {
                         + Array(repeating: AbstractValue.unknown, count: colons)).map(sanitizeValue)
                     continue
                 case .unavailable:
-                    if receiver != .selfPointer, colons > 0, objcIndex.selectorMayUseFloatingArguments(selector) {
+                    if receiverClass == nil, colons > 0, objcIndex.selectorMayUseFloatingArguments(selector) {
                         argumentsByAddress[address] = ([receiver, selectorValue]
                             + Array(repeating: AbstractValue.unknown, count: colons)).map(sanitizeValue)
                         continue

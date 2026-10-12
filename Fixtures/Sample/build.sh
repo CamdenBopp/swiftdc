@@ -54,6 +54,7 @@ echo "==> ABI-source fixtures and native oracles (result and value-self register
 
 echo "==> Objective-C outgoing-send fixtures (mixed x/v argument banks)"
 ./build-outgoing-objc.sh
+./build-objc-nonself-outgoing.sh
 
 echo "==> resilient reconstruction fixture (library evolution) — coroutine accessors"
 # Library evolution forces opaque accessors, so a public stored property gets a
