@@ -1318,6 +1318,12 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   covered three distinct causes including a parser failure. Now distinguishes
   "no function matched `<filter>`" from "this binary contains no recoverable
   functions", and an analysis failure throws instead.
+- **FIXED — an empty `--function ""` meant opposite things.** `disasm` and
+  `objc` matched every function; `xrefs` matched none and printed `// No
+  function matched ''.` with exit 0. Every command that takes `--function`
+  now rejects an empty name as a usage error. Test:
+  `everyFunctionFilterRejectsAnEmptyNameIfPresent`, which finds the commands
+  from their help text.
 - **FIXED — two stale doc artifacts.** A fixed defect still headlined
   `CONFIRMED DEFECT`; a shipped feature still described as "a scoped follow-up".
 - **MITIGATED — exit codes are correct** except the crash above: success 0,

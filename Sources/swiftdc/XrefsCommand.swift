@@ -54,6 +54,8 @@ struct XrefsCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Emit structured JSON.")
     var json = false
 
+    func validate() throws { try validateFunctionFilter(function) }
+
     func run() async throws {
         if listImages {
             try emit(BinaryLoader.dyldCacheImagePaths(cachePath: cache).joined(separator: "\n"), to: output)

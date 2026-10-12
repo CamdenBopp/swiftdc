@@ -65,6 +65,8 @@ struct ObjCCommand: AsyncParsableCommand {
     @Option(name: [.short, .long], help: "Only include Objective-C methods whose owner, selector, or signature contains this string. Implies --methods.")
     var function: String?
 
+    func validate() throws { try validateFunctionFilter(function) }
+
     func run() async throws {
         if listImages {
             try emit(BinaryLoader.dyldCacheImagePaths(cachePath: cache).joined(separator: "\n"), to: output)
@@ -387,6 +389,8 @@ struct DisasmCommand: AsyncParsableCommand {
     @Option(name: [.short, .long], help: "Only show functions whose name (raw or demangled) contains this string.")
     var function: String?
 
+    func validate() throws { try validateFunctionFilter(function) }
+
     @Option(name: .long, help: "Demangle preset: default, simplified, interface.")
     var demangle: DemanglePreset = .default
 
@@ -578,3 +582,12 @@ struct SwiftVersionCommand: AsyncParsableCommand {
 
 extension DemanglePreset: ExpressibleByArgument {}
 extension SwiftDeclarationDumper.Section: ExpressibleByArgument {}
+
+/// An empty `--function` matched every function in `disasm` and `objc` and none
+/// in `xrefs`, which then reported "No function matched" as if that were the
+/// answer. Neither reading is what was asked, so it is a usage error.
+func validateFunctionFilter(_ function: String?) throws {
+    if let function, function.allSatisfy(\.isWhitespace) {
+        throw ValidationError("--function needs a name to match.")
+    }
+}
