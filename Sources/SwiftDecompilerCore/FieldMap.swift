@@ -144,24 +144,43 @@ public struct FieldMap: Sendable {
     /// byte out of the middle of an `Int`.
     public func lookup(offset: Int, bytes: Int) -> Result<FieldHit, FieldLookupFailure> {
         guard offset >= 0, bytes > 0 else { return .failure(.padding) }
+        let (end, overflow) = offset.addingReportingOverflow(bytes)
+        guard !overflow else { return .failure(.pastInstanceSize(instanceSize: instanceSize)) }
         // Trusted-prefix first, and deliberately so. When the layout gave up
         // early, `instanceSize` is itself understated (a Widget whose second
         // field is a resilient `Foundation.Date` reports size 16, not 48), so
         // blaming the instance size would name a number that is also wrong. The
         // actionable reason is the field that could not be laid out.
-        if let reason = trustLimitReason, offset >= trustedOffsetLimit {
+        if let reason = trustLimitReason, end > trustedOffsetLimit {
             return .failure(.pastTrustedPrefix(limit: trustedOffsetLimit, reason: reason))
         }
-        guard offset < instanceSize else { return .failure(.pastInstanceSize(instanceSize: instanceSize)) }
-        guard offset < trustedOffsetLimit else {
+        guard end <= instanceSize else { return .failure(.pastInstanceSize(instanceSize: instanceSize)) }
+        guard end <= trustedOffsetLimit else {
             return .failure(.pastTrustedPrefix(limit: trustedOffsetLimit, reason: trustLimitReason ?? "unresolved"))
         }
         guard !ranges.isEmpty else { return .failure(.noLayout(reason: trustLimitReason ?? "no fields")) }
 
-        let access = offset ..< (offset + bytes)
+        let access = offset ..< end
         let touched = ranges.filter { $0.range.overlaps(access) }
         guard let first = touched.first else { return .failure(.padding) }
-        if touched.count > 1 { return .success(.spans(names: touched.map(\.name))) }
+        if touched.count > 1 {
+            // A spanning name is meaningful only when the access covers whole,
+            // adjacent fields. Otherwise it includes padding or only fragments
+            // of fields, and joining their names would conceal those bytes.
+            guard access.lowerBound == first.range.lowerBound,
+                  access.upperBound == touched.last!.range.upperBound,
+                  zip(touched, touched.dropFirst()).allSatisfy({ pair in
+                      pair.0.range.upperBound == pair.1.range.lowerBound
+                  })
+            else { return .failure(.padding) }
+            return .success(.spans(names: touched.map(\.name)))
+        }
+
+        // An access that starts inside a field but runs past its end reads
+        // padding or the next field's bytes: it is not part of this one.
+        guard first.range.lowerBound <= access.lowerBound,
+              access.upperBound <= first.range.upperBound
+        else { return .failure(.padding) }
 
         if access.lowerBound == first.range.lowerBound && access.upperBound == first.range.upperBound {
             return .success(.whole(name: first.name, typeMangledName: first.typeMangledName))

@@ -101,6 +101,34 @@ private func map(
     #expect(padded.lookup(offset: 4, bytes: 4) == .failure(.padding))
 }
 
+/// Naming a field from an access's starting byte is unsound when the load also
+/// reads padding, another field, or bytes beyond the known layout.
+@Test func refusesAccessesThatCrossFieldOrLayoutBounds() {
+    let adjacent = map("Adjacent", size: 16, [
+        ("a", 0, 8, .computed),
+        ("b", 8, 8, .computed),
+    ])
+    #expect(adjacent.lookup(offset: 7, bytes: 2) == .failure(.padding))
+    #expect(adjacent.lookup(offset: 15, bytes: 2) == .failure(.pastInstanceSize(instanceSize: 16)))
+    #expect(adjacent.lookup(offset: 0, bytes: 16) == .success(.spans(names: ["a", "b"])))
+
+    let padded = map("Padded", size: 24, [
+        ("a", 0, 8, .computed),
+        ("b", 16, 8, .computed),
+    ])
+    #expect(padded.lookup(offset: 0, bytes: 24) == .failure(.padding))
+    #expect(padded.lookup(offset: 7, bytes: 10) == .failure(.padding))
+
+    let partial = map("Partial", size: 32, [
+        ("known", 0, 16, .computed),
+        ("unknown", 16, 8, .unknown(reason: .typeDescriptorNotFound(qualifiedTypeName: "Other.Value"))),
+    ])
+    guard case .failure(.pastTrustedPrefix(let limit, _)) = partial.lookup(offset: 15, bytes: 2) else {
+        Issue.record("expected crossing the trusted prefix to decline"); return
+    }
+    #expect(limit == 16)
+}
+
 // MARK: - Simple-name collision guard
 
 /// Field maps are keyed by SIMPLE name, and the resolver falls back to a name's
