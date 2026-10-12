@@ -114,10 +114,10 @@ struct XrefsCommand: AsyncParsableCommand {
                     "address": hex(address),
                     "name": graph.name(of: address),
                     "callers": graph.callers(of: address).map {
-                        ["site": hex($0.site), "function": graph.name(of: $0.caller)] as [String: Any]
+                        ["site": hex($0.site), "function": graph.name(of: $0.caller), "tailCall": $0.isTailCall] as [String: Any]
                     },
                     "callees": graph.callees(of: address).map {
-                        ["site": hex($0.site), "function": graph.name(of: $0.callee)] as [String: Any]
+                        ["site": hex($0.site), "function": graph.name(of: $0.callee), "tailCall": $0.isTailCall] as [String: Any]
                     },
                 ] as [String: Any]
             })
@@ -134,7 +134,7 @@ struct XrefsCommand: AsyncParsableCommand {
                 lines.append("    <none — an entry point, an export, or called only through unresolved dispatch>")
             }
             for edge in callers {
-                lines.append("    \(hex(edge.site))  \(graph.name(of: edge.caller))")
+                lines.append("    \(hex(edge.site))  \(graph.name(of: edge.caller))\(edge.isTailCall ? "  (tail call)" : "")")
             }
 
             // Deduplicate: a callee hit from several sites is one relationship,
@@ -142,7 +142,7 @@ struct XrefsCommand: AsyncParsableCommand {
             lines.append("  callees (\(Set(callees.map(\.callee)).count)):")
             var seen = Set<UInt64>()
             for edge in callees where seen.insert(edge.callee).inserted {
-                lines.append("    \(hex(edge.site))  \(graph.name(of: edge.callee))")
+                lines.append("    \(hex(edge.site))  \(graph.name(of: edge.callee))\(edge.isTailCall ? "  (tail call)" : "")")
             }
             blocks.append(lines.joined(separator: "\n"))
         }

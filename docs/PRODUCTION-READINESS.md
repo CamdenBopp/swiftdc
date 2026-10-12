@@ -502,6 +502,16 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 - **FIXED — the guard against that class.** An empty parse is now cross-checked
   against `LC_FUNCTION_STARTS` and throws `DisassembleError.parsedNothing` with
   both counts rather than returning `[]`.
+- **FIXED — the call graph dropped every tail call.** `CallGraph` read only
+  `bl`/`blr`, so a `b` into another function's entry added no edge. On Fiery
+  Feeds 14,401 of 180,015 functions are reached only that way, and `xrefs
+  --unreferenced` listed all of them as having no caller. Found with an
+  independent oracle: a raw `bl`/`b` imm26 scan of `__text` (89 ms) agreed
+  with the graph on every `bl` target and disagreed on exactly those `b`
+  targets, each from another function. A `b` is now an edge, marked
+  `(tail call)`, when it leaves its function for a recovered entry or a stub;
+  one into the middle of another function is not. Test:
+  `countsATailCallAsACallerIfPresent`.
 - **FIXED — an x8-indirect return rendered `return ?` (or a stale x0).**
   `3dc93d0`, `17efe56`, `854ffc5`. Callee side: the stores through the
   incoming x8 that reach a `ret` on every path render field-wise against the
@@ -1117,6 +1127,9 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 5. Performance and memory on large frameworks
 
+- **OPEN — `xrefs` on Swiftcord exceeds 8 GB.** The ship2 sweep stopped
+  `xrefs --unreferenced` at the RSS ceiling after 112.8 s (8,636 MB); the
+  earlier merge sweep peaked at ~7.8 GB. Unprofiled.
 - **FIXED — a standalone binary re-opened itself as a dyld cache on every
   `MachOFile.cache` access.** The 0.22 upgrade dropped the fork that memoized
   the failed load, estimating it at about 2.5% of a Keynote `dump`. On a

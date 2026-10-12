@@ -8,11 +8,15 @@ public struct CallEdge: Sendable, Hashable {
     public let caller: UInt64
     /// Resolved call target.
     public let callee: UInt64
+    /// The site is a `b` out of the caller rather than a `bl`: the callee
+    /// returns to the caller's caller.
+    public let isTailCall: Bool
 }
 
 /// Caller/callee relationships across a set of disassembled functions.
 ///
-/// Built from resolved branch targets. This includes direct calls and indirect
+/// Built from resolved branch targets. This includes direct calls, tail calls
+/// (a `b` to another function's entry or to a stub), and indirect
 /// calls whose function pointer was proven from a concrete Mach-O slot (for
 /// example a known witness table). Truly dynamic vtable, generic witness-table,
 /// and block dispatch remains absent; `unresolvedCallSites` counts those sites
@@ -35,26 +39,62 @@ public struct CallGraph: Sendable {
         var names: [UInt64: String] = externalNames
         for function in functions { names[function.startAddress] = function.displayName }
 
+        let starts = Set(functions.map(\.startAddress))
+        let spans = functions.map { ($0.startAddress, $0.instructions.last?.address ?? $0.startAddress) }
+            .sorted { $0.0 < $1.0 }
+        func insideAFunction(_ address: UInt64) -> Bool {
+            var low = 0, high = spans.count
+            while low < high {
+                let mid = (low + high) / 2
+                if spans[mid].0 <= address { low = mid + 1 } else { high = mid }
+            }
+            return low > 0 && address <= spans[low - 1].1
+        }
+
         var edges: [CallEdge] = []
         var unresolved = 0
         for function in functions {
-            for insn in function.instructions where insn.controlFlow == .call {
-                guard let target = insn.branchTarget else {
-                    unresolved += 1
+            let first = function.startAddress
+            let last = function.instructions.last?.address ?? first
+            for insn in function.instructions {
+                let isTailCall: Bool
+                switch insn.controlFlow {
+                case .call:
+                    guard insn.branchTarget != nil else {
+                        unresolved += 1
+                        continue
+                    }
+                    isTailCall = false
+                case .branch:
+                    // A `b` that leaves the function is a tail call. Without
+                    // this edge a function reached only that way (14,401 of
+                    // Fiery Feeds' 180,015) reads as having no caller at all.
+                    // A branch inside the span, or back to the entry, is the
+                    // function's own control flow; one into the middle of
+                    // another function is a shared tail, not a call to it.
+                    guard let target = insn.branchTarget, target < first || target > last,
+                          starts.contains(target)
+                            || (!insideAFunction(target) && DisassembledFunction.calleeName(of: insn) != nil)
+                    else { continue }
+                    isTailCall = true
+                default:
                     continue
                 }
+                guard let target = insn.branchTarget else { continue }
                 // Calls into a stub (an import, or an ObjC selector stub) target
                 // an address that is not itself a recovered function, so it has
                 // no entry above — but the call site knows the name.
                 if names[target] == nil, let name = DisassembledFunction.calleeName(of: insn) {
                     names[target] = name
                 }
-                edges.append(CallEdge(site: insn.address, caller: function.startAddress, callee: target))
+                edges.append(CallEdge(
+                    site: insn.address, caller: function.startAddress, callee: target, isTailCall: isTailCall
+                ))
             }
         }
 
         self.names = names
-        self.functionAddresses = Set(functions.map(\.startAddress))
+        self.functionAddresses = starts
         self.edges = edges
         self.unresolvedCallSites = unresolved
         self.calleesByCaller = Dictionary(grouping: edges, by: \.caller)

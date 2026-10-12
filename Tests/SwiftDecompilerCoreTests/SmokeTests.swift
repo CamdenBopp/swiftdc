@@ -612,6 +612,40 @@ private func assembledFunction(
     }
 }
 
+/// A `b` to another function's entry is a call that returns to the caller's
+/// caller. libSample's specialized `Direction.init(rawValue:)` is reached only
+/// that way, from 0x1310. Every such branch, in every function, is an edge;
+/// a branch inside its own function is not.
+@Test func countsATailCallAsACallerIfPresent() async throws {
+    let path = "Fixtures/Sample/libSample.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .simplified).disassemble(path: path)
+    }
+    let graph = CallGraph(functions: functions)
+    let specialized: UInt64 = 0x2580
+    #expect(graph.functionAddresses.contains(specialized))
+    let callers = graph.callers(of: specialized)
+    #expect(callers.contains { $0.site == 0x1310 && $0.isTailCall })
+    #expect(!graph.unreferenced().contains(specialized))
+
+    let starts = graph.functionAddresses
+    var tailCalls = 0
+    for function in functions {
+        for insn in function.instructions where insn.controlFlow == .branch {
+            guard let target = insn.branchTarget else { continue }
+            let isEdge = graph.edges.contains { $0.site == insn.address && $0.callee == target }
+            if starts.contains(target), target != function.startAddress {
+                tailCalls += 1
+                #expect(isEdge, "b at 0x\(String(insn.address, radix: 16)) to an entry")
+            } else if function.instructions.contains(where: { $0.address == target }) {
+                #expect(!isEdge, "b at 0x\(String(insn.address, radix: 16)) stays in its function")
+            }
+        }
+    }
+    #expect(tailCalls >= 5)
+}
+
 /// The pseudo view renders recovered call statements and hides ARC noise.
 @Test func rendersPseudocodeIfPresent() async throws {
     let path = "Fixtures/Sample/sample.release"
