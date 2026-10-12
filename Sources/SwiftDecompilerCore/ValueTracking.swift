@@ -1923,11 +1923,13 @@ public struct ValueTracer: Sendable {
         // which would otherwise clobber `x0` on `cbz x0, …`.
         if let flow = insn.controlFlow, flow != .sequential { return }
 
-        // An instruction that writes NZCV but that we don't model into a
-        // comparison (float/conditional compares, the S-variant arithmetic) must
-        // invalidate the tracked flags, so a later `cset` never reads a stale
-        // comparison and fabricates the wrong condition.
-        if Self.unmodeledFlagWriters.contains(detail.id.rawValue) {
+        // Every instruction that writes NZCV invalidates the tracked flags
+        // first; the few modelled ones (`cmp`/`cmn`/`tst`, `adds`/`subs`/`ands`)
+        // set them again below. A listed set of unmodelled writers missed
+        // `ngcs` and `negs`, and a path that returned early out of `adds`
+        // left the previous comparison standing, so a later branch read a
+        // stale comparison and rendered the wrong condition.
+        if detail.updatesFlags || Self.unmodeledFlagWriters.contains(detail.id.rawValue) {
             registers[Self.flagsKey] = nil
         }
 

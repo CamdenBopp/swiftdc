@@ -47,6 +47,10 @@ xcrun clang++ -arch arm64 -O1 -dynamiclib -undefined dynamic_lookup landingpadlo
 echo "==> a loop the value tracer must converge on (gridsampler.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name GridSampler gridsampler.swift -o libGridSampler.opt.dylib
 
+echo "==> branch conditions from ccmp/fcmp and unsigned range checks (conditions.swift, -O and -Osize)"
+$SWIFTC -parse-as-library -O -emit-library -module-name Conditions conditions.swift -o libConditions.opt.dylib
+$SWIFTC -parse-as-library -Osize -emit-library -module-name Conditions conditions.swift -o libConditions.osize.dylib
+
 echo "==> C callees without signatures (callreads.c, -O0 and -O1)"
 for level in O0 O1; do
     xcrun clang -arch arm64 -$level -dynamiclib callreads.c -o libCallReads.$level.dylib

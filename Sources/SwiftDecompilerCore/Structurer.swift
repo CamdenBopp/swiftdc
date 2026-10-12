@@ -756,6 +756,17 @@ struct ControlFlowStructure {
             let op = Self.conditionOperator(mnemonic)
             for index in stride(from: last - 1, through: 0, by: -1) {
                 let (m, ops) = Self.decode(block.instructions[index].text)
+                // The branch reads the flags of the LAST instruction that set
+                // them. Walking past one this path cannot read (`ccmp`,
+                // `fcmp`, `ngcs`, …) to an earlier `cmp` bound the condition to
+                // the wrong compare: `cmp; ccmp …, ge; b.lt`, taken iff
+                // `lo <= x < hi`, rendered `x < lo`. Such a branch declines.
+                let setsFlags = block.instructions[index].detail?.updatesFlags
+                    ?? Self.flagSettingMnemonics.contains(m)
+                if setsFlags, !["cmp", "subs", "cmn", "adds", "tst", "ands"].contains(m) {
+                    Probe.record(.structureUnreadableFlags, at: block.instructions[index].address, ["setter": .label(m)])
+                    return ("?", consumed)
+                }
                 if ["cmp", "subs", "cmn", "adds"].contains(m), ops.count >= 2 {
                     // `cmp`/`cmn` compare their two operands; `subs`/`adds` write a
                     // destination first, so their compared operands are 1 and 2 —
@@ -790,6 +801,10 @@ struct ControlFlowStructure {
                 }
                 if m == "tst", ops.count >= 2 {
                     return ("(\(resolve(ops[0], before: index, in: block, consumed: &consumed)) & \(Self.cleanImmediate(ops[1]))) \(op) 0", consumed)
+                }
+                // `ands` is `tst` that also keeps the result.
+                if m == "ands", ops.count >= 3 {
+                    return ("(\(resolve(ops[1], before: index, in: block, consumed: &consumed)) & \(Self.cleanImmediate(ops[2]))) \(op) 0", consumed)
                 }
             }
             return (op == "?" ? terminator.text : "cond \(op)", consumed)
@@ -1007,6 +1022,12 @@ struct ControlFlowStructure {
         return "x" + t.dropFirst()
     }
 
+    /// Mnemonics that write NZCV, for an instruction without Capstone detail.
+    private static let flagSettingMnemonics: Set<String> = [
+        "cmp", "cmn", "tst", "subs", "adds", "ands", "bics", "adcs", "sbcs", "ngcs", "negs",
+        "ccmp", "ccmn", "fcmp", "fcmpe", "fccmp", "fccmpe", "setf8", "setf16", "rmif",
+    ]
+
     private static func conditionOperator(_ mnemonic: String) -> String {
         switch mnemonic {
         case "b.eq": return "=="
@@ -1076,6 +1097,8 @@ struct ControlFlowStructure {
     /// inverted to `(0 > x) && (x < 101)` (measured on a typed-throws guard at
     /// -O), a condition that is never true where the real branch is.
     static func inverted(_ condition: String) -> String {
+        // A declined condition stays declined: `!?` claims nothing more.
+        if condition == "?" { return condition }
         // Unsigned forms first so ` <=ᵁ ` is never read as ` <= `.
         let comparisons: [(String, String)] = [
             (" <=\u{1D41} ", " >\u{1D41} "), (" >=\u{1D41} ", " <\u{1D41} "),

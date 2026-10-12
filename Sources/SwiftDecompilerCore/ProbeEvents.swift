@@ -83,3 +83,9 @@ extension ProbeEvent {
         "cfg.unresolved-indirect-call", .cfg, .decline,
         "A `blr` with no proven target: absent from the call graph.")
 }
+
+extension ProbeEvent {
+    static let structureUnreadableFlags = ProbeEvent(
+        "structure.unreadable-flags", .structure, .decline,
+        "A branch's flags come from an instruction the text path does not model (ccmp, fcmp, ngcs, …); the condition renders `?`.")
+}
