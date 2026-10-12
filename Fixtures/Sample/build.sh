@@ -52,6 +52,9 @@ $CLANG -arch arm64e -O1 -dynamiclib switches.c -o libSwitches.arm64e.dylib
 echo "==> ABI-source fixtures and native oracles (result and value-self registers)"
 ./build-abi-source.sh
 
+echo "==> Objective-C outgoing-send fixtures (mixed x/v argument banks)"
+./build-outgoing-objc.sh
+
 echo "==> resilient reconstruction fixture (library evolution) — coroutine accessors"
 # Library evolution forces opaque accessors, so a public stored property gets a
 # synthesized `_modify`/`_read` yield_once coroutine (absent from a fragile build).

@@ -411,6 +411,42 @@ public struct ObjCMetadataIndex: Sendable {
 
     var addresses: Set<UInt64> { Set(methods.keys) }
 
+    enum OutgoingSignature: Equatable {
+        case unavailable
+        case declined
+        case known(encoding: String, types: [String])
+    }
+
+    /// The argument types a send of `selector` to an instance (or the class)
+    /// of `className` passes: that class's own declaration, provided every
+    /// indexed implementation of the selector agrees on the argument ABI
+    /// (category aliases and subclass overrides included). An absent
+    /// declaration is not an all-integer signature, and a disagreement
+    /// declines. Recovered from the pre-merge stash (983aa25).
+    func outgoingSignature(selector: String, className: String, isClassMethod: Bool) -> OutgoingSignature {
+        let matching = methods.values.joined().filter { $0.selector == selector && $0.isClassMethod == isClassMethod }
+        guard let declared = matching.first(where: { $0.className == className }) else { return .unavailable }
+        guard let types = ObjCArgumentABI.parameterTypes(encoding: declared.typeEncoding,
+                                                        argumentCount: declared.argumentCount),
+              matching.allSatisfy({ ObjCArgumentABI.parameterTypes(encoding: $0.typeEncoding,
+                                      argumentCount: $0.argumentCount) == types })
+        else { return .declined }
+        return .known(encoding: declared.typeEncoding, types: types)
+    }
+
+    /// With no receiver identity, one indexed implementation that takes a
+    /// floating-point argument is enough to doubt that x2… carry the send's
+    /// arguments: the value may arrive in v0 while x2 holds something stale.
+    func selectorMayUseFloatingArguments(_ selector: String) -> Bool {
+        methods.values.joined().contains { method in
+            guard method.selector == selector,
+                  let types = ObjCArgumentABI.parameterTypes(encoding: method.typeEncoding,
+                                                            argumentCount: method.argumentCount)
+            else { return false }
+            return types.contains { ["f", "d", "D"].contains($0) }
+        }
+    }
+
     /// The runtime `__text` address of a method IMP as it appears in the ObjC
     /// metadata. MachOObjCSection normalizes file-backed IMPs to offsets, so the
     /// same file→address resolution the index uses is exposed here for callers

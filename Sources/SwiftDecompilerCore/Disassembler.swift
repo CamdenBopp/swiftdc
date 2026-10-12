@@ -848,8 +848,10 @@ public struct Disassembler: Sendable {
             nil
         } else if let objcMethod {
             objcMethod.isInitializer
-                ? .objectiveCInitializer(argumentCount: objcMethod.argumentCount)
-                : .objectiveC(argumentCount: objcMethod.argumentCount)
+                ? .objectiveCInitializer(argumentCount: objcMethod.argumentCount,
+                                         scalarArguments: Self.objcArgumentLocations(objcMethod))
+                : .objectiveC(argumentCount: objcMethod.argumentCount,
+                              scalarArguments: Self.objcArgumentLocations(objcMethod))
         } else if let symbolEntry {
             symbolEntry
         } else if let valueSelf {
@@ -900,7 +902,8 @@ public struct Disassembler: Sendable {
                 classTypeIndex: context.classTypeIndex
             ),
             asyncContextSlots: chainSlots,
-            asyncSuspensions: Self.asyncSuspensionNotes(in: function, index: context.asyncIndex)
+            asyncSuspensions: Self.asyncSuspensionNotes(in: function, index: context.asyncIndex),
+            objcIndex: context.objcIndex
         )
     }
 
@@ -2134,6 +2137,15 @@ public struct Disassembler: Sendable {
     /// explicit argument per selector colon begins at x2 — the same ABI a bound
     /// method gets. Initializer families are detected from selector spelling so
     /// `self = [super init…]` still threads through.
+    /// Where an Objective-C method's explicit arguments arrive, from its type
+    /// encoding (`ObjCArgumentABI`). Stack locations are kept only for 8-byte
+    /// slots; a narrower packed slot's upper bytes belong to nothing.
+    static func objcArgumentLocations(_ method: ObjCMethodBinding) -> [String: Int] {
+        let locations = ObjCArgumentABI.locations(encoding: method.typeEncoding, argumentCount: method.argumentCount)
+        let widths = ObjCArgumentABI.stackSlotWidths(encoding: method.typeEncoding, argumentCount: method.argumentCount)
+        return locations.filter { location, _ in !location.hasPrefix("stack@") || widths[location] == 8 }
+    }
+
     private static func objcEntryFromSymbol(_ symbol: String) -> MethodEntryConvention? {
         guard let (_, selector) = objcMethodSymbolParts(symbol) else { return nil }
         let argumentCount = selector.filter { $0 == ":" }.count
@@ -2773,7 +2785,8 @@ public struct Disassembler: Sendable {
         typeFieldMaps: [String: FieldMap] = [:],
         calleeConventions: [UInt64: CalleeResultConvention] = [:],
         asyncContextSlots: [Int: AbstractValue] = [:],
-        asyncSuspensions: [UInt64: AsyncSuspensionNote] = [:]
+        asyncSuspensions: [UInt64: AsyncSuspensionNote] = [:],
+        objcIndex: ObjCMetadataIndex? = nil
     ) -> DisassembledFunction {
         // Floating-point signature info: which arguments are float, and whether
         // the function's float type is double-precision — so a literal operand
@@ -3037,6 +3050,61 @@ public struct Disassembler: Sendable {
                     let variadic = (0 ..< count).map { $0 < site.stackArguments.count ? site.stackArguments[$0] : .unknown }
                     argumentsByAddress[address] = (Array(values.prefix(fixed)) + variadic).map(sanitizeValue)
                     continue
+                }
+            }
+            // A message send's explicit arguments follow its declared signature
+            // across the x and v banks: a `double` argument is in d0, and the
+            // integer after it in x2, not x3. Positionally, `[self
+            // setAlpha:0.5]` showed whatever x2 held. For a send to self the
+            // declaration of self's class is used when every implementation in
+            // the image agrees; for a receiver of unknown class, a selector that
+            // some implementation takes floats for shows its arguments as `?`.
+            // (Recovered from the pre-merge stash 983aa25.)
+            if let objcIndex, let callee = calleeByAddress[address],
+               let selector = selectorName(callee: callee, arguments: values),
+               !isVariadicObjCSelector(selector) {
+                let receiver = values.first ?? .unknown
+                let selectorValue = values.count > 1 ? values[1] : .unknown
+                let colons = selector.filter { $0 == ":" }.count
+                let signature: ObjCMetadataIndex.OutgoingSignature = if receiver == .selfPointer, let method = function.objcMethod {
+                    objcIndex.outgoingSignature(selector: selector, className: method.className,
+                                                isClassMethod: method.isClassMethod)
+                } else {
+                    .unavailable
+                }
+                switch signature {
+                case .known(let encoding, let types):
+                    var explicit = Array(repeating: AbstractValue.unknown, count: types.count)
+                    for (location, argument) in ObjCArgumentABI.locations(encoding: encoding, argumentCount: types.count) {
+                        if location.hasPrefix("x"), let register = Int(location.dropFirst()) {
+                            explicit[argument] = register < values.count ? values[register] : .unknown
+                        } else if location.hasPrefix("v"), let register = Int(location.dropFirst()) {
+                            explicit[argument] = register < site.floatArguments.count ? site.floatArguments[register] : .unknown
+                        } else if location.hasPrefix("stack@"), let offset = Int(location.dropFirst("stack@".count)),
+                                  offset % 8 == 0, offset / 8 < site.stackArguments.count {
+                            explicit[argument] = site.stackArguments[offset / 8]
+                        }
+                    }
+                    argumentsByAddress[address] = ([receiver, selectorValue] + explicit).map(sanitizeValue)
+                    laidOutTypes[address] = ["", ""] + types.map { type in
+                        switch type {
+                        case "f": "Swift.Float"
+                        case "d", "D": "Swift.Double"
+                        case "B": "Swift.Bool"
+                        default: ""
+                        }
+                    }
+                    continue
+                case .declined:
+                    argumentsByAddress[address] = ([receiver, selectorValue]
+                        + Array(repeating: AbstractValue.unknown, count: colons)).map(sanitizeValue)
+                    continue
+                case .unavailable:
+                    if receiver != .selfPointer, colons > 0, objcIndex.selectorMayUseFloatingArguments(selector) {
+                        argumentsByAddress[address] = ([receiver, selectorValue]
+                            + Array(repeating: AbstractValue.unknown, count: colons)).map(sanitizeValue)
+                        continue
+                    }
                 }
             }
             // Stack values follow the register arguments by position, so the

@@ -282,11 +282,11 @@ public enum MethodEntryConvention: Sendable, Equatable {
     case swiftInstance(scalarArguments: [String: Int])
     /// Objective-C class or instance method: `self` is x0, `_cmd` is x1, and
     /// explicit selector arguments begin in x2.
-    case objectiveC(argumentCount: Int)
+    case objectiveC(argumentCount: Int, scalarArguments: [String: Int]? = nil)
     /// An Objective-C initializer has the same register convention, but a
     /// metadata-proven `init…` entry lets a super-initializer result become the
     /// method's new `self` for subsequent ivar accesses.
-    case objectiveCInitializer(argumentCount: Int)
+    case objectiveCInitializer(argumentCount: Int, scalarArguments: [String: Int]? = nil)
     /// A Swift free function or static method whose parameters are all
     /// single-register scalars, mapped by `scalarArguments` (register key →
     /// source argument index — integers in x0…, floats in v0…). Seeded only under
@@ -457,8 +457,25 @@ public struct ValueTracer: Sendable {
             // (x20), so an instance method's scalar arguments are seeded the same
             // way a free function's are.
             for (register, argument) in scalarArguments { state[register] = .argument(argument) }
-        case .objectiveC(let argumentCount), .objectiveCInitializer(let argumentCount):
+        case .objectiveC(let argumentCount, let typed), .objectiveCInitializer(let argumentCount, let typed):
             state["x0"] = .selfPointer
+            // Metadata-typed locations: integer arguments in x2…, floating-point
+            // ones in v0… on an independent counter, the rest on the entry stack
+            // (only full 8-byte slots are supplied). A Double argument made every
+            // later integer argument read one register early in the positional
+            // layout below. An empty map seeds nothing: the layout is unproven.
+            if let typed {
+                for (location, argument) in typed {
+                    if location.hasPrefix("stack@"), let offset = Int64(location.dropFirst("stack@".count)) {
+                        state[Self.stackKey(offset)] = .argument(argument)
+                    } else {
+                        state[location] = .argument(argument)
+                    }
+                }
+                break
+            }
+            // Untyped (an entry recovered from a symbol name): the all-integer
+            // layout.
             // AAPCS64 has six argument registers left after self/_cmd. Further
             // ObjC arguments are stack-passed and intentionally remain unknown.
             for argument in 0 ..< min(max(argumentCount, 0), 6) {
