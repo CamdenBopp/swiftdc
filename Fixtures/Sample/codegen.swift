@@ -44,3 +44,15 @@ public func unsignedQuotient(_ a: Int, _ b: Int) -> Int {
 public func unsignedRemainderOf(_ a: Int, _ b: Int) -> Int {
     Int(bitPattern: UInt(bitPattern: a) % UInt(bitPattern: b))
 }
+
+// A dispatch through self's vtable slot reaches Base.hook only when self is
+// exactly a Base: Derived overrides it. The call graph must not record
+// run → Base.hook as a proven edge.
+open class DispatchBase {
+    public init() {}
+    open func hook() -> Int { 1 }
+    open func run() -> Int { hook() &+ 1 }
+}
+open class DispatchDerived: DispatchBase {
+    open override func hook() -> Int { 2 }
+}

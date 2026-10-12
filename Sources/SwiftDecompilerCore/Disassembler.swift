@@ -814,7 +814,6 @@ public struct Disassembler: Sendable {
         // signature would label the awaited result (x0) as the first parameter.
         let isResumeFunclet = function.asyncFunclet.map { !$0.isEntry } ?? false
         let classSelfTypeName = objcMethod == nil && symbolEntry == nil && !isResumeFunclet
-            && !context.fieldMaps.isEmpty
             ? Self.selfType(of: function, selfIndex: context.selfIndex, fieldMaps: context.fieldMaps)
             : nil
         // A nonmutating HFA-struct instance method passes `self` decomposed in
@@ -1959,8 +1958,11 @@ public struct Disassembler: Sendable {
             selfFieldMap(of: function, simpleName: simpleName, fieldMaps: fieldMaps) != nil
         }
         if let binding = selfIndex.binding(for: function.startAddress) {
-            // Authoritative, including when it says no.
-            guard binding.isInstance, resolves(binding.selfTypeName) else { return nil }
+            // Authoritative, including when it says no. An instance vtable slot
+            // proves x20 is self whether or not the type has a layout to name
+            // fields from: a class with no stored properties still dispatches
+            // through its vtable, and its field reads simply stay unnamed.
+            guard binding.isInstance else { return nil }
             return binding.selfTypeName
         }
         guard let fromSymbol = selfTypeFromDemangledName(function.demangledName),
