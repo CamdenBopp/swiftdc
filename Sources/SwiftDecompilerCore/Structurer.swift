@@ -791,7 +791,7 @@ struct ControlFlowStructure {
                     // return x0 unchanged, so the real producer is one call back —
                     // keep walking rather than giving up on the retained result.
                     if let callee = DisassembledFunction.calleeName(of: instruction),
-                       DisassembledFunction.isRuntimeNoise(callee) {
+                       DisassembledFunction.returnsItsArgument(callee) {
                         continue
                     }
                 }
@@ -861,6 +861,9 @@ struct ControlFlowStructure {
         let rawArguments = insn.callArguments ?? []
         if let cast = DisassembledFunction.swiftCastIdiom(callee: callee, arguments: rawArguments) {
             return cast
+        }
+        if DisassembledFunction.isUniquenessCheck(callee) {
+            return "isKnownUniquelyReferenced(\(rawArguments.first ?? "?"))"
         }
         if DisassembledFunction.isRuntimeNoise(callee)
             || DisassembledFunction.isGenericPlumbingCallee(callee) { return nil }

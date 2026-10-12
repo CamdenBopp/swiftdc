@@ -980,3 +980,25 @@ private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
     guard let tagged = try await reconstructionPseudo("makeTagged", in: indirectFixture) else { return }
     #expect(!tagged.contains("return"))
 }
+
+// MARK: - Copy-on-write
+
+/// `swift_isUniquelyReferenced_nonNull_native` returns a Bool, not its
+/// argument. Read through like a retain, a `-> Bool` CoW method rendered
+/// `return self.storage`, and the uniqueness branch tested a bit of the
+/// storage pointer (`if (bit 0 of self.storage clear)`).
+@Test func rendersTheUniquenessCheckAsABoolIfPresent() async throws {
+    let fixture = "Fixtures/Sample/libCow.dylib"
+    guard let unique = try await reconstructionPseudo("CowBox.isUnique", in: fixture) else { return }
+    #expect(unique.contains("return isKnownUniquelyReferenced(self.storage)"), Comment(rawValue: unique))
+    #expect(!unique.contains("return self.storage"))
+
+    guard let functions = try await withStableDependencies({
+        try await Disassembler(preset: .default).disassemble(path: fixture, functionFilter: "CowBox.append")
+    }) as [DisassembledFunction]? else { return }
+    let append = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(append.contains("if (!isKnownUniquelyReferenced(self.storage)) {"), Comment(rawValue: append))
+    #expect(!append.contains("bit 0 of self.storage"))
+    // A void runtime call (`swift_beginAccess`) has no result to read.
+    #expect(!append.contains("(swift_beginAccess("), Comment(rawValue: append))
+}

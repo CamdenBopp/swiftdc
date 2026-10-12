@@ -48,6 +48,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name Conversions conversions.
 echo "==> runtime ivar fixture (-O) — ivar offsets computed at load time"
 $SWIFTC -parse-as-library -O -emit-library -module-name RuntimeIvars runtimeivars.swift -o libRuntimeIvars.dylib
 
+echo "==> copy-on-write fixture (-O) — the uniqueness check is a Bool"
+$SWIFTC -parse-as-library -O -emit-library -module-name Cow cow.swift -o libCow.dylib
+
 echo "==> swifterror probe (-O, and stripped) — callees with no name to say they throw"
 $SWIFTC -parse-as-library -O -emit-library -module-name SwiftErrorProbe swifterror.swift -o libSwiftErrorProbe.dylib
 cp libSwiftErrorProbe.dylib libSwiftErrorProbe.stripped.dylib

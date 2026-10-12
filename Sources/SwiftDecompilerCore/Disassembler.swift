@@ -3345,10 +3345,18 @@ public struct Disassembler: Sendable {
                 // computed before it runs — so this bound only limits line length,
                 // never termination. Kept below the depth-8 expression cap.
                 guard depth < 6, let callee = calleeByAddress[addr] else { return unresolved }
-                // ARC/exclusivity calls return their argument — unwrap them.
-                if DisassembledFunction.isRuntimeNoise(callee) {
+                // The retain/autorelease family returns its argument: unwrap it.
+                if DisassembledFunction.returnsItsArgument(callee) {
                     return inner.first.map { renderValue($0, depth: depth + 1) } ?? unresolved
                 }
+                if DisassembledFunction.isUniquenessCheck(callee) {
+                    let object = inner.first.map { renderValue($0, depth: depth + 1) } ?? "?"
+                    return "isKnownUniquelyReferenced(\(object))"
+                }
+                // The rest of the runtime bookkeeping returns nothing a source
+                // value could be (`swift_release`, `swift_beginAccess` are void):
+                // x0 after one is not a value to name.
+                if DisassembledFunction.isRuntimeNoise(callee) { return "?" }
                 // `_finalizeUninitializedArray(array)` IS the array — render its
                 // argument, which carries the recovered elements.
                 if callee.contains("_finalizeUninitializedArray"), let first = inner.first {

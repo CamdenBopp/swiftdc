@@ -439,6 +439,34 @@ public extension DisassembledFunction {
         return prefixes.contains { callee.hasPrefix($0) }
     }
 
+    /// Runtime calls that return their (first) argument unchanged: the retain
+    /// and autorelease family. Only these may be read through as their
+    /// argument. The rest of `isRuntimeNoise` returns nothing (`swift_release`,
+    /// `swift_beginAccess`) or something else entirely: `swift_task_alloc`
+    /// returns fresh memory, and `swift_isUniquelyReferenced*` a Bool (the
+    /// object's strong refcount is exactly one). Read through, the uniqueness
+    /// check rendered `return self.storage` for a `-> Bool` CoW method.
+    static func returnsItsArgument(_ callee: String) -> Bool {
+        let name = callee.hasPrefix("_") ? String(callee.dropFirst()) : callee
+        let identities: Set<String> = [
+            "swift_retain", "swift_retain_n", "swift_nonatomic_retain",
+            "swift_bridgeObjectRetain", "swift_bridgeObjectRetain_n",
+            "swift_unknownObjectRetain", "swift_unknownObjectRetain_n",
+            "objc_retain", "objc_autorelease", "objc_retainAutorelease",
+            "objc_retainAutoreleasedReturnValue", "objc_claimAutoreleasedReturnValue",
+            "objc_unsafeClaimAutoreleasedReturnValue", "objc_retainAutoreleaseReturnValue",
+            "objc_autoreleaseReturnValue",
+        ]
+        return identities.contains(name)
+    }
+
+    /// `swift_isUniquelyReferenced*`: the lowering of `isKnownUniquelyReferenced`
+    /// (`Builtin.isUnique`), a Bool over its object argument.
+    static func isUniquenessCheck(_ callee: String) -> Bool {
+        let name = callee.hasPrefix("_") ? String(callee.dropFirst()) : callee
+        return name.hasPrefix("swift_isUniquelyReferenced")
+    }
+
     // MARK: - Implicit generic plumbing
 
     /// A call whose *entire* purpose is the compiler's generic machinery — type
