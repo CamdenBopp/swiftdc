@@ -439,6 +439,9 @@ public struct ValueTracer: Sendable {
     /// whole funclet chain (see `Disassembler.asyncChainSlots`) and consulted
     /// by a pointer-width load from `asyncContext + offset`.
     let asyncContextSlots: [Int: AbstractValue]
+    /// The fixpoint's worklist bound, per block. Past it the analysis claims
+    /// nothing (`values.fixpoint-cap`). Injectable so a test can force it.
+    var iterationsPerBlock = 64
 
     /// Callee address → the callee-saved registers its body writes without
     /// saving (`CalleeRegisterSummary`): an outlined fragment reached by `bl`
@@ -559,14 +562,17 @@ public struct ValueTracer: Sendable {
         var worklist = blocks.map(\.startAddress)
         var queued = Set(worklist)
         var iterations = 0
-        let cap = blocks.count * 64 + 16 // safety bound; the analysis is monotone
+        let cap = blocks.count * iterationsPerBlock + 16 // safety bound
         while let addr = worklist.first {
             worklist.removeFirst()
             queued.remove(addr)
             iterations += 1
             if iterations > cap {
+                // The states are not a fixpoint: a block whose predecessors
+                // were not all revisited holds an optimistic meet, and the
+                // snapshot pass would replay it as proof. Claim nothing.
                 Probe.record(.tracerFixpointCap, ["blocks": .int(blocks.count), "cap": .int(cap)])
-                break
+                return FunctionAnalysis()
             }
             guard let block = blockByStart[addr] else { continue }
             let preds = predecessors[addr] ?? []
@@ -588,7 +594,7 @@ public struct ValueTracer: Sendable {
                     addressTaken: addressTaken
                 )
             }
-            if outState[addr] != registers {
+            if !Self.sameFacts(outState[addr], registers) {
                 outState[addr] = registers
                 for successor in block.successors
                 where blockByStart[successor] != nil && !queued.contains(successor) {
@@ -1045,6 +1051,28 @@ public struct ValueTracer: Sendable {
     /// The one exception is the result-buffer poison marker, which is a union:
     /// a result pointer that escaped on ANY incoming path leaves the buffer
     /// unprovable at the join, even where the other paths agree on its contents.
+    /// Whether two block states prove the same facts. A plain register that
+    /// is `.unknown` and one that is absent claim the same nothing, but the
+    /// meet drops a key where a write stores `.unknown`, so comparing the
+    /// dictionaries literally saw a loop's x9 flip between the two forever:
+    /// WeatherRadio's grid sampler (20 blocks) never converged and replayed an
+    /// unconverged state. Marker keys (`result.whole`, `result.poison`, the
+    /// fresh-self flag) and slots mean something by presence and compare
+    /// literally.
+    private static func sameFacts(_ a: State?, _ b: State) -> Bool {
+        guard let a else { return false }
+        if a == b { return true }
+        func isPlainRegister(_ key: String) -> Bool {
+            guard let first = key.first, first == "x" || first == "v" else { return false }
+            return key.dropFirst().allSatisfy(\.isNumber) && key.count > 1
+        }
+        for key in Set(a.keys).union(b.keys) where a[key] != b[key] {
+            guard isPlainRegister(key), (a[key] ?? .unknown) == .unknown, (b[key] ?? .unknown) == .unknown
+            else { return false }
+        }
+        return true
+    }
+
     private static func meet(_ states: [State]) -> State {
         guard var accumulator = states.first else { return [:] }
         for state in states.dropFirst() {

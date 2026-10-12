@@ -124,3 +124,40 @@ private extension ProbeEvent {
         #expect(found.isEmpty, "\(path):\n\(found.prefix(10).joined(separator: "\n"))")
     }
 }
+
+/// A register the tracer knows nothing about is sometimes `.unknown` and
+/// sometimes absent. Comparing block states literally saw a loop's x9 flip
+/// between the two, so the worklist never emptied: an app's grid sampler (20
+/// blocks) hit the bound, and the snapshot pass replayed an unconverged,
+/// optimistic state. `Sampler.disk` is that shape.
+@Test func theTracerConvergesWhereUnknownAndAbsentAlternateIfPresent() async throws {
+    let path = "Fixtures/Sample/libGridSampler.opt.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let recorder = ProbeRecorder(filter: ProbeFilter(events: [ProbeEvent.tracerFixpointCap.id]))
+    let functions = try await withStableDependencies {
+        try await Probe.recording(recorder) {
+            try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "Sampler.disk")
+        }
+    }
+    #expect(!functions.isEmpty)
+    #expect(recorder.records.isEmpty, "\(recorder.records.map { $0.function?.name ?? "" })")
+}
+
+/// Past its bound the tracer's states are not a fixpoint, and it must claim
+/// nothing rather than replay them. Forced with a bound of zero per block.
+@Test func aTracerPastItsBoundClaimsNothingIfPresent() async throws {
+    let path = "Fixtures/Sample/libGridSampler.opt.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "Sampler.disk")
+    }
+    let disk = try #require(functions.first { $0.basicBlocks().count > 16 })
+    let unbounded = ValueTracer().analyze(disk, entry: .swiftFunction(scalarArguments: [:]))
+    #expect(!unbounded.callSites.isEmpty, "the comparison needs a function with recorded calls")
+    var tracer = ValueTracer()
+    tracer.iterationsPerBlock = 0
+    let recorder = ProbeRecorder()
+    let bounded = Probe.recording(recorder) { tracer.analyze(disk, entry: .swiftFunction(scalarArguments: [:])) }
+    #expect(recorder.count(of: .tracerFixpointCap) == 1)
+    #expect(bounded.callSites.isEmpty && bounded.exitValues.isEmpty, "\(bounded.callSites.count) call sites claimed past the bound")
+}
