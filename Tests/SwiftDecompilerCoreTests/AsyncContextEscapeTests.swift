@@ -36,7 +36,7 @@ private func provenSlots(resume words: [UInt32], missingResume: Bool = false) th
             .map(function.attachingAsyncFunclet) ?? function
     }
     return Disassembler().asyncChainSlots(index: index, function: { missingResume && $0 == 0x2000 ? nil : functions[$0] },
-        enumCaseIndex: EnumCaseIndex(), classTypeIndex: ClassTypeIndex())[0x1000] ?? [:]
+        enumCaseIndex: EnumCaseIndex(), classTypeIndex: ClassTypeIndex())[0x2000] ?? [:]
 }
 
 @Test func aContextAliasClobberedOnAnotherBranchStillEscapes() throws {

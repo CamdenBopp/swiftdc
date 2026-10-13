@@ -95,6 +95,9 @@ $CLANG -arch arm64 -dynamiclib abi_frame_ownership.s -o libABIFrameOwnership.dyl
 echo "==> async pointer aliases and unaccounted memory writes (async_alias_escape.s)"
 $CLANG -arch arm64 -dynamiclib async_alias_escape.s -o libAsyncAliasEscape.dylib
 
+echo "==> async context load/store chronology (async_slot_chronology.s)"
+$CLANG -arch arm64 -dynamiclib async_slot_chronology.s -o libAsyncSlotChronology.dylib
+
 echo "==> hardened jump-table bounds (jump_table_bounds.s) — index widths and call-clobbered NZCV"
 $CLANG -arch arm64 -dynamiclib jump_table_bounds.s -o libJumpTableBounds.dylib
 

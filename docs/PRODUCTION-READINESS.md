@@ -1806,7 +1806,10 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   streaming **123 MB**; accumulating every analysed `DisassembledFunction` instead
   of releasing it — the realistic regression — **261 MB**; the `--json` array path
   **1,192 MB**. The array-path figure is a red herring here: it is dominated by
-  `JSONSerialization` boxing every field, *not* by held function objects, so a
+  serialization boxing in that historical implementation, rather than held
+  function objects. Current source constructs Codable DTO arrays and uses
+  `JSONEncoder` Data followed by a String; the old measurement does not
+  establish the current allocation cause. In the historical run, a
   "well under 1,192" bound (e.g. 500 MB) would sail past the actual failure mode,
   which tops out at 261 MB. 200 MB splits the two — ~1.6× over the 123 MB baseline,
   under the 261 MB a hold-every-function regression reaches. Proven both
@@ -2634,3 +2637,33 @@ if a test was observed to fail without the fix.
   fails 36 assertions; restored three focused tests pass. Rebuilt enforcing
   intermediate suite: 641 tests in eleven suites pass. This changes scoring
   only; all disassembly source views remain byte-identical.
+
+- **FIXED — async chain facts could flow backwards in time.** A unique
+  chain-wide store was used as an entry seed even before that store executed,
+  or on a branch that skipped it. Authored ABI-compatible leaves use explicit
+  async entry hints and a compiler-style ResumeParent return. Native execution
+  observes 11 before a later store of 7; the conditional leaf observes 11/7
+  according to its input. Both final source views previously said `observe(7)`.
+  Entry now receives no chain seeds. Resume seeds require a matching definite
+  entry-state fact at every actual entry suspension, in addition to unique
+  portable stores and the existing alias/effect checks. Later-resume stores
+  cannot seed earlier observations. Snapshots are requested only by the chain
+  pass at those transfers; ordinary analysis records none.
+  Four pre-fix regressions fail with six issues while six native return/memory
+  observations pass. Three positive/overhead controls retain forward local
+  recovery and unconditional resume initialization. Independent mutations of
+  entry exclusion, definite transfer proof and snapshot production fail with
+  1/3/2 issues. The synthetic chain tests isolate analysis seams, rather than
+  claiming compiler-generated context layouts. Rebuilt enforcing suite: 648
+  tests in eleven suites. Only two of 182 source views change, both belonging
+  to the new chronology reduction: false `observe(7)` becomes `observe(?)`.
+  This sufficient temporal condition is not a complete inter-funclet proof.
+
+- **CONFIRMED OPEN — unknown pointer writes can alias async context slots.**
+  Native scratch code stores 7 through x22, then 11 through an incoming pointer
+  aliasing that slot. Current context escape detection follows context-derived
+  registers only; the local own-context cache can also retain 7 after a write
+  through that unrelated pointer. Temporal initialization alone cannot prove
+  memory disjointness. A correction must invalidate both chain seeds and local
+  forward cache facts for unbounded writes, with independently tested private
+  stack controls. Investigation is ongoing; no fix is claimed here.

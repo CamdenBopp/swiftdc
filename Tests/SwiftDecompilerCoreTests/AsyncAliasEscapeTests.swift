@@ -83,7 +83,7 @@ private func chainSlotsForAliasResume(_ words: [UInt32]) throws -> [Int: Abstrac
             .map(function.attachingAsyncFunclet) ?? function
     }
     return Disassembler().asyncChainSlots(index: index, function: { functions[$0] },
-        enumCaseIndex: EnumCaseIndex(), classTypeIndex: ClassTypeIndex())[0x1000] ?? [:]
+        enumCaseIndex: EnumCaseIndex(), classTypeIndex: ClassTypeIndex())[0x2000] ?? [:]
 }
 
 @Test func aSpilledContextAliasInvalidatesChainWideSlotProofs() throws {

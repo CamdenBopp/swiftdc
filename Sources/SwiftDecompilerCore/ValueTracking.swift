@@ -442,6 +442,9 @@ public struct FunctionAnalysis: Sendable {
     /// context: slot byte offset → the values stored there, one per store site.
     /// The chain pass keeps a slot only when exactly one store reaches it.
     public var asyncSlotStores: [Int: [AbstractValue]] = [:]
+    /// Definite own-context values immediately before each entry branch.
+    /// Used to prove initialized slots at suspension, never to seed entry.
+    public var asyncSlotFactsAtBranches: [UInt64: [Int: AbstractValue]] = [:]
 }
 
 /// An abstract interpreter over a function's basic blocks. Propagates constants,
@@ -459,6 +462,9 @@ public struct ValueTracer: Sendable {
     /// whole funclet chain (see `Disassembler.asyncChainSlots`) and consulted
     /// by a pointer-width load from `asyncContext + offset`.
     let asyncContextSlots: [Int: AbstractValue]
+    /// Only the chain pass requests entry transfer facts; ordinary analysis
+    /// avoids scanning/copying slot state at every async branch.
+    var asyncSlotFactBranches: Set<UInt64> = []
     /// The fixpoint's worklist bound, per block. Past it the analysis claims
     /// nothing (`values.fixpoint-cap`). Injectable so a test can force it.
     var iterationsPerBlock = 64
@@ -700,6 +706,14 @@ public struct ValueTracer: Sendable {
                     }
                 }
                 if insn.controlFlow == .branch {
+                    if asyncSlotFactBranches.contains(insn.address) {
+                        result.asyncSlotFactsAtBranches[insn.address] = Dictionary(uniqueKeysWithValues:
+                            registers.compactMap { key, value -> (Int, AbstractValue)? in
+                                guard key.hasPrefix(Self.contextSlotPrefix), value != .unknown,
+                                      let offset = Int(key.dropFirst(Self.contextSlotPrefix.count)) else { return nil }
+                                return (offset, value)
+                            })
+                    }
                     let site = Self.snapshot(registers)
                     if !site.isEmpty { result.branchSites[insn.address] = site }
                 }

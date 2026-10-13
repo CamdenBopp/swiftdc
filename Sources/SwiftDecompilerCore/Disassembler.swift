@@ -824,8 +824,8 @@ public struct Disassembler: Sendable {
         var registerSummaries: [UInt64: CalleeRegisterSummary] = [:]
         /// Async funclet chains and their suspension points.
         let asyncIndex: AsyncFuncletIndex
-        /// Per chain (keyed by entry address), the context slots proven to hold
-        /// one value for the whole chain. See `asyncChainSlots`.
+        /// Per resume funclet, the context-slot values definitely initialized
+        /// before every entry suspension and stable throughout the chain.
         let asyncChainSlots: [UInt64: [Int: AbstractValue]]
     }
 
@@ -989,7 +989,7 @@ public struct Disassembler: Sendable {
         // result) over the ordinary convention, and bring the context slots the
         // chain pass proved.
         let asyncEntry = Self.asyncConvention(for: function, base: entry, index: context.asyncIndex)
-        let chainSlots = function.asyncFunclet?.parent.flatMap { context.asyncChainSlots[$0] } ?? [:]
+        let chainSlots = context.asyncChainSlots[function.startAddress] ?? [:]
         return enrichCallArguments(
             in: function, resolver: context.resolver, swiftTargets: context.swiftTargets,
             entry: asyncEntry ?? entry,
@@ -1102,12 +1102,12 @@ public struct Disassembler: Sendable {
         case awaitedCall(binding: String?)
     }
 
-    /// Values proven to sit in each chain's own async context when its funclets
-    /// run: entry address → slot offset → value. A slot qualifies only when
-    /// exactly one store in the whole chain reaches it and the stored value is
-    /// meaningful outside the storing funclet (an argument, an awaited result,
-    /// a constant, or arithmetic over those). Anything else, including a slot
-    /// written twice, is left unproven and loads from it render `?`.
+    /// Resume funclet → slot offset → value definitely initialized before
+    /// every entry suspension. A candidate requires a unique portable store
+    /// originating in entry, definite matching transfer facts, and no possible
+    /// chain mutation. Entry receives no seeds; its forward states preserve
+    /// the temporal order of its own loads and stores. Later-funclet stores
+    /// decline until their inter-funclet ordering can be independently proved.
     func asyncChainSlots(
         index: AsyncFuncletIndex, function: (UInt64) -> DisassembledFunction?,
         enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex
@@ -1125,6 +1125,8 @@ public struct Disassembler: Sendable {
             var stores: [Int: [AbstractValue]] = [:]
             var escapedFrom: Int?
             var entryName: String?
+            var entryTransferFacts: [UInt64: [Int: AbstractValue]] = [:]
+            var entrySuspensions: [UInt64] = []
             for address in chain {
                 guard let funclet = function(address) else {
                     escapedFrom = Int.min
@@ -1144,7 +1146,15 @@ public struct Disassembler: Sendable {
                     }
                     continue
                 }
-                let analysis = ValueTracer().analyze(funclet, entry: convention)
+                var tracer = ValueTracer()
+                if address == entry {
+                    entrySuspensions = funclet.instructions.compactMap {
+                        index.suspensions[$0.address] != nil ? $0.address : nil
+                    }
+                    tracer.asyncSlotFactBranches = Set(entrySuspensions)
+                }
+                let analysis = tracer.analyze(funclet, entry: convention)
+                if address == entry { entryTransferFacts = analysis.asyncSlotFactsAtBranches }
                 let internalAddresses = Set(funclet.instructions.map(\.address))
                 var terminalBranches = Set(analysis.indirectControlFlowTargets.compactMap { address, target -> UInt64? in
                     if target == .asyncResumeParent { return address }
@@ -1164,14 +1174,22 @@ public struct Disassembler: Sendable {
                 }
             }
             let proven = stores.filter { slot, _ in escapedFrom.map { slot < $0 } ?? true }
-                .compactMapValues { values -> AbstractValue? in
-                    guard values.count == 1, let value = values.first, isPortable(value) else { return nil }
-                    return value
+                .reduce(into: [Int: AbstractValue]()) { proven, pair in
+                    let (slot, values) = pair
+                    guard values.count == 1, let value = values.first, isPortable(value),
+                          !entrySuspensions.isEmpty,
+                          entrySuspensions.allSatisfy({ entryTransferFacts[$0]?[slot] == value })
+                    else { return }
+                    proven[slot] = value
                 }
-            if !proven.isEmpty { result[entry] = proven }
-            Probe.inFunction(entry, entryName ?? "async chain") {
-                for (offset, value) in proven.sorted(by: { $0.key < $1.key }) {
-                    Probe.record(.slotProven, ["offset": .int(offset), "value": .abstractValue(value)])
+            // Entry uses its own forward state. Only later funclets receive
+            // facts proven at every transition out of entry.
+            for resume in chain where resume != entry {
+                if !proven.isEmpty { result[resume] = proven }
+                Probe.inFunction(resume, entryName ?? "async chain") {
+                    for (offset, value) in proven.sorted(by: { $0.key < $1.key }) {
+                        Probe.record(.slotProven, ["offset": .int(offset), "value": .abstractValue(value)])
+                    }
                 }
             }
         }

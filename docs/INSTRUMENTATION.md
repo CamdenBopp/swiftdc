@@ -204,7 +204,7 @@ now represented directly:
 | `async.context-escape` | offset; possible aliases on either incoming path invalidate slots |
 | `async.context-escape-cap` | blocks, cap; no slots proven after an incomplete analysis |
 | `async.context-escape-unknown` | reason; missing instruction semantics |
-| `async.slot-proven` | offset, value; a chain-wide portable slot claim |
+| `async.slot-proven` | offset, value; a portable slot fact assigned to a resume funclet |
 
 `ProbeValue` supports exact unsigned bit patterns (`uint`, JSON hex strings),
 arrays and objects. Nested `name` values follow the existing redaction policy.
@@ -399,6 +399,19 @@ declines. `FieldMap` collisions, folded addresses and ObjC bindings that
 disagree already decline that way, and an extension must not resolve those
 by picking one.
 
+### Async context fact chronology
+
+The chain pass requests definite own-context facts only at actual entry
+suspension branches. A resume seed requires one portable store in the chain,
+a matching fact at every entry suspension, and the existing conservative
+alias/effect checks. The seed map is keyed by resume start address. Entry
+funclets receive no chain seeds: their normal forward state preserves the
+order of local loads and stores. Stores originating in later funclets decline
+until their inter-funclet ordering is proved. `FunctionAnalysis` exposes the
+requested snapshots as `asyncSlotFactsAtBranches`; ordinary analysis leaves
+this empty and incurs no slot-snapshot scan. This is a conservative sufficient
+condition, not proof of arbitrary async memory or funclet ownership.
+
 ### Repeating the native research matrix
 
 Run from the repository root:
@@ -413,11 +426,12 @@ executes only its declared UInt64-to-UInt64 exports. Independent nm and system
 demangler output identify each entry and its explicit scalar signature.
 `dladdr` verifies that native execution belongs to the intended image.
 Deterministic SplitMix64 samples supplement fixed integer edge cases.
-The corpus currently includes 28 scalar functions and 35 fixed inputs,
+The corpus currently includes 30 scalar functions and 35 fixed inputs,
 including the byte, halfword and word sign boundaries. With the default
-16 random inputs, each configuration scores 1,428 native expectations.
+16 random inputs, each configuration scores 1,530 native expectations.
 Complement cases cover word truncation, a shifted operand, ORN and conditional
-word selection. Byte swapping is retained as an unsupported-return control.
+word selection. Byte swapping is recovered as explicit `byteSwap64`; the
+separate CLZ unknown-return fixture supplies an unsupported-return control.
 High-half multiplication cases exercise signed and unsigned products. Their
 -Onone library calls return tuples; unproven result-word projections decline
 instead of being presented as the complete call value.
