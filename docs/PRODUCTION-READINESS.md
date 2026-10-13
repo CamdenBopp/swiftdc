@@ -2203,3 +2203,21 @@ if a test was observed to fail without the fix.
   results referenced by exact flag expressions. Call count/order is preserved.
   Compares.doubled falls back to its equivalent raw x0 sign test, retaining
   the original CMN operand rather than presenting an unsupported baked form.
+
+## 2026-10-13: consumed calls respect runtime argument arity
+
+- **FIXED — unused argument registers hid their producer calls.** Consumed
+  call results now use the same fixed ABI argument normalization as rendering.
+  A zero-argument `__stack_chk_fail` must not consume a stale x0; nor may typed
+  throwing helpers consume availability-check results in unused registers.
+  This restores availability checks in Reconstruction typedScale/typedPick
+  (-O/-Osize) and TypedThrowsAwait.codeAsync's second resume function.
+  A dependent-select experiment also exposed a dropped `swift_errorRelease`
+  in SwiftErrorProbe.listingCount; the regression covers both symbol modes
+  and both renderers ahead of shipping that propagation.
+- **VALIDATED — 572 tests pass in the enforcing suite.** Comparing 150
+  structured/pseudo fixture outputs changes three pseudo outputs: the two
+  Reconstruction optimization levels and TypedThrowsAwait gain their original
+  availability-check calls, in instruction order. Structured output is stable.
+  Removing normalization fails the independent availability-check regression
+  with two issues, and the select-propagation release regression with six.

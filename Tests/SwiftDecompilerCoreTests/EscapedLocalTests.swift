@@ -96,3 +96,31 @@ private func pseudo(_ filter: String, in path: String) async throws -> String? {
         #expect(!describe.contains("DefaultStringInterpolation.init("), "\(describe)")
     }
 }
+
+@Test func rejectedMergedReturnsKeepTheirCallsIfPresent() async throws {
+    for path in ["Fixtures/Sample/libSwiftErrorProbe.dylib", "Fixtures/Sample/libSwiftErrorProbe.stripped.dylib"] {
+        guard FileManager.default.fileExists(atPath: path) else { continue }
+        let functions = try await withStableDependencies {
+            try await Disassembler().disassemble(path: path, functionFilter: "listingCount")
+        }
+        let function = try #require(functions.first)
+        let release = try #require(function.instructions.first {
+            DisassembledFunction.calleeName(of: $0) == "swift_errorRelease"
+        })
+        #expect(!release.resultConsumed)
+        #expect(function.renderPseudo().contains("swift_errorRelease("))
+        #expect(function.renderStructured().contains("swift_errorRelease("))
+    }
+}
+
+@Test func typedThrowHelpersKeepUnconsumedAvailabilityChecksIfPresent() async throws {
+    for path in ["Fixtures/Sample/libReconstruction.opt.dylib", "Fixtures/Sample/libReconstruction.osize.dylib"] {
+        guard FileManager.default.fileExists(atPath: path) else { continue }
+        let functions = try await withStableDependencies {
+            try await Disassembler().disassemble(path: path, functionFilter: "typedScale")
+        }
+        let function = try #require(functions.first)
+        let name = path.contains("osize") ? "OUTLINED_FUNCTION_4" : "Swift._stdlib_isOSVersionAtLeastOrVariantVersionAtLeast"
+        #expect(function.renderPseudo().contains(name + "("))
+    }
+}

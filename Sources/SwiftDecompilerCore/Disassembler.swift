@@ -4906,7 +4906,9 @@ public struct Disassembler: Sendable {
             if sites[insn.address] != nil,
                DisassembledFunction.calleeName(of: insn)
                 .map({ !DisassembledFunction.isRuntimeNoise($0) }) ?? true {
-                for value in argumentsByAddress[insn.address] ?? [] {
+                let values = argumentsByAddress[insn.address] ?? []
+                let rendered = calleeByAddress[insn.address].map { normalizedArguments(callee: $0, values: values) } ?? values
+                for value in rendered {
                     collectCallResults(in: value, into: &consumedCallResults)
                 }
             }
