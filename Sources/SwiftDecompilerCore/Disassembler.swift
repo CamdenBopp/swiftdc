@@ -3478,6 +3478,20 @@ public struct Disassembler: Sendable {
                 sites[insn.address] = site
             }
         }
+        // A proven scalar signature fixes arity even when no register value
+        // survives tracking. Positional snapshots intentionally omit trailing
+        // unknowns, so absence of a snapshot is not evidence of zero parameters.
+        for insn in function.instructions
+        where insn.controlFlow == .call || insn.controlFlow == .branch {
+            guard sites[insn.address] == nil,
+                  let callee = DisassembledFunction.calleeName(of: insn),
+                  let slots = Self.swiftCallArgumentSlots(
+                    callee: callee, enumCaseIndex: enumCaseIndex,
+                    classTypeIndex: classTypeIndex),
+                  !slots.isEmpty
+            else { continue }
+            sites[insn.address] = CallSite()
+        }
         // A property getter is often `ldr x0, [x20, #n]; ret` — no calls at all.
         // Bailing on `sites.isEmpty` alone would skip field naming for precisely
         // the functions it is most useful in.

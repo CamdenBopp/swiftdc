@@ -2694,3 +2694,19 @@ if a test was observed to fail without the fix.
   exposes a separate existing argument-snapshot omission. Its known Int
   footprint must retain a placeholder; this arity correction is next, rather
   than restoring unproved context facts. No existing golden test is weakened.
+
+- **FIXED — known scalar calls lost all-unknown arguments.**
+  TypedThrowsAwait.useCode's error continuation calls onError(Int) with x0 set
+  to an unproved context value plus 1000. Dropping a wholly unknown positional
+  snapshot bypassed the existing signature layout and rendered onError().
+  Missing snapshots are now completed only for resolved calls/tail calls whose
+  existing Swift layout proves a nonempty footprint; layout fills unknown
+  integer/floating values without trailing trim. Unsupported generic, aggregate,
+  async and unresolved layouts retain their previous treatment. Independent
+  compiler source and LDR/ADD/BL instructions establish one supplied Int.
+  Two regressions pass; before correction the rendered/arity test fails five
+  assertions. Disabling missing-site completion independently reproduces those
+  five failures. All 184 source views were compared: four change, restoring one
+  unknown argument to TypedThrowsAwait.onError and AuditSemantics.walk's log
+  in each renderer. Source and machine x0 setup confirm both scalar footprints.
+  Fresh restored enforcing suite: 677 tests in eleven suites pass.
