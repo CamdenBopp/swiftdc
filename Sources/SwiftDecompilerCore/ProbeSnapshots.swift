@@ -30,6 +30,7 @@ public extension ProbeValue {
                 case .squareRoot: fields["operator"] = .label("square-root")
                 case .absoluteValue: fields["operator"] = .label("absolute-value")
                 case .bitwiseNot: fields["operator"] = .label("bitwise-not")
+                case .byteSwap(let bits): fields["operator"] = .label("byte-swap"); fields["bits"] = .int(bits)
                 case .toFloat(let bits): fields["operator"] = .label("to-float"); fields["bits"] = .int(bits)
                 case .toInteger(let signed, let bits):
                     fields["operator"] = .label("to-integer"); fields["bits"] = .int(bits); fields["signed"] = .bool(signed)

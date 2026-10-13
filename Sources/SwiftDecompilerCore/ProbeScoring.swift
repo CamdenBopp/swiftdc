@@ -127,6 +127,11 @@ public extension ProbeValue {
                 switch node["operator"]?.description {
                 case "negate": return 0 &- operand
                 case "bitwise-not": return ~operand
+                case "byte-swap":
+                    guard case .int(let bits)? = node["bits"], let result = ByteReversal.apply(operand, bits: bits) else {
+                        throw ProbeScoreError.unsupported("unsupported byte-swap chunk width")
+                    }
+                    return result
                 default: throw ProbeScoreError.unsupported("unsupported unary operator")
                 }
             case "binary": break

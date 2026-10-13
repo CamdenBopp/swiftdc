@@ -77,6 +77,12 @@ $CLANG -arch arm64 -dynamiclib returnpaths.s -o libReturnPaths.dylib
 echo "==> scalar extract and immediate rotation (extract.s)"
 $CLANG -arch arm64 -dynamiclib extract.s -o libExtract.dylib
 
+echo "==> scalar byte reversal (bytereversal.s)"
+$CLANG -arch arm64 -dynamiclib bytereversal.s -o libByteReversal.dylib
+
+echo "==> a pure unmodelled scalar return (unknownreturn.swift, -O)"
+$SWIFTC -O -emit-library -module-name UnknownReturn unknownreturn.swift -o libUnknownReturn.dylib
+
 echo "==> dependent select flow and non-address-order layout (selectflow.s)"
 $CLANG -arch arm64 -dynamiclib selectflow.s -o libSelectFlow.dylib
 

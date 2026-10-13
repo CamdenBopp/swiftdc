@@ -119,6 +119,9 @@ public enum AbstractUnaryOperator: Equatable, Sendable {
     case squareRoot
     case absoluteValue
     case bitwiseNot
+    /// Reverse bytes independently within each 16/32/64-bit chunk of the
+    /// operand's bit pattern. Register-width normalization stays explicit.
+    case byteSwap(bits: Int)
     /// An integer or a float converted to a float of `bits` width (`scvtf`,
     /// `ucvtf`, `fcvt`): `Double(x)` at 64, `Float(x)` at 32.
     case toFloat(bits: Int)
@@ -2196,6 +2199,23 @@ public struct ValueTracer: Sendable {
                                                          source(detail.operands[2], in: registers)) ?? result
                 registers[Self.flagsWidthKey] = .immediate(UInt64(dest.widthBits))
             }
+
+        case AARCH64_INS_REV, AARCH64_INS_REV16, AARCH64_INS_REV32, AARCH64_INS_REV64:
+            guard let dest = destinationRegister(detail), [32, 64].contains(dest.widthBits),
+                  dest.kind == .gpr || dest.kind == .zero, detail.operands.count == 2,
+                  let input = detail.operands[1].operand.register,
+                  input.kind == .gpr || input.kind == .zero, input.widthBits == dest.widthBits,
+                  (detail.id != AARCH64_INS_REV32 && detail.id != AARCH64_INS_REV64) || dest.widthBits == 64
+            else { clobber(detail, into: &registers); return }
+            let bits = detail.id == AARCH64_INS_REV16 ? 16 : detail.id == AARCH64_INS_REV32 ? 32 : dest.widthBits
+            let value = source(detail.operands[1], in: registers)
+            let reversed: AbstractValue
+            if case .immediate(let value) = value, let result = ByteReversal.apply(value, bits: bits) {
+                reversed = .immediate(result)
+            } else if value == .unknown || Self.expressionDepth(value) >= 8 {
+                reversed = .unknown
+            } else { reversed = .unary(.byteSwap(bits: bits), value) }
+            write(dest, reversed, into: &registers)
 
         case AARCH64_INS_EXTR, AARCH64_INS_ROR, AARCH64_INS_ALIAS_ROR:
             // Extract a width-sized window from high:low. The immediate ROR

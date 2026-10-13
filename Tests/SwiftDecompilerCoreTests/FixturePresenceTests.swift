@@ -59,6 +59,8 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libScalarTailReturns.Osize.dylib",
         "Fixtures/Sample/libReturnPaths.dylib",
         "Fixtures/Sample/libExtract.dylib",
+        "Fixtures/Sample/libByteReversal.dylib",
+        "Fixtures/Sample/libUnknownReturn.dylib",
         "Fixtures/Sample/libSelectFlow.dylib",
         "Fixtures/Sample/libResearchOnone.dylib",
         "Fixtures/Sample/libResearchOptimized.dylib",

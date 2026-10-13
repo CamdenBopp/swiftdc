@@ -2417,3 +2417,23 @@ if a test was observed to fail without the fix.
   Swift run retains Onone 1,326/1,530 verified cases (204 unknown) and O/Osize
   1,441 verified (89 unknown), with zero refutations or missing observations.
   Tail-call return markers do not count opaque call results as proven values.
+
+
+## 2026-10-13: scalar byte reversal
+
+- **FIXED (working tree) — scalar REV results were unmodelled.** Model 32/64-bit
+  REV, REV16 and REV32 using explicit per-chunk byte-swap expressions, retaining
+  W-register normalization and conservative register/width/depth guards.
+  Constant folding and integer probe evaluation share the byte permutation;
+  native ARM64 instructions provide independent expectations. The authored
+  bytereversal.s fixture covers five forms with 255 native comparisons
+  (`scalarByteReversalMatchesNativeInstructionsIfPresent`). The unknown-return
+  regression now uses a CLZ/RET lowering instead of supported byteSwap.
+  Fixtures are built by build.sh and required in the enforcing suite.
+  Reproduce with `swift test --filter scalarByteReversal`.
+
+- **VALIDATED — 596 tests pass with fixture presence enforced.** Removing
+  REV tracking or byte-swap probe evaluation independently fails the native
+  regression with one issue; restored source is rebuilt before testing. Six
+  of 176 fixture source views change, recovering byte reversal in all three
+  research images; the remaining 170 views are identical.

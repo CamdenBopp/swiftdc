@@ -3,16 +3,16 @@ import Testing
 @testable import SwiftDecompilerCore
 
 @Test func anUnrecoveredPureResultRendersAnUnknownReturnIfPresent() async throws {
-    let path = "Fixtures/Sample/libResearchOptimized.dylib"
+    let path = "Fixtures/Sample/libUnknownReturn.dylib"
     guard FileManager.default.fileExists(atPath: path) else { return }
     for preset in DemanglePreset.allCases {
         let recorder = ProbeRecorder()
         let functions = try await withStableDependencies {
             try await Probe.recording(recorder) {
-                try await Disassembler(preset: preset).disassemble(path: path, functionFilter: "byteSwap")
+                try await Disassembler(preset: preset).disassemble(path: path, functionFilter: "leadingZeros")
             }
         }
-        let function = try #require(functions.first { $0.symbol.contains("byteSwap") })
+        let function = try #require(functions.first { $0.symbol.contains("leadingZeros") })
         #expect(function.renderPseudo().contains("return ?"))
         #expect(function.renderStructured().contains("return ?"))
         let outcomes = recorder.records.filter { $0.event == .returnOutcome }

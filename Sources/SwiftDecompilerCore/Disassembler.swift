@@ -4275,6 +4275,7 @@ public struct Disassembler: Sendable {
                 switch op {
                 case .negate: return "-\(inner)"
                 case .bitwiseNot: return "~\(inner)"
+                case .byteSwap(let bits): return "byteSwap\(bits)(\(inner))"
                 case .squareRoot: return "sqrt(\(inner))"
                 case .absoluteValue: return "abs(\(inner))"
                 case .toFloat(let bits):

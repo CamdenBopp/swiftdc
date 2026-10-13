@@ -135,7 +135,7 @@ public enum TypeInference {
             case .negate: // `-x` is signed
                 let t = typeOf(operand, arguments: arguments)
                 return .signedInteger(t.width)
-            case .bitwiseNot:
+            case .bitwiseNot, .byteSwap:
                 return ValueType(category: .integer, width: nil, signedness: .unknownSign)
             case .squareRoot, .absoluteValue:
                 return .floating(nil)
