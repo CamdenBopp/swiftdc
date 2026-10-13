@@ -9,6 +9,11 @@ maintainer of this project, not a side effect of a bug hunt.
 Everything below was measured locally against the pinned revision, with the
 patch applied via `swift package edit` and then reverted.
 
+The runnable harness is now `swift Tools/fuzz.swift metadata`. Historical
+mutant numbers below came from the former harness; the Swift harness labels
+its SplitMix64 sequence `splitmix64-swift/1`, so equal seeds do not reproduce
+those historical mutations. The reduced byte edits remain independent evidence.
+
 ## The defect
 
 `MachOFile+Readable.swift` converts a **signed** file offset to unsigned before
@@ -113,7 +118,7 @@ Two things, both distinct from the above:
 
 ```bash
 swift build
-python3 Tools/metadata-fuzz.py Fixtures/Sample/libSample.dylib 100 1234
+swift Tools/fuzz.swift metadata Fixtures/Sample/libSample.dylib 100 1234
 ```
 
 The harness is deterministic for a given (binary, mutants, seed) and exits
@@ -125,7 +130,7 @@ To re-apply the patch locally:
 swift package edit MachOSwiftSection
 # add the guard to the seven entry points in
 # Packages/MachOSwiftSection/Sources/MachOReading/Readable/MachOFile+Readable.swift
-swift build && python3 Tools/metadata-fuzz.py Fixtures/Sample/libSample.dylib 100 1234
+swift build && swift Tools/fuzz.swift metadata Fixtures/Sample/libSample.dylib 100 1234
 ```
 
 Reverting needs both steps — `swift package unedit` refuses while the working

@@ -580,3 +580,28 @@ point (§8) made concrete. #7's bottom line is unchanged: general bodies (loops,
 closures, existentials, async) remain far from dependable, and this is the
 blocking foundational work — but the ordering is now "unify the layers," not
 "build a structurer that already exists."
+
+## 2026-10-12: high-performance decompiler follow-up
+
+This follow-up uses primary architecture documentation and the SAILR paper;
+it does not rank tools by speed, and no speedup for swiftdc is inferred from
+another tool's implementation.
+
+| Evidence | Application to swiftdc | Status |
+| --- | --- | --- |
+| [Binary Ninja settings](https://docs.binary.ninja/guide/settings.html) define staged analysis, per-function size/time/update bounds and a most-recently-used advanced-analysis cache with an explicit retention size and collection ceiling. | Keep whole-image processing streaming. Reuse analysis within a function; consider a bounded cache when repeated queries actually revisit functions. Expose deterministic work limits with decline probes. | Existing streaming is retained. New scoring streams typed records and retains only selected return facts; no full JSONL array. Broader cache/budget changes need a measured workload. |
+| [Ghidra DecompInterface](https://ghidra.re/ghidra_docs/api/ghidra/app/decompiler/DecompInterface.html) persists one decompiler process and cached program information; its [parallel callback](https://ghidra.re/ghidra_docs/api/ghidra/app/decompiler/parallel/DecompilerCallback.html) uses a pool of interfaces. | If profiling shows per-function analysis dominates, try a small worker pool sharing immutable indexes, with worker-owned mutable state and results emitted in address order. Bound bytes in flight as well as worker count on the 16 GB host. | Candidate, not implemented. Eager whole-image parallelism could erase the current memory improvement. First establish release-build wall time, footprint, and output parity. |
+| [Hex-Rays microcode discussion](https://hex-rays.com/blog/hex-rays-microcode-api-vs-obfuscating-compiler) explains why standard optimizations run at the microcode stage, before the rendered C tree. [Binary Ninja's IL overview](https://docs.binary.ninja/dev/bnil-overview.html) describes lifting and progressively higher-level representations. | Consolidate proven register and effect facts in typed IR before rendering. Preserve call/store/await order and alias uncertainty there; avoid recovering semantics by matching rendered strings. Reuse those facts across structuring, rendering and scoring. | The structured probe-value tree and independent Swift evaluator are implemented. An effect-aware IR is the next larger architectural candidate; exporting probe facts alone does not establish effect-order correctness. |
+| [SAILR, USENIX Security 2024](https://www.usenix.org/conference/usenixsecurity24/presentation/basque) reverses specific compiler transformations to improve recovered control-flow structure. | Study Swift/LLVM loop and conditional lowering with source/SIL/assembly reductions before adding a rewrite. Preserve every exit predicate and edge; assess semantic agreement separately from fewer gotos. | Candidate. GCC-specific rules need Swift/LLVM evidence, and structural similarity is not a speed or semantic-correctness measurement. |
+
+For graph hot spots, dense block indexes, bitsets and work queues with a cursor
+are reasonable experiments, not established wins. The new context-escape
+analysis already uses a cursor-based bounded worklist. Any further change must
+beat an alternating release-build baseline with equal output, not merely
+reduce allocation in a synthetic microbenchmark.
+
+The Swift scoring API now provides a repeatable regression gate for that work:
+`swiftdc score Fixtures/Sample/libWidthFlagProbes.dylib --width-flags`. Its 1,174
+integer cases complement, rather than replace, effect-order and control-flow
+fixtures. Native expected results and symbol/exit addresses come from outside
+the decompiler. Agreement and coverage are separate denominators.
