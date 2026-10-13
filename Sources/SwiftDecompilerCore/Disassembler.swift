@@ -3337,6 +3337,16 @@ public struct Disassembler: Sendable {
         var reusedResultSites = Set<UInt64>()
         /// The site whose `let` is being rendered, which spells itself out.
         var definingSite: UInt64?
+        // Rendering limits can discard an otherwise evaluable tracer value.
+        // Count actual placeholder emissions, rather than scanning text where
+        // '?' can also be a ternary operator or part of a string literal.
+        let trackReturnRendering = Probe.isActive
+        var unknownRenderCount = 0
+        var completeReturnRendering: [UInt64: Bool] = [:]
+        func unknownRenderedValue() -> String {
+            if trackReturnRendering { unknownRenderCount += 1 }
+            return "?"
+        }
         let function = annotateIndirectControlFlowTargets(
             in: function, targets: analysis.indirectControlFlowTargets,
             resolver: resolver, selfTypeName: selfTypeName, vtableIndex: vtableIndex
@@ -4083,7 +4093,7 @@ public struct Disassembler: Sendable {
             }
             switch value {
             case .unknown:
-                return "?"
+                return unknownRenderedValue()
             case .immediate(let v):
                 return Self.renderImmediate(v)
             case .argument(let index):
@@ -4094,12 +4104,12 @@ public struct Disassembler: Sendable {
                 return Self.awaitResultName(ordinal)
             case .asyncContext, .asyncCalleeContext, .asyncResumeParent, .asyncContextSlot:
                 // Sanitised to `.unknown` before rendering; plumbing, not a value.
-                return "?"
+                return unknownRenderedValue()
             case .address(let a):
                 return resolver.name(at: a) ?? "0x" + String(a, radix: 16)
             case .loaded(let a):
                 // Sanitised above, so a surviving `.loaded` always has a name.
-                return resolver.loadedName(at: a) ?? "?"
+                return resolver.loadedName(at: a) ?? unknownRenderedValue()
             case .frame(let offset):
                 // A frame-relative address: a local's address being passed
                 // (inout/indirect). Named by frame offset, the way a disassembler
@@ -4124,7 +4134,7 @@ public struct Disassembler: Sendable {
             case .selfVTableMethod(let offset):
                 // A bare method pointer (rarely rendered on its own — the call it
                 // feeds is named at the dispatch site). Name it when resolvable.
-                return resolveVTableMethod(offset).map { "\($0)" } ?? "?"
+                return resolveVTableMethod(offset).map { "\($0)" } ?? unknownRenderedValue()
             case .argumentField(let argument, let offset):
                 return argumentFieldName(argument: argument, offset: offset)
             case .arrayLiteral(let site, let count):
@@ -4143,7 +4153,7 @@ public struct Disassembler: Sendable {
                 // slot it was returned into: `r0.field` (the call bound once at
                 // its site) when the callee's result type is laid out here, else
                 // the raw offset.
-                guard depth < 6 else { return "?" }
+                guard depth < 6 else { return unknownRenderedValue() }
                 let call = boundResultSites[site] ?? renderValue(.callResult(site), depth: depth + 1)
                 if let callee = calleeByAddress[site],
                    let type = Self.swiftReturnTypeName(ofDemangled: callee),
@@ -4157,13 +4167,13 @@ public struct Disassembler: Sendable {
                 }
                 return "\(call)[0x\(String(offset, radix: 16))]"
             case .select(let condition, let whenTrue, let whenFalse):
-                guard depth < 8 else { return "?" }
+                guard depth < 8 else { return unknownRenderedValue() }
                 let c = renderValue(condition, depth: depth + 1)
                 let t = renderValue(whenTrue, depth: depth + 1)
                 let f = renderValue(whenFalse, depth: depth + 1)
                 return "(\(c) ? \(t) : \(f))"
             case .binary(let op, let lhs, let rhs):
-                guard depth < 8 else { return "?" }
+                guard depth < 8 else { return unknownRenderedValue() }
                 // A String object word: the literal sits 32 bytes past the
                 // address. The address itself is never named; what is there is
                 // some other string.
@@ -4229,7 +4239,7 @@ public struct Disassembler: Sendable {
                 }
                 return "(\(operand(lhs)) \(op.symbol) \(operand(rhs)))"
             case .unary(let op, let operand):
-                guard depth < 8 else { return "?" }
+                guard depth < 8 else { return unknownRenderedValue() }
                 let inner = renderValue(operand, depth: depth + 1)
                 switch op {
                 case .negate: return "-\(inner)"
@@ -4248,25 +4258,28 @@ public struct Disassembler: Sendable {
                 // everywhere, so it is never spelled out a second time.
                 if let name = boundResultSites[addr], addr != definingSite { return name }
                 let inner = argumentsByAddress[addr] ?? []
-                let unresolved = "/* unresolved call @ 0x\(String(addr, radix: 16)) */ ?"
+                func unresolved() -> String {
+                    if trackReturnRendering { unknownRenderCount += 1 }
+                    return "/* unresolved call @ 0x\(String(addr, radix: 16)) */ ?"
+                }
                 // Deeply nested message chains (`[[[[self a] b] c] d]`) are common
                 // in framework code; a shallow cap turns the tail into `unresolved`.
                 // callResult references cannot cycle — a call's arguments are fully
                 // computed before it runs — so this bound only limits line length,
                 // never termination. Kept below the depth-8 expression cap.
-                guard depth < 6, let callee = calleeByAddress[addr] else { return unresolved }
+                guard depth < 6, let callee = calleeByAddress[addr] else { return unresolved() }
                 // The retain/autorelease family returns its argument: unwrap it.
                 if DisassembledFunction.returnsItsArgument(callee) {
-                    return inner.first.map { renderValue($0, depth: depth + 1) } ?? unresolved
+                    return inner.first.map { renderValue($0, depth: depth + 1) } ?? unresolved()
                 }
                 if DisassembledFunction.isUniquenessCheck(callee) {
-                    let object = inner.first.map { renderValue($0, depth: depth + 1) } ?? "?"
+                    let object = inner.first.map { renderValue($0, depth: depth + 1) } ?? unknownRenderedValue()
                     return "isKnownUniquelyReferenced(\(object))"
                 }
                 // The rest of the runtime bookkeeping returns nothing a source
                 // value could be (`swift_release`, `swift_beginAccess` are void):
                 // x0 after one is not a value to name.
-                if DisassembledFunction.isRuntimeNoise(callee) { return "?" }
+                if DisassembledFunction.isRuntimeNoise(callee) { return unknownRenderedValue() }
                 // `_finalizeUninitializedArray(array)` IS the array — render its
                 // argument, which carries the recovered elements.
                 if callee.contains("_finalizeUninitializedArray"), let first = inner.first {
@@ -4466,6 +4479,10 @@ public struct Disassembler: Sendable {
         let returnTypeName: String? = Self.swiftReturnTypeName(of: function)
 
         func renderReturnValue(_ rawValue: AbstractValue, before address: UInt64) -> String {
+            let initialUnknowns = unknownRenderCount
+            defer {
+                if trackReturnRendering { completeReturnRendering[address] = unknownRenderCount == initialUnknowns }
+            }
             let value = sanitizeValue(rawValue)
             // An immediate returned from an enum-typed function is that enum's
             // case tag: name it (`return Color.green`) instead of printing the
@@ -5227,7 +5244,7 @@ public struct Disassembler: Sendable {
                     displayName: function.analysisDisplayName, objcSignature: function.objcMethod?.signature)
                 let status = throwExits.contains(insn.address) ? "throw"
                     : renderedReturn == "return ?" ? "unknown"
-                    : renderedReturn != nil ? "recovered"
+                    : renderedReturn != nil ? (completeReturnRendering[insn.address] == false ? "partial" : "recovered")
                     : !returnsValue ? "void" : "unsupported-layout-or-value"
                 Probe.record(.returnOutcome, at: insn.address, ["status": .label(status),
                     "type": .name(returnTypeName ?? function.objcMethod?.signature ?? "unknown")])

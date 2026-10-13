@@ -198,7 +198,7 @@ now represented directly:
 | `values.call` | arguments, floatingArguments, stackArguments, receiver, indirectResult |
 | `values.condition` | value; signed and unsigned operators stay distinct |
 | `values.loop-initialization` | name, value, stackOffset; proven constant entry binding, at the header branch |
-| `render.return-outcome` | status, type; recovered, unknown, void, throw, or unsupported layout/value |
+| `render.return-outcome` | status, type; recovered, partial, unknown, void, throw, or unsupported layout/value |
 | `render.return-value` | value, register, type, rendered; a recovered return claim |
 | `render.function` | view, symbol, returns, returnStatements, unknownReturns, gotos, lines; committed output only |
 | `async.context-escape` | offset; possible aliases on either incoming path invalidate slots |
@@ -290,7 +290,10 @@ incidental probes muted. It avoids serialization and full-trace retention.
 The scorer retains only selected functions' exits, bounds duplicate storage,
 and indexes facts once for repeated samples. It distinguishes verified,
 refuted, not-evaluated and missing cases. An explicitly declined source return
-is not-evaluated; a filtered-out or absent return is missing. A known synchronous
+is not-evaluated; a filtered-out or absent return is missing. A partial expression
+with renderer-emitted unknown placeholders records `partial` and emits no
+`render.return-value` claim, even if its internal AST is evaluable. Literal
+question marks and ternary operators do not mark a return partial. A known synchronous
 value-return contract emits an unknown outcome even when analysis recovers no
 usable facts, and both text renderers retain `return ?`. This does not create a
 return-value claim or infer a value from an async entry RET. Agreement covers

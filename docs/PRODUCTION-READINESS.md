@@ -2304,3 +2304,34 @@ if a test was observed to fail without the fix.
   Onone rotates already lowered to supported shifts and are unchanged.
   All other fixture output is unchanged; the rebuilt enforcing suite passes
   578 tests in 11 suites, including determinism and streaming memory.
+
+## 2026-10-13: partial source-return claims
+
+- **FIXED — depth-limited text was scored as a complete recovered return.**
+  ResearchOptimized.boundedLoop's nonzero exit has an evaluable internal AST,
+  but the existing render depth cap replaces nested operands with `?`.
+  With an explicit exit oracle, recovered-return scoring previously verified
+  that partial source expression. The independently executed input 7 produces
+  21; the new regression was red with three issues before the fix.
+- **IMPLEMENTED — the return-outcome API distinguishes `partial`.** Actual
+  placeholder emissions during each return's rendering mark it partial;
+  the default scorer treats it as not-evaluated and no complete return-value
+  claim is emitted. This tracks renderer decisions, without scanning text
+  where question marks may be ternary operators or literal content. Other
+  returns in the same function retain their own completeness. Raw-register
+  mode still verifies the exact internal value, without claiming source text.
+  Tracking stores no return entries when probes are disabled, and no rendered
+  source text or recovered dataflow fact depends on the tracking state.
+- **VALIDATED — independent tracking, classification and scope mutations.**
+  Removing placeholder tracking or partial classification fails the native
+  regression with three issues each. Comparing the cumulative counter rather
+  than the current return's delta fails its later complete-zero-exit check.
+  A complete ternary return remains recovered. Full-function exit-path
+  selection and loop execution remain separate validation work.
+- **MEASURED — 580 tests pass; all 152 fixture views are unchanged.**
+  Structured/pseudo comparisons against 9e1b914 change zero outputs. The
+  two-batch, 36-configuration Swift research run (`research --iterations 2
+  --seed 7`) retains 1,326 of 1,530 verified Onone cases (204 unknown), and
+  1,428 at O/Osize (102 unknown), with zero refutations or missing observations.
+  Its function-level multi-exit decline remains intact; the regression proves
+  the corrected behavior when a caller supplies an explicit nonzero exit.

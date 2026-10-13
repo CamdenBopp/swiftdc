@@ -15,7 +15,7 @@ public extension ProbeEvent {
     static let conditionSnapshot = ProbeEvent("values.condition", .values, .decision,
         "The recovered branch-taken condition, retaining signed versus unsigned operators.")
     static let returnOutcome = ProbeEvent("render.return-outcome", .render, .decision,
-        "Whether an exit renders a recovered, unknown, void, throwing or unsupported-layout return.")
+        "Whether an exit renders a recovered, partial, unknown, void, throwing or unsupported-layout return.")
     static let returnValue = ProbeEvent("render.return-value", .render, .claim,
         "The abstract value and rendered expression of a recovered return, for an independent oracle.")
     static let renderedFunction = ProbeEvent("render.function", .render, .metric,
