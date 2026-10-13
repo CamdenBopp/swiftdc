@@ -280,6 +280,10 @@ source signature. The native research score checks the AST; the strict
 `renderedRightShiftsAgreeWithNativeBitPatternsIfPresent` regression separately
 parses the actual text and compares required shift expressions with native
 execution. A verified AST alone does not validate every renderer transformation.
+High products retain `multiply-high`/`unsigned-multiply-high` in the AST and
+`mulhˢ`/`mulhᵁ` in text. Their strict text regression covers optimized native
+instructions; the separate -Onone tuple-call regression requires unsupported
+word projections to decline.
 
 The recorder's `.records` output streams typed events outside its mutex, with
 incidental probes muted. It avoids serialization and full-trace retention.

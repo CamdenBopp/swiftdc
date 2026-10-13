@@ -90,7 +90,8 @@ public enum AbstractBinaryOperator: Equatable, Sendable {
         // signedness. Preserve the machine operation even in UInt returns.
         case .shiftRight: ">>\u{1D41}"
         case .arithmeticShiftRight: ">>\u{02E2}"
-        case .multiplyHigh, .unsignedMultiplyHigh: "mulh"
+        case .multiplyHigh: "mulh\u{02E2}"
+        case .unsignedMultiplyHigh: "mulh\u{1D41}"
         case .equal: "=="
         case .notEqual: "!="
         case .less: "<"

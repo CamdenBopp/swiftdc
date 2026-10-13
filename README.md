@@ -269,6 +269,8 @@ for how that works and what differs there.
   (sign-filling) and `>>ᵁ` for logical (zero-filling) shifts, independent of
   the source parameter or result type. These are pseudocode operators over
   register bit patterns; 32-bit normalization remains an explicit mask.
+  High-half multiplication likewise uses `mulhˢ` and `mulhᵁ` for the high
+  64 bits of signed and unsigned 128-bit products.
 - **Cross-references** — a call graph over resolved branch targets, including
   indirect `blr` calls whose register value provably traces to a concrete
   witness/vtable/GOT pointer slot.

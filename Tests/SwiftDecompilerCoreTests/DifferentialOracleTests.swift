@@ -303,6 +303,8 @@ private func integerBinary(_ op: String, _ a: Int, _ b: Int) throws -> EvalValue
         case "<<": return .int(a << b)
         case ">>", ">>\u{02E2}": return .int(a >> b)
         case ">>\u{1D41}": return .int(Int(bitPattern: UInt(bitPattern: a) >> b))
+        case "mulhˢ": return .int(a.multipliedFullWidth(by: b).high)
+        case "mulhᵁ": return .int(Int(bitPattern: UInt(bitPattern: a).multipliedFullWidth(by: UInt(bitPattern: b)).high))
         case "==": return .bool(a == b)
         case "!=": return .bool(a != b)
         case "<": return .bool(a < b)
@@ -988,9 +990,17 @@ private func callConversion(
     try await verifyNativeRenderedReturns(names: ["wordNot", "shiftedNot", "orNot", "wordSelect"])
 }
 
-private func verifyNativeRenderedReturns(names: Set<String>, markers: [String: String] = [:]) async throws {
+@Test func renderedHighProductsAgreeWithNativeBitPatternsIfPresent() async throws {
+    // Onone's tuple-call projection is separately required to decline.
+    try await verifyNativeRenderedReturns(names: ["unsignedHigh", "signedHigh"],
+        markers: ["unsignedHigh": "mulhᵁ", "signedHigh": "mulhˢ"],
+        modules: ["ResearchOptimized", "ResearchSize"])
+}
+
+private func verifyNativeRenderedReturns(names: Set<String>, markers: [String: String] = [:],
+                                         modules: [String] = ResearchFixtures.modules) async throws {
     let inputs = ResearchFixtures.inputs(seed: 7)
-    for module in ResearchFixtures.modules {
+    for module in modules {
         let path = "Fixtures/Sample/lib\(module).dylib"
         guard FileManager.default.fileExists(atPath: path) else { continue }
         let oracle = try ResearchFixtures.oracle(path: path, module: module, inputs: inputs)

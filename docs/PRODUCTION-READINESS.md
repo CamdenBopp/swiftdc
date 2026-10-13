@@ -2110,7 +2110,7 @@ if a test was observed to fail without the fix.
 
 ## 2026-10-13: tuple call result words
 
-- **FIXED (working tree) — a scalar word rendered as an entire tuple call.**
+- **FIXED (`d1314e3`) — a scalar word rendered as an entire tuple call.**
   New native high-product functions call multipliedFullWidth at -Onone, whose
   signature returns `(high: UInt64, low: UInt64)` or `(high: Int64, low: UInt64)`.
   The caller reads only the high word from x0, but output returned the whole
@@ -2126,3 +2126,19 @@ if a test was observed to fail without the fix.
   cases remain not-evaluated. At -O/-Osize native AST evaluation verifies their
   direct SMULH/UMULH results. Full tuple projection recovery and distinct
   high-multiply text notation remain separate follow-ups.
+
+## 2026-10-13: high-product signedness in text
+
+- **FIXED (working tree) — signed and unsigned high products shared mulh.**
+  The typed AST already distinguished the operations, but output concealed
+  the interpretation of its operands. Text now uses mulhˢ for the signed
+  128-bit product's high half and mulhᵁ for the unsigned high half. This
+  matches [Arm's A64 multiplication overview](https://developer.arm.com/-/media/Files/pdf/graphics-and-multimedia/ARMv8_InstructionSetOverview.pdf),
+  independently of a caller's UInt64 result type.
+- **VALIDATED — strict text/native comparison of both variants.** Signed
+  products by a negative multiplier and unsigned squares are required to
+  verify at -O and -Osize, through both renderers and all three presets:
+  1,128 comparisons over 47 inputs. Swapping signed/unsigned markers
+  independently fails with 564/108 issues, including native disagreements.
+  Onone's tuple-call word projection remains a separately tested decline;
+  its unknown cases are not omitted from the research denominator.

@@ -34,10 +34,18 @@ import Testing
         }
         let report = try score.report()
         #expect(report.counts["refuted"] == 0, "\(module): \(report.results.filter { $0.outcome == .refuted })")
-        for name in required {
+        let requiredHere = module == "ResearchOnone" ? required : required.union(["signedHigh", "unsignedHigh"])
+        for name in requiredHere {
             let cases = report.results.filter { $0.expectation.id?.hasPrefix(name + "/") == true }
             #expect(cases.count == inputs.count)
             #expect(cases.allSatisfy { $0.outcome == .verified }, "\(module).\(name) lost native oracle coverage")
+        }
+        if module == "ResearchOnone" {
+            for name in ["signedHigh", "unsignedHigh"] {
+                let cases = report.results.filter { $0.expectation.id?.hasPrefix(name + "/") == true }
+                #expect(cases.count == inputs.count)
+                #expect(cases.allSatisfy { $0.outcome == .notEvaluated }, "unproven tuple projection must decline")
+            }
         }
     }
 }
