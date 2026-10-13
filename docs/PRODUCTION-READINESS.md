@@ -41,6 +41,15 @@ because it cannot be distinguished from a right one by reading the output.
   the compiled fixture and streaming parity. Type-kind evidence proves
   reference classification; it does not invent foreign layouts or vtables.
 
+- **FIXED (working tree) — a reloaded async context alias was lost across a
+  branch or backedge while proving slot constants.** `ee37e08` scanned aliases
+  linearly: one branch overwrote x19, another passed x19 + 16 to a mutating
+  callee, and the latter path could be overlooked. The new bounded MAY analysis
+  unions aliases across CFG predecessors and catches paired context loads.
+  Missing detail, unresolved indirect flow, writeback and a convergence cap
+  decline all slot proofs. `AsyncContextEscapeTests` exercises each case;
+  this does not establish a complete spill/memory-alias model.
+
 - **App audit, 2026-10-12.** Five independent audits ran against four of
   the author's iOS apps, each built at a recorded revision at -Onone and -O,
   each finding checked against objdump, DWARF, the source, SIL or a run of

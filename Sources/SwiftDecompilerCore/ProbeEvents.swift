@@ -2,6 +2,16 @@
 /// (`ProbeRecorder.schema`); `docs/INSTRUMENTATION.md` lists them with their
 /// fields.
 extension ProbeEvent {
+    static let contextEscape = ProbeEvent(
+        "async.context-escape", .async, .decline,
+        "A possible context alias takes a slot address; this slot and later slots cannot be proven constant across the chain.")
+    static let contextEscapeCap = ProbeEvent(
+        "async.context-escape-cap", .async, .limit,
+        "Context alias analysis did not converge within its bound; no chain slot is proven.")
+    static let contextEscapeUnknown = ProbeEvent(
+        "async.context-escape-unknown", .async, .decline,
+        "Missing instruction semantics prevent proving that context slots do not escape.")
+
     // MARK: perf
     static let analysisTime = ProbeEvent("perf.analysis", .perf, .metric, "Time in per-function analysis.")
     static let renderTime = ProbeEvent("perf.render", .perf, .metric, "Time rendering structured or flat pseudocode.")

@@ -237,3 +237,11 @@ uses: binary metadata, then symbols, then outside evidence. Disagreement
 declines. `FieldMap` collisions, folded addresses and ObjC bindings that
 disagree already decline that way, and an extension must not resolve those
 by picking one.
+
+## Async context escape evidence
+
+`async.context-escape` identifies a computed slot address (offset).
+`async.context-escape-cap` reports blocks and the exhausted work bound.
+`async.context-escape-unknown` reports missing detail, an unknown convention,
+missing funclets, unresolved indirect flow or context-base writeback. A cap or
+unknown instruction semantics declines all chain-slot proofs.
