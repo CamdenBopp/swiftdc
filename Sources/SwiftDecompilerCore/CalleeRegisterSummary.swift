@@ -132,13 +132,26 @@ private enum Preservation {
         // Each fact covers exactly eight bytes. A store at a different start
         // address can still overwrite part of that saved register.
         var slots: [Int64: Value]
+        // MAY provenance is independent of the must-value facts above: a
+        // join can lose an exact address while retaining a feasible alias.
+        var stackAliases: Set<String> = ["sp"]
+        var stackAddressEscaped = false
+
+        mutating func setRegister(_ key: String, to value: Value, mayAliasStack: Bool = false) {
+            registers[key] = value == .unknown ? nil : value
+            if case .stack = value { stackAliases.insert(key) }
+            else if mayAliasStack { stackAliases.insert(key) }
+            else { stackAliases.remove(key) }
+        }
 
         func value(_ key: String) -> Value { registers[key] ?? .unknown }
 
         func merged(with other: State) -> State {
             State(
                 registers: registers.filter { other.registers[$0.key] == $0.value },
-                slots: slots.filter { other.slots[$0.key] == $0.value }
+                slots: slots.filter { other.slots[$0.key] == $0.value },
+                stackAliases: stackAliases.union(other.stackAliases),
+                stackAddressEscaped: stackAddressEscaped || other.stackAddressEscaped
             )
         }
 
@@ -182,9 +195,19 @@ private enum Preservation {
                     continue
                 }
                 if insn.controlFlow == .call {
+                    // A callee may mutate any save whose address it can
+                    // reach. sp/x29 alone are ordinary frame bookkeeping;
+                    // any other frame alias can be an outgoing argument,
+                    // including an outlined fragment's nonstandard input.
+                    if !state.stackAliases.subtracting(["sp", "x29"]).isEmpty {
+                        state.stackAddressEscaped = true
+                    }
+                    if state.stackAddressEscaped {
+                        state.slots.removeAll()
+                    }
                     // The callee keeps the ABI: x19–x29 and sp survive it.
-                    for index in 0...18 { state.registers["x\(index)"] = nil }
-                    state.registers["x30"] = nil
+                    for index in 0...18 { state.setRegister("x\(index)", to: .unknown) }
+                    state.setRegister("x30", to: .unknown)
                     continue
                 }
                 apply(detail, to: &state)
@@ -217,15 +240,14 @@ private enum Preservation {
         let operands = detail.operands
         let hasStackBase = operands.contains { info in
             guard case .memory(let base?, _, _) = info.operand else { return false }
-            if case .stack = state.value(base.key) { return true }
-            return false
+            return state.stackAliases.contains(base.key)
         }
         // A writeback through a base that is no known stack address still
         // moves that base.
         if detail.writeback, access(detail, in: state).address == nil,
            let memory = operands.first(where: { $0.operand.isMemory }),
            case .memory(let base?, _, _) = memory.operand {
-            state.registers[base.key] = .unknown
+            state.setRegister(base.key, to: .unknown, mayAliasStack: state.stackAliases.contains(base.key))
         }
         func register(_ index: Int) -> PhysReg? {
             index < operands.count ? operands[index].operand.register : nil
@@ -233,20 +255,27 @@ private enum Preservation {
         switch detail.id {
         case AARCH64_INS_MOV:
             if let destination = register(0), let source = register(1), destination.widthBits == 64 {
-                state.registers[destination.key] = state.value(source.key)
+                state.setRegister(destination.key, to: state.value(source.key), mayAliasStack: state.stackAliases.contains(source.key))
                 return
             }
         case AARCH64_INS_ADD, AARCH64_INS_SUB:
             if let destination = register(0), let source = register(1), destination.widthBits == 64,
                operands.count == 3, let immediate = operands[2].shiftedImmediate,
                case .stack(let k) = state.value(source.key) {
-                state.registers[destination.key] = .stack(detail.id == AARCH64_INS_ADD ? k &+ immediate : k &- immediate)
+                state.setRegister(destination.key, to: .stack(detail.id == AARCH64_INS_ADD ? k &+ immediate : k &- immediate))
                 return
             }
         case AARCH64_INS_STR, AARCH64_INS_STUR, AARCH64_INS_STP, AARCH64_INS_STNP,
              AARCH64_INS_STRB, AARCH64_INS_STURB, AARCH64_INS_STRH, AARCH64_INS_STURH:
             let (address, base, after) = access(detail, in: state)
             let count = detail.id == AARCH64_INS_STP || detail.id == AARCH64_INS_STNP ? 2 : 1
+            // Even a pointer stored before a later save can expose that
+            // future save. Do not tie escape lifetime to existing slot facts.
+            for offset in 0..<count {
+                if let source = register(offset), state.stackAliases.contains(source.key) {
+                    state.stackAddressEscaped = true
+                }
+            }
             if let address {
                 for offset in 0..<count {
                     guard let source = register(offset) else { continue }
@@ -265,13 +294,11 @@ private enum Preservation {
                         state.slots[slot] = state.value(source.key)
                     }
                 }
-            } else if hasStackBase {
-                // An unknown index into this frame may overlap any save.
+            } else if hasStackBase || state.stackAddressEscaped {
+                // An unknown index or escaped pointer may overlap any save.
                 state.slots.removeAll()
             }
-            // A store through an unknown pointer is assumed not to reach the
-            // register save area, which no pointer escapes to.
-            if let base, let after { state.registers[base] = after }
+            if let base, let after { state.setRegister(base, to: after) }
             return
         case AARCH64_INS_LDR, AARCH64_INS_LDUR, AARCH64_INS_LDP:
             let (address, base, after) = access(detail, in: state)
@@ -279,12 +306,12 @@ private enum Preservation {
             for offset in 0..<count {
                 guard let destination = register(offset) else { continue }
                 if let address, destination.widthBits == 64 {
-                    state.registers[destination.key] = state.slots[address &+ Int64(offset * 8)] ?? .unknown
+                    state.setRegister(destination.key, to: state.slots[address &+ Int64(offset * 8)] ?? .unknown)
                 } else {
-                    state.registers[destination.key] = .unknown
+                    state.setRegister(destination.key, to: .unknown)
                 }
             }
-            if let base, let after { state.registers[base] = after }
+            if let base, let after { state.setRegister(base, to: after) }
             return
         default:
             break
@@ -292,10 +319,22 @@ private enum Preservation {
         // An unsupported memory write (or missing memory access flags) has no
         // proven extent. Forget the saves when its base points into the frame.
         // Flags are used only to decline; supported stores use actual widths.
-        if hasStackBase,
+        if hasStackBase || state.stackAddressEscaped,
            operands.contains(where: { $0.operand.isMemory && ($0.isWritten || $0.access == 0) }) {
             state.slots.removeAll()
         }
-        for key in detail.writtenRegisterKeys { state.registers[key] = .unknown }
+        // An unmodelled transform of a frame address loses its exact offset,
+        // not its ability to alias the frame. Keep that MAY fact at joins too.
+        let readsStackAlias = !detail.readRegisterKeys.intersection(state.stackAliases).isEmpty
+            || operands.contains { info in
+                guard let reg = info.operand.register else { return false }
+                return (info.isRead || info.access == 0) && state.stackAliases.contains(reg.key)
+            }
+        if operands.contains(where: { $0.operand.isMemory && ($0.isWritten || $0.access == 0) }), readsStackAlias {
+            state.stackAddressEscaped = true
+        }
+        for key in detail.writtenRegisterKeys {
+            state.setRegister(key, to: .unknown, mayAliasStack: readsStackAlias)
+        }
     }
 }

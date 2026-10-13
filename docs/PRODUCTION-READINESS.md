@@ -2527,3 +2527,46 @@ if a test was observed to fail without the fix.
   Removing the status-propagation line fails with three issues (exits 1, 23
   and terminated-child 143 become 0). The restored intermediate enforcing
   suite passes 615 tests in eleven suites; the original baseline passes 614.
+
+- **FIXED (local frame-derived escapes) — save proofs survived writable
+  pointer aliases.** `abi_escaped_saves.s` independently returns its replacement
+  argument through five fragments; baseline rendered `return arg0`. A separate
+  MAY frame-provenance set survives joins and unsupported transforms. Pointer
+  stores/calls make escape persistent, including before a save is created;
+  unknown writes and subsequent calls invalidate exposed save facts. Six
+  independent mutations fail with 19/10/19/9/9/1 issues (call invalidation,
+  call escape, stored escape, join, transform, escaped unknown store).
+  The native matrix executes 96 comparisons; the safe ordinary-call control
+  retains its seed. Both decoding paths and both text renderers decline the
+  five incorrect caller results.
+
+- **OPEN — precise call memory footprints are required to regain legitimate
+  preservation coverage.** This protection intentionally loses some correct
+  `-Onone` output. `Indirect.makeWide` and `otherWide` pass a temporary at
+  entrySP[-56,-16) to a six-instruction initializer writing exactly 40 bytes,
+  then memcpy; the saved frame pointer is at [-16,0). The present summary
+  cannot carry that disjoint footprint through calls. Both return buffers
+  still reconstruct inside their producers, but consumers lose x29-relative
+  fields. The Onone tests now require an explicit decline and a single visible
+  producer call; optimized result-field recovery remains required. This is a
+  measured completeness cost, not a correction to those formerly valid values.
+  Reproduce: `disasm Fixtures/Sample/libIndirect.dylib -f makeWide`.
+  Across 178 source views, 16 change: the new escape reduction declines five
+  wrong returns; ABISource loses an unused optional-result binding; Indirect
+  loses the two frame-derived results above; Reconstruction ordinary/resilient
+  countMatches loses iterator self and an assertion's frame-spilled literal;
+  RetainRegister.join declines its frame-preserved scalar; sample.debug loses
+  frame-derived iterator/Stack arguments; sample.release loses frame-spilled
+  metadata-helper arguments. Both views change for each of these eight images.
+  No call/store ordering or CFG changes are introduced.
+
+- **OPEN (independently reproduced) — preservation is not yet a complete
+  interprocedural or alias proof.** Nested outlined-call and tail-call clobbers
+  do not propagate; x29-only custom callees can mutate save memory; incoming
+  pointers can reach caller-owned saves at nonnegative entry-SP offsets.
+  Authored native reductions return a replacement while output claims arg0.
+  The local-escape correction does not resolve these cases. Ordinary ABI
+  stack ownership remains an assumption for unescaped negative save slots.
+  Restored, freshly rebuilt intermediate enforcing suite: 620 tests in eleven
+  suites pass. This is scoped escape coverage; no complete alias proof or
+  performance improvement is claimed.
