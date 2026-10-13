@@ -2172,3 +2172,34 @@ if a test was observed to fail without the fix.
   baseline and new binary emit return ? for ResearchOnone_R0.signedRange.
   This adds 51 unknown cases to the matrix; do not hide it by dropping that
   function or counting it as verified.
+
+## 2026-10-13: symbolic addition flags
+
+- **FIXED (working tree) — ADDS/CMN conditions ignored addition overflow.**
+  Onone signedRange exposed `adds x8,x0,#11; b.lt` rendered as
+  `(arg0 + 11) < 0`. A wrapped sum's sign is not N xor V, so this condition
+  is false evidence at signed-overflow boundaries. Addition producers now
+  preserve their operands and width, even for add-zero. Consumers reconstruct
+  N/Z/C/V and all 14 conditions at 32/64 bits. Constant signed thresholds
+  simplify exactly, with a separate signed-minimum case instead of overflowing
+  a negation. Unknown/depth-limited predicates still decline.
+- **VALIDATED — native flags and rendered bounds.** The authored addflags.s
+  exports 104 probes for ADDS/CMN, both widths, every condition and zero/11/minimum
+  constants. Eleven edge values give 12,584 native input-pair comparisons.
+  The signedLowerBound Swift fixture adds 918 actual text/native comparisons
+  over all compiler levels, presets and renderers. Independent consumer,
+  ADDS-producer, CMN-producer and minimum-threshold mutations failed with
+  191/220/220/968 issues. The new native probe test was red before the fix.
+- **OPEN — chained diamond recovery still uses stale outgoing states.**
+  signedRange's first boolean merge is reconstructed in its entry state, but
+  the second diamond reads the original unknown outgoing state. Correcting
+  addition conditions prevents false predicates; propagating proven merged
+  facts remains a separate completeness task.
+- **MEASURED — 570 tests pass; 36 native configurations have zero refutations.**
+  Onone verifies 1,173 of 1,428 cases with 255 not-evaluated; O/Osize verifies
+  1,326 with 102 not-evaluated. Missing observations remain zero. In 148
+  fixture outputs, 21 change: overflow-aware signed thresholds, canonical
+  argument spellings for CMN equality, and original-site bindings for call
+  results referenced by exact flag expressions. Call count/order is preserved.
+  Compares.doubled falls back to its equivalent raw x0 sign test, retaining
+  the original CMN operand rather than presenting an unsupported baked form.

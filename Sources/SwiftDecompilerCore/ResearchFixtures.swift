@@ -5,7 +5,7 @@ import Foundation
 /// corpus only. The declared ARM64 ABI is one UInt64 parameter/result, no
 /// receiver, generic context, error result or async continuation.
 public enum ResearchFixtures {
-    public static let names = ["increment", "mixedBits", "lowWord", "signedShift", "unsignedRange",
+    public static let names = ["increment", "mixedBits", "lowWord", "signedShift", "unsignedRange", "signedLowerBound",
                                "signedRange", "choose", "quotient", "residue", "boundedLoop", "wordAdd",
                                "wordArithmeticShift", "signExtendWord", "signExtendByte", "signExtendHalf", "unsignedByte", "wordSelect",
                                "wordNot", "shiftedNot", "orNot", "byteSwap", "unsignedHigh", "signedHigh",

@@ -63,6 +63,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name AuditSemantics auditsema
 $CLANG -arch arm64 -O1 -dynamiclib -framework Foundation auditvoid.m -o libAuditVoid.dylib
 $CLANG -arch arm64 -dynamiclib conditionalflags.s -o libConditionalFlags.dylib
 
+echo "==> symbolic addition flags at both widths (addflags.s)"
+$CLANG -arch arm64 -dynamiclib addflags.s -o libAddFlags.dylib
+
 echo "==> objc_retain_xN stubs (retainregister.swift, -O, arm64 iOS simulator)"
 $SWIFTC -O -emit-library -module-name RetainRegister -target arm64-apple-ios17.0-simulator \
     -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" retainregister.swift -o libRetainRegister.sim.dylib

@@ -1002,6 +1002,10 @@ private func callConversion(
                                                  "signedWordAccumulate", "unsignedWordSubtract"])
 }
 
+@Test func renderedSignedAdditionBoundsAgreeWithNativeBitPatternsIfPresent() async throws {
+    try await verifyNativeRenderedReturns(names: ["signedLowerBound"])
+}
+
 private func verifyNativeRenderedReturns(names: Set<String>, markers: [String: String] = [:],
                                          modules: [String] = ResearchFixtures.modules) async throws {
     let inputs = ResearchFixtures.inputs(seed: 7)

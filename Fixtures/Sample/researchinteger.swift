@@ -10,6 +10,9 @@
     let n = Int64(bitPattern: x)
     return n >= -11 && n < 23 ? 61 : 71
 }
+@inline(never) public func signedLowerBound(_ x: UInt64) -> UInt64 {
+    Int64(bitPattern: x) >= -11 ? 43 : 59
+}
 @inline(never) public func choose(_ x: UInt64) -> UInt64 { x < 100 ? x &+ 3 : x &- 5 }
 @inline(never) public func quotient(_ x: UInt64) -> UInt64 { x / 7 }
 @inline(never) public func residue(_ x: UInt64) -> UInt64 { x % 7 }

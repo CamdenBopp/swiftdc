@@ -2093,7 +2093,7 @@ public struct ValueTracer: Sendable {
                 // A subtraction keeps its operands for a conditional compare
                 // to read; a sum folds like any other value.
                 registers[Self.flagsKey] = detail.id == AARCH64_INS_SUBS ? .binary(op, lhs, rhs)
-                    : constantFlags(op, lhs, rhs) ?? result
+                    : .binary(op, lhs, rhs)
                 registers[Self.flagsWidthKey] = .immediate(UInt64(dest.widthBits))
             }
 
@@ -2547,7 +2547,7 @@ public struct ValueTracer: Sendable {
                     registers[Self.flagsKey] = .binary(.subtract, lhs, rhs)
                     registers[Self.flagsWidthKey] = .immediate(UInt64(detail.operands[0].operand.register?.widthBits ?? 64))
                 case AARCH64_INS_ALIAS_CMN:
-                    registers[Self.flagsKey] = constantFlags(.add, lhs, rhs) ?? expression(.add, lhs, rhs)
+                    registers[Self.flagsKey] = .binary(.add, lhs, rhs)
                     registers[Self.flagsWidthKey] = .immediate(UInt64(detail.operands[0].operand.register?.widthBits ?? 64))
                 case AARCH64_INS_ALIAS_TST:
                     registers[Self.flagsKey] = constantFlags(.bitAnd, lhs, rhs) ?? expression(.bitAnd, lhs, rhs)
@@ -3015,6 +3015,9 @@ public struct ValueTracer: Sendable {
         if let nzcv = Self.constantNZCV(flags, width: width == .immediate(32) ? 32 : 64) {
             return .immediate(Self.literalFlagCondition(nzcv, code: code) ? 1 : 0)
         }
+        if case .binary(.add, let lhs, let rhs) = flags {
+            return additionCondition(lhs, rhs, code: code, width: width == .immediate(32) ? 32 : 64)
+        }
         if case .binary(.subtract, let lhs, let rhs) = flags {
             // Constants fold exactly, at the compare's width and with its
             // overflow: `cmp w8, w9` of 0xffffffff and 1 is negative, so
@@ -3038,6 +3041,53 @@ public struct ValueTracer: Sendable {
         // Other flag producers retain their existing conservative model.
         guard let op = Self.comparisonOperator(code) else { return nil }
         return comparisonValue(flags: flags, op)
+    }
+
+    private func additionCondition(_ lhs: AbstractValue, _ rhs: AbstractValue, code: AArch64CC_CondCode, width: Int) -> AbstractValue {
+        // N xor V is the sign of the mathematical sum, not its wrapped result.
+        // A constant RHS permits the simpler equivalent signed threshold.
+        if [AArch64CC_EQ, AArch64CC_NE, AArch64CC_LT, AArch64CC_GE, AArch64CC_GT, AArch64CC_LE].contains(code),
+           case .immediate(let bits) = rhs {
+            let c = width == 32 ? Int64(Int32(truncatingIfNeeded: bits)) : Int64(bitPattern: bits)
+            let minimum = width == 32 ? Int64(Int32.min) : Int64.min
+            if c == minimum, code != AArch64CC_EQ, code != AArch64CC_NE {
+                return .immediate(code == AArch64CC_LT || code == AArch64CC_LE ? 1 : 0)
+            }
+            if let op = Self.comparisonOperator(code) {
+                let negated = UInt64(0) &- UInt64(bitPattern: c)
+                let threshold = width == 32 ? UInt64(bitPattern: Int64(Int32(truncatingIfNeeded: negated))) : negated
+                return expression(op, width == 32 ? signExtended(lhs, bits: 32) : lhs,
+                                  .immediate(threshold))
+            }
+        }
+        let a = narrowed(lhs, bits: width), b = narrowed(rhs, bits: width)
+        let result = narrowed(expression(.add, a, b), bits: width)
+        let signMask = UInt64(1) << (width - 1)
+        func sign(_ value: AbstractValue) -> AbstractValue {
+            expression(.notEqual, expression(.bitAnd, value, .immediate(signMask)), .immediate(0))
+        }
+        func not(_ value: AbstractValue) -> AbstractValue { expression(.bitXor, value, .immediate(1)) }
+        let n = sign(result), z = expression(.equal, result, .immediate(0))
+        let carry = expression(.unsignedLess, result, a)
+        let overflow = expression(.bitAnd, expression(.equal, sign(a), sign(b)), expression(.notEqual, n, sign(a)))
+        let lt = expression(.bitXor, n, overflow)
+        switch code {
+        case AArch64CC_EQ: return z
+        case AArch64CC_NE: return not(z)
+        case AArch64CC_HS: return carry
+        case AArch64CC_LO: return not(carry)
+        case AArch64CC_MI: return n
+        case AArch64CC_PL: return not(n)
+        case AArch64CC_VS: return overflow
+        case AArch64CC_VC: return not(overflow)
+        case AArch64CC_HI: return expression(.bitAnd, carry, not(z))
+        case AArch64CC_LS: return expression(.bitOr, not(carry), z)
+        case AArch64CC_GE: return not(lt)
+        case AArch64CC_LT: return lt
+        case AArch64CC_GT: return expression(.bitAnd, not(z), not(lt))
+        case AArch64CC_LE: return expression(.bitOr, z, lt)
+        default: return .unknown
+        }
     }
 
     private func subtractionCondition(_ lhs: AbstractValue, _ rhs: AbstractValue, code: AArch64CC_CondCode, width: Int) -> AbstractValue {

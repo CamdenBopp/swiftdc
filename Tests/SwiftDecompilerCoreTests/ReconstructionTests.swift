@@ -1040,9 +1040,9 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
 @Test func readsCmnAsAComparisonWithTheNegatedOperandIfPresent() async throws {
     let fixture = "Fixtures/Sample/libCompares.dylib"
     guard let minusOne = try await structuredText("Compares.onMinusOne", in: fixture) else { return }
-    #expect(minusOne.contains("if (x0 == -1) {"), Comment(rawValue: minusOne))
+    #expect(minusOne.contains("if (arg0 == -1) {"), Comment(rawValue: minusOne))
     guard let minusTen = try await structuredText("Compares.onMinusTen", in: fixture) else { return }
-    #expect(minusTen.contains("if (x0 != -0xa) {"), Comment(rawValue: minusTen))
+    #expect(minusTen.contains("if (arg0 != -10) {"), Comment(rawValue: minusTen))
 }
 
 /// `b.mi` after `cmn a, b` tests the sign of `a + b`. The text path rendered
