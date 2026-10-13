@@ -2197,6 +2197,40 @@ public struct ValueTracer: Sendable {
                 registers[Self.flagsWidthKey] = .immediate(UInt64(dest.widthBits))
             }
 
+        case AARCH64_INS_EXTR, AARCH64_INS_ROR, AARCH64_INS_ALIAS_ROR:
+            // Extract a width-sized window from high:low. The immediate ROR
+            // alias supplies the same register for both halves. Register ROR
+            // has a different operand shape and fails the immediate guard.
+            let rotating = detail.id != AARCH64_INS_EXTR
+            let shift: Int64? = rotating
+                ? (detail.operands.count == 2 && detail.operands[1].shift.type == AARCH64_SFT_ROR
+                    ? Int64(detail.operands[1].shift.amount) : nil)
+                : (detail.operands.count == 4 ? detail.operands[3].operand.immediateValue : nil)
+            guard let dest = destinationRegister(detail), [32, 64].contains(dest.widthBits),
+                  dest.kind == .gpr || dest.kind == .zero,
+                  detail.operands.count == (rotating ? 2 : 4),
+                  let high = detail.operands[1].operand.register,
+                  let low = detail.operands[rotating ? 1 : 2].operand.register,
+                  high.widthBits == dest.widthBits, low.widthBits == dest.widthBits,
+                  high.kind == .gpr || high.kind == .zero,
+                  low.kind == .gpr || low.kind == .zero,
+                  let shift,
+                  shift >= 0, shift < dest.widthBits
+            else { clobber(detail, into: &registers); return }
+            // Capstone attaches the alias's rotation to its source operand.
+            // Strip that metadata and implement the instruction exactly once.
+            let lowValue = source(StructuredOperandInfo(operand: .register(low),
+                shift: (AARCH64_SFT_INVALID, 0), extender: AARCH64_EXT_INVALID), in: registers)
+            // At zero, the high register contributes no bits. Do not shift by
+            // the full width, or let an unknown high half poison the low half.
+            if shift == 0 { write(dest, lowValue, into: &registers); return }
+            let highValue = source(StructuredOperandInfo(operand: .register(high),
+                shift: (AARCH64_SFT_INVALID, 0), extender: AARCH64_EXT_INVALID), in: registers)
+            let result = expression(.bitOr,
+                expression(.shiftRight, lowValue, .immediate(UInt64(shift))),
+                expression(.shiftLeft, highValue, .immediate(UInt64(dest.widthBits) - UInt64(shift))))
+            write(dest, result, into: &registers)
+
         case AARCH64_INS_SMULL, AARCH64_INS_UMULL,
              AARCH64_INS_SMADDL, AARCH64_INS_UMADDL,
              AARCH64_INS_SMSUBL, AARCH64_INS_UMSUBL,

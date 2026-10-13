@@ -66,6 +66,9 @@ $CLANG -arch arm64 -dynamiclib conditionalflags.s -o libConditionalFlags.dylib
 echo "==> symbolic addition flags at both widths (addflags.s)"
 $CLANG -arch arm64 -dynamiclib addflags.s -o libAddFlags.dylib
 
+echo "==> scalar extract and immediate rotation (extract.s)"
+$CLANG -arch arm64 -dynamiclib extract.s -o libExtract.dylib
+
 echo "==> dependent select flow and non-address-order layout (selectflow.s)"
 $CLANG -arch arm64 -dynamiclib selectflow.s -o libSelectFlow.dylib
 

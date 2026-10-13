@@ -19,7 +19,7 @@ import Testing
     let inputs = ResearchFixtures.inputs(seed: 7)
     let required: Set<String> = ["increment", "mixedBits", "lowWord", "wordAdd", "unsignedByte", "wordArithmeticShift", "signedLowerBound", "signedRange",
                                  "signExtendByte", "signExtendHalf", "signExtendWord", "wordSelect", "wordNot", "shiftedNot", "orNot",
-                                 "signedWordProduct", "unsignedWordProduct", "signedWordAccumulate", "unsignedWordSubtract"]
+                                 "signedWordProduct", "unsignedWordProduct", "signedWordAccumulate", "unsignedWordSubtract", "rotateBits", "rotateWord"]
     for module in ResearchFixtures.modules {
         let path = "Fixtures/Sample/lib\(module).dylib"
         guard FileManager.default.fileExists(atPath: path) else { continue }

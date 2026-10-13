@@ -2101,7 +2101,7 @@ if a test was observed to fail without the fix.
   -Onone functions cover nonzero starts, sequential and nested loops, an
   unknown entry and multiple exits. Source return recovery remains separate;
   these functions still decline unrecovered results.
-- **OPEN — optimized boundedLoop still needs widened multiply/extract semantics.**
+- **SUPERSEDED — widened multiply/extract now transfer; loop verification stays open.**
   At -O/-Osize the loop becomes arithmetic including SMULL and EXTR. The
   current tracer declines its nonzero result. Its -Onone body is structured,
   but exit accumulator recovery and a complete executable-body oracle remain
@@ -2145,7 +2145,7 @@ if a test was observed to fail without the fix.
 
 ## 2026-10-13: widened word multiplication
 
-- **IMPLEMENTED (working tree) — scalar long multiplication.** SMULL/UMULL,
+- **IMPLEMENTED (`5d7e6fe`) — scalar long multiplication.** SMULL/UMULL,
   SMADDL/UMADDL, SMSUBL/UMSUBL and their negate aliases now widen both 32-bit
   operands using the instruction's signedness before multiplication, with
   64-bit addends and result arithmetic. Scalar register/width guards exclude
@@ -2158,9 +2158,9 @@ if a test was observed to fail without the fix.
   3,672 comparisons over 51 inputs, all optimization levels, presets and
   renderers. Independently removing signed extension, unsigned narrowing or
   the 64-bit addend failed with 480/588/582 issues. Unsupported inputs decline.
-- **OPEN — optimized boundedLoop still needs EXTR.** Its SMULL now transfers
-  correctly, but the following extract remains unknown, so its return still
-  declines. Do not count the instruction addition as complete loop recovery.
+- **SUPERSEDED — EXTR support ships below; loop verification stays open.**
+  Its SMULL transferred correctly at this checkpoint, but the following extract
+  remained unknown, so its return declined. Do not count the instruction addition as complete loop recovery.
 - **MEASURED — 36 native configurations, zero refutations.** Onone verifies
   1,122 of 1,377 cases with 255 not-evaluated; O/Osize verifies 1,275 with 102
   not-evaluated. All four new widened-product functions verify, and missing
@@ -2168,14 +2168,14 @@ if a test was observed to fail without the fix.
   changed, only the three research modules' pseudo/structured views: their
   previously unknown long-product return expressions now recover. Other
   fixture output is unchanged.
-- **OPEN — freshly compiled Onone signedRange declines.** Both the frozen
+- **SUPERSEDED (`44fcbeb`) — freshly compiled Onone signedRange declined.** Both the frozen
   baseline and new binary emit return ? for ResearchOnone_R0.signedRange.
   This adds 51 unknown cases to the matrix; do not hide it by dropping that
   function or counting it as verified.
 
 ## 2026-10-13: symbolic addition flags
 
-- **FIXED (working tree) — ADDS/CMN conditions ignored addition overflow.**
+- **FIXED (`5b44c97`) — ADDS/CMN conditions ignored addition overflow.**
   Onone signedRange exposed `adds x8,x0,#11; b.lt` rendered as
   `(arg0 + 11) < 0`. A wrapped sum's sign is not N xor V, so this condition
   is false evidence at signed-overflow boundaries. Addition producers now
@@ -2190,7 +2190,7 @@ if a test was observed to fail without the fix.
   over all compiler levels, presets and renderers. Independent consumer,
   ADDS-producer, CMN-producer and minimum-threshold mutations failed with
   191/220/220/968 issues. The new native probe test was red before the fix.
-- **OPEN — chained diamond recovery still uses stale outgoing states.**
+- **SUPERSEDED (`44fcbeb`) — chained diamonds used stale outgoing states.**
   signedRange's first boolean merge is reconstructed in its entry state, but
   the second diamond reads the original unknown outgoing state. Correcting
   addition conditions prevents false predicates; propagating proven merged
@@ -2265,3 +2265,42 @@ if a test was observed to fail without the fix.
   with the prerequisite consumption fix applied.
   Rebuilt final enforcing suite: 574 tests in 11 suites pass, including
   cross-process determinism, probe output independence and streaming memory.
+
+## 2026-10-13: scalar extract and immediate rotation
+
+- **IMPLEMENTED — EXTR and immediate ROR preserve their bit window.**
+  Scalar 32/64-bit EXTR now takes low bits from the second source and high
+  bits from the first, using logical shifts and a width-normalized write.
+  Immediate ROR supplies the same register for both halves. Capstone attaches
+  that alias's immediate to the source's shift metadata; it is applied once.
+  A zero shift reads only the low register, even if the high register is
+  unknown. Register ROR and incompatible register/operand layouts decline.
+  This follows [Arm's assembler reference, EXTR and ROR immediate](https://documentation-service.arm.com/static/5f3fa899428f7a6b3328fd44).
+- **VALIDATED — 3,402 native assembly comparisons.** The authored fixture
+  covers 42 extract/rotate forms across both widths, zero and maximum shifts,
+  word-boundary shifts, asymmetric halves and high-bit inputs. Additional
+  tests require constant folding, unknown-high zero extraction and declining
+  register rotation. Native and actual rendered text also cover rotateBits
+  and rotateWord at Onone/O/Osize: 1,836 text comparisons over all presets
+  and both renderers. Removing the low-half selection, alias handling, zero
+  special case or unsigned shift fails independently with 1,254/1/2/471 issues.
+  The native assembly test was red before implementation.
+- **MEASURED — the Swift corpus grows to 30 functions, with zero refutations.**
+  `research --iterations 2 --seed 7` verifies 1,326 of 1,530 Onone cases
+  (204 unknowns), and 1,428 at O/Osize (102 unknowns), in all 36 configurations.
+  Missing observations remain zero. The two rotate functions are required
+  verified cases, adding 102 per configuration. This measures the authored
+  corpus; no performance improvement or general accuracy percentage is claimed.
+- **OPEN — boundedLoop remains unverified after extract support.** Its
+  optimized arithmetic can now transfer through EXTR, but multiple returns
+  and partially rendered complex expressions still prevent full verification.
+  The research loop retains those cases as unknown. Onone's actual loop and
+  byteSwap remain separate gaps. Do not claim this change completes loops.
+- **BLAST RADIUS — four of 152 outputs change.** Only the optimized and
+  size-optimized research modules' pseudo/structured views change: both rotates
+  recover and boundedLoop gains a partial expression with explicit unknown
+  leaves at the existing text-depth limit. Its zero return and branch structure
+  stay intact. Native scoring reports multiple exits and keeps it unknown.
+  Onone rotates already lowered to supported shifts and are unchanged.
+  All other fixture output is unchanged; the rebuilt enforcing suite passes
+  578 tests in 11 suites, including determinism and streaming memory.

@@ -1049,3 +1049,7 @@ private func verifyNativeRenderedReturns(names: Set<String>, markers: [String: S
         }
     }
 }
+
+@Test func renderedImmediateRotatesAgreeWithNativeBitPatternsIfPresent() async throws {
+    try await verifyNativeRenderedReturns(names: ["rotateBits", "rotateWord"])
+}

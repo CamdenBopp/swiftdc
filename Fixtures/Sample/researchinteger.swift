@@ -54,3 +54,9 @@
     let n = UInt32(truncatingIfNeeded: x)
     return UInt64((n & 1) != 0 ? n &+ 1 : ~n)
 }
+// Scalar immediate rotates lower to ROR, the equal-input EXTR alias.
+@inline(never) public func rotateBits(_ x: UInt64) -> UInt64 { (x >> 7) | (x << 57) }
+@inline(never) public func rotateWord(_ x: UInt64) -> UInt64 {
+    let n = UInt32(truncatingIfNeeded: x)
+    return UInt64((n >> 7) | (n << 25))
+}
