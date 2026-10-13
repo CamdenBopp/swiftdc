@@ -2004,7 +2004,7 @@ if a test was observed to fail without the fix.
 
 ## 2026-10-12: scalar extension aliases
 
-- **FIXED (working tree) — optimized integer sign extensions were unknown.**
+- **FIXED (`985880b`) — optimized integer sign extensions were unknown.**
   `ResearchOptimized.signExtendWord` is `sxtw x0, w0; ret`, and
   `signExtendByte` uses `sxtb x0, w0`. The tracer had operand-extension support
   but declined these standalone scalar instructions. It now handles SXTB,
@@ -2021,11 +2021,17 @@ if a test was observed to fail without the fix.
   -Onone, -O and -Osize. The bounded loop and word selection remain unknown.
   Signed and unsigned transfer mutations independently fail the scalar
   regression; disabling signed extensions also loses native recovery coverage.
-- **OPEN — text rendering does not distinguish arithmetic and logical shifts.**
-  `AbstractBinaryOperator.symbol` uses `>>` for both, although the exported
-  probe AST and independent integer evaluator preserve the distinction.
-  `signExtendWord` now exposes `((arg0 & 0xffffffff) << 32) >> 32` in its
-  UInt64-returning pseudocode. Native agreement proves the arithmetic-shift
-  AST, not a literal Swift interpretation of that text. Audit signed casts
-  and word truncation in the text renderer independently before treating
-  rendered expressions as compilable Swift equivalents.
+- **FIXED (working tree) — text rendering did not distinguish arithmetic and
+  logical shifts.** `AbstractBinaryOperator.symbol` formerly used `>>` for
+  both, although the exported probe AST preserved the distinction. Text now
+  uses `>>ˢ` (sign-filling) and `>>ᵁ` (zero-filling), preserving the register
+  operation independently of source types. A strict Swift test parses the
+  actual pseudo and structured return text for six required research functions
+  across three optimization levels and all display presets, then compares 47
+  samples per function with independent native expectations: 5,076 comparisons.
+  Unsupported grammar fails; it cannot silently remove a covered function.
+  The pre-fix output failed with 270 issues, including native mismatches in
+  logical shifts with high-bit inputs. The test parser now reads full-width
+  hex bit patterns before decimal exponents, so hexadecimal `e` does not make
+  an integer a floating-point value. These operators denote pseudocode, not
+  compilable Swift syntax.

@@ -265,6 +265,10 @@ for how that works and what differs there.
   rotation, and loop-carried accumulators (`total += i`) are reconstructed.
   Anything irreducible degrades to a labeled `goto`, so output is never
   structurally wrong — brace-balanced by construction.
+- **Explicit integer semantics** — right shifts use `>>ˢ` for arithmetic
+  (sign-filling) and `>>ᵁ` for logical (zero-filling) shifts, independent of
+  the source parameter or result type. These are pseudocode operators over
+  register bit patterns; 32-bit normalization remains an explicit mask.
 - **Cross-references** — a call graph over resolved branch targets, including
   indirect `blr` calls whose register value provably traces to a concrete
   witness/vtable/GOT pointer slot.

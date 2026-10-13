@@ -89,7 +89,7 @@ private struct ExpressionParser {
         // markers carry U+1D41 and must be matched before their bare forms.
         let operators = [
             "<=\u{1D41}", ">=\u{1D41}", "<\u{1D41}", ">\u{1D41}", "/\u{1D41}", "%\u{1D41}",
-            "<<", ">>", "<=", ">=", "==", "!=", "&&", "||",
+            ">>\u{1D41}", ">>\u{02E2}", "<<", ">>", "<=", ">=", "==", "!=", "&&", "||",
             "+", "-", "*", "/", "%", "&", "|", "^", "<", ">", "!", "~", "?", ":", "(", ")",
         ]
         let characters = Array(text)
@@ -179,6 +179,11 @@ private struct ExpressionParser {
                 try expect(")")
                 return .call(token, argument)
             }
+            // Hex integers may contain `e` and occupy the entire register.
+            // Parse their bit pattern before considering a decimal exponent.
+            if token.hasPrefix("0x"), let bits = UInt(token.dropFirst(2), radix: 16) {
+                return .literal(Int(bitPattern: bits))
+            }
             // A decimal point or exponent means this is a floating-point literal.
             // Swift's Double(String) is correctly rounded, so parsing the rendered
             // text reproduces exactly the double that text denotes — which is what
@@ -188,9 +193,6 @@ private struct ExpressionParser {
                 return .doubleLiteral(value)
             }
             if let value = Int(token) { return .literal(value) }
-            if token.hasPrefix("0x"), let value = Int(token.dropFirst(2), radix: 16) {
-                return .literal(value)
-            }
             throw Unsupported(reason: "token '\(token)'")
         }
     }
@@ -299,7 +301,8 @@ private func integerBinary(_ op: String, _ a: Int, _ b: Int) throws -> EvalValue
         case "|": return .int(a | b)
         case "^": return .int(a ^ b)
         case "<<": return .int(a << b)
-        case ">>": return .int(a >> b)
+        case ">>", ">>\u{02E2}": return .int(a >> b)
+        case ">>\u{1D41}": return .int(Int(bitPattern: UInt(bitPattern: a) >> b))
         case "==": return .bool(a == b)
         case "!=": return .bool(a != b)
         case "<": return .bool(a < b)
@@ -970,4 +973,44 @@ private func callConversion(
     }
     let missing = requiredConversionCases.subtracting(comparedNames)
     #expect(missing.isEmpty, "conversion cases not compared: \(missing.sorted()); skipped: \(skipped)")
+}
+
+/// This oracle reads text, not the exported value AST. Unsupported grammar
+/// fails instead of skipping any of these required scalar return expressions.
+@Test func renderedRightShiftsAgreeWithNativeBitPatternsIfPresent() async throws {
+    let names: Set<String> = ["mixedBits", "signedShift", "wordArithmeticShift",
+                             "signExtendByte", "signExtendHalf", "signExtendWord"]
+    let inputs = ResearchFixtures.inputs(seed: 7)
+    for module in ResearchFixtures.modules {
+        let path = "Fixtures/Sample/lib\(module).dylib"
+        guard FileManager.default.fileExists(atPath: path) else { continue }
+        let oracle = try ResearchFixtures.oracle(path: path, module: module, inputs: inputs)
+        for preset in DemanglePreset.allCases {
+            let functions = try await withStableDependencies {
+                try await Disassembler(preset: preset).disassemble(path: path)
+            }
+            for name in names.sorted() {
+                let cases = oracle.cases.filter { $0.id?.hasPrefix(name + "/") == true }
+                #expect(cases.count == inputs.count)
+                let expectation = try #require(cases.first)
+                let function = try #require(functions.first { $0.startAddress == expectation.function })
+                for body in [function.renderPseudo(), function.renderStructured()] {
+                    let returns = body.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+                        .filter { $0.hasPrefix("return ") }
+                    #expect(returns.count == 1)
+                    let expression = String(try #require(returns.first).dropFirst(7))
+                    // Both operations must be explicit even if a display preset
+                    // omits the argument type or the source result is unsigned.
+                    #expect(expression.contains(name == "mixedBits" ? ">>ᵁ" : ">>ˢ"))
+                    var parser = ExpressionParser(expression)
+                    let tree = try parser.parseAll()
+                    for sample in cases {
+                        let predicted = try evaluate(tree, args: sample.arguments.map { Int(bitPattern: UInt($0)) })
+                        #expect(predicted.matches(.int(Int(bitPattern: UInt(sample.expected)))),
+                                "\(module).\(name) [\(preset)]: \(expression), \(sample.arguments)")
+                    }
+                }
+            }
+        }
+    }
 }

@@ -73,7 +73,7 @@ import Foundation
         try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "Reconstruction.truncated(")
     }
     let body = functions.map { $0.renderStructured() + "\n" + $0.renderPseudo() }.joined(separator: "\n")
-    #expect(body.contains("(arg0 >> 52)"), "\(body)")
+    #expect(body.contains("(arg0 >>ᵁ 52)"), "\(body)")
     #expect(body.contains("& 2047)"), "\(body)")
     #expect(!body.contains("e-32"), "\(body)")
 }

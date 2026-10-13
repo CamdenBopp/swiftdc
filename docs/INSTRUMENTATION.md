@@ -264,6 +264,13 @@ For more control, construct `ProbeScore`, install `score.recorder` around the
 existing pipeline, and call `score.report()` afterward. Arbitrary semantic
 checks use the existing typed `assessmentValidators` surface.
 
+The value AST retains `shift-right` and `arithmetic-shift-right` as distinct
+operations. Text output uses `>>ᵁ` and `>>ˢ` respectively, independent of the
+source signature. The native research score checks the AST; the strict
+`renderedRightShiftsAgreeWithNativeBitPatternsIfPresent` regression separately
+parses the actual text and compares required shift expressions with native
+execution. A verified AST alone does not validate every renderer transformation.
+
 The recorder's `.records` output streams typed events outside its mutex, with
 incidental probes muted. It avoids serialization and full-trace retention.
 The scorer retains only selected functions' exits, bounds duplicate storage,

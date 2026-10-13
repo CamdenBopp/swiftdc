@@ -86,7 +86,10 @@ public enum AbstractBinaryOperator: Equatable, Sendable {
         case .bitOr: "|"
         case .bitXor: "^"
         case .shiftLeft: "<<"
-        case .shiftRight, .arithmeticShiftRight: ">>"
+        // The register bit pattern does not inherit the source operand's
+        // signedness. Preserve the machine operation even in UInt returns.
+        case .shiftRight: ">>\u{1D41}"
+        case .arithmeticShiftRight: ">>\u{02E2}"
         case .multiplyHigh, .unsignedMultiplyHigh: "mulh"
         case .equal: "=="
         case .notEqual: "!="
