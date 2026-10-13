@@ -7,10 +7,11 @@ import Foundation
 public enum ResearchFixtures {
     public static let names = ["increment", "mixedBits", "lowWord", "signedShift", "unsignedRange",
                                "signedRange", "choose", "quotient", "residue", "boundedLoop", "wordAdd",
-                               "wordArithmeticShift", "signExtendWord", "signExtendByte", "unsignedByte", "wordSelect"]
+                               "wordArithmeticShift", "signExtendWord", "signExtendByte", "signExtendHalf", "unsignedByte", "wordSelect"]
     public static let modules = ["ResearchOnone", "ResearchOptimized", "ResearchSize"]
     public static let edges: [UInt64] = [0, 1, 2, 6, 7, 15, 16, 19, 20, 23, 26, 27, 31, 32, 63, 64,
-                                       99, 100, UInt64(UInt32.max), 1 << 32, (1 << 63) - 1, 1 << 63, .max]
+                                       99, 100, 0x7f, 0x80, 0xff, 0x7fff, 0x8000, 0xffff,
+                                       0x7fffffff, 0x80000000, UInt64(UInt32.max), 1 << 32, (1 << 63) - 1, 1 << 63, .max]
 
     /// SplitMix64 makes exploratory samples repeatable independently of hash or
     /// process order. The edge corpus is retained even when randomCount is zero.

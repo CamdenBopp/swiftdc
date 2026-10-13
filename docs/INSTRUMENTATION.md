@@ -389,6 +389,9 @@ executes only its declared UInt64-to-UInt64 exports. Independent nm and system
 demangler output identify each entry and its explicit scalar signature.
 `dladdr` verifies that native execution belongs to the intended image.
 Deterministic SplitMix64 samples supplement fixed integer edge cases.
+The corpus currently includes 17 scalar functions and 31 fixed inputs,
+including the byte, halfword and word sign boundaries. With the default
+16 random inputs, each configuration scores 799 native expectations.
 
 Every build is analyzed with all three demangling presets through both array
 and streaming entry points. The loop retains the source snapshot, assembly,

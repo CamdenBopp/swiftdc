@@ -1964,7 +1964,7 @@ if a test was observed to fail without the fix.
   simplified mode. Canonical semantic identities now recover the argument
   under every preset; the integer corpus has matching coverage across presets.
   See the presentation-independent recovery follow-up below.
-- **FIXED (working tree) — unsupported pure returns disappear from the flat fallback.**
+- **FIXED (`3f929e7`) — unsupported pure returns disappear from the flat fallback.**
   Optimized `signExtendWord`, `signExtendByte` and `wordSelect` have known
   UInt64 signatures but unsupported instruction semantics. Their unknown
   register facts were observed, while the early enrichment guard skipped return
@@ -1978,7 +1978,7 @@ if a test was observed to fail without the fix.
   546 verified and 78 not-evaluated cases. Recovery coverage did not increase.
 - **IMPLEMENTED — repeatable research evidence in Swift.**
   `swiftdc research --iterations 2 --seed 7` adds fixed edges and repeatable
-  random samples across 16 authored scalar functions, three optimization
+  random samples across the authored scalar functions, three optimization
   levels, three display presets and two analysis entry points. Each batch uses
   distinct modules and validates native symbol ownership. Evidence is retained
   under a fresh run directory, and refutations make the command fail. Scoring
@@ -2001,3 +2001,31 @@ if a test was observed to fail without the fix.
   `PresetSemanticTests` covers imported calls, sampled native outcomes, display
   spellings, filters and identity preservation. Canonical-print and semantic-name
   fallback mutations independently remove the covered recovery.
+
+## 2026-10-12: scalar extension aliases
+
+- **FIXED (working tree) — optimized integer sign extensions were unknown.**
+  `ResearchOptimized.signExtendWord` is `sxtw x0, w0; ret`, and
+  `signExtendByte` uses `sxtb x0, w0`. The tracer had operand-extension support
+  but declined these standalone scalar instructions. It now handles SXTB,
+  SXTH, SXTW, UXTB and UXTH using the low source byte/halfword/word; a W
+  destination still zero-extends its final 32-bit result. This follows the
+  [Arm instruction reference](https://documentation-service.arm.com/static/6245c734b059dc5ff9a8bdab),
+  including the distinct W and X destination semantics.
+- **VALIDATED — native extensions at every optimization level.** An authored
+  halfword function and explicit byte/halfword/word sign-boundary inputs extend
+  the Swift research corpus to 17 functions and 47 inputs. Running
+  `swiftdc research --iterations 2 --seed 7` produced 36 configurations, each
+  with 705 verified, 94 not-evaluated, zero refuted and zero missing cases.
+  All byte/halfword/word sign-extension samples are required to verify at
+  -Onone, -O and -Osize. The bounded loop and word selection remain unknown.
+  Signed and unsigned transfer mutations independently fail the scalar
+  regression; disabling signed extensions also loses native recovery coverage.
+- **OPEN — text rendering does not distinguish arithmetic and logical shifts.**
+  `AbstractBinaryOperator.symbol` uses `>>` for both, although the exported
+  probe AST and independent integer evaluator preserve the distinction.
+  `signExtendWord` now exposes `((arg0 & 0xffffffff) << 32) >> 32` in its
+  UInt64-returning pseudocode. Native agreement proves the arithmetic-shift
+  AST, not a literal Swift interpretation of that text. Audit signed casts
+  and word truncation in the text renderer independently before treating
+  rendered expressions as compilable Swift equivalents.

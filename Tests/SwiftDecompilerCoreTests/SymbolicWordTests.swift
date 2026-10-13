@@ -19,6 +19,22 @@ private func predictedWord(_ words: [UInt32], input: UInt64) throws -> UInt64 {
     let returned = try #require(result.exitValues[function.instructions.last!.address])
     return try ProbeValue.abstractValue(returned).evaluateInteger(arguments: [input, 33])
 }
+
+@Test func scalarExtensionAliasesUseTheirSourceSignAndDestinationWidth() throws {
+    for input: UInt64 in [0, 0x7f, 0x80, 0xff, 0x7fff, 0x8000, 0xffff,
+                          0x7fffffff, 0x80000000, 0xffffffff, 0xdeadbeef80000080, .max] {
+        let byte = UInt64(bitPattern: Int64(Int8(truncatingIfNeeded: input)))
+        let half = UInt64(bitPattern: Int64(Int16(truncatingIfNeeded: input)))
+        let word = UInt64(bitPattern: Int64(Int32(truncatingIfNeeded: input)))
+        for (encoding, expected): (UInt32, UInt64) in [
+            (0x93401c00, byte), (0x93403c00, half), (0x93407c00, word),
+            (0x13001c00, byte & 0xffffffff), (0x13003c00, half & 0xffffffff),
+            (0x53001c00, input & 0xff), (0x53003c00, input & 0xffff)
+        ] {
+            #expect(try predictedWord([encoding, 0xd65f03c0], input: input) == expected)
+        }
+    }
+}
 @Test func aSymbolicWordMoveZeroExtendsIntoTheReturnRegister() throws {
     for input: UInt64 in [0, 1, UInt64(UInt32.max), 1 << 32, .max, 0xdeadbeef80000000] {
         #expect(try predictedWord([0x2a0003e0, 0xd65f03c0], input: input) == input & 0xffff_ffff)

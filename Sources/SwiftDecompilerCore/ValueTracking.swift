@@ -2159,6 +2159,26 @@ public struct ValueTracer: Sendable {
             }
             write(dest, source(detail.operands[1], in: registers), into: &registers)
 
+        case AARCH64_INS_SXTB, AARCH64_INS_SXTH, AARCH64_INS_SXTW,
+             AARCH64_INS_UXTB, AARCH64_INS_UXTH:
+            // Scalar extend aliases extract the low byte/half/word. Extend
+            // before write() so a W destination zero-extends the signed word.
+            guard let dest = destinationRegister(detail), dest.kind == .gpr,
+                  detail.operands.count == 2,
+                  let input = detail.operands[1].operand.register, input.kind == .gpr
+            else { clobber(detail, into: &registers); return }
+            let bits: Int = switch detail.id {
+            case AARCH64_INS_SXTB, AARCH64_INS_UXTB: 8
+            case AARCH64_INS_SXTH, AARCH64_INS_UXTH: 16
+            default: 32
+            }
+            // Capstone may repeat the alias's extension in operand.extender.
+            // Read the register once, then apply the instruction's semantics.
+            let value = source(StructuredOperandInfo(operand: .register(input),
+                shift: (AARCH64_SFT_INVALID, 0), extender: AARCH64_EXT_INVALID), in: registers)
+            let signed = detail.id == AARCH64_INS_SXTB || detail.id == AARCH64_INS_SXTH || detail.id == AARCH64_INS_SXTW
+            write(dest, signed ? signExtended(value, bits: bits) : narrowed(value, bits: bits), into: &registers)
+
         case AARCH64_INS_MOV, AARCH64_INS_MOVZ:
             // Capstone pre-folds MOVZ's shift into the immediate.
             guard let dest = destinationRegister(detail), detail.operands.count >= 2 else {
