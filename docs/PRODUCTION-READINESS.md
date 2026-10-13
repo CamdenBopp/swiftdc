@@ -2458,3 +2458,21 @@ if a test was observed to fail without the fix.
   Fixtures/Sample/libABISavedSlots.dylib -f ABIStackSlots --pseudo` or
   `--structured`. Existing assumptions about non-stack pointers
   and escaped aliases remain outside this byte-overlap fix.
+
+## 2026-10-13: CFG bound proofs
+
+- **FIXED (working tree) — jump-table guards prove the index actually read.**
+  `JumpTables` rejects a narrow comparison bounding a wide load, a call
+  clobbering clamp flags, and a destructive SUBS replacing the compared index
+  in either the clamp or branch-guard form. `jump_table_bounds.s` reduces
+  all four unsafe proofs alongside five valid controls, including UXTW,
+  rechecked flags and SUBS writing a separate destination. The tests cover
+  both whole-file objdump and filtered Capstone paths (`JumpTableBoundTests`).
+  All eight focused table tests pass. Independently removing the width, call,
+  destructive-clamp or destructive-guard check fails with 8/8/2/2 assertions;
+  the restored source was rebuilt and passed again. Across 88 fixture CFGs,
+  only the reduction changes (nine tables to five); the other 87 retain
+  identical indirect-branch targets. `/bin/zsh` arm64e retains all 22 recovered
+  tables with identical targets. Declined tables retain unresolved indirect
+  transfers. Reproduce with `swiftdc disasm
+  Fixtures/Sample/libJumpTableBounds.dylib --cfg`.

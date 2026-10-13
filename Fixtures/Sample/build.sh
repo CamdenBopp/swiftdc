@@ -86,6 +86,9 @@ $SWIFTC -O -emit-library -module-name UnknownReturn unknownreturn.swift -o libUn
 echo "==> callee-save stack-byte overlap (abi_saved_slots.s)"
 $CLANG -arch arm64 -dynamiclib abi_saved_slots.s -o libABISavedSlots.dylib -Wl,-install_name,@rpath/libABISavedSlots.dylib
 
+echo "==> hardened jump-table bounds (jump_table_bounds.s) — index widths and call-clobbered NZCV"
+$CLANG -arch arm64 -dynamiclib jump_table_bounds.s -o libJumpTableBounds.dylib
+
 echo "==> dependent select flow and non-address-order layout (selectflow.s)"
 $CLANG -arch arm64 -dynamiclib selectflow.s -o libSelectFlow.dylib
 

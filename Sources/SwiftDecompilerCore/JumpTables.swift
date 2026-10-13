@@ -139,11 +139,18 @@ enum JumpTables {
                   clamp.detail.operands[0].operand.register?.widthBits == 64 || loadUsesLow32
             else { return nil }
             for index in stride(from: clamp.index - 1, through: 0, by: -1) {
-                guard let detail = block[index].detail else { return nil }
+                // Calls do not preserve NZCV, even if the source index lives in
+                // a callee-saved register and the call itself sets no flags.
+                guard let detail = block[index].detail, block[index].controlFlow != .call else { return nil }
                 if detail.id == AARCH64_INS_ALIAS_CMP || detail.id == AARCH64_INS_SUBS {
                     let operands = detail.id == AARCH64_INS_SUBS ? Array(detail.operands.dropFirst()) : detail.operands
-                    guard operands.count == 2, operands[0].operand.register?.key == source.key,
-                          let k = operands[1].shiftedImmediate, k >= 0
+                    guard operands.count == 2, let compared = operands[0].operand.register,
+                          compared.key == source.key, let k = operands[1].shiftedImmediate, k >= 0,
+                          // Flags compare the old source. SUBS must not replace
+                          // it with the subtraction result selected by CSEL.
+                          !writes(detail, source.key),
+                          // The clamp must bound every bit the table load reads.
+                          compared.widthBits == 64 || loadUsesLow32
                     else { return nil }
                     limit = UInt64(k)
                     break
@@ -170,6 +177,7 @@ enum JumpTables {
                 guard operands.count == 2, let compared = operands[0].operand.register,
                       compared.key == indexRegister.key,
                       let k = operands[1].shiftedImmediate, k >= 0,
+                      !writes(detail, indexRegister.key),
                       // A 32-bit compare bounds only the low half: the load
                       // must read only that half.
                       compared.widthBits == 64 || loadUsesLow32
