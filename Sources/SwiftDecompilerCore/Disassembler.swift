@@ -2596,6 +2596,37 @@ public struct Disassembler: Sendable {
         return swiftReturnRegister(forReturnType: returnType)
     }
 
+    /// A direct external branch forwards an ordinary synchronous Swift scalar
+    /// result. Its pre-branch registers are arguments, never that result.
+    static func scalarTailReturnSites(
+        in function: DisassembledFunction,
+        enumCaseIndex: EnumCaseIndex = EnumCaseIndex(), classTypeIndex: ClassTypeIndex = ClassTypeIndex()
+    ) -> Set<UInt64> {
+        func ordinaryHead(_ head: String) -> Bool {
+            guard let args = DisassembledFunction.outermostArgumentListRange(of: head) else { return false }
+            var name = withoutPrivateDiscriminators(String(head[..<args.lowerBound].dropLast())).trimmingCharacters(in: .whitespaces)
+            if name.hasPrefix("static ") { name.removeFirst("static ".count) }
+            return name.contains(".") && name.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }
+        }
+        // Compute caller ABI eligibility once, not once per external branch.
+        guard function.objcMethod == nil,
+              let first = function.instructions.first, let last = function.instructions.last,
+              let name = function.analysisName,
+              let caller = DisassembledFunction.splitSignature(name), !caller.isAsync, !caller.isThrowing,
+              ordinaryHead(caller.head),
+              swiftReturnRegister(of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) != nil
+        else { return [] }
+        return Set(function.instructions.compactMap { insn in
+            guard insn.controlFlow == .branch, let target = insn.branchTarget,
+                  target < first.address || target > last.address,
+                  let name = DisassembledFunction.calleeName(of: insn),
+                  let callee = DisassembledFunction.splitSignature(name), !callee.isAsync, !callee.isThrowing,
+                  caller.result == callee.result, ordinaryHead(callee.head)
+            else { return nil }
+            return insn.address
+        })
+    }
+
     static func swiftReturnRegister(
         forReturnType returnType: String, enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
         classTypeIndex: ClassTypeIndex = ClassTypeIndex()
@@ -4996,6 +5027,7 @@ public struct Disassembler: Sendable {
         }()
 
         var observedReturnPaths: [UInt64: AbstractValue]?
+        let scalarTailReturns = Self.scalarTailReturnSites(in: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
         func returnPath(at address: UInt64) -> ProbeValue {
             if observedReturnPaths == nil { observedReturnPaths = Probe.returnPathConditions(analysis, of: function) }
             return .abstractValue(observedReturnPaths?[address] ?? .unknown)
@@ -5021,6 +5053,9 @@ public struct Disassembler: Sendable {
 
             let callee = DisassembledFunction.calleeName(of: insn)
             let isObjCNonVoid = function.objcMethod.map { !$0.returnsVoid } == true
+            if scalarTailReturns.contains(insn.address), let callee {
+                sourceNotes.append("return \(callExpression(callee: callee, values: argumentsByAddress[insn.address] ?? [], site: insn.address))")
+            }
             if isObjCNonVoid, let rawExit = analysis.exitValues[insn.address] {
                 let exit = sanitizeValue(rawExit)
                 if insn.controlFlow == .return, exit != .unknown {
@@ -5243,11 +5278,12 @@ public struct Disassembler: Sendable {
                 sourceNotes.append("return ?")
             }
 
-            if Probe.isActive, isReturn(insn) {
+            if Probe.isActive, isReturn(insn) || scalarTailReturns.contains(insn.address) {
                 let renderedReturn = sourceNotes.first { $0.hasPrefix("return ") }
                 let returnsValue = DisassembledFunction.signatureReturnsValue(
                     displayName: function.analysisDisplayName, objcSignature: function.objcMethod?.signature)
-                let status = throwExits.contains(insn.address) ? "throw"
+                let status = scalarTailReturns.contains(insn.address) ? "tail-call"
+                    : throwExits.contains(insn.address) ? "throw"
                     : renderedReturn == "return ?" ? "unknown"
                     : renderedReturn != nil ? (completeReturnRendering[insn.address] == false ? "partial" : "recovered")
                     : !returnsValue ? "void" : "unsupported-layout-or-value"

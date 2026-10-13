@@ -2380,3 +2380,40 @@ if a test was observed to fail without the fix.
   gain verification in each optimized configuration; no partial nonzero return
   is verified. All runs have zero refutations or missing observations. This
   does not establish complete loop reconstruction or full-body accuracy.
+
+## 2026-10-13: scalar tail-return forwarding
+
+- **FIXED — a tail-called result disappeared from source output.**
+  LargeStrings.matches's slow path ends in B to Swift._stringCompareWithSmolCheck,
+  whose Bool result is returned directly to the original caller. Both views
+  printed the call as a standalone statement, leaving only the identity fast
+  path's `return true`. The slow path now emits `return callee(...)`.
+- **IMPLEMENTED — signatures and ABI constrain forwarding.** Only a direct
+  branch outside the function to an ordinary synchronous Swift callee with
+  the same proven scalar result type qualifies. Caller/callee async, throwing,
+  generic/closure/reabstraction conventions, mismatched results, void and
+  multiword results decline. Caller ABI eligibility is computed once per
+  function. The branch and its target remain intact for CFG and xrefs;
+  reconstructed call arguments and side-effect order are unchanged.
+- **VALIDATED — authored wrappers and the real fixture lowering.** Int, Bool
+  and Double wrappers at Onone/O/Osize cover BL/RET and optimized B forms;
+  Void remains a statement. Independent native execution adds 42 wrapper/leaf
+  comparisons using exported Swift symbols and the external demangler. ABI
+  controls cover incompatible effects/types/conventions and internal/call
+  branches. A `tail-call` return outcome is observable, but the outgoing
+  argument registers are never emitted as returned-value claims or raw exits.
+- **VALIDATED — ten independent mutations fail.** Removing return emission,
+  the external-target, branch-kind, caller/callee effect, result-type, scalar
+  ABI, caller/callee head or diagnostic-status checks fails with
+  14/1/1/1/2/1/4/1/1/2 issues. All 595 tests pass in the enforcing suite.
+- **BLAST RADIUS — 22 of 160 fixture views change.** Every changed line adds
+  return forwarding to an existing call, with identical arguments. Changes
+  cover AuditSemantics.adjacent, CallArity.callMixed, Compares.onMinusOne and
+  onMinusTen, ImportedClassProbe's three wrappers, LargeStrings.matches,
+  Reconstruction.clampLow at O/Osize and both stripped twins, and six scalar
+  wrapper instances at O/Osize. Call count, stores, ordering and CFG branches
+  are unchanged. All other output is stable.
+- **MEASURED — native research stays conservative.** The two-batch 36-mode
+  Swift run retains Onone 1,326/1,530 verified cases (204 unknown) and O/Osize
+  1,441 verified (89 unknown), with zero refutations or missing observations.
+  Tail-call return markers do not count opaque call results as proven values.

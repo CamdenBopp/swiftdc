@@ -66,6 +66,11 @@ $CLANG -arch arm64 -dynamiclib conditionalflags.s -o libConditionalFlags.dylib
 echo "==> symbolic addition flags at both widths (addflags.s)"
 $CLANG -arch arm64 -dynamiclib addflags.s -o libAddFlags.dylib
 
+for level in Onone O Osize; do
+    echo "==> scalar tail-return forwarding (scalartailreturns.swift, -$level)"
+    $SWIFTC -$level -emit-library -module-name ScalarTailReturns scalartailreturns.swift -o libScalarTailReturns.$level.dylib
+done
+
 echo "==> guarded returns across CFG layouts (returnpaths.s)"
 $CLANG -arch arm64 -dynamiclib returnpaths.s -o libReturnPaths.dylib
 

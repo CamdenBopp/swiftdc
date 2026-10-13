@@ -198,7 +198,7 @@ now represented directly:
 | `values.call` | arguments, floatingArguments, stackArguments, receiver, indirectResult |
 | `values.condition` | value; signed and unsigned operators stay distinct |
 | `values.loop-initialization` | name, value, stackOffset; proven constant entry binding, at the header branch |
-| `render.return-outcome` | status, type, path; recovered, partial, unknown, void, throw, or unsupported layout/value |
+| `render.return-outcome` | status, type, path; recovered, partial, tail-call, unknown, void, throw, or unsupported layout/value |
 | `render.return-value` | value, register, type, rendered, path; a recovered return claim |
 | `render.function` | view, symbol, returns, returnStatements, unknownReturns, gotos, lines; committed output only |
 | `async.context-escape` | offset; possible aliases on either incoming path invalidate slots |
@@ -480,3 +480,10 @@ This validates the selected return expression and its branch predicates; it
 does not execute loops, calls or stores, or prove complete side-effect behavior.
 No extra case fields, exit-address lookup or validator callback is needed for
 the common native integer scoring API.
+
+A proven synchronous scalar tail return emits `render.return-outcome` with
+status `tail-call`. Its pre-branch x0/v0 are outgoing arguments, so this does
+not emit a recovered return-value claim or a raw exit-register snapshot. The
+source view forwards the callee result, while default integer scoring keeps
+the opaque call result not-evaluated. The branch remains a branch for CFG
+and cross-reference analysis.
