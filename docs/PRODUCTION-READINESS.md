@@ -2142,3 +2142,33 @@ if a test was observed to fail without the fix.
   independently fails with 564/108 issues, including native disagreements.
   Onone's tuple-call word projection remains a separately tested decline;
   its unknown cases are not omitted from the research denominator.
+
+## 2026-10-13: widened word multiplication
+
+- **IMPLEMENTED (working tree) — scalar long multiplication.** SMULL/UMULL,
+  SMADDL/UMADDL, SMSUBL/UMSUBL and their negate aliases now widen both 32-bit
+  operands using the instruction's signedness before multiplication, with
+  64-bit addends and result arithmetic. Scalar register/width guards exclude
+  vector forms. Operand metadata cannot apply the alias's widening twice.
+  This follows [Arm's long-multiplication overview](https://developer.arm.com/-/media/Files/pdf/graphics-and-multimedia/ARMv8_InstructionSetOverview.pdf).
+- **VALIDATED — symbolic, native and actual text.** Four authored native
+  functions split the input into high/low words, including opposite sign
+  boundaries, and exercise plain and fused signed/unsigned products. Eight
+  forms have 356 symbolic operand comparisons; the text/native oracle adds
+  3,672 comparisons over 51 inputs, all optimization levels, presets and
+  renderers. Independently removing signed extension, unsigned narrowing or
+  the 64-bit addend failed with 480/588/582 issues. Unsupported inputs decline.
+- **OPEN — optimized boundedLoop still needs EXTR.** Its SMULL now transfers
+  correctly, but the following extract remains unknown, so its return still
+  declines. Do not count the instruction addition as complete loop recovery.
+- **MEASURED — 36 native configurations, zero refutations.** Onone verifies
+  1,122 of 1,377 cases with 255 not-evaluated; O/Osize verifies 1,275 with 102
+  not-evaluated. All four new widened-product functions verify, and missing
+  observations remain zero. All 568 tests pass. Six of 146 fixture outputs
+  changed, only the three research modules' pseudo/structured views: their
+  previously unknown long-product return expressions now recover. Other
+  fixture output is unchanged.
+- **OPEN — freshly compiled Onone signedRange declines.** Both the frozen
+  baseline and new binary emit return ? for ResearchOnone_R0.signedRange.
+  This adds 51 unknown cases to the matrix; do not hide it by dropping that
+  function or counting it as verified.

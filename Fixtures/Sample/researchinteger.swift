@@ -35,6 +35,18 @@
 @inline(never) public func signedHigh(_ x: UInt64) -> UInt64 {
     UInt64(bitPattern: Int64(bitPattern: x).multipliedFullWidth(by: -0x123456789abcdef).high)
 }
+@inline(never) public func signedWordProduct(_ x: UInt64) -> UInt64 {
+    UInt64(bitPattern: Int64(Int32(truncatingIfNeeded: x)) * Int64(Int32(truncatingIfNeeded: x >> 32)))
+}
+@inline(never) public func unsignedWordProduct(_ x: UInt64) -> UInt64 {
+    UInt64(UInt32(truncatingIfNeeded: x)) * UInt64(UInt32(truncatingIfNeeded: x >> 32))
+}
+@inline(never) public func signedWordAccumulate(_ x: UInt64) -> UInt64 {
+    x &+ UInt64(bitPattern: Int64(Int32(truncatingIfNeeded: x)) * Int64(Int32(truncatingIfNeeded: x >> 32)))
+}
+@inline(never) public func unsignedWordSubtract(_ x: UInt64) -> UInt64 {
+    x &- UInt64(UInt32(truncatingIfNeeded: x)) * UInt64(UInt32(truncatingIfNeeded: x >> 32))
+}
 @inline(never) public func wordSelect(_ x: UInt64) -> UInt64 {
     let n = UInt32(truncatingIfNeeded: x)
     return UInt64((n & 1) != 0 ? n &+ 1 : ~n)

@@ -18,7 +18,8 @@ import Testing
 @Test func nativeResearchCorpusAgreesAtEveryOptimizationLevelIfPresent() async throws {
     let inputs = ResearchFixtures.inputs(seed: 7)
     let required: Set<String> = ["increment", "mixedBits", "lowWord", "wordAdd", "unsignedByte", "wordArithmeticShift",
-                                 "signExtendByte", "signExtendHalf", "signExtendWord", "wordSelect", "wordNot", "shiftedNot", "orNot"]
+                                 "signExtendByte", "signExtendHalf", "signExtendWord", "wordSelect", "wordNot", "shiftedNot", "orNot",
+                                 "signedWordProduct", "unsignedWordProduct", "signedWordAccumulate", "unsignedWordSubtract"]
     for module in ResearchFixtures.modules {
         let path = "Fixtures/Sample/lib\(module).dylib"
         guard FileManager.default.fileExists(atPath: path) else { continue }

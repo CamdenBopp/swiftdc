@@ -997,6 +997,11 @@ private func callConversion(
         modules: ["ResearchOptimized", "ResearchSize"])
 }
 
+@Test func renderedLongWordProductsAgreeWithNativeBitPatternsIfPresent() async throws {
+    try await verifyNativeRenderedReturns(names: ["signedWordProduct", "unsignedWordProduct",
+                                                 "signedWordAccumulate", "unsignedWordSubtract"])
+}
+
 private func verifyNativeRenderedReturns(names: Set<String>, markers: [String: String] = [:],
                                          modules: [String] = ResearchFixtures.modules) async throws {
     let inputs = ResearchFixtures.inputs(seed: 7)

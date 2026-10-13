@@ -13,11 +13,35 @@ private func symbolicWordFunction(_ words: [UInt32]) throws -> DisassembledFunct
     return DisassembledFunction(symbol: "word", demangledName: nil, startAddress: 0x1000,
                                 instructions: instructions, source: .address)
 }
-private func predictedWord(_ words: [UInt32], input: UInt64) throws -> UInt64 {
+private func predictedWord(_ words: [UInt32], input: UInt64, rhs: UInt64 = 33) throws -> UInt64 {
     let function = try symbolicWordFunction(words)
     let result = ValueTracer().analyze(function, entry: .swiftFunction(scalarArguments: ["x0": 0, "x1": 1]))
     let returned = try #require(result.exitValues[function.instructions.last!.address])
-    return try ProbeValue.abstractValue(returned).evaluateInteger(arguments: [input, 33])
+    return try ProbeValue.abstractValue(returned).evaluateInteger(arguments: [input, rhs])
+}
+
+@Test func longWordMultiplicationExtendsBothOperandsBeforeMultiplying() throws {
+    let edges: [UInt64] = [0, 1, 0x7fffffff, 0x80000000, 0xffffffff, 1 << 32, .max, 0xdeadbeef80000001]
+    for a in edges { for b in edges {
+        let signed = UInt64(bitPattern: Int64(Int32(truncatingIfNeeded: a)) * Int64(Int32(truncatingIfNeeded: b)))
+        let unsigned = UInt64(UInt32(truncatingIfNeeded: a)) * UInt64(UInt32(truncatingIfNeeded: b))
+        for (word, expected): (UInt32, UInt64) in [
+            (0x9b217c00, signed), (0x9ba17c00, unsigned),
+            (0x9b21fc00, 0 &- signed), (0x9ba1fc00, 0 &- unsigned)
+        ] { #expect(try predictedWord([word, 0xd65f03c0], input: a, rhs: b) == expected) }
+    } }
+}
+
+@Test func longWordMultiplyAccumulatesIntoA64BitAddend() throws {
+    let edges: [UInt64] = [0, 0x7fffffff, 0x80000000, 0xffffffff, .max]
+    for a in edges { for b in edges {
+        let signed = UInt64(bitPattern: Int64(Int32(truncatingIfNeeded: a)) * Int64(Int32(truncatingIfNeeded: b)))
+        let unsigned = UInt64(UInt32(truncatingIfNeeded: a)) * UInt64(UInt32(truncatingIfNeeded: b))
+        for (word, expected): (UInt32, UInt64) in [
+            (0x9b210800, 17 &+ signed), (0x9b218800, 17 &- signed),
+            (0x9ba10800, 17 &+ unsigned), (0x9ba18800, 17 &- unsigned)
+        ] { #expect(try predictedWord([0xd2800222, word, 0xd65f03c0], input: a, rhs: b) == expected) }
+    } }
 }
 
 @Test func scalarExtensionAliasesUseTheirSourceSignAndDestinationWidth() throws {

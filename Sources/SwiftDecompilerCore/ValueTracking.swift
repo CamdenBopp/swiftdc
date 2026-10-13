@@ -2153,6 +2153,39 @@ public struct ValueTracer: Sendable {
                 registers[Self.flagsWidthKey] = .immediate(UInt64(dest.widthBits))
             }
 
+        case AARCH64_INS_SMULL, AARCH64_INS_UMULL,
+             AARCH64_INS_SMADDL, AARCH64_INS_UMADDL,
+             AARCH64_INS_SMSUBL, AARCH64_INS_UMSUBL,
+             AARCH64_INS_ALIAS_SMNEGL, AARCH64_INS_ALIAS_UMNEGL:
+            let fused = detail.id == AARCH64_INS_SMADDL || detail.id == AARCH64_INS_UMADDL
+                || detail.id == AARCH64_INS_SMSUBL || detail.id == AARCH64_INS_UMSUBL
+            guard let dest = destinationRegister(detail), dest.widthBits == 64,
+                  dest.kind == .gpr || dest.kind == .zero,
+                  detail.operands.count == (fused ? 4 : 3),
+                  let left = detail.operands[1].operand.register, left.widthBits == 32,
+                  let right = detail.operands[2].operand.register, right.widthBits == 32,
+                  (left.kind == .gpr || left.kind == .zero), (right.kind == .gpr || right.kind == .zero)
+            else { clobber(detail, into: &registers); return }
+            let signed = detail.id == AARCH64_INS_SMULL || detail.id == AARCH64_INS_SMADDL
+                || detail.id == AARCH64_INS_SMSUBL || detail.id == AARCH64_INS_ALIAS_SMNEGL
+            func widened(_ reg: PhysReg) -> AbstractValue {
+                let value = source(StructuredOperandInfo(operand: .register(reg),
+                    shift: (AARCH64_SFT_INVALID, 0), extender: AARCH64_EXT_INVALID), in: registers)
+                return signed ? signExtended(value, bits: 32) : value
+            }
+            let product = expression(.multiply, widened(left), widened(right))
+            let subtracting = detail.id == AARCH64_INS_SMSUBL || detail.id == AARCH64_INS_UMSUBL
+                || detail.id == AARCH64_INS_ALIAS_SMNEGL || detail.id == AARCH64_INS_ALIAS_UMNEGL
+            let addend: AbstractValue
+            if fused {
+                guard let reg = detail.operands[3].operand.register, reg.widthBits == 64,
+                      reg.kind == .gpr || reg.kind == .zero
+                else { clobber(detail, into: &registers); return }
+                addend = source(detail.operands[3], in: registers)
+            } else { addend = .immediate(0) }
+            write(dest, fused || subtracting ? expression(subtracting ? .subtract : .add, addend, product)
+                : product, into: &registers)
+
         case AARCH64_INS_MADD, AARCH64_INS_MSUB:
             // Fused multiply-add/subtract: `madd d, n, m, a` = a + n*m,
             // `msub d, n, m, a` = a - n*m — the common shape of `a + b*c` and of
