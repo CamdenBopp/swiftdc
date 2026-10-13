@@ -422,7 +422,7 @@ struct ControlFlowStructure {
                 break
             }
             if visited.contains(current) {
-                if let loop, current == loop.header { lines.append("\(pad)continue") }
+                if let loop, current == loop.header { lines += loopBackStatements(header: loop.header, pad: pad) }
                 else {
                     // A shared continuation emitted in another branch: a comment
                     // here silently replaced the transfer with fall-through, so
@@ -438,6 +438,9 @@ struct ControlFlowStructure {
             // `while (true) { … }` with the test inside.
             if let info = loops[current], loop?.header != current {
                 if gotoTargets.contains(current) { lines.append("\(pad)loc_\(hex(blocks[current].startAddress)):") }
+                for declaration in Self.bakedLoopInitialization(blocks[current].instructions.last?.annotation) {
+                    lines.append("\(pad)\(declaration)")
+                }
                 let context = LoopContext(
                     header: current,
                     exitNode: info.exit ?? (info.exits.count <= 1 ? exit : nil),
@@ -452,17 +455,6 @@ struct ControlFlowStructure {
                     // redundant once the test is in the `while`. Drop it.
                     if body.last == "\(pad)    continue" { body.removeLast() }
                     lines += body
-                    // Append the proven induction body updates (`total += i`,
-                    // `i += 1`) at the body end — the Swift for/while update
-                    // position. Only when the loop condition is the tracer-baked
-                    // one (which names `i`); if the condition fell back to raw
-                    // registers, the names would be undefined.
-                    let annotation = blocks[current].instructions.last?.annotation
-                    if Self.bakedCondition(annotation) != nil {
-                        for update in Self.bakedLoopUpdate(annotation) {
-                            lines.append("\(pad)    \(update)")
-                        }
-                    }
                     lines += drainBodyInsideLoop(info: info, context: context, stop: stop, indent: indent, visited: &visited, gotoTargets: &gotoTargets, depth: depth)
                     lines.append("\(pad)}")
                     current = rotated.exit   // resume at the loop's exit successor
@@ -592,7 +584,7 @@ struct ControlFlowStructure {
             } else if succs.count == 1 {
                 let only = succs[0]
                 if backSuccessors[current].contains(only) {
-                    if let loop, only == loop.header { lines.append("\(pad)continue") }
+                    if let loop, only == loop.header { lines += loopBackStatements(header: loop.header, pad: pad) }
                     else {
                         // The target header needs a label: once a loop folds it no
                         // longer prints `// loop header`, so an unregistered
@@ -626,7 +618,7 @@ struct ControlFlowStructure {
     private func edge(from u: Int, to v: Int, until merge: Int, indent: Int, visited: inout Set<Int>, gotoTargets: inout Set<Int>, loop: LoopContext?, depth: Int) -> [String] {
         let pad = String(repeating: "    ", count: indent)
         if backSuccessors[u].contains(v) {
-            if let loop, v == loop.header { return ["\(pad)continue"] }
+            if let loop, v == loop.header { return loopBackStatements(header: loop.header, pad: pad) }
             gotoTargets.insert(v)
             return ["\(pad)goto loc_\(hex(blocks[v].startAddress))  // loop"]
         }
@@ -1099,6 +1091,15 @@ struct ControlFlowStructure {
         return nil
     }
 
+    /// Updates belong to the proven back-edge, including explicit continues.
+    /// Emitting only at a rotated body's end skipped them in nonrotated loops.
+    private func loopBackStatements(header: Int, pad: String) -> [String] {
+        let annotation = blocks[header].instructions.last?.annotation
+        let named = Self.bakedCondition(annotation) != nil || !Self.bakedLoopInitialization(annotation).isEmpty
+        let updates = named ? Self.bakedLoopUpdate(annotation).map { "\(pad)\($0)" } : []
+        return updates + ["\(pad)continue"]
+    }
+
     /// The loop induction body updates (`total += i`, `i += 1`), in order, the
     /// enrichment baked on a loop header's branch — or an empty array.
     private static func bakedLoopUpdate(_ annotation: String?) -> [String] {
@@ -1107,6 +1108,17 @@ struct ControlFlowStructure {
             let trimmed = note.trimmingCharacters(in: .whitespaces)
             guard trimmed.hasPrefix("loop-update: ") else { continue }
             return String(trimmed.dropFirst("loop-update: ".count))
+                .components(separatedBy: " | ").map { $0.trimmingCharacters(in: .whitespaces) }
+        }
+        return []
+    }
+
+    private static func bakedLoopInitialization(_ annotation: String?) -> [String] {
+        guard let annotation else { return [] }
+        for note in annotation.components(separatedBy: "  ") {
+            let trimmed = note.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("loop-init: ") else { continue }
+            return String(trimmed.dropFirst("loop-init: ".count))
                 .components(separatedBy: " | ").map { $0.trimmingCharacters(in: .whitespaces) }
         }
         return []

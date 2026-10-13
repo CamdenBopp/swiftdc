@@ -140,6 +140,14 @@ public extension Probe {
             for (address, condition) in analysis.branchConditions.sorted(by: { $0.key < $1.key }) {
                 record(.conditionSnapshot, at: address, ["value": .abstractValue(condition)])
             }
+            for (address, bindings) in analysis.loopInitializations.sorted(by: { $0.key < $1.key }) {
+                for binding in bindings {
+                    record(.loopInitialization, at: address, [
+                        "name": .name(binding.name), "value": .uint(binding.value),
+                        "stackOffset": binding.stackOffset.map { .int(Int($0)) } ?? .label("unknown"),
+                    ])
+                }
+            }
         }
     }
 

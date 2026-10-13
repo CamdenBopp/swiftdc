@@ -147,6 +147,9 @@ for research_configuration in 'ResearchOnone -Onone' 'ResearchOptimized -O' 'Res
     $SWIFTC -parse-as-library "$research_optimization" -emit-library -module-name "$research_module" researchinteger.swift -o "lib${research_module}.dylib"
 done
 
+echo "==> loop entry constants and nested resets (loopentry.swift, -Onone)"
+$SWIFTC -parse-as-library -Onone -emit-library -module-name LoopEntry loopentry.swift -o libLoopEntry.dylib
+
 echo "==> compares fixture (-O) — cmn compares with the negated operand"
 $SWIFTC -parse-as-library -O -emit-library -module-name Compares compares.swift -o libCompares.dylib
 

@@ -2063,3 +2063,47 @@ if a test was observed to fail without the fix.
   modules recover wordNot, orNot and wordSelect. WidthFlags.flagProbe1055
   recovers the constant `0x7ffffffe`; an independently resolved, image-owned
   native call returns exactly that value. No other fixture output changed.
+
+## 2026-10-13: recovered loop-carried state
+
+- **FIXED (working tree) — named loop variables had no entry bindings.**
+  ResearchOnone.boundedLoop printed `while (i <ᵁ (arg0 & 15)) { sum += i;
+  i += 1 }` without initializing either variable. The induction analysis
+  already required constant entry values but discarded them. Typed
+  `FunctionAnalysis.loopInitializations` now retains those bit patterns and
+  entry-frame stack offsets; the structured renderer declares them before
+  entering the corresponding loop. Nested declarations remain inside the
+  outer loop. Sequential accumulators use distinct names. Unknown starting
+  values do not acquire guessed initializers.
+  Across 146 outputs from 73 fixture dylibs, four structured outputs changed:
+  LoopEntry's bindings, names and back-edge step; zero bindings for accumulate
+  and countTo in both Reconstruction variants; and boundedLoop's zero bindings
+  in ResearchOnone. Flat output and every other fixture output are unchanged.
+- **FIXED (working tree) — unrotated loops omitted their proven step.**
+  The authored LoopEntry.multipleExits fixture exposed `var i = 3;
+  while (true) { ... continue }` with no increment. Updates were appended only
+  to rotated while bodies. They now precede the proven loop-back transfer,
+  including explicit continues, and do not execute on exit paths. Proven
+  primary-counter facts flow to body snapshots so its `i != 7` test refers to
+  the same initialized counter instead of an unexplained x8. Other temporary
+  placeholders remain unknown. Six independent mutation gates cover entry
+  facts, declarations, unique naming, probe export, back-edge steps and body
+  identity propagation.
+  The restored full suite passes 561 tests in 11 suites. Independent mutations
+  fail with 17/11/2/3/2/2 issues. The native Swift research matrix remains
+  893 verified and 94 not-evaluated cases per configuration, with zero refuted
+  or missing observations across 36 configurations; return coverage did not
+  increase.
+- **IMPLEMENTED — independent loop-entry validation surfaces.**
+  `values.loop-initialization` exports the synthetic name, exact UInt64 entry
+  value and stack offset at the header branch. It comes from a completed
+  analysis snapshot, preserving observational-only probes. Five authored
+  -Onone functions cover nonzero starts, sequential and nested loops, an
+  unknown entry and multiple exits. Source return recovery remains separate;
+  these functions still decline unrecovered results.
+- **OPEN — optimized boundedLoop still needs widened multiply/extract semantics.**
+  At -O/-Osize the loop becomes arithmetic including SMULL and EXTR. The
+  current tracer declines its nonzero result. Its -Onone body is structured,
+  but exit accumulator recovery and a complete executable-body oracle remain
+  unimplemented. Initializer and transition evidence do not verify a complete
+  recovered function.

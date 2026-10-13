@@ -363,6 +363,16 @@ public struct SelfFieldAccess: Sendable, Equatable {
     public var isAddressOf: Bool = false
 }
 
+/// A named loop-carried variable's proven constant value on entry.
+public struct LoopInitialization: Sendable, Equatable {
+    public var name: String
+    public var value: UInt64
+    public var stackOffset: Int64?
+    public init(name: String, value: UInt64, stackOffset: Int64? = nil) {
+        self.name = name; self.value = value; self.stackOffset = stackOffset
+    }
+}
+
 /// Everything one pass over a function recovers.
 public struct FunctionAnalysis: Sendable {
     public var callSites: [UInt64: CallSite] = [:]
@@ -381,11 +391,14 @@ public struct FunctionAnalysis: Sendable {
     /// (`cbz`/`tbz`) carry no condition code and are absent here.
     public var branchConditions: [UInt64: AbstractValue] = [:]
     /// Proven loop induction body updates, keyed by the loop header's branch
-    /// instruction — the statements (`total += i`, `i += 1`) the structurer
-    /// appends, in order (accumulate then advance), inside a rotated
-    /// `while (i < n) { … }`. Only set for proven linear/accumulator recurrences
+    /// instruction — statements (`total += i`, `i += 1`) emitted in order
+    /// (accumulate then advance) on the loop-back transfer. Only set for proven
+    /// linear/accumulator recurrences
     /// (see `resolveLoopInductions`).
     public var loopUpdates: [UInt64: [String]] = [:]
+    /// Entry bindings keyed by the header branch. Render immediately before
+    /// entering its structured loop, including each nested-loop invocation.
+    public var loopInitializations: [UInt64: [LoopInitialization]] = [:]
     /// x0 immediately before a return or unconditional branch. The enrichment
     /// pass uses Objective-C return types and resolved tail helpers to decide
     /// which of these are honest source-level returns.
@@ -632,7 +645,7 @@ public struct ValueTracer: Sendable {
         // named `.local(i)`, so the loop's exit comparison reconstructs with a
         // name (`i < n`) instead of raw registers, and its body update `i += c` is
         // recorded. Declines anything unproven.
-        let loopUpdates = resolveLoopInductions(
+        let loopBindings = resolveLoopInductions(
             blocks: blocks, predecessors: predecessors,
             blockByStart: blockByStart, inState: &inState, outState: outState,
             addressTaken: addressTaken
@@ -641,7 +654,8 @@ public struct ValueTracer: Sendable {
         // Snapshot pass: replay from each block's fixed entry state, recording
         // call arguments and self-field accesses.
         var result = FunctionAnalysis()
-        result.loopUpdates = loopUpdates
+        result.loopUpdates = loopBindings.updates
+        result.loopInitializations = loopBindings.initializations
         for block in blocks {
             var registers = inState[block.startAddress] ?? [:]
             for insn in block.instructions {
@@ -1609,13 +1623,15 @@ public struct ValueTracer: Sendable {
         inState: inout [UInt64: State],
         outState: [UInt64: State],
         addressTaken: [Int64]
-    ) -> [UInt64: [String]] {
+    ) -> (updates: [UInt64: [String]], initializations: [UInt64: [LoopInitialization]]) {
         var updates: [UInt64: [String]] = [:]
+        var initializations: [UInt64: [LoopInitialization]] = [:]
         var sourcesByHeader: [UInt64: [UInt64]] = [:]
         for (from, header) in Self.backEdges(blocks: blocks, blockByStart: blockByStart) {
             sourcesByHeader[header, default: []].append(from)
         }
         var displayId = 0
+        var accumulatorId = 0
         for header in sourcesByHeader.keys.sorted() {
             guard let sources = sourcesByHeader[header], sources.count == 1,
                   let backFrom = sources.first else { continue }  // simple reducible loop only
@@ -1666,12 +1682,23 @@ public struct ValueTracer: Sendable {
             // header and only contribute a baked body-update statement.
             var names: [Int: String] = [comparedPid: Disassembler.inductionVariableName(displayId)]
             inState[header, default: [:]][comparedKey] = .local(displayId)
+            // Body snapshots must use the same proven counter identity as the
+            // header. Other temporary placeholders must never become names.
+            for address in body.sorted() where address != header {
+                let preds = predecessors[address] ?? []
+                guard !preds.isEmpty, preds.allSatisfy({ body.contains($0) && bodyOut[$0] != nil }) else { continue }
+                let entry = Self.meet(preds.compactMap { bodyOut[$0] })
+                for (key, value) in entry {
+                    if let named = Self.renameInductionFact(value, from: comparedPid, to: displayId) {
+                        inState[address, default: [:]][key] = named
+                    }
+                }
+            }
             displayId += 1
             // Loop-carried accumulators / secondary counters: other self-recurrence
             // slots whose per-iteration addend renders in terms of already-named
             // variables (`total += i`, `seen += 1`). Rendered BEFORE the primary
             // increment (accumulate, then advance).
-            var accumulatorId = 0
             var bodyUpdates: [String] = []
             for pid in placeholderId.keys.sorted() where pid != comparedPid {
                 guard let key = placeholderId[pid], let rec = backOut[key],
@@ -1688,9 +1715,40 @@ public struct ValueTracer: Sendable {
             }
             if let branchAddr = blockByStart[header]?.instructions.last?.address, !bodyUpdates.isEmpty {
                 updates[branchAddr] = bodyUpdates
+                initializations[branchAddr] = names.keys.sorted().compactMap { pid in
+                    guard let key = placeholderId[pid], let name = names[pid],
+                          case .immediate(let value)? = preLoopEntry[key] else { return nil }
+                    return LoopInitialization(name: name, value: value,
+                                              stackOffset: Int64(key.dropFirst("stack@".count)))
+                }
             }
         }
-        return updates
+        return (updates, initializations)
+    }
+
+    private static func renameInductionFact(_ value: AbstractValue, from: Int, to: Int) -> AbstractValue? {
+        var found = false
+        func rename(_ value: AbstractValue) -> AbstractValue {
+            switch value {
+            case .local(let id):
+                guard id == from else { return .unknown }
+                found = true
+                return .local(to)
+            case .binary(let op, let lhs, let rhs):
+                let l = rename(lhs), r = rename(rhs)
+                return l == .unknown || r == .unknown ? .unknown : .binary(op, l, r)
+            case .unary(let op, let operand):
+                let inner = rename(operand)
+                return inner == .unknown ? .unknown : .unary(op, inner)
+            case .select(let condition, let yes, let no):
+                let c = rename(condition), y = rename(yes), n = rename(no)
+                return c == .unknown || y == .unknown || n == .unknown ? .unknown
+                    : .select(condition: c, whenTrue: y, whenFalse: n)
+            default: return value
+            }
+        }
+        let named = rename(value)
+        return found && named != .unknown ? named : nil
     }
 
     /// The placeholder id of the induction operand in a header's compare flags

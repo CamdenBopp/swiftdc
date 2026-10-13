@@ -3420,6 +3420,7 @@ public struct Disassembler: Sendable {
         guard !sites.isEmpty || !analysis.selfFieldAccesses.isEmpty
                 || !analysis.exitValues.isEmpty || !analysis.exitFloatValues.isEmpty
                 || !analysis.exitIndirectResults.isEmpty
+                || !analysis.loopInitializations.isEmpty
                 || function.instructions.contains(where: { $0.controlFlow == .branch && $0.branchTarget == nil })
         else {
             // No facts is still an observed unknown result, not an absent exit.
@@ -5156,10 +5157,14 @@ public struct Disassembler: Sendable {
                 }
             }
             // Proven loop induction body updates (`total += i` | `i += 1`) on the
-            // loop header's branch — the structurer appends them, in order, inside
-            // a rotated `while (i < n)`. Joined with `|` (no update contains one).
+            // loop header's branch — the structurer emits them on its back-edge.
+            // Joined with `|` (no update contains one).
             if let ordered = analysis.loopUpdates[insn.address], !ordered.isEmpty {
                 sourceNotes.append("loop-update: \(ordered.joined(separator: " | "))")
+            }
+            if let bindings = analysis.loopInitializations[insn.address], !bindings.isEmpty {
+                let declarations = bindings.map { "var \($0.name) = \(Self.renderImmediate($0.value))" }
+                sourceNotes.append("loop-init: \(declarations.joined(separator: " | "))")
             }
 
             if insn.controlFlow == .branch, let callee,

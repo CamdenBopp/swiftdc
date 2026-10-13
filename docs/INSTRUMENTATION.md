@@ -197,6 +197,7 @@ now represented directly:
 | `values.exit-registers` | x0, v0, x20, x21; raw facts at ordinary/async returns, not source ABI claims |
 | `values.call` | arguments, floatingArguments, stackArguments, receiver, indirectResult |
 | `values.condition` | value; signed and unsigned operators stay distinct |
+| `values.loop-initialization` | name, value, stackOffset; proven constant entry binding, at the header branch |
 | `render.return-outcome` | status, type; recovered, unknown, void, throw, or unsupported layout/value |
 | `render.return-value` | value, register, type, rendered; a recovered return claim |
 | `render.function` | view, symbol, returns, returnStatements, unknownReturns, gotos, lines; committed output only |
@@ -223,6 +224,15 @@ proven source ABI. Floating-point immediates are raw bit patterns.
 `Probe.observe(analysis, of: function)` is public for native fixture harnesses
 using `ValueTracer` directly. It records a completed snapshot, not worklist
 iterations. The main decompiler calls it after its final trace.
+`FunctionAnalysis.loopInitializations` exposes typed `LoopInitialization`
+records keyed by the loop header's branch address. Values are exact UInt64 bit
+patterns; stack offsets are relative to the function's entry frame. The
+structured renderer declares these bindings before entering each loop, so a
+nested initializer runs on every entry from its outer loop. Unknown initial
+values do not acquire a default zero.
+Proven counter identities also flow to body snapshots. Updates execute at the
+loop-back transfer, including an explicit `continue` and an unrotated loop;
+they are not appended indiscriminately after exit paths.
 `Probe.rendered(output, of: function, view: "custom")` exposes final-render
 counts to other renderers. The built-in renderers call it once each; a
 structured render's flat fallback is muted. Both APIs are observational.

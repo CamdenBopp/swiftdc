@@ -39,6 +39,9 @@ public extension ProbeEvent {
 
 extension ProbeEvent {
     // MARK: values
+    static let loopInitialization = ProbeEvent(
+        "values.loop-initialization", .values, .claim,
+        "A named loop-carried variable has a proven constant entry value; address is the header branch, stackOffset is relative to the entry frame.")
     static let tracerFixpointCap = ProbeEvent(
         "values.fixpoint-cap", .values, .limit,
         "The value tracer stopped at its iteration bound before converging; its states are not a fixpoint.")
