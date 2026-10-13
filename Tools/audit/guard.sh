@@ -30,4 +30,6 @@ while kill -0 $P 2>/dev/null; do
   sleep 1
 done
 wait $P
-echo "exit $? after $(( $(date +%s) - start ))s" >> "$out/mem.log"
+rc=$?
+echo "exit $rc after $(( $(date +%s) - start ))s" >> "$out/mem.log"
+exit $rc

@@ -2514,3 +2514,16 @@ if a test was observed to fail without the fix.
   regression with one issue; restored source is rebuilt before testing. Six
   of 176 fixture source views change, recovering byte reversal in all three
   research images; the remaining 170 views are identical.
+
+## 2026-10-13: preservation and oracle trust follow-up
+
+- **FIXED — the audit footprint guard swallowed child failures.**
+  `Tools/audit/guard.sh /tmp/guard 100 -- /usr/bin/false` logged `exit 1`
+  but returned 0 because its final command was `echo`. Capture the result of
+  `wait` and return it after logging. Independent subprocess checks preserve
+  exits 0, 1 and 23. `auditMemoryGuardPreservesChildExitStatus` protects both
+  the shell status and the log; removing `exit $rc` must fail the nonzero cases.
+  This changes audit reliability, with no decompiler output or hot-path effect.
+  Removing the status-propagation line fails with three issues (exits 1, 23
+  and terminated-child 143 become 0). The restored intermediate enforcing
+  suite passes 615 tests in eleven suites; the original baseline passes 614.
