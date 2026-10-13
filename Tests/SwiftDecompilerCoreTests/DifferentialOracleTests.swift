@@ -980,6 +980,15 @@ private func callConversion(
 @Test func renderedRightShiftsAgreeWithNativeBitPatternsIfPresent() async throws {
     let names: Set<String> = ["mixedBits", "signedShift", "wordArithmeticShift",
                              "signExtendByte", "signExtendHalf", "signExtendWord"]
+    let markers = Dictionary(uniqueKeysWithValues: names.map { ($0, $0 == "mixedBits" ? ">>ᵁ" : ">>ˢ") })
+    try await verifyNativeRenderedReturns(names: names, markers: markers)
+}
+
+@Test func renderedComplementsAndWordSelectionAgreeWithNativeBitPatternsIfPresent() async throws {
+    try await verifyNativeRenderedReturns(names: ["wordNot", "shiftedNot", "orNot", "wordSelect"])
+}
+
+private func verifyNativeRenderedReturns(names: Set<String>, markers: [String: String] = [:]) async throws {
     let inputs = ResearchFixtures.inputs(seed: 7)
     for module in ResearchFixtures.modules {
         let path = "Fixtures/Sample/lib\(module).dylib"
@@ -1001,7 +1010,7 @@ private func callConversion(
                     let expression = String(try #require(returns.first).dropFirst(7))
                     // Both operations must be explicit even if a display preset
                     // omits the argument type or the source result is unsigned.
-                    #expect(expression.contains(name == "mixedBits" ? ">>ᵁ" : ">>ˢ"))
+                    if let marker = markers[name] { #expect(expression.contains(marker)) }
                     var parser = ExpressionParser(expression)
                     let tree = try parser.parseAll()
                     for sample in cases {

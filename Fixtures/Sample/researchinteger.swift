@@ -27,6 +27,10 @@
 @inline(never) public func signExtendByte(_ x: UInt64) -> UInt64 { UInt64(bitPattern: Int64(Int8(truncatingIfNeeded: x))) }
 @inline(never) public func signExtendHalf(_ x: UInt64) -> UInt64 { UInt64(bitPattern: Int64(Int16(truncatingIfNeeded: x))) }
 @inline(never) public func unsignedByte(_ x: UInt64) -> UInt64 { UInt64(UInt8(truncatingIfNeeded: x)) }
+@inline(never) public func wordNot(_ x: UInt64) -> UInt64 { UInt64(~UInt32(truncatingIfNeeded: x)) }
+@inline(never) public func shiftedNot(_ x: UInt64) -> UInt64 { ~(x >> 7) }
+@inline(never) public func orNot(_ x: UInt64) -> UInt64 { 33 | ~x }
+@inline(never) public func byteSwap(_ x: UInt64) -> UInt64 { x.byteSwapped }
 @inline(never) public func wordSelect(_ x: UInt64) -> UInt64 {
     let n = UInt32(truncatingIfNeeded: x)
     return UInt64((n & 1) != 0 ? n &+ 1 : ~n)

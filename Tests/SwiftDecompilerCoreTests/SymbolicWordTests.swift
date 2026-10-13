@@ -40,6 +40,26 @@ private func predictedWord(_ words: [UInt32], input: UInt64) throws -> UInt64 {
         #expect(try predictedWord([0x2a0003e0, 0xd65f03c0], input: input) == input & 0xffff_ffff)
     }
 }
+
+@Test func scalarBitwiseNotRespectsTheOperandShiftAndWordDestination() throws {
+    for input: UInt64 in [0, 1, 0x80000000, 0xffffffff, 1 << 32, 1 << 63, .max, 0xdeadbeef80000080] {
+        #expect(try predictedWord([0xaa2003e0, 0xd65f03c0], input: input) == ~input)
+        #expect(try predictedWord([0x2a2003e0, 0xd65f03c0], input: input) == UInt64(~UInt32(truncatingIfNeeded: input)))
+        #expect(try predictedWord([0xaa601fe0, 0xd65f03c0], input: input) == ~(input >> 7))
+        let signedWord = Int32(truncatingIfNeeded: input) >> 7
+        #expect(try predictedWord([0x2aa01fe0, 0xd65f03c0], input: input) == UInt64(~UInt32(bitPattern: signedWord)))
+        #expect(try predictedWord([0xaa3f03e0, 0xd65f03c0], input: input) == .max)
+        #expect(try predictedWord([0xaa2003e0, 0xaa2003e0, 0xd65f03c0], input: input) == input)
+    }
+}
+
+@Test func scalarOrNotComplementsOnlyTheShiftedRightOperand() throws {
+    for input: UInt64 in [0, 1, 0x80000000, 0xffffffff, 1 << 32, 1 << 63, .max, 0xdeadbeef80000080] {
+        #expect(try predictedWord([0xaa200020, 0xd65f03c0], input: input) == (33 | ~input))
+        #expect(try predictedWord([0x2a200020, 0xd65f03c0], input: input) == UInt64(33 | ~UInt32(truncatingIfNeeded: input)))
+        #expect(try predictedWord([0xaa200c20, 0xd65f03c0], input: input) == (33 | ~(input << 3)))
+    }
+}
 @Test func aSymbolicWordArithmeticWriteWrapsAt32Bits() throws {
     // add w0, w0, #1; ret. Reads alone do not prove the destination fits.
     for input: UInt64 in [0, .max, 0xffff_ffff, 0xdeadbeef80000000] {

@@ -2033,6 +2033,22 @@ public struct ValueTracer: Sendable {
                 registers[Self.flagsWidthKey] = .immediate(UInt64(dest.widthBits))
             }
 
+        case AARCH64_INS_ALIAS_MVN, AARCH64_INS_ORN:
+            // MVN is ORN with a zero first operand. Complement the optionally
+            // shifted source before OR, then normalize the destination width.
+            let operandCount = detail.id == AARCH64_INS_ALIAS_MVN ? 2 : 3
+            guard let dest = destinationRegister(detail), dest.kind == .gpr || dest.kind == .zero,
+                  detail.operands.count == operandCount,
+                  detail.operands.dropFirst().allSatisfy({ operand in
+                      guard let reg = operand.operand.register else { return false }
+                      return (reg.kind == .gpr || reg.kind == .zero) && reg.widthBits == dest.widthBits
+                  })
+            else { clobber(detail, into: &registers); return }
+            let inverted = bitwiseComplement(source(detail.operands[operandCount - 1], in: registers))
+            let result = detail.id == AARCH64_INS_ALIAS_MVN ? inverted
+                : expression(.bitOr, source(detail.operands[1], in: registers), inverted)
+            write(dest, result, into: &registers)
+
         case AARCH64_INS_AND, AARCH64_INS_ANDS, AARCH64_INS_ORR, AARCH64_INS_EOR,
              AARCH64_INS_MUL, AARCH64_INS_SMULH, AARCH64_INS_UMULH,
              AARCH64_INS_LSL, AARCH64_INS_LSR, AARCH64_INS_ASR,
@@ -2675,6 +2691,13 @@ public struct ValueTracer: Sendable {
             return
         }
         registers[reg.key] = value
+    }
+
+    private func bitwiseComplement(_ value: AbstractValue) -> AbstractValue {
+        if case .immediate(let bits) = value { return .immediate(~bits) }
+        if case .unary(.bitwiseNot, let inner) = value { return inner }
+        guard value != .unknown, Self.expressionDepth(value) < 8 else { return .unknown }
+        return .unary(.bitwiseNot, value)
     }
 
     private func narrowed(_ value: AbstractValue, bits: Int) -> AbstractValue {

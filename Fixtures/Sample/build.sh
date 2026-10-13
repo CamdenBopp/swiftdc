@@ -141,7 +141,7 @@ $SWIFTC -parse-as-library -O -emit-library -module-name AsyncInout asyncinout.sw
 echo "==> Imported class signatures without class-symbol references"
 $SWIFTC -parse-as-library -O -emit-library -module-name ImportedClassProbe importedclasses.swift -o libImportedClassProbe.opt.dylib
 
-echo "==> native scalar research corpus (researchinteger.swift, -Onone/-O/-Osize)"
+echo "==> native scalar research corpus with complement/shift/selection cases (researchinteger.swift, -Onone/-O/-Osize)"
 for research_configuration in 'ResearchOnone -Onone' 'ResearchOptimized -O' 'ResearchSize -Osize'; do
     read -r research_module research_optimization <<< "$research_configuration"
     $SWIFTC -parse-as-library "$research_optimization" -emit-library -module-name "$research_module" researchinteger.swift -o "lib${research_module}.dylib"

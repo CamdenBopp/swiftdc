@@ -2035,3 +2035,31 @@ if a test was observed to fail without the fix.
   hex bit patterns before decimal exponents, so hexadecimal `e` does not make
   an integer a floating-point value. These operators denote pseudocode, not
   compilable Swift syntax.
+
+## 2026-10-12: scalar complemented operands
+
+- **FIXED (working tree) — MVN kept conditional word selection unknown.**
+  Optimized `wordSelect` contains `mvn w8, w0; add w9, w0, #1; tst x0, #1;
+  csel x8, x8, x9, eq; mov w0, w8; ret`. The tracer already handled CSEL
+  and word normalization, but declined the complement. Scalar MVN and ORN now
+  complement the optionally shifted right operand before combining it with
+  the left operand, then apply the destination width. Constants fold exactly;
+  repeated complements cancel; unknown or excessively deep operands decline.
+  General-register guards leave vector forms and unsupported shifts unclaimed.
+  This follows [Arm's ORN specification](https://www.scs.stanford.edu/~zyedidia/arm64/orn_log_shift.html):
+  lifting the actual register operation also applies to common compiler output
+  outside Swift; ABI and Mach-O recovery remain separate concerns.
+- **VALIDATED — native expressions, text and independent mutations.**
+  The research corpus now contains 21 functions and 47 inputs, adding word
+  complement, shifted complement, OR-with-complement and a byte-swap decline
+  control. `swiftdc research --iterations 2 --seed 7` produced 36 configurations,
+  each with 893 verified, 94 not-evaluated, zero refuted and zero missing cases.
+  The bounded loop and byte swapping remain unknown. Four complement/selection
+  functions add 3,384 strict text/native comparisons across all optimization
+  levels, display presets and both text renderers. Disabling MVN or ORN
+  independently failed the regression gates with six/four issues. All 555
+  tests pass after restoring and rebuilding.
+- **MEASURED — six of 144 fixture outputs changed.** The optimized/size research
+  modules recover wordNot, orNot and wordSelect. WidthFlags.flagProbe1055
+  recovers the constant `0x7ffffffe`; an independently resolved, image-owned
+  native call returns exactly that value. No other fixture output changed.
