@@ -1289,6 +1289,7 @@ public struct ValueTracer: Sendable {
                 for offset in stride(from: 0, to: size, by: 8) {
                     registers[Self.stackKey(base + Int64(offset))] =
                         .indirectCallResultWord(site: insn.address, offset: offset)
+                    registers[Self.stackWidthKey(base + Int64(offset))] = .immediate(UInt64(min(8, size - offset)))
                 }
             case .indirect(nil)?, nil:
                 break // already forgotten by the escaped-local invalidation above
@@ -1305,6 +1306,7 @@ public struct ValueTracer: Sendable {
             guard let offset = stackOffset(from: key), offset >= from else { continue }
             if let to, offset >= to { continue }
             registers[key] = nil
+            registers[stackWidthKey(offset)] = nil
         }
     }
 
@@ -1343,7 +1345,7 @@ public struct ValueTracer: Sendable {
             if isCopy {
                 switch site.arguments[1] {
                 case .frame(let source):
-                    value = registers[Self.stackKey(source + Int64(offset))] ?? .unknown
+                    value = Self.stackValue(at: source + Int64(offset), bytes: bytes, in: registers)
                 case .indirectResultPointer:
                     value = registers[Self.resultKey(offset, bytes: bytes)] ?? .unknown
                 case .indirectResultField(let base):
@@ -2052,10 +2054,15 @@ public struct ValueTracer: Sendable {
             var shifted = source(detail.operands[1], in: registers)
             // A 32-bit arithmetic shift shifts in the 32-bit sign: `asr w0,
             // w8, #31` of 0x80000001 is 0xffffffff, not 1.
-            if op == .arithmeticShiftRight, dest.widthBits == 32, case .immediate(let bits) = shifted {
-                shifted = .immediate(UInt64(bitPattern: Int64(Int32(truncatingIfNeeded: bits))))
+            if dest.widthBits == 32, op == .arithmeticShiftRight || op == .divide {
+                shifted = signExtended(shifted, bits: 32)
             }
-            let result = expression(op, shifted, source(detail.operands[2], in: registers))
+            var rhs = source(detail.operands[2], in: registers)
+            if op == .divide, dest.widthBits == 32 { rhs = signExtended(rhs, bits: 32) }
+            if op == .shiftLeft || op == .shiftRight || op == .arithmeticShiftRight {
+                rhs = expression(.bitAnd, rhs, .immediate(UInt64(dest.widthBits - 1)))
+            }
+            let result = expression(op, shifted, rhs)
             write(dest, result, into: &registers)
             if detail.id == AARCH64_INS_ANDS {
                 registers[Self.flagsKey] = constantFlags(.bitAnd, source(detail.operands[1], in: registers),
@@ -2202,8 +2209,17 @@ public struct ValueTracer: Sendable {
             case .stackSlot(let key):
                 let offset = Self.stackOffset(from: key)
                 let bytes = Self.accessBytes(detail) ?? max(dest.widthBits / 8, 1)
-                write(dest, offset.map { Self.stackValue(at: $0, bytes: bytes, in: registers) } ?? .unknown,
-                      into: &registers)
+                var value = offset.map { Self.stackValue(at: $0, bytes: bytes, in: registers) } ?? .unknown
+                if dest.kind == .gpr {
+                    switch detail.id {
+                    case AARCH64_INS_LDRSB, AARCH64_INS_LDURSB,
+                         AARCH64_INS_LDRSH, AARCH64_INS_LDURSH,
+                         AARCH64_INS_LDRSW, AARCH64_INS_LDURSW:
+                        value = signExtended(value, bits: bytes * 8)
+                    default: value = narrowed(value, bits: min(bytes * 8, 64))
+                    }
+                }
+                write(dest, value, into: &registers)
             case .absolute(let address):
                 // Only pointer-width loads can safely denote a selref/GOT slot.
                 // A 16-byte vector load from a fixed address is two such words
@@ -2251,7 +2267,9 @@ public struct ValueTracer: Sendable {
                 if case .stackSlot(let key)? = target {
                     if let offset = Self.stackOffset(from: key) {
                         let bytes = Self.accessBytes(detail) ?? 8
-                        Self.storeStack(value, at: offset, bytes: bytes, outgoing: true, into: &registers)
+                        let stored = first.operand.register?.kind == .gpr
+                            ? narrowed(value, bits: min(bytes * 8, 64)) : value
+                        Self.storeStack(stored, at: offset, bytes: bytes, outgoing: true, into: &registers)
                     }
                 }
                 if case .arrayElement(let site, let offset)? = target {
@@ -2626,13 +2644,28 @@ public struct ValueTracer: Sendable {
         default:
             break
         }
-        // A 32-bit write zero-extends into the 64-bit register: a constant
-        // keeps only its low word. `csel w0` of 0x200000016 returns 22.
-        if reg.kind == .gpr, reg.widthBits == 32, case .immediate(let bits) = value {
-            registers[reg.key] = .immediate(bits & 0xffff_ffff)
+        // Every 32-bit write zero-extends, including symbolic arithmetic whose
+        // result can overflow the word. Constants alone missed `mov w0, w0`
+        // and `add w0, w0, #1` with an incoming UInt64 argument.
+        if reg.kind == .gpr, reg.widthBits == 32 {
+            registers[reg.key] = narrowed(value, bits: 32)
             return
         }
         registers[reg.key] = value
+    }
+
+    private func narrowed(_ value: AbstractValue, bits: Int) -> AbstractValue {
+        if bits == 64 { return value }
+        let mask: UInt64 = bits == 64 ? .max : (1 << bits) - 1
+        if case .binary(let op, _, _) = value, op.isComparison { return value }
+        if case .binary(.bitAnd, _, .immediate(let existing)) = value, existing & mask == existing { return value }
+        return expression(.bitAnd, value, .immediate(mask))
+    }
+
+    private func signExtended(_ value: AbstractValue, bits: Int) -> AbstractValue {
+        let shift = UInt64(64 - bits)
+        return expression(.arithmeticShiftRight,
+                          expression(.shiftLeft, value, .immediate(shift)), .immediate(shift))
     }
 
     /// Build or fold a symbolic expression. A small depth cap prevents long
@@ -2645,6 +2678,13 @@ public struct ValueTracer: Sendable {
         _ rhs: AbstractValue
     ) -> AbstractValue {
         guard lhs != .unknown, rhs != .unknown else { return .unknown }
+        if op == .bitAnd, case .immediate(let mask) = rhs {
+            if mask == .max { return lhs }
+            if case .binary(.bitAnd, let inner, .immediate(let previous)) = lhs {
+                return expression(.bitAnd, inner, .immediate(previous & mask))
+            }
+            if Self.fitsLowMask(lhs, mask: mask) { return lhs }
+        }
         if case .immediate(let left) = lhs, case .immediate(let right) = rhs {
             let folded: UInt64? = switch op {
             case .add: left &+ right
@@ -2718,6 +2758,21 @@ public struct ValueTracer: Sendable {
         }
         guard Self.expressionDepth(lhs) < 8, Self.expressionDepth(rhs) < 8 else { return .unknown }
         return .binary(op, lhs, rhs)
+    }
+
+    /// A local range proof keeps width normalization idempotent without
+    /// discarding masks on unconstrained arguments or arithmetic results.
+    private static func fitsLowMask(_ value: AbstractValue, mask: UInt64) -> Bool {
+        switch value {
+        case .immediate(let bits): return bits & mask == bits
+        case .binary(let op, _, _) where op.isComparison: return mask & 1 == 1
+        case .binary(.bitAnd, _, .immediate(let inner)): return inner & mask == inner
+        case .binary(let op, let lhs, let rhs) where op == .bitOr || op == .bitXor:
+            return fitsLowMask(lhs, mask: mask) && fitsLowMask(rhs, mask: mask)
+        case .select(_, let whenTrue, let whenFalse):
+            return fitsLowMask(whenTrue, mask: mask) && fitsLowMask(whenFalse, mask: mask)
+        default: return false
+        }
     }
 
     /// Build a floating-point binary node. Unlike `expression`, it never folds
@@ -2913,6 +2968,11 @@ public struct ValueTracer: Sendable {
 
     private static func expressionDepth(_ value: AbstractValue) -> Int {
         switch value {
+        case .binary(.bitAnd, let value, .immediate(0xffff_ffff)):
+            // Word normalization adds no computation dependency. Charging it
+            // again made bounded 32-bit CCMP overflow predicates exceed the
+            // pre-existing arithmetic-depth limit after symbolic W reads.
+            return expressionDepth(value)
         case .binary(_, let lhs, let rhs): return 1 + max(expressionDepth(lhs), expressionDepth(rhs))
         case .unary(_, let operand): return 1 + expressionDepth(operand)
         case .select(let condition, let whenTrue, let whenFalse):
@@ -2945,9 +3005,14 @@ public struct ValueTracer: Sendable {
 
     /// Read one scalar or a SIMD-packed run of eight-byte stack values.
     private static func stackValue(at offset: Int64, bytes: Int, in registers: State) -> AbstractValue {
-        guard bytes > 8 else { return registers[stackKey(offset)] ?? .unknown }
+        guard bytes > 8 else {
+            if let width = registers[stackWidthKey(offset)] {
+                guard case .immediate(let knownBytes) = width, knownBytes >= bytes else { return .unknown }
+            }
+            return registers[stackKey(offset)] ?? .unknown
+        }
         let words = stride(from: 0, to: bytes, by: 8).map {
-            registers[stackKey(offset + Int64($0))] ?? .unknown
+            stackValue(at: offset + Int64($0), bytes: min(8, bytes - $0), in: registers)
         }
         guard words.allSatisfy({ $0 != .unknown }) else { return .unknown }
         return .aggregate(words)
@@ -2961,6 +3026,18 @@ public struct ValueTracer: Sendable {
         outgoing: Bool,
         into registers: inout State
     ) {
+        // A byte/halfword store can overwrite part of an older tracked word.
+        // Forget intersecting snapshots rather than retaining their old bits.
+        for key in registers.keys {
+            guard let previous = stackOffset(from: key) else { continue }
+            let width: Int64 = if case .immediate(let bytes)? = registers[stackWidthKey(previous)] {
+                Int64(clamping: bytes)
+            } else { 8 }
+            guard previous < offset + Int64(bytes), offset < previous + width else { continue }
+            registers[key] = nil
+            registers[stackWidthKey(previous)] = nil
+            registers[outgoingKey(previous)] = nil
+        }
         let words: [AbstractValue]
         if case .aggregate(let packed) = value, bytes > 8 {
             words = Array(packed.prefix(max(1, (bytes + 7) / 8)))
@@ -2970,6 +3047,7 @@ public struct ValueTracer: Sendable {
         for (index, word) in words.enumerated() {
             let wordOffset = offset + Int64(index * 8)
             registers[stackKey(wordOffset)] = word
+            registers[stackWidthKey(wordOffset)] = .immediate(UInt64(min(8, bytes - index * 8)))
             if outgoing { registers[outgoingKey(wordOffset)] = word }
         }
     }
@@ -2984,15 +3062,20 @@ public struct ValueTracer: Sendable {
         // with x8 = 0x1_0000_0001 compares 1, not the whole value. A known
         // constant is cut exactly, and sign- or zero-extended when the
         // operand says so (`add x0, x1, w2, sxtw`).
-        if reg.kind == .gpr, reg.widthBits == 32, case .immediate(let bits) = value {
-            let low = bits & 0xffff_ffff
+        if reg.kind == .gpr, reg.widthBits == 32 {
+            switch value {
+            case .asyncContext, .asyncCalleeContext, .asyncResumeParent, .indirectResultPointer:
+                return .unknown // a truncated opaque pointer is not that pointer
+            default: break
+            }
+            value = narrowed(value, bits: 32)
             switch operand.extender {
-            case AARCH64_EXT_SXTW: value = .immediate(UInt64(bitPattern: Int64(Int32(truncatingIfNeeded: low))))
-            case AARCH64_EXT_SXTH: value = .immediate(UInt64(bitPattern: Int64(Int16(truncatingIfNeeded: low))))
-            case AARCH64_EXT_SXTB: value = .immediate(UInt64(bitPattern: Int64(Int8(truncatingIfNeeded: low))))
-            case AARCH64_EXT_UXTH: value = .immediate(low & 0xffff)
-            case AARCH64_EXT_UXTB: value = .immediate(low & 0xff)
-            default: value = .immediate(low)
+            case AARCH64_EXT_SXTW: value = signExtended(value, bits: 32)
+            case AARCH64_EXT_SXTH: value = signExtended(value, bits: 16)
+            case AARCH64_EXT_SXTB: value = signExtended(value, bits: 8)
+            case AARCH64_EXT_UXTH: value = narrowed(value, bits: 16)
+            case AARCH64_EXT_UXTB: value = narrowed(value, bits: 8)
+            default: break
             }
         }
         switch operand.shift.type {
@@ -3002,6 +3085,9 @@ public struct ValueTracer: Sendable {
         case AARCH64_SFT_LSR, AARCH64_SFT_ASR:
             let op: AbstractBinaryOperator = operand.shift.type == AARCH64_SFT_ASR
                 ? .arithmeticShiftRight : .shiftRight
+            if op == .arithmeticShiftRight, reg.kind == .gpr, reg.widthBits == 32 {
+                value = signExtended(value, bits: 32)
+            }
             return expression(op, value, .immediate(UInt64(operand.shift.amount)))
         default:
             return .unknown
@@ -3129,6 +3215,7 @@ public struct ValueTracer: Sendable {
 
     /// Stack slots share the register map, under a key no register can collide with.
     private static func stackKey(_ frameOffset: Int64) -> String { "stack@\(frameOffset)" }
+    private static func stackWidthKey(_ frameOffset: Int64) -> String { "stack-width@\(frameOffset)" }
     private static let outgoingPrefix = "outgoing@"
 
     /// The register-state key for a word of the function's own async context

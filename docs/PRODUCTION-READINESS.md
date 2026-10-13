@@ -1940,3 +1940,22 @@ Pick the highest-risk **OPEN** or **UNKNOWN** item you have evidence to move.
 Update its status in the same commit that changes the behavior, and record the
 evidence — a command, a commit, or a file:line. An item may only be marked FIXED
 if a test was observed to fail without the fix.
+
+## 2026-10-12: symbolic integer-width follow-up
+
+- **FIXED (working tree) — symbolic W-register accesses lost their width.**
+  The previous 1,174 width probes held constants. A fresh symbolic-input
+  fixture, `UInt64(UInt32(truncatingIfNeeded: x))`, returned `arg0` instead of
+  its low word. Native execution refuted 20 of 39 samples at each optimization
+  level. W reads now narrow before use, W writes narrow arithmetic results,
+  signed word operations extend their word sign, and register shift counts
+  use the architectural low five/six bits. Word normalization is idempotent;
+  proven boolean values retain their existing rendering. The existing 217,728
+  CCMP and 1,174 width-flag comparisons remain regression gates.
+- **FIXED (working tree) — tracked stack loads ignored width and signedness.**
+  Enlarging the research corpus exposed 49 wrong -Onone samples across byte
+  truncation and sign extension. Stack stores record initialized widths;
+  wider loads decline, signed loads extend the access-width sign, and partial
+  overwrites invalidate intersecting snapshots. Memory copies consult the
+  initialized width too. Symbolic tests cover byte/word loads and an overlapping
+  byte write, with a neighboring non-overlapping control.

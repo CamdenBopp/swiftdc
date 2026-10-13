@@ -974,7 +974,9 @@ public struct Disassembler: Sendable {
             enumCaseIndex: context.enumCaseIndex,
             payloadEnumIndex: context.payloadEnumIndex,
             argumentEnumTypes: Self.swiftEnumArgumentTypes(of: function, enumCaseIndex: context.enumCaseIndex),
-            boolArguments: Self.swiftBoolArgumentIndices(of: function),
+            boolArguments: Self.swiftBoolArgumentIndices(of: function).union(
+                objcMethod.flatMap { ObjCArgumentABI.parameterTypes(encoding: $0.typeEncoding, argumentCount: $0.argumentCount) }
+                    .map { types in Set(types.indices.filter { types[$0] == "B" }) } ?? []),
             classTypeIndex: context.classTypeIndex,
             indirectResultUse: context.indirectResultUses[function.startAddress]
                 ?? Self.indirectResultUse(of: function),
@@ -3768,12 +3770,18 @@ public struct Disassembler: Sendable {
             switch value {
             case .binary(let op, let lhs, let rhs):
                 if invertedComparison(op) != nil { return true }
-                if (op == .bitAnd || op == .bitXor), case .immediate(1) = rhs {
+                if op == .bitAnd, case .immediate(let mask) = rhs, mask & 1 == 1 {
+                    return isBooleanValued(lhs)
+                }
+                if op == .bitXor, case .immediate(1) = rhs {
                     return isBooleanValued(lhs)
                 }
                 return false
             case .argument(let index):
                 return boolArguments.contains(index)
+            case .selfFieldValue(let offset):
+                let type = fieldInfo(at: offset, bytes: 1)?.type
+                return type == "B" || type == "Swift.Bool"
             case .immediate(let k):
                 return k == 0 || k == 1
             case .callResult(let addr):
@@ -3905,8 +3913,9 @@ public struct Disassembler: Sendable {
                 // A Bool parameter is a boolean value (0/1); `!b` and truthiness
                 // tests fold against it, and its raw form is just `arg`.
                 return negated ? "!arg\(index)" : "arg\(index)"
-            case .binary(.bitAnd, let lhs, .immediate(1)):
-                // Redundant boolean-normalization mask; unwrap.
+            case .binary(.bitAnd, let lhs, .immediate(let mask))
+                where mask & 1 == 1 && isBooleanValued(lhs):
+                // Word normalization is redundant only for a proven 0/1 value.
                 return renderBoolean(lhs, negated: negated, depth: depth)
             case .binary(.bitXor, let lhs, .immediate(1)):
                 // `x ^ 1` is logical NOT of a boolean x.
@@ -4017,6 +4026,10 @@ public struct Disassembler: Sendable {
         }
 
         func renderValue(_ value: AbstractValue, depth: Int) -> String {
+            if depth < 8, case .binary(.bitAnd, let inner, .immediate(let mask)) = value,
+               mask & 1 == 1, isBooleanValued(inner) {
+                return renderValue(inner, depth: depth + 1)
+            }
             if depth < 8, let boolean = renderBoolean(value, negated: false, depth: depth) {
                 return boolean
             }
