@@ -407,3 +407,17 @@ check its independently retained machine code, reduce it to a failing fixture,
 fix the semantic mechanism, mutation-check the regression and repeat the same
 seed plus a fresh batch. Keep per-function coverage requirements in tests;
 an aggregate count can conceal losing the case a regression exists to protect.
+
+### Display names and semantic identity
+
+`DisassembledFunction.demangledName` remains the requested presentation.
+`semanticName` retains the canonical signature for ABI/type/return analysis.
+Copying instructions, attaching jump tables and grouping async funclets carries
+that identity forward. Manually constructed functions without `semanticName`
+retain the previous fallback to `demangledName`.
+
+The demangle cache parses a mangled tree once, extracts nominal kinds using
+canonical options, and retains canonical and display strings independently.
+Callee annotations remain semantic input; `Instruction.calleeDisplayName` is
+used only when rendering. Probes score the same value facts across display
+presets, while function-name filters accept canonical and displayed spellings.

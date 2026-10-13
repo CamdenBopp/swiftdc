@@ -1959,12 +1959,11 @@ if a test was observed to fail without the fix.
   overwrites invalidate intersecting snapshots. Memory copies consult the
   initialized width too. Symbolic tests cover byte/word loads and an overlapping
   byte write, with a neighboring non-overlapping control.
-- **OPEN — display presets change semantic recovery.** The imported-object
-  fixture recovers `note(arg0)` in default mode, emits `note(?)` in interface
-  mode and `note()` in simplified mode. On the new integer corpus, simplified
-  mode evaluates no cases. Presentation names must not serve as ABI signatures.
-  Reproduce with `swiftdc disasm Fixtures/Sample/libImportedClassProbe.opt.dylib
-  -f withObject --pseudo --demangle simplified` and the research matrix.
+- **FIXED — display presets changed semantic recovery.** The imported-object
+  fixture formerly emitted `note(?)` in interface mode and `note()` in
+  simplified mode. Canonical semantic identities now recover the argument
+  under every preset; the integer corpus has matching coverage across presets.
+  See the presentation-independent recovery follow-up below.
 - **OPEN — unsupported pure returns disappear from the flat fallback.**
   Optimized `signExtendWord`, `signExtendByte` and `wordSelect` have known
   UInt64 signatures but unsupported instruction semantics. Their unknown
@@ -1979,3 +1978,20 @@ if a test was observed to fail without the fix.
   under a fresh run directory, and refutations make the command fail. Scoring
   coverage is explicit; unknown/missing recovery remains a discovery, never an
   accuracy claim. See [INSTRUMENTATION.md](INSTRUMENTATION.md).
+
+## 2026-10-12: presentation-independent semantic recovery
+
+- **FIXED (working tree) — display presets changed argument and return facts.**
+  Canonical signature and nominal-kind evidence now come from the same parsed
+  mangled tree independently of presentation options. Function copies retain
+  `semanticName`; callee analysis retains canonical annotations and renderers
+  use a separate display spelling. Type recovery and structuring read the
+  semantic name. Requested headings/call spellings and displayed-name filters
+  remain available.
+  The imported object and optional-object fixtures recover their integer call
+  argument under all three presets. The native research matrix has identical
+  outcomes and coverage across presets, with no refutations. Earlier simplified
+  runs evaluated no cases. All 144 default-preset fixture outputs are unchanged.
+  `PresetSemanticTests` covers imported calls, sampled native outcomes, display
+  spellings, filters and identity preservation. Canonical-print and semantic-name
+  fallback mutations independently remove the covered recovery.

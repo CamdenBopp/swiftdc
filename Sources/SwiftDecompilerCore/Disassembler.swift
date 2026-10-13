@@ -18,6 +18,14 @@ import Ccapstone
 final class DemangleCache: Sendable {
     private let store = Mutex<[String: String?]>([:])
     private let kinds = Mutex(NominalTypeEvidence())
+    private let presentations = Mutex<[String: String]>([:])
+
+    func rememberPresentation(_ display: String, for semantic: String) {
+        presentations.withLock { $0[semantic] = display }
+    }
+    func presentation(of semantic: String) -> String {
+        presentations.withLock { $0[semantic] ?? semantic }
+    }
 
     var nominalTypes: NominalTypeEvidence { kinds.withLock { $0 } }
 
@@ -70,6 +78,9 @@ public struct Instruction: Sendable {
     /// merge. Nil only where Capstone failed to decode an address objdump
     /// emitted — data in `__text`, or an encoding Capstone doesn't know.
     public let detail: StructuredInsn?
+    /// Display-only callee spelling. Semantic consumers retain the full name
+    /// in annotation, so hiding argument types cannot change the call ABI.
+    public let calleeDisplayName: String?
 
     public init(
         address: UInt64,
@@ -81,7 +92,8 @@ public struct Instruction: Sendable {
         callSelf: String? = nil,
         resultConsumed: Bool = false,
         sourceType: String? = nil,
-        detail: StructuredInsn? = nil
+        detail: StructuredInsn? = nil,
+        calleeDisplayName: String? = nil
     ) {
         self.address = address
         self.text = text
@@ -93,6 +105,7 @@ public struct Instruction: Sendable {
         self.resultConsumed = resultConsumed
         self.sourceType = sourceType
         self.detail = detail
+        self.calleeDisplayName = calleeDisplayName
     }
 }
 
@@ -127,6 +140,9 @@ public struct DisassembledFunction: Sendable {
     public let symbol: String
     /// Demangled, readable name, if recoverable.
     public let demangledName: String?
+    /// Canonical identity/signature retained independently of display options.
+    /// Nil for legacy/manual constructions; those use demangledName as before.
+    public let semanticName: String?
     /// Virtual address of the first instruction.
     public let startAddress: UInt64
     public let instructions: [Instruction]
@@ -154,10 +170,12 @@ public struct DisassembledFunction: Sendable {
         objcMethod: ObjCMethodBinding? = nil,
         foldedCandidates: [String]? = nil,
         asyncFunclet: AsyncFuncletInfo? = nil,
-        switchTargets: [UInt64: [UInt64]] = [:]
+        switchTargets: [UInt64: [UInt64]] = [:],
+        semanticName: String? = nil
     ) {
         self.symbol = symbol
         self.demangledName = demangledName
+        self.semanticName = semanticName
         self.startAddress = startAddress
         self.instructions = instructions
         self.source = source
@@ -174,7 +192,7 @@ public struct DisassembledFunction: Sendable {
             symbol: symbol, demangledName: demangledName, startAddress: startAddress,
             instructions: instructions, source: source, objcMethod: objcMethod,
             foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet,
-            switchTargets: switchTargets
+            switchTargets: switchTargets, semanticName: semanticName
         )
     }
 
@@ -184,7 +202,7 @@ public struct DisassembledFunction: Sendable {
             symbol: symbol, demangledName: demangledName, startAddress: startAddress,
             instructions: instructions, source: source, objcMethod: objcMethod,
             foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet,
-            switchTargets: tables
+            switchTargets: tables, semanticName: semanticName
         )
     }
 
@@ -203,7 +221,7 @@ public struct DisassembledFunction: Sendable {
             startAddress: startAddress, instructions: instructions,
             source: title == nil ? source : .asyncFunclet, objcMethod: objcMethod,
             foldedCandidates: foldedCandidates, asyncFunclet: info,
-            switchTargets: switchTargets
+            switchTargets: switchTargets, semanticName: semanticName
         )
     }
 
@@ -250,6 +268,8 @@ public struct DisassembledFunction: Sendable {
 
     /// The name to show: demangled if available, else the raw symbol.
     public var displayName: String { demangledName ?? symbol }
+    var analysisName: String? { semanticName ?? demangledName }
+    var analysisDisplayName: String { analysisName ?? symbol }
 
     /// Render this function as annotated assembly text.
     public func render() -> String {
@@ -276,7 +296,12 @@ public struct DisassembledFunction: Sendable {
         for insn in instructions {
             let addr = String(insn.address, radix: 16)
             var line = "  \(addr):  \(insn.text)"
-            if let annotation = insn.annotation, !insn.text.contains(annotation) {
+            var annotation = insn.annotation
+            if let display = insn.calleeDisplayName, let semantic = Self.calleeName(of: insn),
+               let range = annotation?.range(of: semantic) {
+                annotation?.replaceSubrange(range, with: display)
+            }
+            if let annotation, !insn.text.contains(annotation) {
                 line += "  ; \(annotation)"
             }
             lines.append(line)
@@ -770,9 +795,10 @@ public struct Disassembler: Sendable {
         return functions.filter {
             $0.symbol.lowercased().contains(needle)
                 || ($0.demangledName?.lowercased().contains(needle) ?? false)
+                || ($0.semanticName?.lowercased().contains(needle) ?? false)
                 || ($0.foldedCandidates ?? []).contains { candidate in
                     candidate.lowercased().contains(needle)
-                        || (self.demangle(candidate)?.lowercased().contains(needle) ?? false)
+                        || (self.demangle(candidate).map { self.matchesName($0, needle: needle) } ?? false)
                 }
         }
     }
@@ -1483,11 +1509,12 @@ public struct Disassembler: Sendable {
                 symbol: rawLabel,
                 // Runtime metadata is authoritative about an ObjC thunk's
                 // source-level identity; keep the raw Swift/C symbol below it.
-                demangledName: objcMethod?.displayName ?? demangle(rawLabel),
+                demangledName: objcMethod?.displayName ?? demangle(rawLabel).map { demangleCache.presentation(of: $0) },
                 startAddress: start,
                 instructions: instructions,
                 source: .symbol,
-                objcMethod: objcMethod
+                objcMethod: objcMethod,
+                semanticName: objcMethod == nil ? demangle(rawLabel) : nil
             )
         }
         if let objcMethod {
@@ -1503,10 +1530,11 @@ public struct Disassembler: Sendable {
         if let metaName = metadataNames[start] {
             return DisassembledFunction(
                 symbol: subName,
-                demangledName: metaName,
+                demangledName: demangleCache.presentation(of: metaName),
                 startAddress: start,
                 instructions: instructions,
-                source: .metadata
+                source: .metadata,
+                semanticName: metaName
             )
         }
         return DisassembledFunction(
@@ -1707,7 +1735,7 @@ public struct Disassembler: Sendable {
             if symbol.lowercased().contains(needle) { return true }
             if (folded[start] ?? []).contains(where: { candidate in
                 candidate.lowercased().contains(needle)
-                    || (demangle(candidate)?.lowercased().contains(needle) ?? false)
+                    || (demangle(candidate).map { matchesName($0, needle: needle) } ?? false)
             }) {
                 return true
             }
@@ -1718,7 +1746,7 @@ public struct Disassembler: Sendable {
                 return true
             }
             let demangled = labels[start].flatMap { demangle($0) } ?? metadataNames[start]
-            if demangled?.lowercased().contains(needle) == true { return true }
+            if demangled.map({ matchesName($0, needle: needle) }) == true { return true }
             if labels[start] == nil, metadataNames[start] == nil,
                let info = asyncIndex.info(for: start, parentName: nameOf),
                !info.isEntry, let parentName = info.parentName {
@@ -1779,7 +1807,7 @@ public struct Disassembler: Sendable {
             names[address] = objcIndex.binding(for: address)?.displayName
         }
         for function in functions where names[function.startAddress] == nil {
-            names[function.startAddress] = function.displayName
+            names[function.startAddress] = function.analysisDisplayName
         }
         for (address, name) in symbolStubNames(in: machO) where names[address] == nil {
             names[address] = name
@@ -2275,7 +2303,7 @@ public struct Disassembler: Sendable {
             guard binding.isInstance else { return nil }
             return binding.selfTypeName
         }
-        guard let fromSymbol = selfTypeFromDemangledName(function.demangledName),
+        guard let fromSymbol = selfTypeFromDemangledName(function.analysisName),
               resolves(fromSymbol)
         else { return nil }
         return fromSymbol
@@ -2376,7 +2404,7 @@ public struct Disassembler: Sendable {
         // A qualified self type needs its own descriptor's map: falling back to
         // the simple name could borrow another type's fields. (Recovered from
         // the pre-merge stash 983aa25.)
-        if let qualified = qualifiedSelfTypeFromDemangledName(function.demangledName) {
+        if let qualified = qualifiedSelfTypeFromDemangledName(function.analysisName) {
             guard qualified.split(separator: ".").last.map(String.init) == simpleName else { return nil }
             return fieldMaps[qualified]
         }
@@ -2494,7 +2522,7 @@ public struct Disassembler: Sendable {
     /// A function/method spells its result after ` -> `; a property *getter*
     /// demangles as `Type.prop.getter : PropType`.
     static func swiftReturnTypeName(of function: DisassembledFunction) -> String? {
-        guard function.objcMethod == nil, let name = function.demangledName else { return nil }
+        guard function.objcMethod == nil, let name = function.analysisName else { return nil }
         return swiftReturnTypeName(forDemangledName: name)
     }
 
@@ -2553,7 +2581,7 @@ public struct Disassembler: Sendable {
         // An async function's result is delivered through its context's resume
         // function, never in x0/v0 at a `ret`; the same holds for its resume
         // funclets. Its x0 at a `ret` rendered `return swift_task_dealloc()`.
-        if let name = function.demangledName,
+        if let name = function.analysisName,
            DisassembledFunction.splitSignature(name)?.isAsync == true
             || name.contains("resume partial function for ") {
             return nil
@@ -2637,7 +2665,7 @@ public struct Disassembler: Sendable {
         of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
         classTypeIndex: ClassTypeIndex = ClassTypeIndex()
     ) -> [String: Int]? {
-        guard function.objcMethod == nil, let name = function.demangledName,
+        guard function.objcMethod == nil, let name = function.analysisName,
               Self.isSwiftMangled(function.symbol),
               // A getter/setter/accessor or a name without a call signature has no
               // ordinary parameter list to seed.
@@ -2776,7 +2804,7 @@ public struct Disassembler: Sendable {
     static func swiftEnumArgumentTypes(
         of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex
     ) -> [Int: String] {
-        guard function.objcMethod == nil, let name = function.demangledName,
+        guard function.objcMethod == nil, let name = function.analysisName,
               Self.isSwiftMangled(function.symbol),
               let signature = DisassembledFunction.splitSignature(name)?.head
         else { return [:] }
@@ -2800,7 +2828,7 @@ public struct Disassembler: Sendable {
     /// lets `!b` (lowered `(arg ^ 1) & 1`) fold to `!arg` and `b == true`/`b`
     /// used in a condition read cleanly rather than as a masked integer test.
     static func swiftBoolArgumentIndices(of function: DisassembledFunction) -> Set<Int> {
-        guard function.objcMethod == nil, let name = function.demangledName,
+        guard function.objcMethod == nil, let name = function.analysisName,
               Self.isSwiftMangled(function.symbol),
               let signature = DisassembledFunction.splitSignature(name)?.head
         else { return [] }
@@ -2827,7 +2855,7 @@ public struct Disassembler: Sendable {
     static func swiftFloatArgumentInfo(
         of function: DisassembledFunction
     ) -> (indices: Set<Int>, isDouble: Bool)? {
-        guard function.objcMethod == nil, let name = function.demangledName,
+        guard function.objcMethod == nil, let name = function.analysisName,
               Self.isSwiftMangled(function.symbol),
               let split = DisassembledFunction.splitSignature(name)
         else { return nil }
@@ -2932,7 +2960,7 @@ public struct Disassembler: Sendable {
         of function: DisassembledFunction, fieldMaps: [String: FieldMap]
     ) -> (typeName: String, fieldMap: FieldMap,
           seeded: [String: AbstractValue], argumentFieldMaps: [Int: FieldMap])? {
-        guard function.objcMethod == nil, let name = function.demangledName,
+        guard function.objcMethod == nil, let name = function.analysisName,
               Self.isSwiftMangled(function.symbol), !name.hasPrefix("static ")
         else { return nil }
 
@@ -3345,9 +3373,10 @@ public struct Disassembler: Sendable {
         /// A call through self's own vtable slot is `self.member(…)`: the named
         /// implementation is only the one that runs when self is exactly its class.
         func displayCallee(_ callee: String, at site: UInt64) -> String {
-            selfDispatchSites.contains(site)
-                ? DisassembledFunction.selfDispatchCall(callee)
-                : DisassembledFunction.strippedCallee(callee)
+            let display = demangleCache.presentation(of: callee)
+            return selfDispatchSites.contains(site)
+                ? DisassembledFunction.selfDispatchCall(display)
+                : DisassembledFunction.strippedCallee(display)
         }
         // An async function returns by branching through its own context's
         // ResumeParent slot. Proven only when the tracer followed the pointer
@@ -4607,7 +4636,7 @@ public struct Disassembler: Sendable {
         // Rendered as a return, a throw exit printed its x0 as the result: the
         // typed error's payload (`return 0` for `.bad`), or a dead call's.
         let throwsSignature = function.objcMethod == nil
-            ? function.demangledName.flatMap(DisassembledFunction.splitSignature) : nil
+            ? function.analysisName.flatMap(DisassembledFunction.splitSignature) : nil
         // An async throwing function returns through its context's
         // ResumeParent with the error in x20, zero for none: `swift_allocError`
         // then `mov x20, x0; br x0` throws, `mov x20, #0; br x1` returns. A
@@ -4918,7 +4947,7 @@ public struct Disassembler: Sendable {
         // yields nothing, so it is excluded. Only the ramp of a `_modify` (never a
         // `.read`, whose yield is a borrowed value, not an address) is recognized.
         let modifyProperty: String? = {
-            guard let name = function.demangledName, !name.contains(".resume") else { return nil }
+            guard let name = function.analysisName, !name.contains(".resume") else { return nil }
             let base = name.range(of: " : ").map { String(name[..<$0.lowerBound]) } ?? name
             guard base.hasSuffix(".modify") else { return nil }
             let property = base.dropLast(".modify".count)
@@ -5159,7 +5188,7 @@ public struct Disassembler: Sendable {
             if Probe.isActive, isReturn(insn) {
                 let renderedReturn = sourceNotes.first { $0.hasPrefix("return ") }
                 let returnsValue = DisassembledFunction.signatureReturnsValue(
-                    displayName: function.displayName, objcSignature: function.objcMethod?.signature)
+                    displayName: function.analysisDisplayName, objcSignature: function.objcMethod?.signature)
                 let status = throwExits.contains(insn.address) ? "throw"
                     : renderedReturn == "return ?" ? "unknown"
                     : renderedReturn != nil ? "recovered"
@@ -5238,7 +5267,8 @@ public struct Disassembler: Sendable {
                 controlFlow: flow, branchTarget: insn.branchTarget,
                 callArguments: rendered.isEmpty ? nil : rendered,
                 callSelf: selfText, resultConsumed: consumedCallResults.contains(insn.address),
-                sourceType: sourceType, detail: insn.detail
+                sourceType: sourceType, detail: insn.detail,
+                calleeDisplayName: callee.map { demangleCache.presentation(of: $0) }
             )
         }
         return function.replacingInstructions(instructions)
@@ -5382,10 +5412,18 @@ public struct Disassembler: Sendable {
         return demangleCache.value(for: s) { s in
             // Sync context → the sync `print` overload is selected (no await).
             guard let node = try? demangleAsNode(s) else { return nil }
-            demangleCache.rememberNominalTypes(from: node, options: preset.options)
-            let printed = node.print(using: preset.options)
+            demangleCache.rememberNominalTypes(from: node, options: .default)
+            let printed = node.print(using: .default)
+            if preset != .default {
+                demangleCache.rememberPresentation(node.print(using: preset.options), for: printed)
+            }
             return printed.isEmpty ? nil : printed
         }
+    }
+
+    private func matchesName(_ semantic: String, needle: String) -> Bool {
+        semantic.lowercased().contains(needle)
+            || demangleCache.presentation(of: semantic).lowercased().contains(needle)
     }
 
     /// First Swift mangled token in an instruction's operands, demangled.

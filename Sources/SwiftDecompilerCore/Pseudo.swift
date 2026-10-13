@@ -47,7 +47,8 @@ public extension DisassembledFunction {
                 address: insn.address, text: insn.text, annotation: rest.isEmpty ? nil : rest,
                 controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
                 callArguments: insn.callArguments, callSelf: insn.callSelf,
-                resultConsumed: insn.resultConsumed, sourceType: insn.sourceType, detail: insn.detail)
+                resultConsumed: insn.resultConsumed, sourceType: insn.sourceType, detail: insn.detail,
+                calleeDisplayName: insn.calleeDisplayName)
             return pseudoStatement(of: base, hideRuntime: hideRuntime).map { "\($0)\nthrow ?" } ?? "throw ?"
         }
         if insn.isTrap { return "trap()" }
@@ -112,12 +113,12 @@ public extension DisassembledFunction {
         // A Swift method's receiver arrives in x20, not x0, so show it as an
         // explicit `self:` rather than letting it vanish from the call.
         if isSelfDispatch(insn) {
-            let call = "\(selfDispatchCall(callee))(\(arguments.joined(separator: ", ")))"
+            let call = "\(selfDispatchCall(insn.calleeDisplayName ?? callee))(\(arguments.joined(separator: ", ")))"
             guard let binding = awaitBinding(of: insn) else { return call }
             return binding.isEmpty ? "await \(call)" : "let \(binding) = await \(call)"
         }
         let parts = insn.callSelf.map { ["self: \($0)"] + arguments } ?? arguments
-        let call = "\(strippedCallee(callee))(\(parts.joined(separator: ", ")))"
+        let call = "\(strippedCallee(insn.calleeDisplayName ?? callee))(\(parts.joined(separator: ", ")))"
         // A suspension point: the tail call is an `await`, and its result is
         // bound to the name the resume funclet reads it under, when proven.
         guard let binding = awaitBinding(of: insn) else { return call }

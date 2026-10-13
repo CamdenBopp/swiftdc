@@ -27,9 +27,9 @@ public extension DisassembledFunction {
         let depth = maxStructuringDepth > 0 ? maxStructuringDepth : ControlFlowStructure.defaultMaxDepth
         let cfg = ControlFlowStructure(
             blocks: blocks, objectiveCArguments: objcMethod != nil, maxDepth: depth,
-            isThrowing: Self.splitSignature(displayName)?.isThrowing ?? false,
+            isThrowing: Self.splitSignature(analysisDisplayName)?.isThrowing ?? false,
             returnsValue: Self.signatureReturnsValue(
-                displayName: displayName, objcSignature: objcMethod?.signature
+                displayName: analysisDisplayName, objcSignature: objcMethod?.signature
             )
         )
         let header = "\(displayName) {"

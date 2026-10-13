@@ -15,7 +15,7 @@ public enum TypeInference {
     public static func argumentTypes(
         of function: DisassembledFunction, classTypeIndex: ClassTypeIndex = ClassTypeIndex()
     ) -> [Int: ValueType] {
-        guard function.objcMethod == nil, let name = function.demangledName,
+        guard function.objcMethod == nil, let name = function.analysisName,
               Disassembler.isSwiftMangled(function.symbol),
               let signature = DisassembledFunction.splitSignature(name)?.head
         else { return [:] }
