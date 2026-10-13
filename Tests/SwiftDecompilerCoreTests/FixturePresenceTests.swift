@@ -63,6 +63,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libUnknownReturn.dylib",
         "Fixtures/Sample/libABISavedSlots.dylib",
         "Fixtures/Sample/libABIEscapedSaves.dylib",
+        "Fixtures/Sample/libABIFrameOwnership.dylib",
         "Fixtures/Sample/libJumpTableBounds.dylib",
         "Fixtures/Sample/libLoopSwitch.dylib",
         "Fixtures/Sample/libSelectFlow.dylib",

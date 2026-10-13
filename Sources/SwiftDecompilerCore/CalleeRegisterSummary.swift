@@ -155,6 +155,20 @@ private enum Preservation {
             )
         }
 
+        mutating func invalidateSlotsForUnknownWrite(throughStackAlias: Bool) {
+            if throughStackAlias || stackAddressEscaped {
+                slots.removeAll()
+                return
+            }
+            // Incoming pointers can reach caller-owned memory at entry SP
+            // or above it. A save is private only if all eight bytes lie
+            // below entry SP; testing its start alone misses straddling saves.
+            slots = slots.filter { start, _ in
+                let (end, overflow) = start.addingReportingOverflow(8)
+                return !overflow && end <= 0
+            }
+        }
+
         mutating func invalidateSlots(at address: Int64, bytes: Int) {
             let (end, overflow) = address.addingReportingOverflow(Int64(bytes))
             guard bytes > 0, !overflow else {
@@ -202,9 +216,7 @@ private enum Preservation {
                     if !state.stackAliases.subtracting(["sp", "x29"]).isEmpty {
                         state.stackAddressEscaped = true
                     }
-                    if state.stackAddressEscaped {
-                        state.slots.removeAll()
-                    }
+                    state.invalidateSlotsForUnknownWrite(throughStackAlias: false)
                     // The callee keeps the ABI: x19–x29 and sp survive it.
                     for index in 0...18 { state.setRegister("x\(index)", to: .unknown) }
                     state.setRegister("x30", to: .unknown)
@@ -294,9 +306,8 @@ private enum Preservation {
                         state.slots[slot] = state.value(source.key)
                     }
                 }
-            } else if hasStackBase || state.stackAddressEscaped {
-                // An unknown index or escaped pointer may overlap any save.
-                state.slots.removeAll()
+            } else {
+                state.invalidateSlotsForUnknownWrite(throughStackAlias: hasStackBase)
             }
             if let base, let after { state.setRegister(base, to: after) }
             return
@@ -319,9 +330,8 @@ private enum Preservation {
         // An unsupported memory write (or missing memory access flags) has no
         // proven extent. Forget the saves when its base points into the frame.
         // Flags are used only to decline; supported stores use actual widths.
-        if hasStackBase || state.stackAddressEscaped,
-           operands.contains(where: { $0.operand.isMemory && ($0.isWritten || $0.access == 0) }) {
-            state.slots.removeAll()
+        if operands.contains(where: { $0.operand.isMemory && ($0.isWritten || $0.access == 0) }) {
+            state.invalidateSlotsForUnknownWrite(throughStackAlias: hasStackBase)
         }
         // An unmodelled transform of a frame address loses its exact offset,
         // not its ability to alias the frame. Keep that MAY fact at joins too.

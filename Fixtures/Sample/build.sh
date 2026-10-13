@@ -89,6 +89,9 @@ $CLANG -arch arm64 -dynamiclib abi_saved_slots.s -o libABISavedSlots.dylib -Wl,-
 echo "==> escaped save-area pointer aliases (abi_escaped_saves.s)"
 $CLANG -arch arm64 -dynamiclib abi_escaped_saves.s -o libABIEscapedSaves.dylib
 
+echo "==> caller-owned save slots and straddling writes (abi_frame_ownership.s)"
+$CLANG -arch arm64 -dynamiclib abi_frame_ownership.s -o libABIFrameOwnership.dylib
+
 echo "==> hardened jump-table bounds (jump_table_bounds.s) — index widths and call-clobbered NZCV"
 $CLANG -arch arm64 -dynamiclib jump_table_bounds.s -o libJumpTableBounds.dylib
 

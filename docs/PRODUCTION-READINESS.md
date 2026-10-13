@@ -2570,3 +2570,22 @@ if a test was observed to fail without the fix.
   Restored, freshly rebuilt intermediate enforcing suite: 620 tests in eleven
   suites pass. This is scoped escape coverage; no complete alias proof or
   performance improvement is claimed.
+
+- **FIXED (caller-owned save ranges) — incoming pointers could mutate a
+  save without a local escape.** `abi_frame_ownership.s` stores x19 at positive
+  entry-SP offsets, across the entry-SP boundary, or at zero before a call.
+  An incoming pointer can reach those caller-owned bytes. Unknown writes and
+  calls now discard every save whose eight-byte end exceeds entry SP;
+  local aliases/escapes still discard all saves. Checked addition handles
+  overflow, and an exact [-8,0) control remains preserved under the existing
+  ordinary-ABI ownership assumption. This is not proof of arbitrary negative
+  memory privacy or nonstandard x29 conventions.
+  Before correction, three callers rendered arg0 although native execution
+  returned the replacement/full upper word. 64 native comparisons and both
+  decoding/rendering paths cover all three and the safe control. The pre-fix
+  regression failed with 36 issues. Five independent mutations fail with
+  36/14/39/4/31 issues (ownership filter, straddling extent, supported write,
+  unsupported write, call effects); all original escape regressions still pass.
+  Freshly rebuilt enforcing intermediate suite: 624 tests in eleven suites.
+  Across 180 fixture source views, only the new ownership reduction's two
+  views change: three wrong returns decline, and its safe control is unchanged.
