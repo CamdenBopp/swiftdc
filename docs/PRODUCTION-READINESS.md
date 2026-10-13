@@ -2335,3 +2335,48 @@ if a test was observed to fail without the fix.
   1,428 at O/Osize (102 unknown), with zero refutations or missing observations.
   Its function-level multi-exit decline remains intact; the regression proves
   the corrected behavior when a caller supplies an explicit nonzero exit.
+
+## 2026-10-13: guarded multi-exit scoring in Swift
+
+- **IMPLEMENTED — default cases select exits from supplied inputs.** Return
+  probes carry a bounded path predicate. The scorer requires exactly one true
+  path and evaluates its value against the independent expected result; it
+  never searches for a return whose value matches the oracle. Declined values
+  on proven untaken paths are ignored. Unknown, overlapping or unmatched paths,
+  duplicate exit analyses and multiple image analyses decline. Explicit exit
+  cases retain their direct-exit contract; legacy traces remain compatible.
+- **IMPLEMENTED — observational path facts follow the CFG.** The public
+  `Probe.returnPathConditions` helper uses acyclic dependency order, composes
+  taken/fall-through guards and ORs joined routes. Detached DAG roots are
+  unreachable. Cycles and dependents stay unknown, as do unsupported forks and
+  external conditional targets. An unresolved indirect branch prevents claiming
+  disconnected roots unreachable. Construction stops at 256 blocks, 512 nodes
+  or depth 24 and discards exhausted evidence. The lazy producer changes no
+  source output or value analysis. It is shared by raw-register and recovered
+  source-return probes, with the same portable AST in saved JSONL traces.
+- **VALIDATED — independent native, protocol and limit tests.** Five authored
+  assembly functions add 55 native comparisons for split, shuffled, nested,
+  joined and detached layouts. Controls cover a cycle and an external target.
+  Saved-trace replay and four separate CLI processes preserve predicate trees.
+  Protocol tests refute a deliberately wrong expectation, ignore only proven
+  untaken declines, and reject ambiguity/duplicates/multiple images. Block,
+  node and depth bounds have separate regressions. The initial default scorer
+  tests were red with two issues before implementation.
+- **VALIDATED — twelve independent mutations fail.** Removing selection,
+  duplicate/image/unique-match checks, reversing taken predicates, losing OR
+  joins, using address order, permitting external targets, trusting cyclic
+  exits, and relaxing each bound fail with 9/1/1/1/6/2/2/1/1/1/1/1 issues.
+  This is return/path validation; full executable-body scoring, loop execution
+  and side-effect oracles remain open.
+- **VALIDATED — all three producer hooks and incomplete CFGs.** Removing raw
+  register, declined-outcome or recovered-value path evidence fails separately
+  with 6/2/69 issues. The native corpus gate now requires optimized boundedLoop
+  zero-exit cases to verify without exit addresses. Suppressing the unresolved
+  indirect-branch guard fails its otherwise-disconnected-return regression.
+- **MEASURED — 590 tests pass; 154 fixture views are unchanged.** The two-batch
+  36-configuration Swift run (`research --iterations 2 --seed 7`) retains
+  1,326/1,530 verified Onone cases with 204 unknowns. O/Osize verifies 1,441,
+  previously 1,428, with 89 unknowns. Exactly 13 boundedLoop zero-exit cases
+  gain verification in each optimized configuration; no partial nonzero return
+  is verified. All runs have zero refutations or missing observations. This
+  does not establish complete loop reconstruction or full-body accuracy.

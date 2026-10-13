@@ -114,6 +114,11 @@ public extension Probe {
         guard isActive, recorder != nil else { return }
         inFunction(function.startAddress, function.displayName) {
             let blocks = function.basicBlocks()
+            var returnPaths: [UInt64: AbstractValue]?
+            func path(at address: UInt64) -> ProbeValue {
+                if returnPaths == nil { returnPaths = returnPathConditions(analysis, of: function) }
+                return .abstractValue(returnPaths?[address] ?? .unknown)
+            }
             record(.analysisSnapshot, ["symbol": .name(function.symbol), "instructions": .int(function.instructions.count),
                                       "blocks": .int(blocks.count), "calls": .int(analysis.callSites.count)])
             for block in blocks {
@@ -127,6 +132,7 @@ public extension Probe {
                     "v0": .abstractValue(analysis.exitFloatValues[insn.address] ?? .unknown),
                     "x21": .abstractValue(analysis.exitErrorValues[insn.address] ?? .unknown),
                     "x20": .abstractValue(analysis.exitAsyncErrorValues[insn.address] ?? .unknown),
+                    "path": path(at: insn.address),
                 ])
             }
             for (address, site) in analysis.callSites.sorted(by: { $0.key < $1.key }) {

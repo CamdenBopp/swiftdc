@@ -2,7 +2,8 @@ import Foundation
 import Synchronization
 
 /// Exact integer return cases. An omitted exit address requires exactly one
-/// recorded exit for the function; multi-exit functions need an explicit exit.
+/// recorded exit or exactly one proven matching path. An explicit exit address
+/// scores that exit directly, without inferring which path the input takes.
 public struct ReturnExpectation: Sendable, Codable {
     public var function: UInt64
     public var address: UInt64?
@@ -224,7 +225,7 @@ private extension ProbeScoreReport.Outcome {
 public final class ProbeScore: Sendable {
     public enum Mode: String, Sendable, Codable { case recoveredReturn = "recovered-return", rawRegister = "raw-register" }
     private struct Key: Hashable { let function: UInt64; let address: UInt64? }
-    private struct Fact: Sendable { let value: ProbeValue?; let integer: Bool }
+    private struct Fact: Sendable { let value: ProbeValue?; let integer: Bool; let path: ProbeValue? }
     private struct State { var facts: [Key: [Fact]] = [:]; var images: [String] = [] }
     private let oracle: ReturnOracle
     private let mode: Mode
@@ -262,7 +263,8 @@ public final class ProbeScore: Sendable {
         guard record.event.id == event || declined,
               let function = record.function?.start, functions.contains(function) else { return }
         let fact = Fact(value: record[mode == .rawRegister ? "x0" : "value"],
-                        integer: mode == .rawRegister || record["register"]?.description == "x0")
+                        integer: mode == .rawRegister || record["register"]?.description == "x0",
+                        path: record["path"])
         let key = Key(function: function, address: record.address)
         state.withLock { if $0.facts[key, default: []].count < 2 { $0.facts[key, default: []].append(fact) } }
     }
@@ -284,8 +286,28 @@ public final class ProbeScore: Sendable {
                       actual: actual.map { "0x" + String($0, radix: 16) }, reason: reason)
             }
             guard !facts.isEmpty else { return result(.missing, reason: "no captured return claim") }
-            guard facts.count == 1 else { return result(.notEvaluated, reason: "multiple analyses or exits; specify one exit") }
-            guard facts[0].integer, let value = facts[0].value else {
+            // Reject duplicate analyses even when their exit would be untaken.
+            guard keys.allSatisfy({ (snapshot.facts[$0]?.count ?? 0) <= 1 }) else {
+                return result(.notEvaluated, reason: "multiple analyses for one exit")
+            }
+            var selected = facts
+            if expectation.address == nil, facts.count > 1, snapshot.images.count > 1 {
+                return result(.notEvaluated, reason: "multiple image analyses; specify one exit")
+            }
+            if expectation.address == nil, facts.count > 1 || facts.first?.path != nil {
+                guard facts.allSatisfy({ $0.path != nil }) else {
+                    return result(.notEvaluated, reason: "multiple exits without complete path evidence; specify one exit")
+                }
+                do {
+                    selected = try facts.filter { try $0.path!.evaluateInteger(arguments: expectation.arguments) != 0 }
+                } catch ProbeScoreError.invalid(let reason) { throw ProbeScoreError.invalid(reason) }
+                catch { return result(.notEvaluated, reason: "return path is not evaluable: \(error)") }
+            }
+            guard selected.count == 1 else {
+                return result(.notEvaluated, reason: selected.isEmpty ? "no return path matches supplied arguments"
+                    : "multiple return paths match supplied arguments")
+            }
+            guard selected[0].integer, let value = selected[0].value else {
                 return result(.notEvaluated, reason: "expected an integer register result")
             }
             do {

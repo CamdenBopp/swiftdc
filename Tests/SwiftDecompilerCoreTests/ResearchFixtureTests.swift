@@ -41,6 +41,14 @@ import Testing
             #expect(cases.count == inputs.count)
             #expect(cases.allSatisfy { $0.outcome == .verified }, "\(module).\(name) lost native oracle coverage")
         }
+        if module != "ResearchOnone" {
+            let zeroExits = report.results.filter {
+                $0.expectation.id?.hasPrefix("boundedLoop/") == true
+                    && ($0.expectation.arguments.first.map { $0 & 15 == 0 } ?? false)
+            }
+            #expect(zeroExits.count == inputs.filter { $0 & 15 == 0 }.count)
+            #expect(zeroExits.allSatisfy { $0.outcome == .verified }, "\(module) lost guarded zero-exit coverage")
+        }
         if module == "ResearchOnone" {
             for name in ["signedHigh", "unsignedHigh"] {
                 let cases = report.results.filter { $0.expectation.id?.hasPrefix(name + "/") == true }

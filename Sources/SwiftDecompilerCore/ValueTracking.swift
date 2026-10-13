@@ -387,9 +387,9 @@ public struct FunctionAnalysis: Sendable {
     public var branchSites: [UInt64: CallSite] = [:]
     /// The branch-taken comparison at a flags-based conditional branch (`b.eq`,
     /// `b.lt`, …), reconstructed from the tracked NZCV flags and the branch's
-    /// condition code. Lets the structurer render a source-named condition
-    /// (`arg0 >= arg1`) in place of raw registers. Compare-and-branch forms
-    /// (`cbz`/`tbz`) carry no condition code and are absent here.
+    /// condition code. Compare-and-branch forms (`cbz`/`tbz`) instead recover
+    /// their tested register directly. Lets the structurer render source-named
+    /// conditions in place of raw registers.
     public var branchConditions: [UInt64: AbstractValue] = [:]
     /// Proven loop induction body updates, keyed by the loop header's branch
     /// instruction — statements (`total += i`, `i += 1`) emitted in order

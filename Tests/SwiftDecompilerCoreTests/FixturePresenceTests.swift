@@ -54,6 +54,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libTypedThrowsAwait.opt.dylib",
         "Fixtures/Sample/libStaleSlot.opt.dylib",
         "Fixtures/Sample/libImportedClassProbe.opt.dylib",
+        "Fixtures/Sample/libReturnPaths.dylib",
         "Fixtures/Sample/libExtract.dylib",
         "Fixtures/Sample/libSelectFlow.dylib",
         "Fixtures/Sample/libResearchOnone.dylib",

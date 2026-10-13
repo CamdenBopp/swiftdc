@@ -131,3 +131,24 @@ private func capture(_ arguments: [String]) throws -> Data {
         """
     )
 }
+
+@Test func returnPathProbeTreesAreIdenticalAcrossProcessesIfPresent() throws {
+    let path = "Fixtures/Sample/libResearchOnone.dylib"
+    guard FileManager.default.fileExists(atPath: binary.path), FileManager.default.fileExists(atPath: path) else { return }
+    var first: [Data]?
+    for _ in 0..<4 {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("swiftdc-paths-\(UUID()).jsonl")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let output = try capture(["disasm", path, "-f", "signedRange", "--probe", file.path,
+                                  "--probe-filter", "event=render.return-value"])
+        #expect(!output.isEmpty)
+        let trace = try String(contentsOf: file, encoding: .utf8)
+        let paths = try trace.split(separator: "\n").compactMap { line -> Data? in
+            let record = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any]
+            guard let fields = record?["fields"] as? [String: Any], let path = fields["path"] else { return nil }
+            return try JSONSerialization.data(withJSONObject: path, options: [.sortedKeys])
+        }
+        #expect(!paths.isEmpty)
+        if let first { #expect(paths == first) } else { first = paths }
+    }
+}

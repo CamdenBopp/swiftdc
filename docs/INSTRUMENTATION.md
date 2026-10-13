@@ -194,12 +194,12 @@ now represented directly:
 | `loader.image` | UUID, architecture; correlate the trace with the native oracle |
 | `analysis.function` | symbol, instructions, blocks, calls; one completed analysis |
 | `cfg.block` | successors, instructions; CFG evidence |
-| `values.exit-registers` | x0, v0, x20, x21; raw facts at ordinary/async returns, not source ABI claims |
+| `values.exit-registers` | x0, v0, x20, x21, path; raw facts and branch predicates at ordinary/async returns, not source ABI claims |
 | `values.call` | arguments, floatingArguments, stackArguments, receiver, indirectResult |
 | `values.condition` | value; signed and unsigned operators stay distinct |
 | `values.loop-initialization` | name, value, stackOffset; proven constant entry binding, at the header branch |
-| `render.return-outcome` | status, type; recovered, partial, unknown, void, throw, or unsupported layout/value |
-| `render.return-value` | value, register, type, rendered; a recovered return claim |
+| `render.return-outcome` | status, type, path; recovered, partial, unknown, void, throw, or unsupported layout/value |
+| `render.return-value` | value, register, type, rendered, path; a recovered return claim |
 | `render.function` | view, symbol, returns, returnStatements, unknownReturns, gotos, lines; committed output only |
 | `async.context-escape` | offset; possible aliases on either incoming path invalidate slots |
 | `async.context-escape-cap` | blocks, cap; no slots proven after an incomplete analysis |
@@ -456,3 +456,27 @@ canonical options, and retains canonical and display strings independently.
 Callee annotations remain semantic input; `Instruction.calleeDisplayName` is
 used only when rendering. Probes score the same value facts across display
 presets, while function-name filters accept canonical and displayed spellings.
+
+Return probes now carry an optional `path`, using `swiftdc-value/1`. With no
+exit address in a case, the scorer evaluates every recorded path using that
+case's arguments and requires exactly one true predicate. It never uses the
+expected result to select an exit. An unknown value on a proven false path is
+ignored; an unknown path, overlapping true paths, no matching path, duplicate
+analysis at any exit, or multiple image analyses remains not-evaluated.
+An explicit exit address still scores that exit directly. Older traces with
+one exit need no path field; older multi-exit traces remain ambiguous.
+
+`Probe.returnPathConditions(analysis, of: function)` also exposes these facts
+to Swift validators. The built-in producer follows acyclic CFG dependencies,
+combines joined routes, and normalizes taken/fall-through predicates. It
+requires both internal edges of a conditional branch. An unresolved indirect
+branch invalidates path evidence, including otherwise disconnected roots. Cycles, dependent
+blocks, unresolved conditions and unsupported forks remain unknown. Bounds
+are 256 blocks, 512 expression nodes and depth 24; reaching a bound discards
+that path's evidence. Predicate construction is lazy inside probe payloads,
+so disabled probes and summary-only output do not construct the trees.
+
+This validates the selected return expression and its branch predicates; it
+does not execute loops, calls or stores, or prove complete side-effect behavior.
+No extra case fields, exit-address lookup or validator callback is needed for
+the common native integer scoring API.

@@ -4995,6 +4995,11 @@ public struct Disassembler: Sendable {
             return leaf
         }()
 
+        var observedReturnPaths: [UInt64: AbstractValue]?
+        func returnPath(at address: UInt64) -> ProbeValue {
+            if observedReturnPaths == nil { observedReturnPaths = Probe.returnPathConditions(analysis, of: function) }
+            return .abstractValue(observedReturnPaths?[address] ?? .unknown)
+        }
         let instructions = function.instructions.map { insn -> Instruction in
             var sourceNotes: [String] = []
             var sourceType = insn.sourceType
@@ -5247,7 +5252,8 @@ public struct Disassembler: Sendable {
                     : renderedReturn != nil ? (completeReturnRendering[insn.address] == false ? "partial" : "recovered")
                     : !returnsValue ? "void" : "unsupported-layout-or-value"
                 Probe.record(.returnOutcome, at: insn.address, ["status": .label(status),
-                    "type": .name(returnTypeName ?? function.objcMethod?.signature ?? "unknown")])
+                    "type": .name(returnTypeName ?? function.objcMethod?.signature ?? "unknown"),
+                    "path": returnPath(at: insn.address)])
                 if status == "recovered", let renderedReturn {
                     let register = asyncReturns.contains(insn.address) ? asyncReturnRegister
                         : Self.swiftReturnRegister(of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
@@ -5259,7 +5265,8 @@ public struct Disassembler: Sendable {
                     } else { .unknown }
                     Probe.record(.returnValue, at: insn.address, ["value": .abstractValue(value),
                         "register": .label(register == .floating ? "v0" : register != nil || isObjCNonVoid ? "x0" : "indirect-or-aggregate"),
-                        "type": .name(returnTypeName ?? "unknown"), "rendered": .name(renderedReturn)])
+                        "type": .name(returnTypeName ?? "unknown"), "rendered": .name(renderedReturn),
+                        "path": returnPath(at: insn.address)])
                 }
             }
 
