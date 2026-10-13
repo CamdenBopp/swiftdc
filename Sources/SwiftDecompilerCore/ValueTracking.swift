@@ -995,6 +995,11 @@ public struct ValueTracer: Sendable {
                 // object is the initializer's current self even if the runtime
                 // chose a different allocation.
                 registers["x0"] = .selfPointer
+            } else if DisassembledFunction.hasTupleResult(callee) {
+                // A register can be a tuple component, not the complete call
+                // expression. Project it only when its ABI layout is proven.
+                registers["x0"] = .unknown
+                registers["v0"] = nil
             } else {
                 // The result register — x0 for integer/pointer/reference returns,
                 // v0 for a floating-point one. The callee delivers into one; only

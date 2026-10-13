@@ -406,11 +406,14 @@ executes only its declared UInt64-to-UInt64 exports. Independent nm and system
 demangler output identify each entry and its explicit scalar signature.
 `dladdr` verifies that native execution belongs to the intended image.
 Deterministic SplitMix64 samples supplement fixed integer edge cases.
-The corpus currently includes 21 scalar functions and 31 fixed inputs,
+The corpus currently includes 23 scalar functions and 31 fixed inputs,
 including the byte, halfword and word sign boundaries. With the default
-16 random inputs, each configuration scores 987 native expectations.
+16 random inputs, each configuration scores 1,081 native expectations.
 Complement cases cover word truncation, a shifted operand, ORN and conditional
 word selection. Byte swapping is retained as an unsupported-return control.
+High-half multiplication cases exercise signed and unsigned products. Their
+-Onone library calls return tuples; unproven result-word projections decline
+instead of being presented as the complete call value.
 
 Every build is analyzed with all three demangling presets through both array
 and streaming entry points. The loop retains the source snapshot, assembly,

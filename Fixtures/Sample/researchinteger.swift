@@ -31,6 +31,10 @@
 @inline(never) public func shiftedNot(_ x: UInt64) -> UInt64 { ~(x >> 7) }
 @inline(never) public func orNot(_ x: UInt64) -> UInt64 { 33 | ~x }
 @inline(never) public func byteSwap(_ x: UInt64) -> UInt64 { x.byteSwapped }
+@inline(never) public func unsignedHigh(_ x: UInt64) -> UInt64 { x.multipliedFullWidth(by: x).high }
+@inline(never) public func signedHigh(_ x: UInt64) -> UInt64 {
+    UInt64(bitPattern: Int64(bitPattern: x).multipliedFullWidth(by: -0x123456789abcdef).high)
+}
 @inline(never) public func wordSelect(_ x: UInt64) -> UInt64 {
     let n = UInt32(truncatingIfNeeded: x)
     return UInt64((n & 1) != 0 ? n &+ 1 : ~n)

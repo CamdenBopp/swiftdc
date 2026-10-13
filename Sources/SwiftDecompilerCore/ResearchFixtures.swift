@@ -8,7 +8,7 @@ public enum ResearchFixtures {
     public static let names = ["increment", "mixedBits", "lowWord", "signedShift", "unsignedRange",
                                "signedRange", "choose", "quotient", "residue", "boundedLoop", "wordAdd",
                                "wordArithmeticShift", "signExtendWord", "signExtendByte", "signExtendHalf", "unsignedByte", "wordSelect",
-                               "wordNot", "shiftedNot", "orNot", "byteSwap"]
+                               "wordNot", "shiftedNot", "orNot", "byteSwap", "unsignedHigh", "signedHigh"]
     public static let modules = ["ResearchOnone", "ResearchOptimized", "ResearchSize"]
     public static let edges: [UInt64] = [0, 1, 2, 6, 7, 15, 16, 19, 20, 23, 26, 27, 31, 32, 63, 64,
                                        99, 100, 0x7f, 0x80, 0xff, 0x7fff, 0x8000, 0xffff,

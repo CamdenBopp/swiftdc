@@ -151,6 +151,29 @@ extension DisassembledFunction {
         return lastGroup
     }
 
+    /// A logical tuple is not the whole value of one machine result register.
+    /// Require an enclosing tuple, so a function returning a closure whose
+    /// signature contains commas is not mistaken for a tuple return.
+    static func hasTupleResult(_ callee: String) -> Bool {
+        guard callee.contains(" -> (") || callee.contains(".getter : (") else { return false }
+        var result: String
+        if let getter = callee.range(of: ".getter : ") {
+            result = String(callee[getter.upperBound...])
+            if let context = topLevelRange(of: " in ", in: result) { result = String(result[..<context.lowerBound]) }
+        } else if let signature = splitSignature(callee) {
+            result = signature.result
+        } else { return false }
+        result = result.trimmingCharacters(in: .whitespaces)
+        while result.first == "(", result.last == ")",
+              let range = outermostArgumentListRange(of: result),
+              range.lowerBound == result.index(after: result.startIndex),
+              range.upperBound == result.index(before: result.endIndex) {
+            if splitTopLevelArguments(result[range]).count > 1 { return true }
+            result = String(result[range]).trimmingCharacters(in: .whitespaces)
+        }
+        return false
+    }
+
     /// A demangled function name split into its declaration head and its result
     /// type, or nil when the name carries no ` -> ` signature.
     ///

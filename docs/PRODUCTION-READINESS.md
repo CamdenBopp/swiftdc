@@ -2107,3 +2107,22 @@ if a test was observed to fail without the fix.
   but exit accumulator recovery and a complete executable-body oracle remain
   unimplemented. Initializer and transition evidence do not verify a complete
   recovered function.
+
+## 2026-10-13: tuple call result words
+
+- **FIXED (working tree) — a scalar word rendered as an entire tuple call.**
+  New native high-product functions call multipliedFullWidth at -Onone, whose
+  signature returns `(high: UInt64, low: UInt64)` or `(high: Int64, low: UInt64)`.
+  The caller reads only the high word from x0, but output returned the whole
+  call expression as UInt64. A known logical tuple now leaves scalar result
+  registers unknown until its projection/layout is proven. Calls remain
+  visible and the scalar return explicitly declines. Tuple parameters,
+  closure results and grouped tuple/getter signatures are classified separately.
+- **VALIDATED — new independent native high-product inputs.** The Swift research
+  corpus now has 23 scalar functions and 47 inputs, including signed products
+  by a negative multiplier and unsigned squares. Each configuration supplies
+  1,081 expectations. The tuple-call regression was red with 24 issues;
+  disabling the decline reproduces those failures. At -Onone the two added
+  cases remain not-evaluated. At -O/-Osize native AST evaluation verifies their
+  direct SMULH/UMULH results. Full tuple projection recovery and distinct
+  high-multiply text notation remain separate follow-ups.
