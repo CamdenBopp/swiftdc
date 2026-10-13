@@ -70,7 +70,7 @@ public enum Probe {
 
     /// Runs `body` with events attributed to the function starting at `start`.
     @inline(__always)
-    static func inFunction<T>(_ start: UInt64, _ name: @autoclosure () -> String, _ body: () throws -> T) rethrows -> T {
+    public static func inFunction<T>(_ start: UInt64, _ name: @autoclosure () -> String, _ body: () throws -> T) rethrows -> T {
         guard isActive, recorder != nil else { return try body() }
         return try $function.withValue(ProbeFunction(start: start, name: name()), operation: body)
     }
@@ -78,7 +78,7 @@ public enum Probe {
     /// Records `event` at `address` (an instruction, or the function itself
     /// when nil) with `fields`.
     @inline(__always)
-    static func record(
+    public static func record(
         _ event: ProbeEvent, at address: UInt64? = nil,
         _ fields: @autoclosure () -> KeyValuePairs<String, ProbeValue> = [:]
     ) {
@@ -89,7 +89,7 @@ public enum Probe {
     /// Adds `amount` to `event`'s count without emitting a trace line: for a
     /// metric too frequent to trace (one per instruction).
     @inline(__always)
-    static func count(_ event: ProbeEvent, by amount: Int = 1) {
+    public static func count(_ event: ProbeEvent, by amount: Int = 1) {
         guard isActive, let recorder else { return }
         recorder.add(event, amount)
     }
@@ -97,7 +97,7 @@ public enum Probe {
     /// Times `body` under `event`: the total and the number of runs land in
     /// the recorder's summary, never in the deterministic event stream.
     @inline(__always)
-    static func timed<T>(_ event: ProbeEvent, _ body: () throws -> T) rethrows -> T {
+    public static func timed<T>(_ event: ProbeEvent, _ body: () throws -> T) rethrows -> T {
         guard isActive, let recorder else { return try body() }
         let start = ContinuousClock.now
         defer { recorder.addTime(event, ContinuousClock.now - start) }
@@ -109,6 +109,11 @@ public enum Probe {
 public struct ProbeFunction: Sendable, Equatable {
     public let start: UInt64
     public let name: String
+
+    public init(start: UInt64, name: String) {
+        self.start = start
+        self.name = name
+    }
 }
 
 /// One instrument: a stable identifier plus where it belongs and what it
@@ -154,21 +159,28 @@ public struct ProbeEvent: Sendable, Hashable {
 /// A field value. Text derived from the binary (`.name`) is redacted unless
 /// the recorder allows names, so a trace can be shared without the symbols of
 /// the binary it came from.
-public enum ProbeValue: Sendable, Equatable, CustomStringConvertible {
+public indirect enum ProbeValue: Sendable, Equatable, CustomStringConvertible {
     case int(Int)
+    /// Exact bit pattern, serialized as a hex string (never a lossy JSON number).
+    case uint(UInt64)
     case address(UInt64)
     case bool(Bool)
     /// A fixed string from swiftdc itself (a reason, a register name).
     case label(String)
     /// Text read from the binary: a symbol, a type, a selector.
     case name(String)
+    case array([ProbeValue])
+    case object([String: ProbeValue])
 
     public var description: String {
         switch self {
         case .int(let value): "\(value)"
+        case .uint(let value): "0x\(String(value, radix: 16))"
         case .address(let value): "0x\(String(value, radix: 16))"
         case .bool(let value): "\(value)"
         case .label(let value), .name(let value): value
+        case .array(let values): "[" + values.map(\.description).joined(separator: ",") + "]"
+        case .object(let values): "{" + values.keys.sorted().map { "\($0):\(values[$0]!.description)" }.joined(separator: ",") + "}"
         }
     }
 }
@@ -187,6 +199,32 @@ public struct ProbeRecord: Sendable, Equatable {
         a.sequence == b.sequence && a.event == b.event && a.function == b.function
             && a.address == b.address && a.fields.elementsEqual(b.fields) { $0.key == $1.key && $0.value == $1.value }
     }
+
+    /// Uses the CLI's serialization and recursive binary-name redaction.
+    public func jsonLine(includeNames: Bool = true) -> String {
+        ProbeRecorder(includeNames: includeNames).jsonLine(self)
+    }
+}
+
+/// An oracle's assessment, distinct from a decline made by the decompiler.
+public struct ProbeAssessment: Sendable, Equatable {
+    public enum Outcome: String, Sendable, CaseIterable {
+        case verified, refuted, notEvaluated = "not-evaluated"
+    }
+    public let oracle: String
+    public let outcome: Outcome
+    public let message: String?
+
+    public init(oracle: String, outcome: Outcome, message: String? = nil) {
+        self.oracle = oracle
+        self.outcome = outcome
+        self.message = message
+    }
+}
+
+public struct ProbeAssessmentRecord: Sendable {
+    public let record: ProbeRecord
+    public let assessment: ProbeAssessment
 }
 
 /// Which events a recorder keeps. Counts are kept for every event whatever
@@ -238,6 +276,9 @@ public final class ProbeRecorder: Sendable {
 
     /// Returns a violation message when a record contradicts an oracle.
     public typealias Validator = @Sendable (ProbeRecord) -> String?
+    /// Nil means inapplicable; an applicable but unsupported claim must return
+    /// `notEvaluated`, which never counts as a verified result.
+    public typealias AssessmentValidator = @Sendable (ProbeRecord) -> ProbeAssessment?
 
     struct State {
         var sequence = 0
@@ -245,20 +286,23 @@ public final class ProbeRecorder: Sendable {
         var counts: [ProbeEvent: Int] = [:]
         var times: [ProbeEvent: (total: Duration, runs: Int)] = [:]
         var violations: [String] = []
+        var assessments: [ProbeAssessmentRecord] = []
     }
 
     let filter: ProbeFilter
     let output: Output
     let includeNames: Bool
     let validators: [Validator]
+    let assessmentValidators: [AssessmentValidator]
     let state = Mutex(State())
 
     public init(filter: ProbeFilter = ProbeFilter(), output: Output = .capture, includeNames: Bool = true,
-                validators: [Validator] = []) {
+                validators: [Validator] = [], assessmentValidators: [AssessmentValidator] = []) {
         self.filter = filter
         self.output = output
         self.includeNames = includeNames
         self.validators = validators
+        self.assessmentValidators = assessmentValidators
     }
 
     public var records: [ProbeRecord] { state.withLock { $0.records } }
@@ -266,37 +310,48 @@ public final class ProbeRecorder: Sendable {
         state.withLock { Dictionary(uniqueKeysWithValues: $0.counts.map { ($0.key.id, $0.value) }) }
     }
     public var violations: [String] { state.withLock { $0.violations } }
+    public var assessments: [ProbeAssessmentRecord] { state.withLock { $0.assessments } }
 
     public func count(of event: ProbeEvent) -> Int { state.withLock { $0.counts[event] ?? 0 } }
 
     func receive(_ event: ProbeEvent, function: ProbeFunction?, address: UInt64?,
                  fields: () -> KeyValuePairs<String, ProbeValue>) {
         let admitted = filter.admits(event, function: function, address: address)
-        guard admitted || !validators.isEmpty else {
+        let keepsPayload: Bool = if case .summaryOnly = output { false } else { admitted }
+        guard keepsPayload || !validators.isEmpty || !assessmentValidators.isEmpty else {
             state.withLock { $0.counts[event, default: 0] += 1 }
             return
         }
         let built = fields().map { (key: $0.key, value: $0.value) }
-        let (record, line): (ProbeRecord, String?) = state.withLock { state in
+        let record = state.withLock { state in
             state.counts[event, default: 0] += 1
             state.sequence += 1
-            let record = ProbeRecord(sequence: state.sequence, event: event, function: function,
-                                     address: address, fields: built)
-            for validator in validators {
-                if let violation = validator(record) { state.violations.append(violation) }
+            return ProbeRecord(sequence: state.sequence, event: event, function: function,
+                               address: address, fields: built)
+        }
+        // User callbacks may inspect the recorder or perform expensive checks.
+        // They must run outside its mutex.
+        let (violations, assessments) = Probe.muted {
+            let violations = validators.compactMap { $0(record) }
+            let assessments = assessmentValidators.compactMap { validator in
+                validator(record).map { ProbeAssessmentRecord(record: record, assessment: $0) }
             }
-            guard admitted else { return (record, nil) }
+            return (violations, assessments)
+        }
+        let line: String? = state.withLock { state in
+            state.violations.append(contentsOf: violations)
+            state.assessments.append(contentsOf: assessments)
+            guard admitted else { return nil }
             switch output {
             case .capture:
                 state.records.append(record)
-                return (record, nil)
+                return nil
             case .jsonLines:
-                return (record, jsonLine(record))
+                return jsonLine(record)
             case .summaryOnly:
-                return (record, nil)
+                return nil
             }
         }
-        _ = record
         if let line, case .jsonLines(let write) = output { write(line) }
     }
 
@@ -321,7 +376,11 @@ public final class ProbeRecorder: Sendable {
                 .map { "\(quoted($0.key.id)):{\"seconds\":\(Double($0.value.total.components.seconds) + Double($0.value.total.components.attoseconds) / 1e18),\"runs\":\($0.value.runs)}" }
                 .joined(separator: ",")
             let violations = state.violations.map(quoted).joined(separator: ",")
-            return "{\"schema\":\(quoted(Self.schema)),\"summary\":{\"counts\":{\(counts)},\"times\":{\(times)},\"violations\":[\(violations)]}}"
+            let assessments = ProbeAssessment.Outcome.allCases.map { outcome in
+                let count = state.assessments.filter { $0.assessment.outcome == outcome }.count
+                return "\(quoted(outcome.rawValue)):\(count)"
+            }.joined(separator: ",")
+            return "{\"schema\":\(quoted(Self.schema)),\"summary\":{\"counts\":{\(counts)},\"times\":{\(times)},\"violations\":[\(violations)],\"assessments\":{\(assessments)}}}"
         }
     }
 
@@ -340,15 +399,21 @@ public final class ProbeRecorder: Sendable {
             parts.append("\"address\":\(quoted(ProbeValue.address(address).description))")
         }
         let fields = record.fields.map { field -> String in
-            let value: String = switch field.value {
-            case .int(let n): "\(n)"
-            case .bool(let b): "\(b)"
-            default: quoted(redacted(field.value))
-            }
-            return "\(quoted(field.key)):\(value)"
+            return "\(quoted(field.key)):\(jsonValue(field.value))"
         }
         parts.append("\"fields\":{\(fields.joined(separator: ","))}")
         return "{\(parts.joined(separator: ","))}"
+    }
+
+    func jsonValue(_ value: ProbeValue) -> String {
+        switch value {
+        case .int(let n): return "\(n)"
+        case .bool(let b): return "\(b)"
+        case .array(let values): return "[" + values.map(jsonValue).joined(separator: ",") + "]"
+        case .object(let values):
+            return "{" + values.keys.sorted().map { "\(quoted($0)):\(jsonValue(values[$0]!))" }.joined(separator: ",") + "}"
+        default: return quoted(redacted(value))
+        }
     }
 
     /// A binary-derived name, or a stable 8-hex-digit FNV-1a hash of it when

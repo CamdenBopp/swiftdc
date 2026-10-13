@@ -1,7 +1,27 @@
 /// Every instrument swiftdc defines. The identifiers are the trace schema
 /// (`ProbeRecorder.schema`); `docs/INSTRUMENTATION.md` lists them with their
 /// fields.
-extension ProbeEvent {
+public extension ProbeEvent {
+    static let imageIdentity = ProbeEvent("loader.image", .loader, .metric,
+        "The Mach-O UUID and architecture of the image being analyzed; no path is exposed.")
+    static let analysisSnapshot = ProbeEvent("analysis.function", .values, .metric,
+        "One completed per-function value analysis, with symbol and coverage denominators.")
+    static let blockSnapshot = ProbeEvent("cfg.block", .cfg, .decision,
+        "A recovered basic block and its successors; missing edges remain missing.")
+    static let exitRegisters = ProbeEvent("values.exit-registers", .values, .decision,
+        "Raw register facts at a return; these are not a claim about a source-level result's ABI.")
+    static let callSnapshot = ProbeEvent("values.call", .values, .decision,
+        "Raw argument, receiver and result-buffer facts at a machine call site.")
+    static let conditionSnapshot = ProbeEvent("values.condition", .values, .decision,
+        "The recovered branch-taken condition, retaining signed versus unsigned operators.")
+    static let returnOutcome = ProbeEvent("render.return-outcome", .render, .decision,
+        "Whether an exit renders a recovered, unknown, void, throwing or unsupported-layout return.")
+    static let returnValue = ProbeEvent("render.return-value", .render, .claim,
+        "The abstract value and rendered expression of a recovered return, for an independent oracle.")
+    static let renderedFunction = ProbeEvent("render.function", .render, .metric,
+        "One committed render, with view, final return statements and coverage counts; excludes trial emission.")
+    static let slotProven = ProbeEvent("async.slot-proven", .async, .claim,
+        "A context slot is claimed to hold this portable value throughout the funclet chain.")
     static let contextEscape = ProbeEvent(
         "async.context-escape", .async, .decline,
         "A possible context alias takes a slot address; this slot and later slots cannot be proven constant across the chain.")

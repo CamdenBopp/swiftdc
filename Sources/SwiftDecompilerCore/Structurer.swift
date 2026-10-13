@@ -12,13 +12,17 @@ public extension DisassembledFunction {
     /// limit. Exposed so tests can inject a small value.
     func renderStructured(maxStructuringDepth: Int = 0) -> String {
         Probe.inFunction(startAddress, displayName) {
-            Probe.timed(.renderTime) { renderStructuredBody(maxStructuringDepth: maxStructuringDepth) }
+            Probe.timed(.renderTime) {
+                let output = renderStructuredBody(maxStructuringDepth: maxStructuringDepth)
+                Probe.rendered(output, of: self, view: "structured")
+                return output
+            }
         }
     }
 
     private func renderStructuredBody(maxStructuringDepth: Int) -> String {
         let blocks = basicBlocks()
-        guard blocks.count > 1 else { return renderPseudo() }
+        guard blocks.count > 1 else { return Probe.muted { renderPseudo() } }
 
         let depth = maxStructuringDepth > 0 ? maxStructuringDepth : ControlFlowStructure.defaultMaxDepth
         let cfg = ControlFlowStructure(

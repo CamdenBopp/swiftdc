@@ -433,6 +433,7 @@ public struct Disassembler: Sendable {
         machO: MachOFile, transform: (DisassembledFunction) -> T,
         progress: ((_ done: Int, _ total: Int) -> Void)? = nil
     ) async -> [T] {
+        Probe.image(machO)
         let objcIndex = ObjCMetadataIndex.build(in: machO)
         let labelByAddress = symbolLabels(in: machO)
         var foldedByAddress = foldedSymbolAddresses(in: machO)
@@ -630,6 +631,7 @@ public struct Disassembler: Sendable {
         functionFilter: String?,
         objcIndex providedObjCIndex: ObjCMetadataIndex? = nil
     ) async -> [DisassembledFunction] {
+        Probe.image(machO)
         // Function boundaries: LC_FUNCTION_STARTS ∪ label addresses. Function-
         // starts survive stripping, so this re-creates boundaries a label set
         // (objdump's, or a stripped cache image's exports) couldn't cover.
@@ -1139,6 +1141,11 @@ public struct Disassembler: Sendable {
                     return value
                 }
             if !proven.isEmpty { result[entry] = proven }
+            Probe.inFunction(entry, entryName ?? "async chain") {
+                for (offset, value) in proven.sorted(by: { $0.key < $1.key }) {
+                    Probe.record(.slotProven, ["offset": .int(offset), "value": .abstractValue(value)])
+                }
+            }
         }
         return result
     }
@@ -3319,6 +3326,7 @@ public struct Disassembler: Sendable {
             tracer.voidCallSites = resolvedVoidCalls
             analysis = Probe.muted { tracer.analyze(function, entry: entry) }
         }
+        Probe.observe(analysis, of: function)
         if Probe.isActive {
             for insn in function.instructions where insn.branchTarget == nil
                 && (insn.controlFlow == .call || insn.controlFlow == .branch)
@@ -5133,6 +5141,31 @@ public struct Disassembler: Sendable {
                                                 site: insn.address)
                 }
                 sourceNotes.append("let \(name) = \(expression)")
+            }
+
+            if Probe.isActive, isReturn(insn) {
+                let renderedReturn = sourceNotes.first { $0.hasPrefix("return ") }
+                let returnsValue = DisassembledFunction.signatureReturnsValue(
+                    displayName: function.displayName, objcSignature: function.objcMethod?.signature)
+                let status = throwExits.contains(insn.address) ? "throw"
+                    : renderedReturn == "return ?" ? "unknown"
+                    : renderedReturn != nil ? "recovered"
+                    : !returnsValue ? "void" : "unsupported-layout-or-value"
+                Probe.record(.returnOutcome, at: insn.address, ["status": .label(status),
+                    "type": .name(returnTypeName ?? function.objcMethod?.signature ?? "unknown")])
+                if status == "recovered", let renderedReturn {
+                    let register = asyncReturns.contains(insn.address) ? asyncReturnRegister
+                        : Self.swiftReturnRegister(of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
+                    let value: AbstractValue = if isObjCNonVoid {
+                        analysis.exitValues[insn.address].map(sanitizeValue) ?? .unknown
+                    } else if returnsDirectly, let register {
+                        (register == .floating ? analysis.exitFloatValues : analysis.exitValues)[insn.address]
+                            .map(sanitizeValue) ?? .unknown
+                    } else { .unknown }
+                    Probe.record(.returnValue, at: insn.address, ["value": .abstractValue(value),
+                        "register": .label(register == .floating ? "v0" : register != nil || isObjCNonVoid ? "x0" : "indirect-or-aggregate"),
+                        "type": .name(returnTypeName ?? "unknown"), "rendered": .name(renderedReturn)])
+                }
             }
 
             // A proven async return is the function's `ret`; the structurer and

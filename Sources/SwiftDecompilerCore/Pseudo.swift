@@ -7,7 +7,11 @@ import Foundation
 public extension DisassembledFunction {
     func renderPseudo(hideRuntime: Bool = true) -> String {
         Probe.inFunction(startAddress, displayName) {
-            Probe.timed(.renderTime) { renderPseudoBody(hideRuntime: hideRuntime) }
+            Probe.timed(.renderTime) {
+                let output = renderPseudoBody(hideRuntime: hideRuntime)
+                Probe.rendered(output, of: self, view: "pseudo")
+                return output
+            }
         }
     }
 

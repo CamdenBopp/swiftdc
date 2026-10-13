@@ -123,6 +123,11 @@ collected in `violations` and in the summary. Two uses:
 
 ## Measured cost
 
+These measurements predate the structured value snapshots added below. They
+are a historical baseline, not measurements of the expanded full trace.
+Summary-only recording now skips payload construction unless a validator needs
+it; recording disabled still skips every payload.
+
 Release builds, alternating runs on a host shared with other work, wall
 clock:
 
@@ -176,6 +181,66 @@ To reproduce, run the same command with and without `--probe <file>`
 Renaming an event id is a schema change: bump `ProbeRecorder.schema`.
 
 ## Extension points
+
+### Scoring without parsing pseudocode
+
+The native flag-scoring session distinguished correct, wrong, unevaluable and
+missing returns, and explicitly wrapped results modulo 2^64. It also showed
+why trial structuring must not inflate final-output counts. These concerns are
+now represented directly:
+
+| Event | Fields / purpose |
+|---|---|
+| `loader.image` | UUID, architecture; correlate the trace with the native oracle |
+| `analysis.function` | symbol, instructions, blocks, calls; one completed analysis |
+| `cfg.block` | successors, instructions; CFG evidence |
+| `values.exit-registers` | x0, v0, x20, x21; raw facts at ordinary/async returns, not source ABI claims |
+| `values.call` | arguments, floatingArguments, stackArguments, receiver, indirectResult |
+| `values.condition` | value; signed and unsigned operators stay distinct |
+| `render.return-outcome` | status, type; recovered, unknown, void, throw, or unsupported layout/value |
+| `render.return-value` | value, register, type, rendered; a recovered return claim |
+| `render.function` | view, symbol, returns, returnStatements, unknownReturns, gotos, lines; committed output only |
+| `async.context-escape` | offset; possible aliases on either incoming path invalidate slots |
+| `async.context-escape-cap` | blocks, cap; no slots proven after an incomplete analysis |
+| `async.context-escape-unknown` | reason; missing instruction semantics |
+| `async.slot-proven` | offset, value; a chain-wide portable slot claim |
+
+`ProbeValue` supports exact unsigned bit patterns (`uint`, JSON hex strings),
+arrays and objects. Nested `name` values follow the existing redaction policy.
+`ProbeValue.abstractValue` exports `swiftdc-value/1`: an `expression` object
+whose `kind` is `immediate`, `argument`, `binary`, `unary`, `select`, or a named
+provenance leaf. A binary node has `operator`, `lhs` and `rhs`; an immediate has
+exact `bits`. Unknown values, provenance requiring an external oracle, and
+export truncation remain explicit. The export is bounded to depth 32 / 1,024
+expanded nodes, with explicit truncation markers. It does not add missing machine widths or turn a register fact into a
+proven source ABI. Floating-point immediates are raw bit patterns.
+
+```json
+{"schema":"swiftdc-value/1","expression":{"kind":"binary","operator":"unsigned-less",
+ "lhs":{"kind":"argument","index":0},"rhs":{"kind":"immediate","bits":"0xffffffffffffffff"}}}
+```
+
+`Probe.observe(analysis, of: function)` is public for native fixture harnesses
+using `ValueTracer` directly. It records a completed snapshot, not worklist
+iterations. The main decompiler calls it after its final trace.
+`Probe.rendered(output, of: function, view: "custom")` exposes final-render
+counts to other renderers. The built-in renderers call it once each; a
+structured render's flat fallback is muted. Both APIs are observational.
+
+`Probe.record`, `inFunction`, `count`, `timed`, and `ProbeRecord.jsonLine` are
+public extension surfaces. `ProbeFunction` has a public initializer.
+
+An `assessmentValidators` closure returns `ProbeAssessment` with an oracle ID
+and `verified`, `refuted` or `notEvaluated`; nil means inapplicable. Assessments
+retain the original record (function, address, event, sequence). They run even
+when the trace filter excludes that record, outside the recorder mutex with
+their own incidental probes muted, and
+are available through `recorder.assessments`. The JSON summary adds separate
+assessment counts. An unsupported claim never counts as a verified one. The
+legacy string-returning `validators` / `violations` API remains available.
+
+The additions preserve existing event identifiers and fields in
+`swiftdc-probe/1`; structured values have their own versioned schema.
 
 A hook belongs here only when it has a real user today. Anything speculative
 stays out: an abstraction with one implementation is a cost with no
@@ -237,11 +302,3 @@ uses: binary metadata, then symbols, then outside evidence. Disagreement
 declines. `FieldMap` collisions, folded addresses and ObjC bindings that
 disagree already decline that way, and an extension must not resolve those
 by picking one.
-
-## Async context escape evidence
-
-`async.context-escape` identifies a computed slot address (offset).
-`async.context-escape-cap` reports blocks and the exhausted work bound.
-`async.context-escape-unknown` reports missing detail, an unknown convention,
-missing funclets, unresolved indirect flow or context-base writeback. A cap or
-unknown instruction semantics declines all chain-slot proofs.
