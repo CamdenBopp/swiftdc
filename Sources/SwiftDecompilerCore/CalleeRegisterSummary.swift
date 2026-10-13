@@ -129,6 +129,8 @@ private enum Preservation {
 
     struct State: Equatable {
         var registers: [String: Value]
+        // Each fact covers exactly eight bytes. A store at a different start
+        // address can still overwrite part of that saved register.
         var slots: [Int64: Value]
 
         func value(_ key: String) -> Value { registers[key] ?? .unknown }
@@ -138,6 +140,18 @@ private enum Preservation {
                 registers: registers.filter { other.registers[$0.key] == $0.value },
                 slots: slots.filter { other.slots[$0.key] == $0.value }
             )
+        }
+
+        mutating func invalidateSlots(at address: Int64, bytes: Int) {
+            let (end, overflow) = address.addingReportingOverflow(Int64(bytes))
+            guard bytes > 0, !overflow else {
+                slots.removeAll()
+                return
+            }
+            slots = slots.filter { start, _ in
+                let (slotEnd, slotOverflow) = start.addingReportingOverflow(8)
+                return !slotOverflow && (slotEnd <= address || start >= end)
+            }
         }
     }
 
@@ -201,6 +215,11 @@ private enum Preservation {
 
     private static func apply(_ detail: StructuredInsn, to state: inout State) {
         let operands = detail.operands
+        let hasStackBase = operands.contains { info in
+            guard case .memory(let base?, _, _) = info.operand else { return false }
+            if case .stack = state.value(base.key) { return true }
+            return false
+        }
         // A writeback through a base that is no known stack address still
         // moves that base.
         if detail.writeback, access(detail, in: state).address == nil,
@@ -224,17 +243,31 @@ private enum Preservation {
                 state.registers[destination.key] = .stack(detail.id == AARCH64_INS_ADD ? k &+ immediate : k &- immediate)
                 return
             }
-        case AARCH64_INS_STR, AARCH64_INS_STUR, AARCH64_INS_STP:
+        case AARCH64_INS_STR, AARCH64_INS_STUR, AARCH64_INS_STP, AARCH64_INS_STNP,
+             AARCH64_INS_STRB, AARCH64_INS_STURB, AARCH64_INS_STRH, AARCH64_INS_STURH:
             let (address, base, after) = access(detail, in: state)
-            let count = detail.id == AARCH64_INS_STP ? 2 : 1
+            let count = detail.id == AARCH64_INS_STP || detail.id == AARCH64_INS_STNP ? 2 : 1
             if let address {
                 for offset in 0..<count {
                     guard let source = register(offset) else { continue }
-                    let slot = address &+ Int64(offset * 8)
-                    // Only a whole 64-bit register is a saved value.
-                    state.slots[slot] = source.widthBits == 64 ? state.value(source.key) : .unknown
-                    if source.widthBits != 64 { state.slots[slot &- 4] = nil; state.slots[slot &+ 4] = nil }
+                    let bytes: Int
+                    switch detail.id {
+                    case AARCH64_INS_STRB, AARCH64_INS_STURB: bytes = 1
+                    case AARCH64_INS_STRH, AARCH64_INS_STURH: bytes = 2
+                    default: bytes = source.widthBits / 8
+                    }
+                    let slot = address &+ Int64(offset * bytes)
+                    state.invalidateSlots(at: slot, bytes: bytes)
+                    // Only a whole 64-bit GPR is a saved entry value. A SIMD
+                    // store invalidates its complete extent, including both
+                    // adjacent eight-byte saves when it writes a Q register.
+                    if bytes == 8, source.kind == .gpr {
+                        state.slots[slot] = state.value(source.key)
+                    }
                 }
+            } else if hasStackBase {
+                // An unknown index into this frame may overlap any save.
+                state.slots.removeAll()
             }
             // A store through an unknown pointer is assumed not to reach the
             // register save area, which no pointer escapes to.
@@ -255,6 +288,13 @@ private enum Preservation {
             return
         default:
             break
+        }
+        // An unsupported memory write (or missing memory access flags) has no
+        // proven extent. Forget the saves when its base points into the frame.
+        // Flags are used only to decline; supported stores use actual widths.
+        if hasStackBase,
+           operands.contains(where: { $0.operand.isMemory && ($0.isWritten || $0.access == 0) }) {
+            state.slots.removeAll()
         }
         for key in detail.writtenRegisterKeys { state.registers[key] = .unknown }
     }

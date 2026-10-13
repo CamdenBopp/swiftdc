@@ -2437,3 +2437,24 @@ if a test was observed to fail without the fix.
   regression with one issue; restored source is rebuilt before testing. Six
   of 176 fixture source views change, recovering byte reversal in all three
   research images; the remaining 170 views are identical.
+
+## 2026-10-13: ABI preservation
+
+- **FIXED (working tree) — saved-register proofs account for overlapping store bytes.**
+  `CalleeRegisterSummary` now invalidates the complete byte extent of stores,
+  including narrow, unaligned and SIMD writes, and uses actual pair strides.
+  Only full-width GPR stores can establish saved-entry facts. Indexed writes
+  through a known stack base and unmodelled stack writes decline save proofs.
+  In `abi_saved_slots.s`, two callers previously rendered `return arg0`,
+  despite their fragments changing bytes in saved x19; both must decline.
+  For input `0x1122334455667788`, native execution independently returns
+  `0x11223344aa667788` and `0xaabbccdd55667788`. Coverage includes disjoint
+  stores, normal saves/restores, FP writes, both decode paths and 32 native
+  calls (`ABISavedSlotTests`). All seven focused tests pass. Restoring the
+  baseline and independently disabling ranges, narrow widths, pair strides,
+  the GPR-source guard, unknown-index decline, unsupported-store decline or
+  STNP save support fails with 30/9/2/1/1/1/1/1 assertions respectively;
+  restoration rebuilds green. Reproduce with `swiftdc disasm
+  Fixtures/Sample/libABISavedSlots.dylib -f ABIStackSlots --pseudo` or
+  `--structured`. Existing assumptions about non-stack pointers
+  and escaped aliases remain outside this byte-overlap fix.

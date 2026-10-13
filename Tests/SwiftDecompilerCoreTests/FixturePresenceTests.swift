@@ -61,6 +61,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libExtract.dylib",
         "Fixtures/Sample/libByteReversal.dylib",
         "Fixtures/Sample/libUnknownReturn.dylib",
+        "Fixtures/Sample/libABISavedSlots.dylib",
         "Fixtures/Sample/libSelectFlow.dylib",
         "Fixtures/Sample/libResearchOnone.dylib",
         "Fixtures/Sample/libResearchOptimized.dylib",

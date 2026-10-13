@@ -83,6 +83,9 @@ $CLANG -arch arm64 -dynamiclib bytereversal.s -o libByteReversal.dylib
 echo "==> a pure unmodelled scalar return (unknownreturn.swift, -O)"
 $SWIFTC -O -emit-library -module-name UnknownReturn unknownreturn.swift -o libUnknownReturn.dylib
 
+echo "==> callee-save stack-byte overlap (abi_saved_slots.s)"
+$CLANG -arch arm64 -dynamiclib abi_saved_slots.s -o libABISavedSlots.dylib -Wl,-install_name,@rpath/libABISavedSlots.dylib
+
 echo "==> dependent select flow and non-address-order layout (selectflow.s)"
 $CLANG -arch arm64 -dynamiclib selectflow.s -o libSelectFlow.dylib
 
