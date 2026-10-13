@@ -54,6 +54,9 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libTypedThrowsAwait.opt.dylib",
         "Fixtures/Sample/libStaleSlot.opt.dylib",
         "Fixtures/Sample/libImportedClassProbe.opt.dylib",
+        "Fixtures/Sample/libResearchOnone.dylib",
+        "Fixtures/Sample/libResearchOptimized.dylib",
+        "Fixtures/Sample/libResearchSize.dylib",
     ]
 
     /// True on a run that must actually exercise the fixtures. `CI` is set by

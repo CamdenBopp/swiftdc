@@ -25,7 +25,7 @@ Fixtures/Sample/abi-source-oracle
 Fixtures/Sample/abi-source-resilient-oracle
 Fixtures/Sample/exception-cleanup-oracle
 
-# Benchmark harness output (regenerate with Benchmarks/benchmark.py).
+# Benchmark harness output (regenerate with Benchmarks/benchmark.swift).
 # The curated samples in Benchmarks/samples/ and the report are tracked; the
 # full per-binary dump in outputs/ is not.
 Benchmarks/outputs/

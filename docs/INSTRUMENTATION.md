@@ -371,3 +371,39 @@ uses: binary metadata, then symbols, then outside evidence. Disagreement
 declines. `FieldMap` collisions, folded addresses and ObjC bindings that
 disagree already decline that way, and an extension must not resolve those
 by picking one.
+
+### Repeating the native research matrix
+
+Run from the repository root:
+
+```bash
+swift run swiftdc research --iterations 2 --seed 7
+```
+
+The Swift command snapshots `Fixtures/Sample/researchinteger.swift`, compiles
+it at `-Onone`, `-O` and `-Osize` with distinct module names per batch, and
+executes only its declared UInt64-to-UInt64 exports. Independent nm and system
+demangler output identify each entry and its explicit scalar signature.
+`dladdr` verifies that native execution belongs to the intended image.
+Deterministic SplitMix64 samples supplement fixed integer edge cases.
+
+Every build is analyzed with all three demangling presets through both array
+and streaming entry points. The loop retains the source snapshot, assembly,
+oracle manifests, individual scores, probe summaries and `swiftdc-research/1`
+metadata in a fresh directory under `work/research`. Metadata binds evidence
+to source and binary SHA256s, native UUIDs, the running decompiler's SHA256,
+the Git revision/diff and compiler version. Compilation uses the snapshot,
+so editing the original source during a run cannot change later builds.
+
+A completed exploration and a verified case are separate facts. The marker
+starts with `completed: false`; failures leave partial evidence, and no older
+success marker can be reused. Refuted claims produce exit 1 after the matrix
+finishes. Unknown and missing cases stay in the report as discoveries; exit 0
+means the exploration completed, not that every case was verified. The loop
+runs only when invoked; it does not schedule background work.
+
+The review cycle is: inspect the next refuted or unexpectedly missing case,
+check its independently retained machine code, reduce it to a failing fixture,
+fix the semantic mechanism, mutation-check the regression and repeat the same
+seed plus a fresh batch. Keep per-function coverage requirements in tests;
+an aggregate count can conceal losing the case a regression exists to protect.

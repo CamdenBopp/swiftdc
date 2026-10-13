@@ -112,3 +112,19 @@ log. An assertion failure exits nonzero before writing a passing validation
 record. These measurements cover the stated reductions; representative app
 accuracy still requires the source-grounded app protocol above. Probe counts
 alone do not validate a claim.
+
+## 7. Repeat a native research experiment
+
+```bash
+swift run swiftdc research --iterations 2 --seed 7
+```
+
+This Swift loop snapshots the authored integer fixture, compiles three
+optimization levels and checks all display presets through array and streaming
+analysis. Native expected values and entry identities come from independent
+system tools and verified image-owned function pointers. Each run keeps
+versioned evidence in a fresh `work/research` directory, including refuted,
+unknown and missing cases. A completed experiment is separate from complete
+recovery. Start with refutations, reduce the responsible instruction sequence,
+fix it, mutation-check the test, then replay the same seed and another batch.
+See [INSTRUMENTATION.md](../../docs/INSTRUMENTATION.md) for the evidence contract.

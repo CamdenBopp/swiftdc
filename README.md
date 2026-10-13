@@ -78,7 +78,7 @@ Point  // instance size 16 bytes
 
 Every subcommand accepts a Mach-O, a fat binary, a `.app`/`.framework` bundle, or
 an `.ipa` (unzipped for you), and defaults to the bundle's main executable.
-Exceptions: `devices` and `apps` take no path at all.
+Exceptions: `devices`, `apps` and `research` take no positional binary path.
 `score` accepts a binary, or a probe trace with `--trace`, and an independent
 oracle. Native fixture scoring, manifest defaults and the Swift API are in
 [INSTRUMENTATION.md](docs/INSTRUMENTATION.md).
@@ -86,6 +86,7 @@ oracle. Native fixture scoring, manifest defaults and the Swift API are in
 | Subcommand | What it does |
 |---|---|
 | `score` | Score integer return claims against independent expected values; report agreement and coverage separately |
+| `research` | Compile and score an authored native fixture matrix across optimization, display and analysis modes; retain findings and provenance |
 | `analyze` *(default)* | Declarations + disassembly, grouped by owning type |
 | `dump` | Reconstructed Swift declarations from `__swift5_*` metadata |
 | `interface` | A full `.swiftinterface`-style source view — higher fidelity than `dump` |

@@ -1941,9 +1941,9 @@ Update its status in the same commit that changes the behavior, and record the
 evidence — a command, a commit, or a file:line. An item may only be marked FIXED
 if a test was observed to fail without the fix.
 
-## 2026-10-12: symbolic integer-width follow-up
+## 2026-10-12: native research-loop follow-up
 
-- **FIXED (working tree) — symbolic W-register accesses lost their width.**
+- **FIXED (`7c6a070`) — symbolic W-register accesses lost their width.**
   The previous 1,174 width probes held constants. A fresh symbolic-input
   fixture, `UInt64(UInt32(truncatingIfNeeded: x))`, returned `arg0` instead of
   its low word. Native execution refuted 20 of 39 samples at each optimization
@@ -1952,10 +1952,30 @@ if a test was observed to fail without the fix.
   use the architectural low five/six bits. Word normalization is idempotent;
   proven boolean values retain their existing rendering. The existing 217,728
   CCMP and 1,174 width-flag comparisons remain regression gates.
-- **FIXED (working tree) — tracked stack loads ignored width and signedness.**
+- **FIXED (`7c6a070`) — tracked stack loads ignored width and signedness.**
   Enlarging the research corpus exposed 49 wrong -Onone samples across byte
   truncation and sign extension. Stack stores record initialized widths;
   wider loads decline, signed loads extend the access-width sign, and partial
   overwrites invalidate intersecting snapshots. Memory copies consult the
   initialized width too. Symbolic tests cover byte/word loads and an overlapping
   byte write, with a neighboring non-overlapping control.
+- **OPEN — display presets change semantic recovery.** The imported-object
+  fixture recovers `note(arg0)` in default mode, emits `note(?)` in interface
+  mode and `note()` in simplified mode. On the new integer corpus, simplified
+  mode evaluates no cases. Presentation names must not serve as ABI signatures.
+  Reproduce with `swiftdc disasm Fixtures/Sample/libImportedClassProbe.opt.dylib
+  -f withObject --pseudo --demangle simplified` and the research matrix.
+- **OPEN — unsupported pure returns disappear from the flat fallback.**
+  Optimized `signExtendWord`, `signExtendByte` and `wordSelect` have known
+  UInt64 signatures but unsupported instruction semantics. Their unknown
+  register facts are observed, while the early enrichment guard skips return
+  outcomes and the single-block pseudo fallback emits a leaf comment. The
+  research scorer reports missing claims rather than treating these as verified.
+- **IMPLEMENTED — repeatable research evidence in Swift.**
+  `swiftdc research --iterations 2 --seed 7` adds fixed edges and repeatable
+  random samples across 16 authored scalar functions, three optimization
+  levels, three display presets and two analysis entry points. Each batch uses
+  distinct modules and validates native symbol ownership. Evidence is retained
+  under a fresh run directory, and refutations make the command fail. Scoring
+  coverage is explicit; unknown/missing recovery remains a discovery, never an
+  accuracy claim. See [INSTRUMENTATION.md](INSTRUMENTATION.md).
