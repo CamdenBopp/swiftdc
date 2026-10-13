@@ -1006,6 +1006,13 @@ private func callConversion(
     try await verifyNativeRenderedReturns(names: ["signedLowerBound"])
 }
 
+@Test func renderedChainedSignedRangeAgreesWithNativeBitPatternsIfPresent() async throws {
+    // This text interpreter uses signed values for bare comparisons. The
+    // optimized unsigned-offset expression instead inherits UInt64 typing;
+    // its typed AST is required to verify in the all-level native gate.
+    try await verifyNativeRenderedReturns(names: ["signedRange"], modules: ["ResearchOnone"])
+}
+
 private func verifyNativeRenderedReturns(names: Set<String>, markers: [String: String] = [:],
                                          modules: [String] = ResearchFixtures.modules) async throws {
     let inputs = ResearchFixtures.inputs(seed: 7)

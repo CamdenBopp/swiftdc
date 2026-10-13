@@ -66,6 +66,9 @@ $CLANG -arch arm64 -dynamiclib conditionalflags.s -o libConditionalFlags.dylib
 echo "==> symbolic addition flags at both widths (addflags.s)"
 $CLANG -arch arm64 -dynamiclib addflags.s -o libAddFlags.dylib
 
+echo "==> dependent select flow and non-address-order layout (selectflow.s)"
+$CLANG -arch arm64 -dynamiclib selectflow.s -o libSelectFlow.dylib
+
 echo "==> objc_retain_xN stubs (retainregister.swift, -O, arm64 iOS simulator)"
 $SWIFTC -O -emit-library -module-name RetainRegister -target arm64-apple-ios17.0-simulator \
     -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" retainregister.swift -o libRetainRegister.sim.dylib

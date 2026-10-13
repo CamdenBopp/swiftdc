@@ -631,15 +631,10 @@ public struct ValueTracer: Sendable {
         // conditional-branch diamond is that branch's select (`cond ? a : b`),
         // reconstructing a ternary / nil-coalescing. Enrich the merge blocks'
         // entry states before the snapshot pass replays them.
-        resolveDiamondSelects(
+        resolveAcyclicSelects(
             blocks: blocks, predecessors: predecessors,
-            blockByStart: blockByStart, inState: &inState, outState: outState
-        )
-        // The N-way generalization: a switch over a tag, whose merge has more
-        // than the two predecessors a diamond does.
-        resolveSwitchSelects(
-            blocks: blocks, predecessors: predecessors,
-            blockByStart: blockByStart, inState: &inState, outState: outState
+            blockByStart: blockByStart, inState: &inState, outState: outState,
+            entry: entry, addressTaken: addressTaken
         )
         // Loop-carried induction variables: a header slot with a proven constant
         // initial value and a proven `i ± c` recurrence across the back-edge is
@@ -1405,6 +1400,55 @@ public struct ValueTracer: Sendable {
             return false
         }
         return true
+    }
+
+    /// Forward select facts through acyclic dependencies in graph order. A
+    /// diamond's new entry state must reach its outgoing branch before another
+    /// diamond can use it. Cycles retain the original converged analysis;
+    /// this pass never assumes a loop has reached a new fixpoint.
+    private func resolveAcyclicSelects(
+        blocks: [BasicBlock], predecessors: [UInt64: [UInt64]],
+        blockByStart: [UInt64: BasicBlock], inState: inout [UInt64: State],
+        outState: [UInt64: State], entry: MethodEntryConvention?, addressTaken: [Int64]
+    ) {
+        let rawInState = inState
+        resolveDiamondSelects(blocks: blocks, predecessors: predecessors,
+                             blockByStart: blockByStart, inState: &inState, outState: outState)
+        resolveSwitchSelects(blocks: blocks, predecessors: predecessors,
+                            blockByStart: blockByStart, inState: &inState, outState: outState)
+        guard blocks.contains(where: { (predecessors[$0.startAddress]?.count ?? 0) >= 2 }) else { return }
+        var remaining = Dictionary(uniqueKeysWithValues: blocks.map { block in
+            (block.startAddress, (predecessors[block.startAddress] ?? []).filter { blockByStart[$0] != nil }.count)
+        })
+        var queue = remaining.keys.filter { remaining[$0] == 0 }.sorted(), cursor = 0
+        var forwarded = outState
+        Probe.muted {
+            while cursor < queue.count {
+                let address = queue[cursor]; cursor += 1
+                guard let block = blockByStart[address] else { continue }
+                var inputs = (predecessors[address] ?? []).compactMap { forwarded[$0] }
+                if address == blocks.first?.startAddress { inputs.append(Self.initialState(entry: entry)) }
+                let prior = rawInState[address]
+                inState[address] = Self.meet(inputs)
+                resolveDiamondSelects(blocks: [block], predecessors: predecessors,
+                                     blockByStart: blockByStart, inState: &inState, outState: forwarded)
+                resolveSwitchSelects(blocks: [block], predecessors: predecessors,
+                                    blockByStart: blockByStart, inState: &inState, outState: forwarded)
+                let incoming = inState[address] ?? [:]
+                if !Self.sameFacts(prior, incoming) {
+                    var registers = incoming
+                    for insn in block.instructions {
+                        transfer(insn, into: &registers, record: nil, recordAccess: nil,
+                                 initializerEntry: entry?.isObjectiveCInitializer == true, addressTaken: addressTaken)
+                    }
+                    forwarded[address] = registers
+                }
+                for successor in block.successors.sorted() where remaining[successor] != nil {
+                    remaining[successor, default: 0] -= 1
+                    if remaining[successor] == 0 { queue.append(successor) }
+                }
+            }
+        }
     }
 
     /// Reconstruct the select at each control-flow diamond: a join with two

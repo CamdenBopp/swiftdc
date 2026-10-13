@@ -2221,3 +2221,47 @@ if a test was observed to fail without the fix.
   availability-check calls, in instruction order. Structured output is stable.
   Removing normalization fails the independent availability-check regression
   with two issues, and the select-propagation release regression with six.
+
+## 2026-10-13: dependent select propagation
+
+- **FIXED — later diamonds read stale outgoing states.**
+  ResearchOnone.signedRange's first boolean merge was known at entry but
+  never re-transferred before the next decider read it. A forward pass now
+  visits acyclic dependencies in topological graph order, rebuilds merge
+  entry facts from updated predecessors, and re-transfers only changed states.
+  Both diamond and equality-switch merges use refreshed outgoing facts.
+  Cycles and their dependents retain the original converged analysis;
+  this pass does not pretend to solve a new loop fixpoint. Repeated work is
+  probe-muted.
+- **VALIDATED — native and layout-independent regressions.** signedRange is
+  required to verify at all optimization levels in native AST scoring. Its
+  recovered Onone text adds 306 native comparisons through all presets and
+  both renderers. The text interpreter uses signed bare comparisons, so the
+  optimized UInt64 offset expression remains covered by its typed AST gate.
+  Two assembly fixtures cover separated dependent diamonds and a return
+  placed earlier in address order; a cyclic control must remain unknown.
+  Removing outgoing refresh, incoming propagation or graph ordering fails
+  independently with 3/1/1 issues. The original corpus gate was red before
+  propagation. Complete executable-body scoring remains a separate goal.
+- **PREREQUISITE — d9ad06e preserves unused-argument producer calls.**
+  The fixture comparison exposed `swift_errorRelease` disappearing from
+  SwiftErrorProbe.listingCount when its stale result reached `__stack_chk_fail`.
+  The latter has zero arguments: consuming calls now uses the same fixed ABI
+  argument normalization as rendering. Both stripped and unstripped outputs
+  retain the release in both renderers. Removing this normalization fails the
+  regression with six issues.
+- **MEASURED — native coverage increases without refutations.** The two-batch,
+  36-configuration Swift research run (`research --iterations 2 --seed 7`)
+  verifies 1,224 of 1,428 Onone cases (previously 1,173), with 204 unknowns;
+  O/Osize stays at 1,326 verified and 102 unknowns. All configurations have
+  zero refutations and missing observations. This measures the authored corpus,
+  not general decompilation accuracy.
+- **BLAST RADIUS — 12 of 150 fixture outputs change after d9ad06e.**
+  ResearchOnone recovers the signed range; Indirect, Reconstruction and both
+  EnumIdentity modules recover enum equality returns from their ordinal
+  selections. Cow binds the earlier conditional buffer call at its original
+  site and carries its partial select into the later buffer call's argument.
+  Calls and stores retain their order. SwiftErrorProbe output stays unchanged
+  with the prerequisite consumption fix applied.
+  Rebuilt final enforcing suite: 574 tests in 11 suites pass, including
+  cross-process determinism, probe output independence and streaming memory.
