@@ -17,6 +17,15 @@ import Ccapstone
 /// is why `Disassembler.preset` is immutable per instance.
 final class DemangleCache: Sendable {
     private let store = Mutex<[String: String?]>([:])
+    private let kinds = Mutex(NominalTypeEvidence())
+
+    var nominalTypes: NominalTypeEvidence { kinds.withLock { $0 } }
+
+    func rememberNominalTypes(from node: Node, options: DemangleOptions) {
+        var evidence = NominalTypeEvidence()
+        evidence.collect(from: node, options: options)
+        kinds.withLock { $0.formUnion(evidence) }
+    }
 
     /// The cached result for `key`, computing and storing it on a miss.
     func value(for key: String, compute: (String) -> String?) -> String? {
@@ -520,7 +529,7 @@ public struct Disassembler: Sendable {
             nameOf: { names[$0] }
         )
         let enumCaseIndex = EnumCaseIndex.build(in: machO)
-        let classTypeIndex = ClassTypeIndex.build(in: machO)
+        let classTypeIndex = ClassTypeIndex.build(in: machO).adding(demangleCache.nominalTypes)
         // The chain pass decodes each chain's funclets once more, on demand, so
         // it still holds nothing beyond one chain at a time.
         let chainSlots = asyncChainSlots(
@@ -545,7 +554,7 @@ public struct Disassembler: Sendable {
             vtableIndex: VTableIndex.build(in: machO),
             enumCaseIndex: enumCaseIndex,
             payloadEnumIndex: PayloadEnumCaseIndex.build(in: machO),
-            classTypeIndex: ClassTypeIndex.build(in: machO),
+            classTypeIndex: classTypeIndex,
             indirectResultUses: indirectResultUses,
             registerSummaries: registerSummaries,
             asyncIndex: asyncIndex, asyncChainSlots: chainSlots
@@ -726,7 +735,7 @@ public struct Disassembler: Sendable {
         // Class (reference) type names, so a single-register `Optional<SomeClass>`
         // (nil == 0) seeds like a scalar and its `!= nil` reconstructs, while a
         // value-typed (tagged) optional still declines.
-        let classTypeIndex = ClassTypeIndex.build(in: machO)
+        let classTypeIndex = ClassTypeIndex.build(in: machO).adding(demangleCache.nominalTypes)
         let groupedByStart = Dictionary(functions.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
         let chainSlots = asyncChainSlots(
             index: asyncIndex,
@@ -3106,7 +3115,7 @@ public struct Disassembler: Sendable {
         // (nil == 0), so it seeds like a scalar — which lets `r != nil` / `r ?? x`
         // reconstruct. A value-typed (tagged) optional is not a class and stays
         // unseeded here.
-        if classTypeIndex.referenceOptionalInner(type) != nil { return .integer }
+        if classTypeIndex.isClass(type) || classTypeIndex.referenceOptionalInner(type) != nil { return .integer }
         // A no-payload enum is a trivial integer tag in one register, so it seeds
         // like a scalar — which is what lets `c == .case` over an enum parameter
         // reconstruct. Payload enums are absent from the index and stay unseeded.
@@ -5364,6 +5373,7 @@ public struct Disassembler: Sendable {
         return demangleCache.value(for: s) { s in
             // Sync context → the sync `print` overload is selected (no await).
             guard let node = try? demangleAsNode(s) else { return nil }
+            demangleCache.rememberNominalTypes(from: node, options: preset.options)
             let printed = node.print(using: preset.options)
             return printed.isEmpty ? nil : printed
         }

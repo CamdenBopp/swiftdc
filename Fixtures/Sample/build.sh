@@ -138,6 +138,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name SameName samename.swift 
 echo "==> async inout fixture (-O) — a context slot whose address escapes"
 $SWIFTC -parse-as-library -O -emit-library -module-name AsyncInout asyncinout.swift -o libAsyncInout.dylib
 
+echo "==> Imported class signatures without class-symbol references"
+$SWIFTC -parse-as-library -O -emit-library -module-name ImportedClassProbe importedclasses.swift -o libImportedClassProbe.opt.dylib
+
 echo "==> compares fixture (-O) — cmn compares with the negated operand"
 $SWIFTC -parse-as-library -O -emit-library -module-name Compares compares.swift -o libCompares.dylib
 

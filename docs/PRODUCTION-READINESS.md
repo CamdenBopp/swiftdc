@@ -31,6 +31,16 @@ overall decompilation-accuracy percentage is claimed.
 The highest-severity category. A wrong render is worse than a missing one,
 because it cannot be distinguished from a right one by reading the output.
 
+- **FIXED (working tree) — imported reference types required a direct class
+  symbol to seed scalar parameters.** Qualified class/struct/enum evidence
+  now comes from already-demangled trees as well as local metadata and ObjC
+  symbols. Conflicting value evidence declines, including simple-name
+  collisions. The imported Foundation fixture has no NSObject class symbol:
+  ordinary and optional object parameters recover `note(n)`, while CGPoint
+  remains a value type. `ImportedClassTests` covers AST evidence, scalar ABI,
+  the compiled fixture and streaming parity. Type-kind evidence proves
+  reference classification; it does not invent foreign layouts or vtables.
+
 - **App audit, 2026-10-12.** Five independent audits ran against four of
   the author's iOS apps, each built at a recorded revision at -Onone and -O,
   each finding checked against objdump, DWARF, the source, SIL or a run of
