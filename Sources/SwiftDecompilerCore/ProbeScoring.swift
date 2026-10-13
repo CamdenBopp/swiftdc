@@ -296,8 +296,11 @@ public final class ProbeScore: Sendable {
                 return result(.notEvaluated, reason: "multiple analyses for one exit")
             }
             var selected = facts
-            if expectation.address == nil, facts.count > 1, snapshot.images.count > 1 {
-                return result(.notEvaluated, reason: "multiple image analyses; specify one exit")
+            // Addresses and paths identify an exit only within one image
+            // analysis. Facts carry no image identity, so an explicit address
+            // or a single surviving fact cannot disambiguate two analyses.
+            if snapshot.images.count > 1 {
+                return result(.notEvaluated, reason: "multiple image analyses without per-record image identity")
             }
             if expectation.address == nil, facts.count > 1 || facts.first?.path != nil {
                 guard facts.allSatisfy({ $0.path != nil }) else {

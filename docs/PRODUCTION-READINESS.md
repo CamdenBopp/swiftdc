@@ -2621,3 +2621,16 @@ if a test was observed to fail without the fix.
   its stripped twin in both views. Each loses the three spill-derived returns
   above; fetchOrThrow's condition retains the machine register/sign-bit test.
   All other fixture output is unchanged. No CFG or funclet ownership changes.
+
+- **FIXED — mixed-image traces could falsely verify a single return.**
+  `ProbeScoring.report` previously rejected multiple loader events only for
+  default-exit cases containing multiple facts. An explicit exit or one
+  surviving fact bypassed it. Addresses do not identify an image, and records
+  lack per-image association: any two loader events now decline scoring,
+  including repeated UUIDs. UUID-bound manifests retain invalid-input handling;
+  single-image and legacy image-free traces retain their previous contract.
+  Twelve formerly accepted scenarios cover both scoring modes, explicit/default
+  exits, one/two facts, and repeated/distinct UUIDs. Reinstating the old condition
+  fails 36 assertions; restored three focused tests pass. Rebuilt enforcing
+  intermediate suite: 641 tests in eleven suites pass. This changes scoring
+  only; all disassembly source views remain byte-identical.
