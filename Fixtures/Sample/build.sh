@@ -89,6 +89,9 @@ $CLANG -arch arm64 -dynamiclib abi_saved_slots.s -o libABISavedSlots.dylib -Wl,-
 echo "==> hardened jump-table bounds (jump_table_bounds.s) — index widths and call-clobbered NZCV"
 $CLANG -arch arm64 -dynamiclib jump_table_bounds.s -o libJumpTableBounds.dylib
 
+echo "==> a switch case exits its enclosing loop (loopswitch.s)"
+$CLANG -arch arm64 -dynamiclib loopswitch.s -o libLoopSwitch.dylib
+
 echo "==> dependent select flow and non-address-order layout (selectflow.s)"
 $CLANG -arch arm64 -dynamiclib selectflow.s -o libSelectFlow.dylib
 

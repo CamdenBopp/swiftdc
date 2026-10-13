@@ -2476,3 +2476,18 @@ if a test was observed to fail without the fix.
   tables with identical targets. Declined tables retain unresolved indirect
   transfers. Reproduce with `swiftdc disasm
   Fixtures/Sample/libJumpTableBounds.dylib --cfg`.
+
+## 2026-10-13: loop-switch exits
+
+- **FIXED (working tree) — a switch case leaving its enclosing loop used the
+  switch's break.** In `loopswitch.s`, case 0 must leave the loop and call
+  `finished()`, while cases 1–9 repeat. Previously, the structured output's
+  bare `break` repeated `while (true)` indefinitely. Loop contexts now track
+  intervening switches and emit an explicit labeled transfer across their
+  scope; nested loops retain local breaks. Six regressions cover direct and
+  conditional exits, nested switches, nested loops, ordinary loop breaks and
+  native table decoding. Independently disabling scope propagation or goto
+  rendering fails five tests with eleven assertions; restoration rebuilds
+  green. Reproduce with `swiftdc disasm Fixtures/Sample/libLoopSwitch.dylib
+  --structured -f loopSwitchExit`. Switch indices and irreducible-loop
+  reconstruction remain outside this fix.
