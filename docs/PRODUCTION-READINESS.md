@@ -1964,12 +1964,18 @@ if a test was observed to fail without the fix.
   simplified mode. Canonical semantic identities now recover the argument
   under every preset; the integer corpus has matching coverage across presets.
   See the presentation-independent recovery follow-up below.
-- **OPEN — unsupported pure returns disappear from the flat fallback.**
+- **FIXED (working tree) — unsupported pure returns disappear from the flat fallback.**
   Optimized `signExtendWord`, `signExtendByte` and `wordSelect` have known
   UInt64 signatures but unsupported instruction semantics. Their unknown
-  register facts are observed, while the early enrichment guard skips return
-  outcomes and the single-block pseudo fallback emits a leaf comment. The
-  research scorer reports missing claims rather than treating these as verified.
+  register facts were observed, while the early enrichment guard skipped return
+  outcomes and the single-block pseudo fallback emitted a leaf comment. Known
+  value-return contracts now retain `return ?` and an unknown return outcome,
+  without creating a value claim. Void, Never, unknown signatures and async
+  entry RETs do not acquire a value return. Re-running
+  `swiftdc research --iterations 2 --seed 7` produced 36 configurations with
+  zero refutations or missing observations: each optimized configuration had
+  468 verified and 156 not-evaluated cases; each -Onone configuration had
+  546 verified and 78 not-evaluated cases. Recovery coverage did not increase.
 - **IMPLEMENTED — repeatable research evidence in Swift.**
   `swiftdc research --iterations 2 --seed 7` adds fixed edges and repeatable
   random samples across 16 authored scalar functions, three optimization

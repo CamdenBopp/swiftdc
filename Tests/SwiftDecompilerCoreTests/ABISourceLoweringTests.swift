@@ -78,13 +78,15 @@ struct ABISourceLoweringTests {
         }
         // A SIMD-stored two-word result proves nothing it can render.
         if let two = try await abiSourcePseudo("abiMakeTwo", in: abiSourceResilient) {
-            #expect(!two.contains("return "), "Pseudo: \(two)")
+            #expect(two.contains("return ?"), "Pseudo: \(two)")
+            #expect(!two.contains("return ABISource."))
         }
         // The nonresilient one-word result is direct (`add x0, x0, #17; ret`),
         // but a nominal type's register class is not proven from its name, so
         // its x0 is not read as the result.
         if let direct = try await abiSourcePseudo("abiMakeOne", in: abiSourceOptimized) {
-            #expect(!direct.contains("return "), "Pseudo: \(direct)")
+            #expect(direct.contains("return ?"), "Pseudo: \(direct)")
+            #expect(!direct.contains("return (arg0"))
         }
     }
 

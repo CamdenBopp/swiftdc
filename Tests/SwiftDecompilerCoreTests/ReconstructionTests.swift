@@ -606,7 +606,8 @@ private func reconstructionStructured(
     // Adversarial: a sub-word field breaks the clean 2-word shape, so `self` is
     // NOT decomposed — declines rather than mis-assigning registers.
     if let mixed = try await reconstructionPseudo("MixedPair.justCount") {
-        #expect(mixed.contains("no non-runtime calls"))
+        #expect(mixed.contains("return ?"))
+        #expect(!mixed.contains("self."))
     }
     // Adversarial: a method with parameters passes `self` AFTER the params in the
     // shared GPR bank, an order we don't decompose — declines rather than
@@ -636,9 +637,9 @@ private func reconstructionStructured(
     // Adversarial: mixing an `Int` (GPR) and a `Double` (SIMD) is neither a float
     // HFA nor an all-integer struct. The `x{n} = offset/8` mapping would wrongly
     // pull the Double from the GPR bank, so `self` is NOT decomposed — the getter
-    // declines (blank) rather than fabricate a field.
+    // declines with an unknown return rather than fabricate a field.
     if let readN = try await reconstructionPseudo("IntThenDouble.readN") {
-        #expect(readN.contains("no non-runtime calls"))
+        #expect(readN.contains("return ?"))
         #expect(!readN.contains("self."))
     }
 }
@@ -935,13 +936,15 @@ private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
 
 /// Negative: a result pointer that escapes into a call argument (a generic
 /// result written by the value witness) or a result with no stored-property
-/// layout (an existential) prints no return at all.
+/// layout (an existential) explicitly declines its result.
 @Test func declinesEscapedOrUnlaidOutIndirectResultIfPresent() async throws {
     guard let generic = try await reconstructionPseudo("identity<", in: indirectFixture) else { return }
-    #expect(!generic.contains("return"))
+    #expect(generic.contains("return ?"))
+    #expect(!generic.contains("return arg0"))
     for fixture in [indirectFixture, "Fixtures/Sample/libIndirect.opt.dylib"] {
         guard let existential = try await reconstructionPseudo("asAny", in: fixture) else { continue }
-        #expect(!existential.contains("return"), "existential result rendered in \(fixture)")
+        #expect(existential.contains("return ?"), "existential result should decline in \(fixture)")
+        #expect(!existential.contains("return arg0"))
     }
 }
 
@@ -982,7 +985,8 @@ private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
     // Negative: a `String` payload spans two words, so the tuple's scalar arity
     // is not what the store count says; the case is not spelled out.
     guard let tagged = try await reconstructionPseudo("makeTagged", in: indirectFixture) else { return }
-    #expect(!tagged.contains("return"))
+    #expect(tagged.contains("return ?"))
+    #expect(!tagged.contains("return Indirect."))
 }
 
 // MARK: - Copy-on-write

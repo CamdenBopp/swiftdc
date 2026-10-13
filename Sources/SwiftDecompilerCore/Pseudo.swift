@@ -21,7 +21,9 @@ public extension DisassembledFunction {
         if let asyncLine = asyncHeaderLine() { lines.append("    \(asyncLine)") }
         var statements: [String] = []
         for insn in instructions {
-            guard let statement = Self.pseudoStatement(of: insn, hideRuntime: hideRuntime) else { continue }
+            let recovered = Self.pseudoStatement(of: insn, hideRuntime: hideRuntime)
+            let fallback = insn.controlFlow == .return && hasProvenMachineValueReturn ? "return ?" : nil
+            guard let statement = recovered ?? fallback else { continue }
             statements += statement.components(separatedBy: "\n")
         }
         if hideRuntime { statements = Self.foldSwiftIdioms(statements) }

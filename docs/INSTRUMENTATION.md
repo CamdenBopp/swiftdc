@@ -269,7 +269,10 @@ incidental probes muted. It avoids serialization and full-trace retention.
 The scorer retains only selected functions' exits, bounds duplicate storage,
 and indexes facts once for repeated samples. It distinguishes verified,
 refuted, not-evaluated and missing cases. An explicitly declined source return
-is not-evaluated; a filtered-out or absent return is missing. Agreement covers
+is not-evaluated; a filtered-out or absent return is missing. A known synchronous
+value-return contract emits an unknown outcome even when analysis recovers no
+usable facts, and both text renderers retain `return ?`. This does not create a
+return-value claim or infer a value from an async entry RET. Agreement covers
 evaluated cases; coverage uses every supplied case. Unsupported provenance,
 floating-point expressions and bounded exports never count as verified.
 

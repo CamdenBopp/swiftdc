@@ -3421,7 +3421,25 @@ public struct Disassembler: Sendable {
                 || !analysis.exitValues.isEmpty || !analysis.exitFloatValues.isEmpty
                 || !analysis.exitIndirectResults.isEmpty
                 || function.instructions.contains(where: { $0.controlFlow == .branch && $0.branchTarget == nil })
-        else { return function }
+        else {
+            // No facts is still an observed unknown result, not an absent exit.
+            // Do not run unrelated enrichment when only this contract is known.
+            guard function.hasProvenMachineValueReturn else { return function }
+            let type = DisassembledFunction.splitSignature(function.analysisDisplayName)?.result
+                ?? function.objcMethod?.signature ?? "unknown"
+            let instructions = function.instructions.map { insn in
+                guard insn.controlFlow == .return else { return insn }
+                Probe.record(.returnOutcome, at: insn.address, ["status": .label("unknown"), "type": .name(type)])
+                return Instruction(
+                    address: insn.address, text: insn.text,
+                    annotation: [insn.annotation, "return ?"].compactMap { $0 }.joined(separator: "  "),
+                    controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
+                    callArguments: insn.callArguments, callSelf: insn.callSelf,
+                    resultConsumed: insn.resultConsumed, sourceType: insn.sourceType, detail: insn.detail,
+                    calleeDisplayName: insn.calleeDisplayName)
+            }
+            return function.replacingInstructions(instructions)
+        }
 
         // Callee name per call/tail-call address, for nesting result expressions.
         var calleeByAddress: [UInt64: String] = [:]
@@ -5183,6 +5201,17 @@ public struct Disassembler: Sendable {
                                                 site: insn.address)
                 }
                 sourceNotes.append("let \(name) = \(expression)")
+            }
+
+            // Unknown facts do not mean the source result is absent. Keep the
+            // exit visible even when there were no usable tracer facts at all.
+            let valueContract = function.hasProvenMachineValueReturn
+                || (asyncReturns.contains(insn.address) && DisassembledFunction.signatureReturnsValue(
+                    displayName: function.analysisDisplayName, objcSignature: function.objcMethod?.signature))
+            if isReturn(insn), valueContract, !throwExits.contains(insn.address),
+               !mergedThrowEnds.contains(insn.address),
+               !sourceNotes.contains(where: { $0.hasPrefix("return ") || $0.hasPrefix("throw ") || $0.hasPrefix("yield ") }) {
+                sourceNotes.append("return ?")
             }
 
             if Probe.isActive, isReturn(insn) {

@@ -87,6 +87,15 @@ public extension DisassembledFunction {
 
         return false
     }
+
+    /// A normal machine RET delivers this source value. Async functions use
+    /// their proven ResumeParent transfer instead; Never has no normal result.
+    var hasProvenMachineValueReturn: Bool {
+        if let signature = Self.splitSignature(analysisDisplayName) {
+            if signature.isAsync || signature.result == "Swift.Never" || signature.result == "Never" { return false }
+        }
+        return Self.signatureReturnsValue(displayName: analysisDisplayName, objcSignature: objcMethod?.signature)
+    }
 }
 
 /// Carries the rendered lines back from the large-stack worker thread. Safe

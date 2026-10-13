@@ -127,7 +127,9 @@ private func structured(_ filter: String) async throws -> String? {
         let text = function.renderStructured()
         guard text.contains("return ?") else { continue }
         checked += 1
-        if function.displayName.hasSuffix("-> ()") { offenders.append(function.displayName) }
+        // A closure's own signature precedes its enclosing default-argument context.
+        let ownSignature = function.displayName.components(separatedBy: " in default argument ").first!
+        if ownSignature.hasSuffix("-> ()") { offenders.append(function.displayName) }
     }
 
     #expect(offenders.isEmpty, "`return ?` under a void signature: \(offenders)")
