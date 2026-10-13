@@ -61,10 +61,8 @@ private func aliasEscapeFunction(_ words: [UInt32]) throws -> DisassembledFuncti
 
 private func chainSlotsForAliasResume(_ words: [UInt32]) throws -> [Int: AbstractValue] {
     let engine = try #require(CapstoneEngine())
-    let entryWords: [UInt32] = [
-        0xd28000e8, 0xf9000ac8, 0x94000000, 0x10007fa9,
-        0xf9000409, 0xaa0003f6, 0x14000bfa,
-    ]
+    // Own-context continuation avoids an unproved allocator-buffer store.
+    let entryWords: [UInt32] = [0xd28000e8, 0xf9000ac8, 0x10007fc0, 0x14000bfd]
     let bytes = entryWords.flatMap { word in (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) } }
     let decoded = engine.disassemble(Data(bytes), address: 0x1000)
     let entry = DisassembledFunction(symbol: "entry", demangledName: "M.entry() async -> Swift.Int", startAddress: 0x1000,
@@ -74,9 +72,9 @@ private func chainSlotsForAliasResume(_ words: [UInt32]) throws -> [Int: Abstrac
             detail: $0.detail) }, source: .address)
     let resume = try aliasEscapeFunction(words)
     let raw = [UInt64(0x1000): entry, UInt64(0x2000): resume]
-    let index = AsyncFuncletIndex.build(hints: .init(entries: [0x1000], awaitReturns: [0x2000]),
+    let index = AsyncFuncletIndex.build(hints: .init(entries: [0x1000], awaitReturns: [], continuations: [0x2000]),
         functionStarts: Set(raw.keys), instructions: { raw[$0]?.instructions ?? [] },
-        nameOf: { $0 == 0x4000 ? "M.callee() async -> Swift.Int" : raw[$0]?.displayName })
+        nameOf: { $0 == 0x4000 ? "swift_task_switch" : raw[$0]?.displayName })
     try #require(index.chains[0x1000] == [0x1000, 0x2000])
     let functions = raw.mapValues { function in
         index.info(for: function.startAddress, parentName: { raw[$0]?.displayName })

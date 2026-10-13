@@ -412,6 +412,22 @@ requested snapshots as `asyncSlotFactsAtBranches`; ordinary analysis leaves
 this empty and incurs no slot-snapshot scan. This is a conservative sufficient
 condition, not proof of arbitrary async memory or funclet ownership.
 
+### Async mutable memory facts
+
+Imported own-context values and ResumeParent/callee-parent header facts enter
+mutable abstract state. Both scalar and paired loads consult that state only.
+Writes invalidate exact overlapping eight-byte cached ranges when the target
+and width are known; an unbounded write clears both context identities. A
+complete checked negative frame extent is disjoint under the ordinary live-frame
+ABI. Relative parent/child offsets alone provide no allocation-bound proof, so
+writes also invalidate the other identity's facts. Unknown instruction detail or
+an incomplete analysis cannot establish absence of writes.
+`asyncUnboundedMemoryWrites` defaults true and is reset only by a completed
+snapshot pass. The chain pass records `contextEscapeUnknown` with reason
+`unbounded-memory-write` and declines imported slot proofs when this flag is set.
+This currently covers represented stores; interprocedural call memory effects
+remain a separate limitation. Loaded GPR snapshots keep their earlier values.
+
 ### Repeating the native research matrix
 
 Run from the repository root:

@@ -445,6 +445,9 @@ public struct FunctionAnalysis: Sendable {
     /// Definite own-context values immediately before each entry branch.
     /// Used to prove initialized slots at suspension, never to seed entry.
     public var asyncSlotFactsAtBranches: [UInt64: [Int: AbstractValue]] = [:]
+    /// An incomplete analysis cannot establish absence of context mutations.
+    /// Completed snapshots set this false, then flag unbounded memory writes.
+    public var asyncUnboundedMemoryWrites = true
 }
 
 /// An abstract interpreter over a function's basic blocks. Propagates constants,
@@ -493,7 +496,7 @@ public struct ValueTracer: Sendable {
     /// Entry state: `sp` anchors the frame at offset 0. Receiver/argument
     /// registers are seeded only when runtime or Swift metadata establishes the
     /// method convention for this exact implementation address.
-    private static func initialState(entry: MethodEntryConvention?) -> State {
+    private static func initialState(entry: MethodEntryConvention?, asyncContextSlots: [Int: AbstractValue] = [:]) -> State {
         // x8 is the indirect-result address in every ARM64 convention, so the
         // seed is a fact about the ABI, not about this function; see
         // `AbstractValue.indirectResultPointer`.
@@ -548,8 +551,17 @@ public struct ValueTracer: Sendable {
             // `arg<n>.field` with no x20 pointer.
             for (register, value) in seededRegisters { state[register] = value }
         case .asyncFunclet(let base, let seededRegisters):
-            state = initialState(entry: base)
+            state = initialState(entry: base, asyncContextSlots: asyncContextSlots)
             for (register, value) in seededRegisters { state[register] = value }
+            // ABI facts and entry seeds are mutable memory facts. They must
+            // participate in the same invalidation and intersection as stores.
+            state[contextSlotKey(8)] = .asyncResumeParent
+            if seededRegisters.values.contains(.asyncCalleeContext) {
+                state[calleeParentKey] = .asyncContext
+            }
+            for (offset, value) in asyncContextSlots {
+                state[contextSlotKey(offset)] = value == .unknown ? nil : value
+            }
         case nil:
             break
         }
@@ -615,7 +627,7 @@ public struct ValueTracer: Sendable {
             // incoming edge when a loop branches back to it; met only with its
             // back edges, it lost its arguments and self.
             var incoming = preds.compactMap { outState[$0] }
-            if addr == function.startAddress { incoming.append(Self.initialState(entry: entry)) }
+            if addr == function.startAddress { incoming.append(Self.initialState(entry: entry, asyncContextSlots: asyncContextSlots)) }
             let blockEntry = Self.meet(incoming)
             inState[addr] = blockEntry
             var registers = blockEntry
@@ -659,6 +671,7 @@ public struct ValueTracer: Sendable {
         // Snapshot pass: replay from each block's fixed entry state, recording
         // call arguments and self-field accesses.
         var result = FunctionAnalysis()
+        result.asyncUnboundedMemoryWrites = false
         result.loopUpdates = loopBindings.updates
         result.loopInitializations = loopBindings.initializations
         for block in blocks {
@@ -737,6 +750,7 @@ public struct ValueTracer: Sendable {
                     recordAccess: { result.selfFieldAccesses[$0] = $1 },
                     recordArrayElement: { result.arrayElements[$0, default: [:]][$1] = $2 },
                     recordSlotStore: { result.asyncSlotStores[$0, default: []].append($1) },
+                    recordUnboundedMemoryWrite: { result.asyncUnboundedMemoryWrites = true },
                     initializerEntry: entry?.isObjectiveCInitializer == true,
                     addressTaken: addressTaken
                 ) }
@@ -885,6 +899,7 @@ public struct ValueTracer: Sendable {
         recordAccess: ((UInt64, SelfFieldAccess) -> Void)?,
         recordArrayElement: ((UInt64, Int, AbstractValue) -> Void)? = nil,
         recordSlotStore: ((Int, AbstractValue) -> Void)? = nil,
+        recordUnboundedMemoryWrite: (() -> Void)? = nil,
         initializerEntry: Bool = false,
         addressTaken: [Int64] = []
     ) {
@@ -1029,7 +1044,8 @@ public struct ValueTracer: Sendable {
         }
         let hadSelf = registers[Self.selfFreshKey]
         apply(insn, into: &registers, recordAccess: recordAccess,
-              recordArrayElement: recordArrayElement, recordSlotStore: recordSlotStore)
+              recordArrayElement: recordArrayElement, recordSlotStore: recordSlotStore,
+              recordUnboundedMemoryWrite: recordUnboundedMemoryWrite)
         if Self.writesSwiftSelf(insn) {
             registers[Self.selfFreshKey] = .immediate(1)
         } else {
@@ -1444,7 +1460,7 @@ public struct ValueTracer: Sendable {
                 let address = queue[cursor]; cursor += 1
                 guard let block = blockByStart[address] else { continue }
                 var inputs = (predecessors[address] ?? []).compactMap { forwarded[$0] }
-                if address == blocks.first?.startAddress { inputs.append(Self.initialState(entry: entry)) }
+                if address == blocks.first?.startAddress { inputs.append(Self.initialState(entry: entry, asyncContextSlots: asyncContextSlots)) }
                 let prior = rawInState[address]
                 inState[address] = Self.meet(inputs)
                 resolveDiamondSelects(blocks: [block], predecessors: predecessors,
@@ -2060,14 +2076,22 @@ public struct ValueTracer: Sendable {
         into registers: inout State,
         recordAccess: ((UInt64, SelfFieldAccess) -> Void)? = nil,
         recordArrayElement: ((UInt64, Int, AbstractValue) -> Void)? = nil,
-        recordSlotStore: ((Int, AbstractValue) -> Void)? = nil
+        recordSlotStore: ((Int, AbstractValue) -> Void)? = nil,
+        recordUnboundedMemoryWrite: (() -> Void)? = nil
     ) {
         guard let detail = insn.detail else {
             // Capstone couldn't decode what objdump printed — data in __text, or
             // an unknown encoding. We cannot know what it writes, and keeping
             // stale values would be a lie, so drop everything nameable.
             registers.removeAll()
+            recordUnboundedMemoryWrite?()
             return
+        }
+        if detail.operands.contains(where: { $0.operand.isMemory }),
+           !Self.readOnlyMemoryIDs.contains(detail.id.rawValue) {
+            if invalidateAsyncMemoryForWrite(detail, into: &registers) {
+                recordUnboundedMemoryWrite?()
+            }
         }
 
         // Branches and returns write no general register. (Calls never reach
@@ -2494,13 +2518,13 @@ public struct ValueTracer: Sendable {
                 // drops its upper bits and `ldr d0` is a floating value. A value
                 // this funclet itself stored there earlier comes back first.
                 let isPointerLoad = dest.kind == .gpr && dest.widthBits == 64
-                let stored = registers[Self.contextSlotKey(offset)]
-                write(dest, isPointerLoad ? (stored ?? asyncSlotValue(at: offset)) : .unknown, into: &registers)
+                let stored = registers[Self.contextSlotKey(offset)] ?? .unknown
+                write(dest, isPointerLoad ? stored : .unknown, into: &registers)
             case .asyncCalleeSlot(let offset):
                 // The callee context's first word is the caller's own context;
                 // nothing else in it is known here.
                 let isPointerLoad = dest.kind == .gpr && dest.widthBits == 64
-                write(dest, isPointerLoad && offset == 0 ? .asyncContext : .unknown, into: &registers)
+                write(dest, isPointerLoad && offset == 0 ? (registers[Self.calleeParentKey] ?? .unknown) : .unknown, into: &registers)
             case .arrayElement, .none: write(dest, .unknown, into: &registers)
             }
 
@@ -2537,14 +2561,16 @@ public struct ValueTracer: Sendable {
                     // -Onone stores x22 into its own context (`str x9, [x22,
                     // #0x10]`) and reaches ResumeParent through it at each exit;
                     // forwarding the store is what proves those exits returns.
-                    for key in Self.contextSlotKeys(overlapping: offset, bytes: Self.accessBytes(detail) ?? 8) {
-                        registers[key] = nil
-                    }
-                    if detail.id == AARCH64_INS_STR || detail.id == AARCH64_INS_STUR,
-                       first.operand.register?.widthBits == 64 {
+                    if (detail.id == AARCH64_INS_STR || detail.id == AARCH64_INS_STUR),
+                       Self.isFullWidthGPR(first) {
                         recordSlotStore?(offset, value)
                         if value != .unknown { registers[Self.contextSlotKey(offset)] = value }
                     }
+                }
+                if case .asyncCalleeSlot(0)? = target,
+                   (detail.id == AARCH64_INS_STR || detail.id == AARCH64_INS_STUR),
+                   Self.isFullWidthGPR(first) {
+                    registers[Self.calleeParentKey] = value == .unknown ? nil : value
                 }
                 // A full-width store establishes a useful equality: its source
                 // register now also holds the current ivar value. Canonicalizing
@@ -2594,7 +2620,8 @@ public struct ValueTracer: Sendable {
                                      bytes: bytes, into: &registers)
                 }
             } else if case .asyncSlot(let offset)? = target,
-                      detail.operands.first?.operand.register?.widthBits == 64 {
+                      detail.operands.count >= 3,
+                      detail.operands.prefix(2).allSatisfy({ Self.isFullWidthGPR($0) }) {
                 // `stp x22, x8, [x0]` is how the caller's context and the resume
                 // pointer are written into a fresh callee context; the same shape
                 // spills two locals into the function's own context.
@@ -2602,6 +2629,14 @@ public struct ValueTracer: Sendable {
                     let value = source(operand, in: registers)
                     registers[Self.contextSlotKey(offset + index * 8)] = value == .unknown ? nil : value
                     recordSlotStore?(offset + index * 8, source(operand, in: registers))
+                }
+            }
+            if case .asyncCalleeSlot(let offset)? = target,
+               detail.operands.count >= 3,
+               detail.operands.prefix(2).allSatisfy({ Self.isFullWidthGPR($0) }) {
+                for (index, operand) in detail.operands.prefix(2).enumerated() where offset + index * 8 == 0 {
+                    let value = source(operand, in: registers)
+                    registers[Self.calleeParentKey] = value == .unknown ? nil : value
                 }
             }
             // Stores two registers; writes none. Writeback still applies —
@@ -2631,10 +2666,10 @@ public struct ValueTracer: Sendable {
                 case .resultSlot(let offset):
                     registers[Self.resultKey(offset + index * registerBytes, bytes: registerBytes)] ?? .unknown
                 case .asyncSlot(let offset) where register.kind == .gpr && registerBytes == 8:
-                    asyncSlotValue(at: offset + index * 8)
+                    registers[Self.contextSlotKey(offset + index * 8)] ?? .unknown
                 case .asyncCalleeSlot(let offset) where register.kind == .gpr && registerBytes == 8
                     && offset + index * 8 == 0:
-                    .asyncContext
+                    registers[Self.calleeParentKey] ?? .unknown
                 case .absolute, .vtableMethod, .arrayElement, .asyncSlot, .asyncCalleeSlot, .none:
                     .unknown
                 }
@@ -3423,13 +3458,61 @@ public struct ValueTracer: Sendable {
         case asyncCalleeSlot(Int)
     }
 
-    /// What a pointer-width load from the function's own async context yields:
-    /// offset 8 is the ABI's ResumeParent, the continuation an async function
-    /// returns through; any other slot is a spill, known only when the chain
-    /// pass proved its single store.
-    private func asyncSlotValue(at offset: Int) -> AbstractValue {
-        if offset == 8 { return .asyncResumeParent }
-        return asyncContextSlots[offset] ?? .asyncContextSlot(offset)
+    private static let calleeParentKey = "callee-context.parent"
+
+    private static func isFullWidthGPR(_ operand: StructuredOperandInfo) -> Bool {
+        guard let register = operand.operand.register else { return false }
+        return register.widthBits == 64 && (register.kind == .gpr || register.kind == .zero)
+    }
+
+    /// Only explicit read-only opcodes prove no memory write; operand access
+    /// flags omit effects for atomics and other instructions on this decoder.
+    private static let readOnlyMemoryIDs: Set<UInt32> = Set([
+        AARCH64_INS_LDR, AARCH64_INS_LDUR, AARCH64_INS_LDP, AARCH64_INS_LDNP,
+        AARCH64_INS_LDPSW, AARCH64_INS_LDRB, AARCH64_INS_LDURB,
+        AARCH64_INS_LDRH, AARCH64_INS_LDURH, AARCH64_INS_LDRSB, AARCH64_INS_LDURSB,
+        AARCH64_INS_LDRSH, AARCH64_INS_LDURSH, AARCH64_INS_LDRSW, AARCH64_INS_LDURSW,
+    ].map(\.rawValue))
+
+    /// Return true when a write may affect any context byte. Only a complete
+    /// negative private-frame extent is disjoint under the ordinary frame ABI.
+    private func invalidateAsyncMemoryForWrite(_ detail: StructuredInsn, into registers: inout State) -> Bool {
+        let target = memoryTarget(detail, in: registers)
+        let bytes = Self.accessBytes(detail)
+        if case .stackSlot(let key)? = target, let start = Self.stackOffset(from: key),
+           let bytes, bytes > 0 {
+            let (end, overflow) = start.addingReportingOverflow(Int64(bytes))
+            if !overflow, start < 0, end <= 0 { return false }
+        }
+        if case .asyncSlot(let offset)? = target, let bytes, bytes > 0 {
+            // Relative offsets do not establish disjoint allocations. A write
+            // through the parent can also reach the child's cached parent word.
+            let mayReachCallee = registers[Self.calleeParentKey] != nil
+                || registers.values.contains(.asyncCalleeContext)
+            registers[Self.calleeParentKey] = nil
+            for key in registers.keys where key.hasPrefix(Self.contextSlotPrefix) {
+                guard let start = Int(key.dropFirst(Self.contextSlotPrefix.count)) else { continue }
+                if Self.byteRangesOverlap(start, 8, offset, bytes) { registers[key] = nil }
+            }
+            return mayReachCallee
+        }
+        if case .asyncCalleeSlot(let offset)? = target, let bytes, bytes > 0 {
+            // The child's extent is unknown: child+32 may be parent+16.
+            // Forget the other identity's facts and decline chain-wide claims.
+            let mayReachOwn = registers.keys.contains { $0.hasPrefix(Self.contextSlotPrefix) }
+            for key in registers.keys where key.hasPrefix(Self.contextSlotPrefix) { registers[key] = nil }
+            if Self.byteRangesOverlap(0, 8, offset, bytes) { registers[Self.calleeParentKey] = nil }
+            return mayReachOwn
+        }
+        for key in registers.keys where key.hasPrefix(Self.contextSlotPrefix) { registers[key] = nil }
+        registers[Self.calleeParentKey] = nil
+        return true
+    }
+
+    private static func byteRangesOverlap(_ a: Int, _ aBytes: Int, _ b: Int, _ bBytes: Int) -> Bool {
+        let (aEnd, aOverflow) = a.addingReportingOverflow(aBytes)
+        let (bEnd, bOverflow) = b.addingReportingOverflow(bBytes)
+        return aOverflow || bOverflow || (a < bEnd && b < aEnd)
     }
 
     /// Where a memory operand points, when its base is a known frame offset or a
@@ -3527,11 +3610,7 @@ public struct ValueTracer: Sendable {
     /// this funclet stored, by byte offset.
     private static let contextSlotPrefix = "ownctx@"
     static func contextSlotKey(_ offset: Int) -> String { "\(contextSlotPrefix)\(offset)" }
-    /// The 8-byte words a store of `bytes` at `offset` touches.
-    static func contextSlotKeys(overlapping offset: Int, bytes: Int) -> [String] {
-        let first = offset - ((offset % 8) + 8) % 8
-        return stride(from: first - 8, to: offset + bytes, by: 8).map(contextSlotKey)
-    }
+
     private static func outgoingKey(_ frameOffset: Int64) -> String { "\(outgoingPrefix)\(frameOffset)" }
     private static func stackOffset(from key: String) -> Int64? {
         guard key.hasPrefix("stack@") else { return nil }

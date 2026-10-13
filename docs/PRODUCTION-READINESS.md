@@ -2659,11 +2659,38 @@ if a test was observed to fail without the fix.
   to the new chronology reduction: false `observe(7)` becomes `observe(?)`.
   This sufficient temporal condition is not a complete inter-funclet proof.
 
-- **CONFIRMED OPEN — unknown pointer writes can alias async context slots.**
-  Native scratch code stores 7 through x22, then 11 through an incoming pointer
-  aliasing that slot. Current context escape detection follows context-derived
-  registers only; the local own-context cache can also retain 7 after a write
-  through that unrelated pointer. Temporal initialization alone cannot prove
-  memory disjointness. A correction must invalidate both chain seeds and local
-  forward cache facts for unbounded writes, with independently tested private
-  stack controls. Investigation is ongoing; no fix is claimed here.
+- **FIXED — async memory facts survived writes through possible aliases.**
+  Authored ARM64 leaves store 7 through x22, then 11 through an incoming
+  pointer aliasing that slot. Native execution returns 11 and observes 11 in
+  memory; final source previously rendered `observe(7)`. Context seeds and
+  ResumeParent/callee-parent header facts now live in mutable forward state,
+  with no immutable fallback after invalidation. Unknown writes clear both
+  context identities; precise writes invalidate overlapping byte intervals.
+  Paired loads use current local stores. Only full-width GPR stores establish
+  integer facts: a SIMD store of 1.0 cannot establish integer 1.
+  Unknown write widths cannot prove private-frame disjointness. A native ST4
+  reduction writes 64 bytes starting eight bytes below entry SP and changes
+  the caller-context word. Checked complete negative extents retain ordinary
+  live-frame ABI disjointness; caller-owned and straddling extents decline.
+  Relative context offsets do not prove allocation bounds: native reductions
+  place child+32 at parent+16 and parent-16 at child header zero. Known writes
+  therefore also forget the other identity's memory facts when present.
+  Loaded scalar register snapshots survive; exact later stores can recover
+  their own local values. Chain seeding declines any unbounded write, including
+  an incomplete analysis. Calls remain a separate confirmed open limitation.
+  These are authored machine-memory observations and analysis-seam regressions,
+  not a proof of complete compiler async ABI or arbitrary allocation ownership.
+  Twenty-seven regressions include seven native executions and fifteen return/
+  memory observations. Fourteen independent mutations fail with respectively
+  1/1/17/1/13/2/2/1/4/1/2/2/2/1 issues (opposite identity invalidation,
+  unknown write, chain flag, scalar/paired seeds, scalar/paired parent headers,
+  overlap/adjacent ranges, register bank, private extent, unknown width,
+  incomplete analysis). Restored fresh build passes 675 tests in eleven suites.
+  Six of 184 source views change: the new leaf loses its stale observed value
+  and unproved return header; RethrowCleanup.persist resume #3 retains a raw
+  indirect branch because stores through unknown modify-accessor results at
+  0xfc8 and 0x1004 cannot prove ResumeParent disjointness. TypedThrowsAwait's
+  onError(?) becomes onError(): independent source and x0 setup confirm this
+  exposes a separate existing argument-snapshot omission. Its known Int
+  footprint must retain a placeholder; this arity correction is next, rather
+  than restoring unproved context facts. No existing golden test is weakened.

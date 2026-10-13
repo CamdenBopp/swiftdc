@@ -6,7 +6,34 @@ thread. This is **tier-5 (conversation-memory) authority** per
 git history, and measurements. Verify each claim against HEAD before acting, and
 delete items from this file as they ship.
 
-## Committed on local `dev` (2026-10-13)
+## Current soundness development session (2026-10-13)
+
+Baseline `9910115`; seven coherent corrections (latest async store invalidation) are committed on
+local `dev`. The freshly rebuilt enforcing suite passes **675 tests** in eleven
+suites. Added regressions independently kill guards for process exit propagation,
+escaped/caller-owned register saves, represented async aliases/effects, ambiguous
+image scoring and async slot chronology. Final release A/B measurements and the
+full native matrix are still pending. Async unknown-pointer writes now invalidate
+mutable context seeds/headers; fourteen independent mutations fail and six of
+184 source views change. A separate known-signature argument omission is
+confirmed: TypedThrowsAwait onError(Int) drops its unknown x0 placeholder. Fix
+that next, followed by compiler-generated escaped stack cache facts across
+unknown calls (native 11, optimized final source incorrectly return 7). Do not treat the earlier 614-test summary as current.
+
+Confirmed remaining risks include transitive outlined/tail register effects and
+writes through incoming x29. Independent native reductions confirm them;
+prevalence in current compiler fixtures has not been established. A child
+clobber union is insufficient when a wrapper transfers the clobbered value into
+a different register. The general correction needs callee effects inside
+Preservation, dependency reanalysis and equivalent filtered/array/stream decoding.
+
+Broader tuple/memory/call-order final-render verification remains a design, not
+implemented proof. Existing native scalar research and targeted native memory
+observations do not establish complete rendered-body semantics. See the latest
+entries in [PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md) and retained
+session evidence under `work/session-*`.
+
+## Earlier committed baseline on local `dev` (2026-10-13)
 
 Three dedicated agents completed focused fixes for ABI preservation, complex
 control flow and CFG jump-table bounds. Saved-register proofs now use exact

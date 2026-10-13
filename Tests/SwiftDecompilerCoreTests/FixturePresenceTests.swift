@@ -66,6 +66,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libABIFrameOwnership.dylib",
         "Fixtures/Sample/libAsyncAliasEscape.dylib",
         "Fixtures/Sample/libAsyncSlotChronology.dylib",
+        "Fixtures/Sample/libAsyncMemoryEffects.dylib",
         "Fixtures/Sample/libJumpTableBounds.dylib",
         "Fixtures/Sample/libLoopSwitch.dylib",
         "Fixtures/Sample/libSelectFlow.dylib",

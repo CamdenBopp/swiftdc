@@ -1154,6 +1154,13 @@ public struct Disassembler: Sendable {
                     tracer.asyncSlotFactBranches = Set(entrySuspensions)
                 }
                 let analysis = tracer.analyze(funclet, entry: convention)
+                if analysis.asyncUnboundedMemoryWrites {
+                    escapedFrom = Int.min
+                    Probe.inFunction(funclet.startAddress, funclet.displayName) {
+                        Probe.record(.contextEscapeUnknown, at: funclet.startAddress,
+                                     ["reason": .label("unbounded-memory-write")])
+                    }
+                }
                 if address == entry { entryTransferFacts = analysis.asyncSlotFactsAtBranches }
                 let internalAddresses = Set(funclet.instructions.map(\.address))
                 var terminalBranches = Set(analysis.indirectControlFlowTargets.compactMap { address, target -> UInt64? in

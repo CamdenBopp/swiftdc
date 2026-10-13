@@ -14,12 +14,12 @@ private func escapeBody(_ words: [UInt32], at address: UInt64, allocation: Bool 
 }
 
 private func provenSlots(resume words: [UInt32], missingResume: Bool = false) throws -> [Int: AbstractValue] {
-    // Store 7 in our slot, allocate a callee context, save the resume address,
-    // and hand that context to an await. The resume receives its parent in [x22].
+    // Store7 before an own-context continuation handoff. Raw alias
+    // bodies challenge the MAY detector; this is not a complete native ABI fixture.
+    // Compiler-style own-context continuation handoff, an analysis seam.
     let entryBody = try escapeBody([
-        0xd28000e8, 0xf9000ac8, 0x94000000, 0x10007fa9,
-        0xf9000409, 0xaa0003f6, 0x14000bfa,
-    ], at: 0x1000, allocation: true)
+        0xd28000e8, 0xf9000ac8, 0x10007fc0, 0x14000bfd,
+    ], at: 0x1000)
     let resumeBody = try escapeBody(words, at: 0x2000)
     let raw: [UInt64: DisassembledFunction] = [
         0x1000: .init(symbol: "entry", demangledName: "M.entry() async -> Swift.Int", startAddress: 0x1000,
@@ -27,9 +27,9 @@ private func provenSlots(resume words: [UInt32], missingResume: Bool = false) th
         0x2000: .init(symbol: "resume", demangledName: nil, startAddress: 0x2000,
                       instructions: resumeBody, source: .address),
     ]
-    let index = AsyncFuncletIndex.build(hints: .init(entries: [0x1000], awaitReturns: [0x2000]),
+    let index = AsyncFuncletIndex.build(hints: .init(entries: [0x1000], awaitReturns: [], continuations: [0x2000]),
         functionStarts: Set(raw.keys), instructions: { raw[$0]?.instructions ?? [] },
-        nameOf: { $0 == 0x4000 ? "M.callee() async -> Swift.Int" : raw[$0]?.displayName })
+        nameOf: { $0 == 0x4000 ? "swift_task_switch" : raw[$0]?.displayName })
     try #require(index.chains[0x1000] == [0x1000, 0x2000])
     let functions = raw.mapValues { function in
         index.info(for: function.startAddress, parentName: { raw[$0]?.displayName })
@@ -62,7 +62,7 @@ private func provenSlots(resume words: [UInt32], missingResume: Bool = false) th
 }
 
 @Test func aContextSlotWithoutAnEscapeRemainsProven() throws {
-    let slots = try provenSlots(resume: [0xf94002d3, 0xf9400a60, 0xd65f03c0])
+    let slots = try provenSlots(resume: [0xf9400ac0, 0xf94006c1, 0xd61f0020])
     #expect(slots[16] == .immediate(7))
 }
 

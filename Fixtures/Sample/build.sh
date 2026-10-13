@@ -98,6 +98,9 @@ $CLANG -arch arm64 -dynamiclib async_alias_escape.s -o libAsyncAliasEscape.dylib
 echo "==> async context load/store chronology (async_slot_chronology.s)"
 $CLANG -arch arm64 -dynamiclib async_slot_chronology.s -o libAsyncSlotChronology.dylib
 
+echo "==> async context writes through unknown aliases (async_memory_effects.s)"
+$CLANG -arch arm64 -dynamiclib async_memory_effects.s -o libAsyncMemoryEffects.dylib
+
 echo "==> hardened jump-table bounds (jump_table_bounds.s) — index widths and call-clobbered NZCV"
 $CLANG -arch arm64 -dynamiclib jump_table_bounds.s -o libJumpTableBounds.dylib
 

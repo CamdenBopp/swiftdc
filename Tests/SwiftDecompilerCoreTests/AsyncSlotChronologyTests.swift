@@ -17,22 +17,21 @@ private func chronologyFunction(_ words: [UInt32], at: UInt64, allocations: Set<
         }, source: .address)
 }
 
-private func chronologyChain(_ prefix: [UInt32], resumeWords: [UInt32] = [0xf94002d3, 0xf9400a60, 0xd65f03c0]) throws -> (DisassembledFunction, DisassembledFunction, AsyncFuncletIndex, [UInt64: [Int: AbstractValue]]) {
+private func chronologyChain(_ prefix: [UInt32], resumeWords: [UInt32] = [0xf9400ac0, 0xf94006c1, 0xd61f0020]) throws -> (DisassembledFunction, DisassembledFunction, AsyncFuncletIndex, [UInt64: [Int: AbstractValue]]) {
     var entryWords = prefix
-    let allocation = entryWords.count
-    entryWords.append(0x94000000)
+    // Compiler-style executor hop: x0 is the continuation address; x22
+    // remains our own context. No unknown callee-buffer write is assumed safe.
     let pc = UInt32(0x1000 + entryWords.count * 4)
     let delta = UInt32(0x2000) - pc
-    entryWords.append(0x10000009 | ((delta & 3) << 29) | (((delta >> 2) & 0x7ffff) << 5))
-    entryWords += [0xf9000409, 0xaa0003f6]
+    entryWords.append(0x10000000 | ((delta & 3) << 29) | (((delta >> 2) & 0x7ffff) << 5))
     let branchPC = UInt32(0x1000 + entryWords.count * 4)
     entryWords.append(0x14000000 | ((0x4000 - branchPC) >> 2))
-    let entry = try chronologyFunction(entryWords, at: 0x1000, allocations: [allocation])
+    let entry = try chronologyFunction(entryWords, at: 0x1000)
     let resume = try chronologyFunction(resumeWords, at: 0x2000)
     let raw = [UInt64(0x1000): entry, UInt64(0x2000): resume]
-    let index = AsyncFuncletIndex.build(hints: .init(entries: [0x1000], awaitReturns: [0x2000]),
+    let index = AsyncFuncletIndex.build(hints: .init(entries: [0x1000], awaitReturns: [], continuations: [0x2000]),
         functionStarts: Set(raw.keys), instructions: { raw[$0]?.instructions ?? [] },
-        nameOf: { $0 == 0x4000 ? "M.callee() async -> Swift.Int" : raw[$0]?.displayName })
+        nameOf: { $0 == 0x4000 ? "swift_task_switch" : raw[$0]?.displayName })
     try #require(index.chains[0x1000] == [0x1000, 0x2000])
     let functions = raw.mapValues { function in
         index.info(for: function.startAddress, parentName: { raw[$0]?.displayName })
@@ -66,11 +65,11 @@ private func chronologyChain(_ prefix: [UInt32], resumeWords: [UInt32] = [0xf940
 
 @Test func aLaterResumeStoreCannotSeedTheEarlierResumeObservation() throws {
     let (_, resume, index, slots) = try chronologyChain([], resumeWords: [
-        0xf94002d3, 0xf9400a60, 0x94000000, 0xd28000e8, 0xf9000a68, 0xd65f03c0,
+        0xf9400ac0, 0x94000000, 0xd28000e8, 0xf9000ac8, 0xf94006c1, 0xd61f0020,
     ])
     let convention = try #require(Disassembler.asyncConvention(for: resume, base: nil, index: index))
     let analysis = ValueTracer(asyncContextSlots: slots[0x2000] ?? slots[0x1000] ?? [:]).analyze(resume, entry: convention)
-    #expect(analysis.callSites[0x2008]?.arguments.first != .immediate(7))
+    #expect(analysis.callSites[0x2004]?.arguments.first != .immediate(7))
 }
 
 @Test func nativeAsyncLeafChronologyAndRenderedCallsAgreeIfPresent() async throws {
