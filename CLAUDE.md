@@ -91,7 +91,7 @@ does not fit in it, so a new whole-image mode should stream
 
 ## Branches, commits, pushes
 
-- Work on `trial/unified-merge`, which tracks `origin/dev`. Push with
+- Work on `dev`, which tracks `origin/dev`. Push with
   `git push origin HEAD:dev`. **Never commit to or push master**: merging
   dev into master is the owner's call. Don't push to any other repository
   without asking.

@@ -328,7 +328,9 @@ because it cannot be distinguished from a right one by reading the output.
   Since `c18e6b4`, a callee whose every parameter is a proven one-register
   scalar is laid out from its signature (stale registers dropped, float slots
   from v0–v7); everything below still holds for callees outside that layout
-  (String, aggregate, generic, `T?`, value-type methods, ObjC, C).
+  (String, unproven aggregates, generic and unproven optional footprints).
+  `ABISourceLoweringTests` now covers proven scalar/HFA value-type self layout;
+  Objective-C's typed argument banks have their own layout and tests.
   Leftover registers show up as arguments: `static Alignment.center.getter`
   (no parameters) renders `Alignment.center.getter(SwiftUI.Text.init(…))`,
   `sink(Int)` renders `P.sink(arg0, arg1)`, and a non-generic metadata accessor,
@@ -497,7 +499,9 @@ because it cannot be distinguished from a right one by reading the output.
   v0–v7, and a Swift callee whose parameters are proven one-register scalars
   takes its float slots from them (`Swift.Double.init(arg0)`,
   `mixed(arg0, 2.5, arg1)`; `CallArityTests`). Callees outside that layout
-  (ObjC sends, C functions, multi-register parameters) still read x0–x7 only.
+  (unprototyped C functions and unproven multi-register parameters) still use
+  general-register recovery. Typed Objective-C sends use independent integer
+  and floating banks (`ObjCOutgoingABITests`, `ObjCNonselfOutgoingABITests`).
 - **MITIGATED — the decline-rather-than-guess rule.** Verified as systematic, not
   incidental: `.unknown` renders `?` (`Disassembler.swift:2322`); the structurer
   refuses to structure an unprovable branch (`Structurer.swift:214`); `clobber`
@@ -2418,10 +2422,83 @@ if a test was observed to fail without the fix.
   1,441 verified (89 unknown), with zero refutations or missing observations.
   Tail-call return markers do not count opaque call results as proven values.
 
+## 2026-10-13: ABI preservation, loop switches and CFG bound proofs
+
+- **FIXED (`9e2f279`) — a switch case leaving its enclosing loop used the
+  switch's break.** In `loopswitch.s`, case 0 must leave the loop and call
+  `finished()`, while cases 1–9 repeat. Previously, the structured output's
+  bare `break` repeated `while (true)` indefinitely. Loop contexts now track
+  intervening switches and emit an explicit labeled transfer across their
+  scope; nested loops retain local breaks. Six regressions cover direct and
+  conditional exits, nested switches, nested loops, ordinary loop breaks and
+  native table decoding. Independently disabling scope propagation or goto
+  rendering fails five tests with eleven assertions; restoration rebuilds
+  green. Reproduce with `swiftdc disasm Fixtures/Sample/libLoopSwitch.dylib
+  --structured -f loopSwitchExit`. Switch indices and irreducible-loop
+  reconstruction remain outside this fix.
+- **FIXED (`7b5d5ce`) — saved-register proofs account for overlapping store bytes.**
+  `CalleeRegisterSummary` now invalidates the complete byte extent of stores,
+  including narrow, unaligned and SIMD writes, and uses actual pair strides.
+  Only full-width GPR stores can establish saved-entry facts. Indexed writes
+  through a known stack base and unmodelled stack writes decline save proofs.
+  In `abi_saved_slots.s`, two callers previously rendered `return arg0`,
+  despite their fragments changing bytes in saved x19; both now decline.
+  For input `0x1122334455667788`, native execution independently returns
+  `0x11223344aa667788` and `0xaabbccdd55667788`. Coverage includes disjoint
+  stores, normal saves/restores, FP writes, both decode paths and 32 native
+  calls (`ABISavedSlotTests`). All seven focused tests pass. Restoring the
+  baseline and independently disabling ranges, narrow widths, pair strides,
+  the GPR-source guard, unknown-index decline, unsupported-store decline or
+  STNP save support fails with 30/9/2/1/1/1/1/1 assertions respectively;
+  restoration rebuilds green. Reproduce with `swiftdc disasm
+  Fixtures/Sample/libABISavedSlots.dylib -f ABIStackSlots --pseudo` or
+  `--structured`. Existing assumptions about non-stack pointers
+  and escaped aliases remain outside this byte-overlap fix.
+- **FIXED (`334628b`) — jump-table guards prove the index actually read.**
+  `JumpTables` rejects a narrow comparison bounding a wide load, a call
+  clobbering clamp flags, and a destructive SUBS replacing the compared index
+  in either the clamp or branch-guard form. `jump_table_bounds.s` reduces
+  all four unsafe proofs alongside five valid controls, including UXTW,
+  rechecked flags and SUBS writing a separate destination. The tests cover
+  both whole-file objdump and filtered Capstone paths (`JumpTableBoundTests`).
+  All eight focused table tests pass. Independently removing the width, call,
+  destructive-clamp or destructive-guard check fails with 8/8/2/2 assertions;
+  the restored source was rebuilt and passed again. Across 88 fixture CFGs,
+  only the reduction changes (nine tables to five); the other 87 retain
+  identical indirect-branch targets. `/bin/zsh` arm64e retains all 22 recovered
+  tables with identical targets. Declined tables retain unresolved indirect
+  transfers. Reproduce with `swiftdc disasm
+  Fixtures/Sample/libJumpTableBounds.dylib --cfg`.
+- **VALIDATION MAINTENANCE — unknown-return coverage survives REV support.**
+  Scalar REV recovery makes byteSwap a recovered result. `unknownreturn.swift`
+  now supplies an independently checked CLZ/RET lowering; `UnknownReturnTests`
+  still requires `return ?`
+  and an unknown probe outcome. All new fixtures, including byte reversal,
+  are built by `Fixtures/Sample/build.sh` and required by the enforcing suite.
+- **BLAST RADIUS — seven of 176 fixture source views change after byte
+  reversal (`c9de323`).** Across 88 fixtures in structured and pseudo modes,
+  the ABI reduction changes two incorrect scalar returns to unknown;
+  the loop-switch reduction adds its
+  exit goto and label in one view; the bound reductions retain unresolved
+  transfers in two views. The remaining two changes are in sample.debug:
+  its outlined Foundation.Data representation helpers write a W register
+  immediately before the saved x29 slot. Correctly retaining that disjoint
+  save restores frame addresses and spilled-call bindings. The new
+  `local_50`/`local_58` argument pairs are proved by `sub x1, x29, #...;
+  mov x0, x1`; related call-result bindings and temporary numbering follow.
+  All other fixture source views are byte-identical. This measures the
+  reductions and fixture corpus, not complete ABI or control-flow recovery.
+- **VALIDATED — 614 tests pass with fixture presence enforced.** Freshly
+  rebuilt via `swift build --build-tests`, then
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`: all 614 tests in eleven
+  suites pass, including the final disjoint-word-store control. CLI smoke
+  checks on libSample succeed with nonempty output for disasm, dump, layout,
+  interface, objc, xrefs (`--unreferenced`), analyze and swift-version. The
+  four code commits passed enforcing suites at each intermediate state.
 
 ## 2026-10-13: scalar byte reversal
 
-- **FIXED (working tree) — scalar REV results were unmodelled.** Model 32/64-bit
+- **FIXED (`c9de323`) — scalar REV results were unmodelled.** Model 32/64-bit
   REV, REV16 and REV32 using explicit per-chunk byte-swap expressions, retaining
   W-register normalization and conservative register/width/depth guards.
   Constant folding and integer probe evaluation share the byte permutation;
@@ -2437,57 +2514,3 @@ if a test was observed to fail without the fix.
   regression with one issue; restored source is rebuilt before testing. Six
   of 176 fixture source views change, recovering byte reversal in all three
   research images; the remaining 170 views are identical.
-
-## 2026-10-13: ABI preservation
-
-- **FIXED (working tree) — saved-register proofs account for overlapping store bytes.**
-  `CalleeRegisterSummary` now invalidates the complete byte extent of stores,
-  including narrow, unaligned and SIMD writes, and uses actual pair strides.
-  Only full-width GPR stores can establish saved-entry facts. Indexed writes
-  through a known stack base and unmodelled stack writes decline save proofs.
-  In `abi_saved_slots.s`, two callers previously rendered `return arg0`,
-  despite their fragments changing bytes in saved x19; both must decline.
-  For input `0x1122334455667788`, native execution independently returns
-  `0x11223344aa667788` and `0xaabbccdd55667788`. Coverage includes disjoint
-  stores, normal saves/restores, FP writes, both decode paths and 32 native
-  calls (`ABISavedSlotTests`). All seven focused tests pass. Restoring the
-  baseline and independently disabling ranges, narrow widths, pair strides,
-  the GPR-source guard, unknown-index decline, unsupported-store decline or
-  STNP save support fails with 30/9/2/1/1/1/1/1 assertions respectively;
-  restoration rebuilds green. Reproduce with `swiftdc disasm
-  Fixtures/Sample/libABISavedSlots.dylib -f ABIStackSlots --pseudo` or
-  `--structured`. Existing assumptions about non-stack pointers
-  and escaped aliases remain outside this byte-overlap fix.
-
-## 2026-10-13: CFG bound proofs
-
-- **FIXED (working tree) — jump-table guards prove the index actually read.**
-  `JumpTables` rejects a narrow comparison bounding a wide load, a call
-  clobbering clamp flags, and a destructive SUBS replacing the compared index
-  in either the clamp or branch-guard form. `jump_table_bounds.s` reduces
-  all four unsafe proofs alongside five valid controls, including UXTW,
-  rechecked flags and SUBS writing a separate destination. The tests cover
-  both whole-file objdump and filtered Capstone paths (`JumpTableBoundTests`).
-  All eight focused table tests pass. Independently removing the width, call,
-  destructive-clamp or destructive-guard check fails with 8/8/2/2 assertions;
-  the restored source was rebuilt and passed again. Across 88 fixture CFGs,
-  only the reduction changes (nine tables to five); the other 87 retain
-  identical indirect-branch targets. `/bin/zsh` arm64e retains all 22 recovered
-  tables with identical targets. Declined tables retain unresolved indirect
-  transfers. Reproduce with `swiftdc disasm
-  Fixtures/Sample/libJumpTableBounds.dylib --cfg`.
-
-## 2026-10-13: loop-switch exits
-
-- **FIXED (working tree) — a switch case leaving its enclosing loop used the
-  switch's break.** In `loopswitch.s`, case 0 must leave the loop and call
-  `finished()`, while cases 1–9 repeat. Previously, the structured output's
-  bare `break` repeated `while (true)` indefinitely. Loop contexts now track
-  intervening switches and emit an explicit labeled transfer across their
-  scope; nested loops retain local breaks. Six regressions cover direct and
-  conditional exits, nested switches, nested loops, ordinary loop breaks and
-  native table decoding. Independently disabling scope propagation or goto
-  rendering fails five tests with eleven assertions; restoration rebuilds
-  green. Reproduce with `swiftdc disasm Fixtures/Sample/libLoopSwitch.dylib
-  --structured -f loopSwitchExit`. Switch indices and irreducible-loop
-  reconstruction remain outside this fix.

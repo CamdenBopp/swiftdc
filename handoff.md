@@ -6,7 +6,26 @@ thread. This is **tier-5 (conversation-memory) authority** per
 git history, and measurements. Verify each claim against HEAD before acting, and
 delete items from this file as they ship.
 
-_Last updated: 2026-10-12, second session (see "Shipped in the second session"
+## Committed on local `dev` (2026-10-13)
+
+Three dedicated agents completed focused fixes for ABI preservation, complex
+control flow and CFG jump-table bounds. Saved-register proofs now use exact
+store-byte ranges; loop exits crossing a switch use labeled transfers; four
+unsafe table-bound forms decline. Each safeguard was independently disabled
+and its regression observed failing, then restored and rebuilt.
+
+The enforcing suite passes **614 tests**. Across 88 fixture CFGs, only the new
+invalid-bound reduction loses edges; all 22 recovered `/bin/zsh` tables remain
+unchanged. After byte reversal, seven of 176 structured/pseudo fixture views
+change, with every change explained in
+[PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md).
+Scalar byte reversal (`c9de323`) also has build/presence wiring; the
+unknown-return test now uses an unmodelled CLZ fixture. ABI preservation
+(`7b5d5ce`), CFG bounds (`334628b`) and loop transfers (`9e2f279`) are
+committed on local `dev`. Full ABI layout, aliasing and irreducible flow remain
+separate work.
+
+_Historical handoff from 2026-10-12, second session (see "Shipped in the second session"
 and sections 7 and 8, which hold the second mining wave and the ranked plan).
 The unified merge and the fixes below are on the
 `dev` branch on GitHub, not on master. A sweep of every subcommand over 7 large
@@ -424,8 +443,6 @@ installed on this host.
   namespace. And from `findings-scratch.md`: seeding a function's own `Int?`
   parameter (the `orZero` case).
 
-- A float argument to a call is not tracked (`Swift.Double.init()` for
-  `Double(f)` at -Onone).
 - Async: `-Onone` context reloads through stack spills decline; executor from
   an actor's `unownedExecutor` renders `hop_to_executor(?)`.
 - Validation: no committed whole-binary golden output for a real framework.
@@ -442,5 +459,5 @@ installed on this host.
 Fixtures/Sample/build.sh                 # build fixtures once (git-ignored)
 swift build && swift build -c release     # debug CLI + release
 SWIFTDC_REQUIRE_FIXTURES=1 swift test     # enforcing run (missing fixture fails)
-python3 Benchmarks/benchmark.py           # swiftdc vs ipsw (needs `ipsw`)
+swift Benchmarks/benchmark.swift          # swiftdc vs ipsw (needs `ipsw`)
 ```
