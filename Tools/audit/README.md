@@ -61,6 +61,12 @@ true of the machine code.
 `ProbeRecorder(validators:)` takes an oracle as a closure. See
 [INSTRUMENTATION.md](../../docs/INSTRUMENTATION.md).
 
+Common integer-return checks use the native Swift `ProbeScore` API or
+`swiftdc score <binary> --oracle oracle.json`. The authored width-flag corpus
+needs only `swiftdc score Fixtures/Sample/libWidthFlagProbes.dylib --width-flags`.
+Saved traces also work with `--trace`; missing, unknown, ambiguous and refuted
+cases stay distinct. There is no scripting-language dependency for scoring.
+
 ## 4. Classify each difference
 
 Every difference gets exactly one class:

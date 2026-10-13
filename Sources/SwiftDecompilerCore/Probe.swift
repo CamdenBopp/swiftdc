@@ -270,6 +270,8 @@ public final class ProbeRecorder: Sendable {
         case capture
         /// Write each admitted record as a JSON line, then a summary line.
         case jsonLines(@Sendable (String) -> Void)
+        /// Consume typed records without JSON serialization or retaining a trace.
+        case records(@Sendable (ProbeRecord) -> Void)
         /// Counts and times only.
         case summaryOnly
     }
@@ -348,11 +350,14 @@ public final class ProbeRecorder: Sendable {
                 return nil
             case .jsonLines:
                 return jsonLine(record)
+            case .records:
+                return nil
             case .summaryOnly:
                 return nil
             }
         }
         if let line, case .jsonLines(let write) = output { write(line) }
+        if admitted, case .records(let receive) = output { Probe.muted { receive(record) } }
     }
 
     func add(_ event: ProbeEvent, _ amount: Int) {

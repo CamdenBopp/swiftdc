@@ -239,6 +239,75 @@ are available through `recorder.assessments`. The JSON summary adds separate
 assessment counts. An unsupported claim never counts as a verified one. The
 legacy string-returning `validators` / `violations` API remains available.
 
+The scoring system is Swift, in `SwiftDecompilerCore`. Common cases need expected
+returns, not a custom validator or a manifest. Width defaults to 64 bits,
+arguments default to empty, and an omitted exit requires exactly one observed
+exit for the function. For a sampled one-argument function:
+
+```swift
+let cases = ReturnExpectation.samples(in: functionStart, inputs: [0, 1, .max]) {
+    $0 &+ 1  // independent oracle, or a typed call to the native fixture
+}
+let report = try await ProbeScore.recording(cases) {
+    let functions = try await Disassembler().disassemble(path: binary, functionFilter: "increment")
+    for function in functions { _ = function.renderStructured() }
+}
+print(try report.json())
+```
+
+For a constant, use `[ReturnExpectation(7, in: functionStart)]`. Add `at:` for
+multiple exits, `arguments:` for manual samples and `bits:` for narrow results.
+`samples` accepts typed Swift `Int`, `UInt64` and other scalar integer inputs,
+preserves their bit patterns, and defaults the result width to that type's width.
+Use `ReturnExpectation(signed: -1, in: functionStart)` for a signed constant.
+For more control, construct `ProbeScore`, install `score.recorder` around the
+existing pipeline, and call `score.report()` afterward. Arbitrary semantic
+checks use the existing typed `assessmentValidators` surface.
+
+The recorder's `.records` output streams typed events outside its mutex, with
+incidental probes muted. It avoids serialization and full-trace retention.
+The scorer retains only selected functions' exits, bounds duplicate storage,
+and indexes facts once for repeated samples. It distinguishes verified,
+refuted, not-evaluated and missing cases. An explicitly declined source return
+is not-evaluated; a filtered-out or absent return is missing. Agreement covers
+evaluated cases; coverage uses every supplied case. Unsupported provenance,
+floating-point expressions and bounded exports never count as verified.
+
+The authored native width fixture runs in one command:
+
+```bash
+swift run swiftdc score Fixtures/Sample/libWidthFlagProbes.dylib --width-flags \
+    --output /tmp/width-score.json
+swift test --filter 'integerOracle|score|typedProbeSink|presentButDeclined'
+```
+
+All 1,174 functions use an explicit no-argument UInt64 ABI. Native CPU execution
+supplies expected values; nm/objdump independently supply symbol and exit
+addresses, and dwarfdump supplies the UUID. This option only supports that
+fixture family. It audits raw x0 facts, independently of source return-layout
+recovery.
+
+General Swift return cases also work through optional JSON manifests:
+
+```bash
+swiftdc score fixture.dylib --oracle oracle.json --output score.json
+swiftdc score trace.jsonl --trace --oracle oracle.json --output score.json
+```
+
+Manifests use `swiftdc-oracle/1`, with a `cases` array containing `function`
+and `expected`; `address`, `arguments`, `bits` and `id` are optional. Integers
+accept exact hex strings or 64-bit JSON integers (including signed bit patterns).
+An optional `binaryUUID` binds cases to one image; keep `loader.image` in saved
+traces. Saved traces are read incrementally and require exactly one closing
+`swiftdc-probe/1` summary. `--raw-register` selects raw x0 rather than recovered
+return claims. An ambiguous exit or duplicate analysis cannot verify a case.
+
+The CLI exits 1 on refutation, 3 on incomplete evaluation, and 2 on invalid
+scoring data or I/O. Invalid command-line syntax follows ArgumentParser's usage
+errors. `--allow-incomplete` permits incomplete cases, never refutations. Empty
+oracles and invalid result widths are rejected. Scores describe the explicit
+integer sample corpus; neither mode establishes app-wide accuracy.
+
 The additions preserve existing event identifiers and fields in
 `swiftdc-probe/1`; structured values have their own versioned schema.
 

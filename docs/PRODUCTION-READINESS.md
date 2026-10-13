@@ -24,6 +24,15 @@ comparisons and 486 native CSETM executions. Each fix's test was seen red with
 that fix disabled. This is measured regression coverage of the reductions; no
 overall decompilation-accuracy percentage is claimed.
 
+
+Native Swift scoring now separates agreement from coverage, rejects duplicate
+analyses and ambiguous exits, and validates an optional image UUID. Constant
+returns and typed integer samples need no custom validator or manifest.
+`swiftdc score Fixtures/Sample/libWidthFlagProbes.dylib --width-flags` verifies
+1,174 independently executed integer cases; seven Swift return samples also
+verify. This is an integer corpus, not an app-wide accuracy estimate. See
+[INSTRUMENTATION.md](INSTRUMENTATION.md) for defaults and CLI exit contracts.
+
 ---
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
