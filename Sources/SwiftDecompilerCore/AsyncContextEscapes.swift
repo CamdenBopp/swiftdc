@@ -64,23 +64,56 @@ struct AsyncContextEscapes {
                     Probe.record(.contextEscapeUnknown, at: insn.address, ["reason": .label("context-writeback")])
                     return Int.min
                 }
-                // Inspect the incoming state BEFORE killing the destination:
-                // add x19,x19,#16 takes a slot's address too.
-                if detail.operands.count >= 2,
-                   let dest = detail.operands[0].operand.register, dest.kind == .gpr,
-                   dest.number != 22, dest.number != 29,
-                   let source = detail.operands[1].operand.register,
-                   source.kind == .gpr, contexts.contains(source.number) {
-                    let offset: Int?
-                    switch detail.id {
-                    case AARCH64_INS_ADD:
-                        offset = detail.operands.count == 3
-                            ? Int(clamping: detail.operands[2].shiftedImmediate ?? 0) : 0
-                    case AARCH64_INS_MOV, AARCH64_INS_ORR, AARCH64_INS_SUB:
-                        offset = 0
-                    default: offset = nil
+                // A context pointer stored anywhere can be reloaded through an
+                // alias this register-only analysis does not represent. Decline
+                // rather than lose that possible pointer at a stack/heap spill.
+                let memory = detail.operands.first { $0.operand.isMemory }
+                let readOnlyLoad = [
+                    AARCH64_INS_LDR, AARCH64_INS_LDUR, AARCH64_INS_LDP, AARCH64_INS_LDNP,
+                    AARCH64_INS_LDRB, AARCH64_INS_LDURB, AARCH64_INS_LDRH, AARCH64_INS_LDURH,
+                    AARCH64_INS_LDRSB, AARCH64_INS_LDURSB, AARCH64_INS_LDRSH, AARCH64_INS_LDURSH,
+                    AARCH64_INS_LDRSW, AARCH64_INS_LDURSW,
+                ].contains(detail.id)
+                if detail.operands.contains(where: { $0.operand.isMemory }), !readOnlyLoad, detail.operands.contains(where: { info in
+                    guard let reg = info.operand.register else { return false }
+                    return reg.kind == .gpr && contexts.contains(reg.number)
+                }) {
+                    Probe.record(.contextEscapeUnknown, at: insn.address, ["reason": .label("stored-context-pointer")])
+                    return Int.min
+                }
+                if let memory, case .memory(let base?, let index, let displacement) = memory.operand,
+                   base.kind == .gpr, contexts.contains(base.number) {
+                    // Only aligned, exact 64-bit integer stores are represented
+                    // in asyncSlotStores. Narrow, vector, indexed, overlapping or
+                    // unmodelled writes cannot leave chain-wide constants intact.
+                    let modeledStore = [AARCH64_INS_STR, AARCH64_INS_STUR, AARCH64_INS_STP].contains(detail.id)
+                        && index == nil && displacement % 8 == 0
+                        && detail.operands.prefix { !$0.operand.isMemory }.allSatisfy {
+                            ($0.operand.register?.kind == .gpr || $0.operand.register?.kind == .zero)
+                                && $0.operand.register?.widthBits == 64
+                        }
+                    if !modeledStore && !readOnlyLoad {
+                        Probe.record(.contextEscapeUnknown, at: insn.address, ["reason": .label("unmodelled-context-memory")])
+                        return Int.min
                     }
-                    if let offset { escapes[insn.address] = min(escapes[insn.address] ?? offset, offset) }
+                }
+                // Inspect every source before killing the destination. Conditional
+                // copies and a context in operand 2 are possible aliases too. An
+                // exported interior address has no proven write footprint: a
+                // callee can write at a negative offset, so lower slots are unsafe.
+                let comparesOnly: Bool
+                switch detail.id {
+                case AARCH64_INS_ALIAS_CMP, AARCH64_INS_ALIAS_CMN, AARCH64_INS_ALIAS_TST, AARCH64_INS_CCMP, AARCH64_INS_CCMN:
+                    comparesOnly = true
+                default: comparesOnly = false
+                }
+                if !comparesOnly, !detail.operands.contains(where: { $0.operand.isMemory }),
+                   detail.operands.first?.operand.register != nil,
+                   detail.operands.dropFirst().contains(where: { info in
+                       guard let source = info.operand.register else { return false }
+                       return source.kind == .gpr && contexts.contains(source.number)
+                   }) {
+                    escapes[insn.address] = Int.min
                 }
                 let loaded: Set<Int> = {
                     let paired = detail.id == AARCH64_INS_LDP || detail.id == AARCH64_INS_LDNP
@@ -98,6 +131,17 @@ struct AsyncContextEscapes {
                     }
                     return aliases
                 }()
+                // A load of parent-pointer bits is safe for this register-only
+                // model only when the complete pointer becomes a tracked GPR
+                // alias. Indexed, partial or SIMD reads may reconstruct a pointer
+                // later through register banks the alias set does not represent.
+                if readOnlyLoad, let memory,
+                   case .memory(let base?, let index, let displacement) = memory.operand,
+                   base.kind == .gpr, contexts.contains(base.number),
+                   index != nil || (displacement < 8 && loaded.isEmpty) {
+                    Probe.record(.contextEscapeUnknown, at: insn.address, ["reason": .label("unproven-parent-pointer-load")])
+                    return Int.min
+                }
                 // Compare/test aliases write NZCV only, even if a decoder's
                 // operand-access flags incorrectly label an input as written.
                 switch detail.id {

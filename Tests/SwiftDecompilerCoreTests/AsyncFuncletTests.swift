@@ -282,8 +282,10 @@ private func structured(_ path: String, _ filter: String) async throws -> String
 /// The whole chain of `twoAwaits` on the stripped -O build, verbatim: the
 /// await binds its result, the second await consumes it, the async return
 /// (a `br` through the context's ResumeParent) is a `return`, and `awaited1`
-/// crosses the second suspension through a context slot whose single store
-/// and load are both proven.
+/// crosses the second suspension through a context slot. Its single store
+/// does not prove immutability after the parent pointer is exported into a
+/// callee context. Without interprocedural memory effects that reload declines;
+/// the direct awaited result and the next call's argument remain recovered.
 @Test func rendersAwaitChainVerbatimIfPresent() async throws {
     guard let text = try await structured(strippedFixture, "twoAwaits") else { return }
     #expect(text == """
@@ -297,7 +299,7 @@ private func structured(_ path: String, _ filter: String) async throws -> String
         }
         resume #2 of AsyncFns.twoAwaits(Swift.Int) async -> Swift.Int {
             // resume #2 of the async function @0x9e8: entered when the await in 0xa34 returns
-            return (awaited1 + awaited2)
+            return ?
         }
         """)
 }
@@ -320,16 +322,17 @@ private func structured(_ path: String, _ filter: String) async throws -> String
 
 /// An executor hop is named only when both executor operands prove it
 /// (`generic` for the null executor); otherwise it declines with `?`. The
-/// continuation reads the parameter back from the context slot the entry
-/// funclet spilled it to, so the throw condition names `arg0`.
+/// continuation reads storage exposed across the hop. A single store does not
+/// establish its immutability, so parameter names and reloaded results decline
+/// until the hop's memory effects are proven.
 @Test func rendersExecutorHopsAndSpilledParametersIfPresent() async throws {
     guard let throwing = try await structured(strippedFixture, "fetchOrThrow") else { return }
     #expect(throwing.contains("await hop_to_executor(generic)"))
-    #expect(throwing.contains("if (arg0 < 0) {"))
-    #expect(throwing.contains("return arg0"))
+    #expect(throwing.contains("if (bit 0x3f of x0 set) {"))
+    #expect(throwing.contains("return ?"))
     guard let main = try await structured(strippedFixture, "onMainAwait") else { return }
     #expect(main.contains("await hop_to_executor(?)"))
-    #expect(main.contains("return (awaited1 + 1)"))
+    #expect(main.contains("return ?"))
 }
 
 /// Negative: at -Onone the funclets reload the context through stack spills
@@ -428,7 +431,9 @@ func resumeFuncletsDoNotInheritTheSignatureArgumentsIfPresent(path: String) asyn
     }
     let thrower = try await structured("fetchOrThrow")
     #expect(thrower.contains("throw ?"), Comment(rawValue: thrower))
-    #expect(thrower.contains("return arg0"), Comment(rawValue: thrower))
+    // The parameter crosses a hop in exported context storage. Error flow is
+    // still proven, but its reloaded success value lacks a memory-effect proof.
+    #expect(thrower.contains("return ?"), Comment(rawValue: thrower))
     let rethrower = try await structured("awaitThrowing")
     #expect(rethrower.contains("return (awaited1 << 1)"), Comment(rawValue: rethrower))
     #expect(rethrower.contains("} else {\n        throw ?"), Comment(rawValue: rethrower))

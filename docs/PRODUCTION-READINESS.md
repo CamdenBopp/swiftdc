@@ -2589,3 +2589,35 @@ if a test was observed to fail without the fix.
   Freshly rebuilt enforcing intermediate suite: 624 tests in eleven suites.
   Across 180 fixture source views, only the new ownership reduction's two
   views change: three wrong returns decline, and its safe control is unchanged.
+
+- **FIXED (represented async aliases/effects) — context-slot constants survived
+  unrepresented pointer provenance and writes.** Native ARM64 wrappers show
+  slot16 changing from 7 to 18 through a spilled pointer, interior pointer,
+  FMOV round trip or vector-loaded parent pointer; byte/unaligned writes produce
+  263. Six native executions also check final memory. Register-only escape
+  analysis now declines stored pointers, copies through every source position
+  and register bank, interior addresses without a proven write footprint,
+  unrepresented stores and parent-pointer loads. Exact full-width GPR parent
+  loads and aligned recorded GPR stores retain their existing treatment.
+  Thirteen soundness regressions cover detector and chain seed claims; the
+  native regression and no-escape control remain independent. Baseline tests
+  fail with 30 issues. Six individual mutations fail with 2/9/9/6/4/10 issues
+  (stored pointer, memory widths, copy inputs, footprint, register bank,
+  parent-pointer load). Rebuilt enforcing intermediate suite: 638 tests in
+  eleven suites pass.
+
+- **OPEN — stronger escape checks also decline valid async spill recovery.**
+  Exporting ParentContext into a callee context does not by itself bound writes
+  to the parent. Without interprocedural memory effects, twoAwaits's saved
+  awaited1 across its second suspension, fetchOrThrow's parameter across a
+  hop, and onMainAwait's stored result now decline. Direct awaited results,
+  subsequent direct call arguments, executor hops and error transfers remain
+  reconstructed. The previous native/source behavior is still valid; these
+  are explicit completeness losses rather than corrected values. Updated
+  expectations require unknown returns/raw machine conditions for these cases.
+  Future recovery requires memory-effect or ownership evidence, not an x22
+  handoff exception based solely on spelling.
+  Blast radius: four of 180 source views change, only optimized AsyncFns and
+  its stripped twin in both views. Each loses the three spill-derived returns
+  above; fetchOrThrow's condition retains the machine register/sign-bit test.
+  All other fixture output is unchanged. No CFG or funclet ownership changes.
