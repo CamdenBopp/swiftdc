@@ -479,6 +479,9 @@ public struct ValueTracer: Sendable {
     /// The fixpoint's worklist bound, per block. Past it the analysis claims
     /// nothing (`values.fixpoint-cap`). Injectable so a test can force it.
     var iterationsPerBlock = 64
+    /// The loop-induction pass's own bound: `(body blocks + 1) ×` this many
+    /// block visits.
+    var loopBodyIterationsPerBlock = 8
 
     /// Callee address → the callee-saved registers its body writes without
     /// saving (`CalleeRegisterSummary`): an outlined fragment reached by `bl`
@@ -1856,12 +1859,12 @@ public struct ValueTracer: Sendable {
                 seed[key] = .local(offset)
                 placeholderId[offset] = key
             }
-            let bodyOut = retransferBody(
+            // A capped body pass holds unconverged states: claim nothing.
+            guard let bodyOut = retransferBody(
                 body: body, header: header, headerSeed: seed,
                 blockByStart: blockByStart, predecessors: predecessors,
                 frame: frame
-            )
-            guard let backOut = bodyOut[backFrom] else { continue }
+            ), let backOut = bodyOut[backFrom] else { continue }
             // The compared slot is the one the header's loop test references — the
             // `.local` placeholder in the re-transferred compare flags. It is the
             // primary induction variable `i`; naming from it (not the `-Onone`
@@ -2058,24 +2061,25 @@ public struct ValueTracer: Sendable {
     /// Re-run the transfer over just the loop body, with the header's entry state
     /// FIXED to `headerSeed` (so the seeded induction placeholders are not merged
     /// away by the back-edge). Bounded mini-fixpoint; internal joins meet over
-    /// body predecessors. Returns each body block's exit state.
+    /// body predecessors. Returns each body block's exit state, or nil when the
+    /// bound is hit before the states settle.
     private func retransferBody(
         body: Set<UInt64>, header: UInt64, headerSeed: State,
         blockByStart: [UInt64: BasicBlock], predecessors: [UInt64: [UInt64]],
         frame: FrameLayout
-    ) -> [UInt64: State] {
+    ) -> [UInt64: State]? {
         var outS: [UInt64: State] = [:]
         var escapeMarkers: [UInt64: State] = [:]
         var worklist = [header]
         var queued: Set<UInt64> = [header]
         var iterations = 0
-        let cap = body.count * 8 + 8
+        let cap = (body.count + 1) * loopBodyIterationsPerBlock
         while let addr = worklist.first {
             worklist.removeFirst(); queued.remove(addr)
             iterations += 1
             if iterations > cap {
                 Probe.record(.tracerLoopBodyCap, at: header, ["blocks": .int(body.count), "cap": .int(cap)])
-                break
+                return nil
             }
             guard let block = blockByStart[addr] else { continue }
             var entry: State

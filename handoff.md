@@ -11,10 +11,8 @@ delete items from this file as they ship.
 Swift error exits are classified per exit, frame slots reachable through
 escaped addresses and async context slots behind escaped context pointers
 are forgotten at later calls (readiness entries of 2026-10-15). Enforcing
-suite: 696 tests. The IR plan is in [docs/IR.md](docs/IR.md). Next: a capped
-loop-body pass must claim nothing (`retransferBody` returns partial states),
-the `()` arity rendering for signatureless callees (pad known arities),
-then IR steps 1–3.
+suite: 697 tests. The IR plan is in [docs/IR.md](docs/IR.md). Next: the `()` arity rendering for signatureless callees (pad known
+arities), then IR steps 1–3.
 
 ## Soundness development session (2026-10-13)
 

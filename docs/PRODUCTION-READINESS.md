@@ -2966,3 +2966,23 @@ if a test was observed to fail without the fix.
 
 - **OPEN — no fixture reproduces the join-derived marker oscillation.** The
   sticky markers are guarded by GoodLinks only.
+
+## 2026-10-15: a capped loop-body pass claimed its loop
+
+- **FIXED — the induction pass named loop variables from unsettled
+  states.** `retransferBody` re-runs a loop body from a seeded header and
+  stops at `(body blocks + 1) × 8` visits. On hitting the bound it broke out
+  and returned whatever states it had, and `resolveLoopInductions` named
+  the loop's induction variables and updates from them. A bound that is hit
+  must claim nothing. It now returns nil and the loop is skipped. The budget
+  is injectable (`loopBodyIterationsPerBlock`, default 8, same bound as
+  before). With a budget of one, one of `LoopEntry.nestedCounters`' two
+  loops hits the bound; before the fix both loops kept their claims (two
+  initializations, two updates), now only the settled one does. At the
+  default budget no fixture and no GoodLinks function hits the bound since
+  the sticky escape markers (above), so every fixture view and app output is
+  unchanged.
+
+  Verified: `aCappedLoopBodyPassClaimsNothingForItsLoopIfPresent` fails
+  with four issues when the old `break` is restored and passes with the fix.
+  Enforcing suite: 697 tests in 11 suites.

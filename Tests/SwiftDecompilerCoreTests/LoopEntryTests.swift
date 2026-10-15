@@ -75,3 +75,28 @@ private func loopEntryFunction(_ name: String) async throws -> DisassembledFunct
     #expect(update.lowerBound < transfer.lowerBound)
     #expect(body.components(separatedBy: "i += 1").count == 2)
 }
+
+/// A loop-body pass that hits its bound holds states that never settled; it
+/// must name nothing for that loop. With a budget of one visit per block,
+/// one of `nestedCounters`' two loops hits the bound and used to keep its
+/// induction claims; the other loop settles and keeps its own.
+@Test func aCappedLoopBodyPassClaimsNothingForItsLoopIfPresent() async throws {
+    guard let function = try await loopEntryFunction("nestedCounters") else { return }
+    var tracer = ValueTracer()
+    tracer.loopBodyIterationsPerBlock = 1
+    let recorder = ProbeRecorder(filter: ProbeFilter(events: [ProbeEvent.tracerLoopBodyCap.id]))
+    let analysis = Probe.recording(recorder) {
+        tracer.analyze(function, entry: .swiftFunction(scalarArguments: ["x0": 0]))
+    }
+    let capped = Set(recorder.records.compactMap(\.address))
+    try #require(capped.count == 1)
+    let blocks = function.basicBlocks()
+    let cappedBranches = Set(blocks.filter { capped.contains($0.startAddress) }.compactMap { $0.instructions.last?.address })
+    try #require(cappedBranches.count == 1)
+    for branch in cappedBranches {
+        #expect(analysis.loopUpdates[branch] == nil)
+        #expect(analysis.loopInitializations[branch] == nil)
+    }
+    #expect(analysis.loopUpdates.count == 1)
+    #expect(analysis.loopInitializations.values.flatMap { $0 }.count == 1)
+}
