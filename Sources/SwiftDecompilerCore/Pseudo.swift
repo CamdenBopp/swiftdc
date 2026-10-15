@@ -469,10 +469,11 @@ public extension DisassembledFunction {
         return String(text[..<cut]).trimmingCharacters(in: .whitespaces)
     }
 
+    /// The C name of a Mach-O symbol: one leading underscore is the linker's
+    /// prefix; any more belong to the name (`___stack_chk_fail` is
+    /// `__stack_chk_fail`, as the in-process paths spell it).
     private static func stripUnderscores(_ symbol: String) -> String {
-        var s = Substring(symbol)
-        while s.hasPrefix("_") { s = s.dropFirst() }
-        return String(s)
+        symbol.hasPrefix("_") ? String(symbol.dropFirst()) : symbol
     }
 
     /// Drop a demangled name's trailing return clause and argument-label

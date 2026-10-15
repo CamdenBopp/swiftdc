@@ -106,10 +106,11 @@ private let compiledCallEffectFixtures = [
     }
 }
 
-/// -O and -Osize rendered `return 7`. Every decode path must decline: the
-/// objdump-backed array path, the filtered Capstone path and streaming.
-/// (The paths still differ in stub naming, `stack_chk_fail` against
-/// `__stack_chk_fail`, which is a separate defect.)
+/// -O and -Osize rendered `return 7`. Every decode path must decline, and
+/// all three (the objdump-backed array path, the filtered Capstone path and
+/// streaming) must render the same views. The array path once named the
+/// stub `stack_chk_fail`, missed its known zero arity, and passed it the
+/// closure's result.
 @Test func compiledStackEscapeIsNotRenderedAsThePreCallStoreIfPresent() async throws {
     for fixture in compiledCallEffectFixtures {
         guard FileManager.default.fileExists(atPath: fixture) else { continue }
@@ -121,14 +122,31 @@ private let compiledCallEffectFixtures = [
             let image = try BinaryLoader.load(path: fixture)
             return await Disassembler().disassembleStreaming(machO: image, transform: { $0 })
         }
-        for functions in [full, filtered, streamed] {
-            let escaping = functions.filter { $0.displayName.contains("cacheEscape(") }
-            #expect(!escaping.isEmpty, "\(fixture)")
-            for function in escaping {
-                for text in [function.renderStructured(), function.renderPseudo()] {
-                    #expect(!text.contains("return 7"), "\(fixture): \(text)")
-                }
+        func views(_ functions: [DisassembledFunction], structured: Bool) -> [String: String] {
+            Dictionary(uniqueKeysWithValues: functions.filter { $0.displayName.contains("cacheEscape(") }
+                .map { ($0.symbol, structured ? $0.renderStructured() : $0.renderPseudo()) })
+        }
+        for structured in [false, true] {
+            let fullViews = views(full, structured: structured)
+            #expect(!fullViews.isEmpty, "\(fixture)")
+            #expect(views(filtered, structured: structured) == fullViews, "\(fixture)")
+            #expect(views(streamed, structured: structured) == fullViews, "\(fixture)")
+            for text in fullViews.values {
+                #expect(!text.contains("return 7"), "\(fixture): \(text)")
             }
         }
     }
+}
+
+/// A Mach-O symbol carries one linker underscore; the rest are the name's.
+/// objdump's stub comment and a direct `bl` operand both name the C function
+/// the in-process paths name.
+@Test func objdumpCalleeNamesKeepTheirOwnUnderscores() {
+    func callee(_ text: String) -> String? {
+        DisassembledFunction.calleeName(of: Instruction(address: 0x1000, text: text, controlFlow: .call))
+    }
+    #expect(callee("bl\t0x744 ; symbol stub for: ___stack_chk_fail") == "__stack_chk_fail")
+    #expect(callee("bl\t0x744 ; symbol stub for: _swift_release") == "swift_release")
+    #expect(callee("bl\t___clang_call_terminate") == "__clang_call_terminate")
+    #expect(callee("bl\t_$s1M1fyyF") == "$s1M1fyyF")
 }

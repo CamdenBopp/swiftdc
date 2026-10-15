@@ -11,9 +11,9 @@ delete items from this file as they ship.
 Swift error exits are classified per exit (readiness entry "2026-10-15:
 Swift error exits"), and frame slots reachable through escaped addresses
 are forgotten at later calls and unknown stores ("2026-10-15: frame slots
-reachable through escaped addresses"). Enforcing suite: 692 tests. The IR
-plan is in [docs/IR.md](docs/IR.md). Next: the objdump stub-name
-divergence and the `()` arity rendering (both OPEN in that entry), async
+reachable through escaped addresses"). Enforcing suite: 693 tests. The IR
+plan is in [docs/IR.md](docs/IR.md). Next: the `()` arity rendering
+(OPEN in that entry), async
 context facts across unknown calls (`async_call_effects.s`, still
 untracked, with the 2026-10-13 proposal under
 `work/session-memory/integrated-call-proposal`), then IR steps 1–3.

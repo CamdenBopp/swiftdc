@@ -2852,9 +2852,22 @@ if a test was observed to fail without the fix.
   four. The escape fix makes this more frequent in Clarc. A call whose
   arity is unproven should say so instead of printing `()`.
 
-- **OPEN — the objdump path strips every leading underscore from stub
-  names.** `calleeName(of:)` turns `___stack_chk_fail` into
-  `stack_chk_fail` where the in-process paths say `__stack_chk_fail`; the
-  unrecognised name then renders `stack_chk_fail(r0)` at -Onone, an
-  argument the C function does not take, and the array, filtered and
-  streamed views of `cacheEscape` differ.
+- **FIXED — the objdump path stripped every leading underscore from
+  callee names.** `calleeName(of:)` turned `___stack_chk_fail` into
+  `stack_chk_fail` where the in-process paths say `__stack_chk_fail`. The
+  unrecognised name missed `knownCArity` (zero) and runtime-noise lists
+  (`__chkstk`), so the array path rendered `stack_chk_fail(r0)` at -Onone,
+  an argument the C function does not take, bound the closure result it
+  "consumed" as `let r0`, and disagreed with the filtered and streamed
+  views of `cacheEscape`. A Mach-O symbol has one linker underscore; only
+  that one is stripped now. Blast radius, on the objdump-backed outputs
+  (plain listing and `--json` for every fixture): 19 of 196 change.
+  `__stack_chk_fail` loses `args(r0)` and `args(((r1 == 0) ? r3 : ?))`
+  (SwiftErrorProbe, both twins), and the `let r3 = swift_errorRelease(r2)`
+  binding it forced; `__sincos_stret`, `_Unwind_Resume`,
+  `__cxa_begin_catch`, `__clang_call_terminate` and
+  `_swift_stdlib_reportUnimplementedInitializerInFile` get their C names.
+  The streamed `--structured`/`--pseudo` views are byte-identical.
+  Verified: `objdumpCalleeNamesKeepTheirOwnUnderscores` and the restored
+  three-path equality in `compiledStackEscapeIsNotRenderedAsThePreCallStore`
+  fail with 14 issues under the old stripping; enforcing suite 693 tests.
