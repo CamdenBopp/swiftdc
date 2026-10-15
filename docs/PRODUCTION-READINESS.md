@@ -3067,3 +3067,20 @@ if a test was observed to fail without the fix.
   The x29 rules had no guard: removing either left every test green and
   every fixture view unchanged. `fpBoundary` and `fpAboveBoundary` in
   `frame_escape_controls.s` now pin them.
+
+## 2026-10-15: callee facts shared across a run
+
+- **FIXED (speed): every `analyze` re-derived each call's name facts.**
+  After facts moved to once per call, building them (`FunctionFacts.init`)
+  took 1,061 of the tracer's samples on Clarc: `analyze` runs more than
+  once per function (enrichment, the re-analysis after indirect targets
+  resolve, async chains), and the facts parse the signature four times.
+  Clarc's 103,776 calls name only 5,636 distinct callees, so
+  `ValueTracer.CallFactsCache` keeps them per callee name for one run
+  (owned by the `Disassembler`, like `DemangleCache`). Output is
+  unchanged: every fixture view and Clarc's `--pseudo` are
+  byte-identical. Release A/B on Clarc, five alternating rounds, under an
+  unrelated process holding five cores, so wall time is not comparable:
+  instructions retired 371.9 G against 349.3 G median (-6.1%; every round
+  of the change below every baseline round), cycles 98.5 G against
+  92.3 G (-6.3%), user CPU 28.62 s against 26.45 s.

@@ -1,5 +1,6 @@
 import Ccapstone
 import Foundation
+import Synchronization
 
 /// Operators retained in source-level symbolic expressions. These are kept
 /// deliberately small and side-effect free: when an instruction falls outside
@@ -531,7 +532,10 @@ public struct ValueTracer: Sendable {
         let hasTupleResult: Bool
 
         init(_ insn: Instruction) {
-            let callee = DisassembledFunction.calleeName(of: insn) ?? ""
+            self.init(callee: DisassembledFunction.calleeName(of: insn) ?? "")
+        }
+
+        init(callee: String) {
             self.callee = callee
             readsOnly = ValueTracer.readOnlyPointerCallees.contains(callee)
             passedRegisters = DisassembledFunction.knownCArity(of: callee).map { arity in
@@ -551,6 +555,24 @@ public struct ValueTracer: Sendable {
         }
     }
 
+    /// `CallFacts` per callee name for one run. They are a pure function of
+    /// the name, and a few thousand names serve a hundred thousand calls
+    /// (Clarc: 5,636 for 103,776).
+    final class CallFactsCache: Sendable {
+        private let store = Mutex<[String: CallFacts]>([:])
+
+        func facts(for callee: String) -> CallFacts {
+            if let hit = store.withLock({ $0[callee] }) { return hit }
+            let facts = CallFacts(callee: callee)
+            store.withLock { $0[callee] = facts }
+            return facts
+        }
+    }
+
+    /// Shared by the tracers of one run; without it each `analyze` derives
+    /// its calls' facts itself.
+    var callFactsCache: CallFactsCache?
+
     /// What the analysed function's own instructions fix, independent of any
     /// register state: computed once per `analyze` and handed to every
     /// transfer.
@@ -560,10 +582,11 @@ public struct ValueTracer: Sendable {
 
         init() {}
 
-        init(_ function: DisassembledFunction) {
+        init(_ function: DisassembledFunction, cache: CallFactsCache?) {
             frame = ValueTracer.frameLayout(function.instructions)
             for insn in function.instructions where insn.controlFlow == .call {
-                calls[insn.address] = CallFacts(insn)
+                let callee = DisassembledFunction.calleeName(of: insn) ?? ""
+                calls[insn.address] = cache?.facts(for: callee) ?? CallFacts(callee: callee)
             }
         }
 
@@ -668,7 +691,7 @@ public struct ValueTracer: Sendable {
         let blocks = function.basicBlocks()
         guard !blocks.isEmpty else { return FunctionAnalysis() }
         let blockByStart = Dictionary(blocks.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
-        let facts = FunctionFacts(function)
+        let facts = FunctionFacts(function, cache: callFactsCache)
 
         var predecessors: [UInt64: [UInt64]] = [:]
         for block in blocks {

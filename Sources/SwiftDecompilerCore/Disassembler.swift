@@ -320,6 +320,8 @@ public struct Disassembler: Sendable {
     public let preset: DemanglePreset
     /// Memoizes `demangle` for the lifetime of this instance (one run).
     let demangleCache = DemangleCache()
+    /// Memoizes what each callee name proves to the tracer, for one run.
+    let callFactsCache = ValueTracer.CallFactsCache()
 
     public init(preset: DemanglePreset = .default) {
         self.preset = preset
@@ -1147,6 +1149,7 @@ public struct Disassembler: Sendable {
                     continue
                 }
                 var tracer = ValueTracer()
+                tracer.callFactsCache = callFactsCache
                 if address == entry {
                     entrySuspensions = funclet.instructions.compactMap {
                         index.suspensions[$0.address] != nil ? $0.address : nil
@@ -3344,6 +3347,7 @@ public struct Disassembler: Sendable {
         }
 
         var tracer = ValueTracer(calleeConventions: calleeConventions, asyncContextSlots: asyncContextSlots)
+        tracer.callFactsCache = callFactsCache
         if let objcIndex {
             let selectors = resolver.selectors.bySelref
             let method = function.objcMethod
