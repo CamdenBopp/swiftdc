@@ -922,32 +922,27 @@ public struct ValueTracer: Sendable {
             // an `inout` struct, an x8 result buffer, a `mutating` self in x20.
             // Keeping the pre-call value rendered the error a failed call
             // reported as the `nil` stored before it
-            // (`_convertNSErrorToError(0)`, SwiftData). The callee may write a
-            // whole aggregate through the pointer, of a size the binary does
-            // not record, so each escaped local is forgotten up to the next
-            // local whose address the function takes separately (a distinct
-            // variable; `addressTakenFrameOffsets`), or to the frame top.
-            // Incoming stack arguments (offsets >= 0) sit in the caller's area,
-            // which a pointer into this frame cannot reach (`[super init…]`
-            // passes `&objc_super`, and `self->_count = arg6` must survive it).
-            let escapedOffsets: [Int64] = (["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x20"]
-                .compactMap { registers[$0] }
-                + registers.filter { $0.key.hasPrefix(Self.outgoingPrefix) }.map(\.value))
-                .compactMap { if case .frame(let offset) = $0 { return offset } else { return nil } }
+            // (`_convertNSErrorToError(0)`, SwiftData). The callee may also
+            // keep the address, so it stays escaped for every later call
+            // (`forgetEscapedFrame`), and so does one that escaped earlier: a
+            // frame address stored to a global before a call that writes
+            // through the global rendered the pre-call value (`cacheEscape`).
             // A helper that only reads through its pointer leaves the local
             // intact: projecting an existential container yields a pointer to
             // its payload and must not erase the container's type and witness
             // words, or the witness-table call through them goes unresolved
             // (guarded by `resolvesConcreteWitnessTableDispatchIfPresent`).
+            // Neither it nor an exactly modelled memory helper keeps a pointer.
             let readsOnly = DisassembledFunction.calleeName(of: insn)
                 .map(Self.readOnlyPointerCallees.contains) ?? false
-            for escaped in (readsOnly || handledAsMemoryHelper) ? [] : Set(escapedOffsets) {
-                let end = escaped >= 0 ? Int64.max : (addressTaken.first { $0 > escaped } ?? 0)
-                for key in registers.keys where key.hasPrefix("stack@") {
-                    if let offset = Int64(key.dropFirst("stack@".count)), escaped <= offset, offset < end {
-                        registers[key] = nil
-                    }
+            if !(readsOnly || handledAsMemoryHelper) {
+                for key in ["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x20"] {
+                    if let value = registers[key] { Self.markFrameEscape(value, into: &registers) }
                 }
+                for (key, value) in registers where key.hasPrefix(Self.outgoingPrefix) {
+                    Self.markFrameEscape(value, into: &registers)
+                }
+                Self.forgetEscapedFrame(in: &registers, addressTaken: addressTaken)
             }
             if !handledAsMemoryHelper { applyCallToResultBuffers(insn, site: site, into: &registers) }
             // AAPCS64: x0–x17 are caller-saved, so a call clobbers them. x18 is
@@ -1043,9 +1038,22 @@ public struct ValueTracer: Sendable {
             return
         }
         let hadSelf = registers[Self.selfFreshKey]
+        let frameInputs = noteFrameMemoryWrite(insn, into: &registers, addressTaken: addressTaken)
         apply(insn, into: &registers, recordAccess: recordAccess,
               recordArrayElement: recordArrayElement, recordSlotStore: recordSlotStore,
               recordUnboundedMemoryWrite: recordUnboundedMemoryWrite)
+        // A frame address transformed beyond the tracer's arithmetic still
+        // points into the frame, at an offset nothing tracks.
+        if frameInputs, let detail = insn.detail,
+           detail.writtenRegisterKeys.contains(where: { key in
+               registers[key].map { !Self.containsFrame($0) } ?? true
+           }) {
+            registers[Self.frameEscapeAllKey] = .immediate(1)
+        }
+        // sp moved below k by a non-constant amount allocates below k.
+        if let sp = registers["sp"], let base = Self.allocationBase(sp) {
+            registers[Self.frameDynamicPrefix + String(base)] = .immediate(1)
+        }
         if Self.writesSwiftSelf(insn) {
             registers[Self.selfFreshKey] = .immediate(1)
         } else {
@@ -1155,6 +1163,19 @@ public struct ValueTracer: Sendable {
         if states.contains(where: { $0[resultPoisonKey] != nil }) {
             accumulator[resultPoisonKey] = .immediate(1)
         }
+        // An address that escaped on any incoming path is reachable here, and
+        // one the join drops is no longer followed: it escapes.
+        var dropped: [AbstractValue] = []
+        for state in states {
+            for (key, value) in state {
+                if isFrameMarker(key) {
+                    accumulator[key] = value
+                } else if accumulator[key] != value, containsFrame(value) {
+                    dropped.append(value)
+                }
+            }
+        }
+        for value in dropped { markFrameEscape(value, into: &accumulator) }
         return accumulator
     }
 
@@ -3616,6 +3637,207 @@ public struct ValueTracer: Sendable {
         guard key.hasPrefix("stack@") else { return nil }
         return Int64(key.dropFirst("stack@".count))
     }
+
+    // MARK: - Escaped frame memory
+
+    /// Frame memory reachable through an escaped address. A frame address
+    /// escapes once it leaves what the tracer follows: passed to a call,
+    /// stored anywhere but an exactly tracked frame slot, transformed beyond
+    /// the tracer's arithmetic, or dropped from a slot or a join while it is
+    /// still in memory or a register. From then on any call, and any store
+    /// through a pointer of unknown origin, may rewrite what it reaches.
+    ///
+    /// - `frame.escaped@k`: an address at offset k, reaching up to the next
+    ///   local whose address the function takes separately
+    ///   (`addressTakenFrameOffsets`) or the frame top; from an incoming
+    ///   stack argument (k >= 0), upward without bound.
+    /// - `frame.below@k`: an address inside a dynamic allocation below k
+    ///   (`frame.dynamic@k`), which reaches nothing at or above k.
+    /// - `frame.escaped`: an address of unknown offset; it reaches everything.
+    ///
+    /// They are MAY facts: `meet` unions them, and they never clear.
+    private static let frameEscapePrefix = "frame.escaped@"
+    private static let frameBelowPrefix = "frame.below@"
+    private static let frameEscapeAllKey = "frame.escaped"
+    /// sp was moved below offset k by a non-constant amount: `frame(k) - n`
+    /// there is a dynamic allocation, not a pointer back into the frame.
+    private static let frameDynamicPrefix = "frame.dynamic@"
+
+    private static func isFrameMarker(_ key: String) -> Bool { key.hasPrefix("frame.") }
+
+    private static func containsFrame(_ value: AbstractValue) -> Bool {
+        switch value {
+        case .frame: return true
+        case .binary(_, let lhs, let rhs): return containsFrame(lhs) || containsFrame(rhs)
+        case .unary(_, let operand): return containsFrame(operand)
+        case .select(let condition, let whenTrue, let whenFalse):
+            return containsFrame(condition) || containsFrame(whenTrue) || containsFrame(whenFalse)
+        case .aggregate(let values): return values.contains(where: containsFrame)
+        default: return false
+        }
+    }
+
+    /// The frame offset a dynamic allocation hangs below: `frame(k) - n` for
+    /// a non-constant n, then any offsets within the block.
+    private static func allocationBase(_ value: AbstractValue) -> Int64? {
+        switch value {
+        case .binary(.subtract, .frame(let base), let size):
+            if case .immediate = size { return nil }
+            return containsFrame(size) ? nil : base
+        case .binary(.add, let lhs, let rhs), .binary(.subtract, let lhs, let rhs):
+            return containsFrame(rhs) ? nil : allocationBase(lhs)
+        default:
+            return nil
+        }
+    }
+
+    private static func markFrameEscape(_ value: AbstractValue, into registers: inout State) {
+        guard containsFrame(value) else { return }
+        if case .frame(let offset) = value {
+            registers[frameEscapePrefix + String(offset)] = .immediate(1)
+        } else if let base = allocationBase(value), registers[frameDynamicPrefix + String(base)] != nil {
+            registers[frameBelowPrefix + String(base)] = .immediate(1)
+        } else {
+            registers[frameEscapeAllKey] = .immediate(1)
+        }
+    }
+
+    /// Forget every frame fact an escaped address can reach. A forgotten slot
+    /// that held a frame address still holds it in memory, so that address
+    /// escapes too, until nothing new escapes.
+    private static func forgetEscapedFrame(in registers: inout State, addressTaken: [Int64]) {
+        var seen = -1
+        while true {
+            let markers = registers.keys.filter(isFrameMarker).count
+            guard markers != seen else { return }
+            seen = markers
+            guard let reach = escapedReach(registers, addressTaken: addressTaken) else { return }
+            forgetFrame(in: &registers, where: reach)
+        }
+    }
+
+    /// Whether an escaped address may reach `bytes` at a frame offset; nil
+    /// when nothing has escaped.
+    private static func escapedReach(_ registers: State, addressTaken: [Int64]) -> ((Int64, Int64) -> Bool)? {
+        let everything = registers[frameEscapeAllKey] != nil
+        var regions: [(start: Int64, end: Int64)] = []
+        for key in registers.keys {
+            if key.hasPrefix(frameEscapePrefix), let start = Int64(key.dropFirst(frameEscapePrefix.count)) {
+                regions.append((start, start >= 0 ? Int64.max : (addressTaken.first { $0 > start } ?? 0)))
+            } else if key.hasPrefix(frameBelowPrefix), let end = Int64(key.dropFirst(frameBelowPrefix.count)) {
+                regions.append((Int64.min, end))
+            }
+        }
+        guard everything || !regions.isEmpty else { return nil }
+        return { offset, bytes in
+            everything || regions.contains { $0.start < offset &+ bytes && offset < $0.end }
+        }
+    }
+
+    /// Forget the frame facts for which `reaches(offset, bytes)` holds. A
+    /// forgotten frame address is still in memory: it escapes.
+    private static func forgetFrame(in registers: inout State, where reaches: (Int64, Int64) -> Bool) {
+        var lost: [AbstractValue] = []
+        for key in Array(registers.keys) {
+            guard let offset = stackOffset(from: key) else { continue }
+            let bytes: Int64 = if case .immediate(let width)? = registers[stackWidthKey(offset)] {
+                Int64(clamping: width)
+            } else { 8 }
+            guard reaches(offset, bytes) else { continue }
+            if let value = registers[key] { lost.append(value) }
+            registers[key] = nil
+            registers[stackWidthKey(offset)] = nil
+            registers[outgoingKey(offset)] = nil
+        }
+        for value in lost { markFrameEscape(value, into: &registers) }
+    }
+
+    /// Entry-provenance pointers: computed before this frame existed, so no
+    /// store through one reaches it.
+    private static func predatesFrame(_ value: AbstractValue?) -> Bool {
+        switch value {
+        case .argument?, .argumentField?, .selfPointer?, .selfField?, .indirectResultPointer?,
+             .indirectResultField?, .asyncContext?, .asyncCalleeContext?:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// A memory write's effect on frame facts, before the write is applied.
+    /// A frame address stored anywhere but an exactly tracked frame slot
+    /// escapes. A write whose frame extent the tracer cannot bound forgets
+    /// what it may reach; a write through a pointer of unknown origin forgets
+    /// every escaped region. Exact `str`/`stp`-family stores to a frame slot
+    /// are left to `apply`, which models them.
+    /// Returns whether a register operand read as a value held a frame
+    /// address (the caller checks that the result kept it).
+    private func noteFrameMemoryWrite(_ insn: Instruction, into registers: inout State, addressTaken: [Int64]) -> Bool {
+        guard let detail = insn.detail else { return false }
+        var memory: (base: PhysReg?, index: PhysReg?, displacement: Int64)?
+        for info in detail.operands {
+            if case .memory(let base, let index, let displacement) = info.operand {
+                memory = (base, index, detail.postIndex ? 0 : displacement)
+            }
+        }
+        // Register operands only: a memory operand's base and index are
+        // addresses, carried inside it.
+        let valueInputs = detail.operands.compactMap { info -> AbstractValue? in
+            guard let register = info.operand.register, register.kind != .zero, info.isRead || info.access == 0
+            else { return nil }
+            return registers[register.key]
+        }
+        let readsFrame = valueInputs.contains(where: Self.containsFrame)
+        guard let memory, !Self.readOnlyMemoryIDs.contains(detail.id.rawValue) else { return readsFrame }
+        let target = memoryTarget(detail, in: registers)
+        let modelledSlot: Bool = if case .stackSlot? = target {
+            Self.modelledStackStoreIDs.contains(detail.id.rawValue)
+        } else { false }
+        // A tracked slot keeps a stored frame address in view, unless the
+        // slot itself is reachable through an escaped address.
+        var tracked = false
+        if modelledSlot, case .stackSlot(let key)? = target, let start = Self.stackOffset(from: key) {
+            let bytes = Int64(Self.accessBytes(detail) ?? 8)
+            tracked = !(Self.escapedReach(registers, addressTaken: addressTaken)?(start, bytes) ?? false)
+        }
+        if !tracked {
+            for value in valueInputs { Self.markFrameEscape(value, into: &registers) }
+        }
+        switch target {
+        case .stackSlot(let key)?:
+            guard !modelledSlot, let start = Self.stackOffset(from: key) else { break }
+            let bytes = Self.accessBytes(detail).map(Int64.init)
+            Self.forgetFrame(in: &registers) { offset, width in
+                offset &+ width > start && (bytes.map { offset < start &+ $0 } ?? true)
+            }
+        case .absolute?, .selfField?, .vtableMethod?, .arrayElement?, .resultSlot?, .asyncSlot?, .asyncCalleeSlot?:
+            break
+        case nil:
+            let base = memory.base.flatMap { registers[$0.key] }
+            let indexed = memory.index != nil
+            if let base, Self.containsFrame(base) {
+                // Inside a dynamic allocation below k, a write at a constant
+                // displacement stays below k plus its extent.
+                if !indexed, let allocation = Self.allocationBase(base),
+                   registers[Self.frameDynamicPrefix + String(allocation)] != nil,
+                   let bytes = Self.accessBytes(detail) {
+                    let limit = allocation &+ max(memory.displacement, 0) &+ Int64(bytes)
+                    Self.forgetFrame(in: &registers) { offset, _ in offset < limit }
+                } else {
+                    Self.forgetFrame(in: &registers) { _, _ in true }
+                }
+            } else if !(Self.predatesFrame(base) && !indexed) {
+                Self.forgetEscapedFrame(in: &registers, addressTaken: addressTaken)
+            }
+        }
+        return false
+    }
+
+    /// The stores `apply` writes into a frame slot exactly.
+    private static let modelledStackStoreIDs: Set<UInt32> = Set([
+        AARCH64_INS_STR, AARCH64_INS_STUR, AARCH64_INS_STRB, AARCH64_INS_STURB,
+        AARCH64_INS_STRH, AARCH64_INS_STURH, AARCH64_INS_STP, AARCH64_INS_STNP,
+    ].map(\.rawValue))
 
     /// Apply a writeback/post-index memory operand's effect on its base register.
     /// `writeback`/`postIndex` are flags from the decoder — the old path sniffed

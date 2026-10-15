@@ -8,13 +8,15 @@ delete items from this file as they ship.
 
 ## Current session (2026-10-15)
 
-Swift error exits are classified per exit (see the readiness entry
-"2026-10-15: Swift error exits"): `f2587e2` (per-exit preservation,
-refactor) and the soundness commit after it. Enforcing suite: 688 tests.
-The IR plan is in [docs/IR.md](docs/IR.md). Next, in order: the escaped
-stack facts across unknown calls (`cacheEscape`, fixture
-`stackcalleffects.swift` and `async_call_effects.s`, still untracked),
-then IR steps 1–3.
+Swift error exits are classified per exit (readiness entry "2026-10-15:
+Swift error exits"), and frame slots reachable through escaped addresses
+are forgotten at later calls and unknown stores ("2026-10-15: frame slots
+reachable through escaped addresses"). Enforcing suite: 692 tests. The IR
+plan is in [docs/IR.md](docs/IR.md). Next: the objdump stub-name
+divergence and the `()` arity rendering (both OPEN in that entry), async
+context facts across unknown calls (`async_call_effects.s`, still
+untracked, with the 2026-10-13 proposal under
+`work/session-memory/integrated-call-proposal`), then IR steps 1–3.
 
 ## Soundness development session (2026-10-13)
 

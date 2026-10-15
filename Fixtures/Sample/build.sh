@@ -104,6 +104,14 @@ $CLANG -arch arm64 -dynamiclib async_memory_effects.s -o libAsyncMemoryEffects.d
 echo "==> explicit Swift error/value exit proofs (error_exit_controls.s)"
 $CLANG -arch arm64 -dynamiclib error_exit_controls.s -o libErrorExitControls.dylib
 
+echo "==> frame slots reachable through escaped addresses (frame_escape_controls.s)"
+$CLANG -arch arm64 -dynamiclib frame_escape_controls.s -o libFrameEscapeControls.dylib
+
+echo "==> a stack address exported to a global, then written by a call (stackcalleffects.swift, -Onone/-O/-Osize)"
+$SWIFTC -parse-as-library -Onone -g -emit-library -module-name StackCallEffects stackcalleffects.swift -o libStackCallEffects.dylib
+$SWIFTC -parse-as-library -O -emit-library -module-name StackCallEffects stackcalleffects.swift -o libStackCallEffects.opt.dylib
+$SWIFTC -parse-as-library -Osize -emit-library -module-name StackCallEffects stackcalleffects.swift -o libStackCallEffects.osize.dylib
+
 echo "==> hardened jump-table bounds (jump_table_bounds.s) — index widths and call-clobbered NZCV"
 $CLANG -arch arm64 -dynamiclib jump_table_bounds.s -o libJumpTableBounds.dylib
 

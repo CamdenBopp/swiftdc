@@ -2781,3 +2781,80 @@ if a test was observed to fail without the fix.
   They cannot throw, but the signature reads `throws(B)` and the indirect
   callee may write x21. Recognising a `Never` error type from the
   specialization's substitution list would recover them.
+
+## 2026-10-15: frame slots reachable through escaped addresses
+
+- **FIXED — a frame slot kept its value across writes through an escaped
+  address.** `StackCallEffects.cacheEscape` at -O and -Osize stores a stack
+  address to a global, writes 7 through it, and calls a helper that writes
+  11 through the global; native execution returns 11 for every seed, and
+  the source view said `return 7`. The tracer forgot a slot only while its
+  address sat in an argument register at that very call, and a store
+  through an unknown pointer forgot nothing. Ten authored reductions in
+  `frame_escape_controls.s` rendered `return 7` against native 11 (or 0):
+  escape through an earlier call, through an outgoing stack argument, on
+  one path of a join (before or at it), through a global reloaded as an
+  unknown pointer, an indexed frame store, an `st1` into a slot, a
+  bit-reversed address, a pointer read back through an alias, a pointer
+  dropped at a join, and a write to the second word of an escaped local.
+
+  The tracer now keeps MAY markers of escaped frame regions, unioned at
+  joins and never cleared. A frame address escapes when it reaches a call
+  (x0–x8, x20, outgoing slots), is stored anywhere but an exactly tracked
+  frame slot (or into a slot that has itself escaped), is transformed
+  beyond the tracer's arithmetic, or is dropped from a slot or a join while
+  it is still in memory or a register. Every call except the exactly
+  modelled memory helpers and read-only projections, and every store
+  through a pointer that does not predate the frame, forgets the escaped
+  regions; a forgotten slot that held a frame address escapes that address
+  too. Stores the tracer cannot bound (indexed, unmodelled store opcodes)
+  forget what they may reach. A region runs from the escaped address to the
+  next address-taken local, as before; an address into a dynamic
+  allocation reaches only below the frame offset it was carved from.
+
+  Blast radius: 6 of 196 fixture views change, all in the new reductions
+  and `cacheEscape` (-O, -Osize: `return 7` becomes `return ?`). Every
+  other fixture view is byte-identical, including every Onone spill and
+  reload the blanket "forget memory at every call" proposal of
+  2026-10-13 lost. On Clarc (13,861 functions, `disasm --pseudo`), 142
+  functions change, all from dynamic allocation (20 of 20 sampled): an
+  allocation sized from runtime metadata makes `frame(k) - size` an
+  unknown value, so the lost-provenance rule escapes the whole frame and
+  later calls forget the fixed frame's spills (mostly metadata accessor
+  results reused as call arguments). Release A/B on Clarc, alternating,
+  three rounds: 33.40 s against 34.32 s median (+2.8%); peak footprint
+  59.4 MB against 58.4 MB (noise).
+
+  Reproduce: `swiftdc disasm Fixtures/Sample/libStackCallEffects.opt.dylib
+  --structured -f cacheEscape`.
+
+  Verified: `FrameEscapeTests` runs every reduction natively (23
+  executions) and checks both views of all 17 plus `cacheEscape` on the array,
+  filtered and streamed paths. Twenty-one mutations, each seen red: the
+  call's register and outgoing-slot escapes, the call's forgetting and its
+  helper exemption (full suite), the store escape, escapes into escaped
+  slots, the forget-escape fixpoint, join union and dropped values,
+  unknown-pointer stores, entry-provenance pointers in both directions,
+  unbounded and unmodelled frame stores, lost provenance, the dynamic
+  allocation marker, its region and its store bound, the escaped region's
+  extent, the whole-frame marker, and read-only loads. Enforcing suite:
+  692 tests in 11 suites.
+
+- **OPEN — dynamic allocations sized from runtime metadata forget the
+  fixed frame.** `frame(k) - unknown` collapses to an unknown value, so
+  the block's address loses its provenance and escapes the whole frame
+  (142 Clarc functions). Keeping frame provenance alongside an unknown
+  value is the shared memory model's job ([IR.md](IR.md) step 4).
+
+- **OPEN — empty argument lists read as "no arguments".** When every
+  positional value of a signatureless callee becomes unknown, the trimmed
+  list renders `swift_arrayInitWithTakeBackToFront()` where the call takes
+  four. The escape fix makes this more frequent in Clarc. A call whose
+  arity is unproven should say so instead of printing `()`.
+
+- **OPEN — the objdump path strips every leading underscore from stub
+  names.** `calleeName(of:)` turns `___stack_chk_fail` into
+  `stack_chk_fail` where the in-process paths say `__stack_chk_fail`; the
+  unrecognised name then renders `stack_chk_fail(r0)` at -Onone, an
+  argument the C function does not take, and the array, filtered and
+  streamed views of `cacheEscape` differ.
