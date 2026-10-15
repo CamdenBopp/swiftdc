@@ -1455,15 +1455,27 @@ public struct ValueTracer: Sendable {
         // it escapes. Copies (`.outgoing`), widths and the awaited callee's
         // parent header are not places this function keeps its pointers.
         var dropped: [AbstractValue] = []
+        var unsizedSlots: [Int64] = []
         for state in states {
             for (key, value) in state {
                 if isEscapeMarker(key) {
                     accumulator[key] = value
-                } else if holdsValue(key), accumulator[key] != value, containsFrame(value) || containsContext(value) {
-                    dropped.append(value)
+                } else if accumulator[key] != value {
+                    if case .stackWidth(let offset) = key {
+                        unsizedSlots.append(offset)
+                    } else if holdsValue(key), containsFrame(value) || containsContext(value) {
+                        dropped.append(value)
+                    }
                 }
             }
         }
+        // A slot is known only at the width stored to it. Where the paths
+        // stored different widths, the bytes beyond the narrower store are
+        // whatever was there before: a value the paths agree on, read at the
+        // wider width, claimed bytes one path never wrote. (A value equal at
+        // two widths is unchanged by narrowing, which no address is, so no
+        // pointer is lost here.)
+        for offset in unsizedSlots { accumulator[.stack(offset)] = nil }
         for value in dropped { markEscape(value, into: &accumulator) }
         return accumulator
     }

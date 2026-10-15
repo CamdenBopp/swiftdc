@@ -38,3 +38,42 @@ _movk_constant:
   mov x0, #0x50000
   movk x0, #7
   ret
+
+// A frame slot stored as eight bytes on one path and four on the other,
+// then read as eight. The branch tests a value the tracer does not model
+// (rbit), so the join forms no select. True result: 1 when x1 != 0, else
+// 0xffffffff00000001 (the upper half is the earlier store's).
+.globl _slot_width_join
+_slot_width_join:
+  sub sp, sp, #16
+  mov x9, #-1
+  str x9, [sp]
+  mov x8, #1
+  rbit x10, x1
+  cbz x10, 1f
+  str x8, [sp]
+  b 2f
+1:
+  str w8, [sp]
+2:
+  ldr x0, [sp]
+  add sp, sp, #16
+  ret
+
+// Control: both paths store eight bytes. True result: 1.
+.globl _slot_width_agree
+_slot_width_agree:
+  sub sp, sp, #16
+  mov x9, #-1
+  str x9, [sp]
+  mov x8, #1
+  rbit x10, x1
+  cbz x10, 1f
+  str x8, [sp]
+  b 2f
+1:
+  str x8, [sp]
+2:
+  ldr x0, [sp]
+  add sp, sp, #16
+  ret

@@ -3137,3 +3137,16 @@ if a test was observed to fail without the fix.
   GoodLinks changes at five call sites, four zero-filled words now `?` and
   one a select of the two words the paths build, top field included;
   `libswift_RegexParser` (arm64e) is unchanged.
+
+- **FIXED (soundness): a join kept a frame slot's value after dropping its
+  width.** Where one path stored a slot as eight bytes and another as four,
+  the predecessors agreed on the value (a small constant is the same at
+  both widths) but not on the width, and the meet dropped only the width.
+  A later eight-byte load read the slot with no width check and claimed
+  the value, though on the narrow path the upper four bytes are the
+  earlier store's: `slot_width_join` rendered `return 1` where native
+  execution returns 0xffffffff00000001 on that path. A diamond whose
+  condition is recoverable was safe by accident (its select pass turned
+  the width into a `select`, which the load rejects); a branch on an
+  unmodelled value forms no select. The meet now drops a slot whose widths
+  disagree. No fixture view, Clarc line or GoodLinks line changes.

@@ -7,7 +7,7 @@ private let partialWriteFixture = "Fixtures/Sample/libPartialWrites.dylib"
 
 /// Probes whose result the tracer must claim; the rest may decline.
 private let claimingProbes: Set<String> = [
-    "movk_argument_low", "movk_argument_high", "movk_argument_w", "movk_constant",
+    "movk_argument_low", "movk_argument_high", "movk_argument_w", "movk_constant", "slot_width_agree",
 ]
 
 /// Each probe replaces part of a value. Whatever the tracer claims at the
@@ -17,7 +17,7 @@ private let claimingProbes: Set<String> = [
     let handle = try #require(dlopen(partialWriteFixture, RTLD_NOW | RTLD_LOCAL))
     defer { dlclose(handle) }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: partialWriteFixture) }
-    #expect(functions.count == 5)
+    #expect(functions.count == 7)
     let edges: [UInt64] = [0, 1, 0xffff, 0x10000, UInt64(UInt32.max), 1 << 32,
                            0x0123456789abcdef, 0xfedcba9876543210, 1 << 63, .max]
     for function in functions {
