@@ -2846,11 +2846,15 @@ if a test was observed to fail without the fix.
   (142 Clarc functions). Keeping frame provenance alongside an unknown
   value is the shared memory model's job ([IR.md](IR.md) step 4).
 
-- **OPEN — empty argument lists read as "no arguments".** When every
+- **MITIGATED — empty argument lists read as "no arguments".** When every
   positional value of a signatureless callee becomes unknown, the trimmed
   list renders `swift_arrayInitWithTakeBackToFront()` where the call takes
-  four. The escape fix makes this more frequent in Clarc. A call whose
-  arity is unproven should say so instead of printing `()`.
+  four. The escape fix makes this more frequent in Clarc. A call of known C
+  arity now shows exactly its parameters (see "2026-10-15: known C
+  arities", below). A call whose arity is unproven still prints its
+  trimmed positional values, `()` when none is known; the body-read bound
+  is too loose to pad (any inner call counts as reading all eight
+  registers).
 
 - **FIXED — the objdump path stripped every leading underscore from
   callee names.** `calleeName(of:)` turned `___stack_chk_fail` into
@@ -2986,3 +2990,30 @@ if a test was observed to fail without the fix.
   Verified: `aCappedLoopBodyPassClaimsNothingForItsLoopIfPresent` fails
   with four issues when the old `break` is restored and passes with the fix.
   Enforcing suite: 697 tests in 11 suites.
+
+
+## 2026-10-15: known C arities
+
+- **FIXED — calls of known C arity printed their trimmed operands.**
+  Positional arguments drop trailing unknowns, so a runtime call whose
+  operands were all unknown read as a call that takes nothing
+  (`swift_errorRelease()`, `memcpy()`), and one with stale later registers
+  read as taking more (`memset(local_38, 0, 40, arg3, arg4)` in
+  ABISource.ABIFiveWords.init). A callee in `knownCArity` now gets exactly
+  its parameters, unknown ones as `?`, the way a proven Swift layout does.
+  The table gains `memcpy`/`memmove`/`memset` and, from
+  swift/include/swift/Runtime/RuntimeFunctions.def, `swift_arrayDestroy`,
+  the three `swift_arrayInitWith…` helpers and
+  `swift_unknownObjectWeakLoadStrong`.
+
+  Blast radius: 10 of 196 fixture views (`swift_errorRelease(?)` in
+  SwiftErrorProbe and its twin and Reconstruction, the `memset` above in
+  ABISource); on the objdump-backed outputs, 68 of 196 listing/JSON files,
+  where runtime calls gain `args(?)`. Clarc `--pseudo`: 313
+  `swift_errorRelease(?)`, 264 `memcpy(?, ?, ?)`, 127
+  `swift_unknownObjectWeakLoadStrong(?)`, 94 `memmove`, 79 array helpers
+  gain their fourth `?`.
+
+  Verified: `KnownArityTests` (two tests) fail with two issues when the
+  layout is removed and with two when `memset` leaves the table; enforcing
+  suite 699 tests in 11 suites.

@@ -3615,6 +3615,16 @@ public struct Disassembler: Sendable {
                 strategy = "swift-signature"
                 continue
             }
+            // A runtime entry point of known C arity takes exactly its
+            // parameters, unknown ones as `?`: with the trailing trim,
+            // `memcpy` whose operands were all unknown read `memcpy()`, a
+            // call that takes nothing.
+            if let callee = calleeByAddress[address], let arity = DisassembledFunction.knownCArity(of: callee),
+               callee != "swift_willThrow" {
+                argumentsByAddress[address] = (0..<arity).map { $0 < values.count ? sanitizeValue(values[$0]) : .unknown }
+                strategy = "c-arity"
+                continue
+            }
             // A C printf-family call passes its variadic arguments on the stack
             // (Apple arm64), one 8-byte slot each, in format order: x1 at the
             // call is scratch. `printf("%ld\n", x)` rendered `printf(0x534)`,

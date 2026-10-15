@@ -593,14 +593,19 @@ public extension DisassembledFunction {
              "swift_task_alloc", "swift_task_dealloc",
              // swift/include/swift/Runtime/HeapObject.h: one object each.
              "swift_retain", "swift_release", "swift_bridgeObjectRetain", "swift_bridgeObjectRelease",
-             "swift_unknownObjectRetain", "swift_unknownObjectRelease", "swift_errorRetain", "swift_errorRelease":
+             "swift_unknownObjectRetain", "swift_unknownObjectRelease", "swift_errorRetain", "swift_errorRelease",
+             "swift_unknownObjectWeakLoadStrong":
             return 1
         case "objc_opt_isKindOfClass", "objc_opt_respondsToSelector",
              "objc_storeStrong", "objc_storeWeak", "objc_initWeak",
              "objc_loadWeakRetained", "os_log_type_enabled", "objc_sync_wait":
             return 2
-        case "objc_copyWeak", "objc_moveWeak":
+        case "objc_copyWeak", "objc_moveWeak", "memcpy", "memmove", "memset",
+             // swift/include/swift/Runtime/RuntimeFunctions.def
+             "swift_arrayDestroy":
             return 3
+        case "swift_arrayInitWithCopy", "swift_arrayInitWithTakeFrontToBack", "swift_arrayInitWithTakeBackToFront":
+            return 4
         default:
             // The formatted-emit os_log helpers: (dso, log, type, format, buf, size).
             if callee.hasPrefix("_os_log"), callee.hasSuffix("_impl") { return 6 }
