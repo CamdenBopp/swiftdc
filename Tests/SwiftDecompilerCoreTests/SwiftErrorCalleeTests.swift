@@ -68,6 +68,29 @@ private func decoded(
     #expect(!unnamed.contains("w0"), "\(unnamed)")
 }
 
+/// A callee named ` throws` redefines x21 whatever the caller armed it
+/// with. Armed with a saved value rather than zero, only the name says the
+/// post-call x21 is the callee's error; no test failed with the rule
+/// removed.
+@Test func aCalleeNamedThrowsRedefinesX21ArmedWithASavedValue() throws {
+    //   bl  g            g's result
+    //   mov x19, x0
+    //   mov x21, x19     arm swifterror with the saved value
+    //   bl  f
+    //   mov x0, x21
+    //   ret
+    let words: [UInt32] = [0x94000010, 0xaa0003f3, 0xaa1303f5, 0x9400000d, 0xaa1503e0, 0xd65f03c0]
+    let throwing = try #require(decoded(words, at: 0, annotations: [0x0c: "M.f() throws -> ()"]))
+    #expect(throwing.instructions.map(\.text) == [
+        "bl\t0x40", "mov\tx19, x0", "mov\tx21, x19", "bl\t0x40", "mov\tx0, x21", "ret",
+    ])
+    #expect(ValueTracer().analyze(throwing).exitValues[0x14] == nil)
+    // A callee that does not throw preserves x21, so the armed value is
+    // still there: the case above is decided by the name alone.
+    let nonThrowing = try #require(decoded(words, at: 0, annotations: [0x0c: "M.f() -> ()"]))
+    #expect(ValueTracer().analyze(nonThrowing).exitValues[0x14] == .callResult(0))
+}
+
 @Test func onlyCLevelSymbolsAndNonThrowingSignaturesProvablyDoNotThrow() {
     for callee in ["memset", "objc_msgSend", "swift_retain",
                    "M.f(Swift.Int) -> Swift.Int",
