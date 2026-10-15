@@ -6,7 +6,17 @@ thread. This is **tier-5 (conversation-memory) authority** per
 git history, and measurements. Verify each claim against HEAD before acting, and
 delete items from this file as they ship.
 
-## Current soundness development session (2026-10-13)
+## Current session (2026-10-15)
+
+Swift error exits are classified per exit (see the readiness entry
+"2026-10-15: Swift error exits"): `f2587e2` (per-exit preservation,
+refactor) and the soundness commit after it. Enforcing suite: 688 tests.
+The IR plan is in [docs/IR.md](docs/IR.md). Next, in order: the escaped
+stack facts across unknown calls (`cacheEscape`, fixture
+`stackcalleffects.swift` and `async_call_effects.s`, still untracked),
+then IR steps 1–3.
+
+## Soundness development session (2026-10-13)
 
 Baseline `9910115`; eight coherent corrections (latest known unknown argument footprint) are committed on
 local `dev`. The freshly rebuilt enforcing suite passes **677 tests** in eleven

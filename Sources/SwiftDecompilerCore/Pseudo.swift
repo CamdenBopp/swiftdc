@@ -5,6 +5,12 @@ import Foundation
 /// bookkeeping hidden. Not a structured decompiler — it surfaces the useful
 /// statements that the CFG + value-tracking already recover.
 public extension DisassembledFunction {
+    /// A throwing function's exit not proven to be a return or a throw.
+    static let unresolvedSwiftExitNote = "swift-exit=unknown"
+    static let unresolvedSwiftExitStatement = "machine_return() /* unresolved Swift success/error exit */"
+    /// A throwing function's exit proven normal that has no value to print.
+    static let normalSwiftExitNote = "swift-exit=normal"
+
     func renderPseudo(hideRuntime: Bool = true) -> String {
         Probe.inFunction(startAddress, displayName) {
             Probe.timed(.renderTime) {
@@ -22,7 +28,10 @@ public extension DisassembledFunction {
         var statements: [String] = []
         for insn in instructions {
             let recovered = Self.pseudoStatement(of: insn, hideRuntime: hideRuntime)
-            let fallback = insn.controlFlow == .return && hasProvenMachineValueReturn ? "return ?" : nil
+            let fallback: String? = if insn.controlFlow != .return { nil }
+                else if Self.splitSignature(analysisDisplayName)?.isThrowing == true { Self.unresolvedSwiftExitStatement }
+                else if hasProvenMachineValueReturn { "return ?" }
+                else { nil }
             guard let statement = recovered ?? fallback else { continue }
             statements += statement.components(separatedBy: "\n")
         }
@@ -54,6 +63,10 @@ public extension DisassembledFunction {
             return pseudoStatement(of: base, hideRuntime: hideRuntime).map { "\($0)\nthrow ?" } ?? "throw ?"
         }
         if insn.isTrap { return "trap()" }
+        if let notes = insn.annotation?.components(separatedBy: "  ") {
+            if notes.contains(Self.unresolvedSwiftExitNote) { return Self.unresolvedSwiftExitStatement }
+            if notes.contains(Self.normalSwiftExitNote) { return "return" }
+        }
         if let annotation = insn.annotation {
             let semantic = annotation.components(separatedBy: "  ")
                 .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -413,7 +426,7 @@ public extension DisassembledFunction {
         guard let annotation else { return nil }
         let base = stripNotes(annotation)
         if base.isEmpty || base.hasPrefix("args(") || base.hasPrefix("self=") || base.hasPrefix("→")
-            || base.hasPrefix("await=") || base.hasPrefix(indirectJumpNote) {
+            || base.hasPrefix("await=") || base.hasPrefix(indirectJumpNote) || base.hasPrefix("swift-exit=") {
             return nil
         }
         return base

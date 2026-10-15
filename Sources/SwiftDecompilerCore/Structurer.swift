@@ -92,7 +92,7 @@ public extension DisassembledFunction {
     /// their proven ResumeParent transfer instead; Never has no normal result.
     var hasProvenMachineValueReturn: Bool {
         if let signature = Self.splitSignature(analysisDisplayName) {
-            if signature.isAsync || signature.result == "Swift.Never" || signature.result == "Never" { return false }
+            if signature.isAsync || signature.isThrowing || signature.result == "Swift.Never" || signature.result == "Never" { return false }
         }
         return Self.signatureReturnsValue(displayName: analysisDisplayName, objcSignature: objcMethod?.signature)
     }
@@ -138,6 +138,7 @@ struct ControlFlowStructure {
     private let objectiveCArguments: Bool
     let maxDepth: Int                          // recursion-depth guard (see emit)
     private let usesSwiftError: Bool           // x21 is the error register here
+    private let isThrowing: Bool               // the signature says `throws`
 
     init(blocks: [BasicBlock], objectiveCArguments: Bool = false, maxDepth: Int = ControlFlowStructure.defaultMaxDepth, isThrowing: Bool = false, returnsValue: Bool = false) {
         self.returnsValue = returnsValue
@@ -168,6 +169,7 @@ struct ControlFlowStructure {
         // threads swifterror even if it coincidentally clears-and-tests x21.
         self.usesSwiftError = !objectiveCArguments && (isThrowing
             || (Self.clearsSwiftErrorRegister(blocks) && Self.testsSwiftErrorRegister(blocks)))
+        self.isThrowing = !objectiveCArguments && isThrowing
         var indexByAddress: [UInt64: Int] = [:]
         for (index, block) in blocks.enumerated() { indexByAddress[block.startAddress] = index }
         self.indexByAddress = indexByAddress
@@ -504,7 +506,7 @@ struct ControlFlowStructure {
                 if let statement = DisassembledFunction.pseudoStatement(of: insn, hideRuntime: true) {
                     for line in statement.components(separatedBy: "\n") {
                         lines.append("\(pad)\(line)")
-                        emittedReturn = emittedReturn || line.hasPrefix("return ") || line.hasPrefix("throw ")
+                        emittedReturn = emittedReturn || line == "return" || line.hasPrefix("return ") || line.hasPrefix("throw ") || line.hasPrefix("machine_return()")
                     }
                 }
             }
@@ -1351,14 +1353,16 @@ struct ControlFlowStructure {
     /// - An unrecognisable signature (`sub_<addr>`, a thunk, a witness accessor)
     ///   keeps the bare form. Claiming a value exists would be a fabrication of
     ///   exactly the kind the `?` convention is meant to avoid.
-    /// - A function that threads swifterror keeps it too. Its error exit really
-    ///   does yield no value — the result travels in x21 — and this is a
-    ///   per-function fact, so the two exits cannot be told apart here. Printing
-    ///   `return ?` on a throw path would assert a missing value that was never
-    ///   there. Where such a function's normal exit IS recovered it already
-    ///   prints `return <expr>`, so the cost of declining is small.
+    /// - A throwing function's exit not classified by enrichment is neither a
+    ///   return nor a throw here: `machine_return()`. Its error exit yields no
+    ///   value (the error travels in x21), so `return ?` would assert a value on
+    ///   a throw path, and a bare `return` would assert success.
+    /// - A function that catches a callee's error (clears and tests x21) but
+    ///   does not throw keeps the bare form. Its exits are returns; whether
+    ///   one carries a value is not proven here.
     private var valuelessReturn: String {
-        returnsValue && !usesSwiftError ? "return ?" : "return"
+        if isThrowing { return DisassembledFunction.unresolvedSwiftExitStatement }
+        return returnsValue && !usesSwiftError ? "return ?" : "return"
     }
 
     private static func decode(_ text: String) -> (String, [String]) {

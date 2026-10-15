@@ -3403,6 +3403,12 @@ public struct Disassembler: Sendable {
             if trackReturnRendering { unknownRenderCount += 1 }
             return "?"
         }
+        // Naming an indirect target does not replay the earlier dataflow graph.
+        // Keep the original machine transfers for exit-proof completeness.
+        let originalIndirectExitTransfers = Set(function.instructions.compactMap { instruction -> UInt64? in
+            instruction.controlFlow == .branch && instruction.branchTarget == nil
+                && function.switchTargets[instruction.address] == nil ? instruction.address : nil
+        })
         let function = annotateIndirectControlFlowTargets(
             in: function, targets: analysis.indirectControlFlowTargets,
             resolver: resolver, selfTypeName: selfTypeName, vtableIndex: vtableIndex
@@ -3501,6 +3507,7 @@ public struct Disassembler: Sendable {
                 || !analysis.exitValues.isEmpty || !analysis.exitFloatValues.isEmpty
                 || !analysis.exitIndirectResults.isEmpty
                 || !analysis.loopInitializations.isEmpty
+                || DisassembledFunction.splitSignature(function.analysisDisplayName)?.isThrowing == true
                 || function.instructions.contains(where: { $0.controlFlow == .branch && $0.branchTarget == nil })
         else {
             // No facts is still an observed unknown result, not an absent exit.
@@ -4751,6 +4758,7 @@ public struct Disassembler: Sendable {
         // the exit is reached only through the non-zero edge of `cbz`/`cbnz
         // x20` with nothing writing x20 since. Both rendered as a bare
         // `return` (`if (x20 == 0) { return (awaited1 << 1) } else { return }`).
+        let opaqueErrorProofTransfer = originalIndirectExitTransfers.contains { !asyncReturns.contains($0) }
         let asyncThrowExits: Set<UInt64> = {
             guard throwsSignature?.isThrowing == true, !asyncReturns.isEmpty else { return [] }
             var exits = Set<UInt64>()
@@ -4825,7 +4833,7 @@ public struct Disassembler: Sendable {
         // block; when every path throws, the `ret` itself does.
         var mergedThrowEnds = Set<UInt64>()
         var mergedThrowExits = Set<UInt64>()
-        if throwsSignature?.isThrowing == true {
+        if throwsSignature?.isThrowing == true && !opaqueErrorProofTransfer {
             for (exit, paths) in analysis.exitErrorValuesByPredecessor {
                 let throwing = paths.filter { isThrownError($0.value) }.map(\.key)
                 guard !throwing.isEmpty else { continue }
@@ -4837,11 +4845,85 @@ public struct Disassembler: Sendable {
             }
         }
         let throwExits: Set<UInt64> = {
-            guard throwsSignature?.isThrowing == true else { return [] }
+            guard throwsSignature?.isThrowing == true, !opaqueErrorProofTransfer else { return [] }
             return asyncThrowExits.union(mergedThrowExits).union(analysis.exitErrorValues.compactMap { address, value in
                 isThrownError(value) ? address : nil
             })
         }()
+
+        // Which exits are proven normal (`SwiftErrorExitProof`). x21 arrives
+        // as the caller's armed zero in a synchronous function, so a path that
+        // never writes it has not thrown; an async function's x20 arrives
+        // holding self and proves nothing. Paths a merged throw already ends
+        // are not asked to be normal.
+        let errorProofBlocks = throwsSignature?.isThrowing == true && !opaqueErrorProofTransfer
+            ? function.basicBlocks() : []
+        let mergedThrowEdges: Set<CFGEdge> = {
+            guard !errorProofBlocks.isEmpty else { return [] }
+            let blockStart = Dictionary(errorProofBlocks.flatMap { block in
+                block.instructions.map { ($0.address, block.startAddress) }
+            }, uniquingKeysWith: { a, _ in a })
+            var edges = Set<CFGEdge>()
+            for (exit, paths) in analysis.exitErrorValuesByPredecessor {
+                guard let to = blockStart[exit] else { continue }
+                for end in paths.keys where mergedThrowEnds.contains(end) {
+                    edges.insert(CFGEdge(from: end, to: to))
+                }
+            }
+            return edges
+        }()
+        // x21 is callee-saved: a call keeps it unless the callee may throw or
+        // its own body does not restore it (an outlined fragment).
+        func callPreservesX21(_ call: Instruction) -> Bool {
+            if call.branchTarget.flatMap({ tracer.calleeClobbers[$0] })?.contains("x21") == true { return false }
+            return ValueTracer.provablyDoesNotThrow(DisassembledFunction.calleeName(of: call) ?? "")
+        }
+        let syncNoErrorPoints = errorProofBlocks.isEmpty ? [] : SwiftErrorExitProof.noErrorPoints(
+            blocks: errorProofBlocks, entry: function.startAddress, key: "x21",
+            entryIsNoError: throwsSignature?.isAsync != true, excluding: mergedThrowEdges,
+            callPreserves: callPreservesX21
+        )
+        // -Onone spills the incoming x21 and reloads it on the way out. The
+        // saved-register proof follows that through the frame; it holds only
+        // where every path hands the entry value back.
+        let entryX21Exits: Set<UInt64> = {
+            guard !errorProofBlocks.isEmpty, throwsSignature?.isAsync != true,
+                  let exits = Preservation.entryValuesAtExits(
+                      blocks: errorProofBlocks, entry: function.startAddress,
+                      addresses: Set(function.instructions.map(\.address)), excluding: mergedThrowEdges,
+                      callClobbers: { call in
+                          var clobbered = call.branchTarget.flatMap { tracer.calleeClobbers[$0] } ?? []
+                          if !callPreservesX21(call) { clobbered.insert("x21") }
+                          return clobbered
+                      })
+            else { return [] }
+            // The saved-register proof follows only paths from the entry; an
+            // exit some other way reaches is not covered by it.
+            let modelled = SwiftErrorExitProof.modelledBlocks(blocks: errorProofBlocks, entry: function.startAddress)
+            let blockOf = Dictionary(errorProofBlocks.flatMap { block in
+                block.instructions.map { ($0.address, block.startAddress) }
+            }, uniquingKeysWith: { a, _ in a })
+            return Set(exits.filter { exit, preserved in
+                preserved.contains("x21") && blockOf[exit].map(modelled.contains) == true
+            }.keys)
+        }()
+        let asyncNoErrorPoints = errorProofBlocks.isEmpty || asyncReturns.isEmpty ? [] : SwiftErrorExitProof.noErrorPoints(
+            blocks: errorProofBlocks, entry: function.startAddress, key: "x20", entryIsNoError: false
+        ) { call in
+            call.branchTarget.flatMap { tracer.calleeClobbers[$0] }?.contains("x20") != true
+        }
+
+        func normalReturnIsProven(at address: UInt64) -> Bool {
+            guard throwsSignature?.isThrowing == true else { return true }
+            if opaqueErrorProofTransfer { return false }
+            if asyncReturns.contains(address) {
+                return analysis.exitAsyncErrorValues[address] == .immediate(0) || asyncNoErrorPoints.contains(address)
+            }
+            if analysis.exitErrorValues[address] == .immediate(0) { return true }
+            if let paths = analysis.exitErrorValuesByPredecessor[address], !paths.isEmpty,
+               paths.values.allSatisfy({ $0 == .immediate(0) }) { return true }
+            return syncNoErrorPoints.contains(address) || entryX21Exits.contains(address)
+        }
 
         // Which calls' indirect results are read back by word anywhere that
         // renders: a return value, a call argument, a condition, a field store,
@@ -4866,15 +4948,15 @@ public struct Disassembler: Sendable {
             }
         }
         var wordSites = Set<UInt64>()
-        for value in analysis.exitValues.values where returnsDirectly { collectWordSites(in: value, into: &wordSites) }
-        for value in analysis.exitFloatValues.values where returnsDirectly { collectWordSites(in: value, into: &wordSites) }
+        for (address, value) in analysis.exitValues where returnsDirectly && normalReturnIsProven(at: address) { collectWordSites(in: value, into: &wordSites) }
+        for (address, value) in analysis.exitFloatValues where returnsDirectly && normalReturnIsProven(at: address) { collectWordSites(in: value, into: &wordSites) }
         for value in analysis.branchConditions.values { collectWordSites(in: value, into: &wordSites) }
         for values in argumentsByAddress.values { for value in values { collectWordSites(in: value, into: &wordSites) } }
         for access in analysis.selfFieldAccesses.values {
             if let value = access.storedValue { collectWordSites(in: value, into: &wordSites) }
             for value in access.storedValues ?? [] { collectWordSites(in: value, into: &wordSites) }
         }
-        for exit in analysis.exitIndirectResults.values where !returnsDirectly && !exit.poisoned {
+        for (address, exit) in analysis.exitIndirectResults where !returnsDirectly && !exit.poisoned && normalReturnIsProven(at: address) {
             // Words that reassemble one whole call result render as that call,
             // not field by field, so they bind nothing.
             guard exit.whole == nil, wholeCallResult(from: exit.stores) == nil else { continue }
@@ -4922,12 +5004,12 @@ public struct Disassembler: Sendable {
         } else if function.objcMethod == nil, returnsDirectly,
                   let register = Self.swiftReturnRegister(of: function, enumCaseIndex: enumCaseIndex,
                                                           classTypeIndex: classTypeIndex) {
-            for insn in function.instructions where isReturn(insn) && !throwExits.contains(insn.address) {
+            for insn in function.instructions where isReturn(insn) && normalReturnIsProven(at: insn.address) && !throwExits.contains(insn.address) {
                 (register == .floating ? analysis.exitFloatValues : analysis.exitValues)[insn.address]
                     .map { countDirectUses($0, at: insn.address) }
             }
         }
-        for address in asyncReturns where !throwExits.contains(address) {
+        for address in asyncReturns where normalReturnIsProven(at: address) && !throwExits.contains(address) {
             let value = asyncReturnRegister == .floating ? analysis.exitFloatValues[address] : analysis.exitValues[address]
             if asyncReturnRegister != nil, let value { countDirectUses(value, at: address) }
         }
@@ -5011,6 +5093,7 @@ public struct Disassembler: Sendable {
                     collectCallResults(in: value, into: &consumedCallResults)
                 }
             } else if function.objcMethod == nil, isReturn(insn),
+                      normalReturnIsProven(at: insn.address),
                       !throwExits.contains(insn.address), returnsDirectly,
                       let returnRegister = Self.swiftReturnRegister(
                           of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
@@ -5020,14 +5103,14 @@ public struct Disassembler: Sendable {
                     ? analysis.exitFloatValues[insn.address]
                     : analysis.exitValues[insn.address]
                 if let value { collectCallResults(in: value, into: &consumedCallResults) }
-            } else if asyncReturns.contains(insn.address), !throwExits.contains(insn.address),
+            } else if asyncReturns.contains(insn.address), normalReturnIsProven(at: insn.address), !throwExits.contains(insn.address),
                       let returnRegister = asyncReturnRegister {
                 let value = returnRegister == .floating
                     ? analysis.exitFloatValues[insn.address]
                     : analysis.exitValues[insn.address]
                 if let value { collectCallResults(in: value, into: &consumedCallResults) }
             } else if function.objcMethod == nil, insn.controlFlow == .return, !returnsDirectly,
-                      let indirect = indirectReturn(at: insn.address) {
+                      normalReturnIsProven(at: insn.address), let indirect = indirectReturn(at: insn.address) {
                 // Likewise an indirect return built from a call's result (the
                 // whole buffer, or its words) consumes that call, and the memory
                 // helpers that copied or zeroed the result buffer are the return
@@ -5134,7 +5217,7 @@ public struct Disassembler: Sendable {
                 }
                 sourceNotes.append("throw \(thrown)")
             } else if function.objcMethod == nil, isReturn(insn), returnsDirectly,
-               let returnRegister = Self.swiftReturnRegister(
+               normalReturnIsProven(at: insn.address), let returnRegister = Self.swiftReturnRegister(
                    of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
                 let rawExit = returnRegister == .floating
                     ? analysis.exitFloatValues[insn.address]
@@ -5145,7 +5228,8 @@ public struct Disassembler: Sendable {
                         sourceNotes.append("return \(renderReturnValue(exit, before: insn.address))")
                     }
                 }
-            } else if function.objcMethod == nil, isReturn(insn), returnsDirectly, let returnTypeName,
+            } else if function.objcMethod == nil, isReturn(insn), returnsDirectly,
+                      normalReturnIsProven(at: insn.address), let returnTypeName,
                       case .immediate(let x0)? = analysis.exitValues[insn.address].map(sanitizeValue) {
                 // Not a proven single-register type, but a payload enum returned
                 // in x0/x1 is named by its exact byte pattern over both registers
@@ -5159,7 +5243,7 @@ public struct Disassembler: Sendable {
                 if let caseName = payloadEnumIndex.caseName(ofEnum: returnTypeName, x0: x0, x1: x1) {
                     sourceNotes.append("return \(returnTypeName).\(caseName)")
                 }
-            } else if asyncReturns.contains(insn.address), let returnRegister = asyncReturnRegister {
+            } else if asyncReturns.contains(insn.address), normalReturnIsProven(at: insn.address), let returnRegister = asyncReturnRegister {
                 let rawExit = returnRegister == .floating
                     ? analysis.exitFloatValues[insn.address]
                     : analysis.exitValues[insn.address]
@@ -5178,7 +5262,7 @@ public struct Disassembler: Sendable {
             // (an escaped pointer, a field missing on one path, a type with no
             // layout) prints nothing, and the structurer's `return ?` stands.
             if function.objcMethod == nil, insn.controlFlow == .return, !returnsDirectly,
-               let indirect = indirectReturn(at: insn.address) {
+               normalReturnIsProven(at: insn.address), let indirect = indirectReturn(at: insn.address) {
                 sourceNotes.append("return \(indirect.rendered)")
             }
 
@@ -5310,12 +5394,30 @@ public struct Disassembler: Sendable {
             // Unknown facts do not mean the source result is absent. Keep the
             // exit visible even when there were no usable tracer facts at all.
             let valueContract = function.hasProvenMachineValueReturn
+                || (throwsSignature?.isThrowing == true && normalReturnIsProven(at: insn.address)
+                    && DisassembledFunction.signatureReturnsValue(displayName: function.analysisDisplayName,
+                        objcSignature: function.objcMethod?.signature))
                 || (asyncReturns.contains(insn.address) && DisassembledFunction.signatureReturnsValue(
                     displayName: function.analysisDisplayName, objcSignature: function.objcMethod?.signature))
-            if isReturn(insn), valueContract, !throwExits.contains(insn.address),
+            if isReturn(insn), valueContract, normalReturnIsProven(at: insn.address), !throwExits.contains(insn.address),
                !mergedThrowEnds.contains(insn.address),
                !sourceNotes.contains(where: { $0.hasPrefix("return ") || $0.hasPrefix("throw ") || $0.hasPrefix("yield ") }) {
                 sourceNotes.append("return ?")
+            }
+
+            if isReturn(insn), throwsSignature?.isThrowing == true,
+               !normalReturnIsProven(at: insn.address), !throwExits.contains(insn.address),
+               !mergedThrowExits.contains(insn.address),
+               !sourceNotes.contains(where: { $0.hasPrefix("throw ") }) {
+                sourceNotes.append(DisassembledFunction.unresolvedSwiftExitNote)
+            }
+            // A proven normal exit with no result to print still says so: with
+            // no note, a renderer cannot tell it from an exit never classified.
+            if isReturn(insn), throwsSignature?.isThrowing == true,
+               normalReturnIsProven(at: insn.address), !throwExits.contains(insn.address),
+               !mergedThrowExits.contains(insn.address),
+               !sourceNotes.contains(where: { $0.hasPrefix("return ") || $0.hasPrefix("throw ") || $0.hasPrefix("yield ") }) {
+                sourceNotes.append(DisassembledFunction.normalSwiftExitNote)
             }
 
             if Probe.isActive, isReturn(insn) || scalarTailReturns.contains(insn.address) {

@@ -641,7 +641,9 @@ because it cannot be distinguished from a right one by reading the output.
     yields no value (the result travels in x21), and whether a given exit is the
     error path is not known per-block, so asserting a missing value on a throw
     path would be wrong. Where the normal exit *is* recovered it already prints
-    `return <expr>`, so little is lost.
+    `return <expr>`, so little is lost. *Superseded 2026-10-15:* exits are now
+    classified per exit, and an unproven one renders `machine_return()`; see
+    "2026-10-15: Swift error exits" below.
 
   Two emission sites had to change, not one; the second was found only by
   re-measuring the whole fixture after fixing the first and noticing a throwing
@@ -2710,3 +2712,72 @@ if a test was observed to fail without the fix.
   unknown argument to TypedThrowsAwait.onError and AuditSemantics.walk's log
   in each renderer. Source and machine x0 setup confirm both scalar footprints.
   Fresh restored enforcing suite: 677 tests in eleven suites pass.
+
+## 2026-10-15: Swift error exits
+
+- **FIXED — a throwing function's unproven exit rendered as a normal
+  return.** Every `ret` of a throwing function counted as a normal return
+  unless x21 was proven to hold a thrown error. Two shapes return and throw
+  through one exit:
+  `Reconstruction.typedForward` at -O and -Osize ends
+  `cmp x21, #0; csel x21, x21, x8, eq; cinc x0, x0, eq; ret`, and
+  `TypedThrowsAwait.codeAsync` resume #2 joins `mov x20, #0` and
+  `mov w20, #1` at one ResumeParent branch. Both rendered `return ?`.
+  An exit is now normal only when one proof covers every path into it:
+  1. `SwiftErrorExitProof`: x21 untouched since entry, set to zero, or on
+     the zero edge of a 64-bit `cbz`/`cbnz x21`. A call keeps x21 only when
+     the callee provably does not throw and its body summary restores x21.
+     An undecoded instruction, an unreachable predecessor or an orphan
+     block ends the proof. An async function's x20 holds self on entry, so
+     there only zeros prove.
+  2. Per-exit `Preservation` (`f2587e2`): x21 holds its entry value through
+     a spill and reload (-Onone) or a register copy (-O `mov x19, x21` …
+     `mov x21, x19`), on blocks every way into which is modelled.
+  3. The tracer's existing zero facts.
+
+  Throw paths already rendered `throw ?` at a merged epilogue are set aside
+  by both proofs. An unproven exit renders `machine_return() /* unresolved
+  Swift success/error exit */`; a proven exit with no value renders
+  `return`. Unresolved indirect branches still decline the whole function.
+  The structurer keys its unclassified exit on the `throws` signature, so a
+  non-throwing function that catches a callee's error keeps its returns.
+  A new note, `swift-exit=unknown|normal`, is excluded from callee-name
+  parsing (it would otherwise have read as a callee).
+
+  Blast radius: 19 of 194 fixture views change. New fixture
+  `libErrorExitControls` (2 views). Corrections: `typedForward` at
+  -O/-Osize and their stripped twins (8 views) and the async resume
+  (2 views) now render `machine_return()`. SwiftErrorProbe's pseudo view
+  gains its proven void `return` (1 view). Losses are the two OPEN entries
+  below (6 views). The earlier draft of this change, which accepted only
+  explicit zeros, also declined -O/-Onone `mightFail`, `typedScale` and
+  MergedThrow's `return r0`; all of those recover.
+
+  Reproduce: `swiftdc disasm Fixtures/Sample/libReconstruction.opt.dylib
+  --structured -f typedForward`.
+
+  Verified: `ErrorExitProofTests` (11 tests over 27 fixture functions plus
+  synthetic bodies) and the restored `aThrowMergedIntoTheEpilogue` and
+  typedScale expectations. Thirty mutations, each seen red: every guard of
+  the dataflow (entry state, entry back edge, zeroing, zero edge and its
+  width, call rule, writes, undecoded instructions, unreachable start and
+  predecessor, merged-throw exclusion), both call-rule halves (clobber
+  summary, may-throw), the preservation proof and its call hook, modelled
+  blocks, merged-throw exclusion and excluded-edge propagation, the note
+  emitters and renderers, the callee-name exclusion, the signature proof,
+  the opaque-branch declines and the async x20 proof (caught by
+  `asyncThrowsRenderAsThrows`). Enforcing suite: 688 tests in 11 suites.
+
+- **OPEN — the -Onone `try` exit declines.** `Reconstruction.typedForward`
+  at -Onone (and resilient) spills the callee's x21, tests it with `cbz`,
+  and on the zero edge reloads x21 from the spill. Proving the reload zero
+  needs "this slot holds the value that was tested", which no analysis can
+  say. It renders `machine_return()` where the source returns `r0 + 1`.
+  Needs value identity with edge refinement ([IR.md](IR.md) step 5).
+
+- **OPEN — `throws(Never)` specializations decline.** Two generic
+  specializations of `withUTF8CodeUnits` in `sample.debug` with
+  `B = Swift.Never` spill x21, call their closure through `blr`, and return.
+  They cannot throw, but the signature reads `throws(B)` and the indirect
+  callee may write x21. Recognising a `Never` error type from the
+  specialization's substitution list would recover them.

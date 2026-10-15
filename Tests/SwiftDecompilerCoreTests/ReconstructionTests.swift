@@ -1086,4 +1086,7 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
     #expect(text.contains("swift_willThrow(") , Comment(rawValue: text))
     #expect(text.contains("throw ?"), Comment(rawValue: text))
     #expect(text.contains("return r0") || text.contains("return MergedThrow.sink(arg0)"), Comment(rawValue: text))
+    // The surviving path is normal only because x19 hands x21's entry value
+    // back (`mov x19, x21` … `mov x21, x19`) once the throw path is set aside.
+    #expect(!text.contains("machine_return()"), Comment(rawValue: text))
 }

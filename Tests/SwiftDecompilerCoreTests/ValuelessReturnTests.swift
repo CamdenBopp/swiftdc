@@ -104,9 +104,9 @@ private func structured(_ filter: String) async throws -> String? {
 }
 
 @Test func aThrowingFunctionsErrorExitKeepsItsBareReturnIfPresent() async throws {
-    // A throwing function's error exit really does yield no value — the result
-    // travels in x21. Whether an exit is the error path is not known per-block,
-    // so these decline rather than assert a missing value on a throw path.
+    // A throwing function's error exit really does yield no value: the error
+    // travels in x21. An exit proven to throw renders `throw ?`, and one not
+    // proven either way `machine_return()`; neither asserts a missing value.
     guard let text = try await structured("mightFail") else { return }
     #expect(text.contains("throws -> Swift.Int"))
     #expect(!text.contains("return ?"))

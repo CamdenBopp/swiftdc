@@ -101,6 +101,9 @@ $CLANG -arch arm64 -dynamiclib async_slot_chronology.s -o libAsyncSlotChronology
 echo "==> async context writes through unknown aliases (async_memory_effects.s)"
 $CLANG -arch arm64 -dynamiclib async_memory_effects.s -o libAsyncMemoryEffects.dylib
 
+echo "==> explicit Swift error/value exit proofs (error_exit_controls.s)"
+$CLANG -arch arm64 -dynamiclib error_exit_controls.s -o libErrorExitControls.dylib
+
 echo "==> hardened jump-table bounds (jump_table_bounds.s) — index widths and call-clobbered NZCV"
 $CLANG -arch arm64 -dynamiclib jump_table_bounds.s -o libJumpTableBounds.dylib
 
