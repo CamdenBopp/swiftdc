@@ -8,15 +8,13 @@ delete items from this file as they ship.
 
 ## Current session (2026-10-15)
 
-Swift error exits are classified per exit (readiness entry "2026-10-15:
-Swift error exits"), and frame slots reachable through escaped addresses
-are forgotten at later calls and unknown stores ("2026-10-15: frame slots
-reachable through escaped addresses"). Enforcing suite: 693 tests. The IR
-plan is in [docs/IR.md](docs/IR.md). Next: the `()` arity rendering
-(OPEN in that entry), async
-context facts across unknown calls (`async_call_effects.s`, still
-untracked, with the 2026-10-13 proposal under
-`work/session-memory/integrated-call-proposal`), then IR steps 1–3.
+Swift error exits are classified per exit, frame slots reachable through
+escaped addresses and async context slots behind escaped context pointers
+are forgotten at later calls (readiness entries of 2026-10-15). Enforcing
+suite: 696 tests. The IR plan is in [docs/IR.md](docs/IR.md). Next: a capped
+loop-body pass must claim nothing (`retransferBody` returns partial states),
+the `()` arity rendering for signatureless callees (pad known arities),
+then IR steps 1–3.
 
 ## Soundness development session (2026-10-13)
 

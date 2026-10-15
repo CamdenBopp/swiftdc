@@ -104,6 +104,9 @@ $CLANG -arch arm64 -dynamiclib async_memory_effects.s -o libAsyncMemoryEffects.d
 echo "==> explicit Swift error/value exit proofs (error_exit_controls.s)"
 $CLANG -arch arm64 -dynamiclib error_exit_controls.s -o libErrorExitControls.dylib
 
+echo "==> async context slots across calls (async_call_effects.s) — escaped and interior context pointers"
+$CLANG -arch arm64 -dynamiclib async_call_effects.s -o libAsyncCallEffects.dylib
+
 echo "==> frame slots reachable through escaped addresses (frame_escape_controls.s)"
 $CLANG -arch arm64 -dynamiclib frame_escape_controls.s -o libFrameEscapeControls.dylib
 

@@ -111,6 +111,8 @@ private extension ProbeEvent {
         "Fixtures/Sample/libReconstruction.opt.dylib", "Fixtures/Sample/libReconstruction.osize.dylib",
         "Fixtures/Sample/libAsyncFns.opt.dylib", "Fixtures/Sample/libSample.dylib",
         "Fixtures/Sample/sample.release", "Fixtures/Sample/libCallReads.O1.dylib",
+        "Fixtures/Sample/libAsyncFns.dylib", "Fixtures/Sample/libAsyncCallEffects.dylib",
+        "Fixtures/Sample/libFrameEscapeControls.dylib", "Fixtures/Sample/libStackCallEffects.opt.dylib",
     ]
     for path in fixtures where FileManager.default.fileExists(atPath: path) {
         let recorder = ProbeRecorder(filter: ProbeFilter(events: [

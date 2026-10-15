@@ -336,6 +336,58 @@ _frame_escape_dummy_pointer:
   adrp x0, _frame_escape_dummy@PAGE
   add x0, x0, _frame_escape_dummy@PAGEOFF
   ret
+// Control: a frame address sits in x8 at a call to `free`, whose one
+// parameter is x0. True result: 7.
+.globl _$s11FrameEscape10arityBoundSiyF
+_$s11FrameEscape10arityBoundSiyF:
+  sub sp, sp, #32
+  stp x29, x30, [sp, #16]
+  mov x9, #7
+  str x9, [sp, #8]
+  add x8, sp, #8
+  mov x0, xzr
+  bl _free
+  ldr x0, [sp, #8]
+  ldp x29, x30, [sp, #16]
+  add sp, sp, #32
+  ret
+
+// Control: a frame address saved at [sp, #8] with nothing stored at [sp] is
+// not a stack argument. True result: 7.
+.globl _$s11FrameEscape11outgoingGapSiyF
+_$s11FrameEscape11outgoingGapSiyF:
+  sub sp, sp, #48
+  stp x29, x30, [sp, #32]
+  add x12, sp, #16
+  str x12, [sp, #8]
+  mov x9, #7
+  str x9, [sp, #16]
+  bl _frame_escape_nop
+  ldr x0, [sp, #16]
+  ldp x29, x30, [sp, #32]
+  add sp, sp, #48
+  ret
+
+// Control: a frame address at [sp] meets a Swift callee whose one Int
+// parameter travels in x0; it reads no stack argument. True result: 7.
+.globl _$s11FrameEscape17stackPrefixNoArgsSiyF
+_$s11FrameEscape17stackPrefixNoArgsSiyF:
+  sub sp, sp, #48
+  stp x29, x30, [sp, #32]
+  add x12, sp, #16
+  str x12, [sp]
+  mov x9, #7
+  str x9, [sp, #16]
+  mov x0, #1
+  bl _$s11FrameEscape4sinkyySiF
+  ldr x0, [sp, #16]
+  ldp x29, x30, [sp, #32]
+  add sp, sp, #48
+  ret
+.globl _$s11FrameEscape4sinkyySiF
+_$s11FrameEscape4sinkyySiF:
+  ret
+
 .globl _frame_escape_stash_stack
 _frame_escape_stash_stack:
   ldr x9, [sp]

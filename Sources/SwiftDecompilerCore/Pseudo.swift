@@ -587,7 +587,13 @@ public extension DisassembledFunction {
              "objc_retainAutoreleasedReturnValue", "objc_claimAutoreleasedReturnValue",
              "objc_autoreleaseReturnValue", "objc_autoreleasePoolPop",
              "objc_sync_enter", "objc_sync_exit", "objc_begin_catch",
-             "objc_retainBlock", "_Block_copy", "free":
+             "objc_retainBlock", "_Block_copy", "free",
+             // swift/include/swift/Runtime/Concurrency.h: `void *(size_t)`
+             // and `void (void *)`.
+             "swift_task_alloc", "swift_task_dealloc",
+             // swift/include/swift/Runtime/HeapObject.h: one object each.
+             "swift_retain", "swift_release", "swift_bridgeObjectRetain", "swift_bridgeObjectRelease",
+             "swift_unknownObjectRetain", "swift_unknownObjectRelease", "swift_errorRetain", "swift_errorRelease":
             return 1
         case "objc_opt_isKindOfClass", "objc_opt_respondsToSelector",
              "objc_storeStrong", "objc_storeWeak", "objc_initWeak",

@@ -68,6 +68,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libAsyncSlotChronology.dylib",
         "Fixtures/Sample/libAsyncMemoryEffects.dylib",
         "Fixtures/Sample/libErrorExitControls.dylib",
+        "Fixtures/Sample/libAsyncCallEffects.dylib",
         "Fixtures/Sample/libFrameEscapeControls.dylib",
         "Fixtures/Sample/libStackCallEffects.dylib",
         "Fixtures/Sample/libStackCallEffects.opt.dylib",

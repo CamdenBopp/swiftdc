@@ -2871,3 +2871,98 @@ if a test was observed to fail without the fix.
   Verified: `objdumpCalleeNamesKeepTheirOwnUnderscores` and the restored
   three-path equality in `compiledStackEscapeIsNotRenderedAsThePreCallStore`
   fail with 14 issues under the old stripping; enforcing suite 693 tests.
+
+## 2026-10-15: async context slots across calls
+
+- **FIXED — an async context slot kept its value across calls that could
+  write it.** Authored ABI leaves (`async_call_effects.s`) store 7 to their
+  own context slot 16, let the context escape, call something that writes
+  11 there, and observe the slot. Native execution observes 11. Five leaves
+  rendered `observe(7)`: `globalLeaf` and `conditionalLeaf` export x22 to a
+  global, `interiorLeaf` hands `x22 + 16` to a call, `rbitLeaf` exports it
+  bit-reversed, `joinLeaf` passes it through a join that drops it. The
+  tracer forgot context slots at a call only when the exact context pointer
+  sat in an argument register at that call.
+
+  The frame escape markers now cover the context. An own-context pointer
+  escapes on the same events as a frame address, with its offset: a pointer
+  to offset k reaches k and above, so the header below an `inout` slot
+  (ParentContext, ResumeParent) stays known. After an escape every call
+  forgets the reachable context slots and declines chain-wide seeds.
+  Storing the context into a context slot (the -Onone spill, the callee's
+  parent header) keeps it followed. The awaited callee's context has its
+  own marker; a call handed it (`swift_task_dealloc`) forgets only that
+  context's parent header.
+
+  Each of these precision rules was added after measuring a real-app loss.
+  - **Known arity.** A call to a runtime entry point of known C arity passes
+    only its parameters. `knownCArity` gains `swift_task_alloc`/`_dealloc`
+    and the one-object refcount entry points, which also clamps their
+    rendered arguments. sample.debug's plain listing loses fabricated
+    trailing arguments such as
+    `swift_release(?, ?, Data._Representation.init(…))`.
+  - **Stack arguments.** They are the contiguous run stored upward from sp,
+    as `snapshot` reads them. Only a callee that can take any (unknown
+    arity, or a Swift signature needing more than eight registers) reads
+    them, and never from the prologue's register save area.
+  - **Save area.** It bounds escaped frame regions too, so an escaped local
+    no longer reaches the callee-saved saves above it.
+  - **Joins.** A join escapes only values it drops from a register or slot,
+    not from an outgoing copy or the callee's header.
+
+  Escape markers are now sticky per block in both fixpoints. A marker
+  derived from a value dropped at a join can stop being derived once that
+  value is forgotten, then return. On GoodLinks this made one function cap
+  (`values.fixpoint-cap`: all its values lost) and another loop-body pass
+  cap.
+
+  Blast radius: 4 of 196 fixture views (the two reduction fixtures).
+  Clarc's `--pseudo` is byte-identical to the frame-escape commit. On
+  GoodLinks (64,322 functions), against that commit, 16 functions change:
+  - **Corrections:** two `_convertNSErrorToError(0)` became `(?)`. The error
+    out-parameter lived in the async context, and an interior pointer to it
+    reached the throwing call.
+  - **Recoveries:** five functions recover arguments that broad escapes had
+    hidden.
+  - **Losses:** four async exits, and seven call arguments in five
+    functions. In each, an escaped local's region (up to the next
+    address-taken offset) reaches a later x22 spill, or an interior context
+    pointer's region (offset upward, no object boundary) reaches a slot
+    above the object.
+
+  Fixpoint caps on GoodLinks: one, the same pre-existing function at every
+  build; the frame-escape commit's loop-body cap is gone. Release A/B on
+  Clarc, five alternating rounds: 33.80 s against 34.79 s median, inside
+  the 32.8–36.4 s run-to-run spread.
+
+  Verified: `AsyncCallEffectTests` (natively: twelve adapters, 15
+  executions; both views of 10 leaves; a tracer-seam test of the callee's
+  header) and three frame precision controls. Eighteen mutations, seventeen
+  seen red: the context marker, interior offset, call
+  forgetting, region bound, context-slot stores (full suite), the callee's
+  marker and forgetting, lost provenance, dropped context values,
+  value-holding keys, the arity-limited registers, the stack-argument
+  run, its save-slot stop, the save-area boundaries, both directions of
+  the stack-argument bound, and the arity table (full suite). The sticky
+  markers survive on every fixture. They are verified only on GoodLinks,
+  where removing them caps `values.fixpoint-cap` and keeping them
+  converges. The population test `theTracerModelsEveryWriteOnTheFixtures`
+  now also covers the async, frame-escape and compiled stack fixtures.
+  Enforcing suite: 696 tests in 11 suites.
+
+- **OPEN (assumption) — a caller does not pass pointers into the callee's
+  own context, and a sync callee does not read x22.** `incomingLeaf` (an
+  incoming argument aliasing slot 16) and `implicitLeaf` (a C helper
+  writing through x22) still render `observe(7)` against native 11.
+  Compiled Swift does neither. Outlined fragments may read callee-saved
+  registers, which needs a callee-body proof of register inputs
+  (`CalleeRegisterSummary`).
+
+- **OPEN — context regions have no object boundaries.** An interior
+  context pointer reaches every slot above its offset, and an escaped frame
+  local reaches every slot up to the next address-taken offset; both cost
+  GoodLinks values (above). Object extents belong in the shared memory
+  model ([IR.md](IR.md) step 4).
+
+- **OPEN — no fixture reproduces the join-derived marker oscillation.** The
+  sticky markers are guarded by GoodLinks only.
