@@ -145,6 +145,26 @@ private extension ProbeEvent {
     #expect(recorder.records.isEmpty, "\(recorder.records.map { $0.function?.name ?? "" })")
 }
 
+/// A join can derive an escape from a frame address its predecessors
+/// disagree on, and the escape then changes what reaches the join. Unless
+/// an escape stays once it reaches a block, the marker flips every lap: an
+/// app's 24-block function hit the bound, and `compacted` is that shape.
+/// Capped, it claimed nothing and its calls rendered `()`.
+@Test func theTracerConvergesWhereAJoinDerivesAnEscapeIfPresent() async throws {
+    let path = "Fixtures/Sample/libMarkerOscillation.opt.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let recorder = ProbeRecorder(filter: ProbeFilter(events: [ProbeEvent.tracerFixpointCap.id]))
+    let functions = try await withStableDependencies {
+        try await Probe.recording(recorder) {
+            try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "compacted")
+        }
+    }
+    #expect(!functions.isEmpty)
+    #expect(recorder.records.isEmpty, "\(recorder.records.map { $0.function?.name ?? "" })")
+    let pseudo = functions.map { $0.renderPseudo() }.joined(separator: "\n")
+    #expect(pseudo.contains("swift_arrayDestroy(local_"), "\(pseudo)")
+}
+
 /// Past its bound the tracer's states are not a fixpoint, and it must claim
 /// nothing rather than replay them. Forced with a bound of zero per block.
 @Test func aTracerPastItsBoundClaimsNothingIfPresent() async throws {

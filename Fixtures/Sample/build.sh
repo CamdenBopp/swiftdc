@@ -47,6 +47,9 @@ xcrun clang++ -arch arm64 -O1 -dynamiclib -undefined dynamic_lookup landingpadlo
 echo "==> a loop the value tracer must converge on (gridsampler.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name GridSampler gridsampler.swift -o libGridSampler.opt.dylib
 
+echo "==> escape markers a loop join derives must stay derived (markeroscillation.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name MarkerOscillation markeroscillation.swift -o libMarkerOscillation.opt.dylib
+
 echo "==> branch conditions from ccmp/fcmp and unsigned range checks (conditions.swift, -O and -Osize)"
 $SWIFTC -parse-as-library -O -emit-library -module-name Conditions conditions.swift -o libConditions.opt.dylib
 $SWIFTC -parse-as-library -Osize -emit-library -module-name Conditions conditions.swift -o libConditions.osize.dylib

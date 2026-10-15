@@ -70,6 +70,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libErrorExitControls.dylib",
         "Fixtures/Sample/libAsyncCallEffects.dylib",
         "Fixtures/Sample/libFrameEscapeControls.dylib",
+        "Fixtures/Sample/libMarkerOscillation.opt.dylib",
         "Fixtures/Sample/libStackCallEffects.dylib",
         "Fixtures/Sample/libStackCallEffects.opt.dylib",
         "Fixtures/Sample/libStackCallEffects.osize.dylib",

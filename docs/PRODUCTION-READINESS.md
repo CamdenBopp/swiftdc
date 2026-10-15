@@ -2968,8 +2968,18 @@ if a test was observed to fail without the fix.
   GoodLinks values (above). Object extents belong in the shared memory
   model ([IR.md](IR.md) step 4).
 
-- **OPEN — no fixture reproduces the join-derived marker oscillation.** The
-  sticky markers are guarded by GoodLinks only.
+- **FIXED (tests) — no fixture reproduced the join-derived marker
+  oscillation.** `markeroscillation.swift` at -O (`[a, b, c].compactMap
+  { $0 }`, a stack array compacted in a loop that re-materializes its base)
+  hits `values.fixpoint-cap` without the per-block sticky markers in
+  `analyze`, and every call in it renders `()`.
+  `theTracerConvergesWhereAJoinDerivesAnEscapeIfPresent` fails with them
+  removed (2 issues).
+- **OPEN — the loop-body pass's sticky markers have no guard.** Removing
+  them from `retransferBody` leaves all 701 tests green and every fixture
+  (also the -Onone and -Osize builds of `markeroscillation.swift`) without
+  a cap. On GoodLinks one 578-block loop then hits `values.loop-body-cap`;
+  GoodLinks and Clarc output stay byte-identical.
 
 ## 2026-10-15: a capped loop-body pass claimed its loop
 
