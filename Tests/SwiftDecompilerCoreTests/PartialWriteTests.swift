@@ -8,16 +8,17 @@ private let partialWriteFixture = "Fixtures/Sample/libPartialWrites.dylib"
 /// Probes whose result the tracer must claim; the rest may decline.
 private let claimingProbes: Set<String> = [
     "movk_argument_low", "movk_argument_high", "movk_argument_w", "movk_constant", "slot_width_agree",
+    "flags_width_agree",
 ]
 
-/// Each probe replaces part of a value. Whatever the tracer claims at the
-/// return must be what the machine computes, for every input.
+/// Each probe computes a value known only at a width. Whatever the tracer
+/// claims at the return must be what the machine computes, for every input.
 @Test func partialWritesMatchNativeExecutionIfPresent() async throws {
     guard FileManager.default.fileExists(atPath: partialWriteFixture) else { return }
     let handle = try #require(dlopen(partialWriteFixture, RTLD_NOW | RTLD_LOCAL))
     defer { dlclose(handle) }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: partialWriteFixture) }
-    #expect(functions.count == 7)
+    #expect(functions.count == 9)
     let edges: [UInt64] = [0, 1, 0xffff, 0x10000, UInt64(UInt32.max), 1 << 32,
                            0x0123456789abcdef, 0xfedcba9876543210, 1 << 63, .max]
     for function in functions {

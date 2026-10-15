@@ -3150,3 +3150,22 @@ if a test was observed to fail without the fix.
   the width into a `select`, which the load rejects); a branch on an
   unmodelled value forms no select. The meet now drops a slot whose widths
   disagree. No fixture view, Clarc line or GoodLinks line changes.
+
+- **FIXED (soundness): a join kept the flags after dropping their
+  width.** The same defect for NZCV: `cmp x8, #1` on one path and
+  `cmp w8, #1` on the other, with x8 = 0x80000000, leave equal flags
+  values (the constant fits both widths) and different widths. The meet
+  dropped the width, and `flagCondition` reads an absent width as 64 bits,
+  so `b.lt` after the join rendered `if (0)`: the 32-bit compare
+  overflows and takes the branch (native `f(0) = 1`). The meet now drops
+  flags whose width it dropped (`flags_width_join`, control
+  `flags_width_agree`). No fixture view, Clarc line or GoodLinks line
+  changes.
+
+- **OPEN: an entry-seeded stack argument has no width.** A slot seeded
+  from an Objective-C method's typed locations (`stack@4` for a 4-byte
+  argument) carries no width, so an 8-byte load at it claims the argument
+  for all eight bytes, though the upper four belong to the next one.
+  Compiled code reads such arguments with `ldr w`/`ldp w`, which narrow;
+  seeding the width needs the argument sizes the location map does not
+  carry.

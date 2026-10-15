@@ -1456,6 +1456,7 @@ public struct ValueTracer: Sendable {
         // parent header are not places this function keeps its pointers.
         var dropped: [AbstractValue] = []
         var unsizedSlots: [Int64] = []
+        var unsizedFlags = false
         for state in states {
             for (key, value) in state {
                 if isEscapeMarker(key) {
@@ -1463,6 +1464,8 @@ public struct ValueTracer: Sendable {
                 } else if accumulator[key] != value {
                     if case .stackWidth(let offset) = key {
                         unsizedSlots.append(offset)
+                    } else if key == .flagsWidth {
+                        unsizedFlags = true
                     } else if holdsValue(key), containsFrame(value) || containsContext(value) {
                         dropped.append(value)
                     }
@@ -1474,8 +1477,10 @@ public struct ValueTracer: Sendable {
         // whatever was there before: a value the paths agree on, read at the
         // wider width, claimed bytes one path never wrote. (A value equal at
         // two widths is unchanged by narrowing, which no address is, so no
-        // pointer is lost here.)
+        // pointer is lost here.) Flags are known only at the width of their
+        // compare: the same constants overflow at 32 bits and not at 64.
         for offset in unsizedSlots { accumulator[.stack(offset)] = nil }
+        if unsizedFlags { accumulator[.flags] = nil }
         for value in dropped { markEscape(value, into: &accumulator) }
         return accumulator
     }

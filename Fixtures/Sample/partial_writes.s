@@ -1,6 +1,7 @@
-// Writes that replace part of a value. Every probe takes (x0, x1) and
-// returns x0. Native execution is the oracle: the tracer may decline a
-// probe's result but never claim a different one.
+// Values known only at a width: writes that replace part of a register,
+// and frame slots and flags that paths set at different widths. Every
+// probe takes (x0, x1) and returns x0. Native execution is the oracle: the
+// tracer may decline a probe's result but never claim a different one.
 .text
 .p2align 2
 
@@ -76,4 +77,34 @@ _slot_width_agree:
 2:
   ldr x0, [sp]
   add sp, sp, #16
+  ret
+
+// The flags of the same constants compared at 64 bits on one path and 32
+// on the other: 0x80000000 - 1 overflows only at 32 bits, so `lt` holds on
+// the narrow path alone. True result: 1 when x1 == 0, else 0.
+.globl _flags_width_join
+_flags_width_join:
+  rbit x10, x1
+  mov x8, #0x80000000
+  cbz x10, 1f
+  cmp x8, #1
+  b 2f
+1:
+  cmp w8, #1
+2:
+  cset x0, lt
+  ret
+
+// Control: both paths compare at 32 bits. True result: 1.
+.globl _flags_width_agree
+_flags_width_agree:
+  rbit x10, x1
+  mov x8, #0x80000000
+  cbz x10, 1f
+  cmp w8, #1
+  b 2f
+1:
+  cmp w8, #1
+2:
+  cset x0, lt
   ret
