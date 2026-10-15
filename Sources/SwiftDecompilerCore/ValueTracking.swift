@@ -923,6 +923,9 @@ public struct ValueTracer: Sendable {
             } else if instruction.controlFlow == .call {
                 prologue = false
             }
+            // Every rule below needs an operand that is sp or x29 or starts
+            // with `[sp`; most instructions name neither register.
+            guard namesFrameRegister(instruction.text) else { continue }
             let parts = instruction.text.split(maxSplits: 1, whereSeparator: { $0 == " " || $0 == "\t" })
             guard parts.count == 2 else { continue }
             let mnemonic = parts[0].lowercased()
@@ -957,6 +960,20 @@ public struct ValueTracer: Sendable {
             }
         }
         return FrameLayout(boundaries: offsets.sorted(), saveSlots: saveSlots)
+    }
+
+    /// Whether `text` contains `sp` or `x29` anywhere: the cheap filter in
+    /// front of `frameLayout`'s operand parse.
+    private static func namesFrameRegister(_ text: String) -> Bool {
+        var previous: UInt8 = 0
+        var beforePrevious: UInt8 = 0
+        for byte in text.utf8 {
+            if previous == UInt8(ascii: "s"), byte == UInt8(ascii: "p") { return true }
+            if beforePrevious == UInt8(ascii: "x"), previous == UInt8(ascii: "2"), byte == UInt8(ascii: "9") { return true }
+            beforePrevious = previous
+            previous = byte
+        }
+        return false
     }
 
     /// Whether a call cannot return a Swift error in x21: a C-level symbol (no

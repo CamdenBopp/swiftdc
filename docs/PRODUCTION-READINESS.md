@@ -3052,3 +3052,18 @@ if a test was observed to fail without the fix.
   Release A/B on Clarc, five alternating rounds: wall 33.80 s against
   29.35 s median (-13%), user CPU 32.33 s against 27.91 s (-14%); every
   round of the change beat every baseline round.
+
+## 2026-10-15: frame layout parses only frame-register instructions
+
+- **FIXED (speed): `frameLayout` split and trimmed the text of every
+  instruction.** It ran once per `analyze`, but its operand parse (split,
+  lowercase, trim) touched every instruction: 602 of 6,249 tracer samples
+  on Clarc. Every rule in it needs an operand that is `sp` or `x29` or
+  starts with `[sp`, so a byte scan now skips instructions naming neither.
+  Output is unchanged: every fixture view and Clarc's `--pseudo` are
+  byte-identical. Release A/B on Clarc, five alternating rounds: wall
+  27.75 s against 26.51 s median (-4.5%), user CPU 26.88 s against
+  25.60 s (-4.8%); four of five rounds beat their baseline.
+  The x29 rules had no guard: removing either left every test green and
+  every fixture view unchanged. `fpBoundary` and `fpAboveBoundary` in
+  `frame_escape_controls.s` now pin them.
