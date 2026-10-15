@@ -57,7 +57,8 @@ is where the open soundness bugs are.
 - **Repeated work.** `basicBlocks()` is rebuilt at 14 call sites, including per
   return instruction in some paths; `calleeName(of:)` re-parses annotation text
   at 29 call sites, several per instruction per pass; every tracer state lookup
-  hashes and often parses a string key.
+  hashed and often parsed a string key. (The tracer's share of the last two is
+  fixed; see step 3 and `ValueTracer.CallFacts`.)
 
 ## Target
 
@@ -109,7 +110,11 @@ fix, measured and explained like any other.
    enrichment, the tracer, the summaries and the structurer. Measure with a
    release A/B on a large app.
 3. **Typed locations in the tracer.** `[Location: AbstractValue]` instead of
-   string keys. Pure refactor; measure the speed.
+   string keys. Pure refactor; measure the speed. *Done for `ValueTracer`
+   (2026-10-15), ahead of steps 1 and 2 because string keys were about half
+   the tracer's samples: every fixture view, Clarc and GoodLinks unchanged;
+   Clarc -12% instructions retired. `Location` carries the escape markers as
+   well as places; the other analyses still key by string.*
 4. **One frame memory model**, used first by the tracer. This is where the
    `cacheEscape` class of bug is fixed once instead of per analysis; it must
    also keep the Onone spill/reload recovery that a blanket "forget memory at

@@ -3084,3 +3084,26 @@ if a test was observed to fail without the fix.
   instructions retired 371.9 G against 349.3 G median (-6.1%; every round
   of the change below every baseline round), cycles 98.5 G against
   92.3 G (-6.3%), user CPU 28.62 s against 26.45 s.
+
+## 2026-10-15: typed tracer locations (IR step 3)
+
+- **FIXED (speed): the tracer keyed its state by strings.** After the
+  callee-facts changes, a `sample` of the release `disasm --pseudo` on
+  Clarc put about 2,500 of the tracer's 4,899 self samples in string
+  machinery: dictionary probes hashing key strings, `hasPrefix`, string
+  comparison, building keys like `stack@-16` and parsing them back.
+  `ValueTracer.State` is now `[Location: AbstractValue]`; `Location` names
+  registers, frame, context and result-buffer words, the flags and the
+  escape markers, and its `description` is the former key. Seeds keep
+  their string spellings at the API and are parsed once per analysis. One
+  order depended on the strings: loop-induction candidates are numbered
+  in the former key order (`stack@-16` before `stack@-8`), kept by sorting
+  on `description`. `result`'s width payload is `Int32`, which keeps the
+  key at 16 bytes; at 24 bytes peak footprint rose 5-10 MB on Clarc.
+  Output is unchanged: every fixture's structured, pseudo, listing and
+  JSON view, Clarc's `--pseudo` and GoodLinks' `--pseudo` (16.4 MB) are
+  byte-identical, and the determinism tests pass. Release A/B on Clarc,
+  five alternating rounds: wall 25.97 s against 23.18 s median (-10.7%;
+  every round of the change faster than every baseline round), user CPU
+  25.18 s against 22.15 s, instructions retired 351.6 G against 309.7 G
+  (-11.9%), peak footprint 59.4 MB against 59.8 MB.

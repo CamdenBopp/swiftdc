@@ -500,10 +500,113 @@ public struct ValueTracer: Sendable {
         self.asyncContextSlots = asyncContextSlots
     }
 
-    /// Register and stack-slot values. Register keys are canonical names
-    /// (`x3`, `sp`); stack slots are keyed by frame offset (see `stackKey`), so
-    /// both live in one map and flow through the same meet.
-    private typealias State = [String: AbstractValue]
+    /// A place the tracer keeps a fact: a register, a frame, context or
+    /// result-buffer word, the flags, or a marker. These were string keys
+    /// (`"x3"`, `"stack@-16"`); hashing, building and re-parsing them was
+    /// about half the tracer's time (docs/IR.md, step 3). `description` is
+    /// the former spelling.
+    enum Location: Hashable, Sendable, CustomStringConvertible {
+        case x(Int)
+        case v(Int)
+        case sp
+        case zero
+        case nzcv
+        case otherRegister(Int)
+        /// A frame word by offset, its stored width, and the copy of a store
+        /// at or above sp kept as a possible outgoing stack argument.
+        case stack(Int64)
+        case stackWidth(Int64)
+        case outgoing(Int64)
+        /// A word of the function's own async context, by byte offset.
+        case contextSlot(Int)
+        /// The awaited callee's context's first word: its parent.
+        case calleeParent
+        /// A store through the incoming x8 (`resultKey`), and the
+        /// whole-buffer and poison markers. `bytes` is an access width, and
+        /// `Int32` keeps the key at 16 bytes, the size of the string keys.
+        case result(offset: Int, bytes: Int32)
+        case resultWhole
+        case resultPoison
+        case flags
+        case flagsWidth
+        /// x20 was written since the last call (see `selfFreshKey`).
+        case selfFresh
+        /// The escape markers (see "Escaped frame memory").
+        case frameEscaped(Int64)
+        case frameBelow(Int64)
+        case frameEscapedAll
+        /// sp was moved below offset k by a non-constant amount: `frame(k) - n`
+        /// there is a dynamic allocation, not a pointer back into the frame.
+        case frameDynamic(Int64)
+        case contextEscaped(Int64)
+        case calleeContextEscaped
+
+        init(_ register: PhysReg) {
+            switch register.kind {
+            case .gpr: self = .x(register.number)
+            case .vector: self = .v(register.number)
+            case .stackPointer: self = .sp
+            case .zero: self = .zero
+            case .nzcv: self = .nzcv
+            case .other: self = .otherRegister(register.number)
+            }
+        }
+
+        /// A register or frame word spelled as the entry-convention seeds
+        /// spell it (`x2`, `v0`, `sp`, `stack@16`).
+        init?(key: String) {
+            if key == "sp" { self = .sp; return }
+            if key.hasPrefix("stack@") {
+                guard let offset = Int64(key.dropFirst("stack@".count)) else { return nil }
+                self = .stack(offset)
+                return
+            }
+            guard let first = key.first, first == "x" || first == "v", key.count > 1,
+                  key.dropFirst().allSatisfy(\.isNumber), let number = Int(key.dropFirst())
+            else { return nil }
+            self = first == "x" ? .x(number) : .v(number)
+        }
+
+        var description: String {
+            switch self {
+            case .x(let n): "x\(n)"
+            case .v(let n): "v\(n)"
+            case .sp: "sp"
+            case .zero: "xzr"
+            case .nzcv: "nzcv"
+            case .otherRegister(let n): "reg\(n)"
+            case .stack(let k): "stack@\(k)"
+            case .stackWidth(let k): "stack-width@\(k)"
+            case .outgoing(let k): "outgoing@\(k)"
+            case .contextSlot(let k): "ownctx@\(k)"
+            case .calleeParent: "callee-context.parent"
+            case .result(let offset, let bytes): "result@\(offset)/\(bytes)"
+            case .resultWhole: "result.whole"
+            case .resultPoison: "result.poison"
+            case .flags: "nzcv.flags"
+            case .flagsWidth: "nzcv.width"
+            case .selfFresh: "swiftself.fresh"
+            case .frameEscaped(let k): "frame.escaped@\(k)"
+            case .frameBelow(let k): "frame.below@\(k)"
+            case .frameEscapedAll: "frame.escaped"
+            case .frameDynamic(let k): "frame.dynamic@\(k)"
+            case .contextEscaped(let k): "context.escaped@\(k)"
+            case .calleeContextEscaped: "callee-context.escaped"
+            }
+        }
+
+        /// A general or vector register named by number (`x3`, `v0`).
+        var isNumberedRegister: Bool {
+            switch self {
+            case .x, .v: true
+            default: false
+            }
+        }
+    }
+
+    /// Register and stack-slot values, keyed by `Location`, so registers and
+    /// slots live in one map and flow through the same meet.
+    private typealias State = [Location: AbstractValue]
 
     /// What a call's callee name proves, whatever the register state. The
     /// tracer revisits each call on every fixpoint lap and in every later
@@ -516,7 +619,7 @@ public struct ValueTracer: Sendable {
         /// The registers that may hand the callee a pointer: the parameters of
         /// a runtime entry point with a fixed C arity, anything else's x0–x8
         /// and x20.
-        let passedRegisters: [String]
+        let passedRegisters: [Location]
         let passesNoStackArguments: Bool
         /// The demangled name carries ` throws`.
         let throwsByName: Bool
@@ -539,8 +642,8 @@ public struct ValueTracer: Sendable {
             self.callee = callee
             readsOnly = ValueTracer.readOnlyPointerCallees.contains(callee)
             passedRegisters = DisassembledFunction.knownCArity(of: callee).map { arity in
-                (0..<arity).map { "x\($0)" }
-            } ?? ["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x20"]
+                (0..<arity).map { Location.x($0) }
+            } ?? [.x(0), .x(1), .x(2), .x(3), .x(4), .x(5), .x(6), .x(7), .x(8), .x(20)]
             passesNoStackArguments = ValueTracer.passesNoStackArguments(callee)
             throwsByName = callee.contains(" throws")
             provablyDoesNotThrow = ValueTracer.provablyDoesNotThrow(callee)
@@ -600,16 +703,16 @@ public struct ValueTracer: Sendable {
         // x8 is the indirect-result address in every ARM64 convention, so the
         // seed is a fact about the ABI, not about this function; see
         // `AbstractValue.indirectResultPointer`.
-        var state: State = ["sp": .frame(0), "x8": .indirectResultPointer]
+        var state: State = [.sp: .frame(0), .x(8): .indirectResultPointer]
         switch entry {
         case .swiftInstance(let scalarArguments):
-            state["x20"] = .selfPointer
+            state[.x(20)] = .selfPointer
             // Parameters occupy x0…/v0… independently of the `self` register
             // (x20), so an instance method's scalar arguments are seeded the same
             // way a free function's are.
-            for (register, argument) in scalarArguments { state[register] = .argument(argument) }
+            for (register, argument) in scalarArguments { if let location = Location(key: register) { state[location] = .argument(argument) } }
         case .objectiveC(let argumentCount, let typed), .objectiveCInitializer(let argumentCount, let typed):
-            state["x0"] = .selfPointer
+            state[.x(0)] = .selfPointer
             // Metadata-typed locations: integer arguments in x2…, floating-point
             // ones in v0… on an independent counter, the rest on the entry stack
             // (only full 8-byte slots are supplied). A Double argument made every
@@ -617,11 +720,7 @@ public struct ValueTracer: Sendable {
             // layout below. An empty map seeds nothing: the layout is unproven.
             if let typed {
                 for (location, argument) in typed {
-                    if location.hasPrefix("stack@"), let offset = Int64(location.dropFirst("stack@".count)) {
-                        state[Self.stackKey(offset)] = .argument(argument)
-                    } else {
-                        state[location] = .argument(argument)
-                    }
+                    if let location = Location(key: location) { state[location] = .argument(argument) }
                 }
                 break
             }
@@ -630,7 +729,7 @@ public struct ValueTracer: Sendable {
             // AAPCS64 has six argument registers left after self/_cmd. Further
             // ObjC arguments are stack-passed and intentionally remain unknown.
             for argument in 0 ..< min(max(argumentCount, 0), 6) {
-                state["x\(argument + 2)"] = .argument(argument)
+                state[.x(argument + 2)] = .argument(argument)
             }
             // For ordinary integer/pointer Objective-C parameters, AAPCS64
             // spills explicit arguments after x7 into consecutive 8-byte slots
@@ -644,15 +743,15 @@ public struct ValueTracer: Sendable {
             // No `self`/`_cmd` prefix: a Swift function's integer arguments occupy
             // x0…, its floating-point ones v0…. A proven all-scalar signature
             // never spills, so there is nothing past the eighth of each to recover.
-            for (register, argument) in scalarArguments { state[register] = .argument(argument) }
+            for (register, argument) in scalarArguments { if let location = Location(key: register) { state[location] = .argument(argument) } }
         case .swiftValueInstance(let seededRegisters):
             // `self` (and HFA parameters) arrive decomposed across SIMD registers;
             // each holds a field's value directly, so they read as `self.field` /
             // `arg<n>.field` with no x20 pointer.
-            for (register, value) in seededRegisters { state[register] = value }
+            for (register, value) in seededRegisters { if let location = Location(key: register) { state[location] = value } }
         case .asyncFunclet(let base, let seededRegisters):
             state = initialState(entry: base, asyncContextSlots: asyncContextSlots)
-            for (register, value) in seededRegisters { state[register] = value }
+            for (register, value) in seededRegisters { if let location = Location(key: register) { state[location] = value } }
             // ABI facts and entry seeds are mutable memory facts. They must
             // participate in the same invalidation and intersection as stores.
             state[contextSlotKey(8)] = .asyncResumeParent
@@ -791,11 +890,11 @@ public struct ValueTracer: Sendable {
                     result.indirectControlFlowTargets[insn.address] = target
                 }
                 if insn.controlFlow == .return || insn.controlFlow == .branch,
-                   let value = registers["x0"], value != .unknown {
+                   let value = registers[.x(0)], value != .unknown {
                     result.exitValues[insn.address] = value
                 }
                 if insn.controlFlow == .return,
-                   let value = registers["x21"], value != .unknown {
+                   let value = registers[.x(21)], value != .unknown {
                     result.exitErrorValues[insn.address] = value
                 }
                 // Also at a proven async return (a `br` through the context's
@@ -805,18 +904,18 @@ public struct ValueTracer: Sendable {
                 // before an ordinary tail call is the callee's argument.
                 let isAsyncReturn = insn.controlFlow == .branch
                     && Self.indirectTarget(of: insn, in: registers) == .asyncResumeParent
-                if isAsyncReturn, let value = registers["x20"], value != .unknown {
+                if isAsyncReturn, let value = registers[.x(20)], value != .unknown {
                     result.exitAsyncErrorValues[insn.address] = value
                 }
                 if insn.controlFlow == .return || isAsyncReturn,
-                   let value = registers["v0"], value != .unknown {
+                   let value = registers[.v(0)], value != .unknown {
                     result.exitFloatValues[insn.address] = value
                 }
                 // x1 at a return is the first yielded value of a `yield_once`
                 // coroutine (`_modify`/`_read`); meaningless for an ordinary
                 // return, so the enrichment reads it only for those accessors.
                 if insn.controlFlow == .return,
-                   let value = registers["x1"], value != .unknown {
+                   let value = registers[.x(1)], value != .unknown {
                     result.exitYieldValues[insn.address] = value
                 }
                 if insn.controlFlow == .return {
@@ -829,8 +928,7 @@ public struct ValueTracer: Sendable {
                     if asyncSlotFactBranches.contains(insn.address) {
                         result.asyncSlotFactsAtBranches[insn.address] = Dictionary(uniqueKeysWithValues:
                             registers.compactMap { key, value -> (Int, AbstractValue)? in
-                                guard key.hasPrefix(Self.contextSlotPrefix), value != .unknown,
-                                      let offset = Int(key.dropFirst(Self.contextSlotPrefix.count)) else { return nil }
+                                guard case .contextSlot(let offset) = key, value != .unknown else { return nil }
                                 return (offset, value)
                             })
                     }
@@ -874,7 +972,7 @@ public struct ValueTracer: Sendable {
                     if insn.controlFlow == .return {
                         // Every path is recorded, unknown included, so a
                         // consumer can tell "all paths throw" from "some do".
-                        result.exitErrorValuesByPredecessor[insn.address, default: [:]][end] = registers["x21"] ?? .unknown
+                        result.exitErrorValuesByPredecessor[insn.address, default: [:]][end] = registers[.x(21)] ?? .unknown
                         break
                     }
                     transfer(insn, into: &registers, record: nil, recordAccess: nil,
@@ -1034,7 +1132,7 @@ public struct ValueTracer: Sendable {
         guard let register = insn.detail?.operands.first?.operand.register,
               register.kind != .zero
         else { return nil }
-        return registers[register.key] ?? .unknown
+        return registers[Location(register)] ?? .unknown
     }
 
     /// Call sites only — the common case.
@@ -1053,7 +1151,7 @@ public struct ValueTracer: Sendable {
                 initializerEntry: false
             )
         }
-        return registers
+        return Dictionary(uniqueKeysWithValues: registers.map { ($0.key.description, $0.value) })
     }
 
 
@@ -1075,7 +1173,7 @@ public struct ValueTracer: Sendable {
             if let record {
                 if !site.isEmpty { record(insn.address, site) }
             }
-            let incomingX0 = registers["x0"] ?? .unknown
+            let incomingX0 = registers[.x(0)] ?? .unknown
             let beforeCall = registers
             // `memcpy`/`memset` and the outlined value-witness copies are modelled
             // as the stores they perform (see `applyMemoryHelper`): their source
@@ -1109,7 +1207,7 @@ public struct ValueTracer: Sendable {
                 // Stack arguments are the words stored upward from sp at the
                 // call (`snapshot`); only a callee that can take any reads them,
                 // and never from the prologue's register save area.
-                if !call.passesNoStackArguments, case .frame(let base)? = registers["sp"] {
+                if !call.passesNoStackArguments, case .frame(let base)? = registers[.sp] {
                     for slot in 0..<16 {
                         let offset = base + Int64(slot * 8)
                         guard !facts.frame.saveSlots.contains(offset), let value = registers[Self.outgoingKey(offset)]
@@ -1121,11 +1219,11 @@ public struct ValueTracer: Sendable {
                 // An escaped context pointer may be written through by any
                 // call, from its offset up.
                 let contextReach = registers.keys.compactMap { key -> Int64? in
-                    key.hasPrefix(Self.contextEscapePrefix) ? Int64(key.dropFirst(Self.contextEscapePrefix.count)) : nil
+                    if case .contextEscaped(let offset) = key { offset } else { nil }
                 }.min()
                 if let contextReach {
-                    for key in registers.keys where key.hasPrefix(Self.contextSlotPrefix) {
-                        if let offset = Int64(key.dropFirst(Self.contextSlotPrefix.count)), offset &+ 8 > contextReach {
+                    for key in registers.keys {
+                        if case .contextSlot(let offset) = key, Int64(offset) &+ 8 > contextReach {
                             registers[key] = nil
                         }
                     }
@@ -1139,24 +1237,24 @@ public struct ValueTracer: Sendable {
             // AAPCS64: x0–x17 are caller-saved, so a call clobbers them. x18 is
             // reserved, x19–x28 are callee-saved — and preserving those is what
             // carries `self` and locals across a call.
-            for index in 1...17 { registers["x\(index)"] = .unknown }
-            registers["x30"] = .unknown
+            for index in 1...17 { registers[.x(index)] = .unknown }
+            registers[.x(30)] = .unknown
             // A callee handed the context (in an argument register; a call
             // reached with `bl` gets x22 only as callee-saved state) may write
             // it. `site` is the argument snapshot taken above.
             if site.arguments.contains(.asyncContext) || site.selfValue == .asyncContext {
-                for key in registers.keys where key.hasPrefix(Self.contextSlotPrefix) { registers[key] = nil }
+                for key in registers.keys where Self.isContextSlot(key) { registers[key] = nil }
             }
             if let target = insn.branchTarget, let clobbered = calleeClobbers[target] {
-                for key in clobbered { registers[key] = .unknown }
+                for key in clobbered { if let location = Location(key: key) { registers[location] = .unknown } }
             }
             // The vector/floating-point bank: v0–v7 and v16–v31 are caller-saved
             // (only the low 64 bits of v8–v15 survive a call). Clobbering them is
             // what stops a stale `d0` from before the call being read as the
             // call's floating-point result after it.
-            for index in 0...7 { registers["v\(index)"] = nil }
-            for index in 16...31 { registers["v\(index)"] = nil }
-            let outgoingKeys = registers.keys.filter { $0.hasPrefix(Self.outgoingPrefix) }
+            for index in 0...7 { registers[.v(index)] = nil }
+            for index in 16...31 { registers[.v(index)] = nil }
+            let outgoingKeys = registers.keys.filter { if case .outgoing = $0 { true } else { false } }
             for key in outgoingKeys { registers[key] = nil }
             // Swift error convention: a throwing callee returns its error in x21
             // (swifterror), so the call *redefines* x21 even though AAPCS64 marks
@@ -1167,7 +1265,7 @@ public struct ValueTracer: Sendable {
             // or Objective-C call, where x21 is an ordinary callee-saved register
             // carrying a live value across the call, is untouched.
             if call.throwsByName {
-                registers["x21"] = .unknown
+                registers[.x(21)] = .unknown
             }
             // The same convention when the name cannot say. Zeroing x21 right
             // before a call is how a caller arms swifterror, so unless the
@@ -1175,23 +1273,23 @@ public struct ValueTracer: Sendable {
             // not that 0. Measured in SwiftData: an `@objc` thunk calling a
             // stripped throwing method rendered its error check `if (0 != 0)`
             // and its result `return 1`.
-            if registers["x21"] == .immediate(0), !call.provablyDoesNotThrow {
-                registers["x21"] = .unknown
+            if registers[.x(21)] == .immediate(0), !call.provablyDoesNotThrow {
+                registers[.x(21)] = .unknown
             }
             if call.returnsArgument {
-                registers["x0"] = incomingX0
+                registers[.x(0)] = incomingX0
             } else if let source = call.retainedRegister {
                 // `objc_retain_xN` retains the object in xN and returns it
                 // in x0 (libobjc's first instruction is `ands x0, xN, xN`).
                 // Matched as a prefix of `objc_retain`, it returned the stale
                 // x0: an `@objc` thunk passed the wrong receiver and `self`.
-                registers["x0"] = beforeCall["x\(source)"] ?? .unknown
+                registers[.x(0)] = beforeCall[.x(source)] ?? .unknown
             } else if call.allocatesArray {
                 // Returns the array in x0 (and its element buffer in x1); the
                 // caller fills it next, so tag it with this site and its count —
                 // the first argument — so those element stores can be gathered.
                 let count: Int = { if case .immediate(let n) = incomingX0 { return Int(n) } else { return -1 } }()
-                registers["x0"] = .arrayLiteral(site: insn.address, count: count)
+                registers[.x(0)] = .arrayLiteral(site: insn.address, count: count)
             } else if call.returnsVoidByName
                         || voidCallSites.contains(insn.address)
                         || callReturnsVoid?(call.callee, site) == true {
@@ -1199,25 +1297,25 @@ public struct ValueTracer: Sendable {
                 // last computed. As a result, it rendered a value flowing on:
                 // `OUTLINED_FUNCTION_35(Swift.Hasher._combine(0))` for a fragment
                 // that takes nothing after `_combine(Swift.UInt) -> ()`.
-                registers["x0"] = .unknown
-                registers["v0"] = nil
+                registers[.x(0)] = .unknown
+                registers[.v(0)] = nil
             } else if initializerEntry, call.isSuperSend {
                 // `self = [super init…]`: after the assignment, the returned
                 // object is the initializer's current self even if the runtime
                 // chose a different allocation.
-                registers["x0"] = .selfPointer
+                registers[.x(0)] = .selfPointer
             } else if call.hasTupleResult {
                 // A register can be a tuple component, not the complete call
                 // expression. Project it only when its ABI layout is proven.
-                registers["x0"] = .unknown
-                registers["v0"] = nil
+                registers[.x(0)] = .unknown
+                registers[.v(0)] = nil
             } else {
                 // The result register — x0 for integer/pointer/reference returns,
                 // v0 for a floating-point one. The callee delivers into one; only
                 // the register the caller actually reads next carries it forward,
                 // so modelling the result in both is faithful.
-                registers["x0"] = .callResult(insn.address)
-                registers["v0"] = .callResult(insn.address)
+                registers[.x(0)] = .callResult(insn.address)
+                registers[.v(0)] = .callResult(insn.address)
             }
             registers[Self.selfFreshKey] = nil
             // AAPCS64 does not preserve NZCV across a call.
@@ -1233,18 +1331,18 @@ public struct ValueTracer: Sendable {
         // A frame address or context pointer transformed beyond the tracer's
         // arithmetic still points where it did, at an offset nothing tracks.
         if inputs.frame || inputs.context, let detail = insn.detail {
-            let written = detail.writtenRegisterKeys.map { registers[$0] }
+            let written = detail.writtenRegisterKeys.map { Location(key: $0).flatMap { registers[$0] } }
             if inputs.frame, written.contains(where: { $0.map { !Self.containsFrame($0) } ?? true }) {
                 registers[Self.frameEscapeAllKey] = .immediate(1)
             }
             if inputs.context, written.contains(where: { $0.map { !Self.containsContext($0) } ?? true }) {
-                registers[Self.contextEscapePrefix + "0"] = .immediate(1)
+                registers[.contextEscaped(0)] = .immediate(1)
                 registers[Self.calleeContextEscapeKey] = .immediate(1)
             }
         }
         // sp moved below k by a non-constant amount allocates below k.
-        if let sp = registers["sp"], let base = Self.allocationBase(sp) {
-            registers[Self.frameDynamicPrefix + String(base)] = .immediate(1)
+        if let sp = registers[.sp], let base = Self.allocationBase(sp) {
+            registers[.frameDynamic(base)] = .immediate(1)
         }
         if Self.writesSwiftSelf(insn) {
             registers[Self.selfFreshKey] = .immediate(1)
@@ -1269,9 +1367,9 @@ public struct ValueTracer: Sendable {
     /// branches. Keeping the construction identical prevents the two output
     /// paths from disagreeing about the same register state.
     private static func snapshot(_ registers: State) -> CallSite {
-        let args = (0...7).map { registers["x\($0)"] ?? .unknown }
+        let args = (0...7).map { registers[.x($0)] ?? .unknown }
         var stackArguments: [AbstractValue] = []
-        if case .frame(let stackBase)? = registers["sp"] {
+        if case .frame(let stackBase)? = registers[.sp] {
             for slot in 0..<16 {
                 let offset = stackBase + Int64(slot * 8)
                 guard let value = registers[outgoingKey(offset)] else { break }
@@ -1280,15 +1378,15 @@ public struct ValueTracer: Sendable {
         }
         return CallSite(
             arguments: trimTrailingUnknown(args) ?? [],
-            floatArguments: (0...7).map { registers["v\($0)"] ?? .unknown },
+            floatArguments: (0...7).map { registers[.v($0)] ?? .unknown },
             stackArguments: stackArguments,
             // Only when freshly set for *this* Swift call — see selfFreshKey.
             // The result pointer parked in callee-saved x20 (`mov x20, x8`) is
             // never a receiver, however fresh the write.
-            selfValue: registers[selfFreshKey] != nil && !isResultPointer(registers["x20"])
-                ? (registers["x20"] ?? .unknown) : .unknown,
-            errorValue: registers["x21"] ?? .unknown,
-            indirectResult: registers["x8"] ?? .unknown
+            selfValue: registers[selfFreshKey] != nil && !isResultPointer(registers[.x(20)])
+                ? (registers[.x(20)] ?? .unknown) : .unknown,
+            errorValue: registers[.x(21)] ?? .unknown,
+            indirectResult: registers[.x(8)] ?? .unknown
         )
     }
 
@@ -1301,10 +1399,11 @@ public struct ValueTracer: Sendable {
     /// previous call's x20 and report it as its own `self`. Requiring a fresh
     /// write trades a missed `self` (when the compiler doesn't re-materialise an
     /// unchanged x20) for never inventing one.
-    private static let selfFreshKey = "swiftself.fresh"
+    private static let selfFreshKey = Location.selfFresh
 
     private static func writesSwiftSelf(_ insn: Instruction) -> Bool {
         guard let detail = insn.detail else { return false }
+        func isX20(_ register: PhysReg) -> Bool { register.kind == .gpr && register.number == 20 }
         // Branches write no general register.
         if let flow = insn.controlFlow, flow != .sequential { return false }
         switch detail.id {
@@ -1313,9 +1412,9 @@ public struct ValueTracer: Sendable {
             // These name a register first but read it.
             return false
         case AARCH64_INS_LDP, AARCH64_INS_LDNP:
-            return detail.operands.prefix(2).contains { $0.operand.register?.key == "x20" }
+            return detail.operands.prefix(2).contains { $0.operand.register.map(isX20) ?? false }
         default:
-            return detail.operands.first?.operand.register?.key == "x20"
+            return detail.operands.first?.operand.register.map(isX20) ?? false
         }
     }
 
@@ -1336,12 +1435,8 @@ public struct ValueTracer: Sendable {
     private static func sameFacts(_ a: State?, _ b: State) -> Bool {
         guard let a else { return false }
         if a == b { return true }
-        func isPlainRegister(_ key: String) -> Bool {
-            guard let first = key.first, first == "x" || first == "v" else { return false }
-            return key.dropFirst().allSatisfy(\.isNumber) && key.count > 1
-        }
         for key in Set(a.keys).union(b.keys) where a[key] != b[key] {
-            guard isPlainRegister(key), (a[key] ?? .unknown) == .unknown, (b[key] ?? .unknown) == .unknown
+            guard key.isNumberedRegister, (a[key] ?? .unknown) == .unknown, (b[key] ?? .unknown) == .unknown
             else { return false }
         }
         return true
@@ -1357,7 +1452,7 @@ public struct ValueTracer: Sendable {
         }
         // An address that escaped on any incoming path is reachable here, and
         // one the join drops from a register or slot is no longer followed:
-        // it escapes. Copies (`outgoing@`), widths and the awaited callee's
+        // it escapes. Copies (`.outgoing`), widths and the awaited callee's
         // parent header are not places this function keeps its pointers.
         var dropped: [AbstractValue] = []
         for state in states {
@@ -1375,18 +1470,15 @@ public struct ValueTracer: Sendable {
 
     // MARK: - Indirect result buffers
 
-    /// The buffer-contents keys: `result@<offset>/<bytes>` for a store through the
+    /// The buffer-contents keys: `.result(offset:bytes:)` for a store through the
     /// incoming x8, plus the whole-buffer and poison markers. They live in the
     /// register map so the block meet treats them like any other slot.
-    private static let resultPrefix = "result@"
-    private static let resultWholeKey = "result.whole"
-    private static let resultPoisonKey = "result.poison"
-    private static func resultKey(_ offset: Int, bytes: Int) -> String { "\(resultPrefix)\(offset)/\(bytes)" }
-    private static func resultOffset(from key: String) -> (offset: Int, bytes: Int)? {
-        guard key.hasPrefix(resultPrefix) else { return nil }
-        let parts = key.dropFirst(resultPrefix.count).split(separator: "/")
-        guard parts.count == 2, let offset = Int(parts[0]), let bytes = Int(parts[1]) else { return nil }
-        return (offset, bytes)
+    private static let resultWholeKey = Location.resultWhole
+    private static let resultPoisonKey = Location.resultPoison
+    private static func resultKey(_ offset: Int, bytes: Int) -> Location { .result(offset: offset, bytes: Int32(clamping: bytes)) }
+    private static func resultOffset(from key: Location) -> (offset: Int, bytes: Int)? {
+        if case .result(let offset, let bytes) = key { return (offset, Int(bytes)) }
+        return nil
     }
 
     /// Whether a value is (an alias of) the incoming result pointer.
@@ -1454,15 +1546,15 @@ public struct ValueTracer: Sendable {
     private func derivesUntrackedResultAlias(_ detail: StructuredInsn, in registers: State) -> Bool {
         let holdsPointer: (StructuredOperandInfo) -> Bool = { operand in
             guard let register = operand.operand.register else { return false }
-            return Self.isResultPointer(registers[register.key])
+            return Self.isResultPointer(registers[Location(register)])
         }
         let operands = detail.operands
         // Memory operands: a result-pointer base is modelled only with no index
         // register; a result pointer as the INDEX is never modelled.
         for operand in operands {
             if case .memory(let base, let index, _) = operand.operand {
-                if let index, Self.isResultPointer(registers[index.key]) { return true }
-                if let base, Self.isResultPointer(registers[base.key]) {
+                if let index, Self.isResultPointer(registers[Location(index)]) { return true }
+                if let base, Self.isResultPointer(registers[Location(base)]) {
                     if index != nil { return true }
                     if detail.writeback { return true } // pre/post-index rewrites the pointer
                 }
@@ -1532,7 +1624,7 @@ public struct ValueTracer: Sendable {
         if site.arguments.contains(where: { Self.isResultPointer($0) }) { Self.poisonResult(&registers) }
 
         let convention = calleeConventions[insn.address]
-        switch registers["x8"] {
+        switch registers[.x(8)] {
         case .indirectResultPointer?:
             switch convention {
             case .indirect?:
@@ -1944,15 +2036,17 @@ public struct ValueTracer: Sendable {
             let headerIn = inState[header] ?? [:]
             // Candidate slots (deterministic by key): a constant value on loop
             // entry that `meet` dropped at the header (loop-carried / divergent).
+            // Ordered by the slots' former string keys (`stack@-16` before
+            // `stack@-8`): the order numbers the placeholders, and so the names.
             let candidateKeys = preLoopEntry.keys.filter { key in
-                guard key.hasPrefix("stack@"), case .immediate = preLoopEntry[key] else { return false }
+                guard case .stack = key, case .immediate = preLoopEntry[key] else { return false }
                 return (headerIn[key] ?? .unknown) == .unknown
-            }.sorted()
+            }.sorted { $0.description < $1.description }
             guard !candidateKeys.isEmpty else { continue }
             // Seed each candidate with a fresh placeholder and re-transfer the loop
             // body so the back-edge value is expressed in terms of the placeholder.
             var seed = preLoopEntry
-            var placeholderId: [Int: String] = [:]
+            var placeholderId: [Int: Location] = [:]
             for (offset, key) in candidateKeys.enumerated() {
                 seed[key] = .local(offset)
                 placeholderId[offset] = key
@@ -2016,8 +2110,7 @@ public struct ValueTracer: Sendable {
                 initializations[branchAddr] = names.keys.sorted().compactMap { pid in
                     guard let key = placeholderId[pid], let name = names[pid],
                           case .immediate(let value)? = preLoopEntry[key] else { return nil }
-                    return LoopInitialization(name: name, value: value,
-                                              stackOffset: Int64(key.dropFirst("stack@".count)))
+                    return LoopInitialization(name: name, value: value, stackOffset: Self.stackOffset(from: key))
                 }
             }
         }
@@ -2229,7 +2322,7 @@ public struct ValueTracer: Sendable {
             guard index < detail.operands.count,
                   let register = detail.operands[index].operand.register
             else { return nil }
-            let value = registers[register.key] ?? .unknown
+            let value = registers[Location(register)] ?? .unknown
             return value == .unknown ? nil : value
         }
         switch detail.id {
@@ -2686,7 +2779,7 @@ public struct ValueTracer: Sendable {
                   let imm = detail.operands[1].operand.immediateValue
             else { clobber(detail, into: &registers); return }
             let shift = detail.operands[1].shift.type == AARCH64_SFT_LSL ? UInt64(detail.operands[1].shift.amount) : 0
-            let base: UInt64 = { if case .immediate(let v) = registers[dest.key] { return v } else { return 0 } }()
+            let base: UInt64 = { if case .immediate(let v) = registers[Location(dest)] { return v } else { return 0 } }()
             let mask = ~(UInt64(0xffff) << shift)
             write(dest, .immediate((base & mask) | (UInt64(bitPattern: imm) << shift)), into: &registers)
 
@@ -3027,7 +3120,7 @@ public struct ValueTracer: Sendable {
             }
         }
         for key in written.subtracting(modelled).sorted() {
-            guard let old = before[key], old != .unknown else { continue }
+            guard let location = Location(key: key), let old = before[location], old != .unknown else { continue }
             Probe.record(.tracerUnmodelledWrite, at: insn.address,
                          ["register": .label(key), "instruction": .label(insn.text), "kept": .label("\(old)")])
         }
@@ -3141,7 +3234,7 @@ public struct ValueTracer: Sendable {
         switch value {
         case .asyncContext, .asyncCalleeContext, .asyncResumeParent:
             guard reg.kind == .gpr, reg.widthBits == 64 else {
-                registers[reg.key] = .unknown
+                registers[Location(reg)] = .unknown
                 return
             }
         default:
@@ -3151,10 +3244,10 @@ public struct ValueTracer: Sendable {
         // result can overflow the word. Constants alone missed `mov w0, w0`
         // and `add w0, w0, #1` with an incoming UInt64 argument.
         if reg.kind == .gpr, reg.widthBits == 32 {
-            registers[reg.key] = narrowed(value, bits: 32)
+            registers[Location(reg)] = narrowed(value, bits: 32)
             return
         }
-        registers[reg.key] = value
+        registers[Location(reg)] = value
     }
 
     private func bitwiseComplement(_ value: AbstractValue) -> AbstractValue {
@@ -3305,8 +3398,8 @@ public struct ValueTracer: Sendable {
 
     /// The tracked flags value from the most recent modelled compare, keyed so it
     /// flows through the register map and the block meet like any other state.
-    private static let flagsKey = "nzcv.flags"
-    private static let flagsWidthKey = "nzcv.width"
+    private static let flagsKey = Location.flags
+    private static let flagsWidthKey = Location.flagsWidth
 
     private static let flagCodes: [AArch64CC_CondCode] = [
         AArch64CC_EQ, AArch64CC_NE, AArch64CC_HS, AArch64CC_LO,
@@ -3617,7 +3710,7 @@ public struct ValueTracer: Sendable {
         if let shifted = operand.shiftedImmediate { return .immediate(UInt64(bitPattern: shifted)) }
         guard let reg = operand.operand.register else { return .unknown }
         if reg.kind == .zero { return .immediate(0) }
-        var value = registers[reg.key] ?? .unknown
+        var value = registers[Location(reg)] ?? .unknown
         // A 32-bit register is the low word of its 64-bit key. `cmp w8, w9`
         // with x8 = 0x1_0000_0001 compares 1, not the whole value. A known
         // constant is cut exactly, and sign- or zero-extended when the
@@ -3659,7 +3752,7 @@ public struct ValueTracer: Sendable {
     }
 
     private enum MemoryTarget {
-        case stackSlot(String)
+        case stackSlot(Location)
         case absolute(UInt64)
         /// A byte offset into `self`.
         case selfField(Int)
@@ -3678,7 +3771,7 @@ public struct ValueTracer: Sendable {
         case asyncCalleeSlot(Int)
     }
 
-    private static let calleeParentKey = "callee-context.parent"
+    private static let calleeParentKey = Location.calleeParent
 
     private static func isFullWidthGPR(_ operand: StructuredOperandInfo) -> Bool {
         guard let register = operand.operand.register else { return false }
@@ -3710,8 +3803,8 @@ public struct ValueTracer: Sendable {
             let mayReachCallee = registers[Self.calleeParentKey] != nil
                 || registers.values.contains(.asyncCalleeContext)
             registers[Self.calleeParentKey] = nil
-            for key in registers.keys where key.hasPrefix(Self.contextSlotPrefix) {
-                guard let start = Int(key.dropFirst(Self.contextSlotPrefix.count)) else { continue }
+            for key in registers.keys {
+                guard case .contextSlot(let start) = key else { continue }
                 if Self.byteRangesOverlap(start, 8, offset, bytes) { registers[key] = nil }
             }
             return mayReachCallee
@@ -3719,12 +3812,12 @@ public struct ValueTracer: Sendable {
         if case .asyncCalleeSlot(let offset)? = target, let bytes, bytes > 0 {
             // The child's extent is unknown: child+32 may be parent+16.
             // Forget the other identity's facts and decline chain-wide claims.
-            let mayReachOwn = registers.keys.contains { $0.hasPrefix(Self.contextSlotPrefix) }
-            for key in registers.keys where key.hasPrefix(Self.contextSlotPrefix) { registers[key] = nil }
+            let mayReachOwn = registers.keys.contains(where: Self.isContextSlot)
+            for key in registers.keys where Self.isContextSlot(key) { registers[key] = nil }
             if Self.byteRangesOverlap(0, 8, offset, bytes) { registers[Self.calleeParentKey] = nil }
             return mayReachOwn
         }
-        for key in registers.keys where key.hasPrefix(Self.contextSlotPrefix) { registers[key] = nil }
+        for key in registers.keys where Self.isContextSlot(key) { registers[key] = nil }
         registers[Self.calleeParentKey] = nil
         return true
     }
@@ -3745,7 +3838,7 @@ public struct ValueTracer: Sendable {
         else { return nil }
         // Post-index accesses the base itself; the displacement applies after.
         let effective = detail.postIndex ? 0 : displacement
-        switch registers[base.key] {
+        switch registers[Location(base)] {
         case .frame(let offset): return .stackSlot(Self.stackKey(offset &+ effective))
         case .address(let address): return .absolute(address &+ UInt64(bitPattern: effective))
         case .selfPointer: return .selfField(Int(effective))
@@ -3822,19 +3915,21 @@ public struct ValueTracer: Sendable {
     }
 
     /// Stack slots share the register map, under a key no register can collide with.
-    private static func stackKey(_ frameOffset: Int64) -> String { "stack@\(frameOffset)" }
-    private static func stackWidthKey(_ frameOffset: Int64) -> String { "stack-width@\(frameOffset)" }
-    private static let outgoingPrefix = "outgoing@"
+    private static func stackKey(_ frameOffset: Int64) -> Location { .stack(frameOffset) }
+    private static func stackWidthKey(_ frameOffset: Int64) -> Location { .stackWidth(frameOffset) }
 
     /// The register-state key for a word of the function's own async context
     /// this funclet stored, by byte offset.
-    private static let contextSlotPrefix = "ownctx@"
-    static func contextSlotKey(_ offset: Int) -> String { "\(contextSlotPrefix)\(offset)" }
+    static func contextSlotKey(_ offset: Int) -> Location { .contextSlot(offset) }
+    private static func isContextSlot(_ key: Location) -> Bool {
+        if case .contextSlot = key { return true }
+        return false
+    }
 
-    private static func outgoingKey(_ frameOffset: Int64) -> String { "\(outgoingPrefix)\(frameOffset)" }
-    private static func stackOffset(from key: String) -> Int64? {
-        guard key.hasPrefix("stack@") else { return nil }
-        return Int64(key.dropFirst("stack@".count))
+    private static func outgoingKey(_ frameOffset: Int64) -> Location { .outgoing(frameOffset) }
+    private static func stackOffset(from key: Location) -> Int64? {
+        if case .stack(let offset) = key { return offset }
+        return nil
     }
 
     // MARK: - Escaped frame memory
@@ -3846,21 +3941,16 @@ public struct ValueTracer: Sendable {
     /// still in memory or a register. From then on any call, and any store
     /// through a pointer of unknown origin, may rewrite what it reaches.
     ///
-    /// - `frame.escaped@k`: an address at offset k, reaching up to the next
+    /// - `.frameEscaped(k)`: an address at offset k, reaching up to the next
     ///   local whose address the function takes separately
     ///   (`addressTakenFrameOffsets`) or the frame top; from an incoming
     ///   stack argument (k >= 0), upward without bound.
-    /// - `frame.below@k`: an address inside a dynamic allocation below k
-    ///   (`frame.dynamic@k`), which reaches nothing at or above k.
-    /// - `frame.escaped`: an address of unknown offset; it reaches everything.
+    /// - `.frameBelow(k)`: an address inside a dynamic allocation below k
+    ///   (`.frameDynamic(k)`), which reaches nothing at or above k.
+    /// - `.frameEscapedAll`: an address of unknown offset; it reaches everything.
     ///
     /// They are MAY facts: `meet` unions them, and they never clear.
-    private static let frameEscapePrefix = "frame.escaped@"
-    private static let frameBelowPrefix = "frame.below@"
-    private static let frameEscapeAllKey = "frame.escaped"
-    /// sp was moved below offset k by a non-constant amount: `frame(k) - n`
-    /// there is a dynamic allocation, not a pointer back into the frame.
-    private static let frameDynamicPrefix = "frame.dynamic@"
+    private static let frameEscapeAllKey = Location.frameEscapedAll
 
     /// The function's own async context reached a place the tracer does not
     /// follow: stored outside a context slot, handed to a call, transformed,
@@ -3868,23 +3958,25 @@ public struct ValueTracer: Sendable {
     /// context has its own marker: a call handed it (`swift_task_dealloc`)
     /// may rewrite that context, whose parent header is all that is known of
     /// it. MAY facts, like the frame markers.
-    /// `context.escaped@k`: a pointer to offset k of the own context, which
+    /// `.contextEscaped(k)`: a pointer to offset k of the own context, which
     /// reaches k and above (an `inout` slot handed to a call); k = 0 is the
     /// whole context.
-    private static let contextEscapePrefix = "context.escaped@"
-    private static let calleeContextEscapeKey = "callee-context.escaped"
+    private static let calleeContextEscapeKey = Location.calleeContextEscaped
 
     /// A state key that is the only record of a value in a register, a frame
     /// slot, a context slot or a result-buffer word.
-    private static func holdsValue(_ key: String) -> Bool {
-        if let first = key.first, first == "x" || first == "v", key.count > 1, key.dropFirst().allSatisfy(\.isNumber) {
-            return true
+    private static func holdsValue(_ key: Location) -> Bool {
+        switch key {
+        case .x, .v, .sp, .stack, .contextSlot, .result: true
+        default: false
         }
-        return key == "sp" || key.hasPrefix("stack@") || key.hasPrefix(contextSlotPrefix) || key.hasPrefix(resultPrefix)
     }
 
-    private static func isEscapeMarker(_ key: String) -> Bool {
-        key.hasPrefix("frame.") || key.hasPrefix(contextEscapePrefix) || key == calleeContextEscapeKey
+    private static func isEscapeMarker(_ key: Location) -> Bool {
+        switch key {
+        case .frameEscaped, .frameBelow, .frameEscapedAll, .frameDynamic, .contextEscaped, .calleeContextEscaped: true
+        default: false
+        }
     }
 
     private static func contains(_ target: AbstractValue, in value: AbstractValue) -> Bool {
@@ -3909,7 +4001,7 @@ public struct ValueTracer: Sendable {
         if contains(.asyncContext, in: value) {
             let offset: Int64 = if case .binary(.add, .asyncContext, .immediate(let k)) = value,
                                    k < UInt64(Int64.max) { Int64(k) } else { 0 }
-            registers[contextEscapePrefix + String(offset)] = .immediate(1)
+            registers[.contextEscaped(offset)] = .immediate(1)
         }
         if contains(.asyncCalleeContext, in: value) { registers[calleeContextEscapeKey] = .immediate(1) }
         markFrameEscape(value, into: &registers)
@@ -3944,9 +4036,9 @@ public struct ValueTracer: Sendable {
     private static func markFrameEscape(_ value: AbstractValue, into registers: inout State) {
         guard containsFrame(value) else { return }
         if case .frame(let offset) = value {
-            registers[frameEscapePrefix + String(offset)] = .immediate(1)
-        } else if let base = allocationBase(value), registers[frameDynamicPrefix + String(base)] != nil {
-            registers[frameBelowPrefix + String(base)] = .immediate(1)
+            registers[.frameEscaped(offset)] = .immediate(1)
+        } else if let base = allocationBase(value), registers[.frameDynamic(base)] != nil {
+            registers[.frameBelow(base)] = .immediate(1)
         } else {
             registers[frameEscapeAllKey] = .immediate(1)
         }
@@ -3972,9 +4064,9 @@ public struct ValueTracer: Sendable {
         let everything = registers[frameEscapeAllKey] != nil
         var regions: [(start: Int64, end: Int64)] = []
         for key in registers.keys {
-            if key.hasPrefix(frameEscapePrefix), let start = Int64(key.dropFirst(frameEscapePrefix.count)) {
+            if case .frameEscaped(let start) = key {
                 regions.append((start, start >= 0 ? Int64.max : (addressTaken.first { $0 > start } ?? 0)))
-            } else if key.hasPrefix(frameBelowPrefix), let end = Int64(key.dropFirst(frameBelowPrefix.count)) {
+            } else if case .frameBelow(let end) = key {
                 regions.append((Int64.min, end))
             }
         }
@@ -4037,7 +4129,7 @@ public struct ValueTracer: Sendable {
         let valueInputs = detail.operands.compactMap { info -> AbstractValue? in
             guard let register = info.operand.register, register.kind != .zero, info.isRead || info.access == 0
             else { return nil }
-            return registers[register.key]
+            return registers[Location(register)]
         }
         let reads = (frame: valueInputs.contains(where: Self.containsFrame),
                      context: valueInputs.contains(where: Self.containsContext))
@@ -4054,7 +4146,7 @@ public struct ValueTracer: Sendable {
             tracked = !(Self.escapedReach(registers, addressTaken: frame.boundaries)?(start, bytes) ?? false)
         }
         // A context pointer stored into a context slot by a full-width store
-        // stays followed (`ownctx@`, the callee's parent header): that is how
+        // stays followed (`.contextSlot`, the callee's parent header): that is how
         // -Onone spills it and how an await links the callee to its parent.
         let contextSlotStore: Bool = switch target {
         case .asyncSlot?, .asyncCalleeSlot?:
@@ -4077,13 +4169,13 @@ public struct ValueTracer: Sendable {
         case .absolute?, .selfField?, .vtableMethod?, .arrayElement?, .resultSlot?, .asyncSlot?, .asyncCalleeSlot?:
             break
         case nil:
-            let base = memory.base.flatMap { registers[$0.key] }
+            let base = memory.base.flatMap { registers[Location($0)] }
             let indexed = memory.index != nil
             if let base, Self.containsFrame(base) {
                 // Inside a dynamic allocation below k, a write at a constant
                 // displacement stays below k plus its extent.
                 if !indexed, let allocation = Self.allocationBase(base),
-                   registers[Self.frameDynamicPrefix + String(allocation)] != nil,
+                   registers[.frameDynamic(allocation)] != nil,
                    let bytes = Self.accessBytes(detail) {
                     let limit = allocation &+ max(memory.displacement, 0) &+ Int64(bytes)
                     Self.forgetFrame(in: &registers) { offset, _ in offset < limit }
@@ -4140,10 +4232,10 @@ public struct ValueTracer: Sendable {
         let delta = detail.postIndex
             ? (detail.operands.last?.operand.immediateValue ?? 0)
             : displacement
-        switch registers[base.key] {
-        case .frame(let offset): registers[base.key] = .frame(offset &+ delta)
-        case .address(let address): registers[base.key] = .address(address &+ UInt64(bitPattern: delta))
-        default: registers[base.key] = .unknown
+        switch registers[Location(base)] {
+        case .frame(let offset): registers[Location(base)] = .frame(offset &+ delta)
+        case .address(let address): registers[Location(base)] = .address(address &+ UInt64(bitPattern: delta))
+        default: registers[Location(base)] = .unknown
         }
     }
 
