@@ -29,6 +29,8 @@ private let frameEscapeCases: [(member: String, rendered: String)] = [
     ("arityBound", "return 7"),
     ("outgoingGap", "return 7"),
     ("stackPrefixNoArgs", "return 7"),
+    ("fpBoundary", "return 7"),
+    ("fpAboveBoundary", "return 7"),
 ]
 
 @Test func frameEscapeReductionsRunAsDocumentedIfPresent() throws {
@@ -65,6 +67,8 @@ private let frameEscapeCases: [(member: String, rendered: String)] = [
     #expect(try call("$s11FrameEscape10arityBoundSiyF") == 7)
     #expect(try call("$s11FrameEscape11outgoingGapSiyF") == 7)
     #expect(try call("$s11FrameEscape17stackPrefixNoArgsSiyF") == 7)
+    #expect(try call("$s11FrameEscape10fpBoundarySiyF") == 7)
+    #expect(try call("$s11FrameEscape15fpAboveBoundarySiyF") == 7)
     #expect(try call("$s11FrameEscape11unknownLoadSiyF") == 7)
     var flag: Int64 = 0
     let flagAddress = withUnsafeMutablePointer(to: &flag) { Int64(Int(bitPattern: $0)) }

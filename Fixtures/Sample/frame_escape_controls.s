@@ -388,6 +388,39 @@ _$s11FrameEscape17stackPrefixNoArgsSiyF:
 _$s11FrameEscape4sinkyySiF:
   ret
 
+// Control: two locals addressed from x29. The lower one's address goes to
+// a call that writes 11 through it; the upper one's address is taken
+// separately, so it is a different variable and keeps 7. True result: 7.
+.globl _$s11FrameEscape10fpBoundarySiyF
+_$s11FrameEscape10fpBoundarySiyF:
+  sub sp, sp, #48
+  stp x29, x30, [sp, #32]
+  add x29, sp, #32
+  mov x9, #7
+  stur x9, [x29, #-8]
+  sub x0, x29, #16
+  bl _frame_escape_fill
+  sub x9, x29, #8
+  ldr x0, [x9]
+  ldp x29, x30, [sp, #32]
+  add sp, sp, #48
+  ret
+
+// Control: the same with x29 at the frame's base and the locals above it.
+// True result: 7.
+.globl _$s11FrameEscape15fpAboveBoundarySiyF
+_$s11FrameEscape15fpAboveBoundarySiyF:
+  stp x29, x30, [sp, #-48]!
+  mov x29, sp
+  mov x9, #7
+  str x9, [x29, #24]
+  add x0, x29, #16
+  bl _frame_escape_fill
+  add x9, x29, #24
+  ldr x0, [x9]
+  ldp x29, x30, [sp], #48
+  ret
+
 .globl _frame_escape_stash_stack
 _frame_escape_stash_stack:
   ldr x9, [sp]
