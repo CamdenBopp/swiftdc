@@ -36,12 +36,14 @@ is where the open soundness bugs are.
 
 ## The defects this shape produces
 
-- **Five memory models, five sets of holes.** The top open soundness item is a
-  `ValueTracer` hole that `Preservation` does not have: `cacheEscape` at -O
+- **Five memory models, five sets of holes.** The top open soundness item was
+  a `ValueTracer` hole that `Preservation` does not have: `cacheEscape` at -O
   stores a frame address to a global, writes 7 through it, calls a helper that
   writes 11 through the global, and renders `return 7`. Native execution
   returns 11. Each analysis that needs frame facts re-derives escape and
-  aliasing, and each one gets a different subset right.
+  aliasing, and each one gets a different subset right. (The stopgap below
+  shipped on 2026-10-15: per-region escape markers in the tracer, unioned at
+  joins. The duplication it describes remains.)
 - **Facts are strings.** `demangledName(from:)` returns any leading note not on
   its deny-list as a callee name. Adding the `swift-exit=` note on 2026-10-15
   would have made call graphs list it as a callee; the deny-list had to grow

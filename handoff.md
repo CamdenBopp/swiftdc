@@ -8,11 +8,23 @@ delete items from this file as they ship.
 
 ## Current session (2026-10-15)
 
-Swift error exits are classified per exit, frame slots reachable through
-escaped addresses and async context slots behind escaped context pointers
-are forgotten at later calls (readiness entries of 2026-10-15). Enforcing
-suite: 697 tests. The IR plan is in [docs/IR.md](docs/IR.md). Next: the `()` arity rendering for signatureless callees (pad known
-arities), then IR steps 1–3.
+Shipped (readiness entries of 2026-10-15): Swift error exits classified per
+exit; frame slots behind escaped addresses (including the -O `cacheEscape`
+shape) and async context slots behind escaped context pointers forgotten at
+later calls; capped loop-body passes claim nothing; known C arities padded.
+Speed, each output-identical on every fixture view and Clarc: per-function
+facts in enrichment, callee facts once per call and shared per run, the
+frame-layout text filter, and typed tracer locations (IR step 3). Clarc
+`disasm --pseudo` went from 38.5 s to 23.2 s. New guards: the throws-name
+x21 rule and the x29-relative frame boundaries had no failing test when
+removed; both do now. Enforcing suite: 700 tests. The IR plan is in
+[docs/IR.md](docs/IR.md).
+
+Next: IR step 1 (typed facts beside the annotation strings) and step 2
+(CFG once: `basicBlocks()` still runs in `analyze`, in enrichment and in
+the structurer). Profile leaders after typed locations: the tracer's
+transfer and meet, enrichment's per-instruction closure, `renderPseudo`,
+and Capstone decode.
 
 ## Soundness development session (2026-10-13)
 
@@ -25,8 +37,8 @@ full native matrix are still pending. Async unknown-pointer writes now invalidat
 mutable context seeds/headers; fourteen independent mutations fail and six of
 184 source views change. The separately exposed known-signature omission now retains unknown x0
 placeholders for onError(Int) and log(Int); its guard mutation fails five
-assertions. Next is compiler-generated escaped stack cache facts across unknown
-calls (native 11, optimized final source incorrectly return 7). Do not treat the earlier 614-test summary as current.
+assertions. (The escaped stack cache across unknown calls shipped on
+2026-10-15.)
 
 Confirmed remaining risks include transitive outlined/tail register effects and
 writes through incoming x29. Independent native reductions confirm them;
