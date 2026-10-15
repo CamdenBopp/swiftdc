@@ -15,7 +15,9 @@ later calls; capped loop-body passes claim nothing; known C arities padded.
 Speed, each output-identical on every fixture view and Clarc: per-function
 facts in enrichment, callee facts once per call and shared per run, the
 frame-layout text filter, and typed tracer locations (IR step 3). Clarc
-`disasm --pseudo` went from 38.5 s to 23.2 s. New guards: the throws-name
+`disasm --pseudo`, `405fc5a` against `7df2b65`, three alternating release
+rounds: 510.1 G to 309.6 G instructions retired (-39%), wall 36.5 s to
+23.4 s median, output identical. New guards: the throws-name
 x21 rule and the x29-relative frame boundaries had no failing test when
 removed; both do now. Enforcing suite: 700 tests. The IR plan is in
 [docs/IR.md](docs/IR.md).
