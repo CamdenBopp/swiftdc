@@ -3529,6 +3529,15 @@ public struct Disassembler: Sendable {
             return function.replacingInstructions(instructions)
         }
 
+        // Facts of the function's own signature, read once rather than at
+        // every instruction: each parses the demangled name, and the return
+        // register walks the CFG.
+        let provenMachineValueReturn = function.hasProvenMachineValueReturn
+        let signatureReturnsValue = DisassembledFunction.signatureReturnsValue(
+            displayName: function.analysisDisplayName, objcSignature: function.objcMethod?.signature)
+        let functionReturnRegister = Self.swiftReturnRegister(
+            of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
+
         // Callee name per call/tail-call address, for nesting result expressions.
         var calleeByAddress: [UInt64: String] = [:]
         for insn in function.instructions
@@ -5012,8 +5021,7 @@ public struct Disassembler: Sendable {
                 analysis.exitValues[insn.address].map { countDirectUses($0, at: insn.address) }
             }
         } else if function.objcMethod == nil, returnsDirectly,
-                  let register = Self.swiftReturnRegister(of: function, enumCaseIndex: enumCaseIndex,
-                                                          classTypeIndex: classTypeIndex) {
+                  let register = functionReturnRegister {
             for insn in function.instructions where isReturn(insn) && normalReturnIsProven(at: insn.address) && !throwExits.contains(insn.address) {
                 (register == .floating ? analysis.exitFloatValues : analysis.exitValues)[insn.address]
                     .map { countDirectUses($0, at: insn.address) }
@@ -5105,8 +5113,7 @@ public struct Disassembler: Sendable {
             } else if function.objcMethod == nil, isReturn(insn),
                       normalReturnIsProven(at: insn.address),
                       !throwExits.contains(insn.address), returnsDirectly,
-                      let returnRegister = Self.swiftReturnRegister(
-                          of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
+                      let returnRegister = functionReturnRegister {
                 // A Swift return that is a call's result consumes it, so the call
                 // isn't also printed as its own statement above the `return`.
                 let value = returnRegister == .floating
@@ -5184,7 +5191,9 @@ public struct Disassembler: Sendable {
                 }
             }
 
-            let callee = DisassembledFunction.calleeName(of: insn)
+            // Parsed once per call or branch above; nil for anything else,
+            // where no use below applies.
+            let callee = calleeByAddress[insn.address]
             let isObjCNonVoid = function.objcMethod.map { !$0.returnsVoid } == true
             if scalarTailReturns.contains(insn.address), let callee {
                 sourceNotes.append("return \(callExpression(callee: callee, values: argumentsByAddress[insn.address] ?? [], site: insn.address))")
@@ -5227,8 +5236,7 @@ public struct Disassembler: Sendable {
                 }
                 sourceNotes.append("throw \(thrown)")
             } else if function.objcMethod == nil, isReturn(insn), returnsDirectly,
-               normalReturnIsProven(at: insn.address), let returnRegister = Self.swiftReturnRegister(
-                   of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
+               normalReturnIsProven(at: insn.address), let returnRegister = functionReturnRegister {
                 let rawExit = returnRegister == .floating
                     ? analysis.exitFloatValues[insn.address]
                     : analysis.exitValues[insn.address]
@@ -5303,8 +5311,7 @@ public struct Disassembler: Sendable {
             // jump table not recovered). Without a statement the path simply
             // ended: an `await` through a closure vanished, and a function
             // whose only call was `br x1` read as a leaf.
-            if insn.controlFlow == .branch, insn.branchTarget == nil,
-               DisassembledFunction.calleeName(of: insn) == nil,
+            if insn.controlFlow == .branch, insn.branchTarget == nil, callee == nil,
                function.switchTargets[insn.address] == nil,
                !asyncReturns.contains(insn.address) {
                 // The tracer may have proven the register (`br x2` through a
@@ -5403,12 +5410,9 @@ public struct Disassembler: Sendable {
 
             // Unknown facts do not mean the source result is absent. Keep the
             // exit visible even when there were no usable tracer facts at all.
-            let valueContract = function.hasProvenMachineValueReturn
-                || (throwsSignature?.isThrowing == true && normalReturnIsProven(at: insn.address)
-                    && DisassembledFunction.signatureReturnsValue(displayName: function.analysisDisplayName,
-                        objcSignature: function.objcMethod?.signature))
-                || (asyncReturns.contains(insn.address) && DisassembledFunction.signatureReturnsValue(
-                    displayName: function.analysisDisplayName, objcSignature: function.objcMethod?.signature))
+            let valueContract = provenMachineValueReturn
+                || (throwsSignature?.isThrowing == true && signatureReturnsValue && normalReturnIsProven(at: insn.address))
+                || (asyncReturns.contains(insn.address) && signatureReturnsValue)
             if isReturn(insn), valueContract, normalReturnIsProven(at: insn.address), !throwExits.contains(insn.address),
                !mergedThrowEnds.contains(insn.address),
                !sourceNotes.contains(where: { $0.hasPrefix("return ") || $0.hasPrefix("throw ") || $0.hasPrefix("yield ") }) {
@@ -5444,7 +5448,7 @@ public struct Disassembler: Sendable {
                     "path": returnPath(at: insn.address)])
                 if status == "recovered", let renderedReturn {
                     let register = asyncReturns.contains(insn.address) ? asyncReturnRegister
-                        : Self.swiftReturnRegister(of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
+                        : functionReturnRegister
                     let value: AbstractValue = if isObjCNonVoid {
                         analysis.exitValues[insn.address].map(sanitizeValue) ?? .unknown
                     } else if returnsDirectly, let register {

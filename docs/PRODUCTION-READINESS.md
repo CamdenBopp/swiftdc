@@ -2991,7 +2991,6 @@ if a test was observed to fail without the fix.
   with four issues when the old `break` is restored and passes with the fix.
   Enforcing suite: 697 tests in 11 suites.
 
-
 ## 2026-10-15: known C arities
 
 - **FIXED — calls of known C arity printed their trimmed operands.**
@@ -3017,3 +3016,21 @@ if a test was observed to fail without the fix.
   Verified: `KnownArityTests` (two tests) fail with two issues when the
   layout is removed and with two when `memset` leaves the table; enforcing
   suite 699 tests in 11 suites.
+
+## 2026-10-15: per-function facts in the enrichment pass
+
+- **FIXED (speed) — the enrichment pass re-derived per-function facts at
+  every instruction.** A `sample` of a release `disasm --pseudo` on Clarc
+  put 5,182 of 9,771 analysis samples in `enrichCallArguments`, with
+  `hasProvenMachineValueReturn` (414), `signatureReturnsValue` (289) and
+  `splitSignature` (284) among its leaves: the per-instruction value
+  contract parsed the function's own demangled name twice per instruction.
+  `swiftReturnRegister(of:)`, which reruns a CFG walk, ran at every return
+  in four places, and `calleeName(of:)` re-parsed every instruction's
+  annotation though a per-call map already held it. All are computed once
+  per function now (after the no-facts early exit). Output is unchanged:
+  every fixture's structured, pseudo, listing and JSON view is
+  byte-identical, and so is Clarc's `--pseudo`.
+  Release A/B on Clarc, five alternating rounds: wall 38.47 s against
+  33.49 s median (-13%), user CPU 36.01 s against 32.05 s (-11%); every
+  round of the change beat every baseline round.
