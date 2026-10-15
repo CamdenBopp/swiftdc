@@ -2779,9 +2779,11 @@ public struct ValueTracer: Sendable {
                   let imm = detail.operands[1].operand.immediateValue
             else { clobber(detail, into: &registers); return }
             let shift = detail.operands[1].shift.type == AARCH64_SFT_LSL ? UInt64(detail.operands[1].shift.amount) : 0
-            let base: UInt64 = { if case .immediate(let v) = registers[Location(dest)] { return v } else { return 0 } }()
-            let mask = ~(UInt64(0xffff) << shift)
-            write(dest, .immediate((base & mask) | (UInt64(bitPattern: imm) << shift)), into: &registers)
+            // The other 48 bits are the register's own. Reading an untracked
+            // register as zero claimed a constant the machine never makes
+            // (`movk x0, #1` on an argument rendered `return 1`).
+            let kept = expression(.bitAnd, registers[Location(dest)] ?? .unknown, .immediate(~(UInt64(0xffff) << shift)))
+            write(dest, expression(.bitOr, kept, .immediate(UInt64(bitPattern: imm) << shift)), into: &registers)
 
         case AARCH64_INS_LDR, AARCH64_INS_LDUR, AARCH64_INS_LDRB, AARCH64_INS_LDURB,
              AARCH64_INS_LDRH, AARCH64_INS_LDURH, AARCH64_INS_LDRSB, AARCH64_INS_LDURSB,

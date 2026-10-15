@@ -3117,3 +3117,23 @@ if a test was observed to fail without the fix.
   every round of the change faster than every baseline round), user CPU
   25.18 s against 22.15 s, instructions retired 351.6 G against 309.7 G
   (-11.9%), peak footprint 59.4 MB against 59.8 MB.
+
+## 2026-10-15: partial writes
+
+- **FIXED (soundness): `movk` on a register the tracer held no constant
+  for claimed a constant.** MOVK replaces one 16-bit field and keeps the
+  other 48 bits. The tracer read a non-constant register as zero, so
+  `movk x0, #1` on an argument claimed `return 1` (native:
+  `(x0 & ~0xffff) | 1`). On GoodLinks the compiler builds a 64-bit
+  small-string word with `mov`/`movk` and branches into the middle of the
+  sequence from another path; the join dropped the low bits and four call
+  arguments rendered a word whose low 32 or 48 bits were zero-filled, a
+  value neither path makes (`LocalizationValue.init(0x746f4e2000000000, …)`).
+  The result is now `(value & ~field) | inserted`, which folds to the same
+  constant when the register is one, is exact for a symbolic value and is
+  unknown otherwise. `partial_writes.s` runs each probe natively over 100
+  input pairs; before the fix four of its five probes claimed constants
+  (290 mismatches). Blast radius: no fixture view and no Clarc line change;
+  GoodLinks changes at five call sites, four zero-filled words now `?` and
+  one a select of the two words the paths build, top field included;
+  `libswift_RegexParser` (arm64e) is unchanged.
