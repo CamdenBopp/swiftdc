@@ -13,6 +13,12 @@ public struct BasicBlock: Sendable {
     public var switchCases: [UInt64]? = nil
 }
 
+/// A CFG edge: from the last instruction of a block to a block start.
+struct CFGEdge: Hashable, Sendable {
+    let from: UInt64
+    let to: UInt64
+}
+
 public extension DisassembledFunction {
     /// Recover the function's basic blocks from Capstone control-flow info.
     /// Requires instructions to carry `controlFlow` (the Capstone-enriched path);

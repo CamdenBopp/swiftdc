@@ -120,7 +120,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
 /// branch out, a register holding anything but its own entry value is not
 /// preserved. Joins keep only what every path agrees on, and an unfinished
 /// fixpoint gives up on every written register.
-private enum Preservation {
+enum Preservation {
     enum Value: Hashable {
         case entry(String)
         case stack(Int64)
@@ -185,27 +185,54 @@ private enum Preservation {
     static func unrestored(
         _ written: Set<String>, blocks: [BasicBlock], entry: UInt64, addresses: Set<UInt64>
     ) -> Set<String> {
+        guard let exits = entryValuesAtExits(blocks: blocks, entry: entry, addresses: addresses) else {
+            return written
+        }
+        var clobbered = Set<String>()
+        for preserved in exits.values { clobbered.formUnion(written.subtracting(preserved)) }
+        return clobbered
+    }
+
+    /// For each exit (a `ret`, or a tail branch out), the callee-saved
+    /// registers that hold their entry values there on every path. Nil when
+    /// the body is not fully decoded or the fixpoint is capped: nothing is
+    /// claimed then. An exit no path from the entry reaches is absent.
+    ///
+    /// `callClobbers` names registers a call does not hand back despite the
+    /// ABI (a callee that may throw redefines x21; an outlined fragment can
+    /// write any of them). They may hold a frame address afterwards.
+    /// `excluding` drops edges whose paths are accounted for elsewhere (a
+    /// throw merged into a shared epilogue); exits are judged without them.
+    static func entryValuesAtExits(
+        blocks: [BasicBlock], entry: UInt64, addresses: Set<UInt64>,
+        excluding excludedEdges: Set<CFGEdge> = [],
+        callClobbers: (Instruction) -> Set<String> = { _ in [] }
+    ) -> [UInt64: Set<String>]? {
+        let calleeSaved = (19...29).map { "x\($0)" }
         var initial = State(registers: ["sp": .stack(0)], slots: [:])
-        for index in 19...29 { initial.registers["x\(index)"] = .entry("x\(index)") }
+        for key in calleeSaved { initial.registers[key] = .entry(key) }
         let blockAt = Dictionary(blocks.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
         var inState: [UInt64: State] = [entry: initial]
-        var clobbered = Set<String>()
+        // States only shrink, so the last visit of an exit is the smallest;
+        // intersecting every visit yields it without tracking which was last.
+        var exits: [UInt64: Set<String>] = [:]
         var worklist = [entry]
         var visits = 0
         while let start = worklist.popLast() {
             visits += 1
             guard visits <= 64 * max(blocks.count, 1) else {
                 Probe.record(.summaryCap, at: entry, ["pass": .label("preservation")])
-                return written
+                return nil
             }
-            guard let block = blockAt[start], var state = inState[start] else { return written }
+            guard let block = blockAt[start], var state = inState[start] else { return nil }
             for insn in block.instructions {
-                guard let detail = insn.detail else { return written }
+                guard let detail = insn.detail else { return nil }
                 let internalBranch = insn.branchTarget.map(addresses.contains) == true
-                let exits = insn.controlFlow == .return
+                let isExit = insn.controlFlow == .return
                     || (insn.controlFlow == .branch && !internalBranch && block.switchCases == nil)
-                if exits {
-                    for key in written where state.value(key) != .entry(key) { clobbered.insert(key) }
+                if isExit {
+                    let preserved = Set(calleeSaved.filter { state.value($0) == .entry($0) })
+                    exits[insn.address] = exits[insn.address].map { $0.intersection(preserved) } ?? preserved
                     continue
                 }
                 if insn.controlFlow == .call {
@@ -220,11 +247,14 @@ private enum Preservation {
                     // The callee keeps the ABI: x19–x29 and sp survive it.
                     for index in 0...18 { state.setRegister("x\(index)", to: .unknown) }
                     state.setRegister("x30", to: .unknown)
+                    for key in callClobbers(insn) { state.setRegister(key, to: .unknown, mayAliasStack: true) }
                     continue
                 }
                 apply(detail, to: &state)
             }
             for successor in block.successors where addresses.contains(successor) {
+                if let end = block.instructions.last?.address,
+                   excludedEdges.contains(CFGEdge(from: end, to: successor)) { continue }
                 let merged = inState[successor].map { $0.merged(with: state) } ?? state
                 if merged != inState[successor] {
                     inState[successor] = merged
@@ -232,7 +262,7 @@ private enum Preservation {
                 }
             }
         }
-        return clobbered
+        return exits
     }
 
     /// The memory operand's address and the base's value after writeback.
