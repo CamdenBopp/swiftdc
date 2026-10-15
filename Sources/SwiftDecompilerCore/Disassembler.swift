@@ -3347,8 +3347,8 @@ public struct Disassembler: Sendable {
         if let objcIndex {
             let selectors = resolver.selectors.bySelref
             let method = function.objcMethod
-            tracer.callReturnsVoid = { insn, site in
-                guard let callee = DisassembledFunction.calleeName(of: insn), callee.hasPrefix("objc_msgSend") else { return false }
+            tracer.callReturnsVoid = { callee, site in
+                guard callee.hasPrefix("objc_msgSend") else { return false }
                 let selector: String?
                 if let marker = callee.firstIndex(of: "$") { selector = String(callee[callee.index(after: marker)...]) }
                 else if site.arguments.count > 1, case .loaded(let slot) = site.arguments[1] { selector = selectors[slot] }

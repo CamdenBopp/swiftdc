@@ -3034,3 +3034,21 @@ if a test was observed to fail without the fix.
   Release A/B on Clarc, five alternating rounds: wall 38.47 s against
   33.49 s median (-13%), user CPU 36.01 s against 32.05 s (-11%); every
   round of the change beat every baseline round.
+
+## 2026-10-15: callee facts once per call in the tracer
+
+- **FIXED (speed): the tracer re-parsed every call's callee name on every
+  visit.** A `sample` of the release `disasm --pseudo` on Clarc put 5,009
+  samples in `ValueTracer.transfer`, 1,148 of them in `calleeName(of:)`:
+  call transfer parsed the name out of the annotation three times per call,
+  and the Objective-C void-return hook a fourth, on every fixpoint lap and
+  in every later pass (selects, loop bodies, the snapshot). The facts
+  derived from the name (`splitSignature` 211, `hasTupleResult` 194,
+  `swiftAccessorProperty` 190, `passesNoStackArguments` 274) were re-derived
+  each time too. `ValueTracer.CallFacts` now holds them, built once per
+  call instruction when `analyze` starts, and the hook receives the name.
+  Output is unchanged: every fixture's structured, pseudo, listing and JSON
+  view is byte-identical, and so is Clarc's `--pseudo`.
+  Release A/B on Clarc, five alternating rounds: wall 33.80 s against
+  29.35 s median (-13%), user CPU 32.33 s against 27.91 s (-14%); every
+  round of the change beat every baseline round.

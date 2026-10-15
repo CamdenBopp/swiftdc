@@ -492,7 +492,7 @@ public struct ValueTracer: Sendable {
     /// Objective-C receiver's declared signature. A selector name alone is
     /// never proof of its return convention.
     var voidCallSites = Set<UInt64>()
-    var callReturnsVoid: (@Sendable (Instruction, CallSite) -> Bool)?
+    var callReturnsVoid: (@Sendable (_ callee: String, CallSite) -> Bool)?
 
     public init(calleeConventions: [UInt64: CalleeResultConvention] = [:], asyncContextSlots: [Int: AbstractValue] = [:]) {
         self.calleeConventions = calleeConventions
@@ -503,6 +503,72 @@ public struct ValueTracer: Sendable {
     /// (`x3`, `sp`); stack slots are keyed by frame offset (see `stackKey`), so
     /// both live in one map and flow through the same meet.
     private typealias State = [String: AbstractValue]
+
+    /// What a call's callee name proves, whatever the register state. The
+    /// tracer revisits each call on every fixpoint lap and in every later
+    /// pass; parsing the name out of the annotation each time was a quarter
+    /// of call transfer on Clarc, so `analyze` builds these once per call.
+    struct CallFacts: Sendable {
+        let callee: String
+        /// Reads through the frame addresses it receives and never writes them.
+        let readsOnly: Bool
+        /// The registers that may hand the callee a pointer: the parameters of
+        /// a runtime entry point with a fixed C arity, anything else's x0–x8
+        /// and x20.
+        let passedRegisters: [String]
+        let passesNoStackArguments: Bool
+        /// The demangled name carries ` throws`.
+        let throwsByName: Bool
+        let provablyDoesNotThrow: Bool
+        /// A runtime call that returns its x0 argument (`objc_retain`).
+        let returnsArgument: Bool
+        /// `objc_retain_xN`: the register it retains and returns.
+        let retainedRegister: Int?
+        let allocatesArray: Bool
+        /// A Swift signature returning `()`, or a setter.
+        let returnsVoidByName: Bool
+        let isSuperSend: Bool
+        let hasTupleResult: Bool
+
+        init(_ insn: Instruction) {
+            let callee = DisassembledFunction.calleeName(of: insn) ?? ""
+            self.callee = callee
+            readsOnly = ValueTracer.readOnlyPointerCallees.contains(callee)
+            passedRegisters = DisassembledFunction.knownCArity(of: callee).map { arity in
+                (0..<arity).map { "x\($0)" }
+            } ?? ["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x20"]
+            passesNoStackArguments = ValueTracer.passesNoStackArguments(callee)
+            throwsByName = callee.contains(" throws")
+            provablyDoesNotThrow = ValueTracer.provablyDoesNotThrow(callee)
+            let runtimeName = callee.hasPrefix("_") ? String(callee.dropFirst()) : callee
+            returnsArgument = ValueTracer.identityRuntimeCalls.contains(runtimeName)
+            retainedRegister = ValueTracer.retainedRegister(runtimeName)
+            allocatesArray = callee.contains("_allocateUninitializedArray")
+            returnsVoidByName = DisassembledFunction.splitSignature(callee)?.result == "()"
+                || DisassembledFunction.swiftAccessorProperty(callee)?.isGetter == false
+            isSuperSend = callee.hasPrefix("objc_msgSendSuper")
+            hasTupleResult = DisassembledFunction.hasTupleResult(callee)
+        }
+    }
+
+    /// What the analysed function's own instructions fix, independent of any
+    /// register state: computed once per `analyze` and handed to every
+    /// transfer.
+    struct FunctionFacts: Sendable {
+        var frame = FrameLayout()
+        var calls: [UInt64: CallFacts] = [:]
+
+        init() {}
+
+        init(_ function: DisassembledFunction) {
+            frame = ValueTracer.frameLayout(function.instructions)
+            for insn in function.instructions where insn.controlFlow == .call {
+                calls[insn.address] = CallFacts(insn)
+            }
+        }
+
+        func call(_ insn: Instruction) -> CallFacts { calls[insn.address] ?? CallFacts(insn) }
+    }
 
     /// Entry state: `sp` anchors the frame at offset 0. Receiver/argument
     /// registers are seeded only when runtime or Swift metadata establishes the
@@ -602,7 +668,7 @@ public struct ValueTracer: Sendable {
         let blocks = function.basicBlocks()
         guard !blocks.isEmpty else { return FunctionAnalysis() }
         let blockByStart = Dictionary(blocks.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
-        let frame = Self.frameLayout(function.instructions)
+        let facts = FunctionFacts(function)
 
         var predecessors: [UInt64: [UInt64]] = [:]
         for block in blocks {
@@ -653,7 +719,7 @@ public struct ValueTracer: Sendable {
                 transfer(
                     insn, into: &registers, record: nil, recordAccess: nil,
                     initializerEntry: entry?.isObjectiveCInitializer == true,
-                    frame: frame
+                    facts: facts
                 )
             }
             if !Self.sameFacts(outState[addr], registers) {
@@ -673,7 +739,7 @@ public struct ValueTracer: Sendable {
         resolveAcyclicSelects(
             blocks: blocks, predecessors: predecessors,
             blockByStart: blockByStart, inState: &inState, outState: outState,
-            entry: entry, frame: frame
+            entry: entry, facts: facts
         )
         // Loop-carried induction variables: a header slot with a proven constant
         // initial value and a proven `i ± c` recurrence across the back-edge is
@@ -683,7 +749,7 @@ public struct ValueTracer: Sendable {
         let loopBindings = resolveLoopInductions(
             blocks: blocks, predecessors: predecessors,
             blockByStart: blockByStart, inState: &inState, outState: outState,
-            frame: frame
+            facts: facts
         )
 
         // Snapshot pass: replay from each block's fixed entry state, recording
@@ -770,7 +836,7 @@ public struct ValueTracer: Sendable {
                     recordSlotStore: { result.asyncSlotStores[$0, default: []].append($1) },
                     recordUnboundedMemoryWrite: { result.asyncUnboundedMemoryWrites = true },
                     initializerEntry: entry?.isObjectiveCInitializer == true,
-                    frame: frame
+                    facts: facts
                 ) }
                 if let before, let writes { Self.checkWritesModelled(insn, before: before, written: writes.keys) }
             }
@@ -789,7 +855,7 @@ public struct ValueTracer: Sendable {
                         break
                     }
                     transfer(insn, into: &registers, record: nil, recordAccess: nil,
-                             initializerEntry: entry?.isObjectiveCInitializer == true, frame: frame)
+                             initializerEntry: entry?.isObjectiveCInitializer == true, facts: facts)
                 }
             }
         }
@@ -962,7 +1028,7 @@ public struct ValueTracer: Sendable {
         recordSlotStore: ((Int, AbstractValue) -> Void)? = nil,
         recordUnboundedMemoryWrite: (() -> Void)? = nil,
         initializerEntry: Bool = false,
-        frame: FrameLayout = FrameLayout()
+        facts: FunctionFacts = FunctionFacts()
     ) {
         if insn.controlFlow == .call {
             let site = Self.snapshot(registers)
@@ -976,8 +1042,8 @@ public struct ValueTracer: Sendable {
             // must be read before the invalidation below forgets it, and their
             // destination is written exactly, so the generic invalidation does
             // not apply to them.
-            let calleeName = DisassembledFunction.calleeName(of: insn) ?? ""
-            let handledAsMemoryHelper = applyMemoryHelper(callee: calleeName, site: site, into: &registers)
+            let call = facts.call(insn)
+            let handledAsMemoryHelper = applyMemoryHelper(callee: call.callee, site: site, into: &registers)
             // A local whose address the call receives may be written by it: an
             // NSError out-parameter (`str xzr, [sp]; mov x3, sp; bl …error:`),
             // an `inout` struct, an x8 result buffer, a `mutating` self in x20.
@@ -994,29 +1060,24 @@ public struct ValueTracer: Sendable {
             // words, or the witness-table call through them goes unresolved
             // (guarded by `resolvesConcreteWitnessTableDispatchIfPresent`).
             // Neither it nor an exactly modelled memory helper keeps a pointer.
-            let readsOnly = DisassembledFunction.calleeName(of: insn)
-                .map(Self.readOnlyPointerCallees.contains) ?? false
-            if !(readsOnly || handledAsMemoryHelper) {
+            if !(call.readsOnly || handledAsMemoryHelper) {
                 // A runtime entry point with a fixed C arity receives only its
                 // parameters; anything else may also be an input.
-                let passed: [String] = DisassembledFunction.knownCArity(of: calleeName).map { arity in
-                    (0..<arity).map { "x\($0)" }
-                } ?? ["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x20"]
-                for key in passed {
+                for key in call.passedRegisters {
                     if let value = registers[key] { Self.markEscape(value, into: &registers) }
                 }
                 // Stack arguments are the words stored upward from sp at the
                 // call (`snapshot`); only a callee that can take any reads them,
                 // and never from the prologue's register save area.
-                if !Self.passesNoStackArguments(calleeName), case .frame(let base)? = registers["sp"] {
+                if !call.passesNoStackArguments, case .frame(let base)? = registers["sp"] {
                     for slot in 0..<16 {
                         let offset = base + Int64(slot * 8)
-                        guard !frame.saveSlots.contains(offset), let value = registers[Self.outgoingKey(offset)]
+                        guard !facts.frame.saveSlots.contains(offset), let value = registers[Self.outgoingKey(offset)]
                         else { break }
                         Self.markEscape(value, into: &registers)
                     }
                 }
-                Self.forgetEscapedFrame(in: &registers, addressTaken: frame.boundaries)
+                Self.forgetEscapedFrame(in: &registers, addressTaken: facts.frame.boundaries)
                 // An escaped context pointer may be written through by any
                 // call, from its offset up.
                 let contextReach = registers.keys.compactMap { key -> Int64? in
@@ -1057,7 +1118,6 @@ public struct ValueTracer: Sendable {
             for index in 16...31 { registers["v\(index)"] = nil }
             let outgoingKeys = registers.keys.filter { $0.hasPrefix(Self.outgoingPrefix) }
             for key in outgoingKeys { registers[key] = nil }
-            let callee = DisassembledFunction.calleeName(of: insn) ?? ""
             // Swift error convention: a throwing callee returns its error in x21
             // (swifterror), so the call *redefines* x21 even though AAPCS64 marks
             // it callee-saved. Without invalidating it, a pre-call `mov x21, #0`
@@ -1066,7 +1126,7 @@ public struct ValueTracer: Sendable {
             // to a throwing callee (the demangled name carries ` throws`), so a C
             // or Objective-C call, where x21 is an ordinary callee-saved register
             // carrying a live value across the call, is untouched.
-            if callee.contains(" throws") {
+            if call.throwsByName {
                 registers["x21"] = .unknown
             }
             // The same convention when the name cannot say. Zeroing x21 right
@@ -1075,40 +1135,38 @@ public struct ValueTracer: Sendable {
             // not that 0. Measured in SwiftData: an `@objc` thunk calling a
             // stripped throwing method rendered its error check `if (0 != 0)`
             // and its result `return 1`.
-            if registers["x21"] == .immediate(0), !Self.provablyDoesNotThrow(callee) {
+            if registers["x21"] == .immediate(0), !call.provablyDoesNotThrow {
                 registers["x21"] = .unknown
             }
-            let runtimeName = callee.hasPrefix("_") ? String(callee.dropFirst()) : callee
-            if Self.identityRuntimeCalls.contains(runtimeName) {
+            if call.returnsArgument {
                 registers["x0"] = incomingX0
-            } else if let source = Self.retainedRegister(runtimeName) {
+            } else if let source = call.retainedRegister {
                 // `objc_retain_xN` retains the object in xN and returns it
                 // in x0 (libobjc's first instruction is `ands x0, xN, xN`).
                 // Matched as a prefix of `objc_retain`, it returned the stale
                 // x0: an `@objc` thunk passed the wrong receiver and `self`.
                 registers["x0"] = beforeCall["x\(source)"] ?? .unknown
-            } else if callee.contains("_allocateUninitializedArray") {
+            } else if call.allocatesArray {
                 // Returns the array in x0 (and its element buffer in x1); the
                 // caller fills it next, so tag it with this site and its count —
                 // the first argument — so those element stores can be gathered.
                 let count: Int = { if case .immediate(let n) = incomingX0 { return Int(n) } else { return -1 } }()
                 registers["x0"] = .arrayLiteral(site: insn.address, count: count)
-            } else if DisassembledFunction.splitSignature(callee)?.result == "()"
-                        || DisassembledFunction.swiftAccessorProperty(callee)?.isGetter == false
+            } else if call.returnsVoidByName
                         || voidCallSites.contains(insn.address)
-                        || callReturnsVoid?(insn, site) == true {
+                        || callReturnsVoid?(call.callee, site) == true {
                 // A Swift callee returning Void leaves x0 holding whatever it
                 // last computed. As a result, it rendered a value flowing on:
                 // `OUTLINED_FUNCTION_35(Swift.Hasher._combine(0))` for a fragment
                 // that takes nothing after `_combine(Swift.UInt) -> ()`.
                 registers["x0"] = .unknown
                 registers["v0"] = nil
-            } else if initializerEntry, callee.hasPrefix("objc_msgSendSuper") {
+            } else if initializerEntry, call.isSuperSend {
                 // `self = [super init…]`: after the assignment, the returned
                 // object is the initializer's current self even if the runtime
                 // chose a different allocation.
                 registers["x0"] = .selfPointer
-            } else if DisassembledFunction.hasTupleResult(callee) {
+            } else if call.hasTupleResult {
                 // A register can be a tuple component, not the complete call
                 // expression. Project it only when its ABI layout is proven.
                 registers["x0"] = .unknown
@@ -1128,7 +1186,7 @@ public struct ValueTracer: Sendable {
             return
         }
         let hadSelf = registers[Self.selfFreshKey]
-        let inputs = noteFrameMemoryWrite(insn, into: &registers, frame: frame)
+        let inputs = noteFrameMemoryWrite(insn, into: &registers, frame: facts.frame)
         apply(insn, into: &registers, recordAccess: recordAccess,
               recordArrayElement: recordArrayElement, recordSlotStore: recordSlotStore,
               recordUnboundedMemoryWrite: recordUnboundedMemoryWrite)
@@ -1559,7 +1617,7 @@ public struct ValueTracer: Sendable {
     private func resolveAcyclicSelects(
         blocks: [BasicBlock], predecessors: [UInt64: [UInt64]],
         blockByStart: [UInt64: BasicBlock], inState: inout [UInt64: State],
-        outState: [UInt64: State], entry: MethodEntryConvention?, frame: FrameLayout
+        outState: [UInt64: State], entry: MethodEntryConvention?, facts: FunctionFacts
     ) {
         let rawInState = inState
         resolveDiamondSelects(blocks: blocks, predecessors: predecessors,
@@ -1589,7 +1647,7 @@ public struct ValueTracer: Sendable {
                     var registers = incoming
                     for insn in block.instructions {
                         transfer(insn, into: &registers, record: nil, recordAccess: nil,
-                                 initializerEntry: entry?.isObjectiveCInitializer == true, frame: frame)
+                                 initializerEntry: entry?.isObjectiveCInitializer == true, facts: facts)
                     }
                     forwarded[address] = registers
                 }
@@ -1822,7 +1880,7 @@ public struct ValueTracer: Sendable {
         blockByStart: [UInt64: BasicBlock],
         inState: inout [UInt64: State],
         outState: [UInt64: State],
-        frame: FrameLayout
+        facts: FunctionFacts
     ) -> (updates: [UInt64: [String]], initializations: [UInt64: [LoopInitialization]]) {
         var updates: [UInt64: [String]] = [:]
         var initializations: [UInt64: [LoopInitialization]] = [:]
@@ -1863,7 +1921,7 @@ public struct ValueTracer: Sendable {
             guard let bodyOut = retransferBody(
                 body: body, header: header, headerSeed: seed,
                 blockByStart: blockByStart, predecessors: predecessors,
-                frame: frame
+                facts: facts
             ), let backOut = bodyOut[backFrom] else { continue }
             // The compared slot is the one the header's loop test references — the
             // `.local` placeholder in the re-transferred compare flags. It is the
@@ -2066,7 +2124,7 @@ public struct ValueTracer: Sendable {
     private func retransferBody(
         body: Set<UInt64>, header: UInt64, headerSeed: State,
         blockByStart: [UInt64: BasicBlock], predecessors: [UInt64: [UInt64]],
-        frame: FrameLayout
+        facts: FunctionFacts
     ) -> [UInt64: State]? {
         var outS: [UInt64: State] = [:]
         var escapeMarkers: [UInt64: State] = [:]
@@ -2094,7 +2152,7 @@ public struct ValueTracer: Sendable {
             escapeMarkers[addr] = entry.filter { Self.isEscapeMarker($0.key) }
             var registers = entry
             for insn in block.instructions {
-                transfer(insn, into: &registers, record: nil, recordAccess: nil, frame: frame)
+                transfer(insn, into: &registers, record: nil, recordAccess: nil, facts: facts)
             }
             if outS[addr] != registers {
                 outS[addr] = registers
