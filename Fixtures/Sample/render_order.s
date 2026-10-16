@@ -1,0 +1,36 @@
+// Where a call's result renders. A result the pseudocode spells out at a
+// later use reads as evaluated there; across another call that reorders
+// the program, so such a result is bound (`let rN`) where it is computed.
+.text
+.p2align 2
+
+// render_helper's result is kept in x19 across render_effect and handed to
+// an indirect call the decompiler cannot resolve. True order: helper,
+// effect, then the indirect call with helper's result.
+.globl _$s11RenderOrder8indirectyyF
+_$s11RenderOrder8indirectyyF:
+  stp x29, x30, [sp, #-32]!
+  str x19, [sp, #16]
+  bl _render_helper
+  mov x19, x0
+  bl _render_effect
+  adrp x8, _render_fn@PAGE
+  ldr x8, [x8, _render_fn@PAGEOFF]
+  mov x0, x19
+  blr x8
+  ldr x19, [sp, #16]
+  ldp x29, x30, [sp], #32
+  ret
+
+.globl _render_helper
+_render_helper:
+  mov x0, #5
+  ret
+.globl _render_effect
+_render_effect:
+  ret
+.data
+.p2align 3
+.globl _render_fn
+_render_fn:
+  .quad 0

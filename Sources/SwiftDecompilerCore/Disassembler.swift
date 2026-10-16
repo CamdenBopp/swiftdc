@@ -5007,9 +5007,14 @@ public struct Disassembler: Sendable {
             default: break
             }
         }
+        // A call with no name (an unresolved `blr`) renders its arguments and
+        // consumes the results in them like any other call, so it uses them:
+        // skipped here, a result it took was neither bound nor shown, and
+        // read as evaluated at the indirect call, after the calls between.
         for (address, values) in argumentsByAddress {
-            guard let callee = calleeByAddress[address], !DisassembledFunction.isRuntimeNoise(callee) else { continue }
-            normalizedArguments(callee: callee, values: values).forEach { countDirectUses($0, at: address) }
+            let callee = calleeByAddress[address]
+            if let callee, DisassembledFunction.isRuntimeNoise(callee) { continue }
+            (callee.map { normalizedArguments(callee: $0, values: values) } ?? values).forEach { countDirectUses($0, at: address) }
         }
         for (address, value) in analysis.branchConditions { countDirectUses(value, at: address) }
         for insn in function.instructions where insn.controlFlow == .branch && insn.branchTarget == nil

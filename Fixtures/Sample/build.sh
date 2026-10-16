@@ -86,6 +86,9 @@ $CLANG -arch arm64 -dynamiclib bytereversal.s -o libByteReversal.dylib
 echo "==> writes that replace part of a value (partial_writes.s)"
 $CLANG -arch arm64 -dynamiclib partial_writes.s -o libPartialWrites.dylib
 
+echo "==> where call results render: bound before the calls they cross (render_order.s)"
+$CLANG -arch arm64 -dynamiclib render_order.s -o libRenderOrder.dylib
+
 echo "==> a pure unmodelled scalar return (unknownreturn.swift, -O)"
 $SWIFTC -O -emit-library -module-name UnknownReturn unknownreturn.swift -o libUnknownReturn.dylib
 

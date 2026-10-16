@@ -3169,3 +3169,21 @@ if a test was observed to fail without the fix.
   Compiled code reads such arguments with `ldr w`/`ldp w`, which narrow;
   seeding the width needs the argument sizes the location map does not
   carry.
+
+## 2026-10-15: call results an indirect call takes
+
+- **FIXED (correctness): a result an unresolved indirect call took
+  rendered at the indirect call.** Counting a call result's uses (which
+  decides whether it is bound as `let rN` where it is computed) skipped
+  calls with no name, but the pass that hides a consumed result's own
+  statement did not. A result kept in a callee-saved register and handed
+  to a `blr` the decompiler cannot resolve was neither bound nor shown
+  where it ran, and its call was spelled inside the indirect call's
+  recovered arguments: `render_effect()` and then
+  `indirect_call(?, recovered_args: [render_helper()])` for a helper that
+  runs first (`render_order.s`). Nameless calls now count their
+  arguments as uses. No fixture view changes; on Clarc and GoodLinks the
+  change binds results that indirect calls take (a metadata accessor
+  spelled in five indirect calls is one `let`), which renumbers later
+  bindings: 2,472 and 12,647 changed lines, every one a new binding, a
+  reference to one, or a renumbered binding.
