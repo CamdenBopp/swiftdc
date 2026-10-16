@@ -3222,3 +3222,9 @@ if a test was observed to fail without the fix.
   `String.init(_builtinStringLiteral:…)` with `self=local_50`. Initializers
   of proven value types now decline it as well (128 Clarc and 130
   GoodLinks lines, every one a struct's `init`).
+  Compiler-generated helpers have no `self` in their convention either
+  (metadata and witness-table accessors take x0 and up, outlined copies
+  and destroys take addresses), yet the listing and JSON noted one when
+  x20 was fresh: `self=arg0` on a lazy protocol witness table accessor,
+  ten such notes across six fixtures. They now decline it; a `merged`
+  method is still a method and keeps its `self`.

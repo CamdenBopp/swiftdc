@@ -5194,7 +5194,8 @@ public struct Disassembler: Sendable {
             guard Self.isSwiftCall(insn, swiftTargets: swiftTargets),
                   site.selfValue != .unknown
             else { return nil }
-            if let callee, DisassembledFunction.receivesThinMetatype(callee, classTypeIndex: classTypeIndex) {
+            if let callee, DisassembledFunction.receivesThinMetatype(callee, classTypeIndex: classTypeIndex)
+                || DisassembledFunction.takesNoSelf(callee) {
                 return nil
             }
             if let callee, let signature = DisassembledFunction.splitSignature(callee),

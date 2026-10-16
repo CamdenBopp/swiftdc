@@ -91,3 +91,16 @@ private func renderOrderFunction(_ member: String) async throws -> DisassembledF
     #expect(!DisassembledFunction.receivesThinMetatype("M.Point.Holder.init() -> M.Point.Holder", classTypeIndex: index))
     #expect(!DisassembledFunction.receivesThinMetatype("M.Point.move(by: Swift.Int) -> ()", classTypeIndex: index))
 }
+
+/// A compiler helper's convention has no `self`; x20 at its call is the
+/// caller's. The listing noted `self=arg0` on a lazy witness table accessor.
+@Test func aCompilerHelperHasNoSelfIfPresent() async throws {
+    guard let function = try await renderOrderFunction("helperCall") else { return }
+    let call = try #require(function.instructions.first { $0.controlFlow == .call })
+    #expect(call.annotation?.contains("lazy protocol witness table accessor") == true, "\(call.annotation ?? "")")
+    #expect(call.annotation?.contains("self=") == false, "\(call.annotation ?? "")")
+    #expect(DisassembledFunction.takesNoSelf("merged outlined copy of M.T"))
+    #expect(DisassembledFunction.takesNoSelf("type metadata accessor for M.T"))
+    #expect(!DisassembledFunction.takesNoSelf("merged M.T.method() -> ()"))
+    #expect(!DisassembledFunction.takesNoSelf("M.T.method() -> ()"))
+}

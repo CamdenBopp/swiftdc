@@ -432,6 +432,22 @@ public extension DisassembledFunction {
         return base
     }
 
+    /// Whether `callee` is a compiler-generated helper whose convention has no
+    /// `self`: metadata and witness-table accessors take their arguments in
+    /// x0 and up, and an outlined copy or destroy takes addresses. x20 at a
+    /// call to one is the caller's. (A `merged` method is still a method, so
+    /// only merged helpers count.)
+    static func takesNoSelf(_ callee: String) -> Bool {
+        let name = callee.hasPrefix("merged ") ? callee.dropFirst("merged ".count) : callee[...]
+        return selflessHelperPrefixes.contains(where: name.hasPrefix)
+    }
+
+    private static let selflessHelperPrefixes = [
+        "outlined ", "type metadata accessor for ", "lazy protocol witness table accessor for ",
+        "base witness table accessor for ", "associated type witness table accessor for ",
+        "associated type metadata accessor for ",
+    ]
+
     /// Whether `callee` receives its type as a thin metatype: a static member
     /// or an initializer of a struct or enum the index proves one. A thin
     /// metatype occupies no register, so x20 at the call is the caller's, not

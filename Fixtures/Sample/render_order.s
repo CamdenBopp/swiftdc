@@ -83,6 +83,24 @@ _$s11RenderOrder6WidgetC6sharedACvgZ:
   mov x0, x20
   ret
 
+// A lazy protocol witness table accessor is `() -> WitnessTable`: x20 at
+// its call (here the argument, parked there) is the caller's, not self.
+.globl _$s11RenderOrder10helperCallyS2iF
+_$s11RenderOrder10helperCallyS2iF:
+  stp x29, x30, [sp, #-32]!
+  stp x20, x19, [sp, #16]
+  mov x19, x0
+  mov x20, x0
+  bl _$s11RenderOrder5PointVACSQAAWl
+  mov x0, x19
+  ldp x20, x19, [sp, #16]
+  ldp x29, x30, [sp], #32
+  ret
+.globl _$s11RenderOrder5PointVACSQAAWl
+_$s11RenderOrder5PointVACSQAAWl:
+  mov x0, #0
+  ret
+
 .globl _render_helper
 _render_helper:
   mov x0, #5
