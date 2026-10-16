@@ -3187,3 +3187,13 @@ if a test was observed to fail without the fix.
   spelled in five indirect calls is one `let`), which renumbers later
   bindings: 2,472 and 12,647 changed lines, every one a new binding, a
   reference to one, or a renumbered binding.
+
+- **FIXED (completeness): a bound call dropped its `self`.** A call whose
+  result is bound (`let r0 = …`, because it is used across another call or
+  its indirect result is read by word) rendered from the call's arguments
+  alone, while the same call as a statement prints `self:`:
+  `let r0 = RenderOrder.Widget.count.getter()` with the note
+  `self=arg0`. Both binding paths now name `self` as the statement does
+  (`render_order.s` `boundSelf`, `boundself.swift` at -O). No fixture
+  view changes beyond the new probes; Clarc and GoodLinks change at 881
+  and 1,557 lines, each a bound call gaining its `self:`.

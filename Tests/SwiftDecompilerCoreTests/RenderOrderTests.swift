@@ -25,3 +25,24 @@ private func renderOrderFunction(_ member: String) async throws -> DisassembledF
         #expect(!text.contains("[render_helper()]"), "\(text)")
     }
 }
+
+/// A bound call is the call's statement, so it names `self` as the
+/// statement does. Both binding paths dropped it: a result bound because
+/// it is used across another call (`boundSelf`) and one bound because its
+/// indirect result is read by word (`readWide`).
+@Test func aBoundCallNamesItsSelfIfPresent() async throws {
+    if let function = try await renderOrderFunction("boundSelf") {
+        for text in [function.renderPseudo(), function.renderStructured()] {
+            #expect(text.contains("let r0 = RenderOrder.Widget.count.getter(self: arg0)"), "\(text)")
+        }
+    }
+    let path = "Fixtures/Sample/libBoundSelf.opt.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler().disassemble(path: path, functionFilter: "readWide")
+    }
+    let function = try #require(functions.first { $0.displayName.contains("BoundSelf.readWide(") })
+    for text in [function.renderPseudo(), function.renderStructured()] {
+        #expect(text.contains("let r0 = BoundSelf.Holder.make(self: arg0)"), "\(text)")
+    }
+}

@@ -3395,8 +3395,10 @@ public struct Disassembler: Sendable {
         /// Bound because its direct result is read in several places (as
         /// opposed to word by word): its `let` renders as the value would.
         var reusedResultSites = Set<UInt64>()
-        /// The site whose `let` is being rendered, which spells itself out.
+        /// The site whose `let` is being rendered, which spells itself out,
+        /// and the `self` it names.
         var definingSite: UInt64?
+        var definingSelfText: String?
         // Rendering limits can discard an otherwise evaluable tracer value.
         // Count actual placeholder emissions, rather than scanning text where
         // '?' can also be a ternary operator or part of a string literal.
@@ -4438,7 +4440,8 @@ public struct Disassembler: Sendable {
                 if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {
                     return send.rendered
                 }
-                return "\(displayCallee(callee, at: addr))(\(arguments.joined(separator: ", ")))"
+                let parts = (addr == definingSite ? definingSelfText.map { ["self: \($0)"] } : nil) ?? []
+                return "\(displayCallee(callee, at: addr))(\((parts + arguments).joined(separator: ", ")))"
             }
         }
 
@@ -4499,7 +4502,9 @@ public struct Disassembler: Sendable {
             renderArguments(values, depth: depth).joined(separator: ", ")
         }
 
-        func callExpression(callee: String, values: [AbstractValue], depth: Int = 0, site: UInt64? = nil) -> String {
+        func callExpression(
+            callee: String, values: [AbstractValue], depth: Int = 0, site: UInt64? = nil, selfText: String? = nil
+        ) -> String {
             // Same rewrite as the nested path: a runtime helper that is an exact
             // lowering of a source send renders as that send, whether it is the
             // statement itself or an argument to one.
@@ -4512,7 +4517,8 @@ public struct Disassembler: Sendable {
             if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {
                 return send.rendered
             }
-            return "\(site.map { displayCallee(callee, at: $0) } ?? DisassembledFunction.strippedCallee(callee))(\(arguments.joined(separator: ", ")))"
+            let parts = (selfText.map { ["self: \($0)"] } ?? []) + arguments
+            return "\(site.map { displayCallee(callee, at: $0) } ?? DisassembledFunction.strippedCallee(callee))(\(parts.joined(separator: ", ")))"
         }
 
         func fieldWrite(
@@ -5181,6 +5187,21 @@ public struct Disassembler: Sendable {
             if observedReturnPaths == nil { observedReturnPaths = Probe.returnPathConditions(analysis, of: function) }
             return .abstractValue(observedReturnPaths?[address] ?? .unknown)
         }
+        // x20 is `self` only under the Swift calling convention; for any
+        // other callee it's a callee-saved register the caller happens to be
+        // using, and calling it `self` would be a fabrication.
+        func swiftSelfText(_ insn: Instruction, site: CallSite, callee: String?) -> String? {
+            guard Self.isSwiftCall(insn, swiftTargets: swiftTargets),
+                  site.selfValue != .unknown
+            else { return nil }
+            if let callee, let signature = DisassembledFunction.splitSignature(callee),
+               let range = DisassembledFunction.outermostArgumentListRange(of: signature.head) {
+                let name = signature.head[..<range.lowerBound].dropLast()
+                if name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }),
+                   name.filter({ $0 == "." }).count == 1 { return nil }
+            }
+            return renderValue(site.selfValue, depth: 0)
+        }
         let instructions = function.instructions.map { insn -> Instruction in
             var sourceNotes: [String] = []
             var sourceType = insn.sourceType
@@ -5403,16 +5424,20 @@ public struct Disassembler: Sendable {
             }
 
             // The one place a call bound for its field reads is spelled out.
+            // It is the call, so it names `self` as the statement would.
             if insn.controlFlow == .call, let name = boundResultSites[insn.address], let callee {
+                let bindingSelf = sites[insn.address].flatMap { swiftSelfText(insn, site: $0, callee: callee) }
                 let expression: String
                 if reusedResultSites.contains(insn.address) {
                     // As each use would have spelled it (`? as? Dog`, a send).
                     definingSite = insn.address
+                    definingSelfText = bindingSelf
                     expression = renderValue(.callResult(insn.address), depth: 0)
                     definingSite = nil
+                    definingSelfText = nil
                 } else {
                     expression = callExpression(callee: callee, values: argumentsByAddress[insn.address] ?? [],
-                                                site: insn.address)
+                                                site: insn.address, selfText: bindingSelf)
                 }
                 sourceNotes.append("let \(name) = \(expression)")
             }
@@ -5492,21 +5517,7 @@ public struct Disassembler: Sendable {
                 )
             }
 
-            // x20 is `self` only under the Swift calling convention; for any
-            // other callee it's a callee-saved register the caller happens to be
-            // using, and calling it `self` would be a fabrication.
-            let selfText: String? = {
-                guard Self.isSwiftCall(insn, swiftTargets: swiftTargets),
-                      site.selfValue != .unknown
-                else { return nil }
-                if let callee, let signature = DisassembledFunction.splitSignature(callee),
-                   let range = DisassembledFunction.outermostArgumentListRange(of: signature.head) {
-                    let name = signature.head[..<range.lowerBound].dropLast()
-                    if name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }),
-                       name.filter({ $0 == "." }).count == 1 { return nil }
-                }
-                return renderValue(site.selfValue, depth: 0)
-            }()
+            let selfText = swiftSelfText(insn, site: site, callee: callee)
 
             let rendered: [String] = (argumentsByAddress[insn.address]).map { values in
                 // Clamp a fixed-ABI callee's arguments to its real arity before

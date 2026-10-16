@@ -22,6 +22,32 @@ _$s11RenderOrder8indirectyyF:
   ldp x29, x30, [sp], #32
   ret
 
+// A Swift method's result used after another call is bound where it is
+// computed; the binding is the call, so it names `self` as the statement
+// would. True call: Widget.count.getter with self = the argument.
+.globl _$s11RenderOrder9boundSelfyS2iF
+_$s11RenderOrder9boundSelfyS2iF:
+  stp x29, x30, [sp, #-32]!
+  stp x20, x19, [sp, #16]
+  mov x20, x0
+  bl _$s11RenderOrder6WidgetC5countSivg
+  mov x19, x0
+  bl _render_effect
+  mov x0, x19
+  bl _render_sink
+  mov x0, x19
+  ldp x20, x19, [sp, #16]
+  ldp x29, x30, [sp], #32
+  ret
+
+.globl _$s11RenderOrder6WidgetC5countSivg
+_$s11RenderOrder6WidgetC5countSivg:
+  ldr x0, [x20, #16]
+  ret
+.globl _render_sink
+_render_sink:
+  ret
+
 .globl _render_helper
 _render_helper:
   mov x0, #5
