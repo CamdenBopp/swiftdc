@@ -61,7 +61,9 @@ private func renderOrderFunction(_ member: String) async throws -> DisassembledF
 }
 
 @Test func staticValueTypeMembersAreFoundByTheirOwner() {
-    let index = ClassTypeIndex(qualifiedClassNames: ["M.Box"], qualifiedNonClassNames: ["M.Point", "M.Edge.Set", "Swift.String"])
+    let index = ClassTypeIndex(qualifiedClassNames: ["M.Box", "M.Point.Holder"],
+                               qualifiedNonClassNames: ["M.Point", "M.Edge.Set", "Swift.String",
+                                                        "(extension in Foundation):Swift.String.Encoding"])
     #expect(DisassembledFunction.isStaticValueTypeMember("static M.Point.origin.getter : Swift.Int", classTypeIndex: index))
     #expect(DisassembledFunction.isStaticValueTypeMember("static M.Edge.Set.all.getter : M.Edge.Set", classTypeIndex: index))
     #expect(DisassembledFunction.isStaticValueTypeMember(
@@ -71,4 +73,11 @@ private func renderOrderFunction(_ member: String) async throws -> DisassembledF
     #expect(!DisassembledFunction.isStaticValueTypeMember("static M.Box.shared.getter : M.Box", classTypeIndex: index))
     #expect(!DisassembledFunction.isStaticValueTypeMember("M.Point.origin.getter : Swift.Int", classTypeIndex: index))
     #expect(!DisassembledFunction.isStaticValueTypeMember("static N.Point.origin.getter : Swift.Int", classTypeIndex: index))
+    // A value type declared in an extension is known by its extension name.
+    #expect(DisassembledFunction.isStaticValueTypeMember(
+        "static (extension in Foundation):Swift.String.Encoding.utf8.getter : (extension in Foundation):Swift.String.Encoding",
+        classTypeIndex: index))
+    // A class nested in a struct: the member is the class's.
+    #expect(!DisassembledFunction.isStaticValueTypeMember("static M.Point.Holder.shared.getter : M.Point.Holder", classTypeIndex: index))
+    #expect(!DisassembledFunction.isStaticValueTypeMember("static M.Point.Holder.make() -> M.Point.Holder", classTypeIndex: index))
 }

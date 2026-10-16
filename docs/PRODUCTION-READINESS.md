@@ -3210,3 +3210,8 @@ if a test was observed to fail without the fix.
   metatype `self`. 116 Clarc lines and 255 GoodLinks lines drop such a
   `self` (`Edge.Set`, `String`, `Alignment`, `Array`, `Locale`, `URL`,
   `Date`, result builders, `Selector.==`, …), and nothing else changes.
+  The owner is the member's own context, not the longest value-type
+  prefix of its name: a class nested in a struct (`BoxA.Holder`) keeps
+  its static members' `self`, and a struct declared in an extension is
+  found by its extension spelling (`(extension in Dispatch):
+  __C.OS_dispatch_queue.Attributes`, 2 more lines).

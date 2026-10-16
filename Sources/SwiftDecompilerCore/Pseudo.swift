@@ -435,21 +435,28 @@ public extension DisassembledFunction {
     /// Whether `callee` is a static member of a struct or enum the index
     /// proves one. Such a member's `self` is a thin metatype, which no
     /// register carries, so x20 at the call is the caller's, not `self`. The
-    /// owner is the longest dotted prefix of the member's name that names a
-    /// value type (`static SwiftUI.Edge.Set.all.getter` is `SwiftUI.Edge.Set`'s).
+    /// owner is the member's own context: the name without the member (and
+    /// an accessor keyword), so a class nested in a struct is the class
+    /// (`static BoxA.Holder.shared.getter` is `BoxA.Holder`'s, not `BoxA`'s).
     static func isStaticValueTypeMember(_ callee: String, classTypeIndex: ClassTypeIndex) -> Bool {
         guard callee.hasPrefix("static ") else { return false }
         var name = callee.dropFirst("static ".count)
+        // A type declared in an extension prints with its context,
+        // `(extension in Foundation):Swift.String.Encoding`; so does the
+        // evidence for it.
+        var context = ""
         if name.hasPrefix("(extension in "), let colon = name.firstIndex(of: ":") {
+            context = String(name[...colon])
             name = name[name.index(after: colon)...]
         }
         if let end = name.firstIndex(where: { $0 == "(" || $0 == "<" || $0 == " " }) { name = name[..<end] }
-        var cut = name.endIndex
-        while let dot = name[..<cut].lastIndex(of: ".") {
-            if classTypeIndex.isValueType(String(name[..<dot])) { return true }
-            cut = dot
+        guard var dot = name.lastIndex(of: ".") else { return false }
+        if accessorKeywords.contains(String(name[name.index(after: dot)...])) {
+            guard let property = name[..<dot].lastIndex(of: ".") else { return false }
+            dot = property
         }
-        return false
+        let owner = String(name[..<dot])
+        return classTypeIndex.isValueType(context + owner) || classTypeIndex.isValueType(owner)
     }
 
     /// Marks a call reached through `self`'s own vtable slot. The named
