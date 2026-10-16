@@ -432,6 +432,26 @@ public extension DisassembledFunction {
         return base
     }
 
+    /// Whether `callee` is a static member of a struct or enum the index
+    /// proves one. Such a member's `self` is a thin metatype, which no
+    /// register carries, so x20 at the call is the caller's, not `self`. The
+    /// owner is the longest dotted prefix of the member's name that names a
+    /// value type (`static SwiftUI.Edge.Set.all.getter` is `SwiftUI.Edge.Set`'s).
+    static func isStaticValueTypeMember(_ callee: String, classTypeIndex: ClassTypeIndex) -> Bool {
+        guard callee.hasPrefix("static ") else { return false }
+        var name = callee.dropFirst("static ".count)
+        if name.hasPrefix("(extension in "), let colon = name.firstIndex(of: ":") {
+            name = name[name.index(after: colon)...]
+        }
+        if let end = name.firstIndex(where: { $0 == "(" || $0 == "<" || $0 == " " }) { name = name[..<end] }
+        var cut = name.endIndex
+        while let dot = name[..<cut].lastIndex(of: ".") {
+            if classTypeIndex.isValueType(String(name[..<dot])) { return true }
+            cut = dot
+        }
+        return false
+    }
+
     /// Marks a call reached through `self`'s own vtable slot. The named
     /// implementation is self's class's; an override in a subclass runs
     /// instead when self is one, so the call is `self.member(…)`, not a static

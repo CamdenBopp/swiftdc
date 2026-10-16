@@ -64,6 +64,12 @@ public struct ClassTypeIndex: Sendable {
         return classNames.contains(typeName)
     }
 
+    /// Whether a module-qualified `typeName` is a struct or enum by the
+    /// index's evidence (a descriptor or a nominal-kind node).
+    public func isValueType(_ typeName: String) -> Bool {
+        qualifiedNonClassNames.contains(typeName)
+    }
+
     /// The inner type of `Optional<Inner>` when `Inner` is a single-register
     /// reference (a class), else nil. `Swift.Optional<Module.Ref>` → `Module.Ref`.
     public func referenceOptionalInner(_ type: String) -> String? {

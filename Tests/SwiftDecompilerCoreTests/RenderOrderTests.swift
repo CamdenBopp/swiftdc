@@ -46,3 +46,29 @@ private func renderOrderFunction(_ member: String) async throws -> DisassembledF
         #expect(text.contains("let r0 = BoundSelf.Holder.make(self: arg0)"), "\(text)")
     }
 }
+
+/// A static member of a struct receives a thin metatype, which no register
+/// carries; x20 at its call is the caller's scratch. It rendered
+/// `Point.origin.getter(self: arg0)`; app code rendered
+/// `static Swift.Array._allocateBufferUninitialized(self: 256, 256)`. A class's
+/// static member receives its metatype in x20 and keeps its `self`.
+@Test func aStaticMemberOfAValueTypeHasNoSelfIfPresent() async throws {
+    guard let function = try await renderOrderFunction("staticCall") else { return }
+    for text in [function.renderPseudo(), function.renderStructured()] {
+        #expect(text.contains("let r0 = static RenderOrder.Point.origin.getter()"), "\(text)")
+        #expect(text.contains("static RenderOrder.Widget.shared.getter(self: r0)"), "\(text)")
+    }
+}
+
+@Test func staticValueTypeMembersAreFoundByTheirOwner() {
+    let index = ClassTypeIndex(qualifiedClassNames: ["M.Box"], qualifiedNonClassNames: ["M.Point", "M.Edge.Set", "Swift.String"])
+    #expect(DisassembledFunction.isStaticValueTypeMember("static M.Point.origin.getter : Swift.Int", classTypeIndex: index))
+    #expect(DisassembledFunction.isStaticValueTypeMember("static M.Edge.Set.all.getter : M.Edge.Set", classTypeIndex: index))
+    #expect(DisassembledFunction.isStaticValueTypeMember(
+        "static (extension in Foundation):Swift.String._unconditionallyBridgeFromObjectiveC(__C.NSString?) -> Swift.String",
+        classTypeIndex: index))
+    #expect(DisassembledFunction.isStaticValueTypeMember("static M.Point.make<A>(A) -> M.Point", classTypeIndex: index))
+    #expect(!DisassembledFunction.isStaticValueTypeMember("static M.Box.shared.getter : M.Box", classTypeIndex: index))
+    #expect(!DisassembledFunction.isStaticValueTypeMember("M.Point.origin.getter : Swift.Int", classTypeIndex: index))
+    #expect(!DisassembledFunction.isStaticValueTypeMember("static N.Point.origin.getter : Swift.Int", classTypeIndex: index))
+}

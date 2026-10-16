@@ -3197,3 +3197,16 @@ if a test was observed to fail without the fix.
   (`render_order.s` `boundSelf`, `boundself.swift` at -O). No fixture
   view changes beyond the new probes; Clarc and GoodLinks change at 881
   and 1,557 lines, each a bound call gaining its `self:`.
+
+- **FIXED (soundness): a static member of a value type rendered a
+  `self`.** The self rule printed x20 for any Swift call where x20 was
+  written since the last call. A static member of a struct or enum
+  receives a thin metatype, which occupies no register, so x20 there is
+  the caller's scratch: `static Swift.Array._allocateBufferUninitialized(
+  self: 256, 256)` (a copy of the count), `static SwiftUI.Edge.Set.all.getter(
+  self: SwiftUI.Color.init(…))`. The rule now declines `self` for a static
+  member whose owner (the longest dotted prefix of its name) the class
+  index proves a struct or enum; a class's static member keeps its
+  metatype `self`. 116 Clarc lines and 255 GoodLinks lines drop such a
+  `self` (`Edge.Set`, `String`, `Alignment`, `Array`, `Locale`, `URL`,
+  `Date`, result builders, `Selector.==`, …), and nothing else changes.
