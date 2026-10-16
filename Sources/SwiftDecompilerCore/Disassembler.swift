@@ -5194,7 +5194,7 @@ public struct Disassembler: Sendable {
             guard Self.isSwiftCall(insn, swiftTargets: swiftTargets),
                   site.selfValue != .unknown
             else { return nil }
-            if let callee, DisassembledFunction.isStaticValueTypeMember(callee, classTypeIndex: classTypeIndex) {
+            if let callee, DisassembledFunction.receivesThinMetatype(callee, classTypeIndex: classTypeIndex) {
                 return nil
             }
             if let callee, let signature = DisassembledFunction.splitSignature(callee),

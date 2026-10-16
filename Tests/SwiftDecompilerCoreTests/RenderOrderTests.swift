@@ -47,37 +47,47 @@ private func renderOrderFunction(_ member: String) async throws -> DisassembledF
     }
 }
 
-/// A static member of a struct receives a thin metatype, which no register
-/// carries; x20 at its call is the caller's scratch. It rendered
-/// `Point.origin.getter(self: arg0)`; app code rendered
-/// `static Swift.Array._allocateBufferUninitialized(self: 256, 256)`. A class's
-/// static member receives its metatype in x20 and keeps its `self`.
+/// A static member or an initializer of a struct receives a thin metatype,
+/// which no register carries; x20 at its call is the caller's scratch. It
+/// rendered `Point.origin.getter(self: arg0)` and `Point.init(self: r0, 7)`;
+/// app code rendered `static Swift.Array._allocateBufferUninitialized(self:
+/// 256, 256)` and `SwiftUI.EdgeInsets.init(self: static
+/// SwiftUI.Edge.Set.vertical.getter(…))`. A class's static member receives
+/// its metatype in x20 and keeps its `self`.
 @Test func aStaticMemberOfAValueTypeHasNoSelfIfPresent() async throws {
     guard let function = try await renderOrderFunction("staticCall") else { return }
     for text in [function.renderPseudo(), function.renderStructured()] {
         #expect(text.contains("let r0 = static RenderOrder.Point.origin.getter()"), "\(text)")
         #expect(text.contains("static RenderOrder.Widget.shared.getter(self: r0)"), "\(text)")
+        #expect(text.contains("RenderOrder.Point.init(7)"), "\(text)")
     }
 }
 
-@Test func staticValueTypeMembersAreFoundByTheirOwner() {
+@Test func thinMetatypeMembersAreFoundByTheirOwner() {
     let index = ClassTypeIndex(qualifiedClassNames: ["M.Box", "M.Point.Holder"],
                                qualifiedNonClassNames: ["M.Point", "M.Edge.Set", "Swift.String",
                                                         "(extension in Foundation):Swift.String.Encoding"])
-    #expect(DisassembledFunction.isStaticValueTypeMember("static M.Point.origin.getter : Swift.Int", classTypeIndex: index))
-    #expect(DisassembledFunction.isStaticValueTypeMember("static M.Edge.Set.all.getter : M.Edge.Set", classTypeIndex: index))
-    #expect(DisassembledFunction.isStaticValueTypeMember(
+    #expect(DisassembledFunction.receivesThinMetatype("static M.Point.origin.getter : Swift.Int", classTypeIndex: index))
+    #expect(DisassembledFunction.receivesThinMetatype("static M.Edge.Set.all.getter : M.Edge.Set", classTypeIndex: index))
+    #expect(DisassembledFunction.receivesThinMetatype(
         "static (extension in Foundation):Swift.String._unconditionallyBridgeFromObjectiveC(__C.NSString?) -> Swift.String",
         classTypeIndex: index))
-    #expect(DisassembledFunction.isStaticValueTypeMember("static M.Point.make<A>(A) -> M.Point", classTypeIndex: index))
-    #expect(!DisassembledFunction.isStaticValueTypeMember("static M.Box.shared.getter : M.Box", classTypeIndex: index))
-    #expect(!DisassembledFunction.isStaticValueTypeMember("M.Point.origin.getter : Swift.Int", classTypeIndex: index))
-    #expect(!DisassembledFunction.isStaticValueTypeMember("static N.Point.origin.getter : Swift.Int", classTypeIndex: index))
+    #expect(DisassembledFunction.receivesThinMetatype("static M.Point.make<A>(A) -> M.Point", classTypeIndex: index))
+    #expect(!DisassembledFunction.receivesThinMetatype("static M.Box.shared.getter : M.Box", classTypeIndex: index))
+    #expect(!DisassembledFunction.receivesThinMetatype("M.Point.origin.getter : Swift.Int", classTypeIndex: index))
+    #expect(!DisassembledFunction.receivesThinMetatype("static N.Point.origin.getter : Swift.Int", classTypeIndex: index))
     // A value type declared in an extension is known by its extension name.
-    #expect(DisassembledFunction.isStaticValueTypeMember(
+    #expect(DisassembledFunction.receivesThinMetatype(
         "static (extension in Foundation):Swift.String.Encoding.utf8.getter : (extension in Foundation):Swift.String.Encoding",
         classTypeIndex: index))
     // A class nested in a struct: the member is the class's.
-    #expect(!DisassembledFunction.isStaticValueTypeMember("static M.Point.Holder.shared.getter : M.Point.Holder", classTypeIndex: index))
-    #expect(!DisassembledFunction.isStaticValueTypeMember("static M.Point.Holder.make() -> M.Point.Holder", classTypeIndex: index))
+    #expect(!DisassembledFunction.receivesThinMetatype("static M.Point.Holder.shared.getter : M.Point.Holder", classTypeIndex: index))
+    #expect(!DisassembledFunction.receivesThinMetatype("static M.Point.Holder.make() -> M.Point.Holder", classTypeIndex: index))
+    // Initializers: a value type's takes a thin metatype, a class's does not,
+    // and neither does a value type's instance method.
+    #expect(DisassembledFunction.receivesThinMetatype("M.Point.init(x: Swift.Int) -> M.Point", classTypeIndex: index))
+    #expect(DisassembledFunction.receivesThinMetatype("M.Point.init<A>(A) -> M.Point", classTypeIndex: index))
+    #expect(!DisassembledFunction.receivesThinMetatype("M.Box.init(x: Swift.Int) -> M.Box", classTypeIndex: index))
+    #expect(!DisassembledFunction.receivesThinMetatype("M.Point.Holder.init() -> M.Point.Holder", classTypeIndex: index))
+    #expect(!DisassembledFunction.receivesThinMetatype("M.Point.move(by: Swift.Int) -> ()", classTypeIndex: index))
 }

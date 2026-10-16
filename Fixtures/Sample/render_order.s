@@ -52,7 +52,8 @@ _render_sink:
 // carries, so x20 is the caller's scratch (here the argument), not self. A
 // class's static member receives its metatype in x20: there it is self.
 // True calls: Point.origin.getter with no self, then Widget.shared.getter
-// with self = what the caller put in x20 (origin's result, also returned).
+// with self = what the caller put in x20 (origin's result, also returned),
+// then Point.init(x: 7), an initializer, again with no self.
 .globl _$s11RenderOrder10staticCallyS2iF
 _$s11RenderOrder10staticCallyS2iF:
   stp x29, x30, [sp, #-32]!
@@ -62,6 +63,9 @@ _$s11RenderOrder10staticCallyS2iF:
   mov x19, x0
   mov x20, x19
   bl _$s11RenderOrder6WidgetC6sharedACvgZ
+  mov x20, x19
+  mov x0, #7
+  bl _$s11RenderOrder5PointV1xACSi_tcfC
   mov x0, x19
   ldp x20, x19, [sp, #16]
   ldp x29, x30, [sp], #32
@@ -70,6 +74,9 @@ _$s11RenderOrder10staticCallyS2iF:
 .globl _$s11RenderOrder5PointV6originSivgZ
 _$s11RenderOrder5PointV6originSivgZ:
   mov x0, #0
+  ret
+.globl _$s11RenderOrder5PointV1xACSi_tcfC
+_$s11RenderOrder5PointV1xACSi_tcfC:
   ret
 .globl _$s11RenderOrder6WidgetC6sharedACvgZ
 _$s11RenderOrder6WidgetC6sharedACvgZ:

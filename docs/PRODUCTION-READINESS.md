@@ -3215,3 +3215,10 @@ if a test was observed to fail without the fix.
   its static members' `self`, and a struct declared in an extension is
   found by its extension spelling (`(extension in Dispatch):
   __C.OS_dispatch_queue.Attributes`, 2 more lines).
+  A value type's initializer receives a thin metatype too, and rendered
+  the same kind of `self`: `SwiftUI.EdgeInsets.init(self:
+  static SwiftUI.Edge.Set.vertical.getter(…), …)`, `SwiftUI.State.init(self:
+  type metadata for Swift.Bool, …)`, and in `sample.debug`
+  `String.init(_builtinStringLiteral:…)` with `self=local_50`. Initializers
+  of proven value types now decline it as well (128 Clarc and 130
+  GoodLinks lines, every one a struct's `init`).

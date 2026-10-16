@@ -432,15 +432,17 @@ public extension DisassembledFunction {
         return base
     }
 
-    /// Whether `callee` is a static member of a struct or enum the index
-    /// proves one. Such a member's `self` is a thin metatype, which no
-    /// register carries, so x20 at the call is the caller's, not `self`. The
-    /// owner is the member's own context: the name without the member (and
-    /// an accessor keyword), so a class nested in a struct is the class
-    /// (`static BoxA.Holder.shared.getter` is `BoxA.Holder`'s, not `BoxA`'s).
-    static func isStaticValueTypeMember(_ callee: String, classTypeIndex: ClassTypeIndex) -> Bool {
-        guard callee.hasPrefix("static ") else { return false }
-        var name = callee.dropFirst("static ".count)
+    /// Whether `callee` receives its type as a thin metatype: a static member
+    /// or an initializer of a struct or enum the index proves one. A thin
+    /// metatype occupies no register, so x20 at the call is the caller's, not
+    /// `self`. (An instance method of a large or `mutating` value does take
+    /// `self` in x20, so it is not one.) The owner is the member's own
+    /// context: the name without the member (and an accessor keyword), so a
+    /// class nested in a struct is the class (`BoxA.Holder.init` is
+    /// `BoxA.Holder`'s, not `BoxA`'s).
+    static func receivesThinMetatype(_ callee: String, classTypeIndex: ClassTypeIndex) -> Bool {
+        let isStatic = callee.hasPrefix("static ")
+        var name = isStatic ? callee.dropFirst("static ".count) : callee[...]
         // A type declared in an extension prints with its context,
         // `(extension in Foundation):Swift.String.Encoding`; so does the
         // evidence for it.
@@ -450,6 +452,7 @@ public extension DisassembledFunction {
             name = name[name.index(after: colon)...]
         }
         if let end = name.firstIndex(where: { $0 == "(" || $0 == "<" || $0 == " " }) { name = name[..<end] }
+        guard isStatic || name.hasSuffix(".init") else { return false }
         guard var dot = name.lastIndex(of: ".") else { return false }
         if accessorKeywords.contains(String(name[name.index(after: dot)...])) {
             guard let property = name[..<dot].lastIndex(of: ".") else { return false }
