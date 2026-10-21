@@ -26,6 +26,15 @@ private func renderOrderFunction(_ member: String) async throws -> DisassembledF
     }
 }
 
+/// A call result spelled inside the one expression that uses it is that
+/// call: `return RenderOrder.Widget.count.getter()` dropped its `self`.
+@Test func aCallSpelledInsideItsUseNamesItsSelfIfPresent() async throws {
+    guard let function = try await renderOrderFunction("inlineSelf") else { return }
+    for text in [function.renderPseudo(), function.renderStructured()] {
+        #expect(text.contains("return RenderOrder.Widget.count.getter(self: arg0)"), "\(text)")
+    }
+}
+
 /// A bound call is the call's statement, so it names `self` as the
 /// statement does. Both binding paths dropped it: a result bound because
 /// it is used across another call (`boundSelf`) and one bound because its

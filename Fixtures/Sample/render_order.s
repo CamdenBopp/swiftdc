@@ -40,6 +40,19 @@ _$s11RenderOrder9boundSelfyS2iF:
   ldp x29, x30, [sp], #32
   ret
 
+// The same getter's result used once, by the return: spelled inline, it is
+// still the call, with its self. True result: Widget.count.getter with
+// self = the argument.
+.globl _$s11RenderOrder10inlineSelfyS2iF
+_$s11RenderOrder10inlineSelfyS2iF:
+  stp x29, x30, [sp, #-32]!
+  str x20, [sp, #16]
+  mov x20, x0
+  bl _$s11RenderOrder6WidgetC5countSivg
+  ldr x20, [sp, #16]
+  ldp x29, x30, [sp], #32
+  ret
+
 .globl _$s11RenderOrder6WidgetC5countSivg
 _$s11RenderOrder6WidgetC5countSivg:
   ldr x0, [x20, #16]

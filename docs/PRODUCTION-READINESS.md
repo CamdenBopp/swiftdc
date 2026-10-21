@@ -3234,3 +3234,13 @@ if a test was observed to fail without the fix.
   `static (extension in os):__C.os_log_type_t.info.getter(self: …)`). An
   extension of a `__C` typealias now counts as value-type evidence: Swift
   extends only nominal types.
+
+- **FIXED (completeness): a call spelled inside its use dropped its
+  `self`.** A call whose result has one use renders inside that use
+  (`return f(…)`, an argument), and that spelling printed the arguments
+  alone: `return RenderOrder.Widget.count.getter()` for a getter called
+  with self = arg0. The self rule (including the thin-metatype, helper
+  and typedef declines above) is now decided once per call, and the
+  statement, the binding and the inline spelling all render it. Every
+  changed line in the fixtures (126), Clarc (805) and GoodLinks (1,460)
+  differs from before only by added `self:` arguments.
