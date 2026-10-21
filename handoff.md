@@ -22,11 +22,22 @@ x21 rule and the x29-relative frame boundaries had no failing test when
 removed; both do now. Enforcing suite: 700 tests. The IR plan is in
 [docs/IR.md](docs/IR.md).
 
+Since then (2026-10-15 to 2026-10-20), soundness first: `movk` on an
+unknown register, slot and flag widths dropped at joins, a static member
+or initializer of a value type (and compiler helpers, and C typedef
+structs) rendered a scratch x20 as `self`; renderer fixes for results an
+unresolved indirect call takes, and `self` in bound and inline call
+spellings; and the fixpoint visiting order (a block runs only once a
+predecessor has; unreached blocks start from nothing), which removed
+GoodLinks' last fixpoint cap. Suite: 710 tests.
+
 Next: IR step 1 (typed facts beside the annotation strings) and step 2
 (CFG once: `basicBlocks()` still runs in `analyze`, in enrichment and in
-the structurer). Profile leaders after typed locations: the tracer's
-transfer and meet, enrichment's per-instruction closure, `renderPseudo`,
-and Capstone decode.
+the structurer). Open from this round: the loop-body pass's sticky
+markers have no guard; entry-seeded stack arguments carry no width.
+Profile leaders after typed locations: the tracer's transfer and meet,
+enrichment's per-instruction closure, `renderPseudo`, and Capstone
+decode.
 
 ## Soundness development session (2026-10-13)
 
