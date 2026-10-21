@@ -87,6 +87,90 @@ public struct Instruction: Sendable {
     /// A note appended to the annotation later cannot become the callee.
     /// Nil for anything else and for an unnamed target.
     public let callee: String?
+    /// The facts below, boxed: nearly every instruction has none, and those
+    /// pay one pointer for all of them.
+    private let statementFacts: StatementFacts?
+
+    /// For an exit: what enrichment proved it does. Set where the matching
+    /// note is appended (`return …`, `throw …`, `swift-exit=…`), kept through
+    /// note-only rebuilds, and the only thing renderers read; the note is
+    /// for display. Nil for anything that is not an exit, and for an
+    /// instruction built by hand without one.
+    public var exit: Exit? { statementFacts?.exit }
+    /// For a call whose result is named once rather than spelled at every
+    /// use: the name and the call as it is spelled (`let r0 = …`). The
+    /// annotation carries the same fact as that note.
+    public var binding: Binding? { statementFacts?.binding }
+    /// A path throws right after this instruction: a throw merged into the
+    /// shared epilogue, so the statement is followed by `throw ?`. The
+    /// annotation carries the same fact as `then throw ?`.
+    public var thenThrows: Bool { statementFacts?.thenThrows ?? false }
+
+    private final class StatementFacts: Sendable {
+        let exit: Exit?
+        let binding: Binding?
+        let thenThrows: Bool
+
+        init(exit: Exit?, binding: Binding?, thenThrows: Bool) {
+            self.exit = exit
+            self.binding = binding
+            self.thenThrows = thenThrows
+        }
+    }
+
+    /// How a path ends. A `ret` that no rule classifies has no exit.
+    public enum Exit: Sendable, Equatable {
+        /// A return. The value is rendered, `?` when not proven; nil for a
+        /// throwing function's exit proven normal with no value to print.
+        case normal(String?)
+        /// A throw of the rendered error, `?` when not proven.
+        case `throw`(String)
+        /// A throwing function's exit proven neither a return nor a throw.
+        case unclassified
+
+        /// The annotation note that carries this exit.
+        public var note: String {
+            switch self {
+            case .normal(let value?): "return \(value)"
+            case .normal(nil): DisassembledFunction.normalSwiftExitNote
+            case .throw(let error): "throw \(error)"
+            case .unclassified: DisassembledFunction.unresolvedSwiftExitNote
+            }
+        }
+
+        /// The exit an instruction carries when it noted `noted`, in order:
+        /// the first, unless a throwing function's verdict on the exit was
+        /// noted, which renderers read ahead of any other note.
+        static func carried(from noted: [Exit]) -> Exit? {
+            noted.first { $0 == .unclassified } ?? noted.first { $0 == .normal(nil) } ?? noted.first
+        }
+
+        /// The source statement for this exit.
+        public var statement: String {
+            switch self {
+            case .normal(let value?): "return \(value)"
+            case .normal(nil): "return"
+            case .throw(let error): "throw \(error)"
+            case .unclassified: DisassembledFunction.unresolvedSwiftExitStatement
+            }
+        }
+    }
+
+    /// A call's result bound to a name.
+    public struct Binding: Sendable, Equatable {
+        /// The name every use reads (`r0`).
+        public let name: String
+        /// The call, spelled once.
+        public let expression: String
+
+        public init(name: String, expression: String) {
+            self.name = name
+            self.expression = expression
+        }
+
+        /// The annotation note, and the statement: `let r0 = …`.
+        public var statement: String { "let \(name) = \(expression)" }
+    }
 
     /// Where a new instruction's `callee` comes from.
     public enum CalleeFact: Sendable {
@@ -109,7 +193,10 @@ public struct Instruction: Sendable {
         sourceType: String? = nil,
         detail: StructuredInsn? = nil,
         calleeDisplayName: String? = nil,
-        callee: CalleeFact = .derived
+        callee: CalleeFact = .derived,
+        exit: Exit? = nil,
+        binding: Binding? = nil,
+        thenThrows: Bool = false
     ) {
         self.address = address
         self.text = text
@@ -122,6 +209,8 @@ public struct Instruction: Sendable {
         self.sourceType = sourceType
         self.detail = detail
         self.calleeDisplayName = calleeDisplayName
+        self.statementFacts = exit == nil && binding == nil && !thenThrows
+            ? nil : StatementFacts(exit: exit, binding: binding, thenThrows: thenThrows)
         switch callee {
         case .kept(let name):
             self.callee = name
@@ -3551,13 +3640,15 @@ public struct Disassembler: Sendable {
             let instructions = function.instructions.map { insn in
                 guard insn.controlFlow == .return else { return insn }
                 Probe.record(.returnOutcome, at: insn.address, ["status": .label("unknown"), "type": .name(type)])
+                let exit = Instruction.Exit.normal("?")
                 return Instruction(
                     address: insn.address, text: insn.text,
-                    annotation: [insn.annotation, "return ?"].compactMap { $0 }.joined(separator: "  "),
+                    annotation: [insn.annotation, exit.note].compactMap { $0 }.joined(separator: "  "),
                     controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
                     callArguments: insn.callArguments, callSelf: insn.callSelf,
                     resultConsumed: insn.resultConsumed, sourceType: insn.sourceType, detail: insn.detail,
-                    calleeDisplayName: insn.calleeDisplayName, callee: .kept(insn.callee))
+                    calleeDisplayName: insn.calleeDisplayName, callee: .kept(insn.callee),
+                    exit: exit, binding: insn.binding, thenThrows: insn.thenThrows)
             }
             return function.replacingInstructions(instructions)
         }
@@ -5240,6 +5331,19 @@ public struct Disassembler: Sendable {
         let instructions = function.instructions.map { insn -> Instruction in
             var sourceNotes: [String] = []
             var sourceType = insn.sourceType
+            // Each exit is a note and a fact, appended in step; the
+            // instruction carries `Exit.carried(from:)` of them.
+            var exits: [Instruction.Exit] = []
+            func noteExit(_ exit: Instruction.Exit) {
+                exits.append(exit)
+                sourceNotes.append(exit.note)
+            }
+            // A `return …` or `throw …` note, not a throwing function's verdict.
+            var notedReturnOrThrow: Bool { exits.contains { $0 != .unclassified && $0 != .normal(nil) } }
+            var notedThrow: Bool { exits.contains { if case .throw = $0 { true } else { false } } }
+            var yields = false
+            var binding: Instruction.Binding?
+            var thenThrows = false
 
             // A `self` field access: the differentiator. `ldp x19, x20, [x20,
             // #0x20]` inside Dog.breed.getter is a 16-byte read of self.breed.
@@ -5261,24 +5365,23 @@ public struct Disassembler: Sendable {
             let callee = calleeByAddress[insn.address]
             let isObjCNonVoid = function.objcMethod.map { !$0.returnsVoid } == true
             if scalarTailReturns.contains(insn.address), let callee {
-                sourceNotes.append("return \(callExpression(callee: callee, values: argumentsByAddress[insn.address] ?? [], site: insn.address))")
+                noteExit(.normal(callExpression(callee: callee, values: argumentsByAddress[insn.address] ?? [], site: insn.address)))
             }
             if isObjCNonVoid, let rawExit = analysis.exitValues[insn.address] {
                 let exit = sanitizeValue(rawExit)
                 if insn.controlFlow == .return, exit != .unknown {
-                    sourceNotes.append("return \(renderReturnValue(exit, before: insn.address))")
+                    noteExit(.normal(renderReturnValue(exit, before: insn.address)))
                 } else if insn.controlFlow == .branch, let callee {
                     if passthroughReturnHelpers.contains(where: callee.hasPrefix), exit != .unknown {
-                        sourceNotes.append("return \(renderReturnValue(exit, before: insn.address))")
+                        noteExit(.normal(renderReturnValue(exit, before: insn.address)))
                     } else if !DisassembledFunction.isRuntimeNoise(callee),
                               let values = argumentsByAddress[insn.address] {
-                        sourceNotes.append("return \(callExpression(callee: callee, values: values, site: insn.address))")
+                        noteExit(.normal(callExpression(callee: callee, values: values, site: insn.address)))
                     }
                 }
             }
-            if isObjCNonVoid, insn.controlFlow == .return,
-               !sourceNotes.contains(where: { $0.hasPrefix("return ") }) {
-                sourceNotes.append("return ?")
+            if isObjCNonVoid, insn.controlFlow == .return, exits.isEmpty {
+                noteExit(.normal("?"))
             }
 
             // A Swift function surfaces its return value too — the reason a pure
@@ -5287,6 +5390,7 @@ public struct Disassembler: Sendable {
             // result) and only return types delivered in one value register, so a
             // stale register is never printed as a fabricated return.
             if mergedThrowEnds.contains(insn.address) {
+                thenThrows = true
                 sourceNotes.append(DisassembledFunction.thenThrowNote)
             }
             if throwExits.contains(insn.address) {
@@ -5299,7 +5403,7 @@ public struct Disassembler: Sendable {
                    let caseName = enumCaseIndex.caseName(ofEnum: errorType, tag: Int(tag)) {
                     thrown = "\(errorType).\(caseName)"
                 }
-                sourceNotes.append("throw \(thrown)")
+                noteExit(.throw(thrown))
             } else if function.objcMethod == nil, isReturn(insn), returnsDirectly,
                normalReturnIsProven(at: insn.address), let returnRegister = functionReturnRegister {
                 let rawExit = returnRegister == .floating
@@ -5308,7 +5412,7 @@ public struct Disassembler: Sendable {
                 if let rawExit {
                     let exit = sanitizeValue(rawExit)
                     if exit != .unknown {
-                        sourceNotes.append("return \(renderReturnValue(exit, before: insn.address))")
+                        noteExit(.normal(renderReturnValue(exit, before: insn.address)))
                     }
                 }
             } else if function.objcMethod == nil, isReturn(insn), returnsDirectly,
@@ -5324,7 +5428,7 @@ public struct Disassembler: Sendable {
                     return value
                 }()
                 if let caseName = payloadEnumIndex.caseName(ofEnum: returnTypeName, x0: x0, x1: x1) {
-                    sourceNotes.append("return \(returnTypeName).\(caseName)")
+                    noteExit(.normal("\(returnTypeName).\(caseName)"))
                 }
             } else if asyncReturns.contains(insn.address), normalReturnIsProven(at: insn.address), let returnRegister = asyncReturnRegister {
                 let rawExit = returnRegister == .floating
@@ -5333,7 +5437,7 @@ public struct Disassembler: Sendable {
                 if let rawExit {
                     let exit = sanitizeValue(rawExit)
                     if exit != .unknown {
-                        sourceNotes.append("return \(renderReturnValue(exit, before: insn.address))")
+                        noteExit(.normal(renderReturnValue(exit, before: insn.address)))
                     }
                 }
             }
@@ -5346,7 +5450,7 @@ public struct Disassembler: Sendable {
             // layout) prints nothing, and the structurer's `return ?` stands.
             if function.objcMethod == nil, insn.controlFlow == .return, !returnsDirectly,
                normalReturnIsProven(at: insn.address), let indirect = indirectReturn(at: insn.address) {
-                sourceNotes.append("return \(indirect.rendered)")
+                noteExit(.normal(indirect.rendered))
             }
 
             // A suspension point. An executor hop names the executor only when
@@ -5401,6 +5505,7 @@ public struct Disassembler: Sendable {
                 }
                 if let offset, let field = fieldInfo(at: offset, bytes: 1),
                    field.names == [modifyProperty] {
+                    yields = true
                     sourceNotes.append("yield &\(fieldPath(modifyProperty))")
                 }
             }
@@ -5472,7 +5577,9 @@ public struct Disassembler: Sendable {
                         callee: callee, values: argumentsByAddress[insn.address] ?? [], site: insn.address,
                         selfText: selfValueBySite[insn.address].map { renderValue($0, depth: 0) })
                 }
-                sourceNotes.append("let \(name) = \(expression)")
+                let bound = Instruction.Binding(name: name, expression: expression)
+                binding = bound
+                sourceNotes.append(bound.statement)
             }
 
             // Unknown facts do not mean the source result is absent. Keep the
@@ -5481,28 +5588,28 @@ public struct Disassembler: Sendable {
                 || (throwsSignature?.isThrowing == true && signatureReturnsValue && normalReturnIsProven(at: insn.address))
                 || (asyncReturns.contains(insn.address) && signatureReturnsValue)
             if isReturn(insn), valueContract, normalReturnIsProven(at: insn.address), !throwExits.contains(insn.address),
-               !mergedThrowEnds.contains(insn.address),
-               !sourceNotes.contains(where: { $0.hasPrefix("return ") || $0.hasPrefix("throw ") || $0.hasPrefix("yield ") }) {
-                sourceNotes.append("return ?")
+               !mergedThrowEnds.contains(insn.address), !notedReturnOrThrow, !yields {
+                noteExit(.normal("?"))
             }
 
             if isReturn(insn), throwsSignature?.isThrowing == true,
                !normalReturnIsProven(at: insn.address), !throwExits.contains(insn.address),
-               !mergedThrowExits.contains(insn.address),
-               !sourceNotes.contains(where: { $0.hasPrefix("throw ") }) {
-                sourceNotes.append(DisassembledFunction.unresolvedSwiftExitNote)
+               !mergedThrowExits.contains(insn.address), !notedThrow {
+                noteExit(.unclassified)
             }
             // A proven normal exit with no result to print still says so: with
             // no note, a renderer cannot tell it from an exit never classified.
             if isReturn(insn), throwsSignature?.isThrowing == true,
                normalReturnIsProven(at: insn.address), !throwExits.contains(insn.address),
-               !mergedThrowExits.contains(insn.address),
-               !sourceNotes.contains(where: { $0.hasPrefix("return ") || $0.hasPrefix("throw ") || $0.hasPrefix("yield ") }) {
-                sourceNotes.append(DisassembledFunction.normalSwiftExitNote)
+               !mergedThrowExits.contains(insn.address), !notedReturnOrThrow, !yields {
+                noteExit(.normal(nil))
             }
+            let exitFact = Instruction.Exit.carried(from: exits)
 
             if Probe.isActive, isReturn(insn) || scalarTailReturns.contains(insn.address) {
-                let renderedReturn = sourceNotes.first { $0.hasPrefix("return ") }
+                let renderedReturn = exits.lazy.compactMap { exit -> String? in
+                    if case .normal(let value?) = exit { "return \(value)" } else { nil }
+                }.first
                 let returnsValue = DisassembledFunction.signatureReturnsValue(
                     displayName: function.analysisDisplayName, objcSignature: function.objcMethod?.signature)
                 let status = scalarTailReturns.contains(insn.address) ? "tail-call"
@@ -5537,7 +5644,7 @@ public struct Disassembler: Sendable {
                 controlFlow: flow, branchTarget: insn.branchTarget,
                 callArguments: insn.callArguments, callSelf: insn.callSelf,
                 resultConsumed: insn.resultConsumed, sourceType: insn.sourceType, detail: insn.detail,
-                callee: .kept(insn.callee)
+                callee: .kept(insn.callee), exit: insn.exit, binding: insn.binding, thenThrows: insn.thenThrows
             )
             guard let site = sites[insn.address] else {
                 guard !sourceNotes.isEmpty || consumedCallResults.contains(insn.address) else { return untouched }
@@ -5547,7 +5654,8 @@ public struct Disassembler: Sendable {
                     controlFlow: flow, branchTarget: insn.branchTarget,
                     callArguments: insn.callArguments, callSelf: insn.callSelf,
                     resultConsumed: consumedCallResults.contains(insn.address),
-                    sourceType: sourceType, detail: insn.detail, callee: .kept(insn.callee)
+                    sourceType: sourceType, detail: insn.detail, callee: .kept(insn.callee),
+                    exit: exitFact, binding: binding, thenThrows: thenThrows
                 )
             }
 
@@ -5575,7 +5683,7 @@ public struct Disassembler: Sendable {
                 callSelf: selfText, resultConsumed: consumedCallResults.contains(insn.address),
                 sourceType: sourceType, detail: insn.detail,
                 calleeDisplayName: callee.map { demangleCache.presentation(of: $0) },
-                callee: .kept(insn.callee)
+                callee: .kept(insn.callee), exit: exitFact, binding: binding, thenThrows: thenThrows
             )
         }
         return function.replacingInstructions(instructions)

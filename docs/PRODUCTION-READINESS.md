@@ -3304,3 +3304,39 @@ if a test was observed to fail without the fix.
   `xrefs` peak footprint 280 MB against 294 MB (+5%), after the fact was
   made to share the annotation's or resolver's string rather than copy it
   (+30 MB before).
+
+## 2026-10-21: exits and bindings as typed facts (IR step 1)
+
+- **FIXED (soundness): a string literal in a call's arguments could
+  become the function's return.** Notes are separated by two spaces, the
+  rendered arguments are a note, and the renderers split the whole
+  annotation at every two spaces, literals included. The first piece
+  starting `return ` was the statement, so an embedded script with an
+  indented `return` line printed that piece as a `return` and the call
+  disappeared; a literal holding `then throw ?` added a `throw ?`; a
+  bound call or a returned call whose literal had a double space was cut
+  there. Exits, bindings and the throw after a statement are now facts on
+  `Instruction` (`exit`: `.normal(value?)`, `.throw(error)`,
+  `.unclassified`; `binding`; `thenThrows`), written where enrichment
+  appends the matching note and read by the pseudo statement and the
+  structurer instead of the text. `notetext.swift` reduces each shape;
+  `literalsThatReadAsNotesStayInsideTheirStatementsIfPresent` pins the
+  true statements, and `exitFactsMatchTheirAnnotationsOnTheFixturesIfPresent`
+  checks every fact against its note, read with literals kept whole.
+  Blast radius: no other fixture view changes. Clarc changes at 3 sites
+  (a fabricated return in place of an append of an embedded script, and
+  two bindings cut at a label's double space), GoodLinks at 5 (two
+  fabricated returns from embedded scripts, one printed once per call
+  carrying the literal, five times in all; a format-string return and two
+  bindings cut short). GoodLinks `xrefs --unreferenced` is unchanged.
+  Release A/B, three alternating rounds, instructions retired: Clarc
+  `--pseudo` 302.3 G against 294.0 G median (-2.7%), peak footprint
+  67.5 MB against 67.8 MB; GoodLinks `--pseudo` 1266.3 G against
+  1237.2 G (-2.3%, measured before the facts were boxed). The facts share
+  one optional box, so an instruction without any pays one pointer.
+- **OPEN (soundness): the statement notes still read from text.** The same
+  split still finds field writes (`self.x = …`), `self = …`, `yield …`,
+  the executor hop and `await=` in a literal: a call `emit("a  self.x = 1")`
+  renders `self.x = 1")`, and `emit("a  await=r9")` renders
+  `let r9") = await emit(…)`. Moving those notes to facts the same way
+  closes it.

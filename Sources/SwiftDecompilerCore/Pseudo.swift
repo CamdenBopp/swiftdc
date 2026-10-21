@@ -51,31 +51,29 @@ public extension DisassembledFunction {
     static func pseudoStatement(of insn: Instruction, hideRuntime: Bool) -> String? {
         // A path that throws after this instruction (a throw merged into the
         // shared epilogue): its own statement, then the throw.
-        if let annotation = insn.annotation, annotation.contains(Self.thenThrowNote) {
-            let rest = annotation.replacingOccurrences(of: "  " + Self.thenThrowNote, with: "")
-                .replacingOccurrences(of: Self.thenThrowNote, with: "")
+        if insn.thenThrows {
+            let rest = insn.annotation.map {
+                $0.replacingOccurrences(of: "  " + Self.thenThrowNote, with: "")
+                    .replacingOccurrences(of: Self.thenThrowNote, with: "")
+            }
             let base = Instruction(
-                address: insn.address, text: insn.text, annotation: rest.isEmpty ? nil : rest,
+                address: insn.address, text: insn.text, annotation: rest?.isEmpty == false ? rest : nil,
                 controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
                 callArguments: insn.callArguments, callSelf: insn.callSelf,
                 resultConsumed: insn.resultConsumed, sourceType: insn.sourceType, detail: insn.detail,
-                calleeDisplayName: insn.calleeDisplayName, callee: .kept(insn.callee))
+                calleeDisplayName: insn.calleeDisplayName, callee: .kept(insn.callee),
+                exit: insn.exit, binding: insn.binding)
             return pseudoStatement(of: base, hideRuntime: hideRuntime).map { "\($0)\nthrow ?" } ?? "throw ?"
         }
         if insn.isTrap { return "trap()" }
-        if let notes = insn.annotation?.components(separatedBy: "  ") {
-            if notes.contains(Self.unresolvedSwiftExitNote) { return Self.unresolvedSwiftExitStatement }
-            if notes.contains(Self.normalSwiftExitNote) { return "return" }
-        }
+        // An exit's statement comes ahead of every note. The only note that
+        // reads as a statement and is noted ahead of an exit is a field
+        // write, which is a store, never an exit.
+        if let exit = insn.exit { return exit.statement }
         if let annotation = insn.annotation {
             let semantic = annotation.components(separatedBy: "  ")
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .first { note in
-                    if note.hasPrefix("return ") || note.hasPrefix("throw ") { return true }
-                    // `let r0 = call(...)`: a call whose indirect result is read
-                    // back field by field later, bound once so the call is not
-                    // spelled out (executed) at every use.
-                    if note.hasPrefix("let r") { return true }
                     if note.hasPrefix("yield ") { return true }
                     if note.hasPrefix("await hop_to_executor(") { return true }
                     if note.hasPrefix("self = ") { return true }
@@ -87,6 +85,10 @@ public extension DisassembledFunction {
                 }
             if let semantic { return semantic }
         }
+        // `let r0 = call(...)`: a call whose result is read more than once,
+        // bound once so the call is not spelled out (executed) at every use.
+        // Its note comes after the notes above, so they win.
+        if let binding = insn.binding { return binding.statement }
         return callStatement(of: insn, hideRuntime: hideRuntime)
     }
 

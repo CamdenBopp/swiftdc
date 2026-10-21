@@ -61,7 +61,7 @@ import SwiftDecompilerCore
 
 @Test func aStructuredFlatFallbackCountsOnlyOneCommittedRender() throws {
     let function = DisassembledFunction(symbol: "fixture", demangledName: nil, startAddress: 0x1000,
-        instructions: [Instruction(address: 0x1000, text: "ret", annotation: "return 7", controlFlow: .return)], source: .address)
+        instructions: [Instruction(address: 0x1000, text: "ret", annotation: "return 7", controlFlow: .return, exit: .normal("7"))], source: .address)
     let recorder = ProbeRecorder()
     let text = Probe.recording(recorder) { function.renderStructured() }
     #expect(text.contains("return 7"))

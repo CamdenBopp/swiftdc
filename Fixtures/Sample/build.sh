@@ -95,6 +95,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name BoundSelf boundself.swif
 echo "==> fixpoint visiting order: blocks reached late or through unmodelled edges (fixpoint_order.s)"
 $CLANG -arch arm64 -dynamiclib fixpoint_order.s -o libFixpointOrder.dylib
 
+echo "==> string literals that read as notes once split at two spaces (notetext.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name NoteText notetext.swift -o libNoteText.opt.dylib
+
 echo "==> a pure unmodelled scalar return (unknownreturn.swift, -O)"
 $SWIFTC -O -emit-library -module-name UnknownReturn unknownreturn.swift -o libUnknownReturn.dylib
 

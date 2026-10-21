@@ -31,9 +31,14 @@ spellings; and the fixpoint visiting order (a block runs only once a
 predecessor has; unreached blocks start from nothing), which removed
 GoodLinks' last fixpoint cap. Suite: 710 tests.
 
-Next: IR step 1 (typed facts beside the annotation strings) and step 2
-(CFG once: `basicBlocks()` still runs in `analyze`, in enrichment and in
-the structurer). Open from this round: the loop-body pass's sticky
+IR step 1 started on 2026-10-21: the callee, then exits, bindings and
+`then throw ?` are typed facts on `Instruction`. Moving exits fixed real
+output: a string literal split at its double spaces printed as a
+`return` (Clarc, GoodLinks; `notetext.swift`). Next: the same for the
+statement notes still read from text (field writes, `self = …`,
+`yield`, the executor hop, `await=`), which have the same literal hole
+(OPEN in the readiness doc), then IR step 2 (CFG once: `basicBlocks()`
+still runs in `analyze`, in enrichment and in the structurer). Open from this round: the loop-body pass's sticky
 markers have no guard; entry-seeded stack arguments carry no width.
 Profile leaders after typed locations: the tracer's transfer and meet,
 enrichment's per-instruction closure, `renderPseudo`, and Capstone

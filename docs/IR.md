@@ -112,7 +112,19 @@ fix, measured and explained like any other.
    a call's target is named and kept through note-only rebuilds; every
    `calleeName(of:)` consumer reads it for calls and branches. The
    annotation still carries the name for display and for instructions
-   built by hand; the other note kinds are next.*
+   built by hand. Exits and bindings followed the same day as
+   `Instruction.exit` (`.normal(value?)`, `.throw(error)`,
+   `.unclassified`), `Instruction.binding` (`let r0 = …`) and
+   `thenThrows`: the pseudo statement and the structurer read them, and a
+   note that only reads as a return no longer makes one. That fixed real
+   output: a string literal's text, split at its double spaces, had been
+   printed as a `return` on Clarc and GoodLinks. Typed accessors rather
+   than `[Fact]`, because each kind has at most one value per instruction;
+   the facts share one optional box, so an instruction without any pays
+   one pointer, and later statement facts join the same box. Next: the
+   notes the pseudo statement still scans (field writes, `yield`, the
+   executor hop, `self = [super init]`) and `await=`, which have the same
+   literal hole, then `jump=`, `cond:` and the loop notes.*
 2. **CFG once.** A `FunctionCFG` built at segmentation and threaded through
    enrichment, the tracer, the summaries and the structurer. Measure with a
    release A/B on a large app.

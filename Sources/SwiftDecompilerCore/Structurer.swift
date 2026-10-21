@@ -504,10 +504,11 @@ struct ControlFlowStructure {
             for insn in block.instructions {
                 if branch?.consumed.contains(insn.address) == true { continue }
                 if let statement = DisassembledFunction.pseudoStatement(of: insn, hideRuntime: true) {
-                    for line in statement.components(separatedBy: "\n") {
-                        lines.append("\(pad)\(line)")
-                        emittedReturn = emittedReturn || line == "return" || line.hasPrefix("return ") || line.hasPrefix("throw ") || line.hasPrefix("machine_return()")
-                    }
+                    for line in statement.components(separatedBy: "\n") { lines.append("\(pad)\(line)") }
+                    // An exit's statement, or a throw after this one, ends
+                    // the path: `pseudoStatement` renders either ahead of
+                    // anything else on the instruction.
+                    emittedReturn = emittedReturn || insn.exit != nil || insn.thenThrows
                 }
             }
             if isReturn(block) {
@@ -913,11 +914,7 @@ struct ControlFlowStructure {
                     }
                     // A result bound because it has several uses is tested by
                     // its name; inlining the call would show it run again.
-                    if let binding = instruction.annotation?.components(separatedBy: "  ")
-                        .first(where: { $0.hasPrefix("let r") }),
-                       let assignment = binding.range(of: " = ") {
-                        return String(binding[binding.index(binding.startIndex, offsetBy: 4)..<assignment.lowerBound])
-                    }
+                    if let binding = instruction.binding { return binding.name }
                     // The branch tests the value this call returned. Inline the
                     // send so the condition reads as source (`[x isKindOfClass:…]`),
                     // and record the call so the body drops its now-dead statement.
