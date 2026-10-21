@@ -17,6 +17,15 @@ struct NominalTypeEvidence: Sendable {
                 classes.insert(node.print(using: options))
             case .structure, .enum, .boundGenericStructure, .boundGenericEnum:
                 values.insert(node.print(using: options))
+            case .extension:
+                // Swift extends only nominal types, so an extension of a C
+                // typedef (`(extension in os):__C.os_log_type_t`) extends one
+                // the importer made a struct; its node is a TypeAlias.
+                let parts = Array(node.children)
+                if parts.count >= 2, parts[1].kind == .typeAlias,
+                   let module = Array(parts[1].children).first, module.kind == .module, module.text == "__C" {
+                    values.insert(parts[1].print(using: options))
+                }
             default: break
             }
             work.append(contentsOf: node.children)

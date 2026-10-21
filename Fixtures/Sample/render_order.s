@@ -101,6 +101,25 @@ _$s11RenderOrder5PointVACSQAAWl:
   mov x0, #0
   ret
 
+// A static member of a C typedef the importer made a struct (os_log_type_t,
+// mangled as a typealias) receives a thin metatype too. Here it is defined
+// locally under the system's mangled name. True call: no self.
+.globl _$s11RenderOrder11importedLogyS2iF
+_$s11RenderOrder11importedLogyS2iF:
+  stp x29, x30, [sp, #-32]!
+  stp x20, x19, [sp, #16]
+  mov x19, x0
+  mov x20, x0
+  bl _$sSo13os_log_type_ta0A0E4infoABvgZ
+  mov x0, x19
+  ldp x20, x19, [sp, #16]
+  ldp x29, x30, [sp], #32
+  ret
+.globl _$sSo13os_log_type_ta0A0E4infoABvgZ
+_$sSo13os_log_type_ta0A0E4infoABvgZ:
+  mov w0, #1
+  ret
+
 .globl _render_helper
 _render_helper:
   mov x0, #5

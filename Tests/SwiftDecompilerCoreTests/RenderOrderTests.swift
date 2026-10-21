@@ -104,3 +104,13 @@ private func renderOrderFunction(_ member: String) async throws -> DisassembledF
     #expect(!DisassembledFunction.takesNoSelf("merged M.T.method() -> ()"))
     #expect(!DisassembledFunction.takesNoSelf("M.T.method() -> ()"))
 }
+
+/// `os_log_type_t` is a C typedef the importer made a struct; Swift mangles
+/// it as a typealias, so the class index had no evidence it is a value type
+/// and its static members kept a scratch `self` (73 Clarc calls).
+@Test func aStaticMemberOfAnImportedTypedefStructHasNoSelfIfPresent() async throws {
+    guard let function = try await renderOrderFunction("importedLog") else { return }
+    let call = try #require(function.instructions.first { $0.controlFlow == .call })
+    #expect(call.annotation?.contains("os_log_type_t.info.getter") == true, "\(call.annotation ?? "")")
+    #expect(call.annotation?.contains("self=") == false, "\(call.annotation ?? "")")
+}

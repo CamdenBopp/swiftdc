@@ -3228,3 +3228,9 @@ if a test was observed to fail without the fix.
   x20 was fresh: `self=arg0` on a lazy protocol witness table accessor,
   ten such notes across six fixtures. They now decline it; a `merged`
   method is still a method and keeps its `self`.
+  A C typedef that the importer makes a struct (`os_log_type_t`) is
+  mangled as a typealias, so the class index had no evidence it is a value
+  type and its static members kept a scratch `self` (48 Clarc calls such as
+  `static (extension in os):__C.os_log_type_t.info.getter(self: …)`). An
+  extension of a `__C` typealias now counts as value-type evidence: Swift
+  extends only nominal types.
