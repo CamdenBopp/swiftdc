@@ -82,8 +82,11 @@ The pipeline:
 
 Stages hand facts to each other as notes in `Instruction.annotation`, each
 note separated by **two spaces**: `→ name`, `args(…)`, `self=…`, `await=…`,
-`cond: …`, `return …`, `let r0 = …`, `jump=…`. A new note must never look
-like a callee name to `calleeName(of:)`/`stripNotes`.
+`cond: …`, `return …`, `let r0 = …`, `jump=…`. A call's or branch's callee
+is a typed fact, `Instruction.callee`, fixed where its target is named:
+a rebuild that only appends notes passes `callee: .kept(insn.callee)`.
+Notes still must not look like a name where the fact is derived
+(`parsedCalleeName`).
 
 The whole-image array path holds about 1 KB per instruction. A large app
 does not fit in it, so a new whole-image mode should stream
