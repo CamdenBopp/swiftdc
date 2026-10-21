@@ -81,6 +81,21 @@ public struct Instruction: Sendable {
     /// Display-only callee spelling. Semantic consumers retain the full name
     /// in annotation, so hiding argument types cannot change the call ABI.
     public let calleeDisplayName: String?
+    /// For a call or branch: the name of its target, fixed where the target
+    /// is named (decode, the Capstone merge, the call-target and indirect
+    /// target passes) and kept through every rebuild that only adds notes.
+    /// A note appended to the annotation later cannot become the callee.
+    /// Nil for anything else and for an unnamed target.
+    public let callee: String?
+
+    /// Where a new instruction's `callee` comes from.
+    public enum CalleeFact: Sendable {
+        /// Named from this instruction's text and annotation: where the
+        /// target is named.
+        case derived
+        /// Carried from the instruction being rebuilt.
+        case kept(String?)
+    }
 
     public init(
         address: UInt64,
@@ -93,7 +108,8 @@ public struct Instruction: Sendable {
         resultConsumed: Bool = false,
         sourceType: String? = nil,
         detail: StructuredInsn? = nil,
-        calleeDisplayName: String? = nil
+        calleeDisplayName: String? = nil,
+        callee: CalleeFact = .derived
     ) {
         self.address = address
         self.text = text
@@ -106,6 +122,13 @@ public struct Instruction: Sendable {
         self.sourceType = sourceType
         self.detail = detail
         self.calleeDisplayName = calleeDisplayName
+        switch callee {
+        case .kept(let name):
+            self.callee = name
+        case .derived:
+            self.callee = controlFlow == .call || controlFlow == .branch
+                ? DisassembledFunction.parsedCalleeName(text: text, annotation: annotation) : nil
+        }
     }
 }
 
@@ -1922,10 +1945,15 @@ public struct Disassembler: Sendable {
                   let target = insn.branchTarget,
                   let name = resolver.callTargetName(at: target)
             else { return insn }
+            let annotation = "→ \(name)"
+            // The fact is the name this pass resolved, shared rather than
+            // copied, whenever the annotation reads back as it.
+            let parsed = DisassembledFunction.parsedCalleeName(text: insn.text, annotation: annotation)
             return Instruction(
-                address: insn.address, text: insn.text, annotation: "→ \(name)",
+                address: insn.address, text: insn.text, annotation: annotation,
                 controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
-                callArguments: insn.callArguments, detail: insn.detail
+                callArguments: insn.callArguments, detail: insn.detail,
+                callee: .kept(parsed == name ? name : parsed)
             )
         }
         return function.replacingInstructions(instructions)
@@ -1963,12 +1991,13 @@ public struct Disassembler: Sendable {
             else { return insn }
             let annotation = insn.annotation.map { "\($0)  → \(resolved.name)" }
                 ?? "→ \(resolved.name)"
+            let parsed = DisassembledFunction.parsedCalleeName(text: insn.text, annotation: annotation)
             return Instruction(
                 address: insn.address, text: insn.text, annotation: annotation,
                 controlFlow: insn.controlFlow, branchTarget: resolved.address,
                 callArguments: insn.callArguments, callSelf: insn.callSelf,
                 resultConsumed: insn.resultConsumed, sourceType: insn.sourceType,
-                detail: insn.detail
+                detail: insn.detail, callee: .kept(parsed == resolved.name ? resolved.name : parsed)
             )
         }
         return function.replacingInstructions(instructions)
@@ -3528,7 +3557,7 @@ public struct Disassembler: Sendable {
                     controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
                     callArguments: insn.callArguments, callSelf: insn.callSelf,
                     resultConsumed: insn.resultConsumed, sourceType: insn.sourceType, detail: insn.detail,
-                    calleeDisplayName: insn.calleeDisplayName)
+                    calleeDisplayName: insn.calleeDisplayName, callee: .kept(insn.callee))
             }
             return function.replacingInstructions(instructions)
         }
@@ -5507,7 +5536,8 @@ public struct Disassembler: Sendable {
                 address: insn.address, text: insn.text, annotation: insn.annotation,
                 controlFlow: flow, branchTarget: insn.branchTarget,
                 callArguments: insn.callArguments, callSelf: insn.callSelf,
-                resultConsumed: insn.resultConsumed, sourceType: insn.sourceType, detail: insn.detail
+                resultConsumed: insn.resultConsumed, sourceType: insn.sourceType, detail: insn.detail,
+                callee: .kept(insn.callee)
             )
             guard let site = sites[insn.address] else {
                 guard !sourceNotes.isEmpty || consumedCallResults.contains(insn.address) else { return untouched }
@@ -5517,7 +5547,7 @@ public struct Disassembler: Sendable {
                     controlFlow: flow, branchTarget: insn.branchTarget,
                     callArguments: insn.callArguments, callSelf: insn.callSelf,
                     resultConsumed: consumedCallResults.contains(insn.address),
-                    sourceType: sourceType, detail: insn.detail
+                    sourceType: sourceType, detail: insn.detail, callee: .kept(insn.callee)
                 )
             }
 
@@ -5544,7 +5574,8 @@ public struct Disassembler: Sendable {
                 callArguments: rendered.isEmpty ? nil : rendered,
                 callSelf: selfText, resultConsumed: consumedCallResults.contains(insn.address),
                 sourceType: sourceType, detail: insn.detail,
-                calleeDisplayName: callee.map { demangleCache.presentation(of: $0) }
+                calleeDisplayName: callee.map { demangleCache.presentation(of: $0) },
+                callee: .kept(insn.callee)
             )
         }
         return function.replacingInstructions(instructions)

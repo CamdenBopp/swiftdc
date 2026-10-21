@@ -108,6 +108,11 @@ fix, measured and explained like any other.
    Producers write both; consumers move one note kind at a time; the string
    channel is deleted when nothing reads it. Removes the callee-name hazard
    class outright.
+   *Started 2026-10-21 with the callee: `Instruction.callee` is fixed where
+   a call's target is named and kept through note-only rebuilds; every
+   `calleeName(of:)` consumer reads it for calls and branches. The
+   annotation still carries the name for display and for instructions
+   built by hand; the other note kinds are next.*
 2. **CFG once.** A `FunctionCFG` built at segmentation and threaded through
    enrichment, the tracer, the summaries and the structurer. Measure with a
    release A/B on a large app.

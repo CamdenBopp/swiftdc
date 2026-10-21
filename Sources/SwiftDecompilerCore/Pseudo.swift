@@ -59,7 +59,7 @@ public extension DisassembledFunction {
                 controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
                 callArguments: insn.callArguments, callSelf: insn.callSelf,
                 resultConsumed: insn.resultConsumed, sourceType: insn.sourceType, detail: insn.detail,
-                calleeDisplayName: insn.calleeDisplayName)
+                calleeDisplayName: insn.calleeDisplayName, callee: .kept(insn.callee))
             return pseudoStatement(of: base, hideRuntime: hideRuntime).map { "\($0)\nthrow ?" } ?? "throw ?"
         }
         if insn.isTrap { return "trap()" }
@@ -394,25 +394,33 @@ public extension DisassembledFunction {
         }
     }
 
-    /// Best-effort callee name for a call instruction, from the demangled
-    /// annotation or objdump's stub/operand text.
+    /// The callee of a call or branch: the name fixed when its target was
+    /// named (`Instruction.callee`). Anything else is parsed from its text and
+    /// annotation as the instruction stands.
     static func calleeName(of insn: Instruction) -> String? {
+        if insn.controlFlow == .call || insn.controlFlow == .branch { return insn.callee }
+        return parsedCalleeName(text: insn.text, annotation: insn.annotation)
+    }
+
+    /// Best-effort callee name from the demangled annotation or objdump's
+    /// stub/operand text.
+    static func parsedCalleeName(text: String, annotation: String?) -> String? {
         // objdump tells us the real callee behind a stub.
-        if insn.text.contains("symbol stub for: ") {
-            if let demangled = demangledName(from: insn.annotation) { return demangled }
-            if let range = insn.text.range(of: "symbol stub for: ") {
-                let raw = insn.text[range.upperBound...].prefix { !$0.isWhitespace && $0 != ";" }
+        if text.contains("symbol stub for: ") {
+            if let demangled = demangledName(from: annotation) { return demangled }
+            if let range = text.range(of: "symbol stub for: ") {
+                let raw = text[range.upperBound...].prefix { !$0.isWhitespace && $0 != ";" }
                 return stripUnderscores(String(raw))
             }
         }
         // Direct call: prefer the demangled annotation, else a resolved
         // `→ name` target (the in-process path), else the symbol operand.
-        if let demangled = demangledName(from: insn.annotation) { return demangled }
-        if let annotation = insn.annotation, let arrow = annotation.range(of: "→ ") {
+        if let demangled = demangledName(from: annotation) { return demangled }
+        if let annotation, let arrow = annotation.range(of: "→ ") {
             let name = stripNotes(String(annotation[arrow.upperBound...]))
             if !name.isEmpty { return name }
         }
-        let fields = insn.text.split(whereSeparator: { $0 == " " || $0 == "\t" })
+        let fields = text.split(whereSeparator: { $0 == " " || $0 == "\t" })
         if fields.count >= 2 {
             let operand = String(fields[1])
             if operand.hasPrefix("_") { return stripUnderscores(operand) }
@@ -511,7 +519,15 @@ public extension DisassembledFunction {
     /// call graph named `swift_dynamicCastClass` as
     /// `swift_dynamicCastClass  let r0 = (? as? Reconstruction.Dog)`.
     private static func stripNotes(_ text: String) -> String {
-        let cut = text.range(of: "  ")?.lowerBound ?? text.endIndex
+        guard let cut = text.range(of: "  ")?.lowerBound else {
+            // Nothing to strip: the text itself, which keeps sharing its
+            // storage (a callee fact then costs no copy of the name).
+            if let first = text.unicodeScalars.first, let last = text.unicodeScalars.last,
+               !CharacterSet.whitespaces.contains(first), !CharacterSet.whitespaces.contains(last) {
+                return text
+            }
+            return text.trimmingCharacters(in: .whitespaces)
+        }
         return String(text[..<cut]).trimmingCharacters(in: .whitespaces)
     }
 

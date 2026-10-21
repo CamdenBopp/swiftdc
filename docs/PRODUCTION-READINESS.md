@@ -3281,3 +3281,26 @@ if a test was observed to fail without the fix.
   the only tokens that disappear are unknowns respelled (`/* unresolved
   call @ … */ ?` as `?`), string words now decoded, and calls bound once
   instead of re-spelled.
+
+## 2026-10-21: the callee as a typed fact (IR step 1)
+
+- **FIXED (hazard): a note appended to a call's annotation could read as
+  its callee.** Every consumer re-parsed the callee name from the
+  annotation (`calleeName(of:)`, about 25 sites), so any new note whose text
+  did not start with a deny-listed prefix became a callee name wherever it
+  came first. `Instruction.callee` now holds the name of a call's or
+  branch's target, fixed where the target is named (decode, the Capstone
+  merge, the call-target and resolved-indirect passes) and kept through the
+  rebuilds that only append notes (enrichment, the `return ?` note, the
+  throw split, CallGraph's slimming); `calleeName(of:)` reads it for calls
+  and branches. `calleeFactsMatchTheirAnnotationsOnTheFixturesIfPresent`
+  checks that the fact still equals what the annotation parses to; with
+  `args(` dropped from the deny-list it reports 31 calls, and HEAD's views
+  change on 15 fixtures while the fact build's do not.
+  Output is unchanged: every fixture view, Clarc `--pseudo`, GoodLinks
+  `--pseudo` and GoodLinks `xrefs --unreferenced` are byte-identical.
+  Release A/B on Clarc, three alternating rounds: instructions retired
+  325.3 G against 300.0 G median (-7.8%). The field costs memory: GoodLinks
+  `xrefs` peak footprint 280 MB against 294 MB (+5%), after the fact was
+  made to share the annotation's or resolver's string rather than copy it
+  (+30 MB before).

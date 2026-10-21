@@ -128,7 +128,7 @@ public struct CallGraph: Sendable {
         where insn.controlFlow == .call || insn.controlFlow == .branch || index == instructions.count - 1 {
             kept.append(Instruction(
                 address: insn.address, text: insn.text, annotation: insn.annotation,
-                controlFlow: insn.controlFlow, branchTarget: insn.branchTarget
+                controlFlow: insn.controlFlow, branchTarget: insn.branchTarget, callee: .kept(insn.callee)
             ))
         }
         return function.replacingInstructions(kept)
