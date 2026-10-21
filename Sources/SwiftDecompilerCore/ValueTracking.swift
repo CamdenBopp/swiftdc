@@ -799,6 +799,19 @@ public struct ValueTracer: Sendable {
             }
         }
 
+        // Blocks the entry or a block without predecessors (a landing pad)
+        // reaches over modelled edges. Anything else runs only through an
+        // edge the CFG does not model, so, like a landing pad, it starts
+        // from nothing every time.
+        var reached: Set<UInt64> = [function.startAddress]
+        var reachWork = [function.startAddress] + blocks.map(\.startAddress).filter { predecessors[$0] == nil }
+        reached.formUnion(reachWork)
+        while let next = reachWork.popLast() {
+            for successor in blockByStart[next]?.successors ?? [] where blockByStart[successor] != nil {
+                if reached.insert(successor).inserted { reachWork.append(successor) }
+            }
+        }
+
         // Forward fixpoint: block entry state = meet of predecessors' exit states.
         var inState: [UInt64: State] = [:]
         var escapeMarkers: [UInt64: State] = [:]
@@ -826,8 +839,17 @@ public struct ValueTracer: Sendable {
             // starts with nothing proven. And the entry keeps the caller as an
             // incoming edge when a loop branches back to it; met only with its
             // back edges, it lost its arguments and self.
-            var incoming = preds.compactMap { outState[$0] }
-            if addr == function.startAddress { incoming.append(Self.initialState(entry: entry, asyncContextSlots: asyncContextSlots)) }
+            var incoming: [State] = []
+            if reached.contains(addr) {
+                incoming = preds.compactMap { outState[$0] }
+                if addr == function.startAddress { incoming.append(Self.initialState(entry: entry, asyncContextSlots: asyncContextSlots)) }
+                // None of its predecessors has run: not reached yet, so its
+                // entry is unconstrained, not empty. Run from nothing, it
+                // gained facts once a predecessor ran, entry states grew
+                // after shrinking, and a loop that rotates values between
+                // registers never settled (`values.fixpoint-cap`).
+                if incoming.isEmpty, !preds.isEmpty { continue }
+            }
             var blockEntry = Self.meet(incoming)
             // An escape the meet derives from a dropped address can stop being
             // derived on a later lap once the incoming values agree, and the

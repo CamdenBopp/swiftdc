@@ -92,6 +92,9 @@ $CLANG -arch arm64 -dynamiclib render_order.s -o libRenderOrder.dylib
 echo "==> a call bound for its word reads names its self (boundself.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name BoundSelf boundself.swift -o libBoundSelf.opt.dylib
 
+echo "==> fixpoint visiting order: blocks reached late or through unmodelled edges (fixpoint_order.s)"
+$CLANG -arch arm64 -dynamiclib fixpoint_order.s -o libFixpointOrder.dylib
+
 echo "==> a pure unmodelled scalar return (unknownreturn.swift, -O)"
 $SWIFTC -O -emit-library -module-name UnknownReturn unknownreturn.swift -o libUnknownReturn.dylib
 

@@ -3244,3 +3244,40 @@ if a test was observed to fail without the fix.
   statement, the binding and the inline spelling all render it. Every
   changed line in the fixtures (126), Clarc (805) and GoodLinks (1,460)
   differs from before only by added `self:` arguments.
+
+## 2026-10-20: fixpoint visiting order
+
+- **FIXED (completeness): a block ran before any of its predecessors had,
+  from an empty state.** The tracer's worklist starts with every block in
+  address order, and a block whose predecessors had not run met nothing:
+  it started from "nothing known" rather than unconstrained, and facts
+  arrived only once a predecessor ran. Entry states then grew after they
+  shrank. In a loop that rotates values between registers (x25 and x28 in
+  a 39-block GoodLinks function) the "nothing known" state chased the real
+  one around the cycle and the fixpoint never settled
+  (`values.fixpoint-cap`): the function claimed nothing and its calls
+  rendered `()`. Elsewhere the empty state became a consistent but worse
+  fixpoint: a loop header lost a register its body ran too early to see,
+  so `Reconstruction.nestedLabelledContinue` (-O) rendered `if (x1 <ᵁ 2)`
+  for `if ((0 <= arg1) && (arg1 < 2))`.
+
+  A block the entry or a block without predecessors (a landing pad) reaches
+  over modelled edges now waits until a predecessor has run. A block no
+  modelled edge reaches can run only through an edge the CFG cannot follow
+  (an unresolved `br`), so it starts from nothing every time, like a
+  landing pad; letting it wait claimed the direct path's value at the join
+  it shares with that edge. `fixpoint_order.s` holds the reduced rotation
+  (`unsettled`), the hidden-edge cycle (`unmodelledLoop`) and a block
+  reached only through the hidden edge whose successor uses what it sets
+  (`handlerTail`), each checked against native execution.
+
+  Blast radius (against HEAD, after the renderer fixes of 2026-10-15 that
+  this change exposed): two -O fixture views (the loop conditions above);
+  269 Clarc functions and 1,087 GoodLinks functions change. Every change
+  was checked: recovered arguments where calls rendered `()`, decoded
+  string literals, new bindings and the renumbering they cause, resolved
+  vtable calls (`self.method()` for an indirect call), resolved casts, and
+  an async return proven through x22. No function loses a value or a call:
+  the only tokens that disappear are unknowns respelled (`/* unresolved
+  call @ … */ ?` as `?`), string words now decoded, and calls bound once
+  instead of re-spelled.
