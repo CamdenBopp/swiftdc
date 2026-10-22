@@ -3376,10 +3376,33 @@ if a test was observed to fail without the fix.
   one is missing, and the prologue's `stp x29, x30, [sp, #…]` stores two
   more, so a call with no stack arguments can look like it has some. The
   widths above stop at the save slots, as the escape at a call does;
-  `stackArguments` does not. Stopping it there drops a known-arity call
-  whose only "values" were the frame record into the defect below
-  (Clarc: 19 more `memmove()`; GoodLinks: 32), so it waits on that one.
-- **OPEN (soundness): a call with nothing tracked renders as taking no
-  arguments.** An empty call site is not recorded, so a callee with a
-  known arity prints `memmove()` instead of `memmove(?, ?, ?)`: 113 sites
-  on Clarc and 714 on GoodLinks at `39a4aa5` (`disasm --pseudo`).
+  `stackArguments` does not. Stopping it there dropped a known-arity call
+  whose only "values" were the frame record into the `memmove()` defect
+  below (Clarc: 19 more; GoodLinks: 32), which is now fixed.
+- **FIXED (soundness): a known-arity call with nothing tracked rendered
+  as taking no arguments.** The tracer records no call site with nothing
+  in it, and the known-C-arity layout that pads unknown operands to `?`
+  runs only on recorded sites, so `memmove` whose operands were all loaded
+  through an unknown pointer read `memmove()`. The pass that already
+  inserted an empty site for a Swift callee whose scalar signature proves
+  its arity now does so for a runtime entry point of known C arity
+  (`untracked_args.c`, -O0 and -O2:
+  `untrackedOperandsKeepTheCalleesKnownArityIfPresent`). A resolved call
+  without a site also rendered its result as `/* unresolved call @ … */
+  ?` wherever it was used; a `swift_bridgeObjectRetain` of an unknown
+  value now reads `?`. Blast radius: the pseudo and structured views of
+  8 fixtures gain the `?` operands of `memcpy`, `memmove` or
+  `objc_sync_exit` (14 pseudo lines), and 14 listings and their JSON the
+  matching `args(?…)` notes. Clarc `--pseudo` changes 227
+  lines and GoodLinks 2,091, every one of them padding, the dropped
+  marker, or (7 on GoodLinks) a setter call printed as the call rather
+  than `self.Node = /* unresolved call @ … */ ?`, the assignment form
+  being kept for a known value. `memmove()`, `memcpy()` and `free()` go
+  from 175 to 0 on Clarc and from 902 to 0 on GoodLinks.
+- **OPEN (soundness): other calls with nothing tracked still render
+  `()`.** A runtime function missing from `knownCArity`
+  (`swift_weakLoadStrong()`: 55 on Clarc, 1,821 on GoodLinks), a Swift
+  callee whose signature has a non-scalar parameter, which
+  `swiftCallArgumentSlots` does not lay out (`Swift.String.append()`: 51
+  and 308), and a C callee of unknown arity (`bzero()`, `malloc()`) each
+  print only the operands that were tracked, so nothing reads as nothing.

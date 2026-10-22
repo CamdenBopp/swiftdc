@@ -3606,17 +3606,22 @@ public struct Disassembler: Sendable {
                 sites[insn.address] = site
             }
         }
-        // A proven scalar signature fixes arity even when no register value
-        // survives tracking. Positional snapshots intentionally omit trailing
-        // unknowns, so absence of a snapshot is not evidence of zero parameters.
+        // A proven scalar signature, or a runtime entry point's known C arity,
+        // fixes arity even when no register value survives tracking.
+        // Positional snapshots intentionally omit trailing unknowns, and a
+        // snapshot with nothing in it is not recorded, so absence of a
+        // snapshot is not evidence of zero parameters: `memmove` whose
+        // operands were all loaded through an unknown pointer read
+        // `memmove()`.
         for insn in function.instructions
         where insn.controlFlow == .call || insn.controlFlow == .branch {
             guard sites[insn.address] == nil,
-                  let callee = DisassembledFunction.calleeName(of: insn),
-                  let slots = Self.swiftCallArgumentSlots(
-                    callee: callee, enumCaseIndex: enumCaseIndex,
-                    classTypeIndex: classTypeIndex),
-                  !slots.isEmpty
+                  let callee = DisassembledFunction.calleeName(of: insn)
+            else { continue }
+            guard DisassembledFunction.knownCArity(of: callee) != nil
+                    || Self.swiftCallArgumentSlots(
+                        callee: callee, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex
+                    )?.isEmpty == false
             else { continue }
             sites[insn.address] = CallSite()
         }
