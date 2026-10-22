@@ -3162,13 +3162,12 @@ if a test was observed to fail without the fix.
   `flags_width_agree`). No fixture view, Clarc line or GoodLinks line
   changes.
 
-- **OPEN: an entry-seeded stack argument has no width.** A slot seeded
-  from an Objective-C method's typed locations (`stack@4` for a 4-byte
-  argument) carries no width, so an 8-byte load at it claims the argument
-  for all eight bytes, though the upper four belong to the next one.
-  Compiled code reads such arguments with `ldr w`/`ldp w`, which narrow;
-  seeding the width needs the argument sizes the location map does not
-  carry.
+- **Not a defect (was OPEN): an entry-seeded stack argument has no
+  width.** The entry seeds only stack locations whose argument is eight
+  bytes (`objcArgumentLocations`, since `ed4f157`), so no narrower slot is
+  seeded, and a load at a packed argument's slot reads unknown
+  (`objc_packed_stack.m`'s callees render `return ?`). The width defect
+  was on the caller's side; see 2026-10-22.
 
 ## 2026-10-15: call results an indirect call takes
 
@@ -3340,3 +3339,47 @@ if a test was observed to fail without the fix.
   renders `self.x = 1")`, and `emit("a  await=r9")` renders
   `let r9") = await emit(…)`. Moving those notes to facts the same way
   closes it.
+
+## 2026-10-22: Objective-C stack arguments
+
+- **FIXED (soundness): a packed Objective-C stack argument claimed its
+  neighbour's bytes.** Apple arm64 packs stack arguments to their own
+  alignment, so after six int arguments in x2-x7 the seventh is at sp+0
+  and the eighth at sp+4, and at -O clang merges the two stores into one
+  (`mov x8, #7; movk x8, #8, lsl #32; str x8, [sp]`). A send read each
+  stack argument from a whole eight-byte slot: `[p a:1 … g:7 h:8]`
+  rendered `g:0x800000007`. Without a signature it also took one slot per
+  argument, so a 16-byte struct argument's second word became the next
+  argument (`g:7 h:9`, true h 8). The call-site snapshot now records the
+  width of each slot's store, up to the register save area. A send with a
+  signature takes a stack argument only from a store that covers it and
+  no other argument (`ObjCArgumentABI.storeHoldsOnlyArgument`); one
+  without takes one slot per argument only where the area holds exactly
+  one aligned store per argument. `objc_packed_stack.m` (-O0 and -O2)
+  holds each shape, typed and untyped. Blast radius: no other fixture
+  view changes; Clarc and GoodLinks (`--pseudo`, `--structured`) and
+  GoodLinks `xrefs --unreferenced` are unchanged. On Terminal (an
+  Objective-C system app) 14 untyped sends change, each a wrong render
+  declined: 13 `+[NSEvent keyEventWithType:…]` sends printed the packed
+  `isARepeat` and key code, or their merged constant, as `characters:`,
+  and one of Terminal's own sends read an argument from a packed slot.
+  Five calls bound only for that misread use are no longer bound.
+- **OPEN (soundness): an untyped send names floating-point arguments'
+  neighbours wrongly.** With no signature the explicit arguments are laid
+  across x2-x7 by colon position, but a point or a time interval travels
+  in v registers: Terminal's `keyEventWithType:location:modifierFlags:
+  timestamp:…` sends render the modifier flags as `location:` and the
+  window number as `modifierFlags:`. `selectorMayUseFloatingArguments`
+  does not catch these selectors.
+- **OPEN (correctness): a call's stack arguments run into the register
+  save area.** The snapshot reads the words stored upward from sp until
+  one is missing, and the prologue's `stp x29, x30, [sp, #…]` stores two
+  more, so a call with no stack arguments can look like it has some. The
+  widths above stop at the save slots, as the escape at a call does;
+  `stackArguments` does not. Stopping it there drops a known-arity call
+  whose only "values" were the frame record into the defect below
+  (Clarc: 19 more `memmove()`; GoodLinks: 32), so it waits on that one.
+- **OPEN (soundness): a call with nothing tracked renders as taking no
+  arguments.** An empty call site is not recorded, so a callee with a
+  known arity prints `memmove()` instead of `memmove(?, ?, ?)`: 113 sites
+  on Clarc and 714 on GoodLinks at `39a4aa5` (`disasm --pseudo`).

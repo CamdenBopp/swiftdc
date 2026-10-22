@@ -38,8 +38,12 @@ output: a string literal split at its double spaces printed as a
 statement notes still read from text (field writes, `self = …`,
 `yield`, the executor hop, `await=`), which have the same literal hole
 (OPEN in the readiness doc), then IR step 2 (CFG once: `basicBlocks()`
-still runs in `analyze`, in enrichment and in the structurer). Open from this round: the loop-body pass's sticky
-markers have no guard; entry-seeded stack arguments carry no width.
+still runs in `analyze`, in enrichment and in the structurer). Open from
+this round: the loop-body pass's sticky markers have no guard; a call's
+stack arguments run into the save area, which waits on known-arity calls
+with nothing tracked rendering `()` (both OPEN, 2026-10-22). The
+entry-seeded stack argument width was not a defect; the caller's side was,
+fixed 2026-10-22.
 Profile leaders after typed locations: the tracer's transfer and meet,
 enrichment's per-instruction closure, `renderPseudo`, and Capstone
 decode.

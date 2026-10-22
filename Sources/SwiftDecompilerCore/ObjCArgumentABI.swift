@@ -64,6 +64,15 @@ enum ObjCArgumentABI {
         return widths
     }
 
+    /// Whether a store of `storedBytes` at a stack argument's offset is that
+    /// argument (`bytes` wide) alone: it covers the argument, and no other
+    /// stack argument starts inside it. Apple arm64 packs stack arguments, and
+    /// at -O clang merges two packed ints' stores into one eight-byte store,
+    /// which is not the first int. `storedBytes` 0 is an unknown store.
+    static func storeHoldsOnlyArgument(at offset: Int, bytes: Int, storedBytes: Int, stackStarts: [Int]) -> Bool {
+        storedBytes >= bytes && !stackStarts.contains { $0 > offset && $0 < offset + storedBytes }
+    }
+
     static func floatingStackSlots(encoding: String, argumentCount: Int) -> Set<String> {
         guard let types = parameterTypes(encoding: encoding, argumentCount: argumentCount) else { return [] }
         return Set(locations(encoding: encoding, argumentCount: argumentCount).compactMap { location, index in

@@ -76,6 +76,8 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libBoundSelf.opt.dylib",
         "Fixtures/Sample/libFixpointOrder.dylib",
         "Fixtures/Sample/libNoteText.opt.dylib",
+        "Fixtures/Sample/libObjCPackedStack.dylib",
+        "Fixtures/Sample/libObjCPackedStack.opt.dylib",
         "Fixtures/Sample/libStackCallEffects.dylib",
         "Fixtures/Sample/libStackCallEffects.opt.dylib",
         "Fixtures/Sample/libStackCallEffects.osize.dylib",

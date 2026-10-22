@@ -262,6 +262,30 @@ private func assembledFunction(
     #expect(site.stackArguments == [.immediate(42)])
 }
 
+/// The stack argument widths end at the prologue's register save area: the
+/// frame record is no argument. Counted as two more, an untyped Objective-C
+/// send saw four stores for its two stack arguments.
+@Test func stackArgumentWidthsStopAtTheRegisterSaveArea() throws {
+    //   sub  sp, sp, #0x20
+    //   stp  x29, x30, [sp, #0x10]
+    //   mov  x9, #0x2a
+    //   str  x9, [sp]
+    //   str  x9, [sp, #8]
+    //   bl   L
+    // L: ret
+    let function = try #require(assembledFunction([
+        0xff, 0x83, 0x00, 0xd1,
+        0xfd, 0x7b, 0x01, 0xa9,
+        0x49, 0x05, 0x80, 0xd2,
+        0xe9, 0x03, 0x00, 0xf9,
+        0xe9, 0x07, 0x00, 0xf9,
+        0x01, 0x00, 0x00, 0x94,
+        0xc0, 0x03, 0x5f, 0xd6,
+    ]))
+    let site = try #require(ValueTracer().callSites(in: function)[0x1014])
+    #expect(site.stackArgumentWidths == [8, 8])
+}
+
 /// Pair operations retain both halves: optimized Objective-C initializers use
 /// `ldp` for entry-stack arguments and `stp` for adjacent ivar assignments.
 @Test func tracksPairedObjectiveCValues() throws {

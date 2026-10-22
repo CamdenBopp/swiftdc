@@ -341,6 +341,13 @@ public struct CallSite: Equatable, Sendable {
     /// add them only when a resolved variadic call shape proves they belong to
     /// the source call.
     public var stackArguments: [AbstractValue] = []
+    /// The bytes the store into each leading `stackArguments` slot wrote, 0
+    /// where unknown. It stops at the prologue's register save area, where
+    /// the stack arguments end (`stackArguments` itself does not yet). Apple
+    /// arm64 packs stack arguments to their own alignment, so one eight-byte
+    /// slot can hold two four-byte arguments, and clang merges their stores
+    /// into one: a slot is one argument only where its store matches it.
+    public var stackArgumentWidths: [Int] = []
     /// x20 — `self` under the Swift calling convention. Meaningless for a
     /// non-Swift callee, where x20 is just another callee-saved register, so
     /// only render it once the callee is known to be Swift.
@@ -954,7 +961,7 @@ public struct ValueTracer: Sendable {
                                 return (offset, value)
                             })
                     }
-                    let site = Self.snapshot(registers)
+                    let site = Self.snapshot(registers, saveSlots: facts.frame.saveSlots)
                     if !site.isEmpty { result.branchSites[insn.address] = site }
                 }
                 // A flags-based conditional branch: reconstruct its branch-taken
@@ -1191,7 +1198,7 @@ public struct ValueTracer: Sendable {
         facts: FunctionFacts = FunctionFacts()
     ) {
         if insn.controlFlow == .call {
-            let site = Self.snapshot(registers)
+            let site = Self.snapshot(registers, saveSlots: facts.frame.saveSlots)
             if let record {
                 if !site.isEmpty { record(insn.address, site) }
             }
@@ -1388,20 +1395,31 @@ public struct ValueTracer: Sendable {
     /// AAPCS64 register snapshot shared by normal calls and possible tail-call
     /// branches. Keeping the construction identical prevents the two output
     /// paths from disagreeing about the same register state.
-    private static func snapshot(_ registers: State) -> CallSite {
+    /// `saveSlots` ends the stack argument widths: the words stored upward
+    /// from sp stop being arguments at the prologue's register save area, as
+    /// the escape at a call already treats them.
+    private static func snapshot(_ registers: State, saveSlots: Set<Int64>) -> CallSite {
         let args = (0...7).map { registers[.x($0)] ?? .unknown }
         var stackArguments: [AbstractValue] = []
+        var stackArgumentWidths: [Int] = []
         if case .frame(let stackBase)? = registers[.sp] {
             for slot in 0..<16 {
                 let offset = stackBase + Int64(slot * 8)
                 guard let value = registers[outgoingKey(offset)] else { break }
                 stackArguments.append(value)
+                guard !saveSlots.contains(offset), stackArgumentWidths.count == slot else { continue }
+                if case .immediate(let bytes)? = registers[stackWidthKey(offset)], bytes <= 8 {
+                    stackArgumentWidths.append(Int(bytes))
+                } else {
+                    stackArgumentWidths.append(0)
+                }
             }
         }
         return CallSite(
             arguments: trimTrailingUnknown(args) ?? [],
             floatArguments: (0...7).map { registers[.v($0)] ?? .unknown },
             stackArguments: stackArguments,
+            stackArgumentWidths: stackArgumentWidths,
             // Only when freshly set for *this* Swift call — see selfFreshKey.
             // The result pointer parked in callee-saved x20 (`mov x20, x8`) is
             // never a receiver, however fresh the write.

@@ -3860,13 +3860,24 @@ public struct Disassembler: Sendable {
                 switch signature {
                 case .known(let encoding, let types):
                     var explicit = Array(repeating: AbstractValue.unknown, count: types.count)
-                    for (location, argument) in ObjCArgumentABI.locations(encoding: encoding, argumentCount: types.count) {
+                    let locations = ObjCArgumentABI.locations(encoding: encoding, argumentCount: types.count)
+                    let stackWidths = ObjCArgumentABI.stackSlotWidths(encoding: encoding, argumentCount: types.count)
+                    let stackStarts = locations.keys.compactMap { location -> Int? in
+                        guard location.hasPrefix("stack@") else { return nil }
+                        return Int(location.dropFirst("stack@".count))
+                    }
+                    for (location, argument) in locations {
                         if location.hasPrefix("x"), let register = Int(location.dropFirst()) {
                             explicit[argument] = register < values.count ? values[register] : .unknown
                         } else if location.hasPrefix("v"), let register = Int(location.dropFirst()) {
                             explicit[argument] = register < site.floatArguments.count ? site.floatArguments[register] : .unknown
                         } else if location.hasPrefix("stack@"), let offset = Int(location.dropFirst("stack@".count)),
-                                  offset % 8 == 0, offset / 8 < site.stackArguments.count {
+                                  offset % 8 == 0, offset / 8 < site.stackArgumentWidths.count,
+                                  let bytes = stackWidths[location] {
+                            guard ObjCArgumentABI.storeHoldsOnlyArgument(
+                                at: offset, bytes: bytes, storedBytes: site.stackArgumentWidths[offset / 8],
+                                stackStarts: stackStarts)
+                            else { continue }
                             explicit[argument] = site.stackArguments[offset / 8]
                         }
                     }
@@ -3925,8 +3936,13 @@ public struct Disassembler: Sendable {
                     strategy = "objc-variadic"
                     continue
                 }
+                // With no signature the arguments' sizes are unknown. One
+                // eight-byte slot per argument holds only where the area has
+                // exactly one aligned store per argument: packed arguments
+                // (two ints in one slot, or one at sp+4) leave fewer, and an
+                // argument wider than a slot leaves more.
                 let fixedStackCount = max(0, colons - 6)
-                if fixedStackCount > 0, !site.stackArguments.isEmpty {
+                if fixedStackCount > 0, site.stackArgumentWidths.count == fixedStackCount {
                     values = (0 ..< 8).map { $0 < values.count ? values[$0] : .unknown }
                         + site.stackArguments.prefix(fixedStackCount)
                 }
