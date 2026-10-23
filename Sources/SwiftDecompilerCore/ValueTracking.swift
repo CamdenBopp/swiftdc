@@ -500,6 +500,11 @@ public struct ValueTracer: Sendable {
     /// anywhere in this frame, above or below the frame record x29 holds.
     var framePointerUsers: Set<UInt64> = []
 
+    /// Callees that use the caller's x22 as a pointer
+    /// (`CalleeRegisterSummary.readsContextRegister`): a call to one may write
+    /// the async context x22 holds, though no argument hands it over.
+    var contextRegisterUsers: Set<UInt64> = []
+
     /// Additional results proven void by a resolved indirect target or an
     /// Objective-C receiver's declared signature. A selector name alone is
     /// never proof of its return convention.
@@ -1245,6 +1250,12 @@ public struct ValueTracer: Sendable {
                 if let target = insn.branchTarget, framePointerUsers.contains(target),
                    case .frame? = registers[.x(29)] {
                     registers[Self.frameEscapeAllKey] = .immediate(1)
+                }
+                // The same for x22: preserving the register does not preserve
+                // the context it points at.
+                if let target = insn.branchTarget, contextRegisterUsers.contains(target),
+                   let context = registers[.x(22)] {
+                    Self.markEscape(context, into: &registers)
                 }
                 // Stack arguments are the words stored upward from sp at the
                 // call (`snapshot`); only a callee that can take any reads them,

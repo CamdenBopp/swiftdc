@@ -4332,8 +4332,8 @@ if a test was observed to fail without the fix.
   release `disasm --pseudo` of Terminal, TextEdit, Chess, Clarc and
   GoodLinks is byte-identical (none is built -Osize, where the machine
   outliner makes such fragments).
-- **FIXED (soundness): the value tracer kept the caller's frame slots
-  across a call to a callee that uses x29.** `preserve_calls.s`'s
+- **FIXED (fc87a54, soundness): the value tracer kept the caller's frame
+  slots across a call to a callee that uses x29.** `preserve_calls.s`'s
   `x29local` keeps arg0 in its frame at `[x29, #16]` across a call to
   `x29_local_writer`, which stores x1 there through x29, and `x29below`
   does the same below the frame record, at `[x29, #-8]`: both rendered
@@ -4343,3 +4343,18 @@ if a test was observed to fail without the fix.
   escape at its call, since it can reach either side of the frame record.
   Blast radius: only those two callers; release `disasm --pseudo` of the
   five apps is byte-identical.
+- **FIXED (soundness): an async function's context was kept across a call
+  to a callee that writes through x22.** A call hands the context over
+  only through an argument, as far as the tracer knew, and x22 is
+  callee-saved, so `async_call_effects.s`'s `implicitLeaf` stored 7 to its
+  context slot, called `async_calls_mutate_implicit` (which stores 11 at
+  `[x22, #16]`) and rendered `return AsyncCalls.observe(7)`; native 11.
+  The summary flag above now has an x22 twin, `readsContextRegister`, on
+  its own bit of the pending mask, and the tracer lets whatever x22 holds
+  escape at a call to such a callee (`contextRegisterUsers`). The leaf now
+  renders `AsyncCalls.observe(?)`, and its return, a branch through the
+  ResumeParent it reloads from the same context, is no longer proven.
+  `readonlyLeaf`, whose callee does not touch x22, keeps `observe(7)`.
+  Blast radius: only that function; release `disasm --pseudo` of the five
+  apps is byte-identical.
+

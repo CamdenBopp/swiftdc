@@ -3804,6 +3804,9 @@ public struct Disassembler: Sendable {
             if insn.controlFlow == .call, registerSummaries[target]?.readsFramePointer == true {
                 tracer.framePointerUsers.insert(target)
             }
+            if insn.controlFlow == .call, registerSummaries[target]?.readsContextRegister == true {
+                tracer.contextRegisterUsers.insert(target)
+            }
         }
         var analysis = tracer.analyze(function, entry: entry)
         // An x8-indirect function's x0 at `ret` is whatever was last left there

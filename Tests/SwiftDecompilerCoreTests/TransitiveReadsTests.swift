@@ -41,7 +41,7 @@ private func pseudo(_ path: String) async throws -> (array: String, streamed: St
 
 /// `mov x0, #5; bl +0x100; ret` with the target an in-image function: the
 /// body reads nothing itself, and the call waits on its target with every
-/// argument register but x0 (which the body wrote), and x29, still
+/// argument register but x0 (which the body wrote), and x29 and x22, still
 /// unwritten.
 @Test func aCallToAnInImageFunctionWaitsForItsTargetsReads() throws {
     let engine = try #require(CapstoneEngine())
@@ -56,8 +56,8 @@ private func pseudo(_ path: String) async throws -> (array: String, streamed: St
         }, source: .symbol)
     let summary = try #require(CalleeRegisterSummary.of(function, isFunction: { $0 == 0x1104 }))
     #expect(summary.argumentReads.isEmpty)
-    // x29 is unwritten there too.
-    #expect(summary.pendingReads == [.init(target: 0x1104, unwritten: 0b1111_1110 | 1 << 29)])
+    // x29 and x22 are unwritten there too.
+    #expect(summary.pendingReads == [.init(target: 0x1104, unwritten: 0b1111_1110 | 1 << 29 | 1 << 22)])
     // Not an in-image function: the call may read every unwritten register.
     let unknown = try #require(CalleeRegisterSummary.of(function))
     #expect(unknown.argumentReads == Set(1...7))
@@ -101,7 +101,7 @@ private func pseudo(_ path: String) async throws -> (array: String, streamed: St
     func uses(_ word: UInt32) throws -> Bool {
         let bytes = (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) }
         let detail = try #require(engine.disassemble(Data(bytes), address: 0x1000).first?.detail)
-        return CalleeRegisterSummary.usesFramePointer(detail)
+        return CalleeRegisterSummary.uses("x29", in: detail)
     }
     #expect(try !uses(0xa9bf7bfd))   // stp x29, x30, [sp, #-16]!
     #expect(try !uses(0x910003fd))   // mov x29, sp
@@ -110,6 +110,14 @@ private func pseudo(_ path: String) async throws -> (array: String, streamed: St
     #expect(try uses(0xf85f83a0))    // ldur x0, [x29, #-8]
     #expect(try uses(0xaa1d03e0))    // mov x0, x29
     #expect(try uses(0xf900001d))    // str x29, [x0]
+    // The same test for x22, the async context register.
+    func usesContext(_ word: UInt32) throws -> Bool {
+        let bytes = (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) }
+        let detail = try #require(engine.disassemble(Data(bytes), address: 0x1000).first?.detail)
+        return CalleeRegisterSummary.uses("x22", in: detail)
+    }
+    #expect(try usesContext(0xf9000ac8))     // str x8, [x22, #16]
+    #expect(try !usesContext(0xa9bf5bf6))    // stp x22, x22, [sp, #-16]!: a save
 }
 
 /// The flag goes through calls the way reads do: a call with x29 unwritten
@@ -125,7 +133,15 @@ private func pseudo(_ path: String) async throws -> (array: String, streamed: St
         0x40: CalleeRegisterSummary(argumentReads: [], pendingReads: [.init(target: 0x99, unwritten: x29)],
                                     clobberedCalleeSaved: []),     // 0x99 has no summary
     ]
+    // x22 travels the same way, on its own bit.
+    summaries[0x50] = CalleeRegisterSummary(argumentReads: [], readsContextRegister: true, clobberedCalleeSaved: [])
+    summaries[0x60] = CalleeRegisterSummary(argumentReads: [], pendingReads: [.init(target: 0x50, unwritten: 1 << 22)],
+                                            clobberedCalleeSaved: [])
+    summaries[0x70] = CalleeRegisterSummary(argumentReads: [], pendingReads: [.init(target: 0x50, unwritten: x29)],
+                                            clobberedCalleeSaved: [])
     CalleeRegisterSummary.closeOverReads(&summaries)
+    #expect(summaries[0x60]?.readsContextRegister == true)
+    #expect(summaries[0x70]?.readsContextRegister == false)
     #expect(summaries[0x20]?.readsFramePointer == true)
     #expect(summaries[0x30]?.readsFramePointer == false)
     #expect(summaries[0x40]?.readsFramePointer == true)

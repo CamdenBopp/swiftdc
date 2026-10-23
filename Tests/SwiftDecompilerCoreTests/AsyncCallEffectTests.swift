@@ -44,6 +44,8 @@ private let asyncCallFixture = "Fixtures/Sample/libAsyncCallEffects.dylib"
 
 /// A context that escaped (stored to a global) or a pointer into it handed to
 /// a call may be rewritten by any later call; the observed slot is unknown.
+/// So may the context x22 holds at a call to a callee that uses x22 itself
+/// (`implicitLeaf`, native 11), though no argument hands it over.
 /// The context header below an interior pointer stays known, so the return
 /// through ResumeParent is still proven.
 @Test func escapedAsyncContextsAreNotReadAcrossCallsIfPresent() async throws {
@@ -53,7 +55,7 @@ private let asyncCallFixture = "Fixtures/Sample/libAsyncCallEffects.dylib"
         let function = try #require(functions.first { $0.displayName.contains("AsyncCalls.\(member)(") }, "\(member)")
         return [function.renderStructured(), function.renderPseudo()]
     }
-    for member in ["globalLeaf", "conditionalLeaf", "interiorLeaf", "rbitLeaf", "joinLeaf"] {
+    for member in ["globalLeaf", "conditionalLeaf", "interiorLeaf", "rbitLeaf", "joinLeaf", "implicitLeaf"] {
         for text in try views(member) {
             #expect(text.contains("AsyncCalls.observe(?)"), "\(member): \(text)")
             #expect(!text.contains("observe(7)"), "\(member): \(text)")
