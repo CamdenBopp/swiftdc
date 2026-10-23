@@ -2775,12 +2775,13 @@ if a test was observed to fail without the fix.
   say. It renders `machine_return()` where the source returns `r0 + 1`.
   Needs value identity with edge refinement ([IR.md](IR.md) step 5).
 
-- **OPEN — `throws(Never)` specializations decline.** Two generic
-  specializations of `withUTF8CodeUnits` in `sample.debug` with
-  `B = Swift.Never` spill x21, call their closure through `blr`, and return.
-  They cannot throw, but the signature reads `throws(B)` and the indirect
-  callee may write x21. Recognising a `Never` error type from the
-  specialization's substitution list would recover them.
+- **FIXED (the commit after 6cca3c4) — `throws(Never)` specializations
+  declined.** Two generic specializations of `withUTF8CodeUnits` in
+  `sample.debug` with `B = Swift.Never` spill x21, call their closure
+  through `blr`, and return. They cannot throw, but the signature reads
+  `throws(B)` and the indirect callee may write x21. The specialization's
+  substitution list, read from the demangle tree, now proves `B = Never`
+  and both exits are returns; see 2026-10-23 at the end of this file.
 
 ## 2026-10-15: frame slots reachable through escaped addresses
 
@@ -3728,3 +3729,78 @@ if a test was observed to fail without the fix.
   16. The argument layout no longer depends on it (struct sizes come from
   their flattened members); ivar field maps still do. Its `l`/`L` are
   also 8 bytes, where the runtime's `NSGetSizeAndAlignment` says 4.
+
+## 2026-10-23: throws(Never) specializations
+
+- **FIXED (6cca3c4) — a `then throw ?` note read as a branch's callee.**
+  `parsedCalleeName` named the merged-throw `b` of the unspecialized
+  `TypedThrowsNeverLib.transform` (-O) `then throw ?`, against its nil
+  callee fact; `calleeFactsMatchTheirAnnotationsOnTheFixturesIfPresent`
+  caught it once the fixture below existed. The note is now declined like
+  `swift-exit=`. Every fixture view is byte-identical.
+- **FIXED (the commit after 6cca3c4) — a specialization that binds its
+  thrown type to `Swift.Never` read as throwing.** The demangler prints a
+  specialization as the declaration it specializes, so
+  `generic specialization <serialized, (), Swift.Never> of
+  Unicode.Scalar.withUTF8CodeUnits<A, B where B: Error>(…) throws(B) -> A`
+  read `throws(B)`, and both of its specializations in `sample.debug` (the
+  function and its closure #1) rendered
+  `machine_return() /* unresolved Swift success/error exit */` on their one
+  exit. No value of `Never` exists, so neither can throw. Their -Onone
+  bodies keep the generic function's x21 convention: they spill x21, call
+  through `bl`/`blr`, test x21 with `cbz` (trapping otherwise) and reload
+  it from the spill before `ret`, which no x21 proof follows (the -Onone
+  `try` exit OPEN). `typedthrowsnever_lib.swift` (an -O library) and
+  `typedthrowsnever.swift` (its -Onone client) reduce the shape: the client
+  emits the library's serialized specializations of
+  `transform<E: Error>(…) throws(E)` for `Never`, `ProbeError` and
+  `any Error`. Built as one -O module, the `Never` specialization keeps x21
+  in a callee-saved register and was already proven; the decline needs the
+  -Onone lowering of a serialized specialization.
+
+  `specializationBindsThrownTypeToNever`
+  (`NeverThrowingSpecialization.swift`) reads the substitution list from
+  the demangle tree of the function's own symbol. The list is positional
+  over the canonical generic parameters of the specialized function's
+  signature (`GenericSpecializationMangler::appendSubstitutions`), so the
+  proof requires all of: the tree prints the analysed name; one `Tg`, `TG`,
+  `TB` or `Ts` specialization (optionally under one function signature
+  specialization) of a function or of a closure directly in one; a generic
+  signature of one depth with no same-type, same-shape, pack or value
+  requirement and as many parameters as substitutions; a thrown type that
+  is a depth-0 parameter with its own `Swift.Error` conformance; and a
+  substitution of exactly `Swift.Never`. Anything else keeps the throwing
+  reading. `signatureThrows` replaces the text test in both renderers, the
+  exit classifier (`throwsSignature`) and the machine-value contract. The
+  structured view still names x21 `error`, because the body threads x21
+  under the generic convention (`threadsSwiftError`).
+
+  Blast radius: of 448 fixture views (112 binaries; structured, pseudo,
+  listing, JSON), only `sample.debug` changes, in exactly the two
+  specializations. The function's exit becomes
+  `return generic specialization <…> of closure #1 (local_28, ?, ?, local_30, local_38)`:
+  its result A travels through the x8 buffer it hands the closure (the
+  existing indirect-result forwarding), so the call statement folds into
+  the return. The closure's exit becomes `return ?`. In the new fixture the
+  `Never` specialization's exit becomes `return (? + 1)` (the source returns
+  `body(x) &+ 1`); the `ProbeError` and `any Error` controls are
+  byte-identical and stay throwing. Clarc (`disasm --pseudo`) is
+  byte-identical, and so is GoodLinks (`disasm --pseudo`): neither has a
+  `Never` specialization.
+
+  Not changed, because nothing shows an effect: the enrichment gate and the
+  tail-call caller test still read the text. Switching either between the
+  text and the new fact moves no test and no fixture view.
+- **OPEN — a specialization's generic result type is read from the
+  unspecialized signature.** `withUTF8CodeUnits`'s closure now renders
+  `return ?` for a result `A` its specialization binds to `()`, and
+  `swiftReturnRegister` reads the text `A`, not its substitution: a
+  specialization returning a parameter bound to `Double` would look in an
+  integer register. The substitution list that settles the thrown type
+  settles this too. Non-throwing specializations have had the same reading
+  all along.
+- **OPEN — a callee's `throws(Never)` specialization still reads as
+  throwing.** `provablyDoesNotThrow` and the tail-call callee test work
+  from the callee's printed name. Carrying the fact on the callee, as
+  `Instruction.callee` carries its name, would let a caller keep its x21
+  proofs across a call to one.

@@ -29,7 +29,7 @@ public extension DisassembledFunction {
         for insn in instructions {
             let recovered = Self.pseudoStatement(of: insn, hideRuntime: hideRuntime)
             let fallback: String? = if insn.controlFlow != .return { nil }
-                else if Self.splitSignature(analysisDisplayName)?.isThrowing == true { Self.unresolvedSwiftExitStatement }
+                else if signatureThrows { Self.unresolvedSwiftExitStatement }
                 else if hasProvenMachineValueReturn { "return ?" }
                 else { nil }
             guard let statement = recovered ?? fallback else { continue }

@@ -27,7 +27,11 @@ public extension DisassembledFunction {
         let depth = maxStructuringDepth > 0 ? maxStructuringDepth : ControlFlowStructure.defaultMaxDepth
         let cfg = ControlFlowStructure(
             blocks: blocks, objectiveCArguments: objcMethod != nil, maxDepth: depth,
-            isThrowing: Self.splitSignature(analysisDisplayName)?.isThrowing ?? false,
+            isThrowing: signatureThrows,
+            // A specialization that binds its thrown type to `Swift.Never`
+            // cannot throw, but it still threads x21 under the convention of
+            // the throwing function it specializes.
+            threadsSwiftError: Self.splitSignature(analysisDisplayName)?.isThrowing ?? false,
             returnsValue: Self.signatureReturnsValue(
                 displayName: analysisDisplayName, objcSignature: objcMethod?.signature
             )
@@ -92,7 +96,7 @@ public extension DisassembledFunction {
     /// their proven ResumeParent transfer instead; Never has no normal result.
     var hasProvenMachineValueReturn: Bool {
         if let signature = Self.splitSignature(analysisDisplayName) {
-            if signature.isAsync || signature.isThrowing || signature.result == "Swift.Never" || signature.result == "Never" { return false }
+            if signature.isAsync || (signature.isThrowing && !specializationBindsThrownTypeToNever) || signature.result == "Swift.Never" || signature.result == "Never" { return false }
         }
         return Self.signatureReturnsValue(displayName: analysisDisplayName, objcSignature: objcMethod?.signature)
     }
@@ -140,7 +144,7 @@ struct ControlFlowStructure {
     private let usesSwiftError: Bool           // x21 is the error register here
     private let isThrowing: Bool               // the signature says `throws`
 
-    init(blocks: [BasicBlock], objectiveCArguments: Bool = false, maxDepth: Int = ControlFlowStructure.defaultMaxDepth, isThrowing: Bool = false, returnsValue: Bool = false) {
+    init(blocks: [BasicBlock], objectiveCArguments: Bool = false, maxDepth: Int = ControlFlowStructure.defaultMaxDepth, isThrowing: Bool = false, threadsSwiftError: Bool? = nil, returnsValue: Bool = false) {
         self.returnsValue = returnsValue
         self.blocks = blocks
         self.exit = blocks.count
@@ -167,7 +171,7 @@ struct ControlFlowStructure {
         // clears-and-tests x21 to catch its closure's throw — 28 in Combine) still
         // qualify. The `!objectiveCArguments` belt-and-suspenders stays: ObjC never
         // threads swifterror even if it coincidentally clears-and-tests x21.
-        self.usesSwiftError = !objectiveCArguments && (isThrowing
+        self.usesSwiftError = !objectiveCArguments && ((threadsSwiftError ?? isThrowing)
             || (Self.clearsSwiftErrorRegister(blocks) && Self.testsSwiftErrorRegister(blocks)))
         self.isThrowing = !objectiveCArguments && isThrowing
         var indexByAddress: [UInt64: Int] = [:]

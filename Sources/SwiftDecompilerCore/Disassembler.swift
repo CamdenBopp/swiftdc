@@ -5161,7 +5161,16 @@ public struct Disassembler: Sendable {
         // Rendered as a return, a throw exit printed its x0 as the result: the
         // typed error's payload (`return 0` for `.bad`), or a dead call's.
         let throwsSignature = function.objcMethod == nil
-            ? function.analysisName.flatMap(DisassembledFunction.splitSignature) : nil
+            ? function.analysisName.flatMap(DisassembledFunction.splitSignature).map { signature in
+                // A specialization that binds the thrown type to `Swift.Never`
+                // cannot throw: its exits are plain returns.
+                var signature = signature
+                if signature.isThrowing && function.specializationBindsThrownTypeToNever {
+                    signature.isThrowing = false
+                    signature.thrownType = nil
+                }
+                return signature
+            } : nil
         // An async throwing function returns through its context's
         // ResumeParent with the error in x20, zero for none: `swift_allocError`
         // then `mov x20, x0; br x0` throws, `mov x20, #0; br x1` returns. A
