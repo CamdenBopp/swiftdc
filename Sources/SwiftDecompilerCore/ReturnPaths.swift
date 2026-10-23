@@ -6,14 +6,15 @@ public extension Probe {
     /// not execute calls, prove side effects or change the value analysis.
     static func returnPathConditions(_ analysis: FunctionAnalysis,
                                      of function: DisassembledFunction) -> [UInt64: AbstractValue] {
-        let blocks = function.basicBlocks()
+        let cfg = FunctionCFG(function)
+        let blocks = cfg.blocks, instructions = function.instructions
         guard !blocks.isEmpty, blocks.count <= 256,
               blocks.first?.startAddress == function.startAddress,
               Set(blocks.map(\.startAddress)).count == blocks.count else { return [:] }
         let byAddress = Dictionary(uniqueKeysWithValues: blocks.map { ($0.startAddress, $0) })
         var remaining = Dictionary(uniqueKeysWithValues: blocks.map { ($0.startAddress, 0) })
         for block in blocks {
-            for successor in Set(block.successors) where byAddress[successor] != nil {
+            for successor in Set(block.successorAddresses) where byAddress[successor] != nil {
                 remaining[successor, default: 0] += 1
             }
         }
@@ -23,7 +24,7 @@ public extension Probe {
         // Initialize every exit to unknown so a cyclic/dependent block cannot
         // accidentally appear absent or inherit an unfinished path calculation.
         for block in blocks {
-            for insn in block.instructions where insn.controlFlow == .return
+            for insn in instructions[block.range] where insn.controlFlow == .return
                 || analysis.indirectControlFlowTargets[insn.address] == .asyncResumeParent {
                 exits[insn.address] = .unknown
             }
@@ -31,17 +32,18 @@ public extension Probe {
         // An unresolved indirect branch can enter an otherwise disconnected
         // block. Without all potential edges, even "unreachable" is unproven.
         if blocks.contains(where: { block in
-            guard let last = block.instructions.last else { return false }
+            let last = instructions[block.terminator]
             return last.controlFlow == .branch && last.branchTarget == nil
                 && function.switchTargets[last.address] == nil
                 && analysis.indirectControlFlowTargets[last.address] != .asyncResumeParent
         }) { return exits }
         while cursor < queue.count {
             let address = queue[cursor]; cursor += 1
-            guard let block = byAddress[address], let last = block.instructions.last else { continue }
+            guard let block = byAddress[address] else { continue }
+            let last = instructions[block.terminator]
             let prefix = paths[address] ?? .zero // disconnected DAG roots are unreachable
-            for insn in block.instructions where exits[insn.address] != nil { exits[insn.address] = prefix.value }
-            let successors = Set(block.successors).sorted()
+            for insn in instructions[block.range] where exits[insn.address] != nil { exits[insn.address] = prefix.value }
+            let successors = Set(block.successorAddresses).sorted()
             for successor in successors where byAddress[successor] != nil {
                 let edge: ReturnPathTerm
                 if prefix.value == .immediate(0) {

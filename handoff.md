@@ -40,8 +40,10 @@ note a renderer reads followed (`Instruction.facts`: statements,
 `dispatch=self`); no renderer reads the annotation for a note now. Open
 from it: a store into two Swift fields at once is never printed, and a
 String stored to a field renders as one integer word (both in the
-readiness doc). Next: IR step 2 (CFG once: `basicBlocks()` still runs
-in `analyze`, in enrichment and in the structurer). Open from this
+readiness doc). IR step 2 (CFG once) has started: `FunctionCFG` owns
+the blocks and `basicBlocks()` is a view of it, but `analyze`,
+enrichment and the structurer still each build their own (docs/IR.md
+lists the commits left). Open from this
 round: the loop-body pass's sticky markers have no guard; calls with
 nothing tracked other than known-arity C runtime calls still render
 `()` (OPEN, 2026-10-22; the save-area overrun and the known-arity case

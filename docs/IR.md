@@ -135,6 +135,41 @@ fix, measured and explained like any other.
 2. **CFG once.** A `FunctionCFG` built at segmentation and threaded through
    enrichment, the tracer, the summaries and the structurer. Measure with a
    release A/B on a large app.
+   *Started 2026-10-22. `FunctionCFG` (FunctionCFG.swift) now owns the
+   block recovery `basicBlocks()` did, with the same algorithm: blocks as
+   index ranges into the instructions, dense ids in instruction order with
+   block 0 the entry, successor addresses in the old order and multiplicity
+   (a conditional branch to the next instruction lists it twice), successor
+   and predecessor ids, the terminator, the switch cases and the block of
+   each instruction. `basicBlocks()` is a view of it. The consumers outside
+   the four large files (`renderCFG`, the JSON blocks, the probe snapshots,
+   the return-path conditions, the x8 classifier, the async context escape
+   check and the accessor test) read the graph instead of copying
+   instructions into blocks. Every fixture view and Clarc are unchanged, and
+   `FunctionCFGTests` compares the view with the old algorithm on every
+   function of every fixture, with and without its jump tables. Each
+   consumer still builds its own graph. The commits left, in order:*
+   1. *Build the register summaries after jump tables are recognised (D1,
+      a fix, measured as one). `CalleeRegisterSummary.of` runs at
+      segmentation, before `JumpTables.recognize`, so a switch's `br` reads
+      as a tail call that takes x0 to x7. It goes first so that the one
+      graph is the one with tables. D2, a `br` resolved into its own
+      function becoming an internal edge, was fixed in 277b543.*
+   2. *Build the graph once per function, after `JumpTables.recognize` in
+      `analyzeFunctionBody`, and pass it to `ValueTracer.analyze`, the
+      three enrichment builders (async throw exits, error-proof blocks,
+      binding blocks), `SwiftErrorExitProof` and the leaf consumers above.
+      Edges change after that point in two places:
+      `annotateIndirectControlFlowTargets` gives a resolved `br` an
+      out-of-function target (a successor address, never an internal edge
+      since 277b543), and a proven async return becomes `.return`, which
+      drops that address. Rebuild at those two points, or show each keeps
+      the internal edges and patch only the addresses; a test compares the
+      passed graph with a fresh build at every consumer.*
+   3. *Keep the final graph with the function so the structurer, JSON,
+      probes and `renderCFG` stop rebuilding it, and make
+      `AsyncFuncletIndex.trapGuardedRuns` a view over block ids instead of
+      new `BasicBlock` values. Release A/B on Clarc and GoodLinks.*
 3. **Typed locations in the tracer.** `[Location: AbstractValue]` instead of
    string keys. Pure refactor; measure the speed. *Done for `ValueTracer`
    (2026-10-15), ahead of steps 1 and 2 because string keys were about half

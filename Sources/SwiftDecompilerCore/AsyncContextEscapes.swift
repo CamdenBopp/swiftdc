@@ -7,15 +7,9 @@ struct AsyncContextEscapes {
     var iterationsPerBlock = 64
 
     func lowestOffset(in function: DisassembledFunction, terminalBranches: Set<UInt64> = []) -> Int? {
-        let blocks = function.basicBlocks()
+        let cfg = FunctionCFG(function)
+        let blocks = cfg.blocks
         guard !blocks.isEmpty else { return nil }
-        let byStart = Dictionary(blocks.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
-        var predecessors: [UInt64: [UInt64]] = [:]
-        for block in blocks {
-            for next in block.successors where byStart[next] != nil {
-                predecessors[next, default: []].append(block.startAddress)
-            }
-        }
         var outputs: [UInt64: Set<Int>] = [:]
         var work = blocks.map(\.startAddress)
         var queued = Set(work)
@@ -31,14 +25,15 @@ struct AsyncContextEscapes {
             let address = work[cursor]
             cursor += 1
             queued.remove(address)
-            guard let block = byStart[address] else { continue }
-            let incoming = predecessors[address] ?? []
+            guard let id = cfg.block(startingAt: address) else { continue }
+            let block = blocks[id]
+            let incoming = block.predecessorIDs.map { blocks[$0].startAddress }
             var contexts = incoming.reduce(into: Set<Int>()) { $0.formUnion(outputs[$1] ?? []) }
             if address == function.startAddress { contexts.insert(22) }
             // An isolated landing pad has no modeled incoming edge or register
             // state. Its callee-saved registers may carry a context alias.
             if incoming.isEmpty, address != function.startAddress { contexts.formUnion(19...28) }
-            for insn in block.instructions {
+            for insn in function.instructions[block.range] {
                 guard let detail = insn.detail else {
                     Probe.record(.contextEscapeUnknown, at: insn.address, ["reason": .label("missing-detail")])
                     return Int.min
@@ -157,8 +152,9 @@ struct AsyncContextEscapes {
             }
             if outputs[address] != contexts {
                 outputs[address] = contexts
-                for next in block.successors where byStart[next] != nil && queued.insert(next).inserted {
-                    work.append(next)
+                for successor in block.successorIDs {
+                    let next = blocks[successor].startAddress
+                    if queued.insert(next).inserted { work.append(next) }
                 }
             }
         }

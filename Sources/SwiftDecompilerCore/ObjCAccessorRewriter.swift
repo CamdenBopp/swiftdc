@@ -138,7 +138,7 @@ extension ObjCDumper {
     /// helpers. Anything that sends a message, calls another function, or has
     /// control flow is custom and worth keeping.
     static func isSynthesizedAccessor(_ function: DisassembledFunction) -> Bool {
-        guard function.basicBlocks().count <= 1 else { return false }
+        guard FunctionCFG(function).blocks.count <= 1 else { return false }
         for insn in function.instructions
         where insn.controlFlow == .call || insn.controlFlow == .branch {
             guard let callee = DisassembledFunction.calleeName(of: insn) else {

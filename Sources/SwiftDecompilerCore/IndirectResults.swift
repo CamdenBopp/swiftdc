@@ -26,17 +26,16 @@ extension Disassembler {
     /// `.reads`; a path can also stop (x8 written, or a call, which clobbers x8)
     /// or make the answer `.unknown` (a tail call out of the function).
     static func indirectResultUse(of function: DisassembledFunction) -> IndirectResultUse {
-        let blocks = function.basicBlocks()
-        guard let entry = blocks.first else { return .unknown }
-        let blockByStart = Dictionary(blocks.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
-        let internalAddresses = Set(blocks.map(\.startAddress))
-        var visited: Set<UInt64> = [entry.startAddress]
-        var worklist = [entry.startAddress]
+        let cfg = FunctionCFG(function)
+        guard let entry = cfg.entry else { return .unknown }
+        var visited = [Bool](repeating: false, count: cfg.blocks.count)
+        visited[entry] = true
+        var worklist = [entry]
         var unknown = false
-        while let address = worklist.popLast() {
-            guard let block = blockByStart[address] else { continue }
+        while let id = worklist.popLast() {
+            let block = cfg.blocks[id]
             var stillIncoming = true
-            for insn in block.instructions {
+            for insn in function.instructions[block.range] {
                 let access: X8Access
                 let isCall: Bool
                 if let detail = insn.detail {
@@ -67,7 +66,7 @@ extension Disassembler {
                     break
                 }
                 if insn.controlFlow == .branch,
-                   insn.branchTarget.map({ !internalAddresses.contains($0) }) ?? true {
+                   insn.branchTarget.map({ cfg.block(startingAt: $0) == nil }) ?? true {
                     // A tail call hands the unread x8 to the callee.
                     unknown = true
                     stillIncoming = false
@@ -75,9 +74,8 @@ extension Disassembler {
                 }
             }
             guard stillIncoming else { continue }
-            for successor in block.successors where blockByStart[successor] != nil
-                && !visited.contains(successor) {
-                visited.insert(successor)
+            for successor in block.successorIDs where !visited[successor] {
+                visited[successor] = true
                 worklist.append(successor)
             }
         }

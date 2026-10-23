@@ -132,8 +132,8 @@ private extension DisassembledFunction {
                     statement: DisassembledFunction.pseudoStatement(of: $0, hideRuntime: true)
                 )
             },
-            blocks: basicBlocks().map {
-                BlockDTO(address: hex($0.startAddress), successors: $0.successors.map(hex))
+            blocks: FunctionCFG(self).blocks.map {
+                BlockDTO(address: hex($0.startAddress), successors: $0.successorAddresses.map(hex))
             }
         )
     }

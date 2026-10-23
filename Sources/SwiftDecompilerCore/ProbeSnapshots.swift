@@ -114,7 +114,7 @@ public extension Probe {
     static func observe(_ analysis: FunctionAnalysis, of function: DisassembledFunction) {
         guard isActive, recorder != nil else { return }
         inFunction(function.startAddress, function.displayName) {
-            let blocks = function.basicBlocks()
+            let blocks = FunctionCFG(function).blocks
             var returnPaths: [UInt64: AbstractValue]?
             func path(at address: UInt64) -> ProbeValue {
                 if returnPaths == nil { returnPaths = returnPathConditions(analysis, of: function) }
@@ -124,7 +124,7 @@ public extension Probe {
                                       "blocks": .int(blocks.count), "calls": .int(analysis.callSites.count)])
             for block in blocks {
                 record(.blockSnapshot, at: block.startAddress,
-                       ["successors": .array(block.successors.map(ProbeValue.address)), "instructions": .int(block.instructions.count)])
+                       ["successors": .array(block.successorAddresses.map(ProbeValue.address)), "instructions": .int(block.range.count)])
             }
             for insn in function.instructions where insn.controlFlow == .return
                 || analysis.indirectControlFlowTargets[insn.address] == .asyncResumeParent {
