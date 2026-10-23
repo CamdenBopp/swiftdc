@@ -4051,9 +4051,9 @@ if a test was observed to fail without the fix.
 
 ## 2026-10-23: untyped sends of struct-taking selectors
 
-- **FIXED (soundness): an untyped send of a selector that an image
-  implementation takes a struct for read the struct's registers as later
-  arguments.** With no signature for the receiver the explicit arguments
+- **FIXED (ffd5fdb, soundness): an untyped send of a selector that an
+  image implementation takes a struct for read the struct's registers as
+  later arguments.** With no signature for the receiver the explicit arguments
   are read one x register each from x2, and only a floating-point
   parameter in some implementation doubted that. A struct breaks it too:
   `[u span:NSMakeRange(3, 4) count:5]` rendered `span:3 count:4` (the
@@ -4098,10 +4098,16 @@ if a test was observed to fail without the fix.
   Terminal implements `setSelectedRange:` with an NSRange. A selector
   only the SDK implements still takes the positional path, so a call
   consumed by an argument slot the send does not print can still vanish.
-- **OPEN (soundness): an untyped send to a receiver of known class that
-  inherits the selector is laid out by colon position.** The doubt above
-  applies only when the receiver's class is unknown. `[self span:r
-  count:5]` from `SDUntypedStructLeaf`, which inherits `span:count:` from
-  an image superclass without declaring it, still renders `span:3
-  count:4` (`objc_untyped_struct.m`, `sendInheritedSpan`).
-
+- **FIXED (soundness): an untyped send to a receiver of known class that
+  inherits the selector was laid out by colon position.** The doubt above
+  applied only when the receiver's class was unknown, a guard kept from
+  when the rule skipped sends to self (`0c92a85`). A class that does not
+  declare the selector inherits or forwards it, so the image's
+  implementations are evidence for it too: `[self span:r count:5]` from
+  `SDUntypedStructLeaf`, which inherits `span:count:` from an image
+  superclass, rendered `span:3 count:4` and now `span:? count:?`
+  (`objc_untyped_struct.m`, `sendInheritedSpan`). Blast radius: only that
+  fixture's views change. Release `disasm --pseudo`: TextEdit, Chess,
+  Clarc and GoodLinks unchanged; Terminal 3 `[self setSelectedRange:r1]`
+  sends in `RawTextView`, where r1 was one word of the NSRange
+  `selectionRangeForProposedRange:granularity:` returned, now read `?`.

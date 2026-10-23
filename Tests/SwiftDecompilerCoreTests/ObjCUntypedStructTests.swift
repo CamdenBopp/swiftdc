@@ -46,6 +46,19 @@ func untypedSendOfAStructTakingSelectorDeclinesItsArgumentsIfPresent(path: Strin
     }
 }
 
+/// A receiver of known class that does not declare the selector inherits or
+/// forwards it, so its send has no signature either and the image's
+/// implementations doubt the layout the same way: `[self span:r count:5]`
+/// from `SDUntypedStructLeaf`, which inherits `span:count:` from its
+/// superclass, rendered `span:3 count:4`.
+@Test(arguments: ["Fixtures/Sample/libObjCUntypedStruct.dylib", "Fixtures/Sample/libObjCUntypedStruct.opt.dylib"])
+func inheritedSendOfAStructTakingSelectorDeclinesItsArgumentsIfPresent(path: String) async throws {
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let found = try await sends(in: path)
+    #expect(found["-[SDUntypedStructLeaf sendInheritedSpan]"] == "[self span:? count:?]",
+            "\(path): \(found["-[SDUntypedStructLeaf sendInheritedSpan]"] ?? "no function")")
+}
+
 /// Which parameter types travel in one x register: the untyped layout's
 /// assumption about every explicit argument.
 @Test func onlyIntegerAndPointerTypesTakeOneXRegister() {

@@ -4229,7 +4229,12 @@ public struct Disassembler: Sendable {
                     strategy = "objc-signature-disputed"
                     continue
                 case .unavailable:
-                    if receiverClass == nil, colons > 0, let kept = objcIndex.positionalArgumentPrefix(selector) {
+                    // A receiver whose class does not declare the selector
+                    // inherits or forwards it, so the image's
+                    // implementations are evidence for it as well:
+                    // `[self span:r count:5]` from a subclass that inherits
+                    // span:count: read the range as both arguments.
+                    if colons > 0, let kept = objcIndex.positionalArgumentPrefix(selector) {
                         // `values` is x0-x7, so no stack argument is kept:
                         // its offset depends on the sizes before it.
                         let explicit = (0 ..< colons).map { argument in
