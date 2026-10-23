@@ -28,3 +28,74 @@ private func pseudo(_ name: String, in path: String) async throws -> String? {
     #expect(text.contains("memset(local_38, 0, 40)"), Comment(rawValue: text))
     #expect(!text.contains("memset(local_38, 0, 40,"), Comment(rawValue: text))
 }
+
+/// The argument lists of every call to `callee` in `text`, each split at its
+/// top-level commas: `[[]]` for one call that takes nothing.
+private func argumentLists(of callee: String, in text: String) -> [[String]] {
+    var lists: [[String]] = []
+    var searchStart = text.startIndex
+    while let found = text.range(of: callee + "(", range: searchStart..<text.endIndex) {
+        searchStart = found.upperBound
+        // A whole name: `objc_copyWeak(` must not match `_objc_copyWeak(`.
+        if found.lowerBound > text.startIndex {
+            let before = text[text.index(before: found.lowerBound)]
+            if before.isLetter || before.isNumber || before == "_" { continue }
+        }
+        var depth = 1
+        var index = found.upperBound
+        while index < text.endIndex, depth > 0 {
+            if text[index] == "(" { depth += 1 } else if text[index] == ")" { depth -= 1 }
+            if depth > 0 { index = text.index(after: index) }
+        }
+        let inner = text[found.upperBound..<index]
+        lists.append(inner.isEmpty ? [] : DisassembledFunction.splitTopLevelArguments(inner))
+    }
+    return lists
+}
+
+/// Entries the table had wrong against their headers, and entry points that
+/// take nothing but printed whatever x0 held (`known_arity.c`). `exit(int)`
+/// read `exit()`; `objc_loadWeakRetained(id *)` read a phantom second `?`,
+/// and `objc_copyWeak`/`objc_moveWeak(id *, id *)` a phantom third; the
+/// functions of no parameters read the stale `malloc(8)` as their argument.
+@Test(arguments: ["Fixtures/Sample/libKnownArity.dylib", "Fixtures/Sample/libKnownArity.opt.dylib"])
+func aKnownCArityMatchesTheHeaderIfPresent(path: String) async throws {
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let expected: [(function: String, callee: String, arguments: [String])] = [
+        ("_quit", "exit", ["3"]),
+        ("_loadSlot", "objc_loadWeakRetained", ["?"]),
+        ("_copySlot", "objc_copyWeak", ["?", "?"]),
+        ("_moveSlot", "objc_moveWeak", ["?", "?"]),
+        ("_lastErrno", "__error", []),
+        ("_mainOr", "pthread_main_np", []),
+        ("_roll", "arc4random", []),
+        ("_makeGroup", "dispatch_group_create", []),
+        ("_endCatch", "objc_end_catch", []),
+        ("_terminate", "objc_terminate", []),
+    ]
+    for (name, callee, arguments) in expected {
+        guard let function = functions.first(where: { $0.displayName == name }) else {
+            Issue.record("no \(name) in \(path)")
+            continue
+        }
+        for (view, text) in [("pseudo", function.renderPseudo()), ("structured", function.renderStructured())] {
+            #expect(argumentLists(of: callee, in: text) == [arguments], "\(path) \(name) \(view):\n\(text)")
+        }
+    }
+}
+
+/// `swift_unexpectedError(error, filenameStart, filenameLength, isAscii,
+/// line)` takes five arguments (swift/include/swift/Runtime/Error.h:128).
+/// The table gave it none, so a failed `try!` read `swift_unexpectedError()`
+/// and lost the error and the location it reports (`forcedtry.swift`).
+@Test(arguments: ["Fixtures/Sample/libForcedTry.dylib", "Fixtures/Sample/libForcedTry.opt.dylib"])
+func aFailedForcedTryPassesItsFiveArgumentsIfPresent(path: String) async throws {
+    guard let text = try await pseudo("ForcedTry.forced(", in: path) else { return }
+    let lists = argumentLists(of: "swift_unexpectedError", in: text)
+    #expect(lists.count == 1, Comment(rawValue: text))
+    let arguments = lists.first ?? []
+    #expect(arguments.count == 5, Comment(rawValue: text))
+    // `isAscii` and the line of the `try!`, both constants at the call.
+    #expect(arguments.suffix(2) == ["1", "17"], Comment(rawValue: text))
+}

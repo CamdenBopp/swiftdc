@@ -623,16 +623,23 @@ public extension DisassembledFunction {
     /// stable, so a stale live register past the real parameter list is trimmed
     /// rather than printed as a fabricated argument (`abort([? x])` → `abort()`).
     ///
-    /// Membership is deliberately conservative and asymmetric, matching the
-    /// tracer's "never invent" rule: clamping only ever DROPS trailing values, so
-    /// a wrong entry costs at most a missed argument — never a fabricated one. An
-    /// unknown callee returns nil and keeps every recovered value. Message sends
-    /// are intentionally absent: their arity comes from the selector's colons, and
+    /// Every entry must be the header's exact count, because an error in either
+    /// direction is a wrong render. The "c-arity" layout pads to the count, so
+    /// one too many prints a phantom `?` (`objc_loadWeakRetained(&slot, ?)`),
+    /// and one too few drops a real argument (`exit()`). The count is also the
+    /// tracer's `passedRegisters`: a frame address in a register past it is
+    /// not treated as escaping into the call. An unknown callee returns nil
+    /// and keeps every recovered value. Message sends are intentionally
+    /// absent: their arity comes from the selector's colons, and
     /// `MessageSend` already pairs those.
     static func knownCArity(of callee: String) -> Int? {
         switch callee {
-        case "abort", "__stack_chk_fail", "objc_autoreleasePoolPush",
-             "swift_unexpectedError", "objc_exception_rethrow", "exit":
+        case "abort", "__stack_chk_fail", "objc_autoreleasePoolPush", "objc_exception_rethrow",
+             // sys/errno.h:80, pthread/pthread.h:539, _stdlib.h:287,
+             // dispatch/group.h:60, objc/objc-exception.h:56 and :60: all
+             // `(void)`. Each printed a stale x0 as its argument.
+             "__error", "pthread_main_np", "arc4random", "dispatch_group_create",
+             "objc_end_catch", "objc_terminate":
             return 0
         case "objc_opt_class", "objc_opt_self", "objc_alloc", "objc_allocWithZone",
              "objc_alloc_init", "objc_opt_new", "objc_retain", "objc_release",
@@ -641,6 +648,10 @@ public extension DisassembledFunction {
              "objc_autoreleaseReturnValue", "objc_autoreleasePoolPop",
              "objc_sync_enter", "objc_sync_exit", "objc_begin_catch",
              "objc_retainBlock", "_Block_copy", "free",
+             // _stdlib.h:165, `void exit(int)`.
+             "exit",
+             // swift/include/swift/Runtime/ObjCBridge.h:50, `id (id *)`.
+             "objc_loadWeakRetained",
              // swift/include/swift/Runtime/Concurrency.h: `void *(size_t)`
              // and `void (void *)`.
              "swift_task_alloc", "swift_task_dealloc",
@@ -651,14 +662,20 @@ public extension DisassembledFunction {
             return 1
         case "objc_opt_isKindOfClass", "objc_opt_respondsToSelector",
              "objc_storeStrong", "objc_storeWeak", "objc_initWeak",
-             "objc_loadWeakRetained", "os_log_type_enabled", "objc_sync_wait":
+             "os_log_type_enabled", "objc_sync_wait",
+             // swift/include/swift/Runtime/ObjCBridge.h:46-47, `void (id *, id *)`.
+             "objc_moveWeak", "objc_copyWeak":
             return 2
-        case "objc_copyWeak", "objc_moveWeak", "memcpy", "memmove", "memset",
+        case "memcpy", "memmove", "memset",
              // swift/include/swift/Runtime/RuntimeFunctions.def
              "swift_arrayDestroy":
             return 3
         case "swift_arrayInitWithCopy", "swift_arrayInitWithTakeFrontToBack", "swift_arrayInitWithTakeBackToFront":
             return 4
+        // swift/include/swift/Runtime/Error.h:128: the error, the file name's
+        // start and length, whether it is ASCII, and the line of the `try!`.
+        case "swift_unexpectedError":
+            return 5
         default:
             // The formatted-emit os_log helpers: (dso, log, type, format, buf, size).
             if callee.hasPrefix("_os_log"), callee.hasSuffix("_impl") { return 6 }

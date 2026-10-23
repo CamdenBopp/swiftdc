@@ -3922,3 +3922,53 @@ if a test was observed to fail without the fix.
   `stringWithFormat:@"%f", 1.5` (was `0x3ff8000000000000`) in every
   view; every other fixture view is byte-identical. Clarc and Terminal
   `--pseudo` are byte-identical.
+
+## 2026-10-23: the known C arity table against its headers
+
+- **FIXED (soundness): known C arities that disagreed with their headers,
+  and entry points of no parameters that printed a stale x0.** The
+  "c-arity" layout pads a call to the table's count, so a wrong entry is a
+  wrong render in either direction. `exit` was 0, not 1 (`_stdlib.h:165`),
+  and read `exit()`; `objc_loadWeakRetained` was 2, not 1, and
+  `objc_copyWeak`/`objc_moveWeak` 3, not 2 (Swift
+  `include/swift/Runtime/ObjCBridge.h:46-50`), each printing a phantom
+  `?`; `swift_unexpectedError` was 0, not 5 (`Error.h:128`), so a failed
+  `try!` lost its error and location. `__error`, `pthread_main_np`,
+  `arc4random`, `dispatch_group_create`, `objc_end_catch` and
+  `objc_terminate` take nothing but were missing, so whatever x0 held
+  printed as their argument, often a whole unrelated call
+  (`objc_terminate(_Unwind_Resume())`). The count is also the tracer's
+  `passedRegisters`, which now matches the header for each. The table's
+  comment claimed a wrong entry could only drop arguments, which stopped
+  being true when the layout began padding; it now says so
+  (`known_arity.c`, -O0 and -O2, and `forcedtry.swift`, -Onone and -O:
+  `aKnownCArityMatchesTheHeaderIfPresent`,
+  `aFailedForcedTryPassesItsFiveArgumentsIfPresent`). Blast radius: no
+  other fixture view changes (structured, pseudo, listing, JSON). Clarc
+  `--pseudo` changes 148 lines: 17 `pthread_main_np` calls lose a stale
+  operand, 6 `swift_unexpectedError()` gain their five arguments, and the
+  rest are the bindings that existed only to feed a stale operand
+  (`let r1 = …` becomes a statement) and the renumbering after them.
+  Terminal `--pseudo` changes 44 lines for 55: 9 `__error`, 10
+  `objc_end_catch` and 2 `objc_terminate` calls lose a stale operand,
+  `exit()` reads `exit(12)`, and 11 calls that were
+  printed only inside such an operand (`_Unwind_Resume`,
+  `__stack_chk_fail`, `NSLog`, `objc_begin_catch`, a send) are now their
+  own statements.
+- **OPEN (soundness): the table applies by name.** An in-image function
+  that shares a name with an entry (a vendored `qsort`) gets the libc
+  arity in the "c-arity" layout, the empty-site pass and the tracer's
+  `passedRegisters`, ahead of its own body summary: the "body-reads"
+  layout skips any callee the table names, and the empty-site pass and
+  the tracer's `CallFacts` consult only the name. A scratch dylib with an in-image
+  `long arc4random(long, long)` called as `arc4random(x, 7)` (-O2)
+  rendered `arc4random(?, 7)` before the entry above and `arc4random()`
+  after it, and the tracer would no longer let a frame address escape
+  into it. The same holds today for `free`, `memcpy` and every older
+  entry. None of the changed entries has such a twin in the fixtures,
+  Clarc or Terminal. The completeness
+  entries a read-only audit of the SDK and Swift runtime headers listed
+  (`bzero` 2, `memchr` 3, `malloc` 1, `_Unwind_Resume` 1,
+  `swift_allocObject` 3, `swift_weakLoadStrong` 1 and others) should land
+  behind a gate that applies the arity only to a callee reached through a
+  stub or bind.

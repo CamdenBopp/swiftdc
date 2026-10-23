@@ -111,6 +111,12 @@ echo "==> known-arity calls whose operands are all untracked (untracked_args.c, 
 $CLANG -O0 -dynamiclib untracked_args.c -o libUntrackedArgs.dylib
 $CLANG -O2 -dynamiclib untracked_args.c -o libUntrackedArgs.opt.dylib
 
+echo "==> known C arities that disagreed with their headers, and entry points that take nothing (known_arity.c, -O0 and -O2; forcedtry.swift, -Onone and -O)"
+$CLANG -O0 -dynamiclib -lobjc known_arity.c -o libKnownArity.dylib
+$CLANG -O2 -dynamiclib -lobjc known_arity.c -o libKnownArity.opt.dylib
+$SWIFTC -parse-as-library -Onone -emit-library -module-name ForcedTry forcedtry.swift -o libForcedTry.dylib
+$SWIFTC -parse-as-library -O -emit-library -module-name ForcedTry forcedtry.swift -o libForcedTry.opt.dylib
+
 echo "==> string literals that read as notes once split at two spaces (notetext.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name NoteText notetext.swift -o libNoteText.opt.dylib
 
