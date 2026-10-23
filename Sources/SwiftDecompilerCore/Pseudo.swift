@@ -697,6 +697,15 @@ public extension DisassembledFunction {
             // `FunctionType::get(WitnessTablePtrTy, false)`). A stale x0 used
             // to print as its argument, often a whole unrelated call.
             if callee.hasPrefix("lazy protocol witness table accessor for ") { return 0 }
+            // `MetadataResponse (MetadataRequest)` for a type with no generic
+            // parameters (swift/lib/IRGen/MetadataRequest.cpp); a system
+            // library's accessor took whatever x1-x7 held:
+            // `type metadata accessor for Swift.MainActor(0, arg1, arg2)`.
+            let accessorPrefix = "type metadata accessor for "
+            if callee.hasPrefix(accessorPrefix),
+               NonGenericMetadataAccessors.types.contains(String(callee.dropFirst(accessorPrefix.count))) {
+                return 1
+            }
             // Historical prefix match: some selectors resolve as
             // `objc_opt_isKindOfClass` with a trailing disambiguator.
             if callee.hasPrefix("objc_opt_isKindOfClass") { return 2 }

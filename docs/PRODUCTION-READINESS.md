@@ -4182,13 +4182,13 @@ if a test was observed to fail without the fix.
   - an SDK-only selector that takes a struct, laid out by colon position:
     Terminal's `[? setNeedsDisplayInRect:arg0]`, whose rect is in d0-d3
     (fixed since, by the SDK selector table below).
-  The accessor needs the type descriptor's generic flag, which only the
-  shared cache holds. The patch is kept out until that lands.
+  The accessor is fixed since too (`NonGenericMetadataAccessors`, below).
+  The patch can be measured again.
 
 ## 2026-10-23: SDK selectors' public declarations
 
-- **FIXED (soundness): an untyped send of a selector only the SDK declares
-  was laid out one x register per argument.** Nothing in the image doubted
+- **FIXED (7a50189, soundness): an untyped send of a selector only the
+  SDK declares was laid out one x register per argument.** Nothing in the image doubted
   the layout, so a struct or floating argument the method passed straight
   through left x2 holding something else. `objc_sdk_selectors.m` (-O2):
   `[window setAlphaValue:alpha]` rendered `setAlphaValue:arg0` (the
@@ -4227,4 +4227,27 @@ if a test was observed to fail without the fix.
   outside the image (a class reference such as `[NSEvent …]`, an ivar
   typed `@"NSButton"`) could use that class's SDK declaration instead;
   that needs the SDK encodings keyed by class, not only the prefixes.
+
+## 2026-10-23: system libraries' non-generic metadata accessors
+
+- **FIXED (soundness): a metadata accessor in a system library took every
+  live register.** A type metadata accessor takes the metadata request,
+  then one argument per generic parameter, so a non-generic type's takes
+  the request alone. With no body in the image the accessor of a
+  system type was laid out positionally: `runtimearity.swift`'s
+  `sharedActor(_:_:_:)` rendered `type metadata accessor for
+  Swift.MainActor(0, arg1, arg2)`. `NonGenericMetadataAccessors` is a
+  generated, committed table of the types whose accessor a system Swift
+  library exports and whose nominal type descriptor (`…Mn`) lacks the
+  generic bit, 0x80 (swift/include/swift/ABI/MetadataValues.h:1940):
+  15,607 types from 202 images of the macOS 27.2 cache, 643 KB, in about
+  six seconds with `SWIFTDC_GENERATE_ACCESSORS=<path>`. `knownCArity`
+  gives such an accessor one argument. Blast radius: only
+  `runtimearity.swift`'s views. Release `disasm --pseudo`: Terminal,
+  TextEdit and Chess unchanged; Clarc 291 normalised lines, GoodLinks
+  3,188. The `Swift.MainActor` accessor with extra arguments goes from 8
+  to 0 in Clarc and from 368 to 0 in GoodLinks; the rest are other system
+  accessors (`Foundation.URL`, `Foundation.Notification`) and in-image
+  callees whose bodies call them, which now take fewer arguments. No call
+  disappeared.
 

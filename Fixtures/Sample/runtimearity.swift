@@ -26,6 +26,9 @@
 //   instantiationArgs)`, three (Metadata.h:369), and completes the box's
 //   metadata: `swift_checkMetadataState(request, type)`, two
 //   (Metadata.h:350).
+// - `sharedActor` reads `MainActor.shared`, calling the system library's
+//   metadata accessor for a type with no generic parameters, which takes the
+//   request alone, while x1 and x2 still hold b and c.
 import Foundation
 
 @objc public enum RuntimeArityTrigger: Int { case manual, automatic }
@@ -70,3 +73,5 @@ public func onMain(_ a: Int, _ b: Int) -> Int {
 @inline(never) public func erase<T>(_ v: T, _ a: Int, _ b: Int) -> CustomStringConvertible {
     RuntimeArityBox(value: v)
 }
+
+@inline(never) public func sharedActor(_ a: Int, _ b: Int, _ c: Int) -> MainActor { MainActor.shared }

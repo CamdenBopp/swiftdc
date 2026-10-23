@@ -109,3 +109,32 @@ private func noteArguments(_ callee: String, in function: DisassembledFunction) 
     #expect(DisassembledFunction.knownCArity(of: "swift_getObjCClassMetadata") == 1)
     #expect(DisassembledFunction.knownCArity(of: "swift_getOpaqueTypeConformance2") == 3)
 }
+
+/// A system library's metadata accessor for a type with no generic
+/// parameters takes the request alone, but with no body in the image it took
+/// every live register: `runtimearity.swift`'s `sharedActor` rendered
+/// `type metadata accessor for Swift.MainActor(0, arg1, arg2)`.
+@Test func aSystemNonGenericMetadataAccessorTakesTheRequestAloneIfPresent() async throws {
+    guard FileManager.default.fileExists(atPath: fixture) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: fixture, functionFilter: "sharedActor")
+    }
+    let function = try #require(functions.first { $0.displayName.hasPrefix("RuntimeArity.sharedActor(") })
+    let text = function.renderPseudo()
+    #expect(text.contains("type metadata accessor for Swift.MainActor(0))"), Comment(rawValue: text))
+}
+
+/// The generated table against the descriptors it was read from: MainActor,
+/// String and URL are not generic; Array and SwiftUI's ModifiedContent are,
+/// so their accessors also take generic arguments and are absent.
+@Test func theNonGenericAccessorTableLeavesGenericTypesOut() {
+    let types = NonGenericMetadataAccessors.types
+    #expect(types.count > 10_000)
+    #expect(types.contains("Swift.MainActor"))
+    #expect(types.contains("Swift.String"))
+    #expect(types.contains("Foundation.URL"))
+    #expect(!types.contains("Swift.Array"))
+    #expect(!types.contains("SwiftUI.ModifiedContent"))
+    #expect(DisassembledFunction.knownCArity(of: "type metadata accessor for Swift.MainActor") == 1)
+    #expect(DisassembledFunction.knownCArity(of: "type metadata accessor for Swift.Array") == nil)
+}
