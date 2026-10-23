@@ -3856,3 +3856,13 @@ if a test was observed to fail without the fix.
   fixture changes (that line in structured and pseudo, and the `br`'s
   note in the listing and JSON); Clarc and Terminal `disasm --pseudo`
   are byte-identical.
+- **FIXED (determinism): `abi.argument-layout` probe events came out in
+  hash order.** The argument-layout loop in `enrichCallArguments` walked
+  the `sites` Dictionary, and each site records its event as it is laid
+  out. `disasm libSample.dylib --pseudo --probe … --probe-filter
+  event=abi.argument-layout` gave three different traces of 230 events in
+  three processes, though the rendered output matched. The loop now walks
+  the sites in address order, and the same three runs give one trace.
+  `argumentLayoutProbeTracesAreIdenticalAcrossProcessesIfPresent`
+  compares four processes. Rendered output does not change: every fixture
+  view, and Clarc and Terminal `disasm --pseudo`, are byte-identical.

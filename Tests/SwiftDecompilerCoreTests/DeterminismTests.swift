@@ -152,3 +152,25 @@ private func capture(_ arguments: [String]) throws -> Data {
         if let first { #expect(paths == first) } else { first = paths }
     }
 }
+
+/// The probe trace is a deterministic stream too (`seq` numbers the events
+/// in the order analysis records them). The argument-layout loop walked a
+/// Dictionary of call sites, so `abi.argument-layout` events came out in
+/// hash order: the rendered output matched across processes and the trace
+/// did not. The summary line carries wall-clock times and is left out.
+@Test func argumentLayoutProbeTracesAreIdenticalAcrossProcessesIfPresent() throws {
+    let path = "Fixtures/Sample/libSample.dylib"
+    guard FileManager.default.fileExists(atPath: binary.path), FileManager.default.fileExists(atPath: path) else { return }
+    var first: [Substring]?
+    for _ in 0..<4 {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("swiftdc-layout-\(UUID()).jsonl")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let output = try capture(["disasm", path, "--pseudo", "--probe", file.path,
+                                  "--probe-filter", "event=abi.argument-layout"])
+        #expect(!output.isEmpty)
+        let trace = try String(contentsOf: file, encoding: .utf8)
+        let events = trace.split(separator: "\n").filter { $0.contains("\"event\":\"abi.argument-layout\"") }
+        #expect(events.count > 10, "expected argument-layout events to compare, got \(events.count)")
+        if let first { #expect(events == first) } else { first = events }
+    }
+}

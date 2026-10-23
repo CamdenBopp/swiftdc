@@ -3961,7 +3961,9 @@ public struct Disassembler: Sendable {
         /// Variadic sends whose variadic argument count is not provable: their
         /// fixed arguments render, followed by `…`.
         var unprovenVariadicSites: Set<UInt64> = []
-        for (address, site) in sites {
+        // In address order: each site records an `abi.argument-layout`
+        // probe event, and Dictionary order changes with every process.
+        for (address, site) in sites.sorted(by: { $0.key < $1.key }) {
             var values = site.arguments
             // Which layout decided this site's arguments. `positional` (the
             // registers as the call found them, trimmed of trailing unknowns)
