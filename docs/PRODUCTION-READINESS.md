@@ -4293,3 +4293,22 @@ if a test was observed to fail without the fix.
   argument, now prints once). GoodLinks' peak footprint went from 159 MB
   to 119 MB, within run-to-run noise.
 
+## 2026-10-23: register summaries and jump tables
+
+- **FIXED (soundness): a callee's register summary read a switch's `br` as
+  a tail call.** The summaries were built before `analyzeFunction`
+  recovers jump tables, so a switch's cases were never reached and the
+  `br` counted as reading every argument register. `switch_clobbers.s`:
+  case 2 of `table_switch` calls `table_clobber`, which leaves x19
+  changed; callers keeping arg0 in x19 across `table_switch`, directly or
+  through one or two wrappers, rendered `return arg0`, where native
+  execution with (2, 5) returns 5. `switchsummary.c` (-O2):
+  `dispatchTable(void)` dispatches through a table and reads only
+  globals, yet the call after `printf` rendered `dispatchTable(printf(…))`.
+  Every summary builder now attaches the function's jump tables first
+  (`withJumpTables`): the streaming pass and its clobber rebuilds, the
+  array path, and the deeper decode of a filtered run. Blast radius: only
+  the two new fixtures; release `disasm --pseudo` of Terminal, TextEdit,
+  Chess, Clarc and GoodLinks is byte-identical. Started by an agent on
+  2026-10-22 and finished here.
+

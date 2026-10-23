@@ -720,6 +720,7 @@ public struct Disassembler: Sendable {
         let arity = { [names] target in self.knownArity(ofCallTarget: target, names: names, cacheSymbols: cacheSymbols) }
         let functionStarts = Set(boundaries)
         let isFunction = { (target: UInt64) in functionStarts.contains(target) }
+        let fileRanges = FileBackedRanges(standalone: machO)
         for index in boundaries.indices {
             // Muted: pass 2 decodes the same span again and records its events.
             let instructions = Probe.muted { capstoneInstructions(in: machO, span: span(index)) }
@@ -735,7 +736,8 @@ public struct Disassembler: Sendable {
                 )
                 indirectResultUses[boundaries[index]] = Self.indirectResultUse(of: function)
                 registerSummaries[boundaries[index]] = CalleeRegisterSummary.of(
-                    function, calleeArity: arity, isFunction: isFunction)
+                    Self.withJumpTables(function, machO: machO, ranges: fileRanges),
+                    calleeArity: arity, isFunction: isFunction)
             }
         }
         // Clobbers and reloads carried through calls; the few functions
@@ -751,7 +753,9 @@ public struct Disassembler: Sendable {
                 metadataNames: metadataNames, objcIndex: objcIndex
             )
             return Probe.muted {
-                CalleeRegisterSummary.of(function, calleeEffects: effects, calleeArity: arity, isFunction: isFunction)
+                CalleeRegisterSummary.of(
+                    Self.withJumpTables(function, machO: machO, ranges: fileRanges),
+                    calleeEffects: effects, calleeArity: arity, isFunction: isFunction)
             }
         }
         CalleeRegisterSummary.closeOverReads(&registerSummaries)
@@ -765,7 +769,7 @@ public struct Disassembler: Sendable {
             cfStringRange: sectionRange(named: "__cfstring", in: machO),
             cacheSymbols: cacheSymbols,
             cacheReader: machO.fullCache.map { CacheReader(full: $0) },
-            fileRanges: FileBackedRanges(standalone: machO),
+            fileRanges: fileRanges,
             foldedCandidates: foldedByAddress
         )
 
@@ -1015,14 +1019,19 @@ public struct Disassembler: Sendable {
                     self.knownArity(ofCallTarget: target, names: resolver.names, cacheSymbols: cacheSymbols)
                 }
                 let isFunction = { (target: UInt64) in boundaries.contains(target) }
+                // A summary reads a switch's `br` as the jump inside the body
+                // it is, not as a tail call out of it.
+                var bodies = Dictionary(
+                    functions.map { ($0.startAddress, Self.withJumpTables($0, machO: machO, ranges: resolver.fileRanges)) },
+                    uniquingKeysWith: { a, _ in a }
+                )
                 var summaries = Dictionary(
-                    functions.compactMap { function in
-                        CalleeRegisterSummary.of(function, calleeArity: arity, isFunction: isFunction)
-                            .map { (function.startAddress, $0) }
+                    bodies.keys.sorted().compactMap { start in
+                        bodies[start].flatMap { CalleeRegisterSummary.of($0, calleeArity: arity, isFunction: isFunction) }
+                            .map { (start, $0) }
                     },
                     uniquingKeysWith: { a, _ in a }
                 )
-                var bodies = Dictionary(functions.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
                 // A filtered run decodes its matches and their direct callees;
                 // a clobber further down (a callee's callee) is decoded here, a
                 // level at a time in address order, so the summaries see what
@@ -1039,9 +1048,11 @@ public struct Disassembler: Sendable {
                         }
                         guard !instructions.isEmpty else { continue }
                         decoded += 1
-                        let body = DisassembledFunction(
-                            symbol: "sub_\(String(target, radix: 16))", demangledName: nil,
-                            startAddress: target, instructions: instructions, source: .address)
+                        let body = Self.withJumpTables(
+                            DisassembledFunction(
+                                symbol: "sub_\(String(target, radix: 16))", demangledName: nil,
+                                startAddress: target, instructions: instructions, source: .address),
+                            machO: machO, ranges: resolver.fileRanges)
                         bodies[target] = body
                         guard let summary = Probe.muted({
                             CalleeRegisterSummary.of(body, calleeArity: arity, isFunction: isFunction)
@@ -1143,6 +1154,18 @@ public struct Disassembler: Sendable {
         }
         let stop = low < boundaries.count ? boundaries[low] : textEnd
         return capstoneInstructions(in: machO, span: (address, stop))
+    }
+
+    /// A function as the register summaries read it: with its jump tables, so
+    /// a switch's `br` is control flow inside the body rather than a tail call
+    /// that may read every argument register and skip the cases. The
+    /// summaries are built before `analyzeFunction` recovers the same tables
+    /// for the rest of the analysis.
+    static func withJumpTables(
+        _ function: DisassembledFunction, machO: MachOFile, ranges: FileBackedRanges?
+    ) -> DisassembledFunction {
+        let tables = JumpTables.recognize(in: function, machO: machO, ranges: ranges)
+        return tables.isEmpty ? function : function.attachingSwitchTargets(tables)
     }
 
     /// Whether an instruction between a call and the use of its result would
