@@ -80,6 +80,8 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libObjCPackedStack.opt.dylib",
         "Fixtures/Sample/libUntrackedArgs.dylib",
         "Fixtures/Sample/libUntrackedArgs.opt.dylib",
+        "Fixtures/Sample/libObjCUntypedFloat.dylib",
+        "Fixtures/Sample/libObjCUntypedFloat.opt.dylib",
         "Fixtures/Sample/libStackCallEffects.dylib",
         "Fixtures/Sample/libStackCallEffects.opt.dylib",
         "Fixtures/Sample/libStackCallEffects.osize.dylib",

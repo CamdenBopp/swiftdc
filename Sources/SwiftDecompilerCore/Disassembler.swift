@@ -3716,6 +3716,51 @@ public struct Disassembler: Sendable {
             DisassembledFunction.MessageSend.isVariadicSelector(selector)
         }
 
+        /// Whether the code just before the call at `address` leaves a value
+        /// in v0–v7 for it: inside the call's block and after the previous
+        /// call, one of them is written (`fmov d0, #1.5`, `ldr d0, [x1]`) and
+        /// not then stored to memory. A register written and stored was a
+        /// temporary for a copy (`ldr d0, [x8]; str d0, [sp]` building a block
+        /// literal, `movi v0.2d, #0; stp q0, q0, [sp]` zeroing a struct, a
+        /// variadic double put on the stack).
+        let instructionIndex = Dictionary(
+            function.instructions.enumerated().map { ($1.address, $0) }, uniquingKeysWith: { first, _ in first })
+        let blockStarts = Set(function.instructions.compactMap(\.branchTarget))
+        func setsFloatingPointArgument(before address: UInt64) -> Bool {
+            guard let callIndex = instructionIndex[address] else { return false }
+            var settled = Set<Int>()
+            var stored = Set<Int>()
+            var index = callIndex
+            while index > 0, !blockStarts.contains(function.instructions[index].address) {
+                index -= 1
+                let insn = function.instructions[index]
+                if let flow = insn.controlFlow, flow != .sequential { break }
+                guard let detail = insn.detail else { break }
+                // The write happens after the instruction's reads, so it is
+                // settled first.
+                for info in detail.operands where info.isWritten {
+                    guard case .register(let register) = info.operand, register.kind == .vector,
+                          register.number < 8, !settled.contains(register.number)
+                    else { continue }
+                    settled.insert(register.number)
+                    if !stored.contains(register.number) { return true }
+                }
+                let storesMemory = detail.operands.contains {
+                    if case .memory = $0.operand { $0.isWritten } else { false }
+                }
+                if storesMemory {
+                    for info in detail.operands where info.isRead {
+                        if case .register(let register) = info.operand, register.kind == .vector,
+                           register.number < 8, !settled.contains(register.number) {
+                            stored.insert(register.number)
+                        }
+                    }
+                }
+                if settled.count == 8 { break }
+            }
+            return false
+        }
+
         var argumentsByAddress: [UInt64: [AbstractValue]] = [:]
         /// Parameter types of the sites laid out from a signature.
         var laidOutTypes: [UInt64: [String]] = [:]
@@ -3907,6 +3952,17 @@ public struct Disassembler: Sendable {
                         argumentsByAddress[address] = ([receiver, selectorValue]
                             + Array(repeating: AbstractValue.unknown, count: colons)).map(sanitizeValue)
                         strategy = "objc-maybe-float"
+                        continue
+                    }
+                    // With no signature the explicit arguments are laid out
+                    // as all integers, x2 on. A floating-point argument
+                    // travels in v0 and on, so a value left in one of them
+                    // for the send disproves that layout: `put:1.5 at:7`
+                    // rendered `put:7 at:?`.
+                    if colons > 0, setsFloatingPointArgument(before: address) {
+                        argumentsByAddress[address] = ([receiver, selectorValue]
+                            + Array(repeating: AbstractValue.unknown, count: colons)).map(sanitizeValue)
+                        strategy = "objc-untyped-float"
                         continue
                     }
                 }

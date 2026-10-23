@@ -3364,13 +3364,29 @@ if a test was observed to fail without the fix.
   `isARepeat` and key code, or their merged constant, as `characters:`,
   and one of Terminal's own sends read an argument from a packed slot.
   Five calls bound only for that misread use are no longer bound.
-- **OPEN (soundness): an untyped send names floating-point arguments'
+- **FIXED (soundness): an untyped send named floating-point arguments'
   neighbours wrongly.** With no signature the explicit arguments are laid
-  across x2-x7 by colon position, but a point or a time interval travels
-  in v registers: Terminal's `keyEventWithType:location:modifierFlags:
-  timestamp:…` sends render the modifier flags as `location:` and the
-  window number as `modifierFlags:`. `selectorMayUseFloatingArguments`
-  does not catch these selectors.
+  across x2-x7 by colon position, but a double, point, size or rect
+  travels in v registers: `[o put:1.5 at:7]` rendered `put:7 at:?`, and
+  Terminal's `keyEventWithType:location:modifierFlags:timestamp:…` sends
+  rendered the modifier flags as `location:`. A send with no signature
+  now declines its explicit arguments when a value is left in v0-v7 for
+  it: written in its block after the previous call and not then stored to
+  memory (a stored register was a copy temporary: a double copied through
+  d0, a struct zeroed with `stp q0, q0`). `objc_untyped_float.m` (-O0 and
+  -O2) holds the shapes, with witnesses for each limit
+  (`anUntypedSendPassingAFloatDeclinesItsArgumentsIfPresent`). On five
+  apps 408 sends decline (Clarc 37, GoodLinks 185, Terminal 155, TextEdit
+  15, Chess 16); at least 23 of them are integer-only selectors
+  (`valueForKey:`, `objectAtIndex:`, `setFont:`), sound but lost, from a v
+  register left set for something else; the rest pass a float, point,
+  size or rect the integer layout misread. No other fixture view changes.
+- **OPEN (soundness): a floating-point argument passed through untouched
+  still misreads.** `putPassed(o, x)` at -O2 sends `put:x at:7` with x
+  still in d0 from its own entry, so nothing before the send writes a v
+  register and the integer layout renders `put:7 at:?`. A signature
+  source for SDK selectors (the system frameworks' method type encodings
+  in the dyld cache) closes it.
 - **FIXED (correctness): a call's stack arguments ran into the register
   save area.** The snapshot reads the words stored upward from sp until
   one is missing, and the prologue's `stp x29, x30, [sp, #…]` stores two
