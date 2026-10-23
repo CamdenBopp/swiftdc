@@ -39,3 +39,73 @@ private func callLine(_ callee: String, in function: DisassembledFunction) -> St
     })
     #expect(!streamedLine.contains("args("), "\(streamedLine)")
 }
+
+/// The arguments a call's listing note gives `callee` in `function`: the
+/// `args(…)` list split at top-level commas, or `[]` for a note without one.
+private func noteArguments(_ callee: String, in function: DisassembledFunction) -> [[String]] {
+    function.instructions.compactMap { insn -> [String]? in
+        guard insn.controlFlow == .call || insn.controlFlow == .branch,
+              let annotation = insn.annotation, annotation.hasPrefix("→ \(callee)"),
+              annotation.dropFirst("→ \(callee)".count).first.map({ $0 == " " }) ?? true
+        else { return nil }
+        guard let open = annotation.range(of: "  args(") else { return [] }
+        var depth = 1
+        var index = open.upperBound
+        while index < annotation.endIndex, depth > 0 {
+            if annotation[index] == "(" { depth += 1 } else if annotation[index] == ")" { depth -= 1 }
+            if depth > 0 { index = annotation.index(after: index) }
+        }
+        let inner = annotation[open.upperBound..<index]
+        return inner.isEmpty ? [] : DisassembledFunction.splitTopLevelArguments(inner)
+    }
+}
+
+/// Swift runtime entry points of fixed arity took whatever registers held a
+/// value at the call. `swift_getObjectType(HeapObject *)` read
+/// `(self, ?, arg0, arg1)` in an `@objc` initializer and `()` where the
+/// object was unknown; `swift_continuation_throwingResumeWithError(task,
+/// error)` read a third argument; `swift_task_getMainExecutor(void)` read
+/// one; and `swift_checkMetadataState(request, type)` and
+/// `swift_getWitnessTable(conformance, type, instantiationArgs)` dropped
+/// their unknown last arguments (`runtimearity.swift`; the headers are cited
+/// in `knownCArity`).
+@Test func aSwiftRuntimeEntryPointTakesItsDeclaredArgumentsIfPresent() async throws {
+    guard FileManager.default.fileExists(atPath: fixture) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: fixture)
+    }
+    func function(_ prefix: String) -> DisassembledFunction? {
+        functions.first { $0.displayName.hasPrefix(prefix) }
+    }
+    let expected: [(function: String, callee: String, arguments: [[String]])] = [
+        ("-[_TtC12RuntimeArity22RuntimeArityFinalEvent initWithProfileName:trigger:]",
+         "swift_getObjectType", [["self"]]),
+        ("RuntimeArity.RuntimeArityFinalEvent.init(", "swift_getObjectType", [["?"]]),
+        ("(1) suspend resume partial function for RuntimeArity.resumeFailing(",
+         "swift_continuation_throwingResumeWithError", [["r0", "r1"]]),
+        ("generic specialization <Swift.Int> of static Swift.MainActor.assumeIsolated",
+         "swift_task_getMainExecutor", [[]]),
+        ("type metadata completion function for RuntimeArity.RuntimeArityBox",
+         "swift_checkMetadataState", [["319", "?"]]),
+    ]
+    for (name, callee, arguments) in expected {
+        guard let found = function(name) else {
+            Issue.record("no \(name)")
+            continue
+        }
+        #expect(noteArguments(callee, in: found) == arguments, "\(name) \(callee): \(noteArguments(callee, in: found))")
+    }
+    let witnessTables = functions.flatMap { noteArguments("swift_getWitnessTable", in: $0) }
+    #expect(!witnessTables.isEmpty && witnessTables.allSatisfy { $0.count == 3 && $0.last == "?" },
+            "\(witnessTables)")
+}
+
+/// The two entries no fixture reaches with a register to spare, pinned to
+/// their declarations: `swift_getObjCClassMetadata(const ClassMetadata *)`
+/// (Metadata.h:562) and `swift_getOpaqueTypeConformance2(arguments,
+/// descriptor, index)` (MetadataLookup.cpp:3237). Terminal and Clarc each
+/// rendered one wider than that.
+@Test func swiftRuntimeArityEntriesWithoutAFixtureMatchTheirDeclarations() {
+    #expect(DisassembledFunction.knownCArity(of: "swift_getObjCClassMetadata") == 1)
+    #expect(DisassembledFunction.knownCArity(of: "swift_getOpaqueTypeConformance2") == 3)
+}

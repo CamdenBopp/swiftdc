@@ -639,7 +639,10 @@ public extension DisassembledFunction {
              // dispatch/group.h:60, objc/objc-exception.h:56 and :60: all
              // `(void)`. Each printed a stale x0 as its argument.
              "__error", "pthread_main_np", "arc4random", "dispatch_group_create",
-             "objc_end_catch", "objc_terminate":
+             "objc_end_catch", "objc_terminate",
+             // swift/include/swift/Runtime/Concurrency.h:1165,
+             // `SerialExecutorRef (void)`.
+             "swift_task_getMainExecutor":
             return 0
         case "objc_opt_class", "objc_opt_self", "objc_alloc", "objc_allocWithZone",
              "objc_alloc_init", "objc_opt_new", "objc_retain", "objc_release",
@@ -658,17 +661,28 @@ public extension DisassembledFunction {
              // swift/include/swift/Runtime/HeapObject.h: one object each.
              "swift_retain", "swift_release", "swift_bridgeObjectRetain", "swift_bridgeObjectRelease",
              "swift_unknownObjectRetain", "swift_unknownObjectRelease", "swift_errorRetain", "swift_errorRelease",
-             "swift_unknownObjectWeakLoadStrong":
+             "swift_unknownObjectWeakLoadStrong",
+             // swift/include/swift/Runtime/Casting.h:231 and Metadata.h:562:
+             // the object, or the class, alone.
+             "swift_getObjectType", "swift_getObjCClassMetadata":
             return 1
         case "objc_opt_isKindOfClass", "objc_opt_respondsToSelector",
              "objc_storeStrong", "objc_storeWeak", "objc_initWeak",
              "os_log_type_enabled", "objc_sync_wait",
              // swift/include/swift/Runtime/ObjCBridge.h:46-47, `void (id *, id *)`.
-             "objc_moveWeak", "objc_copyWeak":
+             "objc_moveWeak", "objc_copyWeak",
+             // swift/include/swift/Runtime/Metadata.h:350, `(MetadataRequest,
+             // const Metadata *)`, and Concurrency.h:1116, `void (AsyncTask *,
+             // SwiftError *)`.
+             "swift_checkMetadataState", "swift_continuation_throwingResumeWithError":
             return 2
         case "memcpy", "memmove", "memset",
              // swift/include/swift/Runtime/RuntimeFunctions.def
-             "swift_arrayDestroy":
+             "swift_arrayDestroy",
+             // swift/include/swift/Runtime/Metadata.h:369, `(conformance,
+             // type, instantiationArgs)`, and stdlib/public/runtime/
+             // MetadataLookup.cpp:3237, `(arguments, descriptor, index)`.
+             "swift_getWitnessTable", "swift_getOpaqueTypeConformance2":
             return 3
         case "swift_arrayInitWithCopy", "swift_arrayInitWithTakeFrontToBack", "swift_arrayInitWithTakeBackToFront":
             return 4

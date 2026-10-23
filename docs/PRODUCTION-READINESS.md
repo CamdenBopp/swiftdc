@@ -4098,8 +4098,8 @@ if a test was observed to fail without the fix.
   Terminal implements `setSelectedRange:` with an NSRange. A selector
   only the SDK implements still takes the positional path, so a call
   consumed by an argument slot the send does not print can still vanish.
-- **FIXED (soundness): an untyped send to a receiver of known class that
-  inherits the selector was laid out by colon position.** The doubt above
+- **FIXED (ad13b4d, soundness): an untyped send to a receiver of known
+  class that inherits the selector was laid out by colon position.** The doubt above
   applied only when the receiver's class was unknown, a guard kept from
   when the rule skipped sends to self (`0c92a85`). A class that does not
   declare the selector inherits or forwards it, so the image's
@@ -4114,8 +4114,8 @@ if a test was observed to fail without the fix.
 
 ## 2026-10-23: calls of known arity inside a callee's body
 
-- **FIXED (soundness): a call inside a body was taken to read every
-  argument register.** A signatureless in-image callee passes what its
+- **FIXED (d64d215, soundness): a call inside a body was taken to read
+  every argument register.** A signatureless in-image callee passes what its
   body reads (`CalleeRegisterSummary.argumentReads`), and any call in the
   body counted as reading x0-x7 that the body had not yet written. A
   metadata accessor whose body is `adrp x0; add x0; bl objc_opt_self; mov
@@ -4142,9 +4142,26 @@ if a test was observed to fail without the fix.
   call disappeared in any app (each callee's call count is the same or
   higher); 47 GoodLinks lines lost a second reference to an unresolved
   call's result, which they had passed as a fabricated argument.
-- **OPEN (soundness): runtime entry points outside `knownCArity` still
-  take every live register.** `runtimearity.swift`'s final class calls
+- **FIXED (soundness): runtime entry points outside `knownCArity` took
+  every live register.** `runtimearity.swift`'s final class called
   `swift_getObjectType(self, ?, arg0, arg1)`, which takes one argument
-  (swift/include/swift/Runtime/Casting.h:231). A survey of the apps
-  against RuntimeFunctions.def found it and five more rendered wider than
-  declared.
+  (swift/include/swift/Runtime/Casting.h:231), and where the object was
+  unknown it read `swift_getObjectType()`. Surveying every call to a
+  function in RuntimeFunctions.def in the five apps against its declared
+  arguments found six more, each now in the table with its declaration
+  checked in the runtime headers: `swift_task_getMainExecutor` (0),
+  `swift_getObjCClassMetadata` (1), `swift_checkMetadataState` and
+  `swift_continuation_throwingResumeWithError` (2), `swift_getWitnessTable`
+  and `swift_getOpaqueTypeConformance2` (3). RuntimeFunctions.def is not
+  an oracle by itself: it declares `swift_unexpectedError(error *)`, but
+  the compiler calls the five-argument form in Error.h:128. After the fix
+  the survey finds no call wider than declared apart from that one and
+  names whose generic arguments hold commas. Blast radius: the seven
+  callees' calls in 35 fixtures (`swift_getObjectType()` → `(?)`, 104
+  `swift_getWitnessTable` notes gain their unknown third argument).
+  Release `disasm --pseudo`, new lines after normalising `let rN`:
+  Terminal 20 (19 `swift_getObjectType`, the widest `(self, ?, arg0, …,
+  arg4)`), Chess 2, Clarc 96, GoodLinks 1,027 (637 `swift_getObjectType`,
+  181 `swift_getWitnessTable`, 72 `swift_checkMetadataState`, and 119
+  in-image callees whose bodies call them and now take fewer arguments).
+  No printed call disappeared.
