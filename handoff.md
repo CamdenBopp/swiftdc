@@ -34,16 +34,19 @@ GoodLinks' last fixpoint cap. Suite: 710 tests.
 IR step 1 started on 2026-10-21: the callee, then exits, bindings and
 `then throw ?` are typed facts on `Instruction`. Moving exits fixed real
 output: a string literal split at its double spaces printed as a
-`return` (Clarc, GoodLinks; `notetext.swift`). Next: the same for the
-statement notes still read from text (field writes, `self = …`,
-`yield`, the executor hop, `await=`), which have the same literal hole
-(OPEN in the readiness doc), then IR step 2 (CFG once: `basicBlocks()`
-still runs in `analyze`, in enrichment and in the structurer). Open from
-this round: the loop-body pass's sticky markers have no guard; a call's
-stack arguments run into the save area, which waits on known-arity calls
-with nothing tracked rendering `()` (both OPEN, 2026-10-22). The
-entry-seeded stack argument width was not a defect; the caller's side was,
-fixed 2026-10-22.
+`return` (Clarc, GoodLinks; `notetext.swift`). On 2026-10-22 every other
+note a renderer reads followed (`Instruction.facts`: statements,
+`await=`, `jump=`, `cond:`, the loop notes, field reads,
+`dispatch=self`); no renderer reads the annotation for a note now. Open
+from it: a store into two Swift fields at once is never printed, and a
+String stored to a field renders as one integer word (both in the
+readiness doc). Next: IR step 2 (CFG once: `basicBlocks()` still runs
+in `analyze`, in enrichment and in the structurer). Open from this
+round: the loop-body pass's sticky markers have no guard; calls with
+nothing tracked other than known-arity C runtime calls still render
+`()` (OPEN, 2026-10-22; the save-area overrun and the known-arity case
+are fixed). The entry-seeded stack argument width was not a defect; the
+caller's side was, fixed 2026-10-22.
 Profile leaders after typed locations: the tracer's transfer and meet,
 enrichment's per-instruction closure, `renderPseudo`, and Capstone
 decode.

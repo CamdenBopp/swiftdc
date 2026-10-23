@@ -56,13 +56,14 @@ public extension DisassembledFunction {
                 $0.replacingOccurrences(of: "  " + Self.thenThrowNote, with: "")
                     .replacingOccurrences(of: Self.thenThrowNote, with: "")
             }
+            var facts = insn.facts
+            facts.thenThrows = false
             let base = Instruction(
                 address: insn.address, text: insn.text, annotation: rest?.isEmpty == false ? rest : nil,
                 controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
                 callArguments: insn.callArguments, callSelf: insn.callSelf,
                 resultConsumed: insn.resultConsumed, sourceType: insn.sourceType, detail: insn.detail,
-                calleeDisplayName: insn.calleeDisplayName, callee: .kept(insn.callee),
-                exit: insn.exit, binding: insn.binding)
+                calleeDisplayName: insn.calleeDisplayName, callee: .kept(insn.callee), facts: facts)
             return pseudoStatement(of: base, hideRuntime: hideRuntime).map { "\($0)\nthrow ?" } ?? "throw ?"
         }
         if insn.isTrap { return "trap()" }
@@ -70,24 +71,11 @@ public extension DisassembledFunction {
         // reads as a statement and is noted ahead of an exit is a field
         // write, which is a store, never an exit.
         if let exit = insn.exit { return exit.statement }
-        if let annotation = insn.annotation {
-            let semantic = annotation.components(separatedBy: "  ")
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-                .first { note in
-                    if note.hasPrefix("yield ") { return true }
-                    if note.hasPrefix("await hop_to_executor(") { return true }
-                    if note.hasPrefix("self = ") { return true }
-                    if note.hasPrefix("("), note.contains("self->"), note.contains(" = ") {
-                        return true
-                    }
-                    guard note.hasPrefix("self.") || note.hasPrefix("self->") else { return false }
-                    return [" = ", " += ", " -= "].contains(where: note.contains)
-                }
-            if let semantic { return semantic }
-        }
+        // The statement (a field write, a yield, an executor hop, `self =
+        // …`) is noted ahead of the binding, so it wins.
+        if let statement = insn.statement { return statement.text }
         // `let r0 = call(...)`: a call whose result is read more than once,
         // bound once so the call is not spelled out (executed) at every use.
-        // Its note comes after the notes above, so they win.
         if let binding = insn.binding { return binding.statement }
         return callStatement(of: insn, hideRuntime: hideRuntime)
     }
@@ -102,10 +90,10 @@ public extension DisassembledFunction {
             // and its arguments may be the only rendering of earlier calls'
             // results. The observed register values are not a claimed
             // signature, so they are listed as recovered values, not arguments.
-            if insn.controlFlow == .branch, let target = indirectJumpTarget(of: insn) {
+            if insn.controlFlow == .branch, let target = insn.indirectJumpTarget {
                 // A suspension is a call; any other indirect `br` may be a
                 // tail call or an unrecovered jump table, so it is a jump.
-                if let binding = awaitBinding(of: insn) {
+                if let binding = insn.awaitBinding {
                     let call = "indirect_call(\(target))"
                     return binding.isEmpty ? "await \(call)" : "let \(binding) = await \(call)"
                 }
@@ -129,42 +117,22 @@ public extension DisassembledFunction {
         if let idiom = objcRuntimeIdiom(callee: callee, arguments: arguments) { return idiom }
         // A Swift method's receiver arrives in x20, not x0, so show it as an
         // explicit `self:` rather than letting it vanish from the call.
-        if isSelfDispatch(insn) {
+        if insn.isSelfDispatch {
             let call = "\(selfDispatchCall(insn.calleeDisplayName ?? callee))(\(arguments.joined(separator: ", ")))"
-            guard let binding = awaitBinding(of: insn) else { return call }
+            guard let binding = insn.awaitBinding else { return call }
             return binding.isEmpty ? "await \(call)" : "let \(binding) = await \(call)"
         }
         let parts = insn.callSelf.map { ["self: \($0)"] + arguments } ?? arguments
         let call = "\(strippedCallee(insn.calleeDisplayName ?? callee))(\(parts.joined(separator: ", ")))"
         // A suspension point: the tail call is an `await`, and its result is
         // bound to the name the resume funclet reads it under, when proven.
-        guard let binding = awaitBinding(of: insn) else { return call }
+        guard let binding = insn.awaitBinding else { return call }
         return binding.isEmpty ? "await \(call)" : "let \(binding) = await \(call)"
     }
 
-    /// The `await=<name>` note the analysis attaches to a suspension's tail call:
-    /// nil when the call is not a suspension, empty when it is one whose result
-    /// is not provable.
-    static func awaitBinding(of insn: Instruction) -> String? {
-        guard let annotation = insn.annotation else { return nil }
-        for note in annotation.components(separatedBy: "  ") where note.hasPrefix("await=") {
-            return String(note.dropFirst("await=".count))
-        }
-        return nil
-    }
-
     /// The note on a `br` through a register to no known function, followed
-    /// by the rendered register value or `?` (see `enrichCallArguments`).
+    /// by the rendered register value or `?` (`Instruction.indirectJumpTarget`).
     static let indirectJumpNote = "jump="
-
-    /// The rendered target of an indirect `br` the analysis marked, if any.
-    static func indirectJumpTarget(of insn: Instruction) -> String? {
-        guard let annotation = insn.annotation else { return nil }
-        for note in annotation.components(separatedBy: "  ") where note.hasPrefix(indirectJumpNote) {
-            return String(note.dropFirst(indirectJumpNote.count))
-        }
-        return nil
-    }
 
     /// The note on the last instruction of a path that throws into a shared
     /// epilogue.
@@ -492,11 +460,8 @@ public extension DisassembledFunction {
     /// implementation is self's class's; an override in a subclass runs
     /// instead when self is one, so the call is `self.member(…)`, not a static
     /// call to that implementation, and its call-graph edge is not proven.
+    /// The note spells `Instruction.isSelfDispatch` for display.
     static let selfDispatchMarker = "  dispatch=self"
-
-    static func isSelfDispatch(_ insn: Instruction) -> Bool {
-        insn.annotation?.contains(selfDispatchMarker) == true
-    }
 
     /// `self.member` for a self dispatch to `callee`.
     static func selfDispatchCall(_ callee: String) -> String {

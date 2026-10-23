@@ -121,10 +121,17 @@ fix, measured and explained like any other.
    printed as a `return` on Clarc and GoodLinks. Typed accessors rather
    than `[Fact]`, because each kind has at most one value per instruction;
    the facts share one optional box, so an instruction without any pays
-   one pointer, and later statement facts join the same box. Next: the
-   notes the pseudo statement still scans (field writes, `yield`, the
-   executor hop, `self = [super init]`) and `await=`, which have the same
-   literal hole, then `jump=`, `cond:` and the loop notes.*
+   one pointer. The rest followed on 2026-10-22 in `Instruction.facts`:
+   the statement the pseudo view scanned for (a field write, a setter or
+   ivar-helper assignment, `self = [super init]`, a yield, an executor
+   hop), `await=`, `jump=`, `cond:`, the loop notes, the field read the
+   structurer substitutes into a condition, and `dispatch=self`. That
+   fixed real output too: a literal holding one of those notes printed it
+   in place of its call, and a field write, jump target or condition whose
+   value spelled a literal with a double space was cut there. No renderer
+   reads a note from the annotation now; it is display text, and a
+   rebuild passes `facts: insn.facts`. The callee is still parsed from the
+   annotation for an instruction built by hand without one.*
 2. **CFG once.** A `FunctionCFG` built at segmentation and threaded through
    enrichment, the tracer, the summaries and the structurer. Measure with a
    release A/B on a large app.

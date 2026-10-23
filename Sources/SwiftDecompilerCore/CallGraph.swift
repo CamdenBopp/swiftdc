@@ -101,7 +101,7 @@ public struct CallGraph: Sendable {
                 }
                 edges.append(CallEdge(
                     site: insn.address, caller: function.startAddress, callee: target, isTailCall: isTailCall,
-                    isSelfDispatch: DisassembledFunction.isSelfDispatch(insn)
+                    isSelfDispatch: insn.isSelfDispatch
                 ))
             }
         }
@@ -129,7 +129,7 @@ public struct CallGraph: Sendable {
             kept.append(Instruction(
                 address: insn.address, text: insn.text, annotation: insn.annotation,
                 controlFlow: insn.controlFlow, branchTarget: insn.branchTarget, callee: .kept(insn.callee),
-                exit: insn.exit, binding: insn.binding, thenThrows: insn.thenThrows
+                facts: insn.facts
             ))
         }
         return function.replacingInstructions(kept)

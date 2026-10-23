@@ -86,13 +86,14 @@ note separated by **two spaces**: `→ name`, `args(…)`, `self=…`, `await=�
 is a typed fact, `Instruction.callee`, fixed where its target is named:
 a rebuild that only appends notes passes `callee: .kept(insn.callee)`.
 Notes still must not look like a name where the fact is derived
-(`parsedCalleeName`). Exits (`return …`, `throw …`, `swift-exit=…`),
-bindings (`let r0 = …`) and `then throw ?` are typed facts as well,
-`Instruction.exit`, `.binding` and `.thenThrows`, written beside their
-notes; renderers read only the facts, so a note-only rebuild passes them
-on too. A note found by splitting the annotation at two spaces can be a
-piece of a rendered string literal, so new code reads a fact; the splits
-that remain are OPEN in the readiness doc.
+(`parsedCalleeName`). Every other note a renderer needs is a typed fact
+in `Instruction.facts`, written beside its note: exits, bindings,
+`then throw ?`, statements (field writes, `self = …`, `yield`, the
+executor hop), `await=`, `jump=`, `cond:`, the loop notes, field reads
+and `dispatch=self`. Renderers read only the facts, and a note-only
+rebuild passes `facts: insn.facts`. Never find a note by splitting or
+searching the annotation: a piece of it can be a rendered string
+literal, so a new note that something reads gets a fact.
 
 The whole-image array path holds about 1 KB per instruction. A large app
 does not fit in it, so a new whole-image mode should stream

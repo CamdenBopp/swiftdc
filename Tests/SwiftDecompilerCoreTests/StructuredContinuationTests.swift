@@ -20,7 +20,8 @@ import Foundation
         BasicBlock(startAddress: 0x200, instructions: [branch(0x200, 0x400)], successors: [0x400, 0x500]),
         BasicBlock(startAddress: 0x300, instructions: [branch(0x300, 0x400)], successors: [0x400, 0x600]),
         BasicBlock(startAddress: 0x400, instructions: [
-            Instruction(address: 0x400, text: "str x0, [x1]", annotation: "self.value = 7"), ret(0x404)
+            Instruction(address: 0x400, text: "str x0, [x1]", annotation: "self.value = 7",
+                facts: .init(statement: .assignment("self.value = 7"))), ret(0x404)
         ], successors: []),
         BasicBlock(startAddress: 0x500, instructions: [ret(0x500)], successors: []),
         BasicBlock(startAddress: 0x600, instructions: [ret(0x600)], successors: []),

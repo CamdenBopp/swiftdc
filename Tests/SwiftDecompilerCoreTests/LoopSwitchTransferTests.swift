@@ -20,7 +20,8 @@ private func loopSwitchDispatch(_ address: UInt64, cases: [UInt64]) -> BasicBloc
 
 private func loopSwitchExit(_ address: UInt64 = 0x400) -> BasicBlock {
     BasicBlock(startAddress: address, instructions: [
-        Instruction(address: address, text: "str x0, [x1]", annotation: "self.finished = 1"),
+        Instruction(address: address, text: "str x0, [x1]", annotation: "self.finished = 1",
+            facts: .init(statement: .assignment("self.finished = 1"))),
         Instruction(address: address + 4, text: "ret", controlFlow: .return),
     ], successors: [])
 }
@@ -65,11 +66,13 @@ private func renderLoopSwitch(_ blocks: [BasicBlock], maxDepth: Int = ControlFlo
 @Test func ordinaryLoopExitStillUsesBreak() {
     let text = renderLoopSwitch([
         BasicBlock(startAddress: 0x100, instructions: [
-            Instruction(address: 0x100, text: "str x0, [x1]", annotation: "self.headVisits += 1"),
+            Instruction(address: 0x100, text: "str x0, [x1]", annotation: "self.headVisits += 1",
+                facts: .init(statement: .assignment("self.headVisits += 1"))),
             loopSwitchTest(0x104, to: 0x400),
         ], successors: [0x400, 0x200]),
         BasicBlock(startAddress: 0x200, instructions: [
-            Instruction(address: 0x200, text: "str x0, [x1]", annotation: "self.visited += 1"),
+            Instruction(address: 0x200, text: "str x0, [x1]", annotation: "self.visited += 1",
+                facts: .init(statement: .assignment("self.visited += 1"))),
             loopSwitchBranch(0x204, to: 0x100),
         ], successors: [0x100]),
         loopSwitchExit(),
@@ -87,7 +90,8 @@ private func renderLoopSwitch(_ blocks: [BasicBlock], maxDepth: Int = ControlFlo
         BasicBlock(startAddress: 0x100, instructions: [loopSwitchBranch(0x100, to: 0x200)], successors: [0x200]),
         loopSwitchDispatch(0x200, cases: [0x250, 0x300]),
         BasicBlock(startAddress: 0x250, instructions: [
-            Instruction(address: 0x250, text: "str x0, [x1]", annotation: "self.innerVisits += 1"),
+            Instruction(address: 0x250, text: "str x0, [x1]", annotation: "self.innerVisits += 1",
+                facts: .init(statement: .assignment("self.innerVisits += 1"))),
             loopSwitchTest(0x254, to: 0x270),
         ], successors: [0x270, 0x260]),
         BasicBlock(startAddress: 0x260, instructions: [loopSwitchBranch(0x260, to: 0x250)], successors: [0x250]),

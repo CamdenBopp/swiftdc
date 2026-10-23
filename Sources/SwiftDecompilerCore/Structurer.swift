@@ -446,7 +446,7 @@ struct ControlFlowStructure {
             // `while (true) { … }` with the test inside.
             if let info = loops[current], loop?.header != current {
                 if gotoTargets.contains(current) { lines.append("\(pad)loc_\(hex(blocks[current].startAddress)):") }
-                for declaration in Self.bakedLoopInitialization(blocks[current].instructions.last?.annotation) {
+                for declaration in Self.bakedLoopInitialization(blocks[current].instructions.last) {
                     lines.append("\(pad)\(declaration)")
                 }
                 let context = LoopContext(
@@ -742,7 +742,7 @@ struct ControlFlowStructure {
         // the text back-substitution below can only reach raw registers. Only
         // clean scalar comparisons are baked; message-send/boolean tests are left
         // to the text path, which inlines them more readably.
-        if let baked = Self.bakedCondition(terminator.annotation) {
+        if let baked = Self.bakedCondition(terminator) {
             return (baked, consumed)
         }
         // A test of the Swift error register (x21) against zero is an error check:
@@ -908,10 +908,7 @@ struct ControlFlowStructure {
             if instruction.controlFlow == .call,
                let number = Int(register.dropFirst()), number <= 17 {
                 if register == "x0" {
-                    if instruction.annotation?.components(separatedBy: "  ")
-                        .contains(where: { $0.hasPrefix("self = ") }) == true {
-                        return "self"
-                    }
+                    if case .selfInitialization? = instruction.statement { return "self" }
                     // A result bound because it has several uses is tested by
                     // its name; inlining the call would show it run again.
                     if let binding = instruction.binding { return binding.name }
@@ -949,16 +946,7 @@ struct ControlFlowStructure {
             }
             let (mnemonic, ops) = Self.decode(instruction.text)
             guard let dest = ops.first, Self.canonicalRegister(dest) == register else { continue }
-            if let annotation = instruction.annotation,
-               let field = annotation.components(separatedBy: "  ")
-                .map({ $0.trimmingCharacters(in: .whitespaces) })
-                .first(where: {
-                    ($0.hasPrefix("self.") || $0.hasPrefix("self->"))
-                        && ![" = ", " += ", " -= "].contains(where: $0.contains)
-                        && !$0.hasPrefix("&")
-                }) {
-                return field
-            }
+            if let field = instruction.fieldRead { return field }
             switch mnemonic {
             case "and" where ops.count >= 3: return "(\(ops[1]) & \(Self.cleanImmediate(ops[2])))"
             case "orr" where ops.count >= 3: return "(\(ops[1]) | \(Self.cleanImmediate(ops[2])))"
@@ -1102,47 +1090,29 @@ struct ControlFlowStructure {
     /// The comparison the enrichment baked for this branch (`cond: (a >= b)`),
     /// with its outer parentheses removed so it matches the text path's spacing
     /// (which `inverted` and the `if (…)` wrapper both assume). Nil when absent.
-    private static func bakedCondition(_ annotation: String?) -> String? {
-        guard let annotation else { return nil }
-        for note in annotation.components(separatedBy: "  ") {
-            let trimmed = note.trimmingCharacters(in: .whitespaces)
-            guard trimmed.hasPrefix("cond: ") else { continue }
-            return unwrapOuterParentheses(String(trimmed.dropFirst("cond: ".count)))
-        }
-        return nil
+    private static func bakedCondition(_ branch: Instruction?) -> String? {
+        branch?.condition.map(unwrapOuterParentheses)
     }
 
     /// Updates belong to the proven back-edge, including explicit continues.
     /// Emitting only at a rotated body's end skipped them in nonrotated loops.
     private func loopBackStatements(header: Int, pad: String) -> [String] {
-        let annotation = blocks[header].instructions.last?.annotation
-        let named = Self.bakedCondition(annotation) != nil || !Self.bakedLoopInitialization(annotation).isEmpty
-        let updates = named ? Self.bakedLoopUpdate(annotation).map { "\(pad)\($0)" } : []
+        let branch = blocks[header].instructions.last
+        let named = Self.bakedCondition(branch) != nil || !Self.bakedLoopInitialization(branch).isEmpty
+        let updates = named ? Self.bakedLoopUpdate(branch).map { "\(pad)\($0)" } : []
         return updates + ["\(pad)continue"]
     }
 
     /// The loop induction body updates (`total += i`, `i += 1`), in order, the
     /// enrichment baked on a loop header's branch — or an empty array.
-    private static func bakedLoopUpdate(_ annotation: String?) -> [String] {
-        guard let annotation else { return [] }
-        for note in annotation.components(separatedBy: "  ") {
-            let trimmed = note.trimmingCharacters(in: .whitespaces)
-            guard trimmed.hasPrefix("loop-update: ") else { continue }
-            return String(trimmed.dropFirst("loop-update: ".count))
-                .components(separatedBy: " | ").map { $0.trimmingCharacters(in: .whitespaces) }
-        }
-        return []
+    private static func bakedLoopUpdate(_ branch: Instruction?) -> [String] {
+        branch?.loopUpdates ?? []
     }
 
-    private static func bakedLoopInitialization(_ annotation: String?) -> [String] {
-        guard let annotation else { return [] }
-        for note in annotation.components(separatedBy: "  ") {
-            let trimmed = note.trimmingCharacters(in: .whitespaces)
-            guard trimmed.hasPrefix("loop-init: ") else { continue }
-            return String(trimmed.dropFirst("loop-init: ".count))
-                .components(separatedBy: " | ").map { $0.trimmingCharacters(in: .whitespaces) }
-        }
-        return []
+    /// The induction variables' declarations (`var i = 0`) the enrichment
+    /// baked on a loop header's branch, or an empty array.
+    private static func bakedLoopInitialization(_ branch: Instruction?) -> [String] {
+        branch?.loopInitializations ?? []
     }
 
     /// Strip a single balanced outer parenthesis pair, but only when the leading

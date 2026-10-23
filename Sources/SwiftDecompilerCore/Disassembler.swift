@@ -87,34 +87,134 @@ public struct Instruction: Sendable {
     /// A note appended to the annotation later cannot become the callee.
     /// Nil for anything else and for an unnamed target.
     public let callee: String?
-    /// The facts below, boxed: nearly every instruction has none, and those
-    /// pay one pointer for all of them.
-    private let statementFacts: StatementFacts?
+    /// What enrichment proved about this instruction, boxed: nearly every
+    /// instruction has none, and those pay one pointer for all of them.
+    private let factBox: FactBox?
 
-    /// For an exit: what enrichment proved it does. Set where the matching
-    /// note is appended (`return …`, `throw …`, `swift-exit=…`), kept through
-    /// note-only rebuilds, and the only thing renderers read; the note is
-    /// for display. Nil for anything that is not an exit, and for an
-    /// instruction built by hand without one.
-    public var exit: Exit? { statementFacts?.exit }
-    /// For a call whose result is named once rather than spelled at every
-    /// use: the name and the call as it is spelled (`let r0 = …`). The
-    /// annotation carries the same fact as that note.
-    public var binding: Binding? { statementFacts?.binding }
-    /// A path throws right after this instruction: a throw merged into the
-    /// shared epilogue, so the statement is followed by `throw ?`. The
-    /// annotation carries the same fact as `then throw ?`.
-    public var thenThrows: Bool { statementFacts?.thenThrows ?? false }
+    /// What enrichment proved about this instruction beside its callee.
+    /// Each fact is set where its note is appended, kept through every
+    /// rebuild that only adds notes (`facts: insn.facts`), and the only
+    /// thing renderers read: the annotation spells the same facts for
+    /// display, and a note found by splitting it can be a piece of a
+    /// rendered string literal. Empty for an instruction built by hand
+    /// without any.
+    public var facts: Facts { factBox?.facts ?? Facts() }
+    /// `facts.exit`.
+    public var exit: Exit? { factBox?.facts.exit }
+    /// `facts.binding`.
+    public var binding: Binding? { factBox?.facts.binding }
+    /// `facts.thenThrows`.
+    public var thenThrows: Bool { factBox?.facts.thenThrows ?? false }
+    /// `facts.statement`.
+    public var statement: Statement? { factBox?.facts.statement }
+    /// `facts.awaitBinding`.
+    public var awaitBinding: String? { factBox?.facts.awaitBinding }
+    /// `facts.indirectJumpTarget`.
+    public var indirectJumpTarget: String? { factBox?.facts.indirectJumpTarget }
+    /// `facts.condition`.
+    public var condition: String? { factBox?.facts.condition }
+    /// `facts.loopUpdates`.
+    public var loopUpdates: [String] { factBox?.facts.loopUpdates ?? [] }
+    /// `facts.loopInitializations`.
+    public var loopInitializations: [String] { factBox?.facts.loopInitializations ?? [] }
+    /// `facts.fieldRead`.
+    public var fieldRead: String? { factBox?.facts.fieldRead }
+    /// `facts.isSelfDispatch`.
+    public var isSelfDispatch: Bool { factBox?.facts.isSelfDispatch ?? false }
 
-    private final class StatementFacts: Sendable {
-        let exit: Exit?
-        let binding: Binding?
-        let thenThrows: Bool
+    /// What enrichment proved about an instruction. Each fact names the
+    /// note that spells it.
+    public struct Facts: Sendable, Equatable {
+        /// For an exit: what it does (`return …`, `throw …`,
+        /// `swift-exit=…`). Nil for anything that is not an exit.
+        public var exit: Exit?
+        /// For a call whose result is named once rather than spelled at
+        /// every use: the name and the call as it is spelled (`let r0 = …`).
+        public var binding: Binding?
+        /// A path throws right after this instruction: a throw merged into
+        /// the shared epilogue, so the statement is followed by `throw ?`
+        /// (`then throw ?`).
+        public var thenThrows: Bool
+        /// A statement this instruction performs that is not a call, an exit
+        /// or a binding: an assignment to self's storage, `self = …`, a
+        /// yield or an executor hop. The note is the statement.
+        public var statement: Statement?
+        /// For a suspension's tail call (`await=…`): the name its result is
+        /// read under in the resume funclet, empty when that is not proven.
+        /// Nil for a call that is not a suspension.
+        public var awaitBinding: String?
+        /// For a `br` through a register to no known function (`jump=…`):
+        /// the rendered target, `?` when not proven.
+        public var indirectJumpTarget: String?
+        /// For a conditional branch whose comparison the tracer rebuilt with
+        /// real operands: that comparison, rendered (`cond: …`).
+        public var condition: String?
+        /// For a loop header's branch: the proven induction updates, in the
+        /// order the back edge runs them (`loop-update: a | b`).
+        public var loopUpdates: [String]
+        /// For a loop header's branch: the induction variables' declarations
+        /// (`loop-init: a | b`).
+        public var loopInitializations: [String]
+        /// For a read of a field of self: the field's path (`self.x`).
+        public var fieldRead: String?
+        /// For a call through self's own vtable slot (`dispatch=self`): an
+        /// override in a subclass runs instead when self is one.
+        public var isSelfDispatch: Bool
 
-        init(exit: Exit?, binding: Binding?, thenThrows: Bool) {
+        public init(
+            exit: Exit? = nil,
+            binding: Binding? = nil,
+            thenThrows: Bool = false,
+            statement: Statement? = nil,
+            awaitBinding: String? = nil,
+            indirectJumpTarget: String? = nil,
+            condition: String? = nil,
+            loopUpdates: [String] = [],
+            loopInitializations: [String] = [],
+            fieldRead: String? = nil,
+            isSelfDispatch: Bool = false
+        ) {
             self.exit = exit
             self.binding = binding
             self.thenThrows = thenThrows
+            self.statement = statement
+            self.awaitBinding = awaitBinding
+            self.indirectJumpTarget = indirectJumpTarget
+            self.condition = condition
+            self.loopUpdates = loopUpdates
+            self.loopInitializations = loopInitializations
+            self.fieldRead = fieldRead
+            self.isSelfDispatch = isSelfDispatch
+        }
+    }
+
+    private final class FactBox: Sendable {
+        let facts: Facts
+        init(_ facts: Facts) { self.facts = facts }
+    }
+
+    /// A statement an instruction performs that is not a call.
+    public enum Statement: Sendable, Equatable {
+        /// An assignment to self's storage: a store to a field (`self.x = v`,
+        /// `self.x += v`, `self->_x = v`, `(self->_a, self->_b) = (…)`), a
+        /// call to one of self's own setters, or an Objective-C property
+        /// helper's ivar write. Spelled whole.
+        case assignment(String)
+        /// An Objective-C initializer's `self = …`: the call to super.
+        case selfInitialization(String)
+        /// A `_modify` accessor's yield of its storage (`&self.x`).
+        case yield(String)
+        /// An executor hop, naming the executor (`MainActor`, `generic`, `?`).
+        case executorHop(String)
+
+        /// The annotation note, and the statement.
+        public var text: String {
+            switch self {
+            case .assignment(let assignment): assignment
+            case .selfInitialization(let call): "self = \(call)"
+            case .yield(let storage): "yield \(storage)"
+            case .executorHop(let executor): "await hop_to_executor(\(executor))"
+            }
         }
     }
 
@@ -194,9 +294,7 @@ public struct Instruction: Sendable {
         detail: StructuredInsn? = nil,
         calleeDisplayName: String? = nil,
         callee: CalleeFact = .derived,
-        exit: Exit? = nil,
-        binding: Binding? = nil,
-        thenThrows: Bool = false
+        facts: Facts = Facts()
     ) {
         self.address = address
         self.text = text
@@ -209,8 +307,7 @@ public struct Instruction: Sendable {
         self.sourceType = sourceType
         self.detail = detail
         self.calleeDisplayName = calleeDisplayName
-        self.statementFacts = exit == nil && binding == nil && !thenThrows
-            ? nil : StatementFacts(exit: exit, binding: binding, thenThrows: thenThrows)
+        self.factBox = facts == Facts() ? nil : FactBox(facts)
         switch callee {
         case .kept(let name):
             self.callee = name
@@ -2063,14 +2160,14 @@ public struct Disassembler: Sendable {
         /// Resolve a `blr` target to a (name, address). A class vtable dispatch is
         /// resolved through the class's metadata layout; anything else through the
         /// generic indirect-target resolver.
-        func resolve(_ value: AbstractValue) -> (address: UInt64?, name: String)? {
+        func resolve(_ value: AbstractValue) -> (address: UInt64?, name: String, isSelfDispatch: Bool)? {
             if case .selfVTableMethod(let offset) = value,
                let selfTypeName,
                let address = vtableIndex.methodAddress(type: selfTypeName, offset: offset),
                let name = resolver.name(at: address, ownedBy: selfTypeName) {
-                return (address, name + DisassembledFunction.selfDispatchMarker)
+                return (address, name, true)
             }
-            return resolver.indirectCallTarget(for: value)
+            return resolver.indirectCallTarget(for: value).map { ($0.address, $0.name, false) }
         }
         let ownAddresses = Set(function.instructions.map(\.address))
         let instructions = function.instructions.map { insn -> Instruction in
@@ -2079,8 +2176,8 @@ public struct Disassembler: Sendable {
                   let value = targets[insn.address],
                   let resolved = resolve(value)
             else { return insn }
-            let annotation = insn.annotation.map { "\($0)  → \(resolved.name)" }
-                ?? "→ \(resolved.name)"
+            let named = resolved.name + (resolved.isSelfDispatch ? DisassembledFunction.selfDispatchMarker : "")
+            let annotation = insn.annotation.map { "\($0)  → \(named)" } ?? "→ \(named)"
             let parsed = DisassembledFunction.parsedCalleeName(text: insn.text, annotation: annotation)
             // A `br` resolved to an address inside this function is a tail
             // call that happens to land here (`return countdown(n - 1)`
@@ -2088,12 +2185,14 @@ public struct Disassembler: Sendable {
             // as a branch target it became an edge, and the call a loop.
             let target = insn.controlFlow == .branch && resolved.address.map(ownAddresses.contains) == true
                 ? nil : resolved.address
+            var facts = insn.facts
+            facts.isSelfDispatch = resolved.isSelfDispatch
             return Instruction(
                 address: insn.address, text: insn.text, annotation: annotation,
                 controlFlow: insn.controlFlow, branchTarget: target,
                 callArguments: insn.callArguments, callSelf: insn.callSelf,
                 resultConsumed: insn.resultConsumed, sourceType: insn.sourceType,
-                detail: insn.detail, callee: .kept(parsed == resolved.name ? resolved.name : parsed)
+                detail: insn.detail, callee: .kept(parsed == named ? named : parsed), facts: facts
             )
         }
         return function.replacingInstructions(instructions)
@@ -3570,7 +3669,7 @@ public struct Disassembler: Sendable {
                 Probe.record(.jumpTable, at: address, ["cases": .int(targets.count)])
             }
         }
-        let selfDispatchSites = Set(function.instructions.filter(DisassembledFunction.isSelfDispatch).map(\.address))
+        let selfDispatchSites = Set(function.instructions.filter(\.isSelfDispatch).map(\.address))
         /// A call through self's own vtable slot is `self.member(…)`: the named
         /// implementation is only the one that runs when self is exactly its class.
         func displayCallee(_ callee: String, at site: UInt64) -> String {
@@ -3652,15 +3751,15 @@ public struct Disassembler: Sendable {
             let instructions = function.instructions.map { insn in
                 guard insn.controlFlow == .return else { return insn }
                 Probe.record(.returnOutcome, at: insn.address, ["status": .label("unknown"), "type": .name(type)])
-                let exit = Instruction.Exit.normal("?")
+                var facts = insn.facts
+                facts.exit = .normal("?")
                 return Instruction(
                     address: insn.address, text: insn.text,
-                    annotation: [insn.annotation, exit.note].compactMap { $0 }.joined(separator: "  "),
+                    annotation: [insn.annotation, facts.exit?.note].compactMap { $0 }.joined(separator: "  "),
                     controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
                     callArguments: insn.callArguments, callSelf: insn.callSelf,
                     resultConsumed: insn.resultConsumed, sourceType: insn.sourceType, detail: insn.detail,
-                    calleeDisplayName: insn.calleeDisplayName, callee: .kept(insn.callee),
-                    exit: exit, binding: insn.binding, thenThrows: insn.thenThrows)
+                    calleeDisplayName: insn.calleeDisplayName, callee: .kept(insn.callee), facts: facts)
             }
             return function.replacingInstructions(instructions)
         }
@@ -5425,9 +5524,17 @@ public struct Disassembler: Sendable {
             // A `return …` or `throw …` note, not a throwing function's verdict.
             var notedReturnOrThrow: Bool { exits.contains { $0 != .unclassified && $0 != .normal(nil) } }
             var notedThrow: Bool { exits.contains { if case .throw = $0 { true } else { false } } }
-            var yields = false
-            var binding: Instruction.Binding?
-            var thenThrows = false
+            // Each statement is a note and a fact, appended in step; the
+            // instruction carries the first, as the notes' order gave it.
+            var statements: [Instruction.Statement] = []
+            func noteStatement(_ statement: Instruction.Statement) {
+                statements.append(statement)
+                sourceNotes.append(statement.text)
+            }
+            var yields: Bool { statements.contains { if case .yield = $0 { true } else { false } } }
+            // Every other fact is set beside its note. A fact the passes
+            // before this one proved (a self dispatch) is kept.
+            var facts = insn.facts
 
             // A `self` field access: the differentiator. `ldp x19, x20, [x20,
             // #0x20]` inside Dog.breed.getter is a 16-byte read of self.breed.
@@ -5436,11 +5543,19 @@ public struct Disassembler: Sendable {
                     sourceType = field.type
                     let name = field.names.count == 1
                         ? field.names[0] : "{\(field.names.joined(separator: ", "))}"
-                    sourceNotes.append(access.isAddressOf
-                        ? "&\(fieldPath(name))"
-                        : (access.isWrite
-                            ? fieldWrite(access, field: field)
-                            : fieldPath(name)))
+                    if access.isAddressOf {
+                        sourceNotes.append("&\(fieldPath(name))")
+                    } else if access.isWrite {
+                        let write = fieldWrite(access, field: field)
+                        if let statement = Self.fieldWriteStatement(write, objcFieldSyntax: objcFieldSyntax) {
+                            noteStatement(statement)
+                        } else {
+                            sourceNotes.append(write)
+                        }
+                    } else {
+                        facts.fieldRead = fieldPath(name)
+                        sourceNotes.append(fieldPath(name))
+                    }
                 }
             }
 
@@ -5474,7 +5589,7 @@ public struct Disassembler: Sendable {
             // result) and only return types delivered in one value register, so a
             // stale register is never printed as a fabricated return.
             if mergedThrowEnds.contains(insn.address) {
-                thenThrows = true
+                facts.thenThrows = true
                 sourceNotes.append(DisassembledFunction.thenThrowNote)
             }
             if throwExits.contains(insn.address) {
@@ -5552,8 +5667,9 @@ public struct Disassembler: Sendable {
                         }
                         return "?"
                     }()
-                    sourceNotes.append("await hop_to_executor(\(executor))")
+                    noteStatement(.executorHop(executor))
                 case .awaitedCall(let binding):
+                    facts.awaitBinding = binding ?? ""
                     sourceNotes.append("await=\(binding ?? "")")
                 }
             }
@@ -5571,6 +5687,7 @@ public struct Disassembler: Sendable {
                 // function-pointer argument renders `indirect_jump(arg2)`).
                 let target = analysis.indirectControlFlowTargets[insn.address]
                     .map(sanitizeValue).map { renderValue($0, depth: 0) } ?? "?"
+                facts.indirectJumpTarget = target
                 sourceNotes.append(DisassembledFunction.indirectJumpNote + target)
             }
 
@@ -5589,8 +5706,7 @@ public struct Disassembler: Sendable {
                 }
                 if let offset, let field = fieldInfo(at: offset, bytes: 1),
                    field.names == [modifyProperty] {
-                    yields = true
-                    sourceNotes.append("yield &\(fieldPath(modifyProperty))")
+                    noteStatement(.yield("&\(fieldPath(modifyProperty))"))
                 }
             }
 
@@ -5607,24 +5723,28 @@ public struct Disassembler: Sendable {
                 collectCallResults(in: condition, into: &callResults)
                 if condition != .unknown, callResults.isEmpty,
                    !Self.isTruthinessTest(condition) {
-                    sourceNotes.append("cond: \(renderValue(condition, depth: 0))")
+                    let rendered = renderValue(condition, depth: 0)
+                    facts.condition = rendered
+                    sourceNotes.append("cond: \(rendered)")
                 }
             }
             // Proven loop induction body updates (`total += i` | `i += 1`) on the
             // loop header's branch — the structurer emits them on its back-edge.
             // Joined with `|` (no update contains one).
             if let ordered = analysis.loopUpdates[insn.address], !ordered.isEmpty {
+                facts.loopUpdates = ordered
                 sourceNotes.append("loop-update: \(ordered.joined(separator: " | "))")
             }
             if let bindings = analysis.loopInitializations[insn.address], !bindings.isEmpty {
                 let declarations = bindings.map { "var \($0.name) = \(Self.renderImmediate($0.value))" }
+                facts.loopInitializations = declarations
                 sourceNotes.append("loop-init: \(declarations.joined(separator: " | "))")
             }
 
             if insn.controlFlow == .branch, let callee,
                let site = sites[insn.address],
                let helper = objcHelperStatement(callee: callee, site: site) {
-                sourceNotes.append(helper)
+                noteStatement(.assignment(helper))
             }
 
             // A vtable dispatch to one of `self`'s own setters is the assignment
@@ -5636,7 +5756,7 @@ public struct Disassembler: Sendable {
                let value = sites[insn.address]?.arguments.first {
                 let rendered = renderValue(sanitizeValue(value), depth: 0)
                 if rendered != "?" {
-                    sourceNotes.append("self.\(access.property) = \(rendered)")
+                    noteStatement(.assignment("self.\(access.property) = \(rendered)"))
                 }
             }
 
@@ -5644,7 +5764,7 @@ public struct Disassembler: Sendable {
                insn.controlFlow == .call,
                let callee, callee.hasPrefix("objc_msgSendSuper"),
                let values = argumentsByAddress[insn.address] {
-                sourceNotes.append("self = \(callExpression(callee: callee, values: values))")
+                noteStatement(.selfInitialization(callExpression(callee: callee, values: values)))
             }
 
             // The one place a call bound for its field reads is spelled out.
@@ -5662,7 +5782,7 @@ public struct Disassembler: Sendable {
                         selfText: selfValueBySite[insn.address].map { renderValue($0, depth: 0) })
                 }
                 let bound = Instruction.Binding(name: name, expression: expression)
-                binding = bound
+                facts.binding = bound
                 sourceNotes.append(bound.statement)
             }
 
@@ -5688,7 +5808,8 @@ public struct Disassembler: Sendable {
                !mergedThrowExits.contains(insn.address), !notedReturnOrThrow, !yields {
                 noteExit(.normal(nil))
             }
-            let exitFact = Instruction.Exit.carried(from: exits)
+            facts.exit = Instruction.Exit.carried(from: exits)
+            facts.statement = statements.first
 
             if Probe.isActive, isReturn(insn) || scalarTailReturns.contains(insn.address) {
                 let renderedReturn = exits.lazy.compactMap { exit -> String? in
@@ -5728,7 +5849,7 @@ public struct Disassembler: Sendable {
                 controlFlow: flow, branchTarget: insn.branchTarget,
                 callArguments: insn.callArguments, callSelf: insn.callSelf,
                 resultConsumed: insn.resultConsumed, sourceType: insn.sourceType, detail: insn.detail,
-                callee: .kept(insn.callee), exit: insn.exit, binding: insn.binding, thenThrows: insn.thenThrows
+                callee: .kept(insn.callee), facts: insn.facts
             )
             guard let site = sites[insn.address] else {
                 guard !sourceNotes.isEmpty || consumedCallResults.contains(insn.address) else { return untouched }
@@ -5738,8 +5859,7 @@ public struct Disassembler: Sendable {
                     controlFlow: flow, branchTarget: insn.branchTarget,
                     callArguments: insn.callArguments, callSelf: insn.callSelf,
                     resultConsumed: consumedCallResults.contains(insn.address),
-                    sourceType: sourceType, detail: insn.detail, callee: .kept(insn.callee),
-                    exit: exitFact, binding: binding, thenThrows: thenThrows
+                    sourceType: sourceType, detail: insn.detail, callee: .kept(insn.callee), facts: facts
                 )
             }
 
@@ -5767,10 +5887,18 @@ public struct Disassembler: Sendable {
                 callSelf: selfText, resultConsumed: consumedCallResults.contains(insn.address),
                 sourceType: sourceType, detail: insn.detail,
                 calleeDisplayName: callee.map { demangleCache.presentation(of: $0) },
-                callee: .kept(insn.callee), exit: exitFact, binding: binding, thenThrows: thenThrows
+                callee: .kept(insn.callee), facts: facts
             )
         }
         return function.replacingInstructions(instructions)
+    }
+
+    /// The statement a field write makes: every write but a tuple of Swift
+    /// fields (`(self.a, self.b) = …`), which is noted and has never been
+    /// printed (OPEN in the readiness doc). Objective-C's tuple
+    /// (`(self->_a, self->_b) = …`) is a statement.
+    static func fieldWriteStatement(_ write: String, objcFieldSyntax: Bool) -> Instruction.Statement? {
+        write.hasPrefix("(") && !objcFieldSyntax ? nil : .assignment(write)
     }
 
     /// `adrp x8, 12 ; 0x10000c000` (llvm-objdump) or `adrp x8, 0x10000c000`

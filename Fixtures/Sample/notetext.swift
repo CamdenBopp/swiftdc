@@ -46,3 +46,40 @@ public func readLabelled() -> Int {
     let w = wide("Name  Value")
     return w.a &+ w.e
 }
+
+// Literals that read as the statement notes the pseudo view also scanned
+// for, and as the markers on a call: a field write, an ivar write, a tuple
+// of ivar writes, `self = …`, a yield, an executor hop, `await=` and
+// `dispatch=self`. True behaviour: each calls `emit` once with its literal.
+public func emitFieldWriteText() { emit("a  self.x = 1") }
+public func emitIvarWriteText() { emit("a  self->x -= 1") }
+public func emitTupleWriteText() { emit("a  (self->a, b) = (1, 2)") }
+public func emitSelfInitText() { emit("a  self = b") }
+public func emitYieldText() { emit("a  yield &self.x") }
+public func emitHopText() { emit("a  await hop_to_executor(MainActor)") }
+public func emitAwaitText() { emit("a  await=r9") }
+public func emitDispatchText() { emit("a  dispatch=self") }
+
+// A real field write whose value spells a literal with a double space:
+// its note was cut there. True behaviour: remeasure() stores
+// measure("ok  done") to self.count.
+public struct Tally {
+    public var count = 0
+    public mutating func remeasure() { count = measure("ok  done") }
+}
+
+@inline(never) public func handler(_ name: String) -> @convention(c) () -> Void {
+    name.isEmpty ? { sink = "e" } : { sink = "f" }
+}
+
+// `bl handler; br x0`: a tail call through the pointer `handler` returned.
+// The jump note spells the target with the literal and was cut at its
+// double space. True behaviour: calls handler("a  b"), then jumps to the
+// pointer it returned.
+public func runHandler() { handler("a  b")() }
+
+// `cmp x0, x8; b.eq` against a literal's address: the baked condition
+// holds the literal. True behaviour: emit("y") iff p is that address.
+public func isLabel(_ p: UnsafeRawPointer) {
+    if p == UnsafeRawPointer(("a  b" as StaticString).utf8Start) { emit("y") }
+}

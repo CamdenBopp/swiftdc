@@ -3338,7 +3338,7 @@ if a test was observed to fail without the fix.
   the executor hop and `await=` in a literal: a call `emit("a  self.x = 1")`
   renders `self.x = 1")`, and `emit("a  await=r9")` renders
   `let r9") = await emit(…)`. Moving those notes to facts the same way
-  closes it.
+  closes it. *FIXED 2026-10-22, below.*
 
 ## 2026-10-22: Objective-C stack arguments
 
@@ -3462,3 +3462,57 @@ if a test was observed to fail without the fix.
   `aLoopBodyPassSeedsFromTheConvergedHeaderIfPresent`). The loops now
   render without those claims. Blast radius: no other fixture view and no
   line of Clarc, GoodLinks, Terminal, TextEdit or Chess changes.
+
+## 2026-10-22: every note a renderer reads as a typed fact (IR step 1)
+
+- **FIXED (soundness): a literal's text could become a statement, a call
+  marker or a cut condition.** The pseudo statement still split the
+  annotation at every two spaces, literals included, and took the first
+  piece that read as a field write, `self = …`, a yield or an executor
+  hop; `await=` and `jump=` were found the same way, `dispatch=self` by a
+  search of the whole annotation, and the structurer split for `cond:`,
+  the loop notes, a field read and `self = `. Measured on
+  `notetext.swift` (-O) against the pre-change release build: each
+  `emit("a  <note>")` printed the piece (`self.x = 1")`,
+  `await hop_to_executor(MainActor)")`, …) in place of its call,
+  `emit("a  await=r9")` printed `let r9") = await NoteText.emit(…)`,
+  `emit("a  dispatch=self")` printed `self.emit(…)` and `xrefs` called
+  its edge a dispatch through self; a field write
+  `self.count = NoteText.measure("ok`, a jump
+  `indirect_jump(NoteText.handler("a)` and a condition
+  `if ((arg0 == "a) {` were cut at their literal's double space. On an
+  earlier build of the fixture the literal's own `add` carried it in a
+  `literal pool for:` note and printed it a second time.
+  `Instruction.facts` now carries all of them beside their notes
+  (`statement`, `awaitBinding`, `indirectJumpTarget`, `condition`,
+  `loopUpdates`, `loopInitializations`, `fieldRead`, `isSelfDispatch`,
+  with the exit, binding and `thenThrows` of 2026-10-21), and no renderer
+  reads the annotation for a note. Blast radius: every other fixture view
+  (structured, pseudo, listing, JSON) is byte-identical, and so are Clarc
+  `--pseudo`, `--structured`, the listing and `--json`, and GoodLinks
+  `--pseudo`, `--structured` and `xrefs --unreferenced` (text and JSON):
+  neither app has one of these shapes.
+  Release A/B against 39a4aa5, three alternating rounds, instructions
+  retired median: Clarc `--pseudo` 293.5 G against 286.0 G (-2.6%),
+  peak footprint 68.5 MB against 68.0 MB; GoodLinks `--pseudo` 1223.3 G
+  against 1210.4 G (-1.1%), `--structured` 1445.7 G against 1360.1 G
+  (-5.9%, peak 248.2 MB against 237.7 MB): the structurer no longer
+  splits annotations. GoodLinks `xrefs --unreferenced` shows no measurable
+  change: two A/B sets gave +1.6% and -1.3%, and one binary's rounds span
+  1121 G to 1158 G. Reading emptiness field by field instead of comparing
+  with `Facts()` measured 1127.2 G against 1121.9 G and was not kept.
+- **OPEN (completeness): a store into two Swift fields at once is noted
+  but never printed.** `stp x0, x1, [x20]` in a mutating
+  `set(_ x: Int, _ y: Int) { a = x; b = y }` (-O) is noted
+  `(self.a, self.b) = (arg0, arg1)`, and `--pseudo` says
+  `// no non-runtime calls (leaf / pure computation)`. The pseudo
+  statement has only ever printed the Objective-C form of the tuple
+  (`(self->_a, self->_b) = …`); the facts keep that view
+  (`Disassembler.fieldWriteStatement`). Printing it is the fix, with a
+  fixture and a blast-radius check of its own.
+- **OPEN (soundness): a String stored to a field renders as one word.**
+  `name = "a  b"` in a final class (-O, `stp x8, x9, [x20, #0x10]`) is
+  noted and printed `self.name = 0x62202061`: the field write renders the
+  first register of the two-word String as an integer. It should be the
+  literal, or `?`.
+
