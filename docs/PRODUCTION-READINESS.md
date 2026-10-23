@@ -3629,3 +3629,60 @@ if a test was observed to fail without the fix.
   writes x21 changes it only for its direct callers' summaries. Sound
   while compiled code saves x21 in every function whose outlined code
   writes it; a chain of fragments writing x21 would go unseen.
+
+## 2026-10-23: struct arguments of typed Objective-C sends
+
+- **FIXED (completeness): a typed send with a struct argument rendered
+  every argument `?`.** `ObjCArgumentABI.locations` declined any signature
+  with a struct in it, so `[self place:p flags:7 stamp:2.5]` (a CGPoint
+  first) read `[self place:? flags:? stamp:?]`. Struct arguments are now
+  laid out the way Apple's clang lowers them, checked against its output
+  for each shape: an HFA (one to four members of one floating type,
+  nested structs flattened, so a CGRect is four doubles) takes one v
+  register per member while enough remain; any other struct of 16 bytes
+  or less takes one or two x registers; a larger one is passed as the
+  address of a copy, like a pointer. A struct that does not fit goes on
+  the stack (an HFA at its member alignment, any other struct eight-byte
+  aligned in whole words) and closes its bank: no later floating
+  argument takes a v register after an HFA spills, and no later argument
+  takes an x register after a small struct spills. The struct itself
+  still renders `?`. Every stack argument's start, struct ones included,
+  bounds a merged store (`stackArgumentStarts`), so `count:7` followed by
+  a one-float HFA at sp+4, stored together at -O as one eight-byte
+  `str`, reads `count:?`. Unions, arrays, bitfields, long double,
+  128-bit, complex and vector members, opaque or empty structs and
+  quoted field names still decline the whole layout. A method that takes
+  a struct still seeds none of its own arguments
+  (`objcArgumentLocations`): with them seeded, the untyped layout below
+  named pass-through values one argument off (Terminal's `[super
+  initWithContentRect:arg1 styleMask:arg2 backing:arg3 defer:?]`, Chess
+  the same). Fixture `objc_aggregate_args.m` (-O0 and -O2) and
+  `keyEventLayoutPlacesEveryArgumentAfterTheLocation` (NSEvent's
+  `keyEventWithType:…`, CGPoint in d0-d1, the BOOL and key code packed
+  at sp+0 and sp+2). Blast radius: no other fixture view, listing or
+  JSON changes. `--pseudo`: Terminal 98 changed hunks, every one a typed
+  send to self or a typed ivar gaining arguments after a struct
+  (`[self drawAttributedStringsToScreen:? inRect:? selectedTextRanges:0
+  selectionColor:0]`, `[self ttSendMouseButton:0 atPoint:?
+  modifierFlags:[arg0 modifierFlags]]`), plus 101 lines that only
+  renumber `let rN` because a result is now used as an argument; TextEdit
+  3 sends (`[self textViewAtIndex:0 documentSize:?]`); Chess none.
+- **OPEN (soundness): an untyped send of a selector that takes a struct
+  is laid out by colon position.** `[u span:NSMakeRange(3, 4) count:5]`
+  to a receiver of unknown class renders `[? span:3 count:4]`, and
+  `[u place:p flags:7]` with p passed through in d0-d1 renders `[?
+  place:7 flags:?]` at -O2; Terminal's and Chess's forwarding `[super
+  initWithContentRect:…]` read `initWithContentRect:0` (the style mask).
+  `selectorMayUseFloatingArguments` checks only scalar `f`/`d`/`D`
+  parameters; any in-image implementation taking a struct should decline
+  the same way. Once it does, the entry seeding of struct-taking methods
+  can be turned on (drop the guard in `objcArgumentLocations`; the
+  fixture's `place:flags:stamp:` and `frame:tag:` rows then read `arg1`,
+  `arg2`). SDK-only selectors still need the dyld-cache signature source.
+- **OPEN (soundness, latent): `ObjCTypeLayoutDecoder` truncates a struct
+  at a pointer to an empty struct.** `{S=^{Opaque=}q}` parses the pointee
+  through `parseAggregate`, which returns without consuming the `}` of
+  `{Opaque=}`, so the outer struct ends there and measures 8 bytes, not
+  16. The argument layout no longer depends on it (struct sizes come from
+  their flattened members); ivar field maps still do. Its `l`/`L` are
+  also 8 bytes, where the runtime's `NSGetSizeAndAlignment` says 4.

@@ -31,7 +31,9 @@ import Testing
 @Test func objcArgumentABIConservativeParsing() {
     #expect(ObjCArgumentABI.locations(encoding: "v32@0:8r^v16@\"NSObject\"24", argumentCount: 2)
         == ["x2": 0, "x3": 1])
-    #expect(ObjCArgumentABI.locations(encoding: "v@:{Pair=dd}@", argumentCount: 2).isEmpty)
+    // An HFA takes v0-v1 and has no single location; the object is in x2.
+    #expect(ObjCArgumentABI.locations(encoding: "v@:{Pair=dd}@", argumentCount: 2) == ["x2": 1])
+    #expect(ObjCArgumentABI.locations(encoding: "v@:(Pair=dd)@", argumentCount: 2).isEmpty)
     #expect(ObjCArgumentABI.locations(encoding: "v@:^", argumentCount: 1).isEmpty)
     #expect(ObjCArgumentABI.locations(encoding: "v@:@", argumentCount: 2).isEmpty)
     #expect(ObjCArgumentABI.locations(encoding: "v@:@\"Unclosed", argumentCount: 1).isEmpty)

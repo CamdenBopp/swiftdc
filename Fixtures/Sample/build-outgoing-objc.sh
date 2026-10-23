@@ -10,3 +10,7 @@ xcrun clang -fobjc-arc -O2 -dynamiclib -framework Foundation objc_packed_stack.m
 # Untyped sends that pass a double: no signature in the image.
 xcrun clang -fobjc-arc -O0 -dynamiclib -framework Foundation objc_untyped_float.m -o libObjCUntypedFloat.dylib
 xcrun clang -fobjc-arc -O2 -dynamiclib -framework Foundation objc_untyped_float.m -o libObjCUntypedFloat.opt.dylib
+# Struct arguments: HFAs in v registers, small structs in x registers, large
+# ones by address, and the stack (closing a bank) when they do not fit.
+xcrun clang -fobjc-arc -O0 -dynamiclib -framework Foundation objc_aggregate_args.m -o libObjCAggregateArgs.dylib
+xcrun clang -fobjc-arc -O2 -dynamiclib -framework Foundation objc_aggregate_args.m -o libObjCAggregateArgs.opt.dylib

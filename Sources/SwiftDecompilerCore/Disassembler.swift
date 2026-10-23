@@ -2761,7 +2761,17 @@ public struct Disassembler: Sendable {
     /// Where an Objective-C method's explicit arguments arrive, from its type
     /// encoding (`ObjCArgumentABI`). Stack locations are kept only for 8-byte
     /// slots; a narrower packed slot's upper bytes belong to nothing.
+    ///
+    /// A method that takes a struct seeds nothing. Its integer arguments'
+    /// registers are known, but a send without a signature lays its own
+    /// arguments out by colon position, and a struct the method passes
+    /// straight on stays in its registers untouched, so seeding named the
+    /// shifted ones: Terminal's `[super initWithContentRect:r styleMask:m
+    /// backing:b defer:d]` rendered `initWithContentRect:arg1 styleMask:arg2
+    /// backing:arg3`, each one argument off.
     static func objcArgumentLocations(_ method: ObjCMethodBinding) -> [String: Int] {
+        guard let types = ObjCArgumentABI.parameterTypes(encoding: method.typeEncoding, argumentCount: method.argumentCount),
+              !types.contains(where: { $0.first == "{" }) else { return [:] }
         let locations = ObjCArgumentABI.locations(encoding: method.typeEncoding, argumentCount: method.argumentCount)
         let widths = ObjCArgumentABI.stackSlotWidths(encoding: method.typeEncoding, argumentCount: method.argumentCount)
         return locations.filter { location, _ in !location.hasPrefix("stack@") || widths[location] == 8 }
@@ -4067,10 +4077,9 @@ public struct Disassembler: Sendable {
                     var explicit = Array(repeating: AbstractValue.unknown, count: types.count)
                     let locations = ObjCArgumentABI.locations(encoding: encoding, argumentCount: types.count)
                     let stackWidths = ObjCArgumentABI.stackSlotWidths(encoding: encoding, argumentCount: types.count)
-                    let stackStarts = locations.keys.compactMap { location -> Int? in
-                        guard location.hasPrefix("stack@") else { return nil }
-                        return Int(location.dropFirst("stack@".count))
-                    }
+                    // Struct arguments on the stack count too: a store that
+                    // runs into one is not the argument before it alone.
+                    let stackStarts = ObjCArgumentABI.stackArgumentStarts(encoding: encoding, argumentCount: types.count)
                     for (location, argument) in locations {
                         if location.hasPrefix("x"), let register = Int(location.dropFirst()) {
                             explicit[argument] = register < values.count ? values[register] : .unknown
