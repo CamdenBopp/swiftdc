@@ -30,10 +30,24 @@ struct CalleeEffect: Sendable, Equatable {
 /// fragments are local symbols, so a stripped binary has no name to go by;
 /// the body is the evidence.
 struct CalleeRegisterSummary: Sendable, Equatable {
+    /// A call whose reads depend on its target's summary.
+    struct PendingRead: Sendable, Equatable {
+        let target: UInt64
+        /// Bit n set when xn may still hold the body's incoming value there.
+        let unwritten: UInt8
+    }
+
     /// Argument registers x0…x7 (by number) the body may read before writing
     /// them on some path from its entry. A call or tail call inside counts as
-    /// reading every one not yet written, since it may pass them on.
+    /// reading every one not yet written, since it may pass them on, unless
+    /// its target's own reads are known: a callee of known arity reads its
+    /// parameters, and a call to another in-image function waits in
+    /// `pendingReads` until `closeOverReads` gives it that function's reads.
     let argumentReads: Set<Int>
+    /// Calls and tail branches to other in-image functions, with the argument
+    /// registers (bit n for xn) the body has not written at them on some
+    /// path: the call reads those of them its target reads.
+    var pendingReads: [PendingRead] = []
     /// Callee-saved registers (`x19`…`x29`) the body writes and does not
     /// provably hand back: at some exit (a `ret` or a tail branch out) the
     /// register does not hold its entry value. Anything unproven counts as
@@ -84,10 +98,12 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     ///
     /// `calleeArity` gives, for a call target, how many argument registers it
     /// takes when that is known (`DisassembledFunction.knownCArity`). A call to
-    /// it reads only those; any other call may read every argument register.
+    /// it reads only those. A call to a target `isFunction` names waits in
+    /// `pendingReads`; any other call may read every argument register.
     static func of(
         _ function: DisassembledFunction, calleeEffects: (UInt64) -> CalleeEffect = { _ in CalleeEffect() },
-        calleeArity: (UInt64) -> Int? = { _ in nil }
+        calleeArity: (UInt64) -> Int? = { _ in nil },
+        isFunction: (UInt64) -> Bool = { _ in false }
     ) -> CalleeRegisterSummary? {
         let instructions = function.instructions
         guard !instructions.isEmpty, instructions.allSatisfy({ $0.detail != nil }) else { return nil }
@@ -101,6 +117,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         // a possible argument read.
         var inState: [UInt64: Set<String>] = [entry: []]
         var reads = Set<Int>()
+        // By call address: a block revisited with fewer registers written
+        // widens the mask, as it widens `reads`.
+        var pending: [UInt64: PendingRead] = [:]
         var worklist = [entry]
         var visits = 0
         while let start = worklist.popLast() {
@@ -127,8 +146,16 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                     // a metadata accessor whose one call is `objc_opt_self`
                     // of an address it loads reads no argument, and its
                     // callers printed x1-x3 as arguments to it.
-                    let arity = insn.branchTarget.flatMap(calleeArity) ?? argumentKeys.count
-                    argumentKeys.prefix(arity).forEach(read)
+                    if let target = insn.branchTarget, calleeArity(target) == nil, isFunction(target) {
+                        var unwritten = pending[insn.address]?.unwritten ?? 0
+                        for (index, key) in argumentKeys.enumerated() where !written.contains(key) {
+                            unwritten |= 1 << index
+                        }
+                        pending[insn.address] = PendingRead(target: target, unwritten: unwritten)
+                    } else {
+                        let arity = insn.branchTarget.flatMap(calleeArity) ?? argumentKeys.count
+                        argumentKeys.prefix(arity).forEach(read)
+                    }
                 }
                 // Operands without access flags are counted as read, so a gap
                 // in Capstone's tables cannot hide an argument.
@@ -206,7 +233,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         }
         let definitelyClobbered = clobbered.subtracting(storedCalleeSaved).subtracting(["x21"])
         return CalleeRegisterSummary(
-            argumentReads: reads, clobberedCalleeSaved: clobbered,
+            argumentReads: reads,
+            pendingReads: pending.keys.sorted().compactMap { pending[$0] },
+            clobberedCalleeSaved: clobbered,
             definitelyClobbered: definitelyClobbered,
             restoredFrom: restoredFrom.filter { definitelyClobbered.contains($0.key) },
             callees: callees.sorted())
@@ -215,8 +244,57 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// A summary that claims nothing about callee-saved registers.
     private func claimingNothing() -> CalleeRegisterSummary {
         CalleeRegisterSummary(
-            argumentReads: argumentReads, clobberedCalleeSaved: Self.calleeSavedKeys,
+            argumentReads: argumentReads, pendingReads: pendingReads, clobberedCalleeSaved: Self.calleeSavedKeys,
             definitelyClobbered: Self.calleeSavedKeys, callees: callees)
+    }
+
+    /// Carries argument reads through calls to in-image functions: each
+    /// pending call reads the registers its target reads, among those the
+    /// body had not written there. A target with no summary reads every one.
+    /// This is the least fixpoint, from each body's own reads up, so a
+    /// register counts only through a finite chain of calls that reads it,
+    /// which every real read is. Reads only grow, eight registers a
+    /// function, so the iteration ends without a cap; the pending calls are
+    /// then resolved and dropped.
+    ///
+    /// A helper whose body calls another in-image function counted as
+    /// reading every unwritten register, and its callers passed it whatever
+    /// those held: a Terminal helper reached x4 and x5 only through such a
+    /// call, and a caller rendered it with two of its own arguments.
+    static func closeOverReads(_ summaries: inout [UInt64: CalleeRegisterSummary]) {
+        let starts = summaries.keys.sorted()
+        var callers: [UInt64: [UInt64]] = [:]
+        for start in starts {
+            for target in Set((summaries[start]?.pendingReads ?? []).map(\.target)).sorted() {
+                callers[target, default: []].append(start)
+            }
+        }
+        var worklist = starts.filter { summaries[$0]?.pendingReads.isEmpty == false }
+        var queued = Set(worklist)
+        var next = 0
+        while next < worklist.count {
+            let start = worklist[next]
+            next += 1
+            queued.remove(start)
+            guard let summary = summaries[start] else { continue }
+            var reads = summary.argumentReads
+            for call in summary.pendingReads {
+                let targetReads = summaries[call.target]?.argumentReads ?? Set(0 ..< argumentKeys.count)
+                for index in targetReads where call.unwritten & (1 << index) != 0 { reads.insert(index) }
+            }
+            guard reads != summary.argumentReads else { continue }
+            summaries[start] = summary.replacingArgumentReads(reads)
+            for caller in callers[start] ?? [] where queued.insert(caller).inserted {
+                worklist.append(caller)
+            }
+        }
+        for start in starts { summaries[start]?.pendingReads = [] }
+    }
+
+    private func replacingArgumentReads(_ reads: Set<Int>) -> CalleeRegisterSummary {
+        CalleeRegisterSummary(
+            argumentReads: reads, pendingReads: pendingReads, clobberedCalleeSaved: clobberedCalleeSaved,
+            definitelyClobbered: definitelyClobbered, restoredFrom: restoredFrom, callees: callees)
     }
 
     /// Carries callee effects through calls: a function whose callees change
@@ -279,6 +357,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             let rebuilt = recompute(start, { summaries[$0]?.effect ?? CalleeEffect() }) ?? old.claimingNothing()
             let new = CalleeRegisterSummary(
                 argumentReads: old.argumentReads,
+                pendingReads: old.pendingReads,
                 clobberedCalleeSaved: rebuilt.clobberedCalleeSaved,
                 definitelyClobbered: rebuilt.definitelyClobbered,
                 restoredFrom: rebuilt.restoredFrom,

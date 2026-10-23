@@ -718,6 +718,8 @@ public struct Disassembler: Sendable {
         var indirectResultUses: [UInt64: IndirectResultUse] = [:]
         var registerSummaries: [UInt64: CalleeRegisterSummary] = [:]
         let arity = { [names] target in self.knownArity(ofCallTarget: target, names: names, cacheSymbols: cacheSymbols) }
+        let functionStarts = Set(boundaries)
+        let isFunction = { (target: UInt64) in functionStarts.contains(target) }
         for index in boundaries.indices {
             // Muted: pass 2 decodes the same span again and records its events.
             let instructions = Probe.muted { capstoneInstructions(in: machO, span: span(index)) }
@@ -732,7 +734,8 @@ public struct Disassembler: Sendable {
                     metadataNames: metadataNames, objcIndex: objcIndex
                 )
                 indirectResultUses[boundaries[index]] = Self.indirectResultUse(of: function)
-                registerSummaries[boundaries[index]] = CalleeRegisterSummary.of(function, calleeArity: arity)
+                registerSummaries[boundaries[index]] = CalleeRegisterSummary.of(
+                    function, calleeArity: arity, isFunction: isFunction)
             }
         }
         // Clobbers and reloads carried through calls; the few functions
@@ -747,8 +750,11 @@ public struct Disassembler: Sendable {
                 labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
                 metadataNames: metadataNames, objcIndex: objcIndex
             )
-            return Probe.muted { CalleeRegisterSummary.of(function, calleeEffects: effects, calleeArity: arity) }
+            return Probe.muted {
+                CalleeRegisterSummary.of(function, calleeEffects: effects, calleeArity: arity, isFunction: isFunction)
+            }
         }
+        CalleeRegisterSummary.closeOverReads(&registerSummaries)
         names = resolveCrossImageNames(targets, into: names, resolver: cacheSymbols)
         let resolver = ReferenceResolver(
             names: names,
@@ -1008,9 +1014,11 @@ public struct Disassembler: Sendable {
                 let arity = { target in
                     self.knownArity(ofCallTarget: target, names: resolver.names, cacheSymbols: cacheSymbols)
                 }
+                let isFunction = { (target: UInt64) in boundaries.contains(target) }
                 var summaries = Dictionary(
                     functions.compactMap { function in
-                        CalleeRegisterSummary.of(function, calleeArity: arity).map { (function.startAddress, $0) }
+                        CalleeRegisterSummary.of(function, calleeArity: arity, isFunction: isFunction)
+                            .map { (function.startAddress, $0) }
                     },
                     uniquingKeysWith: { a, _ in a }
                 )
@@ -1035,7 +1043,9 @@ public struct Disassembler: Sendable {
                             symbol: "sub_\(String(target, radix: 16))", demangledName: nil,
                             startAddress: target, instructions: instructions, source: .address)
                         bodies[target] = body
-                        guard let summary = Probe.muted({ CalleeRegisterSummary.of(body, calleeArity: arity) }) else { continue }
+                        guard let summary = Probe.muted({
+                            CalleeRegisterSummary.of(body, calleeArity: arity, isFunction: isFunction)
+                        }) else { continue }
                         summaries[target] = summary
                         next.formUnion(summary.callees.filter { summaries[$0] == nil && boundaries.contains($0) })
                     }
@@ -1043,9 +1053,13 @@ public struct Disassembler: Sendable {
                 }
                 CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects in
                     bodies[start].flatMap { function in
-                        Probe.muted { CalleeRegisterSummary.of(function, calleeEffects: effects, calleeArity: arity) }
+                        Probe.muted {
+                            CalleeRegisterSummary.of(
+                                function, calleeEffects: effects, calleeArity: arity, isFunction: isFunction)
+                        }
                     }
                 }
+                CalleeRegisterSummary.closeOverReads(&summaries)
                 return summaries
             }(),
             asyncIndex: asyncIndex, asyncChainSlots: chainSlots

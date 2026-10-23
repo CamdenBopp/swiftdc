@@ -4263,3 +4263,28 @@ if a test was observed to fail without the fix.
   callees whose bodies call them, which now take fewer arguments. No call
   disappeared.
 
+## 2026-10-23: argument reads through in-image calls
+
+- **FIXED (soundness): a call inside a body to another in-image function
+  read every argument register.** `CalleeRegisterSummary` counted such a
+  call as reading every register the body had not written, so a fragment
+  whose only call reaches a function that reads nothing took its caller's
+  registers as arguments: `abi_escaped_saves.s`'s `control_save_fragment`
+  (it calls `ordinary_noop`, a `ret`) rendered `control_save_fragment(arg0,
+  arg1)`, and `preserve_calls.s`'s `epilogue_fragment` (a tail branch to
+  `stack_sink`, a `ret`) took `setup_fragment()`'s result. A call to an
+  in-image function now records its target and the registers unwritten at
+  it (`pendingReads`), and `closeOverReads` gives each call its target's
+  reads among those, to the least fixpoint: reads only grow, eight a
+  function, so it needs no cap, and a register counts only through a
+  finite chain of calls that reads it. A target with no summary reads
+  every register. `epilogue_helper`, which reads x0 and x1 only through
+  its call to `setup_fragment`, still renders `epilogue_helper(arg0,
+  arg1)`. Blast radius: only those two fixtures. Release `disasm
+  --pseudo`, lines changed after normalising `let rN`: Terminal 2, Clarc
+  73, GoodLinks 1,849 in 714 hunks; TextEdit and Chess unchanged. No hunk
+  gains an argument, and in no app does a function lose a callee
+  altogether (a call that printed twice, once nested in a fabricated
+  argument, now prints once). GoodLinks' peak footprint went from 159 MB
+  to 119 MB, within run-to-run noise.
+
