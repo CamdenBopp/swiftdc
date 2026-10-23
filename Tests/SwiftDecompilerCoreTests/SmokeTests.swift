@@ -262,10 +262,11 @@ private func assembledFunction(
     #expect(site.stackArguments == [.immediate(42)])
 }
 
-/// The stack argument widths end at the prologue's register save area: the
-/// frame record is no argument. Counted as two more, an untyped Objective-C
-/// send saw four stores for its two stack arguments.
-@Test func stackArgumentWidthsStopAtTheRegisterSaveArea() throws {
+/// The stack arguments end at the prologue's register save area: the frame
+/// record is no argument. Read as two more, it made a call with no stack
+/// arguments look like it had some, and an untyped Objective-C send count
+/// four stores for its two stack arguments.
+@Test func stackArgumentsStopAtTheRegisterSaveArea() throws {
     //   sub  sp, sp, #0x20
     //   stp  x29, x30, [sp, #0x10]
     //   mov  x9, #0x2a
@@ -283,6 +284,7 @@ private func assembledFunction(
         0xc0, 0x03, 0x5f, 0xd6,
     ]))
     let site = try #require(ValueTracer().callSites(in: function)[0x1014])
+    #expect(site.stackArguments == [.immediate(42), .immediate(42)])
     #expect(site.stackArgumentWidths == [8, 8])
 }
 

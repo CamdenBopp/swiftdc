@@ -3371,14 +3371,16 @@ if a test was observed to fail without the fix.
   timestamp:…` sends render the modifier flags as `location:` and the
   window number as `modifierFlags:`. `selectorMayUseFloatingArguments`
   does not catch these selectors.
-- **OPEN (correctness): a call's stack arguments run into the register
+- **FIXED (correctness): a call's stack arguments ran into the register
   save area.** The snapshot reads the words stored upward from sp until
   one is missing, and the prologue's `stp x29, x30, [sp, #…]` stores two
-  more, so a call with no stack arguments can look like it has some. The
-  widths above stop at the save slots, as the escape at a call does;
-  `stackArguments` does not. Stopping it there dropped a known-arity call
-  whose only "values" were the frame record into the `memmove()` defect
-  below (Clarc: 19 more; GoodLinks: 32), which is now fixed.
+  more, so a call with no stack arguments could look like it had some,
+  and a variadic count could read the frame record as arguments. The
+  snapshot now stops at the save slots, as the escape at a call does
+  (`stackArgumentsStopAtTheRegisterSaveArea`). Done first, it pushed
+  known-arity calls whose only "values" were the frame record into the
+  `memmove()` defect below (Clarc: 19; GoodLinks: 32); after that fix no
+  fixture view and no Clarc or GoodLinks line changes.
 - **FIXED (soundness): a known-arity call with nothing tracked rendered
   as taking no arguments.** The tracer records no call site with nothing
   in it, and the known-C-arity layout that pads unknown operands to `?`
