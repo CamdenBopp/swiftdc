@@ -2932,8 +2932,12 @@ public struct Disassembler: Sendable {
         return swiftReturnRegister(forReturnType: returnType)
     }
 
-    /// A direct external branch forwards an ordinary synchronous Swift scalar
-    /// result. Its pre-branch registers are arguments, never that result.
+    /// A tail call forwards an ordinary synchronous Swift scalar result: a
+    /// direct branch out of the function, or a `br` whose target the tracer
+    /// named (a vtable or pointer-slot callee, left without an edge; one
+    /// through self's vtable into this function is `return
+    /// self.countdown(n - 1)`). Its pre-branch registers are arguments,
+    /// never that result.
     static func scalarTailReturnSites(
         in function: DisassembledFunction,
         enumCaseIndex: EnumCaseIndex = EnumCaseIndex(), classTypeIndex: ClassTypeIndex = ClassTypeIndex()
@@ -2953,8 +2957,8 @@ public struct Disassembler: Sendable {
               swiftReturnRegister(of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) != nil
         else { return [] }
         return Set(function.instructions.compactMap { insn in
-            guard insn.controlFlow == .branch, let target = insn.branchTarget,
-                  target < first.address || target > last.address,
+            guard insn.controlFlow == .branch,
+                  insn.branchTarget.map({ $0 < first.address || $0 > last.address }) ?? true,
                   let name = DisassembledFunction.calleeName(of: insn),
                   let callee = DisassembledFunction.splitSignature(name), !callee.isAsync, !callee.isThrowing,
                   caller.result == callee.result, ordinaryHead(callee.head)

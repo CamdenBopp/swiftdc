@@ -3844,3 +3844,15 @@ if a test was observed to fail without the fix.
   arm64` (slices `arm64e` and `arm64e.x1`) reports `llvm-objdump produced
   0 lines but no instruction was recognised`, while `--arch arm64e`, a
   `-f` filter and `--pseudo` all work.
+- **FIXED (completeness): a resolved indirect tail call did not forward
+  its result.** `selftail.swift` (-O): `countdown` ends `br x1` through
+  self's vtable, resolved to `SelfTail.Counter.countdown` with no edge
+  (277b543), and rendered `else { self.countdown((arg0 - 1)) }`, as if
+  the call's result were dropped. `scalarTailReturnSites` accepted only a
+  direct branch out of the function; it now also accepts a `br` whose
+  callee the tracer named and which has no branch target, with the same
+  caller and callee signature checks, so the view reads
+  `return self.countdown((arg0 - 1))`. Blast radius: only the selftail
+  fixture changes (that line in structured and pseudo, and the `br`'s
+  note in the listing and JSON); Clarc and Terminal `disasm --pseudo`
+  are byte-identical.
