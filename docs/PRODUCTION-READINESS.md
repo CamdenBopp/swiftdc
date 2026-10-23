@@ -2975,11 +2975,53 @@ if a test was observed to fail without the fix.
   `analyze`, and every call in it renders `()`.
   `theTracerConvergesWhereAJoinDerivesAnEscapeIfPresent` fails with them
   removed (2 issues).
-- **OPEN — the loop-body pass's sticky markers have no guard.** Removing
-  them from `retransferBody` leaves all 701 tests green and every fixture
-  (also the -Onone and -Osize builds of `markeroscillation.swift`) without
-  a cap. On GoodLinks one 578-block loop then hits `values.loop-body-cap`;
-  GoodLinks and Clarc output stay byte-identical.
+- **DEAD END (tests): no test can see the loop-body pass's sticky
+  markers today.** Removing them from `retransferBody` left all 701 tests
+  green and every fixture (also the -Onone and -Osize builds of
+  `markeroscillation.swift`) without a cap. On GoodLinks one 578-block
+  loop then hit `values.loop-body-cap`, and GoodLinks and Clarc output
+  stayed byte-identical. That GoodLinks number predates the converged
+  header seed (`ff9c56f`) and was not rechecked.
+
+  Rechecked at `13fe3d5`, after the converged seed. With the carry
+  removed, the enforcing suite still passes (728 tests in 11 suites).
+  A temporary audit, reverted, re-ran every loop-body pass the suite
+  reaches (342, CLI subprocesses included) with and without the carry,
+  under the converged seed and under the old entry seed. In all 342,
+  under both seeds, the non-marker states and the capped-or-settled
+  result are identical. The carry restores a marker in one pass only:
+  the 123-block loop at `0x192c94328` in CoreLocation's `sub_192c93d9c`,
+  reached by `streamingWholeImageMemoryStaysLowIfPresent`. It restores
+  `frame.escaped@-1848` and `@-1872` 12 times under the converged seed
+  (14 under the entry seed), and every time the entry already holds
+  `frame.escaped`, which reaches every slot, so nothing more is forgotten.
+
+  The suggested shape cannot reach the carry. A frame address stored to
+  a global on one path of an inner join raises its marker in the
+  transfer, on every visit, and the join unions it in. `lateEscape` in
+  `loopescape.c` is that shape, and the carry never fires on it.
+
+  Why the carry has nothing to add: the header's entry is fixed to the
+  seed, so the seed's markers reach every body block, and the seed holds
+  every marker the main pass derived anywhere in the body (in all 342
+  passes, no body block's converged state has a marker the seed lacks).
+  Without an inner loop the body pass follows no cycle, so the carry can
+  only keep a marker a join derived on an early visit and no longer
+  derives on a later one. That needs the dropped address to leave every
+  predecessor without raising the same marker or `frame.escaped`.
+  Reading the transfer, a join drop, a forget and an untracked
+  transformation each raise one, a context-slot store marks the address
+  at the store, and a narrow store truncates the value so the paths
+  differ. No other route was found.
+
+  The body pass can derive markers the seed lacks: in `sub_192c93d9c` it
+  raises `frame.escaped` at a join dropping `0 | (frame(-1864) ==
+  frame(-1864))`, a pointer comparison `containsFrame` counts as an
+  address, and the main pass derives no `frame.escaped` in that body. So
+  an inner loop inside a body could still oscillate the way `analyze`
+  did. Keep the carry: it is a MAY fact and costs nothing. Before retrying
+  a fixture search, recheck GoodLinks at HEAD with it removed
+  (`values.loop-body-cap` under `--probe`).
 
 ## 2026-10-15: a capped loop-body pass claimed its loop
 
