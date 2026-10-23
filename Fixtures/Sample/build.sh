@@ -95,6 +95,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name BoundSelf boundself.swif
 echo "==> fixpoint visiting order: blocks reached late or through unmodelled edges (fixpoint_order.s)"
 $CLANG -arch arm64 -dynamiclib fixpoint_order.s -o libFixpointOrder.dylib
 
+echo "==> loops whose header learns a fact only over the back edge (loopescape.c, -O0)"
+$CLANG -O0 -dynamiclib loopescape.c -o libLoopEscape.dylib
+
 echo "==> a tail call through self's vtable that resolves into its own function (selftail.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name SelfTail selftail.swift -o libSelfTail.opt.dylib
 

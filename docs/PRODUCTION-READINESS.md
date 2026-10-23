@@ -3447,3 +3447,18 @@ if a test was observed to fail without the fix.
   initial value.** `long (*next)(long) = countdown; … return next(n - 1)`
   names its target `countdown` from the initial contents of `next` in
   `__DATA,__data`, which the program may overwrite before the call.
+- **FIXED (soundness): the loop-body pass missed what only the back edge
+  brings.** `resolveLoopInductions` re-transferred the body from the
+  loop's entry state, so a fact that reaches the header only over the
+  back edge never held on its lap: an address escaped at the end of the
+  body (`lateEscape`: `g = &i` after `i++`, so the next lap's `poke()`
+  may write `i`) and a pointer slot that changes after the first lap
+  (`staleEntryPointer`: `p` points at `j` only on the first lap). Both
+  rendered five-lap loops, `var i = 0 … i += 1` and `j += 100`, where
+  native execution runs two laps and returns 102 and 202. The lap is now
+  seeded from the converged header state, taken before any loop's names
+  are written back, with the candidates' placeholders on top; initial
+  values still come from the entry (`loopescape.c`, -O0:
+  `aLoopBodyPassSeedsFromTheConvergedHeaderIfPresent`). The loops now
+  render without those claims. Blast radius: no other fixture view and no
+  line of Clarc, GoodLinks, Terminal, TextEdit or Chess changes.

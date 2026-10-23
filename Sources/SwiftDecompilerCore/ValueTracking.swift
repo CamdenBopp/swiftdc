@@ -2077,6 +2077,9 @@ public struct ValueTracer: Sendable {
         }
         var displayId = 0
         var accumulatorId = 0
+        // The converged states, before any loop's names are written back:
+        // the facts that hold on every lap, back-edge arrivals included.
+        let converged = inState
         for header in sourcesByHeader.keys.sorted() {
             guard let sources = sourcesByHeader[header], sources.count == 1,
                   let backFrom = sources.first else { continue }  // simple reducible loop only
@@ -2100,7 +2103,12 @@ public struct ValueTracer: Sendable {
             guard !candidateKeys.isEmpty else { continue }
             // Seed each candidate with a fresh placeholder and re-transfer the loop
             // body so the back-edge value is expressed in terms of the placeholder.
-            var seed = preLoopEntry
+            // Every other fact is the converged header's, which holds on every
+            // lap: seeded from the loop's entry alone, the lap missed what only
+            // the back edge brings (an address escaped at the end of the body,
+            // a pointer slot that changes after the first lap), so `i += 1`
+            // and `j += 100` were claimed where a later lap writes `i` too.
+            var seed = converged[header] ?? [:]
             var placeholderId: [Int: Location] = [:]
             for (offset, key) in candidateKeys.enumerated() {
                 seed[key] = .local(offset)
