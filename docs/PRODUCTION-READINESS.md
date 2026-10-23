@@ -3554,3 +3554,27 @@ if a test was observed to fail without the fix.
   `_decodePointer` recursion, which renders the header text and is not
   ours. A fix either bounds the nesting before handing an encoding to
   ObjCDump (and prints it undecoded) or patches the dependency.
+
+## 2026-10-23: 64-bit segment fields past Int.max
+
+- **OPEN (robustness): a segment `vmaddr` or `vmsize` at or above 2^63
+  traps.** MachOKit's `SegmentCommand64.virtualMemoryAddress` and
+  `virtualMemorySize` convert the raw `UInt64` with a trapping
+  `numericCast` ("Not enough bits to represent the passed value",
+  SIGTRAP, exit 133). Setting each 64-bit segment and section field of
+  `libObjCNonselfOutgoing.dylib` to 2^63 and to 2^64 - 1 (104 copies)
+  gave 96 clean rejections and 8 traps from `disasm`: `vmsize` of
+  `__TEXT` (both values), `__DATA_CONST` and `__DATA` (2^63) and
+  `__LINKEDIT`'s `vmaddr` and `vmsize` (both values). They pass the
+  preflight because its containment check adds `vmaddr + vmsize` with
+  wrapping and `__LINKEDIT` has no sections to check; the traps are in
+  `MachOFile._fileOffset` (from `Disassembler.sectionBytes`) and
+  `_fileSliceForLinkEditData` (from `dyldChainedFixups`). A sum past
+  `Int.max` of two fields below 2^63 does not trap. A real arm64e kernel
+  hits the same trap: `objc` on
+  `/System/Library/Kernels/kernel.release.t6000` (`__TEXT` at
+  0xfffffe0007004000) dies in our `FileBackedRanges.init`, while `dump`
+  exits 0 with "No Swift metadata found". The obvious fix, a preflight
+  rejection of a segment field above `Int.max`, turns that `dump` into an
+  error too, so it waits for a decision: reject such images everywhere
+  with a clear message, or guard the paths that read segment addresses.
