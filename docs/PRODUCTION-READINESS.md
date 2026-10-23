@@ -4183,7 +4183,19 @@ if a test was observed to fail without the fix.
     Terminal's `[? setNeedsDisplayInRect:arg0]`, whose rect is in d0-d3
     (fixed since, by the SDK selector table below).
   The accessor is fixed since too (`NonGenericMetadataAccessors`, below).
-  The patch can be measured again.
+  Measured again on `8720eb2`: Chess unchanged, and most of Terminal's 304
+  normalised lines, TextEdit's 8, Clarc's 12 and GoodLinks' 18 are right
+  names (`[self cellSizeForProfile:arg1 controller:arg2 kern:0]`,
+  `[self->_activeStorage shiftLineRange:? inDirection:arg1 byAmount:arg2
+  withANSIBackgroundColor:arg3]`). What still blocks it: an in-image helper
+  whose body makes an Objective-C send summarizes as reading every
+  argument register the body has not written, so seeded values reach it as
+  arguments it never takes. Terminal's `sub_100020e6c(self->_lines, arg1,
+  ?, ?, arg1, arg2)`, whose only reads of x4 and x5 are through `[NSException
+  raise:format:…]`, a send of two pointer arguments. Bounding a send in a
+  summary needs its selector's x-register footprint, which is known for
+  selectors the image or the public SDK declares, not for one an embedded
+  framework declares.
 
 ## 2026-10-23: SDK selectors' public declarations
 
@@ -4230,8 +4242,8 @@ if a test was observed to fail without the fix.
 
 ## 2026-10-23: system libraries' non-generic metadata accessors
 
-- **FIXED (soundness): a metadata accessor in a system library took every
-  live register.** A type metadata accessor takes the metadata request,
+- **FIXED (8720eb2, soundness): a metadata accessor in a system library
+  took every live register.** A type metadata accessor takes the metadata request,
   then one argument per generic parameter, so a non-generic type's takes
   the request alone. With no body in the image the accessor of a
   system type was laid out positionally: `runtimearity.swift`'s
