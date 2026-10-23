@@ -3424,3 +3424,26 @@ if a test was observed to fail without the fix.
   `swiftCallArgumentSlots` does not lay out (`Swift.String.append()`: 51
   and 308), and a C callee of unknown arity (`bzero()`, `malloc()`) each
   print only the operands that were tracked, so nothing reads as nothing.
+
+## 2026-10-22: findings from a read-only audit
+
+- **FIXED (soundness): a tail call resolved into its own function rendered
+  as a loop.** `annotateIndirectControlFlowTargets` wrote a resolved `br`
+  target into `branchTarget`; when the target was inside the function,
+  every later CFG gained an edge the call never takes. `countdown(n)`,
+  which tail-calls itself through self's vtable (`br x1`), rendered
+  `while (arg0 >= 1) { self.countdown((arg0 - 1)) }`, an infinite loop on
+  an unchanging `arg0`. A resolved `br` to an address inside the function
+  now keeps its callee and no target, so it stays a tail call
+  (`selftail.swift`, -O: `aTailCallResolvedIntoItsOwnFunctionIsNoLoopIfPresent`).
+  Blast radius: no other fixture view and no line of Clarc, GoodLinks,
+  Terminal, TextEdit or Chess changes. The tail call's result is not yet
+  returned (`else { self.countdown((arg0 - 1)) }`): OPEN below.
+- **OPEN (completeness): a resolved indirect tail call does not forward
+  its result.** `scalarTailReturnSites` takes only direct branches outside
+  the function, so `countdown`'s tail call through the vtable renders as a
+  bare call rather than `return self.countdown((arg0 - 1))`.
+- **OPEN (soundness): an indirect call named from a writable pointer's
+  initial value.** `long (*next)(long) = countdown; … return next(n - 1)`
+  names its target `countdown` from the initial contents of `next` in
+  `__DATA,__data`, which the program may overwrite before the call.

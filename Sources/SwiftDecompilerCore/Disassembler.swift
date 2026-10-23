@@ -2072,6 +2072,7 @@ public struct Disassembler: Sendable {
             }
             return resolver.indirectCallTarget(for: value)
         }
+        let ownAddresses = Set(function.instructions.map(\.address))
         let instructions = function.instructions.map { insn -> Instruction in
             guard insn.branchTarget == nil,
                   insn.controlFlow == .call || insn.controlFlow == .branch,
@@ -2081,9 +2082,15 @@ public struct Disassembler: Sendable {
             let annotation = insn.annotation.map { "\($0)  → \(resolved.name)" }
                 ?? "→ \(resolved.name)"
             let parsed = DisassembledFunction.parsedCalleeName(text: insn.text, annotation: annotation)
+            // A `br` resolved to an address inside this function is a tail
+            // call that happens to land here (`return countdown(n - 1)`
+            // through self's vtable, which an override may own), not a jump:
+            // as a branch target it became an edge, and the call a loop.
+            let target = insn.controlFlow == .branch && resolved.address.map(ownAddresses.contains) == true
+                ? nil : resolved.address
             return Instruction(
                 address: insn.address, text: insn.text, annotation: annotation,
-                controlFlow: insn.controlFlow, branchTarget: resolved.address,
+                controlFlow: insn.controlFlow, branchTarget: target,
                 callArguments: insn.callArguments, callSelf: insn.callSelf,
                 resultConsumed: insn.resultConsumed, sourceType: insn.sourceType,
                 detail: insn.detail, callee: .kept(parsed == resolved.name ? resolved.name : parsed)
