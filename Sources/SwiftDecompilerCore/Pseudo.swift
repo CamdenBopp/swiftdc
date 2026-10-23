@@ -664,7 +664,11 @@ public extension DisassembledFunction {
              "swift_unknownObjectWeakLoadStrong",
              // swift/include/swift/Runtime/Casting.h:231 and Metadata.h:562:
              // the object, or the class, alone.
-             "swift_getObjectType", "swift_getObjCClassMetadata":
+             "swift_getObjectType", "swift_getObjCClassMetadata",
+             // swift/include/swift/Runtime/HeapObject.h:211, 505, 627, 641 and
+             // 883: one reference or object each.
+             "swift_setDeallocating", "swift_unownedRetainStrong", "swift_weakLoadStrong", "swift_weakDestroy",
+             "swift_unknownObjectWeakDestroy":
             return 1
         case "objc_opt_isKindOfClass", "objc_opt_respondsToSelector",
              "objc_storeStrong", "objc_storeWeak", "objc_initWeak",
@@ -674,7 +678,12 @@ public extension DisassembledFunction {
              // swift/include/swift/Runtime/Metadata.h:350, `(MetadataRequest,
              // const Metadata *)`, and Concurrency.h:1116, `void (AsyncTask *,
              // SwiftError *)`.
-             "swift_checkMetadataState", "swift_continuation_throwingResumeWithError":
+             "swift_checkMetadataState", "swift_continuation_throwingResumeWithError",
+             // swift/include/swift/Runtime/HeapObject.h:75, 86, 610, 618, 811
+             // and 830, `(metadata, object)` or `(ref, value)`, and Enum.h:155,
+             // `(value, enumType)`.
+             "swift_initStackObject", "swift_initStaticObject", "swift_weakInit", "swift_weakAssign",
+             "swift_unknownObjectWeakInit", "swift_unknownObjectWeakAssign", "swift_getEnumCaseMultiPayload":
             return 2
         case "memcpy", "memmove", "memset",
              // swift/include/swift/Runtime/RuntimeFunctions.def
@@ -682,10 +691,20 @@ public extension DisassembledFunction {
              // swift/include/swift/Runtime/Metadata.h:369, `(conformance,
              // type, instantiationArgs)`, and stdlib/public/runtime/
              // MetadataLookup.cpp:3237, `(arguments, descriptor, index)`.
-             "swift_getWitnessTable", "swift_getOpaqueTypeConformance2":
+             "swift_getWitnessTable", "swift_getOpaqueTypeConformance2",
+             // swift/include/swift/Runtime/HeapObject.h:65, 296 and 331,
+             // `(metadata or object, size, alignment mask)`; Enum.h:161,
+             // `(value, enumType, whichCase)`; Error.h:63, `(errorObject,
+             // scratch, out)`.
+             "swift_allocObject", "swift_deallocObject", "swift_deallocClassInstance",
+             "swift_storeEnumTagMultiPayload", "swift_getErrorValue":
             return 3
         case "swift_arrayInitWithCopy", "swift_arrayInitWithTakeFrontToBack", "swift_arrayInitWithTakeBackToFront":
             return 4
+        // swift/include/swift/Runtime/Metadata.h:690: `(self, flags,
+        // numFields, fieldTypes, fieldOffsets)`.
+        case "swift_initStructMetadata":
+            return 5
         // swift/include/swift/Runtime/Error.h:128: the error, the file name's
         // start and length, whether it is ASCII, and the line of the `try!`.
         case "swift_unexpectedError":

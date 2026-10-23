@@ -138,3 +138,38 @@ private func noteArguments(_ callee: String, in function: DisassembledFunction) 
     #expect(DisassembledFunction.knownCArity(of: "type metadata accessor for Swift.MainActor") == 1)
     #expect(DisassembledFunction.knownCArity(of: "type metadata accessor for Swift.Array") == nil)
 }
+
+/// Runtime entry points outside the table printed only the operands that
+/// were tracked, so a call whose arguments were not tracked read as taking
+/// nothing: `runtimearity.swift`'s weak reference rendered
+/// `swift_weakLoadStrong()`, `swift_weakAssign(&self.target)` and
+/// `swift_weakDestroy()` (GoodLinks had 1,821 `swift_weakLoadStrong()`).
+@Test func aWeakReferenceCallShowsEveryArgumentIfPresent() async throws {
+    guard FileManager.default.fileExists(atPath: fixture) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: fixture)
+    }
+    let text = functions.filter { $0.displayName.contains("RuntimeArityWeakBox") }
+        .map { $0.renderPseudo() }.joined(separator: "\n")
+    #expect(text.contains("swift_weakAssign(&self.target, ?)"), Comment(rawValue: text))
+    #expect(text.contains("swift_weakDestroy(?)"), Comment(rawValue: text))
+    #expect(!text.contains("swift_weakAssign()") && !text.contains("swift_weakDestroy()")
+            && !text.contains("swift_weakAssign(&self.target)\n"), Comment(rawValue: text))
+}
+
+/// Every runtime entry added with the weak-reference ones, against its
+/// declaration (swift/include/swift/Runtime/HeapObject.h, Enum.h, Error.h,
+/// Metadata.h).
+@Test func runtimeObjectEntriesMatchTheirDeclarations() {
+    let expected: [String: Int] = [
+        "swift_setDeallocating": 1, "swift_unownedRetainStrong": 1, "swift_weakLoadStrong": 1,
+        "swift_weakDestroy": 1, "swift_unknownObjectWeakDestroy": 1,
+        "swift_initStackObject": 2, "swift_initStaticObject": 2, "swift_weakInit": 2, "swift_weakAssign": 2,
+        "swift_unknownObjectWeakInit": 2, "swift_unknownObjectWeakAssign": 2, "swift_getEnumCaseMultiPayload": 2,
+        "swift_allocObject": 3, "swift_deallocObject": 3, "swift_deallocClassInstance": 3,
+        "swift_storeEnumTagMultiPayload": 3, "swift_getErrorValue": 3, "swift_initStructMetadata": 5,
+    ]
+    for (name, arity) in expected.sorted(by: { $0.key < $1.key }) {
+        #expect(DisassembledFunction.knownCArity(of: name) == arity, "\(name)")
+    }
+}

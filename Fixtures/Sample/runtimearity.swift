@@ -26,6 +26,10 @@
 //   instantiationArgs)`, three (Metadata.h:369), and completes the box's
 //   metadata: `swift_checkMetadataState(request, type)`, two
 //   (Metadata.h:350).
+// - `RuntimeArityWeakBox` keeps a weak reference: reading, assigning and
+//   destroying it call `swift_weakLoadStrong(ref)`, `swift_weakAssign(ref,
+//   value)` and `swift_weakDestroy(ref)` (HeapObject.h:627, 618, 641), often
+//   with an address the tracer does not follow.
 // - `sharedActor` reads `MainActor.shared`, calling the system library's
 //   metadata accessor for a type with no generic parameters, which takes the
 //   request alone, while x1 and x2 still hold b and c.
@@ -75,3 +79,11 @@ public func onMain(_ a: Int, _ b: Int) -> Int {
 }
 
 @inline(never) public func sharedActor(_ a: Int, _ b: Int, _ c: Int) -> MainActor { MainActor.shared }
+
+public final class RuntimeArityWeakTarget {}
+
+public final class RuntimeArityWeakBox {
+    public weak var target: RuntimeArityWeakTarget?
+    public init() {}
+    @inline(never) public func current() -> RuntimeArityWeakTarget? { target }
+}

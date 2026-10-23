@@ -3462,7 +3462,8 @@ if a test was observed to fail without the fix.
   from 175 to 0 on Clarc and from 902 to 0 on GoodLinks.
 - **OPEN (soundness): other calls with nothing tracked still render
   `()`.** A runtime function missing from `knownCArity`
-  (`swift_weakLoadStrong()`: 55 on Clarc, 1,821 on GoodLinks), a Swift
+  (`swift_weakLoadStrong()`: 55 on Clarc, 1,821 on GoodLinks; that one and
+  17 more are in the table since 2026-10-23, below), a Swift
   callee whose signature has a non-scalar parameter, which
   `swiftCallArgumentSlots` does not lay out (`Swift.String.append()`: 51
   and 308; since 2026-10-23 only a value type's instance method or a
@@ -3483,12 +3484,13 @@ if a test was observed to fail without the fix.
   Blast radius: no other fixture view and no line of Clarc, GoodLinks,
   Terminal, TextEdit or Chess changes. The tail call's result is not yet
   returned (`else { self.countdown((arg0 - 1)) }`): OPEN below.
-- **OPEN (completeness): a resolved indirect tail call does not forward
-  its result.** `scalarTailReturnSites` takes only direct branches outside
-  the function, so `countdown`'s tail call through the vtable renders as a
-  bare call rather than `return self.countdown((arg0 - 1))`.
-- **OPEN (soundness): an indirect call named from a writable pointer's
-  initial value.** `long (*next)(long) = countdown; … return next(n - 1)`
+- **FIXED (853543f, was OPEN, completeness): a resolved indirect tail call
+  did not forward its result.** `scalarTailReturnSites` took only direct
+  branches outside the function, so `countdown`'s tail call through the
+  vtable rendered as a bare call rather than `return
+  self.countdown((arg0 - 1))`.
+- **FIXED (fedffd0, was OPEN, soundness): an indirect call named from a
+  writable pointer's initial value.** `long (*next)(long) = countdown; … return next(n - 1)`
   names its target `countdown` from the initial contents of `next` in
   `__DATA,__data`, which the program may overwrite before the call.
 - **FIXED (soundness): the loop-body pass missed what only the back edge
@@ -4364,4 +4366,38 @@ if a test was observed to fail without the fix.
   `readonlyLeaf`, whose callee does not touch x22, keeps `observe(7)`.
   Blast radius: only that function; release `disasm --pseudo` of the five
   apps is byte-identical.
+
+## 2026-10-23: Swift runtime object and weak-reference entry points
+
+- **FIXED (soundness): eighteen runtime entry points printed only their
+  tracked operands.** Outside `knownCArity` a call shows the operands that
+  were tracked, so one whose arguments were not tracked read as taking
+  nothing: `runtimearity.swift`'s weak reference rendered
+  `swift_weakLoadStrong()`, `swift_weakAssign(&self.target)` and
+  `swift_weakDestroy()`, and GoodLinks had 1,821 `swift_weakLoadStrong()`,
+  774 `swift_allocObject()` and 330 `swift_setDeallocating()`. Each was
+  checked in the runtime headers: `swift_setDeallocating`,
+  `swift_unownedRetainStrong`, `swift_weakLoadStrong`, `swift_weakDestroy`
+  and `swift_unknownObjectWeakDestroy` take 1 (HeapObject.h:211, 505, 627,
+  641, 883); `swift_initStackObject`, `swift_initStaticObject`,
+  `swift_weakInit`, `swift_weakAssign`, `swift_unknownObjectWeakInit`,
+  `swift_unknownObjectWeakAssign` (HeapObject.h:75, 86, 610, 618, 811,
+  830) and `swift_getEnumCaseMultiPayload` (Enum.h:155) take 2;
+  `swift_allocObject`, `swift_deallocObject`, `swift_deallocClassInstance`
+  (HeapObject.h:65, 296, 331), `swift_storeEnumTagMultiPayload`
+  (Enum.h:161) and `swift_getErrorValue` (Error.h:63) take 3; and
+  `swift_initStructMetadata` takes 5 (Metadata.h:690). Left out on
+  purpose: `swift_willThrow` (its arguments are x20 and x21, so `()` is
+  right), `swift_once` and `swift_getKeyPath` (the plan's exclusions), and
+  the executor checks, whose `SerialExecutorRef` is two words. Blast
+  radius: `runtimearity.swift` and `libRuntimeIvars`
+  (`swift_allocObject(?, ?, ?)`); release `disasm --pseudo` normalised
+  lines: Terminal and TextEdit unchanged, Chess 12, Clarc 2,199, GoodLinks
+  11,657. About nine hunks in ten only add the missing arguments, often a
+  metadata accessor's result the old render dropped
+  (`swift_allocObject(type metadata accessor for
+  Foundation.JSONDecoder(0), ?, ?)`); the rest are in-image callers whose
+  bodies call these and now take fewer arguments
+  (`RxSwift.PublishSubject.init(?)` becomes `init()`). No function loses a
+  callee.
 
