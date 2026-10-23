@@ -4195,7 +4195,12 @@ if a test was observed to fail without the fix.
   raise:format:…]`, a send of two pointer arguments. Bounding a send in a
   summary needs its selector's x-register footprint, which is known for
   selectors the image or the public SDK declares, not for one an embedded
-  framework declares.
+  framework declares. Measured again on `914b099` (reads through in-image
+  calls): the same five Terminal helpers remain, each over a send through
+  a selector stub, plus two Swift callees without a register footprint in
+  Clarc (`SwiftTerm.TerminalView.method(self: self, ?, ?, arg1)`). A
+  positive table of every public selector's footprint (about 800 KB) would
+  remove the first kind; the patch stays out until both are covered.
 
 ## 2026-10-23: SDK selectors' public declarations
 
@@ -4265,8 +4270,8 @@ if a test was observed to fail without the fix.
 
 ## 2026-10-23: argument reads through in-image calls
 
-- **FIXED (soundness): a call inside a body to another in-image function
-  read every argument register.** `CalleeRegisterSummary` counted such a
+- **FIXED (914b099, soundness): a call inside a body to another in-image
+  function read every argument register.** `CalleeRegisterSummary` counted such a
   call as reading every register the body had not written, so a fragment
   whose only call reaches a function that reads nothing took its caller's
   registers as arguments: `abi_escaped_saves.s`'s `control_save_fragment`
