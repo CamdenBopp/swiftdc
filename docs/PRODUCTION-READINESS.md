@@ -3714,9 +3714,8 @@ if a test was observed to fail without the fix.
 - **FIXED (soundness, see "untyped sends of struct-taking selectors"
   below): an untyped send of a selector that takes a struct was laid out
   by colon position.** The entry seeding of struct-taking methods is still
-  off (the guard in `objcArgumentLocations`); turning it on is its own
-  change, once untyped sends to a receiver of known class that does not
-  declare the selector are covered too (OPEN below).
+  off (the guard in `objcArgumentLocations`); see "Entry seeding of
+  struct-taking methods" below for what still blocks it.
 - **OPEN (soundness, latent): `ObjCTypeLayoutDecoder` truncates a struct
   at a pointer to an empty struct.** `{S=^{Opaque=}q}` parses the pointee
   through `parseAggregate`, which returns without consuming the `}` of
@@ -4165,3 +4164,24 @@ if a test was observed to fail without the fix.
   181 `swift_getWitnessTable`, 72 `swift_checkMetadataState`, and 119
   in-image callees whose bodies call them and now take fewer arguments).
   No printed call disappeared.
+
+## 2026-10-23: entry seeding of struct-taking methods
+
+- **OPEN (completeness, blocked): a method that takes a struct still seeds
+  none of its arguments.** With the guard in `objcArgumentLocations`
+  removed on top of `cd835c5`, every seeded name in the fixtures is right
+  (`objc_aggregate_args.m`: `self->_flags = arg1; self->_stamp = arg2`,
+  `self->_tag = arg8`; `objc_untyped_struct.m`: `self->_count = arg0 +
+  arg2`), and Chess does not change. But the newly known values also reach
+  callees nothing bounds, where they print as fabricated arguments:
+  - the metadata accessor of a type in another image, which takes only
+    the request when the type is not generic: Clarc's and GoodLinks'
+    `type metadata accessor for Swift.MainActor(0, ?, arg1, arg2, arg3,
+    arg4)` (2 and 18 more sites; dev already has 8 and 368 from methods
+    seeded today);
+  - an SDK-only selector that takes a struct, laid out by colon position:
+    Terminal's `[? setNeedsDisplayInRect:arg0]`, whose rect is in d0-d3.
+  Both need signatures from outside the image: the type descriptor's
+  generic flag and the SDK selectors' type encodings, which the shared
+  cache holds (plan item 12). The patch is kept out until those land.
+
