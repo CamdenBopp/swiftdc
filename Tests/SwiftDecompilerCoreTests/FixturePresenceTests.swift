@@ -52,6 +52,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libRethrowCleanup.opt.dylib",
         "Fixtures/Sample/libWidthFlagProbes.dylib",
         "Fixtures/Sample/libTypedThrowsAwait.opt.dylib",
+        "Fixtures/Sample/libTypedThrowsNever.dylib",
         "Fixtures/Sample/libStaleSlot.opt.dylib",
         "Fixtures/Sample/libImportedClassProbe.opt.dylib",
         "Fixtures/Sample/libScalarTailReturns.Onone.dylib",

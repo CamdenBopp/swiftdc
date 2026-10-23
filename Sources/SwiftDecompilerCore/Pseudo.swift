@@ -404,7 +404,8 @@ public extension DisassembledFunction {
         guard let annotation else { return nil }
         let base = stripNotes(annotation)
         if base.isEmpty || base.hasPrefix("args(") || base.hasPrefix("self=") || base.hasPrefix("→")
-            || base.hasPrefix("await=") || base.hasPrefix(indirectJumpNote) || base.hasPrefix("swift-exit=") {
+            || base.hasPrefix("await=") || base.hasPrefix(indirectJumpNote) || base.hasPrefix("swift-exit=")
+            || base.hasPrefix(thenThrowNote) {
             return nil
         }
         return base
