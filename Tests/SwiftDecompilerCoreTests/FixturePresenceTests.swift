@@ -97,6 +97,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libResearchOnone.dylib",
         "Fixtures/Sample/libResearchOptimized.dylib",
         "Fixtures/Sample/libResearchSize.dylib",
+        "Fixtures/Sample/libWritablePointer.dylib",
     ]
 
     /// True on a run that must actually exercise the fixtures. `CI` is set by

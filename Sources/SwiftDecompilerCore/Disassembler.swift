@@ -2460,6 +2460,11 @@ public struct Disassembler: Sendable {
             case .address(let target), .immediate(let target):
                 return callTargetName(at: target).map { (target, $0) }
             case .loaded(let slot):
+                // A load reads what the slot holds when the call runs. Only a
+                // slot the program cannot store to still holds its fixup's
+                // value then; a writable global's rebase or bind is where it
+                // starts (`next = other`).
+                guard holdsFixedPointer(at: slot) else { return nil }
                 if let target = pointerTarget(at: slot) {
                     if let name = callTargetName(at: target)
                         ?? cacheSymbols?.name(forCallTarget: target) {
@@ -2470,6 +2475,26 @@ public struct Disassembler: Sendable {
             default:
                 return nil
             }
+        }
+
+        /// Whether `slot` holds its fixup's value whenever code loads it: it
+        /// lies in a segment dyld makes read-only once fixups are applied
+        /// (`SG_READ_ONLY`, or by name `__DATA_CONST` and `__AUTH_CONST`,
+        /// where the linker puts GOTs, witness tables and other constant
+        /// pointers). A dyld-cache slot outside this image's segments (a
+        /// coalesced GOT) is judged by the cache mapping that holds it.
+        /// Anything else is writable, and its initial bytes are only what
+        /// the program starts with.
+        func holdsFixedPointer(at slot: UInt64) -> Bool {
+            if let segment = machO.segments64.first(where: {
+                let start = UInt64($0.virtualMemoryAddress)
+                return start <= slot && slot - start < UInt64($0.virtualMemorySize)
+            }) {
+                return segment.flags.contains(.read_only)
+                    || segment.segmentName == "__DATA_CONST" || segment.segmentName == "__AUTH_CONST"
+            }
+            guard let mapping = machO.fullCache?.mappingAndSlideInfo(for: slot) else { return false }
+            return !mapping.flags.isDisjoint(with: [.constData, .readOnlyData, .constTproData])
         }
 
         /// VM address held by a rebased pointer slot. Full-dyld-cache and
@@ -5752,7 +5777,14 @@ public struct Disassembler: Sendable {
                !asyncReturns.contains(insn.address) {
                 // The tracer may have proven the register (`br x2` through a
                 // function-pointer argument renders `indirect_jump(arg2)`).
+                // A load from a slot the program can rewrite is not its
+                // initial bind: `indirect_jump(puts)` named the callee that
+                // `indirectCallTarget` declines.
                 let target = analysis.indirectControlFlowTargets[insn.address]
+                    .map { value -> AbstractValue in
+                        if case .loaded(let slot) = value, !resolver.holdsFixedPointer(at: slot) { return .unknown }
+                        return value
+                    }
                     .map(sanitizeValue).map { renderValue($0, depth: 0) } ?? "?"
                 facts.indirectJumpTarget = target
                 sourceNotes.append(DisassembledFunction.indirectJumpNote + target)

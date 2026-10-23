@@ -3804,3 +3804,43 @@ if a test was observed to fail without the fix.
   from the callee's printed name. Carrying the fact on the callee, as
   `Instruction.callee` carries its name, would let a caller keep its x21
   proofs across a call to one.
+
+## 2026-10-23: calls through pointer slots and resolved tail calls
+
+- **FIXED (soundness): a call through a writable function pointer was
+  named from the pointer's initial value.** `long (*next)(long) =
+  countdown;` puts `next` in `__DATA,__data` with a rebase to countdown,
+  and `countdown` ends `adrp; ldr x1, [x8]; br x1`. The listing said
+  `br x1 ; → countdown` and the pseudo view `countdown()`, but the program
+  can store another function in `next` first. A bind is the same:
+  `int (*hook)(const char *) = puts;` rendered `puts(?, puts)`.
+  `ReferenceResolver.indirectCallTarget` now names a `.loaded` slot only
+  when `holdsFixedPointer(at:)` holds: the slot's segment is read-only
+  after fixups (`SG_READ_ONLY`, or `__DATA_CONST` or `__AUTH_CONST` by
+  name, where GOTs and witness tables live), or, in a full dyld cache, a
+  slot outside the image lies in a const or read-only mapping. The
+  indirect-jump target applies the same rule, so the bind no longer
+  prints `indirect_jump(puts)`. Fixture `writablepointer.c` (-O2) has
+  both writable shapes and a `__DATA_CONST` control that stays `twice()`.
+  Blast radius: every other fixture view (structured, pseudo, listing,
+  JSON) is byte-identical. Clarc `disasm --pseudo` and
+  `xrefs --unreferenced` are byte-identical. Terminal `disasm --pseudo`
+  changes 12 call sites, all through one table of function pointers in
+  `__DATA,__data` initialised to local wrappers (`[NSDate date]`,
+  `NSFileManager` attributes, `NSUserDefaults boolForKey:`, `NSWorkspace`
+  URL lookup); they now render `indirect_call(?, …)` or
+  `indirect_jump(?)`. No `adrp; str [x, #off]` store to those slots was
+  found in the filtered listings, so whether Terminal rewrites them is not
+  proven either way: the slots are writable, and the name was their
+  initial value. The full-cache mapping clause has no automated test.
+- **OPEN (soundness): a value loaded from a writable bind still renders
+  as the bound symbol.** `sanitizeValue` keeps any `.loaded` slot that
+  `loadedName` names, and `loadedName` reads binds in any section. An
+  argument or result loaded from `int (*hook)(const char *) = puts;`
+  renders `puts`. Class refs and selrefs sit in writable sections too and
+  must stay named, so the fix needs a section rule of its own.
+- **OPEN (robustness): an unfiltered plain listing of an arm64e-only fat
+  binary fails with `--arch arm64`.** `swiftdc disasm Terminal --arch
+  arm64` (slices `arm64e` and `arm64e.x1`) reports `llvm-objdump produced
+  0 lines but no instruction was recognised`, while `--arch arm64e`, a
+  `-f` filter and `--pseudo` all work.
