@@ -18,3 +18,7 @@ xcrun clang -fobjc-arc -O2 -dynamiclib -framework Foundation objc_aggregate_args
 # the arguments do not take one x register each.
 xcrun clang -fobjc-arc -O0 -dynamiclib -framework Foundation objc_untyped_struct.m -o libObjCUntypedStruct.dylib
 xcrun clang -fobjc-arc -O2 -dynamiclib -framework Foundation objc_untyped_struct.m -o libObjCUntypedStruct.opt.dylib
+# Untyped sends of selectors only the SDK declares, struct and float ones
+# among them: the public declarations doubt their layout.
+xcrun clang -fobjc-arc -O0 -dynamiclib -framework AppKit objc_sdk_selectors.m -o libObjCSDKSelectors.dylib
+xcrun clang -fobjc-arc -O2 -dynamiclib -framework AppKit objc_sdk_selectors.m -o libObjCSDKSelectors.opt.dylib

@@ -4180,8 +4180,51 @@ if a test was observed to fail without the fix.
     arg4)` (2 and 18 more sites; dev already has 8 and 368 from methods
     seeded today);
   - an SDK-only selector that takes a struct, laid out by colon position:
-    Terminal's `[? setNeedsDisplayInRect:arg0]`, whose rect is in d0-d3.
-  Both need signatures from outside the image: the type descriptor's
-  generic flag and the SDK selectors' type encodings, which the shared
-  cache holds (plan item 12). The patch is kept out until those land.
+    Terminal's `[? setNeedsDisplayInRect:arg0]`, whose rect is in d0-d3
+    (fixed since, by the SDK selector table below).
+  The accessor needs the type descriptor's generic flag, which only the
+  shared cache holds. The patch is kept out until that lands.
+
+## 2026-10-23: SDK selectors' public declarations
+
+- **FIXED (soundness): an untyped send of a selector only the SDK declares
+  was laid out one x register per argument.** Nothing in the image doubted
+  the layout, so a struct or floating argument the method passed straight
+  through left x2 holding something else. `objc_sdk_selectors.m` (-O2):
+  `[window setAlphaValue:alpha]` rendered `setAlphaValue:arg0` (the
+  receiver, still in x2), `setFrameOrigin:` the same,
+  `removeIndexesInRange:` read the location as the whole range, and
+  `performSelector:withObject:afterDelay:` read the object again as the
+  delay. Terminal had `[self convertPoint:0 toView:?]`, x2 being the view.
+  `SDKSelectorPrefixes` is a generated table: for every selector that a
+  public framework's class, category or protocol takes a struct or
+  floating argument for, how many leading arguments all of them pass in
+  one x register. `positionalArgumentPrefix` takes the smaller of it and
+  the image's own. A send's registers follow the declaration its compiler
+  saw, so only declarations a public SDK header names count: private
+  classes (`CAContext`'s `setLevel:(float)`) and underscore selectors are
+  left out. The table is committed, so output does not depend on the host
+  (4,764 selectors, 189 KB, from the macOS 27.2 cache and the 27.0 SDK);
+  `SDKSelectorPrefixGenerator.swift` regenerates it in about 3.5 minutes
+  with `SWIFTDC_GENERATE_SDK_SELECTORS=<path>`.
+
+  Blast radius: only the new fixture's views. Release `disasm --pseudo`,
+  lines after normalising `let rN` renumbering: Terminal 462, TextEdit
+  58, Chess 76, Clarc 146, GoodLinks 437. Nearly every change declines a
+  value at or after an SDK struct or floating argument
+  (`convertPoint:fromView:`, the NSRange selectors). About 70 sends gain
+  arguments before one, which the float rule had declined whole
+  (`performSelector:@selector(_clearTabIsBusy:) withObject:arg0
+  afterDelay:?`, `setLineDash:… count:1 phase:?`,
+  `popUpMenuPositioningItem:0 atLocation:? inView:?`). No send
+  disappeared.
+- **OPEN (completeness): a selector whose public declarations disagree
+  declines for every untyped receiver.** `setTarget:` (NSControl takes an
+  object, SceneKit's `SCNCameraController` an `SCNVector3`), `setLength:`
+  (NSMutableData an integer, NSStatusItem a CGFloat), `setLevel:` and
+  `setOrientation:` now render `?` when the receiver's class is unknown:
+  Terminal 14 `setTarget:` sends. A receiver whose class is known from
+  outside the image (a class reference such as `[NSEvent …]`, an ivar
+  typed `@"NSButton"`) could use that class's SDK declaration instead;
+  that needs the SDK encodings keyed by class, not only the prefixes.
 

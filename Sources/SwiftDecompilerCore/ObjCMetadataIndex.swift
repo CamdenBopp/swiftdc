@@ -466,13 +466,21 @@ public struct ObjCMetadataIndex: Sendable {
     /// arguments before it are where the layout reads them, because each
     /// argument's register depends only on the ones before it.
     ///
-    /// The number of leading arguments every implementation passes in one x
-    /// register each, or nil when they all pass every argument so.
+    /// The public frameworks' declarations count too, because a send's
+    /// registers follow the declaration its compiler saw: `[v
+    /// setNeedsDisplayInRect:r]` passes the rect in d0-d3, and with no
+    /// implementation in the image it rendered whatever x2 held as the rect
+    /// (`SDKSelectorPrefixes`).
+    ///
+    /// The number of leading arguments every implementation and public
+    /// declaration passes in one x register each, or nil when they all pass
+    /// every argument so.
     func positionalArgumentPrefix(_ selector: String) -> Int? {
-        (bySelector[selector] ?? []).compactMap { method in
+        let image = (bySelector[selector] ?? []).compactMap { method in
             ObjCArgumentABI.parameterTypes(encoding: method.typeEncoding, argumentCount: method.argumentCount)?
                 .firstIndex { !ObjCArgumentABI.takesOneXRegister($0) }
         }.min()
+        return [image, SDKSelectorPrefixes.table[selector]].compactMap { $0 }.min()
     }
 
     /// The runtime `__text` address of a method IMP as it appears in the ObjC

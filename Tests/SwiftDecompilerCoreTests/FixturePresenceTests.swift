@@ -138,6 +138,8 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libObjCUntypedStruct.dylib",
         "Fixtures/Sample/libObjCUntypedStruct.opt.dylib",
         "Fixtures/Sample/libRuntimeArity.dylib",
+        "Fixtures/Sample/libObjCSDKSelectors.dylib",
+        "Fixtures/Sample/libObjCSDKSelectors.opt.dylib",
     ]
 
     /// True on a run that must actually exercise the fixtures. `CI` is set by
