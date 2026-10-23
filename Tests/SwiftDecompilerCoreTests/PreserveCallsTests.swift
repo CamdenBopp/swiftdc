@@ -10,6 +10,9 @@ import Testing
 /// writes x19) or `tail_outer` (which tail-branches to it) rendered
 /// `return arg0`, where native execution returns arg1.
 ///
+/// A callee that uses the caller's x29 as a pointer can write the save slot
+/// x29 points at: `x29_fragment` rendered `return arg0`, native 2.
+///
 /// A restore can be outlined too: GoodLinks' assertion paths save x19 and
 /// x20, call a fragment that rewrites them and tail-branch to a fragment
 /// that reloads them from the frame. Read as a clobber, that reload lost
@@ -30,6 +33,7 @@ import Testing
         && native("7guarded") == 1 && native("7control") == 1)
     #expect(try native("8epilogue") == 1 && native("6direct") == 1 && native("8reloaded") == 1
         && native("6forged") == 2 && native("9scribbled") == 2 && native("7smudged") == 2)
+    #expect(try native("3x29") == 2 && native("8x29relay") == 2)
 
     let full = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let filtered = try await withStableDependencies {
@@ -59,6 +63,10 @@ import Testing
         "Preserve.forged(Swift.Int, Swift.Int) -> Swift.Int": "return ?",
         "Preserve.scribbled(Swift.Int, Swift.Int) -> Swift.Int": "return ?",
         "Preserve.smudged(Swift.Int, Swift.Int) -> Swift.Int": "return ?",
+        // A callee writes through the frame pointer the fragment set to its
+        // save slot, directly or through a tail branch.
+        "Preserve.x29(Swift.Int, Swift.Int) -> Swift.Int": "return ?",
+        "Preserve.x29relay(Swift.Int, Swift.Int) -> Swift.Int": "return ?",
     ]
     for (path, functions) in [("array", full), ("filtered", filtered), ("streaming", streamed)] {
         for (name, statement) in expected.sorted(by: { $0.key < $1.key }) {

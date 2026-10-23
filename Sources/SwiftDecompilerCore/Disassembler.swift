@@ -740,6 +740,9 @@ public struct Disassembler: Sendable {
                     calleeArity: arity, isFunction: isFunction)
             }
         }
+        // Reads first: whether a callee uses the caller's x29 is part of
+        // the effect the clobber closure carries.
+        CalleeRegisterSummary.closeOverReads(&registerSummaries)
         // Clobbers and reloads carried through calls; the few functions
         // whose callees change anything are decoded again.
         let spanIndex = Dictionary(boundaries.indices.map { (boundaries[$0], $0) }, uniquingKeysWith: { a, _ in a })
@@ -758,7 +761,6 @@ public struct Disassembler: Sendable {
                     calleeEffects: effects, calleeArity: arity, isFunction: isFunction)
             }
         }
-        CalleeRegisterSummary.closeOverReads(&registerSummaries)
         names = resolveCrossImageNames(targets, into: names, resolver: cacheSymbols)
         let resolver = ReferenceResolver(
             names: names,
@@ -1062,6 +1064,7 @@ public struct Disassembler: Sendable {
                     }
                     level = next.sorted()
                 }
+                CalleeRegisterSummary.closeOverReads(&summaries)
                 CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects in
                     bodies[start].flatMap { function in
                         Probe.muted {
@@ -1070,7 +1073,6 @@ public struct Disassembler: Sendable {
                         }
                     }
                 }
-                CalleeRegisterSummary.closeOverReads(&summaries)
                 return summaries
             }(),
             asyncIndex: asyncIndex, asyncChainSlots: chainSlots

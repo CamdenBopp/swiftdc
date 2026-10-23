@@ -41,7 +41,8 @@ private func pseudo(_ path: String) async throws -> (array: String, streamed: St
 
 /// `mov x0, #5; bl +0x100; ret` with the target an in-image function: the
 /// body reads nothing itself, and the call waits on its target with every
-/// argument register but x0 (which the body wrote) still unwritten.
+/// argument register but x0 (which the body wrote), and x29, still
+/// unwritten.
 @Test func aCallToAnInImageFunctionWaitsForItsTargetsReads() throws {
     let engine = try #require(CapstoneEngine())
     let words: [UInt32] = [0xd28000a0, 0x94000040, 0xd65f03c0]
@@ -55,7 +56,8 @@ private func pseudo(_ path: String) async throws -> (array: String, streamed: St
         }, source: .symbol)
     let summary = try #require(CalleeRegisterSummary.of(function, isFunction: { $0 == 0x1104 }))
     #expect(summary.argumentReads.isEmpty)
-    #expect(summary.pendingReads == [.init(target: 0x1104, unwritten: 0b1111_1110)])
+    // x29 is unwritten there too.
+    #expect(summary.pendingReads == [.init(target: 0x1104, unwritten: 0b1111_1110 | 1 << 29)])
     // Not an in-image function: the call may read every unwritten register.
     let unknown = try #require(CalleeRegisterSummary.of(function))
     #expect(unknown.argumentReads == Set(1...7))
@@ -65,7 +67,7 @@ private func pseudo(_ path: String) async throws -> (array: String, streamed: St
 /// target's reads among the registers unwritten at it, through any depth and
 /// around a cycle, and every register of a target with no summary.
 @Test func pendingReadsCloseToTheLeastFixpoint() {
-    func summary(_ reads: Set<Int>, _ pending: [(UInt64, UInt8)] = []) -> CalleeRegisterSummary {
+    func summary(_ reads: Set<Int>, _ pending: [(UInt64, UInt32)] = []) -> CalleeRegisterSummary {
         CalleeRegisterSummary(argumentReads: reads, pendingReads: pending.map { .init(target: $0.0, unwritten: $0.1) },
                               clobberedCalleeSaved: [])
     }
@@ -90,4 +92,42 @@ private func pseudo(_ path: String) async throws -> (array: String, streamed: St
     #expect(summaries[0x70]?.argumentReads == [1])
     #expect(summaries[0x80]?.argumentReads == [3])
     #expect(summaries.values.allSatisfy { $0.pendingReads.isEmpty })
+}
+
+/// What counts as using the caller's x29: a memory access through it, or any
+/// other read of it, but not the store of it to the stack a prologue makes.
+@Test func aFramePointerUseIsAReadOtherThanItsSave() throws {
+    let engine = try #require(CapstoneEngine())
+    func uses(_ word: UInt32) throws -> Bool {
+        let bytes = (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) }
+        let detail = try #require(engine.disassemble(Data(bytes), address: 0x1000).first?.detail)
+        return CalleeRegisterSummary.usesFramePointer(detail)
+    }
+    #expect(try !uses(0xa9bf7bfd))   // stp x29, x30, [sp, #-16]!
+    #expect(try !uses(0x910003fd))   // mov x29, sp
+    #expect(try !uses(0xa8c17bfd))   // ldp x29, x30, [sp], #16
+    #expect(try uses(0xf90003a1))    // str x1, [x29]
+    #expect(try uses(0xf85f83a0))    // ldur x0, [x29, #-8]
+    #expect(try uses(0xaa1d03e0))    // mov x0, x29
+    #expect(try uses(0xf900001d))    // str x29, [x0]
+}
+
+/// The flag goes through calls the way reads do: a call with x29 unwritten
+/// to a function that uses it, or to one with no summary, uses it too.
+@Test func aFramePointerUseReachesThroughCalls() {
+    let x29: UInt32 = 1 << 29
+    var summaries: [UInt64: CalleeRegisterSummary] = [
+        0x10: CalleeRegisterSummary(argumentReads: [], readsFramePointer: true, clobberedCalleeSaved: []),
+        0x20: CalleeRegisterSummary(argumentReads: [], pendingReads: [.init(target: 0x10, unwritten: x29)],
+                                    clobberedCalleeSaved: []),
+        0x30: CalleeRegisterSummary(argumentReads: [], pendingReads: [.init(target: 0x10, unwritten: 0xff)],
+                                    clobberedCalleeSaved: []),     // wrote x29 first
+        0x40: CalleeRegisterSummary(argumentReads: [], pendingReads: [.init(target: 0x99, unwritten: x29)],
+                                    clobberedCalleeSaved: []),     // 0x99 has no summary
+    ]
+    CalleeRegisterSummary.closeOverReads(&summaries)
+    #expect(summaries[0x20]?.readsFramePointer == true)
+    #expect(summaries[0x30]?.readsFramePointer == false)
+    #expect(summaries[0x40]?.readsFramePointer == true)
+    #expect(summaries[0x20]?.effect.readsFramePointer == true)
 }

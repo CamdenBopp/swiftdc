@@ -4295,8 +4295,8 @@ if a test was observed to fail without the fix.
 
 ## 2026-10-23: register summaries and jump tables
 
-- **FIXED (soundness): a callee's register summary read a switch's `br` as
-  a tail call.** The summaries were built before `analyzeFunction`
+- **FIXED (0f0b271, soundness): a callee's register summary read a
+  switch's `br` as a tail call.** The summaries were built before `analyzeFunction`
   recovers jump tables, so a switch's cases were never reached and the
   `br` counted as reading every argument register. `switch_clobbers.s`:
   case 2 of `table_switch` calls `table_clobber`, which leaves x19
@@ -4311,4 +4311,30 @@ if a test was observed to fail without the fix.
   the two new fixtures; release `disasm --pseudo` of Terminal, TextEdit,
   Chess, Clarc and GoodLinks is byte-identical. Started by an agent on
   2026-10-22 and finished here.
+
+## 2026-10-23: callees that use the caller's frame pointer
+
+- **FIXED (soundness): a save slot that x29 pointed at was taken as intact
+  across a call to a callee that writes through x29.** The preservation
+  analysis counts sp and x29 as ordinary frame bookkeeping at a call,
+  because every function with a frame keeps a frame address in x29. A
+  callee can still use it: `preserve_calls.s`'s `x29_writer` stores x1 at
+  `[x29]`, and `x29_fragment` saves x19 at `[sp]`, points x29 there and
+  calls it, so its reload brings back arg1; the Swift caller keeping arg0
+  in x19 rendered `return arg0`, native 2. A summary now records whether
+  the body uses the caller's x29 (`readsFramePointer`): reads it before
+  writing it, other than as the value a store to its own stack saves
+  (the prologue's `stp x29, x30, [sp, #-16]!`). The flag goes through
+  calls to in-image functions with the reads fixpoint (`x29relay` reaches
+  the writer through a tail branch), and a call to a callee that has it
+  lets x29's frame address escape. Imports are taken to keep the ABI and
+  not write through x29, as before. Blast radius: only those two callers;
+  release `disasm --pseudo` of Terminal, TextEdit, Chess, Clarc and
+  GoodLinks is byte-identical (none is built -Osize, where the machine
+  outliner makes such fragments).
+- **OPEN (soundness): the value tracer keeps the caller's frame slots
+  across a call to a callee that uses x29.** The summaries above prove a
+  callee may write through the caller's frame pointer, but the tracer
+  still forgets a frame slot at a call only when a frame address escapes
+  through an argument register or memory.
 

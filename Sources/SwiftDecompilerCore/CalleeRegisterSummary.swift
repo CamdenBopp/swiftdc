@@ -12,6 +12,10 @@ struct CalleeEffect: Sendable, Equatable {
     /// …; b objc_release`) into a fragment its functions tail-branch to; the
     /// fragment never saves x19, yet it hands back what the function saved.
     var restores: [String: Int64] = [:]
+    /// The callee may use the caller's x29 as a pointer: it reads x29 before
+    /// writing it, other than to save it on its own stack. Whatever the
+    /// caller's x29 points at, its frame, the callee can then write.
+    var readsFramePointer = false
 }
 
 /// What an in-image function's own body proves about the registers a call to
@@ -33,8 +37,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// A call whose reads depend on its target's summary.
     struct PendingRead: Sendable, Equatable {
         let target: UInt64
-        /// Bit n set when xn may still hold the body's incoming value there.
-        let unwritten: UInt8
+        /// Bit n set when xn may still hold the body's incoming value there,
+        /// for x0-x7 and x29.
+        let unwritten: UInt32
     }
 
     /// Argument registers x0…x7 (by number) the body may read before writing
@@ -48,6 +53,11 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// registers (bit n for xn) the body has not written at them on some
     /// path: the call reads those of them its target reads.
     var pendingReads: [PendingRead] = []
+    /// The body may use the caller's x29 as a pointer (`CalleeEffect`): it
+    /// reads x29 before writing it, other than as the value a store to its
+    /// own stack saves, directly or through a call to an in-image function
+    /// that does (`closeOverReads`).
+    var readsFramePointer = false
     /// Callee-saved registers (`x19`…`x29`) the body writes and does not
     /// provably hand back: at some exit (a `ret` or a tail branch out) the
     /// register does not hold its entry value. Anything unproven counts as
@@ -75,7 +85,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// What a call to this function does to its caller's callee-saved
     /// registers, as far as it carries beyond the direct callers.
     var effect: CalleeEffect {
-        CalleeEffect(clobbers: definitelyClobbered.subtracting(restoredFrom.keys), restores: restoredFrom)
+        CalleeEffect(clobbers: definitelyClobbered.subtracting(restoredFrom.keys), restores: restoredFrom,
+                     readsFramePointer: readsFramePointer)
     }
 
     /// The integer arguments a call to this function can pass: through the
@@ -84,6 +95,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     var argumentCount: Int { (argumentReads.max() ?? -1) + 1 }
 
     private static let argumentKeys = (0...7).map { "x\($0)" }
+    private static let framePointerBit: UInt32 = 1 << 29
     private static let calleeSavedKeys = Set((19...29).map { "x\($0)" })
 
     /// Nil when any instruction lacks structured detail: nothing is claimed
@@ -117,6 +129,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         // a possible argument read.
         var inState: [UInt64: Set<String>] = [entry: []]
         var reads = Set<Int>()
+        var readsFramePointer = false
         // By call address: a block revisited with fewer registers written
         // widens the mask, as it widens `reads`.
         var pending: [UInt64: PendingRead] = [:]
@@ -137,6 +150,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 func read(_ key: String) {
                     if let index = argumentKeys.firstIndex(of: key), !written.contains(key) { reads.insert(index) }
                 }
+                if !written.contains("x29"), Self.usesFramePointer(detail) { readsFramePointer = true }
                 let internalBranch = insn.branchTarget.map(addresses.contains) == true
                 let leavesThroughCall = insn.controlFlow == .call
                     || (insn.controlFlow == .branch && !internalBranch && block.switchCases == nil)
@@ -151,6 +165,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                         for (index, key) in argumentKeys.enumerated() where !written.contains(key) {
                             unwritten |= 1 << index
                         }
+                        if !written.contains("x29") { unwritten |= Self.framePointerBit }
                         pending[insn.address] = PendingRead(target: target, unwritten: unwritten)
                     } else {
                         let arity = insn.branchTarget.flatMap(calleeArity) ?? argumentKeys.count
@@ -166,7 +181,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                     }
                 }
                 detail.readRegisterKeys.forEach(read)
-                written.formUnion(detail.writtenRegisterKeys.intersection(argumentKeys))
+                written.formUnion(detail.writtenRegisterKeys.intersection(argumentKeys + ["x29"]))
                 if insn.controlFlow == .call { written.formUnion(argumentKeys) }
             }
             for successor in block.successors where addresses.contains(successor) {
@@ -235,6 +250,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         return CalleeRegisterSummary(
             argumentReads: reads,
             pendingReads: pending.keys.sorted().compactMap { pending[$0] },
+            readsFramePointer: readsFramePointer,
             clobberedCalleeSaved: clobbered,
             definitelyClobbered: definitelyClobbered,
             restoredFrom: restoredFrom.filter { definitelyClobbered.contains($0.key) },
@@ -244,8 +260,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// A summary that claims nothing about callee-saved registers.
     private func claimingNothing() -> CalleeRegisterSummary {
         CalleeRegisterSummary(
-            argumentReads: argumentReads, pendingReads: pendingReads, clobberedCalleeSaved: Self.calleeSavedKeys,
-            definitelyClobbered: Self.calleeSavedKeys, callees: callees)
+            argumentReads: argumentReads, pendingReads: pendingReads, readsFramePointer: readsFramePointer,
+            clobberedCalleeSaved: Self.calleeSavedKeys, definitelyClobbered: Self.calleeSavedKeys, callees: callees)
     }
 
     /// Carries argument reads through calls to in-image functions: each
@@ -278,12 +294,16 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             queued.remove(start)
             guard let summary = summaries[start] else { continue }
             var reads = summary.argumentReads
+            var readsFramePointer = summary.readsFramePointer
             for call in summary.pendingReads {
                 let targetReads = summaries[call.target]?.argumentReads ?? Set(0 ..< argumentKeys.count)
                 for index in targetReads where call.unwritten & (1 << index) != 0 { reads.insert(index) }
+                if call.unwritten & framePointerBit != 0, summaries[call.target]?.readsFramePointer ?? true {
+                    readsFramePointer = true
+                }
             }
-            guard reads != summary.argumentReads else { continue }
-            summaries[start] = summary.replacingArgumentReads(reads)
+            guard reads != summary.argumentReads || readsFramePointer != summary.readsFramePointer else { continue }
+            summaries[start] = summary.replacingReads(reads, readsFramePointer: readsFramePointer)
             for caller in callers[start] ?? [] where queued.insert(caller).inserted {
                 worklist.append(caller)
             }
@@ -291,10 +311,32 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         for start in starts { summaries[start]?.pendingReads = [] }
     }
 
-    private func replacingArgumentReads(_ reads: Set<Int>) -> CalleeRegisterSummary {
+    private func replacingReads(_ reads: Set<Int>, readsFramePointer: Bool) -> CalleeRegisterSummary {
         CalleeRegisterSummary(
-            argumentReads: reads, pendingReads: pendingReads, clobberedCalleeSaved: clobberedCalleeSaved,
-            definitelyClobbered: definitelyClobbered, restoredFrom: restoredFrom, callees: callees)
+            argumentReads: reads, pendingReads: pendingReads, readsFramePointer: readsFramePointer,
+            clobberedCalleeSaved: clobberedCalleeSaved, definitelyClobbered: definitelyClobbered,
+            restoredFrom: restoredFrom, callees: callees)
+    }
+
+    /// Whether an instruction uses x29 as a value: as a memory base, or read
+    /// by anything but a store of it to a stack-pointer address (the save a
+    /// prologue makes, `stp x29, x30, [sp, #-16]!`).
+    static func usesFramePointer(_ detail: StructuredInsn) -> Bool {
+        let operands = detail.operands
+        var memoryBase: String?
+        for info in operands {
+            if case .memory(let base?, let index, _) = info.operand {
+                if base.key == "x29" || index?.key == "x29" { return true }
+                memoryBase = base.key
+            }
+        }
+        let readsIt = operands.contains { info in
+            if case .register(let register) = info.operand, register.key == "x29" { return info.access == 0 || info.isRead }
+            return false
+        } || detail.readRegisterKeys.contains("x29")
+        guard readsIt else { return false }
+        let isStore = operands.contains { $0.operand.isMemory && $0.isWritten }
+        return !(isStore && memoryBase == "sp")
     }
 
     /// Carries callee effects through calls: a function whose callees change
@@ -325,7 +367,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             }
         }
         var worklist = summaries.keys.sorted().filter { start in
-            summaries[start]?.callees.contains { summaries[$0]?.definitelyClobbered.isEmpty == false } == true
+            summaries[start]?.callees.contains {
+                summaries[$0]?.definitelyClobbered.isEmpty == false || summaries[$0]?.readsFramePointer == true
+            } == true
         }
         var queued = Set(worklist)
         var rounds = 0
@@ -358,6 +402,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             let new = CalleeRegisterSummary(
                 argumentReads: old.argumentReads,
                 pendingReads: old.pendingReads,
+                readsFramePointer: old.readsFramePointer,
                 clobberedCalleeSaved: rebuilt.clobberedCalleeSaved,
                 definitelyClobbered: rebuilt.definitelyClobbered,
                 restoredFrom: rebuilt.restoredFrom,
@@ -564,7 +609,8 @@ enum Preservation {
                     // reach. sp/x29 alone are ordinary frame bookkeeping;
                     // any other frame alias can be an outgoing argument,
                     // including an outlined fragment's nonstandard input.
-                    if !state.stackAliases.subtracting(["sp", "x29"]).isEmpty {
+                    if !state.stackAliases.subtracting(["sp", "x29"]).isEmpty
+                        || (effect.readsFramePointer && state.stackAliases.contains("x29")) {
                         state.stackAddressEscaped = true
                     }
                     state.invalidateSlotsForUnknownWrite(throughStackAlias: false)

@@ -19,6 +19,11 @@
 // the slot holds something else: forged saves arg1 where x19 belongs,
 // scribbled's fragment overwrites half the slot first (on one path) and
 // smudged's through an address it computes from sp; each returns 2.
+//
+// A callee can use the caller's frame pointer: x29_writer stores x1 at [x29].
+// x29_fragment saves x19 at [sp], points x29 there and calls x29_writer, so
+// its reload brings back arg1; x29relay reaches x29_writer through a tail
+// branch from a fragment that does not touch x29 itself. Both return 2.
 .text
 .p2align 2
 .macro caller name, fragment
@@ -38,6 +43,8 @@ caller 7guarded, _guarded_middle
 caller 7control, _control_fragment
 caller 8epilogue, _epilogue_helper
 caller 6direct, _direct_helper
+caller 3x29, _x29_fragment
+caller 8x29relay, _x29_relayed_fragment
 caller 8reloaded, _reloading_helper
 caller 6forged, _forged_helper
 caller 9scribbled, _scribbled_helper
@@ -151,3 +158,26 @@ _smudge_fragment:
 reloader _reloading_helper, _reload_fragment
 reloader _scribbled_helper, _scribble_fragment
 reloader _smudged_helper, _smudge_fragment
+.globl _x29_writer
+_x29_writer:
+ str x1, [x29]
+ ret
+.globl _x29_relay
+_x29_relay:
+ b _x29_writer
+.macro x29saver name, callee
+.globl \name
+\name:
+ sub sp, sp, #32
+ stp x29, x30, [sp, #16]
+ str x19, [sp]
+ mov x29, sp
+ mov x19, xzr
+ bl \callee
+ ldr x19, [sp]
+ ldp x29, x30, [sp, #16]
+ add sp, sp, #32
+ ret
+.endm
+x29saver _x29_fragment, _x29_writer
+x29saver _x29_relayed_fragment, _x29_relay
