@@ -3516,3 +3516,41 @@ if a test was observed to fail without the fix.
   first register of the two-word String as an integer. It should be the
   literal, or `?`.
 
+
+## 2026-10-23: malformed Objective-C type encodings
+
+- **FIXED (robustness): a corrupt ivar type encoding trapped `disasm`.**
+  `ObjCTypeLayoutDecoder`, which sizes an ivar so its field-map range can
+  be bounds-checked, did unchecked arithmetic and unbounded recursion on a
+  string read from the file. A copy of `libObjCNonselfOutgoing.dylib` with
+  `SDNonselfCaller._target`'s type (`@"SDNonselfTarget"`, the last string
+  in `__objc_methtype`) overwritten in place passes the preflight, whose
+  ivar check is only that the type points into `__objc_methtype`. Six
+  payloads each died by SIGTRAP (exit 133): a 25-digit array count
+  (`parseNumber`), `[4611686018427387904q]` (count times size), a 19-digit
+  bitfield width, `j[…]` (complex doubling), field alignment and field
+  addition in an aggregate. `[9223372036854775807c]` decoded to `Int.max`
+  bytes and trapped one step later, in `FieldMap`'s
+  `offset + bytes <= instanceSize`. A run of 1,000 to 12,000 `^`, or 4,000
+  nested `[1`, overflowed the stack (SIGBUS, exit 138): the debug build's
+  `parseType` frame is 2.2 KB and the 512 KB cooperative-thread stack ran
+  out at 236 levels. Every size, count and alignment step is now checked
+  and nesting stops at `maximumNestingDepth` (32); either one declines the
+  whole encoding, so the ivar gets no field range and its accesses keep
+  their raw offsets. The deepest real encoding among 197,428
+  `__objc_methtype` strings in 889 binaries (400 under /Applications, 489
+  in Xcode) nests 11 levels. `FieldMap` compares `bytes` with the room
+  left, which cannot overflow. All ten payloads now exit 0 from `disasm`
+  and `dump`, and `objc` still exits 0 on the six overflow payloads
+  (`declinesObjCTypeLayoutsWhoseSizeOverflows`,
+  `declinesObjCTypeLayoutsNestedPastTheBound`,
+  `dropsAnIvarFieldLargerThanTheInstance`,
+  `corruptIvarTypeEncodingsDeclineTheirFieldIfPresent`, which builds the
+  corrupt copies from the fixture's bytes). Blast radius: every fixture's
+  structured, pseudo, listing and JSON views are byte-identical.
+- **OPEN (robustness): a deeply nested type encoding still overflows the
+  stack in `objc`.** The same `^` and `[1` payloads kill `objc` (SIGBUS,
+  exit 138) inside ObjCDump's own `ObjCTypeDecoder._decode` /
+  `_decodePointer` recursion, which renders the header text and is not
+  ours. A fix either bounds the nesting before handing an encoding to
+  ObjCDump (and prints it undecoded) or patches the dependency.

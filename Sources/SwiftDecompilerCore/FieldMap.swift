@@ -125,9 +125,11 @@ public struct FieldMap: Sendable {
         self.trustedOffsetLimit = instanceSize
         self.trustLimitReason = nil
         self.ranges = fields.compactMap { field in
+            // `bytes` comes from an encoding in the file and can be near
+            // `Int.max`; comparing it to the room left cannot overflow.
             guard field.offset >= 0, field.bytes > 0,
                   field.offset < instanceSize,
-                  field.offset + field.bytes <= instanceSize
+                  field.bytes <= instanceSize - field.offset
             else { return nil }
             return (
                 field.offset ..< (field.offset + field.bytes),

@@ -605,16 +605,32 @@ struct ObjCTypeLayout: Sendable, Equatable {
 }
 
 enum ObjCTypeLayoutDecoder {
+    /// The deepest nesting of pointers, arrays, aggregates and complex types
+    /// decoded before declining. Each level is a recursive call, and a debug
+    /// build overflowed the 512 KB cooperative-thread stack at 236 levels of
+    /// `^` (2.2 KB a frame) on a corrupt ivar type. The deepest of 197,428
+    /// `__objc_methtype` strings in 889 binaries (400 under /Applications,
+    /// 489 in Xcode) nests 11 levels, a wxWidgets C++ `basic_string`.
+    static let maximumNestingDepth = 32
+
     static func layout(of encoding: String, pointerSize: Int = 8) -> ObjCTypeLayout? {
         guard !encoding.isEmpty else { return nil }
         var parser = Parser(encoding, pointerSize: pointerSize)
-        return parser.parseType()
+        let layout = parser.parseType()
+        // A size that overflows or a nesting past the bound stops the parse
+        // mid-string, so nothing it decoded is trusted, not even an enclosing
+        // pointer's size.
+        return parser.declined ? nil : layout
     }
 
     private struct Parser {
         let characters: [Character]
         let pointerSize: Int
         var index = 0
+        var depth = 0
+        /// Set by an overflowing size or count, or by nesting past
+        /// `maximumNestingDepth`. The whole encoding then has no layout.
+        private(set) var declined = false
 
         init(_ text: String, pointerSize: Int) {
             self.characters = Array(text)
@@ -626,6 +642,9 @@ enum ObjCTypeLayoutDecoder {
         mutating func advance() { index += 1 }
 
         mutating func parseType() -> ObjCTypeLayout? {
+            guard depth < ObjCTypeLayoutDecoder.maximumNestingDepth else { return decline() }
+            depth += 1
+            defer { depth -= 1 }
             // const/in/out/bycopy/byref/oneway/atomic qualifiers do not change
             // storage layout.
             while let c = current, "rnNoORVA".contains(c) { advance() }
@@ -653,22 +672,23 @@ enum ObjCTypeLayoutDecoder {
             case "{": return parseAggregate(end: "}", isUnion: false)
             case "(": return parseAggregate(end: ")", isUnion: true)
             case "b":
-                let width = parseNumber()
-                guard width > 0 else { return nil }
-                return .init(size: (width + 7) / 8, alignment: 1)
+                guard let width = parseNumber(), width > 0,
+                      let rounded = sum(width, 7) else { return nil }
+                return .init(size: rounded / 8, alignment: 1)
             case "j":
-                guard let element = parseType() else { return nil }
-                return .init(size: element.size * 2, alignment: element.alignment)
+                guard let element = parseType(),
+                      let size = product(element.size, 2) else { return nil }
+                return .init(size: size, alignment: element.alignment)
             case "v", "?": return nil
             default: return nil
             }
         }
 
         mutating func parseArray() -> ObjCTypeLayout? {
-            let count = parseNumber()
-            guard count >= 0, let element = parseType(), current == "]" else { return nil }
+            guard let count = parseNumber(), let element = parseType(), current == "]",
+                  let size = product(element.size, count) else { return nil }
             advance()
-            return .init(size: element.size * count, alignment: element.alignment)
+            return .init(size: size, alignment: element.alignment)
         }
 
         mutating func parseAggregate(end: Character, isUnion: Bool) -> ObjCTypeLayout? {
@@ -692,12 +712,14 @@ enum ObjCTypeLayoutDecoder {
                 if isUnion {
                     size = max(size, field.size)
                 } else {
-                    size = align(size, to: field.alignment) + field.size
+                    guard let start = align(size, to: field.alignment),
+                          let next = sum(start, field.size) else { return nil }
+                    size = next
                 }
             }
-            guard current == end, sawField else { return nil }
+            guard current == end, sawField, let padded = align(size, to: alignment) else { return nil }
             advance()
-            return .init(size: align(size, to: alignment), alignment: alignment)
+            return .init(size: padded, alignment: alignment)
         }
 
         mutating func skipQuotedName() {
@@ -709,24 +731,47 @@ enum ObjCTypeLayoutDecoder {
             }
         }
 
-        mutating func parseNumber() -> Int {
+        /// A decimal count or width; nil when there are no digits, or when
+        /// the digits overflow `Int` (and the parse declines).
+        mutating func parseNumber() -> Int? {
             var value = 0
             var found = false
             while let c = current, let digit = c.wholeNumberValue {
                 found = true
-                value = value * 10 + digit
+                guard let shifted = product(value, 10), let next = sum(shifted, digit) else { return nil }
+                value = next
                 advance()
             }
-            return found ? value : -1
+            return found ? value : nil
         }
 
         func pointer() -> ObjCTypeLayout {
             .init(size: pointerSize, alignment: pointerSize)
         }
 
-        func align(_ value: Int, to alignment: Int) -> Int {
+        mutating func align(_ value: Int, to alignment: Int) -> Int? {
             guard alignment > 1 else { return value }
-            return (value + alignment - 1) & ~(alignment - 1)
+            guard let raised = sum(value, alignment - 1) else { return nil }
+            return raised & ~(alignment - 1)
+        }
+
+        mutating func decline() -> ObjCTypeLayout? {
+            declined = true
+            return nil
+        }
+
+        /// `a + b`, or nil when it overflows, which declines the parse.
+        mutating func sum(_ a: Int, _ b: Int) -> Int? {
+            let (value, overflow) = a.addingReportingOverflow(b)
+            if overflow { declined = true; return nil }
+            return value
+        }
+
+        /// `a * b`, or nil when it overflows, which declines the parse.
+        mutating func product(_ a: Int, _ b: Int) -> Int? {
+            let (value, overflow) = a.multipliedReportingOverflow(by: b)
+            if overflow { declined = true; return nil }
+            return value
         }
     }
 }
