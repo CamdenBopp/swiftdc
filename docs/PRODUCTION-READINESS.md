@@ -4036,3 +4036,21 @@ if a test was observed to fail without the fix.
 - **OPEN (soundness): `Int?` and other two-register parameters are still
   positional.** `takeOptInt(_: Int?, _: Int)` reads `takeOptInt(?, ?, 7)`
   (a payload and a tag byte in x0 and x1, then x2).
+
+## 2026-10-23: fixtures the presence check did not list
+
+- **FIXED (tests): 26 fixtures that tests read could go missing on an
+  enforcing run.** `FixturePresenceTests.requiredFixtures` is the list a
+  `SWIFTDC_REQUIRE_FIXTURES=1` run checks, so a fixture a test reads but
+  the list leaves out turns its `…IfPresent` test into a silent pass. 26
+  were left out, among them `libCallArity`, `libObjCOutgoing`,
+  `libSwitches`, `libCodegen.opt` and the three `libABISource` builds
+  (`libStringArity`, a 27th, was listed when its fixture landed, in
+  `851477a`). With `libCallArity.dylib` moved away, the enforcing
+  presence test passed and the CallArity tests skipped. The list now holds
+  every build product a test names, by literal path or through a level
+  loop. The products no test reads stay out: link-only dependencies
+  (`libTypedThrowsNeverLib`, the `…IdentityExternal` and
+  `libFieldIdentityDuplicate` dylibs) and `libReconstruction.osize.stripped`.
+  Found by comparing every `-o` and `cp` product in `Fixtures/Sample/build*.sh`
+  against the list and against the names in `Tests/`.
