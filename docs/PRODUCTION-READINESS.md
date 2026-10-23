@@ -4314,8 +4314,8 @@ if a test was observed to fail without the fix.
 
 ## 2026-10-23: callees that use the caller's frame pointer
 
-- **FIXED (soundness): a save slot that x29 pointed at was taken as intact
-  across a call to a callee that writes through x29.** The preservation
+- **FIXED (6da37c9, soundness): a save slot that x29 pointed at was taken
+  as intact across a call to a callee that writes through x29.** The preservation
   analysis counts sp and x29 as ordinary frame bookkeeping at a call,
   because every function with a frame keeps a frame address in x29. A
   callee can still use it: `preserve_calls.s`'s `x29_writer` stores x1 at
@@ -4332,9 +4332,14 @@ if a test was observed to fail without the fix.
   release `disasm --pseudo` of Terminal, TextEdit, Chess, Clarc and
   GoodLinks is byte-identical (none is built -Osize, where the machine
   outliner makes such fragments).
-- **OPEN (soundness): the value tracer keeps the caller's frame slots
-  across a call to a callee that uses x29.** The summaries above prove a
-  callee may write through the caller's frame pointer, but the tracer
-  still forgets a frame slot at a call only when a frame address escapes
-  through an argument register or memory.
-
+- **FIXED (soundness): the value tracer kept the caller's frame slots
+  across a call to a callee that uses x29.** `preserve_calls.s`'s
+  `x29local` keeps arg0 in its frame at `[x29, #16]` across a call to
+  `x29_local_writer`, which stores x1 there through x29, and `x29below`
+  does the same below the frame record, at `[x29, #-8]`: both rendered
+  `return arg0`, native 2. The tracer forgets a frame slot at a call only
+  when a frame address escapes through an argument or memory; a callee
+  whose summary uses x29 (`framePointerUsers`) now lets the whole frame
+  escape at its call, since it can reach either side of the frame record.
+  Blast radius: only those two callers; release `disasm --pseudo` of the
+  five apps is byte-identical.

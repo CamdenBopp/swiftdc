@@ -33,7 +33,8 @@ import Testing
         && native("7guarded") == 1 && native("7control") == 1)
     #expect(try native("8epilogue") == 1 && native("6direct") == 1 && native("8reloaded") == 1
         && native("6forged") == 2 && native("9scribbled") == 2 && native("7smudged") == 2)
-    #expect(try native("3x29") == 2 && native("8x29relay") == 2)
+    #expect(try native("3x29") == 2 && native("8x29relay") == 2 && native("8x29local") == 2
+        && native("8x29below") == 2)
 
     let full = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let filtered = try await withStableDependencies {
@@ -67,6 +68,9 @@ import Testing
         // save slot, directly or through a tail branch.
         "Preserve.x29(Swift.Int, Swift.Int) -> Swift.Int": "return ?",
         "Preserve.x29relay(Swift.Int, Swift.Int) -> Swift.Int": "return ?",
+        // The same callee shape writes the caller's own local through x29.
+        "Preserve.x29local(Swift.Int, Swift.Int) -> Swift.Int": "return ?",
+        "Preserve.x29below(Swift.Int, Swift.Int) -> Swift.Int": "return ?",
     ]
     for (path, functions) in [("array", full), ("filtered", filtered), ("streaming", streamed)] {
         for (name, statement) in expected.sorted(by: { $0.key < $1.key }) {

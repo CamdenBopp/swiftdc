@@ -495,6 +495,11 @@ public struct ValueTracer: Sendable {
     /// does not preserve them, so they are forgotten after a call to it.
     var calleeClobbers: [UInt64: Set<String>] = [:]
 
+    /// Callees that use the caller's x29 as a pointer
+    /// (`CalleeRegisterSummary.readsFramePointer`): a call to one may write
+    /// anywhere in this frame, above or below the frame record x29 holds.
+    var framePointerUsers: Set<UInt64> = []
+
     /// Additional results proven void by a resolved indirect target or an
     /// Objective-C receiver's declared signature. A selector name alone is
     /// never proof of its return convention.
@@ -1233,6 +1238,13 @@ public struct ValueTracer: Sendable {
                 // parameters; anything else may also be an input.
                 for key in call.passedRegisters {
                     if let value = registers[key] { Self.markEscape(value, into: &registers) }
+                }
+                // x29 is not an argument, but a callee that uses it reaches
+                // the frame through it, below the frame record as well as
+                // above it (`[x29, #-8]`), so the whole frame escapes.
+                if let target = insn.branchTarget, framePointerUsers.contains(target),
+                   case .frame? = registers[.x(29)] {
+                    registers[Self.frameEscapeAllKey] = .immediate(1)
                 }
                 // Stack arguments are the words stored upward from sp at the
                 // call (`snapshot`); only a callee that can take any reads them,

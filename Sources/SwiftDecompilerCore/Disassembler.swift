@@ -3801,6 +3801,9 @@ public struct Disassembler: Sendable {
                !clobbered.isEmpty {
                 tracer.calleeClobbers[target] = clobbered
             }
+            if insn.controlFlow == .call, registerSummaries[target]?.readsFramePointer == true {
+                tracer.framePointerUsers.insert(target)
+            }
         }
         var analysis = tracer.analyze(function, entry: entry)
         // An x8-indirect function's x0 at `ret` is whatever was last left there

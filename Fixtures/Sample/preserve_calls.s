@@ -24,6 +24,10 @@
 // x29_fragment saves x19 at [sp], points x29 there and calls x29_writer, so
 // its reload brings back arg1; x29relay reaches x29_writer through a tail
 // branch from a fragment that does not touch x29 itself. Both return 2.
+// x29local keeps arg0 in its own frame, at [x29, #16], across a call to
+// x29_local_writer, which stores x1 there through x29: it returns 2 as well,
+// and so does x29below, whose local sits below the frame record, at
+// [x29, #-8].
 .text
 .p2align 2
 .macro caller name, fragment
@@ -181,3 +185,31 @@ _x29_relay:
 .endm
 x29saver _x29_fragment, _x29_writer
 x29saver _x29_relayed_fragment, _x29_relay
+.globl _$s8Preserve8x29localyS2i_SitF
+_$s8Preserve8x29localyS2i_SitF:
+ stp x29, x30, [sp, #-32]!
+ mov x29, sp
+ str x0, [x29, #16]
+ bl _x29_local_writer
+ ldr x0, [x29, #16]
+ ldp x29, x30, [sp], #32
+ ret
+.globl _x29_local_writer
+_x29_local_writer:
+ str x1, [x29, #16]
+ ret
+.globl _$s8Preserve8x29belowyS2i_SitF
+_$s8Preserve8x29belowyS2i_SitF:
+ sub sp, sp, #32
+ stp x29, x30, [sp, #16]
+ add x29, sp, #16
+ stur x0, [x29, #-8]
+ bl _x29_below_writer
+ ldur x0, [x29, #-8]
+ ldp x29, x30, [sp, #16]
+ add sp, sp, #32
+ ret
+.globl _x29_below_writer
+_x29_below_writer:
+ stur x1, [x29, #-8]
+ ret
