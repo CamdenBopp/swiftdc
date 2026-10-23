@@ -16,13 +16,14 @@ private func pseudo(_ fixture: String, _ name: String) async throws -> String? {
 }
 
 /// `movi v0.2d, #0; str d0, [x8]` stores one eight-byte variadic slot.
-/// -O2 stores `xzr` instead and is the control.
+/// -O2 stores `xzr` instead and is the control. The `%f` slot is a
+/// double, so its zero reads `0.0`.
 @Test func aDoubleStoredFromAZeroedVectorIsOneLaneIfPresent() async throws {
     for fixture in ["Fixtures/Sample/libVectorLane.O0.dylib", "Fixtures/Sample/libVectorLane.O2.dylib"] {
         guard let format = try await pseudo(fixture, "laneZeroFormat"),
               let printf = try await pseudo(fixture, "laneZeroPrintf") else { return }
-        #expect(format.contains(#"[NSString stringWithFormat:@"%f", 0]"#), "\(fixture)\n\(format)")
-        #expect(printf.contains(#"printf("%f|%d", 0, 1)"#), "\(fixture)\n\(printf)")
+        #expect(format.contains(#"[NSString stringWithFormat:@"%f", 0.0]"#), "\(fixture)\n\(format)")
+        #expect(printf.contains(#"printf("%f|%d", 0.0, 1)"#), "\(fixture)\n\(printf)")
         #expect(!format.contains("(0, 0)") && !printf.contains("(0, 0)"), "\(fixture)\n\(format)\n\(printf)")
     }
 }

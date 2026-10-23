@@ -308,12 +308,26 @@ public extension DisassembledFunction {
         /// positional `%1$d`, or any specifier this parser does not know. On
         /// Apple arm64 each variadic argument is one 8-byte stack slot.
         static func formatArgumentCount(_ literal: String) -> Int? {
+            formatArgumentKinds(literal)?.count
+        }
+
+        /// What one printf-style conversion passes. On Apple arm64 `long
+        /// double` is `double`, so a floating conversion bare or with `l` or
+        /// `L` is a double's eight bytes; with any other length modifier it
+        /// is `unsized` and renders as its bits.
+        enum FormatArgumentKind: Equatable, Sendable {
+            case integer, floating, pointer, unsized
+        }
+
+        /// Each variadic argument a printf-style format consumes, in order,
+        /// or nil when that is not provable (see `formatArgumentCount`).
+        static func formatArgumentKinds(_ literal: String) -> [FormatArgumentKind]? {
             var text = Substring(literal)
             if text.hasPrefix("@") { text = text.dropFirst() }
             guard text.hasPrefix("\""), text.hasSuffix("\""), !text.hasSuffix("…\""), text.count >= 2
             else { return nil }
             let characters = Array(text.dropFirst().dropLast())
-            var count = 0, index = 0
+            var kinds: [FormatArgumentKind] = [], index = 0
             while index < characters.count {
                 guard characters[index] == "%" else { index += 1; continue }
                 index += 1
@@ -328,13 +342,22 @@ public extension DisassembledFunction {
                 // `*` takes an argument; `$` reorders them. Neither is counted soundly.
                 guard index < characters.count, characters[index] != "*", characters[index] != "$"
                 else { return nil }
+                let lengthStart = index
                 while index < characters.count, "hlqLjzt".contains(characters[index]) { index += 1 }
+                let length = String(characters[lengthStart ..< index])
                 guard index < characters.count, "diouxXfFeEgGaAcsSpn@C".contains(characters[index])
                 else { return nil }
-                count += 1
+                let conversion = characters[index]
+                if "fFeEgGaA".contains(conversion) {
+                    kinds.append(["", "l", "L"].contains(length) ? .floating : .unsized)
+                } else if "diouxXcC".contains(conversion) {
+                    kinds.append(.integer)
+                } else {
+                    kinds.append(.pointer)
+                }
                 index += 1
             }
-            return count
+            return kinds
         }
 
         static func isVariadicSelector(_ selector: String) -> Bool {

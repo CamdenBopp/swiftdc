@@ -201,6 +201,10 @@ $CLANG -arch arm64 -O2 -fobjc-arc -framework Foundation -dynamiclib vectorlane.m
 $SWIFTC -parse-as-library -Onone -emit-library -module-name VectorLane vectorlane.swift -o libVectorLaneSwift.Onone.dylib
 $SWIFTC -parse-as-library -O -emit-library -module-name VectorLane vectorlane.swift -o libVectorLaneSwift.O.dylib
 
+echo "==> floating variadic slots (variadicfloat.m, -O0 and -O2): a double passed as its bits"
+$CLANG -arch arm64 -O0 -fobjc-arc -framework Foundation -dynamiclib variadicfloat.m -o libVariadicFloat.O0.dylib
+$CLANG -arch arm64 -O2 -fobjc-arc -framework Foundation -dynamiclib variadicfloat.m -o libVariadicFloat.O2.dylib
+
 echo "==> jump-table fixture (C, -O1) — compressed byte and halfword tables"
 $CLANG -O1 -dynamiclib switches.c -o libSwitches.dylib
 # arm64e lowers the same switches to the hardened form (csel clamp, ldrsw entries).

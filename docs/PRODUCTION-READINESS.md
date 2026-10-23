@@ -3900,3 +3900,25 @@ if a test was observed to fail without the fix.
   while each eight-byte lane is `w0 | w0 << 32`. No fixture or app render
   was seen to read those words; requiring a 64-bit source register is the
   likely fix, with a fixture that reloads such a word.
+- **FIXED (correctness): a floating variadic argument printed its bits.**
+  On Apple arm64 a double passed to a variadic function is its bits in
+  one eight-byte stack slot, and the format paths kept only a count of
+  the conversions, so `[NSString stringWithFormat:@"%f", 1.5]` rendered
+  `0x3ff8000000000000` and `printf("%Lf %lf %e %g %a\n", …)` five hex
+  words. The format parser now classifies each conversion
+  (`formatArgumentKinds`: `f F e E g G a A` bare or with `l` or `L` are
+  floating, `d i o u x X c C` integer, `s S p @ n` pointer, a floating
+  conversion with any other length modifier unsized), and a floating
+  slot renders as its shortest round-trip double when one eight-byte
+  store wrote it (`CallSite.stackArgumentWidths`) with a normal or zero
+  constant (`Disassembler.formatSlotTypes`). A NaN, an infinity, a
+  subnormal, a narrower store and an argument the format disagrees with
+  (`@"%f", 3` and `@"%d", 1.5`) keep their bits. `__snprintf_chk` and
+  `__sprintf_chk`, which snprintf and sprintf lower to at -O0, joined the
+  format table, so their variadic arguments print instead of being
+  dropped. `variadicfloat.m` (-O0 and -O2) holds each shape. Blast
+  radius: the `%f` zero of `vectorlane.m` reads `0.0` (was `0`), and
+  `objc_untyped_float.m`'s `formatLocal` (-O0 and -O2) reads
+  `stringWithFormat:@"%f", 1.5` (was `0x3ff8000000000000`) in every
+  view; every other fixture view is byte-identical. Clarc and Terminal
+  `--pseudo` are byte-identical.

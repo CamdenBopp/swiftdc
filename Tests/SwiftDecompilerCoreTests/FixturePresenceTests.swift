@@ -97,6 +97,8 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libResearchOnone.dylib",
         "Fixtures/Sample/libResearchOptimized.dylib",
         "Fixtures/Sample/libResearchSize.dylib",
+        "Fixtures/Sample/libVariadicFloat.O0.dylib",
+        "Fixtures/Sample/libVariadicFloat.O2.dylib",
         "Fixtures/Sample/libVectorLane.O0.dylib",
         "Fixtures/Sample/libVectorLane.O2.dylib",
         "Fixtures/Sample/libVectorLaneSwift.O.dylib",

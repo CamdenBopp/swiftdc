@@ -1588,12 +1588,38 @@ public struct Disassembler: Sendable {
     }
 
     /// C variadic functions whose variadic arguments a printf-style format
-    /// describes: the fixed parameter count and the format's position.
+    /// describes: the fixed parameter count and the format's position. The
+    /// `_chk` forms are what `snprintf` and `sprintf` lower to at -O0
+    /// (`__snprintf_chk(str, maxlen, flag, slen, format, …)`,
+    /// `__sprintf_chk(str, flag, slen, format, …)`).
     static let cFormatVariadics: [String: (fixed: Int, format: Int)] = [
         "printf": (1, 0), "fprintf": (2, 1), "dprintf": (2, 1), "sprintf": (2, 1),
         "snprintf": (3, 2), "asprintf": (2, 1), "syslog": (2, 1),
         "NSLog": (1, 0), "CFStringCreateWithFormat": (3, 2),
+        "__snprintf_chk": (5, 4), "__sprintf_chk": (4, 3),
     ]
+
+    /// The type each variadic slot of a format call renders as:
+    /// `Swift.Double` for a floating conversion whose slot one eight-byte
+    /// store wrote with a finite normal or zero constant, so `%f` of 1.5
+    /// reads `1.5`, not `0x3ff8000000000000`. Any other slot is untyped: an
+    /// integer conversion, a narrower store, an unknown value, and a NaN, an
+    /// infinity or a subnormal, whose shortest decimal does not say which
+    /// bits were passed. Nil when no slot is a double, so the call renders
+    /// as before.
+    static func formatSlotTypes(
+        _ kinds: [DisassembledFunction.MessageSend.FormatArgumentKind],
+        values: [AbstractValue], storedBytes: [Int]
+    ) -> [String]? {
+        let types = kinds.enumerated().map { index, kind -> String in
+            guard kind == .floating, index < values.count, index < storedBytes.count,
+                  storedBytes[index] == 8, case .immediate(let bits) = values[index]
+            else { return "" }
+            let value = Double(bitPattern: bits)
+            return value.isNormal || value.isZero ? "Swift.Double" : ""
+        }
+        return types.contains("Swift.Double") ? types : nil
+    }
 
     private static func stripLeadingUnderscore(_ symbol: String) -> String {
         symbol.hasPrefix("_") ? String(symbol.dropFirst()) : symbol
@@ -4034,20 +4060,23 @@ public struct Disassembler: Sendable {
             // count comes from the format's own bytes; an unreadable format
             // shows the fixed arguments, then `…`.
             if let callee = calleeByAddress[address],
-               let variadic = Self.cFormatVariadics[Self.stripLeadingUnderscore(callee)] {
+               let variadic = Self.cFormatVariadics[callee] ?? Self.cFormatVariadics[Self.stripLeadingUnderscore(callee)] {
                 let fixed = (0 ..< variadic.fixed).map { $0 < values.count ? values[$0] : AbstractValue.unknown }
-                var count: Int?
+                var kinds: [DisassembledFunction.MessageSend.FormatArgumentKind]?
                 if case .address(let format) = fixed[variadic.format] {
                     let text: String? = resolver.cfString(at: format)
                         ?? ReferenceResolver.rawCString(at: format, in: resolver.machO, ranges: resolver.fileRanges)
                             .map { "\"\($0)\"" }
-                    count = text.flatMap(DisassembledFunction.MessageSend.formatArgumentCount)
+                    kinds = text.flatMap(DisassembledFunction.MessageSend.formatArgumentKinds)
                 }
-                if let count {
-                    let variadicValues = (0 ..< count).map {
-                        $0 < site.stackArguments.count ? site.stackArguments[$0] : AbstractValue.unknown
+                if let kinds {
+                    let variadicValues = (0 ..< kinds.count).map {
+                        $0 < site.stackArguments.count ? sanitizeValue(site.stackArguments[$0]) : AbstractValue.unknown
                     }
-                    argumentsByAddress[address] = (fixed + variadicValues).map(sanitizeValue)
+                    argumentsByAddress[address] = fixed.map(sanitizeValue) + variadicValues
+                    if let types = Self.formatSlotTypes(kinds, values: variadicValues, storedBytes: site.stackArgumentWidths) {
+                        laidOutTypes[address] = Array(repeating: "", count: fixed.count) + types
+                    }
                     strategy = "c-format"
                 } else {
                     argumentsByAddress[address] = fixed.map(sanitizeValue)
@@ -4066,9 +4095,14 @@ public struct Disassembler: Sendable {
                 if fixed <= 8, values.count >= fixed,
                    case .address(let formatAddress) = values[fixed - 1],
                    let literal = resolver.name(at: formatAddress),
-                   let count = DisassembledFunction.MessageSend.formatArgumentCount(literal) {
-                    let variadic = (0 ..< count).map { $0 < site.stackArguments.count ? site.stackArguments[$0] : .unknown }
-                    argumentsByAddress[address] = (Array(values.prefix(fixed)) + variadic).map(sanitizeValue)
+                   let kinds = DisassembledFunction.MessageSend.formatArgumentKinds(literal) {
+                    let variadic = (0 ..< kinds.count).map {
+                        $0 < site.stackArguments.count ? sanitizeValue(site.stackArguments[$0]) : .unknown
+                    }
+                    argumentsByAddress[address] = Array(values.prefix(fixed)).map(sanitizeValue) + variadic
+                    if let types = Self.formatSlotTypes(kinds, values: variadic, storedBytes: site.stackArgumentWidths) {
+                        laidOutTypes[address] = Array(repeating: "", count: fixed) + types
+                    }
                     strategy = "objc-format"
                     continue
                 }
