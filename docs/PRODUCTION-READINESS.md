@@ -3601,8 +3601,8 @@ if a test was observed to fail without the fix.
 
 ## 2026-10-23: 64-bit segment fields past Int.max
 
-- **OPEN (robustness): a segment `vmaddr` or `vmsize` at or above 2^63
-  traps.** MachOKit's `SegmentCommand64.virtualMemoryAddress` and
+- **FIXED (robustness, below): a segment `vmaddr` or `vmsize` at or above
+  2^63 trapped.** MachOKit's `SegmentCommand64.virtualMemoryAddress` and
   `virtualMemorySize` convert the raw `UInt64` with a trapping
   `numericCast` ("Not enough bits to represent the passed value",
   SIGTRAP, exit 133). Setting each 64-bit segment and section field of
@@ -3620,8 +3620,15 @@ if a test was observed to fail without the fix.
   0xfffffe0007004000) dies in our `FileBackedRanges.init`, while `dump`
   exits 0 with "No Swift metadata found". The obvious fix, a preflight
   rejection of a segment field above `Int.max`, turns that `dump` into an
-  error too, so it waits for a decision: reject such images everywhere
-  with a clear message, or guard the paths that read segment addresses.
+  error too. Fixed between the two: `BinaryLoader.load` fails such an image
+  with an error naming the segment, field and value
+  (`requireSignedAddresses`), and `dump` and `swift-version`, which read it
+  without address arithmetic, opt out (`allowingWideAddresses`). Over the
+  104 corrupted copies every entry point now exits cleanly (the 10 that
+  trapped are rejected by the seven commands that did address arithmetic
+  and still read by `dump` and `swift-version`); on the kernel, `objc` and
+  `disasm` print the error and `dump` and `swift-version` exit 0. `layout`
+  now also rejects the two `__LINKEDIT.vmsize` copies it used to read.
 
 ## 2026-10-23: callee-saved registers through calls
 
@@ -4343,8 +4350,8 @@ if a test was observed to fail without the fix.
   escape at its call, since it can reach either side of the frame record.
   Blast radius: only those two callers; release `disasm --pseudo` of the
   five apps is byte-identical.
-- **FIXED (soundness): an async function's context was kept across a call
-  to a callee that writes through x22.** A call hands the context over
+- **FIXED (b9c1b02, soundness): an async function's context was kept
+  across a call to a callee that writes through x22.** A call hands the context over
   only through an argument, as far as the tracer knew, and x22 is
   callee-saved, so `async_call_effects.s`'s `implicitLeaf` stored 7 to its
   context slot, called `async_calls_mutate_implicit` (which stores 11 at

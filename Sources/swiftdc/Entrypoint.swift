@@ -272,7 +272,8 @@ struct DumpCommand: AsyncParsableCommand {
             image: image,
             imagePath: imagePath,
             cachePath: cache,
-            binary: binary
+            binary: binary,
+            allowingWideAddresses: true
         )
         let dumper = SwiftDeclarationDumper(preset: demangle)
         let selected = sections.isEmpty
@@ -594,7 +595,8 @@ struct SwiftVersionCommand: AsyncParsableCommand {
             image: image,
             imagePath: imagePath,
             cachePath: cache,
-            binary: binary
+            binary: binary,
+            allowingWideAddresses: true
         )
         let report = SwiftVersionDetector.detect(machO)
         try emit(json ? report.jsonString() : report.text, to: output)

@@ -17,7 +17,12 @@ public enum BinaryLoader {
     ///   - path: Filesystem path to a Mach-O or fat binary.
     ///   - architecture: For fat binaries, the slice to select ("arm64",
     ///     "arm64e", "x86_64"). Ignored for thin binaries.
-    public static func load(path: String, architecture: String? = nil) throws -> MachOFile {
+    ///   - allowingWideAddresses: Accept a segment whose address or size is at
+    ///     or above 2^63 (`requireSignedAddresses`), for a reader that never
+    ///     does address arithmetic on it.
+    public static func load(
+        path: String, architecture: String? = nil, allowingWideAddresses: Bool = false
+    ) throws -> MachOFile {
         let url = URL(fileURLWithPath: path)
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw BinaryLoadError("File not found: \(path)")
@@ -38,6 +43,7 @@ public enum BinaryLoader {
 
         switch file {
         case .machO(let machO):
+            if !allowingWideAddresses { try requireSignedAddresses(machO) }
             warnIfEncrypted(machO, path: path)
             return machO
 
@@ -57,8 +63,31 @@ public enum BinaryLoader {
                     "Architecture '\(architecture)' not found. Available: \(available)"
                 )
             }
+            if !allowingWideAddresses { try requireSignedAddresses(match) }
             warnIfEncrypted(match, path: path)
             return match
+        }
+    }
+
+    /// Fails when a segment's address or size is at or above 2^63. MachOKit
+    /// converts both to `Int` with a trapping `numericCast` wherever it
+    /// computes a file offset or a section range, so `disasm`, `objc`,
+    /// `layout`, `interface`, `xrefs` and `analyze` died with SIGTRAP on a
+    /// segment `vmsize` set to 2^63 and on a real arm64e kernel, whose
+    /// `__TEXT` is at 0xfffffe0007004000. The preflight lets them through:
+    /// its containment check adds address and size with wrapping, and
+    /// `__LINKEDIT` has no sections to check. `dump` and `swift-version`
+    /// read such an image without that arithmetic, so they opt out.
+    public static func requireSignedAddresses(_ machO: MachOFile) throws {
+        for segment in machO.loadCommands.infos(of: LoadCommand.segment64) {
+            for (field, value) in [("address", segment.layout.vmaddr), ("size", segment.layout.vmsize)]
+            where value >= 1 << 63 {
+                throw BinaryLoadError(
+                    "Segment \(segment.segmentName) has a virtual \(field) of 0x\(String(value, radix: 16)), "
+                    + "at or above 2^63: past the signed 64-bit addresses swiftdc computes with. "
+                    + "`dump` and `swift-version` can still read this image."
+                )
+            }
         }
     }
 
@@ -115,7 +144,8 @@ extension BinaryLoader {
         image: String? = nil,
         imagePath: String? = nil,
         cachePath: String? = nil,
-        binary: String? = nil
+        binary: String? = nil,
+        allowingWideAddresses: Bool = false
     ) throws -> MachOFile {
         if image != nil, imagePath != nil {
             throw BinaryLoadError("Pass only one of --image or --image-path.")
@@ -133,7 +163,9 @@ extension BinaryLoader {
             throw BinaryLoadError("Provide a binary path, or --image <name> to read from the dyld shared cache.")
         }
         // Accept a Mach-O, or an .app/.framework/.ipa to dig the binary out of.
-        return try load(path: resolveBinaryInput(path, binary: binary), architecture: architecture)
+        return try load(
+            path: resolveBinaryInput(path, binary: binary), architecture: architecture,
+            allowingWideAddresses: allowingWideAddresses)
     }
 
     /// Extract a single image from a dyld shared cache as a cache-aware
