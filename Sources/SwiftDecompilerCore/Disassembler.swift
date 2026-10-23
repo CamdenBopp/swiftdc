@@ -4229,10 +4229,14 @@ public struct Disassembler: Sendable {
                     strategy = "objc-signature-disputed"
                     continue
                 case .unavailable:
-                    if receiverClass == nil, colons > 0, objcIndex.selectorMayUseFloatingArguments(selector) {
-                        argumentsByAddress[address] = ([receiver, selectorValue]
-                            + Array(repeating: AbstractValue.unknown, count: colons)).map(sanitizeValue)
-                        strategy = "objc-maybe-float"
+                    if receiverClass == nil, colons > 0, let kept = objcIndex.positionalArgumentPrefix(selector) {
+                        // `values` is x0-x7, so no stack argument is kept:
+                        // its offset depends on the sizes before it.
+                        let explicit = (0 ..< colons).map { argument in
+                            argument < kept && 2 + argument < values.count ? values[2 + argument] : AbstractValue.unknown
+                        }
+                        argumentsByAddress[address] = ([receiver, selectorValue] + explicit).map(sanitizeValue)
+                        strategy = "objc-maybe-nonpositional"
                         continue
                     }
                     // With no signature the explicit arguments are laid out

@@ -3711,18 +3711,12 @@ if a test was observed to fail without the fix.
   modifierFlags:[arg0 modifierFlags]]`), plus 101 lines that only
   renumber `let rN` because a result is now used as an argument; TextEdit
   3 sends (`[self textViewAtIndex:0 documentSize:?]`); Chess none.
-- **OPEN (soundness): an untyped send of a selector that takes a struct
-  is laid out by colon position.** `[u span:NSMakeRange(3, 4) count:5]`
-  to a receiver of unknown class renders `[? span:3 count:4]`, and
-  `[u place:p flags:7]` with p passed through in d0-d1 renders `[?
-  place:7 flags:?]` at -O2; Terminal's and Chess's forwarding `[super
-  initWithContentRect:…]` read `initWithContentRect:0` (the style mask).
-  `selectorMayUseFloatingArguments` checks only scalar `f`/`d`/`D`
-  parameters; any in-image implementation taking a struct should decline
-  the same way. Once it does, the entry seeding of struct-taking methods
-  can be turned on (drop the guard in `objcArgumentLocations`; the
-  fixture's `place:flags:stamp:` and `frame:tag:` rows then read `arg1`,
-  `arg2`). SDK-only selectors still need the dyld-cache signature source.
+- **FIXED (soundness, see "untyped sends of struct-taking selectors"
+  below): an untyped send of a selector that takes a struct was laid out
+  by colon position.** The entry seeding of struct-taking methods is still
+  off (the guard in `objcArgumentLocations`); turning it on is its own
+  change, once untyped sends to a receiver of known class that does not
+  declare the selector are covered too (OPEN below).
 - **OPEN (soundness, latent): `ObjCTypeLayoutDecoder` truncates a struct
   at a pointer to an empty struct.** `{S=^{Opaque=}q}` parses the pointee
   through `parseAggregate`, which returns without consuming the `}` of
@@ -4054,3 +4048,60 @@ if a test was observed to fail without the fix.
   `libFieldIdentityDuplicate` dylibs) and `libReconstruction.osize.stripped`.
   Found by comparing every `-o` and `cp` product in `Fixtures/Sample/build*.sh`
   against the list and against the names in `Tests/`.
+
+## 2026-10-23: untyped sends of struct-taking selectors
+
+- **FIXED (soundness): an untyped send of a selector that an image
+  implementation takes a struct for read the struct's registers as later
+  arguments.** With no signature for the receiver the explicit arguments
+  are read one x register each from x2, and only a floating-point
+  parameter in some implementation doubted that. A struct breaks it too:
+  `[u span:NSMakeRange(3, 4) count:5]` rendered `span:3 count:4` (the
+  range's location and length, from x2-x3), and at -O2 `[u place:p
+  flags:7]`, with the CGPoint passed through in d0-d1, rendered `place:7`.
+  On Chess the forwarding `[super initWithContentRect:…]` rendered
+  `initWithContentRect:0`, which was the style mask. Now any parameter
+  that is not an integer, pointer, object, class or selector doubts the
+  layout (`ObjCArgumentABI.takesOneXRegister`), from that parameter on:
+  each argument's register depends only on the ones before it, so the
+  arguments before the first such parameter in every implementation of
+  the selector keep their registers (`[u count:5 span:r]` reads `count:5
+  span:?`). This also keeps the leading integer arguments of a
+  float-taking selector, which the old rule declined whole.
+  `objc_untyped_struct.m` (-O0, -O2) holds the shapes and a control.
+
+  Blast radius: of every fixture view, only `objc_untyped_struct.m`'s,
+  plus `libObjCNonselfOutgoing` (`forwardWhole:11 ratio:? tail:?`, was
+  `forwardWhole:?`; the source passes 11) and `libObjCPackedStack`'s
+  listing and JSON (the untyped `pairs:` send's args note lists `g` and
+  `h` as `?` instead of trimming them; its pseudo view is unchanged).
+  Release `disasm --pseudo`: TextEdit unchanged; Chess one send (above);
+  Clarc 6 `insertText:replacementRange:` sends decline the NSRange
+  (`replacementRange:[? selectedRange]` read one word of it), so the
+  `selectedRange` send prints on its own; GoodLinks 3 sends gain a
+  leading argument the float rule had declined, each checked against the
+  listing (`reloadFromCacheWithGoogleAppID:r22`, where x2 is the retained
+  result of the send before it, and `attempts:1`, from `mov w2, #1`).
+  Terminal: 80 hunks once `let rN` renumbering is normalised away. 70
+  decline values at or after a struct or floating argument (`setFrame:1
+  display:?`, where 1 was `display:`; `updateContentSize:r1 rowCount:r2`,
+  where r1 was the row count), 4 keep an argument before one, and the rest
+  are calls that now print as statements because the send no longer
+  consumes their result. Two of those calls were missing from the old
+  render altogether (below).
+- **OPEN (completeness): a call whose result an untyped send reads past
+  its colon count vanished.** In Terminal's `-[TTAppPrefsController
+  thumbnailView]`, `setSelectedRange:NSMakeRange(a, b - a)` took x2 and x3
+  positionally; the pseudo view printed one argument, `r5`, and the second
+  `unicharOffsetForDisplayPosition:` call, whose result fed only x3, was
+  not printed anywhere. The fix above shows both calls there, because
+  Terminal implements `setSelectedRange:` with an NSRange. A selector
+  only the SDK implements still takes the positional path, so a call
+  consumed by an argument slot the send does not print can still vanish.
+- **OPEN (soundness): an untyped send to a receiver of known class that
+  inherits the selector is laid out by colon position.** The doubt above
+  applies only when the receiver's class is unknown. `[self span:r
+  count:5]` from `SDUntypedStructLeaf`, which inherits `span:count:` from
+  an image superclass without declaring it, still renders `span:3
+  count:4` (`objc_untyped_struct.m`, `sendInheritedSpan`).
+

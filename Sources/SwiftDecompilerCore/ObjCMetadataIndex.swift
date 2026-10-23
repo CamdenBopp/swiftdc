@@ -457,16 +457,22 @@ public struct ObjCMetadataIndex: Sendable {
         return matching.allSatisfy(\.returnsVoid)
     }
 
-    /// With no receiver identity, one indexed implementation that takes a
-    /// floating-point argument is enough to doubt that x2… carry the send's
-    /// arguments: the value may arrive in v0 while x2 holds something stale.
-    func selectorMayUseFloatingArguments(_ selector: String) -> Bool {
-        (bySelector[selector] ?? []).contains { method in
-            guard let types = ObjCArgumentABI.parameterTypes(encoding: method.typeEncoding,
-                                                            argumentCount: method.argumentCount)
-            else { return false }
-            return types.contains { ["f", "d", "D"].contains($0) }
-        }
+    /// With no receiver identity, the explicit arguments are read one x
+    /// register each from x2. One indexed implementation whose arguments do
+    /// not all travel that way is enough to doubt the layout from its first
+    /// such argument on: a floating-point value arrives in v0 while x2 holds
+    /// something stale, and an NSRange takes x2-x3, so `[u span:r count:5]`
+    /// rendered the range's location and length as `span:3 count:4`. The
+    /// arguments before it are where the layout reads them, because each
+    /// argument's register depends only on the ones before it.
+    ///
+    /// The number of leading arguments every implementation passes in one x
+    /// register each, or nil when they all pass every argument so.
+    func positionalArgumentPrefix(_ selector: String) -> Int? {
+        (bySelector[selector] ?? []).compactMap { method in
+            ObjCArgumentABI.parameterTypes(encoding: method.typeEncoding, argumentCount: method.argumentCount)?
+                .firstIndex { !ObjCArgumentABI.takesOneXRegister($0) }
+        }.min()
     }
 
     /// The runtime `__text` address of a method IMP as it appears in the ObjC

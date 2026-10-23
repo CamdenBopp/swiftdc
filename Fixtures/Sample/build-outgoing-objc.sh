@@ -14,3 +14,7 @@ xcrun clang -fobjc-arc -O2 -dynamiclib -framework Foundation objc_untyped_float.
 # ones by address, and the stack (closing a bank) when they do not fit.
 xcrun clang -fobjc-arc -O0 -dynamiclib -framework Foundation objc_aggregate_args.m -o libObjCAggregateArgs.dylib
 xcrun clang -fobjc-arc -O2 -dynamiclib -framework Foundation objc_aggregate_args.m -o libObjCAggregateArgs.opt.dylib
+# Untyped sends of selectors an in-image implementation takes a struct for:
+# the arguments do not take one x register each.
+xcrun clang -fobjc-arc -O0 -dynamiclib -framework Foundation objc_untyped_struct.m -o libObjCUntypedStruct.dylib
+xcrun clang -fobjc-arc -O2 -dynamiclib -framework Foundation objc_untyped_struct.m -o libObjCUntypedStruct.opt.dylib

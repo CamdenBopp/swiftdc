@@ -25,6 +25,15 @@ enum ObjCArgumentABI {
         return Array(types.dropFirst(3))
     }
 
+    /// Whether an argument of this type travels in one x register (or one
+    /// stack slot once they run out): an integer, pointer, object, class or
+    /// selector. A floating-point scalar takes a v register, and a struct
+    /// takes several registers or the address of a copy.
+    static func takesOneXRegister(_ type: String) -> Bool {
+        guard let code = type.first else { return false }
+        return "cCsSiIlLqQB@#:*^".contains(code)
+    }
+
     /// Where each explicit scalar argument arrives: `x<n>`, `v<n>` or
     /// `stack@<offset>`. A struct argument has no entry, because its value is
     /// several registers or the address of a copy, but it still uses up its
