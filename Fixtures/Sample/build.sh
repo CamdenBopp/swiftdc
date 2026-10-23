@@ -198,6 +198,9 @@ echo "==> call-arity fixture (-Onone and -O) — arguments laid out from the cal
 $SWIFTC -parse-as-library -Onone -emit-library -module-name CallArity callarity.swift -o libCallArity.dylib
 $SWIFTC -parse-as-library -O -emit-library -module-name CallArity callarity.swift -o libCallArity.opt.dylib
 
+echo "==> String and inout parameter footprints (stringarity.swift, -O): two registers for a String, one for inout"
+$SWIFTC -parse-as-library -O -emit-library -module-name StringArity stringarity.swift -o libStringArity.dylib
+
 echo "==> variadic ObjC fixture (-O1) — format arguments on the stack"
 $CLANG -O1 -fobjc-arc -framework Foundation -dynamiclib variadic.m -o libVariadic.dylib
 

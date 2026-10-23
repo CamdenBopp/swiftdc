@@ -3101,9 +3101,10 @@ public struct Disassembler: Sendable {
     /// integer after a Double reads in the Double's position. Laying the
     /// arguments out from the signature fixes both, but only where the footprint
     /// of every parameter is proven: integer-class and float-class scalars of
-    /// one register each, on independent counters (`scalarParameterClass`).
-    /// Declined: a parameter of any other type (a String is two registers, an
-    /// aggregate several, a generic or resilient one indirect), a generic or
+    /// one register each, on independent counters (`scalarParameterClass`),
+    /// plus the String and `inout` footprints of `swiftCallArgumentSlots`.
+    /// Declined: a parameter of any other type (an aggregate takes several
+    /// registers, a generic or resilient one is indirect), a generic or
     /// specialized or closure or thunk name (trailing metadata and witness
     /// tables, other conventions), `async` (the context and continuation), and
     /// an instance method whose `self` may be a value type, which travels after
@@ -3154,9 +3155,17 @@ public struct Disassembler: Sendable {
         return isStatic || !context.contains(".") || classTypeIndex.isClass(context)
     }
 
+    /// Each source parameter's register bank, how many registers of it the
+    /// parameter takes, and its demangled type. A scalar takes one; so does an
+    /// `inout` parameter of any type, which is passed as its address. A
+    /// `String` takes two integer registers (count and flags, then the object),
+    /// and so does a `String?`, whose nil is an extra inhabitant
+    /// (`takeOptString(nil, 7)` passes 0 in x0 and x1, 7 in x2). Any other
+    /// parameter declines the whole layout, and so does a typed throw, whose
+    /// error may travel through an extra pointer parameter.
     static func swiftCallArgumentSlots(
         callee: String, enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex
-    ) -> [(kind: ScalarParameterClass, type: String)]? {
+    ) -> [(kind: ScalarParameterClass, registers: Int, type: String)]? {
         guard let signature = DisassembledFunction.splitSignature(callee), !signature.isAsync,
               let range = DisassembledFunction.outermostArgumentListRange(of: signature.head)
         else { return nil }
@@ -3175,21 +3184,39 @@ public struct Disassembler: Sendable {
         else { return nil }
 
         let parameters = DisassembledFunction.splitTopLevelArguments(signature.head[range])
-        var layout: [(kind: ScalarParameterClass, type: String)] = []
+        var layout: [(kind: ScalarParameterClass, registers: Int, type: String)] = []
         var integers = 0, floats = 0
         for parameter in parameters {
-            guard let kind = scalarParameterClass(parameter, enumCaseIndex: enumCaseIndex,
-                                                  classTypeIndex: classTypeIndex)
-            else { return nil }
+            let type = parameterType(parameter)
+            let kind: ScalarParameterClass, registers: Int
+            if let scalar = scalarParameterClass(parameter, enumCaseIndex: enumCaseIndex,
+                                                 classTypeIndex: classTypeIndex) {
+                (kind, registers) = (scalar, 1)
+            } else if signature.thrownType == nil, let words = integerRegisterFootprint(ofParameterType: type) {
+                (kind, registers) = (.integer, words)
+            } else {
+                return nil
+            }
             switch kind {
-            case .integer: integers += 1
-            case .floating: floats += 1
+            case .integer: integers += registers
+            case .floating: floats += registers
             }
             guard integers <= 8, floats <= 8 else { return nil }
-            let type = parameter.range(of: ": ", options: .backwards).map { String(parameter[$0.upperBound...]) } ?? parameter
-            layout.append((kind, type.trimmingCharacters(in: .whitespaces)))
+            layout.append((kind, registers, type))
         }
         return layout
+    }
+
+    /// The two-word String types `swiftCallArgumentSlots` lays out.
+    static let twoWordStringTypes: Set<String> = ["Swift.String", "Swift.Optional<Swift.String>", "Swift.String?"]
+
+    /// The integer registers a parameter that is not a scalar takes, for the
+    /// shapes whose footprint the Swift ABI fixes whatever the image holds:
+    /// an `inout` address and a String's two words. Nil for anything else.
+    static func integerRegisterFootprint(ofParameterType type: String) -> Int? {
+        if type.hasPrefix("inout "), type.count > "inout ".count { return 1 }
+        if twoWordStringTypes.contains(type) { return 2 }
+        return nil
     }
 
     /// Maps each source-parameter index that is a no-payload enum to that enum's
@@ -3981,6 +4008,20 @@ public struct Disassembler: Sendable {
             return false
         }
 
+        /// The quoted literal a String's two words spell, when both are known:
+        /// a small string's bytes, or a large literal's count and object.
+        func swiftStringLiteral(_ low: AbstractValue, _ high: AbstractValue) -> String? {
+            guard case .immediate(let first) = low else { return nil }
+            if let object = Self.largeStringObjectAddress(high) {
+                return resolver.swiftLargeStringLiteral(
+                    objectAddress: object, count: Int(first & 0x0000_FFFF_FFFF_FFFF))
+            }
+            guard case .immediate(let second) = high,
+                  let string = ValueTracer.decodeSmallString(lo: first, hi: second)
+            else { return nil }
+            return "\"\(string)\""
+        }
+
         var argumentsByAddress: [UInt64: [AbstractValue]] = [:]
         /// Parameter types of the sites laid out from a signature.
         var laidOutTypes: [UInt64: [String]] = [:]
@@ -4022,6 +4063,11 @@ public struct Disassembler: Sendable {
             // A Swift callee with a proven layout gets exactly its parameters:
             // integer slots from x0… and float slots from v0…, each in order on
             // its own counter, with no trailing trim, so its arity shows.
+            // A String's two words are one argument, kept only as a literal
+            // both words spell: a known first word over an unknown second is
+            // not that String. Read one register per word, `takeTwo(_: String,
+            // _: Int)` with nothing tracked rendered `takeTwo()`, and with 7
+            // in x2 `takeTwo(?, ?, 7)`.
             if let callee = calleeByAddress[address],
                let slots = Self.swiftCallArgumentSlots(
                    callee: callee, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
@@ -4029,8 +4075,14 @@ public struct Disassembler: Sendable {
                 let laidOut: [AbstractValue] = slots.map { slot in
                     switch slot.kind {
                     case .integer:
-                        defer { integer += 1 }
-                        return integer < values.count ? values[integer] : .unknown
+                        defer { integer += slot.registers }
+                        let words = (integer ..< integer + slot.registers).map {
+                            $0 < values.count ? sanitizeValue(values[$0]) : AbstractValue.unknown
+                        }
+                        if words.count == 2 {
+                            return swiftStringLiteral(words[0], words[1]) != nil ? .aggregate(words) : .unknown
+                        }
+                        return words[0]
                     case .floating:
                         defer { floating += 1 }
                         return floating < site.floatArguments.count ? site.floatArguments[floating] : .unknown
@@ -4910,6 +4962,13 @@ public struct Disassembler: Sendable {
                 var parts: [String] = []
                 var index = 0
                 while index < values.count {
+                    // A String slot's two words, kept only when they spell a literal.
+                    if case .aggregate(let words) = values[index], words.count == 2,
+                       Self.twoWordStringTypes.contains(types[index]) {
+                        parts.append(swiftStringLiteral(words[0], words[1]) ?? unknownRenderedValue())
+                        index += 1
+                        continue
+                    }
                     if let literal = largeString(at: index) {
                         parts.append(literal)
                         index += 2

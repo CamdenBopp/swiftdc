@@ -108,6 +108,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libVectorLaneSwift.O.dylib",
         "Fixtures/Sample/libVectorLaneSwift.Onone.dylib",
         "Fixtures/Sample/libWritablePointer.dylib",
+        "Fixtures/Sample/libStringArity.dylib",
     ]
 
     /// True on a run that must actually exercise the fixtures. `CI` is set by

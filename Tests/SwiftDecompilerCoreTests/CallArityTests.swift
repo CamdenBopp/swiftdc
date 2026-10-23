@@ -10,7 +10,8 @@ import Foundation
 ///
 /// A parameter count alone is not a layout: a String is two registers, so a
 /// count cap on `sink(_: String, _: Int)` drops the Int. That was tried and
-/// reverted on 2026-10-12; the layout declines any parameter it cannot size.
+/// reverted on 2026-10-12; the layout sizes each parameter (a String's two
+/// registers since 2026-10-23) and declines any it cannot size.
 private let fixtures = ["Fixtures/Sample/libCallArity.dylib", "Fixtures/Sample/libCallArity.opt.dylib"]
 
 private func pseudo(_ filter: String, in fixture: String) async throws -> String {
@@ -54,11 +55,9 @@ private func pseudo(_ filter: String, in fixture: String) async throws -> String
     #expect(layout("M.mixed(Swift.Int, Swift.Double, Swift.Int) -> Swift.Double") == [.integer, .floating, .integer])
     #expect(layout("static M.S.make(Swift.Int) -> M.S") == [.integer])
     #expect(layout("M.S.init(x: Swift.Int) -> M.S") != nil)
-    // A String is two registers; generics carry trailing metadata; inout is a pointer
-    // to a value of unknown footprint here; async has a context.
-    #expect(layout("M.sink(Swift.String, Swift.Int) -> ()") == nil)
+    // Generics carry trailing metadata; async has a context. A String's two
+    // registers and an inout address are sized in StringArityTests.
     #expect(layout("M.gen<A>(Swift.Int, A) -> Swift.Int") == nil)
-    #expect(layout("M.bump(inout Swift.Int) -> ()") == nil)
     #expect(layout("M.wait(Swift.Int) async -> Swift.Int") == nil)
     // An instance method of a type not known to be a class: its self may be a
     // value passed after the formals.

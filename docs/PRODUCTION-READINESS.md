@@ -3465,7 +3465,8 @@ if a test was observed to fail without the fix.
   (`swift_weakLoadStrong()`: 55 on Clarc, 1,821 on GoodLinks), a Swift
   callee whose signature has a non-scalar parameter, which
   `swiftCallArgumentSlots` does not lay out (`Swift.String.append()`: 51
-  and 308), and a C callee of unknown arity (`bzero()`, `malloc()`) each
+  and 308; since 2026-10-23 only a value type's instance method or a
+  parameter outside the String and `inout` footprints), and a C callee of unknown arity (`bzero()`, `malloc()`) each
   print only the operands that were tracked, so nothing reads as nothing.
 
 ## 2026-10-22: findings from a read-only audit
@@ -3972,3 +3973,66 @@ if a test was observed to fail without the fix.
   `swift_allocObject` 3, `swift_weakLoadStrong` 1 and others) should land
   behind a gate that applies the arity only to a callee reached through a
   stub or bind.
+
+## 2026-10-23: Swift String and inout argument footprints
+
+- **FIXED (soundness): a call to a Swift callee with a String, `String?`
+  or `inout` parameter rendered the wrong number of arguments.**
+  `swiftCallArgumentSlots` declined the whole layout when any parameter
+  was not one scalar register, so with nothing tracked the call printed
+  no arguments, and with some registers tracked the positional fallback
+  printed one argument per register. In `stringarity.swift` (-O):
+  `takeTwo(_: String, _: Int)` read `takeTwo()`, `takeTwo(?, ?, 7)` and
+  `takeTwo(StringArity.makeString(arg0), ?, 7)`, `takeInout(&x, b)` read
+  `takeInout()`, `takeOptString(nil, 7)` read `takeOptString(0, 0, 7)`,
+  and the class method `Box.put(_: String, _: Int)` read
+  `Box.put(?, ?, 7)`. A slot now carries its register footprint: one for
+  a scalar and for `inout` of any type (its address), two integer
+  registers for `Swift.String` and `Swift.Optional<Swift.String>`. Each
+  declared parameter renders as one argument. A String renders as the
+  literal when both words spell one (small or large), and `?` otherwise:
+  a known first word over an unknown second is not that String. The
+  layout still declines a bank past eight registers, a typed throw, and
+  every other parameter type; the context guard is unchanged, so a value
+  type's instance method (`Swift.String.append`) is still not laid out.
+  The fixture now reads `takeTwo(?, ?)`, `takeTwo(?, 7)`,
+  `takeInout(?, ?)`, `takeOptString(?, 7)` for both callers and
+  `Box.put(?, 7)`, and keeps its literals (`takeTwo("hi", 7)`) (`stringAndInoutParametersAreOneArgumentEachIfPresent`,
+  `theLayoutSizesStringAndInoutParameters`). Blast radius: 4 views of 6
+  fixtures. `bump()` and `syncBump()` over an `inout Int` read `bump(?)`
+  (StaleSlot, AsyncInout); `Dog.__allocating_init(name:)` and the
+  `Animal`, `Dog` and `Widget` initializers in `sample` gain their
+  untracked String as `?`; `Dog.__allocating_init(name:breed:)` at
+  -Onone read three arguments for two (`String.init("Rex", 3, 1), ?,
+  String.init("Lab", 3, 1)`) and now reads `(?, ?)`, and `Widget.init(r0)`
+  over a bridged String reads `Widget.init(?)`, both with the call that
+  made the String printed as its own statement. Clarc `--pseudo` changes
+  107 lines to 116: about 50 calls with nothing tracked
+  (`LocalizedStringKey.init()`, `Image.init()`) gain their `?`; 37
+  printed a raw String word as an argument of its own (a high word over
+  an unknown low word, a newline or non-ASCII small string such as
+  `AttributedString.init(10, 0xe100000000000000)`, a large string's count
+  over an unknown object) and read `?`; 13 printed the empty string as
+  two arguments, `init(0, 0xe000000000000000)`, and read `?`; 11 passed a
+  call's first result word, and that call (13 lines) is now a statement
+  of its own; and `String.init(repeating:count:)` gains its untracked
+  count. `Swift.String.append()` stays at 51.
+- **OPEN (completeness): a String that is a call's result renders `?`.**
+  After a call, x1 is untracked, so `takeTwo(makeString(n), 7)` reads
+  `makeString(arg0)` then `takeTwo(?, 7)`, and the -Onone
+  `Dog(name: "Rex", breed: "Lab")` reads `"Rex"`, `"Lab"`, then
+  `Dog.__allocating_init(?, ?)`. Proving x1 as the second word of a callee
+  whose demangled result is `Swift.String` lets the slot render the
+  call. That same proof is what laying out a value type's instance
+  method (`Swift.String.append`) needs first, or the correct
+  `append(f())` renders (1,274 on Clarc and GoodLinks, counted by the
+  2026-10-22 audit) read `append(?)`.
+- **OPEN (completeness): some String literals the layout could prove
+  render `?`.** The empty string, `(0, 0xe000000000000000)` (13 on
+  Clarc), a small string with a control character (`"\n"` is
+  `(10, 0xe100000000000000)`) and a non-ASCII small string (discriminator
+  `0xa_`) are rejected by `ValueTracer.decodeSmallString`, which the
+  positional path shares; the typed String slot could accept them.
+- **OPEN (soundness): `Int?` and other two-register parameters are still
+  positional.** `takeOptInt(_: Int?, _: Int)` reads `takeOptInt(?, ?, 7)`
+  (a payload and a tag byte in x0 and x1, then x2).
