@@ -3866,3 +3866,37 @@ if a test was observed to fail without the fix.
   `argumentLayoutProbeTracesAreIdenticalAcrossProcessesIfPresent`
   compares four processes. Rendered output does not change: every fixture
   view, and Clarc and Terminal `disasm --pseudo`, are byte-identical.
+
+## 2026-10-23: floating values in vector registers and variadic slots
+
+- **FIXED (soundness): a scalar read of a zeroed vector register took
+  both lanes.** Clang and Swift make every floating zero with
+  `movi v0.2d, #0`, which writes all 128 bits, and the tracer holds that
+  as two eight-byte lanes. A read of `d0` took the whole pair: at -O0,
+  `movi v0.2d, #0; str d0, [x8]` stored the pair into one eight-byte
+  variadic slot, so `printf("%f|%d", 0.0, 1)` rendered
+  `printf("%f|%d", (0, 0), 1)` and `stringWithFormat:@"%f", 0.0` rendered
+  `(0, 0)`. A Double argument and a Double return read v0 whole as well:
+  Swift `laneTakes(0)` rendered `laneTakes((0, 0))` and `return 0` rendered
+  `return (0, 0)`, at -Onone and -O. A scalar view of a vector register
+  (`ValueTracer.scalarView`) is now its low lane: a `d` operand, every
+  call's floating arguments (each reader lays out a scalar `f`, `d`,
+  Double, Float or CGFloat) and the floating return. A view narrower than
+  a lane keeps a constant lane's low bits and declines anything else.
+  `vectorlane.m` (-O0, and -O2 where clang stores `xzr` instead) and
+  `vectorlane.swift` (-Onone and -O) hold the shapes. Blast radius: one
+  fixture call changes, `sample.debug`'s `Point(x: 0, y: 0)`
+  (`movi.2d v1, #0; mov.16b v0, v1; bl Point.init(x:y:)`), from
+  `sample.Point.init((0, 0), (0, 0))` to `sample.Point.init(0.0, 0.0)` in
+  `--pseudo`, `--structured`, the listing and `--json`; every other
+  fixture view is byte-identical. Clarc `--pseudo` changes two lines, both
+  `SwiftUI.Animation.spring(0.3, 0.85, (0, 0))` to `spring(0.3, 0.85, 0.0)`
+  (the defaulted `blendDuration: 0`); Terminal `--pseudo` is
+  byte-identical.
+- **OPEN (soundness): `dup` into four or eight lanes is held as two
+  eight-byte lanes.** The `dup` transfer requires only a general-register
+  source and a 128-bit destination, so `dup.4s v0, w0` (clang -O2 filling
+  an `int[8]` local, `stp q0, q0, [sp]`) writes `.aggregate([w0, w0])`,
+  while each eight-byte lane is `w0 | w0 << 32`. No fixture or app render
+  was seen to read those words; requiring a 64-bit source register is the
+  likely fix, with a fixture that reloads such a word.

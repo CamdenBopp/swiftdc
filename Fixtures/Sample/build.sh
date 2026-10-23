@@ -195,6 +195,12 @@ $SWIFTC -parse-as-library -O -emit-library -module-name CallArity callarity.swif
 echo "==> variadic ObjC fixture (-O1) — format arguments on the stack"
 $CLANG -O1 -fobjc-arc -framework Foundation -dynamiclib variadic.m -o libVariadic.dylib
 
+echo "==> vector-register lanes (vectorlane.m -O0/-O2, vectorlane.swift -Onone/-O): a d0 read after movi v0.2d, #0"
+$CLANG -arch arm64 -O0 -fobjc-arc -framework Foundation -dynamiclib vectorlane.m -o libVectorLane.O0.dylib
+$CLANG -arch arm64 -O2 -fobjc-arc -framework Foundation -dynamiclib vectorlane.m -o libVectorLane.O2.dylib
+$SWIFTC -parse-as-library -Onone -emit-library -module-name VectorLane vectorlane.swift -o libVectorLaneSwift.Onone.dylib
+$SWIFTC -parse-as-library -O -emit-library -module-name VectorLane vectorlane.swift -o libVectorLaneSwift.O.dylib
+
 echo "==> jump-table fixture (C, -O1) — compressed byte and halfword tables"
 $CLANG -O1 -dynamiclib switches.c -o libSwitches.dylib
 # arm64e lowers the same switches to the hardened form (csel clamp, ldrsw entries).

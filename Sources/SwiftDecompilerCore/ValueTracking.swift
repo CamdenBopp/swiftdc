@@ -935,8 +935,10 @@ public struct ValueTracer: Sendable {
                 if isAsyncReturn, let value = registers[.x(20)], value != .unknown {
                     result.exitAsyncErrorValues[insn.address] = value
                 }
+                // A floating return is a scalar in d0 or s0: the d view, not
+                // the whole register (`movi v0.2d, #0; ret` is `return 0`).
                 if insn.controlFlow == .return || isAsyncReturn,
-                   let value = registers[.v(0)], value != .unknown {
+                   let value = registers[.v(0)].map({ Self.scalarView($0, bits: 64) }), value != .unknown {
                     result.exitFloatValues[insn.address] = value
                 }
                 // x1 at a return is the first yielded value of a `yield_once`
@@ -1415,7 +1417,9 @@ public struct ValueTracer: Sendable {
         }
         return CallSite(
             arguments: trimTrailingUnknown(args) ?? [],
-            floatArguments: (0...7).map { registers[.v($0)] ?? .unknown },
+            // Every reader lays out a scalar `float`/`double` here (an ObjC `f`
+            // or `d`, a Swift Double/Float/CGFloat), so each is the d view.
+            floatArguments: (0...7).map { scalarView(registers[.v($0)] ?? .unknown, bits: 64) },
             stackArguments: stackArguments,
             stackArgumentWidths: stackArgumentWidths,
             // Only when freshly set for *this* Swift call — see selfFreshKey.
@@ -3330,6 +3334,20 @@ public struct ValueTracer: Sendable {
         return expression(.bitAnd, value, .immediate(mask))
     }
 
+    /// What a scalar view of a vector register holds: `d0` is the low 64 bits
+    /// of v0, `s0` the low 32. An `.aggregate` is the whole register as its
+    /// eight-byte lanes, so `movi v0.2d, #0; str d0, [sp]` stores lane 0 alone;
+    /// stored whole, `printf("%f|%d", 0.0, 1)` rendered the double as `(0, 0)`.
+    /// A view narrower than a lane keeps a constant lane's low bits and
+    /// declines anything else. Any other value passes through as it was.
+    static func scalarView(_ value: AbstractValue, bits: Int) -> AbstractValue {
+        guard case .aggregate(let lanes) = value, bits < 128 else { return value }
+        guard let low = lanes.first else { return .unknown }
+        if bits == 64 { return low }
+        guard bits < 64, case .immediate(let word) = low else { return .unknown }
+        return .immediate(word & ((1 << UInt64(bits)) - 1))
+    }
+
     private func signExtended(_ value: AbstractValue, bits: Int) -> AbstractValue {
         let shift = UInt64(64 - bits)
         return expression(.arithmeticShiftRight,
@@ -3776,6 +3794,7 @@ public struct ValueTracer: Sendable {
         guard let reg = operand.operand.register else { return .unknown }
         if reg.kind == .zero { return .immediate(0) }
         var value = registers[Location(reg)] ?? .unknown
+        if reg.kind == .vector { value = Self.scalarView(value, bits: reg.widthBits) }
         // A 32-bit register is the low word of its 64-bit key. `cmp w8, w9`
         // with x8 = 0x1_0000_0001 compares 1, not the whole value. A known
         // constant is cut exactly, and sign- or zero-extended when the
