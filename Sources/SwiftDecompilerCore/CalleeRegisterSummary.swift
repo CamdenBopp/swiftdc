@@ -81,8 +81,13 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// them to the caller changed: a body that never writes x19 itself still
     /// clobbers it through `bl clobber` or `b clobber`, and one whose
     /// epilogue is an outlined fragment still restores what it saved.
+    ///
+    /// `calleeArity` gives, for a call target, how many argument registers it
+    /// takes when that is known (`DisassembledFunction.knownCArity`). A call to
+    /// it reads only those; any other call may read every argument register.
     static func of(
-        _ function: DisassembledFunction, calleeEffects: (UInt64) -> CalleeEffect = { _ in CalleeEffect() }
+        _ function: DisassembledFunction, calleeEffects: (UInt64) -> CalleeEffect = { _ in CalleeEffect() },
+        calleeArity: (UInt64) -> Int? = { _ in nil }
     ) -> CalleeRegisterSummary? {
         let instructions = function.instructions
         guard !instructions.isEmpty, instructions.allSatisfy({ $0.detail != nil }) else { return nil }
@@ -118,8 +123,12 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                     || (insn.controlFlow == .branch && !internalBranch && block.switchCases == nil)
                 if leavesThroughCall {
                     // The callee may read any argument register still holding
-                    // this function's incoming value.
-                    argumentKeys.forEach(read)
+                    // this function's incoming value, or only its parameters:
+                    // a metadata accessor whose one call is `objc_opt_self`
+                    // of an address it loads reads no argument, and its
+                    // callers printed x1-x3 as arguments to it.
+                    let arity = insn.branchTarget.flatMap(calleeArity) ?? argumentKeys.count
+                    argumentKeys.prefix(arity).forEach(read)
                 }
                 // Operands without access flags are counted as read, so a gap
                 // in Capstone's tables cannot hide an argument.

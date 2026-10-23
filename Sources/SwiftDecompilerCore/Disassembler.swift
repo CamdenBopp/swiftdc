@@ -717,6 +717,7 @@ public struct Disassembler: Sendable {
         var targets = Set<UInt64>()
         var indirectResultUses: [UInt64: IndirectResultUse] = [:]
         var registerSummaries: [UInt64: CalleeRegisterSummary] = [:]
+        let arity = { [names] target in self.knownArity(ofCallTarget: target, names: names, cacheSymbols: cacheSymbols) }
         for index in boundaries.indices {
             // Muted: pass 2 decodes the same span again and records its events.
             let instructions = Probe.muted { capstoneInstructions(in: machO, span: span(index)) }
@@ -731,7 +732,7 @@ public struct Disassembler: Sendable {
                     metadataNames: metadataNames, objcIndex: objcIndex
                 )
                 indirectResultUses[boundaries[index]] = Self.indirectResultUse(of: function)
-                registerSummaries[boundaries[index]] = CalleeRegisterSummary.of(function)
+                registerSummaries[boundaries[index]] = CalleeRegisterSummary.of(function, calleeArity: arity)
             }
         }
         // Clobbers and reloads carried through calls; the few functions
@@ -746,7 +747,7 @@ public struct Disassembler: Sendable {
                 labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
                 metadataNames: metadataNames, objcIndex: objcIndex
             )
-            return Probe.muted { CalleeRegisterSummary.of(function, calleeEffects: effects) }
+            return Probe.muted { CalleeRegisterSummary.of(function, calleeEffects: effects, calleeArity: arity) }
         }
         names = resolveCrossImageNames(targets, into: names, resolver: cacheSymbols)
         let resolver = ReferenceResolver(
@@ -1004,8 +1005,13 @@ public struct Disassembler: Sendable {
                 uniquingKeysWith: { a, _ in a }
             ),
             registerSummaries: {
+                let arity = { target in
+                    self.knownArity(ofCallTarget: target, names: resolver.names, cacheSymbols: cacheSymbols)
+                }
                 var summaries = Dictionary(
-                    functions.compactMap { function in CalleeRegisterSummary.of(function).map { (function.startAddress, $0) } },
+                    functions.compactMap { function in
+                        CalleeRegisterSummary.of(function, calleeArity: arity).map { (function.startAddress, $0) }
+                    },
                     uniquingKeysWith: { a, _ in a }
                 )
                 var bodies = Dictionary(functions.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
@@ -1029,7 +1035,7 @@ public struct Disassembler: Sendable {
                             symbol: "sub_\(String(target, radix: 16))", demangledName: nil,
                             startAddress: target, instructions: instructions, source: .address)
                         bodies[target] = body
-                        guard let summary = Probe.muted({ CalleeRegisterSummary.of(body) }) else { continue }
+                        guard let summary = Probe.muted({ CalleeRegisterSummary.of(body, calleeArity: arity) }) else { continue }
                         summaries[target] = summary
                         next.formUnion(summary.callees.filter { summaries[$0] == nil && boundaries.contains($0) })
                     }
@@ -1037,7 +1043,7 @@ public struct Disassembler: Sendable {
                 }
                 CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects in
                     bodies[start].flatMap { function in
-                        Probe.muted { CalleeRegisterSummary.of(function, calleeEffects: effects) }
+                        Probe.muted { CalleeRegisterSummary.of(function, calleeEffects: effects, calleeArity: arity) }
                     }
                 }
                 return summaries
@@ -1574,6 +1580,18 @@ public struct Disassembler: Sendable {
     }
 
     /// Resolve accumulated cross-image call targets to names.
+    /// The known argument count of a call target, by the name a call to it
+    /// renders: an in-image or stub name, else the dyld cache's, so the
+    /// whole-image and streaming paths agree.
+    private func knownArity(
+        ofCallTarget target: UInt64, names: [UInt64: String], cacheSymbols: CacheSymbolResolver?
+    ) -> Int? {
+        let name = names[target] ?? cacheSymbols?.name(forCallTarget: target).map {
+            demangle($0) ?? Self.stripLeadingUnderscore($0)
+        }
+        return name.flatMap(DisassembledFunction.knownCArity(of:))
+    }
+
     private func resolveCrossImageNames(
         _ targets: Set<UInt64>, into names: [UInt64: String], resolver: CacheSymbolResolver?
     ) -> [UInt64: String] {

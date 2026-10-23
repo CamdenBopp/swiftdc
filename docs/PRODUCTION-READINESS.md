@@ -4111,3 +4111,40 @@ if a test was observed to fail without the fix.
   Clarc and GoodLinks unchanged; Terminal 3 `[self setSelectedRange:r1]`
   sends in `RawTextView`, where r1 was one word of the NSRange
   `selectionRangeForProposedRange:granularity:` returned, now read `?`.
+
+## 2026-10-23: calls of known arity inside a callee's body
+
+- **FIXED (soundness): a call inside a body was taken to read every
+  argument register.** A signatureless in-image callee passes what its
+  body reads (`CalleeRegisterSummary.argumentReads`), and any call in the
+  body counted as reading x0-x7 that the body had not yet written. A
+  metadata accessor whose body is `adrp x0; add x0; bl objc_opt_self; mov
+  x1, #0; ret` therefore summarized as reading x1-x7, and its callers
+  passed it whatever those held: `runtimearity.swift`'s `@objc`
+  initializer rendered `type metadata accessor for
+  RuntimeArity.RuntimeArityOpenEvent  args(self, ?, arg0, arg1)`, its own
+  arguments. A call to a target of known arity (`knownCArity`, by the
+  name the call renders, the dyld cache's included so the streaming and
+  array paths agree) now reads only that many registers. This settles the
+  MITIGATED item's "a non-generic metadata accessor, whose body never
+  reads x0, renders `accessor(arg0)`" wherever the accessor's own calls
+  have known arity. Blast radius: 12 fixtures, every change an argument
+  a callee's body never reads (`type metadata accessor for
+  ABISource.ABIRef(arg0)` → `()`, `Cow.Storage(?)` → `()`; the
+  `String._unconditionallyBridgeFromObjectiveC` result that only fed such
+  an accessor is no longer bound; `sample.Circle.name.getter`, whose self
+  is in x20, no longer takes `memcpy`'s result in x0). Release `disasm
+  --pseudo`, lines changed once `let rN` renumbering is normalised:
+  Terminal 65, TextEdit 29 (`defaultValues(r#)` → `defaultValues()`, a
+  `(void)` function), Chess 71 (`sub_1000271ac` takes x0-x2, read before
+  its first call), Clarc 530, GoodLinks 9,269 in 3,990 hunks, almost all
+  `sub_…(0)` accessors whose bodies never read the request. No printed
+  call disappeared in any app (each callee's call count is the same or
+  higher); 47 GoodLinks lines lost a second reference to an unresolved
+  call's result, which they had passed as a fabricated argument.
+- **OPEN (soundness): runtime entry points outside `knownCArity` still
+  take every live register.** `runtimearity.swift`'s final class calls
+  `swift_getObjectType(self, ?, arg0, arg1)`, which takes one argument
+  (swift/include/swift/Runtime/Casting.h:231). A survey of the apps
+  against RuntimeFunctions.def found it and five more rendered wider than
+  declared.
