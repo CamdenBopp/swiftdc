@@ -1,6 +1,19 @@
 import Ccapstone
 import Foundation
 
+/// What a call or tail branch to an in-image function does to the caller's
+/// callee-saved registers, as that function's body proves it.
+struct CalleeEffect: Sendable, Equatable {
+    /// Registers the callee leaves holding a value the caller cannot name.
+    var clobbers: Set<String> = []
+    /// Registers the callee reloads from the caller's frame: the eight bytes
+    /// at the stack pointer of the call (or tail branch) plus this offset.
+    /// LLVM's machine outliner moves an epilogue (`ldp x20, x19, [sp, #0x20];
+    /// …; b objc_release`) into a fragment its functions tail-branch to; the
+    /// fragment never saves x19, yet it hands back what the function saved.
+    var restores: [String: Int64] = [:]
+}
+
 /// What an in-image function's own body proves about the registers a call to
 /// it uses, for callees no signature describes.
 ///
@@ -26,6 +39,30 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// register does not hold its entry value. Anything unproven counts as
     /// clobbered.
     let clobberedCalleeSaved: Set<String>
+    /// The clobbered registers the body never stores to memory: changed and
+    /// not saved anywhere (an outlined fragment writing x19). Only these
+    /// carry through calls. A register the body saves but whose save slot
+    /// the analysis cannot prove intact (a frame address passed to a callee)
+    /// is clobbered for its direct callers, as before, and goes no further:
+    /// carried up the call graph, that caution cost thousands of correct
+    /// lines on real apps. x21 is left out too: it is Swift's error
+    /// register, which every throwing function changes, and each call site
+    /// models it already (`callPreservesX21`); carried through callers it
+    /// made a later store through x21 look like a store into their saves.
+    var definitelyClobbered: Set<String> = []
+    /// Of the definitely clobbered registers, those that hold at every exit
+    /// the eight bytes at entry sp + k, read before the body could have
+    /// written there: an outlined epilogue reloading what its caller saved.
+    var restoredFrom: [String: Int64] = [:]
+    /// The other functions this body calls or tail-branches to directly, in
+    /// address order: the ones whose clobbers can reach through it.
+    var callees: [UInt64] = []
+
+    /// What a call to this function does to its caller's callee-saved
+    /// registers, as far as it carries beyond the direct callers.
+    var effect: CalleeEffect {
+        CalleeEffect(clobbers: definitelyClobbered.subtracting(restoredFrom.keys), restores: restoredFrom)
+    }
 
     /// The integer arguments a call to this function can pass: through the
     /// highest argument register it reads. Unread registers below that are
@@ -37,7 +74,16 @@ struct CalleeRegisterSummary: Sendable, Equatable {
 
     /// Nil when any instruction lacks structured detail: nothing is claimed
     /// about a body that was not fully decoded.
-    static func of(_ function: DisassembledFunction) -> CalleeRegisterSummary? {
+    ///
+    /// `calleeEffects` names, for another function's start, the callee-saved
+    /// registers it definitely changes and those it reloads from its caller's
+    /// frame. A call to it leaves them changed, and a tail branch to it hands
+    /// them to the caller changed: a body that never writes x19 itself still
+    /// clobbers it through `bl clobber` or `b clobber`, and one whose
+    /// epilogue is an outlined fragment still restores what it saved.
+    static func of(
+        _ function: DisassembledFunction, calleeEffects: (UInt64) -> CalleeEffect = { _ in CalleeEffect() }
+    ) -> CalleeRegisterSummary? {
         let instructions = function.instructions
         guard !instructions.isEmpty, instructions.allSatisfy({ $0.detail != nil }) else { return nil }
         let addresses = Set(instructions.map(\.address))
@@ -97,14 +143,145 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         }
 
         var writtenCalleeSaved = Set<String>()
+        var storedCalleeSaved = Set<String>()
+        var callees = Set<UInt64>()
         for insn in instructions {
             guard let detail = insn.detail else { return nil }
             writtenCalleeSaved.formUnion(detail.writtenRegisterKeys.intersection(calleeSavedKeys))
+            if detail.operands.contains(where: { if case .memory = $0.operand { $0.isWritten } else { false } }) {
+                for info in detail.operands where info.isRead {
+                    if case .register(let register) = info.operand, register.kind == .gpr,
+                       calleeSavedKeys.contains(register.key) {
+                        storedCalleeSaved.insert(register.key)
+                    }
+                }
+            }
+            if insn.controlFlow == .call || insn.controlFlow == .branch,
+               let target = insn.branchTarget, !addresses.contains(target) {
+                callees.insert(target)
+                let effect = calleeEffects(target)
+                writtenCalleeSaved.formUnion(effect.clobbers)
+                writtenCalleeSaved.formUnion(effect.restores.keys)
+            }
         }
-        let clobbered = writtenCalleeSaved.isEmpty
-            ? []
-            : Preservation.unrestored(writtenCalleeSaved, blocks: blocks, entry: entry, addresses: addresses)
-        return CalleeRegisterSummary(argumentReads: reads, clobberedCalleeSaved: clobbered)
+        func external(_ insn: Instruction) -> UInt64? {
+            guard let target = insn.branchTarget, !addresses.contains(target) else { return nil }
+            return target
+        }
+        var clobbered = Set<String>()
+        var restoredFrom: [String: Int64] = [:]
+        if !writtenCalleeSaved.isEmpty {
+            let exits = Preservation.exitValues(
+                blocks: blocks, entry: entry, addresses: addresses,
+                callEffect: { insn in insn.controlFlow == .call ? external(insn).map(calleeEffects) ?? CalleeEffect() : CalleeEffect() },
+                exitEffect: { insn in insn.controlFlow == .branch ? external(insn).map(calleeEffects) ?? CalleeEffect() : CalleeEffect() },
+                // A callee's definite clobber is an unknown value, not a frame
+                // address: read as one, a later store through it unproved
+                // every save the caller made, and a method one call up lost
+                // `self` across a call it never passed self to.
+                clobbersMayAliasStack: false)
+            if let exits {
+                for values in exits.values {
+                    clobbered.formUnion(writtenCalleeSaved.filter { values[$0] != .entry($0) })
+                }
+                // A reload holds only if every exit reloads the same slot.
+                for key in clobbered {
+                    let offsets = Set(exits.values.map { values -> Int64? in
+                        if case .incoming(let offset)? = values[key] { offset } else { nil }
+                    })
+                    if offsets.count == 1, let offset = offsets.first ?? nil { restoredFrom[key] = offset }
+                }
+            } else {
+                clobbered = writtenCalleeSaved
+            }
+        }
+        let definitelyClobbered = clobbered.subtracting(storedCalleeSaved).subtracting(["x21"])
+        return CalleeRegisterSummary(
+            argumentReads: reads, clobberedCalleeSaved: clobbered,
+            definitelyClobbered: definitelyClobbered,
+            restoredFrom: restoredFrom.filter { definitelyClobbered.contains($0.key) },
+            callees: callees.sorted())
+    }
+
+    /// A summary that claims nothing about callee-saved registers.
+    private func claimingNothing() -> CalleeRegisterSummary {
+        CalleeRegisterSummary(
+            argumentReads: argumentReads, clobberedCalleeSaved: Self.calleeSavedKeys,
+            definitelyClobbered: Self.calleeSavedKeys, callees: callees)
+    }
+
+    /// Carries callee effects through calls: a function whose callees change
+    /// a register may not hand it back either, and one whose epilogue is an
+    /// outlined fragment gets back what that fragment reloads. Each summary
+    /// whose callees change anything is rebuilt from their current effects
+    /// (`recompute`), and its callers again whenever its own effect changes,
+    /// until nothing changes. Every summary is then built from its callees'
+    /// final effects, which is what makes it sound: by induction over a
+    /// returning call's depth, each callee keeps the effect its caller
+    /// assumed. A rebuild replaces the summary rather than merging with it,
+    /// since a first summary built before its callees' effects were known is
+    /// not a claim to keep: merged in, a function that writes x19 itself
+    /// kept that clobber after its outlined epilogue was seen to reload it.
+    ///
+    /// A run still changing at the cap claims nothing for the functions
+    /// waiting to be rebuilt and for every function that calls one of them,
+    /// directly or not: those were built on effects that are now stale.
+    static func closeOverCalls(
+        _ summaries: inout [UInt64: CalleeRegisterSummary],
+        cap fixedCap: Int? = nil,
+        recompute: (UInt64, (UInt64) -> CalleeEffect) -> CalleeRegisterSummary?
+    ) {
+        var callers: [UInt64: [UInt64]] = [:]
+        for start in summaries.keys.sorted() {
+            for callee in summaries[start]?.callees ?? [] where summaries[callee] != nil {
+                callers[callee, default: []].append(start)
+            }
+        }
+        var worklist = summaries.keys.sorted().filter { start in
+            summaries[start]?.callees.contains { summaries[$0]?.definitelyClobbered.isEmpty == false } == true
+        }
+        var queued = Set(worklist)
+        var rounds = 0
+        // A run that settles rebuilds each function a few times at most; the
+        // cap stops only one whose effects keep feeding each other (a cycle).
+        let edges = callers.values.reduce(0) { $0 + $1.count }
+        let cap = fixedCap ?? (summaries.count + (2 * calleeSavedKeys.count + 1) * edges + 64)
+        while !worklist.isEmpty {
+            let start = worklist.removeFirst()
+            queued.remove(start)
+            rounds += 1
+            guard rounds <= cap else {
+                Probe.record(.summaryCap, at: start, ["pass": .label("call-clobbers")])
+                var unsettled = Set([start] + worklist)
+                var pending = unsettled.sorted()
+                while let next = pending.popLast() {
+                    for caller in callers[next] ?? [] where unsettled.insert(caller).inserted {
+                        pending.append(caller)
+                    }
+                }
+                for function in unsettled.sorted() {
+                    summaries[function] = summaries[function]?.claimingNothing()
+                }
+                return
+            }
+            guard let old = summaries[start] else { continue }
+            // A body that cannot be summarised again claims nothing, rather
+            // than keeping a summary built before its callees were known.
+            let rebuilt = recompute(start, { summaries[$0]?.effect ?? CalleeEffect() }) ?? old.claimingNothing()
+            let new = CalleeRegisterSummary(
+                argumentReads: old.argumentReads,
+                clobberedCalleeSaved: rebuilt.clobberedCalleeSaved,
+                definitelyClobbered: rebuilt.definitelyClobbered,
+                restoredFrom: rebuilt.restoredFrom,
+                callees: old.callees)
+            guard new != old else { continue }
+            summaries[start] = new
+            guard new.effect != old.effect else { continue }
+            for caller in callers[start] ?? [] where !queued.contains(caller) {
+                worklist.append(caller)
+                queued.insert(caller)
+            }
+        }
     }
 }
 
@@ -116,14 +293,18 @@ struct CalleeRegisterSummary: Sendable, Equatable {
 /// value, an address `entry sp + k`, or unknown. Moves copy values; `add`/`sub`
 /// of an immediate move addresses; stores and loads through a known stack
 /// address (pre- and post-index included) save and reload them; anything else
-/// a register is written with is unknown. At every exit, a `ret` or a tail
-/// branch out, a register holding anything but its own entry value is not
-/// preserved. Joins keep only what every path agrees on, and an unfinished
-/// fixpoint gives up on every written register.
+/// a register is written with is unknown. A load from entry sp or above that
+/// no write since entry can have reached reads the caller's own bytes,
+/// `incoming(k)`: what an outlined epilogue reloads. At every exit, a `ret`
+/// or a tail branch out, a register holding anything but its own entry value
+/// is not preserved. Joins keep only what every path agrees on, and an
+/// unfinished fixpoint gives up on every written register.
 enum Preservation {
     enum Value: Hashable {
         case entry(String)
         case stack(Int64)
+        /// The eight bytes at entry sp + k, as they were at entry.
+        case incoming(Int64)
         case unknown
     }
 
@@ -136,6 +317,10 @@ enum Preservation {
         // join can lose an exact address while retaining a feasible alias.
         var stackAliases: Set<String> = ["sp"]
         var stackAddressEscaped = false
+        // No write since entry can have reached entry sp or above, so a load
+        // there with no slot fact still reads the caller's bytes. Any call,
+        // any write of unknown extent and any store reaching that far ends it.
+        var incomingIntact = true
 
         mutating func setRegister(_ key: String, to value: Value, mayAliasStack: Bool = false) {
             registers[key] = value == .unknown ? nil : value
@@ -146,16 +331,47 @@ enum Preservation {
 
         func value(_ key: String) -> Value { registers[key] ?? .unknown }
 
+        /// The value of the eight bytes at entry sp + `address`.
+        func load(at address: Int64) -> Value {
+            if let value = slots[address] { return value }
+            return address >= 0 && incomingIntact ? .incoming(address) : .unknown
+        }
+
+        /// What a callee's reloads (`CalleeEffect.restores`) hand back, read
+        /// from this state at the call or tail branch: the callee's entry sp
+        /// is the stack pointer here.
+        func reloaded(_ effect: CalleeEffect) -> [String: Value] {
+            var values: [String: Value] = [:]
+            for (key, offset) in effect.restores {
+                guard case .stack(let sp) = value("sp") else {
+                    values[key] = .unknown
+                    continue
+                }
+                let (address, overflow) = sp.addingReportingOverflow(offset)
+                values[key] = overflow ? .unknown : load(at: address)
+            }
+            return values
+        }
+
+        /// A callee's clobbers and reloads, the reloads already read with
+        /// `reloaded` before the call could change memory.
+        mutating func apply(_ effect: CalleeEffect, reloaded: [String: Value], clobbersMayAliasStack: Bool) {
+            for key in effect.clobbers { setRegister(key, to: .unknown, mayAliasStack: clobbersMayAliasStack) }
+            for (key, value) in reloaded { setRegister(key, to: value) }
+        }
+
         func merged(with other: State) -> State {
             State(
                 registers: registers.filter { other.registers[$0.key] == $0.value },
                 slots: slots.filter { other.slots[$0.key] == $0.value },
                 stackAliases: stackAliases.union(other.stackAliases),
-                stackAddressEscaped: stackAddressEscaped || other.stackAddressEscaped
+                stackAddressEscaped: stackAddressEscaped || other.stackAddressEscaped,
+                incomingIntact: incomingIntact && other.incomingIntact
             )
         }
 
         mutating func invalidateSlotsForUnknownWrite(throughStackAlias: Bool) {
+            incomingIntact = false
             if throughStackAlias || stackAddressEscaped {
                 slots.removeAll()
                 return
@@ -172,9 +388,11 @@ enum Preservation {
         mutating func invalidateSlots(at address: Int64, bytes: Int) {
             let (end, overflow) = address.addingReportingOverflow(Int64(bytes))
             guard bytes > 0, !overflow else {
+                incomingIntact = false
                 slots.removeAll()
                 return
             }
+            if end > 0 { incomingIntact = false }
             slots = slots.filter { start, _ in
                 let (slotEnd, slotOverflow) = start.addingReportingOverflow(8)
                 return !slotOverflow && (slotEnd <= address || start >= end)
@@ -182,32 +400,42 @@ enum Preservation {
         }
     }
 
-    static func unrestored(
-        _ written: Set<String>, blocks: [BasicBlock], entry: UInt64, addresses: Set<UInt64>
-    ) -> Set<String> {
-        guard let exits = entryValuesAtExits(blocks: blocks, entry: entry, addresses: addresses) else {
-            return written
-        }
-        var clobbered = Set<String>()
-        for preserved in exits.values { clobbered.formUnion(written.subtracting(preserved)) }
-        return clobbered
-    }
-
     /// For each exit (a `ret`, or a tail branch out), the callee-saved
     /// registers that hold their entry values there on every path. Nil when
     /// the body is not fully decoded or the fixpoint is capped: nothing is
     /// claimed then. An exit no path from the entry reaches is absent.
-    ///
-    /// `callClobbers` names registers a call does not hand back despite the
-    /// ABI (a callee that may throw redefines x21; an outlined fragment can
-    /// write any of them). They may hold a frame address afterwards.
-    /// `excluding` drops edges whose paths are accounted for elsewhere (a
-    /// throw merged into a shared epilogue); exits are judged without them.
     static func entryValuesAtExits(
         blocks: [BasicBlock], entry: UInt64, addresses: Set<UInt64>,
         excluding excludedEdges: Set<CFGEdge> = [],
-        callClobbers: (Instruction) -> Set<String> = { _ in [] }
+        callEffect: (Instruction) -> CalleeEffect = { _ in CalleeEffect() },
+        exitEffect: (Instruction) -> CalleeEffect = { _ in CalleeEffect() },
+        clobbersMayAliasStack: Bool = true
     ) -> [UInt64: Set<String>]? {
+        exitValues(
+            blocks: blocks, entry: entry, addresses: addresses, excluding: excludedEdges,
+            callEffect: callEffect, exitEffect: exitEffect, clobbersMayAliasStack: clobbersMayAliasStack
+        )?.mapValues { values in Set(values.filter { $0.value == .entry($0.key) }.keys) }
+    }
+
+    /// For each exit, what each callee-saved register holds there on every
+    /// path (a register absent is unknown). Nil when the body is not fully
+    /// decoded or the fixpoint is capped: nothing is claimed then.
+    ///
+    /// `callEffect` names registers a call does not hand back despite the
+    /// ABI (a callee that may throw redefines x21; an outlined fragment can
+    /// write any of them, or reload them from this frame). Its clobbers may
+    /// hold a frame address afterwards unless `clobbersMayAliasStack` is
+    /// false. `excluding` drops edges whose paths are accounted for elsewhere
+    /// (a throw merged into a shared epilogue); exits are judged without
+    /// them. `exitEffect` is what a tail branch's target does after this body
+    /// exits through it.
+    static func exitValues(
+        blocks: [BasicBlock], entry: UInt64, addresses: Set<UInt64>,
+        excluding excludedEdges: Set<CFGEdge> = [],
+        callEffect: (Instruction) -> CalleeEffect = { _ in CalleeEffect() },
+        exitEffect: (Instruction) -> CalleeEffect = { _ in CalleeEffect() },
+        clobbersMayAliasStack: Bool = true
+    ) -> [UInt64: [String: Value]]? {
         let calleeSaved = (19...29).map { "x\($0)" }
         var initial = State(registers: ["sp": .stack(0)], slots: [:])
         for key in calleeSaved { initial.registers[key] = .entry(key) }
@@ -215,7 +443,7 @@ enum Preservation {
         var inState: [UInt64: State] = [entry: initial]
         // States only shrink, so the last visit of an exit is the smallest;
         // intersecting every visit yields it without tracking which was last.
-        var exits: [UInt64: Set<String>] = [:]
+        var exits: [UInt64: [String: Value]] = [:]
         var worklist = [entry]
         var visits = 0
         while let start = worklist.popLast() {
@@ -231,11 +459,19 @@ enum Preservation {
                 let isExit = insn.controlFlow == .return
                     || (insn.controlFlow == .branch && !internalBranch && block.switchCases == nil)
                 if isExit {
-                    let preserved = Set(calleeSaved.filter { state.value($0) == .entry($0) })
-                    exits[insn.address] = exits[insn.address].map { $0.intersection(preserved) } ?? preserved
+                    var exitState = state
+                    let effect = exitEffect(insn)
+                    exitState.apply(
+                        effect, reloaded: exitState.reloaded(effect), clobbersMayAliasStack: clobbersMayAliasStack)
+                    var values: [String: Value] = [:]
+                    for key in calleeSaved where exitState.value(key) != .unknown { values[key] = exitState.value(key) }
+                    exits[insn.address] = exits[insn.address].map { $0.filter { values[$0.key] == $0.value } } ?? values
                     continue
                 }
                 if insn.controlFlow == .call {
+                    let effect = callEffect(insn)
+                    // The callee reads its reloads before it can write anything.
+                    let reloaded = state.reloaded(effect)
                     // A callee may mutate any save whose address it can
                     // reach. sp/x29 alone are ordinary frame bookkeeping;
                     // any other frame alias can be an outgoing argument,
@@ -247,7 +483,7 @@ enum Preservation {
                     // The callee keeps the ABI: x19–x29 and sp survive it.
                     for index in 0...18 { state.setRegister("x\(index)", to: .unknown) }
                     state.setRegister("x30", to: .unknown)
-                    for key in callClobbers(insn) { state.setRegister(key, to: .unknown, mayAliasStack: true) }
+                    state.apply(effect, reloaded: reloaded, clobbersMayAliasStack: clobbersMayAliasStack)
                     continue
                 }
                 apply(detail, to: &state)
@@ -347,7 +583,7 @@ enum Preservation {
             for offset in 0..<count {
                 guard let destination = register(offset) else { continue }
                 if let address, destination.widthBits == 64 {
-                    state.setRegister(destination.key, to: state.slots[address &+ Int64(offset * 8)] ?? .unknown)
+                    state.setRegister(destination.key, to: state.load(at: address &+ Int64(offset * 8)))
                 } else {
                     state.setRegister(destination.key, to: .unknown)
                 }

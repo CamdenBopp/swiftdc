@@ -65,12 +65,11 @@ placeholders for onError(Int) and log(Int); its guard mutation fails five
 assertions. (The escaped stack cache across unknown calls shipped on
 2026-10-15.)
 
-Confirmed remaining risks include transitive outlined/tail register effects and
-writes through incoming x29. Independent native reductions confirm them;
-prevalence in current compiler fixtures has not been established. A child
-clobber union is insufficient when a wrapper transfers the clobbered value into
-a different register. The general correction needs callee effects inside
-Preservation, dependency reanalysis and equivalent filtered/array/stream decoding.
+A confirmed remaining risk is a write through the incoming x29. An independent
+native reduction confirms it; prevalence in current compiler fixtures has not
+been established. Transitive outlined and tail register effects shipped on
+2026-10-23: callee effects inside Preservation, rebuilt to a fixpoint, with
+filtered runs decoding the deeper callees.
 
 Broader tuple/memory/call-order final-render verification remains a design, not
 implemented proof. Existing native scalar research and targeted native memory

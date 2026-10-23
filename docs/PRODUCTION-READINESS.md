@@ -3578,3 +3578,54 @@ if a test was observed to fail without the fix.
   rejection of a segment field above `Int.max`, turns that `dump` into an
   error too, so it waits for a decision: reject such images everywhere
   with a clear message, or guard the paths that read segment addresses.
+
+## 2026-10-23: callee-saved registers through calls
+
+- **FIXED (soundness): a caller kept a callee-saved register across a call
+  that reaches a clobber one call down.** The register summaries judged
+  each body alone, so a function that never writes x19 itself but calls
+  or tail-branches to an outliner fragment that does (`mov x19, x1; ret`)
+  was summarised as preserving x19, and its caller rendered `return arg0`
+  where native execution returns arg1 (`preserve_calls.s`: `nested`,
+  `tail`). A summary now carries what a call does to the caller's
+  callee-saved registers (`CalleeEffect`), and `closeOverCalls` rebuilds
+  every summary from its callees' effects until nothing changes. Only a
+  definite clobber travels (a register the body never stores, minus x21,
+  Swift's error register, which each call site models already); a
+  register saved somewhere stays clobbered for direct callers only.
+  Filtered runs decode up to 512 further callees, a level at a time, so
+  they agree with whole-image runs.
+- **FIXED (soundness): an outlined epilogue's reload counted as a
+  clobber.** Read as an unknown clobber, the reload lost `self` in 158
+  GoodLinks `--pseudo` lines: an assertion path such as
+  `-[DDAbstractDatabaseLogger saveThreshold]`'s `sub_100d70128` saves x19
+  to x24, calls the fragment `sub_1001664d4` (`mov x19, x1; mov x20, x0`)
+  and leaves through `ldp x29, x30, [sp, #0x30]; b 0x10016f85c`, whose
+  `ldp x20, x19, [sp, #0x20]; …; b objc_release` hands back what it saved.
+  A load from entry sp or above that no write since entry can reach is
+  now `incoming(k)`, a register every exit reloads that way is a reload,
+  and a caller evaluates it against its own frame at the call or tail
+  branch. A rebuilt summary replaces the first one rather than merging
+  with it, so a function that writes x19 itself before its outlined
+  epilogue is not left clobbering it. The reload restores only what the
+  slot holds: `forged` (a slot holding arg1), `scribbled` (half the slot
+  written first, on one path) and `smudged` (written through an address
+  computed from sp) return arg1 natively and render `return ?`; on
+  origin/dev all three rendered `return arg0`. A closure stopped by its
+  cap now claims nothing for every caller of an unsettled function as
+  well, and a body that cannot be summarised again claims nothing. Blast
+  radius against origin/dev (`disasm --pseudo` and `--structured`):
+  `libPreserveCalls` only among the fixtures (six lines, each matching
+  native execution); three GoodLinks lines, `?` to `arg0` in
+  `-[GDTCORTransport initWithMappingID:transformers:target:]`,
+  `sendDataEvent:onComplete:` and `sendEvent:onComplete:`, whose helpers
+  write x19 themselves and leave through the outlined epilogue at
+  0x10016f87c; Clarc, Terminal, TextEdit, Chess and GoodLinks
+  `xrefs --unreferenced` byte-identical. Clarc `disasm --pseudo`, release,
+  three alternating rounds: instructions retired 287.7G to 285.6G (run
+  spread 1.1%), wall 22.9 s both, peak footprint 66.9 MB to 70.7 MB
+  (medians).
+- **OPEN (assumption): x21 is not carried through calls.** A fragment that
+  writes x21 changes it only for its direct callers' summaries. Sound
+  while compiled code saves x21 in every function whose outlined code
+  writes it; a chain of fragments writing x21 would go unseen.

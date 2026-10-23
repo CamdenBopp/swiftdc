@@ -101,7 +101,7 @@ extension ProbeEvent {
     // MARK: abi (summaries)
     static let summaryCap = ProbeEvent(
         "abi.summary-cap", .abi, .limit,
-        "A callee summary's dataflow hit its visit bound; it claims nothing (argument reads) or every written register clobbered (preservation).")
+        "A callee summary's dataflow hit its visit bound; it claims nothing (argument reads) or every written register clobbered (preservation). The closure over calls (call-clobbers) stopped instead: each function still waiting, and every caller of one, claims every callee-saved register clobbered.")
 }
 
 extension ProbeEvent {

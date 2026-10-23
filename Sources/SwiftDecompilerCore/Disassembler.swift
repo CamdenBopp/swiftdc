@@ -734,6 +734,20 @@ public struct Disassembler: Sendable {
                 registerSummaries[boundaries[index]] = CalleeRegisterSummary.of(function)
             }
         }
+        // Clobbers and reloads carried through calls; the few functions
+        // whose callees change anything are decoded again.
+        let spanIndex = Dictionary(boundaries.indices.map { (boundaries[$0], $0) }, uniquingKeysWith: { a, _ in a })
+        CalleeRegisterSummary.closeOverCalls(&registerSummaries) { start, effects in
+            guard let index = spanIndex[start] else { return nil }
+            let instructions = Probe.muted { capstoneInstructions(in: machO, span: span(index)) }
+            guard !instructions.isEmpty else { return nil }
+            let function = makeFunction(
+                start: start, instructions: instructions,
+                labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
+                metadataNames: metadataNames, objcIndex: objcIndex
+            )
+            return Probe.muted { CalleeRegisterSummary.of(function, calleeEffects: effects) }
+        }
         names = resolveCrossImageNames(targets, into: names, resolver: cacheSymbols)
         let resolver = ReferenceResolver(
             names: names,
@@ -989,10 +1003,45 @@ public struct Disassembler: Sendable {
                 functions.map { ($0.startAddress, Self.indirectResultUse(of: $0)) },
                 uniquingKeysWith: { a, _ in a }
             ),
-            registerSummaries: Dictionary(
-                functions.compactMap { function in CalleeRegisterSummary.of(function).map { (function.startAddress, $0) } },
-                uniquingKeysWith: { a, _ in a }
-            ),
+            registerSummaries: {
+                var summaries = Dictionary(
+                    functions.compactMap { function in CalleeRegisterSummary.of(function).map { (function.startAddress, $0) } },
+                    uniquingKeysWith: { a, _ in a }
+                )
+                var bodies = Dictionary(functions.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
+                // A filtered run decodes its matches and their direct callees;
+                // a clobber further down (a callee's callee) is decoded here, a
+                // level at a time in address order, so the summaries see what
+                // a whole-image run sees. A whole-image run decodes nothing.
+                var level = Set(summaries.values.flatMap(\.callees)).filter {
+                    summaries[$0] == nil && boundaries.contains($0)
+                }.sorted()
+                var decoded = 0
+                while !level.isEmpty, decoded < 512 {
+                    var next = Set<UInt64>()
+                    for target in level where decoded < 512 && summaries[target] == nil {
+                        let instructions = Probe.muted {
+                            self.decodeFunction(at: target, boundaries: sortedBoundaries, in: machO)
+                        }
+                        guard !instructions.isEmpty else { continue }
+                        decoded += 1
+                        let body = DisassembledFunction(
+                            symbol: "sub_\(String(target, radix: 16))", demangledName: nil,
+                            startAddress: target, instructions: instructions, source: .address)
+                        bodies[target] = body
+                        guard let summary = Probe.muted({ CalleeRegisterSummary.of(body) }) else { continue }
+                        summaries[target] = summary
+                        next.formUnion(summary.callees.filter { summaries[$0] == nil && boundaries.contains($0) })
+                    }
+                    level = next.sorted()
+                }
+                CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects in
+                    bodies[start].flatMap { function in
+                        Probe.muted { CalleeRegisterSummary.of(function, calleeEffects: effects) }
+                    }
+                }
+                return summaries
+            }(),
             asyncIndex: asyncIndex, asyncChainSlots: chainSlots
         )
         functions = functions.map { analyzeFunction($0, context: context) }
@@ -5244,10 +5293,10 @@ public struct Disassembler: Sendable {
                   let exits = Preservation.entryValuesAtExits(
                       blocks: errorProofBlocks, entry: function.startAddress,
                       addresses: Set(function.instructions.map(\.address)), excluding: mergedThrowEdges,
-                      callClobbers: { call in
+                      callEffect: { call in
                           var clobbered = call.branchTarget.flatMap { tracer.calleeClobbers[$0] } ?? []
                           if !callPreservesX21(call) { clobbered.insert("x21") }
-                          return clobbered
+                          return CalleeEffect(clobbers: clobbered)
                       })
             else { return [] }
             // The saved-register proof follows only paths from the entry; an

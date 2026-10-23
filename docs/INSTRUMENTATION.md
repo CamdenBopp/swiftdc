@@ -163,7 +163,7 @@ To reproduce, run the same command with and without `--probe <file>`
 | `values.loop-body-cap` | limit | blocks, cap | Same, for the induction re-transfer. |
 | `values.unmodelled-write` | claim | register, instruction, kept | An instruction writes a register (Capstone access flags) whose proven value the tracer kept: a stale value that renders as a confident argument. |
 | `abi.argument-layout` | decision | strategy, callee, count | Which layout set a call's arguments. `positional` is where stale-register fabrications have come from. |
-| `abi.summary-cap` | limit | pass | A callee summary gave up (it claims nothing, or that every written register is clobbered). |
+| `abi.summary-cap` | limit | pass | A callee summary gave up: it claims nothing (`argument-reads`), or that every written register is clobbered (`preservation`). For `call-clobbers` the closure over calls stopped, and each function still waiting and every caller of one claims every callee-saved register clobbered. |
 | `types.field-named` | claim | type, offset, bytes, field, fieldType, coverage | A field name at an offset, checkable against DWARF. |
 | `types.field-unnamed` | decline | type, offset, bytes, reason | Why an access stayed `+0x…`. |
 | `cfg.jump-table` | decision | cases | A `br` proven a jump table. |
