@@ -16,6 +16,8 @@ func untrackedOperandsKeepTheCalleesKnownArityIfPresent(path: String) async thro
         // bzero and malloc had no known arity: `bzero()`, `malloc()`.
         "_clearJob": path.hasSuffix(".opt.dylib") ? "bzero(?, ?)" : "__memset_chk(?, 0, ?, -1)",
         "_growJob": "malloc(?)",
+        "_findJob": "memchr(?, ?, ?)",
+        "_sizeJob": "malloc_size(?)",
     ]
     for (name, call) in expected.sorted(by: { $0.key < $1.key }) {
         guard let function = functions.first(where: { $0.displayName == name }) else {
@@ -37,6 +39,11 @@ func untrackedOperandsKeepTheCalleesKnownArityIfPresent(path: String) async thro
         "malloc": 1, "objc_enumerationMutation": 1, "CFRelease": 1,
         "bzero": 2, "dispatch_async": 2, "dispatch_sync": 2, "swift_getKeyPath": 2, "swift_slowAlloc": 2,
         "swift_once": 3, "swift_slowDealloc": 3,
+        "malloc_size": 1, "_Block_release": 1, "objc_destroyWeak": 1,
+        "os_unfair_lock_unlock": 1, "swift_dynamicCastClass": 2, "swift_conformsToProtocol": 2,
+        "swift_task_isCurrentExecutor": 2, "sqlite3_column_type": 2, "sqlite3_column_int64": 2,
+        "objc_getAssociatedObject": 2, "dispatch_once": 2, "memchr": 3,
+        "swift_getAssociatedTypeWitness": 5, "swift_task_create": 5, "swift_task_reportUnexpectedExecutor": 6,
     ]
     for (callee, arity) in expected.sorted(by: { $0.key < $1.key }) {
         #expect(DisassembledFunction.knownCArity(of: callee) == arity, "\(callee)")

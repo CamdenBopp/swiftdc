@@ -684,7 +684,10 @@ public extension DisassembledFunction {
              // malloc/_malloc.h:56, `void *(size_t)`; objc/runtime.h:1526,
              // `void (id)`; CFBase.h:781, `void (CFTypeRef)`. With nothing
              // tracked each read `malloc()`, a call that takes nothing.
-             "malloc", "objc_enumerationMutation", "CFRelease":
+             "malloc", "objc_enumerationMutation", "CFRelease",
+             // malloc/malloc.h:461, Block.h:34, ObjCBridge.h:49 and
+             // os/lock.h:158: one pointer each.
+             "malloc_size", "_Block_release", "objc_destroyWeak", "os_unfair_lock_unlock":
             return 1
         case "objc_opt_isKindOfClass", "objc_opt_respondsToSelector",
              "objc_storeStrong", "objc_storeWeak", "objc_initWeak",
@@ -705,7 +708,15 @@ public extension DisassembledFunction {
              // swift/include/swift/Runtime/Metadata.h:1044, `(pattern,
              // arguments)`, and Heap.h:34, `void *(size_t bytes, size_t
              // alignMask)`.
-             "bzero", "dispatch_async", "dispatch_sync", "swift_getKeyPath", "swift_slowAlloc":
+             "bzero", "dispatch_async", "dispatch_sync", "swift_getKeyPath", "swift_slowAlloc",
+             // swift/include/swift/Runtime/Casting.h:56 and :244, `(object or
+             // type, class or protocol)`; Concurrency.h:1191, one
+             // SerialExecutorRef, which is two words (ABI/Executor.h:59-60);
+             // sqlite3.h:5668 and :5674, `(sqlite3_stmt *, int)`;
+             // objc/runtime.h:1669, `(id, const void *)`; dispatch/once.h:74,
+             // `(dispatch_once_t *, dispatch_block_t)`.
+             "swift_dynamicCastClass", "swift_conformsToProtocol", "swift_task_isCurrentExecutor",
+             "sqlite3_column_type", "sqlite3_column_int64", "objc_getAssociatedObject", "dispatch_once":
             return 2
         case "memcpy", "memmove", "memset",
              // swift/include/swift/Runtime/RuntimeFunctions.def
@@ -723,14 +734,22 @@ public extension DisassembledFunction {
              // swift/include/swift/Runtime/Once.h:33, `(predicate, fn,
              // context)`, and Heap.h:49, `void (void *ptr, size_t bytes,
              // size_t alignMask)`.
-             "swift_once", "swift_slowDealloc":
+             "swift_once", "swift_slowDealloc",
+             // _string.h:74, `(const void *, int, size_t)`.
+             "memchr":
             return 3
         case "swift_arrayInitWithCopy", "swift_arrayInitWithTakeFrontToBack", "swift_arrayInitWithTakeBackToFront":
             return 4
         // swift/include/swift/Runtime/Metadata.h:690: `(self, flags,
-        // numFields, fieldTypes, fieldOffsets)`.
-        case "swift_initStructMetadata":
+        // numFields, fieldTypes, fieldOffsets)`; Metadata.h:388, `(request,
+        // wtable, conformingType, reqBase, assocType)`; Concurrency.h:54,
+        // `(flags, options, futureResultType, closureEntry, closureContext)`.
+        case "swift_initStructMetadata", "swift_getAssociatedTypeWitness", "swift_task_create":
             return 5
+        // swift/include/swift/Runtime/Concurrency.h:1238: `(file,
+        // fileLength, fileIsASCII, line, executor)`, the executor two words.
+        case "swift_task_reportUnexpectedExecutor":
+            return 6
         // swift/include/swift/Runtime/Error.h:128: the error, the file name's
         // start and length, whether it is ASCII, and the line of the `try!`.
         case "swift_unexpectedError":

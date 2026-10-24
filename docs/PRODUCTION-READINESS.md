@@ -5049,3 +5049,22 @@ if a test was observed to fail without the fix.
   declared count: `swift_once` from 2 arguments to 3 (3,777 on
   GoodLinks), `swift_getKeyPath` from 1 to 2, `bzero` from 0 to 2, and 7
   GoodLinks `bzero` calls from 3 to 2, a stale third register dropped.
+- **FIXED (soundness): fifteen more runtime and C functions read at a
+  count their declarations do not have.** Surveyed by the callees whose
+  rendered argument count varies across call sites: `memchr` showed two
+  of its three arguments 402 times and none 31, `sqlite3_column_type`
+  none 67 times, `swift_task_isCurrentExecutor` one of its executor's two
+  words 1,794 times. Each now has its declared arity (malloc_size,
+  _Block_release, objc_destroyWeak and os_unfair_lock_unlock 1;
+  swift_dynamicCastClass, swift_conformsToProtocol,
+  swift_task_isCurrentExecutor, sqlite3_column_type, sqlite3_column_int64,
+  objc_getAssociatedObject and dispatch_once 2; memchr 3;
+  swift_getAssociatedTypeWitness and swift_task_create 5;
+  swift_task_reportUnexpectedExecutor 6, its executor two words), each
+  cited in `knownCArity`. `swift_willThrow` stays out: its one rendered
+  argument is the error it reads from x21. Release `disasm --pseudo`:
+  Clarc 947 lines and GoodLinks 3,460, nearly all a call to one of them
+  at its count; a few in-image functions that reach x5-x7 only through
+  one of them no longer take those registers (Terminal's four
+  `sub_…(?, ?, arg0)` read `sub_…()`), and TextEdit and Chess change two
+  lines each.
