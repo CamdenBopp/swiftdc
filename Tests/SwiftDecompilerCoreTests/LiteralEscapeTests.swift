@@ -89,20 +89,39 @@ private func body(_ functions: [String: String], _ prefix: String) throws -> Str
     #expect(interpolated.contains(#""q\"\(local_"#) && !interpolated.contains("appendLiteral"), "\(interpolated)")
 }
 
-/// An interpolation fold was tried at every statement, so after a piece it
-/// could not read it was retried from the next append, folded the tail
-/// alone and consumed the closing `String(stringInterpolation:)`: -Onone
-/// `"\u{7}ring \(x) done"` rendered `"\(local_40) done"`, which reads as the
-/// whole string. A run folds only from its start.
-@Test func anInterpolationWithAnUnreadablePieceFoldsNoneOfItIfPresent() async throws {
+/// -Onone builds a literal from its bytes' address and count. Named as a C
+/// string, the address showed only printable ASCII, cut after 48
+/// characters: a piece with a control character or a non-ASCII byte showed
+/// an address, after which the interpolation fold printed the tail alone
+/// (`"\(local_40) done"`), and a long literal printed cut, which the folds
+/// took for the string. Read as exactly its count, each is whole.
+@Test func anOnoneLiteralIsReadAsItsByteCountIfPresent() async throws {
     guard let functions = try await pseudo("Fixtures/Sample/libLiteralEscapes.Onone.dylib") else { return }
-    for name in ["bell", "middleBell"] {
+    for (name, literal) in [
+        ("bell", #""\u{7}ring \(local_40) done""#),
+        ("middleBell", #""x=\(local_48) \u{7} y=\(local_50)""#),
+        ("accented", #""café \(local_40)""#),
+        ("longStore", #""a literal that is longer than forty-eight characters, by a few""#),
+        ("longInterp", #""a literal that is longer than forty-eight characters: \(local_40)""#),
+    ] {
         let text = try body(functions, "LiteralEscapes.\(name)(")
-        let folded = text.split(separator: "\n").filter { $0.hasPrefix("    \"") }
-        #expect(folded.isEmpty && text.contains("    Swift.String.init()\n"), "\(name): \(text)")
+        #expect(text.contains("    \(literal)\n") && !text.contains("DefaultStringInterpolation"), "\(name): \(text)")
     }
 }
 
+/// Only Swift's literal initializer reads its pointer as a counted
+/// literal: a C call with the same (address, count, 1) shape keeps the
+/// address of a C string it cannot print.
+@Test func onlyTheLiteralInitializerReadsACountedLiteralIfPresent() async throws {
+    guard let functions = try await pseudo("Fixtures/Sample/libObjCLiteralEscapes.dylib") else { return }
+    let text = try body(functions, "_cCountLike")
+    #expect(text.contains("countLike(0x") && !text.contains(#"\u{7}"#), "\(text)")
+}
+
+/// An interpolation fold was tried at every statement, so after a piece it
+/// could not read it was retried from the next append, folded the tail
+/// alone and consumed the closing `String(stringInterpolation:)`, which then
+/// read as the whole string. A run folds only from its start.
 @Test func anInterpolationRunFoldsOnlyFromItsStart() {
     let run = [
         "Swift.DefaultStringInterpolation.init(11, 1)",
@@ -116,4 +135,13 @@ private func body(_ functions: [String: String], _ prefix: String) throws -> Str
     var readable = run
     readable[1] = "Swift.DefaultStringInterpolation.appendLiteral(Swift.String.init(\"ring \", 5, 1))"
     #expect(DisassembledFunction.foldSwiftIdioms(readable) == [#""ring \(local_40) done""#])
+}
+
+/// A literal's bytes must agree with the `isASCII` flag its initializer
+/// passes; no compiler output disagrees, so this has no fixture.
+@Test func aLiteralsBytesMustAgreeWithItsASCIIFlag() {
+    #expect(Disassembler.ReferenceResolver.bytes(Array("ring".utf8), agreeWithASCIIFlag: true))
+    #expect(Disassembler.ReferenceResolver.bytes(Array("café".utf8), agreeWithASCIIFlag: false))
+    #expect(!Disassembler.ReferenceResolver.bytes(Array("café".utf8), agreeWithASCIIFlag: true))
+    #expect(!Disassembler.ReferenceResolver.bytes(Array("ring".utf8), agreeWithASCIIFlag: false))
 }

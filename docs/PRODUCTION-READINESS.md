@@ -4815,5 +4815,20 @@ if a test was observed to fail without the fix.
   from its builder's init or from a statement that no other step of a run
   precedes, so both keep the raw run. Blast radius: those two functions'
   pseudo and structured lines; the five apps' `--pseudo` is
-  byte-identical. Reading such a piece is the next step: the init passes
-  its byte count, so the literal could be read whole and escaped.
+  byte-identical. Since the next entry those two pieces read whole; the
+  rule still covers any piece the fold cannot read.
+- **FIXED (soundness): an -Onone literal printed cut, or as an address.**
+  -Onone builds every String literal with
+  `String(_builtinStringLiteral:utf8CodeUnitCount:isASCII:)`, and its
+  address rendered as a C string: printable ASCII only, cut after 48
+  characters. So `longInterp`'s 54-byte piece folded as
+  `"a literal that is longer than forty-eight charac…\(local_40)"`, the
+  cut text claimed as the string, and `"\u{7}ring "` and `"café "`
+  printed an address. That initializer's pointer now reads as exactly its
+  count of bytes (NUL after them, UTF-8, ASCII exactly when the flag
+  says): `"\u{7}ring \(local_40) done"`, `"café \(local_40)"`, and every
+  byte of the long literals. A C call of the same (address, count, 1)
+  shape keeps its address. Blast radius: `literal_escapes.swift`'s five
+  such functions and one sample.debug line, `print`'s default terminator
+  (`Swift.String.init(0x100007f86, 1, 1)` to `"\n"`, bytes `0a 00`); the
+  five apps' `--pseudo` is byte-identical.

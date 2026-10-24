@@ -2498,16 +2498,26 @@ public struct Disassembler: Sendable {
         /// `count`, the bytes must be exactly that long.
         func swiftLargeStringLiteral(objectAddress: UInt64, count: Int? = nil) -> String? {
             let (target, overflow) = objectAddress.addingReportingOverflow(32)
+            guard !overflow else { return nil }
+            return swiftStringLiteral(at: target, count: count)
+        }
+
+        /// The quoted text of a Swift literal's bytes at `target`: a NUL-ended
+        /// run in a string section, or in `__TEXT,__const` when `count` says
+        /// how long it is, and exactly that long. With `isASCII`, the bytes
+        /// must agree with the flag the compiler computed for them.
+        func swiftStringLiteral(at target: UInt64, count: Int?, isASCII: Bool? = nil) -> String? {
             let constantRanges: [Range<UInt64>] = count == nil ? [] : machO.sections.compactMap {
                 guard $0.segmentName == "__TEXT", $0.sectionName == "__const" else { return nil }
                 return UInt64($0.address)..<(UInt64($0.address) + UInt64($0.size))
             }
-            guard !overflow, let range = (stringRanges + constantRanges).first(where: { $0.contains(target) }),
+            guard let range = (stringRanges + constantRanges).first(where: { $0.contains(target) }),
                   let length = count ?? Self.rawCString(at: target, in: machO, ranges: fileRanges)?.utf8.count,
                   length > 0, UInt64(length) < range.upperBound - target,
                   fileRanges.map({ $0.holdsBytes(at: target, count: length + 1) }) ?? true,
                   let bytes: [UInt8] = try? machO.readElements(offset: machO.resolveOffset(at: target), numberOfElements: length + 1),
                   bytes.count == length + 1, bytes.last == 0,
+                  isASCII.map({ Self.bytes(bytes.dropLast(), agreeWithASCIIFlag: $0) }) ?? true,
                   let raw = String(bytes: bytes.dropLast(), encoding: .utf8)
             else { return nil }
             // Count UTF-8 bytes, not characters; retain combining sequences and
@@ -2516,6 +2526,13 @@ public struct Disassembler: Sendable {
             // byte count. Escape the complete value instead of truncating it
             // into a different literal.
             return "\"\(Self.escapedLiteralText(raw))\""
+        }
+
+        /// Whether a literal's bytes are ASCII exactly when the compiler's
+        /// `isASCII` flag says so. A disagreement means the bytes are not that
+        /// literal's.
+        static func bytes(_ bytes: some Sequence<UInt8>, agreeWithASCIIFlag isASCII: Bool) -> Bool {
+            bytes.allSatisfy { $0 < 0x80 } == isASCII
         }
 
         /// A literal's text with each character a reader would take for
@@ -3529,6 +3546,12 @@ public struct Disassembler: Sendable {
     /// address; interpreting the bits per the type recovers `3.14159`. Nil when
     /// the type isn't one whose constants need a typed reading — the caller then
     /// falls back to the plain integer rendering.
+    /// The standard library's literal initializer, which -Onone calls for
+    /// every String literal with its bytes, their count and whether they are
+    /// ASCII.
+    static let builtinStringLiteralInit =
+        "Swift.String.init(_builtinStringLiteral: Builtin.RawPointer, utf8CodeUnitCount: Builtin.Word, isASCII: Builtin.Int1)"
+
     static func renderTypedConstant(bits: UInt64, type: String) -> String? {
         switch type {
         case "Swift.Bool":
@@ -5237,9 +5260,32 @@ public struct Disassembler: Sendable {
             }
         }
 
+        /// The literal a `String(_builtinStringLiteral:utf8CodeUnitCount:isASCII:)`
+        /// call builds, read as exactly its byte count. Named as a C string,
+        /// the pointer printed only printable ASCII and cut it after 48
+        /// characters, so at -Onone `"\u{7}ring "` and `"café "` showed an
+        /// address, and a 60-byte literal `"…charac…"`, which the
+        /// interpolation fold then printed as the string.
+        func builtinStringLiteral(_ values: [AbstractValue], site: UInt64) -> String? {
+            guard values.count == 3, let callee = calleeByAddress[site],
+                  callee.hasPrefix(Self.builtinStringLiteralInit),
+                  case .address(let address) = values[0], case .immediate(let count) = values[1],
+                  case .immediate(let isASCII) = values[2], isASCII <= 1, count < 1 << 32
+            else { return nil }
+            return resolver.swiftStringLiteral(at: address, count: Int(count), isASCII: isASCII == 1)
+        }
+
         // Render an argument list, collapsing the two-register pairs that encode
         // a Swift small string into a single quoted literal.
         func renderArguments(_ values: [AbstractValue], depth: Int, site: UInt64? = nil) -> [String] {
+            var parts = renderArgumentList(values, depth: depth, site: site)
+            if let site, parts.count == values.count, let literal = builtinStringLiteral(values, site: site) {
+                parts[0] = literal
+            }
+            return parts
+        }
+
+        func renderArgumentList(_ values: [AbstractValue], depth: Int, site: UInt64?) -> [String] {
             // A laid-out site: each slot is one parameter of a known type, so a
             // constant renders as that type and no pair is a small string.
             /// A large literal's two words, (count and flags, object), as one
