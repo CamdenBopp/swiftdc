@@ -4883,3 +4883,34 @@ if a test was observed to fail without the fix.
   signature as well declined 27 Terminal, 9 TextEdit and 5 Chess sends
   with nothing to show a float was there, so they keep the integer
   layout.
+
+## 2026-10-24: a field of self held across a call
+
+- **FIXED (soundness): a register named as a field of self kept the name
+  across a call that may write the field.** The tracer names a register
+  loaded from, or stored to, a field of self as that field
+  (`.selfFieldValue`) and forgot the name only at the next field store.
+  `field_aliases.swift` (-O): `let old = a; bumpA(); b = old` rendered
+  `bumpA(); self.b = self.a`, the incremented a, and
+  `let old = a; bumpA(); return old` rendered `return self.a`, the same
+  text as `bumpA(); return a`. A call now forgets those names unless it is
+  a retain or an exclusivity access marker (`CallFacts.writesNoFields`; a
+  release can run a deinit that writes anything): `self.b = …` and
+  `return ?`. Fixture blast radius: the new fixture, the `args(…)` of a
+  release after a call in libCow, libSample, libStringArity and
+  sample.release (`args(?)`), and one libReconstruction -Osize return.
+  Release `disasm --pseudo` changes Terminal 243 lines, TextEdit 2, Chess
+  49, Clarc 130 and GoodLinks 554 (after normalising `let rN`); across
+  them the self-field references fall from 291 to 34, 2 to 0, 92 to 20,
+  152 to 18 and 702 to 134, and no changed line gains one.
+- **OPEN (completeness): an in-image wrapper of an access marker forgets
+  field names.** -Osize outlines `swift_beginAccess` into
+  `OUTLINED_FUNCTION_3` (`mov x2, #0; mov x3, #0; b swift_beginAccess`),
+  which is no retain or marker by name, so libReconstruction -Osize's
+  `return (self.first + self.second)` became `return ?`. A callee whose
+  body stores nothing and calls only field-preserving runtime functions
+  writes no field either.
+- **OPEN (completeness): a store renames its source register to the
+  field.** After `a = x`, x19 is named `self.a`, not `arg0`, so once a
+  call forgets field names `a = x; bumpA(); b = x` reads `self.b = …`
+  where `self.b = arg0` is provable.

@@ -648,6 +648,10 @@ public struct ValueTracer: Sendable {
         let knownArityApplies: Bool
         /// Reads through the frame addresses it receives and never writes them.
         let readsOnly: Bool
+        /// Writes no field of any object: a retain, or an exclusivity
+        /// access marker. A release is not one, since the deinit it can run
+        /// may write anything.
+        let writesNoFields: Bool
         /// The registers that may hand the callee a pointer: the parameters of
         /// a runtime entry point with a fixed C arity, anything else's x0–x8
         /// and x20.
@@ -689,6 +693,8 @@ public struct ValueTracer: Sendable {
             let runtimeName = callee.hasPrefix("_") ? String(callee.dropFirst()) : callee
             returnsArgument = ValueTracer.identityRuntimeCalls.contains(runtimeName)
             retainedRegister = ValueTracer.retainedRegister(runtimeName)
+            writesNoFields = knownArityApplies && (readsOnly || retainedRegister != nil
+                || ValueTracer.fieldPreservingRuntimeCalls.contains(runtimeName))
             allocatesArray = callee.contains("_allocateUninitializedArray")
             returnsVoidByName = DisassembledFunction.splitSignature(callee)?.result == "()"
                 || DisassembledFunction.swiftAccessorProperty(callee)?.isGetter == false
@@ -1318,6 +1324,14 @@ public struct ValueTracer: Sendable {
                     registers[Self.calleeParentKey] = nil
                 }
             }
+            // A register that held a field of self held its value before the
+            // call, and the call may write the field: `let old = a; bumpA();
+            // b = old` rendered `bumpA(); self.b = self.a`, the new a, and
+            // `a = x; bumpA(); b = x` the same. A store to a field already
+            // forgets these; so does any call but a retain or an access
+            // marker, a memory helper included, since its destination may be
+            // a field.
+            if !call.writesNoFields { Self.invalidateSelfFieldAliases(in: &registers) }
             if !handledAsMemoryHelper { applyCallToResultBuffers(insn, site: site, into: &registers) }
             // AAPCS64: x0–x17 are caller-saved, so a call clobbers them. x18 is
             // reserved, x19–x28 are callee-saved — and preserving those is what
@@ -1436,6 +1450,17 @@ public struct ValueTracer: Sendable {
             registers[Self.selfFreshKey] = hadSelf
         }
     }
+
+    /// Runtime entry points that write no field of any object.
+    private static let fieldPreservingRuntimeCalls: Set<String> = [
+        "swift_retain", "swift_retain_n", "swift_nonatomic_retain", "swift_nonatomic_retain_n",
+        "swift_bridgeObjectRetain", "swift_bridgeObjectRetain_n", "swift_nonatomic_bridgeObjectRetain",
+        "swift_unknownObjectRetain", "swift_unknownObjectRetain_n", "swift_nonatomic_unknownObjectRetain",
+        "objc_retain", "objc_retainAutorelease", "objc_retainAutoreleasedReturnValue",
+        "objc_claimAutoreleasedReturnValue", "objc_unsafeClaimAutoreleasedReturnValue",
+        "objc_retainAutoreleaseReturnValue", "objc_autorelease", "objc_autoreleaseReturnValue",
+        "objc_retainBlock", "swift_beginAccess", "swift_endAccess",
+    ]
 
     private static let identityRuntimeCalls: Set<String> = [
         "objc_retain", "objc_claimAutoreleasedReturnValue",
