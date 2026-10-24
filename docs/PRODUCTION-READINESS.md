@@ -5193,6 +5193,19 @@ if a test was observed to fail without the fix.
   extension, as Capstone does. On the five apps it changes exactly those
   17 lines, and on the fixtures nothing but the new `atomics.c` (-O2,
   `anUnfilteredListingDecodesEveryArchitectureExtensionIfPresent`).
+- **FIXED (speed): a streaming run re-read `__text` for every span.**
+  Each function's decode in `disassembleStreaming` (pass 1, the summary
+  closure, the async chains and pass 2) looked up the section's bounds in
+  the load commands, read its bytes from the file and opened a Capstone
+  engine: `sample` of GoodLinks `--pseudo` put 2,555 of 81,749 samples
+  under `textSectionBounds` and 2,291 under `readElements`. The run now
+  reads `__text` once (`TextSection`) and slices each span from it with
+  one engine, falling back to the per-span read when the whole section
+  does not read. Release `disasm --pseudo`, three alternating rounds,
+  medians: GoodLinks 98.71 s to 94.14 s, Clarc 22.94 s to 22.38 s (the
+  third round overlapped another build and is the noisiest), outputs and
+  probe counts identical. GoodLinks' peak footprint rises by about its
+  14.1 MB `__text`.
 - **Measured (speed): where a whole-image run's decode time goes.** On
   GoodLinks' 3,524,352-word `__text`, decode alone (medians of three
   rounds, each the median of five): Capstone 6 as swiftdc calls it

@@ -727,9 +727,13 @@ public struct Disassembler: Sendable {
             self.knownArity(ofCallTarget: target, names: names, cacheSymbols: cacheSymbols, isFunction: isFunction)
         }
         let fileRanges = FileBackedRanges(standalone: machO)
+        let section = textSection(in: machO)
+        func decode(_ span: (start: UInt64, stop: UInt64)) -> [Instruction] {
+            section?.instructions(span: span) ?? capstoneInstructions(in: machO, span: span)
+        }
         for index in boundaries.indices {
             // Muted: pass 2 decodes the same span again and records its events.
-            let instructions = Probe.muted { capstoneInstructions(in: machO, span: span(index)) }
+            let instructions = Probe.muted { decode(span(index)) }
             collectUnnamedCallTargets(in: instructions, names: names, into: &targets)
             // The callee-side x8 fact every caller's analysis consults (see
             // `PerFunctionContext.indirectResultUses`); decoded here so pass 2
@@ -754,7 +758,7 @@ public struct Disassembler: Sendable {
         let spanIndex = Dictionary(boundaries.indices.map { (boundaries[$0], $0) }, uniquingKeysWith: { a, _ in a })
         CalleeRegisterSummary.closeOverCalls(&registerSummaries) { start, effects in
             guard let index = spanIndex[start] else { return nil }
-            let instructions = Probe.muted { capstoneInstructions(in: machO, span: span(index)) }
+            let instructions = Probe.muted { decode(span(index)) }
             guard !instructions.isEmpty else { return nil }
             let function = makeFunction(
                 start: start, instructions: instructions,
@@ -798,7 +802,7 @@ public struct Disassembler: Sendable {
         // funclets' own spans, so the grouping costs no whole-image residency.
         let asyncIndex = asyncFuncletIndex(
             in: machO, boundaries: Set(boundaries),
-            instructions: { self.decodeFunction(at: $0, boundaries: boundaries, in: machO) },
+            instructions: { self.decodeFunction(at: $0, boundaries: boundaries, in: machO, section: section) },
             nameOf: { names[$0] }
         )
         let enumCaseIndex = EnumCaseIndex.build(in: machO)
@@ -808,7 +812,7 @@ public struct Disassembler: Sendable {
         let chainSlots = asyncChainSlots(
             index: asyncIndex,
             function: { address in
-                let instructions = self.decodeFunction(at: address, boundaries: boundaries, in: machO)
+                let instructions = self.decodeFunction(at: address, boundaries: boundaries, in: machO, section: section)
                 guard !instructions.isEmpty else { return nil }
                 let function = makeFunction(
                     start: address, instructions: instructions,
@@ -839,7 +843,7 @@ public struct Disassembler: Sendable {
         rendered.reserveCapacity(boundaries.count)
         let total = boundaries.count
         for index in boundaries.indices {
-            let instructions = capstoneInstructions(in: machO, span: span(index))
+            let instructions = decode(span(index))
             if !instructions.isEmpty {
                 let function = makeFunction(
                     start: boundaries[index], instructions: instructions,
@@ -1159,7 +1163,8 @@ public struct Disassembler: Sendable {
 
     /// Decode one function on demand: from `address` to the next sorted boundary
     /// (or the end of `__text`).
-    func decodeFunction(at address: UInt64, boundaries: [UInt64], in machO: MachOFile) -> [Instruction] {
+    func decodeFunction(at address: UInt64, boundaries: [UInt64], in machO: MachOFile,
+                        section: TextSection? = nil) -> [Instruction] {
         guard let text = textSectionBounds(in: machO) else { return [] }
         let textEnd = text.address + UInt64(text.size)
         guard address >= text.address, address < textEnd else { return [] }
@@ -1169,7 +1174,7 @@ public struct Disassembler: Sendable {
             if boundaries[mid] <= address { low = mid + 1 } else { high = mid }
         }
         let stop = low < boundaries.count ? boundaries[low] : textEnd
-        return capstoneInstructions(in: machO, span: (address, stop))
+        return section?.instructions(span: (address, stop)) ?? capstoneInstructions(in: machO, span: (address, stop))
     }
 
     /// A function as the register summaries read it: with its jump tables, so
@@ -1558,16 +1563,56 @@ public struct Disassembler: Sendable {
     /// Decode `__text` (or `span`) into an ordered instruction stream carrying
     /// text, control-flow class, and branch target.
     private func capstoneInstructions(in machO: MachOFile, span: (start: UInt64, stop: UInt64)? = nil) -> [Instruction] {
-        decodeText(in: machO, span: span).map { decoded in
-            Instruction(
-                address: decoded.address,
-                text: decoded.text,
-                annotation: nil,
-                controlFlow: decoded.controlFlow,
-                branchTarget: decoded.branchTarget,
-                detail: decoded.detail
-            )
+        decodeText(in: machO, span: span).map(Self.instruction(decoded:))
+    }
+
+    private static func instruction(decoded: DecodedInstruction) -> Instruction {
+        Instruction(
+            address: decoded.address,
+            text: decoded.text,
+            annotation: nil,
+            controlFlow: decoded.controlFlow,
+            branchTarget: decoded.branchTarget,
+            detail: decoded.detail
+        )
+    }
+
+    /// `__text` read once, for a run that decodes it one span at a time.
+    /// Each span re-read the section's bounds from the load commands and its
+    /// bytes from the file, and opened its own Capstone engine: `sample` of a
+    /// GoodLinks `--pseudo` run put 2,555 of 81,749 samples under
+    /// `textSectionBounds` and 2,291 under `readElements`. Nil when the
+    /// section's bytes do not all read, so a span decodes on its own as it
+    /// did.
+    final class TextSection {
+        let address: UInt64
+        let bytes: Data
+        let engine: CapstoneEngine
+
+        fileprivate init?(address: UInt64, bytes: Data?, size: Int) {
+            guard let bytes, bytes.count == size, let engine = CapstoneEngine() else { return nil }
+            self.address = address
+            self.bytes = bytes
+            self.engine = engine
         }
+
+        /// The instructions of `[start, stop)`, clipped to the section, as
+        /// `capstoneInstructions(in:span:)` decodes them.
+        func instructions(span: (start: UInt64, stop: UInt64)) -> [Instruction] {
+            let lo = max(span.start, address)
+            let hi = min(span.stop, address + UInt64(bytes.count))
+            guard hi > lo else { return [] }
+            let first = bytes.startIndex + Int(lo - address)
+            let slice = bytes[first ..< first + Int(hi - lo)]
+            return engine.disassemble(slice, address: lo).map(Disassembler.instruction(decoded:))
+        }
+    }
+
+    /// The whole `__text` of `machO`, read once (see `TextSection`).
+    func textSection(in machO: MachOFile) -> TextSection? {
+        guard let text = textSectionBounds(in: machO) else { return nil }
+        return TextSection(address: text.address, bytes: sectionBytes(address: text.address, size: text.size, in: machO),
+                           size: text.size)
     }
 
     /// Raw bytes of an arbitrary section span (`__text`, `__objc_stubs`, …).
