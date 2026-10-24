@@ -153,6 +153,43 @@ does not fit in it, so a new whole-image mode should stream
    `layout`, `interface`, `objc`, `xrefs` and `analyze` take different paths,
    and a robustness result on one does not carry over.
 
+## Iterating fast
+
+Measured on this host (2026-10-24). Plan the cycle around what a rebuild
+costs:
+
+| Step | Cost |
+|---|---|
+| no-op `swift build` | 5 s, nearly all manifest loading and planning |
+| body edit, `swift build --build-tests` | about 30 s: any change to the module recompiles all test files |
+| interface edit, `--build-tests` | about 60 s |
+| `swift build -c release --scratch-path .build-release` after a change | about 70 s |
+| release in the shared `.build` after a debug build | about 5 min: every dependency rebuilds |
+
+- **Two scratch paths, always.** Debug and tests in `.build`, release in
+  `.build-release`. Never switch configurations in one scratch path.
+- **Batch the mutation proofs.** Save the changed files, then one loop:
+  apply a mutation by exact string replacement (assert the old text occurs
+  once), rebuild, run the filtered tests, restore the saved files. End with
+  one rebuild and a green run. A mutation that does not compile proves
+  nothing: check the build for `error:` before reading the test result.
+- **Keep the last commit's renders.** Render every fixture in all four
+  views (structured, pseudo, listing, JSON), six at a time, into a
+  directory per commit, and the five apps' `--pseudo` under the memory
+  guard. The next change diffs against those directories instead of
+  rebuilding the baseline. A commit that leaves a view byte-identical keeps
+  its renders as the baseline for that view.
+- **Chain the long pipeline in the background:** suite, fixture views, the
+  release build, then the apps, in one command. Review the fixture diffs
+  while the release build runs.
+- **Do not touch a tree while it builds** for a measurement or a release.
+  Run a parallel experiment in a second worktree.
+- **Profile before optimizing a run:** `sample <pid> <seconds>` on a release
+  run, then sum the call tree by frame. The first such profile found 7.4%
+  of a GoodLinks `--pseudo` run re-opening the file as a dyld cache.
+  `pgrep -f` matches its own shell: find a compiler with `pgrep -x
+  swift-frontend` and check its arguments.
+
 ## Fixtures
 
 Everything lives in `Fixtures/Sample/`. The built products are git-ignored.
@@ -286,7 +323,7 @@ Fixtures/Sample/build.sh                # build fixtures once (git-ignored)
 swift build                             # .build/debug/swiftdc
 swift build --build-tests               # before any `swift test --skip-build`
 SWIFTDC_REQUIRE_FIXTURES=1 swift test   # enforcing: a missing fixture fails
-swift build -c release --scratch-path .build-release   # for any timing or memory number
+swift build -c release --scratch-path .build-release   # for any timing or memory number (never in .build)
 ```
 
 Requires Apple Silicon, Xcode 26+ (Swift 6.3+; tools version 6.2, macOS 15
