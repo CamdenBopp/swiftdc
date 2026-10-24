@@ -5383,6 +5383,23 @@ public struct Disassembler: Sendable {
             return "\(path) = \(renderValue(value, depth: 0))"
         }
 
+        /// A method that returns a struct of two words in x0 and x1, both
+        /// words of one whole 16-byte field of self, returns that field:
+        /// `ldp x8, x1, [x0, #0x30]; mov x0, x8; ret` in
+        /// `-[TTLogicalScreen cursorPosition]` is `return
+        /// self->_cursorPosition`. The return path otherwise proves x0 alone.
+        func twoWordFieldReturn(at address: UInt64) -> String? {
+            guard let encoding = function.objcMethod?.typeEncoding,
+                  let type = ObjCArgumentABI.returnType(encoding: encoding),
+                  case .composite(let size)? = ObjCArgumentABI.aggregate(type), size > 8,
+                  let low = analysis.exitValues[address].map(sanitizeValue),
+                  let high = analysis.exitYieldValues[address].map(sanitizeValue),
+                  case .selfFieldValue(let offset) = low, high == .selfFieldValue(offset: offset + 8),
+                  case .success(.whole(let name, _))? = fieldMap?.lookup(offset: offset, bytes: 16)
+            else { return nil }
+            return fieldPath(name)
+        }
+
         /// A paired store that is no tuple of whole fields, as a tuple of what
         /// each register writes: `stp w3, w4, [x0, #0x10]` over the last four
         /// bytes of a 12-byte `_e` and all of `_f` named no field and was
@@ -6140,7 +6157,9 @@ public struct Disassembler: Sendable {
             if scalarTailReturns.contains(insn.address), let callee {
                 noteExit(.normal(callExpression(callee: callee, values: argumentsByAddress[insn.address] ?? [], site: insn.address)))
             }
-            if isObjCNonVoid, let rawExit = analysis.exitValues[insn.address] {
+            if isObjCNonVoid, insn.controlFlow == .return, let field = twoWordFieldReturn(at: insn.address) {
+                noteExit(.normal(field))
+            } else if isObjCNonVoid, let rawExit = analysis.exitValues[insn.address] {
                 let exit = sanitizeValue(rawExit)
                 if insn.controlFlow == .return, exit != .unknown {
                     noteExit(.normal(renderReturnValue(exit, before: insn.address)))

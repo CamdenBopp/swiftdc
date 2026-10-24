@@ -4552,15 +4552,25 @@ if a test was observed to fail without the fix.
   read `return self->_cursorPosition[0..<8]`. The old line was right only
   because x0's word took the whole field's name; the return path proves
   x0 alone (see the two-word return item below).
-- **OPEN (completeness): a two-word struct return renders only x0.** The
-  tracer records x0 at an exit, so a method returning `{QQ}` in x0 and x1
-  reads `return <x0>`: Terminal's `-[TTLogicalScreen cursorPosition]`
-  reads `return self->_cursorPosition[0..<8]`. Recording x1 at exits and
-  naming two consecutive words of one whole field as that field, as a
-  String slot does, would read `return self->_cursorPosition`.
-
-## 2026-10-23: known arity and in-image name twins
-
+- **FIXED (completeness): a two-word struct returned from one ivar read
+  as its first word.** `twoWordFieldReturn`: a method whose encoded
+  return type is a composite of 9 to 16 bytes, whose x0 and x1 at the
+  `ret` are consecutive words of one whole 16-byte ivar, returns that
+  ivar. `objc_pair_stores.m`'s `range` reads `return self->_range`, and
+  Terminal's `cursorPosition`, `displayCursorPosition` and `scrollRange`
+  read as they did before 2c92b57. Those three lines and that fixture
+  line are the whole blast radius.
+- **OPEN (completeness): any other two-word struct return renders only
+  x0.** `rangeHead`, whose words come from two ivars, reads
+  `return self->_range[0..<8]`. A Swift function returning a two-word
+  struct prints no return at all (`return ?`). The same field rule would
+  serve it, but only once the field's type is known to be the return
+  type: a field map stores each field's mangled type name, and for a type
+  of the same module that is a symbolic reference (`\u{01}` and an
+  offset), not a name. Resolving it at build time
+  (`SymbolicDemangler.demangleType` over the field record's
+  `mangledTypeName`, as MachOSwiftSection's `BuiltinTypeLayoutIndex`
+  does) would give `FieldMap` a type name per field.
 - **FIXED (80235e1, soundness): an in-image function named like a C
   library function took the library's arity.** `knownCArity` is looked up by name,
   so a vendored function sharing a libc entry's name got its arity in the

@@ -56,3 +56,32 @@ typedef struct { int x, y, z; } SDTriple;
 @implementation SDPairParts
 - (void)setTail:(int)x b:(int)y { _a[2] = x; _b = y; }
 @end
+
+// A struct of two words returned from one ivar: `ldp x0, x1, [x0, #0x8];
+// ret` returns _range whole. rangeHead returns _range's first word with
+// another ivar's, and rangeShifted _range's second word with another's.
+// wordOfRange returns one word, _range.location, though its inline paired
+// load leaves _range.length in x1. True behaviour: range returns _range;
+// rangeHead returns {_range.location, _other}; rangeShifted
+// {_range.length, _other}; wordOfRange _range.location.
+@interface SDPairReturns : NSObject {
+@public
+    NSRange _range;
+    NSUInteger _other;
+}
+- (NSRange)range;
+- (NSRange)rangeHead;
+- (NSRange)rangeShifted;
+- (NSUInteger)wordOfRange;
+@end
+
+@implementation SDPairReturns
+- (NSRange)range { return _range; }
+- (NSRange)rangeHead { return NSMakeRange(_range.location, _other); }
+- (NSRange)rangeShifted { return NSMakeRange(_range.length, _other); }
+- (NSUInteger)wordOfRange {
+    NSUInteger word;
+    __asm__ volatile("ldp %0, x1, [%1, #0x8]" : "=r"(word) : "r"(self) : "x1");
+    return word;
+}
+@end
