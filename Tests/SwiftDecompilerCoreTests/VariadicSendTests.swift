@@ -69,3 +69,40 @@ import Foundation
     let format = try #require(functions.first { $0.displayName == "_formatFirst" }).renderPseudo()
     #expect(format.components(separatedBy: "firstValue()").count == 2, Comment(rawValue: format))
 }
+
+/// `objc_unsafeClaimAutoreleasedReturnValue`, which ARC wraps a discarded
+/// result in, is autorelease bookkeeping like the rest of its family:
+/// `(void)[o description]` rendered
+/// `objc_unsafeClaimAutoreleasedReturnValue([? description])`.
+@Test func anUnsafeClaimIsHiddenLikeTheRestOfItsFamilyIfPresent() async throws {
+    let path = "Fixtures/Sample/libObjCDroppedResult.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = try #require(functions.first { $0.displayName == "_discardDescription" }).renderPseudo()
+    #expect(text.contains("    [? description]\n") && !text.contains("objc_unsafeClaim"), Comment(rawValue: text))
+}
+
+/// `objc_autorelease` returns the object it is handed. Modelled as
+/// returning a new value, its result printed as the allocation it returned
+/// at every use (`objc_autorelease.m`, no ARC): three
+/// `[[NSMutableString alloc] init]` for one object.
+@Test func anAutoreleasedObjectIsOneObjectIfPresent() async throws {
+    let path = "Fixtures/Sample/libObjCAutorelease.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = try #require(functions.first { $0.displayName == "_autoreleasedTwice" }).renderPseudo()
+    #expect(text.components(separatedBy: "[NSMutableString alloc]").count == 2, Comment(rawValue: text))
+    #expect(text.contains("let r0 = [[NSMutableString alloc] init]") && text.contains("[r0 length]"),
+            Comment(rawValue: text))
+}
+
+/// The runtime calls that return the object they are handed (objc4's
+/// declarations), and one that does not: `objc_retainBlock` returns a copy.
+@Test func theAutoreleaseFamilyReturnsItsArgument() {
+    for callee in ["objc_autorelease", "_objc_retainAutorelease", "objc_retainAutoreleaseReturnValue",
+                   "objc_unsafeClaimAutoreleasedReturnValue", "objc_retain"] {
+        #expect(ValueTracer.CallFacts(callee: callee).returnsArgument, "\(callee)")
+    }
+    #expect(!ValueTracer.CallFacts(callee: "objc_retainBlock").returnsArgument)
+    #expect(!ValueTracer.CallFacts(callee: "objc_release").returnsArgument)
+}

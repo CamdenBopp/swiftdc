@@ -4985,3 +4985,24 @@ if a test was observed to fail without the fix.
   Chess 1, Clarc 2 and GoodLinks 2 lines, each a two-field span store
   now one tuple per lane with the same values (`= 0` as `(0, 0)`); TextEdit
   is byte-identical.
+
+## 2026-10-24: the autorelease family returns its argument
+
+- **FIXED (soundness): an autoreleased object rendered as a new
+  allocation at every use.** `objc_autorelease` returns the object it is
+  handed, and the tracer modelled its result as new: that result printed
+  as the allocation it came from wherever it was used, and as a runtime
+  helper's it was never bound. `objc_autorelease.m` (no ARC) rendered
+  `[[NSMutableString alloc] init]` three times for one string, and
+  TextEdit's `-[Controller application:runTest:duration:]` eight
+  `[[NSMutableAttributedString alloc] init]`. `objc_autorelease`,
+  `objc_retainAutorelease`, `objc_retainAutoreleaseReturnValue` and
+  `objc_unsafeClaimAutoreleasedReturnValue` now return their argument, and
+  the last, the one member the pseudo view did not hide, is hidden with
+  the rest (either change alone regresses: a printed claim, or a result
+  never bound). Release `disasm --pseudo`, after normalising `let rN`:
+  Terminal 352 lines, TextEdit 51, Chess 27, GoodLinks 84; across them the
+  rendered sends fall from 1,206 to 474, 183 to 69, 78 to 30 and 132 to
+  84, and the allocations from 264 to 2, 40 to 1 and 20 to 1. GoodLinks
+  printed 22 `objc_unsafeClaimAutoreleasedReturnValue(…)` wrappers and
+  prints none; Clarc is byte-identical.

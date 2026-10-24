@@ -8,9 +8,14 @@
 // variadic argument, which the send prints after its format, so the call
 // prints once, inside it.
 //
+// discardDescription discards a send's result under ARC, which clang
+// claims with objc_unsafeClaimAutoreleasedReturnValue: bookkeeping like
+// the rest of the autorelease family, which is not printed.
+//
 // True behaviour: spanSend calls firstValue(o), then secondValue(o), then
 // sends setSpan: with the range (first, second); formatFirst returns
-// [NSString stringWithFormat:@"%ld", firstValue(o)].
+// [NSString stringWithFormat:@"%ld", firstValue(o)]; discardDescription
+// sends description to o and ignores the result.
 #import <Foundation/Foundation.h>
 
 __attribute__((noinline)) long firstValue(id o) { return (long)[o hash]; }
@@ -23,3 +28,5 @@ __attribute__((noinline)) long secondValue(id o) { return (long)[o hash] * 2; }
 void spanSend(id o) { [o setSpan:NSMakeRange(firstValue(o), secondValue(o))]; }
 
 NSString *formatFirst(id o) { return [NSString stringWithFormat:@"%ld", firstValue(o)]; }
+
+void discardDescription(id o) { (void)[o description]; }

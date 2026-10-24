@@ -1473,9 +1473,16 @@ public struct ValueTracer: Sendable {
         "objc_retainBlock", "swift_beginAccess", "swift_endAccess",
     ]
 
+    /// Each returns the object it was handed (objc4's `objc_autorelease`,
+    /// `objc_retainAutorelease`, …): the result is that value. Without
+    /// `objc_autorelease` here, `[[[X alloc] init] autorelease]` used twice
+    /// rendered three allocations, the autorelease's result printed as the
+    /// allocation it returned at every use.
     private static let identityRuntimeCalls: Set<String> = [
         "objc_retain", "objc_claimAutoreleasedReturnValue",
         "objc_retainAutoreleasedReturnValue", "objc_autoreleaseReturnValue",
+        "objc_autorelease", "objc_retainAutorelease", "objc_retainAutoreleaseReturnValue",
+        "objc_unsafeClaimAutoreleasedReturnValue",
     ]
 
     /// N for `objc_retain_xN`, the register-specific retain stub.
