@@ -88,3 +88,32 @@ private func body(_ functions: [String: String], _ prefix: String) throws -> Str
     let interpolated = try body(functions, "LiteralEscapes.interpolatedQuote(")
     #expect(interpolated.contains(#""q\"\(local_"#) && !interpolated.contains("appendLiteral"), "\(interpolated)")
 }
+
+/// An interpolation fold was tried at every statement, so after a piece it
+/// could not read it was retried from the next append, folded the tail
+/// alone and consumed the closing `String(stringInterpolation:)`: -Onone
+/// `"\u{7}ring \(x) done"` rendered `"\(local_40) done"`, which reads as the
+/// whole string. A run folds only from its start.
+@Test func anInterpolationWithAnUnreadablePieceFoldsNoneOfItIfPresent() async throws {
+    guard let functions = try await pseudo("Fixtures/Sample/libLiteralEscapes.Onone.dylib") else { return }
+    for name in ["bell", "middleBell"] {
+        let text = try body(functions, "LiteralEscapes.\(name)(")
+        let folded = text.split(separator: "\n").filter { $0.hasPrefix("    \"") }
+        #expect(folded.isEmpty && text.contains("    Swift.String.init()\n"), "\(name): \(text)")
+    }
+}
+
+@Test func anInterpolationRunFoldsOnlyFromItsStart() {
+    let run = [
+        "Swift.DefaultStringInterpolation.init(11, 1)",
+        "Swift.DefaultStringInterpolation.appendLiteral(Swift.String.init(?, 6, 1))",
+        "Swift.DefaultStringInterpolation.appendInterpolation<A where A: Swift.CustomStringConvertible>(local_40)",
+        "Swift.DefaultStringInterpolation.appendLiteral(Swift.String.init(\" done\", 5, 1))",
+        "Swift.String.init()",
+    ]
+    #expect(DisassembledFunction.foldSwiftIdioms(run) == run)
+    // Read whole, the same run folds.
+    var readable = run
+    readable[1] = "Swift.DefaultStringInterpolation.appendLiteral(Swift.String.init(\"ring \", 5, 1))"
+    #expect(DisassembledFunction.foldSwiftIdioms(readable) == [#""ring \(local_40) done""#])
+}

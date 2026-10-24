@@ -45,10 +45,16 @@ extension DisassembledFunction {
         // `String(stringInterpolation:)`; seeing the init here is what ties the
         // closing `String.init(…)` to this run instead.
         var sawBuilderInit = false
-        if statements[index].contains("DefaultStringInterpolation.init("),
-           !statements[index].contains("String.init(") {
+        if isBuilderInit(statements[index]) {
             sawBuilderInit = true
             index += 1
+        } else if start > 0, isInterpolationStep(statements[start - 1]) {
+            // A run folds only from its start. Retried from a later append
+            // after a piece that did not parse, the tail folded alone and took
+            // the closing `String(stringInterpolation:)` with it: -Onone
+            // `"\u{7}ring \(x) done"`, whose first piece is no printable C
+            // string, rendered `"\(local_40) done"` as the whole string.
+            return nil
         }
         while index < statements.count {
             let statement = statements[index]
@@ -79,6 +85,19 @@ extension DisassembledFunction {
         // standalone folder so this only claims genuine interpolations.
         guard sawInterpolation, index > start else { return nil }
         return ("\"\(components)\"", index - start)
+    }
+
+    /// The builder's own `DefaultStringInterpolation.init(capacity, count)`,
+    /// which starts a run.
+    private static func isBuilderInit(_ statement: String) -> Bool {
+        statement.contains("DefaultStringInterpolation.init(") && !statement.contains("String.init(")
+    }
+
+    /// A statement of an interpolation run: its builder's init or an append.
+    private static func isInterpolationStep(_ statement: String) -> Bool {
+        isBuilderInit(statement)
+            || statement.contains("DefaultStringInterpolation.appendLiteral")
+            || statement.contains("DefaultStringInterpolation.appendInterpolation")
     }
 
     /// A bare Swift string-literal construction — `String.init("hi", 2, 1)`,

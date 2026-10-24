@@ -22,3 +22,13 @@ public func storeBackslash() { sink = "c\\nd" }
 // -Onone kept `String.init("q\"", 2, 1)` and the appends it lowers to.
 public func storeQuote() { sink = "q\"" }
 public func interpolatedQuote(_ x: Int) -> String { "q\"\(x)" }
+// An interpolation with a piece the fold cannot read: at -Onone the piece
+// `"\u{7}ring "` is a C string with a control character, which renders
+// only as its address. Retried from the next append, the fold folded the
+// tail alone, `"\(local_40) done"`, and consumed the closing
+// `String(stringInterpolation:)`, as if that were the whole string.
+// True behaviour: bell returns "\u{7}ring " + x + " done", and middleBell
+// "x=" + x + " \u{7} y=" + y; a fold that cannot read every piece claims
+// none.
+public func bell(_ x: Int) -> String { "\u{7}ring \(x) done" }
+public func middleBell(_ x: Int, _ y: Int) -> String { "x=\(x) \u{7} y=\(y)" }

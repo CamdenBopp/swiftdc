@@ -4803,12 +4803,17 @@ if a test was observed to fail without the fix.
   `"q\""`, and `"q\"\(local_40)"` for `interpolatedQuote`. Blast radius:
   that fixture's pseudo and structured views only; the five apps'
   `--pseudo` is byte-identical.
-- **OPEN (soundness): an interpolation fold restarts after a piece it
-  cannot read.** `matchStringInterpolation` is tried at every statement,
-  so when one `appendLiteral` piece does not parse, the run is retried
-  from the next append and the tail folds alone, consuming the closing
-  `String(stringInterpolation:)`: before the fix above,
-  `interpolatedQuote` rendered its init and `appendLiteral` raw, then
-  `"\(local_40)"`, which reads as the whole string. Any other unreadable
-  piece still does this. A run should fold only from its start, and
-  decline whole when a piece fails.
+- **FIXED (soundness): an interpolation fold restarted after a piece it
+  could not read.** `matchStringInterpolation` was tried at every
+  statement, so when one `appendLiteral` piece did not parse, the run was
+  retried from the next append, and the tail folded alone and consumed the
+  closing `String(stringInterpolation:)`. `literal_escapes.swift`'s
+  `bell` (-Onone), `"\u{7}ring \(x) done"`, whose first piece is a C
+  string with a control character that renders only as its address,
+  rendered `"\(local_40) done"`, which reads as the whole string;
+  `middleBell` folded only its last interpolation. A run now folds only
+  from its builder's init or from a statement that no other step of a run
+  precedes, so both keep the raw run. Blast radius: those two functions'
+  pseudo and structured lines; the five apps' `--pseudo` is
+  byte-identical. Reading such a piece is the next step: the init passes
+  its byte count, so the literal could be read whole and escaped.
