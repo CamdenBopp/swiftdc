@@ -3353,6 +3353,36 @@ public struct Disassembler: Sendable {
         return layout
     }
 
+    /// A C function's arguments as its SDK declaration places them, for
+    /// one `knownCArity` does not count: an integer or pointer takes the next
+    /// x register, a float or double the next v register. Without it
+    /// `glVertex3f(x, y, z)`, whose operands are all in v registers, took the
+    /// x0 it found. Where a struct goes depends on how it is passed (an HFA
+    /// such as CGRect in v registers, a small one in x registers, a large one
+    /// by address), so it and every parameter after it are `unplaced`, each
+    /// a `?`: `CGRectGetMinY(rect)` took x0 too. Nil for a variadic
+    /// declaration, one with only integer parameters or none, or one that
+    /// places more parameters than registers.
+    static func cPrototypeLayout(
+        callee: String
+    ) -> (slots: [(kind: ScalarParameterClass, registers: Int, type: String)], unplaced: Int)? {
+        guard let prototype = DisassembledFunction.cPrototype(of: callee), !prototype.isVariadic,
+              prototype.parameters.contains(where: { $0 != "i" })
+        else { return nil }
+        let placed = prototype.parameters.prefix { $0 != "s" }
+        var integers = 0, floats = 0
+        var slots: [(kind: ScalarParameterClass, registers: Int, type: String)] = []
+        for parameter in placed {
+            switch parameter {
+            case "i": integers += 1; slots.append((.integer, 1, "Swift.Int"))
+            case "f": floats += 1; slots.append((.floating, 1, "Swift.Float"))
+            default: floats += 1; slots.append((.floating, 1, "Swift.Double"))
+            }
+        }
+        guard integers <= 8, floats <= 8 else { return nil }
+        return (slots, prototype.parameters.count - placed.count)
+    }
+
     /// A value whose every byte is zero: `0`, or a vector register's words
     /// all `0` (`movi v0.2d, #0`).
     static func isAllZero(_ value: AbstractValue) -> Bool {
@@ -4146,6 +4176,8 @@ public struct Disassembler: Sendable {
                         callee: layoutName(at: insn.address, callee: callee),
                         enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex
                     )?.isEmpty == false
+                    || (!(callTargets[insn.address] != nil && DisassembledFunction.knownArityNameMayHaveTwin(callee))
+                        && Self.cPrototypeLayout(callee: callee) != nil)
                     || (insn.branchTarget.flatMap { registerSummaries[$0] }?.provenArgumentCount ?? 0) > 0
             else { continue }
             sites[insn.address] = CallSite()
@@ -4391,10 +4423,14 @@ public struct Disassembler: Sendable {
             // not that String. Read one register per word, `takeTwo(_: String,
             // _: Int)` with nothing tracked rendered `takeTwo()`, and with 7
             // in x2 `takeTwo(?, ?, 7)`.
-            if let callee = calleeByAddress[address],
-               let slots = Self.swiftCallArgumentSlots(
-                   callee: layoutName(at: address, callee: callee),
-                   enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
+            let swiftSlots = calleeByAddress[address].flatMap {
+                Self.swiftCallArgumentSlots(
+                    callee: layoutName(at: address, callee: $0),
+                    enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
+            }
+            let cLayout = swiftSlots != nil || isNameTwin(address)
+                ? nil : calleeByAddress[address].flatMap { Self.cPrototypeLayout(callee: $0) }
+            if let slots = swiftSlots ?? cLayout?.slots {
                 var integer = 0, floating = 0
                 let laidOut: [AbstractValue] = slots.map { slot in
                     switch slot.kind {
@@ -4420,11 +4456,12 @@ public struct Disassembler: Sendable {
                         return floating < site.floatArguments.count ? site.floatArguments[floating] : .unknown
                     }
                 }
-                if !laidOut.isEmpty {
-                    argumentsByAddress[address] = laidOut.map(sanitizeValue)
-                    laidOutTypes[address] = slots.map(\.type)
+                let unplaced = Array(repeating: AbstractValue.unknown, count: cLayout?.unplaced ?? 0)
+                if !(laidOut + unplaced).isEmpty {
+                    argumentsByAddress[address] = (laidOut + unplaced).map(sanitizeValue)
+                    laidOutTypes[address] = slots.map(\.type) + unplaced.map { _ in "" }
                 }
-                strategy = "swift-signature"
+                strategy = cLayout == nil ? "swift-signature" : "c-declaration"
                 continue
             }
             // A runtime entry point of known C arity takes exactly its

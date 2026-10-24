@@ -231,6 +231,9 @@ $CLANG -fobjc-arc -O0 -dynamiclib -framework Foundation objc_field_copy.m -o lib
 echo "==> paired stores covering two ivars, aligned or not with them (objc_pair_stores.m, -O2)"
 $CLANG -fobjc-arc -O2 -dynamiclib -framework Foundation objc_pair_stores.m -o libObjCPairStores.dylib
 
+echo "==> calls of SDK C functions laid out from their declarations (c_prototypes.c, -O2)"
+$CLANG -O2 -dynamiclib -framework OpenGL -undefined dynamic_lookup c_prototypes.c -o libCPrototypes.dylib
+
 echo "==> a Swift @objc getter thunk returning an untracked ivar (objc_thunk_return.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name ObjCThunkReturn objc_thunk_return.swift -o libObjCThunkReturn.dylib
 

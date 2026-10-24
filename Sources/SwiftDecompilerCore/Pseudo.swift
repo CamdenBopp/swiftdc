@@ -773,8 +773,33 @@ public extension DisassembledFunction {
             // Historical prefix match: some selectors resolve as
             // `objc_opt_isKindOfClass` with a trailing disambiguator.
             if callee.hasPrefix("objc_opt_isKindOfClass") { return 2 }
+            // A C function the SDK declares with only integer and pointer
+            // parameters (`SDKCPrototypes`, generated from the headers).
+            if let prototype = cPrototype(of: callee), !prototype.isVariadic,
+               prototype.parameters.allSatisfy({ $0 == "i" }) {
+                return prototype.parameters.count
+            }
             return nil
         }
+    }
+
+    /// The SDK's declaration of a C function (`SDKCPrototypes`): what it
+    /// returns (`v`, `i`, `f`, `d`, `s` for a value no one register holds,
+    /// `x` unclassified) and each parameter's register bank (`i`, `f`, `d`,
+    /// or `s` for one that is no single register or is unclassified).
+    struct CPrototype: Equatable {
+        let result: Character
+        let parameters: [Character]
+        let isVariadic: Bool
+    }
+
+    static func cPrototype(of callee: String) -> CPrototype? {
+        guard let entry = SDKCPrototypes.table[callee] else { return nil }
+        var parameters = Array(entry.dropFirst(2))
+        let isVariadic = parameters.count >= 3 && parameters.suffix(3) == [".", ".", "."]
+        if isVariadic { parameters.removeLast(3) }
+        guard let result = entry.first else { return nil }
+        return CPrototype(result: result, parameters: parameters, isVariadic: isVariadic)
     }
 
     /// Checked-cast / safe-category helpers whose result IS one of their

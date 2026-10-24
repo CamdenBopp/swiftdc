@@ -3474,8 +3474,9 @@ if a test was observed to fail without the fix.
   Since 2026-10-24 `bzero`, `malloc`, `objc_enumerationMutation`,
   `CFRelease`, `dispatch_async`, `dispatch_sync`, `swift_getKeyPath`,
   `swift_slowAlloc`, `swift_once` and `swift_slowDealloc` are in the table
-  too (below); a C callee absent from it still prints only what was
-  tracked.
+  too (below), and since 2026-10-24 every C function the SDK declares
+  takes its declared parameters (below); an undeclared C callee, or a
+  variadic one, still prints only what was tracked.
 
 ## 2026-10-22: findings from a read-only audit
 
@@ -5068,16 +5069,75 @@ if a test was observed to fail without the fix.
   one of them no longer take those registers (Terminal's four
   `sub_…(?, ?, arg0)` read `sub_…()`), and TextEdit and Chess change two
   lines each.
-- **OPEN (soundness): consecutive calls of signatureless C functions
-  that take floats and return nothing render nested.** Chess's OpenGL
-  drawing, `glTexCoord2f(u, v); glVertex3f(x, y, z); …; glEnd();`, reads
-  `glEnd(glVertex3f(glTexCoord2f(glVertex3f(…))))` in 53 lines: each
-  callee takes only v registers and returns void, but with no known
-  arity the positional fallback passes the x0 it finds, and with no
-  known return the previous call's x0 is its result. The image's
-  evidence cannot tell this from `CFRelease(CFCopyX())`, which is right,
-  so the fix is a signature source: a table of the SDK's C prototypes
-  (void or not, integer and floating-point parameter counts), generated
-  from the headers as `SDKSelectorPrefixes` is from the shared cache.
-  The same table would close the untyped-float entries above for C
-  functions such as `putPassed`.
+
+## 2026-10-24: C calls laid out from the SDK's declarations
+
+- **FIXED (soundness): a signatureless C call took the registers it
+  found and left x0 as its result.** A call to an SDK C function carries
+  no signature in the binary, so its arguments were laid out by position
+  from the tracked x registers and x0 after it was taken as its result.
+  Chess's OpenGL drawing, `glTexCoord2f(u, v); glVertex3f(x, y, z); …;
+  glEnd();`, read `glEnd(glVertex3f(glTexCoord2f(glVertex3f(…))))` in 53
+  lines; `glFlush(); notifyDone();` read `notifyDone(glFlush())`;
+  `glVertex3f(1.0f, 2.0f, 0.5f)` read `glVertex3f()`; `strchr(s, c)` read
+  `strchr()`; Terminal's `NSInsetRect(NSInsetRect(r))` nested a CGRect
+  that comes back in d0-d3; and `CGRectGetMinY(rect)` took x0, which
+  holds no part of the rect. `SDKCPrototypes` is a table of every
+  external C function the macOS SDK 27.0 headers declare (20,279, from
+  224 of 333 translation units: each public framework's umbrella header
+  and one unit of the C library and runtime headers, dumped by clang as
+  text), with what each returns (void, integer or pointer, float,
+  double, a struct or other value no one register holds, or
+  unclassified) and each parameter's register bank. The generator,
+  `generateSDKCPrototypes` (`SWIFTDC_GENERATE_SDK_C_PROTOTYPES=<file>
+  swift test --filter generateSDKCPrototypes`, about 4 minutes), keeps
+  no declaration without a prototype (`int f()`, whose parameters are
+  unknown, not none: a first draft gave `SMJobBless` and
+  `vImageBuffer_InitForCopyFromCVPixelBuffer` an arity of 0), reads a
+  returned function pointer as a pointer (`signal` had read as void),
+  drops the attribute macros clang prints inside a type
+  (`DISPATCH_RETURNS_RETAINED dispatch_queue_t`, which had made every
+  dispatch, os_log and xpc creator unclassified), resolves an anonymous
+  struct typedef to its struct (`CMTime`), and declines the 4 names
+  declared two ways (the `objc_msgSend` family). Where the callee is the
+  import, not an in-image function of the same name:
+  - an all-integer declaration is the call's arity (`strchr(?, ?)`);
+  - otherwise integers take x registers and floats v registers in
+    order, up to the first struct, which with every parameter after it
+    renders `?`, since its registers depend on how it is passed
+    (`glVertex3f(1.0, 2.0, 0.5)`, `CGContextFillRect(0, ?)`,
+    `CGRectOffset(?, ?, ?)`);
+  - the result is in x0 for an integer or pointer, v0 for a float or
+    double, and neither for void or a struct (`glFlush()` then
+    `notifyDone()`; `CGContextSetFontSize(?, CTFontGetSize(r25))`); an
+    unclassified result keeps the old reading.
+  `c_prototypes.c` (-O2) holds the shapes
+  (`anSDKCCallIsLaidOutFromItsDeclarationIfPresent`,
+  `anSDKCPrototypeReadsItsBanksAndVariadics`). Fixtures: only
+  libGridSampler.opt changes, `fmod(atan2(sin(asin(__sincos_stret(…)))))`
+  becoming the seven calls it makes, with `__sincos_stret(r0)` reading
+  atan2's double and `fmod(?, 360.0)` its stack constant. Release
+  `disasm --pseudo` against the build before: Terminal 634/711,
+  TextEdit 32/47, Chess 214/1144, Clarc 317/405 and
+  GoodLinks 1161/1285 lines (removed/added). Nearly all are C
+  calls taking their declared arguments, nested calls coming apart, and
+  results in v0 or in no register; bindings renumber after a binding
+  that is gone. In-image functions that only reached x registers
+  through such a call take fewer (`sub_…(self, ?, arg0, arg1)` around
+  `CFAbsoluteTimeGetCurrent()` reads `sub_…()`). The table is
+  568,644 bytes of source.
+- **OPEN (completeness): nothing at or after a struct parameter is
+  placed.** A struct's registers depend on how it is passed, and the
+  table records only that a parameter is a struct, so
+  `NSDivideRect(rect, &slice, &rem, amount, edge)`, which read
+  `NSDivideRect(local_d0, local_b0, 1)` by position (right only because
+  the CGRect is an HFA in d0-d3), now reads `NSDivideRect(?, ?, ?, ?, ?)`,
+  and `CGContextDrawImage(ctx, rect, image)` loses its image in x1.
+  Recording an HFA's member count and type (CGRect, CGPoint, CGSize) in
+  the table would place the parameters after one.
+- **OPEN (soundness): a float constant inside a float expression renders
+  as its bit pattern.** `fmov d1, #100.0; fdiv d0, d0, d1` gives the
+  tracer `.binary(.divide, x, .immediate(0x4059000000000000))`, the same
+  node an integer divide makes, so TextEdit renders `[r13 doubleValue] /
+  0x4059000000000000` (one site; GoodLinks two). A float constant at the
+  top of a float slot renders as its decimal (`fmod(?, 360.0)`).

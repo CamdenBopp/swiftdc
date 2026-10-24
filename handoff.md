@@ -281,10 +281,10 @@ everything); ReDyne is MIT but nothing in it beats what swiftdc has. Ranked:
    no successors, so switch arms are orphaned. Recognise the AArch64 compact
    table (`adrp/add` table, `adr` anchor, `ldrb/ldrh`, `add …, lsl #s`, `br`),
    bound it by the dominating `cmp; b.hi` guard, decline without one. Effort M.
-3. **An SDK-generated C prototype table** (NeverD's idea: libclang over the SDK
-   headers, variadic and unprototyped left empty) to replace the hand list
-   `knownCArity` in `Pseudo.swift`; it also marks variadics for stack-argument
-   recovery. Write our own generator. Effort M.
+3. **The SDK C prototype table** shipped 2026-10-24 (`SDKCPrototypes`, from
+   `generateSDKCPrototypes`; see PRODUCTION-READINESS). Left: HFA struct
+   parameters (nothing after a struct is placed yet), and using its variadic
+   marks for stack-argument recovery.
 4. **Oracles.** A structural flow oracle (rebuild the edges the structured
    output implies, diff against the CFG; NeverD `HighFlowOracle.cpp`) as a
    test-only check, and an ABI execution oracle (call with random bytes,

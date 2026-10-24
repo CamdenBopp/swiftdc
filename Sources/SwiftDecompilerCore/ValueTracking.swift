@@ -679,6 +679,10 @@ public struct ValueTracer: Sendable {
         /// A Swift signature returning a String (or `String?`), whose second
         /// word comes back in x1.
         let returnsString: Bool
+        /// What the SDK declares a C function returns (`SDKCPrototypes`):
+        /// `v`, `i`, `f`, `d`, or `s` for a value no one register holds.
+        /// Nil for a type the table could not classify.
+        let cResult: Character?
 
         init(_ insn: Instruction) {
             self.init(callee: DisassembledFunction.calleeName(of: insn) ?? "")
@@ -709,6 +713,14 @@ public struct ValueTracer: Sendable {
             hasTupleResult = DisassembledFunction.hasTupleResult(callee)
             returnsString = DisassembledFunction.splitSignature(callee)
                 .map { Disassembler.twoWordStringTypes.contains($0.result) } ?? false
+            cResult = knownArityApplies ? Self.result(of: DisassembledFunction.cPrototype(of: callee)) : nil
+        }
+
+        /// A declaration's result, or nil for one the table could not
+        /// classify (`x`), which claims nothing about x0 or v0.
+        static func result(of prototype: DisassembledFunction.CPrototype?) -> Character? {
+            guard let result = prototype?.result, result != "x" else { return nil }
+            return result
         }
     }
 
@@ -1423,6 +1435,16 @@ public struct ValueTracer: Sendable {
                 // expression. Project it only when its ABI layout is proven.
                 registers[.x(0)] = .unknown
                 registers[.v(0)] = nil
+            } else if let result = call.cResult {
+                // A C function's declaration says where its result is: x0 for
+                // an integer or pointer, v0 for a float or double, and
+                // neither for void or a struct. Taken as x0, a run of
+                // void `glVertex3f` calls nested, each the previous one's
+                // argument; `NSInsetRect` returns an NSRect in d0-d3, and its
+                // d0 passed on read as the whole rect. The register the
+                // result is not in holds whatever the callee left there.
+                registers[.x(0)] = result == "i" ? .callResult(insn.address) : .unknown
+                registers[.v(0)] = result == "f" || result == "d" ? .callResult(insn.address) : nil
             } else {
                 // The result register — x0 for integer/pointer/reference returns,
                 // v0 for a floating-point one. The callee delivers into one; only
