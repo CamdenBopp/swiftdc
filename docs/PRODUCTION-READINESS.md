@@ -4886,6 +4886,19 @@ if a test was observed to fail without the fix.
 
 ## 2026-10-24: a field of self held across a call
 
+- **OPEN (completeness): untyped sends with a float in a v register
+  decline even for selectors the SDK proves integer.** The untyped-float
+  guard declines a send's arguments whenever a v register may hold one,
+  with no signature to say the selector takes none. Release `disasm
+  --pseudo --probe` counts `objc-untyped-float` at Terminal 58, TextEdit
+  18, Chess 21, Clarc 45 and GoodLinks 128 sends. The public frameworks
+  in the macOS 27.2 shared cache declare 43,919 selectors (with at least
+  one argument) whose every declaration passes all arguments in x
+  registers (counted with the `SDKSelectorPrefixes` generator's walk), and
+  for those the integer layout stands whatever v0-v7 hold. A table of
+  them is about 1.8 MB of names, or about 470 KB as 64-bit hashes, next
+  to the 4,764-selector prefix table already generated; not yet worth
+  the size without a count of how many of the 270 it restores.
 - **FIXED (soundness): a register named as a field of self kept the name
   across a call that may write the field.** The tracer names a register
   loaded from, or stored to, a field of self as that field
