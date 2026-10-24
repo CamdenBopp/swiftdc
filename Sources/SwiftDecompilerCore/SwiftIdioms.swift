@@ -56,7 +56,7 @@ extension DisassembledFunction {
                 guard let inner = firstArgument(of: statement),
                       let literal = stringLiteralValue(ofInit: inner)
                 else { return nil }
-                components += escapeForInterpolation(literal)
+                components += literal
                 index += 1
             } else if statement.contains("DefaultStringInterpolation.appendInterpolation") {
                 let value = firstArgument(of: statement) ?? "?"
@@ -88,11 +88,11 @@ extension DisassembledFunction {
         guard statement.hasPrefix("Swift.String.init(") || statement.hasPrefix("String.init("),
               let literal = stringLiteralValue(ofInit: statement)
         else { return nil }
-        return "\"\(escapeForInterpolation(literal))\""
+        return "\"\(literal)\""
     }
 
-    /// The literal text of a `String.init(contents, count, isASCII)` expression:
-    /// the quoted contents when present, or `""` when the count operand is `0`
+    /// The literal text of a `String.init(contents, count, isASCII)` expression,
+    /// escaped as the contents rendered it: the quoted contents when present, or `""` when the count operand is `0`
     /// (an empty segment, common as an interpolation's trailing piece). Nil when
     /// the contents are only a pointer we could not decode, so a fold that needs
     /// this can bail rather than print a wrong literal.
@@ -307,12 +307,4 @@ extension DisassembledFunction {
         return parts
     }
 
-    /// Escape a recovered literal for embedding in a rendered `"…"` so the output
-    /// stays a single well-formed string.
-    private static func escapeForInterpolation(_ literal: String) -> String {
-        literal
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\n", with: "\\n")
-    }
 }

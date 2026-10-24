@@ -231,6 +231,11 @@ $CLANG -fobjc-arc -O0 -dynamiclib -framework Foundation objc_field_copy.m -o lib
 echo "==> paired stores covering two ivars, aligned or not with them (objc_pair_stores.m, -O2)"
 $CLANG -fobjc-arc -O2 -dynamiclib -framework Foundation objc_pair_stores.m -o libObjCPairStores.dylib
 
+echo "==> literals holding a quote or a backslash (literal_escapes.swift, -O and -Onone; literal_escapes.m, -O2)"
+$SWIFTC -parse-as-library -O -emit-library -module-name LiteralEscapes literal_escapes.swift -o libLiteralEscapes.dylib
+$SWIFTC -parse-as-library -Onone -emit-library -module-name LiteralEscapes literal_escapes.swift -o libLiteralEscapes.Onone.dylib
+$CLANG -fobjc-arc -O2 -dynamiclib -framework Foundation literal_escapes.m -o libObjCLiteralEscapes.dylib
+
 echo "==> an in-image function named like a libc entry of known arity (arity_twin.c, -O2)"
 $CLANG -O2 -dynamiclib arity_twin.c -o libArityTwin.dylib
 

@@ -2465,12 +2465,7 @@ public struct Disassembler: Sendable {
 
         /// A printable C string, crossing subcaches when needed.
         private func readCString(at address: UInt64) -> String? {
-            if let cacheReader {
-                guard let text = cacheReader.cString(at: address), !text.isEmpty,
-                      text.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value < 0x7f })
-                else { return nil }
-                return text.count > 48 ? String(text.prefix(48)) + "…" : text
-            }
+            if let cacheReader { return cacheReader.cString(at: address).flatMap(Self.printableLiteralText) }
             return Self.cString(at: address, in: machO, ranges: fileRanges)
         }
 
@@ -2520,6 +2515,16 @@ public struct Disassembler: Sendable {
             // C-string scan is insufficient when the representation gives a
             // byte count. Escape the complete value instead of truncating it
             // into a different literal.
+            return "\"\(Self.escapedLiteralText(raw))\""
+        }
+
+        /// A literal's text with each character a reader would take for
+        /// syntax escaped, so the rendered `"…"` spells exactly these
+        /// characters. Unescaped, the bytes `c\nd` rendered `"c\nd"`, which
+        /// reads as a newline, and `a"b` rendered `"a"b"`, which does not
+        /// parse. For printable ASCII, the only text a C string renders, the
+        /// escapes are C's as well.
+        static func escapedLiteralText(_ raw: String) -> String {
             var text = ""
             for scalar in raw.unicodeScalars {
                 switch scalar.value {
@@ -2533,7 +2538,7 @@ public struct Disassembler: Sendable {
                 default: text.unicodeScalars.append(scalar)
                 }
             }
-            return "\"\(text)\""
+            return text
         }
 
         /// `→ name` form for inline operand annotation.
@@ -2638,11 +2643,15 @@ public struct Disassembler: Sendable {
         }
 
         private static func cString(at target: UInt64, in machO: MachOFile, ranges: FileBackedRanges?) -> String? {
-            guard let s = rawCString(at: target, in: machO, ranges: ranges), !s.isEmpty,
-                  s.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value < 0x7f })
-            else { return nil }
-            let truncated = s.count > 48 ? String(s.prefix(48)) + "…" : s
-            return truncated.replacingOccurrences(of: "\"", with: "\\\"")
+            rawCString(at: target, in: machO, ranges: ranges).flatMap(printableLiteralText)
+        }
+
+        /// A C string's text for a rendered literal: printable ASCII only,
+        /// escaped, and cut after 48 characters with `…`, which no such string
+        /// contains. Nil for an empty string or any other byte.
+        static func printableLiteralText(_ s: String) -> String? {
+            guard !s.isEmpty, s.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value < 0x7f }) else { return nil }
+            return s.count > 48 ? escapedLiteralText(String(s.prefix(48))) + "…" : escapedLiteralText(s)
         }
     }
 
@@ -4222,7 +4231,7 @@ public struct Disassembler: Sendable {
             guard case .immediate(let second) = high,
                   let string = ValueTracer.decodeSmallString(lo: first, hi: second)
             else { return nil }
-            return "\"\(string)\""
+            return "\"\(ReferenceResolver.escapedLiteralText(string))\""
         }
 
         /// A String's two words read from one String field of `self`, as
@@ -5297,7 +5306,7 @@ public struct Disassembler: Sendable {
                    case .immediate(let lo) = values[index],
                    case .immediate(let hi) = values[index + 1],
                    let string = ValueTracer.decodeSmallString(lo: lo, hi: hi) {
-                    parts.append("\"\(string)\"")
+                    parts.append("\"\(ReferenceResolver.escapedLiteralText(string))\"")
                     index += 2
                 } else {
                     parts.append(renderValue(values[index], depth: depth))

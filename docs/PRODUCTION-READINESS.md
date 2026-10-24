@@ -4755,3 +4755,27 @@ if a test was observed to fail without the fix.
   lists the slice, `pacibsppc` and all. Every fixture view and the five
   apps are byte-identical.
 
+
+## 2026-10-24: literals that hold a quote or a backslash
+
+- **FIXED (soundness): a rendered literal did not spell its bytes.** A
+  small Swift string's bytes and a C string were printed between quotes
+  as they were, so the four characters c, backslash, n, d rendered
+  `"c\nd"`, which reads as a newline, and `a"b` rendered `"a"b"`, which
+  does not parse. A C string escaped its quotes but not its backslashes
+  (`puts("\\"")` for the bytes `\"`), and the -Onone interpolation fold
+  escaped pieces that were already escaped (`"say \\\"hi\\\" …"`). Every
+  literal now goes through one escaper, the one large Swift literals
+  already used (`escapedLiteralText`); C strings, CFStrings from a file
+  or the dyld cache, and both small-string paths share it, and the fold
+  keeps each piece as rendered. `literal_escapes.swift` (-O and -Onone)
+  and `literal_escapes.m` (-O2) read `take("c\\nd")`, `take("a\"b")`,
+  `puts("a\\nb")`, `puts("\\\"")`, `NSLog(@"x\\y")` and
+  `"say \"hi\" \(local_40) and a \\n slash"`. Blast radius: those three
+  fixtures only, 3 pseudo lines each; no other fixture holds such a
+  literal. Release `disasm --pseudo` changes Terminal 31 lines, TextEdit
+  7, Chess 1, Clarc 35 and GoodLinks 277, each only adding backslashes
+  (equal once every backslash is deleted). The dyld-cache CFString read has no fixture: no
+  cache CFString found holds a quote or a backslash (Foundation's `\`
+  and `"` at 0x181DC33B4 and 0x181DC33B7 are plain C strings), so that
+  branch is guarded only by sharing `printableLiteralText`.
