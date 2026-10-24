@@ -4223,8 +4223,10 @@ public struct Disassembler: Sendable {
             // call is scratch. `printf("%ld\n", x)` rendered `printf(0x534)`,
             // dropping x, and a stale x1 could read as the first value. The
             // count comes from the format's own bytes; an unreadable format
-            // shows the fixed arguments, then `…`.
-            if let callee = calleeByAddress[address],
+            // shows the fixed arguments, then `…`. An in-image function with
+            // such a name is no evidence for that layout: `printf(long, long)`
+            // rendered `printf(?, …)` for `printf(x, 4)`.
+            if let callee = calleeByAddress[address], !isNameTwin(address),
                let variadic = Self.cFormatVariadics[callee] ?? Self.cFormatVariadics[Self.stripLeadingUnderscore(callee)] {
                 let fixed = (0 ..< variadic.fixed).map { $0 < values.count ? values[$0] : AbstractValue.unknown }
                 var kinds: [DisassembledFunction.MessageSend.FormatArgumentKind]?

@@ -141,3 +141,22 @@ func aFailedForcedTryPassesItsFiveArgumentsIfPresent(path: String) async throws 
         #expect(argumentLists(of: "sink", in: text).allSatisfy { $0.isEmpty || $0 == ["?"] }, Comment(rawValue: text))
     }
 }
+
+/// A call to a printf-family name read its variadic arguments from the stack
+/// by the format, whatever the callee: an in-image `printf(long, long)`
+/// rendered `printf(?, …)` for `printf(x, 4)`, and an in-image
+/// `fprintf(label, long, long)` dropped its 9 the same way (`libc_twins.c`).
+/// The call now passes what the twin's body reads.
+@Test func anInImagePrintfTwinTakesItsRegisterArgumentsIfPresent() async throws {
+    let path = "Fixtures/Sample/libLibcTwins.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName == name }, "no \(name)").renderPseudo()
+    }
+    let printf = try text("_usePrintf")
+    #expect(argumentLists(of: "printf", in: printf) == [["?", "4"]], Comment(rawValue: printf))
+    let fprintf = try text("_useFprintf")
+    let lists = argumentLists(of: "fprintf", in: fprintf)
+    #expect(lists.count == 1 && lists.first?.count == 3 && lists.first?.last == "9", Comment(rawValue: fprintf))
+}

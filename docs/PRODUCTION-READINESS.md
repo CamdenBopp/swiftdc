@@ -4497,10 +4497,29 @@ if a test was observed to fail without the fix.
   radius: every other fixture view (structured, pseudo, listing, JSON) is
   byte-identical, and release `disasm --pseudo` of Terminal, TextEdit,
   Chess, Clarc and GoodLinks is byte-identical.
-- **OPEN (soundness): other by-name tables still apply to an in-image
-  twin.** `IndirectResults.isKnownDirectReturnCallee`, the printf-family
-  format table and the identity runtime set match a callee by its name
-  alone. (The read-only set already followed `knownArityApplies`.)
+- **FIXED (soundness): an in-image printf-family name was laid out by its
+  format.** `enrichCallArguments` read the variadic arguments of any
+  callee named in `cFormatVariadics` from the stack. `libc_twins.c` also
+  defines `int printf(long, long)` and `int fprintf(const char *, long,
+  long)`: `printf(x, 4)` rendered `printf(?, …)` and
+  `fprintf("%ld\n", x, 9)` rendered `fprintf(0x630, ?, …)`, each dropping
+  its last register argument for stack varargs that are not there. The
+  format layout now also requires `!isNameTwin(address)`, as the
+  known-arity layout beside it does, so the calls read `printf(?, 4)` and
+  `fprintf(0x630, ?, 9)`. Blast radius: every other fixture view
+  (structured, pseudo, listing, JSON) is byte-identical, and release
+  `disasm --pseudo` of the five apps is byte-identical.
+- **OPEN (soundness): the direct-return table may still apply to an
+  in-image twin.** `IndirectResults.isKnownDirectReturnCallee` is
+  consulted only for a call whose target has no `indirectResultUses`
+  entry. Every function the run decodes has one, but a filtered array run
+  decodes only its matches, so a call to an in-image `strlen` returning a
+  struct through x8 could be called direct by name there. A probe
+  (`struct Big strlen(long)`, read back from the buffer) rendered the same
+  `strlen()` filtered and unfiltered, so no wrong render is shown yet. The
+  identity runtime set holds only `objc_` names, which
+  `knownArityNameMayHaveTwin` already treats as one function wherever it
+  is, and the read-only set follows `knownArityApplies`.
 - **OPEN (completeness): a body-reads call with untracked arguments still
   renders `()`.** `sink()` reads x0, but its argument is unknown and the
   trailing unknown is trimmed; padding to the summary's count would
