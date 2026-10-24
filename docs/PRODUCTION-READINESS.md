@@ -4755,7 +4755,6 @@ if a test was observed to fail without the fix.
   lists the slice, `pacibsppc` and all. Every fixture view and the five
   apps are byte-identical.
 
-
 ## 2026-10-24: literals that hold a quote or a backslash
 
 - **FIXED (soundness): a rendered literal did not spell its bytes.** A
@@ -4779,3 +4778,18 @@ if a test was observed to fail without the fix.
   cache CFString found holds a quote or a backslash (Foundation's `\`
   and `"` at 0x181DC33B4 and 0x181DC33B7 are plain C strings), so that
   branch is guarded only by sharing `printableLiteralText`.
+- **FIXED (soundness): a condition holding a literal with an escaped
+  quote inverted wrong.** The condition inverter found top-level
+  operators by toggling at every `"`, so the escaped quote in `"a\""`
+  ended the literal for it and the real end opened a new one, hiding
+  the rest of the condition. `quoted_conditions.swift` (-O): the loop
+  guard of `while p != "a\"" && i > 0` (`cmp x0, x8; ccmp x1, #1, #8,
+  ne; b.lt`) rendered `if (!(arg0 == "a\"") || (arg1 < 1))`, entered when
+  n < 1, where the same loop over `"ab"` rendered
+  `!((arg0 == "ab") || (arg1 < 1))`. `LiteralScan` steps over a
+  literal's characters, an escaped one included, and the inverter and
+  `unwrapOuterParentheses` (which ignored literals entirely, so
+  `!(a == "(") + (b == ")")` inverted to `a == "(") + (b == ")"`) both
+  use it. That guard is the whole blast radius: every other fixture
+  view and the five apps' `--structured` and `--pseudo` are
+  byte-identical.

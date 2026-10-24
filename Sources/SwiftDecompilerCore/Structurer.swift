@@ -1125,7 +1125,9 @@ struct ControlFlowStructure {
     private static func unwrapOuterParentheses(_ text: String) -> String {
         guard text.hasPrefix("("), text.hasSuffix(")") else { return text }
         var depth = 0
+        var literal = LiteralScan()
         for (offset, character) in text.enumerated() {
+            if literal.step(character) { continue }
             if character == "(" { depth += 1 }
             else if character == ")" {
                 depth -= 1
@@ -1161,15 +1163,13 @@ struct ControlFlowStructure {
         var hasTopLevelSpace = false
         var depth = 0
         var genericDepth = 0
-        var inQuote = false
+        var literal = LiteralScan()
         var previous: Character = " "
         var index = condition.startIndex
         while index < condition.endIndex {
             let character = condition[index]
             defer { previous = character }
-            if character == "\"" {
-                inQuote.toggle()
-            } else if !inQuote {
+            if !literal.step(character) {
                 // A generic clause's `<` hugs a name (`Collection<A>`,
                 // `Collection< where A.Element == B>`), where a comparison or a
                 // shift is spaced; its `>` closes only an open clause, so a

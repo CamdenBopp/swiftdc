@@ -77,3 +77,33 @@ import Foundation
     #expect(body.contains("& 2047)"), "\(body)")
     #expect(!body.contains("e-32"), "\(body)")
 }
+
+/// A literal in a condition is not syntax. A scanner that toggled at every
+/// `"` took the escaped quote in `"a\""` for the literal's end and its real
+/// end for a new start, so it never saw the `||` after it and negated one
+/// disjunct: `quoted_conditions.swift`'s loop guard rendered
+/// `!(arg0 == "a\"") || (arg1 < 1)`, entered when n < 1. Nor do a literal's
+/// parentheses match the condition's: `!(a == "(") + (b == ")")` lost its
+/// negation as `a == "(") + (b == ")"`.
+@Test func readsALiteralInAConditionAsALiteral() {
+    #expect(ControlFlowStructure.inverted(#"(arg0 == "a\"") || (arg1 < 1)"#) == #"!((arg0 == "a\"") || (arg1 < 1))"#)
+    #expect(ControlFlowStructure.inverted(#"arg0 == "a\"" && arg1 < 1"#) == #"!(arg0 == "a\"" && arg1 < 1)"#)
+    // An escaped backslash does not escape the quote after it.
+    #expect(ControlFlowStructure.inverted(#"arg0 == "a\\" && arg1 < 1"#) == #"!(arg0 == "a\\" && arg1 < 1)"#)
+    #expect(ControlFlowStructure.inverted(#"!(a == "(") + (b == ")")"#) == #"!(!(a == "(") + (b == ")"))"#)
+}
+
+@Test func aLoopGuardOverAQuotedLiteralNegatesWholeIfPresent() async throws {
+    let path = "Fixtures/Sample/libQuotedConditions.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path)
+    }
+    // `cmp x0, x8; ccmp x1, #1, #8, ne; b.lt <exit>`: the loop runs when
+    // NOT (p is the literal or n < 1).
+    for (name, literal) in [("skipUnlessQuote", #""a\"""#), ("skipUnlessPlain", #""ab""#)] {
+        let body = try #require(functions.first { $0.displayName.hasPrefix("QuotedConditions.\(name)(") })
+            .renderStructured()
+        #expect(body.contains("if (!((arg0 == \(literal)) || (arg1 < 1))) {"), "\(name): \(body)")
+    }
+}
