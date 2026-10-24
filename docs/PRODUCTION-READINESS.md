@@ -2956,12 +2956,12 @@ if a test was observed to fail without the fix.
   Enforcing suite: 696 tests in 11 suites.
 
 - **OPEN (assumption) — a caller does not pass pointers into the callee's
-  own context, and a sync callee does not read x22.** `incomingLeaf` (an
-  incoming argument aliasing slot 16) and `implicitLeaf` (a C helper
-  writing through x22) still render `observe(7)` against native 11.
-  Compiled Swift does neither. Outlined fragments may read callee-saved
-  registers, which needs a callee-body proof of register inputs
-  (`CalleeRegisterSummary`).
+  own context.** `incomingLeaf` (an incoming argument aliasing slot 16)
+  still renders `observe(7)` against native 11; compiled Swift does not
+  pass one. The second half of this entry, a sync callee that reads x22,
+  is fixed (b9c1b02): `implicitLeaf` (a C helper writing through x22)
+  renders `observe(?)`, because a callee whose body uses x22 receives the
+  context (`CalleeRegisterSummary.readsContextRegister`).
 
 - **OPEN — context regions have no object boundaries.** An interior
   context pointer reaches every slot above its offset, and an escaped frame
@@ -4700,6 +4700,22 @@ if a test was observed to fail without the fix.
   Clarc 8,040, GoodLinks 38,440, all padding but 14 Clarc and 356
   GoodLinks lines, where a generic plumbing argument the pseudo view
   strips only from the end of a list now precedes a padded `?` and shows.
+
+## 2026-10-24: fields past a standard-library generic
+
+- **OPEN (completeness): a field past an `ArraySlice` or `Task` field
+  stays unnamed.** The field maps come from MachOSwiftSection's
+  `StaticLayoutCalculator` over one image, whose `KnownLayoutTable`
+  covers Array, Dictionary, Set, String and the pointer types but not
+  `Swift.ArraySlice` or `Swift.Task`, whose descriptors live in the
+  standard library. The layout stops at such a field (its trusted
+  prefix), so every later field of the type reads `+0x…`: `xrefs
+  --probe` over Clarc counts 132 `types.field-unnamed`, 122
+  `typeDescriptorNotFound(Swift.ArraySlice)` and 10 `Swift.Task`. Both
+  are frozen with fixed layouts, measured here with `MemoryLayout`:
+  `ArraySlice<T>` is 32 bytes, alignment 8, for any T (its Optional also
+  32), and `Task<S, F>` is 8 (its Optional 8). The fix is two entries in
+  the dependency's table (upstream, or a fork pin like MachOKit's).
 
 ## 2026-10-23: slice names
 
