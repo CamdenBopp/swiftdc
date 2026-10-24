@@ -52,9 +52,29 @@ public func callOptInt(_ p: UnsafePointer<Int?>) -> Int { takeOptInt(p.pointee, 
 
 public final class Box {
     public var total = 0
+    public var label = ""
+    public var span: (Int, Int) = (0, 0)
+    public var both: (String, String) = ("", "")
     // A class method: self in x20, the String in x0/x1, the Int in x2.
     @_optimize(none) @inline(never) public func put(_ s: String, _ n: Int) { total &+= s.utf8.count &+ n }
 }
 
 // b.put(p.pointee, 7): self is x20, so the formals start at x0.
 public func callBox(_ b: Box, _ p: UnsafePointer<String>) { b.put(p.pointee, 7) }
+
+// The two words of a String field, loaded with one ldp (`ldp x19, x20,
+// [x20, #0x18]`), are that field: takeTwo(self.label, 7). passMixedLabel
+// pairs the field's first word with the empty string's second, which is no
+// String the program holds: takeTwo(?, 7). passSpan passes the two words of
+// a field that is no String, and passFirstOfBoth the first String of a
+// two-String field, whose two words are not the whole field: both take
+// takeTwo(?, 7) until a part of a field can be named in a String slot.
+extension Box {
+    @inline(never) public func passLabel() -> Int { takeTwo(label, 7) }
+    @inline(never) public func passMixedLabel() -> Int {
+        let words = unsafeBitCast(label, to: (UInt, UInt).self)
+        return takeTwo(unsafeBitCast((words.0, 0xe000_0000_0000_0000 as UInt), to: String.self), 7)
+    }
+    @inline(never) public func passSpan() -> Int { takeTwo(unsafeBitCast(span, to: String.self), 7) }
+    @inline(never) public func passFirstOfBoth() -> Int { takeTwo(both.0, 7) }
+}

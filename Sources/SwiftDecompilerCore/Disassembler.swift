@@ -4186,6 +4186,18 @@ public struct Disassembler: Sendable {
             return "\"\(string)\""
         }
 
+        /// A String's two words read from one String field of `self`, as
+        /// that field: `ldp x19, x20, [x20, #0x10]` handing a call
+        /// `self.name`. Two words of different fields, or of a field of
+        /// another type, are no String.
+        func selfStringField(_ low: AbstractValue, _ high: AbstractValue) -> String? {
+            guard case .selfFieldValue(let offset) = low, high == .selfFieldValue(offset: offset + 8),
+                  case .success(.whole(let name, let type))? = fieldMap?.lookup(offset: offset, bytes: 16),
+                  Self.twoWordStringMangledTypes.contains(type)
+            else { return nil }
+            return fieldPath(name)
+        }
+
         /// A call to an in-image function whose name is also a C library
         /// function's in the known-arity table: the table is no evidence for it.
         func isNameTwin(_ address: UInt64) -> Bool {
@@ -4254,7 +4266,8 @@ public struct Disassembler: Sendable {
                             return Self.optionalScalarArgument(words, payloadBytes: payload.bytes)
                         }
                         if words.count == 2 {
-                            return swiftStringLiteral(words[0], words[1]) != nil ? .aggregate(words) : .unknown
+                            return swiftStringLiteral(words[0], words[1]) != nil
+                                || selfStringField(words[0], words[1]) != nil ? .aggregate(words) : .unknown
                         }
                         return words[0]
                     case .floating:
@@ -5167,10 +5180,12 @@ public struct Disassembler: Sendable {
                 var parts: [String] = []
                 var index = 0
                 while index < values.count {
-                    // A String slot's two words, kept only when they spell a literal.
+                    // A String slot's two words, kept only when they spell a
+                    // literal or are one String field's.
                     if case .aggregate(let words) = values[index], words.count == 2,
                        Self.twoWordStringTypes.contains(types[index]) {
-                        parts.append(swiftStringLiteral(words[0], words[1]) ?? unknownRenderedValue())
+                        parts.append(swiftStringLiteral(words[0], words[1])
+                            ?? selfStringField(words[0], words[1]) ?? unknownRenderedValue())
                         index += 1
                         continue
                     }

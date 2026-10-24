@@ -4028,6 +4028,18 @@ if a test was observed to fail without the fix.
   call's first result word, and that call (13 lines) is now a statement
   of its own; and `String.init(repeating:count:)` gains its untracked
   count. `Swift.String.append()` stays at 51.
+- **FIXED (completeness): a String field handed on whole rendered `?`.**
+  A laid-out String slot kept its two words only when they spelled a
+  literal, so `stringarity.swift`'s new `Box.passLabel` (`ldp x19, x20,
+  [x20, #0x18]`, then `takeTwo(label, 7)`) read `takeTwo(?, 7)`. Two
+  words that are consecutive words of one String field of `self`, the
+  whole field, are now that field: `takeTwo(self.label, 7)`
+  (`selfStringField`). The field's first word over another second word
+  (`passMixedLabel`), the two words of a field that is no String
+  (`passSpan`) and a String that is only part of a field
+  (`passFirstOfBoth`) stay `?`. Blast radius: only `passLabel` in
+  libStringArity; release `disasm --pseudo` of the five apps is
+  byte-identical (no laid-out String slot there takes a field's words).
 - **OPEN (completeness): a String that is a call's result renders `?`.**
   After a call, x1 is untracked, so `takeTwo(makeString(n), 7)` reads
   `makeString(arg0)` then `takeTwo(?, 7)`, and the -Onone

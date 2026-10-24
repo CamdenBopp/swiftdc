@@ -68,3 +68,26 @@ private let fixture = "Fixtures/Sample/libStringArity.dylib"
     #expect(slots("M.f<A>(A, Swift.String) -> Swift.Int") == nil)
     #expect(slots("Swift.String.append(Swift.String) -> ()") == nil)
 }
+
+/// A String slot kept its two words only when they spelled a literal, so a
+/// String field handed on whole rendered `?`: `Box.passLabel`
+/// (`ldp x19, x20, [x20, #0x18]`, then `takeTwo(label, 7)`) read
+/// `takeTwo(?, 7)`. Two words that are one String field's are that field
+/// now. The field's first word over another second word, the two words of
+/// a field that is no String, and a String that is only part of a field
+/// are not, and stay `?`.
+@Test func aStringFieldPassedWholeIsTheFieldIfPresent() async throws {
+    guard FileManager.default.fileExists(atPath: fixture) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: fixture, functionFilter: "Box.pass")
+    }
+    func pseudo(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("StringArity.Box.\(name)(") }).renderPseudo()
+    }
+    let label = try pseudo("passLabel")
+    #expect(label.contains("StringArity.takeTwo(self.label, 7)"), "\(label)")
+    for name in ["passMixedLabel", "passSpan", "passFirstOfBoth"] {
+        let text = try pseudo(name)
+        #expect(text.contains("StringArity.takeTwo(?, 7)"), "\(name): \(text)")
+    }
+}
