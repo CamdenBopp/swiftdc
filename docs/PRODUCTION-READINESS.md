@@ -3722,13 +3722,17 @@ if a test was observed to fail without the fix.
   by colon position.** The entry seeding of struct-taking methods is still
   off (the guard in `objcArgumentLocations`); see "Entry seeding of
   struct-taking methods" below for what still blocks it.
-- **OPEN (soundness, latent): `ObjCTypeLayoutDecoder` truncates a struct
-  at a pointer to an empty struct.** `{S=^{Opaque=}q}` parses the pointee
-  through `parseAggregate`, which returns without consuming the `}` of
-  `{Opaque=}`, so the outer struct ends there and measures 8 bytes, not
-  16. The argument layout no longer depends on it (struct sizes come from
-  their flattened members); ivar field maps still do. Its `l`/`L` are
-  also 8 bytes, where the runtime's `NSGetSizeAndAlignment` says 4.
+- **FIXED (soundness): `ObjCTypeLayoutDecoder` truncated a struct at a
+  pointer to an empty struct.** `parseAggregate` returned for an empty
+  definition (`{Opaque=}`) without consuming its `}`, so inside a struct
+  it closed the outer struct early: `{S=^{Opaque=}q}` measured 8 bytes,
+  not 16, and an ivar of that type claimed half its bytes. The closer is
+  now consumed before the empty definition declines: 16, and
+  `{S=^{Opaque=}c^{Other=}}` 24, as `NSGetSizeAndAlignment` measures them
+  on this host. Every fixture view and release `disasm --pseudo` of the
+  five apps are byte-identical.
+- **OPEN (soundness, latent): `ObjCTypeLayoutDecoder` measures `l`/`L` as
+  8 bytes**, where the runtime's `NSGetSizeAndAlignment` says 4.
 
 ## 2026-10-23: throws(Never) specializations
 

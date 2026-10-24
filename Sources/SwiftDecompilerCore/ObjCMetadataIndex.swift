@@ -731,8 +731,12 @@ enum ObjCTypeLayoutDecoder {
                     size = next
                 }
             }
-            guard current == end, sawField, let padded = align(size, to: alignment) else { return nil }
+            // An empty definition (`{Opaque=}`, a pointee) has no layout, but
+            // its closer is still consumed: left in place, it closed the
+            // enclosing aggregate, and `{S=^{Opaque=}q}` measured 8 bytes.
+            guard current == end else { return nil }
             advance()
+            guard sawField, let padded = align(size, to: alignment) else { return nil }
             return .init(size: padded, alignment: alignment)
         }
 

@@ -14,6 +14,17 @@ import Testing
     #expect(ObjCTypeLayoutDecoder.layout(of: "?") == nil)
 }
 
+/// A pointer to an empty struct inside a struct left the empty struct's
+/// `}` unconsumed, so it closed the outer struct early: `{S=^{Opaque=}q}`
+/// measured 8 bytes, not 16, and an ivar of that type claimed half its
+/// bytes.
+@Test func decodesAPointerToAnEmptyStructInsideAStruct() {
+    #expect(ObjCTypeLayoutDecoder.layout(of: "{S=^{Opaque=}q}") == .init(size: 16, alignment: 8))
+    #expect(ObjCTypeLayoutDecoder.layout(of: "{S=^{Opaque=}c^{Other=}}") == .init(size: 24, alignment: 8))
+    #expect(ObjCTypeLayoutDecoder.layout(of: "^{Opaque=}") == .init(size: 8, alignment: 8))
+    #expect(ObjCTypeLayoutDecoder.layout(of: "{Opaque=}") == nil)
+}
+
 /// A size, count or width in a corrupt encoding can overflow `Int`. Each of
 /// these trapped (arithmetic overflow) in one decoder step; now the whole
 /// encoding has no layout, including a pointer whose pointee overflowed.
