@@ -110,3 +110,17 @@ import Testing
     let both = try text("-[SDPairStores setBoth:d:]")
     #expect(both.contains("(self->_c, self->_d) = (arg0, arg1)"), Comment(rawValue: both))
 }
+
+/// A paired store rendered as a tuple of the fields it covers whenever it
+/// covered whole adjacent fields, whatever the registers' boundaries:
+/// `packE:f:` (`stp x2, x3, [x0, #0x8]` over the 12-byte `_e` and the
+/// 4-byte `_f`) rendered `(self->_e, self->_f) = (arg0, arg1)`, though x2
+/// is only `_e`'s first 8 bytes. Each register must now fill one whole
+/// field.
+@Test func aPairStoreIsATupleOnlyWhenEachRegisterFillsAFieldIfPresent() async throws {
+    let path = "Fixtures/Sample/libObjCPairStores.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let packE = try #require(functions.first { $0.displayName == "-[SDPairStores packE:f:]" }).renderPseudo()
+    #expect(packE.contains("self->{_e, _f} = …") && !packE.contains("(self->_e, self->_f)"), Comment(rawValue: packE))
+}

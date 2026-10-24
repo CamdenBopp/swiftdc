@@ -3557,6 +3557,13 @@ if a test was observed to fail without the fix.
   byte-identical, and Terminal changes two lines: a two-int span's
   `-= 1` taken from one register now reads `= …`, and a four-int span
   zeroed by `stp q0, q0` reads `= …` where it read `= (0, 0)`.
+- **FIXED (soundness): a pair store was a tuple of the fields it covered
+  whatever its registers' boundaries.** `packE:f:` (`stp x2, x3, [x0,
+  #0x8]` over a 12-byte struct ivar and an int) rendered
+  `(self->_e, self->_f) = (arg0, arg1)`, though x2 is only `_e`'s first
+  8 bytes. Each register must now fill one whole field, in order; the
+  store reads `self->{_e, _f} = …`. Only that fixture line changes;
+  release `disasm --pseudo` of the five apps is byte-identical.
 - **OPEN (completeness): a store into two Swift fields at once is noted
   but never printed.** `stp x0, x1, [x20]` in a mutating
   `set(_ x: Int, _ y: Int) { a = x; b = y }` (-O) is noted

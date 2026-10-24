@@ -5282,9 +5282,21 @@ public struct Disassembler: Sendable {
             _ access: SelfFieldAccess,
             field: (names: [String], type: String?)
         ) -> String {
-            if field.names.count > 1, let stored = access.storedValues,
-               stored.count >= field.names.count {
-                let values = stored.prefix(field.names.count).map(sanitizeValue)
+            // A pair store writes a tuple of fields only when each register
+            // fills one whole field: `stp x2, x3, [x0, #8]` over a 12-byte
+            // `_e` and a 4-byte `_f` covers both exactly, yet x2 is only the
+            // first 8 bytes of `_e`, and it rendered
+            // `(self->_e, self->_f) = (arg0, arg1)`.
+            if field.names.count > 1, let stored = access.storedValues, stored.count == field.names.count,
+               let fieldMap, access.bytes % stored.count == 0,
+               field.names.indices.allSatisfy({ index in
+                   let width = access.bytes / stored.count
+                   guard case .success(.whole(let name, _)) =
+                           fieldMap.lookup(offset: access.offset + index * width, bytes: width)
+                   else { return false }
+                   return name == field.names[index]
+               }) {
+                let values = stored.map(sanitizeValue)
                 if values.allSatisfy({ $0 != .unknown }) {
                     let paths = field.names.map(fieldPath).joined(separator: ", ")
                     let rendered = values.map { renderValue($0, depth: 0) }.joined(separator: ", ")
