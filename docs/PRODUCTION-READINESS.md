@@ -3564,6 +3564,18 @@ if a test was observed to fail without the fix.
   8 bytes. Each register must now fill one whole field, in order; the
   store reads `self->{_e, _f} = …`. Only that fixture line changes;
   release `disasm --pseudo` of the five apps is byte-identical.
+- **FIXED (completeness): a pair store that started inside a field was
+  dropped.** `SDPairParts setTail:b:` (`stp w2, w3, [x0, #0x10]` over the
+  last four bytes of the 12-byte `_a` and all of `_b`) named no field, so
+  the method printed nothing. A pair store that is no tuple of whole
+  fields is now the tuple of what each register writes:
+  `(self->_a[8..<12], self->_b) = ((arg0 & 0xffffffff), (arg1 &
+  0xffffffff))`, and `packC:` reads `(self->_c, self->_d) = (arg0, …)`.
+  Only one statement per instruction renders, so the two writes stay one
+  tuple. A forwarded value in a register is named at the register's
+  width (`self.front[0..<16]`, not `self.front`). Blast radius: those
+  fixture stores; release `disasm --pseudo` changes four Terminal lines,
+  each a two-int span now a tuple per register, and nothing else.
 - **OPEN (completeness): a store into two Swift fields at once is noted
   but never printed.** `stp x0, x1, [x20]` in a mutating
   `set(_ x: Int, _ y: Int) { a = x; b = y }` (-O) is noted

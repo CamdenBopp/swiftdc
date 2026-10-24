@@ -5383,6 +5383,52 @@ public struct Disassembler: Sendable {
             return "\(path) = \(renderValue(value, depth: 0))"
         }
 
+        /// A paired store that is no tuple of whole fields, as a tuple of what
+        /// each register writes: `stp w3, w4, [x0, #0x10]` over the last four
+        /// bytes of a 12-byte `_e` and all of `_f` named no field and was
+        /// dropped; it is `(self->_e[8..<12], self->_f) = (…, arg1)`. Nil when
+        /// the store is already a tuple of whole fields, or when a register's
+        /// bytes name no field or part of one.
+        func registerWrite(_ access: SelfFieldAccess) -> String? {
+            guard let stored = access.storedValues, stored.count == 2, access.bytes % 2 == 0, let fieldMap
+            else { return nil }
+            if let field = fieldInfo(at: access.offset, bytes: access.bytes),
+               field.names.count == 1 || fieldWrite(access, field: field).hasPrefix("(") {
+                return nil
+            }
+            let width = access.bytes / 2
+            var targets: [String] = [], values: [String] = []
+            for (index, stored) in stored.enumerated() {
+                switch fieldMap.lookup(offset: access.offset + index * width, bytes: width) {
+                case .success(.whole(let name, _)):
+                    targets.append(fieldPath(name))
+                case .success(.part(let name, _, let subOffset, let bytes)):
+                    targets.append(fieldPath("\(name)[\(subOffset)..<\(subOffset + bytes)]"))
+                default:
+                    return nil
+                }
+                // A value this object's own field held is named by the
+                // register's width: q0 forwarded from a 16-byte store into a
+                // 32-byte `front` is `self.front[0..<16]`, not `self.front`.
+                let value = sanitizeValue(stored)
+                if case .selfFieldValue(let source) = value,
+                   case .success(let hit) = fieldMap.lookup(offset: source, bytes: width) {
+                    switch hit {
+                    case .whole(let name, _):
+                        values.append(fieldPath(name))
+                        continue
+                    case .part(let name, _, let subOffset, let bytes):
+                        values.append(fieldPath("\(name)[\(subOffset)..<\(subOffset + bytes)]"))
+                        continue
+                    case .spans:
+                        break
+                    }
+                }
+                values.append(value == .unknown ? "…" : renderValue(value, depth: 0))
+            }
+            return "(\(targets.joined(separator: ", "))) = (\(values.joined(separator: ", ")))"
+        }
+
         /// Runtime helpers emitted as tail calls can express higher-level ivar
         /// operations more accurately than their low-level ABI argument list.
         func objcHelperStatement(callee: String, site: CallSite) -> String? {
@@ -6054,7 +6100,13 @@ public struct Disassembler: Sendable {
             // A `self` field access: the differentiator. `ldp x19, x20, [x20,
             // #0x20]` inside Dog.breed.getter is a 16-byte read of self.breed.
             if let access = analysis.selfFieldAccesses[insn.address] {
-                if let field = fieldInfo(at: access.offset, bytes: access.bytes) {
+                if access.isWrite, !access.isAddressOf, let write = registerWrite(access) {
+                    if let statement = Self.fieldWriteStatement(write, objcFieldSyntax: objcFieldSyntax) {
+                        noteStatement(statement)
+                    } else {
+                        sourceNotes.append(write)
+                    }
+                } else if let field = fieldInfo(at: access.offset, bytes: access.bytes) {
                     sourceType = field.type
                     let name = field.names.count == 1
                         ? field.names[0] : "{\(field.names.joined(separator: ", "))}"

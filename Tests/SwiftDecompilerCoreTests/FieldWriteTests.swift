@@ -97,7 +97,9 @@ import Testing
 /// fell through to the single-value form, which takes the first register:
 /// `objc_pair_stores.m`'s `packC:` (`stp x2, x9, [x0, #0x18]`, x9 never
 /// written) rendered `self->{_c, _d} = arg0`, as if `_d` took part of a.
-/// Such a store now shows no value; `setBoth:d:` keeps its tuple.
+/// Such a store shows each register's own value (see
+/// `aPairStoreThatIsNoTupleIsWrittenRegisterByRegisterIfPresent`):
+/// `(self->_c, self->_d) = (arg0, …)`; `setBoth:d:` keeps its tuple.
 @Test func aPairStoreOverTwoFieldsClaimsNoSingleValueIfPresent() async throws {
     let path = "Fixtures/Sample/libObjCPairStores.dylib"
     guard FileManager.default.fileExists(atPath: path) else { return }
@@ -106,7 +108,7 @@ import Testing
         try #require(functions.first { $0.displayName == name }, "no \(name)").renderPseudo()
     }
     let packC = try text("-[SDPairStores packC:]")
-    #expect(packC.contains("self->{_c, _d} = …"), Comment(rawValue: packC))
+    #expect(packC.contains("(self->_c, self->_d) = (arg0, …)"), Comment(rawValue: packC))
     let both = try text("-[SDPairStores setBoth:d:]")
     #expect(both.contains("(self->_c, self->_d) = (arg0, arg1)"), Comment(rawValue: both))
 }
@@ -123,4 +125,28 @@ import Testing
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let packE = try #require(functions.first { $0.displayName == "-[SDPairStores packE:f:]" }).renderPseudo()
     #expect(packE.contains("self->{_e, _f} = …") && !packE.contains("(self->_e, self->_f)"), Comment(rawValue: packE))
+}
+
+/// A paired store that covered no whole field first named nothing, so it
+/// was dropped: `SDPairParts setTail:b:` (`stp w2, w3, [x0, #0x10]` over
+/// the last four bytes of the 12-byte `_a` and all of `_b`) rendered no
+/// statement at all. Such a store is now the tuple of what each register
+/// writes, and an unknown register's value is `…`.
+@Test func aPairStoreThatIsNoTupleIsWrittenRegisterByRegisterIfPresent() async throws {
+    let path = "Fixtures/Sample/libObjCPairStores.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let tail = try #require(functions.first { $0.displayName == "-[SDPairParts setTail:b:]" }).renderPseudo()
+    #expect(tail.contains("(self->_a[8..<12], self->_b) = ((arg0 & 0xffffffff), (arg1 & 0xffffffff))"),
+            Comment(rawValue: tail))
+    // A register holding a value forwarded from a store into part of a
+    // field is that part, at the register's width: `FieldWrites.init`
+    // stores one zeroed q0 across fields with `stp q0, q0`, and q0 is
+    // `self.front[0..<16]` after the store into the 32-byte `front`.
+    let writesPath = "Fixtures/Sample/libFieldWrites.dylib"
+    guard FileManager.default.fileExists(atPath: writesPath) else { return }
+    let writes = try await withStableDependencies { try await Disassembler().disassemble(path: writesPath) }
+    let initializer = try #require(writes.first { $0.displayName.hasPrefix("FieldWrites.FieldWrites.init()") }).render()
+    #expect(initializer.contains("(self.front[16..<32], self.back[0..<16]) = (self.front[0..<16], self.front[0..<16])"),
+            Comment(rawValue: initializer))
 }

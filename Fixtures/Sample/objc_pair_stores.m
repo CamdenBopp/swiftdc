@@ -10,10 +10,15 @@
 //   exactly, but x2 is only the first 8 bytes of _e, and x3 is _e's last
 //   4 bytes and then _f.
 //
+// - SDPairParts's setTail:b: is clang's own `stp w2, w3, [x0, #0x10]` over
+//   _a[2] (the last 4 bytes of the 12-byte _a at 8..20) and _b at 20..24:
+//   the store covers no whole field first, so it named nothing.
+//
 // The inline stores fix the registers; nothing else in the methods runs.
 // True behaviour: setBoth:d: sets _c = x and _d = y; packC: sets _c = a and
 // _d to an unknown value; packE:f: sets _e's first 8 bytes to a, its last
-// 4 to the low half of b, and _f to the high half of b.
+// 4 to the low half of b, and _f to the high half of b; setTail:b: sets
+// _a[2] = x and _b = y.
 #import <Foundation/Foundation.h>
 
 typedef struct { int x, y, z; } SDTriple;
@@ -38,4 +43,16 @@ typedef struct { int x, y, z; } SDTriple;
 - (void)packE:(long)a f:(long)b {
     __asm__ volatile("stp %0, %1, [%2, #0x8]" :: "r"(a), "r"(b), "r"(self) : "memory");
 }
+@end
+
+@interface SDPairParts : NSObject {
+@public
+    int _a[3];
+    int _b;
+}
+- (void)setTail:(int)x b:(int)y;
+@end
+
+@implementation SDPairParts
+- (void)setTail:(int)x b:(int)y { _a[2] = x; _b = y; }
 @end
