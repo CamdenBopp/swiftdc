@@ -28,10 +28,15 @@ private let fixture = "Fixtures/Sample/libStringArity.dylib"
     #expect(small.contains("StringArity.takeTwo(\"hi\", 7)"), "\(small)")
     let large = try pseudo("callTwoLarge")
     #expect(large.contains("StringArity.takeTwo(\"a literal longer than fifteen bytes\", 7)"), "\(large)")
-    // x0 is the call's first result word; the second is not tracked, so the
-    // String is not proven to be that call's.
+    // x0 and x1 are the two words of a call that returns a String.
     let result = try pseudo("callTwoCallResult")
-    #expect(result.contains("StringArity.takeTwo(?, 7)"), "\(result)")
+    #expect(result.contains("StringArity.takeTwo(StringArity.makeString(arg0), 7)"), "\(result)")
+    // Its first word over another second word, and a call returning no
+    // String, are not that String.
+    for name in ["callTwoMixedResult", "callTwoWordsResult"] {
+        let text = try pseudo(name)
+        #expect(text.contains("StringArity.takeTwo(?, 7)"), "\(name): \(text)")
+    }
     // An inout parameter is one address.
     let address = try pseudo("callInoutLoaded")
     #expect(address.contains("StringArity.takeInout(?, ?)"), "\(address)")
@@ -90,4 +95,31 @@ private let fixture = "Fixtures/Sample/libStringArity.dylib"
         let text = try pseudo(name)
         #expect(text.contains("StringArity.takeTwo(?, 7)"), "\(name): \(text)")
     }
+}
+
+/// A String result's second word is an argument only in a String slot.
+/// In a positional list (a value type's method, which is not laid out) it
+/// trims like any unknown: `runtimearity.swift`'s `String.append` of a
+/// `_typeName` call keeps reading `append(self: …, Swift._typeName(?, 0))`,
+/// with no `?` for the high word after it.
+@Test func aStringResultsSecondWordAloneIsNoArgumentIfPresent() async throws {
+    let path = "Fixtures/Sample/libRuntimeArity.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = functions.map { $0.renderPseudo() }.joined(separator: "\n")
+    #expect(text.contains("Swift._typeName(?, 0))") && !text.contains("Swift._typeName(?, 0), ?)"),
+            Comment(rawValue: text.components(separatedBy: "\n").filter { $0.contains("_typeName") }.joined(separator: "\n")))
+}
+
+/// A String result's second word copied into x20 before a call is no
+/// receiver: `string_high_receiver.s` keeps makeString's x1 in x22 and
+/// moves it to x20 before `String.hasPrefix`, whose self travels in x2 and
+/// x3, and the call read `hasPrefix(self: ?, "-", …)`.
+@Test func aStringResultsSecondWordInX20IsNoReceiverIfPresent() async throws {
+    let path = "Fixtures/Sample/libStringHighReceiver.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = try #require(functions.first { $0.displayName.hasPrefix("High.keptValue()") }).renderPseudo()
+    #expect(text.contains("Swift.String.hasPrefix(\"-\", High.makeString(3))") && !text.contains("self: ?"),
+            Comment(rawValue: text))
 }

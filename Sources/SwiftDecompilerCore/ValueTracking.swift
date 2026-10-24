@@ -142,6 +142,10 @@ public indirect enum AbstractValue: Equatable, Sendable {
     /// The return value (x0) of the call at this instruction address — lets a
     /// result flow into a later call's argument as a nested expression.
     case callResult(UInt64)
+    /// The second word (x1) of the two-word result of the call at this
+    /// address, for a callee whose signature returns a `Swift.String`: with
+    /// `.callResult` of the same call in x0, the whole String.
+    case callResultHigh(UInt64)
     /// A named source-level method argument. Objective-C's explicit arguments
     /// begin in x2 (after `self` and `_cmd`), so metadata can seed these without
     /// guessing and keep `arg0` alive through register moves and stack spills.
@@ -661,6 +665,9 @@ public struct ValueTracer: Sendable {
         let returnsVoidByName: Bool
         let isSuperSend: Bool
         let hasTupleResult: Bool
+        /// A Swift signature returning a String (or `String?`), whose second
+        /// word comes back in x1.
+        let returnsString: Bool
 
         init(_ insn: Instruction) {
             self.init(callee: DisassembledFunction.calleeName(of: insn) ?? "")
@@ -687,6 +694,8 @@ public struct ValueTracer: Sendable {
                 || DisassembledFunction.swiftAccessorProperty(callee)?.isGetter == false
             isSuperSend = callee.hasPrefix("objc_msgSendSuper")
             hasTupleResult = DisassembledFunction.hasTupleResult(callee)
+            returnsString = DisassembledFunction.splitSignature(callee)
+                .map { Disassembler.twoWordStringTypes.contains($0.result) } ?? false
         }
     }
 
@@ -1392,6 +1401,7 @@ public struct ValueTracer: Sendable {
                 // so modelling the result in both is faithful.
                 registers[.x(0)] = .callResult(insn.address)
                 registers[.v(0)] = .callResult(insn.address)
+                if call.returnsString { registers[.x(1)] = .callResultHigh(insn.address) }
             }
             registers[Self.selfFreshKey] = nil
             // AAPCS64 does not preserve NZCV across a call.

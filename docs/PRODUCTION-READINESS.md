@@ -4083,6 +4083,22 @@ if a test was observed to fail without the fix.
   (`passFirstOfBoth`) stay `?`. Blast radius: only `passLabel` in
   libStringArity; release `disasm --pseudo` of the five apps is
   byte-identical (no laid-out String slot there takes a field's words).
+- **FIXED (completeness, for laid-out slots): a String that is a call's
+  result rendered `?`.** After a call whose Swift signature returns a
+  String the tracer now sets x1 to `callResultHigh(site)`, and a String
+  slot holding that call's two words renders the call:
+  `takeTwo(makeString(arg0), 7)`. The paragraph below is the original
+  entry; the value-type method part (`Swift.String.append`) is still
+  open. Alone, the high word is no argument and no receiver: it trims
+  from a positional list like any unknown, and x20 holding it is no
+  `self` (`string_high_receiver.s`, after Terminal's `mov x20, x22`
+  before `String.hasPrefix`). Blast radius: StringArity and sample.debug
+  (`Dog.__allocating_init(Swift.String.init("Rex", 3, 1),
+  Swift.String.init("Lab", 3, 1))` where it read `(?, ?)`); release
+  `disasm --pseudo` of Terminal, TextEdit and Chess is byte-identical,
+  Clarc changes 4 lines and GoodLinks 20, each a body-bounded call padded
+  now that a reloaded high word makes its snapshot non-empty, or a String
+  result passed by name (`Swift.Substring.init(r#)` for `(?)`).
 - **OPEN (completeness): a String that is a call's result renders `?`.**
   After a call, x1 is untracked, so `takeTwo(makeString(n), 7)` reads
   `makeString(arg0)` then `takeTwo(?, 7)`, and the -Onone

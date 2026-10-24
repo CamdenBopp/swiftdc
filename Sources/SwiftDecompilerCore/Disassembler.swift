@@ -3841,8 +3841,16 @@ public struct Disassembler: Sendable {
                 guard c != .unknown, t != .unknown, f != .unknown else { return .unknown }
                 return .select(condition: c, whenTrue: t, whenFalse: f)
             case .aggregate(let values):
-                let values = values.map(sanitizeValue)
+                // A String slot's call result keeps its second word.
+                let values = values.map { value -> AbstractValue in
+                    if case .callResultHigh = value { return value }
+                    return sanitizeValue(value)
+                }
                 return values.allSatisfy({ $0 != .unknown }) ? .aggregate(values) : .unknown
+            case .callResultHigh:
+                // Alone, a String result's second word is no argument: in a
+                // positional list it trims like any unknown.
+                return .unknown
             default:
                 return value
             }
@@ -4095,6 +4103,8 @@ public struct Disassembler: Sendable {
             guard let site = sites[insn.address], Self.isSwiftCall(insn, swiftTargets: swiftTargets),
                   site.selfValue != .unknown
             else { continue }
+            // A String result's second word moved into x20 is no receiver.
+            if case .callResultHigh = site.selfValue { continue }
             if let callee = calleeByAddress[insn.address] {
                 if DisassembledFunction.receivesThinMetatype(callee, classTypeIndex: classTypeIndex)
                     || DisassembledFunction.takesNoSelf(callee) { continue }
@@ -4190,6 +4200,12 @@ public struct Disassembler: Sendable {
         /// that field: `ldp x19, x20, [x20, #0x10]` handing a call
         /// `self.name`. Two words of different fields, or of a field of
         /// another type, are no String.
+        /// A String's two words that are one call's String result: that call.
+        func stringCallResult(_ low: AbstractValue, _ high: AbstractValue) -> UInt64? {
+            guard case .callResult(let site) = low, high == .callResultHigh(site) else { return nil }
+            return site
+        }
+
         func selfStringField(_ low: AbstractValue, _ high: AbstractValue) -> String? {
             guard case .selfFieldValue(let offset) = low, high == .selfFieldValue(offset: offset + 8),
                   case .success(.whole(let name, let type))? = fieldMap?.lookup(offset: offset, bytes: 16),
@@ -4259,13 +4275,17 @@ public struct Disassembler: Sendable {
                     switch slot.kind {
                     case .integer:
                         defer { integer += slot.registers }
-                        let words = (integer ..< integer + slot.registers).map {
-                            $0 < values.count ? sanitizeValue(values[$0]) : AbstractValue.unknown
+                        let raw = (integer ..< integer + slot.registers).map {
+                            $0 < values.count ? values[$0] : AbstractValue.unknown
                         }
+                        let words = raw.map(sanitizeValue)
                         if let payload = Self.optionalScalarPayload(ofParameterType: slot.type) {
                             return Self.optionalScalarArgument(words, payloadBytes: payload.bytes)
                         }
                         if words.count == 2 {
+                            if let site = stringCallResult(raw[0], raw[1]) {
+                                return .aggregate([.callResult(site), .callResultHigh(site)])
+                            }
                             return swiftStringLiteral(words[0], words[1]) != nil
                                 || selfStringField(words[0], words[1]) != nil ? .aggregate(words) : .unknown
                         }
@@ -4909,7 +4929,8 @@ public struct Disassembler: Sendable {
                 return boolean
             }
             switch value {
-            case .unknown:
+            case .unknown, .callResultHigh:
+                // A String result's second word alone is no source value.
                 return unknownRenderedValue()
             case .immediate(let v):
                 return Self.renderImmediate(v)
@@ -5201,7 +5222,9 @@ public struct Disassembler: Sendable {
                     if case .aggregate(let words) = values[index], words.count == 2,
                        Self.twoWordStringTypes.contains(types[index]) {
                         parts.append(swiftStringLiteral(words[0], words[1])
-                            ?? selfStringField(words[0], words[1]) ?? unknownRenderedValue())
+                            ?? selfStringField(words[0], words[1])
+                            ?? stringCallResult(words[0], words[1]).map { renderValue(.callResult($0), depth: depth + 1) }
+                            ?? unknownRenderedValue())
                         index += 1
                         continue
                     }

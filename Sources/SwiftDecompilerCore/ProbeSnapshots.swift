@@ -20,6 +20,7 @@ public extension ProbeValue {
             case .address(let address): return leaf("address", ["address": .address(address)])
             case .loaded(let address): return leaf("loaded", ["address": .address(address)])
             case .callResult(let site): return leaf("call-result", ["site": .address(site)])
+            case .callResultHigh(let site): return leaf("call-result-high", ["site": .address(site)])
             case .argument(let index): return leaf("argument", ["index": .int(index)])
             case .binary(let op, let lhs, let rhs):
                 return leaf("binary", ["operator": .label(op.probeID), "lhs": child(lhs), "rhs": child(rhs)])

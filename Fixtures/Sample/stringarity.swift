@@ -27,9 +27,20 @@ public func callTwoLarge() -> Int { takeTwo("a literal longer than fifteen bytes
 
 @inline(never) public func makeString(_ n: Int) -> String { String(repeating: "x", count: n) }
 
-// x0 is makeString's first result word and x1 its second, which the call
-// site does not track: the String is not proven, takeTwo(?, 7).
+// x0 is makeString's first result word and x1 its second: the String is
+// that call's, takeTwo(makeString(n), 7).
 public func callTwoCallResult(_ n: Int) -> Int { takeTwo(makeString(n), 7) }
+
+// The call's first word with the empty string's second word, and the two
+// words of a call that returns no String: neither is a String a call
+// returned, takeTwo(?, 7) both.
+public func callTwoMixedResult(_ n: Int) -> Int {
+    let words = unsafeBitCast(makeString(n), to: (UInt, UInt).self)
+    return takeTwo(unsafeBitCast((words.0, 0xe000_0000_0000_0000 as UInt), to: String.self), 7)
+}
+public struct TwoWords { public var a: UInt; public var b: UInt }
+@inline(never) public func makeTwoWords(_ n: Int) -> TwoWords { TwoWords(a: UInt(bitPattern: n), b: UInt(bitPattern: n) &* 3) }
+public func callTwoWordsResult(_ n: Int) -> Int { takeTwo(unsafeBitCast(makeTwoWords(n), to: String.self), 7) }
 
 // Both the address and the Int loaded through unknown pointers:
 // takeInout(?, ?), never takeInout().
