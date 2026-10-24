@@ -139,7 +139,7 @@ extension DisassembledFunction {
         return type
     }
 
-    private static func unwrappingType(_ node: Node) -> Node? {
+    static func unwrappingType(_ node: Node) -> Node? {
         var node = node
         while node.kind == .type {
             guard node.children.count == 1, let inner = node.children.first else { return nil }
@@ -148,7 +148,7 @@ extension DisassembledFunction {
         return node
     }
 
-    private static func genericParameter(_ node: Node) -> (depth: UInt64, index: UInt64)? {
+    static func genericParameter(_ node: Node) -> (depth: UInt64, index: UInt64)? {
         guard let node = unwrappingType(node), node.kind == .dependentGenericParamType,
               node.children.count == 2,
               node.children[0].kind == .index, let depth = node.children[0].index,

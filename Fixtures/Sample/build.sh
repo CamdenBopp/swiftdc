@@ -231,6 +231,9 @@ $CLANG -fobjc-arc -O0 -dynamiclib -framework Foundation objc_field_copy.m -o lib
 echo "==> paired stores covering two ivars, aligned or not with them (objc_pair_stores.m, -O2)"
 $CLANG -fobjc-arc -O2 -dynamiclib -framework Foundation objc_pair_stores.m -o libObjCPairStores.dylib
 
+echo "==> calls to generic specializations, laid out from their substitutions (specializations.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name Specializations specializations.swift -o libSpecializations.dylib
+
 echo "==> conditions comparing against a literal holding a quote (quoted_conditions.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name QuotedConditions quoted_conditions.swift -o libQuotedConditions.dylib
 

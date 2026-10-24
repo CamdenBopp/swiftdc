@@ -774,7 +774,9 @@ public struct Disassembler: Sendable {
             cacheSymbols: cacheSymbols,
             cacheReader: machO.fullCache.map { CacheReader(full: $0) },
             fileRanges: fileRanges,
-            foldedCandidates: foldedByAddress
+            foldedCandidates: foldedByAddress,
+            specializationSymbols: ReferenceResolver.specializationSymbols(
+                labels: labelByAddress, names: names, folded: foldedByAddress)
         )
 
         var swiftTargets = Set(labelByAddress.compactMap { address, symbol in
@@ -938,15 +940,16 @@ public struct Disassembler: Sendable {
         // Resolve adrp/add(+ldr) operand references to function, type-descriptor,
         // string, and Swift-symbol names, and name direct call/branch targets.
         let cacheSymbols = CacheSymbolResolver(machO: machO)
-        let resolver = ReferenceResolver(
-            names: crossImageNames(
-                for: functions,
-                names: referenceIndex(
-                    functions: functions, labelByAddress: labelByAddress,
-                    metadataNames: metadataNames, objcIndex: objcIndex, in: machO
-                ),
-                resolver: cacheSymbols
+        let resolvedNames = crossImageNames(
+            for: functions,
+            names: referenceIndex(
+                functions: functions, labelByAddress: labelByAddress,
+                metadataNames: metadataNames, objcIndex: objcIndex, in: machO
             ),
+            resolver: cacheSymbols
+        )
+        let resolver = ReferenceResolver(
+            names: resolvedNames,
             stringRanges: stringSectionRanges(in: machO),
             machO: machO,
             demangleSymbol: { self.demangle($0) },
@@ -955,7 +958,9 @@ public struct Disassembler: Sendable {
             cacheSymbols: cacheSymbols,
             cacheReader: machO.fullCache.map { CacheReader(full: $0) },
             fileRanges: FileBackedRanges(standalone: machO),
-            foldedCandidates: foldedByAddress
+            foldedCandidates: foldedByAddress,
+            specializationSymbols: ReferenceResolver.specializationSymbols(
+                labels: labelByAddress, names: resolvedNames, folded: foldedByAddress)
         )
         // Addresses whose callee uses the Swift calling convention, so `self` in
         // x20 is meaningful there.
@@ -2382,6 +2387,31 @@ public struct Disassembler: Sendable {
         /// metadata candidates). `names` holds one of them; a consumer that knows
         /// which owner it reached the address through picks from these instead.
         var foldedCandidates: [UInt64: [String]] = [:]
+        /// The mangled symbol of each generic specialization in the image, by
+        /// address, so a call to one can be laid out from its substituted
+        /// signature (`specializedSignature`). An address the linker folded
+        /// several symbols onto has none: the bodies of `bump<Int>` and
+        /// `bump<UInt>` can be one, and the symbol there names either.
+        var specializationSymbols: [UInt64: String] = [:]
+
+        /// The substituted signature of the specialization a call to `target`
+        /// names, when its symbol proves one.
+        func specializedSignature(at target: UInt64, printedName: String) -> String? {
+            guard printedName.hasPrefix("generic specialization <"), let symbol = specializationSymbols[target]
+            else { return nil }
+            return DisassembledFunction.specializedSignature(symbol: symbol, printedName: printedName)
+        }
+
+        static func specializationSymbols(
+            labels: [UInt64: String], names: [UInt64: String], folded: [UInt64: [String]]
+        ) -> [UInt64: String] {
+            var symbols: [UInt64: String] = [:]
+            for (address, name) in names where name.hasPrefix("generic specialization <") {
+                guard (folded[address]?.count ?? 0) <= 1, let symbol = labels[address] else { continue }
+                symbols[address] = symbol
+            }
+            return symbols
+        }
 
         /// The candidate at `address` that belongs to `typeName` (its simple
         /// name is a component of the member's qualified context), or nil. At a
@@ -3942,6 +3972,13 @@ public struct Disassembler: Sendable {
             }
         }
         var callTargets: [UInt64: UInt64] = [:]
+        /// The name a call's arguments are laid out by: for a generic
+        /// specialization its substituted signature, which says what the
+        /// printed `A` is. `bump<Double>(d)` passes d in d0, and read from its
+        /// printed `(A)` it rendered `bump(arg1)`, the Int then in x0.
+        func layoutName(at address: UInt64, callee: String) -> String {
+            callTargets[address].flatMap { resolver.specializedSignature(at: $0, printedName: callee) } ?? callee
+        }
         for insn in function.instructions where insn.controlFlow == .call || insn.controlFlow == .branch {
             guard let target = insn.branchTarget, registerSummaries[target] != nil else { continue }
             // A tail branch passes its arguments the same way a call does.
@@ -4099,7 +4136,8 @@ public struct Disassembler: Sendable {
             // its argument was loaded through an unknown pointer.
             guard DisassembledFunction.knownCArity(of: callee) != nil
                     || Self.swiftCallArgumentSlots(
-                        callee: callee, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex
+                        callee: layoutName(at: insn.address, callee: callee),
+                        enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex
                     )?.isEmpty == false
                     || (insn.branchTarget.flatMap { registerSummaries[$0] }?.provenArgumentCount ?? 0) > 0
             else { continue }
@@ -4330,7 +4368,8 @@ public struct Disassembler: Sendable {
             // in x2 `takeTwo(?, ?, 7)`.
             if let callee = calleeByAddress[address],
                let slots = Self.swiftCallArgumentSlots(
-                   callee: callee, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
+                   callee: layoutName(at: address, callee: callee),
+                   enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
                 var integer = 0, floating = 0
                 let laidOut: [AbstractValue] = slots.map { slot in
                     switch slot.kind {

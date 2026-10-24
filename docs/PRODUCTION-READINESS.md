@@ -3852,7 +3852,9 @@ if a test was observed to fail without the fix.
   specialization returning a parameter bound to `Double` would look in an
   integer register. The substitution list that settles the thrown type
   settles this too. Non-throwing specializations have had the same reading
-  all along.
+  all along. Its arguments are laid out from the substituted signature
+  since 2026-10-24 ("a specialization's arguments", below); the result
+  register still reads the printed type.
 - **OPEN — a callee's `throws(Never)` specialization still reads as
   throwing.** `provablyDoesNotThrow` and the tail-call callee test work
   from the callee's printed name. Carrying the fact on the callee, as
@@ -4839,3 +4841,25 @@ if a test was observed to fail without the fix.
   such functions and one sample.debug line, `print`'s default terminator
   (`Swift.String.init(0x100007f86, 1, 1)` to `"\n"`, bytes `0a 00`); the
   five apps' `--pseudo` is byte-identical.
+
+## 2026-10-24: a specialization's arguments
+
+- **FIXED (soundness): a generic specialization's arguments were read
+  from its unspecialized signature.** The demangler prints a
+  specialization as its declaration, `generic specialization
+  <Swift.Double> of Specializations.bump<A where A: Swift.Numeric>(A) ->
+  A`, and the call took the printed `(A)` positionally from x0. The Double
+  specialization takes its argument in d0: `specializations.swift` (-O)
+  `useDouble(d, n)` rendered `bump(arg1)`, passing n, and
+  `returnDouble(d)` rendered `bump()`. `specializedSignature` reads the
+  specialization's substitution list from its symbol and prints the
+  declaration's function type with each generic parameter replaced
+  (`Specializations.bump(Swift.Double) -> Swift.Double`), and the call is
+  laid out from that: `bump(arg0)` in both. Declined, so laid out as
+  before, for a function signature specialization, a closure, a generic
+  signature of more than one depth or with a same-type requirement, a
+  member type such as `A.Element`, a name the tree does not print, and an
+  address the linker folded several symbols onto. Blast radius: that
+  fixture's two lines in every view; the other fixtures' specialization
+  calls are struct methods, closures or signature specializations, and
+  the five stripped apps have none, so all are byte-identical.
