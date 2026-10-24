@@ -17,10 +17,17 @@
 // then the argument; pair.a becomes the argument and pair.b is unchanged;
 // end becomes start, back becomes front, back.a becomes front.a, and start
 // becomes all zeros; secondOfPair returns pair.b, and differenceOfPair
-// pair.a - pair.b.
+// pair.a - pair.b; FieldPQ.set sets p = x and q = y with one
+// `stp x0, x1, [x20]`.
 public struct FieldPair { public var a: Int; public var b: Int }
 
 public struct FieldQuad { public var a: Int; public var b: Int; public var c: Int; public var d: Int }
+
+public struct FieldPQ {
+    public var p: Int
+    public var q: Int
+    @inline(never) public mutating func set(_ x: Int, _ y: Int) { p = x; q = y }
+}
 
 public final class FieldWrites {
     public var name: String = ""

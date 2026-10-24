@@ -59,12 +59,13 @@ private func parsedBinding(_ annotation: String?) -> Instruction.Binding? {
 }
 
 /// The first note `pseudoStatement` read as a statement that is not an exit
-/// or a binding: a field write, `self = …`, a yield or an executor hop.
+/// or a binding: a field write (a tuple of Swift or Objective-C fields
+/// too), `self = …`, a yield or an executor hop.
 private func isStatementNote(_ note: String) -> Bool {
     if note.hasPrefix("yield ") { return true }
     if note.hasPrefix("await hop_to_executor(") { return true }
     if note.hasPrefix("self = ") { return true }
-    if note.hasPrefix("("), note.contains("self->"), note.contains(" = ") { return true }
+    if note.hasPrefix("("), note.contains("self->") || note.contains("self."), note.contains(" = ") { return true }
     guard note.hasPrefix("self.") || note.hasPrefix("self->") else { return false }
     return [" = ", " += ", " -= "].contains(where: note.contains)
 }
@@ -207,14 +208,14 @@ private func textStatement(of insn: Instruction) -> String? {
         == "let r1 = await indirect_call(f)")
 }
 
-/// A field write is a statement, but for a tuple of Swift fields: the
-/// pseudo view never printed one (OPEN), and the facts keep that view.
-@Test func aFieldWriteIsAStatementButForASwiftTuple() {
-    #expect(Disassembler.fieldWriteStatement("self.x = 1", objcFieldSyntax: false) == .assignment("self.x = 1"))
-    #expect(Disassembler.fieldWriteStatement("self->_x = 1", objcFieldSyntax: true) == .assignment("self->_x = 1"))
-    #expect(Disassembler.fieldWriteStatement("(self->_a, self->_b) = (1, 2)", objcFieldSyntax: true)
+/// Every field write is a statement, a tuple of Swift fields too.
+@Test func aFieldWriteIsAStatement() {
+    #expect(Disassembler.fieldWriteStatement("self.x = 1") == .assignment("self.x = 1"))
+    #expect(Disassembler.fieldWriteStatement("self->_x = 1") == .assignment("self->_x = 1"))
+    #expect(Disassembler.fieldWriteStatement("(self->_a, self->_b) = (1, 2)")
         == .assignment("(self->_a, self->_b) = (1, 2)"))
-    #expect(Disassembler.fieldWriteStatement("(self.a, self.b) = (arg0, arg1)", objcFieldSyntax: false) == nil)
+    #expect(Disassembler.fieldWriteStatement("(self.a, self.b) = (arg0, arg1)")
+        == .assignment("(self.a, self.b) = (arg0, arg1)"))
 }
 
 /// The precedence the notes' order gave: an exit comes ahead of a yield

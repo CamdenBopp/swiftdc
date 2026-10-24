@@ -6118,11 +6118,7 @@ public struct Disassembler: Sendable {
             // #0x20]` inside Dog.breed.getter is a 16-byte read of self.breed.
             if let access = analysis.selfFieldAccesses[insn.address] {
                 if access.isWrite, !access.isAddressOf, let write = registerWrite(access) {
-                    if let statement = Self.fieldWriteStatement(write, objcFieldSyntax: objcFieldSyntax) {
-                        noteStatement(statement)
-                    } else {
-                        sourceNotes.append(write)
-                    }
+                    noteStatement(Self.fieldWriteStatement(write))
                 } else if let field = fieldInfo(at: access.offset, bytes: access.bytes) {
                     sourceType = field.type
                     let name = field.names.count == 1
@@ -6130,12 +6126,7 @@ public struct Disassembler: Sendable {
                     if access.isAddressOf {
                         sourceNotes.append("&\(fieldPath(name))")
                     } else if access.isWrite {
-                        let write = fieldWrite(access, field: field)
-                        if let statement = Self.fieldWriteStatement(write, objcFieldSyntax: objcFieldSyntax) {
-                            noteStatement(statement)
-                        } else {
-                            sourceNotes.append(write)
-                        }
+                        noteStatement(Self.fieldWriteStatement(fieldWrite(access, field: field)))
                     } else {
                         // A load of part of a field reads that byte range.
                         var readPath = fieldPath(name)
@@ -6493,12 +6484,11 @@ public struct Disassembler: Sendable {
         return function.replacingInstructions(instructions)
     }
 
-    /// The statement a field write makes: every write but a tuple of Swift
-    /// fields (`(self.a, self.b) = …`), which is noted and has never been
-    /// printed (OPEN in the readiness doc). Objective-C's tuple
-    /// (`(self->_a, self->_b) = …`) is a statement.
-    static func fieldWriteStatement(_ write: String, objcFieldSyntax: Bool) -> Instruction.Statement? {
-        write.hasPrefix("(") && !objcFieldSyntax ? nil : .assignment(write)
+    /// The statement a field write makes. A tuple of Swift fields
+    /// (`(self.a, self.b) = …`) is one as well as Objective-C's: it was only
+    /// noted, so `FieldPQ.set`'s `stp x0, x1, [x20]` printed nothing.
+    static func fieldWriteStatement(_ write: String) -> Instruction.Statement {
+        .assignment(write)
     }
 
     /// `adrp x8, 12 ; 0x10000c000` (llvm-objdump) or `adrp x8, 0x10000c000`

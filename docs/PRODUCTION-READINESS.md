@@ -3576,15 +3576,16 @@ if a test was observed to fail without the fix.
   width (`self.front[0..<16]`, not `self.front`). Blast radius: those
   fixture stores; release `disasm --pseudo` changes four Terminal lines,
   each a two-int span now a tuple per register, and nothing else.
-- **OPEN (completeness): a store into two Swift fields at once is noted
-  but never printed.** `stp x0, x1, [x20]` in a mutating
-  `set(_ x: Int, _ y: Int) { a = x; b = y }` (-O) is noted
-  `(self.a, self.b) = (arg0, arg1)`, and `--pseudo` says
-  `// no non-runtime calls (leaf / pure computation)`. The pseudo
-  statement has only ever printed the Objective-C form of the tuple
-  (`(self->_a, self->_b) = …`); the facts keep that view
-  (`Disassembler.fieldWriteStatement`). Printing it is the fix, with a
-  fixture and a blast-radius check of its own.
+- **FIXED (completeness): a store into two Swift fields at once was noted
+  but never printed.** `fieldWriteStatement` made every field write a
+  statement but a tuple of Swift fields: `fieldwrites.swift`'s
+  `FieldPQ.set` (`stp x0, x1, [x20]`, -O) noted
+  `(self.p, self.q) = (arg0, arg1)` and its pseudo view read
+  `// no non-runtime calls`. A tuple is a statement in both syntaxes now;
+  a tuple is written only when each register fills one whole field
+  (78bd747), and a pair store that is no tuple names each register's own
+  target (cf68ec0), so printing it claims no more than the note did.
+  BLAST_RADIUS
 - **FIXED (soundness, see "field writes that do not fill one field"
   below): a String stored to a field rendered as one word.**
 

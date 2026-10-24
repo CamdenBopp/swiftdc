@@ -175,3 +175,15 @@ import Testing
     let word = try text("-[SDPairReturns wordOfRange]")
     #expect(word.contains("return self->_range[0..<8]"), Comment(rawValue: word))
 }
+
+/// A paired store into two whole Swift fields was noted as a tuple but
+/// never printed, so `FieldPQ.set` (`stp x0, x1, [x20]`, -O) read
+/// `// no non-runtime calls (leaf / pure computation)`. It is a statement
+/// now, as the Objective-C tuple always was.
+@Test func aSwiftTupleFieldWriteIsPrintedIfPresent() async throws {
+    let path = "Fixtures/Sample/libFieldWrites.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let set = try #require(functions.first { $0.displayName.hasPrefix("FieldWrites.FieldPQ.set(") }).renderPseudo()
+    #expect(set.contains("(self.p, self.q) = (arg0, arg1)"), Comment(rawValue: set))
+}
