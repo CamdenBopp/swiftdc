@@ -3576,6 +3576,12 @@ if a test was observed to fail without the fix.
   width (`self.front[0..<16]`, not `self.front`). Blast radius: those
   fixture stores; release `disasm --pseudo` changes four Terminal lines,
   each a two-int span now a tuple per register, and nothing else.
+- **FIXED (completeness): an all-zero store over several fields read as
+  its words.** A zeroed vector register stored over a span rendered
+  `self->{_v, _u, _t, _s} = (0, 0)` (`SDPairZeros clear`), or `= …` for a
+  pair of them (Terminal's deleteAllCharacters). Every stored byte zero is
+  `= 0` now (`isAllZero`). Release `disasm --pseudo`: six Terminal lines
+  and one Clarc line, each such a span; nothing else changes.
 - **FIXED (soundness): a value forwarded from this object's fields was
   named by the field at its offset.** With no load to fix its width,
   `.selfFieldValue(offset)` named the field there whatever the store's

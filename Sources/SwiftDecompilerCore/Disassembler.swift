@@ -3295,6 +3295,16 @@ public struct Disassembler: Sendable {
         return layout
     }
 
+    /// A value whose every byte is zero: `0`, or a vector register's words
+    /// all `0` (`movi v0.2d, #0`).
+    static func isAllZero(_ value: AbstractValue) -> Bool {
+        switch value {
+        case .immediate(0): return true
+        case .aggregate(let words): return !words.isEmpty && words.allSatisfy(isAllZero)
+        default: return false
+        }
+    }
+
     /// The two-word String types `swiftCallArgumentSlots` lays out.
     static let twoWordStringTypes: Set<String> = ["Swift.String", "Swift.Optional<Swift.String>", "Swift.String?"]
     /// The same types as a field record's mangled names spell them.
@@ -5387,6 +5397,15 @@ public struct Disassembler: Sendable {
             // A pair store over several fields that is no tuple of them holds
             // two values, and the first is not the span's: `stp x2, x9` over
             // `_c` and `_d`, x9 unknown, rendered `self->{_c, _d} = arg0`.
+            // A store over several fields whose every byte is zero holds the
+            // one value the whole span then holds: `movi v0.2d, #0; stur q0`
+            // over four ints read `= (0, 0)`, the register's two words, and
+            // a pair of them `= …`.
+            if field.names.count > 1,
+               let words = access.storedValues ?? access.storedValue.map({ [$0] }),
+               !words.isEmpty, words.map(sanitizeValue).allSatisfy(Self.isAllZero) {
+                return "\(path) = 0"
+            }
             if field.names.count > 1, access.storedValues != nil { return "\(path) = …" }
             guard let rawValue = access.storedValue else { return "\(path) = …" }
             let value = sanitizeValue(rawValue)

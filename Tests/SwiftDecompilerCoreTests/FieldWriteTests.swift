@@ -201,3 +201,19 @@ import Testing
     let clear = try #require(functions.first { $0.displayName == "-[SDPairZeros clear]" }).renderPseudo()
     #expect(clear.contains("self->{_w, _x, _y, _z} = self->{_v, _u, _t, _s}"), Comment(rawValue: clear))
 }
+
+/// A store over several fields shows a value only when it is the span's,
+/// so a zeroed vector register read as its words: `SDPairZeros clear`'s
+/// `stur q0, [x0, #0x18]` of a zeroed q0 rendered
+/// `self->{_v, _u, _t, _s} = (0, 0)`. Every byte zero is the one value
+/// the span holds, `= 0`.
+@Test func anAllZeroStoreOverSeveralFieldsIsZeroIfPresent() async throws {
+    let path = "Fixtures/Sample/libObjCPairStores.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let clear = try #require(functions.first { $0.displayName == "-[SDPairZeros clear]" }).renderPseudo()
+    #expect(clear.contains("self->{_v, _u, _t, _s} = 0\n"), Comment(rawValue: clear))
+    #expect(Disassembler.isAllZero(.aggregate([.immediate(0), .immediate(0)])))
+    #expect(!Disassembler.isAllZero(.aggregate([.immediate(0), .immediate(1)])))
+    #expect(!Disassembler.isAllZero(.aggregate([])))
+}
