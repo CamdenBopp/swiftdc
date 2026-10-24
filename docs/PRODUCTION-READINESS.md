@@ -4945,15 +4945,19 @@ if a test was observed to fail without the fix.
   `(self->_a[16..<24], self->_b) = (self->_a[0..<8], self->_a[0..<8])`.
   Blast radius: those four init lines; the five apps' `--pseudo` is
   byte-identical.
-- **OPEN (soundness): a forwarded part of a field is named as the whole
-  field outside `registerWrite`.** Clang -O2 `_s.x = v; _s.y = w;
-  _t = v; _u = w;` over a 16-byte struct `_s` (`stp x2, x3, [x0, #0x8];
-  stp x2, x3, [x0, #0x18]`) renders the second store
-  `(self->_t, self->_u) = (self->_s, self->_s[8...])`: x2 holds `_s`'s
-  first 8 bytes, not `_s`. The tuple-of-whole-fields path renders its
-  values with `renderValue`, which has no width. A masked value has the
-  same fault: the 4-byte `_a.x = v; _a.z = v; _b = v;` over a 12-byte
-  struct reads `((self->_a & 0xffffffff), …)` for `_a`'s first four bytes.
+- **FIXED (soundness): a forwarded part of a field was named as the whole
+  field outside `registerWrite`.** A value renamed to a field by a store
+  rendered by the widths of the loads at its offset, and had none:
+  `objc_pair_stores.m`'s `spreadParts:and:` (`stp x2, x3, [x0, #0x8]` over
+  a 16-byte `_s`, then over `_t` and `_u`) read
+  `(self->_t, self->_u) = (self->_s, self->_s[8...])`, and `tailInt:`
+  `((self->_a & 0xffffffff), …)` for `_a`'s first four bytes. The tracer
+  records each renaming store's width (`selfFieldAliasWidths`), and those
+  join the load widths: `(self->_s[0..<8], self->_s[8..<16])` and
+  `(self->_a[0..<4] & 0xffffffff)`. Release `disasm --pseudo`: Clarc 2
+  lines, a comparison of two 16-byte fields word by word whose first or
+  second field had been named whole, now by both ranges; the other four
+  apps are byte-identical.
 - **OPEN (completeness): a `dup`'d vector store over two ivars renders
   nothing.** The same three stores over 8-byte members
   (`_a = v; _s.x = v; _s.y = v; _t = v;`) compile to `dup v0.2d, x2;

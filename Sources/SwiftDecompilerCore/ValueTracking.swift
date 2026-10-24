@@ -453,6 +453,10 @@ public struct FunctionAnalysis: Sendable {
     public var exitYieldValues: [UInt64: AbstractValue] = [:]
     /// Instruction address → the access it makes into `self`.
     public var selfFieldAccesses: [UInt64: SelfFieldAccess] = [:]
+    /// Offset of `self` → the widths of the stores that left their source
+    /// register named as the field there (`.selfFieldValue`): such a value
+    /// is that many bytes, whatever the field's size.
+    public var selfFieldAliasWidths: [Int: Set<Int>] = [:]
     /// Array-literal construction site → the values stored into it, by byte
     /// offset. Reconstructs `[e0, e1, …]` from the `_allocateUninitializedArray` +
     /// element-store + `_finalizeUninitializedArray` lowering.
@@ -1034,6 +1038,7 @@ public struct ValueTracer: Sendable {
                     recordArrayElement: { result.arrayElements[$0, default: [:]][$1] = $2 },
                     recordSlotStore: { result.asyncSlotStores[$0, default: []].append($1) },
                     recordUnboundedMemoryWrite: { result.asyncUnboundedMemoryWrites = true },
+                    recordFieldAlias: { result.selfFieldAliasWidths[$0, default: []].insert($1) },
                     initializerEntry: entry?.isObjectiveCInitializer == true,
                     facts: facts
                 ) }
@@ -1243,6 +1248,7 @@ public struct ValueTracer: Sendable {
         recordArrayElement: ((UInt64, Int, AbstractValue) -> Void)? = nil,
         recordSlotStore: ((Int, AbstractValue) -> Void)? = nil,
         recordUnboundedMemoryWrite: (() -> Void)? = nil,
+        recordFieldAlias: ((Int, Int) -> Void)? = nil,
         initializerEntry: Bool = false,
         facts: FunctionFacts = FunctionFacts()
     ) {
@@ -1432,7 +1438,7 @@ public struct ValueTracer: Sendable {
         let inputs = noteFrameMemoryWrite(insn, into: &registers, frame: facts.frame)
         apply(insn, into: &registers, recordAccess: recordAccess,
               recordArrayElement: recordArrayElement, recordSlotStore: recordSlotStore,
-              recordUnboundedMemoryWrite: recordUnboundedMemoryWrite)
+              recordUnboundedMemoryWrite: recordUnboundedMemoryWrite, recordFieldAlias: recordFieldAlias)
         // A frame address or context pointer transformed beyond the tracer's
         // arithmetic still points where it did, at an offset nothing tracks.
         if inputs.frame || inputs.context, let detail = insn.detail {
@@ -2570,7 +2576,8 @@ public struct ValueTracer: Sendable {
         recordAccess: ((UInt64, SelfFieldAccess) -> Void)? = nil,
         recordArrayElement: ((UInt64, Int, AbstractValue) -> Void)? = nil,
         recordSlotStore: ((Int, AbstractValue) -> Void)? = nil,
-        recordUnboundedMemoryWrite: (() -> Void)? = nil
+        recordUnboundedMemoryWrite: (() -> Void)? = nil,
+        recordFieldAlias: ((Int, Int) -> Void)? = nil
     ) {
         guard let detail = insn.detail else {
             // Capstone couldn't decode what objdump printed — data in __text, or
@@ -3078,6 +3085,7 @@ public struct ValueTracer: Sendable {
                    value != .unknown, case .selfField(let offset)? = target,
                    let sourceRegister = first.operand.register {
                     write(sourceRegister, .selfFieldValue(offset: offset), into: &registers)
+                    recordFieldAlias?(offset, sourceRegister.widthBits / 8)
                 }
             }
             applyWriteback(detail, into: &registers)
@@ -3106,6 +3114,7 @@ public struct ValueTracer: Sendable {
                     // pair of Doubles from a pair of Ints.
                     if let register = operand.operand.register, !Self.isConstant(source(operand, in: registers)) {
                         write(register, .selfFieldValue(offset: offset + index * bytes), into: &registers)
+                        recordFieldAlias?(offset + index * bytes, bytes)
                     }
                 }
             } else if case .arrayElement(let site, let offset)? = target,

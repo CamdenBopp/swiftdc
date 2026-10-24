@@ -269,3 +269,22 @@ import Testing
     #expect(!stores.isEmpty && stores.allSatisfy { !$0.contains("= self.") && !$0.contains("= (self.") }, "\(text)")
     #expect(text.contains("    self.point = 0\n"), "\(text)")
 }
+
+/// A field value's name took its width from the loads at its offset, and
+/// a value forwarded from a store has none: after `stp x2, x3, [x0, #0x8]`
+/// over a 16-byte `_s`, x2 holds `_s`'s first eight bytes, and storing it
+/// into `_t` rendered `self->_t = self->_s`. The stores that forward a
+/// value count as its width too.
+@Test func aValueForwardedFromAStoreIsNamedByItsPartIfPresent() async throws {
+    let path = "Fixtures/Sample/libObjCPairStores.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func pseudo(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName == name }).renderPseudo()
+    }
+    let parts = try pseudo("-[SDForwardParts spreadParts:and:]")
+    #expect(parts.contains("(self->_t, self->_u) = (self->_s[0..<8], self->_s[8..<16])"), Comment(rawValue: parts))
+    let tail = try pseudo("-[SDTailInt tailInt:]")
+    #expect(tail.contains("(self->_a[8..<12], self->_b) = ((self->_a[0..<4] & 0xffffffff), (self->_a[0..<4] & 0xffffffff))"),
+            Comment(rawValue: tail))
+}

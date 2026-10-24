@@ -118,3 +118,38 @@ typedef struct { long x, y, z; } SDTripleLong;
 @implementation SDTailForward
 - (void)tailForward:(long)v { _a.x = v; _a.z = v; _b = v; }
 @end
+
+// Values forwarded from stores into parts of an ivar, stored again into
+// whole ivars (-O2). spreadParts:and: is `stp x2, x3, [x0, #0x8]` over the
+// 16-byte struct _s, then `stp x2, x3, [x0, #0x18]` over _t and _u: x2 and
+// x3 then hold _s's two halves, not _s, and the second store rendered
+// `(self->_t, self->_u) = (self->_s, self->_s[8...])`. tailInt: is the
+// four-byte version of SDTailForward over a 12-byte struct of ints, whose
+// masked value rendered `(self->_a & 0xffffffff)`. True behaviour:
+// spreadParts:and: sets _s = {v, w}, _t = v and _u = w; tailInt: sets
+// _a.x, _a.z and _b to v.
+typedef struct { long x, y; } SDWidePair;
+typedef struct { int x, y, z; } SDIntTriple;
+@interface SDForwardParts : NSObject {
+@public
+    SDWidePair _s;
+    long _t, _u;
+}
+- (void)spreadParts:(long)v and:(long)w;
+@end
+
+@implementation SDForwardParts
+- (void)spreadParts:(long)v and:(long)w { _s.x = v; _s.y = w; _t = v; _u = w; }
+@end
+
+@interface SDTailInt : NSObject {
+@public
+    SDIntTriple _a;
+    int _b;
+}
+- (void)tailInt:(int)v;
+@end
+
+@implementation SDTailInt
+- (void)tailInt:(int)v { _a.x = v; _a.z = v; _b = v; }
+@end

@@ -4002,11 +4002,15 @@ public struct Disassembler: Sendable {
             }
         }
         var analysis = tracer.analyze(function, entry: entry)
-        /// The widths of the loads from each offset of `self`, for naming
-        /// the part of a field a loaded value is. A paired load gives each
-        /// register its own word: `ldp x0, x1, [x20, #off]` over a String
-        /// field read as the whole field in x0.
-        var selfFieldReadWidths: [Int: Set<Int>] = [:]
+        /// The widths of the loads from each offset of `self`, and of the
+        /// stores that leave their source register named as the field
+        /// (`.selfFieldValue`), for naming the part of a field such a value
+        /// is. A paired load gives each register its own word:
+        /// `ldp x0, x1, [x20, #off]` over a String field read as the whole
+        /// field in x0. A store is a value's start too: after `stp x2, x3,
+        /// [x0, #0x8]` over a 16-byte `_s`, x2 holds `_s`'s first eight
+        /// bytes, and with only loads counted it rendered `self->_s`.
+        var selfFieldReadWidths = analysis.selfFieldAliasWidths
         for access in analysis.selfFieldAccesses.values where !access.isWrite && !access.isAddressOf {
             if let word = access.registerBytes {
                 selfFieldReadWidths[access.offset, default: []].insert(word)
