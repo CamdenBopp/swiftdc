@@ -4482,10 +4482,25 @@ if a test was observed to fail without the fix.
   concrete witness dispatch through `__swift_project_boxed_…`. Blast
   radius: only `arity_twin.c`; release `disasm --pseudo` of the five apps
   is byte-identical.
+- **FIXED (soundness): an in-image `memset` or `memcpy` was modelled as
+  the library's stores.** The tracer's `applyMemoryHelper` matched the
+  callee by name, so `libc_twins.c` (-O2 `-fno-builtin`), whose `memset`
+  writes nothing, rendered `useFill`'s `memset(&a, 0, 8); sink(a)` as
+  `sink(0)`; the local still holds 1. `CallFacts` now keeps
+  `knownArityApplies`, false for a call to an in-image function with a
+  C library name, and the model runs only when it holds, so the call is an
+  ordinary one that may write the local it receives: `sink()`, its
+  unknown argument trimmed (see the body-reads item below). The outlined
+  `__swift_memcpyN_M` copies are compiler helpers, not twins, and stay
+  modelled. `useCopy`, the memcpy shape, renders `sink()` before and
+  after: the copy model does not carry that frame source either. Blast
+  radius: every other fixture view (structured, pseudo, listing, JSON) is
+  byte-identical, and release `disasm --pseudo` of Terminal, TextEdit,
+  Chess, Clarc and GoodLinks is byte-identical.
 - **OPEN (soundness): other by-name tables still apply to an in-image
   twin.** `IndirectResults.isKnownDirectReturnCallee`, the printf-family
-  format table, `isMemoryHelper` and the identity and read-only runtime
-  sets match a callee by its name alone.
+  format table and the identity runtime set match a callee by its name
+  alone. (The read-only set already followed `knownArityApplies`.)
 - **OPEN (completeness): a body-reads call with untracked arguments still
   renders `()`.** `sink()` reads x0, but its argument is unknown and the
   trailing unknown is trimmed; padding to the summary's count would

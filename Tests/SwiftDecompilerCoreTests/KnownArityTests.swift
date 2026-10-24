@@ -126,3 +126,18 @@ func aFailedForcedTryPassesItsFiveArgumentsIfPresent(path: String) async throws 
     let relayed = try text("_useRelay")
     #expect(argumentLists(of: "relay", in: relayed) == [["?", "5"]], Comment(rawValue: relayed))
 }
+
+/// The value tracker modelled any callee named `memset` or `memcpy` as the
+/// stores it performs, so an in-image `memset` whose body writes nothing
+/// made `useFill` render `sink(0)`, the fill byte, for a local that still
+/// holds 1 (`libc_twins.c`, -O2 -fno-builtin). The call is now an ordinary
+/// one that may write the local it receives.
+@Test func anInImageMemoryHelperTwinIsAnOrdinaryCallIfPresent() async throws {
+    let path = "Fixtures/Sample/libLibcTwins.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    for name in ["_useFill", "_useCopy"] {
+        let text = try #require(functions.first { $0.displayName == name }, "no \(name)").renderPseudo()
+        #expect(argumentLists(of: "sink", in: text).allSatisfy { $0.isEmpty || $0 == ["?"] }, Comment(rawValue: text))
+    }
+}

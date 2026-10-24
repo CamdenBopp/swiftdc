@@ -635,6 +635,9 @@ public struct ValueTracer: Sendable {
     /// of call transfer on Clarc, so `analyze` builds these once per call.
     struct CallFacts: Sendable {
         let callee: String
+        /// False for a call to an in-image function whose name may be a
+        /// library function's: the tables kept by name are no evidence for it.
+        let knownArityApplies: Bool
         /// Reads through the frame addresses it receives and never writes them.
         let readsOnly: Bool
         /// The registers that may hand the callee a pointer: the parameters of
@@ -663,6 +666,7 @@ public struct ValueTracer: Sendable {
         /// whose name may be a library function's without its arity.
         init(callee: String, knownArityApplies: Bool = true) {
             self.callee = callee
+            self.knownArityApplies = knownArityApplies
             readsOnly = knownArityApplies && ValueTracer.readOnlyPointerCallees.contains(callee)
             let knownArity = knownArityApplies ? DisassembledFunction.knownCArity(of: callee) : nil
             passedRegisters = knownArity.map { arity in
@@ -1231,9 +1235,12 @@ public struct ValueTracer: Sendable {
             // as the stores they perform (see `applyMemoryHelper`): their source
             // must be read before the invalidation below forgets it, and their
             // destination is written exactly, so the generic invalidation does
-            // not apply to them.
+            // not apply to them. An in-image function named `memset` is an
+            // ordinary call: a `memset(&a, 0, 8)` whose body writes nothing
+            // rendered the `a` loaded after it as 0.
             let call = facts.call(insn)
-            let handledAsMemoryHelper = applyMemoryHelper(callee: call.callee, site: site, into: &registers)
+            let handledAsMemoryHelper = call.knownArityApplies
+                && applyMemoryHelper(callee: call.callee, site: site, into: &registers)
             // A local whose address the call receives may be written by it: an
             // NSError out-parameter (`str xzr, [sp]; mov x3, sp; bl …error:`),
             // an `inout` struct, an x8 result buffer, a `mutating` self in x20.

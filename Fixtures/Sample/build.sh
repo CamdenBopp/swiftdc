@@ -219,6 +219,9 @@ $CLANG -fobjc-arc -O0 -dynamiclib -framework Foundation objc_field_copy.m -o lib
 echo "==> an in-image function named like a libc entry of known arity (arity_twin.c, -O2)"
 $CLANG -O2 -dynamiclib arity_twin.c -o libArityTwin.dylib
 
+echo "==> in-image functions named like C library functions, with other bodies (libc_twins.c, -O2 -fno-builtin)"
+$CLANG -O2 -fno-builtin -dynamiclib libc_twins.c -o libLibcTwins.dylib
+
 echo "==> variadic ObjC fixture (-O1) — format arguments on the stack"
 $CLANG -O1 -fobjc-arc -framework Foundation -dynamiclib variadic.m -o libVariadic.dylib
 
