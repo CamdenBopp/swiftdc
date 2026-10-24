@@ -85,3 +85,18 @@ typedef struct { int x, y, z; } SDTriple;
     return word;
 }
 @end
+
+// Eight ints zeroed at once: clang stores one zeroed q0 twice (`movi
+// v0.2d, #0; stur q0, [x0, #0x18]; stur q0, [x0, #0x8]`), each store over
+// four ints. After the first, q0 holds what _v.._s hold, all sixteen
+// bytes of them. True behaviour: every ivar becomes 0.
+@interface SDPairZeros : NSObject {
+@public
+    int _w, _x, _y, _z, _v, _u, _t, _s;
+}
+- (void)clear;
+@end
+
+@implementation SDPairZeros
+- (void)clear { _w = _x = _y = _z = _v = _u = _t = _s = 0; }
+@end

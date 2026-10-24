@@ -5391,6 +5391,21 @@ public struct Disassembler: Sendable {
             guard let rawValue = access.storedValue else { return "\(path) = …" }
             let value = sanitizeValue(rawValue)
             guard value != .unknown else { return "\(path) = …" }
+            // A value this object's own fields held, forwarded through a
+            // register from an earlier store, is as wide as this store: q0
+            // forwarded from a 16-byte store into four ints read `self->_v`,
+            // the 4-byte field at its offset.
+            if case .selfFieldValue(let source) = value, let fieldMap {
+                switch fieldMap.lookup(offset: source, bytes: max(access.bytes, 1)) {
+                case .success(.whole(let name, _)): return "\(path) = \(fieldPath(name))"
+                case .success(.part(let name, _, let subOffset, let bytes)):
+                    return "\(path) = \(fieldPath("\(name)[\(subOffset)..<\(subOffset + bytes)]"))"
+                case .success(.spans(let names)):
+                    return "\(path) = \(fieldPath("{\(names.joined(separator: ", "))}"))"
+                case .failure:
+                    return "\(path) = …"
+                }
+            }
 
             // The canonical compiler shape for `_count += delta` is load/add/
             // store. Preserve that source operator instead of spelling a noisy

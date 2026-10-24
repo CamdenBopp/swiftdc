@@ -3576,6 +3576,14 @@ if a test was observed to fail without the fix.
   width (`self.front[0..<16]`, not `self.front`). Blast radius: those
   fixture stores; release `disasm --pseudo` changes four Terminal lines,
   each a two-int span now a tuple per register, and nothing else.
+- **FIXED (soundness): a value forwarded from this object's fields was
+  named by the field at its offset.** With no load to fix its width,
+  `.selfFieldValue(offset)` named the field there whatever the store's
+  width: `objc_pair_stores.m`'s `SDPairZeros clear` stored one zeroed q0
+  over `_v`..`_s` and then over `_w`..`_z`, and the second read
+  `self->{_w, _x, _y, _z} = self->_v`. `fieldWrite` now looks the value
+  up at the store's width: `self->{_v, _u, _t, _s}`. Only that fixture
+  line changes; the five apps are byte-identical.
 - **FIXED (completeness): a store into two Swift fields at once was noted
   but never printed.** `fieldWriteStatement` made every field write a
   statement but a tuple of Swift fields: `fieldwrites.swift`'s
