@@ -4476,12 +4476,36 @@ if a test was observed to fail without the fix.
   `sample.release`: `self.breed, self.breed` reads `self.breed,
   self.breed[8...]`). Release `disasm --pseudo` normalised lines:
   Terminal 118, TextEdit 0, Chess 30, Clarc 124, GoodLinks 316.
-- **OPEN (soundness): the first word of a paired load still names the
-  whole field.** `ldp x0, x1, [x20, #off]` records one 16-byte read at
-  `off`, so x0's value renders `self.breed` though it is the first word
-  only. Splitting a paired load into its registers' widths makes it
-  `self.breed[0..<8]`, which a String argument made of a field's two words
-  should then collapse back to `self.breed`.
+- **FIXED (soundness): the first word of a paired load named the whole
+  field.** `ldp x8, x9, [x20, #off]` recorded one read as wide as both
+  registers, so the value in x8 took the whole field's name:
+  `fieldwrites.swift`'s new `differenceOfPair` (`ldp x8, x9, [x20,
+  #0x20]; sub x0, x8, x9`) rendered `return (self.pair - self.pair[8...])`,
+  and `Dog.speak` in `sample` passed `self.breed, self.breed[8...]`.
+  A paired load's access now carries `registerBytes`, and the widths that
+  name a loaded value give each register its own word:
+  `return (self.pair[0..<8] - self.pair[8..<16])` and
+  `self.breed[0..<8], self.breed[8..<16]`. The load's own listing note
+  still names the whole field it reads. Blast radius: six fixtures (the
+  first word of each such pair in libFieldWrites, libSample and its
+  stripped copy, sample.release and libConditions opt and osize, whose
+  second words' `[8...]` also become `[8..<16]`). Release `disasm
+  --pseudo`, lines changed after normalising `let rN`: Terminal 4,
+  TextEdit and Chess none, Clarc 3, GoodLinks 127, every one a word of a
+  paired load from `self` now named by its own range (`self.impl[0..<8]`,
+  `self.visitor[24..<32]`); no function loses a callee. Three of
+  Terminal's are `return self->_cursorPosition` (and
+  `_displayCursorPosition`, `_scrollRange`) in methods returning a
+  two-word struct, `ldp x8, x1, [x0, #0x30]; mov x0, x8; ret`: they now
+  read `return self->_cursorPosition[0..<8]`. The old line was right only
+  because x0's word took the whole field's name; the return path proves
+  x0 alone (see the two-word return item below).
+- **OPEN (completeness): a two-word struct return renders only x0.** The
+  tracer records x0 at an exit, so a method returning `{QQ}` in x0 and x1
+  reads `return <x0>`: Terminal's `-[TTLogicalScreen cursorPosition]`
+  reads `return self->_cursorPosition[0..<8]`. Recording x1 at exits and
+  naming two consecutive words of one whole field as that field, as a
+  String slot does, would read `return self->_cursorPosition`.
 
 ## 2026-10-23: known arity and in-image name twins
 

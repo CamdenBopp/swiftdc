@@ -380,6 +380,10 @@ public struct SelfFieldAccess: Sendable, Equatable {
     /// True when the instruction forms the field's ADDRESS rather than loading
     /// it (`add x0, x20, #0x20` -> `&self.breed`).
     public var isAddressOf: Bool = false
+    /// A paired load's register width: its first register reads the first
+    /// `registerBytes` of the access and its second the rest. Nil for any
+    /// other access.
+    public var registerBytes: Int? = nil
 }
 
 /// A named loop-carried variable's proven constant value on entry.
@@ -4031,12 +4035,14 @@ public struct ValueTracer: Sendable {
         } else {
             nil
         }
+        let isPairedLoad = detail.id == AARCH64_INS_LDP || detail.id == AARCH64_INS_LDNP
         recordAccess(insn.address, SelfFieldAccess(
             offset: offset,
             bytes: bytes,
             isWrite: isWrite,
             storedValue: isWrite ? detail.operands.first.map { source($0, in: registers) } : nil,
-            storedValues: storedValues
+            storedValues: storedValues,
+            registerBytes: isPairedLoad ? bytes / 2 : nil
         ))
     }
 

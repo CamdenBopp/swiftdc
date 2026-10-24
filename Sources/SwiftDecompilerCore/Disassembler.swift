@@ -3898,10 +3898,17 @@ public struct Disassembler: Sendable {
         }
         var analysis = tracer.analyze(function, entry: entry)
         /// The widths of the loads from each offset of `self`, for naming
-        /// the part of a field a loaded value is.
+        /// the part of a field a loaded value is. A paired load gives each
+        /// register its own word: `ldp x0, x1, [x20, #off]` over a String
+        /// field read as the whole field in x0.
         var selfFieldReadWidths: [Int: Set<Int>] = [:]
         for access in analysis.selfFieldAccesses.values where !access.isWrite && !access.isAddressOf {
-            selfFieldReadWidths[access.offset, default: []].insert(access.bytes)
+            if let word = access.registerBytes {
+                selfFieldReadWidths[access.offset, default: []].insert(word)
+                selfFieldReadWidths[access.offset + word, default: []].insert(word)
+            } else {
+                selfFieldReadWidths[access.offset, default: []].insert(access.bytes)
+            }
         }
         // An x8-indirect function's x0 at `ret` is whatever was last left there
         // (usually a stale argument), never its result. Both single-register

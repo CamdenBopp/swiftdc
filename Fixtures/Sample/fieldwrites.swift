@@ -9,12 +9,15 @@
 // x9`), `mirror` a four-word struct in two-register pieces, and
 // `copyFirst` one word of one field into one word of another, and `clear`
 // zeroes a two-word field with `stp xzr, xzr`. `secondOfPair` reads only
-// the second word of `pair` (`ldr x0, [x20, #0x28]`).
+// the second word of `pair` (`ldr x0, [x20, #0x28]`), and `differenceOfPair`
+// both words with one paired load (`ldp x8, x9, [x20, #0x20]`), x8 holding
+// only the first.
 //
 // True behaviour: name becomes "a  b", then "a literal past fifteen bytes",
 // then the argument; pair.a becomes the argument and pair.b is unchanged;
 // end becomes start, back becomes front, back.a becomes front.a, and start
-// becomes all zeros; secondOfPair returns pair.b.
+// becomes all zeros; secondOfPair returns pair.b, and differenceOfPair
+// pair.a - pair.b.
 public struct FieldPair { public var a: Int; public var b: Int }
 
 public struct FieldQuad { public var a: Int; public var b: Int; public var c: Int; public var d: Int }
@@ -36,4 +39,5 @@ public final class FieldWrites {
     @inline(never) public func copyFirst() { back.a = front.a }
     @inline(never) public func clear() { start = FieldPair(a: 0, b: 0) }
     @inline(never) public func secondOfPair() -> Int { pair.b }
+    @inline(never) public func differenceOfPair() -> Int { pair.a &- pair.b }
 }

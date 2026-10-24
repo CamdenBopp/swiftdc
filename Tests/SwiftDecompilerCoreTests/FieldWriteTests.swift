@@ -71,3 +71,24 @@ import Testing
     #expect(listing.contains("; self->_pair[8..<9]") && listing.contains("; self->_pair[8..<16]"),
             Comment(rawValue: listing))
 }
+
+/// A paired load recorded one read as wide as both registers, so the value
+/// in its first register named the whole field: `differenceOfPair`
+/// (`ldp x8, x9, [x20, #0x20]; sub x0, x8, x9`) rendered
+/// `return (self.pair - self.pair[8...])`. Each register is now its own
+/// word of the field, and the String words `Dog.speak` passes from
+/// `self.breed` are `self.breed[0..<8]` and `self.breed[8..<16]`.
+@Test func aPairedLoadGivesEachRegisterItsWordIfPresent() async throws {
+    let fieldWrites = "Fixtures/Sample/libFieldWrites.dylib"
+    let sample = "Fixtures/Sample/libSample.dylib"
+    guard FileManager.default.fileExists(atPath: fieldWrites), FileManager.default.fileExists(atPath: sample)
+    else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: fieldWrites) }
+    let difference = try #require(functions.first {
+        $0.displayName == "FieldWrites.FieldWrites.differenceOfPair() -> Swift.Int"
+    }).renderPseudo()
+    #expect(difference.contains("return (self.pair[0..<8] - self.pair[8..<16])"), Comment(rawValue: difference))
+    let dogs = try await withStableDependencies { try await Disassembler().disassemble(path: sample) }
+    let speak = try #require(dogs.first { $0.displayName.hasPrefix("Sample.Dog.speak()") }).renderPseudo()
+    #expect(speak.contains("self.breed[0..<8], self.breed[8..<16])"), Comment(rawValue: speak))
+}
