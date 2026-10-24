@@ -227,8 +227,14 @@ See [docs/INSTRUMENTATION.md](docs/INSTRUMENTATION.md). In brief:
 - Unfiltered `disasm`/`analyze` on a large app holds the whole image (Enchanted
   debug, 7M instructions, would need 7 GB+); filter with `-f`, or use `xrefs`,
   which streams.
-- Measure with a **release** build (`swift build -c release`, about 5
-  minutes), copied to the scratchpad so later edits cannot change it:
+- Measure with a **release** build in its own scratch path (`swift build
+  -c release --scratch-path .build-release`, binary
+  `.build-release/release/swiftdc`), copied to the scratchpad so later
+  edits cannot change it. In the shared `.build`, Swift Build rebuilds
+  every dependency (swift-syntax included) when the configuration
+  switches: a release build after a debug one took 315 s, against 66 s
+  release after release, and the debug build after it 54 s. With its own
+  path, a release build after a source change takes about 70 s:
   `/usr/bin/time -l` for wall time and `peak memory footprint`, and `cmp` the
   outputs.
 - For A/B runs, alternate the two binaries back to back, at least three
@@ -280,7 +286,7 @@ Fixtures/Sample/build.sh                # build fixtures once (git-ignored)
 swift build                             # .build/debug/swiftdc
 swift build --build-tests               # before any `swift test --skip-build`
 SWIFTDC_REQUIRE_FIXTURES=1 swift test   # enforcing: a missing fixture fails
-swift build -c release                  # for any timing or memory number
+swift build -c release --scratch-path .build-release   # for any timing or memory number
 ```
 
 Requires Apple Silicon, Xcode 26+ (Swift 6.3+; tools version 6.2, macOS 15

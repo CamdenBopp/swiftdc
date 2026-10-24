@@ -530,7 +530,7 @@ installed on this host.
 
 ```bash
 Fixtures/Sample/build.sh                 # build fixtures once (git-ignored)
-swift build && swift build -c release     # debug CLI + release
+swift build && swift build -c release --scratch-path .build-release   # debug CLI + release
 SWIFTDC_REQUIRE_FIXTURES=1 swift test     # enforcing run (missing fixture fails)
 swift Benchmarks/benchmark.swift          # swiftdc vs ipsw (needs `ipsw`)
 ```

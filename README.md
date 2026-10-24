@@ -374,9 +374,13 @@ listing as a sample, not an inventory — and please report it.
 
 ```bash
 swift build              # debug   → .build/debug/swiftdc
-swift build -c release   # release → .build/release/swiftdc
-swift test               # 110 tests; fixture-based ones self-skip if unbuilt
+swift build -c release --scratch-path .build-release   # release → .build-release/release/swiftdc
+swift test               # 847 tests; fixture-based ones self-skip if unbuilt
 ```
+
+Give a release build its own scratch path when you also build debug: in a
+shared `.build`, switching configurations rebuilds every dependency (about
+5 minutes instead of about 1).
 
 `Fixtures/Sample/sample.swift` plus `sample_objc.m` form a metadata-rich program
 (Swift structs/enums/classes/protocols/generics; ObjC methods, properties, ivars,

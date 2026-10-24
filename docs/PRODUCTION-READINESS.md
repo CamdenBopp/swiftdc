@@ -5210,3 +5210,32 @@ if a test was observed to fail without the fix.
   So a faster decoder buys at most a few percent of a `--pseudo` run;
   the decode-twice pass, `cs_disasm_iter`, and replacing objdump in the
   plain listing are the larger levers.
+
+## 2026-10-24: build times
+
+- **FIXED (speed): a release build after a debug one rebuilt every
+  dependency.** Swift Build (Swift 6.4's default) keeps one `.build` for
+  both configurations, and switching between them invalidated the other's
+  products: with no source change, a release build right after `swift
+  build --build-tests` took 315 s, recompiling swift-syntax, the
+  MachOSwiftSection modules and the rest, against 66 s for release after
+  release, and the debug build after a release 54 s against about 10 s.
+  Every verification cycle alternated the two. A release build now has
+  its own scratch path (`--scratch-path .build-release`, git-ignored; the
+  CLAUDE.md, README and handoff commands say so): after a one-time 379 s
+  build, release with no change takes 5.7 s and after a `Disassembler.swift`
+  edit 71 s, and debug no longer rebuilds after it. MachOSwiftSection's
+  own notes warn against the same thing.
+- **Measured (speed): where an incremental debug build goes.** A no-op
+  `swift build` costs 5.3 s, nearly all manifest loading and planning
+  before any compile. A body-only edit to a large source file costs 26-29 s
+  with `--build-tests`: about 4.5 s planning, 7.5 s recompiling the
+  module, 10.5 s recompiling all 151 test files (they import the module,
+  and nothing makes that incremental across modules), and about 2 s of
+  test discovery and links. `-warn-long-function-bodies=80` puts 18.6 s of
+  type checking over the threshold, most of it in tests: two copies of
+  one chained `split`/`compactMap`/`filter` in `CLIDiagnosticsTests`
+  (1.2 s each), an integer literal chain in `TransitiveReadsTests`
+  (0.6 s), array concatenations in `FlagsAcrossCallTests` (0.6 s); in
+  sources `enrichCallArguments` (0.9 s) and `ValueTracer.apply` (0.3 s).
+
