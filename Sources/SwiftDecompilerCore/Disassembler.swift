@@ -3811,6 +3811,12 @@ public struct Disassembler: Sendable {
             }
         }
         var analysis = tracer.analyze(function, entry: entry)
+        /// The widths of the loads from each offset of `self`, for naming
+        /// the part of a field a loaded value is.
+        var selfFieldReadWidths: [Int: Set<Int>] = [:]
+        for access in analysis.selfFieldAccesses.values where !access.isWrite && !access.isAddressOf {
+            selfFieldReadWidths[access.offset, default: []].insert(access.bytes)
+        }
         // An x8-indirect function's x0 at `ret` is whatever was last left there
         // (usually a stale argument), never its result. Both single-register
         // return paths below are gated on this so no fabricated `return arg0`
@@ -4802,6 +4808,24 @@ public struct Disassembler: Sendable {
                 }
                 return "&\(fieldPath(name))"
             case .selfFieldValue(let offset):
+                // Part of a field is not the field: a four-byte read at
+                // `fCurPos + 80` rendered `self->fCurPos`. Every such value
+                // starts at a load of this offset in this function, so when
+                // those loads agree on a width it is the range read; when
+                // they do not, the start alone is shown.
+                if let fieldMap {
+                    let widths = selfFieldReadWidths[offset] ?? []
+                    if widths.count == 1, let width = widths.first,
+                       case .success(.part(let name, _, let subOffset, let bytes)) =
+                        fieldMap.lookup(offset: offset, bytes: width) {
+                        return fieldPath("\(name)[\(subOffset)..<\(subOffset + bytes)]")
+                    }
+                    if widths.count != 1,
+                       case .success(.part(let name, _, let subOffset, _)) = fieldMap.lookup(offset: offset, bytes: 1),
+                       subOffset > 0 {
+                        return fieldPath("\(name)[\(subOffset)...]")
+                    }
+                }
                 guard let name = fieldName(at: offset, bytes: 1) else {
                     return "self[0x\(String(offset, radix: 16))]"
                 }
@@ -5873,8 +5897,15 @@ public struct Disassembler: Sendable {
                             sourceNotes.append(write)
                         }
                     } else {
-                        facts.fieldRead = fieldPath(name)
-                        sourceNotes.append(fieldPath(name))
+                        // A load of part of a field reads that byte range.
+                        var readPath = fieldPath(name)
+                        if field.names.count == 1, let fieldMap,
+                           case .success(.part(let partName, _, let subOffset, let bytes)) =
+                            fieldMap.lookup(offset: access.offset, bytes: max(access.bytes, 1)) {
+                            readPath = fieldPath("\(partName)[\(subOffset)..<\(subOffset + bytes)]")
+                        }
+                        facts.fieldRead = readPath
+                        sourceNotes.append(readPath)
                     }
                 }
             }

@@ -4400,8 +4400,8 @@ if a test was observed to fail without the fix.
 
 ## 2026-10-23: field writes that do not fill one field
 
-- **FIXED (soundness): a field write rendered the first register a store
-  wrote as the field's value.** A store into part of a field, or one that
+- **FIXED (50a0c9e, soundness): a field write rendered the first register
+  a store wrote as the field's value.** A store into part of a field, or one that
   filled a two-word field with an `stp`, printed that one word as the
   whole field. `fieldwrites.swift` (-O): `name = "a  b"` (`stp x8, x9,
   [x20, #0x10]`) rendered `self.name = 0x62202061`, the String's low word;
@@ -4423,8 +4423,28 @@ if a test was observed to fail without the fix.
   and one whole write per app declines where the old render was one word
   (`self->logicalSize = Double(arg1)` for a CGSize, Clarc's `self.start =
   0` from `stp x11, x10`).
-- **OPEN (soundness): a read of part of a field renders as the whole
-  field.** `self->fPrvPos[80..<81] = (self->fCurPos & 0xffffffff)` is a
-  one-byte store of a four-byte read at `fCurPos + 80`; the read prints
-  the field's name alone, as every partial read does.
+- **FIXED (soundness, below): a read of part of a field rendered as the
+  whole field.**
+- **FIXED (soundness): a read of part of a field rendered as the whole
+  field.** A value loaded from `self` (`selfFieldValue`) printed the name
+  of the field holding its offset, whatever it read: `fieldwrites.swift`'s
+  `secondOfPair` (`ldr x0, [x20, #0x28]`, pair.b) rendered `return
+  self.pair`; Terminal closed `self->_signalPipe` twice where it closes
+  each of its two descriptors; GoodLinks formatted `self->fg` three times
+  for three colour bytes. The load's note now names its byte range, and
+  a loaded value does too, with the width every load of that offset in the
+  function agrees on (`self.pair[8..<16]`, `self->_signalPipe[4..<8]`,
+  `self->fg[1..<2]`); where loads of one offset differ in width, only the
+  start is shown (`objc_field_copy.m`'s `mixed`: `self->_pair[8...]`).
+  Blast radius: `fieldwrites.swift`, `objc_field_copy.m`, and the second
+  word of a String passed from a field (`libConditions`, `libSample`,
+  `sample.release`: `self.breed, self.breed` reads `self.breed,
+  self.breed[8...]`). Release `disasm --pseudo` normalised lines:
+  Terminal 118, TextEdit 0, Chess 30, Clarc 124, GoodLinks 316.
+- **OPEN (soundness): the first word of a paired load still names the
+  whole field.** `ldp x0, x1, [x20, #off]` records one 16-byte read at
+  `off`, so x0's value renders `self.breed` though it is the first word
+  only. Splitting a paired load into its registers' widths makes it
+  `self.breed[0..<8]`, which a String argument made of a field's two words
+  should then collapse back to `self.breed`.
 

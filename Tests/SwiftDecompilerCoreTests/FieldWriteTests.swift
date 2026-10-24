@@ -47,3 +47,27 @@ import Testing
     let lines = function.renderPseudo().components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
     #expect(lines.contains("self->_saved = self->_current"), "\(lines)")
 }
+
+/// A load of part of a field named the whole field: `fieldwrites.swift`'s
+/// `secondOfPair` (`ldr x0, [x20, #0x28]`, pair.b) rendered `return
+/// self.pair`, and Chess's one-byte read deep in a board ivar
+/// `self->fCurPos`. The read names its byte range, from the width every load
+/// of that offset in the function agrees on; `objc_field_copy.m`'s `mixed`
+/// (-O0) loads one offset as a byte and as a word, so the value shows only
+/// where it starts, and each load's note shows its own range.
+@Test func aPartialFieldReadNamesItsRangeIfPresent() async throws {
+    let swiftPath = "Fixtures/Sample/libFieldWrites.dylib"
+    let objcPath = "Fixtures/Sample/libObjCFieldCopy.O0.dylib"
+    guard FileManager.default.fileExists(atPath: swiftPath), FileManager.default.fileExists(atPath: objcPath)
+    else { return }
+    let swift = try await withStableDependencies { try await Disassembler().disassemble(path: swiftPath) }
+    let second = try #require(swift.first { $0.displayName == "FieldWrites.FieldWrites.secondOfPair() -> Swift.Int" })
+    #expect(second.renderPseudo().contains("return self.pair[8..<16]"), Comment(rawValue: second.renderPseudo()))
+    let objc = try await withStableDependencies { try await Disassembler().disassemble(path: objcPath) }
+    let mixed = try #require(objc.first { $0.displayName == "-[SDFieldCopy mixed]" })
+    #expect(mixed.renderPseudo().contains("return ((self->_pair[8...] & 0xffffffff) + self->_pair[8...])"),
+            Comment(rawValue: mixed.renderPseudo()))
+    let listing = mixed.render()
+    #expect(listing.contains("; self->_pair[8..<9]") && listing.contains("; self->_pair[8..<16]"),
+            Comment(rawValue: listing))
+}
