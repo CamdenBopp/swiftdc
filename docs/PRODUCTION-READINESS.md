@@ -3731,8 +3731,12 @@ if a test was observed to fail without the fix.
   `{S=^{Opaque=}c^{Other=}}` 24, as `NSGetSizeAndAlignment` measures them
   on this host. Every fixture view and release `disasm --pseudo` of the
   five apps are byte-identical.
-- **OPEN (soundness, latent): `ObjCTypeLayoutDecoder` measures `l`/`L` as
-  8 bytes**, where the runtime's `NSGetSizeAndAlignment` says 4.
+- **FIXED (soundness): `ObjCTypeLayoutDecoder` measured `l`/`L` as 8
+  bytes.** The runtime's `NSGetSizeAndAlignment` treats them as 32 bits
+  on 64-bit platforms (LP64's `long` encodes as `q`), so an `l` ivar
+  claimed four bytes of the next one. They are 4 bytes, aligned to 4:
+  `{T=lL}` is 8, as `NSGetSizeAndAlignment` measures it. Every fixture
+  view and release `disasm --pseudo` of the five apps are byte-identical.
 
 ## 2026-10-23: throws(Never) specializations
 

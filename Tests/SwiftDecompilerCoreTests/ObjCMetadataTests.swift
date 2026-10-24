@@ -25,6 +25,16 @@ import Testing
     #expect(ObjCTypeLayoutDecoder.layout(of: "{Opaque=}") == nil)
 }
 
+/// `l` and `L` measured 8 bytes, where the runtime's NSGetSizeAndAlignment
+/// treats them as 32 bits on 64-bit platforms (LP64's `long` encodes as
+/// `q`), so an `l` ivar claimed four bytes of the next one.
+@Test func decodesLAsThirtyTwoBits() {
+    #expect(ObjCTypeLayoutDecoder.layout(of: "l") == .init(size: 4, alignment: 4))
+    #expect(ObjCTypeLayoutDecoder.layout(of: "L") == .init(size: 4, alignment: 4))
+    #expect(ObjCTypeLayoutDecoder.layout(of: "{T=lL}") == .init(size: 8, alignment: 4))
+    #expect(ObjCTypeLayoutDecoder.layout(of: "q") == .init(size: 8, alignment: 8))
+}
+
 /// A size, count or width in a corrupt encoding can overflow `Int`. Each of
 /// these trapped (arithmetic overflow) in one decoder step; now the whole
 /// encoding has no layout, including a pointer whose pointee overflowed.

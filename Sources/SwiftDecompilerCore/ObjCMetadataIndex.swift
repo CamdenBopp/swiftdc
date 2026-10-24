@@ -668,8 +668,10 @@ enum ObjCTypeLayoutDecoder {
             switch code {
             case "c", "C", "B": return .init(size: 1, alignment: 1)
             case "s", "S": return .init(size: 2, alignment: 2)
-            case "i", "I", "f": return .init(size: 4, alignment: 4)
-            case "l", "L", "q", "Q", "d", "D": return .init(size: 8, alignment: 8)
+            // `l` and `L` are 32 bits on 64-bit platforms, as the runtime's
+            // NSGetSizeAndAlignment measures them; LP64's `long` encodes as `q`.
+            case "i", "I", "f", "l", "L": return .init(size: 4, alignment: 4)
+            case "q", "Q", "d", "D": return .init(size: 8, alignment: 8)
             case "t", "T": return .init(size: 16, alignment: 16)
             case "@":
                 if current == "?" { advance() } // block
