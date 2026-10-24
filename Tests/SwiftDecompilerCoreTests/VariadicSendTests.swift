@@ -53,3 +53,19 @@ import Foundation
     let formatted = try await pseudo("describeWith")
     #expect(formatted.contains("[NSString stringWithFormat:?, …]"), "\(formatted)")
 }
+
+/// A call counted as printed when a later call's registers held its result,
+/// but a send prints only one argument per colon, past them only for a
+/// variadic selector: `objc_dropped_result.m`'s secondValue fed only x3 of
+/// an untyped `setSpan:` (an NSRange in x2 and x3) and was printed nowhere.
+@Test func aCallOnlyAnUnprintedSendRegisterTakesStaysPrintedIfPresent() async throws {
+    let path = "Fixtures/Sample/libObjCDroppedResult.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = try #require(functions.first { $0.displayName == "_spanSend" }).renderPseudo()
+    #expect(text.contains("secondValue()"), Comment(rawValue: text))
+    // A variadic send prints its arguments past the colons, so a call
+    // there is printed once, inside it.
+    let format = try #require(functions.first { $0.displayName == "_formatFirst" }).renderPseudo()
+    #expect(format.components(separatedBy: "firstValue()").count == 2, Comment(rawValue: format))
+}

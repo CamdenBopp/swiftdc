@@ -6236,8 +6236,19 @@ public struct Disassembler: Sendable {
                DisassembledFunction.calleeName(of: insn)
                 .map({ !DisassembledFunction.isRuntimeNoise($0) }) ?? true {
                 let values = argumentsByAddress[insn.address] ?? []
-                let rendered = calleeByAddress[insn.address]
+                var rendered = calleeByAddress[insn.address]
                     .map { normalizedArguments(callee: $0, values: values, at: insn.address) } ?? values
+                // A send prints its receiver and one argument per colon, and
+                // a register past those only for a variadic selector: a call
+                // whose result reached only x3 of an untyped `setSpan:` (an
+                // NSRange in x2 and x3) was taken as printed and printed
+                // nowhere.
+                if let callee = calleeByAddress[insn.address],
+                   let selector = selectorName(callee: callee, arguments: values)
+                    ?? DisassembledFunction.MessageSend.directMethodSelector(callee),
+                   !isVariadicObjCSelector(selector) {
+                    rendered = Array(rendered.prefix(2 + selector.filter { $0 == ":" }.count))
+                }
                 for value in rendered {
                     collectCallResults(in: value, into: &consumedCallResults)
                 }

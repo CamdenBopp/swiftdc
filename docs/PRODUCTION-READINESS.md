@@ -4225,15 +4225,20 @@ if a test was observed to fail without the fix.
   are calls that now print as statements because the send no longer
   consumes their result. Two of those calls were missing from the old
   render altogether (below).
-- **OPEN (completeness): a call whose result an untyped send reads past
+- **FIXED (completeness): a call whose result an untyped send reads past
   its colon count vanished.** In Terminal's `-[TTAppPrefsController
   thumbnailView]`, `setSelectedRange:NSMakeRange(a, b - a)` took x2 and x3
   positionally; the pseudo view printed one argument, `r5`, and the second
   `unicharOffsetForDisplayPosition:` call, whose result fed only x3, was
-  not printed anywhere. The fix above shows both calls there, because
-  Terminal implements `setSelectedRange:` with an NSRange. A selector
-  only the SDK implements still takes the positional path, so a call
-  consumed by an argument slot the send does not print can still vanish.
+  not printed anywhere. The consumption scan read every register a send's
+  site held; it now counts only what a send prints, the receiver, the
+  selector and one argument per colon (all of them for a variadic
+  selector). `objc_dropped_result.m`'s `spanSend` (an untyped `setSpan:`
+  of an NSRange) prints `secondValue()` as its own statement, and
+  `formatFirst` still prints its variadic `firstValue()` once. Release
+  `disasm --pseudo`: TextEdit gains one line, a `length` call whose
+  result was only the length of `addAttribute:value:range:`'s range; the
+  other four apps are byte-identical.
 - **FIXED (ad13b4d, soundness): an untyped send to a receiver of known
   class that inherits the selector was laid out by colon position.** The doubt above
   applied only when the receiver's class was unknown, a guard kept from

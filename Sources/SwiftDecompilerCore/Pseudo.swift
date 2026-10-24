@@ -291,7 +291,7 @@ public extension DisassembledFunction {
         /// `(self, _cmd, args…)` ABI as a message send, so x0 is the receiver and
         /// the selector's arguments still begin at x2 — rendering identically as
         /// `[receiver selector]` rather than the raw `-[Class sel](self, …)`.
-        private static func directMethodSelector(_ callee: String) -> String? {
+        static func directMethodSelector(_ callee: String) -> String? {
             guard callee.hasPrefix("-[") || callee.hasPrefix("+["), callee.hasSuffix("]") else { return nil }
             let inner = callee.dropFirst(2).dropLast()
             guard let space = inner.firstIndex(of: " ") else { return nil }

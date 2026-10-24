@@ -231,6 +231,9 @@ $CLANG -fobjc-arc -O0 -dynamiclib -framework Foundation objc_field_copy.m -o lib
 echo "==> paired stores covering two ivars, aligned or not with them (objc_pair_stores.m, -O2)"
 $CLANG -fobjc-arc -O2 -dynamiclib -framework Foundation objc_pair_stores.m -o libObjCPairStores.dylib
 
+echo "==> a call whose result only an argument an untyped send drops holds (objc_dropped_result.m, -O2)"
+$CLANG -fobjc-arc -O2 -dynamiclib -framework Foundation objc_dropped_result.m -o libObjCDroppedResult.dylib
+
 echo "==> a field of self held in a register across a call that writes it (field_aliases.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name FieldAliases field_aliases.swift -o libFieldAliases.dylib
 
