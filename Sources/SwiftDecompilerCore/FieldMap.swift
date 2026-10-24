@@ -2,6 +2,10 @@ import Foundation
 import MachOKit
 import MachOSwiftSection
 import SwiftLayout
+// `SymbolicDemangler` is SPI, as in MetadataSymbolizer: safe while
+// MachOSwiftSection is exact-pinned; re-check it at each bump.
+@_spi(Internals) import SwiftInspection
+import Demangling
 
 /// What a memory access at a given offset into a Swift value resolves to.
 public enum FieldHit: Sendable, Equatable {
@@ -76,6 +80,18 @@ public struct FieldMap: Sendable {
 
     /// Sorted, non-overlapping `[start, end)` ranges of the trusted fields.
     private let ranges: [(range: Range<Int>, name: String, typeMangledName: String)]
+
+    /// Each Swift field's type, printed from its field record with symbolic
+    /// references resolved (`FieldWrites.FieldPair`), by field name. A field
+    /// whose type does not demangle has none. Empty for Objective-C maps.
+    public private(set) var fieldTypeNames: [String: String] = [:]
+
+    /// This map with the field types `FieldMapBuilder` resolved.
+    func withFieldTypeNames(_ names: [String: String]) -> FieldMap {
+        var map = self
+        map.fieldTypeNames = names
+        return map
+    }
 
     /// Build from a resolved aggregate layout.
     ///
@@ -281,7 +297,9 @@ public enum FieldMapBuilder {
             // the whole image with it.
             guard let layout = try? calculator.fieldLayout(of: descriptor), !layout.fields.isEmpty
             else { continue }
-            built.append((name, Self.qualifiedName(of: type, in: machO), FieldMap(typeName: name, layout: layout)))
+            let map = FieldMap(typeName: name, layout: layout)
+                .withFieldTypeNames(Self.fieldTypeNames(of: type, in: machO))
+            built.append((name, Self.qualifiedName(of: type, in: machO), map))
         }
         var maps = resolvingSimpleNameCollisions(built.map { ($0.name, $0.map) })
         // Also index each type by its FULLY-QUALIFIED name (`Module.Outer.Type`).
@@ -335,6 +353,28 @@ public enum FieldMapBuilder {
         }
         for name in ambiguous { maps.removeValue(forKey: name) }
         return maps
+    }
+
+    /// Each stored field's type as its record names it, symbolic references
+    /// resolved: a field of a type in the same module records `\u{01}` and an
+    /// offset, which is no name until resolved.
+    private static func fieldTypeNames(of type: TypeContextWrapper, in machO: MachOFile) -> [String: String] {
+        let records: [FieldRecord]
+        switch type {
+        case .struct(let model): records = (try? model.descriptor.fieldDescriptor(in: machO).records(in: machO)) ?? []
+        case .class(let model): records = (try? model.descriptor.fieldDescriptor(in: machO).records(in: machO)) ?? []
+        case .enum: return [:]
+        }
+        var names: [String: String] = [:]
+        for record in records {
+            guard let field = try? record.fieldName(in: machO),
+                  let mangled = try? record.mangledTypeName(in: machO),
+                  let node = try? SymbolicDemangler.demangleType(for: mangled, in: machO.context)
+            else { continue }
+            let printed = node.print(using: .default)
+            if !printed.isEmpty { names[field] = printed }
+        }
+        return names
     }
 
     private static func contextDescriptor(of type: TypeContextWrapper) -> TypeContextDescriptorWrapper? {
