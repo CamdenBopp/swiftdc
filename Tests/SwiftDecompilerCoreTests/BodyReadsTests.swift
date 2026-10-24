@@ -70,3 +70,14 @@ private func noteArguments(_ callee: String, in function: DisassembledFunction) 
     let accessor = try await pseudo("_callAccessorLike")
     #expect(accessor.contains("accessorLike()"), Comment(rawValue: accessor))
 }
+
+/// A call whose registers hold nothing tracked leaves no snapshot, so the
+/// padding never saw it: `body_reads.s`'s `callReadsFirstUnknown` passes
+/// `readsFirst`, whose body reads x0, a value loaded through a clobbered
+/// register, and rendered `readsFirst()`. A body-bounded callee that reads
+/// an argument register itself gets a site anyway, padded with `?`.
+@Test func aBodyBoundedCallWithNothingTrackedIsStillPaddedIfPresent() async throws {
+    guard FileManager.default.fileExists(atPath: fixture) else { return }
+    let text = try await pseudo("_callReadsFirstUnknown")
+    #expect(text.contains("readsFirst(?)"), Comment(rawValue: text))
+}

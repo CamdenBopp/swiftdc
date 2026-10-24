@@ -10,6 +10,13 @@
 // table accessor hands its x2 to swift_getWitnessTable. callAccessorLike
 // leaves 5 in x0. True behaviour: accessorLike reads x2 only by passing it
 // on; the 5 is never read.
+//
+// readsFirst reads x0. callReadsFirstUnknown calls rand, which clobbers
+// every argument register, and passes readsFirst a value loaded through
+// one of them, so no register at the call holds anything tracked: it
+// overwrites rand's result in d0 with an unknown, and keeps its return
+// address in x19 rather than build a frame, whose saved words would read
+// as stack arguments. True behaviour: readsFirst takes one argument.
 .text
 .p2align 2
 .globl _useSecond
@@ -45,4 +52,19 @@ _callAccessorLike:
     mov x0, #5
     bl _accessorLike
     ldp x29, x30, [sp], #16
+    ret
+
+.globl _readsFirst
+_readsFirst:
+    add x0, x0, #1
+    ret
+
+.globl _callReadsFirstUnknown
+_callReadsFirstUnknown:
+    mov x19, x30
+    bl _rand
+    fmov d0, x1
+    ldr x0, [x1]
+    bl _readsFirst
+    mov x30, x19
     ret

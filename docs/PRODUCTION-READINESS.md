@@ -4701,6 +4701,18 @@ if a test was observed to fail without the fix.
   GoodLinks lines, where a generic plumbing argument the pseudo view
   strips only from the end of a list now precedes a padded `?` and shows.
 
+## 2026-10-24: body-bounded calls with nothing tracked
+
+- **FIXED (completeness): a body-bounded call whose registers held
+  nothing tracked was not padded.** db4729a pads a body-bounded call to
+  the registers its callee's own instructions read, but only where the
+  call has a snapshot, and a snapshot with nothing tracked in it is never
+  recorded: `body_reads.s`'s `callReadsFirstUnknown` (rand, then a load
+  through a clobbered register) rendered `readsFirst()`. Such a callee now
+  gets an empty site, as a call of known arity does: `readsFirst(?)`.
+  Release `disasm --pseudo`: Terminal 19 lines, TextEdit 3, Chess 23,
+  Clarc 985, GoodLinks 5,932, all padding only.
+
 ## 2026-10-24: fields past a standard-library generic
 
 - **OPEN (completeness): a field past an `ArraySlice` or `Task` field

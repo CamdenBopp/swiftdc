@@ -4047,10 +4047,14 @@ public struct Disassembler: Sendable {
             guard sites[insn.address] == nil,
                   let callee = DisassembledFunction.calleeName(of: insn)
             else { continue }
+            // So does an in-image callee whose body itself reads an
+            // argument register: `readsFirst(?)`, not `readsFirst()`, when
+            // its argument was loaded through an unknown pointer.
             guard DisassembledFunction.knownCArity(of: callee) != nil
                     || Self.swiftCallArgumentSlots(
                         callee: callee, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex
                     )?.isEmpty == false
+                    || (insn.branchTarget.flatMap { registerSummaries[$0] }?.provenArgumentCount ?? 0) > 0
             else { continue }
             sites[insn.address] = CallSite()
         }
