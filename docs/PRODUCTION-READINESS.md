@@ -5135,12 +5135,31 @@ if a test was observed to fail without the fix.
   and `CGContextDrawImage(ctx, rect, image)` loses its image in x1.
   Recording an HFA's member count and type (CGRect, CGPoint, CGSize) in
   the table would place the parameters after one.
-- **OPEN (soundness): a float constant inside a float expression renders
-  as its bit pattern.** `fmov d1, #100.0; fdiv d0, d0, d1` gives the
-  tracer `.binary(.divide, x, .immediate(0x4059000000000000))`, the same
-  node an integer divide makes, so TextEdit renders `[r13 doubleValue] /
-  0x4059000000000000` (one site; GoodLinks two). A float constant at the
-  top of a float slot renders as its decimal (`fmod(?, 360.0)`).
+- **FIXED (soundness): a float constant inside a float expression
+  rendered as its bit pattern.** `mov x8, #0x4059000000000000; fmov d1,
+  x8; fdiv d0, d0, d1` gave the tracer `.binary(.divide, x,
+  .immediate(0x4059000000000000))`, the node an integer divide makes, and
+  the renderer read the immediate as a float only beside a float
+  argument, a conversion or a Swift call returning a float. Beside an
+  Objective-C send, a field or a C call it printed the integer: TextEdit
+  `[r13 doubleValue] / 0x4059000000000000` for `/ 100.0`, Chess
+  `self->_totalTime * 0x40800000` for `* 4.0`. A float operation's
+  immediate operand, read from a float register, is now marked
+  `.floatConstant(bits:)` at the operation's width and renders as its
+  decimal; an integer register's immediate converted by `scvtf` stays the
+  integer it is. `float_constants.c` (-O2) and a synthetic `scvtf`/`fcvt`
+  body hold it (`aFloatOperationsConstantRendersAsItsDecimalIfPresent`,
+  `onlyAFloatRegistersImmediateIsAFloatConstant`). Fixtures: objc_outgoing
+  (both builds) `fraction:(arg0 + 0x4004000000000000)` reads `+ 2.5`, and
+  libSample.stripped `self.radius * 0x400921fb54442d18` reads
+  `* 3.141592653589793`. Release `disasm --pseudo`: TextEdit 1 line, Chess
+  2 (`* 4.0`, `+ 180.0`), GoodLinks 2 (`* 0.85`, `* 0.65`), Terminal and
+  Clarc none.
+- **OPEN (completeness): a float constant passed as an Optional's
+  payload renders as its bit pattern.** GoodLinks passes `14.0` to
+  `SwiftUI._FrameLayout.init`'s `CGFloat?` height as
+  `0x402c000000000000, 0`: the typed-constant rendering knows `Double`,
+  `Float` and `CGFloat`, not an Optional of them.
 
 ## 2026-10-24: what decoding costs
 

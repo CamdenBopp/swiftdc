@@ -129,6 +129,10 @@ public enum AbstractUnaryOperator: Equatable, Sendable {
     /// A float truncated toward zero to an integer of `bits` width (`fcvtzs`,
     /// `fcvtzu`): `Int(x)`, `UInt32(x)`.
     case toInteger(signed: Bool, bits: Int)
+    /// The float of `bits` width whose IEEE bit pattern is the operand, an
+    /// immediate: a float operation's constant operand. Bare, it read as the
+    /// integer it is spelled as (`t / 0x4059000000000000`, for `t / 100.0`).
+    case floatConstant(bits: Int)
 }
 
 /// A small abstract-value lattice for CFG-aware data-flow. Alongside constants
@@ -2881,9 +2885,9 @@ public struct ValueTracer: Sendable {
             default: .multiply // FMUL, FNMUL
             }
             let product = floatBinary(op, source(detail.operands[1], in: registers),
-                                      source(detail.operands[2], in: registers))
+                                      source(detail.operands[2], in: registers), bits: dest.widthBits)
             // FNMUL negates the product: `-(a * b)`.
-            write(dest, detail.id == AARCH64_INS_FNMUL ? floatUnary(.negate, product) : product,
+            write(dest, detail.id == AARCH64_INS_FNMUL ? floatUnary(.negate, product, operandBits: nil) : product,
                   into: &registers)
 
         case AARCH64_INS_FNEG, AARCH64_INS_FSQRT, AARCH64_INS_FABS:
@@ -2895,7 +2899,8 @@ public struct ValueTracer: Sendable {
             case AARCH64_INS_FABS: .absoluteValue
             default: .negate // FNEG
             }
-            write(dest, floatUnary(op, source(detail.operands[1], in: registers)), into: &registers)
+            write(dest, floatUnary(op, source(detail.operands[1], in: registers), operandBits: dest.widthBits),
+                  into: &registers)
 
         case AARCH64_INS_FCVT, AARCH64_INS_SCVTF, AARCH64_INS_UCVTF,
              AARCH64_INS_FCVTZS, AARCH64_INS_FCVTZU:
@@ -2913,7 +2918,11 @@ public struct ValueTracer: Sendable {
             case AARCH64_INS_FCVTZU: .toInteger(signed: false, bits: dest.widthBits)
             default: .toFloat(bits: dest.widthBits)
             }
-            let converted = floatUnary(op, source(detail.operands[1], in: registers))
+            // `scvtf`/`ucvtf` convert an integer register, whose immediate is
+            // the integer it says; `fcvt`/`fcvtz*` a float register.
+            let input = detail.operands[1].operand.register
+            let converted = floatUnary(op, source(detail.operands[1], in: registers),
+                                       operandBits: input?.kind == .vector ? input?.widthBits : nil)
             guard detail.operands.count == 3 else { write(dest, converted, into: &registers); return }
             // Fixed point: `ucvtf d0, x0, #2` is `Double(x0) / 4`, the compiler's
             // folding of `* 0.25`. Only the int-to-float direction is modelled.
@@ -2923,7 +2932,8 @@ public struct ValueTracer: Sendable {
             else { clobber(detail, into: &registers); return }
             let scale = Double(sign: .plus, exponent: Int(fractionBits), significand: 1)
             let scaleBits = dest.widthBits == 64 ? scale.bitPattern : UInt64(Float(scale).bitPattern)
-            write(dest, floatBinary(.divide, converted, .immediate(scaleBits)), into: &registers)
+            write(dest, floatBinary(.divide, converted, .immediate(scaleBits), bits: dest.widthBits),
+                  into: &registers)
 
         case AARCH64_INS_FMOV:
             // A register-to-register FP move carries the bits through unchanged
@@ -3628,17 +3638,29 @@ public struct ValueTracer: Sendable {
     /// for two's-complement integers but not for IEEE floats (`-0.0`, `NaN`,
     /// `Inf`), and an FP register never carries an `.immediate` anyway.
     private func floatBinary(
-        _ op: AbstractBinaryOperator, _ lhs: AbstractValue, _ rhs: AbstractValue
+        _ op: AbstractBinaryOperator, _ lhs: AbstractValue, _ rhs: AbstractValue, bits: Int
     ) -> AbstractValue {
         guard lhs != .unknown, rhs != .unknown,
               Self.expressionDepth(lhs) < 8, Self.expressionDepth(rhs) < 8
         else { return .unknown }
-        return .binary(op, lhs, rhs)
+        return .binary(op, Self.floatOperand(lhs, bits: bits), Self.floatOperand(rhs, bits: bits))
     }
 
-    private func floatUnary(_ op: AbstractUnaryOperator, _ value: AbstractValue) -> AbstractValue {
+    /// `operandBits` is the width of the float register the operand was read
+    /// from, nil for an integer register.
+    private func floatUnary(_ op: AbstractUnaryOperator, _ value: AbstractValue, operandBits: Int?) -> AbstractValue {
         guard value != .unknown, Self.expressionDepth(value) < 8 else { return .unknown }
-        return .unary(op, value)
+        return .unary(op, operandBits.map { Self.floatOperand(value, bits: $0) } ?? value)
+    }
+
+    /// An immediate read from a float register as a float operation's operand
+    /// is an IEEE bit pattern of the operation's width (`mov x8,
+    /// #0x4059000000000000; fmov d1, x8; fdiv d0, d0, d1` divides by 100.0).
+    /// Marked, it renders as its decimal wherever the expression goes; bare,
+    /// it read as an integer unless the expression beside it said float.
+    private static func floatOperand(_ value: AbstractValue, bits: Int) -> AbstractValue {
+        guard case .immediate = value, [16, 32, 64].contains(bits) else { return value }
+        return .unary(.floatConstant(bits: bits), value)
     }
 
     /// The tracked flags value from the most recent modelled compare, keyed so it

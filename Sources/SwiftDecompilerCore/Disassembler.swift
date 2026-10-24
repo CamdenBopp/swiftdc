@@ -5079,7 +5079,7 @@ public struct Disassembler: Sendable {
                 }
             case .binary(_, let lhs, let rhs):
                 return floatWidth(lhs) ?? floatWidth(rhs)
-            case .unary(.toFloat(let bits), _):
+            case .unary(.toFloat(let bits), _), .unary(.floatConstant(let bits), _):
                 return bits
             case .unary(.toInteger, _):
                 return nil
@@ -5277,6 +5277,13 @@ public struct Disassembler: Sendable {
                     return "\(bits == 64 ? "Double" : bits == 32 ? "Float" : "Float\(bits)")(\(inner))"
                 case .toInteger(let signed, let bits):
                     return "\(signed ? "Int" : "UInt")\(bits == 64 ? "" : String(bits))(\(inner))"
+                case .floatConstant(let bits):
+                    guard case .immediate(let pattern) = operand else { return unknownRenderedValue() }
+                    switch bits {
+                    case 64: return String(Double(bitPattern: pattern))
+                    case 32: return String(Float(bitPattern: UInt32(truncatingIfNeeded: pattern)))
+                    default: return String(Float(Float16(bitPattern: UInt16(truncatingIfNeeded: pattern))))
+                    }
                 }
             case .aggregate(let values):
                 return "(" + values.map { renderValue($0, depth: depth + 1) }.joined(separator: ", ") + ")"
