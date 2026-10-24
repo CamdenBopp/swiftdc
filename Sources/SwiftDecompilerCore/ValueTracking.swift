@@ -500,6 +500,11 @@ public struct ValueTracer: Sendable {
     /// anywhere in this frame, above or below the frame record x29 holds.
     var framePointerUsers: Set<UInt64> = []
 
+    /// Call targets that are functions of this image. The known C arity a
+    /// callee's name gives is evidence only for the library function of
+    /// that name, not for an in-image function that shares it.
+    var inImageCallTargets: Set<UInt64> = []
+
     /// Callees that use the caller's x22 as a pointer
     /// (`CalleeRegisterSummary.readsContextRegister`): a call to one may write
     /// the async context x22 holds, though no argument hands it over.
@@ -654,13 +659,16 @@ public struct ValueTracer: Sendable {
             self.init(callee: DisassembledFunction.calleeName(of: insn) ?? "")
         }
 
-        init(callee: String) {
+        /// `knownArityApplies` is false for a call to an in-image function,
+        /// whose name may be a library function's without its arity.
+        init(callee: String, knownArityApplies: Bool = true) {
             self.callee = callee
-            readsOnly = ValueTracer.readOnlyPointerCallees.contains(callee)
-            passedRegisters = DisassembledFunction.knownCArity(of: callee).map { arity in
+            readsOnly = knownArityApplies && ValueTracer.readOnlyPointerCallees.contains(callee)
+            let knownArity = knownArityApplies ? DisassembledFunction.knownCArity(of: callee) : nil
+            passedRegisters = knownArity.map { arity in
                 (0..<arity).map { Location.x($0) }
             } ?? [.x(0), .x(1), .x(2), .x(3), .x(4), .x(5), .x(6), .x(7), .x(8), .x(20)]
-            passesNoStackArguments = ValueTracer.passesNoStackArguments(callee)
+            passesNoStackArguments = knownArityApplies && ValueTracer.passesNoStackArguments(callee)
             throwsByName = callee.contains(" throws")
             provablyDoesNotThrow = ValueTracer.provablyDoesNotThrow(callee)
             let runtimeName = callee.hasPrefix("_") ? String(callee.dropFirst()) : callee
@@ -701,11 +709,15 @@ public struct ValueTracer: Sendable {
 
         init() {}
 
-        init(_ function: DisassembledFunction, cache: CallFactsCache?) {
+        init(_ function: DisassembledFunction, cache: CallFactsCache?, inImageTargets: Set<UInt64> = []) {
             frame = ValueTracer.frameLayout(function.instructions)
             for insn in function.instructions where insn.controlFlow == .call {
                 let callee = DisassembledFunction.calleeName(of: insn) ?? ""
-                calls[insn.address] = cache?.facts(for: callee) ?? CallFacts(callee: callee)
+                if let target = insn.branchTarget, inImageTargets.contains(target) {
+                    calls[insn.address] = CallFacts(callee: callee, knownArityApplies: false)
+                } else {
+                    calls[insn.address] = cache?.facts(for: callee) ?? CallFacts(callee: callee)
+                }
             }
         }
 
@@ -806,7 +818,7 @@ public struct ValueTracer: Sendable {
         let blocks = function.basicBlocks()
         guard !blocks.isEmpty else { return FunctionAnalysis() }
         let blockByStart = Dictionary(blocks.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
-        let facts = FunctionFacts(function, cache: callFactsCache)
+        let facts = FunctionFacts(function, cache: callFactsCache, inImageTargets: inImageCallTargets)
 
         var predecessors: [UInt64: [UInt64]] = [:]
         for block in blocks {

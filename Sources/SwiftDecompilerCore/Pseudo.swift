@@ -632,6 +632,18 @@ public extension DisassembledFunction {
     /// and keeps every recovered value. Message sends are intentionally
     /// absent: their arity comes from the selector's colons, and
     /// `MessageSend` already pairs those.
+    /// Whether a name in the table is a C library function's, which an
+    /// in-image function may also be called (a vendored `qsort`, an
+    /// `arc4random(long *, long)`): the table is then evidence only for calls
+    /// that leave the image. Runtime entry points (`swift_`, `objc_`), the
+    /// compiler's own per-module helpers (`__swift_project_boxed_…`) and
+    /// demangled Swift entities (`lazy protocol witness table accessor for …`)
+    /// name one function wherever it is.
+    static func knownArityNameMayHaveTwin(_ callee: String) -> Bool {
+        !(callee.hasPrefix("swift_") || callee.hasPrefix("__swift_") || callee.hasPrefix("objc_")
+            || callee.hasPrefix("_os_log") || callee.contains(" ") || callee.contains("."))
+    }
+
     static func knownCArity(of callee: String) -> Int? {
         switch callee {
         case "abort", "__stack_chk_fail", "objc_autoreleasePoolPush", "objc_exception_rethrow",

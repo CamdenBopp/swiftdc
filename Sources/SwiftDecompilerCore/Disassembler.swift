@@ -717,9 +717,11 @@ public struct Disassembler: Sendable {
         var targets = Set<UInt64>()
         var indirectResultUses: [UInt64: IndirectResultUse] = [:]
         var registerSummaries: [UInt64: CalleeRegisterSummary] = [:]
-        let arity = { [names] target in self.knownArity(ofCallTarget: target, names: names, cacheSymbols: cacheSymbols) }
         let functionStarts = Set(boundaries)
         let isFunction = { (target: UInt64) in functionStarts.contains(target) }
+        let arity = { [names] target in
+            self.knownArity(ofCallTarget: target, names: names, cacheSymbols: cacheSymbols, isFunction: isFunction)
+        }
         let fileRanges = FileBackedRanges(standalone: machO)
         for index in boundaries.indices {
             // Muted: pass 2 decodes the same span again and records its events.
@@ -1017,10 +1019,11 @@ public struct Disassembler: Sendable {
                 uniquingKeysWith: { a, _ in a }
             ),
             registerSummaries: {
-                let arity = { target in
-                    self.knownArity(ofCallTarget: target, names: resolver.names, cacheSymbols: cacheSymbols)
-                }
                 let isFunction = { (target: UInt64) in boundaries.contains(target) }
+                let arity = { target in
+                    self.knownArity(
+                        ofCallTarget: target, names: resolver.names, cacheSymbols: cacheSymbols, isFunction: isFunction)
+                }
                 // A summary reads a switch's `br` as the jump inside the body
                 // it is, not as a tail call out of it.
                 var bodies = Dictionary(
@@ -1623,12 +1626,17 @@ public struct Disassembler: Sendable {
     /// renders: an in-image or stub name, else the dyld cache's, so the
     /// whole-image and streaming paths agree.
     private func knownArity(
-        ofCallTarget target: UInt64, names: [UInt64: String], cacheSymbols: CacheSymbolResolver?
+        ofCallTarget target: UInt64, names: [UInt64: String], cacheSymbols: CacheSymbolResolver?,
+        isFunction: (UInt64) -> Bool
     ) -> Int? {
         let name = names[target] ?? cacheSymbols?.name(forCallTarget: target).map {
             demangle($0) ?? Self.stripLeadingUnderscore($0)
         }
-        return name.flatMap(DisassembledFunction.knownCArity(of:))
+        guard let name else { return nil }
+        // An in-image function named like a C library function is bounded by
+        // its own body instead.
+        if isFunction(target), DisassembledFunction.knownArityNameMayHaveTwin(name) { return nil }
+        return DisassembledFunction.knownCArity(of: name)
     }
 
     private func resolveCrossImageNames(
@@ -3806,6 +3814,10 @@ public struct Disassembler: Sendable {
             if insn.controlFlow == .call, registerSummaries[target]?.readsFramePointer == true {
                 tracer.framePointerUsers.insert(target)
             }
+            if let callee = DisassembledFunction.calleeName(of: insn),
+               DisassembledFunction.knownArityNameMayHaveTwin(callee) {
+                tracer.inImageCallTargets.insert(target)
+            }
             if insn.controlFlow == .call, registerSummaries[target]?.readsContextRegister == true {
                 tracer.contextRegisterUsers.insert(target)
             }
@@ -4093,6 +4105,13 @@ public struct Disassembler: Sendable {
             return "\"\(string)\""
         }
 
+        /// A call to an in-image function whose name is also a C library
+        /// function's in the known-arity table: the table is no evidence for it.
+        func isNameTwin(_ address: UInt64) -> Bool {
+            guard callTargets[address] != nil, let callee = calleeByAddress[address] else { return false }
+            return DisassembledFunction.knownArityNameMayHaveTwin(callee)
+        }
+
         var argumentsByAddress: [UInt64: [AbstractValue]] = [:]
         /// Parameter types of the sites laid out from a signature.
         var laidOutTypes: [UInt64: [String]] = [:]
@@ -4171,7 +4190,7 @@ public struct Disassembler: Sendable {
             // `memcpy` whose operands were all unknown read `memcpy()`, a
             // call that takes nothing.
             if let callee = calleeByAddress[address], let arity = DisassembledFunction.knownCArity(of: callee),
-               callee != "swift_willThrow" {
+               callee != "swift_willThrow", !isNameTwin(address) {
                 argumentsByAddress[address] = (0..<arity).map { $0 < values.count ? sanitizeValue(values[$0]) : .unknown }
                 strategy = "c-arity"
                 continue
@@ -4379,7 +4398,7 @@ public struct Disassembler: Sendable {
             if let target = callTargets[address], let summary = registerSummaries[target],
                calleeByAddress[address].flatMap({ DisassembledFunction.splitSignature($0) }) == nil,
                calleeByAddress[address].flatMap({ selectorName(callee: $0, arguments: values) }) == nil,
-               calleeByAddress[address].flatMap(DisassembledFunction.knownCArity(of:)) == nil {
+               calleeByAddress[address].flatMap(DisassembledFunction.knownCArity(of:)) == nil || isNameTwin(address) {
                 values = Array(values.prefix(summary.argumentCount))
                 strategy = "body-reads"
             }
@@ -4389,8 +4408,10 @@ public struct Disassembler: Sendable {
         /// Runtime entry points with a fixed public ABI often inherit unrelated
         /// live values in later argument registers. Keep only parameters the
         /// helper actually accepts before embedding it in a source expression.
-        func normalizedArguments(callee: String, values: [AbstractValue]) -> [AbstractValue] {
-            DisassembledFunction.knownCArity(of: callee).map { Array(values.prefix($0)) } ?? values
+        func normalizedArguments(callee: String, values: [AbstractValue], at address: UInt64?) -> [AbstractValue] {
+            // Not for a call to an in-image function that shares the name.
+            if let address, isNameTwin(address) { return values }
+            return DisassembledFunction.knownCArity(of: callee).map { Array(values.prefix($0)) } ?? values
         }
 
         /// Render a runtime helper as the source send it lowers from.
@@ -5020,7 +5041,7 @@ public struct Disassembler: Sendable {
                 if let idiom = objcRuntimeIdiom(callee: callee, arguments: inner, depth: depth) {
                     return idiom
                 }
-                let callValues = normalizedArguments(callee: callee, values: inner)
+                let callValues = normalizedArguments(callee: callee, values: inner, at: addr)
                 let rawArguments: [String] = renderArguments(callValues, depth: depth + 1, site: addr)
                 // A dynamic cast reads its target type from the metadata argument
                 // that the plumbing strip would remove, so match it on the raw
@@ -5116,7 +5137,7 @@ public struct Disassembler: Sendable {
                 return idiom
             }
             let arguments: [String] = renderArguments(
-                normalizedArguments(callee: callee, values: values), depth: depth, site: site
+                normalizedArguments(callee: callee, values: values, at: site), depth: depth, site: site
             )
             if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {
                 return send.rendered
@@ -5688,7 +5709,8 @@ public struct Disassembler: Sendable {
         for (address, values) in argumentsByAddress {
             let callee = calleeByAddress[address]
             if let callee, DisassembledFunction.isRuntimeNoise(callee) { continue }
-            (callee.map { normalizedArguments(callee: $0, values: values) } ?? values).forEach { countDirectUses($0, at: address) }
+            (callee.map { normalizedArguments(callee: $0, values: values, at: address) } ?? values)
+                .forEach { countDirectUses($0, at: address) }
         }
         for (address, value) in analysis.branchConditions { countDirectUses(value, at: address) }
         for insn in function.instructions where insn.controlFlow == .branch && insn.branchTarget == nil
@@ -5778,7 +5800,8 @@ public struct Disassembler: Sendable {
                DisassembledFunction.calleeName(of: insn)
                 .map({ !DisassembledFunction.isRuntimeNoise($0) }) ?? true {
                 let values = argumentsByAddress[insn.address] ?? []
-                let rendered = calleeByAddress[insn.address].map { normalizedArguments(callee: $0, values: values) } ?? values
+                let rendered = calleeByAddress[insn.address]
+                    .map { normalizedArguments(callee: $0, values: values, at: insn.address) } ?? values
                 for value in rendered {
                     collectCallResults(in: value, into: &consumedCallResults)
                 }
@@ -6227,7 +6250,7 @@ public struct Disassembler: Sendable {
                 // Clamp a fixed-ABI callee's arguments to its real arity before
                 // rendering the top-level statement, so a stale live register does
                 // not surface as a fabricated trailing argument (`abort([? x])`).
-                let clamped = callee.map { normalizedArguments(callee: $0, values: values) } ?? values
+                let clamped = callee.map { normalizedArguments(callee: $0, values: values, at: insn.address) } ?? values
                 return renderArguments(clamped, depth: 0, site: insn.address)
             } ?? []
             guard !rendered.isEmpty || selfText != nil || !sourceNotes.isEmpty

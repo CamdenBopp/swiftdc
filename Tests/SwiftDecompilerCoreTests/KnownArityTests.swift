@@ -99,3 +99,30 @@ func aFailedForcedTryPassesItsFiveArgumentsIfPresent(path: String) async throws 
     // `isAscii` and the line of the `try!`, both constants at the call.
     #expect(arguments.suffix(2) == ["1", "17"], Comment(rawValue: text))
 }
+
+/// The known-arity table applied by name, so an in-image function sharing a
+/// libc entry's name took the library's arity (`arity_twin.c`, -O2): its
+/// `arc4random(long *, long)` rendered `arc4random()`, and the frame address
+/// passed in x0 did not escape into it, so the local it writes read as the
+/// value stored before the call (`sink(5)`; native 7). A call to an in-image
+/// function is bounded by its own body, which also keeps a stale x2 out and
+/// lets a relay read x0 and x1 through it; the table is for calls that leave
+/// the image.
+@Test func anInImageNameTwinIsNotGivenTheLibraryArityIfPresent() async throws {
+    let path = "Fixtures/Sample/libArityTwin.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName == name }, "no \(name)").renderPseudo()
+    }
+    let direct = try text("_useTwin")
+    #expect(argumentLists(of: "arc4random", in: direct) == [["?", "7"]], Comment(rawValue: direct))
+    let frame = try text("_useTwinFrame")
+    #expect(argumentLists(of: "arc4random", in: frame) == [["local_18", "7"]], Comment(rawValue: frame))
+    #expect(!frame.contains("sink(5)"), Comment(rawValue: frame))
+    // Its body bounds a stale x2 out, and a relay reads x0 and x1 through it.
+    let stale = try text("_useTwinStale")
+    #expect(argumentLists(of: "arc4random", in: stale) == [["?", "7"]], Comment(rawValue: stale))
+    let relayed = try text("_useRelay")
+    #expect(argumentLists(of: "relay", in: relayed) == [["?", "5"]], Comment(rawValue: relayed))
+}

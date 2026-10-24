@@ -3955,7 +3955,8 @@ if a test was observed to fail without the fix.
   printed only inside such an operand (`_Unwind_Resume`,
   `__stack_chk_fail`, `NSLog`, `objc_begin_catch`, a send) are now their
   own statements.
-- **OPEN (soundness): the table applies by name.** An in-image function
+- **FIXED (soundness, see "known arity and in-image name twins" below):
+  the table applied by name.** An in-image function
   that shares a name with an entry (a vendored `qsort`) gets the libc
   arity in the "c-arity" layout, the empty-site pass and the tracer's
   `passedRegisters`, ahead of its own body summary: the "body-reads"
@@ -4425,8 +4426,8 @@ if a test was observed to fail without the fix.
   0` from `stp x11, x10`).
 - **FIXED (soundness, below): a read of part of a field rendered as the
   whole field.**
-- **FIXED (soundness): a read of part of a field rendered as the whole
-  field.** A value loaded from `self` (`selfFieldValue`) printed the name
+- **FIXED (f051793, soundness): a read of part of a field rendered as the
+  whole field.** A value loaded from `self` (`selfFieldValue`) printed the name
   of the field holding its offset, whatever it read: `fieldwrites.swift`'s
   `secondOfPair` (`ldr x0, [x20, #0x28]`, pair.b) rendered `return
   self.pair`; Terminal closed `self->_signalPipe` twice where it closes
@@ -4447,4 +4448,35 @@ if a test was observed to fail without the fix.
   only. Splitting a paired load into its registers' widths makes it
   `self.breed[0..<8]`, which a String argument made of a field's two words
   should then collapse back to `self.breed`.
+
+## 2026-10-23: known arity and in-image name twins
+
+- **FIXED (soundness): an in-image function named like a C library
+  function took the library's arity.** `knownCArity` is looked up by name,
+  so a vendored function sharing a libc entry's name got its arity in the
+  c-arity layout, the render-time trim, the body-reads gate, the tracer's
+  passed registers and the summaries' call reads. `arity_twin.c` (-O2)
+  defines `long arc4random(long *slot, long value)`, which stores through
+  `slot`: `useTwin` rendered `arc4random()`, and `useTwinFrame`, which
+  passes its local's address, rendered `sink(5)` after the call, because
+  the address did not escape into a callee of arity 0 (native 7). Now
+  a call to an in-image function whose name is a C library function's
+  (`knownArityNameMayHaveTwin`: not a `swift_`, `__swift_`, `objc_` or
+  `_os_log` entry point and not a demangled Swift entity) is bounded by
+  its own body everywhere the table applied: `arc4random(?, 7)`,
+  `arc4random(local_18, 7)` and `sink()`, a stale x2 bounded out, and a
+  relay that tail-branches to the twin reading x0 and x1 through it. The
+  compiler's own helpers and Swift accessors keep their entries: gating
+  every in-image name broke the lazy witness table accessor's `()` and
+  concrete witness dispatch through `__swift_project_boxed_…`. Blast
+  radius: only `arity_twin.c`; release `disasm --pseudo` of the five apps
+  is byte-identical.
+- **OPEN (soundness): other by-name tables still apply to an in-image
+  twin.** `IndirectResults.isKnownDirectReturnCallee`, the printf-family
+  format table, `isMemoryHelper` and the identity and read-only runtime
+  sets match a callee by its name alone.
+- **OPEN (completeness): a body-reads call with untracked arguments still
+  renders `()`.** `sink()` reads x0, but its argument is unknown and the
+  trailing unknown is trimmed; padding to the summary's count would
+  render `sink(?)`.
 

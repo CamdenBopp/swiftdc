@@ -145,6 +145,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libFieldWrites.dylib",
         "Fixtures/Sample/libObjCFieldCopy.dylib",
         "Fixtures/Sample/libObjCFieldCopy.O0.dylib",
+        "Fixtures/Sample/libArityTwin.dylib",
     ]
 
     /// True on a run that must actually exercise the fixtures. `CI` is set by

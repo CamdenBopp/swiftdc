@@ -213,6 +213,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name FieldWrites fieldwrites.
 $CLANG -fobjc-arc -O2 -dynamiclib -framework Foundation objc_field_copy.m -o libObjCFieldCopy.dylib
 $CLANG -fobjc-arc -O0 -dynamiclib -framework Foundation objc_field_copy.m -o libObjCFieldCopy.O0.dylib
 
+echo "==> an in-image function named like a libc entry of known arity (arity_twin.c, -O2)"
+$CLANG -O2 -dynamiclib arity_twin.c -o libArityTwin.dylib
+
 echo "==> variadic ObjC fixture (-O1) — format arguments on the stack"
 $CLANG -O1 -fobjc-arc -framework Foundation -dynamiclib variadic.m -o libVariadic.dylib
 
