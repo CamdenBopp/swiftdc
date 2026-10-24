@@ -1574,7 +1574,10 @@ public struct Disassembler: Sendable {
     /// so locate the subcache that maps the section's VM address and read that
     /// subcache file directly.
     private func sectionBytes(address: UInt64, size: Int, in machO: MachOFile) -> Data? {
-        if let full = machO.fullCache,
+        // MachOKit keeps a full cache it finds but not the failure to find
+        // one, so for a plain file every `fullCache` read re-opened the
+        // file as a dyld cache: 7.4% of a GoodLinks `--pseudo` run.
+        if machO.isLoadedFromDyldCache, let full = machO.fullCache,
            let fullOffset = full.fileOffset(of: address),
            let subcache = full.cache(forFileOffset: fullOffset),
            let url = full.url(forFileOffset: fullOffset),
@@ -2661,14 +2664,15 @@ public struct Disassembler: Sendable {
                 return segment.flags.contains(.read_only)
                     || segment.segmentName == "__DATA_CONST" || segment.segmentName == "__AUTH_CONST"
             }
-            guard let mapping = machO.fullCache?.mappingAndSlideInfo(for: slot) else { return false }
+            guard machO.isLoadedFromDyldCache, let mapping = machO.fullCache?.mappingAndSlideInfo(for: slot)
+            else { return false }
             return !mapping.flags.isDisjoint(with: [.constData, .readOnlyData, .constTproData])
         }
 
         /// VM address held by a rebased pointer slot. Full-dyld-cache and
         /// standalone Mach-O resolvers intentionally return different spaces.
         private func pointerTarget(at slot: UInt64) -> UInt64? {
-            if let full = machO.fullCache,
+            if machO.isLoadedFromDyldCache, let full = machO.fullCache,
                let fileOffset = full.fileOffset(of: slot) {
                 return full.resolveRebase(at: fileOffset)
             }

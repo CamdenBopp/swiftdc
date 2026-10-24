@@ -5072,8 +5072,8 @@ if a test was observed to fail without the fix.
 
 ## 2026-10-24: C calls laid out from the SDK's declarations
 
-- **FIXED (soundness): a signatureless C call took the registers it
-  found and left x0 as its result.** A call to an SDK C function carries
+- **FIXED (soundness, `a395807`): a signatureless C call took the
+  registers it found and left x0 as its result.** A call to an SDK C function carries
   no signature in the binary, so its arguments were laid out by position
   from the tracked x registers and x0 after it was taken as its result.
   Chess's OpenGL drawing, `glTexCoord2f(u, v); glVertex3f(x, y, z); …;
@@ -5141,3 +5141,35 @@ if a test was observed to fail without the fix.
   node an integer divide makes, so TextEdit renders `[r13 doubleValue] /
   0x4059000000000000` (one site; GoodLinks two). A float constant at the
   top of a float slot renders as its decimal (`fmod(?, 360.0)`).
+
+## 2026-10-24: what decoding costs
+
+- **FIXED (speed): a plain file paid for a dyld-cache lookup on every
+  decode span.** `sectionBytes` and `pointerTarget` asked
+  `MachOFile.fullCache` first, and MachOKit keeps a full cache it finds
+  but not the failure to find one (the fork's `4c4738f` memoizes only
+  `cache`), so for a standalone file each read re-opened it as a cache.
+  `sample` of release `disasm --pseudo` on GoodLinks put 6,055 of 81,749
+  streaming-thread samples (7.4%) under `fullCache.getter`, more than
+  `cs_disasm` itself. Both, and `holdsFixedPointer`, now ask only for an
+  image loaded from a dyld cache. Release `disasm --pseudo`, three
+  alternating rounds, medians: GoodLinks 106.98 s to 99.11 s, Clarc
+  24.34 s to 23.05 s, outputs byte-identical, as are `disasm --image
+  UserNotifications --pseudo` and every fixture view.
+- **Measured (speed): where a whole-image run's decode time goes.** On
+  GoodLinks' 3,524,352-word `__text`, decode alone (medians of three
+  rounds, each the median of five): Capstone 6 as swiftdc calls it
+  (4,096-instruction batches, detail on) 3.24 s, 1.09M instructions/s;
+  `cs_disasm_iter` with one reused `cs_insn` 2.76 s; detail off 2.29 s;
+  `CS_OPT_SYNTAX_REAL` with real detail, to skip alias matching, 3.44 s,
+  no faster (DEAD END). ReIPA's hand-written decoder
+  (github.com/JRBusiness/REipa, MIT) does it in 0.71 s, 4.96M/s, but
+  yields only a text string and a flow class: no operands, register
+  reads and writes, or flag effects, which the tracer is built on, and it
+  is scored against Capstone by mnemonic alone. In the same `--pseudo`
+  run Capstone's decode is about 7% of wall time and the streaming path
+  decodes the image twice; per-function analysis is about 50%. The plain
+  listing's `llvm-objdump` pass alone takes 13.2 s on GoodLinks (0.27M/s).
+  So a faster decoder buys at most a few percent of a `--pseudo` run;
+  the decode-twice pass, `cs_disasm_iter`, and replacing objdump in the
+  plain listing are the larger levers.
