@@ -140,15 +140,12 @@ import Testing
     #expect(tail.contains("(self->_a[8..<12], self->_b) = ((arg0 & 0xffffffff), (arg1 & 0xffffffff))"),
             Comment(rawValue: tail))
     // A register holding a value forwarded from a store into part of a
-    // field is that part, at the register's width: `FieldWrites.init`
-    // stores one zeroed q0 across fields with `stp q0, q0`, and q0 is
-    // `self.front[0..<16]` after the store into the 32-byte `front`.
-    let writesPath = "Fixtures/Sample/libFieldWrites.dylib"
-    guard FileManager.default.fileExists(atPath: writesPath) else { return }
-    let writes = try await withStableDependencies { try await Disassembler().disassemble(path: writesPath) }
-    let initializer = try #require(writes.first { $0.displayName.hasPrefix("FieldWrites.FieldWrites.init()") }).render()
-    #expect(initializer.contains("(self.front[16..<32], self.back[0..<16]) = (self.front[0..<16], self.front[0..<16])"),
-            Comment(rawValue: initializer))
+    // field is that part, at the register's width: SDTailForward stores
+    // x2 into the first 8 bytes of the 24-byte `_a`, then stores it again
+    // over `_a`'s last 8 bytes and `_b`.
+    let forward = try #require(functions.first { $0.displayName == "-[SDTailForward tailForward:]" }).renderPseudo()
+    #expect(forward.contains("(self->_a[16..<24], self->_b) = (self->_a[0..<8], self->_a[0..<8])"),
+            Comment(rawValue: forward))
 }
 
 /// The return path proves x0 alone, so a method returning a two-word
@@ -254,4 +251,21 @@ import Testing
     #expect(!Disassembler.returnsInTwoIntegerRegisters(map(["Si", "Sd"])))
     #expect(!Disassembler.returnsInTwoIntegerRegisters(FieldMap(typeName: "M.T", instanceSize: 8,
         fields: [(offset: 0, bytes: 8, name: "a", typeEncoding: "Si")])))
+}
+
+/// An initializer zeroes its fields with one `movi v0.2d, #0` and a run of
+/// `stp q0, q0` and `str q0`. Each pair store renamed q0 to the field it
+/// had just written, so every later store read as a copy of a field:
+/// `(self.end, self.front[0..<16]) = (self.start, self.start)` and
+/// `self.point = self.other`, a pair of Doubles from a pair of Ints. A
+/// constant stays a constant, and a zero vector is an all-zero store.
+@Test func anInitializersZeroStoresStayZeroIfPresent() async throws {
+    let path = "Fixtures/Sample/libFieldWrites.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = try #require(functions.first { $0.displayName.hasPrefix("FieldWrites.FieldWrites.init()") })
+        .renderPseudo()
+    let stores = text.split(separator: "\n").filter { $0.contains(" = ") }
+    #expect(!stores.isEmpty && stores.allSatisfy { !$0.contains("= self.") && !$0.contains("= (self.") }, "\(text)")
+    #expect(text.contains("    self.point = 0\n"), "\(text)")
 }

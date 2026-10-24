@@ -3099,7 +3099,12 @@ public struct ValueTracer: Sendable {
                       let bytes = detail.operands.first?.operand.register.map({ $0.widthBits / 8 }) {
                 Self.invalidateSelfFieldAliases(in: &registers)
                 for (index, operand) in detail.operands.prefix(2).enumerated() {
-                    if let register = operand.operand.register {
+                    // A constant stays a constant. Renamed to the field it was
+                    // stored to, the `movi v0.2d, #0` an initializer zeroes
+                    // every field with rendered each later store of it as a
+                    // copy of the field before: `self.point = self.other`, a
+                    // pair of Doubles from a pair of Ints.
+                    if let register = operand.operand.register, !Self.isConstant(source(operand, in: registers)) {
                         write(register, .selfFieldValue(offset: offset + index * bytes), into: &registers)
                     }
                 }
@@ -3834,6 +3839,15 @@ public struct ValueTracer: Sendable {
     /// Forget every register or slot whose value was read from a self field:
     /// after a store through self it is a snapshot, not the field. Recovered
     /// from the pre-merge stash (983aa25), with its native-execution oracle.
+    /// An immediate, or a vector register's words all immediates.
+    private static func isConstant(_ value: AbstractValue) -> Bool {
+        switch value {
+        case .immediate: return true
+        case .aggregate(let words): return !words.isEmpty && words.allSatisfy(isConstant)
+        default: return false
+        }
+    }
+
     private static func invalidateSelfFieldAliases(in registers: inout State) {
         let keys = registers.compactMap { key, value in containsSelfFieldValue(value) ? key : nil }
         for key in keys { registers[key] = nil }

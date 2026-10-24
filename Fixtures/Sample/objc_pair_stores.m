@@ -100,3 +100,21 @@ typedef struct { int x, y, z; } SDTriple;
 @implementation SDPairZeros
 - (void)clear { _w = _x = _y = _z = _v = _u = _t = _s = 0; }
 @end
+
+// A value forwarded from a store into part of an ivar, stored again by a
+// pair store over two ivars (-O2): `str x2, [x0, #0x8]` puts v in _a.x,
+// the first 8 bytes of the 24-byte _a, and `stp x2, x2, [x0, #0x18]`
+// writes _a.z and _b. After the first store x2 holds _a's first eight
+// bytes, not all of _a. True behaviour: _a.x, _a.z and _b become v.
+typedef struct { long x, y, z; } SDTripleLong;
+@interface SDTailForward : NSObject {
+@public
+    SDTripleLong _a;
+    long _b;
+}
+- (void)tailForward:(long)v;
+@end
+
+@implementation SDTailForward
+- (void)tailForward:(long)v { _a.x = v; _a.z = v; _b = v; }
+@end

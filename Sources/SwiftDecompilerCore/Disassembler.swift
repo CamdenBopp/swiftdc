@@ -5504,8 +5504,9 @@ public struct Disassembler: Sendable {
                 case .success(.whole(_, let type)) where access.bytes > 8:
                     // An `stp` gives two words; one wide register (`str q0`) one value.
                     let words = (access.storedValues ?? access.storedValue.map { [$0] } ?? []).map(sanitizeValue)
-                    // Every byte zeroed (`stp xzr, xzr`).
-                    if !words.isEmpty, words.allSatisfy({ $0 == .immediate(0) }),
+                    // Every byte zeroed (`stp xzr, xzr`, or `str q0` after
+                    // `movi v0.2d, #0`).
+                    if !words.isEmpty, words.allSatisfy(Self.isAllZero),
                        !Self.twoWordStringMangledTypes.contains(type) {
                         return "\(path) = 0"
                     }
@@ -5635,8 +5636,8 @@ public struct Disassembler: Sendable {
                     return nil
                 }
                 // A value this object's own field held is named by the
-                // register's width: q0 forwarded from a 16-byte store into a
-                // 32-byte `front` is `self.front[0..<16]`, not `self.front`.
+                // register's width: x2 forwarded from an 8-byte store into the
+                // 24-byte `_a` is `self->_a[0..<8]`, not `self->_a`.
                 let value = sanitizeValue(stored)
                 if case .selfFieldValue(let source) = value,
                    case .success(let hit) = fieldMap.lookup(offset: source, bytes: width) {
