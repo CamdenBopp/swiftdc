@@ -5126,6 +5126,32 @@ if a test was observed to fail without the fix.
   through such a call take fewer (`sub_…(self, ?, arg0, arg1)` around
   `CFAbsoluteTimeGetCurrent()` reads `sub_…()`). The table is
   568,644 bytes of source.
+- **FIXED (soundness): a C argument showed one lane of a struct result
+  as the whole call.** After any call the tracer models v0 as the call's
+  result, and for a call returning a struct in several v registers v0 is
+  only its first field: Chess's `gluOrtho2D([self bounds], ?, ?, ?)` showed
+  the whole NSRect as `left`. In a C declaration's float slot a call result
+  now stands only where its declaration proves a single `float` or
+  `double`: a C prototype result `f`/`d`, a Swift signature returning
+  Double, Float or CGFloat, or a send whose every in-image declaration
+  returns `d` or `f`; anything else, at any depth short of a conversion,
+  is `?`. `objc_struct_lanes.m` (-O2):
+  `glVertex2d(r.origin.x, r.origin.y)` after `r = [self rect]` read
+  `glVertex2d([self rect], ?)` and reads `glVertex2d(?, ?)`, and
+  `glVertex2d([self scale], 0.5)` keeps its send
+  (`aCArgumentTakesOnlyAWholeFloatResultIfPresent`). Release `disasm
+  --pseudo`: Chess 2 lines (`gluOrtho2D`); Clarc 33, two
+  `[? underlinePosition]` (an AppKit CGFloat, true but unproven here)
+  declined and the bindings after them renumbered; GoodLinks 7, two
+  `modf` arguments that were sends declined and three `/* unresolved call
+  */ ?` read `?`; Terminal and TextEdit none.
+- **OPEN (completeness): a send of an SDK method returning a CGFloat is
+  unproven in a C argument.** Only the image's own method encodings prove
+  a send's return, so `CGAffineTransformMakeTranslation(0.0, [?
+  underlinePosition])` reads `(0.0, ?)`. A generated table of the selectors
+  every public declaration of which returns `d` or `f` (as
+  `SDKSelectorPrefixes` is generated from the shared cache) would prove
+  them.
 - **OPEN (completeness): nothing at or after a struct parameter is
   placed.** A struct's registers depend on how it is passed, and the
   table records only that a parameter is a struct, so

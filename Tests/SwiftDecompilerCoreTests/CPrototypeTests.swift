@@ -69,3 +69,22 @@ import Foundation
     #expect(DisassembledFunction.knownCArity(of: "SMJobBless") != 0)
     #expect(DisassembledFunction.knownCArity(of: "MPSGetPreferredDevice") == 1)
 }
+
+/// A send returning a struct leaves it in several v registers, so a C
+/// argument holding one of them is a field of the result, not the send:
+/// `objc_struct_lanes.m` (-O2) rendered `glVertex2d(r0, ?)` for
+/// `glVertex2d(r.origin.x, r.origin.y)`, r0 the whole `[self rect]` (and
+/// Chess `gluOrtho2D([self bounds], ?, ?, ?)`). A send whose method returns
+/// a double is whole in d0.
+@Test func aCArgumentTakesOnlyAWholeFloatResultIfPresent() async throws {
+    let path = "Fixtures/Sample/libObjCStructLanes.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func rendered(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName == name }).renderPseudo()
+    }
+    let lanes = try rendered("-[SDLanes vertexFromRect]")
+    #expect(lanes.contains("glVertex2d(?, ?)"), Comment(rawValue: lanes))
+    let scaled = try rendered("-[SDLanes vertexScaled]")
+    #expect(scaled.contains("glVertex2d([self scale], 0.5)"), Comment(rawValue: scaled))
+}

@@ -231,6 +231,9 @@ $CLANG -fobjc-arc -O0 -dynamiclib -framework Foundation objc_field_copy.m -o lib
 echo "==> paired stores covering two ivars, aligned or not with them (objc_pair_stores.m, -O2)"
 $CLANG -fobjc-arc -O2 -dynamiclib -framework Foundation objc_pair_stores.m -o libObjCPairStores.dylib
 
+echo "==> a struct-returning send's lanes passed on to a C call (objc_struct_lanes.m, -O2)"
+$CLANG -fobjc-arc -O2 -dynamiclib -framework Foundation -framework CoreGraphics -framework OpenGL objc_struct_lanes.m -o libObjCStructLanes.dylib
+
 echo "==> float constants inside float expressions (float_constants.c, -O2)"
 $CLANG -O2 -dynamiclib -framework OpenGL -framework CoreFoundation float_constants.c -o libFloatConstants.dylib
 

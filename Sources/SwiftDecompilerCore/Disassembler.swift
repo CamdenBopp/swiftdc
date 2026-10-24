@@ -4485,6 +4485,43 @@ public struct Disassembler: Sendable {
             }
             let cLayout = swiftSlots != nil || isNameTwin(address)
                 ? nil : calleeByAddress[address].flatMap { Self.cPrototypeLayout(callee: $0) }
+            /// Whether a call's v0 is its whole result: a `float` or `double`
+            /// its declaration proves. A struct comes back in several v
+            /// registers, so a later argument holding one of them is a part
+            /// of it: Terminal's `NSOffsetRect(r, frame.origin.x,
+            /// frame.origin.y)` after `frame = [? rect]` read
+            /// `NSOffsetRect(?, r0, ?)`.
+            func returnsOneFloat(_ site: UInt64) -> Bool {
+                guard let callee = calleeByAddress[site] else { return false }
+                if !isNameTwin(site), let result = DisassembledFunction.cPrototype(of: callee)?.result {
+                    return result == "f" || result == "d"
+                }
+                if let type = Self.swiftReturnTypeName(ofDemangled: callee) {
+                    return ["Swift.Double", "Swift.Float", "Swift.Float64", "Swift.Float32",
+                            "Swift.CGFloat", "CoreGraphics.CGFloat"].contains(type)
+                }
+                if callee.hasPrefix("objc_msgSend$"), let objcIndex {
+                    return objcIndex.selectorReturnsOneFloat(String(callee.dropFirst("objc_msgSend$".count)))
+                }
+                return false
+            }
+            /// Whether every call result a float value is built from is that
+            /// call's whole result. Below a conversion the operand is an
+            /// integer register's, which this does not judge.
+            func holdsWholeResults(_ value: AbstractValue, depth: Int = 0) -> Bool {
+                guard depth < 8 else { return false }
+                switch value {
+                case .callResult(let site): return returnsOneFloat(site)
+                case .binary(_, let lhs, let rhs):
+                    return holdsWholeResults(lhs, depth: depth + 1) && holdsWholeResults(rhs, depth: depth + 1)
+                case .unary(.toFloat, _): return true
+                case .unary(_, let operand): return holdsWholeResults(operand, depth: depth + 1)
+                case .select(let condition, let whenTrue, let whenFalse):
+                    return holdsWholeResults(condition, depth: depth + 1) && holdsWholeResults(whenTrue, depth: depth + 1)
+                        && holdsWholeResults(whenFalse, depth: depth + 1)
+                default: return true
+                }
+            }
             if let slots = swiftSlots ?? cLayout?.slots {
                 var integer = 0, floating = 0
                 let laidOut: [AbstractValue] = slots.map { slot in
@@ -4508,7 +4545,9 @@ public struct Disassembler: Sendable {
                         return words[0]
                     case .floating:
                         defer { floating += 1 }
-                        return floating < site.floatArguments.count ? site.floatArguments[floating] : .unknown
+                        guard floating < site.floatArguments.count else { return .unknown }
+                        let value = site.floatArguments[floating]
+                        return cLayout == nil || holdsWholeResults(value) ? value : .unknown
                     }
                 }
                 let unplaced = Array(repeating: AbstractValue.unknown, count: cLayout?.unplaced ?? 0)

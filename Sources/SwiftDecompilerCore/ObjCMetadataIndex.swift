@@ -54,6 +54,13 @@ public struct ObjCMethodBinding: Sendable, Equatable {
         typeEncoding.first { !"rnNoORVA".contains($0) } == "v"
     }
 
+    /// Whether the encoding declares a `double` or `float` return, which
+    /// comes back whole in v0.
+    var returnsOneFloat: Bool {
+        let code = typeEncoding.first { !"rnNoORVA".contains($0) }
+        return code == "d" || code == "f"
+    }
+
     /// Objective-C initializer families are defined by selector spelling. This
     /// metadata fact is enough to model `self = [super init…]` without relying
     /// on a symbol-table name that stripping removes.
@@ -451,6 +458,13 @@ public struct ObjCMetadataIndex: Sendable {
     /// can pass the same parameters but disagree on whether there is a result.
     /// Require the receiver's declaration and every indexed implementation to
     /// say void, including category aliases and dynamic overrides.
+    /// Whether every indexed implementation of `selector` returns a `double`
+    /// or `float`, so a send of it leaves its whole result in v0.
+    func selectorReturnsOneFloat(_ selector: String) -> Bool {
+        let matching = bySelector[selector] ?? []
+        return !matching.isEmpty && matching.allSatisfy(\.returnsOneFloat)
+    }
+
     func outgoingReturnsVoid(selector: String, className: String, isClassMethod: Bool) -> Bool {
         let matching = (bySelector[selector] ?? []).filter { $0.isClassMethod == isClassMethod }
         guard matching.contains(where: { $0.className == className && $0.returnsVoid }) else { return false }
