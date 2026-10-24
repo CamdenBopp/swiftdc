@@ -4498,7 +4498,13 @@ public struct Disassembler: Sendable {
                calleeByAddress[address].flatMap({ DisassembledFunction.splitSignature($0) }) == nil,
                calleeByAddress[address].flatMap({ selectorName(callee: $0, arguments: values) }) == nil,
                calleeByAddress[address].flatMap(DisassembledFunction.knownCArity(of:)) == nil || isNameTwin(address) {
-                values = Array(values.prefix(summary.argumentCount))
+                // A register below the highest one read that the body never
+                // reads holds whatever the caller left there, not an argument:
+                // `useSecond` writes x0 before reading it, and
+                // `useSecond(5, 7)` showed the stale 5.
+                values = values.prefix(summary.argumentCount).enumerated().map {
+                    summary.argumentReads.contains($0.offset) ? $0.element : .unknown
+                }
                 strategy = "body-reads"
             }
             if let values = sanitize(values) { argumentsByAddress[address] = values }

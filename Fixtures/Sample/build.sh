@@ -98,6 +98,9 @@ $CLANG -arch arm64 -dynamiclib fixpoint_order.s -o libFixpointOrder.dylib
 echo "==> callee-saved registers clobbered through nested and tail calls (preserve_calls.s)"
 $CLANG -arch arm64 -dynamiclib preserve_calls.s -o libPreserveCalls.dylib
 
+echo "==> body-bounded calls whose callees leave some registers unread (body_reads.s)"
+$CLANG -arch arm64 -dynamiclib body_reads.s -o libBodyReads.dylib
+
 echo "==> a clobber inside a switch case, and a switch callee that takes nothing (switch_clobbers.s; switchsummary.c, -O2)"
 $CLANG -arch arm64 -dynamiclib switch_clobbers.s -o libSwitchClobbers.dylib
 $CLANG -O2 -dynamiclib switchsummary.c -o libSwitchSummary.dylib

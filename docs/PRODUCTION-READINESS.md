@@ -4582,6 +4582,22 @@ if a test was observed to fail without the fix.
   identity runtime set holds only `objc_` names, which
   `knownArityNameMayHaveTwin` already treats as one function wherever it
   is, and the read-only set follows `knownArityApplies`.
+- **FIXED (soundness): a body-bounded call showed a register its callee
+  never reads.** Such a call passed every register through the highest
+  its callee's body may read, positionally, so a register below that one
+  which the body writes before reading showed the caller's stale value:
+  `body_reads.s`'s `useSecond` (`mov x0, x1; …`) rendered
+  `useSecond(5, 7)`, and `accessorLike`, which reads only x2 (by passing
+  it to memset), `accessorLike(5)`; Clarc's lazy witness table accessors
+  took the previous call's result the same way. A position keeps its
+  value only when `argumentReads` holds that register: `useSecond(?, 7)`,
+  `accessorLike()`. Blast radius: 15 fixtures; release `disasm --pseudo`
+  changes Terminal 64 lines, TextEdit 7, Chess 64, Clarc 4,159 and
+  GoodLinks 9,787, each a value dropped from an unread position, a call
+  that fed only such a position now printed as its own statement, or a
+  binding inlined at its one remaining use. Six GoodLinks functions lose a
+  call from the pseudo view whose only remaining use is generic plumbing
+  that view strips; the listing keeps it.
 - **OPEN (completeness): a body-reads call with untracked arguments still
   renders `()`.** `sink()` reads x0, but its argument is unknown and the
   trailing unknown is trimmed; padding to the summary's count would
