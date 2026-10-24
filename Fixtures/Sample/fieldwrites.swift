@@ -23,6 +23,10 @@ public struct FieldPair { public var a: Int; public var b: Int }
 
 public struct FieldQuad { public var a: Int; public var b: Int; public var c: Int; public var d: Int }
 
+public struct FieldOther { public var x: Int; public var y: Int }
+
+public struct FieldPoint { public var x: Double; public var y: Double }
+
 public struct FieldPQ {
     public var p: Int
     public var q: Int
@@ -36,6 +40,9 @@ public final class FieldWrites {
     public var end = FieldPair(a: 0, b: 0)
     public var front = FieldQuad(a: 0, b: 0, c: 0, d: 0)
     public var back = FieldQuad(a: 0, b: 0, c: 0, d: 0)
+    public var other = FieldOther(x: 0, y: 0)
+    public var point = FieldPoint(x: 0, y: 0)
+    public var calls = 0
     public init() {}
     @inline(never) public func rename() { name = "a  b" }
     @inline(never) public func retitle() { name = "a literal past fifteen bytes" }
@@ -47,4 +54,10 @@ public final class FieldWrites {
     @inline(never) public func clear() { start = FieldPair(a: 0, b: 0) }
     @inline(never) public func secondOfPair() -> Int { pair.b }
     @inline(never) public func differenceOfPair() -> Int { pair.a &- pair.b }
+    // Each also counts its call, so identical code folding cannot merge it
+    // with a field's getter.
+    @inline(never) public func pairCopy() -> FieldPair { calls &+= 1; return pair }
+    @inline(never) public func pairMixed() -> FieldPair { calls &+= 2; return FieldPair(a: pair.a, b: start.b) }
+    @inline(never) public func otherAsPair() -> FieldPair { calls &+= 3; return FieldPair(a: other.x, b: other.y) }
+    @inline(never) public func pointCopy() -> FieldPoint { calls &+= 4; return point }
 }

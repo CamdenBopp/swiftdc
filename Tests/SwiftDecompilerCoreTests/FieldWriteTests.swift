@@ -217,3 +217,41 @@ import Testing
     #expect(!Disassembler.isAllZero(.aggregate([.immediate(0), .immediate(1)])))
     #expect(!Disassembler.isAllZero(.aggregate([])))
 }
+
+/// The Swift return path rendered only a single-register result, so a
+/// function returning a two-word struct from one field printed
+/// `return ?`: `FieldWrites.pairCopy` (`ldp x0, x1, [x20, #0x20]; ret`).
+/// Both words of one whole field of the return type are that field:
+/// `return self.pair`. Words of two fields (`pairMixed`), a field of
+/// another two-word type (`otherAsPair`, by the field's resolved type)
+/// and a struct of Doubles (`pointCopy`, returned in d0 and d1) stay `?`.
+@Test func aSwiftTwoWordStructReturnOfOneFieldIsThatFieldIfPresent() async throws {
+    let path = "Fixtures/Sample/libFieldWrites.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("FieldWrites.FieldWrites.\(name)()") }, "no \(name)")
+            .renderPseudo()
+    }
+    let copy = try text("pairCopy")
+    #expect(copy.contains("return self.pair\n"), Comment(rawValue: copy))
+    for name in ["pairMixed", "otherAsPair", "pointCopy"] {
+        let other = try text(name)
+        #expect(other.contains("return ?") && !other.contains("return self."), "\(name): \(other)")
+    }
+}
+
+/// Which two-word structs come back in x0 and x1: integer scalars only.
+@Test func onlyAnIntegerTwoWordStructReturnsInXRegisters() {
+    func map(_ types: [String]) -> FieldMap {
+        FieldMap(typeName: "M.S", instanceSize: 16, fields: types.enumerated().map { (index, type) in
+            (offset: index * 8, bytes: 8, name: "f\(index)", typeEncoding: type)
+        })
+    }
+    #expect(Disassembler.returnsInTwoIntegerRegisters(map(["Si", "Si"])))
+    #expect(Disassembler.returnsInTwoIntegerRegisters(map(["Su", "s5Int64V"])))
+    #expect(!Disassembler.returnsInTwoIntegerRegisters(map(["Sd", "Sd"])))
+    #expect(!Disassembler.returnsInTwoIntegerRegisters(map(["Si", "Sd"])))
+    #expect(!Disassembler.returnsInTwoIntegerRegisters(FieldMap(typeName: "M.T", instanceSize: 8,
+        fields: [(offset: 0, bytes: 8, name: "a", typeEncoding: "Si")])))
+}

@@ -3305,6 +3305,21 @@ public struct Disassembler: Sendable {
         }
     }
 
+    /// The mangled integer scalars: a struct of only these is returned in x
+    /// registers, not v registers.
+    static let integerScalarMangledTypes: Set<String> = [
+        "Si", "Su", "Sb", "s4Int8V", "s5UInt8V", "s5Int16V", "s6UInt16V", "s5Int32V", "s6UInt32V",
+        "s5Int64V", "s6UInt64V",
+    ]
+
+    /// Whether a struct of this layout comes back in x0 and x1: 9 to 16
+    /// bytes of integer scalars only. One with a floating-point field may
+    /// come back in v registers instead.
+    static func returnsInTwoIntegerRegisters(_ map: FieldMap) -> Bool {
+        (9...16).contains(map.instanceSize) && !map.fields.isEmpty
+            && map.fields.allSatisfy { integerScalarMangledTypes.contains($0.typeMangledName) }
+    }
+
     /// The two-word String types `swiftCallArgumentSlots` lays out.
     static let twoWordStringTypes: Set<String> = ["Swift.String", "Swift.Optional<Swift.String>", "Swift.String?"]
     /// The same types as a field record's mangled names spell them.
@@ -5444,6 +5459,25 @@ public struct Disassembler: Sendable {
             return "\(path) = \(renderValue(value, depth: 0))"
         }
 
+        /// A Swift function returning a struct of integer scalars of 9 to 16
+        /// bytes, so in x0 and x1, whose two words at the `ret` are one whole
+        /// field of self of that same type, returns that field:
+        /// `FieldWrites.pairCopy` (`ldp x0, x1, [x20, #0x20]; ret`) is
+        /// `return self.pair`. The field's type, resolved from its record,
+        /// must be the return type, so a field of another two-word type is not
+        /// claimed.
+        func swiftTwoWordFieldReturn(at address: UInt64, type: String) -> String? {
+            guard let returned = typeFieldMaps[type], Self.returnsInTwoIntegerRegisters(returned),
+                  let low = analysis.exitValues[address].map(sanitizeValue),
+                  let high = analysis.exitYieldValues[address].map(sanitizeValue),
+                  case .selfFieldValue(let offset) = low, high == .selfFieldValue(offset: offset + 8),
+                  let lookup = fieldMap?.lookup(offset: offset, bytes: 16),
+                  case .success(.whole(let name, _)) = lookup,
+                  fieldMap?.fieldTypeNames[name] == type
+            else { return nil }
+            return fieldPath(name)
+        }
+
         /// A method that returns a struct of two words in x0 and x1, both
         /// words of one whole 16-byte field of self, returns that field:
         /// `ldp x8, x1, [x0, #0x30]; mov x0, x8; ret` in
@@ -6259,6 +6293,10 @@ public struct Disassembler: Sendable {
                         noteExit(.normal(renderReturnValue(exit, before: insn.address)))
                     }
                 }
+            } else if function.objcMethod == nil, isReturn(insn), returnsDirectly,
+                      normalReturnIsProven(at: insn.address), let returnTypeName,
+                      let field = swiftTwoWordFieldReturn(at: insn.address, type: returnTypeName) {
+                noteExit(.normal(field))
             } else if function.objcMethod == nil, isReturn(insn), returnsDirectly,
                       normalReturnIsProven(at: insn.address), let returnTypeName,
                       case .immediate(let x0)? = analysis.exitValues[insn.address].map(sanitizeValue) {

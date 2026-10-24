@@ -4593,17 +4593,26 @@ if a test was observed to fail without the fix.
   Terminal's `cursorPosition`, `displayCursorPosition` and `scrollRange`
   read as they did before 2c92b57. Those three lines and that fixture
   line are the whole blast radius.
-- **OPEN (completeness): any other two-word struct return renders only
-  x0.** `rangeHead`, whose words come from two ivars, reads
-  `return self->_range[0..<8]`. A Swift function returning a two-word
-  struct prints no return at all (`return ?`). The same field rule would
-  serve it, but only once the field's type is known to be the return
-  type: a field map stores each field's mangled type name, and for a type
-  of the same module that is a symbolic reference (`\u{01}` and an
-  offset), not a name. Resolving it at build time
-  (`SymbolicDemangler.demangleType` over the field record's
-  `mangledTypeName`, as MachOSwiftSection's `BuiltinTypeLayoutIndex`
-  does) would give `FieldMap` a type name per field.
+- **OPEN (completeness): an Objective-C two-word struct return from two
+  ivars renders only x0.** `rangeHead`, whose words come from two ivars,
+  reads `return self->_range[0..<8]`.
+- **FIXED (completeness): a Swift two-word struct returned from one field
+  printed `return ?`.** The return path proved only a single-register
+  result. `swiftTwoWordFieldReturn`: a function returning a struct of 9
+  to 16 bytes of integer scalars (so in x0 and x1), whose two words at
+  the `ret` are one whole field of `self` whose type is the return type,
+  returns that field. The field's type comes from its record, demangled
+  with symbolic references resolved (`FieldMap.fieldTypeNames`, f3b82e2),
+  since a field of a type in the same module records `\u{01}` and an
+  offset, which matches no name. `fieldwrites.swift` (-O): `pairCopy`
+  (`ldp x0, x1, [x20, #0x20]; ret`) reads `return self.pair`, and the
+  `pair`, `start`, `end` and `other` getters return their fields;
+  `pairMixed` (words of two fields), `otherAsPair` (a field of another
+  two-word type) and `pointCopy` (two Doubles, returned in d0 and d1)
+  stay `return ?`. Those five lines in each view of libFieldWrites are
+  the whole blast radius: no other fixture changes, and release `disasm
+  --pseudo` on Terminal, TextEdit, Chess, Clarc and GoodLinks is
+  byte-identical.
 - **FIXED (80235e1, soundness): an in-image function named like a C
   library function took the library's arity.** `knownCArity` is looked up by name,
   so a vendored function sharing a libc entry's name got its arity in the
