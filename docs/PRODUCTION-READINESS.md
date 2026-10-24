@@ -3833,12 +3833,25 @@ if a test was observed to fail without the fix.
   found in the filtered listings, so whether Terminal rewrites them is not
   proven either way: the slots are writable, and the name was their
   initial value. The full-cache mapping clause has no automated test.
-- **OPEN (soundness): a value loaded from a writable bind still renders
-  as the bound symbol.** `sanitizeValue` keeps any `.loaded` slot that
-  `loadedName` names, and `loadedName` reads binds in any section. An
-  argument or result loaded from `int (*hook)(const char *) = puts;`
-  renders `puts`. Class refs and selrefs sit in writable sections too and
-  must stay named, so the fix needs a section rule of its own.
+- **FIXED (soundness): a value loaded from a writable bind rendered as
+  the bound symbol.** `sanitizeValue` keeps any `.loaded` slot that
+  `loadedName` names, and `loadedName` read binds in any section, so
+  `writablepointer.c`'s `currentHook`, which passes what `hook` holds,
+  rendered `keep(puts)`, though `silence` can store another function in
+  `hook` first. `loadedName` now names a bind only where
+  `holdsLoaderOwnedPointer(at:)` holds: the slot is read-only after fixups
+  (`holdsFixedPointer`, as for calls), or it lies in a section only dyld
+  and the Objective-C runtime write (`__objc_classrefs`,
+  `__objc_superrefs`, `__objc_protorefs`, `__got`, `__auth_got`,
+  `__la_symbol_ptr`, `__nl_symbol_ptr`). Selector references keep their
+  own table. An image linked without `__DATA_CONST` keeps its GOT in the
+  writable `__DATA`, and GoodLinks has its class references there, so the
+  section rule is what keeps their receivers named: `writable_tables.m`
+  (-O1, `-no_data_const`) pins `[NSUserDefaults standardUserDefaults]`
+  and `keep(puts)` through a `__DATA,__got`. Now `currentHook` renders
+  `keep()`. Blast radius: every other fixture view (structured, pseudo,
+  listing, JSON) is byte-identical, and release `disasm --pseudo` of
+  Terminal, TextEdit, Chess, Clarc and GoodLinks is byte-identical.
 - **FIXED (diagnostics, see "slice names" below): an unfiltered plain
   listing of an arm64e-only fat binary with `--arch arm64` failed as a
   parser defect.**

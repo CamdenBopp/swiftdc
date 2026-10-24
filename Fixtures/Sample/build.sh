@@ -111,6 +111,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name SelfTail selftail.swift 
 echo "==> calls through function pointers in writable and read-only-after-fixup data (writablepointer.c, -O2)"
 $CLANG -arch arm64 -O2 -dynamiclib writablepointer.c -o libWritablePointer.dylib
 
+echo "==> pointers bound in loader-owned sections of a writable __DATA (writable_tables.m, -O1, -no_data_const)"
+$CLANG -arch arm64 -O1 -fobjc-arc -dynamiclib -framework Foundation -Wl,-no_data_const writable_tables.m -o libWritableTables.dylib
+
 echo "==> known-arity calls whose operands are all untracked (untracked_args.c, -O0 and -O2)"
 $CLANG -O0 -dynamiclib untracked_args.c -o libUntrackedArgs.dylib
 $CLANG -O2 -dynamiclib untracked_args.c -o libUntrackedArgs.opt.dylib

@@ -2408,7 +2408,11 @@ public struct Disassembler: Sendable {
         /// other load: unnamed data we must not guess at.
         func loadedName(at slot: UInt64) -> String? {
             if let selector = selectors.bySelref[slot] { return "@selector(\(selector))" }
-            guard let symbol = boundSymbol(at: slot) else { return nil }
+            // A bind in a slot the program can rewrite names only the value
+            // it starts with: `int (*hook)(const char *) = puts;` in
+            // __DATA,__data rendered `keep(puts)` after `silence` could have
+            // replaced it.
+            guard holdsLoaderOwnedPointer(at: slot), let symbol = boundSymbol(at: slot) else { return nil }
             if symbol.hasPrefix(Self.classSymbolPrefix) {
                 return String(symbol.dropFirst(Self.classSymbolPrefix.count))
             }
@@ -2565,6 +2569,25 @@ public struct Disassembler: Sendable {
                 return loadedName(at: slot).map { (nil, $0) }
             default:
                 return nil
+            }
+        }
+
+        /// Writable sections whose pointers only dyld and the Objective-C
+        /// runtime set: class, superclass and protocol references, and the
+        /// symbol pointer tables.
+        private static let loaderOwnedPointerSections: Set<String> = [
+            "__objc_classrefs", "__objc_superrefs", "__objc_protorefs",
+            "__got", "__auth_got", "__la_symbol_ptr", "__nl_symbol_ptr",
+        ]
+
+        /// Whether the program cannot change the pointer in `slot`: it is
+        /// read-only after fixups (`holdsFixedPointer`), or in a section only
+        /// the loader and the runtime write.
+        func holdsLoaderOwnedPointer(at slot: UInt64) -> Bool {
+            if holdsFixedPointer(at: slot) { return true }
+            return machO.sections.contains {
+                UInt64($0.address) <= slot && slot - UInt64($0.address) < UInt64($0.size)
+                    && Self.loaderOwnedPointerSections.contains($0.sectionName)
             }
         }
 

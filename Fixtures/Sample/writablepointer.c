@@ -9,7 +9,9 @@
    of calling the function `next` holds with n - 1. The callee is unknown.
 
    `hook` is the same shape with an imported initial value: a chained-fixup
-   bind to puts in __DATA,__data. `announce` calls whatever `hook` holds.
+   bind to puts in __DATA,__data. `announce` calls whatever `hook` holds,
+   and `currentHook` returns it as a value: true behaviour, whatever `hook`
+   holds, which its initial bind to puts does not decide.
 
    `pinned` is the control: the same C, but placed in __DATA_CONST, which
    dyld makes read-only once fixups are applied. Its initial value is the
@@ -26,6 +28,9 @@ long countdown(long n) { if (n <= 0) return 0; return next(n - 1); }
 int (*hook)(const char *) = puts;
 void silence(int (*replacement)(const char *)) { hook = replacement; }
 int announce(const char *s) { return hook(s); }
+int (*kept)(const char *);
+__attribute__((noinline)) void keep(int (*f)(const char *)) { kept = f; }
+void currentHook(void) { keep(hook); }
 
 long (*pinned)(long) __attribute__((section("__DATA_CONST,__const"))) = twice;
 long viaPinned(long n) { return pinned(n + 1); }

@@ -41,3 +41,34 @@ import Testing
     let viaPinned = try branch(in: "viaPinned")
     #expect(viaPinned.callee == "twice", Comment(rawValue: viaPinnedText))
 }
+
+/// A value loaded from a writable bind named the bound symbol, as a call
+/// through it once did: `currentHook` passes what `hook` holds, and `hook`,
+/// a bind to puts in __DATA,__data, can be replaced by `silence`, yet it
+/// rendered `keep(puts)`. A bind is named only in a slot the program cannot
+/// change: read-only after fixups, or a section only the loader and the
+/// Objective-C runtime write (class references stay named).
+@Test func aValueLoadedFromAWritableBindIsNotNamedIfPresent() async throws {
+    let path = "Fixtures/Sample/libWritablePointer.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = try #require(functions.first { $0.displayName == "_currentHook" }).renderPseudo()
+    #expect(text.contains("keep(") && !text.contains("keep(puts)"), Comment(rawValue: text))
+}
+
+/// The other half: a writable segment does not make every bind in it
+/// changeable. An image linked without __DATA_CONST keeps its GOT in
+/// __DATA, and only dyld writes it (`writable_tables.m`, -no_data_const), so
+/// the NSUserDefaults receiver and the puts passed to `keep` stay named.
+@Test func aBindInALoaderOwnedWritableSectionStaysNamedIfPresent() async throws {
+    let path = "Fixtures/Sample/libWritableTables.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName == name }, "no \(name)").renderPseudo()
+    }
+    let defaults = try text("_makeDefaults")
+    #expect(defaults.contains("[NSUserDefaults standardUserDefaults]"), Comment(rawValue: defaults))
+    let passPuts = try text("_passPuts")
+    #expect(passPuts.contains("keep(puts)"), Comment(rawValue: passPuts))
+}

@@ -108,6 +108,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libVectorLaneSwift.O.dylib",
         "Fixtures/Sample/libVectorLaneSwift.Onone.dylib",
         "Fixtures/Sample/libWritablePointer.dylib",
+        "Fixtures/Sample/libWritableTables.dylib",
         "Fixtures/Sample/libStringArity.dylib",
         "Fixtures/Sample/libABISource.dylib",
         "Fixtures/Sample/libABISource.opt.dylib",
