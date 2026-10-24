@@ -2867,10 +2867,11 @@ public struct ValueTracer: Sendable {
         case AARCH64_INS_DUP:
             // `dup v0.2d, x9` replicates a general register into both vector
             // lanes: the two words the compiler then stores as a pair to fill a
-            // buffer with one repeated value.
+            // buffer with one repeated value. A narrower lane (`dup v0.4s, w0`)
+            // repeats inside each word, which is then `w0 | w0 << 32`, not w0.
             guard let dest = destinationRegister(detail), detail.operands.count >= 2,
                   let lane = detail.operands[1].operand.register, lane.kind == .gpr,
-                  dest.widthBits == 128
+                  lane.widthBits == 64, dest.widthBits == 128
             else { clobber(detail, into: &registers); return }
             let value = source(detail.operands[1], in: registers)
             write(dest, value == .unknown ? .unknown : .aggregate([value, value]), into: &registers)

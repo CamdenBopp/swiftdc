@@ -108,6 +108,9 @@ $CLANG -O0 -dynamiclib loopescape.c -o libLoopEscape.dylib
 echo "==> a tail call through self's vtable that resolves into its own function (selftail.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name SelfTail selftail.swift -o libSelfTail.opt.dylib
 
+echo "==> a general register replicated into two- and four-lane vectors (dup_lanes.c, -O2)"
+$CLANG -O2 -dynamiclib dup_lanes.c -o libDupLanes.dylib
+
 echo "==> calls through function pointers in writable and read-only-after-fixup data (writablepointer.c, -O2)"
 $CLANG -arch arm64 -O2 -dynamiclib writablepointer.c -o libWritablePointer.dylib
 

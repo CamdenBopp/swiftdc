@@ -3904,13 +3904,16 @@ if a test was observed to fail without the fix.
   `SwiftUI.Animation.spring(0.3, 0.85, (0, 0))` to `spring(0.3, 0.85, 0.0)`
   (the defaulted `blendDuration: 0`); Terminal `--pseudo` is
   byte-identical.
-- **OPEN (soundness): `dup` into four or eight lanes is held as two
-  eight-byte lanes.** The `dup` transfer requires only a general-register
-  source and a 128-bit destination, so `dup.4s v0, w0` (clang -O2 filling
-  an `int[8]` local, `stp q0, q0, [sp]`) writes `.aggregate([w0, w0])`,
-  while each eight-byte lane is `w0 | w0 << 32`. No fixture or app render
-  was seen to read those words; requiring a 64-bit source register is the
-  likely fix, with a fixture that reloads such a word.
+- **FIXED (soundness): `dup` into four lanes was held as two eight-byte
+  lanes.** The `dup` transfer required only a general-register source and
+  a 128-bit destination, so `dup.4s v0, w0` held w0 in each word, though
+  each word is `w0 | w0 << 32`. `dup_lanes.c` (-O2) fills an `int[8]`
+  with a call's result (`dup.4s v0, w0; stp q0, q0, [sp]`) and reads one
+  word back: `fillInts` rendered `sink((r0 & 0xffffffff))`. The transfer
+  now also requires a 64-bit source (`dup.2d v0, x0`), so `fillInts`
+  passes an unknown and the `long[4]` control `fillLongs` keeps
+  `sink(r0)`. Blast radius: only `libDupLanes`; release `disasm
+  --pseudo` of the five apps is byte-identical.
 - **FIXED (correctness): a floating variadic argument printed its bits.**
   On Apple arm64 a double passed to a variadic function is its bits in
   one eight-byte stack slot, and the format paths kept only a count of
