@@ -5068,3 +5068,16 @@ if a test was observed to fail without the fix.
   one of them no longer take those registers (Terminal's four
   `sub_…(?, ?, arg0)` read `sub_…()`), and TextEdit and Chess change two
   lines each.
+- **OPEN (soundness): consecutive calls of signatureless C functions
+  that take floats and return nothing render nested.** Chess's OpenGL
+  drawing, `glTexCoord2f(u, v); glVertex3f(x, y, z); …; glEnd();`, reads
+  `glEnd(glVertex3f(glTexCoord2f(glVertex3f(…))))` in 53 lines: each
+  callee takes only v registers and returns void, but with no known
+  arity the positional fallback passes the x0 it finds, and with no
+  known return the previous call's x0 is its result. The image's
+  evidence cannot tell this from `CFRelease(CFCopyX())`, which is right,
+  so the fix is a signature source: a table of the SDK's C prototypes
+  (void or not, integer and floating-point parameter counts), generated
+  from the headers as `SDKSelectorPrefixes` is from the shared cache.
+  The same table would close the untyped-float entries above for C
+  functions such as `putPassed`.
