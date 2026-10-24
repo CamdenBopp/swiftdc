@@ -4927,10 +4927,17 @@ if a test was observed to fail without the fix.
   fixpoint; a call to one keeps the names. That return is back, and so
   are 1 Chess and 19 GoodLinks lines, every one a line the apps rendered
   before the fix above; the other three apps are byte-identical.
-- **OPEN (completeness): a store renames its source register to the
-  field.** After `a = x`, x19 is named `self.a`, not `arg0`, so once a
-  call forgets field names `a = x; bumpA(); b = x` reads `self.b = …`
-  where `self.b = arg0` is provable.
+- **FIXED (completeness): a store renamed its argument source to the
+  field.** After `a = x`, x19 was named `self.a`, not `arg0`, so once a
+  call forgot field names `a = x; bumpA(); b = x` read `self.b = …`. A
+  store now leaves an argument as the argument: `self.b = arg0`, and
+  `objc_pair_stores.m`'s `spreadArgs:and:` `(self->_t, self->_u) =
+  (arg0, arg1)` where it read the two halves of `_s`. Release `disasm
+  --pseudo`: Terminal 11, Chess 5 and GoodLinks 1 lines, 5 of them a `?`
+  that is now the argument and 12 a field name now the argument it was
+  stored from (`[self->_profile addObserver:…]` as `[arg0 addObserver:…]`
+  in a setter); none loses a value, and TextEdit and Clarc are
+  byte-identical.
 - **FIXED (correctness): a pair store's constant source was renamed to
   the field it wrote.** An initializer zeroes its fields with one
   `movi v0.2d, #0` and a run of stores of q0, and each pair store renamed

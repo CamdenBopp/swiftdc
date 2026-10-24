@@ -102,10 +102,11 @@ typedef struct { int x, y, z; } SDTriple;
 @end
 
 // A value forwarded from a store into part of an ivar, stored again by a
-// pair store over two ivars (-O2): `str x2, [x0, #0x8]` puts v in _a.x,
-// the first 8 bytes of the 24-byte _a, and `stp x2, x2, [x0, #0x18]`
-// writes _a.z and _b. After the first store x2 holds _a's first eight
-// bytes, not all of _a. True behaviour: _a.x, _a.z and _b become v.
+// pair store over two ivars (-O2): `add x8, x2, #1; str x8, [x0, #0x8]`
+// puts v + 1 in _a.x, the first 8 bytes of the 24-byte _a, and
+// `stp x8, x8, [x0, #0x18]` writes _a.z and _b. After the first store x8
+// holds _a's first eight bytes, not all of _a. True behaviour: _a.x, _a.z
+// and _b become v + 1.
 typedef struct { long x, y, z; } SDTripleLong;
 @interface SDTailForward : NSObject {
 @public
@@ -116,18 +117,21 @@ typedef struct { long x, y, z; } SDTripleLong;
 @end
 
 @implementation SDTailForward
-- (void)tailForward:(long)v { _a.x = v; _a.z = v; _b = v; }
+- (void)tailForward:(long)v { _a.x = v + 1; _a.z = v + 1; _b = v + 1; }
 @end
 
 // Values forwarded from stores into parts of an ivar, stored again into
-// whole ivars (-O2). spreadParts:and: is `stp x2, x3, [x0, #0x8]` over the
-// 16-byte struct _s, then `stp x2, x3, [x0, #0x18]` over _t and _u: x2 and
-// x3 then hold _s's two halves, not _s, and the second store rendered
+// whole ivars (-O2). spreadParts:and: stores v + 1 and w + 1 with a pair
+// store over the 16-byte struct _s, then over _t and _u: the two registers
+// then hold _s's two halves, not _s, and the second store rendered
 // `(self->_t, self->_u) = (self->_s, self->_s[8...])`. tailInt: is the
 // four-byte version of SDTailForward over a 12-byte struct of ints, whose
-// masked value rendered `(self->_a & 0xffffffff)`. True behaviour:
-// spreadParts:and: sets _s = {v, w}, _t = v and _u = w; tailInt: sets
-// _a.x, _a.z and _b to v.
+// masked value rendered `(self->_a & 0xffffffff)`. spreadArgs:and: stores
+// the arguments themselves the same way (`stp x2, x3` twice), and they are
+// still the arguments after the first store. True behaviour:
+// spreadParts:and: sets _s = {v + 1, w + 1}, _t = v + 1 and _u = w + 1;
+// tailInt: sets _a.x, _a.z and _b to v + 1; spreadArgs:and: sets
+// _s = {v, w}, _t = v and _u = w.
 typedef struct { long x, y; } SDWidePair;
 typedef struct { int x, y, z; } SDIntTriple;
 @interface SDForwardParts : NSObject {
@@ -136,10 +140,12 @@ typedef struct { int x, y, z; } SDIntTriple;
     long _t, _u;
 }
 - (void)spreadParts:(long)v and:(long)w;
+- (void)spreadArgs:(long)v and:(long)w;
 @end
 
 @implementation SDForwardParts
-- (void)spreadParts:(long)v and:(long)w { _s.x = v; _s.y = w; _t = v; _u = w; }
+- (void)spreadParts:(long)v and:(long)w { _s.x = v + 1; _s.y = w + 1; _t = v + 1; _u = w + 1; }
+- (void)spreadArgs:(long)v and:(long)w { _s.x = v; _s.y = w; _t = v; _u = w; }
 @end
 
 @interface SDTailInt : NSObject {
@@ -151,7 +157,7 @@ typedef struct { int x, y, z; } SDIntTriple;
 @end
 
 @implementation SDTailInt
-- (void)tailInt:(int)v { _a.x = v; _a.z = v; _b = v; }
+- (void)tailInt:(int)v { _a.x = v + 1; _a.z = v + 1; _b = v + 1; }
 @end
 
 // One vector register stored over the end of one ivar and the start of

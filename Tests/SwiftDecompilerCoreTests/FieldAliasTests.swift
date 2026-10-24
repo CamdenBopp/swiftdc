@@ -17,10 +17,11 @@ import Foundation
     func pseudo(_ name: String) throws -> String {
         try #require(functions.first { $0.displayName.hasPrefix("FieldAliases.Box.\(name)(") }).renderPseudo()
     }
-    for name in ["stale", "storeTwice"] {
-        let text = try pseudo(name)
-        #expect(text.contains("self.b = ") && !text.contains("self.b = self.a"), "\(name): \(text)")
-    }
+    let stale = try pseudo("stale")
+    #expect(stale.contains("self.b = ") && !stale.contains("self.b = self.a"), "\(stale)")
+    // A stored argument stays the argument, which no call can change.
+    let storeTwice = try pseudo("storeTwice")
+    #expect(storeTwice.contains("self.b = arg0\n"), "\(storeTwice)")
     let staleReturn = try pseudo("staleReturn")
     #expect(!staleReturn.contains("return self.a"), "\(staleReturn)")
     // A load after the call is the field's current value.

@@ -3082,7 +3082,7 @@ public struct ValueTracer: Sendable {
                 // `if (enabled) _count += delta; return _count` meet back at the
                 // return even though one path performed arithmetic.
                 if (detail.id == AARCH64_INS_STR || detail.id == AARCH64_INS_STUR),
-                   value != .unknown, case .selfField(let offset)? = target,
+                   value != .unknown, !Self.isArgument(value), case .selfField(let offset)? = target,
                    let sourceRegister = first.operand.register {
                     write(sourceRegister, .selfFieldValue(offset: offset), into: &registers)
                     recordFieldAlias?(offset, sourceRegister.widthBits / 8)
@@ -3112,7 +3112,8 @@ public struct ValueTracer: Sendable {
                     // every field with rendered each later store of it as a
                     // copy of the field before: `self.point = self.other`, a
                     // pair of Doubles from a pair of Ints.
-                    if let register = operand.operand.register, !Self.isConstant(source(operand, in: registers)) {
+                    if let register = operand.operand.register, !Self.isConstant(source(operand, in: registers)),
+                       !Self.isArgument(source(operand, in: registers)) {
                         write(register, .selfFieldValue(offset: offset + index * bytes), into: &registers)
                         recordFieldAlias?(offset + index * bytes, bytes)
                     }
@@ -3848,6 +3849,12 @@ public struct ValueTracer: Sendable {
     /// Forget every register or slot whose value was read from a self field:
     /// after a store through self it is a snapshot, not the field. Recovered
     /// from the pre-merge stash (983aa25), with its native-execution oracle.
+    /// One of the function's own arguments, which no call can change.
+    private static func isArgument(_ value: AbstractValue) -> Bool {
+        if case .argument = value { return true }
+        return false
+    }
+
     /// An immediate, or a vector register's words all immediates.
     private static func isConstant(_ value: AbstractValue) -> Bool {
         switch value {

@@ -284,6 +284,9 @@ import Testing
     }
     let parts = try pseudo("-[SDForwardParts spreadParts:and:]")
     #expect(parts.contains("(self->_t, self->_u) = (self->_s[0..<8], self->_s[8..<16])"), Comment(rawValue: parts))
+    // An argument stored is still the argument: no call changes it.
+    let args = try pseudo("-[SDForwardParts spreadArgs:and:]")
+    #expect(args.contains("(self->_t, self->_u) = (arg0, arg1)"), Comment(rawValue: args))
     let tail = try pseudo("-[SDTailInt tailInt:]")
     #expect(tail.contains("(self->_a[8..<12], self->_b) = ((self->_a[0..<4] & 0xffffffff), (self->_a[0..<4] & 0xffffffff))"),
             Comment(rawValue: tail))
