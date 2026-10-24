@@ -5020,3 +5020,13 @@ if a test was observed to fail without the fix.
   across them the empty argument lists fall from 4 to 0, 2 to 0, 26 to 0
   and 325 to 22, each call showing the `?` it takes; TextEdit is
   byte-identical.
+- **DEAD END (completeness): the Swift retain family as identity calls.**
+  `swift_retain`, `swift_bridgeObjectRetain` and `swift_unknownObjectRetain`
+  return their argument too, and taking them so (known arguments only,
+  as above) binds some re-rendered calls: Clarc 22 and GoodLinks 77 lines
+  after normalising `let rN`, their C-style calls falling from 31 to 17
+  and 147 to 69. But a retained String's second word then flows on as a
+  lone high word, which an argument list trims as unknown, and
+  `Swift.String.Iterator.next(?)` read `next()` three times on Clarc, a
+  call that takes nothing. Measured at 933ccbd and reverted; it needs the
+  lone high word kept as a value first.
