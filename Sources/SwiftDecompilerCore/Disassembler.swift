@@ -579,7 +579,11 @@ public struct Disassembler: Sendable {
         }
 
         // Unfiltered: one full objdump pass (its text is the default file listing).
-        var args = ["-d", "--macho", "--no-show-raw-insn"]
+        // Every architecture extension, as Capstone decodes: with no CPU or
+        // features a plain arm64 slice decodes as ARMv8.0, and the LSE and
+        // RCpc atomics clang emits by default printed as `.long` data (17
+        // instructions in GoodLinks) under Capstone's operands.
+        var args = ["-d", "--macho", "--no-show-raw-insn", "--mattr=+all"]
         if let architecture {
             args += ["--arch", architecture]
         }

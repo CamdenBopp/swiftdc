@@ -37,7 +37,7 @@ for index in "${!binaries[@]}"; do
         shasum -a 256 "$binary"
         xcrun dwarfdump --uuid "$binary"
     } > "$out/$name.provenance"
-    xcrun llvm-objdump -d --macho "$binary" > "$out/$name.asm"
+    xcrun llvm-objdump -d --macho --mattr=+all "$binary" > "$out/$name.asm"
     arguments=(disasm "$binary" --structured --probe "$out/$name.probes.jsonl" --probe-summary)
     if [[ -n ${filters[$index]} ]]; then arguments+=(-f "${filters[$index]}"); fi
     .build/debug/swiftdc "${arguments[@]}" > "$out/$name.structured"

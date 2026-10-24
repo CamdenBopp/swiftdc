@@ -1926,7 +1926,7 @@ The meta-category. Every gap here weakens confidence in every claim above.
 | Function boundaries | `LC_FUNCTION_STARTS` | **Enforced** — throws on empty parse, warns below 50% recovery. The count is deduped and cross-checked against `dyld_info` in tests |
 | Byte-level decode coverage | `dyld_info -function_starts` extents | **In tests + measured by hand** — 100.000% of declared slots decode; no holes inside bodies on either decoder |
 | Peak memory | `/usr/bin/time -l` peak footprint | **Measured + guarded** — linear ~2.5 KB/instruction; SwiftUI 13.5 GB exceeds a 16 GB host; `MemoryRegressionTests` bounds per-instruction footprint |
-| Instruction decode | `llvm-objdump` vs in-process Capstone | Two independent decoders exist; **nothing cross-checks them**. Both silent-truncation bugs found so far were in whichever decoder the other wasn't covering |
+| Instruction decode | `llvm-objdump` vs in-process Capstone | Two independent decoders exist; **checked once by hand, 2026-10-24**: every address both decode, on the five audit apps (4.67M instructions), mnemonic by mnemonic. The only disagreements were 17 GoodLinks instructions objdump could not decode without `--mattr=+all` (below). Both silent-truncation bugs found so far were in whichever decoder the other wasn't covering |
 | Enum tag → case index | SIL (`swiftc -emit-sil`) | Used once, manually, to confirm the `rank` lowering |
 | Field offsets | `__swift5_fieldmd`, computed offline | Runtime-exact by construction |
 | Cross-image symbols | export trie | Used as the primary source |
@@ -5144,8 +5144,8 @@ if a test was observed to fail without the fix.
 
 ## 2026-10-24: what decoding costs
 
-- **FIXED (speed): a plain file paid for a dyld-cache lookup on every
-  decode span.** `sectionBytes` and `pointerTarget` asked
+- **FIXED (speed, `4b87870`): a plain file paid for a dyld-cache lookup
+  on every decode span.** `sectionBytes` and `pointerTarget` asked
   `MachOFile.fullCache` first, and MachOKit keeps a full cache it finds
   but not the failure to find one (the fork's `4c4738f` memoizes only
   `cache`), so for a standalone file each read re-opened it as a cache.
@@ -5156,6 +5156,24 @@ if a test was observed to fail without the fix.
   alternating rounds, medians: GoodLinks 106.98 s to 99.11 s, Clarc
   24.34 s to 23.05 s, outputs byte-identical, as are `disasm --image
   UserNotifications --pseudo` and every fixture view.
+- **FIXED (completeness): the unfiltered listing printed LSE and RCpc
+  atomics as data.** llvm-objdump given no CPU or features decodes a
+  plain arm64 slice as ARMv8.0, but clang's default macOS arm64 target
+  (apple-m1) emits ARMv8.1 LSE, ARMv8.2 dot-product and ARMv8.3 RCpc
+  instructions. The listing showed `.long 0xf8e80000` where the CPU
+  executes `ldaddal x8, x0, [x0]`, and the analysis ran on Capstone's
+  decoding of an instruction the text called data. A filtered run of the
+  same function showed `ldapr x0, [x0]`. Found by comparing the two
+  decoders' mnemonics at every address of the five audit apps (ReIPA
+  scores its decoder against Capstone the same way): after normalizing
+  objdump's `mov.16b v0, v1` against Capstone's `mov v0.16b, v1.16b`,
+  Terminal, TextEdit, Chess and Clarc agreed everywhere, and GoodLinks
+  differed at 17 `.long` words (`casal`, `casalb`, `casp`, `caspl`,
+  `ldadd`, `ldapr`, `udot`). The listing and the audit harness's
+  reference listing now pass `--mattr=+all`, which decodes every
+  extension, as Capstone does. On the five apps it changes exactly those
+  17 lines, and on the fixtures nothing but the new `atomics.c` (-O2,
+  `anUnfilteredListingDecodesEveryArchitectureExtensionIfPresent`).
 - **Measured (speed): where a whole-image run's decode time goes.** On
   GoodLinks' 3,524,352-word `__text`, decode alone (medians of three
   rounds, each the median of five): Capstone 6 as swiftdc calls it
