@@ -4512,7 +4512,13 @@ public struct Disassembler: Sendable {
                             "Swift.CGFloat", "CoreGraphics.CGFloat"].contains(type)
                 }
                 if callee.hasPrefix("objc_msgSend$"), let objcIndex {
-                    return objcIndex.selectorReturnsOneFloat(String(callee.dropFirst("objc_msgSend$".count)))
+                    let selector = String(callee.dropFirst("objc_msgSend$".count))
+                    if sites[site]?.arguments.first == .selfPointer, let method = function.objcMethod,
+                       let declared = objcIndex.selectorReturnsOneFloat(
+                           selector, className: method.className, isClassMethod: method.isClassMethod) {
+                        return declared
+                    }
+                    return objcIndex.selectorReturnsOneFloat(selector)
                 }
                 return false
             }

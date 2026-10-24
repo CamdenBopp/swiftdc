@@ -61,6 +61,19 @@ public struct ObjCMethodBinding: Sendable, Equatable {
         return code == "d" || code == "f"
     }
 
+    /// Whether the encoding declares a struct returned in v registers (one
+    /// of one to four floats), of which v0 is only the first field, or a
+    /// struct this cannot classify.
+    var returnsFloatAggregate: Bool {
+        guard let type = ObjCArgumentABI.returnType(encoding: typeEncoding),
+              type.hasPrefix("{") || type.hasPrefix("(")
+        else { return false }
+        switch ObjCArgumentABI.aggregate(type) {
+        case .composite?, .byReference?: return false
+        default: return true
+        }
+    }
+
     /// Objective-C initializer families are defined by selector spelling. This
     /// metadata fact is enough to model `self = [super init…]` without relying
     /// on a symbol-table name that stripping removes.
@@ -458,11 +471,27 @@ public struct ObjCMetadataIndex: Sendable {
     /// can pass the same parameters but disagree on whether there is a result.
     /// Require the receiver's declaration and every indexed implementation to
     /// say void, including category aliases and dynamic overrides.
-    /// Whether every indexed implementation of `selector` returns a `double`
-    /// or `float`, so a send of it leaves its whole result in v0.
+    /// Whether a send of `selector` whose v0 the code reads leaves its whole
+    /// result there. Code reads v0 after a send only when the declaration it
+    /// was compiled against returns in v registers: one float whole, or a
+    /// struct of floats of which v0 is the first field. So v0 is the result
+    /// when some declaration, in the image or a public SDK framework
+    /// (`SDKSelectorReturns`), returns one float and none returns such a
+    /// struct: the image's `- (double)size` beside NSImage's NSSize `size`
+    /// leaves `[x size]`'s v0 ambiguous.
+    /// A send to a receiver of known class takes that class's declaration.
+    func selectorReturnsOneFloat(_ selector: String, className: String, isClassMethod: Bool) -> Bool? {
+        let declared = (bySelector[selector] ?? [])
+            .filter { $0.className == className && $0.isClassMethod == isClassMethod }
+        guard !declared.isEmpty else { return nil }
+        return declared.allSatisfy { $0.returnsOneFloat }
+    }
+
     func selectorReturnsOneFloat(_ selector: String) -> Bool {
         let matching = bySelector[selector] ?? []
-        return !matching.isEmpty && matching.allSatisfy(\.returnsOneFloat)
+        let sdk = SDKSelectorReturns.table[selector]
+        guard sdk != "h", !matching.contains(where: \.returnsFloatAggregate) else { return false }
+        return sdk == "f" || matching.contains(where: \.returnsOneFloat)
     }
 
     func outgoingReturnsVoid(selector: String, className: String, isClassMethod: Bool) -> Bool {

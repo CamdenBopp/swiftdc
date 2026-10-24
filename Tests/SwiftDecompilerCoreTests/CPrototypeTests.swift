@@ -98,6 +98,15 @@ import Foundation
     #expect(offset.contains("CGRectOffset(?, ?, ?)"), Comment(rawValue: offset))
     let inset = try rendered("-[SDLanes scaledFrame]")
     #expect(inset.contains("CGRectInset(?, [self scale], 0.5)"), Comment(rawValue: inset))
+    // Only Foundation declares timeIntervalSinceNow, a double; the image's
+    // own `size` returns a double, but NSImage's an NSSize.
+    let interval = try rendered("-[SDLanes vertexInterval:]")
+    #expect(interval.contains("timeIntervalSinceNow], 0.5)"), Comment(rawValue: interval))
+    let size = try rendered("-[SDLanes vertexSize:]")
+    #expect(size.contains("glVertex2d(?, 0.5)"), Comment(rawValue: size))
+    // Two of the image's own declarations disagree: a double and a CGPoint.
+    let lane = try rendered("-[SDLanes vertexLane:]")
+    #expect(lane.contains("glVertex2d(?, 0.5)"), Comment(rawValue: lane))
 }
 
 /// An HFA takes its member count of v registers, and one that does not fit
@@ -112,4 +121,15 @@ import Foundation
         prototype: .init(result: "v", parameters: ["d", "d", "d", "d", "d", "D4", "i"], isVariadic: false)))
     #expect(overflows.slots.count == 5)
     #expect(overflows.unplaced == 2)
+}
+
+/// The SDK's float and float-aggregate returns. NSFont's getters are
+/// implemented in a private framework (AppKit holds only a category on
+/// NSFont), and NSImage's `size` is an NSSize.
+@Test func theSDKSelectorReturnsHoldFloatsAndAggregates() {
+    #expect(SDKSelectorReturns.table["underlinePosition"] == "f")
+    #expect(SDKSelectorReturns.table["timeIntervalSinceNow"] == "f")
+    #expect(SDKSelectorReturns.table["size"] == "h")
+    #expect(SDKSelectorReturns.table["frame"] == "h")
+    #expect(SDKSelectorReturns.table["count"] == nil)
 }
