@@ -5257,3 +5257,15 @@ if a test was observed to fail without the fix.
   `--build-tests` at 28.54 s median against 28.87 s, three rounds each:
   within noise. The test module's critical path is elsewhere. Reverted.
 
+## 2026-10-24: probe traces across processes
+
+- **FIXED (determinism): the async chain pass recorded its probe events
+  in hash order.** `asyncChainSlots` walked `AsyncFuncletIndex.chains`, a
+  Dictionary, so its `async.context-escape` and
+  `async.context-escape-unknown` events came out in a different order in
+  every process: two runs of one release binary on Chess differed in 148
+  trace lines. Rendered output was unaffected (the result is keyed). It
+  now walks the chains by entry address, and three runs of Chess give
+  identical whole traces. `asyncChainProbeTracesAreIdenticalAcrossProcessesIfPresent`
+  compares four processes on `libAsyncFns.dylib` (27 events).
+

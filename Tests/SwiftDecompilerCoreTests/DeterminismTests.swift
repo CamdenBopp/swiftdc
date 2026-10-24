@@ -174,3 +174,24 @@ private func capture(_ arguments: [String]) throws -> Data {
         if let first { #expect(events == first) } else { first = events }
     }
 }
+
+/// The async chain pass walked a Dictionary of chains, so its
+/// `async.context-escape` events came out in hash order: Chess's first 148
+/// trace lines differed between two runs of one binary. `asyncfns.swift`
+/// has 15 functions that record them.
+@Test func asyncChainProbeTracesAreIdenticalAcrossProcessesIfPresent() throws {
+    let path = "Fixtures/Sample/libAsyncFns.dylib"
+    guard FileManager.default.fileExists(atPath: binary.path), FileManager.default.fileExists(atPath: path) else { return }
+    var first: [Substring]?
+    for _ in 0..<4 {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("swiftdc-async-\(UUID()).jsonl")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let output = try capture(["disasm", path, "--pseudo", "--probe", file.path,
+                                  "--probe-filter", "event=async.context-escape|async.context-escape-unknown"])
+        #expect(!output.isEmpty)
+        let trace = try String(contentsOf: file, encoding: .utf8)
+        let events = trace.split(separator: "\n").filter { $0.contains("\"event\":\"async.context-escape") }
+        #expect(events.count > 10, "expected async context-escape events to compare, got \(events.count)")
+        if let first { #expect(events == first) } else { first = events }
+    }
+}

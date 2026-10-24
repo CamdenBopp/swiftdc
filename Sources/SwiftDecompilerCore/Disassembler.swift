@@ -1445,7 +1445,9 @@ public struct Disassembler: Sendable {
             }
         }
         var result: [UInt64: [Int: AbstractValue]] = [:]
-        for (entry, chain) in index.chains {
+        // In address order: each chain records probe events, and Dictionary
+        // order changes with every process.
+        for (entry, chain) in index.chains.sorted(by: { $0.key < $1.key }) {
             var stores: [Int: [AbstractValue]] = [:]
             var escapedFrom: Int?
             var entryName: String?
