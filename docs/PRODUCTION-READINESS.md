@@ -3585,7 +3585,9 @@ if a test was observed to fail without the fix.
   a tuple is written only when each register fills one whole field
   (78bd747), and a pair store that is no tuple names each register's own
   target (cf68ec0), so printing it claims no more than the note did.
-  BLAST_RADIUS
+  Blast radius: two libFieldWrites functions (`FieldPQ.set`, and
+  `FieldWrites.init`'s three pair stores of one zeroed q0); release
+  `disasm --pseudo` of the five apps is byte-identical.
 - **FIXED (soundness, see "field writes that do not fill one field"
   below): a String stored to a field rendered as one word.**
 
