@@ -3266,6 +3266,8 @@ public struct Disassembler: Sendable {
 
     /// The two-word String types `swiftCallArgumentSlots` lays out.
     static let twoWordStringTypes: Set<String> = ["Swift.String", "Swift.Optional<Swift.String>", "Swift.String?"]
+    /// The same types as a field record's mangled names spell them.
+    static let twoWordStringMangledTypes: Set<String> = ["SS", "SSSg"]
 
     /// The integer registers a parameter that is not a scalar takes, for the
     /// shapes whose footprint the Swift ABI fixes whatever the image holds:
@@ -5115,6 +5117,61 @@ public struct Disassembler: Sendable {
             let name = field.names.count == 1
                 ? field.names[0] : "{\(field.names.joined(separator: ", "))}"
             let path = fieldPath(name)
+            // A store into part of one field holds a piece of its value, and
+            // one `stp` that fills a two-word field holds both words, so the
+            // first word alone is not the field's value: `name = "a  b"`
+            // (`stp x8, x9, [x20, #0x10]`) rendered `self.name = 0x62202061`.
+            // A part is written to its byte range (`self.pair[0..<8] = x`); a
+            // String's two words are shown only when they spell a literal.
+            // A value this object's own fields held is shown as the range it
+            // was read from: a struct copied in pieces reads
+            // `self->fPrvPos[32..<48] = self->fCurPos[32..<48]`.
+            func ownFieldRange(_ value: AbstractValue, bytes: Int) -> String? {
+                guard case .selfFieldValue(let offset) = value, let fieldMap else { return nil }
+                switch fieldMap.lookup(offset: offset, bytes: max(bytes, 1)) {
+                case .success(.whole(let name, _)): return fieldPath(name)
+                case .success(.part(let name, _, let subOffset, let bytes)):
+                    return fieldPath("\(name)[\(subOffset)..<\(subOffset + bytes)]")
+                default: return nil
+                }
+            }
+            if field.names.count == 1, let fieldMap {
+                switch fieldMap.lookup(offset: access.offset, bytes: max(access.bytes, 1)) {
+                case .success(.part(let partName, _, let subOffset, let bytes)):
+                    let partPath = fieldPath("\(partName)[\(subOffset)..<\(subOffset + bytes)]")
+                    guard let rawValue = access.storedValue, sanitizeValue(rawValue) != .unknown
+                    else { return "\(partPath) = …" }
+                    let value = sanitizeValue(rawValue)
+                    if let source = ownFieldRange(value, bytes: access.bytes) { return "\(partPath) = \(source)" }
+                    guard access.bytes <= 8 else { return "\(partPath) = …" }
+                    return "\(partPath) = \(renderValue(value, depth: 0))"
+                case .success(.whole(_, let type)) where access.bytes > 8:
+                    // An `stp` gives two words; one wide register (`str q0`) one value.
+                    let words = (access.storedValues ?? access.storedValue.map { [$0] } ?? []).map(sanitizeValue)
+                    // Every byte zeroed (`stp xzr, xzr`).
+                    if !words.isEmpty, words.allSatisfy({ $0 == .immediate(0) }),
+                       !Self.twoWordStringMangledTypes.contains(type) {
+                        return "\(path) = 0"
+                    }
+                    if Self.twoWordStringMangledTypes.contains(type), words.count == 2,
+                       let literal = swiftStringLiteral(words[0], words[1]) {
+                        return "\(path) = \(literal)"
+                    }
+                    // Both words read from consecutive words of one field.
+                    if words.count == 2, case .selfFieldValue(let low) = words[0],
+                       words[1] == .selfFieldValue(offset: low + 8),
+                       let source = ownFieldRange(words[0], bytes: access.bytes) {
+                        return "\(path) = \(source)"
+                    }
+                    if words.count == 1, let first = words.first,
+                       let source = ownFieldRange(first, bytes: access.bytes) {
+                        return "\(path) = \(source)"
+                    }
+                    return "\(path) = …"
+                default:
+                    break
+                }
+            }
             guard let rawValue = access.storedValue else { return "\(path) = …" }
             let value = sanitizeValue(rawValue)
             guard value != .unknown else { return "\(path) = …" }

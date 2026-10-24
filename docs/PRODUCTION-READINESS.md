@@ -3556,11 +3556,8 @@ if a test was observed to fail without the fix.
   (`(self->_a, self->_b) = …`); the facts keep that view
   (`Disassembler.fieldWriteStatement`). Printing it is the fix, with a
   fixture and a blast-radius check of its own.
-- **OPEN (soundness): a String stored to a field renders as one word.**
-  `name = "a  b"` in a final class (-O, `stp x8, x9, [x20, #0x10]`) is
-  noted and printed `self.name = 0x62202061`: the field write renders the
-  first register of the two-word String as an integer. It should be the
-  literal, or `?`.
+- **FIXED (soundness, see "field writes that do not fill one field"
+  below): a String stored to a field rendered as one word.**
 
 
 ## 2026-10-23: malformed Objective-C type encodings
@@ -4369,8 +4366,8 @@ if a test was observed to fail without the fix.
 
 ## 2026-10-23: Swift runtime object and weak-reference entry points
 
-- **FIXED (soundness): eighteen runtime entry points printed only their
-  tracked operands.** Outside `knownCArity` a call shows the operands that
+- **FIXED (13f2bb2, soundness): eighteen runtime entry points printed only
+  their tracked operands.** Outside `knownCArity` a call shows the operands that
   were tracked, so one whose arguments were not tracked read as taking
   nothing: `runtimearity.swift`'s weak reference rendered
   `swift_weakLoadStrong()`, `swift_weakAssign(&self.target)` and
@@ -4400,4 +4397,34 @@ if a test was observed to fail without the fix.
   bodies call these and now take fewer arguments
   (`RxSwift.PublishSubject.init(?)` becomes `init()`). No function loses a
   callee.
+
+## 2026-10-23: field writes that do not fill one field
+
+- **FIXED (soundness): a field write rendered the first register a store
+  wrote as the field's value.** A store into part of a field, or one that
+  filled a two-word field with an `stp`, printed that one word as the
+  whole field. `fieldwrites.swift` (-O): `name = "a  b"` (`stp x8, x9,
+  [x20, #0x10]`) rendered `self.name = 0x62202061`, the String's low word;
+  a large literal rendered its count and flags; `pair.a = x` rendered
+  `self.pair = arg0`. On Chess a one-byte write deep in a 2 KB struct ivar
+  rendered `self->fCollection = arg0`, and a board copied in 16-byte
+  pieces rendered `self->fPrvPos = self->fCurPos` for each piece. Now:
+  a part is written to its byte range (`self.pair[0..<8] = arg0`); a
+  two-word field shows a String literal its words spell, every byte
+  zeroed (`= 0`), or a field of the object read whole (`self.end =
+  self.start`, one wide register's copy `self->_saved = self->_current`),
+  and otherwise `…`; and a value read from the object's own fields names
+  the range it came from (`self->fPrvPos[32..<48] =
+  self->fCurPos[32..<48]`). Blast radius: `fieldwrites.swift`,
+  `objc_field_copy.m`, and the partial writes of `libBoundSelf.opt` and
+  `sample.debug`, which now name their ranges (`self.center[0..<8] = …`).
+  Release `disasm --pseudo`, normalised lines: Terminal 132, TextEdit 0,
+  Chess 124, Clarc 114, GoodLinks 218; about half name a written range,
+  and one whole write per app declines where the old render was one word
+  (`self->logicalSize = Double(arg1)` for a CGSize, Clarc's `self.start =
+  0` from `stp x11, x10`).
+- **OPEN (soundness): a read of part of a field renders as the whole
+  field.** `self->fPrvPos[80..<81] = (self->fCurPos & 0xffffffff)` is a
+  one-byte store of a four-byte read at `fCurPos + 80`; the read prints
+  the field's name alone, as every partial read does.
 

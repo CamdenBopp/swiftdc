@@ -208,6 +208,10 @@ $SWIFTC -parse-as-library -O -emit-library -module-name StringArity stringarity.
 echo "==> calls that take fewer arguments than the live registers: a metadata accessor and swift_getObjectType from @objc initializers (runtimearity.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name RuntimeArity runtimearity.swift -o libRuntimeArity.dylib
 
+echo "==> stores that fill part of a field, or a two-word field with one stp or one q register (fieldwrites.swift, -O; objc_field_copy.m, -O2)"
+$SWIFTC -parse-as-library -O -emit-library -module-name FieldWrites fieldwrites.swift -o libFieldWrites.dylib
+$CLANG -fobjc-arc -O2 -dynamiclib -framework Foundation objc_field_copy.m -o libObjCFieldCopy.dylib
+
 echo "==> variadic ObjC fixture (-O1) — format arguments on the stack"
 $CLANG -O1 -fobjc-arc -framework Foundation -dynamiclib variadic.m -o libVariadic.dylib
 
