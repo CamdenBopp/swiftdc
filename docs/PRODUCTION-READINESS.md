@@ -5006,3 +5006,17 @@ if a test was observed to fail without the fix.
   84, and the allocations from 264 to 2, 40 to 1 and 20 to 1. GoodLinks
   printed 22 `objc_unsafeClaimAutoreleasedReturnValue(…)` wrappers and
   prints none; Clarc is byte-identical.
+- **FIXED (soundness): an unknown object handed through retain or
+  autorelease vanished from argument lists.** An identity call's result is
+  the object it was handed, and an unknown one made the result unknown,
+  which a positional argument list trims: `objc_autorelease.m`'s
+  `enumerateAutoreleased` read `objc_enumerationMutation()`, as did
+  `objc_retain` of an unknown object all along. An unknown object now
+  leaves the call's own result, kept as `?`
+  (`objc_enumerationMutation(?)`), and that result renders `?`, not
+  `/* unresolved call @ … */ ?`: `objc_thunk_return.swift`'s `@objc`
+  getter thunk reads `return ?`. Release `disasm --pseudo` (lines after
+  normalising `let rN`): Terminal 15, Chess 4, Clarc 43, GoodLinks 467;
+  across them the empty argument lists fall from 4 to 0, 2 to 0, 26 to 0
+  and 325 to 22, each call showing the `?` it takes; TextEdit is
+  byte-identical.

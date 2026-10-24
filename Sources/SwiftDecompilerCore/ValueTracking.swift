@@ -1386,7 +1386,11 @@ public struct ValueTracer: Sendable {
             if registers[.x(21)] == .immediate(0), !call.provablyDoesNotThrow {
                 registers[.x(21)] = .unknown
             }
-            if call.returnsArgument {
+            if call.returnsArgument, incomingX0 != .unknown {
+                // An unknown object handed through stays the call's result:
+                // something is there, which an argument list keeps as `?`.
+                // Taken as unknown, `objc_enumerationMutation` of an
+                // autoreleased object read `objc_enumerationMutation()`.
                 registers[.x(0)] = incomingX0
             } else if let source = call.retainedRegister {
                 // `objc_retain_xN` retains the object in xN and returns it

@@ -5251,8 +5251,11 @@ public struct Disassembler: Sendable {
                 // never termination. Kept below the depth-8 expression cap.
                 guard depth < 6, let callee = calleeByAddress[addr] else { return unresolved() }
                 // The retain/autorelease family returns its argument: unwrap it.
+                // With nothing tracked at the call the argument is unknown, and
+                // so is what it returns; the call itself is resolved, so it is
+                // no `unresolved call`.
                 if DisassembledFunction.returnsItsArgument(callee) {
-                    return inner.first.map { renderValue($0, depth: depth + 1) } ?? unresolved()
+                    return inner.first.map { renderValue($0, depth: depth + 1) } ?? unknownRenderedValue()
                 }
                 if DisassembledFunction.isUniquenessCheck(callee) {
                     let object = inner.first.map { renderValue($0, depth: depth + 1) } ?? unknownRenderedValue()

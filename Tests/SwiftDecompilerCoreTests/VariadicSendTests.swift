@@ -63,7 +63,7 @@ import Foundation
     guard FileManager.default.fileExists(atPath: path) else { return }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let text = try #require(functions.first { $0.displayName == "_spanSend" }).renderPseudo()
-    #expect(text.contains("secondValue()"), Comment(rawValue: text))
+    #expect(text.contains("    secondValue("), Comment(rawValue: text))
     // A variadic send prints its arguments past the colons, so a call
     // there is printed once, inside it.
     let format = try #require(functions.first { $0.displayName == "_formatFirst" }).renderPseudo()
@@ -105,4 +105,29 @@ import Foundation
     }
     #expect(!ValueTracer.CallFacts(callee: "objc_retainBlock").returnsArgument)
     #expect(!ValueTracer.CallFacts(callee: "objc_release").returnsArgument)
+}
+
+/// An unknown object handed through the autorelease family is still a
+/// value: taken as unknown, the positional argument list it fed trimmed it
+/// away, and fast enumeration's `objc_enumerationMutation` of an
+/// autoreleased `*p` read `objc_enumerationMutation()` (`objc_autorelease.m`).
+@Test func anUnknownObjectHandedThroughStaysAnArgumentIfPresent() async throws {
+    let path = "Fixtures/Sample/libObjCAutorelease.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = try #require(functions.first { $0.displayName == "_enumerateAutoreleased" }).renderPseudo()
+    #expect(text.contains("objc_enumerationMutation(?)"), Comment(rawValue: text))
+}
+
+/// An identity call with nothing tracked at it returns its unknown
+/// argument: unknown, and no unresolved call. A Swift `@objc` getter thunk
+/// returns an ivar loaded through a computed offset by way of
+/// `objc_retainAutoreleaseReturnValue`, and read `return /* unresolved call
+/// @ … */ ?` (`objc_thunk_return.swift`).
+@Test func anIdentityCallOfAnUnknownValueReturnsUnknownIfPresent() async throws {
+    let path = "Fixtures/Sample/libObjCThunkReturn.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = try #require(functions.first { $0.displayName == "-[_TtC15ObjCThunkReturn8Labelled label]" }).renderPseudo()
+    #expect(text.contains("    return ?\n") && !text.contains("unresolved"), Comment(rawValue: text))
 }
