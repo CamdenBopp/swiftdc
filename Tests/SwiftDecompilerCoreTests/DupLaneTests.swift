@@ -16,7 +16,7 @@ import Testing
         try #require(functions.first { $0.displayName == name }, "no \(name)").renderPseudo()
     }
     let ints = try text("_fillInts")
-    #expect(ints.contains("sink()") && !ints.contains("sink((r0"), Comment(rawValue: ints))
+    #expect(ints.contains("sink(?)"), Comment(rawValue: ints))
     let longs = try text("_fillLongs")
     #expect(longs.contains("sink(r0)"), Comment(rawValue: longs))
 }

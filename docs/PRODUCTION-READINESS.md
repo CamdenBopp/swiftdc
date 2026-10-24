@@ -4598,10 +4598,28 @@ if a test was observed to fail without the fix.
   binding inlined at its one remaining use. Six GoodLinks functions lose a
   call from the pseudo view whose only remaining use is generic plumbing
   that view strips; the listing keeps it.
-- **OPEN (completeness): a body-reads call with untracked arguments still
-  renders `()`.** `sink()` reads x0, but its argument is unknown and the
-  trailing unknown is trimmed; padding to the summary's count would
-  render `sink(?)`.
+- **FIXED (completeness): a body-reads call with untracked arguments
+  rendered `()`.** A call to an in-image function no signature describes
+  passes what its body may read, trimmed of trailing unknowns, so a call
+  whose arguments were all untracked read as taking nothing:
+  `libc_twins.c`'s `sink(a)` after the memset twin rendered `sink()`,
+  and `variadic.m`'s `churn(a, b, c, d)` over untracked C parameters
+  `churn()`. The may-read set is an upper bound: a call inside the body
+  counts as reading every register it could be passed, and even a
+  known-arity callee's parameter can be whatever the register held (a
+  lazy witness table accessor hands its untouched x2 to
+  `swift_getWitnessTable`). The summary now also keeps
+  `provenArgumentReads`, the registers the body's own instructions read,
+  and the call is padded with `?` to that count: `sink(?)`,
+  `churn(?, ?, ?, ?)`. Padded to the may-read count, the in-image
+  `swift_willThrowTyped` in `libTypedThrowsNever` read eight arguments for
+  its three, and `body_reads.s`'s `accessorLike` three for none. Blast
+  radius: 36 fixtures, 189 pseudo lines, each only gaining `?` arguments
+  in every view (checked by stripping the added `?`s and comparing).
+  Release `disasm --pseudo`: Terminal 193 lines, TextEdit 19, Chess 159,
+  Clarc 8,040, GoodLinks 38,440, all padding but 14 Clarc and 356
+  GoodLinks lines, where a generic plumbing argument the pseudo view
+  strips only from the end of a list now precedes a padded `?` and shows.
 
 ## 2026-10-23: slice names
 

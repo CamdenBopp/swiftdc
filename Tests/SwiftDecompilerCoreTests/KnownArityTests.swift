@@ -138,7 +138,7 @@ func aFailedForcedTryPassesItsFiveArgumentsIfPresent(path: String) async throws 
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     for name in ["_useFill", "_useCopy"] {
         let text = try #require(functions.first { $0.displayName == name }, "no \(name)").renderPseudo()
-        #expect(argumentLists(of: "sink", in: text).allSatisfy { $0.isEmpty || $0 == ["?"] }, Comment(rawValue: text))
+        #expect(argumentLists(of: "sink", in: text) == [["?"]], Comment(rawValue: text))
     }
 }
 

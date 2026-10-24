@@ -4501,11 +4501,21 @@ public struct Disassembler: Sendable {
                 // A register below the highest one read that the body never
                 // reads holds whatever the caller left there, not an argument:
                 // `useSecond` writes x0 before reading it, and
-                // `useSecond(5, 7)` showed the stale 5.
-                values = values.prefix(summary.argumentCount).enumerated().map {
-                    summary.argumentReads.contains($0.offset) ? $0.element : .unknown
+                // `useSecond(5, 7)` showed the stale 5. Every register
+                // through the highest the body's own instructions read is a
+                // parameter, so an unknown one is `?`, not absent:
+                // `sink(long)` called with nothing tracked rendered `sink()`.
+                // Past those, a register the body may read only by passing it
+                // to a call is shown when its value is known, as before.
+                let proven = summary.provenArgumentCount
+                var bounded = (0 ..< max(summary.argumentCount, proven)).map {
+                    $0 < values.count && summary.argumentReads.contains($0)
+                        ? sanitizeValue(values[$0]) : AbstractValue.unknown
                 }
+                while bounded.count > proven, bounded.last == .unknown { bounded.removeLast() }
+                if !bounded.isEmpty { argumentsByAddress[address] = bounded }
                 strategy = "body-reads"
+                continue
             }
             if let values = sanitize(values) { argumentsByAddress[address] = values }
         }

@@ -49,6 +49,14 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// parameters, and a call to another in-image function waits in
     /// `pendingReads` until `closeOverReads` gives it that function's reads.
     let argumentReads: Set<Int>
+    /// Of those, the registers the body's own instructions read. A call
+    /// proves no parameter: one of unknown arity may pass any unwritten
+    /// register on (`swift_willThrowTyped`'s body reaches x6 and x7 only by
+    /// calling `_stdlib_isOSVersionAtLeast…`, and it takes three), and even
+    /// a known one's parameter may be whatever the register held (a lazy
+    /// witness table accessor hands its untouched x2 to
+    /// `swift_getWitnessTable`).
+    var provenArgumentReads: Set<Int> = []
     /// Calls and tail branches to other in-image functions, with the argument
     /// registers (bit n for xn) the body has not written at them on some
     /// path: the call reads those of them its target reads.
@@ -97,6 +105,10 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// positional parameters it ignores.
     var argumentCount: Int { (argumentReads.max() ?? -1) + 1 }
 
+    /// The parameters a call to this function has, as its own body proves
+    /// them: through the highest register it reads itself.
+    var provenArgumentCount: Int { (provenArgumentReads.max() ?? -1) + 1 }
+
     private static let argumentKeys = (0...7).map { "x\($0)" }
     private static let framePointerBit: UInt32 = 1 << 29
     private static let contextRegisterBit: UInt32 = 1 << 22
@@ -133,6 +145,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         // a possible argument read.
         var inState: [UInt64: Set<String>] = [entry: []]
         var reads = Set<Int>()
+        var provenReads = Set<Int>()
         var readsFramePointer = false
         var readsContextRegister = false
         // By call address: a block revisited with fewer registers written
@@ -152,8 +165,10 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             var written = inState[start] ?? []
             for insn in block.instructions {
                 guard let detail = insn.detail else { return nil }
-                func read(_ key: String) {
-                    if let index = argumentKeys.firstIndex(of: key), !written.contains(key) { reads.insert(index) }
+                func read(_ key: String, proven: Bool = true) {
+                    guard let index = argumentKeys.firstIndex(of: key), !written.contains(key) else { return }
+                    reads.insert(index)
+                    if proven { provenReads.insert(index) }
                 }
                 if !written.contains("x29"), Self.uses("x29", in: detail) { readsFramePointer = true }
                 if !written.contains("x22"), Self.uses("x22", in: detail) { readsContextRegister = true }
@@ -175,8 +190,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                         if !written.contains("x22") { unwritten |= Self.contextRegisterBit }
                         pending[insn.address] = PendingRead(target: target, unwritten: unwritten)
                     } else {
-                        let arity = insn.branchTarget.flatMap(calleeArity) ?? argumentKeys.count
-                        argumentKeys.prefix(arity).forEach(read)
+                        let known = insn.branchTarget.flatMap(calleeArity)
+                        argumentKeys.prefix(known ?? argumentKeys.count).forEach { read($0, proven: false) }
                     }
                 }
                 // Operands without access flags are counted as read, so a gap
@@ -187,7 +202,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                         read(register.key)
                     }
                 }
-                detail.readRegisterKeys.forEach(read)
+                detail.readRegisterKeys.forEach { read($0) }
                 written.formUnion(detail.writtenRegisterKeys.intersection(argumentKeys + ["x29", "x22"]))
                 if insn.controlFlow == .call { written.formUnion(argumentKeys) }
             }
@@ -256,6 +271,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         let definitelyClobbered = clobbered.subtracting(storedCalleeSaved).subtracting(["x21"])
         return CalleeRegisterSummary(
             argumentReads: reads,
+            provenArgumentReads: provenReads,
             pendingReads: pending.keys.sorted().compactMap { pending[$0] },
             readsFramePointer: readsFramePointer,
             readsContextRegister: readsContextRegister,
@@ -268,7 +284,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// A summary that claims nothing about callee-saved registers.
     private func claimingNothing() -> CalleeRegisterSummary {
         CalleeRegisterSummary(
-            argumentReads: argumentReads, pendingReads: pendingReads, readsFramePointer: readsFramePointer,
+            argumentReads: argumentReads, provenArgumentReads: provenArgumentReads, pendingReads: pendingReads,
+            readsFramePointer: readsFramePointer,
             readsContextRegister: readsContextRegister, clobberedCalleeSaved: Self.calleeSavedKeys,
             definitelyClobbered: Self.calleeSavedKeys, callees: callees)
     }
@@ -331,7 +348,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         _ reads: Set<Int>, readsFramePointer: Bool, readsContextRegister: Bool
     ) -> CalleeRegisterSummary {
         CalleeRegisterSummary(
-            argumentReads: reads, pendingReads: pendingReads, readsFramePointer: readsFramePointer,
+            argumentReads: reads, provenArgumentReads: provenArgumentReads, pendingReads: pendingReads,
+            readsFramePointer: readsFramePointer,
             readsContextRegister: readsContextRegister, clobberedCalleeSaved: clobberedCalleeSaved,
             definitelyClobbered: definitelyClobbered, restoredFrom: restoredFrom, callees: callees)
     }
@@ -420,6 +438,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             let rebuilt = recompute(start, { summaries[$0]?.effect ?? CalleeEffect() }) ?? old.claimingNothing()
             let new = CalleeRegisterSummary(
                 argumentReads: old.argumentReads,
+                provenArgumentReads: old.provenArgumentReads,
                 pendingReads: old.pendingReads,
                 readsFramePointer: old.readsFramePointer,
                 readsContextRegister: old.readsContextRegister,

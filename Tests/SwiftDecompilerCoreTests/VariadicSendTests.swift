@@ -14,7 +14,8 @@ import Foundation
         try await Disassembler(preset: .default).disassemble(path: fixture, functionFilter: "describe")
     }
     let text = functions.map { expandingResultBindingsForAssertions($0.renderPseudo()) }.joined(separator: "\n")
-    #expect(text.contains(#"stringWithFormat:@"%ld %ld", churn(), ?]"#), "\(text)")
+    // churn's own four arguments are untracked C parameters.
+    #expect(text.contains(#"stringWithFormat:@"%ld %ld", churn(?, ?, ?, ?), ?]"#), "\(text)")
 }
 
 @Test func theFormatParserCountsOnlyWhatItCanProve() {
