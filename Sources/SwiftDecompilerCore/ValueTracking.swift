@@ -2476,6 +2476,33 @@ public struct ValueTracer: Sendable {
         }
     }
 
+    /// The text of any Swift small string, for two words already known to be
+    /// one String (a String parameter or field): the empty string, control
+    /// characters and non-ASCII text too, which `decodeSmallString` refuses
+    /// because a pair of integers could look like them. The high nibble is
+    /// 0xE for ASCII and 0xA for other UTF-8 (the ASCII bit, 62, clear), and
+    /// the bytes must agree with it, be valid UTF-8, and leave every byte past
+    /// the count zero.
+    public static func decodeStringSmallString(lo: UInt64, hi: UInt64) -> String? {
+        let discriminator = UInt8(truncatingIfNeeded: hi >> 56)
+        let isASCII: Bool
+        switch discriminator & 0xF0 {
+        case 0xE0: isASCII = true
+        case 0xA0: isASCII = false
+        default: return nil
+        }
+        let count = Int(discriminator & 0x0F)
+        var bytes: [UInt8] = []
+        for shift in stride(from: 0, to: 64, by: 8) { bytes.append(UInt8(truncatingIfNeeded: lo >> shift)) }
+        for shift in stride(from: 0, to: 56, by: 8) { bytes.append(UInt8(truncatingIfNeeded: hi >> shift)) }
+        let content = Array(bytes.prefix(count))
+        guard bytes.dropFirst(count).allSatisfy({ $0 == 0 }),
+              content.allSatisfy({ $0 < 0x80 }) == isASCII,
+              let text = String(validating: content, as: UTF8.self)
+        else { return nil }
+        return text
+    }
+
     /// Decode a Swift `_SmallString` passed in two registers (x0 = low 8 bytes,
     /// x1 = high 8 bytes, with the count in the top byte's low nibble and the
     /// `0xE` small-string discriminator in its high nibble). Returns the text

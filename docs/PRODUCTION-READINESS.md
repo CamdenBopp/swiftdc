@@ -4123,12 +4123,19 @@ if a test was observed to fail without the fix.
   method (`Swift.String.append`) needs first, or the correct
   `append(f())` renders (1,274 on Clarc and GoodLinks, counted by the
   2026-10-22 audit) read `append(?)`.
-- **OPEN (completeness): some String literals the layout could prove
-  render `?`.** The empty string, `(0, 0xe000000000000000)` (13 on
+- **FIXED (completeness): some String literals the layout could prove
+  rendered `?`.** The empty string, `(0, 0xe000000000000000)` (13 on
   Clarc), a small string with a control character (`"\n"` is
-  `(10, 0xe100000000000000)`) and a non-ASCII small string (discriminator
-  `0xa_`) are rejected by `ValueTracer.decodeSmallString`, which the
-  positional path shares; the typed String slot could accept them.
+  `(10, 0xe100000000000000)`) and a non-ASCII small string
+  (discriminator `0xa_`) were rejected by `ValueTracer.decodeSmallString`,
+  which the positional path shares. A typed String slot or field now uses
+  `decodeStringSmallString`, which takes any small string whose words
+  prove it (ASCII bit agreeing with the bytes, valid UTF-8, zero past the
+  count): `stringarity.swift`'s `takeTwo("", 7)`, `takeTwo("\n", 7)` and
+  `takeTwo("é", 7)`, and FieldWrites' `self.name = ""` (was `= …`).
+  Release `disasm --pseudo`: Clarc 25 lines and GoodLinks 2, each a `?`
+  that became a literal (Clarc: 13 empty, 9 with an escaped control
+  character, 3 non-ASCII); Terminal, TextEdit and Chess byte-identical.
 - **FIXED (soundness): an Optional scalar parameter was read one argument
   per register.** An Optional of a fixed-width scalar has no spare bits for
   nil, so Swift passes the payload's bytes and then a tag byte that is 1

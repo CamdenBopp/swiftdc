@@ -4252,7 +4252,7 @@ public struct Disassembler: Sendable {
                     objectAddress: object, count: Int(first & 0x0000_FFFF_FFFF_FFFF))
             }
             guard case .immediate(let second) = high,
-                  let string = ValueTracer.decodeSmallString(lo: first, hi: second)
+                  let string = ValueTracer.decodeStringSmallString(lo: first, hi: second)
             else { return nil }
             return "\"\(ReferenceResolver.escapedLiteralText(string))\""
         }

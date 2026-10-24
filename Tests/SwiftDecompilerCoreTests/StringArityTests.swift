@@ -28,6 +28,16 @@ private let fixture = "Fixtures/Sample/libStringArity.dylib"
     #expect(small.contains("StringArity.takeTwo(\"hi\", 7)"), "\(small)")
     let large = try pseudo("callTwoLarge")
     #expect(large.contains("StringArity.takeTwo(\"a literal longer than fifteen bytes\", 7)"), "\(large)")
+    // The small strings a pair of integers could not be told from, in a slot
+    // that holds a String.
+    for (name, call) in [
+        ("callTwoEmpty", #"StringArity.takeTwo("", 7)"#),
+        ("callTwoNewline", #"StringArity.takeTwo("\n", 7)"#),
+        ("callTwoAccent", #"StringArity.takeTwo("é", 7)"#),
+    ] {
+        let text = try pseudo(name)
+        #expect(text.contains(call), "\(name): \(text)")
+    }
     // x0 and x1 are the two words of a call that returns a String.
     let result = try pseudo("callTwoCallResult")
     #expect(result.contains("StringArity.takeTwo(StringArity.makeString(arg0), 7)"), "\(result)")
@@ -122,4 +132,20 @@ private let fixture = "Fixtures/Sample/libStringArity.dylib"
     let text = try #require(functions.first { $0.displayName.hasPrefix("High.keptValue()") }).renderPseudo()
     #expect(text.contains("Swift.String.hasPrefix(\"-\", High.makeString(3))") && !text.contains("self: ?"),
             Comment(rawValue: text))
+}
+
+/// A String slot's small string decodes whatever its words say, but only
+/// when they are one: the ASCII bit agrees with the bytes, the bytes are
+/// UTF-8, and nothing follows the count.
+@Test func aStringSlotsSmallStringDecodesOnlyWhatItsWordsProve() {
+    #expect(ValueTracer.decodeStringSmallString(lo: 0, hi: 0xe000_0000_0000_0000) == "")
+    #expect(ValueTracer.decodeStringSmallString(lo: 0x0a, hi: 0xe100_0000_0000_0000) == "\n")
+    #expect(ValueTracer.decodeStringSmallString(lo: 0xa9c3, hi: 0xa200_0000_0000_0000) == "é")
+    // The ASCII bit set over a non-ASCII byte, and clear over ASCII ones.
+    #expect(ValueTracer.decodeStringSmallString(lo: 0xa9c3, hi: 0xe200_0000_0000_0000) == nil)
+    #expect(ValueTracer.decodeStringSmallString(lo: 0x6968, hi: 0xa200_0000_0000_0000) == nil)
+    // Not UTF-8, a byte past the count, and no small-string discriminator.
+    #expect(ValueTracer.decodeStringSmallString(lo: 0xc3, hi: 0xa100_0000_0000_0000) == nil)
+    #expect(ValueTracer.decodeStringSmallString(lo: 0x6968, hi: 0xe100_0000_0000_0000) == nil)
+    #expect(ValueTracer.decodeStringSmallString(lo: 0x6968, hi: 0x0200_0000_0000_0000) == nil)
 }

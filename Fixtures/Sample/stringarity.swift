@@ -25,6 +25,14 @@ public func callTwoSmall() -> Int { takeTwo("hi", 7) }
 // A large literal: count and flags in x0, the object address in x1.
 public func callTwoLarge() -> Int { takeTwo("a literal longer than fifteen bytes", 7) }
 
+// Small literals the printable-ASCII decoder refused: the empty string is
+// (0, 0xe000000000000000), "\n" is (0x0a, 0xe100000000000000), and "é" is
+// (0xa9c3, 0xa200000000000000), its ASCII bit (62) clear. In a String slot
+// each is that literal: takeTwo("", 7), takeTwo("\n", 7), takeTwo("é", 7).
+public func callTwoEmpty() -> Int { takeTwo("", 7) }
+public func callTwoNewline() -> Int { takeTwo("\n", 7) }
+public func callTwoAccent() -> Int { takeTwo("é", 7) }
+
 @inline(never) public func makeString(_ n: Int) -> String { String(repeating: "x", count: n) }
 
 // x0 is makeString's first result word and x1 its second: the String is
