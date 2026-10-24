@@ -76,3 +76,15 @@ private func body(_ functions: [String: String], _ prefix: String) throws -> Str
     #expect(Disassembler.ReferenceResolver.printableLiteralText("") == nil)
     #expect(Disassembler.ReferenceResolver.printableLiteralText("a\nb") == nil)
 }
+
+/// The folds find a call's arguments by scanning its text, and toggled at
+/// every `"`, so a literal with one escaped quote (`"q\""`) never closed:
+/// -Onone kept `Swift.String.init("q\"", 2, 1)` for `sink = "q\""`, and the
+/// whole `DefaultStringInterpolation` sequence for `"q\"\(x)"`.
+@Test func aLiteralWithAnEscapedQuoteStillFoldsIfPresent() async throws {
+    guard let functions = try await pseudo("Fixtures/Sample/libLiteralEscapes.Onone.dylib") else { return }
+    let stored = try body(functions, "LiteralEscapes.storeQuote(")
+    #expect(stored.contains(#"    "q\""\#n"#) && !stored.contains("String.init"), "\(stored)")
+    let interpolated = try body(functions, "LiteralEscapes.interpolatedQuote(")
+    #expect(interpolated.contains(#""q\"\(local_"#) && !interpolated.contains("appendLiteral"), "\(interpolated)")
+}

@@ -4774,10 +4774,11 @@ if a test was observed to fail without the fix.
   fixtures only, 3 pseudo lines each; no other fixture holds such a
   literal. Release `disasm --pseudo` changes Terminal 31 lines, TextEdit
   7, Chess 1, Clarc 35 and GoodLinks 277, each only adding backslashes
-  (equal once every backslash is deleted). The dyld-cache CFString read has no fixture: no
-  cache CFString found holds a quote or a backslash (Foundation's `\`
-  and `"` at 0x181DC33B4 and 0x181DC33B7 are plain C strings), so that
-  branch is guarded only by sharing `printableLiteralText`.
+  (equal once every backslash is deleted). The dyld-cache CFString read
+  has no fixture: no cache CFString found holds a quote or a backslash
+  (Foundation's `\` and `"` at 0x181DC33B4 and 0x181DC33B7 are plain C
+  strings), so that branch is guarded only by sharing
+  `printableLiteralText`.
 - **FIXED (soundness): a condition holding a literal with an escaped
   quote inverted wrong.** The condition inverter found top-level
   operators by toggling at every `"`, so the escaped quote in `"a\""`
@@ -4793,3 +4794,21 @@ if a test was observed to fail without the fix.
   use it. That guard is the whole blast radius: every other fixture
   view and the five apps' `--structured` and `--pseudo` are
   byte-identical.
+- **FIXED (completeness): a literal with an escaped quote did not fold.**
+  The -Onone literal and interpolation folds find a call's arguments with
+  `outermostArgumentListRange` and `splitTopLevelArguments`, which toggled
+  at every `"`, so `"q\""` never closed and both declined:
+  `literal_escapes.swift`'s `storeQuote` kept
+  `Swift.String.init("q\"", 2, 1)`. Both use `LiteralScan` now:
+  `"q\""`, and `"q\"\(local_40)"` for `interpolatedQuote`. Blast radius:
+  that fixture's pseudo and structured views only; the five apps'
+  `--pseudo` is byte-identical.
+- **OPEN (soundness): an interpolation fold restarts after a piece it
+  cannot read.** `matchStringInterpolation` is tried at every statement,
+  so when one `appendLiteral` piece does not parse, the run is retried
+  from the next append and the tail folds alone, consuming the closing
+  `String(stringInterpolation:)`: before the fix above,
+  `interpolatedQuote` rendered its init and `appendLiteral` raw, then
+  `"\(local_40)"`, which reads as the whole string. Any other unreadable
+  piece still does this. A run should fold only from its start, and
+  decline whole when a piece fails.

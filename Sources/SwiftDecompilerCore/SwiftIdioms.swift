@@ -129,15 +129,13 @@ extension DisassembledFunction {
     /// the outermost `(` and `)`), so callers can rebuild `prefix(newArgs)suffix`.
     static func outermostArgumentListRange(of expression: String) -> Range<String.Index>? {
         var depth = 0
-        var inQuote = false
+        var literal = LiteralScan()
         var groupStart: String.Index?
         var lastGroup: Range<String.Index>?
         var index = expression.startIndex
         while index < expression.endIndex {
             let character = expression[index]
-            if character == "\"" {
-                inQuote.toggle()
-            } else if !inQuote {
+            if !literal.step(character) {
                 if character == "(" {
                     if depth == 0 { groupStart = expression.index(after: index) }
                     depth += 1
@@ -278,13 +276,10 @@ extension DisassembledFunction {
         var parts: [String] = []
         var current = ""
         var depth = 0
-        var inQuote = false
+        var literal = LiteralScan()
         var previous: Character = " "
         for character in arguments {
-            if character == "\"" {
-                inQuote.toggle()
-                current.append(character)
-            } else if inQuote {
+            if literal.step(character) {
                 current.append(character)
             } else if character == "(" || character == "[" || character == "<" {
                 depth += 1

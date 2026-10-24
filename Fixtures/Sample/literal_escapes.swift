@@ -17,3 +17,8 @@ public func largeBackslash() { take("a long literal with a \\n backslash") }
 public func interpolated(_ x: Int) -> String { "say \"hi\" \(x) and a \\n slash" }
 // -Onone folds the `String.init` of a stored literal into the literal alone.
 public func storeBackslash() { sink = "c\\nd" }
+// A literal with one escaped quote. The folds found a call's arguments by
+// toggling at every `"`, so `"q\""` never closed and they declined:
+// -Onone kept `String.init("q\"", 2, 1)` and the appends it lowers to.
+public func storeQuote() { sink = "q\"" }
+public func interpolatedQuote(_ x: Int) -> String { "q\"\(x)" }
