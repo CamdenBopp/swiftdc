@@ -3302,11 +3302,62 @@ public struct Disassembler: Sendable {
 
     /// The integer registers a parameter that is not a scalar takes, for the
     /// shapes whose footprint the Swift ABI fixes whatever the image holds:
-    /// an `inout` address and a String's two words. Nil for anything else.
+    /// an `inout` address, a String's two words and an Optional scalar's
+    /// payload and tag. Nil for anything else.
     static func integerRegisterFootprint(ofParameterType type: String) -> Int? {
         if type.hasPrefix("inout "), type.count > "inout ".count { return 1 }
         if twoWordStringTypes.contains(type) { return 2 }
+        if let payload = optionalScalarPayload(ofParameterType: type) { return payload.bytes == 8 ? 2 : 1 }
         return nil
+    }
+
+    /// The payload type and size of an Optional of a fixed-width scalar,
+    /// which has no spare bits for nil: Swift passes the payload's bytes, then
+    /// a tag byte that is 1 for nil, in integer registers. An eight-byte
+    /// payload takes two, the payload in the first (a Double's bits too, not
+    /// a d register) and the tag in the second; a narrower one packs both into
+    /// one, the tag just above the payload (`Int32?`: bits 32-39). Nil for
+    /// any other type.
+    static func optionalScalarPayload(ofParameterType type: String) -> (type: String, bytes: Int)? {
+        let wrapped: String
+        if type.hasPrefix("Swift.Optional<"), type.hasSuffix(">") {
+            wrapped = String(type.dropFirst("Swift.Optional<".count).dropLast())
+        } else if type.hasSuffix("?") {
+            wrapped = String(type.dropLast())
+        } else {
+            return nil
+        }
+        switch wrapped {
+        case "Swift.Int", "Swift.UInt", "Swift.Int64", "Swift.UInt64", "Swift.Double", "Swift.CGFloat",
+             "CoreGraphics.CGFloat":
+            return (wrapped, 8)
+        case "Swift.Int32", "Swift.UInt32", "Swift.Float": return (wrapped, 4)
+        case "Swift.Int16", "Swift.UInt16": return (wrapped, 2)
+        case "Swift.Int8", "Swift.UInt8": return (wrapped, 1)
+        default: return nil
+        }
+    }
+
+    /// An Optional scalar argument from its registers, as
+    /// `.aggregate([payload, tag])` when the tag is a known 0 or 1, so the
+    /// renderer spells the payload or `nil`; a narrower payload's one register
+    /// is split at the tag byte first. Unknown otherwise: a payload under an
+    /// unknown tag is not that value.
+    static func optionalScalarArgument(_ words: [AbstractValue], payloadBytes: Int) -> AbstractValue {
+        let payload: AbstractValue, tag: UInt64
+        if words.count == 2 {
+            guard case .immediate(let bits) = words[1] else { return .unknown }
+            (payload, tag) = (words[0], bits & 0xFF)
+        } else {
+            guard case .immediate(let bits) = words.first, payloadBytes < 8 else { return .unknown }
+            let width = UInt64(payloadBytes * 8)
+            (payload, tag) = (.immediate(bits & ((1 << width) - 1)), (bits >> width) & 0xFF)
+        }
+        switch tag {
+        case 1: return .aggregate([.immediate(0), .immediate(1)])
+        case 0 where payload != .unknown: return .aggregate([payload, .immediate(0)])
+        default: return .unknown
+        }
     }
 
     /// Maps each source-parameter index that is a no-payload enum to that enum's
@@ -4191,6 +4242,9 @@ public struct Disassembler: Sendable {
                         defer { integer += slot.registers }
                         let words = (integer ..< integer + slot.registers).map {
                             $0 < values.count ? sanitizeValue(values[$0]) : AbstractValue.unknown
+                        }
+                        if let payload = Self.optionalScalarPayload(ofParameterType: slot.type) {
+                            return Self.optionalScalarArgument(words, payloadBytes: payload.bytes)
                         }
                         if words.count == 2 {
                             return swiftStringLiteral(words[0], words[1]) != nil ? .aggregate(words) : .unknown
@@ -5110,6 +5164,21 @@ public struct Disassembler: Sendable {
                     if case .aggregate(let words) = values[index], words.count == 2,
                        Self.twoWordStringTypes.contains(types[index]) {
                         parts.append(swiftStringLiteral(words[0], words[1]) ?? unknownRenderedValue())
+                        index += 1
+                        continue
+                    }
+                    // An Optional scalar's payload and tag: `nil`, or the payload
+                    // as its own type.
+                    if case .aggregate(let words) = values[index], words.count == 2,
+                       let payload = Self.optionalScalarPayload(ofParameterType: types[index]) {
+                        if words[1] == .immediate(1) {
+                            parts.append("nil")
+                        } else if case .immediate(let bits) = words[0],
+                                  let constant = Self.renderTypedConstant(bits: bits, type: payload.type) {
+                            parts.append(constant)
+                        } else {
+                            parts.append(renderValue(words[0], depth: depth))
+                        }
                         index += 1
                         continue
                     }

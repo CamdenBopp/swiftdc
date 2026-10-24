@@ -4044,9 +4044,32 @@ if a test was observed to fail without the fix.
   `(10, 0xe100000000000000)`) and a non-ASCII small string (discriminator
   `0xa_`) are rejected by `ValueTracer.decodeSmallString`, which the
   positional path shares; the typed String slot could accept them.
-- **OPEN (soundness): `Int?` and other two-register parameters are still
-  positional.** `takeOptInt(_: Int?, _: Int)` reads `takeOptInt(?, ?, 7)`
-  (a payload and a tag byte in x0 and x1, then x2).
+- **FIXED (soundness): an Optional scalar parameter was read one argument
+  per register.** An Optional of a fixed-width scalar has no spare bits for
+  nil, so Swift passes the payload's bytes and then a tag byte that is 1
+  for nil, and `swiftCallArgumentSlots` declined it, leaving the
+  positional fallback. `optionalscalars.swift` (-O): `takeOptInt(nil, 7)`
+  rendered `takeOptInt(0, 1, 7)`, `takeOptDouble(2.5, 7)` rendered
+  `takeOptDouble(0x4004000000000000, 0, 7)`, and `takeOptInt32(nil, 7)`,
+  whose payload and tag share x0, rendered `takeOptInt32(0x100000000, 7)`.
+  Probed lowerings, one -O caller per type: an eight-byte payload
+  (`Int?`, `UInt?`, `Int64?`, `UInt64?`, `Double?`, `CGFloat?`) takes two
+  integer registers, the payload in the first, a Double's bits too, and
+  the tag in the second; a narrower one (`Int32?`, `UInt32?`, `Int16?`,
+  `UInt16?`, `Int8?`, `UInt8?`, `Float?`) packs payload and tag into one,
+  the tag just above the payload. `Bool?`, pointer and class optionals use
+  an extra inhabitant and keep their one-register reading.
+  `integerRegisterFootprint` now sizes those optionals
+  (`optionalScalarPayload`), `optionalScalarArgument` keeps a slot only
+  when its tag is a known 0 or 1, and the renderer spells `nil` or the
+  payload as its own type: `takeOptInt(nil, 7)`, `takeOptInt(5, 7)`,
+  `takeOptDouble(2.5, 7)`, `takeOptInt32(nil, 7)`, and `?` for an
+  unknown optional. Blast radius: the two fixtures only (stringarity's
+  `takeOptInt(?, ?, 7)` reads `takeOptInt(?, 7)`); release
+  `disasm --pseudo` of Terminal, TextEdit, Chess and Clarc is
+  byte-identical, and GoodLinks changes two calls to FoundationModels'
+  `SamplingMode.random`, whose overloads both take a `UInt64?` seed, from
+  `random()` to `random(?, ?)`.
 
 ## 2026-10-23: fixtures the presence check did not list
 

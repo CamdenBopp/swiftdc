@@ -60,9 +60,9 @@ private let fixture = "Fixtures/Sample/libStringArity.dylib"
     #expect(slots("M.f(Swift.String, Swift.String, Swift.String, Swift.String, Swift.Int) -> ()") == nil)
     // A typed throw may add an error pointer parameter.
     #expect(slots("M.f(Swift.String) throws(M.E) -> ()") == nil)
-    // Still declined: Int? (a payload and a tag), a closure, an existential,
-    // a generic, and an instance method of a type not known to be a class.
-    #expect(slots("M.f(Swift.Optional<Swift.Int>, Swift.Int) -> Swift.Int") == nil)
+    // Still declined: a closure, an existential, a generic, and an instance
+    // method of a type not known to be a class. (`Int?` is laid out in
+    // `OptionalScalarTests`.)
     #expect(slots("M.f(() -> Swift.Int, Swift.Int) -> Swift.Int") == nil)
     #expect(slots("M.f(Swift.CustomStringConvertible, Swift.Int) -> Swift.Int") == nil)
     #expect(slots("M.f<A>(A, Swift.String) -> Swift.Int") == nil)

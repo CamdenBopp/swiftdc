@@ -110,6 +110,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libWritablePointer.dylib",
         "Fixtures/Sample/libWritableTables.dylib",
         "Fixtures/Sample/libStringArity.dylib",
+        "Fixtures/Sample/libOptionalScalars.dylib",
         "Fixtures/Sample/libABISource.dylib",
         "Fixtures/Sample/libABISource.opt.dylib",
         "Fixtures/Sample/libABISource.resilient.dylib",

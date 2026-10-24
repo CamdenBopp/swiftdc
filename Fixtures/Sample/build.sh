@@ -208,6 +208,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name CallArity callarity.swif
 echo "==> String and inout parameter footprints (stringarity.swift, -O): two registers for a String, one for inout"
 $SWIFTC -parse-as-library -O -emit-library -module-name StringArity stringarity.swift -o libStringArity.dylib
 
+echo "==> Optional scalar parameter footprints (optionalscalars.swift, -O): a payload and a tag byte"
+$SWIFTC -parse-as-library -O -emit-library -module-name OptionalScalars optionalscalars.swift -o libOptionalScalars.dylib
+
 echo "==> calls that take fewer arguments than the live registers: a metadata accessor and swift_getObjectType from @objc initializers (runtimearity.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name RuntimeArity runtimearity.swift -o libRuntimeArity.dylib
 

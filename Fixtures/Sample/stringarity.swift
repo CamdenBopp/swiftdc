@@ -46,7 +46,8 @@ public func callOptString(_ p: UnsafePointer<String?>) -> Int { takeOptString(p.
 // nil is not a literal: takeOptString(nil, 7) must not render as a string.
 public func callOptStringNil() -> Int { takeOptString(nil, 7) }
 
-// Int? is a payload and a tag byte, outside the layout: unchanged.
+// Int? is a payload and a tag byte in two registers (optionalscalars.swift
+// covers its layout): takeOptInt(?, 7).
 public func callOptInt(_ p: UnsafePointer<Int?>) -> Int { takeOptInt(p.pointee, 7) }
 
 public final class Box {
