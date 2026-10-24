@@ -110,8 +110,18 @@ public enum BinaryLoader {
         guard let type = cpu.type else { return "unknown" }
         switch type {
         case .arm64:
-            if case .arm64(.arm64e)? = cpu.subtype { return "arm64e" }
-            return "arm64"
+            // By the raw subtype, capability bits masked, with lipo's and
+            // llvm-objdump's names: MachOKit does not know ARM64E_X1 (12),
+            // which then read as "arm64", so `--arch arm64` chose Terminal's
+            // arm64e.x1 slice and llvm-objdump, which has no arm64 slice to
+            // give, listed nothing.
+            switch UInt32(bitPattern: cpu.subtypeRawValue) & 0x00ff_ffff {
+            case 0: return "arm64"
+            case 1: return "arm64v8"
+            case 2: return "arm64e"
+            case 12: return "arm64e.x1"
+            case let subtype: return "arm64 (subtype \(subtype))"
+            }
         case .x86_64:
             return "x86_64"
         default:

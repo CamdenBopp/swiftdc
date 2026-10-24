@@ -3839,11 +3839,9 @@ if a test was observed to fail without the fix.
   argument or result loaded from `int (*hook)(const char *) = puts;`
   renders `puts`. Class refs and selrefs sit in writable sections too and
   must stay named, so the fix needs a section rule of its own.
-- **OPEN (robustness): an unfiltered plain listing of an arm64e-only fat
-  binary fails with `--arch arm64`.** `swiftdc disasm Terminal --arch
-  arm64` (slices `arm64e` and `arm64e.x1`) reports `llvm-objdump produced
-  0 lines but no instruction was recognised`, while `--arch arm64e`, a
-  `-f` filter and `--pseudo` all work.
+- **FIXED (diagnostics, see "slice names" below): an unfiltered plain
+  listing of an arm64e-only fat binary with `--arch arm64` failed as a
+  parser defect.**
 - **FIXED (completeness): a resolved indirect tail call did not forward
   its result.** `selftail.swift` (-O): `countdown` ends `br x1` through
   self's vtable, resolved to `SelfTail.Counter.countdown` with no edge
@@ -4451,8 +4449,8 @@ if a test was observed to fail without the fix.
 
 ## 2026-10-23: known arity and in-image name twins
 
-- **FIXED (soundness): an in-image function named like a C library
-  function took the library's arity.** `knownCArity` is looked up by name,
+- **FIXED (80235e1, soundness): an in-image function named like a C
+  library function took the library's arity.** `knownCArity` is looked up by name,
   so a vendored function sharing a libc entry's name got its arity in the
   c-arity layout, the render-time trim, the body-reads gate, the tracer's
   passed registers and the summaries' call reads. `arity_twin.c` (-O2)
@@ -4479,4 +4477,21 @@ if a test was observed to fail without the fix.
   renders `()`.** `sink()` reads x0, but its argument is unknown and the
   trailing unknown is trimmed; padding to the summary's count would
   render `sink(?)`.
+
+## 2026-10-23: slice names
+
+- **FIXED (diagnostics): `--arch arm64` chose an arm64e.x1 slice, and the
+  listing then blamed a parser defect.** `BinaryLoader.archName` named an
+  ARM64 slice through MachOKit's subtype enum, which does not know
+  `CPU_SUBTYPE_ARM64E_X1` (12, mach/machine.h:347), so Terminal's two
+  slices read "arm64e, arm64". `--arch arm64` selected the x1 slice for
+  the in-process paths, and the unfiltered listing asked llvm-objdump for
+  an arm64 slice the file does not have, then failed with "llvm-objdump
+  produced 0 lines … This is a parser defect, not an empty binary". Slices
+  are now named by the raw subtype, capability bits masked, as lipo and
+  llvm-objdump name them (arm64, arm64v8, arm64e, arm64e.x1, else
+  `arm64 (subtype n)`): `--arch arm64` on Terminal reports "Architecture
+  'arm64' not found. Available: arm64e, arm64e.x1", and `--arch arm64e.x1`
+  lists the slice, `pacibsppc` and all. Every fixture view and the five
+  apps are byte-identical.
 
