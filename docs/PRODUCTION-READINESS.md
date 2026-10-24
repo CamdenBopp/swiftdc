@@ -5238,4 +5238,9 @@ if a test was observed to fail without the fix.
   (1.2 s each), an integer literal chain in `TransitiveReadsTests`
   (0.6 s), array concatenations in `FlagsAcrossCallTests` (0.6 s); in
   sources `enrichCallArguments` (0.9 s) and `ValueTracer.apply` (0.3 s).
+- **DEAD END (speed): typing the slowest test expressions.** Rewriting
+  the three worst (the `CLIDiagnosticsTests` helper, the `UInt32` literal,
+  the byte-array joins; about 3.7 s of type checking) left a body edit's
+  `--build-tests` at 28.54 s median against 28.87 s, three rounds each:
+  within noise. The test module's critical path is elsewhere. Reverted.
 
