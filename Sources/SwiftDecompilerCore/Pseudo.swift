@@ -680,7 +680,11 @@ public extension DisassembledFunction {
              // swift/include/swift/Runtime/HeapObject.h:211, 505, 627, 641 and
              // 883: one reference or object each.
              "swift_setDeallocating", "swift_unownedRetainStrong", "swift_weakLoadStrong", "swift_weakDestroy",
-             "swift_unknownObjectWeakDestroy":
+             "swift_unknownObjectWeakDestroy",
+             // malloc/_malloc.h:56, `void *(size_t)`; objc/runtime.h:1526,
+             // `void (id)`; CFBase.h:781, `void (CFTypeRef)`. With nothing
+             // tracked each read `malloc()`, a call that takes nothing.
+             "malloc", "objc_enumerationMutation", "CFRelease":
             return 1
         case "objc_opt_isKindOfClass", "objc_opt_respondsToSelector",
              "objc_storeStrong", "objc_storeWeak", "objc_initWeak",
@@ -695,7 +699,13 @@ public extension DisassembledFunction {
              // and 830, `(metadata, object)` or `(ref, value)`, and Enum.h:155,
              // `(value, enumType)`.
              "swift_initStackObject", "swift_initStaticObject", "swift_weakInit", "swift_weakAssign",
-             "swift_unknownObjectWeakInit", "swift_unknownObjectWeakAssign", "swift_getEnumCaseMultiPayload":
+             "swift_unknownObjectWeakInit", "swift_unknownObjectWeakAssign", "swift_getEnumCaseMultiPayload",
+             // _strings.h:75, `void (void *, size_t)`; dispatch/queue.h:248
+             // and :323, `void (dispatch_queue_t, dispatch_block_t)`;
+             // swift/include/swift/Runtime/Metadata.h:1044, `(pattern,
+             // arguments)`, and Heap.h:34, `void *(size_t bytes, size_t
+             // alignMask)`.
+             "bzero", "dispatch_async", "dispatch_sync", "swift_getKeyPath", "swift_slowAlloc":
             return 2
         case "memcpy", "memmove", "memset",
              // swift/include/swift/Runtime/RuntimeFunctions.def
@@ -709,7 +719,11 @@ public extension DisassembledFunction {
              // `(value, enumType, whichCase)`; Error.h:63, `(errorObject,
              // scratch, out)`.
              "swift_allocObject", "swift_deallocObject", "swift_deallocClassInstance",
-             "swift_storeEnumTagMultiPayload", "swift_getErrorValue":
+             "swift_storeEnumTagMultiPayload", "swift_getErrorValue",
+             // swift/include/swift/Runtime/Once.h:33, `(predicate, fn,
+             // context)`, and Heap.h:49, `void (void *ptr, size_t bytes,
+             // size_t alignMask)`.
+             "swift_once", "swift_slowDealloc":
             return 3
         case "swift_arrayInitWithCopy", "swift_arrayInitWithTakeFrontToBack", "swift_arrayInitWithTakeBackToFront":
             return 4

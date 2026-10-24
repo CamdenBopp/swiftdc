@@ -3471,6 +3471,11 @@ if a test was observed to fail without the fix.
   and 308; since 2026-10-23 only a value type's instance method or a
   parameter outside the String and `inout` footprints), and a C callee of unknown arity (`bzero()`, `malloc()`) each
   print only the operands that were tracked, so nothing reads as nothing.
+  Since 2026-10-24 `bzero`, `malloc`, `objc_enumerationMutation`,
+  `CFRelease`, `dispatch_async`, `dispatch_sync`, `swift_getKeyPath`,
+  `swift_slowAlloc`, `swift_once` and `swift_slowDealloc` are in the table
+  too (below); a C callee absent from it still prints only what was
+  tracked.
 
 ## 2026-10-22: findings from a read-only audit
 
@@ -5030,3 +5035,17 @@ if a test was observed to fail without the fix.
   `Swift.String.Iterator.next(?)` read `next()` three times on Clarc, a
   call that takes nothing. Measured at 933ccbd and reverted; it needs the
   lone high word kept as a value first.
+- **FIXED (soundness): ten common runtime and C functions read as taking
+  fewer arguments than they do.** With nothing tracked, a call of no
+  known arity printed only the operands the tracer knew: `bzero()` 376
+  times across the five apps, `swift_getKeyPath()` 173, `malloc()` 55,
+  `objc_enumerationMutation()` 46. Each now has its declared arity
+  (`_strings.h:75`, `_malloc.h:56`, `objc/runtime.h:1526`, `CFBase.h:781`,
+  `dispatch/queue.h:248` and `:323`, and swift/include/swift/Runtime
+  `Metadata.h:1044`, `Heap.h:34` and `:49`, `Once.h:33`), and
+  `untracked_args.c` reads `bzero(?, ?)` and `malloc(?)`. Release `disasm
+  --pseudo` changes Terminal 51 lines, TextEdit 3, Chess 19, Clarc 1,668
+  and GoodLinks 5,608, every one a call to one of them now at its
+  declared count: `swift_once` from 2 arguments to 3 (3,777 on
+  GoodLinks), `swift_getKeyPath` from 1 to 2, `bzero` from 0 to 2, and 7
+  GoodLinks `bzero` calls from 3 to 2, a stale third register dropped.

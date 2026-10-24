@@ -13,6 +13,9 @@ func untrackedOperandsKeepTheCalleesKnownArityIfPresent(path: String) async thro
     let expected: [String: String] = [
         "_moveJob": path.hasSuffix(".opt.dylib") ? "memmove(?, ?, ?)" : "__memmove_chk(?, ?, ?, -1)",
         "_freeJob": "free(?)",
+        // bzero and malloc had no known arity: `bzero()`, `malloc()`.
+        "_clearJob": path.hasSuffix(".opt.dylib") ? "bzero(?, ?)" : "__memset_chk(?, 0, ?, -1)",
+        "_growJob": "malloc(?)",
     ]
     for (name, call) in expected.sorted(by: { $0.key < $1.key }) {
         guard let function = functions.first(where: { $0.displayName == name }) else {
@@ -24,5 +27,18 @@ func untrackedOperandsKeepTheCalleesKnownArityIfPresent(path: String) async thro
                 .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
             #expect(lines.first == call, "\(path) \(name) \(view):\n\(text)")
         }
+    }
+}
+
+/// Each entry the known-arity table gained for a call the apps printed
+/// with nothing tracked as taking nothing, checked against its header.
+@Test func theKnownArityTableTakesEachHeadersParameters() {
+    let expected: [String: Int] = [
+        "malloc": 1, "objc_enumerationMutation": 1, "CFRelease": 1,
+        "bzero": 2, "dispatch_async": 2, "dispatch_sync": 2, "swift_getKeyPath": 2, "swift_slowAlloc": 2,
+        "swift_once": 3, "swift_slowDealloc": 3,
+    ]
+    for (callee, arity) in expected.sorted(by: { $0.key < $1.key }) {
+        #expect(DisassembledFunction.knownCArity(of: callee) == arity, "\(callee)")
     }
 }

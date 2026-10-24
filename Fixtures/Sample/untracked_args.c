@@ -3,9 +3,11 @@
 // no call site is recorded, and a renderer that reads arity from the
 // recorded values printed `memmove()`: a call that takes nothing.
 //
-// True behaviour: moveJob calls memmove(j->dst, j->src, j->n) and freeJob
-// calls free(j->dst); each passes all of its parameters. -O0 checks the
-// length, so moveJob calls __memmove_chk(…, -1) there.
+// True behaviour: moveJob calls memmove(j->dst, j->src, j->n), freeJob
+// calls free(j->dst), clearJob calls bzero(j->dst, j->n) and growJob
+// calls malloc(j->n); each passes all of its parameters. -O0 checks the
+// length, so moveJob calls __memmove_chk(…, -1) there, and clearJob
+// ___bzero_chk.
 #include <stdlib.h>
 #include <string.h>
 
@@ -13,3 +15,5 @@ struct job { void *dst; void *src; size_t n; };
 
 void moveJob(struct job *j) { memmove(j->dst, j->src, j->n); }
 void freeJob(struct job *j) { free(j->dst); }
+void clearJob(struct job *j) { bzero(j->dst, j->n); }
+void *growJob(struct job *j) { return malloc(j->n); }
