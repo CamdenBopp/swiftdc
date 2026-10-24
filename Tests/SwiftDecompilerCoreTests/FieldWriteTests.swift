@@ -92,3 +92,21 @@ import Testing
     let speak = try #require(dogs.first { $0.displayName.hasPrefix("Sample.Dog.speak()") }).renderPseudo()
     #expect(speak.contains("self.breed[0..<8], self.breed[8..<16])"), Comment(rawValue: speak))
 }
+
+/// A paired store over two ivars that did not render as a tuple of them
+/// fell through to the single-value form, which takes the first register:
+/// `objc_pair_stores.m`'s `packC:` (`stp x2, x9, [x0, #0x18]`, x9 never
+/// written) rendered `self->{_c, _d} = arg0`, as if `_d` took part of a.
+/// Such a store now shows no value; `setBoth:d:` keeps its tuple.
+@Test func aPairStoreOverTwoFieldsClaimsNoSingleValueIfPresent() async throws {
+    let path = "Fixtures/Sample/libObjCPairStores.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName == name }, "no \(name)").renderPseudo()
+    }
+    let packC = try text("-[SDPairStores packC:]")
+    #expect(packC.contains("self->{_c, _d} = …"), Comment(rawValue: packC))
+    let both = try text("-[SDPairStores setBoth:d:]")
+    #expect(both.contains("(self->_c, self->_d) = (arg0, arg1)"), Comment(rawValue: both))
+}

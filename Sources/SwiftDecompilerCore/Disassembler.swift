@@ -5349,6 +5349,10 @@ public struct Disassembler: Sendable {
                     break
                 }
             }
+            // A pair store over several fields that is no tuple of them holds
+            // two values, and the first is not the span's: `stp x2, x9` over
+            // `_c` and `_d`, x9 unknown, rendered `self->{_c, _d} = arg0`.
+            if field.names.count > 1, access.storedValues != nil { return "\(path) = …" }
             guard let rawValue = access.storedValue else { return "\(path) = …" }
             let value = sanitizeValue(rawValue)
             guard value != .unknown else { return "\(path) = …" }

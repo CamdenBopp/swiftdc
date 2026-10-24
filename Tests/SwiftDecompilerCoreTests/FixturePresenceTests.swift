@@ -149,6 +149,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libFieldWrites.dylib",
         "Fixtures/Sample/libObjCFieldCopy.dylib",
         "Fixtures/Sample/libObjCFieldCopy.O0.dylib",
+        "Fixtures/Sample/libObjCPairStores.dylib",
         "Fixtures/Sample/libArityTwin.dylib",
         "Fixtures/Sample/libLibcTwins.dylib",
     ]

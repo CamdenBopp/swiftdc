@@ -3547,6 +3547,16 @@ if a test was observed to fail without the fix.
   change: two A/B sets gave +1.6% and -1.3%, and one binary's rounds span
   1121 G to 1158 G. Reading emptiness field by field instead of comparing
   with `Facts()` measured 1127.2 G against 1121.9 G and was not kept.
+- **FIXED (soundness): a pair store over two fields that was no tuple took
+  the first register's value.** `fieldWrite` fell through to the
+  single-value form, so `objc_pair_stores.m`'s `packC:` (`stp x2, x9,
+  [x0, #0x18]`, x9 unknown) rendered `self->{_c, _d} = arg0`. A pair
+  store over several fields that is no tuple shows no value:
+  `self->{_c, _d} = …`. Blast radius: that one fixture line; release
+  `disasm --pseudo` of TextEdit, Chess, Clarc and GoodLinks is
+  byte-identical, and Terminal changes two lines: a two-int span's
+  `-= 1` taken from one register now reads `= …`, and a four-int span
+  zeroed by `stp q0, q0` reads `= …` where it read `= (0, 0)`.
 - **OPEN (completeness): a store into two Swift fields at once is noted
   but never printed.** `stp x0, x1, [x20]` in a mutating
   `set(_ x: Int, _ y: Int) { a = x; b = y }` (-O) is noted
