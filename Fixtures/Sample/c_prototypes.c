@@ -21,7 +21,10 @@
 // context is in x0, the CGRect in d0-d3, so only the context is placed and
 // the rect is `?`. offsetConstant calls CGRectOffset(CGRectMake(1, 2, 3,
 // 4), 5, 6): the rect is d0-d3 and the offsets d4 and d5, so a layout that
-// took the rect as one register would read 2.0 and 3.0 as the offsets.
+// took the rect as one register would read 2.0 and 3.0 as the offsets. The
+// CGRect is a homogeneous float aggregate, so the offsets that follow it are
+// placed: CGRectOffset(?, 5.0, 6.0). drawNull calls CGContextDrawImage(NULL,
+// rect, NULL): the context in x0, the rect in d0-d3, the image in x1.
 #define GL_SILENCE_DEPRECATION
 #include <OpenGL/gl.h>
 #include <CoreGraphics/CoreGraphics.h>
@@ -58,3 +61,5 @@ double parseThenNotify(const char *text) {
 void fillNull(CGRect r) { CGContextFillRect(NULL, r); }
 
 CGRect offsetConstant(void) { return CGRectOffset(CGRectMake(1, 2, 3, 4), 5, 6); }
+
+void drawNull(CGRect r) { CGContextDrawImage(NULL, r, NULL); }

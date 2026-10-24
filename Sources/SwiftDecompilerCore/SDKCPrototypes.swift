@@ -6,8 +6,10 @@
 /// void, `i` an integer or pointer, `f` float, `d` double, `s` a struct,
 /// union, vector, complex or 128-bit value, `x` a type the generator could
 /// not classify) and the register bank of each parameter in order (`i`,
-/// `f`, `d`, or `s` for one that takes no single register or could not be
-/// classified), with `...` for a variadic one.
+/// `f`, `d`, `D<n>` or `F<n>` for a struct of `n` doubles or floats
+/// passed in `n` v registers (an HFA such as CGRect, `D4`), or `s` for
+/// any other struct or a type that could not be classified), with `...`
+/// for a variadic one.
 enum SDKCPrototypes {
     static let table: [String: String] = {
         var table: [String: String] = [:]
@@ -230,7 +232,7 @@ AVCaptureReactionSystemImageNameForType i i
 AVCaptureTimecodeAdvancedByFrames s si
 AVCaptureTimecodeCreateMetadataSampleBufferAssociatedWithPresentationTimeStamp i ss
 AVCaptureTimecodeCreateMetadataSampleBufferForDuration i ss
-AVMakeRectWithAspectRatioInsideRect s ss
+AVMakeRectWithAspectRatioInsideRect s D2D4
 AVSampleBufferAttachContentKey i iii
 AXAPIEnabled i 
 AXAnimatedImagesEnabled i 
@@ -743,7 +745,7 @@ CAClockStart i i
 CAClockStop i i
 CAClockTranslateTime i iiii
 CACurrentMediaTime d 
-CAFrameRateRangeIsEqualToRange i ss
+CAFrameRateRangeIsEqualToRange i F3F3
 CAFrameRateRangeMake s fff
 CAShow v i
 CAShowFile v ii
@@ -1794,50 +1796,50 @@ CGConfigureDisplayWithDisplayMode i iiii
 CGContextAddArc v idddddi
 CGContextAddArcToPoint v iddddd
 CGContextAddCurveToPoint v idddddd
-CGContextAddEllipseInRect v is
+CGContextAddEllipseInRect v iD4
 CGContextAddLineToPoint v idd
 CGContextAddLines v iii
 CGContextAddPath v ii
 CGContextAddQuadCurveToPoint v idddd
-CGContextAddRect v is
+CGContextAddRect v iD4
 CGContextAddRects v iii
 CGContextBeginPage v ii
 CGContextBeginPath v i
 CGContextBeginTransparencyLayer v ii
-CGContextBeginTransparencyLayerWithRect v isi
-CGContextClearRect v is
+CGContextBeginTransparencyLayerWithRect v iD4i
+CGContextClearRect v iD4
 CGContextClip v i
-CGContextClipToMask v isi
-CGContextClipToRect v is
+CGContextClipToMask v iD4i
+CGContextClipToRect v iD4
 CGContextClipToRects v iii
 CGContextClosePath v i
 CGContextConcatCTM v is
-CGContextConvertPointToDeviceSpace s is
-CGContextConvertPointToUserSpace s is
-CGContextConvertRectToDeviceSpace s is
-CGContextConvertRectToUserSpace s is
-CGContextConvertSizeToDeviceSpace s is
-CGContextConvertSizeToUserSpace s is
+CGContextConvertPointToDeviceSpace s iD2
+CGContextConvertPointToUserSpace s iD2
+CGContextConvertRectToDeviceSpace s iD4
+CGContextConvertRectToUserSpace s iD4
+CGContextConvertSizeToDeviceSpace s iD2
+CGContextConvertSizeToUserSpace s iD2
 CGContextCopyPath i i
-CGContextDrawConicGradient v iisd
-CGContextDrawImage v isi
-CGContextDrawImageApplyingToneMapping i isiii
-CGContextDrawLayerAtPoint v isi
-CGContextDrawLayerInRect v isi
-CGContextDrawLinearGradient v iissi
-CGContextDrawPDFDocument v isii
+CGContextDrawConicGradient v iiD2d
+CGContextDrawImage v iD4i
+CGContextDrawImageApplyingToneMapping i iD4iii
+CGContextDrawLayerAtPoint v iD2i
+CGContextDrawLayerInRect v iD4i
+CGContextDrawLinearGradient v iiD2D2i
+CGContextDrawPDFDocument v iD4ii
 CGContextDrawPDFPage v ii
 CGContextDrawPath v ii
-CGContextDrawRadialGradient v iisdsdi
+CGContextDrawRadialGradient v iiD2dD2di
 CGContextDrawShading v ii
-CGContextDrawTiledImage v isi
+CGContextDrawTiledImage v iD4i
 CGContextEOClip v i
 CGContextEOFillPath v i
 CGContextEndPage v i
 CGContextEndTransparencyLayer v i
-CGContextFillEllipseInRect v is
+CGContextFillEllipseInRect v iD4
 CGContextFillPath v i
-CGContextFillRect v is
+CGContextFillRect v iD4
 CGContextFillRects v iii
 CGContextFlush v i
 CGContextGetCTM s i
@@ -1853,7 +1855,7 @@ CGContextGetTypeID i
 CGContextGetUserSpaceToDeviceSpaceTransform s i
 CGContextIsPathEmpty i i
 CGContextMoveToPoint v idd
-CGContextPathContainsPoint i isi
+CGContextPathContainsPoint i iD2i
 CGContextRelease v i
 CGContextReplacePathWithStrokedPath v i
 CGContextResetClip v i
@@ -1889,12 +1891,12 @@ CGContextSetLineDash v idii
 CGContextSetLineJoin v ii
 CGContextSetLineWidth v id
 CGContextSetMiterLimit v id
-CGContextSetPatternPhase v is
+CGContextSetPatternPhase v iD2
 CGContextSetRGBFillColor v idddd
 CGContextSetRGBStrokeColor v idddd
 CGContextSetRenderingIntent v ii
-CGContextSetShadow v isd
-CGContextSetShadowWithColor v isdi
+CGContextSetShadow v iD2d
+CGContextSetShadowWithColor v iD2di
 CGContextSetShouldAntialias v ii
 CGContextSetShouldSmoothFonts v ii
 CGContextSetShouldSubpixelPositionFonts v ii
@@ -1912,11 +1914,11 @@ CGContextShowGlyphsAtPositions v iiii
 CGContextShowGlyphsWithAdvances v iiii
 CGContextShowText v iii
 CGContextShowTextAtPoint v iddii
-CGContextStrokeEllipseInRect v is
+CGContextStrokeEllipseInRect v iD4
 CGContextStrokeLineSegments v iii
 CGContextStrokePath v i
-CGContextStrokeRect v is
-CGContextStrokeRectWithWidth v isd
+CGContextStrokeRect v iD4
+CGContextStrokeRectWithWidth v iD4d
 CGContextSynchronize v i
 CGContextSynchronizeAttributes v i
 CGContextTranslateCTM v idd
@@ -1951,7 +1953,7 @@ CGDisplayCopyAllDisplayModes i ii
 CGDisplayCopyColorSpace i i
 CGDisplayCopyDisplayMode i i
 CGDisplayCreateImage i i
-CGDisplayCreateImageForRect i is
+CGDisplayCreateImageForRect i iD4
 CGDisplayCreateUUIDFromDisplayID i i
 CGDisplayCurrentMode i i
 CGDisplayFade i iffffffi
@@ -1986,7 +1988,7 @@ CGDisplayModeIsUsableForDesktopGUI i i
 CGDisplayModeRelease v i
 CGDisplayModeRetain i i
 CGDisplayModelNumber i i
-CGDisplayMoveCursorToPoint i is
+CGDisplayMoveCursorToPoint i iD2
 CGDisplayPixelsHigh i i
 CGDisplayPixelsWide i i
 CGDisplayPrimaryDisplay i i
@@ -2023,7 +2025,7 @@ CGEventCreateCopy i i
 CGEventCreateData i ii
 CGEventCreateFromData i ii
 CGEventCreateKeyboardEvent i iii
-CGEventCreateMouseEvent i iisi
+CGEventCreateMouseEvent i iiD2i
 CGEventCreateScrollWheelEvent i iiii...
 CGEventCreateScrollWheelEvent2 i iiiiii
 CGEventCreateSourceFromEvent i i
@@ -2043,7 +2045,7 @@ CGEventPostToPid v ii
 CGEventSetDoubleValueField v iid
 CGEventSetFlags v ii
 CGEventSetIntegerValueField v iii
-CGEventSetLocation v is
+CGEventSetLocation v iD2
 CGEventSetSource v ii
 CGEventSetTimestamp v ii
 CGEventSetType v ii
@@ -2109,8 +2111,8 @@ CGGetActiveDisplayList i iii
 CGGetDisplayTransferByFormula i iiiiiiiiii
 CGGetDisplayTransferByTable i iiiiii
 CGGetDisplaysWithOpenGLDisplayMask i iiii
-CGGetDisplaysWithPoint i siii
-CGGetDisplaysWithRect i siii
+CGGetDisplaysWithPoint i D2iii
+CGGetDisplaysWithRect i D4iii
 CGGetEventTapList i iii
 CGGetLastMouseDelta v ii
 CGGetOnlineDisplayList i iii
@@ -2131,7 +2133,7 @@ CGImageCreateCopyWithColorSpace i ii
 CGImageCreateCopyWithContentAverageLightLevel i if
 CGImageCreateCopyWithContentHeadroom i fi
 CGImageCreateWithContentHeadroom i fiiiiiiiiiii
-CGImageCreateWithImageInRect i is
+CGImageCreateWithImageInRect i iD4
 CGImageCreateWithJPEGDataProvider i iiii
 CGImageCreateWithMask i ii
 CGImageCreateWithMaskingColors i ii
@@ -2268,7 +2270,7 @@ CGLTexImageIOSurface2D i iiiiiiiii
 CGLTexImagePBuffer i iii
 CGLUnlockContext i i
 CGLUpdateContext i i
-CGLayerCreateWithContext i isi
+CGLayerCreateWithContext i iD2i
 CGLayerGetContext i i
 CGLayerGetSize s i
 CGLayerGetTypeID i 
@@ -2294,7 +2296,7 @@ CGPDFContentStreamGetResource i iii
 CGPDFContentStreamGetStreams i i
 CGPDFContentStreamRelease v i
 CGPDFContentStreamRetain i i
-CGPDFContextAddDestinationAtPoint v iis
+CGPDFContextAddDestinationAtPoint v iiD2
 CGPDFContextAddDocumentMetadata v ii
 CGPDFContextAddStructureTreeRootChild i ii
 CGPDFContextBeginMarkedContentSequence i ii
@@ -2309,12 +2311,12 @@ CGPDFContextEndMarkedContentSequence v i
 CGPDFContextEndObjectReference v i
 CGPDFContextEndPage v i
 CGPDFContextEndTag v i
-CGPDFContextSetDestinationForRect v iis
+CGPDFContextSetDestinationForRect v iiD4
 CGPDFContextSetIDTree v ii
 CGPDFContextSetOutline v ii
 CGPDFContextSetPageTagStructureTree v ii
 CGPDFContextSetParentTree v ii
-CGPDFContextSetURLForRect v iis
+CGPDFContextSetURLForRect v iiD4
 CGPDFDictionaryApplyBlock v iii
 CGPDFDictionaryApplyFunction v iii
 CGPDFDictionaryGetArray i iii
@@ -2362,7 +2364,7 @@ CGPDFOperatorTableSetCallback v iii
 CGPDFPageGetBoxRect s ii
 CGPDFPageGetDictionary i i
 CGPDFPageGetDocument i i
-CGPDFPageGetDrawingTransform s iisii
+CGPDFPageGetDrawingTransform s iiD4ii
 CGPDFPageGetPageNumber i i
 CGPDFPageGetRotationAngle i i
 CGPDFPageGetTypeID i 
@@ -2408,19 +2410,19 @@ CGPSConverterIsConverting i i
 CGPathAddArc v iidddddi
 CGPathAddArcToPoint v iiddddd
 CGPathAddCurveToPoint v iidddddd
-CGPathAddEllipseInRect v iis
+CGPathAddEllipseInRect v iiD4
 CGPathAddLineToPoint v iidd
 CGPathAddLines v iiii
 CGPathAddPath v iii
 CGPathAddQuadCurveToPoint v iidddd
-CGPathAddRect v iis
+CGPathAddRect v iiD4
 CGPathAddRects v iiii
 CGPathAddRelativeArc v iiddddd
-CGPathAddRoundedRect v iisdd
+CGPathAddRoundedRect v iiD4dd
 CGPathApply v iii
 CGPathApplyWithBlock v ii
 CGPathCloseSubpath v i
-CGPathContainsPoint i iisi
+CGPathContainsPoint i iiD2i
 CGPathCreateCopy i i
 CGPathCreateCopyByDashingPath i iidii
 CGPathCreateCopyByFlattening i id
@@ -2437,9 +2439,9 @@ CGPathCreateMutable i
 CGPathCreateMutableCopy i i
 CGPathCreateMutableCopyByTransformingPath i ii
 CGPathCreateSeparateComponents i ii
-CGPathCreateWithEllipseInRect i si
-CGPathCreateWithRect i si
-CGPathCreateWithRoundedRect i sddi
+CGPathCreateWithEllipseInRect i D4i
+CGPathCreateWithRect i D4i
+CGPathCreateWithRoundedRect i D4ddi
 CGPathEqualToPath i ii
 CGPathGetBoundingBox s i
 CGPathGetCurrentPoint s i
@@ -2451,45 +2453,45 @@ CGPathIsRect i ii
 CGPathMoveToPoint v iidd
 CGPathRelease v i
 CGPathRetain i i
-CGPatternCreate i issddiii
+CGPatternCreate i iD4sddiii
 CGPatternGetTypeID i 
 CGPatternRelease v i
 CGPatternRetain i i
-CGPointApplyAffineTransform s ss
-CGPointCreateDictionaryRepresentation i s
-CGPointEqualToPoint i ss
+CGPointApplyAffineTransform s D2s
+CGPointCreateDictionaryRepresentation i D2
+CGPointEqualToPoint i D2D2
 CGPointMakeWithDictionaryRepresentation i ii
 CGPostKeyboardEvent i iii
-CGPostMouseEvent i siii...
+CGPostMouseEvent i D2iii...
 CGPostScrollWheelEvent i ii...
 CGPreflightListenEventAccess i 
 CGPreflightPostEventAccess i 
 CGPreflightScreenCaptureAccess i 
-CGRectApplyAffineTransform s ss
-CGRectContainsPoint i ss
-CGRectContainsRect i ss
-CGRectCreateDictionaryRepresentation i s
-CGRectDivide v siidi
-CGRectEqualToRect i ss
-CGRectGetHeight d s
-CGRectGetMaxX d s
-CGRectGetMaxY d s
-CGRectGetMidX d s
-CGRectGetMidY d s
-CGRectGetMinX d s
-CGRectGetMinY d s
-CGRectGetWidth d s
-CGRectInset s sdd
-CGRectIntegral s s
-CGRectIntersection s ss
-CGRectIntersectsRect i ss
-CGRectIsEmpty i s
-CGRectIsInfinite i s
-CGRectIsNull i s
+CGRectApplyAffineTransform s D4s
+CGRectContainsPoint i D4D2
+CGRectContainsRect i D4D4
+CGRectCreateDictionaryRepresentation i D4
+CGRectDivide v D4iidi
+CGRectEqualToRect i D4D4
+CGRectGetHeight d D4
+CGRectGetMaxX d D4
+CGRectGetMaxY d D4
+CGRectGetMidX d D4
+CGRectGetMidY d D4
+CGRectGetMinX d D4
+CGRectGetMinY d D4
+CGRectGetWidth d D4
+CGRectInset s D4dd
+CGRectIntegral s D4
+CGRectIntersection s D4D4
+CGRectIntersectsRect i D4D4
+CGRectIsEmpty i D4
+CGRectIsInfinite i D4
+CGRectIsNull i D4
 CGRectMakeWithDictionaryRepresentation i ii
-CGRectOffset s sdd
-CGRectStandardize s s
-CGRectUnion s ss
+CGRectOffset s D4dd
+CGRectStandardize s D4
+CGRectUnion s D4D4
 CGRegisterScreenRefreshCallback i ii
 CGReleaseAllDisplays i 
 CGReleaseDisplayFadeReservation i i
@@ -2512,33 +2514,33 @@ CGSetDisplayTransferByFormula i ifffffffff
 CGSetDisplayTransferByTable i iiiii
 CGSetLocalEventsFilterDuringSuppressionState i ii
 CGSetLocalEventsSuppressionInterval i d
-CGShadingCreateAxial i issiii
-CGShadingCreateAxialWithContentHeadroom i fissiii
-CGShadingCreateRadial i isdsdiii
-CGShadingCreateRadialWithContentHeadroom i fisdsdiii
+CGShadingCreateAxial i iD2D2iii
+CGShadingCreateAxialWithContentHeadroom i fiD2D2iii
+CGShadingCreateRadial i iD2dD2diii
+CGShadingCreateRadialWithContentHeadroom i fiD2dD2diii
 CGShadingGetContentHeadroom f i
 CGShadingGetTypeID i 
 CGShadingRelease v i
 CGShadingRetain i i
 CGShieldingWindowID i i
 CGShieldingWindowLevel i 
-CGSizeApplyAffineTransform s ss
-CGSizeCreateDictionaryRepresentation i s
-CGSizeEqualToSize i ss
+CGSizeApplyAffineTransform s D2s
+CGSizeCreateDictionaryRepresentation i D2
+CGSizeEqualToSize i D2D2
 CGSizeMakeWithDictionaryRepresentation i ii
 CGUnregisterScreenRefreshCallback v ii
 CGWaitForScreenRefreshRects i ii
 CGWaitForScreenUpdateRects i iiiii
-CGWarpMouseCursorPosition i s
+CGWarpMouseCursorPosition i D2
 CGWindowLevelForKey i i
 CGWindowListCopyWindowInfo i ii
 CGWindowListCreate i ii
 CGWindowListCreateDescriptionFromArray i i
-CGWindowListCreateImage i siii
-CGWindowListCreateImageFromArray i sii
+CGWindowListCreateImage i D4iii
+CGWindowListCreateImageFromArray i D4ii
 CGWindowServerCFMachPort i 
 CGWindowServerCreateServerPort i 
-CLLocationCoordinate2DIsValid i s
+CLLocationCoordinate2DIsValid i D2
 CLLocationCoordinate2DMake s dd
 CMAudioClockCreate i ii
 CMAudioDeviceClockCreate i iii
@@ -3288,7 +3290,7 @@ CTFontDescriptorCreateWithNameAndSize i id
 CTFontDescriptorGetTypeID i 
 CTFontDescriptorMatchFontDescriptorsWithProgressHandler i iii
 CTFontDrawGlyphs v iiiii
-CTFontDrawImageFromAdaptiveImageProviderAtPoint v iisi
+CTFontDrawImageFromAdaptiveImageProviderAtPoint v iiD2i
 CTFontGetAdvancesForGlyphs d iiiii
 CTFontGetAscent d i
 CTFontGetBoundingBox s i
@@ -3355,7 +3357,7 @@ CTFramesetterCreateWithAttributedString i i
 CTFramesetterCreateWithTypesetter i i
 CTFramesetterGetTypeID i 
 CTFramesetterGetTypesetter i i
-CTFramesetterSuggestFrameSizeWithConstraints s isisi
+CTFramesetterSuggestFrameSizeWithConstraints s isiD2i
 CTGetCoreTextVersion i 
 CTGlyphInfoCreateWithCharacterIdentifier i iii
 CTGlyphInfoCreateWithGlyph i iii
@@ -3376,7 +3378,7 @@ CTLineGetGlyphRuns i i
 CTLineGetImageBounds s ii
 CTLineGetOffsetForStringIndex d iii
 CTLineGetPenOffsetForFlush d idd
-CTLineGetStringIndexForPosition i is
+CTLineGetStringIndexForPosition i iD2
 CTLineGetStringRange s i
 CTLineGetTrailingWhitespaceWidth d i
 CTLineGetTypeID i 
@@ -4571,7 +4573,7 @@ GetVoiceDescription i iii
 GetVoiceInfo i iii
 HClrRBit v i
 HGetState i i
-HIDictionaryWindowShow v iisisii
+HIDictionaryWindowShow v iisiD2ii
 HIGetMousePosition i iii
 HIMouseTrackingGetParameters i iii
 HIObjectAddDelegate i iii
@@ -5210,10 +5212,10 @@ JRSFontSetRenderingStyleOnContext v ii
 JRSFontStyleIsAntialiased i i
 JRSFontStyleUsesFractionalMetrics i i
 JRSUIControlCreate i i
-JRSUIControlDraw v iiis
-JRSUIControlGetHitPart i iiss
-JRSUIControlGetScrollBarOffsetFor d isddd
-JRSUIControlGetScrollBarPartBounds s isi
+JRSUIControlDraw v iiiD4
+JRSUIControlGetHitPart i iiD4D2
+JRSUIControlGetScrollBarOffsetFor d iD4ddd
+JRSUIControlGetScrollBarPartBounds s iD4i
 JRSUIControlRelease v i
 JRSUIControlSetAlignmentHorizontal v ii
 JRSUIControlSetAlignmentVertical v ii
@@ -5775,8 +5777,8 @@ MIDIThruConnectionParamsInitialize v i
 MIDIThruConnectionSetParams i ii
 MKCoordinateForMapPoint s s
 MKCoordinateRegionForMapRect s s
-MKCoordinateRegionMakeWithDistance s sdd
-MKMapPointForCoordinate s s
+MKCoordinateRegionMakeWithDistance s D2dd
+MKMapPointForCoordinate s D2
 MKMapPointsPerMeterAtLatitude d d
 MKMapRectContainsPoint i ss
 MKMapRectContainsRect i ss
@@ -6031,8 +6033,8 @@ MusicTrackSetProperty i iiii
 NIAlgorithmConvergenceStatusReasonDescription i i
 NPickColor i i
 NSAccessibilityActionDescription i i
-NSAccessibilityFrameInView s is
-NSAccessibilityPointInView s is
+NSAccessibilityFrameInView s iD4
+NSAccessibilityPointInView s iD2
 NSAccessibilityPostNotification v ii
 NSAccessibilityPostNotificationWithUserInfo v iii
 NSAccessibilityRaiseBadArgumentException v iii
@@ -6063,9 +6065,9 @@ NSClassFromString i i
 NSColorSpaceFromDepth i i
 NSCompareHashTables i ii
 NSCompareMapTables i ii
-NSContainsRect i ss
+NSContainsRect i D4D4
 NSConvertGlyphsToPackedGlyphs i iiii
-NSCopyBits v iss
+NSCopyBits v iD4D2
 NSCopyHashTableWithZone i ii
 NSCopyMapTableWithZone i ii
 NSCopyMemoryPages v iii
@@ -6103,35 +6105,35 @@ NSDecimalSubtract i iiii
 NSDecrementExtraRefCountWasZero i i
 NSDefaultMallocZone i 
 NSDisableScreenUpdates v 
-NSDivideRect v siidi
-NSDottedFrameRect v s
-NSDrawBitmap v siiiiiiiiii
-NSDrawButton v ss
-NSDrawColorTiledRects s ssiii
-NSDrawDarkBezel v ss
-NSDrawGrayBezel v ss
-NSDrawGroove v ss
-NSDrawLightBezel v ss
-NSDrawNinePartImage v siiiiiiiiiidi
-NSDrawThreePartImage v siiiiidi
-NSDrawTiledRects s ssiii
-NSDrawWhiteBezel v ss
-NSDrawWindowBackground v s
-NSEdgeInsetsEqual i ss
+NSDivideRect v D4iidi
+NSDottedFrameRect v D4
+NSDrawBitmap v D4iiiiiiiiii
+NSDrawButton v D4D4
+NSDrawColorTiledRects s D4D4iii
+NSDrawDarkBezel v D4D4
+NSDrawGrayBezel v D4D4
+NSDrawGroove v D4D4
+NSDrawLightBezel v D4D4
+NSDrawNinePartImage v D4iiiiiiiiiidi
+NSDrawThreePartImage v D4iiiiidi
+NSDrawTiledRects s D4D4iii
+NSDrawWhiteBezel v D4D4
+NSDrawWindowBackground v D4
+NSEdgeInsetsEqual i D4D4
 NSEnableScreenUpdates v 
 NSEndHashTableEnumeration v i
 NSEndMapTableEnumeration v i
 NSEnumerateHashTable s i
 NSEnumerateMapTable s i
-NSEqualPoints i ss
-NSEqualRects i ss
-NSEqualSizes i ss
-NSEraseRect v s
+NSEqualPoints i D2D2
+NSEqualRects i D4D4
+NSEqualSizes i D2D2
+NSEraseRect v D4
 NSExtraRefCount i i
 NSFileTypeForHFSTypeCode i i
-NSFrameRect v s
-NSFrameRectWithWidth v sd
-NSFrameRectWithWidthUsingOperation v sdi
+NSFrameRect v D4
+NSFrameRectWithWidth v D4d
+NSFrameRectWithWidthUsingOperation v D4di
 NSFreeHashTable v i
 NSFreeMapTable v i
 NSFullUserName i 
@@ -6150,19 +6152,19 @@ NSHashInsert v ii
 NSHashInsertIfAbsent i ii
 NSHashInsertKnownAbsent v ii
 NSHashRemove v ii
-NSHighlightRect v s
+NSHighlightRect v D4
 NSHomeDirectory i 
 NSHomeDirectoryForUser i i
 NSIncrementExtraRefCount v i
-NSInsetRect s sdd
-NSIntegralRect s s
-NSIntegralRectWithOptions s si
+NSInsetRect s D4dd
+NSIntegralRect s D4
+NSIntegralRectWithOptions s D4i
 NSInterfaceStyleForKey i ii
 NSIntersectionRange s ss
-NSIntersectionRect s ss
-NSIntersectsRect i ss
+NSIntersectionRect s D4D4
+NSIntersectsRect i D4D4
 NSIsControllerMarker i i
-NSIsEmptyRect i s
+NSIsEmptyRect i D4
 NSLog v i...
 NSLogPageSize i 
 NSLogv v ii
@@ -6172,11 +6174,11 @@ NSMapInsertIfAbsent i iii
 NSMapInsertKnownAbsent v iii
 NSMapMember i iiii
 NSMapRemove v ii
-NSMouseInRect i ssi
+NSMouseInRect i D2D4i
 NSNextHashEnumeratorItem i i
 NSNextMapEnumeratorPair i iii
 NSNumberOfColorComponents i i
-NSOffsetRect s sdd
+NSOffsetRect s D4dd
 NSOpenGLGetOption v ii
 NSOpenGLGetVersion v ii
 NSOpenGLSetOption v ii
@@ -6185,21 +6187,21 @@ NSPageSize i
 NSPerformService i ii
 NSPlanarFromDepth i i
 NSPointFromString s i
-NSPointInRect i ss
+NSPointInRect i D2D4
 NSProtocolFromString i i
 NSRangeFromString s i
-NSReadPixel i s
+NSReadPixel i D2
 NSRealMemoryAvailable i 
 NSReallocateCollectable i iii
-NSRectClip v s
+NSRectClip v D4
 NSRectClipList v ii
-NSRectFill v s
+NSRectFill v D4
 NSRectFillList v ii
 NSRectFillListUsingOperation v iii
 NSRectFillListWithColors v iii
 NSRectFillListWithColorsUsingOperation v iiii
 NSRectFillListWithGrays v iii
-NSRectFillUsingOperation v si
+NSRectFillUsingOperation v D4i
 NSRectFromString s i
 NSRecycleZone v i
 NSRegisterServicesProvider v ii
@@ -6221,11 +6223,11 @@ NSSetShowsServicesMenuItem i ii
 NSSetUncaughtExceptionHandler v i
 NSSetZoneName v ii
 NSShouldRetainWithZone i ii
-NSShowAnimationEffect v issiii
+NSShowAnimationEffect v iD2D2iii
 NSShowsServicesMenuItem i i
 NSSizeFromString s i
 NSStringFromClass i i
-NSStringFromGCPoint2 i s
+NSStringFromGCPoint2 i F2
 NSStringFromGLKMatrix2 i s
 NSStringFromGLKMatrix3 i s
 NSStringFromGLKMatrix4 i s
@@ -6235,15 +6237,15 @@ NSStringFromGLKVector3 i s
 NSStringFromGLKVector4 i s
 NSStringFromHashTable i i
 NSStringFromMapTable i i
-NSStringFromPoint i s
+NSStringFromPoint i D2
 NSStringFromProtocol i i
 NSStringFromRange i s
-NSStringFromRect i s
+NSStringFromRect i D4
 NSStringFromSelector i i
-NSStringFromSize i s
+NSStringFromSize i D2
 NSTemporaryDirectory i 
 NSUnionRange s ss
-NSUnionRect s ss
+NSUnionRect s D4D4
 NSUnregisterServicesProvider v i
 NSUpdateDynamicServices v 
 NSUserName i 
@@ -6893,7 +6895,7 @@ PushSymbolicHotKeyMode i i
 QLPreviewRequestCopyContentUTI i i
 QLPreviewRequestCopyOptions i i
 QLPreviewRequestCopyURL i i
-QLPreviewRequestCreateContext i isii
+QLPreviewRequestCreateContext i iD2ii
 QLPreviewRequestCreatePDFContext i iiii
 QLPreviewRequestFlushContext v ii
 QLPreviewRequestGetDocumentObject i i
@@ -6907,17 +6909,17 @@ QLThumbnailCancel v i
 QLThumbnailCopyDocumentURL i i
 QLThumbnailCopyImage i i
 QLThumbnailCopyOptions i i
-QLThumbnailCreate i iisi
+QLThumbnailCreate i iiD2i
 QLThumbnailDispatchAsync v iii
 QLThumbnailGetContentRect s i
 QLThumbnailGetMaximumSize s i
 QLThumbnailGetTypeID i 
-QLThumbnailImageCreate i iisi
+QLThumbnailImageCreate i iiD2i
 QLThumbnailIsCancelled i i
 QLThumbnailRequestCopyContentUTI i i
 QLThumbnailRequestCopyOptions i i
 QLThumbnailRequestCopyURL i i
-QLThumbnailRequestCreateContext i isii
+QLThumbnailRequestCreateContext i iD2ii
 QLThumbnailRequestFlushContext v ii
 QLThumbnailRequestGetDocumentObject i i
 QLThumbnailRequestGetGeneratorBundle i i
@@ -7033,8 +7035,8 @@ SCNMatrix4Mult s ss
 SCNMatrix4Rotate s sdddd
 SCNMatrix4Scale s sddd
 SCNMatrix4ToGLKMatrix4 s s
-SCNVector3EqualToVector3 i ss
-SCNVector4EqualToVector4 i ss
+SCNVector3EqualToVector3 i D3D3
+SCNVector4EqualToVector4 i D4D4
 SCNetworkCheckReachabilityByAddress i iii
 SCNetworkCheckReachabilityByName i ii
 SCNetworkConnectionCopyExtendedStatus i i
@@ -8470,17 +8472,17 @@ UseDictionary i ii
 UseResFile v i
 UseSpeechDictionary i ii
 VNElementTypeSize i i
-VNImagePointForFaceLandmarkPoint s ssii
-VNImagePointForNormalizedPoint s sii
-VNImagePointForNormalizedPointUsingRegionOfInterest s siis
-VNImageRectForNormalizedRect s sii
-VNImageRectForNormalizedRectUsingRegionOfInterest s siis
-VNNormalizedFaceBoundingBoxPointForLandmarkPoint s ssii
-VNNormalizedPointForImagePoint s sii
-VNNormalizedPointForImagePointUsingRegionOfInterest s siis
-VNNormalizedRectForImageRect s sii
-VNNormalizedRectForImageRectUsingRegionOfInterest s siis
-VNNormalizedRectIsIdentityRect i s
+VNImagePointForFaceLandmarkPoint s sD4ii
+VNImagePointForNormalizedPoint s D2ii
+VNImagePointForNormalizedPointUsingRegionOfInterest s D2iiD4
+VNImageRectForNormalizedRect s D4ii
+VNImageRectForNormalizedRectUsingRegionOfInterest s D4iiD4
+VNNormalizedFaceBoundingBoxPointForLandmarkPoint s sD4ii
+VNNormalizedPointForImagePoint s D2ii
+VNNormalizedPointForImagePointUsingRegionOfInterest s D2iiD4
+VNNormalizedRectForImageRect s D4ii
+VNNormalizedRectForImageRectUsingRegionOfInterest s D4iiD4
+VNNormalizedRectIsIdentityRect i D4
 VTCompressionSessionBeginPass i iii
 VTCompressionSessionCompleteFrames i is
 VTCompressionSessionCreate i iiiiiiiiii

@@ -786,19 +786,31 @@ public extension DisassembledFunction {
     /// The SDK's declaration of a C function (`SDKCPrototypes`): what it
     /// returns (`v`, `i`, `f`, `d`, `s` for a value no one register holds,
     /// `x` unclassified) and each parameter's register bank (`i`, `f`, `d`,
-    /// or `s` for one that is no single register or is unclassified).
+    /// `D<n>`/`F<n>` for an HFA of `n` doubles or floats, or `s` for any
+    /// other struct or an unclassified type).
     struct CPrototype: Equatable {
         let result: Character
-        let parameters: [Character]
+        let parameters: [String]
         let isVariadic: Bool
     }
 
     static func cPrototype(of callee: String) -> CPrototype? {
-        guard let entry = SDKCPrototypes.table[callee] else { return nil }
-        var parameters = Array(entry.dropFirst(2))
-        let isVariadic = parameters.count >= 3 && parameters.suffix(3) == [".", ".", "."]
-        if isVariadic { parameters.removeLast(3) }
-        guard let result = entry.first else { return nil }
+        guard let entry = SDKCPrototypes.table[callee], let result = entry.first else { return nil }
+        var body = Substring(entry.dropFirst(2))
+        let isVariadic = body.hasSuffix("...")
+        if isVariadic { body = body.dropLast(3) }
+        var parameters: [String] = []
+        var index = body.startIndex
+        while index < body.endIndex {
+            var token = String(body[index])
+            index = body.index(after: index)
+            // An HFA's bank is followed by its member count.
+            if token == "D" || token == "F", index < body.endIndex, body[index].isNumber {
+                token.append(body[index])
+                index = body.index(after: index)
+            }
+            parameters.append(token)
+        }
         return CPrototype(result: result, parameters: parameters, isVariadic: isVariadic)
     }
 

@@ -50,8 +50,10 @@ import Testing
     /// void, `i` an integer or pointer, `f` float, `d` double, `s` a struct,
     /// union, vector, complex or 128-bit value, `x` a type the generator could
     /// not classify) and the register bank of each parameter in order (`i`,
-    /// `f`, `d`, or `s` for one that takes no single register or could not be
-    /// classified), with `...` for a variadic one.
+    /// `f`, `d`, `D<n>` or `F<n>` for a struct of `n` doubles or floats
+    /// passed in `n` v registers (an HFA such as CGRect, `D4`), or `s` for
+    /// any other struct or a type that could not be classified), with `...`
+    /// for a variadic one.
     enum SDKCPrototypes {
         static let table: [String: String] = {
             var table: [String: String] = [:]
@@ -120,7 +122,11 @@ private enum CPrototypeDump {
             guard let text = String(data: line, encoding: .utf8) else { return }
             if text.hasPrefix("|-FunctionDecl ") || text.hasPrefix("`-FunctionDecl ")
                 || text.hasPrefix("| |-ParmVarDecl ") || text.hasPrefix("| `-ParmVarDecl ")
-                || text.hasPrefix("|-TypedefDecl ") || text.hasPrefix("`-TypedefDecl ") {
+                || text.hasPrefix("|-TypedefDecl ") || text.hasPrefix("`-TypedefDecl ")
+                || text.hasPrefix("|-RecordDecl ") || text.hasPrefix("`-RecordDecl ")
+                || text.hasPrefix("| |-FieldDecl ") || text.hasPrefix("| `-FieldDecl ")
+                || text.hasPrefix("| |-RecordDecl ") || text.hasPrefix("| `-RecordDecl ")
+                || text.hasPrefix("| |-IndirectFieldDecl ") || text.hasPrefix("| `-IndirectFieldDecl ") {
                 kept.append(Substring(text))
             } else if text.hasPrefix("|-") || text.hasPrefix("`-") {
                 kept.append("|-Other")
@@ -213,6 +219,59 @@ private enum CPrototypeDump {
             }
             return nil
         }
+        // Each struct definition's field types, nil for one with a member
+        // this cannot classify (a nested record, an anonymous member).
+        var records: [String: [String]?] = [:]
+        var recordIndex = 0
+        while recordIndex < lines.count {
+            let line = lines[recordIndex]
+            recordIndex += 1
+            guard line.hasPrefix("|-RecordDecl ") || line.hasPrefix("`-RecordDecl "),
+                  line.hasSuffix(" definition"),
+                  let structWord = line.range(of: " struct ", options: .backwards)
+            else { continue }
+            let name = String(line[structWord.upperBound...].dropLast(" definition".count))
+            guard !name.isEmpty, !name.contains(" ") else { continue }
+            var fields: [String]? = []
+            while recordIndex < lines.count, lines[recordIndex].hasPrefix("| ") {
+                let child = lines[recordIndex]
+                recordIndex += 1
+                if child.hasPrefix("| |-FieldDecl ") || child.hasPrefix("| `-FieldDecl "),
+                   let field = declaration(child) {
+                    fields?.append(field.desugared ?? field.type)
+                } else {
+                    fields = nil
+                }
+            }
+            records[name] = records[name] == nil ? fields : nil
+        }
+        /// A homogeneous floating-point aggregate (AAPCS64): one to four
+        /// members, after flattening nested structs and arrays, all `float`
+        /// or all `double`. Its bank and member count.
+        func homogeneousFloats(_ type: String, depth: Int = 0) -> (bank: Character, count: Int)? {
+            guard depth < 8 else { return nil }
+            let type = resolve(type)
+            if type == "float" { return ("F", 1) }
+            if type == "double" || type == "long double" { return ("D", 1) }
+            if type.hasSuffix("]"), let open = type.lastIndex(of: "["),
+               let length = Int(type[type.index(after: open)..<type.index(before: type.endIndex)]), length > 0,
+               let element = homogeneousFloats(String(type[..<open]).trimmingCharacters(in: .whitespaces), depth: depth + 1) {
+                return (element.bank, element.count * length)
+            }
+            guard type.hasPrefix("struct "), let fields = records[String(type.dropFirst("struct ".count))] ?? nil,
+                  !fields.isEmpty
+            else { return nil }
+            var bank: Character?
+            var count = 0
+            for field in fields {
+                guard let member = homogeneousFloats(field, depth: depth + 1), bank == nil || bank == member.bank
+                else { return nil }
+                bank = member.bank
+                count += member.count
+            }
+            guard let bank, (1...4).contains(count) else { return nil }
+            return (bank, count)
+        }
         var index = 0
         while index < lines.count {
             let line = lines[index]
@@ -224,7 +283,14 @@ private enum CPrototypeDump {
             var parsed = true
             while index < lines.count, lines[index].hasPrefix("| |-ParmVarDecl ") || lines[index].hasPrefix("| `-ParmVarDecl ") {
                 if let parameter = declaration(lines[index]) {
-                    parameters.append(bank(parameter.desugared ?? parameter.type).flatMap { $0 == "v" ? nil : $0 } ?? "s")
+                    let type = parameter.desugared ?? parameter.type
+                    if let scalar = bank(type), scalar != "v", scalar != "s" {
+                        parameters.append(scalar)
+                    } else if let aggregate = homogeneousFloats(type) {
+                        parameters += "\(aggregate.bank)\(aggregate.count)"
+                    } else {
+                        parameters.append("s")
+                    }
                 } else {
                     parsed = false
                 }

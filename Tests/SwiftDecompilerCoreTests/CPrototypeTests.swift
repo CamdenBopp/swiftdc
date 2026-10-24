@@ -28,12 +28,13 @@ import Foundation
     #expect(try statements("_insetVertex").last == "glVertex2d(?, ?)")
     // strtod's double is in d0; x0 after it is not its result.
     #expect(try statements("_parseThenNotify") == ["strtod(?, 0)", "notifyDone()"])
-    // A struct parameter is placed by how it is passed, so it and what
-    // follows it are `?`; what precedes it is placed (`CGRectInset()` took
-    // nothing, and `CGContextFillRect` only x0).
-    #expect(try statements("_insetVertex").first == "CGRectInset(?, ?, ?)")
+    // What precedes a struct parameter is placed (`CGRectInset()` took
+    // nothing, and `CGContextFillRect` only x0). A CGRect is an HFA in four
+    // v registers, so what follows it is placed too.
+    #expect(try statements("_insetVertex").first == "CGRectInset(?, 0.5, 0.5)")
     #expect(try statements("_fillNull") == ["CGContextFillRect(0, ?)"])
-    #expect(try statements("_offsetConstant") == ["CGRectOffset(?, ?, ?)"])
+    #expect(try statements("_offsetConstant") == ["CGRectOffset(?, 5.0, 6.0)"])
+    #expect(try statements("_drawNull") == ["CGContextDrawImage(0, ?, 0)"])
 }
 
 /// A table entry: the result, each parameter's bank, and `...` for a
@@ -44,7 +45,7 @@ import Foundation
     #expect(DisassembledFunction.cPrototype(of: "printf")?.isVariadic == true)
     #expect(DisassembledFunction.cPrototype(of: "printf")?.parameters == ["i"])
     #expect(DisassembledFunction.cPrototype(of: "glEnd")?.parameters == [])
-    #expect(DisassembledFunction.cPrototype(of: "CGRectGetHeight")?.parameters == ["s"])
+    #expect(DisassembledFunction.cPrototype(of: "CGRectGetHeight")?.parameters == ["D4"])
     #expect(DisassembledFunction.cPrototype(of: "noSuchFunction_ZZ") == nil)
     // `void (*signal(int, void (*)(int)))(int)` returns a function pointer:
     // read up to its first parenthesis, it looked like a void function.
@@ -54,6 +55,10 @@ import Foundation
     #expect(DisassembledFunction.cPrototype(of: "dispatch_queue_create")?.result == "i")
     #expect(DisassembledFunction.cPrototype(of: "CGRectInset")?.result == "s")
     #expect(DisassembledFunction.cPrototype(of: "CMTimeMake")?.result == "s")
+    // CGRect's four CGFloats, through CGPoint and CGSize, are an HFA;
+    // CGAffineTransform's six are not.
+    #expect(DisassembledFunction.cPrototype(of: "NSDivideRect")?.parameters == ["D4", "i", "i", "d", "i"])
+    #expect(DisassembledFunction.cPrototype(of: "CGPointApplyAffineTransform")?.parameters == ["D2", "s"])
     // A result the generator could not classify claims no register.
     #expect(ValueTracer.CallFacts.result(of: .init(result: "x", parameters: [], isVariadic: false)) == nil)
     #expect(ValueTracer.CallFacts.result(of: .init(result: "s", parameters: [], isVariadic: false)) == "s")
@@ -87,4 +92,24 @@ import Foundation
     #expect(lanes.contains("glVertex2d(?, ?)"), Comment(rawValue: lanes))
     let scaled = try rendered("-[SDLanes vertexScaled]")
     #expect(scaled.contains("glVertex2d([self scale], 0.5)"), Comment(rawValue: scaled))
+    // After an HFA too: CGRectOffset's offsets are [self rect]'s lanes, and
+    // CGRectInset's dx the whole [self scale].
+    let offset = try rendered("-[SDLanes offsetFrame]")
+    #expect(offset.contains("CGRectOffset(?, ?, ?)"), Comment(rawValue: offset))
+    let inset = try rendered("-[SDLanes scaledFrame]")
+    #expect(inset.contains("CGRectInset(?, [self scale], 0.5)"), Comment(rawValue: inset))
+}
+
+/// An HFA takes its member count of v registers, and one that does not fit
+/// in those left goes on the stack (AAPCS64), so it and what follows are not
+/// placed. No SDK declaration overflows, so the case is built by hand.
+@Test func anHFAParameterIsPlacedOnlyWhereItFits() throws {
+    let fits = try #require(Disassembler.cPrototypeLayout(
+        prototype: .init(result: "v", parameters: ["i", "D4", "d", "i"], isVariadic: false)))
+    #expect(fits.slots.map(\.registers) == [1, 4, 1, 1])
+    #expect(fits.unplaced == 0)
+    let overflows = try #require(Disassembler.cPrototypeLayout(
+        prototype: .init(result: "v", parameters: ["d", "d", "d", "d", "d", "D4", "i"], isVariadic: false)))
+    #expect(overflows.slots.count == 5)
+    #expect(overflows.unplaced == 2)
 }

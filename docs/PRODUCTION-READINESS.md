@@ -5152,15 +5152,33 @@ if a test was observed to fail without the fix.
   every public declaration of which returns `d` or `f` (as
   `SDKSelectorPrefixes` is generated from the shared cache) would prove
   them.
-- **OPEN (completeness): nothing at or after a struct parameter is
-  placed.** A struct's registers depend on how it is passed, and the
-  table records only that a parameter is a struct, so
-  `NSDivideRect(rect, &slice, &rem, amount, edge)`, which read
-  `NSDivideRect(local_d0, local_b0, 1)` by position (right only because
-  the CGRect is an HFA in d0-d3), now reads `NSDivideRect(?, ?, ?, ?, ?)`,
-  and `CGContextDrawImage(ctx, rect, image)` loses its image in x1.
-  Recording an HFA's member count and type (CGRect, CGPoint, CGSize) in
-  the table would place the parameters after one.
+- **FIXED (completeness): nothing at or after an HFA struct parameter
+  was placed.** The table recorded only that a parameter was a struct, so
+  `NSDivideRect(rect, &slice, &rem, amount, edge)`, whose CGRect is a
+  homogeneous float aggregate in d0-d3, read `NSDivideRect(?, ?, ?, ?, ?)`
+  and `CGContextDrawImage(ctx, rect, image)` lost its image in x1. The
+  generator now reads each struct's fields from the dump and records a
+  parameter that flattens, through nested structs and arrays, to one to
+  four of one float type as `D<n>` or `F<n>` (CGRect `D4`, CGSize `D2`;
+  CGAffineTransform's six doubles stay `s`), in 164 declarations. The
+  layout gives such a parameter its `n` v registers as one `?` and places
+  what follows; one that does not fit in the v registers left goes on the
+  stack (AAPCS64), so it and what follows stay unplaced.
+  `c_prototypes.c`: `CGRectInset(?, 0.5, 0.5)`, `CGRectOffset(?, 5.0,
+  6.0)`, `CGContextDrawImage(0, ?, 0)`; `objc_struct_lanes.m`:
+  `CGRectInset(?, [self scale], 0.5)` and, offsets from a send's lanes,
+  `CGRectOffset(?, ?, ?)` (`anSDKCCallIsLaidOutFromItsDeclarationIfPresent`,
+  `anHFAParameterIsPlacedOnlyWhereItFits`,
+  `aCArgumentTakesOnlyAWholeFloatResultIfPresent`). Release `disasm
+  --pseudo`: Terminal 64 lines, among them
+  `NSDivideRect(?, local_80, local_60, 40.0, ((r0 == 1) ? 2 : 0))`,
+  `NSRectFillUsingOperation(?, 2)`, `CGContextDrawImage(r6, ?, r1)` and
+  constant insets and offsets; TextEdit 5, Chess 1, GoodLinks 5
+  (`CGRectDivide`'s pointers); Clarc none.
+- **OPEN (completeness): nothing at or after a non-HFA struct parameter
+  is placed.** A small integer struct (an NSRange in x0-x1) and a large
+  one passed by address would need their sizes, which the table does not
+  record.
 - **FIXED (soundness): a float constant inside a float expression
   rendered as its bit pattern.** `mov x8, #0x4059000000000000; fmov d1,
   x8; fdiv d0, d0, d1` gave the tracer `.binary(.divide, x,

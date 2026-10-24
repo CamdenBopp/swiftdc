@@ -3415,27 +3415,38 @@ public struct Disassembler: Sendable {
     /// x0 it found. Where a struct goes depends on how it is passed (an HFA
     /// such as CGRect in v registers, a small one in x registers, a large one
     /// by address), so it and every parameter after it are `unplaced`, each
-    /// a `?`: `CGRectGetMinY(rect)` took x0 too. Nil for a variadic
+    /// a `?`: `CGRectGetMinY(rect)` took x0 too. An HFA (`D4`, a CGRect)
+    /// takes its `n` v registers and renders `?`, and what follows it is
+    /// placed; one that does not fit in the v registers left goes on the
+    /// stack, so it and what follows are unplaced. Nil for a variadic
     /// declaration, one with only integer parameters or none, or one that
     /// places more parameters than registers.
     static func cPrototypeLayout(
         callee: String
     ) -> (slots: [(kind: ScalarParameterClass, registers: Int, type: String)], unplaced: Int)? {
-        guard let prototype = DisassembledFunction.cPrototype(of: callee), !prototype.isVariadic,
-              prototype.parameters.contains(where: { $0 != "i" })
-        else { return nil }
-        let placed = prototype.parameters.prefix { $0 != "s" }
+        DisassembledFunction.cPrototype(of: callee).flatMap(cPrototypeLayout(prototype:))
+    }
+
+    static func cPrototypeLayout(
+        prototype: DisassembledFunction.CPrototype
+    ) -> (slots: [(kind: ScalarParameterClass, registers: Int, type: String)], unplaced: Int)? {
+        guard !prototype.isVariadic, prototype.parameters.contains(where: { $0 != "i" }) else { return nil }
         var integers = 0, floats = 0
         var slots: [(kind: ScalarParameterClass, registers: Int, type: String)] = []
-        for parameter in placed {
+        for parameter in prototype.parameters {
             switch parameter {
             case "i": integers += 1; slots.append((.integer, 1, "Swift.Int"))
             case "f": floats += 1; slots.append((.floating, 1, "Swift.Float"))
-            default: floats += 1; slots.append((.floating, 1, "Swift.Double"))
+            case "d": floats += 1; slots.append((.floating, 1, "Swift.Double"))
+            default:
+                guard parameter.count == 2, let members = Int(parameter.dropFirst()), floats + members <= 8
+                else { return (slots, prototype.parameters.count - slots.count) }
+                floats += members
+                slots.append((.floating, members, ""))
             }
         }
         guard integers <= 8, floats <= 8 else { return nil }
-        return (slots, prototype.parameters.count - placed.count)
+        return (slots, 0)
     }
 
     /// A value whose every byte is zero: `0`, or a vector register's words
@@ -4544,8 +4555,9 @@ public struct Disassembler: Sendable {
                         }
                         return words[0]
                     case .floating:
-                        defer { floating += 1 }
-                        guard floating < site.floatArguments.count else { return .unknown }
+                        defer { floating += slot.registers }
+                        // An HFA argument spans its registers; it renders `?`.
+                        guard slot.registers == 1, floating < site.floatArguments.count else { return .unknown }
                         let value = site.floatArguments[floating]
                         return cLayout == nil || holdsWholeResults(value) ? value : .unknown
                     }
