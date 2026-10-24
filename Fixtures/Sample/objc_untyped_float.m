@@ -17,6 +17,13 @@
 // one path before the send's block or before an intervening call;
 // copyThenTake copies a double through d0 (`ldr d0, [x1]; str d0, [x2]`)
 // right before take:3 and:4, a temporary and not an argument.
+// -[Relay relay:to:] sends put:x at:7 with x its own double argument,
+// which at -O2 stays in d0 from the method's entry, as putPassed's does;
+// the method's encoding says d0 holds an argument, so the send declines.
+// -[Relay relayCount:to:] sends take:n and:4, and its encoding gives it no
+// floating-point argument, so the integer layout stands; nor does
+// -[Relay relayAfterCall:to:], whose double the call to useDouble before
+// its send take:3 and:4 has clobbered.
 #import <Foundation/Foundation.h>
 
 long gSink;
@@ -36,3 +43,15 @@ void copyThenTake(id o, double *src, double *dst) { *dst = *src; [o take:3 and:4
 void takeAfterCall(id o, double *p) { useDouble(*p * 2.0); [o take:3 and:4]; }
 long countAll(id<NSFastEnumeration> o) { long n = 0; for (id x in o) { (void)x; n++; } return n; }
 NSString *formatLocal(void) { double d = 1.5; return [NSString stringWithFormat:@"%f", d]; }
+
+@interface Relay : NSObject
+- (void)relay:(double)x to:(id)o;
+- (void)relayCount:(long)n to:(id)o;
+- (void)relayAfterCall:(double)x to:(id)o;
+@end
+
+@implementation Relay
+- (void)relay:(double)x to:(id)o { [o put:x at:7]; }
+- (void)relayCount:(long)n to:(id)o { [o take:n and:4]; }
+- (void)relayAfterCall:(double)x to:(id)o { useDouble(x); [o take:3 and:4]; }
+@end

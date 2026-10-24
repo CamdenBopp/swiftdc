@@ -73,10 +73,26 @@ enum ObjCArgumentABI {
         case aggregate(stack: Int?)
     }
 
+    /// How many of v0–v7 a method's explicit arguments arrive in, its
+    /// floating-point scalars and homogeneous float structs. Nil when the
+    /// encoding does not parse or an argument cannot be classified.
+    static func floatRegisterCount(encoding: String, argumentCount: Int) -> Int? {
+        guard let types = parameterTypes(encoding: encoding, argumentCount: argumentCount) else { return nil }
+        var fp = 0
+        guard placements(types, floatRegisters: &fp) != nil else { return nil }
+        return fp
+    }
+
     /// Lays the explicit arguments out across x2-x7, v0-v7 and the stack.
     /// Nil when any argument cannot be classified.
     private static func placements(_ types: [String]) -> [Placement]? {
-        var gp = 2, fp = 0, stack = 0
+        var fp = 0
+        return placements(types, floatRegisters: &fp)
+    }
+
+    private static func placements(_ types: [String], floatRegisters fp: inout Int) -> [Placement]? {
+        var gp = 2, stack = 0
+        fp = 0
         // Apple arm64 packs stack arguments to their natural alignment,
         // unlike generic AAPCS64's minimum eight-byte slots.
         func onStack(size: Int, alignment: Int) -> Int {

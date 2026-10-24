@@ -3429,7 +3429,9 @@ if a test was observed to fail without the fix.
   still in d0 from its own entry, so nothing before the send writes a v
   register and the integer layout renders `put:7 at:?`. A signature
   source for SDK selectors (the system frameworks' method type encodings
-  in the dyld cache) closes it.
+  in the dyld cache) closes it. Since 2026-10-24 a method's own float
+  arguments count (below); a C function or block has no signature to show
+  them, so `putPassed` itself is unchanged.
 - **FIXED (correctness): a call's stack arguments ran into the register
   save area.** The snapshot reads the words stored upward from sp until
   one is missing, and the prologue's `stp x29, x30, [sp, #…]` stores two
@@ -4863,3 +4865,21 @@ if a test was observed to fail without the fix.
   fixture's two lines in every view; the other fixtures' specialization
   calls are struct methods, closures or signature specializations, and
   the five stripped apps have none, so all are byte-identical.
+- **FIXED (soundness): an untyped send a method's own double reached
+  read its arguments as integers.** The guard that declines an untyped
+  send when a v register is written for it saw no write when the double
+  was the method's own argument, untouched since the entry:
+  `objc_untyped_float.m`'s `-[Relay relay:to:]` (-O2) rendered
+  `[arg1 put:7 at:?]`. The method's encoding now says how many of v0-v7
+  its arguments arrive in (`ObjCArgumentABI.floatRegisterCount`), and when
+  straight-line code with no call reaches the send from the entry, any of
+  them not rewritten counts: `[arg1 put:? at:?]`. `relayCount:to:` (a
+  long) and `relayAfterCall:to:` (a call clobbers the double first) keep
+  their integer layout. Release `disasm --pseudo`: Terminal 2 sends
+  (`setIsOffScreen:` in two methods taking an `NSPoint`, d0 and d1) and
+  Chess 1 (`objectForKey:` in `-[MBCController setValue:forAchievement:]`,
+  whose value is a double) decline; TextEdit, Clarc and GoodLinks are
+  byte-identical. Counting all eight registers for functions without a
+  signature as well declined 27 Terminal, 9 TextEdit and 5 Chess sends
+  with nothing to show a float was there, so they keep the integer
+  layout.

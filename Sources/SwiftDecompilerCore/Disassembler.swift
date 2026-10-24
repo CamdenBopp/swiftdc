@@ -4246,11 +4246,25 @@ public struct Disassembler: Sendable {
         let instructionIndex = Dictionary(
             function.instructions.enumerated().map { ($1.address, $0) }, uniquingKeysWith: { first, _ in first })
         let blockStarts = Set(function.instructions.compactMap(\.branchTarget))
+        /// How many of v0–v7 hold one of the function's own arguments at its
+        /// entry. Such an argument, untouched from the entry to a send, is a
+        /// value left for it too: at -O2 `-[Relay relay:to:]` sends
+        /// `[o put:x at:7]` with x still in d0, nothing writes it, and the
+        /// integer layout rendered `put:7 at:?`. A method's encoding says
+        /// which v registers hold an argument. Any other function, a C
+        /// function or a block, shows none, so its sends keep the integer
+        /// layout.
+        let ownFloatArgumentRegisters: Int = {
+            guard let method = function.objcMethod else { return 0 }
+            let colons = method.selector.filter { $0 == ":" }.count
+            return ObjCArgumentABI.floatRegisterCount(encoding: method.typeEncoding, argumentCount: colons) ?? 0
+        }()
         func setsFloatingPointArgument(before address: UInt64) -> Bool {
             guard let callIndex = instructionIndex[address] else { return false }
             var settled = Set<Int>()
             var stored = Set<Int>()
             var index = callIndex
+            var reachedEntry = false
             while index > 0, !blockStarts.contains(function.instructions[index].address) {
                 index -= 1
                 let insn = function.instructions[index]
@@ -4276,9 +4290,13 @@ public struct Disassembler: Sendable {
                         }
                     }
                 }
+                // Every instruction from the entry to the send is
+                // straight-line and none of them is a call.
+                if index == 0 { reachedEntry = true }
                 if settled.count == 8 { break }
             }
-            return false
+            if callIndex == 0 { reachedEntry = true }
+            return reachedEntry && (0 ..< min(ownFloatArgumentRegisters, 8)).contains { !settled.contains($0) }
         }
 
         /// The quoted literal a String's two words spell, when both are known:

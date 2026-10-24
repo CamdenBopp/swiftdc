@@ -26,8 +26,15 @@ func anUntypedSendPassingAFloatDeclinesItsArgumentsIfPresent(path: String) async
         // The 128-bit zeroing of the enumeration state is no float.
         "_countAll": "[? countByEnumeratingWithState:local_",
     ]
+    // A method's own double, in d0 from its entry at -O2 or reloaded there
+    // at -O0, may be the send's; its long may not.
+    let optimized = path.hasSuffix(".opt.dylib")
+    expected["-[Relay relay:to:]"] = optimized ? "[arg1 put:? at:?]" : "[? put:? at:?]"
+    expected["-[Relay relayCount:to:]"] = optimized ? "[arg1 take:arg0 and:4]" : "[? take:? and:4]"
+    // A call since the entry has clobbered the double.
+    expected["-[Relay relayAfterCall:to:]"] = optimized ? "[arg1 take:3 and:4]" : "[? take:3 and:4]"
     // -O0 reloads the double parameter into d0; -O2 passes it untouched,
-    // which nothing in the caller shows (OPEN).
+    // and a C function has no signature to say d0 holds an argument (OPEN).
     if !path.hasSuffix(".opt.dylib") { expected["_putPassed"] = "[? put:? at:?]" }
     for (name, send) in expected.sorted(by: { $0.key < $1.key }) {
         guard let function = functions.first(where: { $0.displayName == name }) else {
