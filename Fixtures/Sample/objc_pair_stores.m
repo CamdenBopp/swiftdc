@@ -153,3 +153,21 @@ typedef struct { int x, y, z; } SDIntTriple;
 @implementation SDTailInt
 - (void)tailInt:(int)v { _a.x = v; _a.z = v; _b = v; }
 @end
+
+// One vector register stored over the end of one ivar and the start of
+// the next (-O2): `dup v0.2d, x2; stur q0, [x0, #0x18]; stur q0, [x0, #0x8]`
+// writes _s.y and _t, then _a and _s.x. Neither store covers a field
+// first, so neither printed a statement. True behaviour: _a, _s.x, _s.y
+// and _t all become v.
+@interface SDStraddle : NSObject {
+@public
+    long _a;
+    SDWidePair _s;
+    long _t;
+}
+- (void)fill:(long)v;
+@end
+
+@implementation SDStraddle
+- (void)fill:(long)v { _a = v; _s.x = v; _s.y = v; _t = v; }
+@end

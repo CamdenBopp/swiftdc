@@ -288,3 +288,16 @@ import Testing
     #expect(tail.contains("(self->_a[8..<12], self->_b) = ((self->_a[0..<4] & 0xffffffff), (self->_a[0..<4] & 0xffffffff))"),
             Comment(rawValue: tail))
 }
+
+/// A 16-byte vector store that starts inside one ivar and ends in the
+/// next printed nothing: only a pair store was written register by
+/// register. One vector register is two eight-byte lanes, written the same
+/// way (`SDStraddle fill:`).
+@Test func aVectorStoreOverTwoFieldsIsWrittenLaneByLaneIfPresent() async throws {
+    let path = "Fixtures/Sample/libObjCPairStores.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let fill = try #require(functions.first { $0.displayName == "-[SDStraddle fill:]" }).renderPseudo()
+    #expect(fill.contains("(self->_s[8..<16], self->_t) = (arg0, arg0)"), Comment(rawValue: fill))
+    #expect(fill.contains("(self->_a, self->_s[0..<8]) = "), Comment(rawValue: fill))
+}

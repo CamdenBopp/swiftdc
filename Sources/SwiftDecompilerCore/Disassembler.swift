@@ -5622,7 +5622,17 @@ public struct Disassembler: Sendable {
         /// the store is already a tuple of whole fields, or when a register's
         /// bytes name no field or part of one.
         func registerWrite(_ access: SelfFieldAccess) -> String? {
-            guard let stored = access.storedValues, stored.count == 2, access.bytes % 2 == 0, let fieldMap
+            // One 16-byte vector register is two eight-byte lanes, and a
+            // store of it that starts inside one field and ends in the next
+            // is written lane by lane the same way: `dup v0.2d, x2;
+            // stur q0, [x0, #0x18]` over `_s.y` and `_t` printed nothing.
+            let lanes: [AbstractValue]? = access.storedValues == nil && access.bytes == 16
+                ? (access.storedValue.flatMap { value -> [AbstractValue]? in
+                    if case .aggregate(let words) = value, words.count == 2 { return words }
+                    return nil
+                } ?? [.unknown, .unknown])
+                : nil
+            guard let stored = access.storedValues ?? lanes, stored.count == 2, access.bytes % 2 == 0, let fieldMap
             else { return nil }
             if let field = fieldInfo(at: access.offset, bytes: access.bytes),
                field.names.count == 1 || fieldWrite(access, field: field).hasPrefix("(") {

@@ -4958,8 +4958,18 @@ if a test was observed to fail without the fix.
   lines, a comparison of two 16-byte fields word by word whose first or
   second field had been named whole, now by both ranges; the other four
   apps are byte-identical.
-- **OPEN (completeness): a `dup`'d vector store over two ivars renders
-  nothing.** The same three stores over 8-byte members
-  (`_a = v; _s.x = v; _s.y = v; _t = v;`) compile to `dup v0.2d, x2;
-  stur q0, [x0, #0x18]; stur q0, [x0, #0x8]`, and neither store prints a
-  statement.
+- **FIXED (completeness): a `dup`'d vector store over two ivars rendered
+  nothing.** `objc_pair_stores.m`'s SDStraddle `fill:` is `dup v0.2d, x2;
+  stur q0, [x0, #0x18]; stur q0, [x0, #0x8]`, each store over the end of
+  one ivar and the start of the next, and printed no statement.
+  `registerWrite` now takes a 16-byte single-register store as its two
+  lanes: `(self->_s[8..<16], self->_t) = (arg0, arg0)`, and
+  `(self->_a, self->_s[0..<8]) = (…, …)` for the second, whose q0 is by
+  then named as a field. The same rule writes a vector store over two
+  whole fields per lane, which also ends one wrong line: libReconstruction
+  -O and -Osize `x *= k; y *= k` (`fmul v0.2d`) read
+  `self.{x, y} = (self.x * arg0)`, one value for both, and now reads
+  `(self.x, self.y) = (…, …)`. Release `disasm --pseudo`: Terminal 5,
+  Chess 1, Clarc 2 and GoodLinks 2 lines, each a two-field span store
+  now one tuple per lane with the same values (`= 0` as `(0, 0)`); TextEdit
+  is byte-identical.
