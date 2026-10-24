@@ -41,3 +41,53 @@ import Foundation
     }
     #expect(!ValueTracer.CallFacts(callee: "swift_retain", knownArityApplies: false).writesNoFields)
 }
+
+/// -Osize outlines `swift_beginAccess` into `OUTLINED_FUNCTION_3`
+/// (`mov x2, #0; mov x3, #0; b swift_beginAccess`), which writes no field
+/// but is no runtime call by name: `Holder.total` loads `first` before it
+/// and `second` after it, and `return (self.first + self.second)` read
+/// `return ?` once calls forgot field names.
+@Test func anOutlinedAccessMarkerKeepsFieldNamesIfPresent() async throws {
+    let path = "Fixtures/Sample/libReconstruction.osize.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path)
+    }
+    let total = try #require(functions.first { $0.displayName.hasPrefix("Reconstruction.BoxA.Holder.total.getter") })
+        .renderPseudo()
+    #expect(total.contains("return (self.first + self.second)"), "\(total)")
+}
+
+/// A body writes no field when it stores only through sp and calls only
+/// runtime functions that write none, or bodies that write none.
+@Test func onlyABodyThatStoresNothingAndCallsNothingThatWritesKeepsFields() throws {
+    let engine = try #require(CapstoneEngine())
+    let stub: UInt64 = 0x2000
+    let bodies: [UInt64: [UInt32]] = [
+        0x1000: [0xD280_0002, 0xD280_0003, 0x1400_03FE],  // mov x2, #0; mov x3, #0; b stub
+        0x3000: [0xF900_0280, 0xD65F_03C0],               // str x0, [x20]; ret
+        0x4000: [0x97FF_F400, 0xD65F_03C0],               // bl 0x1000; ret
+        0x5000: [0xD63F_0100, 0xD65F_03C0],               // blr x8; ret
+        0x6000: [0x9400_0400, 0xD65F_03C0],               // bl 0x7000; ret
+        0x7000: [0x97FF_FC00, 0xD65F_03C0],               // bl 0x6000; ret
+    ]
+    var summaries: [UInt64: CalleeRegisterSummary] = [:]
+    for (start, words) in bodies {
+        let bytes = words.flatMap { word in (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) } }
+        let decoded = engine.disassemble(Data(bytes), address: start)
+        try #require(decoded.count == words.count)
+        let function = DisassembledFunction(symbol: "_f\(start)", demangledName: nil, startAddress: start,
+            instructions: decoded.map {
+                Instruction(address: $0.address, text: $0.text, controlFlow: $0.controlFlow,
+                            branchTarget: $0.branchTarget, detail: $0.detail)
+            }, source: .symbol)
+        summaries[start] = try #require(CalleeRegisterSummary.of(function, isFunction: { bodies[$0] != nil }))
+    }
+    CalleeRegisterSummary.closeOverFieldWrites(&summaries) { $0 == stub ? "swift_beginAccess" : nil }
+    #expect(summaries[0x1000]?.writesNoFields == true)
+    #expect(summaries[0x4000]?.writesNoFields == true)
+    // A store through another register, an indirect call and a cycle prove nothing.
+    for start: UInt64 in [0x3000, 0x5000, 0x6000, 0x7000] {
+        #expect(summaries[start]?.writesNoFields == false, "\(String(start, radix: 16))")
+    }
+}

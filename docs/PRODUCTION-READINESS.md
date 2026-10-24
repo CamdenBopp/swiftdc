@@ -4903,13 +4903,17 @@ if a test was observed to fail without the fix.
   49, Clarc 130 and GoodLinks 554 (after normalising `let rN`); across
   them the self-field references fall from 291 to 34, 2 to 0, 92 to 20,
   152 to 18 and 702 to 134, and no changed line gains one.
-- **OPEN (completeness): an in-image wrapper of an access marker forgets
+- **FIXED (completeness): an in-image wrapper of an access marker forgot
   field names.** -Osize outlines `swift_beginAccess` into
   `OUTLINED_FUNCTION_3` (`mov x2, #0; mov x3, #0; b swift_beginAccess`),
   which is no retain or marker by name, so libReconstruction -Osize's
-  `return (self.first + self.second)` became `return ?`. A callee whose
-  body stores nothing and calls only field-preserving runtime functions
-  writes no field either.
+  `return (self.first + self.second)` became `return ?`.
+  `CalleeRegisterSummary.closeOverFieldWrites` marks a body that stores
+  only through sp, makes no indirect call and calls only stubs that write
+  no field (by the resolver's name) or bodies already marked, a least
+  fixpoint; a call to one keeps the names. That return is back, and so
+  are 1 Chess and 19 GoodLinks lines, every one a line the apps rendered
+  before the fix above; the other three apps are byte-identical.
 - **OPEN (completeness): a store renames its source register to the
   field.** After `a = x`, x19 is named `self.a`, not `arg0`, so once a
   call forgets field names `a = x; bumpA(); b = x` reads `self.b = …`

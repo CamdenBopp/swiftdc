@@ -92,6 +92,23 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// The other functions this body calls or tail-branches to directly, in
     /// address order: the ones whose clobbers can reach through it.
     var callees: [UInt64] = []
+    /// Every call and tail branch out of the body, by target (nil when
+    /// indirect), and whether every store the body makes is through
+    /// sp, into its own stack. `closeOverFieldWrites` decides from these
+    /// whether a call to the body can write a field of any object.
+    var outgoingCalls: [OutgoingCall] = []
+    var storesOnlyToStack = false
+    /// The body writes no field of any object, nor does anything it calls
+    /// (`closeOverFieldWrites`): an outlined fragment that tail-calls
+    /// `swift_beginAccess`. False until proven.
+    var writesNoFields = false
+
+    struct OutgoingCall: Sendable, Equatable {
+        let target: UInt64?
+        /// The target is an in-image function, judged by its body; anything
+        /// else (a stub) is judged by its name.
+        let isFunction: Bool
+    }
 
     /// What a call to this function does to its caller's callee-saved
     /// registers, as far as it carries beyond the direct callers.
@@ -218,9 +235,20 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         var writtenCalleeSaved = Set<String>()
         var storedCalleeSaved = Set<String>()
         var callees = Set<UInt64>()
+        var outgoingCalls: [OutgoingCall] = []
+        var storesOnlyToStack = true
         for insn in instructions {
             guard let detail = insn.detail else { return nil }
             writtenCalleeSaved.formUnion(detail.writtenRegisterKeys.intersection(calleeSavedKeys))
+            for info in detail.operands where info.isWritten {
+                guard case .memory(let base, _, _) = info.operand else { continue }
+                if base?.kind != .stackPointer { storesOnlyToStack = false }
+            }
+            if insn.controlFlow == .call
+                || (insn.controlFlow == .branch && insn.branchTarget.map(addresses.contains) != true) {
+                outgoingCalls.append(OutgoingCall(
+                    target: insn.branchTarget, isFunction: insn.branchTarget.map(isFunction) ?? false))
+            }
             if detail.operands.contains(where: { if case .memory = $0.operand { $0.isWritten } else { false } }) {
                 for info in detail.operands where info.isRead {
                     if case .register(let register) = info.operand, register.kind == .gpr,
@@ -278,7 +306,41 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             clobberedCalleeSaved: clobbered,
             definitelyClobbered: definitelyClobbered,
             restoredFrom: restoredFrom.filter { definitelyClobbered.contains($0.key) },
-            callees: callees.sorted())
+            callees: callees.sorted(),
+            outgoingCalls: outgoingCalls,
+            storesOnlyToStack: storesOnlyToStack)
+    }
+
+    /// Marks each body that writes no field of any object: it stores only
+    /// into its own stack, makes no indirect call, and calls only runtime
+    /// functions that write none (`CallFacts.writesNoFields`) or bodies
+    /// already marked. A least fixpoint, so a cycle is never marked; a call
+    /// to anything but an in-image function (a stub) is judged by its name. -Osize outlines
+    /// `swift_beginAccess` into `OUTLINED_FUNCTION_3` (`mov x2, #0;
+    /// mov x3, #0; b swift_beginAccess`), and a call to it forgot every field
+    /// of self the caller held.
+    /// `name` gives a stub's name: the summaries are built before any call
+    /// is named.
+    static func closeOverFieldWrites(
+        _ summaries: inout [UInt64: CalleeRegisterSummary], name: (UInt64) -> String?
+    ) {
+        let starts = summaries.keys.sorted()
+        var changed = true
+        while changed {
+            changed = false
+            for start in starts {
+                guard let summary = summaries[start], !summary.writesNoFields, summary.storesOnlyToStack else { continue }
+                let preserving = summary.outgoingCalls.allSatisfy { call in
+                    guard let target = call.target else { return false }
+                    if call.isFunction { return summaries[target]?.writesNoFields ?? false }
+                    return name(target).map { ValueTracer.CallFacts(callee: $0).writesNoFields } ?? false
+                }
+                if preserving {
+                    summaries[start]?.writesNoFields = true
+                    changed = true
+                }
+            }
+        }
     }
 
     /// A summary that claims nothing about callee-saved registers.
@@ -351,7 +413,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             argumentReads: reads, provenArgumentReads: provenArgumentReads, pendingReads: pendingReads,
             readsFramePointer: readsFramePointer,
             readsContextRegister: readsContextRegister, clobberedCalleeSaved: clobberedCalleeSaved,
-            definitelyClobbered: definitelyClobbered, restoredFrom: restoredFrom, callees: callees)
+            definitelyClobbered: definitelyClobbered, restoredFrom: restoredFrom, callees: callees,
+            outgoingCalls: outgoingCalls, storesOnlyToStack: storesOnlyToStack)
     }
 
     /// Whether an instruction uses a callee-saved register (`key`, x29 or
@@ -445,7 +508,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 clobberedCalleeSaved: rebuilt.clobberedCalleeSaved,
                 definitelyClobbered: rebuilt.definitelyClobbered,
                 restoredFrom: rebuilt.restoredFrom,
-                callees: old.callees)
+                callees: old.callees,
+                outgoingCalls: old.outgoingCalls,
+                storesOnlyToStack: old.storesOnlyToStack)
             guard new != old else { continue }
             summaries[start] = new
             guard new.effect != old.effect else { continue }

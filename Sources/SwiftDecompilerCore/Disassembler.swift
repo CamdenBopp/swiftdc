@@ -764,6 +764,7 @@ public struct Disassembler: Sendable {
             }
         }
         names = resolveCrossImageNames(targets, into: names, resolver: cacheSymbols)
+        CalleeRegisterSummary.closeOverFieldWrites(&registerSummaries) { names[$0] }
         let resolver = ReferenceResolver(
             names: names,
             stringRanges: stringSectionRanges(in: machO),
@@ -1081,6 +1082,7 @@ public struct Disassembler: Sendable {
                         }
                     }
                 }
+                CalleeRegisterSummary.closeOverFieldWrites(&summaries) { resolvedNames[$0] }
                 return summaries
             }(),
             asyncIndex: asyncIndex, asyncChainSlots: chainSlots
@@ -3987,6 +3989,7 @@ public struct Disassembler: Sendable {
                !clobbered.isEmpty {
                 tracer.calleeClobbers[target] = clobbered
             }
+            if registerSummaries[target]?.writesNoFields == true { tracer.fieldPreservingCallees.insert(target) }
             if insn.controlFlow == .call, registerSummaries[target]?.readsFramePointer == true {
                 tracer.framePointerUsers.insert(target)
             }

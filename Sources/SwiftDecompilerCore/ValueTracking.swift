@@ -502,6 +502,9 @@ public struct ValueTracer: Sendable {
     /// saving (`CalleeRegisterSummary`): an outlined fragment reached by `bl`
     /// does not preserve them, so they are forgotten after a call to it.
     var calleeClobbers: [UInt64: Set<String>] = [:]
+    /// In-image call targets whose bodies write no field of any object
+    /// (`CalleeRegisterSummary.writesNoFields`).
+    var fieldPreservingCallees: Set<UInt64> = []
 
     /// Callees that use the caller's x29 as a pointer
     /// (`CalleeRegisterSummary.readsFramePointer`): a call to one may write
@@ -1331,7 +1334,9 @@ public struct ValueTracer: Sendable {
             // forgets these; so does any call but a retain or an access
             // marker, a memory helper included, since its destination may be
             // a field.
-            if !call.writesNoFields { Self.invalidateSelfFieldAliases(in: &registers) }
+            if !call.writesNoFields, !(insn.branchTarget.map(fieldPreservingCallees.contains) ?? false) {
+                Self.invalidateSelfFieldAliases(in: &registers)
+            }
             if !handledAsMemoryHelper { applyCallToResultBuffers(insn, site: site, into: &registers) }
             // AAPCS64: x0–x17 are caller-saved, so a call clobbers them. x18 is
             // reserved, x19–x28 are callee-saved — and preserving those is what
