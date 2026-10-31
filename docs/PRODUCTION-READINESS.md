@@ -1934,7 +1934,7 @@ The meta-category. Every gap here weakens confidence in every claim above.
 | Recovered semantics | the compiled function itself, called via `dlsym` | **In tests** — 1,264 comparisons at both `-Onone` and `-O`: 636 integer/boolean (catches an injected U1) and 628 floating point (catches a one-ULP constant error). Narrow: no strings, payload enums, or side effects |
 | Async funclet grouping | the unstripped symbol table (`…TQ<n>_` / `…TY<n>_` suffixes) | **In tests** — parent, ordinal and kind of all 14 funclets on three builds, and the stripped build must match address for address; the code-only fallback is checked against the same oracle |
 | Malformed-input handling | the CLI's own exit status, checked from a subprocess | **In tests** — 9 header-shaped inputs; no fuzzer, no malformed metadata |
-| Whole-binary output | — | **None.** No golden-output corpus, so a silent regression on a real framework would not be noticed |
+| Whole-binary output | `Tools/corpus.swift` over every arm64 image on the host: exit status and signal, cross-process output hashes, `dyld_info -function_starts`, the image's own sections, `proc_pid_rusage` | **Measured (2026-10-31)**: 6,127 images; `corpus compare` diffs two builds' outputs, outcomes, time and memory. Hashes are not committed (the images are private and host-specific), so a regression shows only when a sweep is re-run |
 
 The two decoders being cross-checkable against each other is the cheapest
 unexploited oracle in the project: the objdump path and the Capstone path decode
@@ -5591,3 +5591,74 @@ if a test was observed to fail without the fix.
   category getter backed by a global, message sends) and 4 tail-call an
   outlined or shared helper. Fixture blast radius: only
   `constantgetter.m`.
+
+## 2026-10-31: whole-binary corpus measurements
+
+`Tools/corpus.swift` (see [Tools/audit/README.md](../Tools/audit/README.md))
+over every arm64 Mach-O image on the audit host: 6,127 unique images
+(by SHA-256) from 9,079 candidates, 7.2 GB of `__text`, 1,615 with Swift
+metadata, 2,459 with Objective-C classes; Xcode's frameworks and plugins
+(1,782), `/usr/libexec` (583), `/usr/bin` (487), `/System/Library`
+(411), and third-party apps (SDRangel, VLC, KiCad, Docker, Electron and
+Chromium apps, Go tools). The harness's header reader agrees with `otool
+-l` on all 6,091 images both read. Release builds throughout; the
+"before" build is the session's starting point, `10e5c9e`.
+
+**Reliability**, the 5,979 images with at most 8 MB of `__text`, `dump`,
+`interface`, `layout`, `objc`, `swift-version` and `xrefs --unreferenced`,
+4 jobs, 1.8 GB and 900 s limits, 35,874 runs each:
+
+| | crash | memory kill | timeout | error |
+|---|---|---|---|---|
+| before (`10e5c9e`) | 17 | 7 | 0 | 72 (12 per command) |
+| after (`0b3f7db`) | 0 | 0 | 0 | 84 (14 per command, all FairPlay declines) |
+
+The 12 errors per command before were 10 encrypted images misreported as
+malformed and 2 valid Chromium helpers refused; after, the 14 encrypted
+images decline by their cause and the helpers load. The 148 images over
+8 MB (4.8 GB of `__text`; metadata commands, 3 GB limit): 0 crashes, 0
+errors, 0 timeouts; `objc` exceeded 3 GB on 9 before the accessor fixes
+and finishes on all 148 after (1.8 to 3.6 GB on the Electron and Chromium
+frameworks).
+
+**Completeness against independent evidence** (`xrefs` function counts
+against `dyld_info -function_starts`, same 5,979 images): images listing
+fewer functions than their starts, 17 → 7, every remaining one explained
+(jump tables after a `br`, which swiftdc declines as functions, in
+AppleMediaServicesKit ×3; data in `__text` in DumpPanic ×2; one start each
+in CryptexKitHost and MobileDevice, unexamined). Images averaging over
+20,000 instructions per function: 7 → 3 (Chromium's `app_mode_loader`
+×2 and libRosettaRuntime, no starts and no Go table, OPEN above).
+
+**Consistency across processes**: 400 sampled images × 7 commands
+(`disasm --structured` included) × 3 separate processes, 8,400 runs: 0
+output differences, 0 failures.
+
+**Performance**, the A/B the working agreement asks for: 40 images
+stratified by size (64 KB to 8 MB, Swift and not), `dump`, `interface`,
+`objc`, `xrefs`, `--jobs 1`, nothing else running, the upstream build
+(`175a563`) and this one (`0b3f7db`) alternated three rounds, medians per
+image. Spread between rounds of one build: 1.5% median, 4.3% p90.
+
+| command | median wall ratio | median peak ratio | total wall, s |
+|---|---|---|---|
+| dump | 1.000 | 1.003 | 28.6 → 28.5 |
+| interface | 1.002 | 1.001 | 30.5 → 30.7 |
+| objc | 0.517 | 1.004 | 40.1 → 10.1 |
+| xrefs | 1.005 | 1.001 | 494.4 → 497.3 |
+
+Output differs on 7 images' `objc` (accessor classification) and 1
+`xrefs` (Zoom's libavcodec loses 81 functions named by `N_INDR` symbols),
+and one `xrefs` crash is gone (CoreGraphics). Against `10e5c9e` in the
+4-job sweep, `xrefs`' peak footprint is up about 3 MB median in every
+size band (8.9 → 12.2 MB for images under 64 KB of `__text`); the A/B
+puts none of it in this session's commits, so it predates `175a563`.
+
+Commits from the corpus: FairPlay declines (`7ed8c6d`), every `__TEXT`
+code section (`0eec0b5`), section-defined symbols only (`ffa5e26`), no
+scalar model of SVE registers (`5a68ec2`), 4-aligned method lists
+(`7ed62b4`), the objdump file line (`6cdb88d`), direct context
+references (`949f90d`), Go function tables (`b01115d`), the own-entry
+branch (`9f92b71`), accessor decoding and classification (`10712d8`,
+`bb3d206`, `0b3f7db`); the harness itself (`a28c827`, `f423c7f`,
+`7b47780`).

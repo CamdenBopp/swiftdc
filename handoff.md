@@ -518,7 +518,9 @@ installed on this host.
 
 - Async: `-Onone` context reloads through stack spills decline; executor from
   an actor's `unownedExecutor` renders `hop_to_executor(?)`.
-- Validation: no committed whole-binary golden output for a real framework.
+- Validation: `Tools/corpus.swift` sweeps every arm64 image on the host and
+  compares two builds (readiness doc, 2026-10-31). Its outputs are not
+  committed: re-run a sweep to see a regression.
 - TinyCC (`git clone https://repo.or.cz/tinycc.git`, `./configure && make` with
   `SDKROOT` set) builds Mach-O with its own linker: no `LC_FUNCTION_STARTS`, no
   `LC_UUID`. It is a cheap source of unusual inputs for the robustness corpus;
