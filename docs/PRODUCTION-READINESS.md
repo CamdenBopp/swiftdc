@@ -5484,3 +5484,33 @@ if a test was observed to fail without the fix.
   method's comment regains "[recovered from Objective-C metadata]"); the
   filtered, pseudo and structured views read no objdump labels and are
   unchanged.
+
+## 2026-10-31: Go function tables
+
+- **FIXED (completeness, memory): a stripped Go image was one function.**
+  Go's internal linker writes no `LC_FUNCTION_STARTS`, and `-ldflags=-s`
+  removes the symbol table: 20 of the 41 Go images on this host (Docker's
+  CLI plugins, github-mcp-server, claude-ssh-askpass) had no boundary at
+  all, so all of `__text` was analysed as a single function. `xrefs`
+  reported "1 of 1 functions" and peaked at 2.68 to 2.85 GB on the 7 MB
+  plugins (the corpus sweep's 7 memory kills at 1.8 GB). The Go runtime's
+  own table, `__gopclntab` (what it reads to print a stack trace), lists
+  every function's entry and name. `GoFunctionTable` reads it (Go 1.18
+  and later), declining the whole table on any inconsistency, and its
+  entries join the function starts and name otherwise unnamed functions
+  as an unstripped image's symbols do (`_main.scale`). On the fixture the
+  table equals the unstripped twin's symbol table: 1,683 addresses, every
+  name equal once the symbol table's `.abi0` suffix is dropped. Release
+  `xrefs`, before → after: github-mcp-server 1 → 24,783 functions,
+  2,850 → 142 MB, 90.7 → 112.6 s; docker-ai 1 → 21,419, 2,678 → 158 MB,
+  60.7 → 105.8 s; com.docker.socket 1 → 1,952, 188 → 33 MB, 5.5 →
+  10.8 s. The time grows because each function is now analysed as one.
+- **OPEN (soundness): Go's stack-growth prologue renders as a loop that
+  calls the function itself.** `cmp sp, x16; b.ls` to a block that calls
+  `runtime.morestack_noctxt` and branches back to the entry renders in
+  `--structured` as `while (sp <=ᵁ x16) { runtime.morestack_noctxt();
+  main.main() }`: the branch to the function's own entry is read as a
+  tail call.
+- **OPEN (soundness): `go:buildid` is data at the start of `__text`.** The
+  table lists it as a function at `runtime.text`; its bytes are the build
+  ID string, decoded as instructions (the data-in-`__text` item above).

@@ -14,6 +14,8 @@ xcuserdata/
 Fixtures/Sample/sample.debug
 Fixtures/Sample/sample.release
 Fixtures/Sample/sample.stripped
+Fixtures/Sample/goProgram
+Fixtures/Sample/goProgram.stripped
 Fixtures/Sample/*.dylib
 Fixtures/Sample/*.dSYM/
 Fixtures/Sample/*.swiftmodule

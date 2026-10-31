@@ -367,6 +367,14 @@ xcrun clang -arch arm64 -dynamiclib absolutesymbols.s -o libAbsoluteSymbols.dyli
 echo "==> SVE writes to z registers (sveregisters.s): no scalar model, and z0 aliases v0"
 xcrun clang -arch arm64 -march=armv8-a+sve -dynamiclib sveregisters.s -o libSVERegisters.dylib
 
+echo "==> Go program, stripped and not (gofunctions/): functions only in __gopclntab"
+if command -v go >/dev/null; then
+    (cd gofunctions && GOFLAGS=-mod=mod GOOS=darwin GOARCH=arm64 go build -trimpath -o ../goProgram .)
+    (cd gofunctions && GOFLAGS=-mod=mod GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o ../goProgram.stripped .)
+else
+    echo "    go is not installed: goProgram and goProgram.stripped not built"
+fi
+
 echo "==> first function's symbol stripped (localfirst.s, strip -x): objdump's path line is no label"
 xcrun clang -arch arm64 -dynamiclib localfirst.s -o libLocalFirst.stripped.dylib
 strip -x libLocalFirst.stripped.dylib

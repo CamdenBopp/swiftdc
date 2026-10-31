@@ -533,6 +533,8 @@ public struct Disassembler: Sendable {
     let callFactsCache = ValueTracer.CallFactsCache()
     /// Memoizes each image's code sections, for one run.
     let codeSectionCache = CodeSection.Cache()
+    /// Memoizes each image's Go function table, for one run.
+    let goFunctionCache = GoFunctionTable.Cache()
 
     public init(preset: DemanglePreset = .default) {
         self.preset = preset
@@ -907,12 +909,14 @@ public struct Disassembler: Sendable {
     /// (files) and Capstone (in-process/cache) — feed into this.
     private func assemble(
         instructions: [Instruction],
-        labelByAddress: [UInt64: String],
+        labelByAddress objdumpLabels: [UInt64: String],
         in machO: MachOFile,
         functionFilter: String?,
         objcIndex providedObjCIndex: ObjCMetadataIndex? = nil
     ) async -> [DisassembledFunction] {
         Probe.image(machO)
+        var labelByAddress = objdumpLabels
+        goLabels(in: machO, adding: &labelByAddress)
         // Function boundaries: LC_FUNCTION_STARTS ∪ label addresses. Function-
         // starts survive stripping, so this re-creates boundaries a label set
         // (objdump's, or a stripped cache image's exports) couldn't cover.
@@ -1855,6 +1859,7 @@ public struct Disassembler: Sendable {
                 labels[address] = symbol.name
             }
         }
+        goLabels(in: machO, adding: &labels)
         return labels
     }
 
@@ -2035,12 +2040,35 @@ public struct Disassembler: Sendable {
     /// actually declare and prints a wrong figure in the `parsedNothing`
     /// diagnostic. The boundary callers were always unaffected — they wrap this
     /// in a `Set` — so deduping here changes counts only.
+    ///
+    /// A Go image adds its runtime's function table (`GoFunctionTable`),
+    /// which its internal linker writes in place of LC_FUNCTION_STARTS.
     private func functionStarts(of machO: MachOFile) -> [UInt64] {
-        guard let starts = machO.functionStarts else { return [] }
         var seen: Set<UInt64> = []
-        return starts.compactMap { entry in
+        var starts = (machO.functionStarts.map(Array.init) ?? []).compactMap { entry in
             let address = UInt64(entry.offset)
             return seen.insert(address).inserted ? address : nil
+        }
+        for entry in goFunctions(in: machO)?.entries ?? [] where seen.insert(entry.address).inserted {
+            starts.append(entry.address)
+        }
+        return starts
+    }
+
+    /// The image's Go function table, read once per run.
+    func goFunctions(in machO: MachOFile) -> GoFunctionTable? {
+        let key = "\(machO.url.path)#\(machO.headerStartOffset)#\(machO.headerStartOffsetInCache)"
+        return goFunctionCache.value(for: key) {
+            GoFunctionTable.read(machO) { self.sectionBytes(address: $0, size: $1, in: machO) }
+        }
+    }
+
+    /// Names from the Go function table, spelled as the symbol table of an
+    /// unstripped Go image spells them (`_main.scale`), for addresses no
+    /// symbol names.
+    private func goLabels(in machO: MachOFile, adding labels: inout [UInt64: String]) {
+        for entry in goFunctions(in: machO)?.entries ?? [] where labels[entry.address] == nil {
+            labels[entry.address] = "_" + entry.name
         }
     }
 

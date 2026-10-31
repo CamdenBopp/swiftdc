@@ -327,5 +327,6 @@ swift build -c release --scratch-path .build-release   # for any timing or memor
 ```
 
 Requires Apple Silicon, Xcode 26+ (Swift 6.3+; tools version 6.2, macOS 15
-deployment). `brew install openssl@3` is needed only for the device
+deployment). The Go fixtures (`Fixtures/Sample/gofunctions`) need `go` on the
+path; without it `build.sh` skips them and the enforcing suite names them. `brew install openssl@3` is needed only for the device
 commands.
