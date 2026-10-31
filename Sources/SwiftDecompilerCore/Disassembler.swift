@@ -6977,9 +6977,18 @@ public struct Disassembler: Sendable {
         var instructions: [Instruction] = []
         var labelByAddress: [UInt64: String] = [:]
         var pendingLabel: String?
+        // objdump opens with the file's path and a colon, the shape of a
+        // label. In an image whose first function has no symbol it named
+        // that function: `disasm /usr/bin/true` titled it `/usr/bin/true`.
+        // Labels count only inside a section's listing.
+        var inSection = false
 
         for rawLine in output.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = String(rawLine)
+            if line.hasSuffix(") section") {
+                inSection = true
+                continue
+            }
             if let (address, text) = parseInstruction(line) {
                 if let label = pendingLabel {
                     labelByAddress[address] = label
@@ -6988,7 +6997,7 @@ public struct Disassembler: Sendable {
                 instructions.append(
                     Instruction(address: address, text: text, annotation: annotate(text))
                 )
-            } else if let label = parseLabel(line) {
+            } else if inSection, let label = parseLabel(line) {
                 pendingLabel = label
             }
         }

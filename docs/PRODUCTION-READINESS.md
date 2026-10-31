@@ -5458,3 +5458,20 @@ if a test was observed to fail without the fix.
   4242`, mutant 4 (offsets 15813, 15827, 15873, 15921): `interface`,
   `objc`, `objc --methods`, `layout`, `disasm`, `xrefs` and `analyze` die
   by SIGTRAP.
+
+## 2026-10-31: objdump's file line
+
+- **FIXED (soundness): the listing named a function after the file.**
+  `llvm-objdump --macho -d` opens with `<path>:`, the shape of a label,
+  and `parseObjdump` took it as the next instruction's symbol. When the
+  first function has no symbol (a stripped executable), the unfiltered
+  listing and `analyze` titled it with the path: `disasm /usr/bin/true
+  --arch arm64e` printed `/usr/bin/true:` over its only function, and a
+  call to it was annotated `→ /usr/bin/true`. With the original HEAD's
+  release build, 1,029 of the 3,201 corpus images with at most 64 KB of
+  `__text` did this. Labels now count only after a `(…) section` line.
+  The fixture blast radius is 23 fixtures' listing and analyze, each
+  only its first function's title or symbol comment (an Objective-C
+  method's comment regains "[recovered from Objective-C metadata]"); the
+  filtered, pseudo and structured views read no objdump labels and are
+  unchanged.

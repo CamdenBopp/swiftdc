@@ -147,6 +147,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libCodeSections.dylib",
         "Fixtures/Sample/libAbsoluteSymbols.dylib",
         "Fixtures/Sample/libSVERegisters.dylib",
+        "Fixtures/Sample/libLocalFirst.stripped.dylib",
         "Fixtures/Sample/libObjCSDKSelectors.dylib",
         "Fixtures/Sample/libObjCSDKSelectors.opt.dylib",
         "Fixtures/Sample/libSwitchClobbers.dylib",
