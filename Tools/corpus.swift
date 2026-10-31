@@ -370,6 +370,15 @@ func report(_ dir: String) throws {
         for r in below.sorted(by: { $0.path < $1.path }).prefix(15) { print("  - `\(r.path)`: \(r.reportedFunctions!) of \(r.functionStarts!) starts") }
         let totals = paired.reduce((0, 0)) { ($0.0 + $1.reportedFunctions!, $0.1 + $1.functionStarts!) }
         print("- totals: \(totals.0) functions reported, \(totals.1) function starts")
+        // No starts at all passes the comparison above; a function count far
+        // below the code's size does not. Compilers' functions average a few
+        // hundred instructions.
+        let sparse = x.filter { $0.textBytes >= 1 << 18 && ($0.reportedFunctions ?? 0) > 0
+            && $0.textBytes / 4 / $0.reportedFunctions! > 20_000 }
+        print("- \(sparse.count) binaries with at least 256 KB of __text average more than 20,000 instructions per reported function")
+        for r in sparse.sorted(by: { $0.path < $1.path }).prefix(15) {
+            print("  - `\(r.path)`: \(r.reportedFunctions!) functions for \(r.textBytes / 4) instructions, \(r.functionStarts ?? 0) starts")
+        }
     }
     print("\n## Consistency across processes\n")
     let groups = Dictionary(grouping: records.filter { $0.outcome == "ok" || $0.outcome == "error" }, by: { "\($0.sha256) \($0.command)" }).values.filter { $0.count > 1 }
