@@ -48,7 +48,7 @@ struct AppsCommand: AsyncParsableCommand {
         Encryption is reported from the app's FairPlay ApplicationSINF blob, which \
         App Store builds carry and development-signed and system apps do not. An \
         encrypted app's __TEXT cannot be disassembled without decryption, so \
-        `swiftdc analyze` on its binary will warn about cryptid.
+        every swiftdc command refuses its binary (cryptid != 0).
         """
     )
 

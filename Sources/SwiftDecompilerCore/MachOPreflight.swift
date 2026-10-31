@@ -45,6 +45,7 @@ public enum MachOPreflight {
         static let segment64: UInt32 = 0x19
         static let symtab: UInt32 = 0x2
         static let chainedFixups: UInt32 = 0x8000_0034   // LC_DYLD_CHAINED_FIXUPS
+        static let encryptionInfo: Set<UInt32> = [0x21, 0x2c]   // LC_ENCRYPTION_INFO(_64)
         /// Every command whose payload is a `struct dylib` (a name as an
         /// `lc_str` offset into the command, then three version words).
         static let dylibCommands: Set<UInt32> = [
@@ -163,6 +164,17 @@ public enum MachOPreflight {
     /// start `prefix`.
     static func validateImageContents(prefix: Data, image: ImageReader, path: String) throws {
         let fileSize = image.size
+        // FairPlay ciphertext is not a malformed image, and no reading of it
+        // is true: decoded, it renders fabricated code (the corpus sweep
+        // found 11 App Store binaries that exited 0 with only a warning), and
+        // its metadata fails the checks below as "malformed" (3 more). Decline
+        // the image, by its own cause, before anything reads it.
+        if let crypt = encryptedRange(prefix: prefix) {
+            throw BinaryLoadError(
+                "FairPlay-encrypted: \(path) — \(crypt.size) bytes at file offset \(crypt.offset) are ciphertext "
+                + "(cryptid \(crypt.cryptid)), so its code and metadata cannot be read. Analyze a decrypted copy."
+            )
+        }
         // Section CONTENTS, for a thin little-endian image. A fat file's
         // slices come through here one at a time from `validate(url:)`.
         //
@@ -1047,6 +1059,33 @@ public enum MachOPreflight {
 
     /// The `LC_DYLD_CHAINED_FIXUPS` payload of a thin little-endian loadable
     /// image, in bounds, with the number of segment commands beside it.
+    /// The range an `LC_ENCRYPTION_INFO(_64)` command with a non-zero
+    /// `cryptid` declares encrypted, from `struct encryption_info_command`:
+    /// `cryptoff`, `cryptsize`, `cryptid` after `cmd` and `cmdsize`. A
+    /// `cryptid` of 0 (`ld -encryptable`, before the App Store encrypts it)
+    /// is plaintext.
+    static func encryptedRange(prefix: Data) -> (offset: Int, size: Int, cryptid: UInt32)? {
+        guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE || magic == Magic.machO32LE,
+              let ncmds = prefix.u32(at: 16), let sizeofcmds = prefix.u32(at: 20)
+        else { return nil }
+        let header = magic == Magic.machO64LE ? Layout.machHeader64 : Layout.machHeader32
+        let limit = min(header + Int(sizeofcmds), prefix.count)
+        var cursor = header
+        for _ in 0..<Int(ncmds) {
+            guard cursor + Layout.minLoadCommand <= limit,
+                  let cmd = prefix.u32(at: cursor), let cmdsize = prefix.u32(at: cursor + 4),
+                  cmdsize >= UInt32(Layout.minLoadCommand)
+            else { return nil }
+            if Command.encryptionInfo.contains(cmd), let offset = prefix.u32(at: cursor + 8),
+               let size = prefix.u32(at: cursor + 12), let cryptid = prefix.u32(at: cursor + 16),
+               cryptid != 0, size > 0 {
+                return (Int(offset), Int(size), cryptid)
+            }
+            cursor += Int(cmdsize)
+        }
+        return nil
+    }
+
     static func chainedFixups(prefix: Data) -> (dataoff: Int, datasize: Int, segments: Int)? {
         guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE,
               let filetype = prefix.u32(at: 12), FileType.loadable.contains(filetype),

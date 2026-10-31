@@ -5333,3 +5333,24 @@ if a test was observed to fail without the fix.
   identical whole traces. `asyncChainProbeTracesAreIdenticalAcrossProcessesIfPresent`
   compares four processes on `libAsyncFns.dylib` (27 events).
 
+
+
+## 2026-10-30: FairPlay-encrypted images
+
+- **FIXED (soundness): an App Store binary decoded its ciphertext.** The
+  first whole-corpus sweep (`Tools/corpus.swift`, 6,127 arm64 images on
+  this host) found 14 FairPlay-encrypted binaries (`cryptid 1`), all iOS
+  apps under `/Applications/*/Wrapper`. Four decoded ciphertext with
+  only a stderr warning: three exited 0 from every command, `xrefs`
+  included (two Flutter runners whose encrypted range is 4 KB, so the
+  rest of the image passed the preflight, and MikroTik), and `xrefs` on
+  ShredderChessLite died by SIGTRAP. The other ten failed as "Malformed
+  Mach-O: … `__swift5_fieldmd` descriptor 0 declares 27615-byte records"
+  (or `__swift5_assocty`), one message for
+  a different cause. The preflight now declines an image whose
+  `LC_ENCRYPTION_INFO(_64)` has a non-zero `cryptid`, before any content
+  check, with "FairPlay-encrypted: <path> — N bytes at file offset O are
+  ciphertext". `cryptid 0` (`ld -encryptable`) still reads. All 14 now
+  exit 1 with that message. Every fixture's `dump`, `objc`, `xrefs` and
+  `disasm --structured` output is unchanged (`corpus compare`, 145
+  binaries, 580 runs).

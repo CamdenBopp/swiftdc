@@ -143,6 +143,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libObjCUntypedStruct.dylib",
         "Fixtures/Sample/libObjCUntypedStruct.opt.dylib",
         "Fixtures/Sample/libRuntimeArity.dylib",
+        "Fixtures/Sample/libEncryptable.dylib",
         "Fixtures/Sample/libObjCSDKSelectors.dylib",
         "Fixtures/Sample/libObjCSDKSelectors.opt.dylib",
         "Fixtures/Sample/libSwitchClobbers.dylib",

@@ -44,7 +44,6 @@ public enum BinaryLoader {
         switch file {
         case .machO(let machO):
             if !allowingWideAddresses { try requireSignedAddresses(machO) }
-            warnIfEncrypted(machO, path: path)
             return machO
 
         case .fat(let fat):
@@ -64,7 +63,6 @@ public enum BinaryLoader {
                 )
             }
             if !allowingWideAddresses { try requireSignedAddresses(match) }
-            warnIfEncrypted(match, path: path)
             return match
         }
     }
@@ -89,19 +87,6 @@ public enum BinaryLoader {
                 )
             }
         }
-    }
-
-    /// FairPlay-encrypted App Store binaries (`cryptid != 0`) read as garbage —
-    /// warn loudly so the user isn't puzzled by nonsense output.
-    private static func warnIfEncrypted(_ machO: MachOFile, path: String) {
-        guard machO.isEncrypted else { return }
-        let name = (path as NSString).lastPathComponent
-        FileHandle.standardError.write(Data("""
-        warning: '\(name)' is FairPlay-encrypted (cryptid != 0) — its __text and Swift metadata \
-        will read as garbage. Analyze a decrypted dump (e.g. from a jailbroken device via \
-        frida-ios-dump) or an un-encrypted build instead.
-
-        """.utf8))
     }
 
     /// Best-effort architecture name for a thin Mach-O slice.

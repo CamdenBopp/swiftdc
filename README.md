@@ -324,8 +324,8 @@ lose naming rather than gaining a wrong name.
   Class vtable names occasionally fall back to `sub_<addr>` even unstripped (a
   SwiftDump resolution gap); the address is still correct and disassemblable.
 - **FairPlay-encrypted `.ipa`s cannot be decrypted.** App Store `.ipa`s ship
-  their main binary encrypted (`cryptid != 0`); swiftdc detects and warns, but
-  you need a decrypted dump (e.g. frida-ios-dump on a jailbroken device) or an
+  their main binary encrypted (`cryptid != 0`); swiftdc refuses such an image
+  rather than decode ciphertext, so you need a decrypted dump (e.g. frida-ios-dump on a jailbroken device) or an
   un-encrypted build. Enterprise/dev builds and `.app`s are unaffected.
 - **Device commands enumerate only.** They do not pull binaries off the device —
   a stock iOS device does not vend other apps' bundles over any lockdown service
@@ -352,7 +352,7 @@ lose naming rather than gaining a wrong name.
   (that needs the binary, which the previous point rules out). The two agree by
   construction and empirically: across 573 apps on an iOS 27 device, every App
   Store app had a SINF and every system/development-signed app had none.
-  `BinaryLoader` still reads the real `cryptid` whenever it has a binary in hand.
+  The preflight still reads the real `cryptid` whenever it has a binary in hand.
 
 Known rough edges in cache images are in
 [docs/dyld-shared-cache.md](docs/dyld-shared-cache.md).

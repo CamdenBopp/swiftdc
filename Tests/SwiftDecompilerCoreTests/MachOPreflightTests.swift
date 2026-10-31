@@ -1316,3 +1316,76 @@ private func oneProtocolReader(size: UInt32 = 96, name: UInt64 = 0x3000) -> Mach
         try MachOPreflight.validateObjCClasses([], protocols: [0x6000], reader: oneProtocolReader(size: 0x400))
     }
 }
+
+// MARK: - FairPlay encryption
+
+/// `libEncryptable.dylib` as an installed App Store binary is: its
+/// `LC_ENCRYPTION_INFO_64` says `cryptid 1`, and, when `scrambled`, the range
+/// it declares holds ciphertext. Found by its load command, not by the
+/// preflight's own walk.
+private func fairPlayCopy(scrambled: Bool) throws -> Data? {
+    let path = "Fixtures/Sample/libEncryptable.dylib"
+    guard var bytes = FileManager.default.contents(atPath: path) else { return nil }
+    func u32(_ o: Int) -> Int { Int(bytes[o]) | Int(bytes[o + 1]) << 8 | Int(bytes[o + 2]) << 16 | Int(bytes[o + 3]) << 24 }
+    var cursor = 32
+    for _ in 0..<u32(16) {
+        if u32(cursor) == 0x2c {
+            let offset = u32(cursor + 8), size = u32(cursor + 12)
+            #expect(u32(cursor + 16) == 0, "the fixture is plaintext as linked")
+            bytes[cursor + 16] = 1
+            if scrambled { for i in offset..<(offset + size) { bytes[i] ^= 0xa5 } }
+            return bytes
+        }
+        cursor += u32(cursor + 4)
+    }
+    Issue.record("libEncryptable.dylib has no LC_ENCRYPTION_INFO_64; rebuild it with -Xlinker -encryptable")
+    return nil
+}
+
+@Test func aPlaintextEncryptableImageIsReadIfPresent() throws {
+    let path = "Fixtures/Sample/libEncryptable.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    #expect(throws: Never.self) { try MachOPreflight.validate(url: URL(fileURLWithPath: path)) }
+}
+
+/// Before, cryptid 1 over plaintext-looking bytes (11 App Store binaries in
+/// the corpus sweep) decoded and exited 0 behind a warning, and over
+/// ciphertext (3 more) failed as "Malformed Mach-O: … __swift5_fieldmd
+/// descriptor 0 declares 27615-byte records". Every entry point declines,
+/// naming the encryption, and prints nothing.
+@Test func aFairPlayEncryptedImageIsDeclinedByItsCauseIfPresent() throws {
+    let binary = URL(fileURLWithPath: ".build/debug/swiftdc")
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("swiftdc-fairplay-\(ProcessInfo.processInfo.processIdentifier)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    for scrambled in [false, true] {
+        guard let bytes = try fairPlayCopy(scrambled: scrambled) else { return }
+        let url = directory.appendingPathComponent(scrambled ? "ciphertext.dylib" : "flagged.dylib")
+        try bytes.write(to: url)
+        do {
+            try MachOPreflight.validate(url: url)
+            Issue.record("scrambled \(scrambled): preflight accepted an encrypted image")
+        } catch {
+            #expect("\(error)".hasPrefix("FairPlay-encrypted: "), "scrambled \(scrambled): \(error)")
+            #expect("\(error)".contains("16384 bytes at file offset 16384"), "\(error)")
+        }
+        guard FileManager.default.fileExists(atPath: binary.path) else { continue }
+        for command in [["dump"], ["interface"], ["layout"], ["objc"], ["swift-version"],
+                        ["xrefs", "--unreferenced"], ["disasm"], ["analyze"]] {
+            let process = Process(), out = Pipe(), err = Pipe()
+            process.executableURL = binary
+            process.arguments = [command[0], url.path] + command.dropFirst()
+            process.standardOutput = out
+            process.standardError = err
+            try process.run()
+            let stdout = out.fileHandleForReading.readDataToEndOfFile()
+            let stderr = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            process.waitUntilExit()
+            #expect(process.terminationReason == .exit && process.terminationStatus == 1,
+                    "\(command) scrambled \(scrambled): status \(process.terminationStatus)")
+            #expect(stderr.contains("FairPlay-encrypted: "), "\(command) scrambled \(scrambled): \(stderr)")
+            #expect(stdout.isEmpty, "\(command) scrambled \(scrambled): printed \(stdout.count) bytes")
+        }
+    }
+}

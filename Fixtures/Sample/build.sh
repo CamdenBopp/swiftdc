@@ -355,6 +355,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name AsyncFns asyncfns.swift 
 cp libAsyncFns.opt.dylib libAsyncFns.opt.stripped.dylib
 strip -x libAsyncFns.opt.stripped.dylib 2>/dev/null || strip libAsyncFns.opt.stripped.dylib
 
+echo "==> encryptable dylib (-Onone, ld -encryptable): LC_ENCRYPTION_INFO_64, cryptid 0"
+$SWIFTC -parse-as-library -emit-library -module-name Encryptable encryptable.swift -o libEncryptable.dylib -Xlinker -encryptable
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release
