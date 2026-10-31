@@ -145,7 +145,7 @@ func describe(cacheImage path: String) -> Entry? {
 struct Measured {
     var status: Int32 = 0, signal: Int32 = 0, timedOut = false, memoryKilled = false
     var wall = 0.0, user = 0.0, system = 0.0, peakMB = 0.0
-    var stdoutHash = "", stdoutBytes = 0, stdoutLines = 0, stderrHash = "", stderrTail = "", stdoutTail = ""
+    var stdoutHash = "", stdoutBytes = 0, stdoutLines = 0, stdoutControlBytes = 0, stderrHash = "", stderrTail = "", stdoutTail = ""
 }
 
 let timebase: Double = { var t = mach_timebase_info_data_t(); mach_timebase_info(&t); return Double(t.numer) / Double(t.denom) / 1e9 }()
@@ -158,15 +158,20 @@ func rusage(_ pid: pid_t) -> rusage_info_v4? {
     return rc == 0 ? info : nil
 }
 
-func hashFile(_ path: String) -> (String, Int, Int) {
-    guard let h = FileHandle(forReadingAtPath: path) else { return ("", 0, 0) }
+/// SHA-256, size, lines, and control bytes (below 0x20 other than tab and
+/// newline, and DEL): rendered text never holds one, so each is binary data
+/// printed raw, as `layout` once printed symbolic references.
+func hashFile(_ path: String) -> (String, Int, Int, Int) {
+    guard let h = FileHandle(forReadingAtPath: path) else { return ("", 0, 0, 0) }
     defer { try? h.close() }
-    var hasher = SHA256(), bytes = 0, lines = 0
+    var hasher = SHA256(), bytes = 0, lines = 0, control = 0
     while let chunk = try? h.read(upToCount: 1 << 20), !chunk.isEmpty {
         hasher.update(data: chunk); bytes += chunk.count
-        lines += chunk.reduce(0) { $0 + ($1 == 10 ? 1 : 0) }
+        for b in chunk {
+            if b == 10 { lines += 1 } else if (b < 0x20 && b != 9) || b == 0x7f { control += 1 }
+        }
     }
-    return (hasher.finalize().map { String(format: "%02x", $0) }.joined(), bytes, lines)
+    return (hasher.finalize().map { String(format: "%02x", $0) }.joined(), bytes, lines, control)
 }
 
 func measure(_ executable: String, _ arguments: [String], scratch: String, killMB: Double, timeout: Double) throws -> Measured {
@@ -203,7 +208,7 @@ func measure(_ executable: String, _ arguments: [String], scratch: String, killM
     var raw: Int32 = 0
     waitpid(pid, &raw, 0)
     if raw & 0x7f == 0 { m.status = (raw >> 8) & 0xff } else { m.signal = raw & 0x7f }
-    (m.stdoutHash, m.stdoutBytes, m.stdoutLines) = hashFile(out)
+    (m.stdoutHash, m.stdoutBytes, m.stdoutLines, m.stdoutControlBytes) = hashFile(out)
     if let h = FileHandle(forReadingAtPath: out) {
         let size = (try? h.seekToEnd()) ?? 0
         try? h.seek(toOffset: size > 4096 ? size - 4096 : 0)
@@ -243,6 +248,7 @@ struct Record: Codable {
     var wall: Double, user: Double, system: Double, peakMB: Double
     var stdoutHash: String, stdoutBytes: Int, stdoutLines: Int, stderrHash: String, stderrTail: String
     var functionStarts: Int?, reportedFunctions: Int?
+    var stdoutControlBytes: Int?
     var outcome: String {
         if memoryKilled { return "memory-kill" }
         if timedOut { return "timeout" }
@@ -336,7 +342,8 @@ func runCorpus(_ args: [String]) throws {
                                status: m.status, signal: m.signal, timedOut: m.timedOut, memoryKilled: m.memoryKilled,
                                wall: m.wall, user: m.user, system: m.system, peakMB: m.peakMB,
                                stdoutHash: m.stdoutHash, stdoutBytes: m.stdoutBytes, stdoutLines: m.stdoutLines,
-                               stderrHash: m.stderrHash, stderrTail: m.stderrTail, functionStarts: starts, reportedFunctions: reported)
+                               stderrHash: m.stderrHash, stderrTail: m.stderrTail, functionStarts: starts, reportedFunctions: reported,
+                               stdoutControlBytes: m.stdoutControlBytes)
                 lock.lock()
                 if let line = try? encoder.encode(r) { results.write(line + Data("\n".utf8)) }
                 lock.unlock()
@@ -407,6 +414,12 @@ func report(_ dir: String) throws {
         let emptyObjC = ok.filter { $0.objc && $0.stdoutBytes == 0 && c == "objc" }
         if !(emptySwift + emptyObjC).isEmpty {
             print("- \(c): \(emptySwift.count + emptyObjC.count) empty outputs for a binary whose sections say it has metadata, e.g. `\((emptySwift + emptyObjC)[0].path)`")
+        }
+        let measured = ok.filter { $0.stdoutControlBytes != nil }
+        let raw = measured.filter { $0.stdoutControlBytes! > 0 }.sorted { $0.path < $1.path }
+        if !measured.isEmpty {
+            print("- \(c): \(raw.count) of \(measured.count) outputs hold control bytes (binary data printed raw)")
+            for r in raw.prefix(10) { print("  - `\(r.path)`: \(r.stdoutControlBytes!) bytes") }
         }
     }
     let x = records.filter { $0.command == "xrefs" && $0.rep == 0 && $0.outcome == "ok" }

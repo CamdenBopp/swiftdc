@@ -143,6 +143,8 @@ can be checked without reading the output by hand:
   instructions (an image with no boundaries passes the first check), and
   empty output for a binary whose own sections say it has Swift or
   Objective-C metadata;
+- **raw bytes**: control bytes in stdout (below 0x20 other than tab and
+  newline, and DEL), which rendered text never holds;
 - **performance**: wall, CPU and peak footprint from `proc_pid_rusage` of the
   exited child (the numbers `/usr/bin/time -l` prints), per instruction.
 
