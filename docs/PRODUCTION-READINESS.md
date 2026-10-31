@@ -5514,3 +5514,25 @@ if a test was observed to fail without the fix.
 - **OPEN (soundness): `go:buildid` is data at the start of `__text`.** The
   table lists it as a function at `runtime.text`; its bytes are the build
   ID string, decoded as instructions (the data-in-`__text` item above).
+
+## 2026-10-31: boundaries the corpus measures but nothing supplies
+
+- **OPEN (completeness): an image with neither function starts nor
+  symbols is a handful of functions.** Chromium's `app_mode_loader` (in
+  Brave and in ChatGPT's Codex framework) has 152,073 instructions, no
+  `LC_FUNCTION_STARTS` and 2 function symbols: `xrefs` lists 2 functions.
+  libRosettaRuntime lists 1 for 80,317. `app_mode_loader` has an
+  `__unwind_info` with 410 entries, and every compact-unwind entry is a
+  function start in 1,141,960 of 1,142,197 entries sampled across 591
+  corpus images (the 237 others begin code regions after a `ret` with
+  their own unwind record, real code no start names). But the linker
+  merges consecutive functions with the same encoding into one entry (5
+  functions, 2 entries in a reduction), so an entry is not a function's
+  extent; used as one, it would render several functions as one. A
+  boundary source would need the merged runs split, for example at direct
+  call targets.
+- **Explained: AppleMediaServicesKit lists 55 fewer functions than its
+  starts.** 47 of the 55 starts swiftdc does not list follow a `br`: they
+  are the jump tables after it (`e4f9ffff 5cfeffff …`, offsets), which
+  `LC_FUNCTION_STARTS` marks and swiftdc does not render as functions.
+  The other 8 follow a `bl` and are not yet classified.
