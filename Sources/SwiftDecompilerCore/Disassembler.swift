@@ -1255,6 +1255,7 @@ public struct Disassembler: Sendable {
     ) -> DisassembledFunction {
         var function = annotateReferences(in: rawFunction, resolver: context.resolver)
         function = annotateCallTargets(in: function, resolver: context.resolver)
+        function = Self.droppingSelfBranchCallees(function)
         let tables = JumpTables.recognize(
             in: function, machO: context.resolver.machO, ranges: context.resolver.fileRanges)
         if !tables.isEmpty { function = function.attachingSwitchTargets(tables) }
@@ -2369,6 +2370,29 @@ public struct Disassembler: Sendable {
     /// instruction text (via stubs); this fills the in-process (Capstone) path,
     /// where the operand is a bare `#0x…` address — so calls to another function
     /// in the same image read by name and flow into `--pseudo`.
+    /// A `b` to the function's own entry is the edge of a loop the CFG
+    /// already draws, not a call: Go's stack-growth prologue (`cmp sp, x16;
+    /// b.ls` to `bl runtime.morestack_noctxt; b main.main`) rendered as
+    /// `while (sp <=ᵁ x16) { runtime.morestack_noctxt(); main.main() }`,
+    /// the loop and a call for one branch. The branch keeps its target and
+    /// loses only the callee.
+    static func droppingSelfBranchCallees(_ function: DisassembledFunction) -> DisassembledFunction {
+        guard function.instructions.contains(where: {
+            $0.controlFlow == .branch && $0.branchTarget == function.startAddress && $0.callee != nil
+        }) else { return function }
+        return function.replacingInstructions(function.instructions.map { insn in
+            guard insn.controlFlow == .branch, insn.branchTarget == function.startAddress, insn.callee != nil
+            else { return insn }
+            return Instruction(
+                address: insn.address, text: insn.text, annotation: insn.annotation,
+                controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
+                callArguments: insn.callArguments, callSelf: insn.callSelf,
+                resultConsumed: insn.resultConsumed, sourceType: insn.sourceType,
+                detail: insn.detail, callee: .kept(nil), facts: insn.facts
+            )
+        })
+    }
+
     private func annotateCallTargets(
         in function: DisassembledFunction,
         resolver: ReferenceResolver

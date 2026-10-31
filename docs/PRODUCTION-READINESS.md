@@ -5505,12 +5505,17 @@ if a test was observed to fail without the fix.
   2,850 → 142 MB, 90.7 → 112.6 s; docker-ai 1 → 21,419, 2,678 → 158 MB,
   60.7 → 105.8 s; com.docker.socket 1 → 1,952, 188 → 33 MB, 5.5 →
   10.8 s. The time grows because each function is now analysed as one.
-- **OPEN (soundness): Go's stack-growth prologue renders as a loop that
-  calls the function itself.** `cmp sp, x16; b.ls` to a block that calls
-  `runtime.morestack_noctxt` and branches back to the entry renders in
-  `--structured` as `while (sp <=ᵁ x16) { runtime.morestack_noctxt();
-  main.main() }`: the branch to the function's own entry is read as a
-  tail call.
+- **FIXED (soundness): a branch to the function's own entry rendered as a
+  loop and a call.** The CFG makes `b <own entry>` a loop's edge, and its
+  callee made the same branch a call: Go's stack-growth prologue (`cmp sp,
+  x16; b.ls` to `bl runtime.morestack_noctxt; b main.main`) rendered
+  `while (sp <=ᵁ x16) { runtime.morestack_noctxt(); main.main() }`, and
+  `error_exit_controls.s`'s `entryBackEdge`, whose entry is a loop target,
+  rendered `ExitProof.entryBackEdge(arg0)` inside its own loop. Such a
+  branch keeps its target and loses its callee. Fixture blast radius:
+  only `entryBackEdge` (listing loses `args(arg0)`, pseudo and structured
+  lose the call), across 169 fixtures × listing, pseudo, structured,
+  xrefs.
 - **OPEN (soundness): `go:buildid` is data at the start of `__text`.** The
   table lists it as a function at `runtime.text`; its bytes are the build
   ID string, decoded as instructions (the data-in-`__text` item above).

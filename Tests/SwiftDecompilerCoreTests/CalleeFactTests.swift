@@ -16,6 +16,14 @@ import Testing
         for function in functions {
             for insn in function.instructions where insn.controlFlow == .call || insn.controlFlow == .branch {
                 checked += 1
+                // A branch to the function's own entry names its target in
+                // the listing but is a loop's edge, never a callee.
+                if insn.controlFlow == .branch, insn.branchTarget == function.startAddress {
+                    if insn.callee != nil {
+                        mismatches.append("\(name) \(function.displayName) @\(String(insn.address, radix: 16)): a branch to the entry has callee \(insn.callee!)")
+                    }
+                    continue
+                }
                 let parsed = DisassembledFunction.parsedCalleeName(text: insn.text, annotation: insn.annotation)
                 if parsed != insn.callee {
                     mismatches.append("\(name) \(function.displayName) @\(String(insn.address, radix: 16)): fact \(insn.callee ?? "nil"), parsed \(parsed ?? "nil") | \(insn.annotation ?? "")")
