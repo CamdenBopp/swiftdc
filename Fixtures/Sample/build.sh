@@ -358,6 +358,9 @@ strip -x libAsyncFns.opt.stripped.dylib 2>/dev/null || strip libAsyncFns.opt.str
 echo "==> encryptable dylib (-Onone, ld -encryptable): LC_ENCRYPTION_INFO_64, cryptid 0"
 $SWIFTC -parse-as-library -emit-library -module-name Encryptable encryptable.swift -o libEncryptable.dylib -Xlinker -encryptable
 
+echo "==> functions in __TEXT,__realtime and __TEXT,__text_cold (codesections.c, -O1)"
+xcrun clang -arch arm64 -O1 -dynamiclib codesections.c -o libCodeSections.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release

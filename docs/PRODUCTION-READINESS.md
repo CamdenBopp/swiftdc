@@ -5354,3 +5354,32 @@ if a test was observed to fail without the fix.
   exit 1 with that message. Every fixture's `dump`, `objc`, `xrefs` and
   `disasm --structured` output is unchanged (`corpus compare`, 145
   binaries, 580 runs).
+
+## 2026-10-30: code outside `__TEXT,__text`
+
+- **FIXED (completeness): functions in other code sections were dropped.**
+  Every decode path read `__TEXT,__text` alone. The corpus sweep's
+  function-count check (`xrefs` against `dyld_info -function_starts`)
+  flagged seven binaries; on this host 60 images have code in other
+  `__TEXT` sections (`__lcxx_override` 24, `__text_cold` 4, `__realtime`
+  4, `__text_startup` 3, and helpers). Those functions were missing from
+  every listing and from `xrefs`, `disasm -f` could not find them, and a
+  direct `bl` to one rendered in `--structured` as `/* unresolved call */
+  indirect_call(?)`. `CodeSection.of` now takes every `__TEXT` section the
+  linker marks as instructions that holds a function start (stub sections
+  excluded), and the objdump listing (`--section` per extra section),
+  the Capstone decode, streaming, filtered matching, callee decoding,
+  on-demand decoding, symbol labels and fold detection all read it.
+  `xrefs` function counts, release, before → after (function starts):
+  auvaltool 291 → 294 (294), audiomxd 229 → 232 (232),
+  systemsoundserverd 230 → 233 (233), Emacs's libcc1plugin 875 → 904
+  (904) and libcp1plugin 971 → 1000 (1000). Fixture blast radius: only
+  `libCodeSections.dylib` changes (146 fixtures × dump, objc, xrefs,
+  listing, pseudo, structured, `corpus compare`).
+- **OPEN (soundness): `LC_FUNCTION_STARTS` marks data in `__text`, and
+  the paths disagree about it.** DumpPanic and DumpPanicRecoveryOS each
+  list starts at lookup tables (`0x1000210c0` holds `52 52 52 …`). The
+  objdump listing reports invalid encodings and drops 4 of them; the
+  streaming path (`xrefs`) drops 1 and decodes the rest as instructions.
+  Neither declines: a start over bytes that do not decode as a function
+  should render as data, the same way on every path.

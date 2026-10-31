@@ -531,6 +531,8 @@ public struct Disassembler: Sendable {
     let demangleCache = DemangleCache()
     /// Memoizes what each callee name proves to the tracer, for one run.
     let callFactsCache = ValueTracer.CallFactsCache()
+    /// Memoizes each image's code sections, for one run.
+    let codeSectionCache = CodeSection.Cache()
 
     public init(preset: DemanglePreset = .default) {
         self.preset = preset
@@ -586,6 +588,11 @@ public struct Disassembler: Sendable {
         var args = ["-d", "--macho", "--no-show-raw-insn", "--mattr=+all"]
         if let architecture {
             args += ["--arch", architecture]
+        }
+        // `-d --macho` always lists `__text`; a named section is appended
+        // after it, so instructions are sorted back into address order below.
+        for section in codeSections(in: machO) where section.name != "__text" {
+            args.append("--section=\(section.segment),\(section.name)")
         }
         args.append(path)
 
@@ -677,17 +684,16 @@ public struct Disassembler: Sendable {
         let objcIndex = ObjCMetadataIndex.build(in: machO)
         let labelByAddress = symbolLabels(in: machO)
         var foldedByAddress = foldedSymbolAddresses(in: machO)
-        guard let text = textSectionBounds(in: machO) else { return [] }
-        let textStart = text.address
-        let textEnd = text.address + UInt64(text.size)
+        let sections = codeSections(in: machO)
+        guard !sections.isEmpty else { return [] }
 
         var boundarySet = Set(functionStarts(of: machO))
         boundarySet.formUnion(labelByAddress.keys)
         boundarySet.formUnion(objcIndex.addresses)
         // `segment` starts the first function at the first decoded instruction
-        // (the text start), even when that address is not itself a boundary.
-        boundarySet.insert(textStart)
-        let boundaries = boundarySet.filter { $0 >= textStart && $0 < textEnd }.sorted()
+        // of each section, even when that address is not itself a boundary.
+        boundarySet.formUnion(sections.map(\.range.lowerBound))
+        let boundaries = boundarySet.filter { CodeSection.containing($0, in: sections) != nil }.sorted()
         guard !boundaries.isEmpty else { return [] }
 
         // Metadata names, on the same gate `assemble`/`matchedRanges` use.
@@ -700,7 +706,8 @@ public struct Disassembler: Sendable {
         }
 
         func span(_ index: Int) -> (start: UInt64, stop: UInt64) {
-            (boundaries[index], index + 1 < boundaries.count ? boundaries[index + 1] : textEnd)
+            let end = CodeSection.containing(boundaries[index], in: sections)!.range.upperBound
+            return (boundaries[index], min(index + 1 < boundaries.count ? boundaries[index + 1] : end, end))
         }
 
         // Cross-function name index. `referenceIndex` and `swiftTargets` read only
@@ -875,13 +882,11 @@ public struct Disassembler: Sendable {
         var boundarySet = Set(functionStarts(of: machO))
         boundarySet.formUnion(objcIndex.addresses)
         let boundaries = boundarySet.sorted()
-        guard let text = machO.sections.first(where: {
-            $0.segmentName == "__TEXT" && $0.sectionName == "__text" && $0.size > 0
-        }) else { return [] }
-        let textEnd = UInt64(text.address + text.size)
+        let sections = codeSections(in: machO)
 
         let instructions = addresses.sorted().flatMap { start -> [Instruction] in
-            let stop = boundaries.first(where: { $0 > start }) ?? textEnd
+            guard let end = CodeSection.containing(start, in: sections)?.range.upperBound else { return [] }
+            let stop = min(boundaries.first(where: { $0 > start }) ?? end, end)
             guard stop > start else { return [] }
             return capstoneInstructions(in: machO, span: (start, stop))
         }
@@ -1165,15 +1170,14 @@ public struct Disassembler: Sendable {
     /// (or the end of `__text`).
     func decodeFunction(at address: UInt64, boundaries: [UInt64], in machO: MachOFile,
                         section: TextSection? = nil) -> [Instruction] {
-        guard let text = textSectionBounds(in: machO) else { return [] }
-        let textEnd = text.address + UInt64(text.size)
-        guard address >= text.address, address < textEnd else { return [] }
+        guard let end = CodeSection.containing(address, in: codeSections(in: machO))?.range.upperBound
+        else { return [] }
         var low = 0, high = boundaries.count
         while low < high {
             let mid = (low + high) / 2
             if boundaries[mid] <= address { low = mid + 1 } else { high = mid }
         }
-        let stop = low < boundaries.count ? boundaries[low] : textEnd
+        let stop = min(low < boundaries.count ? boundaries[low] : end, end)
         return section?.instructions(span: (address, stop)) ?? capstoneInstructions(in: machO, span: (address, stop))
     }
 
@@ -1530,36 +1534,33 @@ public struct Disassembler: Sendable {
         return result
     }
 
-    /// `(vmaddr, size)` of the `__text` section.
-    private func textSectionBounds(in machO: MachOFile) -> (address: UInt64, size: Int)? {
-        guard let text = machO.sections.first(where: {
-            $0.segmentName == "__TEXT" && $0.sectionName == "__text"
-        }) else { return nil }
-        return (UInt64(text.address), text.size)
+    /// The code sections of `machO` (`CodeSection.of`), in address order,
+    /// computed once per image: streaming decodes each function separately.
+    func codeSections(in machO: MachOFile) -> [CodeSection] {
+        let key = "\(machO.url.path)#\(machO.headerStartOffset)#\(machO.headerStartOffsetInCache)"
+        return codeSectionCache.value(for: key) {
+            CodeSection.of(machO, functionStarts: functionStarts(of: machO))
+        }
     }
 
-    /// Decode `__text`, or just the `[start, stop)` slice of it, in-process with
-    /// Capstone. Restricting to a span is what makes `disasm --function` fast on
-    /// a large binary — only the matched function's code is decoded, not the
-    /// whole text section.
+    /// Decode every code section, or just the parts of them inside
+    /// `[start, stop)`, in-process with Capstone, in address order.
+    /// Restricting to a span is what makes `disasm --function` fast on a large
+    /// binary — only the matched function's code is decoded, not the whole
+    /// text section. Bytes between code sections (stubs, constants) are never
+    /// decoded.
     private func decodeText(
         in machO: MachOFile, span: (start: UInt64, stop: UInt64)?, includeText: Bool = true
     ) -> [DecodedInstruction] {
-        guard let engine = CapstoneEngine(), let text = textSectionBounds(in: machO) else { return [] }
-        let start: UInt64
-        let size: Int
-        if let span {
-            let lo = max(span.start, text.address)
-            let hi = min(span.stop, text.address + UInt64(text.size))
-            guard hi > lo else { return [] }
-            start = lo
-            size = Int(hi - lo)
-        } else {
-            start = text.address
-            size = text.size
+        guard let engine = CapstoneEngine() else { return [] }
+        var decoded: [DecodedInstruction] = []
+        for section in codeSections(in: machO) {
+            let lo = max(span?.start ?? section.range.lowerBound, section.range.lowerBound)
+            let hi = min(span?.stop ?? section.range.upperBound, section.range.upperBound)
+            guard hi > lo, let bytes = sectionBytes(address: lo, size: Int(hi - lo), in: machO) else { continue }
+            decoded += engine.disassemble(bytes, address: lo, includeText: includeText)
         }
-        guard let bytes = sectionBytes(address: start, size: size, in: machO) else { return [] }
-        return engine.disassemble(bytes, address: start, includeText: includeText)
+        return decoded
     }
 
     /// Decode `__text` (or `span`) into an ordered instruction stream carrying
@@ -1579,7 +1580,8 @@ public struct Disassembler: Sendable {
         )
     }
 
-    /// `__text` read once, for a run that decodes it one span at a time.
+    /// The code sections (`CodeSection`) read once, for a run that decodes
+    /// them one span at a time.
     /// Each span re-read the section's bounds from the load commands and its
     /// bytes from the file, and opened its own Capstone engine: `sample` of a
     /// GoodLinks `--pseudo` run put 2,555 of 81,749 samples under
@@ -1587,34 +1589,44 @@ public struct Disassembler: Sendable {
     /// section's bytes do not all read, so a span decodes on its own as it
     /// did.
     final class TextSection {
-        let address: UInt64
-        let bytes: Data
+        let pieces: [(address: UInt64, bytes: Data)]
         let engine: CapstoneEngine
 
-        fileprivate init?(address: UInt64, bytes: Data?, size: Int) {
-            guard let bytes, bytes.count == size, let engine = CapstoneEngine() else { return nil }
-            self.address = address
-            self.bytes = bytes
+        fileprivate init?(pieces: [(address: UInt64, bytes: Data?, size: Int)]) {
+            var read: [(address: UInt64, bytes: Data)] = []
+            for piece in pieces {
+                guard let bytes = piece.bytes, bytes.count == piece.size else { return nil }
+                read.append((piece.address, bytes))
+            }
+            guard let engine = CapstoneEngine() else { return nil }
+            self.pieces = read
             self.engine = engine
         }
 
-        /// The instructions of `[start, stop)`, clipped to the section, as
+        /// The instructions of `[start, stop)`, clipped to the sections, as
         /// `capstoneInstructions(in:span:)` decodes them.
         func instructions(span: (start: UInt64, stop: UInt64)) -> [Instruction] {
-            let lo = max(span.start, address)
-            let hi = min(span.stop, address + UInt64(bytes.count))
-            guard hi > lo else { return [] }
-            let first = bytes.startIndex + Int(lo - address)
-            let slice = bytes[first ..< first + Int(hi - lo)]
-            return engine.disassemble(slice, address: lo).map(Disassembler.instruction(decoded:))
+            var decoded: [Instruction] = []
+            for (address, bytes) in pieces {
+                let lo = max(span.start, address)
+                let hi = min(span.stop, address + UInt64(bytes.count))
+                guard hi > lo else { continue }
+                let first = bytes.startIndex + Int(lo - address)
+                let slice = bytes[first ..< first + Int(hi - lo)]
+                decoded += engine.disassemble(slice, address: lo).map(Disassembler.instruction(decoded:))
+            }
+            return decoded
         }
     }
 
-    /// The whole `__text` of `machO`, read once (see `TextSection`).
+    /// Every code section of `machO`, read once (see `TextSection`).
     func textSection(in machO: MachOFile) -> TextSection? {
-        guard let text = textSectionBounds(in: machO) else { return nil }
-        return TextSection(address: text.address, bytes: sectionBytes(address: text.address, size: text.size, in: machO),
-                           size: text.size)
+        let sections = codeSections(in: machO)
+        guard !sections.isEmpty else { return nil }
+        return TextSection(pieces: sections.map { section in
+            let size = Int(section.range.upperBound - section.range.lowerBound)
+            return (section.range.lowerBound, sectionBytes(address: section.range.lowerBound, size: size, in: machO), size)
+        })
     }
 
     /// Raw bytes of an arbitrary section span (`__text`, `__objc_stubs`, …).
@@ -1817,12 +1829,10 @@ public struct Disassembler: Sendable {
     /// keyed by VM address. Present even in dyld-cache images (exports), and a
     /// no-op when the symbol table is stripped.
     private func symbolLabels(in machO: MachOFile) -> [UInt64: String] {
-        // Restrict to the __text VM range so a defined-symbol's offset that maps
+        // Restrict to the code sections so a defined-symbol's offset that maps
         // outside code (a mis-typed symbol) can't mislabel a function.
-        guard let text = machO.sections.first(where: {
-            $0.segmentName == "__TEXT" && $0.sectionName == "__text"
-        }) else { return [:] }
-        let textRange = UInt64(text.address) ..< UInt64(text.address + text.size)
+        let sections = codeSections(in: machO)
+        guard !sections.isEmpty else { return [:] }
 
         // MachOKit's `Symbol.offset` is the nlist `n_value` — for a defined
         // symbol that's its (unslid) VM address, the same space as instruction
@@ -1831,7 +1841,7 @@ public struct Disassembler: Sendable {
         var labels: [UInt64: String] = [:]
         for symbol in machO.symbols where !symbol.name.isEmpty {
             let address = UInt64(symbol.offset)
-            if textRange.contains(address), labels[address] == nil {
+            if CodeSection.containing(address, in: sections) != nil, labels[address] == nil {
                 labels[address] = symbol.name
             }
         }
@@ -1863,15 +1873,13 @@ public struct Disassembler: Sendable {
     }
 
     private func foldedSymbolAddresses(in machO: MachOFile) -> [UInt64: [String]] {
-        guard let text = machO.sections.first(where: {
-            $0.segmentName == "__TEXT" && $0.sectionName == "__text"
-        }) else { return [:] }
-        let textRange = UInt64(text.address) ..< UInt64(text.address + text.size)
+        let sections = codeSections(in: machO)
+        guard !sections.isEmpty else { return [:] }
 
         var namesByAddress: [UInt64: Set<String>] = [:]
         for symbol in machO.symbols where !symbol.name.isEmpty {
             let address = UInt64(symbol.offset)
-            guard textRange.contains(address) else { continue }
+            guard CodeSection.containing(address, in: sections) != nil else { continue }
             namesByAddress[address, default: []].insert(symbol.name)
         }
         return namesByAddress
@@ -2042,7 +2050,11 @@ public struct Disassembler: Sendable {
         guard result.status == 0 else {
             throw DisassembleError.toolFailed(result.stderr.isEmpty ? result.stdout : result.stderr)
         }
-        let (parsed, labelByAddress) = parseObjdump(result.stdout)
+        var (parsed, labelByAddress) = parseObjdump(result.stdout)
+        // Sections named with `--section` follow `__text` in the listing.
+        if zip(parsed, parsed.dropFirst()).contains(where: { $0.address >= $1.address }) {
+            parsed.sort { $0.address < $1.address }
+        }
         if parsed.isEmpty {
             let knownStarts = functionStarts(of: machO).count
             guard knownStarts == 0 else {
@@ -2104,21 +2116,21 @@ public struct Disassembler: Sendable {
         boundarySet.formUnion(symbolLabels(in: machO).keys)
         boundarySet.formUnion(objcIndex.addresses)
         let boundaries = boundarySet.sorted()
-        guard let text = textSectionBounds(in: machO) else { return [] }
-        let textEnd = text.address + UInt64(text.size)
+        let sections = codeSections(in: machO)
         var targets = Set<UInt64>()
         // A tail branch to a function start is a call too: its callee's body
         // bounds the arguments it renders (`b bump` after `printf`).
         for insn in instructions where insn.controlFlow == .call || insn.controlFlow == .branch {
             guard let target = insn.branchTarget, boundarySet.contains(target),
-                  target >= text.address, target < textEnd,
+                  CodeSection.containing(target, in: sections) != nil,
                   !covered.contains(where: { $0.start <= target && target < $0.stop })
             else { continue }
             targets.insert(target)
         }
         return targets.sorted().map { start in
+            let end = CodeSection.containing(start, in: sections)!.range.upperBound
             let next = boundaries.firstIndex(of: start).map { $0 + 1 }
-            let stop = next.flatMap { $0 < boundaries.count ? boundaries[$0] : nil } ?? textEnd
+            let stop = min(next.flatMap { $0 < boundaries.count ? boundaries[$0] : nil } ?? end, end)
             return (start, stop)
         }
     }
@@ -2144,8 +2156,7 @@ public struct Disassembler: Sendable {
             metadataNames = MetadataSymbolizer().functionNames(in: machO).unique
         }
 
-        let textEnd = textSectionBounds(in: machO).map { $0.address + UInt64($0.size) }
-            ?? (boundaries.last! + 0x4000)
+        let sections = codeSections(in: machO)
 
         // Async funclet chains, decoded from the funclets' own spans only. A
         // nameless resume funclet is matched by the title it will be given
@@ -2201,7 +2212,8 @@ public struct Disassembler: Sendable {
 
         var ranges: [(start: UInt64, stop: UInt64)] = []
         for (index, start) in boundaries.enumerated() where selected.contains(start) {
-            let stop = index + 1 < boundaries.count ? boundaries[index + 1] : textEnd
+            guard let end = CodeSection.containing(start, in: sections)?.range.upperBound else { continue }
+            let stop = min(index + 1 < boundaries.count ? boundaries[index + 1] : end, end)
             if let last = ranges.last, start <= last.stop + 0x10000 {
                 ranges[ranges.count - 1].stop = max(last.stop, stop)
             } else {
