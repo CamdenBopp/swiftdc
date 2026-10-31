@@ -5541,3 +5541,23 @@ if a test was observed to fail without the fix.
   are the jump tables after it (`e4f9ffff 5cfeffff …`, offsets), which
   `LC_FUNCTION_STARTS` marks and swiftdc does not render as functions.
   The other 8 follow a `bl` and are not yet classified.
+
+## 2026-10-31: accessor classification in images without function starts
+
+- **FIXED (memory, soundness): `objc` decoded accessors up to the next
+  IMP.** The large-image tier (148 images over 8 MB of `__text`) found
+  `objc` killed at 3 GB on nine Chromium and Electron frameworks;
+  Discord's Electron Framework passed 6 GB at 118 s. `objc` classifies
+  property accessors by decoding each IMP to the next boundary, and
+  `disassembleFunctions` took boundaries from function starts and IMPs
+  only. Electron Framework has no `LC_FUNCTION_STARTS`, so each extent ran
+  to the next IMP, megabytes away, and the async funclet grouping then
+  decoded every boundary of the image. Symbols are boundaries there now,
+  an extent past 4 KB is left unclassified (the rewriter's class-dump
+  fallback), and the classification skips async grouping. The overlong
+  extent was also wrong: a synthesized setter decoded together with the
+  6 KB function after it read as custom and stayed in the header
+  (`accessorextent.m`). Release `objc`, all nine now exit 0: 1,814 to
+  3,610 MB, 12.2 to 24.3 s (Discord's 1,974 MB, 13.6 s). Fixture blast
+  radius: only the new fixture's `objc` and `objc --methods` (171
+  fixtures).

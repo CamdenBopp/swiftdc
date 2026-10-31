@@ -379,6 +379,13 @@ echo "==> first function's symbol stripped (localfirst.s, strip -x): objdump's p
 xcrun clang -arch arm64 -dynamiclib localfirst.s -o libLocalFirst.stripped.dylib
 strip -x libLocalFirst.stripped.dylib
 
+echo "==> no LC_FUNCTION_STARTS (nofunctionstarts.c, -Wl,-no_function_starts): symbols bound a decode"
+xcrun clang -arch arm64 -O1 -dynamiclib nofunctionstarts.c -o libNoFunctionStarts.dylib -Wl,-no_function_starts
+
+echo "==> accessor extent past 6 KB (accessorextent.m, -no_function_starts, strip -x)"
+xcrun clang -arch arm64 -O1 -dynamiclib -framework Foundation accessorextent.m -o libAccessorExtent.dylib -Wl,-no_function_starts
+strip -x libAccessorExtent.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release

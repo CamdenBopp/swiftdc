@@ -875,30 +875,50 @@ public struct Disassembler: Sendable {
     /// Disassemble only the functions beginning at `addresses`, each decoded up
     /// to the next function boundary. Lets a caller classify a handful of
     /// Objective-C accessor IMPs without decoding the whole binary.
+    ///
+    /// `groupsAsyncFunclets: false` skips the async funclet grouping, which
+    /// in an image without Swift's async hint sections decodes every function
+    /// start; a caller that only reads these bodies (accessor classification)
+    /// has no async function to group.
+    ///
+    /// `maxBytes` declines an address whose extent, to the next boundary, is
+    /// longer: in an image with no LC_FUNCTION_STARTS (Electron Framework,
+    /// 140 MB of `__text`) the next boundary can be megabytes away, and
+    /// `objc` decoding every accessor that far passed 6 GB.
     public func disassembleFunctions(
         at addresses: Set<UInt64>,
-        in machO: MachOFile
+        in machO: MachOFile,
+        maxBytes: UInt64? = nil,
+        groupsAsyncFunclets: Bool = true
     ) async -> [DisassembledFunction] {
         guard !addresses.isEmpty else { return [] }
         let objcIndex = ObjCMetadataIndex.build(in: machO)
+        let labels = symbolLabels(in: machO)
         var boundarySet = Set(functionStarts(of: machO))
         boundarySet.formUnion(objcIndex.addresses)
+        boundarySet.formUnion(labels.keys)
         let boundaries = boundarySet.sorted()
         let sections = codeSections(in: machO)
 
         let instructions = addresses.sorted().flatMap { start -> [Instruction] in
             guard let end = CodeSection.containing(start, in: sections)?.range.upperBound else { return [] }
-            let stop = min(boundaries.first(where: { $0 > start }) ?? end, end)
-            guard stop > start else { return [] }
+            var low = 0, high = boundaries.count
+            while low < high {
+                let mid = (low + high) / 2
+                if boundaries[mid] <= start { low = mid + 1 } else { high = mid }
+            }
+            let stop = min(low < boundaries.count ? boundaries[low] : end, end)
+            guard stop > start, maxBytes.map({ stop - start <= $0 }) ?? true else { return [] }
             return capstoneInstructions(in: machO, span: (start, stop))
         }
         guard !instructions.isEmpty else { return [] }
         return await assemble(
             instructions: instructions,
-            labelByAddress: symbolLabels(in: machO),
+            labelByAddress: labels,
             in: machO,
             functionFilter: nil,
-            objcIndex: objcIndex
+            objcIndex: objcIndex,
+            groupsAsyncFunclets: groupsAsyncFunclets
         )
     }
 
@@ -912,7 +932,8 @@ public struct Disassembler: Sendable {
         labelByAddress objdumpLabels: [UInt64: String],
         in machO: MachOFile,
         functionFilter: String?,
-        objcIndex providedObjCIndex: ObjCMetadataIndex? = nil
+        objcIndex providedObjCIndex: ObjCMetadataIndex? = nil,
+        groupsAsyncFunclets: Bool = true
     ) async -> [DisassembledFunction] {
         Probe.image(machO)
         var labelByAddress = objdumpLabels
@@ -997,14 +1018,16 @@ public struct Disassembler: Sendable {
         // filtered run) is decoded on demand, so the grouping is whole-image.
         let byStart = Dictionary(functions.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
         let sortedBoundaries = boundaries.sorted()
-        let asyncIndex = asyncFuncletIndex(
-            in: machO, boundaries: boundaries,
-            instructions: { address in
-                byStart[address]?.instructions
-                    ?? self.decodeFunction(at: address, boundaries: sortedBoundaries, in: machO)
-            },
-            nameOf: { resolver.callTargetName(at: $0) }
-        )
+        let asyncIndex = groupsAsyncFunclets
+            ? asyncFuncletIndex(
+                in: machO, boundaries: boundaries,
+                instructions: { address in
+                    byStart[address]?.instructions
+                        ?? self.decodeFunction(at: address, boundaries: sortedBoundaries, in: machO)
+                },
+                nameOf: { resolver.callTargetName(at: $0) }
+            )
+            : AsyncFuncletIndex.build(hints: nil, functionStarts: [], instructions: { _ in [] }, nameOf: { _ in nil })
         functions = functions.map { function in
             asyncIndex.info(for: function.startAddress, parentName: {
                 byStart[$0]?.displayName ?? resolver.callTargetName(at: $0)

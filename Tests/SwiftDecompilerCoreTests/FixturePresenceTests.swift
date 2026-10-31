@@ -148,6 +148,8 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libAbsoluteSymbols.dylib",
         "Fixtures/Sample/libSVERegisters.dylib",
         "Fixtures/Sample/libLocalFirst.stripped.dylib",
+        "Fixtures/Sample/libNoFunctionStarts.dylib",
+        "Fixtures/Sample/libAccessorExtent.dylib",
         "Fixtures/Sample/goProgram",
         "Fixtures/Sample/goProgram.stripped",
         "Fixtures/Sample/libObjCSDKSelectors.dylib",

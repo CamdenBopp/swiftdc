@@ -103,6 +103,10 @@ extension ObjCDumper {
     /// synthesized (a trivial ivar load/store its @property already covers),
     /// `false` = custom (real code, keep and type it). Keyed by the raw
     /// `ObjCMethodInfo.imp` so `rewritingPropertyAccessors` can look it up.
+    /// The longest IMP extent decoded to classify an accessor: 1,024
+    /// instructions, far past any synthesized getter or setter.
+    static let accessorExtentLimit: UInt64 = 4096
+
     static func classifyAccessors(
         _ snapshot: ObjCMetadataSnapshot,
         in machO: MachOFile,
@@ -121,7 +125,11 @@ extension ObjCDumper {
         }
         guard !rawToRuntime.isEmpty else { return [:] }
 
-        let functions = await disassembler.disassembleFunctions(at: Set(rawToRuntime.values), in: machO)
+        // A synthesized accessor is a handful of instructions; an IMP whose
+        // extent is longer is not one, and is left unclassified (kept).
+        let functions = await disassembler.disassembleFunctions(
+            at: Set(rawToRuntime.values), in: machO, maxBytes: Self.accessorExtentLimit,
+            groupsAsyncFunclets: false)
         let byAddress = Dictionary(functions.map { ($0.startAddress, $0) }, uniquingKeysWith: { first, _ in first })
 
         var result: [UInt64: Bool] = [:]
