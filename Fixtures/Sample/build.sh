@@ -364,6 +364,9 @@ xcrun clang -arch arm64 -O1 -dynamiclib codesections.c -o libCodeSections.dylib
 echo "==> absolute symbols, one of them -1 (absolutesymbols.s): constants, not addresses"
 xcrun clang -arch arm64 -dynamiclib absolutesymbols.s -o libAbsoluteSymbols.dylib
 
+echo "==> SVE writes to z registers (sveregisters.s): no scalar model, and z0 aliases v0"
+xcrun clang -arch arm64 -march=armv8-a+sve -dynamiclib sveregisters.s -o libSVERegisters.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release

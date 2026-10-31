@@ -2656,6 +2656,16 @@ public struct ValueTracer: Sendable {
             Self.poisonResult(&registers)
         }
 
+        // A destination the tracer does not model (an SVE `z` or `p`
+        // register, an SME tile) is no scalar: `lsr z9.s, z9.s, #25` shifts
+        // each lane, and its 0-bit width trapped the shift model in
+        // libcrypto's ChaCha20. Nothing is computed into it.
+        if let dest = destinationRegister(detail), dest.kind == .other,
+           !Self.storesWithoutRegisterWrite.contains(detail.id.rawValue) {
+            clobber(detail, into: &registers)
+            return
+        }
+
         switch detail.id {
         case AARCH64_INS_ADRP, AARCH64_INS_ADR:
             // Capstone resolves the page/PC-relative target into the immediate.
@@ -3469,6 +3479,14 @@ public struct ValueTracer: Sendable {
 
     private func write(_ reg: PhysReg, _ value: AbstractValue, into registers: inout State) {
         guard reg.kind != .zero else { return }   // writes to xzr are discarded
+        // A `z` register's low 128 bits are the `v` register of its number,
+        // and SVE and SME tuples and tiles overlap several: no vector value
+        // survives a write to a register the tracer does not model.
+        if reg.kind == .other {
+            for number in 0..<32 {
+                registers[Location(PhysReg(kind: .vector, number: number, widthBits: 128))] = .unknown
+            }
+        }
         if Probe.isActive, let log = TracerWriteLog.current { log.keys.insert(reg.key) }
         // A truncated copy (`mov w9, w22`) or a floating register cannot hold
         // an async context or continuation pointer, though its key aliases xN.

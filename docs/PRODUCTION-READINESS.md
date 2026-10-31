@@ -5409,3 +5409,28 @@ if a test was observed to fail without the fix.
   exit 0. Fixture blast radius: only `libAbsoluteSymbols.dylib`, crash →
   ok on listing, pseudo, structured and xrefs; no output changes
   elsewhere (147 fixtures, 882 runs).
+
+## 2026-10-30: SVE registers
+
+- **FIXED (robustness, soundness): an SVE instruction reached the scalar
+  model.** Capstone gives `z` and `p` registers no bank, so `PhysReg`
+  calls them `.other`, width 0. `lsr z9.s, z9.s, #0x19` (OpenSSL 3's
+  ChaCha20) reached the shift model, and `UInt64(width - 1)` trapped
+  `xrefs` on six images: five copies of libcrypto (Gqrx, KiCad ×2, UTM,
+  zoom) and ChatGPT's `usb_webauthn.node`. In the two OpenSSL 1.1
+  builds the instructions are `fcmla`, `ld1sb` and `sel`, which
+  `llvm-objdump --mattr=+all` lists too (963 in KiCad's); whether they
+  are code or constants in `__text` is not established. And a `z`
+  register's low 128 bits are the `v` register of its number: after
+  `fmov d0, #2.0; lsr z0.s, z0.s, #1` the tracer still held v0 = 2.0 at
+  the return. The tracer now computes nothing into a register it does
+  not model, and a write to one leaves no vector value standing. All six
+  exit 0, listing every function start (libcrypto 3 for Gqrx 13,087 of
+  13,087; usb_webauthn.node 10,389 of 10,389). Fixture blast radius:
+  only `libSVERegisters.dylib`, crash → ok on listing, pseudo, structured
+  and xrefs (148 fixtures, 888 runs).
+- **OPEN (soundness): images list more functions than their starts.**
+  UTM's crypto.1.1 lists 7,511 functions against 7,424 starts and zoom's
+  libcrypto 10,638 against 10,495. Symbol labels are boundaries too, and
+  OpenSSL's assembly keeps local labels inside functions; a label that is
+  no function start may be cutting one function in two. Unmeasured.
