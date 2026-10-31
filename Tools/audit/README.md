@@ -139,8 +139,10 @@ can be checked without reading the output by hand:
 - **consistency**: the SHA-256 of stdout and stderr from separate processes
   (`--repeat`), and from two builds (`compare`);
 - **completeness**: `xrefs`' function count against `dyld_info
-  -function_starts`, and empty output for a binary whose own sections say it
-  has Swift or Objective-C metadata;
+  -function_starts`, images whose functions average more than 20,000
+  instructions (an image with no boundaries passes the first check), and
+  empty output for a binary whose own sections say it has Swift or
+  Objective-C metadata;
 - **performance**: wall, CPU and peak footprint from `proc_pid_rusage` of the
   exited child (the numbers `/usr/bin/time -l` prints), per instruction.
 
