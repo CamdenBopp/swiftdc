@@ -152,6 +152,7 @@ find /Applications /usr/libexec -type f -perm -u+x | ./corpus manifest > corpus.
 ./corpus run .build/release/swiftdc corpus.tsv out --jobs 4 --kill-mb 1800
 ./corpus report out
 ./corpus compare out-before out-after
+swiftdc dump --list-images | ./corpus cache-manifest > cache.tsv
 ```
 
 The manifest reads each header itself (arm64 slice, `__text` size, Swift and
@@ -160,6 +161,11 @@ with `otool -l` on all 6,091 binaries both could read. A run appends to
 `out/results.jsonl` and resumes where it stopped. `--commands` picks from
 `dump,interface,layout,objc,version,xrefs,structured,pseudo,listing,analyze,objc-methods`;
 filter with `--max-text`, `--swift-only` and `--sample N --seed S`.
+
+`cache-manifest` reads install paths of dyld shared cache images and
+describes each with `dyld_info -uuid -segments`, a reader independent of
+swiftdc's. Its rows are `cache:<install path>`, identified by the cache UUID
+and the path, and `run` passes them to swiftdc with `--image-path`.
 
 Time numbers are only comparable at `--jobs 1` with nothing else running.
 The manifest and output directory name private apps: keep them out of the

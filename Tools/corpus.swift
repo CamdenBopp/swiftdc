@@ -9,6 +9,7 @@ import Foundation
 // binary's own sections) and performance (wall, CPU, peak footprint).
 //
 //   swift Tools/corpus.swift manifest < paths > corpus.tsv
+//   swift Tools/corpus.swift cache-manifest < install-paths > cache.tsv
 //   swift Tools/corpus.swift run <swiftdc> <corpus.tsv> <outdir> [options]
 //   swift Tools/corpus.swift report <outdir>
 //   swift Tools/corpus.swift compare <old outdir> <new outdir>
@@ -34,6 +35,9 @@ let commandTable: [String: [String]] = [
 struct Entry {
     var path: String, sha256: String, arch: String, fat: Bool, fileType: Int
     var textBytes: Int, swift: Bool, objc: Bool
+    /// A dyld shared cache image is `cache:<install path>`: commands read it
+    /// with `--image-path`, and its identity is the cache UUID plus the path.
+    var cacheImage: String? { path.hasPrefix("cache:") ? String(path.dropFirst(6)) : nil }
     var tsv: String { [path, sha256, arch, fat ? "1" : "0", "\(fileType)", "\(textBytes)", swift ? "1" : "0", objc ? "1" : "0"].joined(separator: "\t") }
     init?(tsv line: Substring) {
         let f = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
@@ -106,6 +110,34 @@ func describe(path: String) -> Entry? {
     guard let data = FileManager.default.contents(atPath: path) else { return nil }
     let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     return Entry(path: path, sha256: digest, arch: arch, fat: fat, fileType: Int(fileType), textBytes: text, swift: swift, objc: objc)
+}
+
+/// A dyld shared cache image, read by `dyld_info` (an independent reader of
+/// the cache): its `__TEXT,__text` size and whether it has Swift types or
+/// conformances and Objective-C classes.
+func describe(cacheImage path: String) -> Entry? {
+    let p = Process(), pipe = Pipe()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+    p.arguments = ["dyld_info", "-uuid", "-segments", path]
+    p.standardOutput = pipe; p.standardError = FileHandle.nullDevice
+    guard (try? p.run()) != nil else { return nil }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+    guard p.terminationStatus == 0 else { return nil }
+    var uuid = "", segment = "", text = 0, swift = false, objc = false, arch = "arm64e"
+    for line in String(decoding: data, as: UTF8.self).split(separator: "\n") {
+        let t = line.split(separator: " ")
+        if line.hasSuffix(":"), let a = line.firstRange(of: "[") { arch = String(line[a.upperBound...].prefix { $0 != "]" }) }
+        if t.count == 1, t[0].count == 36, t[0].filter({ $0 == "-" }).count == 4 { uuid = String(t[0]) }
+        guard t.count >= 3, t[0].hasPrefix("0x"), t[1].hasPrefix("__") else { continue }
+        if t[2].hasSuffix("KB") { segment = String(t[1]); continue }
+        guard let size = Int(t[2]) else { continue }
+        if segment == "__TEXT" || segment == "__TEXT_EXEC", t[1] == "__text" { text = size }
+        if t[1].hasPrefix("__swift5_types") || t[1].hasPrefix("__swift5_proto") { swift = true }
+        if t[1] == "__objc_classlist" { objc = true }
+    }
+    guard !uuid.isEmpty, !segment.isEmpty else { return nil }
+    let digest = SHA256.hash(data: Data("dyld-cache \(uuid) \(path)".utf8)).map { String(format: "%02x", $0) }.joined()
+    return Entry(path: "cache:" + path, sha256: digest, arch: arch, fat: false, fileType: 6, textBytes: text, swift: swift, objc: objc)
 }
 
 // MARK: Running one command under a footprint and time guard.
@@ -189,7 +221,7 @@ func measure(_ executable: String, _ arguments: [String], scratch: String, killM
 func functionStarts(_ e: Entry) -> Int? {
     let p = Process(), pipe = Pipe()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-    p.arguments = ["dyld_info", "-function_starts"] + (e.fat ? ["-arch", e.arch] : []) + [e.path]
+    p.arguments = ["dyld_info", "-function_starts"] + (e.fat ? ["-arch", e.arch] : []) + [e.cacheImage ?? e.path]
     p.standardOutput = pipe; p.standardError = FileHandle.nullDevice
     guard (try? p.run()) != nil else { return nil }
     let data = pipe.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
@@ -293,7 +325,8 @@ func runCorpus(_ args: [String]) throws {
             defer { gate.signal(); group.leave() }
             let starts = commands.contains("xrefs") ? functionStarts(entry) : nil
             for command in commands { for rep in 0..<repeats where !done.contains("\(entry.sha256) \(command) \(rep)") {
-                let arguments = [commandTable[command]![0], entry.path] + commandTable[command]!.dropFirst()
+                let input = entry.cacheImage.map { ["--image-path", $0] } ?? [entry.path]
+                let arguments = [commandTable[command]![0]] + input + commandTable[command]!.dropFirst()
                     + (entry.fat ? ["--arch", entry.arch] : [])
                 guard let m = try? measure(swiftdc, arguments, scratch: "\(outdir)/scratch/\(index)", killMB: killMB, timeout: timeout) else { continue }
                 var reported: Int?
@@ -447,13 +480,14 @@ func compare(_ old: String, _ new: String) throws {
 func main() throws {
     let args = Array(CommandLine.arguments.dropFirst())
     switch args.first {
-    case "manifest":
+    case "manifest", "cache-manifest":
+        let cache = args.first == "cache-manifest"
         var paths: [String] = []
         while let line = readLine() { if !line.isEmpty { paths.append(line) } }
         var rows = [String?](repeating: nil, count: paths.count)
         let lock = NSLock()
         DispatchQueue.concurrentPerform(iterations: paths.count) { i in
-            let row = describe(path: paths[i])?.tsv
+            let row = (cache ? describe(cacheImage: paths[i]) : describe(path: paths[i]))?.tsv
             lock.lock(); rows[i] = row; lock.unlock()
         }
         var seen = Set<String>()
@@ -464,7 +498,7 @@ func main() throws {
     case "run": try runCorpus(Array(args.dropFirst()))
     case "report" where args.count == 2: try report(args[1])
     case "compare" where args.count == 3: try compare(args[1], args[2])
-    default: throw CorpusError.invalid("usage: corpus.swift manifest|run|report|compare …")
+    default: throw CorpusError.invalid("usage: corpus.swift manifest|cache-manifest|run|report|compare …")
     }
 }
 
