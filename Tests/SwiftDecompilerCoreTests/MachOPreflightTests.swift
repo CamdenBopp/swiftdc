@@ -1406,3 +1406,88 @@ private func fairPlayCopy(scrambled: Bool) throws -> Data? {
         }
     }
 }
+
+// MARK: - Context descriptors behind direct symbolic references
+
+/// A context descriptor's first three words: flags (kind in the low five
+/// bits), a relative parent pointer, a relative name pointer.
+private func contextDescriptor(kind: UInt32, parent: Int32, name: Int32) -> Data {
+    var data = Data()
+    for word in [kind, UInt32(bitPattern: parent), UInt32(bitPattern: name)] {
+        withUnsafeBytes(of: word.littleEndian) { data.append(contentsOf: $0) }
+    }
+    return data
+}
+
+/// A struct at 0x1000 inside a module at 0x1100, names at 0x2000, all in
+/// one mapped, file-backed range; `edit` changes the struct or the module.
+private func rejectsContext(struct structure: Data? = nil, module: Data? = nil) -> Bool {
+    let memory: [UInt64: Data] = [
+        0x1000: structure ?? contextDescriptor(kind: 17, parent: 0x100 - 4, name: 0x1000 - 8),
+        0x1100: module ?? contextDescriptor(kind: 0, parent: 0, name: 0xf00 - 8),
+    ]
+    let read: (UInt64, Int) -> Data? = { address, count in
+        if let bytes = memory[address], count <= bytes.count { return bytes.prefix(count) }
+        return (0x2000..<0x3000).contains(address) ? Data(repeating: 0x41, count: count) : nil
+    }
+    return (try? MachOPreflight.validateContextDescriptor(
+        at: 0x1000, read: read, segments: [0x1000..<0x3000], path: "<test>", what: "reference"
+    )) == nil
+}
+
+/// `sample.release`, fuzz seed 4242, mutant 4 moved a `\x01` reference in
+/// `__swift5_typeref` onto bytes that are no descriptor; MachOSwiftSection
+/// read a "module" there whose name sat at offset -121290283, and seven
+/// commands died by SIGTRAP.
+@Test func aDirectContextReferenceMustNameAContext() {
+    #expect(!rejectsContext())
+    #expect(rejectsContext(struct: contextDescriptor(kind: 31, parent: 0x100 - 4, name: 0x1000 - 8)))   // no such kind
+    #expect(rejectsContext(struct: contextDescriptor(kind: 17, parent: 0x100 - 4, name: -0x7000_0000)))  // name outside the file
+    #expect(rejectsContext(struct: contextDescriptor(kind: 17, parent: 0x7000_0000, name: 0x1000 - 8)))  // parent outside the image
+    #expect(rejectsContext(module: contextDescriptor(kind: 0, parent: -0x100 - 4, name: 0xf00 - 8)))    // the module's parent loops back
+    #expect(rejectsContext(module: contextDescriptor(kind: 0, parent: 0, name: -0x7000_0000)))           // the parent's name, too
+    // A parent through a GOT slot (bit 0) is checked for its slot only,
+    // and the slot must be mapped.
+    #expect(!rejectsContext(struct: contextDescriptor(kind: 17, parent: 0x100 - 4 + 1, name: 0x1000 - 8)))
+    #expect(rejectsContext(struct: contextDescriptor(kind: 17, parent: 0x7000_0000 + 1, name: 0x1000 - 8)))
+}
+
+/// End to end: a real `\x01` reference in `sample.release`'s
+/// `__swift5_typeref`, re-aimed at the start of `__cstring` (mapped, but no
+/// descriptor), is refused by its cause, and the CLI exits rather than trap.
+@Test func aDirectContextReferenceIntoStringsIsRefusedIfPresent() throws {
+    let path = "Fixtures/Sample/sample.release"
+    guard let original = FileManager.default.contents(atPath: path) else { return }
+    let machO = try BinaryLoader.load(path: path)
+    let typeref = try #require(machO.sections.first { $0.sectionName == "__swift5_typeref" })
+    let strings = try #require(machO.sections.first { $0.sectionName == "__cstring" })
+    let start = Int(machO.resolveOffset(at: UInt64(typeref.address)))
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("swiftdc-ctx-\(ProcessInfo.processInfo.processIdentifier)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    var refused: URL?
+    for cursor in 0..<(typeref.size - 4) where original[start + cursor] == 0x01 {
+        var copy = original
+        let field = UInt64(typeref.address) + UInt64(cursor + 1)
+        let delta = Int32(truncatingIfNeeded: Int64(strings.address) - Int64(field))
+        withUnsafeBytes(of: delta.littleEndian) { copy.replaceSubrange(start + cursor + 1 ..< start + cursor + 5, with: $0) }
+        let url = directory.appendingPathComponent("m\(cursor)")
+        try copy.write(to: url)
+        do { try MachOPreflight.validate(url: url) } catch {
+            if "\(error)".contains("holds no context descriptor") || "\(error)".contains("is no context kind") { refused = url; break }
+        }
+    }
+    let url = try #require(refused, "no \\x01 reference in __swift5_typeref was refused once re-aimed")
+    let binary = URL(fileURLWithPath: ".build/debug/swiftdc")
+    guard FileManager.default.fileExists(atPath: binary.path) else { return }
+    for command in ["dump", "interface", "layout"] {
+        let process = Process()
+        process.executableURL = binary
+        process.arguments = [command, url.path]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        #expect(process.terminationReason == .exit && process.terminationStatus == 1, "\(command): \(process.terminationStatus)")
+    }
+}

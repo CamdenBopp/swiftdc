@@ -358,9 +358,18 @@ public enum MachOPreflight {
            let typeref = sectionTable(prefix: prefix)?.sections.first(where: { $0.name == "__swift5_typeref" }),
            typeref.size > 0, typeref.offset <= fileSize, typeref.size <= fileSize - typeref.offset,
            let bytes = image.read(offset: typeref.offset, count: typeref.size) {
+            let fileSegments = segmentRanges(prefix: prefix)
             try validateMangledNames(
                 at: mangledNames, in: bytes, sectionOffset: typeref.offset, sectionAddress: typeref.addr,
-                segments: mappedSegments(prefix: prefix), name: "__swift5_typeref", path: path
+                segments: mappedSegments(prefix: prefix), name: "__swift5_typeref", path: path,
+                read: { address, count in
+                    for segment in fileSegments where address >= segment.vmaddr && address - segment.vmaddr < UInt64(segment.size) {
+                        let within = address - segment.vmaddr
+                        guard UInt64(count) <= UInt64(segment.size) - within else { return nil }
+                        return image.read(offset: segment.offset + Int(within), count: count)
+                    }
+                    return nil
+                }
             )
         }
     }
@@ -1271,9 +1280,18 @@ public enum MachOPreflight {
     /// References resolve in VM space: an indirect one (`\x02`) names a GOT
     /// slot in `__DATA_CONST`, whose VM address need not track its file
     /// offset. Each must land in a mapped segment.
+    ///
+    /// A direct context reference (`\x01`) must also land on a context
+    /// descriptor, which MachOSwiftSection reads without checking: a mutated
+    /// offset still inside the image sent it through a "module" whose name
+    /// pointer resolved to offset -121290283 (`swift Tools/fuzz.swift
+    /// metadata Fixtures/Sample/sample.release 100 4242`, mutant 4, SIGTRAP
+    /// in seven commands). `read` gives an address's file bytes, nil where it
+    /// has none.
     static func validateMangledNames(
         at starts: [Int], in bytes: Data, sectionOffset: Int, sectionAddress: UInt64,
-        segments: [Range<UInt64>], name: String, path: String = "<data>"
+        segments: [Range<UInt64>], name: String, path: String = "<data>",
+        read: ((UInt64, Int) -> Data?)? = nil
     ) throws {
         for start in Set(starts) {
             var cursor = start - sectionOffset
@@ -1294,6 +1312,10 @@ public enum MachOPreflight {
                             "Malformed Mach-O: \(path) — \(name) symbolic reference at +\(cursor) points to 0x\(String(target, radix: 16)), outside every mapped segment"
                         )
                     }
+                    if byte == 0x01, let read {
+                        try validateContextDescriptor(at: target, read: read, segments: segments, path: path,
+                                                      what: "\(name) symbolic reference at +\(cursor)")
+                    }
                     cursor += 5
                 case 0x18...0x1F:
                     cursor += 9
@@ -1301,6 +1323,45 @@ public enum MachOPreflight {
                     cursor += 1
                 }
             }
+        }
+    }
+
+    /// A context descriptor and its parents (swift/include/swift/ABI/Metadata.h
+    /// `TargetContextDescriptor`): flags whose kind is one the ABI defines
+    /// (module, extension, anonymous, protocol, opaque type, class, struct,
+    /// enum), a relative parent pointer (bit 0 marks a GOT slot, which is not
+    /// followed), and for the named kinds and extensions a relative pointer
+    /// at +8 to a name the file holds.
+    static func validateContextDescriptor(
+        at address: UInt64, read: (UInt64, Int) -> Data?, segments: [Range<UInt64>], path: String, what: String
+    ) throws {
+        func fail(_ why: String) -> BinaryLoadError {
+            BinaryLoadError("Malformed Mach-O: \(path) — \(what) \(why)")
+        }
+        var current = address, seen: Set<UInt64> = []
+        while true {
+            guard seen.insert(current).inserted else { throw fail("names a context whose parents loop at 0x\(String(current, radix: 16))") }
+            guard seen.count <= 64 else { throw fail("reaches a context more than 64 parents deep") }
+            guard let header = read(current, 12), let flags = header.u32(at: 0),
+                  let parent = header.u32(at: 4), let nameField = header.u32(at: 8)
+            else { throw fail("names 0x\(String(current, radix: 16)), which holds no context descriptor") }
+            let kind = flags & 0x1f
+            guard [0, 1, 2, 3, 4, 16, 17, 18].contains(kind) else {
+                throw fail("names 0x\(String(current, radix: 16)), whose kind \(kind) is no context kind")
+            }
+            if [0, 1, 3, 16, 17, 18].contains(kind) {
+                let target = (current &+ 8) &+ UInt64(bitPattern: Int64(Int32(bitPattern: nameField)))
+                guard read(target, 1) != nil else {
+                    throw fail("names a context at 0x\(String(current, radix: 16)) whose name points to 0x\(String(target, radix: 16)), outside the file")
+                }
+            }
+            guard parent != 0 else { return }
+            let target = (current &+ 4) &+ UInt64(bitPattern: Int64(Int32(bitPattern: parent & ~1)))
+            guard segments.contains(where: { $0.contains(target) }) else {
+                throw fail("names a context at 0x\(String(current, radix: 16)) whose parent points to 0x\(String(target, radix: 16)), outside every mapped segment")
+            }
+            if parent & 1 != 0 { return }
+            current = target
         }
     }
 

@@ -5453,11 +5453,20 @@ if a test was observed to fail without the fix.
   and rejects the same mutants as before (`libObjCAggregateArgs.dylib
   100 4242`: 504/296, 0 crashes; `sample.release 100 4242`: 384/409, 7
   crashes, the same 7 in both builds, next entry).
-- **OPEN (robustness): a corrupt `__swift5_typeref` traps six commands.**
-  `swift Tools/fuzz.swift metadata Fixtures/Sample/sample.release 100
-  4242`, mutant 4 (offsets 15813, 15827, 15873, 15921): `interface`,
-  `objc`, `objc --methods`, `layout`, `disasm`, `xrefs` and `analyze` die
-  by SIGTRAP.
+- **FIXED (robustness): a corrupt `__swift5_typeref` trapped seven
+  commands.** `swift Tools/fuzz.swift metadata Fixtures/Sample/sample.release
+  100 4242`, mutant 4 (offsets 15813, 15827, 15873, 15921): `interface`,
+  `objc`, `objc --methods`, `layout`, `disasm`, `xrefs` and `analyze` died
+  by SIGTRAP. The mutation moved a direct context reference (`\x01`) onto
+  bytes that are no descriptor but still inside the image, so the
+  preflight's "lands in a mapped segment" passed; MachOSwiftSection read
+  a "module" there whose name pointer resolved to offset -121290283. The
+  preflight now walks the descriptor a `\x01` reference names and its
+  parents: a kind the ABI defines, a name the file holds, a mapped parent,
+  no loop, at most 64 deep. The fuzz set: 7 crashes → 0 (383 accepted,
+  417 rejected of 800). No real image changes outcome: `swift-version`
+  over all 6,127 corpus images, with and without the check, 0 outcome
+  changes.
 
 ## 2026-10-31: objdump's file line
 
