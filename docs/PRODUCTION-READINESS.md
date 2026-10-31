@@ -1285,7 +1285,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   | `cache` / `vtable` | bind or null / null only |
   | `data` (low 3 bits masked) | `__objc_const` or `__objc_data` (both hold `class_ro_t`) |
   | `ro.name` | `__objc_classname`, `__cstring`, `__const` |
-  | `ro.baseMethods` | `__objc_methlist`, `__objc_const`, `__objc_methname`; null |
+  | `ro.baseMethods` (bit 0 masked, 4-aligned) | `__objc_methlist`, `__objc_const`, `__objc_methname`; null |
   | `ro.ivars` / `baseProtocols` / `baseProperties` | `__objc_const`; null |
   | ivar layouts | `__cstring`, `__objc_classname`; null |
   | ivar list (entsize 32) | offset in `__objc_ivar`/`__const`/`__data`/`__common`/`__bss`; name in `__objc_methname`/`__cstring`; type in `__objc_methtype`/`__cstring` |
@@ -5434,3 +5434,27 @@ if a test was observed to fail without the fix.
   libcrypto 10,638 against 10,495. Symbol labels are boundaries too, and
   OpenSSL's assembly keeps local labels inside functions; a label that is
   no function start may be cutting one function in two. Unmeasured.
+
+## 2026-10-30: 4-aligned relative method lists
+
+- **FIXED (robustness): the preflight refused two valid images as
+  malformed.** The corpus sweep found every command failing on Brave's
+  `ksadmin` and Grok Bot's `chrome_crashpad_handler` with "Objective-C
+  method list at 0x100215b78 points at 0x1001f0d60, not into
+  __objc_const or __objc_data or __objc_methlist or __objc_methname". The
+  fixup targets 0x1001f0d64, the first byte of `__objc_methlist`
+  (`dyld_info -fixups` agrees). `class_ro_t.baseMethods` is objc4's
+  `PointerUnion`: bit 0 tags a list of lists, and a relative method list
+  (12-byte entries) is only 4-aligned. The check masked three bits and
+  required 8-byte alignment, which held in the 1,058 binaries it was
+  measured on only because their `__objc_methlist` happened to start on
+  an 8-byte boundary. It now masks bit 0 and requires 4. Both images load:
+  `objc` prints 291 and 32 lines of headers. The metadata fuzzer accepts
+  and rejects the same mutants as before (`libObjCAggregateArgs.dylib
+  100 4242`: 504/296, 0 crashes; `sample.release 100 4242`: 384/409, 7
+  crashes, the same 7 in both builds, next entry).
+- **OPEN (robustness): a corrupt `__swift5_typeref` traps six commands.**
+  `swift Tools/fuzz.swift metadata Fixtures/Sample/sample.release 100
+  4242`, mutant 4 (offsets 15813, 15827, 15873, 15921): `interface`,
+  `objc`, `objc --methods`, `layout`, `disasm`, `xrefs` and `analyze` die
+  by SIGTRAP.

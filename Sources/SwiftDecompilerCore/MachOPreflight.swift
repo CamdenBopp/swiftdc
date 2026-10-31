@@ -616,7 +616,7 @@ public enum MachOPreflight {
         @discardableResult
         func check(
             _ address: UInt64, _ what: String, in names: Set<String>,
-            null: Bool = true, bind: Bool = true, mask: UInt64 = 0, aligned: Bool = true
+            null: Bool = true, bind: Bool = true, mask: UInt64 = 0, alignment: UInt64 = 8
         ) throws -> UInt64? {
             guard let decoded = reader.field(at: address) else { return nil }
             guard let target = decoded else {
@@ -632,7 +632,7 @@ public enum MachOPreflight {
             case .address(let raw):
                 let value = raw & ~mask
                 guard let index = reader.section(containing: value), names.contains(reader.sections[index].name),
-                      !aligned || value % 8 == 0
+                      value % alignment == 0
                 else {
                     throw fail("\(what) at 0x\(String(address, radix: 16)) points at 0x\(String(value, radix: 16)), not into \(names.sorted().joined(separator: " or "))")
                 }
@@ -663,15 +663,20 @@ public enum MachOPreflight {
         /// A `class_ro_t`, of a class or a metaclass. No field of one, and no
         /// list entry it reaches, is ever a bind in the measured binaries.
         func walkReadOnlyData(_ ro: UInt64) throws {
-            try check(ro + 16, "ivar layout", in: ["__cstring", "__objc_classname"], bind: false, aligned: false)
-            try check(ro + 24, "class name", in: strings, null: false, bind: false, aligned: false)
+            try check(ro + 16, "ivar layout", in: ["__cstring", "__objc_classname"], bind: false, alignment: 1)
+            try check(ro + 24, "class name", in: strings, null: false, bind: false, alignment: 1)
             // x86_64 slices keep pointer-based method lists in `__objc_data`
             // (all 86 such lists in the arm64e sweep's fat system binaries).
+            // `baseMethods` is objc4's `PointerUnion`: bit 0 tags a list of
+            // lists, and a relative method list (12-byte entries) is only
+            // 4-aligned. Masking three bits sent Brave's and Grok's Chromium
+            // helpers' lists at 0x…d64 to 0x…d60, outside their section, and
+            // the whole image was refused as malformed.
             try check(ro + 32, "method list", in: ["__objc_methlist", "__objc_const", "__objc_methname", "__objc_data"],
-                      bind: false, mask: 7)
+                      bind: false, mask: 1, alignment: 4)
             let protocols = try check(ro + 40, "protocol list", in: ["__objc_const"], bind: false)
             let ivars = try check(ro + 48, "ivar list", in: ["__objc_const"], bind: false)
-            try check(ro + 56, "weak ivar layout", in: ["__cstring", "__objc_classname"], bind: false, aligned: false)
+            try check(ro + 56, "weak ivar layout", in: ["__cstring", "__objc_classname"], bind: false, alignment: 1)
             let properties = try check(ro + 64, "property list", in: ["__objc_const"], bind: false)
             // `protocol_list_t`: a 64-bit count, then that many protocol
             // pointers (into `__data` or `__objc_const` in all 8,684 measured
@@ -693,16 +698,16 @@ public enum MachOPreflight {
             if let ivars {
                 for ivar in try listEntries(ivars, "ivar list", entsize: 32) {
                     try check(ivar, "ivar offset", in: ["__objc_ivar", "__const", "__data", "__common", "__bss"],
-                              bind: false, aligned: false)
-                    try check(ivar + 8, "ivar name", in: names, null: false, bind: false, aligned: false)
-                    try check(ivar + 16, "ivar type", in: ["__objc_methtype", "__cstring"], bind: false, aligned: false)
+                              bind: false, alignment: 1)
+                    try check(ivar + 8, "ivar name", in: names, null: false, bind: false, alignment: 1)
+                    try check(ivar + 16, "ivar type", in: ["__objc_methtype", "__cstring"], bind: false, alignment: 1)
                 }
             }
             // `property_t`: name, attributes.
             if let properties {
                 for property in try listEntries(properties, "property list", entsize: 16) {
-                    try check(property, "property name", in: names, null: false, bind: false, aligned: false)
-                    try check(property + 8, "property attributes", in: names, bind: false, aligned: false)
+                    try check(property, "property name", in: names, null: false, bind: false, alignment: 1)
+                    try check(property + 8, "property attributes", in: names, bind: false, alignment: 1)
                 }
             }
         }
@@ -744,7 +749,7 @@ public enum MachOPreflight {
                 throw fail("protocol at 0x\(String(proto, radix: 16)) declares \(size.value) bytes, not a protocol in its section")
             }
             try check(proto, "protocol isa", in: [])
-            try check(proto + 8, "protocol name", in: strings, null: false, bind: false, aligned: false)
+            try check(proto + 8, "protocol name", in: strings, null: false, bind: false, alignment: 1)
             try check(proto + 16, "protocol's protocol list", in: ["__objc_const"], bind: false)
             for (offset, what) in [(24, "instance"), (32, "class"), (40, "optional instance"), (48, "optional class")] {
                 try check(proto + UInt64(offset), "protocol \(what) method list", in: methodLists, bind: false)
@@ -754,7 +759,7 @@ public enum MachOPreflight {
                 try check(proto + 72, "protocol extended method types", in: ["__objc_const"], bind: false)
             }
             if size.value >= 88 {
-                try check(proto + 80, "protocol demangled name", in: strings, bind: false, aligned: false)
+                try check(proto + 80, "protocol demangled name", in: strings, bind: false, alignment: 1)
             }
             if size.value >= 96 {
                 try check(proto + 88, "protocol class properties", in: ["__objc_const"], bind: false)

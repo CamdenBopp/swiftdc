@@ -1020,8 +1020,25 @@ private func oneClassReader(
             ("__cstring", 0x3000, 0x100, 0, nil),
             ("__objc_ivar", 0x4000, 0x10, 0, nil),
             ("__const", 0x5000, 0x100, 0, nil),
+            ("__objc_methlist", 0x6004, 0x100, 0, nil),
         ],
         encodings: [0: .plain])
+}
+
+/// `ro.baseMethods` is objc4's `PointerUnion`: bit 0 tags a list of lists,
+/// and a relative method list is only 4-aligned. Brave's and Grok Bot's
+/// Chromium helpers (ksadmin, chrome_crashpad_handler) put `__objc_methlist`
+/// at 0x…d64; masking three bits made 0x…d60, outside it, and the preflight
+/// refused both images as malformed.
+@Test func aMethodListNeedsOnlyFourByteAlignment() throws {
+    try MachOPreflight.validateObjCClasses([0x1000], reader: oneClassReader(methodList: 0x6004))
+    try MachOPreflight.validateObjCClasses([0x1000], reader: oneClassReader(methodList: 0x6005))   // list of lists
+    #expect(throws: (any Error).self) {
+        try MachOPreflight.validateObjCClasses([0x1000], reader: oneClassReader(methodList: 0x6006))
+    }
+    #expect(throws: (any Error).self) {
+        try MachOPreflight.validateObjCClasses([0x1000], reader: oneClassReader(methodList: 0x6000))
+    }
 }
 
 @Test func walksAClassThroughItsPointerFields() throws {
