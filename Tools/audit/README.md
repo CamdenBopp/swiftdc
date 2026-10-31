@@ -128,3 +128,37 @@ unknown and missing cases. A completed experiment is separate from complete
 recovery. Start with refutations, reduce the responsible instruction sequence,
 fix it, mutation-check the test, then replay the same seed and another batch.
 See [INSTRUMENTATION.md](../../docs/INSTRUMENTATION.md) for the evidence contract.
+
+## Whole-binary corpus measurements
+
+`Tools/corpus.swift` runs swiftdc over many real binaries and measures what
+can be checked without reading the output by hand:
+
+- **reliability**: exit status, signal, timeout and memory kill per run,
+  with non-zero exits grouped by message;
+- **consistency**: the SHA-256 of stdout and stderr from separate processes
+  (`--repeat`), and from two builds (`compare`);
+- **completeness**: `xrefs`' function count against `dyld_info
+  -function_starts`, and empty output for a binary whose own sections say it
+  has Swift or Objective-C metadata;
+- **performance**: wall, CPU and peak footprint from `proc_pid_rusage` of the
+  exited child (the numbers `/usr/bin/time -l` prints), per instruction.
+
+```bash
+xcrun swiftc -O Tools/corpus.swift -o corpus
+find /Applications /usr/libexec -type f -perm -u+x | ./corpus manifest > corpus.tsv
+./corpus run .build/release/swiftdc corpus.tsv out --jobs 4 --kill-mb 1800
+./corpus report out
+./corpus compare out-before out-after
+```
+
+The manifest reads each header itself (arm64 slice, `__text` size, Swift and
+Objective-C sections) and deduplicates by content hash; its readings agreed
+with `otool -l` on all 6,091 binaries both could read. A run appends to
+`out/results.jsonl` and resumes where it stopped. `--commands` picks from
+`dump,interface,layout,objc,version,xrefs,structured,pseudo,listing,analyze,objc-methods`;
+filter with `--max-text`, `--swift-only` and `--sample N --seed S`.
+
+Time numbers are only comparable at `--jobs 1` with nothing else running.
+The manifest and output directory name private apps: keep them out of the
+repository.
