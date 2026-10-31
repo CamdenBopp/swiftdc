@@ -5693,3 +5693,12 @@ branch (`9f92b71`), accessor decoding and classification (`10712d8`,
   and printed it as the answer. `--image SwiftUI` read macOS SwiftUI only
   because the cache lists it first. An ambiguous name now declines and
   lists every matching install path; `--image-path` picks one.
+- **FIXED (correctness): `layout` printed a symbolic field type as raw
+  bytes.** A field whose type is in the same module records a symbolic
+  reference (a byte from 0x01 to 0x1F and a relative offset), and
+  `layout` printed the mangled name as is: `center: ^A` plus the
+  offset's bytes, control characters in the text and in JSON's `type`.
+  On SwiftUI that was 2,165 of 3,536 fields (61%); on the fixtures, 42
+  fields in 10 of 177. Such a field now prints the name the reference
+  resolves to (`center: sample.Point`) or `?`, and a plain mangling
+  (`Si`) prints as before. SwiftUI: 0 control bytes, 0 `?`.

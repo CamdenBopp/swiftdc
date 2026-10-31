@@ -86,6 +86,16 @@ public struct FieldMap: Sendable {
     /// whose type does not demangle has none. Empty for Objective-C maps.
     public private(set) var fieldTypeNames: [String: String] = [:]
 
+    /// A field's type for display: its mangled name (`Si`), unless the
+    /// mangling holds a symbolic reference, a byte from 0x01 to 0x1F and a
+    /// relative offset into the binary. Printed raw that was control bytes
+    /// (61% of SwiftUI's fields, `center: ^A…` on the fixtures). Such a type
+    /// shows the name the reference resolves to, or `?` when it does not.
+    public static func printableTypeName(mangled: String, resolved: String?) -> String {
+        guard mangled.unicodeScalars.contains(where: { (0x01...0x1F).contains($0.value) }) else { return mangled }
+        return resolved ?? "?"
+    }
+
     /// This map with the field types `FieldMapBuilder` resolved.
     func withFieldTypeNames(_ names: [String: String]) -> FieldMap {
         var map = self

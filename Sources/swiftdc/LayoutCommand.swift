@@ -150,7 +150,7 @@ struct LayoutCommand: AsyncParsableCommand {
             var lines = ["\(name)  // \(size)"]
             for field in map.fields {
                 let offset = "0x" + String(field.offset, radix: 16)
-                lines.append("  +\(offset.padding(toLength: max(6, offset.count), withPad: " ", startingAt: 0)) \(field.bytes)B  \(field.name): \(field.typeMangledName)")
+                lines.append("  +\(offset.padding(toLength: max(6, offset.count), withPad: " ", startingAt: 0)) \(field.bytes)B  \(field.name): \(Self.typeText(of: field, in: map))")
             }
             if let reason = map.trustLimitReason {
                 lines.append("  // offsets past 0x\(String(map.trustedOffsetLimit, radix: 16)) are NOT trusted: \(reason)")
@@ -158,6 +158,10 @@ struct LayoutCommand: AsyncParsableCommand {
             blocks.append(lines.joined(separator: "\n"))
         }
         return blocks.joined(separator: "\n\n")
+    }
+
+    static func typeText(of field: (offset: Int, bytes: Int, name: String, typeMangledName: String), in map: FieldMap) -> String {
+        FieldMap.printableTypeName(mangled: field.typeMangledName, resolved: map.fieldTypeNames[field.name])
     }
 
     private func renderJSON(_ maps: [String: FieldMap]) -> String {
@@ -168,7 +172,7 @@ struct LayoutCommand: AsyncParsableCommand {
                 "trustedOffsetLimit": map.trustedOffsetLimit,
                 "trustLimitReason": map.trustLimitReason as Any,
                 "fields": map.fields.map {
-                    ["offset": $0.offset, "bytes": $0.bytes, "name": $0.name, "type": $0.typeMangledName] as [String: Any]
+                    ["offset": $0.offset, "bytes": $0.bytes, "name": $0.name, "type": Self.typeText(of: $0, in: map)] as [String: Any]
                 },
             ] as [String: Any]
         }

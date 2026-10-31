@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+@testable import SwiftDecompilerCore
 
 /// Content assertions for the `layout` and `xrefs` commands, which were only
 /// exercised for determinism and not-crashing — never for what they render.
@@ -38,6 +39,35 @@ struct LayoutXrefsContentTests {
         #expect(output.contains("a: Si"))   // Swift.Int
         #expect(output.contains("b: Si"))
         #expect(output.contains("+0x8"))    // the second field's offset
+    }
+
+    /// A field whose type is in the same module records a symbolic reference
+    /// (`\u{01}` and a relative offset), which `layout` printed raw:
+    /// `center: ^A` and the offset's bytes, control characters in the text
+    /// and in JSON, on 61% of SwiftUI's fields. It prints the resolved name.
+    @Test func layoutResolvesASymbolicFieldTypeIfPresent() throws {
+        let fixture = "Fixtures/Sample/sample.release"
+        guard FileManager.default.fileExists(atPath: fixture),
+              let text = try run(["layout", fixture]),
+              let json = try run(["layout", fixture, "--json"]) else { return }
+        #expect(text.contains("center: sample.Point"), Comment(rawValue: text))
+        #expect(text.contains("radius: Sd"), Comment(rawValue: text))
+        let control = text.unicodeScalars.filter { $0.value < 0x20 && $0 != "\n" }
+        #expect(control.isEmpty, "control bytes: \(control.map(\.value))")
+        let types = try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]])
+        let circle = try #require(types.first { $0["type"] as? String == "Circle" })
+        let fields = try #require(circle["fields"] as? [[String: Any]])
+        #expect(fields.first { $0["name"] as? String == "center" }?["type"] as? String == "sample.Point", "\(fields)")
+    }
+
+    /// The symbolic-reference rule itself: a plain mangling prints as is, one
+    /// holding a reference prints its resolution, and an unresolved one `?`,
+    /// never its bytes.
+    @Test func aSymbolicFieldTypePrintsItsResolutionOrDeclines() {
+        #expect(FieldMap.printableTypeName(mangled: "Si", resolved: "Swift.Int") == "Si")
+        #expect(FieldMap.printableTypeName(mangled: "\u{01}\u{10}\u{20}\u{00}\u{00}", resolved: "M.Point") == "M.Point")
+        #expect(FieldMap.printableTypeName(mangled: "\u{02}xXj\u{00}Sg", resolved: nil) == "?")
+        #expect(FieldMap.printableTypeName(mangled: "Say\u{1F}abcdG", resolved: nil) == "?")
     }
 
     /// A layout that stopped at a field it could not resolve has an
