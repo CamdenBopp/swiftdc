@@ -30,6 +30,9 @@ struct LayoutCommand: AsyncParsableCommand {
     @Option(name: .customLong("image"), help: "Read this image from the dyld shared cache by name.")
     var image: String?
 
+    @Option(name: .customLong("image-path"), help: "Read this image from the dyld shared cache by full install path.")
+    var imagePath: String?
+
     @Option(name: .customLong("cache"), help: "Path to a dyld_shared_cache_* file.")
     var cache: String?
 
@@ -63,7 +66,7 @@ struct LayoutCommand: AsyncParsableCommand {
             return
         }
         let machO = try BinaryLoader.loadMachO(
-            path: path, architecture: architecture, image: image, cachePath: cache, binary: binary
+            path: path, architecture: architecture, image: image, imagePath: imagePath, cachePath: cache, binary: binary
         )
         if selfIndex {
             try emit(renderSelfIndex(SelfTypeIndex.build(in: machO)), to: output)

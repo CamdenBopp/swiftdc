@@ -5,7 +5,7 @@ import Foundation
 /// shared message, "Use --list-images to see what's available", but only
 /// `dump` and `swift-version` accepted that flag: `disasm --list-images` was
 /// an "Unknown option" error. Every subcommand that takes `--image` must take
-/// `--list-images` too. Drives the built CLI, like the other CLI tests.
+/// `--list-images` and `--image-path` too. Drives the built CLI, like the other CLI tests.
 struct CLIDiagnosticsTests {
     private static let binary = URL(fileURLWithPath: ".build/debug/swiftdc")
 
@@ -36,6 +36,9 @@ struct CLIDiagnosticsTests {
             guard let text = try help(name), text.contains("--image <") else { continue }
             withImage += 1
             #expect(text.contains("--list-images"), "\(name) takes --image but not --list-images")
+            // A name several cache images share declines, so --image-path is
+            // the only way to choose one of them (`layout` lacked it).
+            #expect(text.contains("--image-path <"), "\(name) takes --image but not --image-path")
         }
         #expect(withImage >= 6, "found \(withImage) --image commands")
     }
