@@ -5553,11 +5553,34 @@ if a test was observed to fail without the fix.
   only. Electron Framework has no `LC_FUNCTION_STARTS`, so each extent ran
   to the next IMP, megabytes away, and the async funclet grouping then
   decoded every boundary of the image. Symbols are boundaries there now,
-  an extent past 4 KB is left unclassified (the rewriter's class-dump
-  fallback), and the classification skips async grouping. The overlong
+  the classification decodes a 4 KB prefix of each extent and skips async
+  grouping. The overlong
   extent was also wrong: a synthesized setter decoded together with the
   6 KB function after it read as custom and stayed in the header
   (`accessorextent.m`). Release `objc`, all nine now exit 0: 1,814 to
   3,610 MB, 12.2 to 24.3 s (Discord's 1,974 MB, 13.6 s). Fixture blast
   radius: only the new fixture's `objc` and `objc --methods` (171
   fixtures).
+- **FIXED (soundness): an accessor was judged by its whole extent.** The
+  first form of the entry above left an extent past 4 KB unclassified,
+  which the rewriter treats as synthesized: a custom getter that is the
+  last IMP before a long unnamed function (`accessorextentcustom.m`,
+  `return [_inner value]`) was dropped from the header. Judging the whole
+  extent was wrong the other way (the synthesized setter above). The
+  accessor is now the block its entry starts, over the prefix: one block
+  ending in a return or a tail call, with only property-storage helpers,
+  is synthesized; a branch inside it is custom; a block that runs off a
+  decode the prefix cut is unknown, and one that runs into the next
+  function (after a call that does not return) is custom. Release `objc`
+  on the nine frameworks: 1,791 to 3,438 MB, 11.9 to 21.3 s, all exit 0.
+  On 150 sampled Objective-C images the headers equal the upstream
+  build's. Fixture blast radius: only the new fixture (171 fixtures ×
+  `objc`, `objc --methods`).
+- **OPEN (soundness): a getter that returns a constant reads as
+  synthesized.** `- (int)period { return -1; }` (`mov w0, #-1; ret`) is
+  one block with no call, so `objc` drops its line, in the upstream build
+  as in this one. Brave's `BraveSoftwareUpdateAgent` has four
+  (`CRUManagedPreferenceGlobalPolicySettings`' `lastCheckPeriodMinutes`
+  returns -1, `proxyMode`, `proxyServer` and `proxyPacURL` return nil):
+  the upstream build kept them there only because their long extents had
+  more blocks. A synthesized accessor reads or writes the ivar.

@@ -150,6 +150,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libLocalFirst.stripped.dylib",
         "Fixtures/Sample/libNoFunctionStarts.dylib",
         "Fixtures/Sample/libAccessorExtent.dylib",
+        "Fixtures/Sample/libAccessorExtentCustom.dylib",
         "Fixtures/Sample/goProgram",
         "Fixtures/Sample/goProgram.stripped",
         "Fixtures/Sample/libObjCSDKSelectors.dylib",

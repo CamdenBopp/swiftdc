@@ -881,14 +881,14 @@ public struct Disassembler: Sendable {
     /// start; a caller that only reads these bodies (accessor classification)
     /// has no async function to group.
     ///
-    /// `maxBytes` declines an address whose extent, to the next boundary, is
-    /// longer: in an image with no LC_FUNCTION_STARTS (Electron Framework,
-    /// 140 MB of `__text`) the next boundary can be megabytes away, and
-    /// `objc` decoding every accessor that far passed 6 GB.
+    /// `prefixBytes` decodes at most that much of each extent: in an image
+    /// with no LC_FUNCTION_STARTS (Electron Framework, 140 MB of `__text`)
+    /// the next boundary can be megabytes away, and `objc` decoding every
+    /// accessor that far passed 6 GB.
     public func disassembleFunctions(
         at addresses: Set<UInt64>,
         in machO: MachOFile,
-        maxBytes: UInt64? = nil,
+        prefixBytes: UInt64? = nil,
         groupsAsyncFunclets: Bool = true
     ) async -> [DisassembledFunction] {
         guard !addresses.isEmpty else { return [] }
@@ -907,8 +907,9 @@ public struct Disassembler: Sendable {
                 let mid = (low + high) / 2
                 if boundaries[mid] <= start { low = mid + 1 } else { high = mid }
             }
-            let stop = min(low < boundaries.count ? boundaries[low] : end, end)
-            guard stop > start, maxBytes.map({ stop - start <= $0 }) ?? true else { return [] }
+            var stop = min(low < boundaries.count ? boundaries[low] : end, end)
+            if let prefixBytes, stop - start > prefixBytes { stop = start + prefixBytes }
+            guard stop > start else { return [] }
             return capstoneInstructions(in: machO, span: (start, stop))
         }
         guard !instructions.isEmpty else { return [] }

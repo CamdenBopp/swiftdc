@@ -103,9 +103,9 @@ extension ObjCDumper {
     /// synthesized (a trivial ivar load/store its @property already covers),
     /// `false` = custom (real code, keep and type it). Keyed by the raw
     /// `ObjCMethodInfo.imp` so `rewritingPropertyAccessors` can look it up.
-    /// The longest IMP extent decoded to classify an accessor: 1,024
+    /// How much of an IMP's extent is decoded to classify an accessor: 1,024
     /// instructions, far past any synthesized getter or setter.
-    static let accessorExtentLimit: UInt64 = 4096
+    static let accessorPrefixBytes: UInt64 = 4096
 
     static func classifyAccessors(
         _ snapshot: ObjCMetadataSnapshot,
@@ -125,29 +125,46 @@ extension ObjCDumper {
         }
         guard !rawToRuntime.isEmpty else { return [:] }
 
-        // A synthesized accessor is a handful of instructions; an IMP whose
-        // extent is longer is not one, and is left unclassified (kept).
+        // Only a prefix of each extent: the accessor is the block its entry
+        // starts, a handful of instructions.
         let functions = await disassembler.disassembleFunctions(
-            at: Set(rawToRuntime.values), in: machO, maxBytes: Self.accessorExtentLimit,
+            at: Set(rawToRuntime.values), in: machO, prefixBytes: Self.accessorPrefixBytes,
             groupsAsyncFunclets: false)
         let byAddress = Dictionary(functions.map { ($0.startAddress, $0) }, uniquingKeysWith: { first, _ in first })
 
         var result: [UInt64: Bool] = [:]
         for (raw, runtime) in rawToRuntime {
-            if let function = byAddress[runtime] {
-                result[raw] = isSynthesizedAccessor(function)
+            if let function = byAddress[runtime],
+               let synthesized = isSynthesizedAccessor(function, prefixBytes: Self.accessorPrefixBytes) {
+                result[raw] = synthesized
             }
         }
         return result
     }
 
-    /// Whether a disassembled accessor body is synthesized: a single basic block
-    /// (no branches or loops) whose only calls are ARC / property-storage runtime
+    /// Whether a disassembled accessor body is synthesized: the block its
+    /// entry starts ends it (a return, or a tail call), with no branch to
+    /// other code, and its only calls are ARC / property-storage runtime
     /// helpers. Anything that sends a message, calls another function, or has
-    /// control flow is custom and worth keeping.
-    static func isSynthesizedAccessor(_ function: DisassembledFunction) -> Bool {
-        guard FunctionCFG(function).blocks.count <= 1 else { return false }
-        for insn in function.instructions
+    /// control flow is custom and worth keeping. Only that block is the
+    /// accessor: what follows it in the decoded extent is another function
+    /// or padding, and judging by the whole extent called a synthesized
+    /// setter followed by a 6 KB function custom (`accessorextent.m`). Nil
+    /// when the block runs past a decode `prefixBytes` cut short; a block
+    /// that runs into the next function (after a call that does not return)
+    /// is no accessor's shape, so it is custom.
+    static func isSynthesizedAccessor(_ function: DisassembledFunction, prefixBytes: UInt64? = nil) -> Bool? {
+        let cfg = FunctionCFG(function)
+        guard let entry = cfg.entry else { return nil }
+        let block = cfg.blocks[entry]
+        let last = function.instructions[block.terminator]
+        if last.controlFlow == .conditionalBranch || !block.successorIDs.isEmpty { return false }
+        let fallsThrough = !last.isTrap && [.call, .sequential, .none].contains(last.controlFlow)
+        if fallsThrough {
+            let cut = prefixBytes.map { last.address + 4 - function.startAddress >= $0 } ?? false
+            return block.terminator == function.instructions.count - 1 && cut ? nil : false
+        }
+        for insn in function.instructions[block.range]
         where insn.controlFlow == .call || insn.controlFlow == .branch {
             guard let callee = DisassembledFunction.calleeName(of: insn) else {
                 // An unresolved call is not provably a helper — treat as custom.
