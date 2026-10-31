@@ -471,6 +471,30 @@ private func assembledFunction(
     }
 }
 
+/// A name two cache images share declines rather than taking whichever the
+/// cache lists first: on macOS 27 `libswiftMetalKit` named the Mac Catalyst
+/// overlay under /System/iOSSupport, not /usr/lib/swift's.
+@Test func anAmbiguousCacheImageNameDeclinesIfAvailable() throws {
+    guard let paths = try? BinaryLoader.dyldCacheImagePaths(cachePath: nil) else { return }
+    var byName: [String: [String]] = [:]
+    for path in paths {
+        byName[((path as NSString).lastPathComponent as NSString).deletingPathExtension, default: []].append(path)
+    }
+    guard let (name, shared) = byName.filter({ $0.value.count > 1 }).min(by: { $0.key < $1.key }) else { return }
+    do {
+        _ = try BinaryLoader.loadFromDyldCache(cachePath: nil, selector: .name(name))
+        Issue.record("--image \(name) chose one of \(shared)")
+    } catch {
+        let message = "\(error)"
+        #expect(message.contains("--image-path"))
+        for path in shared { #expect(message.contains(path)) }
+    }
+    // Each of them still opens by install path.
+    for path in shared {
+        #expect(try BinaryLoader.loadFromDyldCache(cachePath: nil, selector: .path(path)).imagePath == path)
+    }
+}
+
 /// Integration check that runs only when the compiled fixture is present
 /// (build it with `Fixtures/Sample/build.sh`). Keeps `swift test` green on a
 /// clean checkout while still exercising the real pipeline in dev.

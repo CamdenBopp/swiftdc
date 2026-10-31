@@ -12,6 +12,12 @@ swiftdc dump    --image-path /System/Library/Frameworks/Foundation.framework/Ver
 swiftdc dump    --image Foundation --cache /path/to/dyld_shared_cache_arm64e
 ```
 
+`--image` matches the file name without its extension. A name several images
+share (260 on macOS 27: a library and its Mac Catalyst copy under
+`/System/iOSSupport`, or a framework and its accessibility bundle, as
+`--image SwiftUI`) is refused with the matching install paths; pick one with
+`--image-path`.
+
 Omit `--cache` to use the running system's cache. `disasm`/`analyze` decode
 cache images **in-process with Capstone** — `llvm-objdump` needs a standalone
 file, which a cache image does not have. The loader also handles the fact that

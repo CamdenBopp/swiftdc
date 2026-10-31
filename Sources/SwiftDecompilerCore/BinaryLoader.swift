@@ -181,6 +181,16 @@ extension BinaryLoader {
         case .name(let name): matches = { imageName(of: $0) == name }
         case .path(let path): matches = { $0.imagePath == path }
         }
+        // A name can belong to several images: the macOS library and its Mac
+        // Catalyst copy under /System/iOSSupport, or a framework and its
+        // accessibility bundle. Cache order is no reason to prefer one, so an
+        // ambiguous name declines and lists the install paths to choose from.
+        if case .name(let name) = selector {
+            let named = cache.machOFiles().filter(matches)
+            if named.count > 1 {
+                throw BinaryLoadError(ambiguousImageNameMessage(name, paths: named.map(\.imagePath)))
+            }
+        }
         guard let image = cache.machOFiles().first(where: matches) else {
             switch selector {
             case .name(let name):
@@ -193,6 +203,11 @@ extension BinaryLoader {
             }
         }
         return image
+    }
+
+    static func ambiguousImageNameMessage(_ name: String, paths: [String]) -> String {
+        "Image '\(name)' names \(paths.count) images in the dyld shared cache; "
+            + "choose one with --image-path:\n" + paths.sorted().map { "  " + $0 }.joined(separator: "\n")
     }
 
     /// Install paths of every image in the cache, sorted. Backs `--list-images`.

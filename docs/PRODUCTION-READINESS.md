@@ -5680,3 +5680,14 @@ references (`949f90d`), Go function tables (`b01115d`), the own-entry
 branch (`9f92b71`), accessor decoding and classification (`10712d8`,
 `bb3d206`, `0b3f7db`); the harness itself (`a28c827`, `f423c7f`,
 `7b47780`).
+
+## 2026-10-31: the dyld shared cache
+
+- **FIXED (soundness): `--image <name>` took the first cache image with
+  that name.** 260 names on the macOS 27 host cache belong to more than
+  one of its 4,115 images, and for 22 the first is a Mac Catalyst copy
+  under `/System/iOSSupport` or an accessibility bundle: `--image
+  libswiftMetalKit` read the Catalyst overlay, not `/usr/lib/swift`'s,
+  and printed it as the answer. `--image SwiftUI` read macOS SwiftUI only
+  because the cache lists it first. An ambiguous name now declines and
+  lists every matching install path; `--image-path` picks one.
