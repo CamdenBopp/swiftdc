@@ -5654,6 +5654,24 @@ and one `xrefs` crash is gone (CoreGraphics). Against `10e5c9e` in the
 size band (8.9 → 12.2 MB for images under 64 KB of `__text`); the A/B
 puts none of it in this session's commits, so it predates `175a563`.
 
+**Go images**, all 41 on the host (550 MB of `__text`; `xrefs
+--unreferenced`, `--jobs 1`, 3.5 GB and 1,200 s limits; the 30 Docker
+images on `1f6dd3e`, the other 11 on the Go-table build): 40 finish, 0
+crash, 0 memory kills, none lists fewer functions than its starts, 1.48
+million functions in all, 1.47 GB peak at most (docker-scout, 72 MB of
+`__text`, 1,146 s).
+
+- **OPEN (speed): `xrefs` on a large Go image runs at half the
+  corpus's rate.** Median 16,300 instructions/s across the Go images
+  over 4 MB, against 35,800 for the 142 corpus images over 4 MB; at that
+  rate `com.docker.backend` (81 MB of `__text`, 188,961 starts) needs
+  over 20 minutes and hit the 1,200 s limit at 1.8 GB. A 30 s `sample`
+  of that run, main thread: decoding 28% (Capstone's text printer and
+  alias matching 15%), `CalleeRegisterSummary.of` 20%
+  (`Preservation.exitValues` 7%, `indirectResultUse` 7%), the rest
+  spread across CFG building, hashing and retain/release. No single
+  hotspot; not yet compared against a non-Go image of the same size.
+
 Commits from the corpus: FairPlay declines (`7ed8c6d`), every `__TEXT`
 code section (`0eec0b5`), section-defined symbols only (`ffa5e26`), no
 scalar model of SVE registers (`5a68ec2`), 4-aligned method lists
