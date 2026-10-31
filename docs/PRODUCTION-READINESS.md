@@ -5383,3 +5383,29 @@ if a test was observed to fail without the fix.
   streaming path (`xrefs`) drops 1 and decodes the rest as instructions.
   Neither declines: a start over bytes that do not decode as a function
   should render as data, the same way on every path.
+
+## 2026-10-30: symbols that are not addresses
+
+- **FIXED (soundness, robustness): every nlist value was read as an
+  address.** `symbolLabels` and fold detection converted each symbol's
+  `n_value` with `UInt64(symbol.offset)`, whatever its type. Two kinds
+  are not addresses. An indirect symbol (`N_INDR`, a re-export) holds a
+  string-table offset: Gqrx's libc++ re-exports libc++abi, and the
+  offset of `__ZNKSt9bad_alloc4whatEv`'s target name, 0x7923, fell in
+  `__text`, so `disasm -f bad_alloc4what` listed a function by that name
+  at an unaligned address, decoded from the middle of another
+  (`sbfx w17, w28, #1, #0xf`). 19 images on this host carry 13,664
+  `N_INDR` symbols. SDRangel's libavformat.61 gained 214 such functions
+  (3,446 listed, 3,232 starts) and exited 0; Gqrx's libc++, SDRangel's
+  libavformat.58 and the CoreGraphics in Xcode's asset runtimes trapped
+  in the tracer on the misaligned bytes. An absolute symbol (`N_ABS`) is
+  a constant: pixman's NEON assembly sets `mask_bpp_shift` to -1, whose
+  conversion trapped ("Negative value is not representable") `xrefs`,
+  `disasm` and `analyze` on Emacs's and KiCad's libpixman. Only a
+  section-defined (`N_SECT`) symbol names code now, converted with
+  `UInt64(exactly:)`. After, release `xrefs`: libc++ 2,143 functions
+  (2,143 starts), libavformat.61 3,232 (3,232), CoreGraphics 15,291
+  (15,291), Emacs's libpixman 1,082 (1,082), KiCad's 1,189 (1,189), all
+  exit 0. Fixture blast radius: only `libAbsoluteSymbols.dylib`, crash →
+  ok on listing, pseudo, structured and xrefs; no output changes
+  elsewhere (147 fixtures, 882 runs).

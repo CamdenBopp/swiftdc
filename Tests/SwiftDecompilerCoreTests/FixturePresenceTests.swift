@@ -145,6 +145,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libRuntimeArity.dylib",
         "Fixtures/Sample/libEncryptable.dylib",
         "Fixtures/Sample/libCodeSections.dylib",
+        "Fixtures/Sample/libAbsoluteSymbols.dylib",
         "Fixtures/Sample/libObjCSDKSelectors.dylib",
         "Fixtures/Sample/libObjCSDKSelectors.opt.dylib",
         "Fixtures/Sample/libSwitchClobbers.dylib",

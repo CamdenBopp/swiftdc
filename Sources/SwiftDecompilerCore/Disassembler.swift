@@ -1825,6 +1825,16 @@ public struct Disassembler: Sendable {
         return names
     }
 
+    /// The address a symbol defined in a section names. An absolute symbol
+    /// (`N_ABS`) is a constant, not an address: pixman's NEON assembly sets
+    /// `mask_bpp_shift` to -1, whose conversion trapped every disassembly of
+    /// Emacs's and KiCad's libpixman, and one whose value happens to equal a
+    /// code address would name a function it has nothing to do with.
+    static func sectionAddress(of symbol: MachOFile.Symbol) -> UInt64? {
+        guard symbol.nlist.flags?.type == .sect else { return nil }
+        return UInt64(exactly: symbol.offset)
+    }
+
     /// Function labels from the symbol table: `__text`-range defined symbols,
     /// keyed by VM address. Present even in dyld-cache images (exports), and a
     /// no-op when the symbol table is stripped.
@@ -1840,7 +1850,7 @@ public struct Disassembler: Sendable {
         // which the __text-range filter drops.)
         var labels: [UInt64: String] = [:]
         for symbol in machO.symbols where !symbol.name.isEmpty {
-            let address = UInt64(symbol.offset)
+            guard let address = Self.sectionAddress(of: symbol) else { continue }
             if CodeSection.containing(address, in: sections) != nil, labels[address] == nil {
                 labels[address] = symbol.name
             }
@@ -1878,8 +1888,8 @@ public struct Disassembler: Sendable {
 
         var namesByAddress: [UInt64: Set<String>] = [:]
         for symbol in machO.symbols where !symbol.name.isEmpty {
-            let address = UInt64(symbol.offset)
-            guard CodeSection.containing(address, in: sections) != nil else { continue }
+            guard let address = Self.sectionAddress(of: symbol),
+                  CodeSection.containing(address, in: sections) != nil else { continue }
             namesByAddress[address, default: []].insert(symbol.name)
         }
         return namesByAddress

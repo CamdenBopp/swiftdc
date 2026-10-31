@@ -361,6 +361,9 @@ $SWIFTC -parse-as-library -emit-library -module-name Encryptable encryptable.swi
 echo "==> functions in __TEXT,__realtime and __TEXT,__text_cold (codesections.c, -O1)"
 xcrun clang -arch arm64 -O1 -dynamiclib codesections.c -o libCodeSections.dylib
 
+echo "==> absolute symbols, one of them -1 (absolutesymbols.s): constants, not addresses"
+xcrun clang -arch arm64 -dynamiclib absolutesymbols.s -o libAbsoluteSymbols.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release
