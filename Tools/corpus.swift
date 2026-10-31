@@ -248,7 +248,7 @@ func option(_ args: [String], _ name: String) -> String? {
 
 func runCorpus(_ args: [String]) throws {
     guard args.count >= 3 else { throw CorpusError.invalid("run <swiftdc> <corpus.tsv> <outdir> [options]") }
-    let swiftdc = URL(fileURLWithPath: args[0]).standardizedFileURL.path, outdir = args[2]
+    let outdir = args[2]
     let commands = (option(args, "--commands") ?? "dump,interface,layout,objc,version,xrefs").split(separator: ",").map(String.init)
     for c in commands where commandTable[c] == nil { throw CorpusError.invalid("unknown command \(c); known: \(commandTable.keys.sorted())") }
     let repeats = Int(option(args, "--repeat") ?? "1") ?? 1, jobs = Int(option(args, "--jobs") ?? "1") ?? 1
@@ -263,6 +263,22 @@ func runCorpus(_ args: [String]) throws {
         entries = Array(entries.prefix(n)).sorted { ($0.textBytes, $0.sha256) < ($1.textBytes, $1.sha256) }
     }
     try FileManager.default.createDirectory(atPath: outdir + "/scratch", withIntermediateDirectories: true)
+    // Run a private copy: replacing the build in place while a sweep
+    // launches it gets each later launch killed at exec (SIGKILL, no usage),
+    // which once read as 14 crashes. The copy is named by its hash, and a
+    // resumed run must use the same build.
+    let source = URL(fileURLWithPath: args[0]).standardizedFileURL.path
+    guard let build = FileManager.default.contents(atPath: source) else { throw CorpusError.invalid("cannot read \(source)") }
+    let buildHash = SHA256.hash(data: build).map { String(format: "%02x", $0) }.joined()
+    let stamp = outdir + "/swiftdc.sha256"
+    if let previous = try? String(contentsOfFile: stamp, encoding: .utf8), previous != buildHash {
+        throw CorpusError.invalid("\(outdir) was run with swiftdc \(previous.prefix(12)), not \(buildHash.prefix(12)); use a new outdir")
+    }
+    let swiftdc = outdir + "/swiftdc-" + buildHash.prefix(12)
+    if !FileManager.default.fileExists(atPath: swiftdc) {
+        try FileManager.default.copyItem(atPath: source, toPath: swiftdc)
+    }
+    try buildHash.write(toFile: stamp, atomically: true, encoding: .utf8)
     let done = Set(loadRecords(outdir).map { "\($0.sha256) \($0.command) \($0.rep)" })
     let resultsPath = outdir + "/results.jsonl"
     if !FileManager.default.fileExists(atPath: resultsPath) { FileManager.default.createFile(atPath: resultsPath, contents: nil) }
