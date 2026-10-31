@@ -153,6 +153,11 @@ extension ObjCDumper {
     /// when the block runs past a decode `prefixBytes` cut short; a block
     /// that runs into the next function (after a call that does not return)
     /// is no accessor's shape, so it is custom.
+    ///
+    /// And it touches the ivar: a load or store addressed from `self` (or a
+    /// copy of it), or a property-storage helper. A getter
+    /// that returns a constant, `mov w0, #-1; ret`, is one block with no
+    /// call, and read as synthesized: its line was dropped.
     static func isSynthesizedAccessor(_ function: DisassembledFunction, prefixBytes: UInt64? = nil) -> Bool? {
         let cfg = FunctionCFG(function)
         guard let entry = cfg.entry else { return nil }
@@ -164,16 +169,57 @@ extension ObjCDumper {
             let cut = prefixBytes.map { last.address + 4 - function.startAddress >= $0 } ?? false
             return block.terminator == function.instructions.count - 1 && cut ? nil : false
         }
-        for insn in function.instructions[block.range]
-        where insn.controlFlow == .call || insn.controlFlow == .branch {
+        // The registers holding `self` or an address in it: x0 at entry, a
+        // `mov` copy (a Swift `@objc` thunk keeps self in x19 across
+        // `swift_beginAccess`), and an `add` to it (a non-fragile ivar,
+        // `add x8, x0, x8; ldr x0, [x8]`), and a reload of a stack slot self
+        // was spilled to. Any other write ends one, and a call ends every one
+        // but the callee-saved x19 to x28.
+        var touchesIvar = false, selfRegisters: Set<Int> = [0], selfSlots: Set<Int64> = []
+        for insn in function.instructions[block.range] {
+            let operands = insn.detail?.operands ?? []
+            // -O0 spills self to the stack and reloads it: `str x0, [sp, #8]`
+            // … `ldr x8, [sp, #8]`.
+            var reloaded: Int?
+            if operands.count == 2, case .register(let register) = operands[0].operand, register.kind == .gpr,
+               register.widthBits == 64, case .memory(let base?, nil, let offset) = operands[1].operand,
+               base.kind == .stackPointer, insn.detail?.writeback == false {
+                if insn.text.hasPrefix("str"), selfRegisters.contains(register.number) { selfSlots.insert(offset) }
+                if insn.text.hasPrefix("ldr"), selfSlots.contains(offset) { reloaded = register.number }
+            }
+            if operands.contains(where: { operand in
+                guard case .memory(let base?, _, _) = operand.operand else { return false }
+                return base.kind == .gpr && base.widthBits == 64 && selfRegisters.contains(base.number)
+            }) {
+                touchesIvar = true
+            }
+            if insn.controlFlow == .call { selfRegisters = selfRegisters.filter { (19...28).contains($0) } }
+            if let detail = insn.detail {
+                let copied: Int? = {
+                    guard insn.text.hasPrefix("mov") && operands.count == 2 || insn.text.hasPrefix("add") && operands.count == 3,
+                          case .register(let destination) = operands[0].operand, destination.kind == .gpr,
+                          destination.widthBits == 64,
+                          case .register(let source) = operands[1].operand, source.kind == .gpr,
+                          selfRegisters.contains(source.number) else { return nil }
+                    return destination.number
+                }()
+                for key in detail.writtenRegisterKeys {
+                    if let number = Int(key.dropFirst()) { selfRegisters.remove(number) }
+                }
+                if let copied = copied ?? reloaded { selfRegisters.insert(copied) }
+            } else {
+                selfRegisters = []
+            }
+            guard insn.controlFlow == .call || insn.controlFlow == .branch else { continue }
             guard let callee = DisassembledFunction.calleeName(of: insn) else {
                 // An unresolved call is not provably a helper — treat as custom.
                 if insn.controlFlow == .call { return false }
                 continue
             }
             guard isAccessorRuntimeHelper(callee) else { return false }
+            if propertyStorageHelpers.contains(where: { callee.hasPrefix($0) }) { touchesIvar = true }
         }
-        return true
+        return touchesIvar
     }
 
     /// ARC and property-storage helpers a synthesized accessor may call: the
@@ -181,11 +227,13 @@ extension ObjCDumper {
     /// plus the atomic/copy accessor primitives.
     private static func isAccessorRuntimeHelper(_ callee: String) -> Bool {
         if DisassembledFunction.isRuntimeNoise(callee) { return true }
-        let helpers = [
-            "objc_storeStrong", "objc_storeWeak", "objc_loadWeakRetained",
-            "objc_getProperty", "objc_setProperty", "objc_copyStruct",
-            "objc_copyCppObjectAtomic", "objc_initWeak", "objc_destroyWeak",
-        ]
-        return helpers.contains { callee.hasPrefix($0) }
+        return propertyStorageHelpers.contains { callee.hasPrefix($0) }
     }
+
+    /// The helpers that read or write a property's storage for it.
+    private static let propertyStorageHelpers = [
+        "objc_storeStrong", "objc_storeWeak", "objc_loadWeakRetained",
+        "objc_getProperty", "objc_setProperty", "objc_copyStruct",
+        "objc_copyCppObjectAtomic", "objc_initWeak", "objc_destroyWeak",
+    ]
 }

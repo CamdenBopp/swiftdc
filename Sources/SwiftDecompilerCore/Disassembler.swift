@@ -1598,7 +1598,7 @@ public struct Disassembler: Sendable {
         decodeText(in: machO, span: span).map(Self.instruction(decoded:))
     }
 
-    private static func instruction(decoded: DecodedInstruction) -> Instruction {
+    static func instruction(decoded: DecodedInstruction) -> Instruction {
         Instruction(
             address: decoded.address,
             text: decoded.text,

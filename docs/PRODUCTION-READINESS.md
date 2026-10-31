@@ -5576,11 +5576,18 @@ if a test was observed to fail without the fix.
   On 150 sampled Objective-C images the headers equal the upstream
   build's. Fixture blast radius: only the new fixture (171 fixtures ×
   `objc`, `objc --methods`).
-- **OPEN (soundness): a getter that returns a constant reads as
+- **FIXED (soundness): a getter that returns a constant read as
   synthesized.** `- (int)period { return -1; }` (`mov w0, #-1; ret`) is
-  one block with no call, so `objc` drops its line, in the upstream build
-  as in this one. Brave's `BraveSoftwareUpdateAgent` has four
+  one block with no call, so `objc` dropped its line, in the upstream
+  build as well. Brave's `BraveSoftwareUpdateAgent` has four
   (`CRUManagedPreferenceGlobalPolicySettings`' `lastCheckPeriodMinutes`
-  returns -1, `proxyMode`, `proxyServer` and `proxyPacURL` return nil):
-  the upstream build kept them there only because their long extents had
-  more blocks. A synthesized accessor reads or writes the ivar.
+  returns -1, `proxyMode`, `proxyServer` and `proxyPacURL` return nil).
+  A synthesized accessor now must touch the ivar: a load or store
+  addressed from `self` or from a copy of it (a `mov`, an `add` for a
+  non-fragile ivar offset, a reload of the stack slot `-O0` spills it to,
+  a callee-saved copy across a call), or a property-storage helper. On
+  150 sampled Objective-C images it keeps 291 accessor lines in 34
+  images and drops none; of 12 read by hand, 8 are custom (constants, a
+  category getter backed by a global, message sends) and 4 tail-call an
+  outlined or shared helper. Fixture blast radius: only
+  `constantgetter.m`.

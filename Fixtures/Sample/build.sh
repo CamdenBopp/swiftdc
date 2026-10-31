@@ -388,6 +388,9 @@ strip -x libAccessorExtent.dylib
 xcrun clang -arch arm64 -O1 -dynamiclib -framework Foundation accessorextentcustom.m -o libAccessorExtentCustom.dylib -Wl,-no_function_starts
 strip -x libAccessorExtentCustom.dylib
 
+echo "==> a getter that returns a constant (constantgetter.m): custom, not synthesized"
+xcrun clang -arch arm64 -O1 -dynamiclib -framework Foundation constantgetter.m -o libConstantGetter.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release
