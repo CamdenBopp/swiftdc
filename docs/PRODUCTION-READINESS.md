@@ -1619,7 +1619,12 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   runs, 0 differ, 0 failures, 0 control bytes. Rerun at be0a5ee, after
   the argument-layout changes: 498 runs, 0 failures, 0 control bytes,
   total wall 5,727 s → 5,742 s, max peak 1,915 → 1,887 MB (largest rise
-  SwiftUICore `--structured`, +123 MB).
+  SwiftUICore `--structured`, +123 MB). The other six commands at
+  f3af5e8 over the same sample's 413 images (`dump`, `interface`,
+  `layout`, `objc`, `version`, `xrefs`): 2,478 runs, 0 failures, 0
+  control bytes; `xrefs` reports 2,113,408 functions against 2,113,414
+  starts, the six missing in five images being the data-in-`__text`
+  starts already open.
 
 - **FIXED (`294dce7`) — the structurer broke a post-dominator tie by
   hash order.**
