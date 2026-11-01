@@ -186,8 +186,16 @@ public struct SwiftDeclarationDumper: Sendable {
             return nil
         }
         let address = machO.address(forOffset: Self.descriptorOffset(of: type))
+        // A local type in a private function prints with its private
+        // discriminator, `.(unknown context at _H).(PlaneInfo in _H)`.
+        func privateSpan() -> Range<String.Index>? {
+            guard let open = header.range(of: ".(\(own) in _", range: keyword.range.upperBound ..< header.endIndex),
+                  let close = header[open.upperBound...].firstIndex(of: ")")
+            else { return nil }
+            return open.lowerBound ..< header.index(after: close)
+        }
         if let symbol = symbols[address], let full = Self.demangledDescriptorName(symbol),
-           let last = span([own]) {
+           let last = span([own]) ?? privateSpan() {
             header.replaceSubrange(keyword.range.upperBound ..< last.upperBound, with: full)
         } else {
             // Outermost first, so an earlier insertion does not move a later span.

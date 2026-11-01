@@ -19,6 +19,14 @@ public func freeMake() -> Any {
     return FreeLocal(flag: true)
 }
 
+// A local type in a private function: the renderer prints its private
+// discriminator, `(PrivateLocal in _H)`, under an unknown context.
+private func privateMake() -> Any {
+    struct PrivateLocal { var level: Int }
+    return PrivateLocal(level: 2)
+}
+public func callPrivate() -> Any { privateMake() }
+
 public struct Holder {
     public var source: (any Source<String>)?
     public var pair: (any Source<Int>)?

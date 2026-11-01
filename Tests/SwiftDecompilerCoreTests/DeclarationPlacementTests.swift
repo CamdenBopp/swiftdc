@@ -22,6 +22,9 @@ struct DeclarationPlacementTests {
         #expect(text.contains("struct Local #1 in LocalTypes.Outer.make() -> Any {"), Comment(rawValue: text))
         #expect(text.contains("struct FreeLocal #1 in LocalTypes.freeMake() -> Any {"), Comment(rawValue: text))
         #expect(!text.contains("struct LocalTypes.Outer.Local"), Comment(rawValue: text))
+        // In a private function, where the renderer printed the private
+        // discriminator form.
+        #expect(text.contains("struct PrivateLocal #1 in LocalTypes.(privateMake in _"), Comment(rawValue: text))
     }
 
     /// Stripped, nothing names the function, and the anonymous context is
