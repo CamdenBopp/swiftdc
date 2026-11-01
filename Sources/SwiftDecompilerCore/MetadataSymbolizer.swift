@@ -45,7 +45,8 @@ struct MetadataSymbolizer: Sendable {
     /// descriptions, and keeps the class name.
     func functionNames(in machO: MachOFile) -> Names {
         var claims: [UInt64: [Claim]] = [:]
-        for claim in classMethodClaims(in: machO) + witnessClaims(in: machO) + accessorClaims(in: machO) {
+        for claim in classMethodClaims(in: machO) + witnessClaims(in: machO) + accessorClaims(in: machO)
+            + valueWitnessClaims(in: machO) {
             claims[claim.address, default: []].append(claim)
         }
         var names = Names()
@@ -92,27 +93,152 @@ struct MetadataSymbolizer: Sendable {
             // LocalTypes.Outer.makeCounter()`. As in `contextName`, the
             // dropped context is marked, and a name it cannot be placed in
             // is declined.
-            guard let target,
-                  let (own, contexts) = SwiftDeclarationDumper.anonymousAncestors(of: type, in: machO),
-                  let node = try? SymbolicDemangler.demangleContext(for: .type(wrapper), in: machO.context)
-            else { continue }
-            var typeName = node.print(using: .default)
-            // An imported type's descriptor does not carry the name its
-            // symbol uses (`__C.Options` for `__C.NSRegularExpressionOptions`).
-            guard !typeName.isEmpty, !typeName.hasPrefix("__C") else { continue }
-            // An extension's where-clause prints its requirements as the
-            // descriptor lists them, which the symbol minimises (`B:
-            // Swift.Error` on `Swift.Result`); it is not part of the type's
-            // identity, so it is left out.
-            typeName = Self.withoutWhereClauses(typeName)
-            if !contexts.isEmpty, !typeName.contains("(unknown context at "), !typeName.contains("(\(own) in _"),
-               !SwiftDeclarationDumper.markingUnknownContexts(contexts, in: &typeName, from: typeName.startIndex) {
-                continue
-            }
+            guard let target, let typeName = accessorTypeName(of: type, wrapper: wrapper, in: machO) else { continue }
             claims.append(Claim(address: machO.address(forOffset: target), name: "type metadata accessor for \(typeName)",
                                 owner: typeName))
         }
         return claims
+    }
+
+    // MARK: - Value witnesses
+
+    /// The value witness table's functions in order
+    /// (swift/include/swift/ABI/ValueWitness.def), then, for an enum, the
+    /// three enum witnesses after the size, stride, flags and extra
+    /// inhabitant count.
+    static let valueWitnessNames = [
+        "initializeBufferWithCopyOfBuffer", "destroy", "initializeWithCopy", "assignWithCopy",
+        "initializeWithTake", "assignWithTake", "getEnumTagSinglePayload", "storeEnumTagSinglePayload",
+    ]
+    static let enumValueWitnessNames = ["getEnumTag", "destructiveProjectEnumData", "destructiveInjectEnumTag"]
+
+    /// Each struct's and enum's value witness functions, named as their
+    /// symbols demangle: `destroy value witness for Sample.Tree`. A type's
+    /// metadata record is its value witness table pointer, its kind (0x200
+    /// a struct, 0x201 an enum) and its descriptor (swift/include/swift/ABI/
+    /// Metadata.h), so the record is found by the rebase that points at
+    /// the descriptor, and each witness by the rebase in the table's slot.
+    /// One function serving several types (a shared `destroy`, a
+    /// `__swift_memcpy`) is claimed by each and so declined as a fold.
+    /// Standalone images with chained fixups only.
+    private func valueWitnessClaims(in machO: MachOFile) -> [Claim] {
+        guard machO.cache == nil, machO.dyldChainedFixups != nil,
+              let base = machO.segments.first(where: { $0.segmentName == "__TEXT" })?.virtualMemoryAddress
+        else { return [] }
+        var types: [UInt64: (name: String, isEnum: Bool)] = [:]
+        for type in UnrecordedTypes.all(in: machO) {
+            let wrapper: TypeContextDescriptorWrapper
+            let isEnum: Bool
+            switch type {
+            case .struct(let m): wrapper = .struct(m.descriptor); isEnum = false
+            case .enum(let m): wrapper = .enum(m.descriptor); isEnum = true
+            case .class: continue
+            }
+            guard let name = accessorTypeName(of: type, wrapper: wrapper, in: machO) else { continue }
+            let runtime = machO.address(forOffset: SwiftDeclarationDumper.descriptorOffset(of: type)) - UInt64(base)
+            types[runtime] = (name, isEnum)
+        }
+        guard !types.isEmpty else { return [] }
+        let table = Disassembler.ChainedFixupTable()
+        let rebases = table.allRebases(in: machO)
+        func fileOffset(ofRuntime runtime: UInt64) -> UInt64? {
+            machO.fileOffset(of: UInt64(base) + runtime).map { UInt64($0) }
+        }
+        guard let engine = CapstoneEngine() else { return [] }
+        var claims: [Claim] = []
+        var seenTables: Set<UInt64> = []
+        for (slot, target) in rebases.sorted(by: { $0.key < $1.key }) {
+            guard let type = types[target], slot >= 16,
+                  let kind = UnrecordedTypes.read(Int(slot) - 8, as: UInt64.self, in: machO),
+                  kind == (type.isEnum ? 0x201 : 0x200),
+                  let tableRuntime = rebases[slot - 16], let tableOffset = fileOffset(ofRuntime: tableRuntime),
+                  seenTables.insert(tableOffset).inserted
+            else { continue }
+            var entries = Self.valueWitnessNames.enumerated().map { (UInt64($0.offset * 8), $0.element) }
+            if type.isEnum {
+                // After 8 functions: size, stride, flags (4) and extra
+                // inhabitants (4).
+                entries += Self.enumValueWitnessNames.enumerated().map { (UInt64(88 + $0.offset * 8), $0.element) }
+            }
+            for (delta, witness) in entries {
+                guard let function = rebases[tableOffset + delta],
+                      let functionOffset = fileOffset(ofRuntime: function),
+                      !Self.isSharedCopyHelper(at: Int(functionOffset), address: UInt64(base) + function,
+                                               in: machO, engine: engine),
+                      // The copy, destroy, assign and take witnesses are
+                      // where IRGen's shared helpers go.
+                      delta >= 48 || !Self.isSharedHelperShape(at: Int(functionOffset), address: UInt64(base) + function,
+                                                               in: machO, engine: engine)
+                else { continue }
+                claims.append(Claim(address: UInt64(base) + function,
+                                    name: "\(witness) value witness for \(type.name)", owner: type.name))
+            }
+        }
+        return claims
+    }
+
+    /// Whether the function at `offset` only copies from x1 to x0, or only
+    /// returns: the shape of IRGen's shared `__swift_memcpyN_M` and
+    /// `__swift_noop_void_return` helpers, which serve as the copy, take and
+    /// destroy witnesses of trivial types. Its witness role is real, but
+    /// its identity is the helper (libSample.stripped's `initializeWithTake
+    /// value witness for Sample.Circle` is `__swift_memcpy40_8`), so it is
+    /// not named for one type.
+    static func isSharedCopyHelper(at offset: Int, address: UInt64, in machO: MachOFile,
+                                   engine: CapstoneEngine) -> Bool {
+        // An unrolled copy of a large type runs long (`__swift_memcpy225_8`).
+        var bytes = Data()
+        for index in 0 ..< 128 {
+            guard let word = UnrecordedTypes.read(offset + index * 4, as: UInt32.self, in: machO) else { break }
+            withUnsafeBytes(of: word.littleEndian) { bytes.append(contentsOf: $0) }
+        }
+        let loads: Set<String> = ["ldr", "ldp", "ldur", "ldrb", "ldrh", "ldurb", "ldurh"]
+        let stores: Set<String> = ["str", "stp", "stur", "strb", "strh", "sturb", "sturh"]
+        for insn in engine.disassemble(bytes, address: address) {
+            if insn.mnemonic == "ret" { return true }
+            let base = insn.operands.range(of: "[").map { insn.operands[$0.upperBound...].prefix(2) }
+            if loads.contains(insn.mnemonic), base == "x1" { continue }
+            if stores.contains(insn.mnemonic), base == "x0" { continue }
+            return false
+        }
+        return false
+    }
+
+    /// Whether the function at `offset` has the shape of IRGen's shared
+    /// value witness helpers: at most 14 instructions in a straight line (no
+    /// conditional branch), its memory reached only through x0, x1, sp, x29
+    /// and registers copied from x0 or x1, ending in `ret` or a tail branch. `__swift_memcpy41_8` sets up a
+    /// frame and calls `memcpy`; `__swift_destroy_strong` loads x0's word
+    /// and branches to `swift_release`; the `assignWith…_strong` helpers
+    /// swap one reference. Each served one type in an image as its
+    /// initializeWithTake, destroy or assign witness, and was named for it
+    /// (358 conflicts in the stripped-name oracle). A type's own copy,
+    /// destroy or assign reaches its fields through another register or
+    /// branches on them.
+    static func isSharedHelperShape(at offset: Int, address: UInt64, in machO: MachOFile,
+                                    engine: CapstoneEngine) -> Bool {
+        var bytes = Data()
+        for index in 0 ..< 14 {
+            guard let word = UnrecordedTypes.read(offset + index * 4, as: UInt32.self, in: machO) else { break }
+            withUnsafeBytes(of: word.littleEndian) { bytes.append(contentsOf: $0) }
+        }
+        // A register copied from x0 or x1 is the same base:
+        // `__swift_assignWithCopy_strong` keeps x0 in x19 across its calls.
+        var bases: Set<Substring> = ["x0", "x1", "sp", "x29"]
+        for insn in engine.disassemble(bytes, address: address) {
+            if insn.mnemonic == "ret" { return true }
+            if insn.mnemonic == "b" { return true }
+            if insn.controlFlow == .conditionalBranch { return false }
+            if insn.mnemonic == "mov" {
+                let parts = insn.operands.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                if parts.count == 2, parts[1] == "x0" || parts[1] == "x1" { bases.insert(Substring(parts[0])) }
+            }
+            if let open = insn.operands.range(of: "[") {
+                let base = insn.operands[open.upperBound...].prefix(while: { $0 != "," && $0 != "]" })
+                guard bases.contains(base) else { return false }
+            }
+        }
+        return false
     }
 
     /// `text` without its `< where …>` groups.
@@ -132,6 +258,30 @@ struct MetadataSymbolizer: Sendable {
             result.removeSubrange(open.lowerBound ... index)
         }
         return result
+    }
+
+    /// A type as its accessor's and value witnesses' symbols spell it, or
+    /// nil when that cannot be proven.
+    private func accessorTypeName(
+        of type: TypeContextWrapper, wrapper: TypeContextDescriptorWrapper, in machO: MachOFile
+    ) -> String? {
+        guard let (own, contexts) = SwiftDeclarationDumper.anonymousAncestors(of: type, in: machO),
+              let node = try? SymbolicDemangler.demangleContext(for: .type(wrapper), in: machO.context)
+        else { return nil }
+        var typeName = node.print(using: .default)
+        // An imported type's descriptor does not carry the name its
+        // symbol uses (`__C.Options` for `__C.NSRegularExpressionOptions`).
+        guard !typeName.isEmpty, !typeName.hasPrefix("__C") else { return nil }
+        // An extension's where-clause prints its requirements as the
+        // descriptor lists them, which the symbol minimises (`B:
+        // Swift.Error` on `Swift.Result`); it is not part of the type's
+        // identity, so it is left out.
+        typeName = Self.withoutWhereClauses(typeName)
+        if !contexts.isEmpty, !typeName.contains("(unknown context at "), !typeName.contains("(\(own) in _"),
+           !SwiftDeclarationDumper.markingUnknownContexts(contexts, in: &typeName, from: typeName.startIndex) {
+            return nil
+        }
+        return typeName
     }
 
     /// The offset the descriptor's relative accessor pointer leads to, or

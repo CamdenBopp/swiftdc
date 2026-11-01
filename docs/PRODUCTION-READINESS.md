@@ -923,6 +923,18 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — a stripped value witness was an anonymous `sub_`.** A
+  struct's or enum's metadata record is its value witness table pointer,
+  its kind and its descriptor, so the record is found by the rebase that
+  points at the descriptor, and each witness by its table slot; it is
+  named as its symbol demangles (`destroy value witness for
+  Sample.Tree`). A function several types share is a fold and declined,
+  and so is one whose body is the shape of IRGen's shared helpers (only
+  copying x1 to x0, or a short straight-line body through x0, x1 and
+  their copies: `__swift_memcpy40_8`, `__swift_destroy_strong`), which
+  first named 358 helpers for the one type an image used them for.
+  Stripped-name oracle: 190,334 → 235,241 recovered names, 0 conflicts.
+  GoodLinks: 2,523 witnesses named, `sub_` functions 52,405 → 49,882.
 - **FIXED — a stripped type metadata accessor was an anonymous `sub_`.**
   Each type's descriptor points at its metadata accessor
   (`accessFunctionPtr`), and `strip -x` removes a local type's `…Ma`

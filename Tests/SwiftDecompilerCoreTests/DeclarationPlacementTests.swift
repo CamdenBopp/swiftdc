@@ -293,3 +293,32 @@ private func accessorSymbolPrinted(_ symbol: String) -> String? {
     #expect(MetadataSymbolizer.withoutWhereClauses("M.Box<Swift.Int>") == "M.Box<Swift.Int>")
     #expect(MetadataSymbolizer.withoutWhereClauses("M.A< where A: M.P<B>>.B< where C: M.Q>.C") == "M.A.B.C")
 }
+
+/// A struct's or enum's value witnesses, which its metadata record's table
+/// points at, are named as their symbols demangle in the stripped image;
+/// a function that only copies x1 to x0 or only returns (IRGen's shared
+/// `__swift_memcpy40_8`, `__swift_noop_void_return`) is not named for one
+/// type, and neither is one two types share.
+@Test(arguments: ["libSample", "libReconstruction.opt", "libLocalTypes"])
+func aStrippedValueWitnessIsNamedByItsTypesTableIfPresent(name: String) async throws {
+    let original = "Fixtures/Sample/\(name).dylib", stripped = "Fixtures/Sample/\(name).stripped.dylib"
+    guard FileManager.default.fileExists(atPath: original), FileManager.default.fileExists(atPath: stripped) else { return }
+    let machO = try BinaryLoader.load(path: original)
+    var truth: [UInt64: Set<String>] = [:]
+    for symbol in machO.symbols {
+        guard let address = Disassembler.sectionAddress(of: symbol) else { continue }
+        let printed = symbol.name.hasPrefix("_$s") ? accessorSymbolPrinted(String(symbol.name.dropFirst())) : nil
+        truth[address, default: []].insert(printed ?? symbol.name)
+    }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: stripped) }
+    let witnesses = functions.filter { $0.displayName.contains(" value witness for ") }
+    #expect(witnesses.count >= 10, "\(witnesses.count)")
+    for function in witnesses {
+        let real = truth[function.startAddress] ?? []
+        let marked = function.displayName.contains("(unknown context at $")
+        let simple = function.displayName.components(separatedBy: ".").last ?? ""
+        let agrees = real.contains(function.displayName)
+            || (marked && real.contains { $0.hasPrefix(function.displayName.components(separatedBy: " for ")[0]) && $0.contains(simple + " #") })
+        #expect(agrees, "\(name) 0x\(String(function.startAddress, radix: 16)): \(function.displayName) vs \(real)")
+    }
+}

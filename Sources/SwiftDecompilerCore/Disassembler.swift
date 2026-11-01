@@ -3236,6 +3236,14 @@ public struct Disassembler: Sendable {
             return rebases[fileOffset]
         }
 
+        /// Every rebase, slot file offset to target runtime offset.
+        func allRebases(in machO: MachOFile) -> [UInt64: UInt64] {
+            lock.lock()
+            defer { lock.unlock() }
+            build(machO)
+            return rebases
+        }
+
         private func build(_ machO: MachOFile) {
             guard !built else { return }
             built = true
