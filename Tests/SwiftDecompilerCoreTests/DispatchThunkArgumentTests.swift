@@ -20,6 +20,15 @@ struct DispatchThunkArgumentTests {
         #expect(pseudo.contains("GaugeKit.Gauge.scaled(self: __swift_project_boxed_opaque_existential_1(?, ?), ?)"), Comment(rawValue: pseudo))
     }
 
+    /// A getter that returns a String returns both its words: `name.getter
+    /// : Swift.String` has no arrow, so x1 after it was not its high word,
+    /// and the String parameter it fills read `count(?)`.
+    @Test func aStringGetterResultIsOneArgumentIfPresent() async throws {
+        guard let label = try await function("Fixtures/Sample/libGaugeClient.dylib", "GaugeClient.label") else { return }
+        let pseudo = label.renderPseudo()
+        #expect(pseudo.contains("GaugeClient.count(dispatch thunk of GaugeKit.Gauge.name.getter(self: "), Comment(rawValue: pseudo))
+    }
+
     /// A requirement's getter takes no formal parameter; x0 and x1 hold the
     /// conformer's metadata and witness table (an app read
     /// `Actor.unownedExecutor.getter(type metadata accessor for

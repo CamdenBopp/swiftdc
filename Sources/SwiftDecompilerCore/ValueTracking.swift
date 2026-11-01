@@ -721,8 +721,12 @@ public struct ValueTracer: Sendable {
                 || DisassembledFunction.swiftAccessorProperty(callee)?.isGetter == false
             isSuperSend = callee.hasPrefix("objc_msgSendSuper")
             hasTupleResult = DisassembledFunction.hasTupleResult(callee)
-            returnsString = DisassembledFunction.splitSignature(callee)
-                .map { Disassembler.twoWordStringTypes.contains($0.result) } ?? false
+            // A getter prints its type after ` : `, with no arrow:
+            // `CustomStringConvertible.description.getter : Swift.String`.
+            let getterType = DisassembledFunction.swiftAccessorProperty(callee)?.isGetter == true
+                ? callee.range(of: ".getter : ").map { String(callee[$0.upperBound...]) } : nil
+            returnsString = (DisassembledFunction.splitSignature(callee)?.result ?? getterType)
+                .map { Disassembler.twoWordStringTypes.contains($0) } ?? false
             cResult = knownArityApplies ? Self.result(of: DisassembledFunction.cPrototype(of: callee)) : nil
         }
 

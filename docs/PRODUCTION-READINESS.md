@@ -154,6 +154,15 @@ because it cannot be distinguished from a right one by reading the output.
   layout. Getters printed with an argument fell from 605 to 531, 321 to
   251 and 816 to 785 on three release apps. Value-type instance methods
   and getters, whose small `self` travels in x0 onward, remain positional.
+- **FIXED (completeness) — a getter's String result lost its second
+  word.** The tracer marks x1 as a call's String high word only for a
+  callee whose signature returns a String, and a getter prints its type
+  after ` : ` with no arrow. A String parameter filled by
+  `name.getter : Swift.String` read `?` (`count(?)`), now
+  `count(dispatch thunk of GaugeKit.Gauge.name.getter(self: g))`. 26
+  changed lines in GoodLinks (`CodingKey.init(stringValue:)`,
+  `Transcript.TextSegment.init`); no fixture changes beyond
+  `gaugeclient.swift`'s new `label`.
 - **FIXED (soundness) — a call through a dispatch thunk took the
   requirement's metadata for arguments, or dropped its own.** A dispatch
   thunk takes `self` in x20 and its formal parameters from x0, and a
