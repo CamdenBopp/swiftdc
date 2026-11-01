@@ -35,6 +35,14 @@ enum UnrecordedTypes {
         return recorded + types(in: machO, recorded: recorded)
     }
 
+    static func fieldDescriptorOffset(of type: TypeContextWrapper, in machO: MachOFile) -> Int? {
+        switch type {
+        case .struct(let m): return try? m.descriptor.fieldDescriptor(in: machO).offset
+        case .enum(let m): return try? m.descriptor.fieldDescriptor(in: machO).offset
+        case .class(let m): return try? m.descriptor.fieldDescriptor(in: machO).offset
+        }
+    }
+
     static func types(in machO: MachOFile, recorded: [TypeContextWrapper]) -> [TypeContextWrapper] {
         guard let section = machO.sections.first(where: { $0.segmentName == "__TEXT" && $0.sectionName == "__swift5_fieldmd" })
         else { return [] }
@@ -65,18 +73,28 @@ enum UnrecordedTypes {
             guard recordSize == 12 || count == 0, next <= end else { break }
             defer { offset = next }
             let name = offset + Int(nameRelative)
-            // Exactly a direct context reference and its terminator.
-            guard read(name, as: UInt8.self) == 0x01, read(name + 5, as: UInt8.self) == 0,
+            // Exactly a context reference and its terminator: direct (0x01),
+            // or indirect through a pointer cell (0x02; Testing's
+            // `FileHandle` names itself so).
+            guard let marker = read(name, as: UInt8.self), marker == 0x01 || marker == 0x02,
+                  read(name + 5, as: UInt8.self) == 0,
                   let targetRelative = read(name + 1, as: Int32.self)
             else { continue }
-            let target = name + 1 + Int(targetRelative)
-            guard !known.contains(target), found[target] == nil,
-                  let pointer = try? RelativeDirectPointer<ContextDescriptorWrapper?>(relativeOffset: targetRelative)
-                      .resolve(at: name + 1, in: context),
-                  let descriptor = pointer.typeContextDescriptorWrapper,
+            let resolved: ContextDescriptorWrapper?? = marker == 0x01
+                ? try? RelativeDirectPointer<ContextDescriptorWrapper?>(relativeOffset: targetRelative)
+                    .resolve(at: name + 1, in: context)
+                : try? RelativeIndirectPointer<ContextDescriptorWrapper?, Pointer<ContextDescriptorWrapper?>>(relativeOffset: targetRelative)
+                    .resolve(at: name + 1, in: context)
+            // The type must be this field descriptor's own: its descriptor
+            // points back here. An indirect cell can lead into another
+            // image, where an offset means nothing in this one.
+            guard let wrapper = resolved ?? nil,
+                  let descriptor = wrapper.typeContextDescriptorWrapper,
                   let type = try? TypeContextWrapper.forTypeContextDescriptorWrapper(descriptor, in: context),
-                  SwiftDeclarationDumper.descriptorOffset(of: type) == target
+                  Self.fieldDescriptorOffset(of: type, in: machO) == offset
             else { continue }
+            let target = SwiftDeclarationDumper.descriptorOffset(of: type)
+            guard !known.contains(target), found[target] == nil else { continue }
             found[target] = type
         }
         return found.keys.sorted().compactMap { found[$0] }

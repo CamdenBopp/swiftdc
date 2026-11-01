@@ -84,6 +84,17 @@ struct DeclarationPlacementTests {
         #expect(text.contains("struct UnrecordedType.Holder {"), Comment(rawValue: text))
     }
 
+    /// Swift Testing's noncopyable `FileHandle` has no record, and its field
+    /// descriptor names it through an indirect (0x02) reference.
+    @Test func aTypeNamedIndirectlyByItsFieldDescriptorIsDeclaredIfAvailable() async throws {
+        let path = "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/Library/Frameworks/Testing.framework/Testing"
+        guard let machO = try? BinaryLoader.load(path: path, architecture: "arm64"),
+              machO.symbols.contains(where: { $0.name == "_$s7Testing10FileHandleVMn" })
+        else { return }
+        let text = await withStableDependencies { await SwiftDeclarationDumper().dump(machO, sections: [.types]) }
+        #expect(text.contains("struct Testing.FileHandle: ~Swift.Copyable {\n    var _fileHandle: "))
+    }
+
     /// `layout` and field naming read the same types: `Inner`, which no
     /// record lists, has its two fields.
     @Test func aTypeNoRecordListsIsLaidOutIfPresent() async throws {
