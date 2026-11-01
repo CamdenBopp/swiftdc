@@ -5777,3 +5777,37 @@ on a `dump` with one type renamed. On those 209 images, after the fixes
 above, missing went 847 → 205 of 69,778, and 4 are not-rendered stubs.
 What is left: 26 C-imported `__C` types, local types in private functions
 whose names the oracle keys differently, and a tail not yet read.
+- **FIXED (completeness, 5edd9af): an unrecorded type its field descriptor
+  names indirectly.** Swift Testing's noncopyable `FileHandle` names itself
+  through a pointer cell (0x02), and the walk read direct references only.
+  Testing (iPhoneOS) declares 274 → 275 types.
+- **FIXED (correctness, f742f6e): a local type in a private function kept
+  its unknown context although its symbol names the function.**
+  InstrumentsKit headers that name their function: 1 → 3; LLDB: 7 → 9.
+
+## 2026-10-31: names in a stripped binary
+
+`Tools/audit/stripnames.py` strips a binary that has its local symbols
+(`strip -x`), runs `disasm` on the copy, and checks each function name
+recovered from metadata against the original symbol at that address,
+demangled by swift-demangle (rules in Tools/audit/README.md). Corpus:
+the 472 Swift files on the host with at least 50 local Swift function
+symbols and at most 1.5 MB of `__text`.
+
+- **Before (ebcee3b):** 172,467 names recovered: 118,257 exact, 26,696
+  compatible, 15,550 Objective-C names of `@objc` thunks, and 11,814
+  Objective-C methods under a category the linker merged into another
+  (the runtime name). 67 conflicts in 26 binaries, all local classes
+  named as members of the enclosing type.
+- **FIXED (soundness, d0b24a9): a stripped local class's methods were
+  named under the enclosing type.** The symbolizer marks the dropped
+  context as `dump` does. After: 0 conflicts on all 472 binaries, with no
+  name lost (1,576 names on the 26 affected binaries, before and after).
+- **Not a defect: a merged Objective-C category.** The linker merges a
+  class's categories and keeps the first name (FileMerge's
+  `NSTextView(diffSpecials)` holds `extras`'s 9 methods; only the method
+  list's symbol, `NSTextView(diffSpecials|extras)`, says so). The runtime
+  reports the first name, and so does swiftdc.
+- **OPEN (correctness): a static method named from a vtable reads as an
+  instance one.** `OpenEmuKit.OESystemPlugin.getter` is a `static`
+  getter, and the label does not say so.
