@@ -1557,7 +1557,10 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   cache manifest (249 Swift images), each command run twice in separate
   processes (`Tools/corpus.swift run … --commands structured,pseudo
   --swift-only --repeat 2 --jobs 4`): 498 (image, command) pairs, 996
-  runs, 0 differ, 0 failures, 0 control bytes.
+  runs, 0 differ, 0 failures, 0 control bytes. Rerun at be0a5ee, after
+  the argument-layout changes: 498 runs, 0 failures, 0 control bytes,
+  total wall 5,727 s → 5,742 s, max peak 1,915 → 1,887 MB (largest rise
+  SwiftUICore `--structured`, +123 MB).
 
 - **FIXED (`294dce7`) — the structurer broke a post-dominator tie by
   hash order.**
