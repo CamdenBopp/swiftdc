@@ -403,6 +403,10 @@ python3 -I droptyperecord.py libUnrecordedType.dylib '_$s14UnrecordedType5InnerV
 echo "==> a class subscript getter's index argument (subscriptgetter.swift, -Onone)"
 $SWIFTC -parse-as-library -Onone -emit-library -module-name SubscriptGetter subscriptgetter.swift -o libSubscriptGetter.dylib
 
+echo "==> requirements called through dispatch thunks (gaugekit.swift -O resilient, gaugeclient.swift -O)"
+$SWIFTC -parse-as-library -O -enable-library-evolution -emit-library -emit-module -module-name GaugeKit gaugekit.swift -o libGaugeKit.dylib
+$SWIFTC -parse-as-library -O -emit-library -module-name GaugeClient gaugeclient.swift -I . -L . -lGaugeKit -o libGaugeClient.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release

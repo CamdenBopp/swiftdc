@@ -3434,9 +3434,14 @@ public struct Disassembler: Sendable {
     /// their index. Generic metadata, which a getter may also receive, is
     /// plumbing the renderer hides anyway.
     static func getterTakesNoArguments(_ callee: String, classTypeIndex: ClassTypeIndex) -> Bool {
+        // A dispatch thunk's getter takes `self` in x20; x0 and x1 hold a
+        // requirement's Self metadata and witness table, which printed as
+        // two arguments: `Actor.unownedExecutor.getter(type metadata
+        // accessor for Swift.MainActor(0), …)`.
+        let isDispatchThunk = callee.hasPrefix(dispatchThunkPrefix)
         // A specialization of a qualifying getter only drops or re-owns
         // parameters (`<Arg[0] = Dead>` is the unused metatype).
-        var name = callee
+        var name = isDispatchThunk ? String(callee.dropFirst(dispatchThunkPrefix.count)) : callee
         for prefix in ["function signature specialization <", "generic specialization <"] where name.hasPrefix(prefix) {
             guard let of = name.range(of: "> of ") else { return false }
             name = String(name[of.upperBound...])
@@ -3455,8 +3460,10 @@ public struct Disassembler: Sendable {
               base[base.index(after: dot)...] != "subscript"
         else { return false }
         let context = String(base[..<dot])
-        return isStatic || !context.contains(".") || classTypeIndex.isClass(context)
+        return isDispatchThunk || isStatic || !context.contains(".") || classTypeIndex.isClass(context)
     }
+
+    static let dispatchThunkPrefix = "dispatch thunk of "
 
     /// Each source parameter's register bank, how many registers of it the
     /// parameter takes, and its demangled type. A scalar takes one; so does an
@@ -3469,7 +3476,14 @@ public struct Disassembler: Sendable {
     static func swiftCallArgumentSlots(
         callee: String, enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex
     ) -> [(kind: ScalarParameterClass, registers: Int, type: String)]? {
-        var declared = callee
+        // A dispatch thunk calls a class method or a protocol requirement
+        // through its vtable or witness table: `self` travels in x20 and the
+        // formal parameters from x0, and a requirement's Self metadata and
+        // witness table come after them. `dispatch thunk of
+        // GaugeKit.Gauge.scaled(by:)` with an untracked x0 read
+        // `scaled(self: g)`, as if it took nothing.
+        let isDispatchThunk = callee.hasPrefix(dispatchThunkPrefix)
+        var declared = isDispatchThunk ? String(callee.dropFirst(dispatchThunkPrefix.count)) : callee
         // A subscript getter prints its parameters as a function type,
         // `Grid.subscript.getter : (Swift.Int) -> Swift.Int`, and takes
         // them as a method takes its own.
@@ -3491,7 +3505,7 @@ public struct Disassembler: Sendable {
         else { return nil }
         let context = String(name[..<dot]), member = name[name.index(after: dot)...]
         let isFreeFunction = !context.contains(".")
-        guard isFreeFunction || isStatic || member == "init" || classTypeIndex.isClass(context)
+        guard isDispatchThunk || isFreeFunction || isStatic || member == "init" || classTypeIndex.isClass(context)
         else { return nil }
 
         let parameters = DisassembledFunction.splitTopLevelArguments(signature.head[range])

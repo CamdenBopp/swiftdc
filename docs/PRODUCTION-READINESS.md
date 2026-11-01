@@ -154,6 +154,18 @@ because it cannot be distinguished from a right one by reading the output.
   layout. Getters printed with an argument fell from 605 to 531, 321 to
   251 and 816 to 785 on three release apps. Value-type instance methods
   and getters, whose small `self` travels in x0 onward, remain positional.
+- **FIXED (soundness) — a call through a dispatch thunk took the
+  requirement's metadata for arguments, or dropped its own.** A dispatch
+  thunk takes `self` in x20 and its formal parameters from x0, and a
+  protocol requirement's Self metadata and witness table come after them.
+  Laid out positionally, `Actor.unownedExecutor.getter` read
+  `(type metadata accessor for Swift.MainActor(0), …)` (800 sites in
+  GoodLinks), and `scaled(by: f)` with f untracked read
+  `scaled(self: g)`. Dispatch-thunk getters now take no arguments, and
+  other dispatch thunks take their signature's parameters: `next()`,
+  `scaled(self: g, ?)`, `TextOutputStream.write(self: s, "\n")` (was
+  `write(self: s, 10, 0xe100000000000000)`). Fixtures `gaugekit.swift`
+  and `gaugeclient.swift`.
 - **FIXED (completeness) — a subscript getter's index was dropped.** The
   no-arguments rule for static and class getters took
   `Grid.subscript.getter : (Swift.Int) -> Swift.Int` for a property, so
