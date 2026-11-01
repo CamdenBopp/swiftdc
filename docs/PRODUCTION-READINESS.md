@@ -5752,6 +5752,21 @@ branch (`9f92b71`), accessor decoding and classification (`10712d8`,
   metadata but no record. The field descriptors in `__swift5_fieldmd` now
   add such types. Declared types: LLDB 872 → 876, SwiftUI 6,308 → 6,316,
   Foundation 1,180 → 1,183.
+- **FIXED (correctness): a private type IRGen did not wrap in an
+  anonymous context printed without its discriminator.** IRGen nests a
+  private type in an anonymous context unless the type is usable from
+  inline (`getAddrOfParentContextDescriptor`). Swift's own SIL and
+  Optimizer modules (in `swift-frontend`, `sourcekitdInProc` and
+  `lib_InternalSwiftScan`) have private types whose descriptor's parent
+  is the module itself, so `dump` printed `struct SIL.AccessPathWalker`,
+  the same as a second file's private `AccessPathWalker` would print.
+  When a file's descriptor symbol names the type with discriminators
+  added and nothing else changed, `dump` now prints the symbol's name,
+  `SIL.(AccessPathWalker in _FFCB…)`. Type oracle on those three binaries:
+  7 missing each → 0. Fixture `dump` output byte-identical. A reduced
+  fixture did not reproduce the shape: `-cross-module-optimization`,
+  `-enable-cmo-everything`, C++ interop and private imports all keep the
+  anonymous context, so the test reads Xcode's binary (`IfAvailable`).
 - **OPEN (completeness): a cross-image indirect reference in a dyld cache
   image resolves to the wrong place.** GenerativeAgents'
   `OpenAICompatibleModel.source` is a constrained existential whose

@@ -163,6 +163,42 @@ struct DeclarationPlacementTests {
         #expect(text.contains("struct Testing.FileHandle: ~Swift.Copyable {\n    var _fileHandle: "))
     }
 
+    /// A private type IRGen did not wrap in an anonymous context: its
+    /// descriptor's parent is the module, so the metadata names it
+    /// `SIL.AccessPathWalker`, and only its descriptor symbol keeps the
+    /// discriminator. Swift's own SIL module, in Xcode's
+    /// `lib_InternalSwiftScan.dylib`, holds such types.
+    @Test func aPrivateTypeWithoutAnonymousContextIsNamedByItsSymbolIfAvailable() async throws {
+        let path = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/compiler/lib_InternalSwiftScan.dylib"
+        guard let machO = try? BinaryLoader.load(path: path, architecture: "arm64"),
+              machO.symbols.contains(where: { $0.name == "_$s3SIL16AccessPathWalker33_FFCBBB6CF68C612F8133E8B2C7CD6411LLVMn" })
+        else { return }
+        let text = await withStableDependencies { await SwiftDeclarationDumper().dump(machO, sections: [.types]) }
+        #expect(text.contains("\nstruct SIL.(AccessPathWalker in _FFCBBB6CF68C612F8133E8B2C7CD6411) {"))
+        #expect(text.contains("\nstruct SIL.(AccessPathWalker in _FFCBBB6CF68C612F8133E8B2C7CD6411).Path {"))
+        #expect(!text.contains("\nstruct SIL.AccessPathWalker {"))
+    }
+
+    /// The descriptor symbol is used only when it names the printed type: a
+    /// symbol that names another private type leaves the header as it was.
+    @Test func aDescriptorSymbolNamingAnotherTypeIsNotUsedIfAvailable() throws {
+        let path = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/compiler/lib_InternalSwiftScan.dylib"
+        guard let machO = try? BinaryLoader.load(path: path, architecture: "arm64"),
+              machO.symbols.contains(where: { $0.name == "_$s3SIL16AccessPathWalker33_FFCBBB6CF68C612F8133E8B2C7CD6411LLVMn" })
+        else { return }
+        let walker = try #require(UnrecordedTypes.all(in: machO).first {
+            SwiftDeclarationDumper.displayName(of: $0, in: machO) == "SIL.AccessPathWalker"
+        })
+        let address = machO.address(forOffset: SwiftDeclarationDumper.descriptorOffset(of: walker))
+        let header = "struct SIL.AccessPathWalker {\n}"
+        let own = SwiftDeclarationDumper.placingLocalType(
+            header, walker, symbols: [address: "_$s3SIL16AccessPathWalker33_FFCBBB6CF68C612F8133E8B2C7CD6411LLVMn"], in: machO)
+        #expect(own == "struct SIL.(AccessPathWalker in _FFCBBB6CF68C612F8133E8B2C7CD6411) {\n}")
+        let other = SwiftDeclarationDumper.placingLocalType(
+            header, walker, symbols: [address: "_$s3SIL17CustomMirrorChild33_F86542DACA770FF4FE826722871B5CEELLVMn"], in: machO)
+        #expect(other == header)
+    }
+
     /// `layout` and field naming read the same types: `Inner`, which no
     /// record lists, has its two fields.
     @Test func aTypeNoRecordListsIsLaidOutIfPresent() async throws {

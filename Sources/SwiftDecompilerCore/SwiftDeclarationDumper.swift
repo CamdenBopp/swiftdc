@@ -135,12 +135,30 @@ public struct SwiftDeclarationDumper: Sendable {
     static func placingLocalType(
         _ text: String, _ type: TypeContextWrapper, symbols: [UInt64: String], in machO: MachOFile
     ) -> String {
-        guard let (own, anonymous) = anonymousAncestors(of: type, in: machO), !anonymous.isEmpty else { return text }
+        guard let (own, anonymous) = anonymousAncestors(of: type, in: machO) else { return text }
         var lines = text.components(separatedBy: "\n")
         guard var header = lines.first,
               let keyword = header.firstMatch(of: #/^(?:[a-z@]+ )*?(?:struct|class|enum|actor) /#)
         else { return text }
         let address = machO.address(forOffset: Self.descriptorOffset(of: type))
+        guard !anonymous.isEmpty else {
+            // A private type IRGen did not wrap in an anonymous context (one
+            // that is usable from inline, `getAddrOfParentContextDescriptor`)
+            // has no discriminator in its metadata: Swift's own SIL module
+            // prints `SIL.AccessPathWalker`, and a second file's private
+            // `AccessPathWalker` would print the same. Its descriptor symbol
+            // keeps it, `SIL.(AccessPathWalker in _FFCB…)`, and is used when
+            // it names the printed type with only the discriminators added.
+            guard let symbol = symbols[address], let full = Self.demangledDescriptorName(symbol),
+                  full.contains(" in _"),
+                  let last = nameSpan(of: [own], in: header, from: keyword.range.upperBound),
+                  full.replacing(#/\((\w+) in _\w+\)/#, with: { String($0.1) })
+                      == header[keyword.range.upperBound ..< last.upperBound]
+            else { return text }
+            header.replaceSubrange(keyword.range.upperBound ..< last.upperBound, with: full)
+            lines[0] = header
+            return lines.joined(separator: "\n")
+        }
         // A local type in a private function prints with its private
         // discriminator, `.(unknown context at _H).(PlaneInfo in _H)`.
         func privateSpan() -> Range<String.Index>? {
