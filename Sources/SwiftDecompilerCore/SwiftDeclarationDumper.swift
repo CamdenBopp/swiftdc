@@ -7,6 +7,7 @@ import SwiftDump
 // `DeclarationRenderConfiguration` typealias for source compatibility; we use the new name.
 import SwiftDeclarationRendering
 import Semantic
+import Demangling
 
 /// Demangling presets, mapped onto SwiftDump's `DemangleOptions` so callers
 /// (e.g. the CLI) don't need to import the demangler directly.
@@ -70,10 +71,11 @@ public struct SwiftDeclarationDumper: Sendable {
         var blocks: [String] = []
 
         if sections.contains(.types), let types = try? machO.swift.types {
+            let descriptorSymbols = Self.descriptorSymbols(in: machO)
             for type in types {
                 switch await dumpType(type, typesConfiguration, in: machO) {
                 case .success(let text):
-                    blocks.append(text)
+                    blocks.append(Self.placingLocalType(text, type, symbols: descriptorSymbols, in: machO))
                 case .failure(let error):
                     blocks.append("// \(Self.kind(of: type)) \(Self.displayName(of: type, in: machO)): not rendered: \(error)")
                 }
@@ -115,6 +117,117 @@ public struct SwiftDeclarationDumper: Sendable {
         } catch {
             return .failure(error)
         }
+    }
+
+    /// A type declared inside a function sits under an anonymous context.
+    /// An optimized build records no name for that context, and the
+    /// renderer then skips it: `PrecedenceGroupBody`, local to LLDB's
+    /// `ASTGenVisitor.generate(precedenceGroupDecl:)`, printed as
+    /// `swiftASTGen.ASTGenVisitor.PrecedenceGroupBody`, a member type of
+    /// `ASTGenVisitor`, which it is not (468 types in the corpus).
+    ///
+    /// The type's own descriptor symbol names its function
+    /// (`PrecedenceGroupBody #1 in …generate(…)`), and replaces the printed
+    /// name when the image has one. Otherwise the context is marked where it
+    /// was dropped, as the Swift runtime prints one:
+    /// `ASTGenVisitor.(unknown context at $855dc90).PrecedenceGroupBody`.
+    static func placingLocalType(
+        _ text: String, _ type: TypeContextWrapper, symbols: [UInt64: String], in machO: MachOFile
+    ) -> String {
+        // The named types between this one and each anonymous ancestor,
+        // innermost first; only types can be declared in a function.
+        var chain: [String] = []
+        var anonymous: [(address: UInt64, below: [String])] = []
+        guard let own = displayName(of: type, in: machO).split(separator: ".").last.map(String.init) else { return text }
+        chain.append(own)
+        var next: SymbolOrElement<ContextWrapper>?
+        switch type {
+        case .enum(let m): next = try? m.parent(in: machO)
+        case .struct(let m): next = try? m.parent(in: machO)
+        case .class(let m): next = try? m.parent(in: machO)
+        }
+        var hops = 0
+        while let link = next, hops < 64 {
+            hops += 1
+            guard case .element(let wrapper) = link else { break }
+            switch wrapper {
+            case .anonymous(let context):
+                anonymous.append((machO.address(forOffset: context.descriptor.offset), chain))
+            case .type(let parentType):
+                let name: String?
+                switch parentType {
+                case .enum(let m): name = try? m.descriptor.name(in: machO)
+                case .struct(let m): name = try? m.descriptor.name(in: machO)
+                case .class(let m): name = try? m.descriptor.name(in: machO)
+                }
+                guard let name else { return text }
+                chain.append(name)
+            default:
+                break
+            }
+            next = try? wrapper.parent(in: machO)
+        }
+        guard !anonymous.isEmpty else { return text }
+        var lines = text.components(separatedBy: "\n")
+        guard var header = lines.first,
+              let keyword = header.firstMatch(of: #/^(?:[a-z@]+ )*?(?:struct|class|enum|actor) /#)
+        else { return text }
+        // Each anonymous context sits just above the `below` names, which
+        // print last in the name, joined by dots.
+        func span(_ below: [String]) -> Range<String.Index>? {
+            let suffix = "." + below.reversed().joined(separator: ".")
+            var from = keyword.range.upperBound
+            while let found = header.range(of: suffix, range: from ..< header.endIndex) {
+                let after = found.upperBound
+                if after == header.endIndex || " <:{".contains(header[after]) { return found }
+                from = found.upperBound
+            }
+            return nil
+        }
+        let address = machO.address(forOffset: Self.descriptorOffset(of: type))
+        if let symbol = symbols[address], let full = Self.demangledDescriptorName(symbol),
+           let last = span([own]) {
+            header.replaceSubrange(keyword.range.upperBound ..< last.upperBound, with: full)
+        } else {
+            // Outermost first, so an earlier insertion does not move a later span.
+            for context in anonymous.reversed() {
+                guard let found = span(context.below) else { return text }
+                header.insert(contentsOf: ".(unknown context at $\(String(context.address, radix: 16)))", at: found.lowerBound)
+            }
+        }
+        lines[0] = header
+        return lines.joined(separator: "\n")
+    }
+
+    static func descriptorOffset(of type: TypeContextWrapper) -> Int {
+        switch type {
+        case .enum(let m): return m.descriptor.offset
+        case .struct(let m): return m.descriptor.offset
+        case .class(let m): return m.descriptor.offset
+        }
+    }
+
+    /// Nominal type descriptor symbols (`$s…Mn`) by address, from the symbol
+    /// table of a file. A cache image's symbol table may live in another
+    /// subcache and cannot be read (`CacheSymbols`), so it has none.
+    static func descriptorSymbols(in machO: MachOFile) -> [UInt64: String] {
+        guard !machO.isLoadedFromDyldCache else { return [:] }
+        var result: [UInt64: String] = [:]
+        for symbol in machO.symbols where symbol.name.hasSuffix("Mn") && symbol.name.hasPrefix("_$s") {
+            if let address = Disassembler.sectionAddress(of: symbol), result[address] == nil {
+                result[address] = symbol.name
+            }
+        }
+        return result
+    }
+
+    /// `PrecedenceGroupBody #1 in …` from `_$s…Mn`, or nil.
+    static func demangledDescriptorName(_ symbol: String) -> String? {
+        guard let node = try? demangleAsNode(String(symbol.dropFirst())) else { return nil }
+        let printed = node.print(using: .default)
+        let prefix = "nominal type descriptor for "
+        guard printed.hasPrefix(prefix) else { return nil }
+        return String(printed.dropFirst(prefix.count))
     }
 
     static func kind(of type: TypeContextWrapper) -> String {

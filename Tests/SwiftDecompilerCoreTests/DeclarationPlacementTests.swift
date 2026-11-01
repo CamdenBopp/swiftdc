@@ -14,6 +14,26 @@ struct DeclarationPlacementTests {
         return await withStableDependencies { await SwiftDeclarationDumper().dump(machO, sections: [.types]) }
     }
 
+    /// A function-local type printed as a member of the enclosing type
+    /// (`LocalTypes.Outer.Local`). With the type's descriptor symbol it is
+    /// named by its function, as `swift-demangle` names that symbol.
+    @Test func aLocalTypeIsNamedByItsFunctionIfPresent() async throws {
+        guard let text = try await types("libLocalTypes.dylib") else { return }
+        #expect(text.contains("struct Local #1 in LocalTypes.Outer.make() -> Any {"), Comment(rawValue: text))
+        #expect(text.contains("struct FreeLocal #1 in LocalTypes.freeMake() -> Any {"), Comment(rawValue: text))
+        #expect(!text.contains("struct LocalTypes.Outer.Local"), Comment(rawValue: text))
+    }
+
+    /// Stripped, nothing names the function, and the anonymous context is
+    /// marked where it was dropped, as the Swift runtime prints one.
+    @Test func aStrippedLocalTypeKeepsItsUnknownContextIfPresent() async throws {
+        guard let text = try await types("libLocalTypes.stripped.dylib") else { return }
+        let local = text.split(separator: "\n").first { $0.hasSuffix(".Local {") }.map(String.init) ?? ""
+        #expect(local.hasPrefix("struct LocalTypes.Outer.(unknown context at $"), "\(local)")
+        #expect(!text.contains("struct LocalTypes.Outer.Local"), Comment(rawValue: text))
+        #expect(!text.contains("struct LocalTypes.FreeLocal"), Comment(rawValue: text))
+    }
+
     /// A constrained existential field printed `symbolic existential type
     /// (non-unique) 0x0 <Swift.String>`: no protocol, no meaning.
     @Test func aConstrainedExistentialFieldNamesItsProtocolIfPresent() async throws {
