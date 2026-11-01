@@ -1497,6 +1497,13 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 4. Determinism
 
+- **Measured — `--structured` and `--pseudo` on dyld cache images are
+  stable across processes.** Release 4d39b01, every 8th entry of the
+  cache manifest (249 Swift images), each command run twice in separate
+  processes (`Tools/corpus.swift run … --commands structured,pseudo
+  --swift-only --repeat 2 --jobs 4`): 498 (image, command) pairs, 996
+  runs, 0 differ, 0 failures, 0 control bytes.
+
 - **FIXED (`294dce7`) — the structurer broke a post-dominator tie by
   hash order.**
   - A loop inside a landing pad is never visited by the entry's DFS, so its
