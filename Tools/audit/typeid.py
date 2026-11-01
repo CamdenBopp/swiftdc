@@ -30,7 +30,9 @@ p = subprocess.run(['xcrun', 'swift-demangle', '--compact'], input='\n'.join(sym
 names = []
 for s, d in zip(syms, p.stdout.splitlines()):
     pre = 'nominal type descriptor for '
-    if d.startswith(pre): names.append((s, d[len(pre):]))
+    # A C type's descriptor (`__C.NSMatchingOptions`) is emitted for a
+    # Swift conformance to it; `dump` declares only the image's own types.
+    if d.startswith(pre) and not d[len(pre):].startswith('__C.'): names.append((s, d[len(pre):]))
 dumpargs = [swiftdc, 'dump'] + (['--image-path', path] if cache else [path]) + (['--arch', arch] if arch else []) + ['-s', 'types']
 text = run(dumpargs)
 heads, declined, local = [], [], set()
