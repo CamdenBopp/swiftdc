@@ -1197,6 +1197,20 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 3. Robustness — what breaks it?
 
+- **FIXED — a corrupt mangled-name pair trapped `disasm`, `xrefs` and
+  `analyze`.** The `type metadata for T` rendering (748222e) demangles a
+  name a code-side pair points at, which preflight never validated: it
+  checks the names metadata records start. Fuzzing with `__const` in reach
+  (`Tools/fuzz.swift metadata`, 60 mutants each, seed 777) trapped two
+  fixtures: a corrupt fixup top byte made an indirect reference's slot a
+  rebase onto junk (libMangledTypes.stripped, mutant 56), and a corrupt
+  direct reference offset in `__swift5_typeref` named a "context" outside
+  the file (libSample.stripped, mutant 11), both `Negative value is not
+  representable` in MachOKit. A pair's name must now lie in
+  `__swift5_typeref`, pass preflight's own reference validation, and have
+  every indirect slot be a bind or a rebase onto a valid context
+  descriptor. The same fuzz runs: 0 crashes in 960.
+
 - **FIXED (upstream) — MachOKit read an empty `seg_info_offset` as a segment's
   starts.** Recorded against the 0.52.102 fork (`07d7633`): a zero
   `seg_info_offset` ("no fixups in this segment") was resolved as a starts

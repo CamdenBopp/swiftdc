@@ -1945,7 +1945,7 @@ public enum MachOPreflight {
 
 // MARK: - Bounds-checked scalar reads
 
-private extension Data {
+extension Data {
     /// Read a `UInt32`, returning nil rather than trapping when out of bounds.
     /// `Data`'s own subscripting is exactly what traps in the dependency this
     /// file exists to protect against, so every read here is checked.

@@ -1,6 +1,8 @@
 import Foundation
 import Testing
 import Demangling
+import MachOSwiftSection
+@_spi(Internals) import SwiftInspection
 @testable import SwiftDecompilerCore
 
 /// `__swift_instantiateConcreteTypeFromMangledNameV2` is a private helper
@@ -137,4 +139,52 @@ private func demangledPrinted(_ symbol: String) -> String? {
         #expect(ValueTracer.CallFacts(callee: name).readsOnly, "\(name)")
     }
     #expect(!ValueTracer.CallFacts(callee: "__swift_destroy_boxed_opaque_existential").readsOnly)
+}
+
+/// A pointer slot a fuzzed byte breaks must not let a pair's name trap the
+/// demangler. In chained fixups each pointer's top bits also link the chain
+/// to the next, so one corrupt slot misdecodes the slots after it: setting
+/// the top byte of a witness-table bind to 0x0c made the slot an indirect
+/// reference names read as a rebase onto junk, whose "module" name lay at
+/// -2063597537, and MachOKit trapped (`Negative value is not
+/// representable`; libMangledTypes.stripped, mutant 56 of `Tools/fuzz.swift
+/// metadata` with `__const` in reach, seed 777). Each 8-byte slot of
+/// `__DATA_CONST` is given that byte in turn, and so is each byte of
+/// `__swift5_typeref` a byte that breaks a direct reference (mutant 11 of
+/// libSample.stripped); every pair decodes to a type or to nothing, and
+/// unchanged all decode.
+@Test func aMangledNamePairWithACorruptFixupChainDoesNotTrapIfPresent() throws {
+    // The pairs' addresses from the symbols; the bytes from the stripped
+    // copy the fuzzer mutated, whose layout `strip -x` leaves the same.
+    let named = "Fixtures/Sample/libMangledTypes.dylib", path = "Fixtures/Sample/libMangledTypes.stripped.dylib"
+    guard FileManager.default.fileExists(atPath: named), FileManager.default.fileExists(atPath: path) else { return }
+    let original = try Data(contentsOf: URL(fileURLWithPath: path))
+    let pairs = try BinaryLoader.load(path: named).symbols.compactMap {
+        $0.name.hasSuffix("MR") ? Disassembler.sectionAddress(of: $0) : nil
+    }
+    let machO = try BinaryLoader.load(path: path)
+    #expect(pairs.count >= 12)
+    #expect(pairs.allSatisfy { MangledNamePair.typeName(at: $0, in: machO) != nil })
+    let segment = try #require(machO.segments.first { $0.segmentName == "__DATA_CONST" })
+    let typeref = try #require(machO.sections.first { $0.sectionName == "__swift5_typeref" })
+    // Each pointer slot's top byte, as mutant 56 set one; and each byte of
+    // the names, as libSample.stripped's mutant 11 set a direct reference's
+    // offset (0xe0), which then named a "context" outside the file.
+    let edits = stride(from: Int(segment.fileOffset), to: Int(segment.fileOffset + segment.fileSize), by: 8).map { ($0 + 7, UInt8(0x0c)) }
+        + (typeref.offset ..< typeref.offset + typeref.size).map { ($0, UInt8(0xe0)) }
+    for (offset, value) in edits {
+        var bytes = original
+        bytes[offset] = value
+        // A path of its own: the demangler caches by image, and a reused
+        // path would answer from the previous mutant.
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("pair-chain-\(UUID().uuidString).dylib")
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        try bytes.write(to: scratch)
+        guard let mutant = try? BinaryLoader.load(path: scratch.path) else { continue }
+        // The demangler caches by image identity, which every mutant
+        // shares with the original.
+        SymbolicDemangler.removeCache(for: mutant)
+        for pair in pairs { _ = MangledNamePair.typeName(at: pair, in: mutant) }
+        SymbolicDemangler.removeCache(for: mutant)
+    }
 }
