@@ -1919,14 +1919,17 @@ public struct Disassembler: Sendable {
     /// `normalizedBody` prints them: a direct branch's target relative to
     /// the function's start, and a call or tail branch through a stub as
     /// the stub's name. A stripped binary leaves them unnamed, and they are
-    /// among its most-called functions: GoodLinks calls
+    /// among its most-called functions. The boxed-existential helpers take
+    /// the container's metadata from +0x18 whatever its witness-table count,
+    /// so one body serves `…_existential_0`, `_1` and the rest, and the name
+    /// leaves the count out. GoodLinks calls
     /// `__swift_instantiateConcreteTypeFromMangledNameV2` from 14,770 places
-    /// and `__swift_project_boxed_opaque_existential_1` from 2,077. Taken
+    /// and the boxed-existential projection from 2,077. Taken
     /// from the symbols of the fixtures, -O and -Onone; bodies shorter than
     /// eight instructions (the `memcpy` value witnesses, a lone `ret`) are
     /// left out, since many functions share them.
     static let helperShapes: [(name: String, body: [String])] = [
-        ("__swift_allocate_boxed_opaque_existential_1", [
+        ("__swift_allocate_boxed_opaque_existential", [
             "ldr x8, [x0, #0x18]",
             "ldur x9, [x8, #-8]",
             "ldrb w9, [x9, #0x52]",
@@ -1943,7 +1946,7 @@ public struct Disassembler: Sendable {
             "ldp x20, x19, [sp], #0x20",
             "ret",
         ]),
-        ("__swift_destroy_boxed_opaque_existential_1", [
+        ("__swift_destroy_boxed_opaque_existential", [
             "ldr x1, [x0, #0x18]",
             "ldur x8, [x1, #-8]",
             "ldrb w9, [x8, #0x52]",
@@ -1953,7 +1956,7 @@ public struct Disassembler: Sendable {
             "ldr x0, [x0]",
             "b <swift_release>",
         ]),
-        ("__swift_destroy_boxed_opaque_existential_1", [
+        ("__swift_destroy_boxed_opaque_existential", [
             "sub sp, sp, #0x20",
             "stp x29, x30, [sp, #0x10]",
             "add x29, sp, #0x10",
@@ -2092,7 +2095,7 @@ public struct Disassembler: Sendable {
             "add sp, sp, #0x30",
             "ret",
         ]),
-        ("__swift_project_boxed_opaque_existential_1", [
+        ("__swift_project_boxed_opaque_existential", [
             "ldur x8, [x1, #-8]",
             "ldr w8, [x8, #0x50]",
             "tbz w8, #0x11, +0x20",
@@ -2103,7 +2106,7 @@ public struct Disassembler: Sendable {
             "add x0, x9, x8",
             "ret",
         ]),
-        ("__swift_project_boxed_opaque_existential_1", [
+        ("__swift_project_boxed_opaque_existential", [
             "sub sp, sp, #0x10",
             "str x0, [sp]",
             "ldur x8, [x1, #-8]",

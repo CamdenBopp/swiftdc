@@ -185,6 +185,13 @@ for address, name in sorted(judged.items()):
     if name[:2] in ('-[', '+[') and any(objcMatch(name, t) for t in truths):
         merged += 1
         continue
+    # A C symbol keeps the C underscore (`___swift_project_…` for
+    # `__swift_project_…`), and a recognised boxed-existential helper leaves
+    # out the witness-table count the symbol carries (`…_existential_0`,
+    # `…_1Tm` when merged).
+    if any(t == '_' + name or re.fullmatch(re.escape('_' + name) + r'_\d+(Tm)?', t) for t in truths):
+        exact += 1
+        continue
     plain = re.sub(r'\(unknown context at \$[0-9a-f]+\)', '', name)
     words = {w for w in re.findall(r'[A-Za-z_][A-Za-z0-9_]+', plain) if w not in KIND}
     if any(all(re.search(r'\b' + re.escape(w) + r'\b', t) for w in words) and placeholderAgrees(name, t) for t in truths):

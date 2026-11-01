@@ -932,7 +932,11 @@ because it cannot be distinguished from a right one by reading the output.
   oracle test names each helper in every arm64 fixture with its labels
   hidden and finds only the symbol's own name. GoodLinks:
   `sub_100008ce8` (2,077 calls) and `sub_100008d0c` (3,280) are now the
-  project and allocate helpers.
+  project and allocate helpers. The boxed-existential helpers now leave
+  out the witness-table count (`__swift_project_boxed_opaque_existential`):
+  one body serves `…_0`, `…_1` and merged `…Tm` forms, and named `…_1`
+  the stripped-name oracle found 430 that were `…_0` or merged. Rerun
+  over the 431 binaries the oracle flagged: 87,621 names, 0 conflicts.
   Each call whose pair argument is a constant now renders as the type the
   pair's mangled name spells (`MangledNamePair`): `swift_allocObject(type
   metadata for Swift._ContiguousArrayStorage<Swift.String>, 56, 7)`. The

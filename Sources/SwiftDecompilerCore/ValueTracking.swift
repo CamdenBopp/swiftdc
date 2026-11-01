@@ -703,7 +703,7 @@ public struct ValueTracer: Sendable {
         init(callee: String, knownArityApplies: Bool = true) {
             self.callee = callee
             self.knownArityApplies = knownArityApplies
-            readsOnly = knownArityApplies && ValueTracer.readOnlyPointerCallees.contains(callee)
+            readsOnly = knownArityApplies && ValueTracer.readOnlyPointerCallees.contains { callee.hasPrefix($0) }
             let knownArity = knownArityApplies ? DisassembledFunction.knownCArity(of: callee) : nil
             passedRegisters = knownArity.map { arity in
                 (0..<arity).map { Location.x($0) }
@@ -1229,9 +1229,11 @@ public struct ValueTracer: Sendable {
     /// (`outlined copy of`, `outlined destroy of`, …) and metadata accessors
     /// cannot throw.
     /// Callees that read through the frame addresses they receive and never
-    /// write them.
-    private static let readOnlyPointerCallees: Set<String> = [
-        "__swift_project_boxed_opaque_existential_1",
+    /// write them, by name prefix: the projection serves every witness-table
+    /// count (`…_existential_0`, `_1`, `_1Tm`), and recognised by its body in
+    /// a stripped binary it is `__swift_project_boxed_opaque_existential`.
+    private static let readOnlyPointerCallees: [String] = [
+        "__swift_project_boxed_opaque_existential",
     ]
 
     private static let nonThrowingHelperPrefixes = [

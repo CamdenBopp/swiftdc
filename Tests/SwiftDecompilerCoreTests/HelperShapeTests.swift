@@ -112,9 +112,29 @@ private func demangledPrinted(_ symbol: String) -> String? {
         }
         let boundaries = Set(disassembler.functionStarts(of: machO)).union(symbols.keys).sorted()
         for (address, name) in disassembler.recognizedHelperNames(in: machO, boundaries: boundaries, labels: [:]) {
-            #expect(symbols[address]?.contains("_" + name) == true, "\(entry) 0x\(String(address, radix: 16)): \(name) vs \(symbols[address] ?? [])")
+            // A boxed-existential helper's symbol adds its witness-table
+            // count, which the body does not tell, and `Tm` when merged.
+            let matches = symbols[address]?.contains { symbol in
+                symbol == "_" + name || symbol.wholeMatch(of: try! Regex("_\(name)_[0-9]+(Tm)?")) != nil
+            } == true
+            #expect(matches, "\(entry) 0x\(String(address, radix: 16)): \(name) vs \(symbols[address] ?? [])")
             namedHelpers.insert(name)
         }
     }
     #expect(namedHelpers == Disassembler.helperShapeNames, "\(Disassembler.helperShapeNames.subtracting(namedHelpers))")
+    // One body serves every witness-table count, so the name claims none:
+    // named `…_1`, 430 helpers in the stripped-name oracle were `…_0`.
+    for name in Disassembler.helperShapeNames where name.contains("boxed_opaque_existential") {
+        #expect(name.wholeMatch(of: /.*_existential/) != nil, "\(name)")
+    }
+}
+
+/// The projection only reads the container it is given, whatever its
+/// witness-table count and whether its name came from a symbol or its body.
+@Test func everyBoxedExistentialProjectionOnlyReads() {
+    for name in ["__swift_project_boxed_opaque_existential_1", "__swift_project_boxed_opaque_existential_0",
+                 "__swift_project_boxed_opaque_existential"] {
+        #expect(ValueTracer.CallFacts(callee: name).readsOnly, "\(name)")
+    }
+    #expect(!ValueTracer.CallFacts(callee: "__swift_destroy_boxed_opaque_existential").readsOnly)
 }
