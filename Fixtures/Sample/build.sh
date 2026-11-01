@@ -400,6 +400,9 @@ echo "==> a type no __swift5_types record lists (unrecordedtype.swift, -O -wmo; 
 xcrun swiftc -O -wmo -parse-as-library -emit-library unrecordedtype.swift -module-name UnrecordedType -o libUnrecordedType.dylib
 python3 -I droptyperecord.py libUnrecordedType.dylib '_$s14UnrecordedType5InnerVMn'
 
+echo "==> a class subscript getter's index argument (subscriptgetter.swift, -Onone)"
+$SWIFTC -parse-as-library -Onone -emit-library -module-name SubscriptGetter subscriptgetter.swift -o libSubscriptGetter.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release

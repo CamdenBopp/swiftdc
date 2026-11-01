@@ -3447,8 +3447,12 @@ public struct Disassembler: Sendable {
         base.removeLast(".getter".count)
         let isStatic = base.hasPrefix("static ")
         if isStatic { base.removeFirst("static ".count) }
+        // A subscript's getter takes its index: `Grid.subscript.getter :
+        // (Swift.Int) -> Swift.Int` read `subscript.getter(self: arg0)`
+        // for `g[i]`.
         guard !base.isEmpty, base.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }),
-              let dot = base.lastIndex(of: "."), !base[base.index(after: dot)...].isEmpty
+              let dot = base.lastIndex(of: "."), !base[base.index(after: dot)...].isEmpty,
+              base[base.index(after: dot)...] != "subscript"
         else { return false }
         let context = String(base[..<dot])
         return isStatic || !context.contains(".") || classTypeIndex.isClass(context)
@@ -3465,7 +3469,15 @@ public struct Disassembler: Sendable {
     static func swiftCallArgumentSlots(
         callee: String, enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex
     ) -> [(kind: ScalarParameterClass, registers: Int, type: String)]? {
-        guard let signature = DisassembledFunction.splitSignature(callee), !signature.isAsync,
+        var declared = callee
+        // A subscript getter prints its parameters as a function type,
+        // `Grid.subscript.getter : (Swift.Int) -> Swift.Int`, and takes
+        // them as a method takes its own.
+        if let colon = declared.range(of: ".subscript.getter : ("), !declared[..<colon.lowerBound].contains(" ") {
+            declared.replaceSubrange(colon, with: ".subscript(")
+        }
+        guard let signature = DisassembledFunction.splitSignature(declared),
+              !signature.isAsync,
               let range = DisassembledFunction.outermostArgumentListRange(of: signature.head)
         else { return nil }
         var name = Substring(Self.withoutPrivateDiscriminators(String(signature.head[..<range.lowerBound].dropLast())))

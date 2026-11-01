@@ -154,6 +154,15 @@ because it cannot be distinguished from a right one by reading the output.
   layout. Getters printed with an argument fell from 605 to 531, 321 to
   251 and 816 to 785 on three release apps. Value-type instance methods
   and getters, whose small `self` travels in x0 onward, remain positional.
+- **FIXED (completeness) — a subscript getter's index was dropped.** The
+  no-arguments rule for static and class getters took
+  `Grid.subscript.getter : (Swift.Int) -> Swift.Int` for a property, so
+  `g[i]` read `Grid.subscript.getter(self: arg0)`, and Combine's
+  `static Published.subscript.getter(_enclosingInstance:wrapped:storage:)`
+  read `()` (178 sites in GoodLinks). A subscript is now excluded, and a
+  class subscript getter is laid out from its function type like a
+  method: `subscript.getter(self: arg0, arg1)`
+  (`subscriptgetter.swift`).
 - **FIXED — `objc_retain_xN` is modelled as returning x0.** It returns xN;
   in `@objc` thunks that named the wrong receiver. Identity runtime calls
   now match by exact name, and `objc_retain_xN` yields xN's pre-call value.
