@@ -56,6 +56,8 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libSubscriptGetter.dylib",
         "Fixtures/Sample/libGaugeKit.dylib",
         "Fixtures/Sample/libGaugeClient.dylib",
+        "Fixtures/Sample/libValueMethod.dylib",
+        "Fixtures/Sample/libValueMethod.stripped.dylib",
         "Fixtures/Sample/libStaleSlot.opt.dylib",
         "Fixtures/Sample/libImportedClassProbe.opt.dylib",
         "Fixtures/Sample/libScalarTailReturns.Onone.dylib",

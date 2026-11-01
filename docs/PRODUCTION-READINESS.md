@@ -152,8 +152,15 @@ because it cannot be distinguished from a right one by reading the output.
   static, class and global properties (specializations included) now take
   no arguments, and private `(name in _HASH)` callees get the signature
   layout. Getters printed with an argument fell from 605 to 531, 321 to
-  251 and 816 to 785 on three release apps. Value-type instance methods
-  and getters, whose small `self` travels in x0 onward, remain positional.
+  251 and 816 to 785 on three release apps. A value type's method takes
+  its formal parameters from x0 whether or not it is mutating, so they
+  are now laid out from its signature and the registers after them kept
+  as found (`swift-leading`): GoodLinks `String.append()` 308 → 2,
+  `Hasher._combine()` 192 → 0, `String.hash()` 312 → 0, and
+  `append(10, 0xe100000000000000)` reads `append("\n")`. Still open: a
+  non-mutating method's `self` words print unlabelled after the
+  parameters, and a value-type getter, which has no formal parameters,
+  stays positional.
 - **FIXED (completeness) — a getter's String result lost its second
   word.** The tracer marks x1 as a call's String high word only for a
   callee whose signature returns a String, and a getter prints its type

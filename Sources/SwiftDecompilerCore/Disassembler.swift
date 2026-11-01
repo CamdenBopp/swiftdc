@@ -3473,8 +3473,12 @@ public struct Disassembler: Sendable {
     /// (`takeOptString(nil, 7)` passes 0 in x0 and x1, 7 in x2). Any other
     /// parameter declines the whole layout, and so does a typed throw, whose
     /// error may travel through an extra pointer parameter.
+    /// `anyContext` accepts a member of any type, a value type's included,
+    /// whose `self` may follow the formal parameters: the slots are then
+    /// only the leading ones.
     static func swiftCallArgumentSlots(
-        callee: String, enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex
+        callee: String, enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex,
+        anyContext: Bool = false
     ) -> [(kind: ScalarParameterClass, registers: Int, type: String)]? {
         // A dispatch thunk calls a class method or a protocol requirement
         // through its vtable or witness table: `self` travels in x20 and the
@@ -3505,7 +3509,8 @@ public struct Disassembler: Sendable {
         else { return nil }
         let context = String(name[..<dot]), member = name[name.index(after: dot)...]
         let isFreeFunction = !context.contains(".")
-        guard isDispatchThunk || isFreeFunction || isStatic || member == "init" || classTypeIndex.isClass(context)
+        guard anyContext || isDispatchThunk || isFreeFunction || isStatic || member == "init"
+                || classTypeIndex.isClass(context)
         else { return nil }
 
         let parameters = DisassembledFunction.splitTopLevelArguments(signature.head[range])
@@ -4364,7 +4369,7 @@ public struct Disassembler: Sendable {
             guard DisassembledFunction.knownCArity(of: callee) != nil
                     || Self.swiftCallArgumentSlots(
                         callee: layoutName(at: insn.address, callee: callee),
-                        enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex
+                        enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, anyContext: true
                     )?.isEmpty == false
                     || (!(callTargets[insn.address] != nil && DisassembledFunction.knownArityNameMayHaveTwin(callee))
                         && Self.cPrototypeLayout(callee: callee) != nil)
@@ -4620,6 +4625,20 @@ public struct Disassembler: Sendable {
             }
             let cLayout = swiftSlots != nil || isNameTwin(address)
                 ? nil : calleeByAddress[address].flatMap { Self.cPrototypeLayout(callee: $0) }
+            // A value type's method takes its formal parameters from x0 too,
+            // and then, unless it is mutating (`self` by address in x20),
+            // `self`'s words: which, its name does not say. The formal
+            // parameters are laid out and the registers after them kept as
+            // found. `String.append(_:)` with an untracked argument read
+            // `append(self: s)`, and with a small literal `append(10,
+            // 0xe100000000000000)`.
+            let leadingSlots = swiftSlots == nil && cLayout == nil
+                ? calleeByAddress[address].flatMap {
+                    Self.swiftCallArgumentSlots(
+                        callee: layoutName(at: address, callee: $0),
+                        enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, anyContext: true)
+                }
+                : nil
             /// Whether a call's v0 is its whole result: a `float` or `double`
             /// its declaration proves. A struct comes back in several v
             /// registers, so a later argument holding one of them is a part
@@ -4663,7 +4682,7 @@ public struct Disassembler: Sendable {
                 default: return true
                 }
             }
-            if let slots = swiftSlots ?? cLayout?.slots {
+            if let slots = swiftSlots ?? cLayout?.slots ?? leadingSlots {
                 var integer = 0, floating = 0
                 let laidOut: [AbstractValue] = slots.map { slot in
                     switch slot.kind {
@@ -4693,11 +4712,16 @@ public struct Disassembler: Sendable {
                     }
                 }
                 let unplaced = Array(repeating: AbstractValue.unknown, count: cLayout?.unplaced ?? 0)
-                if !(laidOut + unplaced).isEmpty {
-                    argumentsByAddress[address] = (laidOut + unplaced).map(sanitizeValue)
-                    laidOutTypes[address] = slots.map(\.type) + unplaced.map { _ in "" }
+                var following: [AbstractValue] = []
+                if leadingSlots != nil {
+                    following = values.dropFirst(integer).map(sanitizeValue)
+                    while following.last == .unknown { following.removeLast() }
                 }
-                strategy = cLayout == nil ? "swift-signature" : "c-declaration"
+                if !(laidOut + unplaced + following).isEmpty {
+                    argumentsByAddress[address] = (laidOut + unplaced).map(sanitizeValue) + following
+                    laidOutTypes[address] = slots.map(\.type) + (unplaced + following).map { _ in "" }
+                }
+                strategy = leadingSlots != nil ? "swift-leading" : cLayout == nil ? "swift-signature" : "c-declaration"
                 continue
             }
             // A runtime entry point of known C arity takes exactly its

@@ -407,6 +407,11 @@ echo "==> requirements called through dispatch thunks (gaugekit.swift -O resilie
 $SWIFTC -parse-as-library -O -enable-library-evolution -emit-library -emit-module -module-name GaugeKit gaugekit.swift -o libGaugeKit.dylib
 $SWIFTC -parse-as-library -O -emit-library -module-name GaugeClient gaugeclient.swift -I . -L . -lGaugeKit -o libGaugeClient.dylib
 
+echo "==> value-type method arguments: formal parameters, then self (valuemethod.swift, -O; strip -x leaves appendTwo unnamed)"
+$SWIFTC -parse-as-library -O -emit-library -module-name ValueMethod valuemethod.swift -o libValueMethod.dylib
+cp libValueMethod.dylib libValueMethod.stripped.dylib
+strip -x libValueMethod.stripped.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release

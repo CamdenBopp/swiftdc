@@ -76,8 +76,9 @@ import Testing
 /// in its first register named the whole field: `differenceOfPair`
 /// (`ldp x8, x9, [x20, #0x20]; sub x0, x8, x9`) rendered
 /// `return (self.pair - self.pair[8...])`. Each register is now its own
-/// word of the field, and the String words `Dog.speak` passes from
-/// `self.breed` are `self.breed[0..<8]` and `self.breed[8..<16]`.
+/// word of the field; the String words `Dog.speak` passes from
+/// `self.breed`, laid out as `append`'s one String parameter, are
+/// `self.breed`.
 @Test func aPairedLoadGivesEachRegisterItsWordIfPresent() async throws {
     let fieldWrites = "Fixtures/Sample/libFieldWrites.dylib"
     let sample = "Fixtures/Sample/libSample.dylib"
@@ -90,7 +91,9 @@ import Testing
     #expect(difference.contains("return (self.pair[0..<8] - self.pair[8..<16])"), Comment(rawValue: difference))
     let dogs = try await withStableDependencies { try await Disassembler().disassemble(path: sample) }
     let speak = try #require(dogs.first { $0.displayName.hasPrefix("Sample.Dog.speak()") }).renderPseudo()
-    #expect(speak.contains("self.breed[0..<8], self.breed[8..<16])"), Comment(rawValue: speak))
+    // `String.append(_:)` lays its String parameter out, so the two words
+    // are the whole field.
+    #expect(speak.contains("append(self: local_40, self.breed)"), Comment(rawValue: speak))
 }
 
 /// A paired store over two ivars that did not render as a tuple of them
