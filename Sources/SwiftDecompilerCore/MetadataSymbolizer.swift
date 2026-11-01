@@ -131,10 +131,27 @@ struct MetadataSymbolizer: Sendable {
     }
 
     private func contextName(of model: Class, type: TypeContextWrapper, in machO: MachOFile) -> String? {
+        // A class declared in a function sits under an anonymous context,
+        // which the demangled context drops: LLDB's `OperatorAndGroupVisitor`,
+        // local to `OperatorTable.addSourceFile(…)`, named its methods
+        // `CompilerSwiftOperators.OperatorTable.OperatorAndGroupVisitor.override`,
+        // a member class that does not exist. The context is marked where it
+        // was dropped, as `dump` marks it, and a name it cannot be placed in
+        // is declined. So is the bare simple name: it reads as top level.
+        guard let (own, contexts) = SwiftDeclarationDumper.anonymousAncestors(of: type, in: machO) else { return nil }
         if let node = try? SymbolicDemangler.demangleContext(for: .type(.class(model.descriptor)), in: machO.context) {
-            let printed = node.print(using: .default)
-            if !printed.isEmpty { return printed }
+            var printed = node.print(using: .default)
+            if !printed.isEmpty {
+                // A private class's context is its file, which the private
+                // discriminator already names: `M.(Bundle in _A1B2)`.
+                if contexts.isEmpty || printed.contains("(unknown context at ") || printed.contains("(\(own) in _") {
+                    return printed
+                }
+                return SwiftDeclarationDumper.markingUnknownContexts(contexts, in: &printed, from: printed.startIndex)
+                    ? printed : nil
+            }
         }
+        guard contexts.isEmpty else { return nil }
         return FieldMapBuilder.qualifiedName(of: type, in: machO) ?? (try? model.descriptor.name(in: machO))
     }
 

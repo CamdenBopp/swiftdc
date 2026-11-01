@@ -14,6 +14,23 @@ public struct Outer {
     }
 }
 
+// A local class: its vtable names its methods in a stripped binary, and
+// the name must not place it in `Outer`.
+extension Outer {
+    public func makeCounter() -> AnyObject {
+        class LocalCounter {
+            var count = 0
+            @inline(never) func bump() -> Int { count += 1; return count }
+        }
+        class LocalDouble: LocalCounter {
+            @inline(never) override func bump() -> Int { count += 2; return count }
+        }
+        let counter: LocalCounter = name.isEmpty ? LocalCounter() : LocalDouble()
+        _ = counter.bump()
+        return counter
+    }
+}
+
 public func freeMake() -> Any {
     struct FreeLocal { var flag: Bool }
     return FreeLocal(flag: true)
@@ -26,6 +43,17 @@ private func privateMake() -> Any {
     return PrivateLocal(level: 2)
 }
 public func callPrivate() -> Any { privateMake() }
+
+// A private class: its context is its file, and the renderer names it with
+// the private discriminator when it knows one.
+private class PrivateBox {
+    var value = 0
+    @inline(never) func grow() -> Int { value += 1; return value }
+}
+private final class PrivateBigBox: PrivateBox {
+    @inline(never) override func grow() -> Int { value += 10; return value }
+}
+public func useBox(_ big: Bool) -> Int { (big ? PrivateBigBox() : PrivateBox()).grow() }
 
 public struct Holder {
     public var source: (any Source<String>)?

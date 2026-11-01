@@ -37,6 +37,56 @@ struct DeclarationPlacementTests {
         #expect(!text.contains("struct LocalTypes.FreeLocal"), Comment(rawValue: text))
     }
 
+    /// In a stripped binary a local class's methods are named from its
+    /// vtable, and the name placed the class in `Outer`
+    /// (`LocalTypes.Outer.LocalCounter.method`).
+    @Test func aStrippedLocalClassMethodKeepsItsUnknownContextIfPresent() throws {
+        let binary = URL(fileURLWithPath: ".build/debug/swiftdc")
+        let fixture = "Fixtures/Sample/libLocalTypes.stripped.dylib"
+        guard FileManager.default.fileExists(atPath: binary.path), FileManager.default.fileExists(atPath: fixture) else { return }
+        let pipe = Pipe()
+        let process = Process()
+        process.executableURL = binary
+        process.arguments = ["disasm", fixture]
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let headers = String(decoding: data, as: UTF8.self).split(separator: "\n").filter { $0.contains("LocalCounter.method:") || $0.contains("LocalDouble.method:") }
+        #expect(headers.count == 2, "\(headers)")
+        for header in headers {
+            #expect(header.hasPrefix("LocalTypes.Outer.(unknown context at $"), "\(header)")
+        }
+    }
+
+    /// A private class's anonymous context is its file, which the private
+    /// discriminator names (`Foundation.(__PlistEncoder in _5692…)`). Marking
+    /// local contexts must keep such a name, not decline it: on a stripped
+    /// copy of Swift 5.0's back-deployed libswiftFoundation, the private
+    /// encoder classes' methods are named.
+    @Test func aPrivateClassKeepsItsDiscriminatedNameIfAvailable() async throws {
+        let source = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/appletvos/libswiftFoundation.dylib"
+        guard FileManager.default.fileExists(atPath: source) else { return }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("swiftdc-private-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let stripped = directory.appendingPathComponent("stripped").path
+        for arguments in [["strip", "-x", "-o", stripped, source]] {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+            process.arguments = arguments
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            process.waitUntilExit()
+            try #require(process.terminationStatus == 0, "\(arguments)")
+        }
+        let machO = try BinaryLoader.load(path: stripped)
+        let names = await withStableDependencies { MetadataSymbolizer().functionNames(in: machO) }
+        let encoder = names.unique.values.filter { $0.contains("(__PlistEncoder in _") }
+        #expect(!encoder.isEmpty, "\(names.unique.values.filter { $0.contains("PlistEncoder") })")
+    }
+
     /// A constrained existential field printed `symbolic existential type
     /// (non-unique) 0x0 <Swift.String>`: no protocol, no meaning.
     @Test func aConstrainedExistentialFieldNamesItsProtocolIfPresent() async throws {
