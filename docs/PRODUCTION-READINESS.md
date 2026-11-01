@@ -5767,6 +5767,13 @@ branch (`9f92b71`), accessor decoding and classification (`10712d8`,
   fixture did not reproduce the shape: `-cross-module-optimization`,
   `-enable-cmo-everything`, C++ interop and private imports all keep the
   anonymous context, so the test reads Xcode's binary (`IfAvailable`).
+- **Type oracle rerun** (release 4d39b01 plus the private-type fix) on the
+  84 binaries the full run flagged with misses: 0 missing types. Xcode had
+  updated since the full run, which cleared most. The oracle now strips
+  C++ `ns::` qualifiers from identities (libusd_ms's 31 "missing"
+  `CodingKeys` were declared under the imported record's C++ name), and
+  reports a binary `dump` declines (2 FairPlay-encrypted ChatGPT
+  extensions) as `dump-failed` rather than as missing types.
 - **OPEN (completeness): a cross-image indirect reference in a dyld cache
   image resolves to the wrong place.** GenerativeAgents'
   `OpenAICompatibleModel.source` is a constrained existential whose

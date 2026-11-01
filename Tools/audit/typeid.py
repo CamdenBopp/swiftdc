@@ -34,7 +34,13 @@ for s, d in zip(syms, p.stdout.splitlines()):
     # Swift conformance to it; `dump` declares only the image's own types.
     if d.startswith(pre) and not d[len(pre):].startswith('__C.'): names.append((s, d[len(pre):]))
 dumpargs = [swiftdc, 'dump'] + (['--image-path', path] if cache else [path]) + (['--arch', arch] if arch else []) + ['-s', 'types']
-text = run(dumpargs)
+dumped = subprocess.run(dumpargs, capture_output=True, text=True, errors='replace')
+if dumped.returncode != 0:
+    # A declined image (FairPlay-encrypted, malformed) declares nothing,
+    # which is not a missing type.
+    print(f'{target}\tsymbols={len(names)}\tdump-failed\t{dumped.stderr.strip().splitlines()[-1:] or ""}')
+    sys.exit(0)
+text = dumped.stdout
 heads, declined, local = [], [], set()
 for line in text.splitlines():
     m = re.match(r'^(?:(?:final|open|public|indirect|distributed|@objc)\s+)*(class|struct|enum|actor)\s+(.*)$', line)
@@ -53,6 +59,9 @@ def identity(text):
     # `(extension in M):`, every `<...>` group, and cut at the first space or
     # colon outside parentheses (`(Foo in _HASH)` keeps its spaces).
     text = re.sub(r'\(extension in [^)]*\):', '', text)
+    # An imported C++ record prints by its C++ name in metadata,
+    # `ns.ns::GfInterval`, and by its Swift path in the symbol, `ns.GfInterval`.
+    text = re.sub(r'\b\w+::', '', text)
     out, angle, paren = [], 0, 0
     for c in text:
         if c == '<': angle += 1; continue
