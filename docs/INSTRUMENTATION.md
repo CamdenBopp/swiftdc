@@ -160,6 +160,7 @@ To reproduce, run the same command with and without `--probe <file>`
 | Event | Category | Fields | Exposes |
 |---|---|---|---|
 | `values.fixpoint-cap` | limit | blocks, cap | The tracer's states are not a fixpoint; its rendered values rest on an unconverged, optimistic state. |
+| `values.state-budget` | limit | blocks, budget | The tracer's block states held more facts than its budget; it claims nothing for the function. |
 | `values.loop-body-cap` | limit | blocks, cap | Same, for the induction re-transfer. |
 | `values.unmodelled-write` | claim | register, instruction, kept | An instruction writes a register (Capstone access flags) whose proven value the tracer kept: a stale value that renders as a confident argument. |
 | `abi.argument-layout` | decision | strategy, callee, count | Which layout set a call's arguments. `positional` is where stale-register fabrications have come from. |

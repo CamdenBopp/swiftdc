@@ -1545,6 +1545,26 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 5. Performance and memory on large frameworks
 
+- **FIXED — one C++ function in WebKit took the value tracer past 3 GB.**
+  The full structured/pseudo sweep of the 1,913 Swift cache images (3,826
+  runs, `Tools/corpus.swift run … --commands structured,pseudo --swift-only
+  --jobs 4 --kill-mb 3000`) passed every run but WebKit's two, killed at
+  3 GB. `heap` during the spike: 7,580 tracer state dictionaries averaging
+  180 KB, all for `WebKit::WebPreferences::features()` (39,628
+  instructions, 5,159 blocks). Its frame keeps about 9,800 words live
+  across every block, and the fixpoint stores an entry and an exit state
+  per block: 50.4M facts. The tracer now counts the facts its block states
+  hold and, past `stateFactBudget` (8M, about 520 MB), claims nothing and
+  records `values.state-budget`, as at the iteration cap. The largest real
+  functions measured on eight large images hold 3.9M (CoreML's
+  431k-instruction function), 1.4M (MetalPerformanceShadersGraph), 0.73M
+  (GeoServices); Swift-heavy images stay under 0.21M; no fixture passes
+  21k. `disasm --image-path …/WebKit -f WebPreferences8featuresEv
+  --structured`: 28 s and 3.47 GB to 7.7 s and 594 MB. Whole-image
+  `--structured` on WebKit: killed at 3 GB to 182 s and 965 MB, exit 0.
+  Fixture `--structured` and `--pseudo` byte-identical. OPEN: states that
+  share structure across blocks would let such a function keep its facts.
+
 - **OPEN — Fiery Feeds whole-binary `xrefs` is 1.17× origin/master.**
   Current (streaming, entry below): 179.6 s, 580 MB. Before that: 204.9 s,
   7.04 GB, output byte-identical, after

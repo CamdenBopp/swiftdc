@@ -183,3 +183,25 @@ private extension ProbeEvent {
     #expect(recorder.count(of: .tracerFixpointCap) == 1)
     #expect(bounded.callSites.isEmpty && bounded.exitValues.isEmpty, "\(bounded.callSites.count) call sites claimed past the bound")
 }
+
+/// The tracer's block states hold blocks × live facts, and past its budget
+/// it claims nothing: `WebKit::WebPreferences::features()`, 5,159 blocks of
+/// about 9,800 frame words each, held 50M facts and 3.5 GB. Forced with a
+/// budget of zero.
+@Test func aTracerPastItsStateBudgetClaimsNothingIfPresent() async throws {
+    let path = "Fixtures/Sample/libGridSampler.opt.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "Sampler.disk")
+    }
+    let disk = try #require(functions.first { $0.basicBlocks().count > 16 })
+    let recorder = ProbeRecorder()
+    let unbounded = Probe.recording(recorder) { ValueTracer().analyze(disk, entry: .swiftFunction(scalarArguments: [:])) }
+    #expect(!unbounded.callSites.isEmpty, "the comparison needs a function with recorded calls")
+    #expect(recorder.count(of: .tracerStateBudget) == 0)
+    var tracer = ValueTracer()
+    tracer.stateFactBudget = 0
+    let bounded = Probe.recording(recorder) { tracer.analyze(disk, entry: .swiftFunction(scalarArguments: [:])) }
+    #expect(recorder.count(of: .tracerStateBudget) == 1)
+    #expect(bounded.callSites.isEmpty && bounded.exitValues.isEmpty, "\(bounded.callSites.count) call sites claimed past the budget")
+}

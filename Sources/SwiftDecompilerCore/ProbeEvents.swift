@@ -45,6 +45,9 @@ extension ProbeEvent {
     static let tracerFixpointCap = ProbeEvent(
         "values.fixpoint-cap", .values, .limit,
         "The value tracer stopped at its iteration bound before converging; its states are not a fixpoint.")
+    static let tracerStateBudget = ProbeEvent(
+        "values.state-budget", .values, .limit,
+        "The value tracer's block states held more facts than its budget; it claims nothing for the function.")
     static let tracerLoopBodyCap = ProbeEvent(
         "values.loop-body-cap", .values, .limit,
         "The induction re-transfer over a loop body stopped at its bound before converging.")

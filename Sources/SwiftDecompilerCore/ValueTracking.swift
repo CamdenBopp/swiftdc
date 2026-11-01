@@ -505,6 +505,12 @@ public struct ValueTracer: Sendable {
     /// The loop-induction pass's own bound: `(body blocks + 1) ×` this many
     /// block visits.
     var loopBodyIterationsPerBlock = 8
+    /// The facts the fixpoint's block states may hold together, about 65
+    /// bytes each. Past it the analysis claims nothing (`values.state-budget`).
+    /// The largest real functions measured hold 3.9M (CoreML, 431k
+    /// instructions) and 1.4M (MetalPerformanceShadersGraph). Injectable so
+    /// a test can force it.
+    var stateFactBudget = 8_000_000
 
     /// Callee address → the callee-saved registers its body writes without
     /// saving (`CalleeRegisterSummary`): an outlined fragment reached by `bl`
@@ -894,6 +900,11 @@ public struct ValueTracer: Sendable {
         var queued = Set(worklist)
         var iterations = 0
         let cap = blocks.count * iterationsPerBlock + 16 // safety bound
+        // Facts held across the stored block states. A function with
+        // thousands of blocks and thousands of live frame words holds their
+        // product: `WebKit::WebPreferences::features()` reached 50M facts
+        // and 3.5 GB.
+        var heldFacts = 0
         while let addr = worklist.first {
             worklist.removeFirst()
             queued.remove(addr)
@@ -931,6 +942,7 @@ public struct ValueTracer: Sendable {
             // block it stays.
             for (key, value) in escapeMarkers[addr] ?? [:] where blockEntry[key] == nil { blockEntry[key] = value }
             escapeMarkers[addr] = blockEntry.filter { Self.isEscapeMarker($0.key) }
+            heldFacts += blockEntry.count - (inState[addr]?.count ?? 0)
             inState[addr] = blockEntry
             var registers = blockEntry
             for insn in block.instructions {
@@ -941,6 +953,13 @@ public struct ValueTracer: Sendable {
                 )
             }
             if !Self.sameFacts(outState[addr], registers) {
+                heldFacts += registers.count - (outState[addr]?.count ?? 0)
+                if heldFacts > stateFactBudget {
+                    // An unfinished fixpoint proves nothing, as at the
+                    // iteration cap.
+                    Probe.record(.tracerStateBudget, ["blocks": .int(blocks.count), "budget": .int(stateFactBudget)])
+                    return FunctionAnalysis()
+                }
                 outState[addr] = registers
                 for successor in block.successors
                 where blockByStart[successor] != nil && !queued.contains(successor) {
