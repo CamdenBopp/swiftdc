@@ -415,6 +415,11 @@ strip -x libValueMethod.stripped.dylib
 echo "==> a StaticString parameter's three words (statictext.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name StaticText statictext.swift -o libStaticText.dylib
 
+echo "==> the mangled-name metadata helper and two look-alikes, stripped (mangledhelper.s)"
+$CLANG -arch arm64 -dynamiclib mangledhelper.s -L"$(xcrun --show-sdk-path)/usr/lib/swift" -lswiftCore -o libMangledHelper.dylib
+cp libMangledHelper.dylib libMangledHelper.stripped.dylib
+strip -x libMangledHelper.stripped.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release

@@ -325,6 +325,9 @@ public enum RecoverySource: String, Sendable {
     case symbol
     /// Named from Swift `__swift5_*` metadata (survives stripping).
     case metadata
+    /// Named because its whole body is a helper IRGen emits with a fixed
+    /// shape (`recognizedHelperNames`).
+    case helperShape = "helper-shape"
     /// Named from an Objective-C class/category method record (survives
     /// stripping and carries selector, type encoding, and IMP).
     case objcMetadata = "objc-metadata"
@@ -486,6 +489,7 @@ public struct DisassembledFunction: Sendable {
         lines.append("\(displayName):")
         let tag: String = switch source {
         case .metadata: "  [recovered from Swift metadata]"
+        case .helperShape: "  [recognized by its body: a helper IRGen emits]"
         case .objcMetadata: "  [recovered from Objective-C metadata]"
         case .asyncFunclet: "  [titled from its async parent; boundary from LC_FUNCTION_STARTS]"
         case .symbol, .address, .foldedSymbols: ""
@@ -706,6 +710,7 @@ public struct Disassembler: Sendable {
             metadataNames = metadata.unique
             Self.mergeMetadataFolds(metadata.folded, into: &foldedByAddress, labels: labelByAddress)
         }
+        metadataNames.merge(recognizedHelperNames(in: machO, boundaries: boundaries, labels: labelByAddress)) { a, _ in a }
 
         func span(_ index: Int) -> (start: UInt64, stop: UInt64) {
             let end = CodeSection.containing(boundaries[index], in: sections)!.range.upperBound
@@ -801,6 +806,8 @@ public struct Disassembler: Sendable {
             Self.isSwiftMangled(symbol) ? address : nil
         })
         swiftTargets.formUnion(metadataNames.keys)
+        // A recognised IRGen helper is a C function: its x20 is no `self`.
+        swiftTargets.subtract(metadataNames.filter { $0.value == Self.mangledNameMetadataHelperName }.keys)
         swiftTargets.formUnion(stubs.filter {
             $0.objcMethod == nil && (Self.isSwiftMangled($0.symbol) || $0.source == .metadata)
         }.map(\.startAddress))
@@ -961,6 +968,7 @@ public struct Disassembler: Sendable {
             metadataNames = metadata.unique
             metadataFolds = metadata.folded
         }
+        metadataNames.merge(recognizedHelperNames(in: machO, boundaries: boundaries.sorted(), labels: labelByAddress)) { a, _ in a }
 
         // Addresses the linker folded multiple distinct symbols onto (see
         // `foldedSymbolAddresses`): computed from the symbol table, so it is the
@@ -1008,6 +1016,8 @@ public struct Disassembler: Sendable {
             Self.isSwiftMangled(symbol) ? address : nil
         })
         swiftTargets.formUnion(metadataNames.keys)
+        // A recognised IRGen helper is a C function: its x20 is no `self`.
+        swiftTargets.subtract(metadataNames.filter { $0.value == Self.mangledNameMetadataHelperName }.keys)
         swiftTargets.formUnion(functions.filter {
             $0.objcMethod == nil && (Self.isSwiftMangled($0.symbol) || $0.source == .metadata)
         }.map(\.startAddress))
@@ -1904,6 +1914,61 @@ public struct Disassembler: Sendable {
     /// Metadata that names one address once per owner is a fold the symbol
     /// table cannot show in a stripped binary. A symbol label, where there is
     /// one, already decided the address, so only unlabeled ones are added.
+    /// The body IRGen emits for `__swift_instantiateConcreteTypeFromMangledNameV2`
+    /// (lib/IRGen/MetadataRequest.cpp), as Capstone prints it: given a cache
+    /// (x0) and a `{relative name offset, length}` pair (x1), return the cached
+    /// metadata, or fetch it by mangled name and cache it. The helper is a
+    /// private per-image function, so a stripped binary leaves it unnamed,
+    /// and its many calls read `sub_100008a20(0x1010f3150, 0x100dac540)`.
+    /// `nil` stands for the conditional branch and the call, checked apart.
+    static let mangledNameMetadataHelperBody: [String?] = [
+        "stp x20, x19, [sp, #-0x20]!", "stp x29, x30, [sp, #0x10]", "add x29, sp, #0x10",
+        "mov x19, x0", "ldr x0, [x0]", "and x8, x0, #1", "cmp x0, #0", "ccmp x8, #0, #0, ne",
+        nil,
+        "ldr x9, [x1]", "asr x8, x9, #32", "add x0, x1, w9, sxtw", "mov x1, x8", "mov x2, #0", "mov x3, #0",
+        nil,
+        "str x0, [x19]", "ldp x29, x30, [sp, #0x10]", "ldp x20, x19, [sp], #0x20", "ret",
+    ]
+    static let mangledNameMetadataHelperName = "__swift_instantiateConcreteTypeFromMangledNameV2"
+
+    /// Unnamed in-image functions whose whole body is a helper IRGen emits
+    /// with a fixed shape, by start address. Only spans of exactly the
+    /// helper's length are decoded.
+    func recognizedHelperNames(
+        in machO: MachOFile, boundaries: [UInt64], labels: [UInt64: String]
+    ) -> [UInt64: String] {
+        let body = Self.mangledNameMetadataHelperBody
+        let length = UInt64(body.count * 4)
+        let stubs = symbolStubNames(in: machO)
+        let sections = codeSections(in: machO)
+        var names: [UInt64: String] = [:]
+        for (index, start) in boundaries.enumerated() where labels[start] == nil {
+            guard let section = CodeSection.containing(start, in: sections) else { continue }
+            let stop = min(index + 1 < boundaries.count ? boundaries[index + 1] : section.range.upperBound,
+                           section.range.upperBound)
+            guard stop - start >= length, stop - start < length + 16 else { continue }
+            let instructions = capstoneInstructions(in: machO, span: (start, start + length))
+            guard instructions.count == body.count else { continue }
+            let matches = zip(instructions, body).enumerated().allSatisfy { offset, pair in
+                let (insn, expected) = pair
+                if let expected {
+                    return insn.text.split(whereSeparator: \.isWhitespace).joined(separator: " ") == expected
+                }
+                if offset == 8 {
+                    // `b.eq` to the epilogue.
+                    return insn.text.hasPrefix("b.eq") && insn.branchTarget == start + 0x44
+                }
+                // The fetch: `swift_getTypeByMangledNameInContext`, or the
+                // signed-descriptor `…2` of newer deployment targets.
+                return insn.controlFlow == .call && insn.branchTarget.flatMap { stubs[$0] }.map {
+                    ["swift_getTypeByMangledNameInContext", "swift_getTypeByMangledNameInContext2"].contains($0)
+                } == true
+            }
+            if matches { names[start] = Self.mangledNameMetadataHelperName }
+        }
+        return names
+    }
+
     static func mergeMetadataFolds(
         _ folds: [UInt64: [String]], into folded: inout [UInt64: [String]], labels: [UInt64: String]
     ) {
@@ -2014,12 +2079,13 @@ public struct Disassembler: Sendable {
             )
         }
         if let metaName = metadataNames[start] {
+            let isHelper = metaName == Self.mangledNameMetadataHelperName
             return DisassembledFunction(
                 symbol: subName,
-                demangledName: demangleCache.presentation(of: metaName),
+                demangledName: isHelper ? metaName : demangleCache.presentation(of: metaName),
                 startAddress: start,
                 instructions: instructions,
-                source: .metadata,
+                source: isHelper ? .helperShape : .metadata,
                 semanticName: metaName
             )
         }
@@ -2218,6 +2284,7 @@ public struct Disassembler: Sendable {
         if Double(unlabeled.count) > Double(max(boundarySet.count, 1)) * 0.25 {
             metadataNames = MetadataSymbolizer().functionNames(in: machO).unique
         }
+        metadataNames.merge(recognizedHelperNames(in: machO, boundaries: boundaries, labels: labels)) { a, _ in a }
 
         let sections = codeSections(in: machO)
 

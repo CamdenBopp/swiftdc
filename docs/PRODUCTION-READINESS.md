@@ -912,6 +912,20 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — a stripped binary's mangled-name metadata helper was an
+  anonymous `sub_`.** IRGen emits `__swift_instantiateConcreteTypeFromMangledNameV2`
+  privately into every image, so stripping leaves it unnamed, and it is
+  among the most-called functions: 14,770 `sub_100008a20(…)` in GoodLinks.
+  Its 20-instruction body has one fixed shape (lib/IRGen/MetadataRequest.cpp),
+  and an unnamed function whose body is exactly that shape, whose branch
+  goes to the epilogue and whose one call is
+  `swift_getTypeByMangledNameInContext` (or `…2`), is now named for it,
+  marked `[recognized by its body: a helper IRGen emits]`, and treated as
+  the metadata plumbing it is. GoodLinks `--pseudo`: 14,770 → 0
+  references to `sub_100008a20`, 512,227 → 504,342 lines;
+  `libSample.stripped`'s helper calls now match `libSample`'s exactly.
+  Open: rendering each call as the type its mangled name spells.
+
 Silent omission is the worst failure mode: it is indistinguishable from a
 correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
