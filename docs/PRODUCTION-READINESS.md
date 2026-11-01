@@ -924,6 +924,15 @@ because it cannot be distinguished from a right one by reading the output.
   the metadata plumbing it is. GoodLinks `--pseudo`: 14,770 → 0
   references to `sub_100008a20`, 512,227 → 504,342 lines;
   `libSample.stripped`'s helper calls now match `libSample`'s exactly.
+  The recogniser is now a table of helper bodies taken from the fixtures'
+  own symbols (`helperShapes`): the mangled-name helper's -O and -Onone
+  forms, `__swift_instantiateGenericMetadata`, and the project, destroy
+  and allocate boxed-existential helpers; bodies under eight
+  instructions (`memcpy` value witnesses, a lone `ret`) are left out. An
+  oracle test names each helper in every arm64 fixture with its labels
+  hidden and finds only the symbol's own name. GoodLinks:
+  `sub_100008ce8` (2,077 calls) and `sub_100008d0c` (3,280) are now the
+  project and allocate helpers.
   Each call whose pair argument is a constant now renders as the type the
   pair's mangled name spells (`MangledNamePair`): `swift_allocObject(type
   metadata for Swift._ContiguousArrayStorage<Swift.String>, 56, 7)`. The

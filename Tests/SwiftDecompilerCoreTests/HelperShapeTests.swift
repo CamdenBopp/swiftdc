@@ -92,3 +92,29 @@ private func demangledPrinted(_ symbol: String) -> String? {
     guard let node = try? demangleAsNode(symbol) else { return nil }
     return node.print(using: .default)
 }
+
+/// Each helper shape is checked against the symbols it was taken from: in
+/// every arm64 fixture that names its helpers, the recogniser, shown no
+/// labels, names a function only where the symbol there is that helper,
+/// and every shape names at least one.
+@Test func everyHelperShapeNamesOnlyItsHelperIfPresent() throws {
+    let directory = "Fixtures/Sample"
+    guard let entries = try? FileManager.default.contentsOfDirectory(atPath: directory) else { return }
+    let disassembler = Disassembler()
+    var namedHelpers = Set<String>()
+    // libMangledHelper labels its helper `genuine`, by design.
+    for entry in entries.sorted() where entry.hasSuffix(".dylib") && !entry.contains("stripped")
+        && !entry.hasPrefix("libMangledHelper") {
+        guard let machO = try? BinaryLoader.load(path: "\(directory)/\(entry)"), machO.header.cpuType == .arm64 else { continue }
+        var symbols: [UInt64: Set<String>] = [:]
+        for symbol in machO.symbols {
+            if let address = Disassembler.sectionAddress(of: symbol) { symbols[address, default: []].insert(symbol.name) }
+        }
+        let boundaries = Set(disassembler.functionStarts(of: machO)).union(symbols.keys).sorted()
+        for (address, name) in disassembler.recognizedHelperNames(in: machO, boundaries: boundaries, labels: [:]) {
+            #expect(symbols[address]?.contains("_" + name) == true, "\(entry) 0x\(String(address, radix: 16)): \(name) vs \(symbols[address] ?? [])")
+            namedHelpers.insert(name)
+        }
+    }
+    #expect(namedHelpers == Disassembler.helperShapeNames, "\(Disassembler.helperShapeNames.subtracting(namedHelpers))")
+}

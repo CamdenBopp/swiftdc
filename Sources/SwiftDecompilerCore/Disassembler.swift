@@ -807,7 +807,7 @@ public struct Disassembler: Sendable {
         })
         swiftTargets.formUnion(metadataNames.keys)
         // A recognised IRGen helper is a C function: its x20 is no `self`.
-        swiftTargets.subtract(metadataNames.filter { $0.value == Self.mangledNameMetadataHelperName }.keys)
+        swiftTargets.subtract(metadataNames.filter { Self.helperShapeNames.contains($0.value) }.keys)
         swiftTargets.formUnion(stubs.filter {
             $0.objcMethod == nil && (Self.isSwiftMangled($0.symbol) || $0.source == .metadata)
         }.map(\.startAddress))
@@ -1017,7 +1017,7 @@ public struct Disassembler: Sendable {
         })
         swiftTargets.formUnion(metadataNames.keys)
         // A recognised IRGen helper is a C function: its x20 is no `self`.
-        swiftTargets.subtract(metadataNames.filter { $0.value == Self.mangledNameMetadataHelperName }.keys)
+        swiftTargets.subtract(metadataNames.filter { Self.helperShapeNames.contains($0.value) }.keys)
         swiftTargets.formUnion(functions.filter {
             $0.objcMethod == nil && (Self.isSwiftMangled($0.symbol) || $0.source == .metadata)
         }.map(\.startAddress))
@@ -1914,31 +1914,245 @@ public struct Disassembler: Sendable {
     /// Metadata that names one address once per owner is a fold the symbol
     /// table cannot show in a stripped binary. A symbol label, where there is
     /// one, already decided the address, so only unlabeled ones are added.
-    /// The body IRGen emits for `__swift_instantiateConcreteTypeFromMangledNameV2`
-    /// (lib/IRGen/MetadataRequest.cpp), as Capstone prints it: given a cache
-    /// (x0) and a `{relative name offset, length}` pair (x1), return the cached
-    /// metadata, or fetch it by mangled name and cache it. The helper is a
-    /// private per-image function, so a stripped binary leaves it unnamed,
-    /// and its many calls read `sub_100008a20(0x1010f3150, 0x100dac540)`.
-    /// `nil` stands for the conditional branch and the call, checked apart.
-    static let mangledNameMetadataHelperBody: [String?] = [
-        "stp x20, x19, [sp, #-0x20]!", "stp x29, x30, [sp, #0x10]", "add x29, sp, #0x10",
-        "mov x19, x0", "ldr x0, [x0]", "and x8, x0, #1", "cmp x0, #0", "ccmp x8, #0, #0, ne",
-        nil,
-        "ldr x9, [x1]", "asr x8, x9, #32", "add x0, x1, w9, sxtw", "mov x1, x8", "mov x2, #0", "mov x3, #0",
-        nil,
-        "str x0, [x19]", "ldp x29, x30, [sp, #0x10]", "ldp x20, x19, [sp], #0x20", "ret",
+    /// The bodies of helpers IRGen emits privately into every image
+    /// (lib/IRGen/MetadataRequest.cpp, GenExistential.cpp), as
+    /// `normalizedBody` prints them: a direct branch's target relative to
+    /// the function's start, and a call or tail branch through a stub as
+    /// the stub's name. A stripped binary leaves them unnamed, and they are
+    /// among its most-called functions: GoodLinks calls
+    /// `__swift_instantiateConcreteTypeFromMangledNameV2` from 14,770 places
+    /// and `__swift_project_boxed_opaque_existential_1` from 2,077. Taken
+    /// from the symbols of the fixtures, -O and -Onone; bodies shorter than
+    /// eight instructions (the `memcpy` value witnesses, a lone `ret`) are
+    /// left out, since many functions share them.
+    static let helperShapes: [(name: String, body: [String])] = [
+        ("__swift_allocate_boxed_opaque_existential_1", [
+            "ldr x8, [x0, #0x18]",
+            "ldur x9, [x8, #-8]",
+            "ldrb w9, [x9, #0x52]",
+            "tbz w9, #1, +0x38",
+            "stp x20, x19, [sp, #-0x20]!",
+            "stp x29, x30, [sp, #0x10]",
+            "add x29, sp, #0x10",
+            "mov x19, x0",
+            "mov x0, x8",
+            "bl <swift_allocBox>",
+            "str x0, [x19]",
+            "mov x0, x1",
+            "ldp x29, x30, [sp, #0x10]",
+            "ldp x20, x19, [sp], #0x20",
+            "ret",
+        ]),
+        ("__swift_destroy_boxed_opaque_existential_1", [
+            "ldr x1, [x0, #0x18]",
+            "ldur x8, [x1, #-8]",
+            "ldrb w9, [x8, #0x52]",
+            "tbnz w9, #1, +0x18",
+            "ldr x2, [x8, #8]",
+            "br x2",
+            "ldr x0, [x0]",
+            "b <swift_release>",
+        ]),
+        ("__swift_destroy_boxed_opaque_existential_1", [
+            "sub sp, sp, #0x20",
+            "stp x29, x30, [sp, #0x10]",
+            "add x29, sp, #0x10",
+            "str x0, [sp]",
+            "ldr x8, [x0, #0x18]",
+            "str x8, [sp, #8]",
+            "ldur x8, [x8, #-8]",
+            "ldr w8, [x8, #0x50]",
+            "tbnz w8, #0x11, +0x48",
+            "b +0x28",
+            "ldr x1, [sp, #8]",
+            "ldr x0, [sp]",
+            "ldur x8, [x1, #-8]",
+            "ldr x8, [x8, #8]",
+            "blr x8",
+            "ldp x29, x30, [sp, #0x10]",
+            "add sp, sp, #0x20",
+            "ret",
+            "ldr x8, [sp]",
+            "ldr x0, [x8]",
+            "bl <swift_release>",
+            "ldp x29, x30, [sp, #0x10]",
+            "add sp, sp, #0x20",
+            "ret",
+        ]),
+        ("__swift_instantiateConcreteTypeFromMangledNameV2", [
+            "stp x20, x19, [sp, #-0x20]!",
+            "stp x29, x30, [sp, #0x10]",
+            "add x29, sp, #0x10",
+            "mov x19, x0",
+            "ldr x0, [x0]",
+            "and x8, x0, #1",
+            "cmp x0, #0",
+            "ccmp x8, #0, #0, ne",
+            "b.eq +0x44",
+            "ldr x9, [x1]",
+            "asr x8, x9, #32",
+            "add x0, x1, w9, sxtw",
+            "mov x1, x8",
+            "mov x2, #0",
+            "mov x3, #0",
+            "bl <swift_getTypeByMangledNameInContext2>",
+            "str x0, [x19]",
+            "ldp x29, x30, [sp, #0x10]",
+            "ldp x20, x19, [sp], #0x20",
+            "ret",
+        ]),
+        ("__swift_instantiateConcreteTypeFromMangledNameV2", [
+            "stp x20, x19, [sp, #-0x20]!",
+            "stp x29, x30, [sp, #0x10]",
+            "add x29, sp, #0x10",
+            "mov x19, x0",
+            "ldr x0, [x0]",
+            "and x8, x0, #1",
+            "cmp x0, #0",
+            "ccmp x8, #0, #0, ne",
+            "b.eq +0x44",
+            "ldr x9, [x1]",
+            "asr x8, x9, #32",
+            "add x0, x1, w9, sxtw",
+            "mov x1, x8",
+            "mov x2, #0",
+            "mov x3, #0",
+            "bl <swift_getTypeByMangledNameInContext>",
+            "str x0, [x19]",
+            "ldp x29, x30, [sp, #0x10]",
+            "ldp x20, x19, [sp], #0x20",
+            "ret",
+        ]),
+        ("__swift_instantiateConcreteTypeFromMangledNameV2", [
+            "stp x20, x19, [sp, #-0x20]!",
+            "stp x29, x30, [sp, #0x10]",
+            "add x29, sp, #0x10",
+            "mov x19, x0",
+            "ldr x0, [x0]",
+            "cbz x0, +0x1c",
+            "tbz w0, #0, +0x3c",
+            "ldr x9, [x1]",
+            "asr x8, x9, #32",
+            "add x0, x1, w9, sxtw",
+            "mov x1, x8",
+            "mov x2, #0",
+            "mov x3, #0",
+            "bl <swift_getTypeByMangledNameInContext2>",
+            "str x0, [x19]",
+            "ldp x29, x30, [sp, #0x10]",
+            "ldp x20, x19, [sp], #0x20",
+            "ret",
+        ]),
+        ("__swift_instantiateConcreteTypeFromMangledNameV2", [
+            "stp x20, x19, [sp, #-0x20]!",
+            "stp x29, x30, [sp, #0x10]",
+            "add x29, sp, #0x10",
+            "mov x19, x0",
+            "ldr x0, [x0]",
+            "cbz x0, +0x1c",
+            "tbz w0, #0, +0x3c",
+            "ldr x9, [x1]",
+            "asr x8, x9, #32",
+            "add x0, x1, w9, sxtw",
+            "mov x1, x8",
+            "mov x2, #0",
+            "mov x3, #0",
+            "bl <swift_getTypeByMangledNameInContext>",
+            "str x0, [x19]",
+            "ldp x29, x30, [sp, #0x10]",
+            "ldp x20, x19, [sp], #0x20",
+            "ret",
+        ]),
+        ("__swift_instantiateGenericMetadata", [
+            "sub sp, sp, #0x30",
+            "stp x29, x30, [sp, #0x20]",
+            "add x29, sp, #0x20",
+            "stp x1, x2, [sp, #8]",
+            "str x3, [sp, #0x18]",
+            "add x1, sp, #8",
+            "mov x2, x4",
+            "bl <swift_getGenericMetadata>",
+            "ldp x29, x30, [sp, #0x20]",
+            "add sp, sp, #0x30",
+            "ret",
+        ]),
+        ("__swift_instantiateGenericMetadata", [
+            "sub sp, sp, #0x30",
+            "stp x29, x30, [sp, #0x20]",
+            "add x29, sp, #0x20",
+            "mov x9, x1",
+            "mov x8, x2",
+            "mov x2, x4",
+            "add x1, sp, #8",
+            "str x9, [sp, #8]",
+            "str x8, [sp, #0x10]",
+            "str x3, [sp, #0x18]",
+            "bl <swift_getGenericMetadata>",
+            "ldp x29, x30, [sp, #0x20]",
+            "add sp, sp, #0x30",
+            "ret",
+        ]),
+        ("__swift_project_boxed_opaque_existential_1", [
+            "ldur x8, [x1, #-8]",
+            "ldr w8, [x8, #0x50]",
+            "tbz w8, #0x11, +0x20",
+            "ldr x9, [x0]",
+            "and x8, x8, #0xff",
+            "add x10, x8, #0x10",
+            "bic x8, x10, x8",
+            "add x0, x9, x8",
+            "ret",
+        ]),
+        ("__swift_project_boxed_opaque_existential_1", [
+            "sub sp, sp, #0x10",
+            "str x0, [sp]",
+            "ldur x8, [x1, #-8]",
+            "ldr w8, [x8, #0x50]",
+            "str x8, [sp, #8]",
+            "tbnz w8, #0x11, +0x28",
+            "b +0x1c",
+            "ldr x0, [sp]",
+            "add sp, sp, #0x10",
+            "ret",
+            "ldr x9, [sp, #8]",
+            "ldr x8, [sp]",
+            "ldr x8, [x8]",
+            "and x10, x9, #0xff",
+            "add x9, x10, #0x10",
+            "bic x9, x9, x10",
+            "add x0, x8, x9",
+            "add sp, sp, #0x10",
+            "ret",
+        ]),
     ]
     static let mangledNameMetadataHelperName = "__swift_instantiateConcreteTypeFromMangledNameV2"
+    static let helperShapeNames = Set(helperShapes.map(\.name))
 
-    /// Unnamed in-image functions whose whole body is a helper IRGen emits
-    /// with a fixed shape, by start address. Only spans of exactly the
-    /// helper's length are decoded.
+    /// A body as `helperShapes` spells it.
+    static func normalizedBody(_ instructions: [Instruction], start: UInt64, stubs: [UInt64: String]) -> [String] {
+        instructions.map { insn in
+            let fields = insn.text.split(whereSeparator: \.isWhitespace)
+            let mnemonic = fields.first.map(String.init) ?? ""
+            if let target = insn.branchTarget {
+                if let stub = stubs[target], insn.controlFlow == .call || insn.controlFlow == .branch {
+                    return "\(mnemonic) <\(stub)>"
+                }
+                if insn.controlFlow == .branch || insn.controlFlow == .conditionalBranch {
+                    var operands = fields.dropFirst().joined(separator: " ").components(separatedBy: ", ")
+                    operands[operands.count - 1] = "+0x" + String(target &- start, radix: 16)
+                    return mnemonic + " " + operands.joined(separator: ", ")
+                }
+            }
+            return fields.joined(separator: " ")
+        }
+    }
+
+    /// Unnamed in-image functions whose whole body is one of `helperShapes`,
+    /// by start address. Only spans of a shape's length are decoded.
     func recognizedHelperNames(
         in machO: MachOFile, boundaries: [UInt64], labels: [UInt64: String]
     ) -> [UInt64: String] {
-        let body = Self.mangledNameMetadataHelperBody
-        let length = UInt64(body.count * 4)
+        let byLength = Dictionary(grouping: Self.helperShapes, by: { UInt64($0.body.count * 4) })
         let stubs = symbolStubNames(in: machO)
         let sections = codeSections(in: machO)
         var names: [UInt64: String] = [:]
@@ -1946,25 +2160,12 @@ public struct Disassembler: Sendable {
             guard let section = CodeSection.containing(start, in: sections) else { continue }
             let stop = min(index + 1 < boundaries.count ? boundaries[index + 1] : section.range.upperBound,
                            section.range.upperBound)
-            guard stop - start >= length, stop - start < length + 16 else { continue }
-            let instructions = capstoneInstructions(in: machO, span: (start, start + length))
-            guard instructions.count == body.count else { continue }
-            let matches = zip(instructions, body).enumerated().allSatisfy { offset, pair in
-                let (insn, expected) = pair
-                if let expected {
-                    return insn.text.split(whereSeparator: \.isWhitespace).joined(separator: " ") == expected
-                }
-                if offset == 8 {
-                    // `b.eq` to the epilogue.
-                    return insn.text.hasPrefix("b.eq") && insn.branchTarget == start + 0x44
-                }
-                // The fetch: `swift_getTypeByMangledNameInContext`, or the
-                // signed-descriptor `…2` of newer deployment targets.
-                return insn.controlFlow == .call && insn.branchTarget.flatMap { stubs[$0] }.map {
-                    ["swift_getTypeByMangledNameInContext", "swift_getTypeByMangledNameInContext2"].contains($0)
-                } == true
+            // A function may be padded to the next boundary.
+            for (length, shapes) in byLength where stop - start >= length && stop - start < length + 16 {
+                let body = Self.normalizedBody(
+                    capstoneInstructions(in: machO, span: (start, start + length)), start: start, stubs: stubs)
+                if let shape = shapes.first(where: { $0.body == body }) { names[start] = shape.name }
             }
-            if matches { names[start] = Self.mangledNameMetadataHelperName }
         }
         return names
     }
@@ -2079,7 +2280,7 @@ public struct Disassembler: Sendable {
             )
         }
         if let metaName = metadataNames[start] {
-            let isHelper = metaName == Self.mangledNameMetadataHelperName
+            let isHelper = Self.helperShapeNames.contains(metaName)
             return DisassembledFunction(
                 symbol: subName,
                 demangledName: isHelper ? metaName : demangleCache.presentation(of: metaName),
@@ -2134,7 +2335,7 @@ public struct Disassembler: Sendable {
     ///
     /// A Go image adds its runtime's function table (`GoFunctionTable`),
     /// which its internal linker writes in place of LC_FUNCTION_STARTS.
-    private func functionStarts(of machO: MachOFile) -> [UInt64] {
+    func functionStarts(of machO: MachOFile) -> [UInt64] {
         var seen: Set<UInt64> = []
         var starts = (machO.functionStarts.map(Array.init) ?? []).compactMap { entry in
             let address = UInt64(entry.offset)
