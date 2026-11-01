@@ -5574,7 +5574,14 @@ if a test was observed to fail without the fix.
   open: a table whose bytes do decode (`52 52 52 …`) reads as code. The
   image gives no evidence against it: DumpPanic's `LC_DATA_IN_CODE` is
   empty (`datasize 0`), and a start reached only through `adrp`/`add` is
-  also how a function pointer is taken.
+  also how a function pointer is taken. The use, though, is evidence:
+  DumpPanic materialises 0x1000210b0 (`adrp x2`; `add x2, x2, #0xb0` at
+  0x1000210ec) only to load through it (`ld1.4s {v3, v4, v5}, [x2]`, a
+  48-byte vector constant), and nothing calls or branches into the
+  region. A start whose every reference is the base of a load, never a
+  branch target, a call, a stored or passed pointer, would be data by
+  its use; that needs an image-wide pass over address materialisations,
+  not yet written.
 
 ## 2026-10-30: symbols that are not addresses
 
