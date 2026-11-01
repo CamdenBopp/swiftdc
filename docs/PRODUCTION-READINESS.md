@@ -937,7 +937,9 @@ because it cannot be distinguished from a right one by reading the output.
   GoodLinks: 2,523 witnesses named, `sub_` functions 52,405 → 49,882.
   The cost of the shape rule: a type's own destroy that only loads one
   reference and releases it is indistinguishable from
-  `__swift_destroy_strong` and stays unnamed (`sharedwitness.swift`).
+  `__swift_destroy_strong` and stays unnamed (`sharedwitness.swift`). The
+  strong helpers themselves are in that fixture too: a single-case enum
+  over one reference (`enum Boxed { case one(Ref) }`) takes them.
 - **FIXED — a stripped type metadata accessor was an anonymous `sub_`.**
   Each type's descriptor points at its metadata accessor
   (`accessFunctionPtr`), and `strip -x` removes a local type's `…Ma`

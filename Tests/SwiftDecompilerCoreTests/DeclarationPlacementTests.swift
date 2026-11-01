@@ -333,9 +333,11 @@ func aStrippedValueWitnessIsNamedByItsTypesTableIfPresent(name: String) async th
     let original = "Fixtures/Sample/libSharedWitness.dylib", stripped = "Fixtures/Sample/libSharedWitness.stripped.dylib"
     guard FileManager.default.fileExists(atPath: original), FileManager.default.fileExists(atPath: stripped) else { return }
     let machO = try BinaryLoader.load(path: original)
-    let helpers = machO.symbols.filter { $0.name.hasPrefix("___swift_memcpy") || $0.name == "___swift_noop_void_return" }
+    let helpers = machO.symbols.filter {
+        $0.name.hasPrefix("___swift_memcpy") || $0.name == "___swift_noop_void_return" || $0.name.hasSuffix("_strong")
+    }
         .compactMap(Disassembler.sectionAddress(of:))
-    #expect(helpers.count >= 2)
+    #expect(helpers.count >= 6)
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: stripped) }
     for address in helpers {
         let name = functions.first { $0.startAddress == address }?.displayName ?? "-"
