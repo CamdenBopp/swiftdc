@@ -322,3 +322,26 @@ func aStrippedValueWitnessIsNamedByItsTypesTableIfPresent(name: String) async th
         #expect(agrees, "\(name) 0x\(String(function.startAddress, radix: 16)): \(function.displayName) vs \(real)")
     }
 }
+
+/// IRGen's shared helpers sit in a type's value witness table, and are not
+/// that type's witnesses: `__swift_memcpy200_8`, `Laden`'s initializeWithTake
+/// alone in its slot, an unrolled copy longer than 16 instructions, stays
+/// unnamed (`sharedwitness.swift`), while `Laden`'s own copy and assign
+/// witnesses are named. Its destroy (load a reference, release it) has the
+/// shape of `__swift_destroy_strong` and is declined with it.
+@Test func aSharedHelperInOneTypesTableIsNotNamedForItIfPresent() async throws {
+    let original = "Fixtures/Sample/libSharedWitness.dylib", stripped = "Fixtures/Sample/libSharedWitness.stripped.dylib"
+    guard FileManager.default.fileExists(atPath: original), FileManager.default.fileExists(atPath: stripped) else { return }
+    let machO = try BinaryLoader.load(path: original)
+    let helpers = machO.symbols.filter { $0.name.hasPrefix("___swift_memcpy") || $0.name == "___swift_noop_void_return" }
+        .compactMap(Disassembler.sectionAddress(of:))
+    #expect(helpers.count >= 2)
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: stripped) }
+    for address in helpers {
+        let name = functions.first { $0.startAddress == address }?.displayName ?? "-"
+        #expect(!name.contains("value witness for"), "0x\(String(address, radix: 16)): \(name)")
+    }
+    for witness in ["initializeWithCopy", "assignWithCopy", "assignWithTake"] {
+        #expect(functions.contains { $0.displayName == "\(witness) value witness for SharedWitness.Laden" }, "\(witness)")
+    }
+}

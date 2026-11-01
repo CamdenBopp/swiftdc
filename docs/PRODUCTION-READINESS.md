@@ -935,6 +935,9 @@ because it cannot be distinguished from a right one by reading the output.
   first named 358 helpers for the one type an image used them for.
   Stripped-name oracle: 190,334 → 235,241 recovered names, 0 conflicts.
   GoodLinks: 2,523 witnesses named, `sub_` functions 52,405 → 49,882.
+  The cost of the shape rule: a type's own destroy that only loads one
+  reference and releases it is indistinguishable from
+  `__swift_destroy_strong` and stays unnamed (`sharedwitness.swift`).
 - **FIXED — a stripped type metadata accessor was an anonymous `sub_`.**
   Each type's descriptor points at its metadata accessor
   (`accessFunctionPtr`), and `strip -x` removes a local type's `…Ma`

@@ -432,6 +432,11 @@ echo "==> tables in __text that LC_FUNCTION_STARTS marks (datastarts.s, stripped
 $CLANG -arch arm64 -dynamiclib datastarts.s -o libDataStarts.dylib
 strip -x libDataStarts.dylib
 
+echo "==> value witnesses IRGen fills with shared helpers (sharedwitness.swift, -O; strip -x copy)"
+$SWIFTC -parse-as-library -O -emit-library -module-name SharedWitness sharedwitness.swift -o libSharedWitness.dylib
+cp libSharedWitness.dylib libSharedWitness.stripped.dylib
+strip -x libSharedWitness.stripped.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release
