@@ -215,6 +215,17 @@ because it cannot be distinguished from a right one by reading the output.
   `scaled(self: g, ?)`, `TextOutputStream.write(self: s, "\n")` (was
   `write(self: s, 10, 0xe100000000000000)`). Fixtures `gaugekit.swift`
   and `gaugeclient.swift`.
+- **FIXED (completeness) — an imported C enum or option set parameter was
+  not seeded.** `describe(_: ComparisonResult)`, which returns its
+  argument, read `return ?`: the type's width is not in its name. A
+  foreign type's metadata candidate starts with its value witness table,
+  which for an `NS_ENUM` or `NS_OPTIONS` the loader binds to the builtin
+  integer's (`_$sBi64_WV`), so the image proves it one 64-bit register;
+  `EnumCaseIndex` now records those, keyed by the C name a signature
+  demangles to. `return arg0`, `if ((arg0 + 1) >=ᵁ 3)`
+  (`importedenum.swift`). Standalone images with chained fixups only.
+  No change to any other fixture or to GoodLinks, whose functions are
+  stripped.
 - **FIXED (completeness) — a subscript getter's index was dropped.** The
   no-arguments rule for static and class getters took
   `Grid.subscript.getter : (Swift.Int) -> Swift.Int` for a property, so

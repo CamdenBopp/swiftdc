@@ -425,6 +425,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtype
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib
 strip -x libMangledTypes.stripped.dylib
 
+echo "==> imported C enum and option set parameters (importedenum.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name ImportedEnum importedenum.swift -o libImportedEnum.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release

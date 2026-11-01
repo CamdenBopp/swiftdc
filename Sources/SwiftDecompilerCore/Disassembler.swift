@@ -4359,6 +4359,8 @@ public struct Disassembler: Sendable {
         // like a scalar — which is what lets `c == .case` over an enum parameter
         // reconstruct. Payload enums are absent from the index and stay unseeded.
         if enumCaseIndex.isNoPayloadEnum(type) { return .integer }
+        // An imported C enum or option set the image proves an integer.
+        if enumCaseIndex.isImportedInteger(type) { return .integer }
         return nil
     }
 
