@@ -109,6 +109,14 @@ def placeholderAgrees(name, truth):
         return True
     subject, kind = m.group(1), m.group(2)
     actual = kindOf(truth)
+    # `static T.kind` claims a static or class member, `T.kind` an instance one.
+    member = re.sub(r'^vtable thunk for .* dispatching to ', '', truth)
+    member = re.sub(r'^protocol witness for ', '', member)
+    member = re.sub(r'^(@objc |merged |dispatch thunk of |method descriptor for )+', '', member)
+    # `T.override` is a slot whose base method is in another image, and
+    # claims nothing about it.
+    if kind != 'override' and name.startswith('static ') != member.startswith('static '):
+        return False
     if kind in ('method', 'override'):
         if actual not in ('method', 'init') and kind == 'method':
             return False
