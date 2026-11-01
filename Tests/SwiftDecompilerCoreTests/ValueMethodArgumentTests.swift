@@ -57,23 +57,49 @@ struct ValueMethodArgumentTests {
         #expect(text.contains("return StaticText.note(\"ready\", 3)"), Comment(rawValue: text))
     }
 
-    /// Parameters past x7 go on the stack, and each renders `?`; declined
-    /// whole, `fatalError(m)`'s `_assertionFailure(_:_:file:line:flags:)`
-    /// read x0-x7 as eight arguments: `("Fatal error", 11, 2, ?, ?,
-    /// "StaticText/statictext.swift", 19, 2)`. A StaticString whose first
-    /// word is in x6 keeps its text: the stdlib's `("Fatal error", "Not
-    /// enough bits…", "Swift/…swiftinterface", ?, ?)` (`sample.debug`).
+    /// Parameters past x7 go on the stack and are read from the call's
+    /// stores; declined whole, `fatalError(m)`'s
+    /// `_assertionFailure(_:_:file:line:flags:)` read x0-x7 as eight
+    /// arguments: `("Fatal error", 11, 2, ?, ?, "StaticText/statictext.swift",
+    /// 19, 2)`. A StaticString whose first word is in x6 keeps its text, and
+    /// its flags byte is the first stack word: the stdlib's `("Fatal error",
+    /// "Not enough bits…", "Swift/…swiftinterface", <line>, 1)` (`sample.debug`).
     @Test func parametersOnTheStackAreUnknownIfPresent() async throws {
         let path = "Fixtures/Sample/libStaticText.dylib"
         let debug = "Fixtures/Sample/sample.debug"
         guard FileManager.default.fileExists(atPath: path), FileManager.default.fileExists(atPath: debug) else { return }
         let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
         let die = try #require(functions.first { $0.displayName.hasPrefix("StaticText.die(") }).renderPseudo()
-        #expect(die.contains("Swift._assertionFailure(\"Fatal error\", ?, \"StaticText/statictext.swift\", ?, ?)"),
+        #expect(die.contains("Swift._assertionFailure(\"Fatal error\", ?, \"StaticText/statictext.swift\", 14, 0)"),
                 Comment(rawValue: die))
         let sample = try await withStableDependencies { try await Disassembler().disassemble(path: debug) }
             .map { $0.renderPseudo() }.joined(separator: "\n")
         #expect(sample.contains("Swift._assertionFailure(\"Fatal error\", \"Not enough bits to represent the passed value\", \"Swift/"))
         #expect(!sample.contains("Swift._assertionFailure(\"Fatal error\", 11, 2"))
+        #expect(!sample.contains("swiftinterface\", ?, ?)"))
+    }
+
+    /// Apple arm64 packs stack words to their own alignment, and a word is
+    /// read only from a slot whose store matches it: two `UInt32`s share
+    /// the first slot, which this cannot split, and a store narrower than
+    /// its parameter is not that parameter.
+    @Test func stackWordsAreReadOnlyWhereTheirStoresMatch() {
+        func layout(_ types: [String], split: Int = 0) -> Disassembler.SwiftArgumentLayout {
+            Disassembler.SwiftArgumentLayout(slots: [], stack: types.map { ($0, .integer) }, splitStackWords: split)
+        }
+        let line = AbstractValue.immediate(14), flags = AbstractValue.immediate(0)
+        let read = Disassembler.stackParameterWords(
+            layout(["Swift.UInt", "Swift.UInt32"]), stackArguments: [line, flags], widths: [8, 4])
+        #expect(read.map { $0 ?? [] } == [[line], [flags]])
+        let narrow = Disassembler.stackParameterWords(
+            layout(["Swift.UInt", "Swift.UInt32"]), stackArguments: [line, flags], widths: [4, 4])
+        #expect(narrow.allSatisfy { $0 == nil })
+        let packed = Disassembler.stackParameterWords(
+            layout(["Swift.UInt32", "Swift.UInt32"]), stackArguments: [line], widths: [4])
+        #expect(packed[0] == [line] && packed[1] == nil)
+        let split = Disassembler.stackParameterWords(
+            layout(["Swift.UInt", "Swift.UInt32"], split: 1),
+            stackArguments: [.immediate(2), line, flags], widths: [1, 8, 4])
+        #expect(split.map { $0 ?? [] } == [[line], [flags]])
     }
 }

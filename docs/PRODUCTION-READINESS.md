@@ -170,8 +170,12 @@ because it cannot be distinguished from a right one by reading the output.
   now laid out and each one on the stack renders `?`; a StaticString
   whose first word is in a register keeps its text:
   `_assertionFailure("Fatal error", ?, "StaticText/statictext.swift", ?,
-  ?)`. GoodLinks: all 494 such calls. Reading the stack slots themselves
-  (Apple arm64 packs them to their own alignment) is open.
+  ?)`. GoodLinks: all 494 such calls. The stack parameters are now read
+  from the call's stores at their packed offsets (Apple arm64 aligns each
+  word to its own size), a word only from a store of its own width:
+  `("Fatal error", ?, "StaticText/statictext.swift", 14, 0)`, and in
+  GoodLinks `("Fatal error", "init(coder:) has not been implemented",
+  "GoodLinks/MainSplitViewController.swift", 37, 0)`.
 - **FIXED (soundness) — a StaticString parameter read as three
   arguments.** A StaticString is a start pointer, a code-unit count and a
   flags byte, and with no layout for it the call fell back to one register

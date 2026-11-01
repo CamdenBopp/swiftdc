@@ -3482,7 +3482,7 @@ public struct Disassembler: Sendable {
     ) -> [(kind: ScalarParameterClass, registers: Int, type: String)]? {
         swiftCallArgumentLayout(callee: callee, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex,
                                 anyContext: anyContext)
-            .flatMap { $0.unplaced == 0 ? $0.slots : nil }
+            .flatMap { $0.stack.isEmpty ? $0.slots : nil }
     }
 
     /// The slots of the parameters that fit in registers, and how many
@@ -3494,7 +3494,7 @@ public struct Disassembler: Sendable {
     static func swiftCallArgumentLayout(
         callee: String, enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex,
         anyContext: Bool = false
-    ) -> (slots: [(kind: ScalarParameterClass, registers: Int, type: String)], unplaced: Int)? {
+    ) -> SwiftArgumentLayout? {
         // A dispatch thunk calls a class method or a protocol requirement
         // through its vtable or witness table: `self` travels in x20 and the
         // formal parameters from x0, and a requirement's Self metadata and
@@ -3530,7 +3530,9 @@ public struct Disassembler: Sendable {
 
         let parameters = DisassembledFunction.splitTopLevelArguments(signature.head[range])
         var layout: [(kind: ScalarParameterClass, registers: Int, type: String)] = []
-        var integers = 0, floats = 0, unplaced = 0, spilled = false
+        var integers = 0, floats = 0, spilled = false
+        var stack: [(type: String, kind: ScalarParameterClass)] = []
+        var splitStackWords = 0
         for parameter in parameters {
             let type = parameterType(parameter)
             let kind: ScalarParameterClass, registers: Int
@@ -3553,15 +3555,72 @@ public struct Disassembler: Sendable {
                 // StaticString message starts in x6.
                 if !spilled, kind == .integer, type == "Swift.StaticString", integers - registers < 8 {
                     layout.append((kind, 8 - (integers - registers), type))
+                    splitStackWords = integers - 8
                 } else {
-                    unplaced += 1
+                    stack.append((type, kind))
                 }
                 spilled = true
             } else {
                 layout.append((kind, registers, type))
             }
         }
-        return (layout, unplaced)
+        return SwiftArgumentLayout(slots: layout, stack: stack, splitStackWords: splitStackWords)
+    }
+
+    /// A Swift call's parameters: those in registers, then those on the
+    /// stack, in order, after the last `splitStackWords` words of a
+    /// StaticString that began in registers.
+    struct SwiftArgumentLayout {
+        let slots: [(kind: ScalarParameterClass, registers: Int, type: String)]
+        let stack: [(type: String, kind: ScalarParameterClass)]
+        let splitStackWords: Int
+        var unplaced: Int { stack.count }
+    }
+
+    /// The byte size of each word a parameter of `type` puts on the stack,
+    /// or nil for a type this cannot size. A String is two words; a
+    /// StaticString a pointer, a count and a flags byte
+    /// (stdlib/public/core/StaticString.swift:77-92).
+    static func stackWordSizes(ofParameterType type: String) -> [Int]? {
+        switch type {
+        case "Swift.Int", "Swift.UInt", "Swift.Int64", "Swift.UInt64": return [8]
+        case "Swift.Int32", "Swift.UInt32": return [4]
+        case "Swift.Int16", "Swift.UInt16": return [2]
+        case "Swift.Int8", "Swift.UInt8", "Swift.Bool": return [1]
+        case _ where twoWordStringTypes.contains(type): return [8, 8]
+        case "Swift.StaticString": return [8, 8, 1]
+        default: return nil
+        }
+    }
+
+    /// The words of the stack parameters, read from the eight-byte slots a
+    /// call's stores fill. Apple arm64 packs each word at the next offset
+    /// its own size aligns, where AAPCS64 would round each to eight bytes.
+    /// A word is read only from a slot whose store began at its offset with
+    /// its width. The first parameter that cannot be read stops the
+    /// reading: it and every later one are nil.
+    static func stackParameterWords(
+        _ layout: SwiftArgumentLayout, stackArguments: [AbstractValue], widths: [Int]
+    ) -> [[AbstractValue]?] {
+        var offset = 0
+        var readable = true
+        func read(_ size: Int) -> AbstractValue? {
+            offset = (offset + size - 1) / size * size
+            defer { offset += size }
+            guard offset % 8 == 0 else { return nil }
+            let slot = offset / 8
+            guard slot < stackArguments.count, slot < widths.count, widths[slot] == size else { return nil }
+            return stackArguments[slot]
+        }
+        for size in [8, 8, 1].suffix(layout.splitStackWords) where read(size) == nil { readable = false }
+        return layout.stack.map { parameter in
+            guard readable, parameter.kind == .integer,
+                  let sizes = stackWordSizes(ofParameterType: parameter.type)
+            else { readable = false; return nil }
+            let words = sizes.map(read)
+            guard words.allSatisfy({ $0 != nil }) else { readable = false; return nil }
+            return words.compactMap { $0 }
+        }
     }
 
     /// A C function's arguments as its SDK declaration places them, for
@@ -4648,8 +4707,7 @@ public struct Disassembler: Sendable {
             // not that String. Read one register per word, `takeTwo(_: String,
             // _: Int)` with nothing tracked rendered `takeTwo()`, and with 7
             // in x2 `takeTwo(?, ?, 7)`.
-            let swiftLayout: (slots: [(kind: ScalarParameterClass, registers: Int, type: String)], unplaced: Int)?
-                = calleeByAddress[address].flatMap {
+            let swiftLayout: SwiftArgumentLayout? = calleeByAddress[address].flatMap {
                 Self.swiftCallArgumentLayout(
                     callee: layoutName(at: address, callee: $0),
                     enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
@@ -4749,8 +4807,24 @@ public struct Disassembler: Sendable {
                         return cLayout == nil || holdsWholeResults(value) ? value : .unknown
                     }
                 }
-                let unplaced = Array(repeating: AbstractValue.unknown,
+                var unplaced = Array(repeating: AbstractValue.unknown,
                                      count: cLayout?.unplaced ?? swiftLayout?.unplaced ?? 0)
+                if cLayout == nil, let swiftLayout, !swiftLayout.stack.isEmpty {
+                    let stackWords = Self.stackParameterWords(
+                        swiftLayout, stackArguments: site.stackArguments, widths: site.stackArgumentWidths)
+                    unplaced = zip(swiftLayout.stack, stackWords).map { parameter, words in
+                        guard let words = words?.map(sanitizeValue) else { return .unknown }
+                        switch parameter.type {
+                        case "Swift.StaticString":
+                            if case .address = words[0] { return words[0] }
+                            return .unknown
+                        case _ where words.count == 2:
+                            return swiftStringLiteral(words[0], words[1]) != nil ? .aggregate(words) : .unknown
+                        default:
+                            return words[0]
+                        }
+                    }
+                }
                 var following: [AbstractValue] = []
                 if leadingSlots != nil {
                     following = values.dropFirst(integer).map(sanitizeValue)
