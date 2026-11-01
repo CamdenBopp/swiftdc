@@ -172,3 +172,16 @@ and the path, and `run` passes them to swiftdc with `--image-path`.
 Time numbers are only comparable at `--jobs 1` with nothing else running.
 The manifest and output directory name private apps: keep them out of the
 repository.
+
+### Type identity
+
+`Tools/audit/typeid.py` checks `dump` against the binary's own symbols.
+Every nominal type descriptor symbol (`$s…Mn`), demangled by
+`swift-demangle`, must be a type `dump` declares, compared by module and
+nesting path.
+
+```bash
+python3 -I Tools/audit/typeid.py .build/release/swiftdc <binary> --show
+python3 -I Tools/audit/typeid.py .build/release/swiftdc cache:/usr/lib/swift/libswiftCore.dylib
+```
+

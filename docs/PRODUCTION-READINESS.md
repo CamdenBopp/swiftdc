@@ -5702,3 +5702,67 @@ branch (`9f92b71`), accessor decoding and classification (`10712d8`,
   fields in 10 of 177. Such a field now prints the name the reference
   resolves to (`center: sample.Point`) or `?`, and a plain mangling
   (`Si`) prints as before. SwiftUI: 0 control bytes, 0 `?`.
+- **FIXED (completeness, e82eedc): `dump` skipped a declaration it failed
+  to render.** A type, protocol, conformance or associated-type entry
+  whose rendering threw was left out, which reads as a binary without
+  it. GenerativeAgents exports `OpenAICompatibleModel` and
+  `InMemorySessionService`, and `dump` and `interface` never mentioned
+  them. Each now prints `// struct GenerativeAgents.OpenAICompatibleModel:
+  not rendered: unexpected(at: 4)` in its place. The error itself is
+  OPEN below.
+- **FIXED (correctness, 12f3d24): a constrained existential field printed
+  `symbolic existential type (non-unique) 0x0 <Swift.String>`.** The
+  shape's existential type was demangled but never printed. `dump` and
+  `layout` now substitute the field's arguments into it:
+  `Optional<any Source<Self.Source.Element == Swift.String>>`, the type
+  swift-demangle gives the field's accessor symbols. On SwiftUI 3 fields
+  change and on Foundation 2 (its predicate expressions).
+- **FIXED (soundness, 302f9ec): a function-local type printed as a member
+  of the enclosing type.** The renderer skipped the unnamed anonymous
+  context, so LLDB's `PrecedenceGroupBody`, local to
+  `ASTGenVisitor.generate(precedenceGroupDecl:)`, printed as
+  `ASTGenVisitor.PrecedenceGroupBody`. The oracle counted 468 such types.
+  The type's descriptor symbol now names it (`Local #1 in
+  M.Outer.make() -> Any`). Without one, the dropped context is marked as
+  the Swift runtime marks it: `M.Outer.(unknown context at $1514).Local`.
+- **FIXED (completeness, 7e0d714): a type no type metadata record lists
+  was missing from `dump`.** IRGen records a type only when it emits the
+  type's metadata, which an optimized build does lazily. LLDB's
+  `ASTGenVisitor.DeclAttributesResult` has a descriptor and field
+  metadata but no record. The field descriptors in `__swift5_fieldmd` now
+  add such types. Declared types: LLDB 872 → 876, SwiftUI 6,308 → 6,316,
+  Foundation 1,180 → 1,183.
+- **OPEN (completeness): a cross-image indirect reference in a dyld cache
+  image resolves to the wrong place.** GenerativeAgents'
+  `OpenAICompatibleModel.source` is a constrained existential whose
+  argument is a type from IntelligencePlatformLibrary (an indirect 0x02
+  reference). MachOSwiftSection reads the pointer cell as an "opaque type"
+  at offset 0, with ASCII text for flags, so the demangle fails and the
+  type is not rendered. 4 types in that image are affected.
+- **OPEN (completeness): `layout`, and field naming in `disasm`, still read
+  types from the records only.** UnrecordedTypes feeds `dump` alone.
+
+## 2026-10-31: the dyld shared cache in the corpus, and a type-identity oracle
+
+The corpus harness reads dyld shared cache images (`cache-manifest`,
+02cc7bd). On the macOS 27 host cache: 4,115 images, 1,913 with Swift
+metadata (2.55 GB of `__text`), 3,130 with Objective-C classes. Release
+build 9aabf0f, the 3,215 Swift or Objective-C images with at most 8 MB of
+`__text`, `dump`, `interface`, `layout`, `objc`, `swift-version` and
+`xrefs --unreferenced`, 4 jobs, 1.8 GB and 900 s limits: 19,290 runs, 0
+crashes, 0 memory kills, 0 timeouts, 0 errors. No output holds a control
+byte (f57b103). `xrefs` reports 10,586,556 functions against 10,586,566
+starts. The 10 missing starts sit in data inside `__text`
+(libMobileGestalt and 6 more, 1 to 3 each), the open data-in-`__text`
+item above.
+
+**Type identity** (`Tools/audit/typeid.py`): every nominal type descriptor
+symbol (`$s…Mn`) an image defines, demangled by swift-demangle, must be a
+type `dump` declares, compared by module and nesting path. A file's
+symbols come from `nm -U`; a cache image's from its exports. Across 3,528
+Swift images (1,913 cache, 1,615 files), 266,460 type symbols, 889 (0.33%)
+in 209 images were not declared on 9aabf0f. The oracle was seen to fail
+on a `dump` with one type renamed. On those 209 images, after the fixes
+above, missing went 847 → 205 of 69,778, and 4 are not-rendered stubs.
+What is left: 26 C-imported `__C` types, local types in private functions
+whose names the oracle keys differently, and a tail not yet read.
