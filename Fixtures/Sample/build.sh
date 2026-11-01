@@ -412,6 +412,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name ValueMethod valuemethod.
 cp libValueMethod.dylib libValueMethod.stripped.dylib
 strip -x libValueMethod.stripped.dylib
 
+echo "==> a StaticString parameter's three words (statictext.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name StaticText statictext.swift -o libStaticText.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release

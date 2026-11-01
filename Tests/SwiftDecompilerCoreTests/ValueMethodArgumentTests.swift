@@ -45,4 +45,15 @@ struct ValueMethodArgumentTests {
         guard let text = try await pseudo("use") else { return }
         #expect(text.contains("ValueMethod.Meter.scaled(arg1, arg0)"), Comment(rawValue: text))
     }
+
+    /// A StaticString is three words and one argument: `note("ready", 3)`
+    /// read `note("ready", 5, 2, 3)`, its count and flags as two more
+    /// arguments (`statictext.swift`).
+    @Test func aStaticStringParameterIsOneArgumentIfPresent() async throws {
+        let path = "Fixtures/Sample/libStaticText.dylib"
+        guard FileManager.default.fileExists(atPath: path) else { return }
+        let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+        let text = try #require(functions.first { $0.displayName.hasPrefix("StaticText.report(") }).renderPseudo()
+        #expect(text.contains("return StaticText.note(\"ready\", 3)"), Comment(rawValue: text))
+    }
 }

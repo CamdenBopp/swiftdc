@@ -3615,6 +3615,9 @@ public struct Disassembler: Sendable {
     static func integerRegisterFootprint(ofParameterType type: String) -> Int? {
         if type.hasPrefix("inout "), type.count > "inout ".count { return 1 }
         if twoWordStringTypes.contains(type) { return 2 }
+        // stdlib/public/core/StaticString.swift:77-92: a start pointer (or
+        // a scalar), a code-unit count and a flags byte.
+        if type == "Swift.StaticString" { return 3 }
         if let payload = optionalScalarPayload(ofParameterType: type) { return payload.bytes == 8 ? 2 : 1 }
         return nil
     }
@@ -4694,6 +4697,12 @@ public struct Disassembler: Sendable {
                         let words = raw.map(sanitizeValue)
                         if let payload = Self.optionalScalarPayload(ofParameterType: slot.type) {
                             return Self.optionalScalarArgument(words, payloadBytes: payload.bytes)
+                        }
+                        // A StaticString is its text when its first word
+                        // points at it; a scalar or anything else is `?`.
+                        if slot.type == "Swift.StaticString" {
+                            if case .address = words[0] { return words[0] }
+                            return .unknown
                         }
                         if words.count == 2 {
                             if let site = stringCallResult(raw[0], raw[1]) {

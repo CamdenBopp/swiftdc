@@ -161,6 +161,13 @@ because it cannot be distinguished from a right one by reading the output.
   non-mutating method's `self` words print unlabelled after the
   parameters, and a value-type getter, which has no formal parameters,
   stays positional.
+- **FIXED (soundness) — a StaticString parameter read as three
+  arguments.** A StaticString is a start pointer, a code-unit count and a
+  flags byte, and with no layout for it the call fell back to one register
+  per argument: `note("ready", 3)` read `note("ready", 5, 2, 3)`, and
+  GoodLinks' 47 `_assertionFailure(_:_:flags:)` calls read
+  `("Fatal error", 11, 2, ?, ?, 0)`, now `("Fatal error", ?, 0)`
+  (`statictext.swift`).
 - **FIXED (soundness) — Swift runtime entry points without a table
   arity printed positional arguments.** `swift_endAccess`,
   `swift_isUniquelyReferenced_nonNull_native`, `_Unwind_Resume` and others
