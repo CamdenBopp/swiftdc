@@ -1532,3 +1532,43 @@ private func rejectsContext(struct structure: Data? = nil, module: Data? = nil) 
     #expect(throws: BinaryLoadError.self) { try check(image(kind: 0, protocolOffset: 0x7000)) }
     #expect(throws: BinaryLoadError.self) { try check(image(kind: 0, protocolOffset: 0x20, typeOffset: 0x7000)) }
 }
+
+/// A conformance's resilient witnesses trail its header, and each one's
+/// requirement pointer must land in the image: the reader resolved a
+/// fuzzed one's slot at a negative file offset and trapped
+/// (libMangledTypes.stripped, seed 2024, mutant 39).
+@Test func aResilientWitnessRequirementIsCheckedBeforeItIsResolved() throws {
+    // Image at 0x1000: the record at 0x1000, a retroactive conformance at
+    // 0x1010 whose witness count is at 0x1024 (after the retroactive
+    // context pointer), its one witness at 0x1028, and a protocol
+    // descriptor at 0x1030 named "P" at 0x1040.
+    func image(requirementOffset: Int32) -> Data {
+        var bytes = Data(count: 0x60)
+        func put32(_ value: UInt32, at offset: Int) {
+            withUnsafeBytes(of: value.littleEndian) { bytes.replaceSubrange(offset ..< offset + 4, with: $0) }
+        }
+        put32(0x10, at: 0x00)                                   // record -> 0x1010
+        put32(0x20, at: 0x10)                                   // protocol -> 0x1030
+        put32(0x1c, at: 0x14)                                   // type -> 0x1030
+        put32(1 << 16 | 1 << 6, at: 0x1c)                       // resilient witnesses, retroactive
+        put32(1, at: 0x24)                                      // one witness
+        put32(UInt32(bitPattern: requirementOffset), at: 0x28)  // requirement, relative to 0x1028
+        put32(3, at: 0x30)
+        put32(0x08, at: 0x38)
+        bytes[0x40] = UInt8(ascii: "P")
+        return bytes
+    }
+    func check(_ bytes: Data) throws {
+        let reader = MachOPreflight.PointerReader(sections: [], encodings: [:])
+        try MachOPreflight.validateConformanceDescriptors(
+            records: bytes.prefix(4), address: 0x1000, reader: reader, segments: [0x1000 ..< 0x1060], path: "t",
+            read: { address, count in
+                guard address >= 0x1000, address + UInt64(count) <= 0x1060 else { return nil }
+                return bytes.subdata(in: Int(address - 0x1000) ..< Int(address - 0x1000) + count)
+            })
+    }
+    try check(image(requirementOffset: 0x08))
+    try check(image(requirementOffset: 0x09))  // an indirect slot the reader does not judge
+    #expect(throws: BinaryLoadError.self) { try check(image(requirementOffset: -0x6200_0000)) }
+    #expect(throws: BinaryLoadError.self) { try check(image(requirementOffset: -0x6200_0000 | 1)) }
+}

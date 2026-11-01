@@ -1395,6 +1395,8 @@ public enum MachOPreflight {
                     try validateContextDescriptor(at: type, read: read, segments: segments, path: path, what: typeWhat)
                 }
             }
+            try validateResilientWitnesses(
+                descriptor: descriptor, flags: flags, index: index, reader: reader, segments: segments, read: read, fail: fail)
             let relative = UInt64(bitPattern: Int64(Int32(bitPattern: protocolField & ~1)))
             let target = descriptor &+ relative
             let what = "__swift5_proto[\(index)]'s protocol"
@@ -1416,6 +1418,49 @@ public enum MachOPreflight {
                 // host binaries, the swift-5.0 back-deployment libraries
                 // among them), and an undecoded or unloaded one is not
                 // judged.
+                break
+            }
+        }
+    }
+
+    /// The resilient witnesses a conformance carries after its header, at the
+    /// trailing offset MachOSwiftSection reads them from
+    /// (`ProtocolConformance.swift`: a retroactive context pointer if bit 6,
+    /// 12-byte conditional requirements counted in bits 8–15, 8-byte pack
+    /// shapes counted in bits 24–31, then, if bit 16, a witness count and
+    /// `{requirement, implementation}` pairs). Each requirement points to a
+    /// protocol requirement directly or, bit 0 set, through a slot, and both
+    /// must lie in a mapped segment: the reader resolves the slot's bind at
+    /// whatever file offset the pointer makes, and a fuzzed top byte made it
+    /// negative and trapped (`Tools/fuzz.swift metadata
+    /// libMangledTypes.stripped.dylib 100 2024`, mutant 39).
+    static func validateResilientWitnesses(
+        descriptor: UInt64, flags: UInt32, index: Int, reader: PointerReader, segments: [Range<UInt64>],
+        read: (UInt64, Int) -> Data?, fail: (Int, String) -> BinaryLoadError
+    ) throws {
+        guard flags & (1 << 16) != 0 else { return }
+        var offset = descriptor &+ 16
+        if flags & (1 << 6) != 0 { offset &+= 4 }
+        offset &+= 12 * UInt64((flags >> 8) & 0xff) + 8 * UInt64(flags >> 24)
+        guard let header = read(offset, 4), let count = header.u32(at: 0),
+              let witnesses = read(offset &+ 4, 8 * Int(count))
+        else { throw fail(index, "has resilient witnesses at 0x\(String(offset, radix: 16)) that run past the file") }
+        for witness in 0 ..< Int(count) {
+            guard let field = witnesses.u32(at: witness * 8) else { break }
+            let place = offset &+ 4 &+ UInt64(witness * 8)
+            let target = place &+ UInt64(bitPattern: Int64(Int32(bitPattern: field & ~1)))
+            guard segments.contains(where: { $0.contains(target) }) else {
+                throw fail(index, "has resilient witness \(witness) whose requirement points to 0x\(String(target, radix: 16)), outside every mapped segment")
+            }
+            guard field & 1 != 0 else { continue }
+            switch reader.field(at: target) {
+            case .some(.some(.address(let requirement))):
+                guard segments.contains(where: { $0.contains(requirement) }) else {
+                    throw fail(index, "has resilient witness \(witness) whose requirement slot holds 0x\(String(requirement, radix: 16)), outside every mapped segment")
+                }
+            case .some(.some(.badBind(let ordinal))):
+                throw fail(index, "binds resilient witness \(witness)'s requirement to import \(ordinal), past the import table")
+            default:
                 break
             }
         }

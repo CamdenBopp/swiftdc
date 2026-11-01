@@ -1197,6 +1197,22 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 3. Robustness — what breaks it?
 
+- **FIXED — a corrupt resilient witness trapped `dump`, `interface` and
+  `analyze`.** The conformance check (5d17c6f) stopped at the 16-byte
+  header, but MachOSwiftSection also resolves each resilient witness's
+  requirement pointer, through its slot's bind, at whatever file offset the
+  pointer makes. Fuzzing (`Tools/fuzz.swift metadata
+  libMangledTypes.stripped.dylib 100 2024`, mutant 39) set a requirement's
+  top byte and trapped with `Negative value is not representable` in
+  `MachOFile.resolveBind`. Preflight now finds the witnesses at the trailing
+  offset MachOSwiftSection reads them from (after the retroactive pointer,
+  the conditional requirements and the pack shapes), requires the array to
+  lie in the file, and requires each requirement, and each slot's rebase
+  target, to lie in a mapped segment. Two more mutants (24, 86), a pack
+  shape count of 255 and 165, are now rejected: the old build accepted them
+  and rendered `extension Choice: Swift.Equatable {}`, the witness silently
+  gone. The same fuzz run: 0 crashes in 800 (3 before); `version` over the
+  6,127-binary host corpus: 0 status changes.
 - **FIXED — a corrupt conformance descriptor trapped every subcommand.**
   Preflight checked that each `__swift5_proto` entry points at an aligned
   descriptor, not the descriptor: MachOSwiftSection force-unwraps its type
