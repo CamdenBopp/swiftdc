@@ -111,20 +111,20 @@ struct MetadataSymbolizer: Sendable {
                 // A null relative pointer is a resilient / externally-defined slot.
                 guard relative != 0 else { continue }
                 let address = machO.address(forOffset: method.offset + implementationDelta + relative)
-                record(address, "\(typeName).\(methodKindLabel(method.layout.flags.kind))")
+                record(address, Self.label(typeName, methodKindLabel(method.layout.flags.kind),
+                                           isInstance: method.layout.flags.isInstance))
             }
             for override in model.methodOverrideDescriptors {
                 guard let offset = override.implementationOffset else { continue }
                 // The overridden method's kind is known when its descriptor is
                 // in this image; across images it is a symbol, and the slot is
                 // labelled only as the override it is.
-                let kind: String
                 if case .element(let base)? = try? override.methodDescriptor(in: machO.context) {
-                    kind = methodKindLabel(base.layout.flags.kind)
+                    record(machO.address(forOffset: offset), Self.label(typeName, methodKindLabel(base.layout.flags.kind),
+                                                                        isInstance: base.layout.flags.isInstance))
                 } else {
-                    kind = "override"
+                    record(machO.address(forOffset: offset), "\(typeName).override")
                 }
-                record(machO.address(forOffset: offset), "\(typeName).\(kind)")
             }
         }
         return claims
@@ -153,6 +153,14 @@ struct MetadataSymbolizer: Sendable {
         }
         guard contexts.isEmpty else { return nil }
         return FieldMapBuilder.qualifiedName(of: type, in: machO) ?? (try? model.descriptor.name(in: machO))
+    }
+
+    /// `T.kind`, or `static T.kind` for a class or static member, as
+    /// swift-demangle spells one: `OESystemPlugin.getter` read as an
+    /// instance getter for `static pluginExtension`. An initializer is never
+    /// spelled static.
+    static func label(_ owner: String, _ kind: String, isInstance: Bool) -> String {
+        isInstance || kind == "init" ? "\(owner).\(kind)" : "static \(owner).\(kind)"
     }
 
     private func methodKindLabel(_ kind: MethodDescriptorKind) -> String {
@@ -186,7 +194,8 @@ struct MetadataSymbolizer: Sendable {
             let label = typeName.map { "\($0): \(protocolName)" } ?? protocolName
             for (index, requirement) in proto.requirements.enumerated() {
                 guard let kind = functionKindLabel(requirement.layout.flags.kind) else { continue }
-                slots.append((pattern.offset + pointerSize * (index + 1), "\(label).\(kind)", typeName ?? label))
+                slots.append((pattern.offset + pointerSize * (index + 1),
+                              Self.label(label, kind, isInstance: requirement.layout.flags.isInstance), typeName ?? label))
             }
         }
         guard let lowest = slots.map(\.offset).min(), let highest = slots.map(\.offset).max() else { return [] }

@@ -5808,6 +5808,9 @@ symbols and at most 1.5 MB of `__text`.
   `NSTextView(diffSpecials)` holds `extras`'s 9 methods; only the method
   list's symbol, `NSTextView(diffSpecials|extras)`, says so). The runtime
   reports the first name, and so does swiftdc.
-- **OPEN (correctness): a static method named from a vtable reads as an
+- **FIXED (correctness): a class member named from metadata read as an
   instance one.** `OpenEmuKit.OESystemPlugin.getter` is a `static`
-  getter, and the label does not say so.
+  getter. Vtable entries and witnesses now say `static` when their
+  descriptor's flags do (an initializer never does). Stripped-name oracle,
+  472 binaries, counting static-ness: 3,917 conflicts → 0, none lost
+  (172,466 names).

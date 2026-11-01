@@ -60,6 +60,21 @@ struct DeclarationPlacementTests {
         }
     }
 
+    /// A class member's vtable entry was named like an instance one:
+    /// `LocalTypes.Registry.getter` for `class var kind`.
+    @Test func aStrippedClassMemberIsNamedStaticIfPresent() async throws {
+        let path = "Fixtures/Sample/libLocalTypes.stripped.dylib"
+        guard FileManager.default.fileExists(atPath: path) else { return }
+        let machO = try BinaryLoader.load(path: path)
+        let names = await withStableDependencies { MetadataSymbolizer().functionNames(in: machO) }
+        let registry = Set(names.unique.values.filter { $0.contains("Registry.") })
+        #expect(registry.contains("static LocalTypes.Registry.getter"), "\(registry.sorted())")
+        #expect(registry.contains("static LocalTypes.Registry.method"), "\(registry.sorted())")
+        #expect(registry.contains("LocalTypes.Registry.method"), "\(registry.sorted())")
+        #expect(registry.contains("static LocalTypes.SpecialRegistry.getter"), "\(registry.sorted())")
+        #expect(!registry.contains("LocalTypes.Registry.getter"), "\(registry.sorted())")
+    }
+
     /// A private class's anonymous context is its file, which the private
     /// discriminator names (`Foundation.(__PlistEncoder in _5692…)`). Marking
     /// local contexts must keep such a name, not decline it: on a stripped

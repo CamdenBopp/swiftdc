@@ -55,6 +55,19 @@ private final class PrivateBigBox: PrivateBox {
 }
 public func useBox(_ big: Bool) -> Int { (big ? PrivateBigBox() : PrivateBox()).grow() }
 
+// Class members in a vtable: `kind` and `make()` are not instance members,
+// and a stripped binary's names must say `static`.
+open class Registry {
+    public init() {}
+    open class var kind: String { "base" }
+    open class func make() -> Registry { Registry() }
+    open func describe() -> String { "registry" }
+}
+open class SpecialRegistry: Registry {
+    open override class var kind: String { "special" }
+    open override class func make() -> Registry { SpecialRegistry() }
+}
+
 public struct Holder {
     public var source: (any Source<String>)?
     public var pair: (any Source<Int>)?
