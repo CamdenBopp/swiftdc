@@ -56,4 +56,24 @@ struct ValueMethodArgumentTests {
         let text = try #require(functions.first { $0.displayName.hasPrefix("StaticText.report(") }).renderPseudo()
         #expect(text.contains("return StaticText.note(\"ready\", 3)"), Comment(rawValue: text))
     }
+
+    /// Parameters past x7 go on the stack, and each renders `?`; declined
+    /// whole, `fatalError(m)`'s `_assertionFailure(_:_:file:line:flags:)`
+    /// read x0-x7 as eight arguments: `("Fatal error", 11, 2, ?, ?,
+    /// "StaticText/statictext.swift", 19, 2)`. A StaticString whose first
+    /// word is in x6 keeps its text: the stdlib's `("Fatal error", "Not
+    /// enough bits…", "Swift/…swiftinterface", ?, ?)` (`sample.debug`).
+    @Test func parametersOnTheStackAreUnknownIfPresent() async throws {
+        let path = "Fixtures/Sample/libStaticText.dylib"
+        let debug = "Fixtures/Sample/sample.debug"
+        guard FileManager.default.fileExists(atPath: path), FileManager.default.fileExists(atPath: debug) else { return }
+        let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+        let die = try #require(functions.first { $0.displayName.hasPrefix("StaticText.die(") }).renderPseudo()
+        #expect(die.contains("Swift._assertionFailure(\"Fatal error\", ?, \"StaticText/statictext.swift\", ?, ?)"),
+                Comment(rawValue: die))
+        let sample = try await withStableDependencies { try await Disassembler().disassemble(path: debug) }
+            .map { $0.renderPseudo() }.joined(separator: "\n")
+        #expect(sample.contains("Swift._assertionFailure(\"Fatal error\", \"Not enough bits to represent the passed value\", \"Swift/"))
+        #expect(!sample.contains("Swift._assertionFailure(\"Fatal error\", 11, 2"))
+    }
 }

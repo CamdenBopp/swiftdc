@@ -161,6 +161,17 @@ because it cannot be distinguished from a right one by reading the output.
   non-mutating method's `self` words print unlabelled after the
   parameters, and a value-type getter, which has no formal parameters,
   stays positional.
+- **FIXED (soundness) — a signature with parameters on the stack read
+  x0-x7 as its arguments.** A Swift signature needing more than eight
+  integer (or float) registers declined whole, so the call was
+  positional: `fatalError(m)` read `_assertionFailure("Fatal error", 11,
+  2, ?, ?, "StaticText/statictext.swift", 19, 2)`, the count and flag
+  words of two StaticStrings as arguments. The parameters that fit are
+  now laid out and each one on the stack renders `?`; a StaticString
+  whose first word is in a register keeps its text:
+  `_assertionFailure("Fatal error", ?, "StaticText/statictext.swift", ?,
+  ?)`. GoodLinks: all 494 such calls. Reading the stack slots themselves
+  (Apple arm64 packs them to their own alignment) is open.
 - **FIXED (soundness) — a StaticString parameter read as three
   arguments.** A StaticString is a start pointer, a code-unit count and a
   flags byte, and with no layout for it the call fell back to one register

@@ -6,3 +6,9 @@
     Int(bitPattern: text.utf8Start) &+ text.utf8CodeUnitCount &+ count
 }
 @inline(never) public func report() -> Int { note("ready", 3) }
+
+// `fatalError(m)` calls `_assertionFailure(_:_:file:line:flags:)`: three,
+// two and three words in x0-x7, then `line` and `flags` on the stack.
+// True behaviour: five arguments, the prefix "Fatal error", m, the file
+// name, the line and the flags.
+@inline(never) public func die(_ m: String) -> Never { fatalError(m) }

@@ -3480,6 +3480,21 @@ public struct Disassembler: Sendable {
         callee: String, enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex,
         anyContext: Bool = false
     ) -> [(kind: ScalarParameterClass, registers: Int, type: String)]? {
+        swiftCallArgumentLayout(callee: callee, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex,
+                                anyContext: anyContext)
+            .flatMap { $0.unplaced == 0 ? $0.slots : nil }
+    }
+
+    /// The slots of the parameters that fit in registers, and how many
+    /// parameters follow them on the stack. Past x7 or v7 a parameter's
+    /// words go to the stack, packed to their own alignment, and so does
+    /// every parameter after it here: each renders `?`. `_assertionFailure(_:
+    /// _:file:line:flags:)` takes ten words, and declined whole it read
+    /// x0-x7 as eight arguments.
+    static func swiftCallArgumentLayout(
+        callee: String, enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex,
+        anyContext: Bool = false
+    ) -> (slots: [(kind: ScalarParameterClass, registers: Int, type: String)], unplaced: Int)? {
         // A dispatch thunk calls a class method or a protocol requirement
         // through its vtable or witness table: `self` travels in x20 and the
         // formal parameters from x0, and a requirement's Self metadata and
@@ -3515,7 +3530,7 @@ public struct Disassembler: Sendable {
 
         let parameters = DisassembledFunction.splitTopLevelArguments(signature.head[range])
         var layout: [(kind: ScalarParameterClass, registers: Int, type: String)] = []
-        var integers = 0, floats = 0
+        var integers = 0, floats = 0, unplaced = 0, spilled = false
         for parameter in parameters {
             let type = parameterType(parameter)
             let kind: ScalarParameterClass, registers: Int
@@ -3531,10 +3546,22 @@ public struct Disassembler: Sendable {
             case .integer: integers += registers
             case .floating: floats += registers
             }
-            guard integers <= 8, floats <= 8 else { return nil }
-            layout.append((kind, registers, type))
+            if spilled || integers > 8 || floats > 8 {
+                // A StaticString renders only its first word, so it is
+                // placed while that word is in a register: the file name
+                // of `_assertionFailure(_:_:file:line:flags:)` with a
+                // StaticString message starts in x6.
+                if !spilled, kind == .integer, type == "Swift.StaticString", integers - registers < 8 {
+                    layout.append((kind, 8 - (integers - registers), type))
+                } else {
+                    unplaced += 1
+                }
+                spilled = true
+            } else {
+                layout.append((kind, registers, type))
+            }
         }
-        return layout
+        return (layout, unplaced)
     }
 
     /// A C function's arguments as its SDK declaration places them, for
@@ -4370,10 +4397,10 @@ public struct Disassembler: Sendable {
             // argument register: `readsFirst(?)`, not `readsFirst()`, when
             // its argument was loaded through an unknown pointer.
             guard DisassembledFunction.knownCArity(of: callee) != nil
-                    || Self.swiftCallArgumentSlots(
+                    || Self.swiftCallArgumentLayout(
                         callee: layoutName(at: insn.address, callee: callee),
                         enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, anyContext: true
-                    )?.isEmpty == false
+                    ).map { !$0.slots.isEmpty || $0.unplaced > 0 } == true
                     || (!(callTargets[insn.address] != nil && DisassembledFunction.knownArityNameMayHaveTwin(callee))
                         && Self.cPrototypeLayout(callee: callee) != nil)
                     || (insn.branchTarget.flatMap { registerSummaries[$0] }?.provenArgumentCount ?? 0) > 0
@@ -4621,11 +4648,13 @@ public struct Disassembler: Sendable {
             // not that String. Read one register per word, `takeTwo(_: String,
             // _: Int)` with nothing tracked rendered `takeTwo()`, and with 7
             // in x2 `takeTwo(?, ?, 7)`.
-            let swiftSlots = calleeByAddress[address].flatMap {
-                Self.swiftCallArgumentSlots(
+            let swiftLayout: (slots: [(kind: ScalarParameterClass, registers: Int, type: String)], unplaced: Int)?
+                = calleeByAddress[address].flatMap {
+                Self.swiftCallArgumentLayout(
                     callee: layoutName(at: address, callee: $0),
                     enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
             }
+            let swiftSlots = swiftLayout?.slots
             let cLayout = swiftSlots != nil || isNameTwin(address)
                 ? nil : calleeByAddress[address].flatMap { Self.cPrototypeLayout(callee: $0) }
             // A value type's method takes its formal parameters from x0 too,
@@ -4720,7 +4749,8 @@ public struct Disassembler: Sendable {
                         return cLayout == nil || holdsWholeResults(value) ? value : .unknown
                     }
                 }
-                let unplaced = Array(repeating: AbstractValue.unknown, count: cLayout?.unplaced ?? 0)
+                let unplaced = Array(repeating: AbstractValue.unknown,
+                                     count: cLayout?.unplaced ?? swiftLayout?.unplaced ?? 0)
                 var following: [AbstractValue] = []
                 if leadingSlots != nil {
                     following = values.dropFirst(integer).map(sanitizeValue)
