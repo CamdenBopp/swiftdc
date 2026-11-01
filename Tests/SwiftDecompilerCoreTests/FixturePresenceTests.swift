@@ -60,6 +60,8 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libValueMethod.stripped.dylib",
         "Fixtures/Sample/libStaticText.dylib",
         "Fixtures/Sample/libMangledHelper.stripped.dylib",
+        "Fixtures/Sample/libMangledTypes.dylib",
+        "Fixtures/Sample/libMangledTypes.stripped.dylib",
         "Fixtures/Sample/libStaleSlot.opt.dylib",
         "Fixtures/Sample/libImportedClassProbe.opt.dylib",
         "Fixtures/Sample/libScalarTailReturns.Onone.dylib",

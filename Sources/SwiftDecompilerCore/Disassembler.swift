@@ -5749,6 +5749,14 @@ public struct Disassembler: Sendable {
                 // value could be (`swift_release`, `swift_beginAccess` are void):
                 // x0 after one is not a value to name.
                 if DisassembledFunction.isRuntimeNoise(callee) { return unknownRenderedValue() }
+                // The mangled-name metadata helper fetches the type its
+                // second argument spells: `type metadata for MN.Box<Swift.Int>`,
+                // not `__swift_instantiateConcreteTypeFromMangledNameV2(0x8008, 0xde8)`.
+                if callee == Self.mangledNameMetadataHelperName, inner.count >= 2,
+                   case .address(let pair) = sanitizeValue(inner[1]),
+                   let type = MangledNamePair.typeName(at: pair, in: resolver.machO) {
+                    return "type metadata for \(type)"
+                }
                 // `_finalizeUninitializedArray(array)` IS the array — render its
                 // argument, which carries the recovered elements.
                 if callee.contains("_finalizeUninitializedArray"), let first = inner.first {

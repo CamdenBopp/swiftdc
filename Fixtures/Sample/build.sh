@@ -420,6 +420,11 @@ $CLANG -arch arm64 -dynamiclib mangledhelper.s -L"$(xcrun --show-sdk-path)/usr/l
 cp libMangledHelper.dylib libMangledHelper.stripped.dylib
 strip -x libMangledHelper.stripped.dylib
 
+echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
+cp libMangledTypes.dylib libMangledTypes.stripped.dylib
+strip -x libMangledTypes.stripped.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release

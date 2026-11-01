@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import Demangling
 @testable import SwiftDecompilerCore
 
 /// `__swift_instantiateConcreteTypeFromMangledNameV2` is a private helper
@@ -47,12 +48,47 @@ import Testing
     guard FileManager.default.fileExists(atPath: path) else { return }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let text = functions.map { $0.renderPseudo() }.joined(separator: "\n")
-    #expect(text.contains("__swift_instantiateConcreteTypeFromMangledNameV2(0x"))
+    #expect(text.contains("swift_allocObject(type metadata for "))
     #expect(!text.contains("__swift_instantiateConcreteTypeFromMangledNameV2(self:"))
     let machO = try BinaryLoader.load(path: path)
     let streamed = await withStableDependencies {
         await Disassembler().disassembleStreamingRender(machO: machO) { $0.renderPseudo() }
     }.joined(separator: "\n")
-    #expect(streamed.contains("__swift_instantiateConcreteTypeFromMangledNameV2(0x"))
+    #expect(streamed.contains("swift_allocObject(type metadata for "))
     #expect(!streamed.contains("__swift_instantiateConcreteTypeFromMangledNameV2(self:"))
+}
+
+/// Each pair the helper takes spells its type: decoded, it is the type the
+/// pair's own `…MR` symbol ("mangled name ref for type metadata for T")
+/// names, for all of `mangledtypes.swift`'s pairs, generic, sugared,
+/// nested, tuple, function and Foundation types among them. Stripped, the
+/// calls render those types (`swift_allocObject(type metadata for …)`).
+@Test func aMangledNamePairDecodesToItsSymbolsTypeIfPresent() async throws {
+    let path = "Fixtures/Sample/libMangledTypes.dylib"
+    let stripped = "Fixtures/Sample/libMangledTypes.stripped.dylib"
+    guard FileManager.default.fileExists(atPath: path), FileManager.default.fileExists(atPath: stripped) else { return }
+    let machO = try BinaryLoader.load(path: path)
+    let prefix = "mangled name ref for type metadata for "
+    var checked = 0
+    for symbol in machO.symbols where symbol.name.hasPrefix("_$s") && symbol.name.hasSuffix("MR") {
+        guard let address = Disassembler.sectionAddress(of: symbol),
+              let printed = demangledPrinted(String(symbol.name.dropFirst()))
+        else { continue }
+        try #require(printed.hasPrefix(prefix), "\(printed)")
+        #expect(MangledNamePair.typeName(at: address, in: machO) == String(printed.dropFirst(prefix.count)),
+                "\(symbol.name)")
+        // Four bytes in, the length word is read as an offset: whatever it
+        // leads to is not a name of the pair's length.
+        #expect(MangledNamePair.typeName(at: address + 4, in: machO) == nil, "\(symbol.name) + 4")
+        checked += 1
+    }
+    #expect(checked >= 12)
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: stripped) }
+    let text = functions.map { $0.renderPseudo() }.joined(separator: "\n")
+    #expect(text.contains("swift_allocObject(type metadata for Swift._ContiguousArrayStorage<"), Comment(rawValue: text))
+}
+
+private func demangledPrinted(_ symbol: String) -> String? {
+    guard let node = try? demangleAsNode(symbol) else { return nil }
+    return node.print(using: .default)
 }

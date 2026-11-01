@@ -924,7 +924,13 @@ because it cannot be distinguished from a right one by reading the output.
   the metadata plumbing it is. GoodLinks `--pseudo`: 14,770 → 0
   references to `sub_100008a20`, 512,227 → 504,342 lines;
   `libSample.stripped`'s helper calls now match `libSample`'s exactly.
-  Open: rendering each call as the type its mangled name spells.
+  Each call whose pair argument is a constant now renders as the type the
+  pair's mangled name spells (`MangledNamePair`): `swift_allocObject(type
+  metadata for Swift._ContiguousArrayStorage<Swift.String>, 56, 7)`. The
+  name's length must equal the pair's, or nothing is claimed. Checked
+  against the `…MR` symbols of `mangledtypes.swift` (12 types, 12 exact).
+  GoodLinks: `type metadata for` 2,268 → 11,240; 113 calls whose pair is
+  untracked stay calls.
 
 Silent omission is the worst failure mode: it is indistinguishable from a
 correct empty answer. See the empty-result rule in `CLAUDE.md`.
