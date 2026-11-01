@@ -76,6 +76,33 @@ struct DeclarationPlacementTests {
         #expect((try? ExtendedExistentials.resolve(resolvable))?.print(using: .default) == "Swift.Int")
     }
 
+    /// A type no `__swift5_types` record lists, reachable only from its
+    /// field descriptor and another type's field, was missing from `dump`.
+    @Test func aTypeNoRecordListsIsDeclaredIfPresent() async throws {
+        guard let text = try await types("libUnrecordedType.dylib") else { return }
+        #expect(text.contains("struct UnrecordedType.Inner {\n    var a: Swift.Int\n    var b: Swift.Int"), Comment(rawValue: text))
+        #expect(text.contains("struct UnrecordedType.Holder {"), Comment(rawValue: text))
+    }
+
+    /// The reader the walk uses returns the file's bytes, at every offset
+    /// and width, against a plain read of the file.
+    @Test func theFieldDescriptorReaderReadsTheFileIfPresent() throws {
+        let path = "Fixtures/Sample/libUnrecordedType.dylib"
+        guard FileManager.default.fileExists(atPath: path) else { return }
+        let machO = try BinaryLoader.load(path: path)
+        let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+        let section = try #require(machO.sections.first { $0.sectionName == "__swift5_fieldmd" })
+        var mismatches = 0
+        for offset in section.offset ..< section.offset + section.size - 4 {
+            let byte = bytes[offset]
+            let word = bytes[offset ..< offset + 4].reversed().reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
+            if UnrecordedTypes.read(offset, as: UInt8.self, in: machO) != byte { mismatches += 1 }
+            if UnrecordedTypes.read(offset, as: UInt32.self, in: machO) != word { mismatches += 1 }
+            if UnrecordedTypes.read(offset, as: UInt16.self, in: machO) != UInt16(truncatingIfNeeded: word) { mismatches += 1 }
+        }
+        #expect(mismatches == 0)
+    }
+
     /// A type the renderer fails on was skipped, which read as a binary
     /// without it: GenerativeAgents' `OpenAICompatibleModel` (its argument
     /// type is a cross-image reference the reader does not follow).

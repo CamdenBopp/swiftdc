@@ -70,7 +70,8 @@ public struct SwiftDeclarationDumper: Sendable {
         })
         var blocks: [String] = []
 
-        if sections.contains(.types), let types = try? machO.swift.types {
+        if sections.contains(.types), let recorded = try? machO.swift.types {
+            let types = recorded + UnrecordedTypes.types(in: machO, recorded: recorded)
             let descriptorSymbols = Self.descriptorSymbols(in: machO)
             for type in types {
                 switch await dumpType(type, typesConfiguration, in: machO) {

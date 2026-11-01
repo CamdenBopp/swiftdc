@@ -154,6 +154,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libConstantGetter.dylib",
         "Fixtures/Sample/libLocalTypes.dylib",
         "Fixtures/Sample/libLocalTypes.stripped.dylib",
+        "Fixtures/Sample/libUnrecordedType.dylib",
         "Fixtures/Sample/goProgram",
         "Fixtures/Sample/goProgram.stripped",
         "Fixtures/Sample/libObjCSDKSelectors.dylib",

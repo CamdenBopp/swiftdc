@@ -396,6 +396,10 @@ xcrun swiftc -O -parse-as-library -emit-library localtypes.swift -module-name Lo
 cp libLocalTypes.dylib libLocalTypes.stripped.dylib
 strip -x libLocalTypes.stripped.dylib
 
+echo "==> a type no __swift5_types record lists (unrecordedtype.swift, -O -wmo; record removed by droptyperecord.py)"
+xcrun swiftc -O -wmo -parse-as-library -emit-library unrecordedtype.swift -module-name UnrecordedType -o libUnrecordedType.dylib
+python3 -I droptyperecord.py libUnrecordedType.dylib '_$s14UnrecordedType5InnerVMn'
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release
