@@ -379,7 +379,8 @@ public enum FieldMapBuilder {
         for record in records {
             guard let field = try? record.fieldName(in: machO),
                   let mangled = try? record.mangledTypeName(in: machO),
-                  let node = try? SymbolicDemangler.demangleType(for: mangled, in: machO.context)
+                  let demangled = try? SymbolicDemangler.demangleType(for: mangled, in: machO.context),
+                  let node = try? ExtendedExistentials.resolve(demangled)
             else { continue }
             let printed = node.print(using: .default)
             if !printed.isEmpty { names[field] = printed }

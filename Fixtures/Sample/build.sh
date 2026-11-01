@@ -391,6 +391,11 @@ strip -x libAccessorExtentCustom.dylib
 echo "==> a getter that returns a constant (constantgetter.m): custom, not synthesized"
 xcrun clang -arch arm64 -O1 -dynamiclib -framework Foundation constantgetter.m -o libConstantGetter.dylib
 
+echo "==> local types and constrained existentials (localtypes.swift, -O; strip -x drops the type symbols)"
+xcrun swiftc -O -parse-as-library -emit-library localtypes.swift -module-name LocalTypes -o libLocalTypes.dylib
+cp libLocalTypes.dylib libLocalTypes.stripped.dylib
+strip -x libLocalTypes.stripped.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release

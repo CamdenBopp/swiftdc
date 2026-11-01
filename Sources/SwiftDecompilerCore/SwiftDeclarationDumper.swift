@@ -59,12 +59,19 @@ public struct SwiftDeclarationDumper: Sendable {
         // a builder through unchanged (`weak var target: weak Optional<…>`).
         // Reference storage occurs only in stored-field types, so it is
         // always on here.
+        // Only the types section: the conformance renderer, like the field
+        // renderer, adjusts an options resolver and passes a builder through,
+        // and lost its extension spelling (`Swift.ClosedRange<>.Index`).
         let configuration = DeclarationRenderConfiguration.demangleOptions(preset.options)
+        let options = preset.options.union(.removeReferenceStoragePrefix)
+        let typesConfiguration = DeclarationRenderConfiguration(demangleResolver: .builder { node in
+            try ExtendedExistentials.resolve(node).printSemantic(using: options)
+        })
         var blocks: [String] = []
 
         if sections.contains(.types), let types = try? machO.swift.types {
             for type in types {
-                switch await dumpType(type, configuration, in: machO) {
+                switch await dumpType(type, typesConfiguration, in: machO) {
                 case .success(let text):
                     blocks.append(text)
                 case .failure(let error):
