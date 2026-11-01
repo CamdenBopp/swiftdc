@@ -45,7 +45,10 @@ func metadataRegions(_ path: String) throws -> [Region] {
         case "sectname": name = String(t[1]); size = 0
         case "size" where name != nil: size = Int(t[1].dropFirst(2), radix: 16) ?? 0
         case "offset" where name != nil:
-            if let name, size > 0, name.contains("swift5") || name.contains("objc"), let offset = Int(t[1]) {
+            // `__const` holds value witness tables, foreign metadata and the
+            // mangled-name pairs code passes to the metadata helper.
+            if let name, size > 0, name.contains("swift5") || name.contains("objc") || name == "__const",
+               let offset = Int(t[1]) {
                 regions.append(Region(offset: offset, size: size, name: name))
             }
             name = nil
