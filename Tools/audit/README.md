@@ -185,3 +185,19 @@ python3 -I Tools/audit/typeid.py .build/release/swiftdc <binary> --show
 python3 -I Tools/audit/typeid.py .build/release/swiftdc cache:/usr/lib/swift/libswiftCore.dylib
 ```
 
+### Names in a stripped binary
+
+`Tools/audit/stripnames.py` strips (`strip -x`) a binary that has its
+local symbols, runs `swiftdc disasm` on the copy, and checks every function
+name `swiftdc` recovered from metadata against the original symbol at that
+address, demangled by `swift-demangle`. Each name is classified:
+- exact: equal to the demangled symbol;
+- compatible: every identifier in it occurs in the symbol (`Circle:
+  Shape.method` for a protocol witness);
+- an Objective-C IMP of an `@objc` thunk: `-[SDWidget label]`, counted apart;
+- a conflict: it names something the function is not.
+
+```bash
+python3 -I Tools/audit/stripnames.py .build/release/swiftdc <binary> <scratch dir> --show
+```
+
