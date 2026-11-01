@@ -1143,6 +1143,13 @@ public struct Disassembler: Sendable {
         guard let needle = functionFilter?.lowercased(), !needle.isEmpty else {
             return functions
         }
+        if let address = Self.filterAddress(needle) {
+            return functions.filter { function in
+                guard let first = function.instructions.first?.address, let last = function.instructions.last?.address
+                else { return false }
+                return first <= address && address <= last
+            }
+        }
         // A folded address declines to pick one of its symbols, so each of them
         // selects it: `-f` on any folded symbol printed "No function matched"
         // for a symbol the binary exports.
@@ -2538,7 +2545,17 @@ public struct Disassembler: Sendable {
             return false
         }
 
-        var selected = Set(boundaries.filter(matches))
+        var selected: Set<UInt64>
+        if let address = Self.filterAddress(needle) {
+            // The function whose span holds the address.
+            guard let index = boundaries.lastIndex(where: { $0 <= address }),
+                  let end = CodeSection.containing(boundaries[index], in: sections)?.range.upperBound,
+                  address < min(index + 1 < boundaries.count ? boundaries[index + 1] : end, end)
+            else { return [] }
+            selected = [boundaries[index]]
+        } else {
+            selected = Set(boundaries.filter(matches))
+        }
         guard !selected.isEmpty else { return [] }
         for start in selected {
             if let chain = asyncIndex.chains[start] { selected.formUnion(chain) }
@@ -7586,6 +7603,13 @@ public struct Disassembler: Sendable {
             }
             return printed.isEmpty ? nil : printed
         }
+    }
+
+    /// The address a `-f 0x…` filter names, or nil for a name filter.
+    static func filterAddress(_ filter: String) -> UInt64? {
+        let text = filter.lowercased()
+        guard text.hasPrefix("0x"), text.count > 2 else { return nil }
+        return UInt64(text.dropFirst(2), radix: 16)
     }
 
     private func matchesName(_ semantic: String, needle: String) -> Bool {

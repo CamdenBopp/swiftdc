@@ -398,7 +398,7 @@ struct DisasmCommand: AsyncParsableCommand {
     @Flag(name: .customLong("list-images"), help: "List every image install path in the dyld shared cache and exit.")
     var listImages = false
 
-    @Option(name: [.short, .long], help: "Only show functions whose name (raw or demangled) contains this string.")
+    @Option(name: [.short, .long], help: "Only show functions whose name (raw or demangled) contains this string, or, given 0x<hex>, the function that holds that address.")
     var function: String?
 
     func validate() throws { try validateFunctionFilter(function) }

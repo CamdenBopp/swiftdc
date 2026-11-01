@@ -1989,6 +1989,12 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 6. Usability — are commands, diagnostics, and docs accurate?
 
+- **FIXED — `-f` could not select a function by address.** `disasm -f
+  0x1a5ce3f10` on WebKit printed `No function matched`; the function had
+  a symbol, so `sub_1a5ce3f10` did not match either. `-f 0x<hex>` now
+  selects the function whose span holds the address, at its start or
+  inside it, on files and cache images.
+
 - **FIXED — three README defects.** A documented command that errors
   (`--sections types,protocols` is space-separated); an entire undocumented
   subcommand (`layout`, including the `--self-index` flag that produces numbers
