@@ -299,7 +299,7 @@ public enum FieldMapBuilder {
         let calculator = try StaticLayoutCalculator(machO: machO)
 
         var built: [(name: String, qualified: String?, map: FieldMap)] = []
-        for type in (try? machO.swift.types) ?? [] {
+        for type in UnrecordedTypes.all(in: machO) {
             guard let descriptor = Self.contextDescriptor(of: type),
                   let name = Self.name(of: type, in: machO)
             else { continue }

@@ -104,7 +104,7 @@ public struct ClassTypeIndex: Sendable {
         var nonClasses: Set<String> = []
         var qualifiedClasses: Set<String> = []
         var qualifiedNonClasses: Set<String> = []
-        for type in (try? machO.swift.types) ?? [] {
+        for type in UnrecordedTypes.all(in: machO) {
             switch type {
             case .class(let model):
                 if let name = try? model.descriptor.name(in: machO) { classes.insert(name) }

@@ -84,6 +84,18 @@ struct DeclarationPlacementTests {
         #expect(text.contains("struct UnrecordedType.Holder {"), Comment(rawValue: text))
     }
 
+    /// `layout` and field naming read the same types: `Inner`, which no
+    /// record lists, has its two fields.
+    @Test func aTypeNoRecordListsIsLaidOutIfPresent() async throws {
+        let path = "Fixtures/Sample/libUnrecordedType.dylib"
+        guard FileManager.default.fileExists(atPath: path) else { return }
+        let machO = try BinaryLoader.load(path: path)
+        let maps = try await withStableDependencies { try FieldMapBuilder.build(in: machO) }
+        let inner = try #require(maps["UnrecordedType.Inner"])
+        #expect(inner.fields.map(\.name) == ["a", "b"])
+        #expect(inner.instanceSize == 16)
+    }
+
     /// The reader the walk uses returns the file's bytes, at every offset
     /// and width, against a plain read of the file.
     @Test func theFieldDescriptorReaderReadsTheFileIfPresent() throws {

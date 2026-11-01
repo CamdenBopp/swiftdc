@@ -182,7 +182,7 @@ public struct PayloadEnumCaseIndex: Sendable {
         var byQualified: [String: Entry] = [:]
         var ambiguousQualifiedNames: Set<String> = []
 
-        for type in (try? machO.swift.types) ?? [] {
+        for type in UnrecordedTypes.all(in: machO) {
             guard case .enum(let model) = type else { continue }
             let descriptor = model.descriptor
             // Payload enums only: a no-payload enum is `EnumCaseIndex`'s domain

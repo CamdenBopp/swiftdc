@@ -91,7 +91,7 @@ struct MetadataSymbolizer: Sendable {
         // name stands in, and a name two classes share is dropped rather than
         // credited to either.
         var classes: [(name: String, owner: String, model: Class)] = []
-        for type in (try? machO.swift.types) ?? [] {
+        for type in UnrecordedTypes.all(in: machO) {
             guard case .class(let model) = type,
                   let name = contextName(of: model, type: type, in: machO),
                   let owner = try? model.descriptor.name(in: machO)

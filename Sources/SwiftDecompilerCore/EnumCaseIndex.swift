@@ -74,7 +74,7 @@ public struct EnumCaseIndex: Sendable {
         var ambiguous: Set<String> = []
         var byQualifiedName: [String: [String]] = [:]
         var ambiguousQualifiedNames: Set<String> = []
-        for type in (try? machO.swift.types) ?? [] {
+        for type in UnrecordedTypes.all(in: machO) {
             guard case .enum(let model) = type else { continue }
             let descriptor = model.descriptor
             // No-payload enums only: a payload enum's tags don't index the case

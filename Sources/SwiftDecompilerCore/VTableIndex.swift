@@ -52,13 +52,13 @@ public struct VTableIndex: Sendable {
         // colliding name is dropped instead, so its dispatches decline, as the
         // field-map collision guard does for layouts.
         var descriptorsByName: [String: Set<Int>] = [:]
-        for type in (try? machO.swift.types) ?? [] {
+        for type in UnrecordedTypes.all(in: machO) {
             guard case .class(let model) = type,
                   let typeName = try? model.descriptor.name(in: machO)
             else { continue }
             descriptorsByName[typeName, default: []].insert(model.descriptor.offset)
         }
-        for type in (try? machO.swift.types) ?? [] {
+        for type in UnrecordedTypes.all(in: machO) {
             guard case .class(let model) = type,
                   let header = model.vTableDescriptorHeader,
                   let typeName = try? model.descriptor.name(in: machO),

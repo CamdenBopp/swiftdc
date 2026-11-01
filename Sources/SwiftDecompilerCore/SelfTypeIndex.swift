@@ -74,7 +74,7 @@ public struct SelfTypeIndex: Sendable {
         // simple name (`BoxA.Holder`, `BoxB.Holder`).
         var binder: [UInt64: Int] = [:]
         var shared: Set<UInt64> = []
-        for type in (try? machO.swift.types) ?? [] {
+        for type in UnrecordedTypes.all(in: machO) {
             guard case .class(let model) = type,
                   let typeName = try? model.descriptor.name(in: machO)
             else { continue }

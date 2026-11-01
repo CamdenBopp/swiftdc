@@ -28,6 +28,13 @@ enum UnrecordedTypes {
         }
     }
 
+    /// Every type the image describes: the recorded ones, then the
+    /// unrecorded ones in address order.
+    static func all(in machO: MachOFile) -> [TypeContextWrapper] {
+        let recorded = (try? machO.swift.types) ?? []
+        return recorded + types(in: machO, recorded: recorded)
+    }
+
     static func types(in machO: MachOFile, recorded: [TypeContextWrapper]) -> [TypeContextWrapper] {
         guard let section = machO.sections.first(where: { $0.segmentName == "__TEXT" && $0.sectionName == "__swift5_fieldmd" })
         else { return [] }

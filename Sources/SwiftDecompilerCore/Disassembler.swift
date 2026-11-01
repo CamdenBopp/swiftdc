@@ -2331,7 +2331,7 @@ public struct Disassembler: Sendable {
         for (address, name) in objcStubNames(in: machO) where names[address] == nil {
             names[address] = name
         }
-        for type in (try? machO.swift.types) ?? [] {
+        for type in UnrecordedTypes.all(in: machO) {
             let offset: Int
             let name: String?
             switch type {

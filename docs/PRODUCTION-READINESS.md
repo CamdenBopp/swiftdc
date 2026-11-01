@@ -5739,8 +5739,19 @@ branch (`9f92b71`), accessor decoding and classification (`10712d8`,
   reference). MachOSwiftSection reads the pointer cell as an "opaque type"
   at offset 0, with ASCII text for flags, so the demangle fails and the
   type is not rendered. 4 types in that image are affected.
-- **OPEN (completeness): `layout`, and field naming in `disasm`, still read
-  types from the records only.** UnrecordedTypes feeds `dump` alone.
+- **FIXED (completeness): `layout` and the metadata indices read
+  unrecorded types too.** Every index that walked the records (field maps,
+  enum cases, payload cases, class names, self types, vtables, the
+  metadata symbolizer, descriptor names) now walks `UnrecordedTypes.all`.
+  `layout` types: SwiftUI 5,769 → 5,771, Foundation 1,100 → 1,102, LLDB
+  581 → 587. The fixtures' structured and pseudo renders do not change.
+- **OPEN (completeness, dependency): a field whose type has no record
+  stops its type's layout.** MachOSwiftSection's layout calculator finds a
+  field's type by name in an index seeded from the records only, so
+  `Holder { inner: Inner }` stops at `inner`
+  (`typeDescriptorNotFound("UnrecordedType.Inner")`) even though `Inner`
+  is laid out. That index is private, and fixing it needs a change in the
+  dependency.
 
 ## 2026-10-31: the dyld shared cache in the corpus, and a type-identity oracle
 
