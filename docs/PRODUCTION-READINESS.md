@@ -5542,7 +5542,10 @@ if a test was observed to fail without the fix.
   image marks a function, but its bytes are not code` instead of being
   dropped (its 0x24ae4e7a4, 2,596 bytes). `xrefs` on the five cache images
   that reported fewer functions than starts: 196,563 of 196,563. Still
-  open: a table whose bytes do decode (`52 52 52 …`) reads as code.
+  open: a table whose bytes do decode (`52 52 52 …`) reads as code. The
+  image gives no evidence against it: DumpPanic's `LC_DATA_IN_CODE` is
+  empty (`datasize 0`), and a start reached only through `adrp`/`add` is
+  also how a function pointer is taken.
 
 ## 2026-10-30: symbols that are not addresses
 
