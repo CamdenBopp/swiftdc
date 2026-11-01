@@ -5531,13 +5531,18 @@ if a test was observed to fail without the fix.
   (904) and libcp1plugin 971 → 1000 (1000). Fixture blast radius: only
   `libCodeSections.dylib` changes (146 fixtures × dump, objc, xrefs,
   listing, pseudo, structured, `corpus compare`).
-- **OPEN (soundness): `LC_FUNCTION_STARTS` marks data in `__text`, and
-  the paths disagree about it.** DumpPanic and DumpPanicRecoveryOS each
-  list starts at lookup tables (`0x1000210c0` holds `52 52 52 …`). The
-  objdump listing reports invalid encodings and drops 4 of them; the
-  streaming path (`xrefs`) drops 1 and decodes the rest as instructions.
-  Neither declines: a start over bytes that do not decode as a function
-  should render as data, the same way on every path.
+- **PARTLY FIXED (soundness): `LC_FUNCTION_STARTS` marks data in
+  `__text`, and the paths disagreed about it.** DumpPanic and
+  DumpPanicRecoveryOS each list starts at lookup tables (`0x1000210c0`
+  holds `52 52 52 …`). Each marked start is now one function at its own
+  address on every path: one whose first word does not decode starts
+  there (AGXMetalG15G_B0's 0x24ae3fc70 ran on from the function before it
+  in an in-process decode, and a filter named it `sub_24ae3fc74`), and
+  one where no word decodes renders `// no instruction decodes here: the
+  image marks a function, but its bytes are not code` instead of being
+  dropped (its 0x24ae4e7a4, 2,596 bytes). `xrefs` on the five cache images
+  that reported fewer functions than starts: 196,563 of 196,563. Still
+  open: a table whose bytes do decode (`52 52 52 …`) reads as code.
 
 ## 2026-10-30: symbols that are not addresses
 

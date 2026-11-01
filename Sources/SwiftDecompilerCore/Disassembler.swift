@@ -484,6 +484,13 @@ public struct DisassembledFunction: Sendable {
     var analysisDisplayName: String { analysisName ?? symbol }
 
     /// Render this function as annotated assembly text.
+    /// The body of a function boundary with no instruction in its span: a
+    /// table in `__text` that LC_FUNCTION_STARTS marks (AGXMetalG15G_B0's
+    /// 2,596 bytes at 0x24ae4e7a4). Dropped, it read as no function at all;
+    /// as an empty body, as a leaf with no calls.
+    static let noDecodedInstructionNote =
+        "// no instruction decodes here: the image marks a function, but its bytes are not code"
+
     public func render() -> String {
         var lines: [String] = []
         lines.append("\(displayName):")
@@ -506,6 +513,7 @@ public struct DisassembledFunction: Sendable {
             lines.append("  // unnamed function  @ 0x\(String(startAddress, radix: 16))  [boundary from LC_FUNCTION_STARTS]")
         }
         if let asyncLine = asyncHeaderLine() { lines.append("  \(asyncLine)") }
+        if instructions.isEmpty { lines.append("  \(Self.noDecodedInstructionNote)") }
         for insn in instructions {
             let addr = String(insn.address, radix: 16)
             var line = "  \(addr):  \(insn.text)"
@@ -612,7 +620,8 @@ public struct Disassembler: Sendable {
             instructions: instructions,
             labelByAddress: labelByAddress,
             in: machO,
-            functionFilter: nil
+            functionFilter: nil,
+            decodedWholeImage: true
         )
     }
 
@@ -630,10 +639,14 @@ public struct Disassembler: Sendable {
         let objcIndex = ObjCMetadataIndex.build(in: machO)
         // Filtered: decode only the matched functions' ranges of __text.
         let instructions: [Instruction]
+        // A matched range whose bytes are not code: shown, not "no match".
+        var undecodedStarts: [UInt64] = []
         if let filter = functionFilter, !filter.isEmpty {
             let ranges = await matchedRanges(filter: filter, in: machO, objcIndex: objcIndex)
             guard !ranges.isEmpty else { return [] }
-            let matched = ranges.flatMap { capstoneInstructions(in: machO, span: $0) }
+            let decodedRanges = ranges.map { capstoneInstructions(in: machO, span: $0) }
+            undecodedStarts = zip(ranges, decodedRanges).filter { $0.1.isEmpty }.map(\.0.start)
+            let matched = decodedRanges.flatMap { $0 }
             // The matched functions' direct callees are decoded too (one level),
             // because a caller's analysis consults each callee's body for whether
             // it returns through x8 (`PerFunctionContext.indirectResultUses`).
@@ -645,14 +658,22 @@ public struct Disassembler: Sendable {
         } else {
             instructions = capstoneInstructions(in: machO, span: nil)
         }
-        guard !instructions.isEmpty else { return [] }
-        return await assemble(
+        let labels = symbolLabels(in: machO)
+        let undecoded = undecodedStarts.map {
+            makeFunction(start: $0, instructions: [], labelByAddress: labels, foldedByAddress: [:],
+                         metadataNames: [:], objcIndex: objcIndex)
+        }
+        guard !instructions.isEmpty else { return undecoded }
+        let functions = await assemble(
             instructions: instructions,
-            labelByAddress: symbolLabels(in: machO),
+            labelByAddress: labels,
             in: machO,
             functionFilter: functionFilter,
-            objcIndex: objcIndex
+            objcIndex: objcIndex,
+            decodedWholeImage: (functionFilter ?? "").isEmpty
         )
+        guard !undecoded.isEmpty else { return functions }
+        return (functions + undecoded).sorted { $0.startAddress < $1.startAddress }
     }
 
     /// Render every function of a cache image **streaming** — decode, analyse,
@@ -860,7 +881,15 @@ public struct Disassembler: Sendable {
         let total = boundaries.count
         for index in boundaries.indices {
             let instructions = decode(span(index))
-            if !instructions.isEmpty {
+            if instructions.isEmpty {
+                // A marked start whose bytes are not code is shown as such,
+                // not left out.
+                rendered.append(transform(makeFunction(
+                    start: boundaries[index], instructions: [],
+                    labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
+                    metadataNames: metadataNames, objcIndex: objcIndex
+                )))
+            } else {
                 let function = makeFunction(
                     start: boundaries[index], instructions: instructions,
                     labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
@@ -941,7 +970,8 @@ public struct Disassembler: Sendable {
         in machO: MachOFile,
         functionFilter: String?,
         objcIndex providedObjCIndex: ObjCMetadataIndex? = nil,
-        groupsAsyncFunclets: Bool = true
+        groupsAsyncFunclets: Bool = true,
+        decodedWholeImage: Bool = false
     ) async -> [DisassembledFunction] {
         Probe.image(machO)
         var labelByAddress = objdumpLabels
@@ -982,7 +1012,8 @@ public struct Disassembler: Sendable {
             labelByAddress: labelByAddress,
             foldedByAddress: foldedByAddress,
             metadataNames: metadataNames,
-            objcIndex: objcIndex
+            objcIndex: objcIndex,
+            emitsUndecodedSpans: decodedWholeImage
         )
 
         // Resolve adrp/add(+ldr) operand references to function, type-descriptor,
@@ -1144,10 +1175,11 @@ public struct Disassembler: Sendable {
             return functions
         }
         if let address = Self.filterAddress(needle) {
+            // From its start, which an undecodable first word leaves before
+            // its first instruction.
             return functions.filter { function in
-                guard let first = function.instructions.first?.address, let last = function.instructions.last?.address
-                else { return false }
-                return first <= address && address <= last
+                guard let last = function.instructions.last?.address else { return false }
+                return function.startAddress <= address && address <= last
             }
         }
         // A folded address declines to pick one of its symbols, so each of them
@@ -2211,7 +2243,8 @@ public struct Disassembler: Sendable {
         labelByAddress: [UInt64: String],
         foldedByAddress: [UInt64: [String]],
         metadataNames: [UInt64: String],
-        objcIndex: ObjCMetadataIndex
+        objcIndex: ObjCMetadataIndex,
+        emitsUndecodedSpans: Bool = false
     ) -> [DisassembledFunction] {
         var functions: [DisassembledFunction] = []
         var current: [Instruction] = []
@@ -2227,11 +2260,35 @@ public struct Disassembler: Sendable {
             current = []
         }
 
+        // A boundary cuts a function wherever it falls, on an instruction or
+        // between two: a start whose first word does not decode (a table in
+        // `__text` that LC_FUNCTION_STARTS marks) still begins its function
+        // there. Cut only at decoded addresses, AGX's table at 0x24ae3fc70
+        // ran on from the function before it, and a filtered run named it
+        // `sub_24ae3fc74`. The function holding an instruction starts at the
+        // last boundary at or below it.
+        let sorted = boundaries.sorted()
+        var next = 0
         for insn in instructions {
-            // A boundary (other than the very first instruction) cuts a function.
-            if boundaries.contains(insn.address), !current.isEmpty {
+            var crossed: UInt64?
+            while next < sorted.count, sorted[next] <= insn.address {
+                // A boundary passed with no instruction of its own before
+                // the next one marks a span that is not code. Only a whole
+                // decode knows that; a filtered one skips other functions.
+                if let passed = crossed, emitsUndecodedSpans {
+                    flush()
+                    functions.append(makeFunction(start: passed, instructions: [],
+                                                  labelByAddress: labelByAddress,
+                                                  foldedByAddress: foldedByAddress,
+                                                  metadataNames: metadataNames,
+                                                  objcIndex: objcIndex))
+                }
+                crossed = sorted[next]
+                next += 1
+            }
+            if let crossed {
                 flush()
-                start = insn.address
+                start = crossed
             } else if current.isEmpty {
                 start = insn.address
             }

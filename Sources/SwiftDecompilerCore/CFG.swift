@@ -33,6 +33,7 @@ public extension DisassembledFunction {
     func renderCFG() -> String {
         var lines = ["\(displayName):  // \(symbol) @ 0x\(String(startAddress, radix: 16))"]
         if let objcMethod { lines.append("  // \(objcMethod.signature)") }
+        if instructions.isEmpty { lines.append("  \(Self.noDecodedInstructionNote)") }
         for block in FunctionCFG(self).blocks {
             lines.append("  loc_\(String(block.startAddress, radix: 16)):")
             for insn in instructions[block.range] {

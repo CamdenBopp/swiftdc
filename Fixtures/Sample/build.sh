@@ -428,6 +428,10 @@ strip -x libMangledTypes.stripped.dylib
 echo "==> imported C enum and option set parameters (importedenum.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name ImportedEnum importedenum.swift -o libImportedEnum.dylib
 
+echo "==> tables in __text that LC_FUNCTION_STARTS marks (datastarts.s, stripped)"
+$CLANG -arch arm64 -dynamiclib datastarts.s -o libDataStarts.dylib
+strip -x libDataStarts.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release

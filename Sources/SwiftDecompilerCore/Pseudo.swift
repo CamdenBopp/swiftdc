@@ -36,7 +36,9 @@ public extension DisassembledFunction {
             statements += statement.components(separatedBy: "\n")
         }
         if hideRuntime { statements = Self.foldSwiftIdioms(statements) }
-        if statements.isEmpty {
+        if instructions.isEmpty {
+            lines.append("    \(Self.noDecodedInstructionNote)")
+        } else if statements.isEmpty {
             lines.append("    // no non-runtime calls (leaf / pure computation)")
         } else {
             for statement in statements { lines.append("    \(statement)") }
