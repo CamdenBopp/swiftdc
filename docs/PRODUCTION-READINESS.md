@@ -1197,6 +1197,19 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 3. Robustness — what breaks it?
 
+- **FIXED — a corrupt conformance descriptor trapped every subcommand.**
+  Preflight checked that each `__swift5_proto` entry points at an aligned
+  descriptor, not the descriptor: MachOSwiftSection force-unwraps its type
+  reference kind and resolves its protocol and type pointers unchecked.
+  Fuzzing with `__const` in reach (`Tools/fuzz.swift metadata
+  libReconstruction.opt.stripped.dylib 100 31337`) found three: a kind of
+  4 (mutant 54), a protocol slot rebased to junk (55), a type reference
+  moved out of the file (88), 21 crashing runs. Each conformance's kind
+  must now be one of the four the ABI defines, its protocol a context
+  descriptor directly or through a slot (a zero slot is one classic bind
+  opcodes fill, and is not judged), and its type reference valid for its
+  kind. The same fuzz run: 0 crashes in 800; `version` over the 6,127-binary
+  host corpus: 0 status changes.
 - **FIXED — a corrupt mangled-name pair trapped `disasm`, `xrefs` and
   `analyze`.** The `type metadata for T` rendering (748222e) demangles a
   name a code-side pair points at, which preflight never validated: it

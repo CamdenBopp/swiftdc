@@ -1491,3 +1491,44 @@ private func rejectsContext(struct structure: Data? = nil, module: Data? = nil) 
         #expect(process.terminationReason == .exit && process.terminationStatus == 1, "\(command): \(process.terminationStatus)")
     }
 }
+
+/// A conformance descriptor must name one of the four type reference kinds
+/// the ABI defines and a protocol that is a context descriptor:
+/// MachOSwiftSection force-unwraps the kind and reads the protocol's name
+/// unchecked, and so is its type reference; fuzzed values trapped every
+/// subcommand (libReconstruction.opt.stripped, seed 31337, mutants 54, 55
+/// and 88).
+@Test func aConformanceDescriptorIsCheckedBeforeItIsParsed() throws {
+    // Image at 0x1000: the record at 0x1000, the conformance at 0x1010,
+    // a protocol descriptor at 0x1030 named "P" at 0x1040.
+    func image(kind: UInt32, protocolOffset: Int32, typeOffset: Int32 = 0x1c) -> Data {
+        var bytes = Data(count: 0x60)
+        func put32(_ value: UInt32, at offset: Int) {
+            withUnsafeBytes(of: value.littleEndian) { bytes.replaceSubrange(offset ..< offset + 4, with: $0) }
+        }
+        put32(0x10, at: 0x00)                                // record -> 0x1010
+        put32(UInt32(bitPattern: protocolOffset), at: 0x10)  // protocol, relative to 0x1010
+        put32(UInt32(bitPattern: typeOffset), at: 0x14)      // type, relative to 0x1014: the
+                                                             // protocol descriptor, a context too
+        put32(kind << 3, at: 0x1c)                           // flags
+        put32(3, at: 0x30)                                   // protocol context kind
+        put32(0, at: 0x34)                                   // no parent
+        put32(0x08, at: 0x38)                                // name at 0x1040
+        bytes[0x40] = UInt8(ascii: "P")
+        return bytes
+    }
+    func check(_ bytes: Data) throws {
+        let reader = MachOPreflight.PointerReader(sections: [], encodings: [:])
+        try MachOPreflight.validateConformanceDescriptors(
+            records: bytes.prefix(4), address: 0x1000, reader: reader, segments: [0x1000 ..< 0x1060], path: "t",
+            read: { address, count in
+                guard address >= 0x1000, address + UInt64(count) <= 0x1060 else { return nil }
+                return bytes.subdata(in: Int(address - 0x1000) ..< Int(address - 0x1000) + count)
+            })
+    }
+    try check(image(kind: 0, protocolOffset: 0x20))
+    try check(image(kind: 3, protocolOffset: 0x20))
+    #expect(throws: BinaryLoadError.self) { try check(image(kind: 4, protocolOffset: 0x20)) }
+    #expect(throws: BinaryLoadError.self) { try check(image(kind: 0, protocolOffset: 0x7000)) }
+    #expect(throws: BinaryLoadError.self) { try check(image(kind: 0, protocolOffset: 0x20, typeOffset: 0x7000)) }
+}

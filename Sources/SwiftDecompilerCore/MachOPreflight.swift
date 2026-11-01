@@ -296,6 +296,8 @@ public enum MachOPreflight {
             }
             let loaded: Set<String> = [
                 "__objc_data", "__data", "__objc_const", "__objc_classlist", "__objc_nlclslist", "__objc_protolist",
+                // Where a conformance's indirect protocol slot lives.
+                "__const", "__got", "__auth_got",
             ]
             // (Other sections are named, not read: a field's target only has to
             // land in them.)
@@ -322,6 +324,25 @@ public enum MachOPreflight {
                 }
             }
             try validateObjCClasses(classes, protocols: protocols, reader: reader, path: path)
+
+            if let proto = table.sections.first(where: { $0.name == "__swift5_proto" }), proto.size > 0,
+               proto.offset <= fileSize, proto.size <= fileSize - proto.offset,
+               let records = image.read(offset: proto.offset, count: proto.size) {
+                let fileSegments = segmentRanges(prefix: prefix)
+                try validateConformanceDescriptors(
+                    records: records, address: proto.addr, reader: reader,
+                    segments: mappedSegments(prefix: prefix), path: path,
+                    read: { address, count in
+                        for segment in fileSegments
+                        where address >= segment.vmaddr && address - segment.vmaddr < UInt64(segment.size) {
+                            let within = address - segment.vmaddr
+                            guard UInt64(count) <= UInt64(segment.size) - within else { return nil }
+                            return image.read(offset: segment.offset + Int(within), count: count)
+                        }
+                        return nil
+                    }
+                )
+            }
         }
 
         var mangledNames: [Int] = []
@@ -1322,6 +1343,80 @@ public enum MachOPreflight {
                 default:
                     cursor += 1
                 }
+            }
+        }
+    }
+
+    /// Each protocol conformance descriptor `__swift5_proto` names
+    /// (swift/include/swift/ABI/Metadata.h, `TargetProtocolConformanceDescriptor`:
+    /// a relative protocol pointer, bit 0 marking an indirect slot, then the
+    /// type reference, the witness table pattern and the flags). The flags'
+    /// type reference kind must be one of the four the ABI defines, and the
+    /// protocol must be a context descriptor, directly or through a slot
+    /// that binds or rebases to one. MachOSwiftSection force-unwraps the
+    /// kind (`ProtocolConformanceFlags.swift:42`) and reads the protocol's
+    /// name unchecked: fuzzed, a kind of 4 and a protocol slot rebased to
+    /// junk trapped every subcommand (`Tools/fuzz.swift metadata
+    /// libReconstruction.opt.stripped.dylib 100 31337`, mutants 54 and 55).
+    static func validateConformanceDescriptors(
+        records: Data, address: UInt64, reader: PointerReader, segments: [Range<UInt64>], path: String,
+        read: (UInt64, Int) -> Data?
+    ) throws {
+        func fail(_ index: Int, _ why: String) -> BinaryLoadError {
+            BinaryLoadError("Malformed Mach-O: \(path) — __swift5_proto[\(index)] \(why)")
+        }
+        for index in 0 ..< records.count / 4 {
+            guard let raw = records.u32(at: index * 4) else { break }
+            let descriptor = (address &+ UInt64(index * 4)) &+ UInt64(bitPattern: Int64(Int32(bitPattern: raw)))
+            guard let header = read(descriptor, 16), let protocolField = header.u32(at: 0),
+                  let typeField = header.u32(at: 4), let flags = header.u32(at: 12)
+            else { throw fail(index, "names 0x\(String(descriptor, radix: 16)), which holds no conformance descriptor") }
+            let kind = (flags >> 3) & 0x7
+            guard kind <= 3 else {
+                throw fail(index, "is a conformance whose type reference kind \(kind) is none the ABI defines")
+            }
+            // The type reference, by its kind: a type descriptor directly or
+            // through a slot, an Objective-C class name, or a slot holding
+            // the class (mutant 88 of the same run moved a direct one).
+            let typeTarget = (descriptor &+ 4) &+ UInt64(bitPattern: Int64(Int32(bitPattern: typeField)))
+            let typeWhat = "__swift5_proto[\(index)]'s type"
+            switch kind {
+            case 0:
+                try validateContextDescriptor(at: typeTarget, read: read, segments: segments, path: path, what: typeWhat)
+            case 2:
+                guard read(typeTarget, 1) != nil else {
+                    throw fail(index, "names its Objective-C class at 0x\(String(typeTarget, radix: 16)), outside the file")
+                }
+            default:
+                guard segments.contains(where: { $0.contains(typeTarget) }) else {
+                    throw fail(index, "has its type slot at 0x\(String(typeTarget, radix: 16)), outside every mapped segment")
+                }
+                if kind == 1, case .some(.some(.address(let type))) = reader.field(at: typeTarget) {
+                    try validateContextDescriptor(at: type, read: read, segments: segments, path: path, what: typeWhat)
+                }
+            }
+            let relative = UInt64(bitPattern: Int64(Int32(bitPattern: protocolField & ~1)))
+            let target = descriptor &+ relative
+            let what = "__swift5_proto[\(index)]'s protocol"
+            if protocolField & 1 == 0 {
+                try validateContextDescriptor(at: target, read: read, segments: segments, path: path, what: what)
+                continue
+            }
+            guard segments.contains(where: { $0.contains(target) }) else {
+                throw fail(index, "has its protocol slot at 0x\(String(target, radix: 16)), outside every mapped segment")
+            }
+            switch reader.field(at: target) {
+            case .some(.some(.address(let proto))):
+                try validateContextDescriptor(at: proto, read: read, segments: segments, path: path, what: what)
+            case .some(.some(.badBind(let ordinal))):
+                throw fail(index, "binds its protocol to import \(ordinal), past the import table")
+            default:
+                // A bind names another image's protocol. A zero slot is one
+                // dyld's bind opcodes fill (no chained fixups: 127 of 6,127
+                // host binaries, the swift-5.0 back-deployment libraries
+                // among them), and an undecoded or unloaded one is not
+                // judged.
+                break
             }
         }
     }
