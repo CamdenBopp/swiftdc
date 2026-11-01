@@ -45,7 +45,7 @@ struct MetadataSymbolizer: Sendable {
     /// descriptions, and keeps the class name.
     func functionNames(in machO: MachOFile) -> Names {
         var claims: [UInt64: [Claim]] = [:]
-        for claim in classMethodClaims(in: machO) + witnessClaims(in: machO) {
+        for claim in classMethodClaims(in: machO) + witnessClaims(in: machO) + accessorClaims(in: machO) {
             claims[claim.address, default: []].append(claim)
         }
         var names = Names()
@@ -68,6 +68,78 @@ struct MetadataSymbolizer: Sendable {
             }
         }
         return names
+    }
+
+    // MARK: - Type metadata accessors
+
+    /// Each type's metadata accessor, which its descriptor points at
+    /// (`TypeContextDescriptor.accessFunctionPtr`), named as its symbol
+    /// demangles: `type metadata accessor for Sample.Dog`. A local type's
+    /// accessor loses its symbol under `strip -x`; libSample.stripped named
+    /// 4 of its 11.
+    private func accessorClaims(in machO: MachOFile) -> [Claim] {
+        var claims: [Claim] = []
+        for type in UnrecordedTypes.all(in: machO) {
+            let wrapper: TypeContextDescriptorWrapper
+            let target: Int?
+            switch type {
+            case .struct(let m): wrapper = .struct(m.descriptor); target = Self.accessorOffset(of: m.descriptor)
+            case .enum(let m): wrapper = .enum(m.descriptor); target = Self.accessorOffset(of: m.descriptor)
+            case .class(let m): wrapper = .class(m.descriptor); target = Self.accessorOffset(of: m.descriptor)
+            }
+            // A local type's demangled context drops the function it is in:
+            // `LocalTypes.Outer.LocalDouble` for `LocalDouble #1 in
+            // LocalTypes.Outer.makeCounter()`. As in `contextName`, the
+            // dropped context is marked, and a name it cannot be placed in
+            // is declined.
+            guard let target,
+                  let (own, contexts) = SwiftDeclarationDumper.anonymousAncestors(of: type, in: machO),
+                  let node = try? SymbolicDemangler.demangleContext(for: .type(wrapper), in: machO.context)
+            else { continue }
+            var typeName = node.print(using: .default)
+            // An imported type's descriptor does not carry the name its
+            // symbol uses (`__C.Options` for `__C.NSRegularExpressionOptions`).
+            guard !typeName.isEmpty, !typeName.hasPrefix("__C") else { continue }
+            // An extension's where-clause prints its requirements as the
+            // descriptor lists them, which the symbol minimises (`B:
+            // Swift.Error` on `Swift.Result`); it is not part of the type's
+            // identity, so it is left out.
+            typeName = Self.withoutWhereClauses(typeName)
+            if !contexts.isEmpty, !typeName.contains("(unknown context at "), !typeName.contains("(\(own) in _"),
+               !SwiftDeclarationDumper.markingUnknownContexts(contexts, in: &typeName, from: typeName.startIndex) {
+                continue
+            }
+            claims.append(Claim(address: machO.address(forOffset: target), name: "type metadata accessor for \(typeName)",
+                                owner: typeName))
+        }
+        return claims
+    }
+
+    /// `text` without its `< where …>` groups.
+    static func withoutWhereClauses(_ text: String) -> String {
+        var result = text
+        while let open = result.range(of: "< where ") {
+            var depth = 0
+            var index = open.lowerBound
+            while index < result.endIndex {
+                if result[index] == "<" { depth += 1 } else if result[index] == ">" {
+                    depth -= 1
+                    if depth == 0 { break }
+                }
+                index = result.index(after: index)
+            }
+            guard index < result.endIndex else { return result }
+            result.removeSubrange(open.lowerBound ... index)
+        }
+        return result
+    }
+
+    /// The offset the descriptor's relative accessor pointer leads to, or
+    /// nil when it is null.
+    private static func accessorOffset(of descriptor: some TypeContextDescriptorProtocol) -> Int? {
+        let relative = descriptor.layout.accessFunctionPtr
+        guard relative.isValid else { return nil }
+        return relative.resolveDirectOffset(from: descriptor.offset + descriptor.layout.offset(of: .accessFunctionPtr))
     }
 
     // MARK: - Class vtable methods (via method descriptors)

@@ -923,6 +923,18 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — a stripped type metadata accessor was an anonymous `sub_`.**
+  Each type's descriptor points at its metadata accessor
+  (`accessFunctionPtr`), and `strip -x` removes a local type's `…Ma`
+  symbol: libSample.stripped named 4 of its 11 accessors. They are now
+  named from the descriptor, as the symbol demangles (`type metadata
+  accessor for Sample.Dog`), with a local or private type's dropped
+  context marked as `dump` marks it, an extension's where-clause left
+  out, and imported (`__C`) types, whose descriptors do not carry the
+  symbol's name, declined. Stripped-name oracle, 472 binaries: 174,029
+  → 190,334 recovered names, 0 conflicts. GoodLinks: 2,806 accessors
+  named, `sub_` functions 55,211 → 52,405.
+
 - **FIXED — a stripped binary's mangled-name metadata helper was an
   anonymous `sub_`.** IRGen emits `__swift_instantiateConcreteTypeFromMangledNameV2`
   privately into every image, so stripping leaves it unnamed, and it is

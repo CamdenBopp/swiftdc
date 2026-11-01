@@ -244,3 +244,52 @@ struct DeclarationPlacementTests {
             || text.contains("struct GenerativeAgents.OpenAICompatibleModel {"), Comment(rawValue: String(text.prefix(2000))))
     }
 }
+
+/// A type's descriptor points at its metadata accessor, so a stripped image
+/// names it as its symbol does: `strip -x` left libSample.stripped 4 of its
+/// 11 (the exported ones), the other 7 `sub_`.
+@Test func aStrippedTypeMetadataAccessorIsNamedByItsDescriptorIfPresent() async throws {
+    let original = "Fixtures/Sample/libSample.dylib", stripped = "Fixtures/Sample/libSample.stripped.dylib"
+    guard FileManager.default.fileExists(atPath: original), FileManager.default.fileExists(atPath: stripped) else { return }
+    let machO = try BinaryLoader.load(path: original)
+    var truth: [UInt64: String] = [:]
+    for symbol in machO.symbols where symbol.name.hasSuffix("Ma") && symbol.name.hasPrefix("_$s") {
+        guard let address = Disassembler.sectionAddress(of: symbol),
+              let printed = accessorSymbolPrinted(String(symbol.name.dropFirst()))
+        else { continue }
+        truth[address] = printed
+    }
+    #expect(truth.count >= 10)
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: stripped) }
+    for (address, name) in truth.sorted(by: { $0.key < $1.key }) {
+        #expect(functions.first { $0.startAddress == address }?.displayName == name, "\(name)")
+    }
+}
+
+/// A local type's accessor keeps the context its demangled name drops:
+/// named `type metadata accessor for LocalTypes.Outer.LocalDouble`, it
+/// claimed a member type `Outer` does not have.
+@Test func aStrippedLocalTypesAccessorKeepsItsUnknownContextIfPresent() async throws {
+    let path = "Fixtures/Sample/libLocalTypes.stripped.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let names = functions.map(\.displayName).filter { $0.hasPrefix("type metadata accessor for ") }
+    #expect(names.contains { $0.hasPrefix("type metadata accessor for LocalTypes.Outer.(unknown context at $") && $0.hasSuffix(".LocalDouble") },
+            "\(names)")
+    #expect(!names.contains("type metadata accessor for LocalTypes.Outer.LocalDouble"), "\(names)")
+    #expect(names.contains("type metadata accessor for LocalTypes.Outer"), "\(names)")
+}
+
+private func accessorSymbolPrinted(_ symbol: String) -> String? {
+    (try? demangleAsNode(symbol))?.print(using: .default)
+}
+
+/// An accessor's type name leaves out an extension's where-clause, which
+/// the descriptor and the symbol spell differently.
+@Test func anAccessorNameLeavesOutWhereClauses() {
+    #expect(MetadataSymbolizer.withoutWhereClauses(
+        "(extension in M):Swift.Result< where A: Swift.Decodable, B: Swift.Error>.CodingKeys")
+        == "(extension in M):Swift.Result.CodingKeys")
+    #expect(MetadataSymbolizer.withoutWhereClauses("M.Box<Swift.Int>") == "M.Box<Swift.Int>")
+    #expect(MetadataSymbolizer.withoutWhereClauses("M.A< where A: M.P<B>>.B< where C: M.Q>.C") == "M.A.B.C")
+}

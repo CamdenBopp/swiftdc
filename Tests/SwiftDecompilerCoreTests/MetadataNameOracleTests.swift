@@ -83,6 +83,8 @@ private let pairs: [(stripped: String, symbols: String, required: [String], requ
 /// `Module.Type.kind` against a demangled symbol such as
 /// `Module.Type.label.getter : Swift.String` or `Module.Type.ping() -> Swift.Int`.
 private func agrees(_ name: String, with symbol: String) -> Bool {
+    // A name metadata proves whole (a type metadata accessor) is the symbol.
+    if name == symbol { return true }
     if let colon = name.range(of: ": ") {
         // A witness: `Type: Protocol.kind`. The symbol names the conforming
         // type's own implementation (or a protocol witness thunk for it).
