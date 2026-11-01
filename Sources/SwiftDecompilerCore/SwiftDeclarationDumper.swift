@@ -135,12 +135,39 @@ public struct SwiftDeclarationDumper: Sendable {
     static func placingLocalType(
         _ text: String, _ type: TypeContextWrapper, symbols: [UInt64: String], in machO: MachOFile
     ) -> String {
-        // The named types between this one and each anonymous ancestor,
-        // innermost first; only types can be declared in a function.
-        var chain: [String] = []
+        guard let (own, anonymous) = anonymousAncestors(of: type, in: machO), !anonymous.isEmpty else { return text }
+        var lines = text.components(separatedBy: "\n")
+        guard var header = lines.first,
+              let keyword = header.firstMatch(of: #/^(?:[a-z@]+ )*?(?:struct|class|enum|actor) /#)
+        else { return text }
+        let address = machO.address(forOffset: Self.descriptorOffset(of: type))
+        // A local type in a private function prints with its private
+        // discriminator, `.(unknown context at _H).(PlaneInfo in _H)`.
+        func privateSpan() -> Range<String.Index>? {
+            guard let open = header.range(of: ".(\(own) in _", range: keyword.range.upperBound ..< header.endIndex),
+                  let close = header[open.upperBound...].firstIndex(of: ")")
+            else { return nil }
+            return open.lowerBound ..< header.index(after: close)
+        }
+        if let symbol = symbols[address], let full = Self.demangledDescriptorName(symbol),
+           let last = nameSpan(of: [own], in: header, from: keyword.range.upperBound) ?? privateSpan() {
+            header.replaceSubrange(keyword.range.upperBound ..< last.upperBound, with: full)
+        } else if !markingUnknownContexts(anonymous, in: &header, from: keyword.range.upperBound) {
+            return text
+        }
+        lines[0] = header
+        return lines.joined(separator: "\n")
+    }
+
+    /// A type's own name and each anonymous context above it: its address,
+    /// and the named types between it and this type, innermost first (only
+    /// types can be declared in a function). Nil when a name cannot be read.
+    static func anonymousAncestors(
+        of type: TypeContextWrapper, in machO: MachOFile
+    ) -> (own: String, contexts: [(address: UInt64, below: [String])])? {
+        guard let own = displayName(of: type, in: machO).split(separator: ".").last.map(String.init) else { return nil }
+        var chain = [own]
         var anonymous: [(address: UInt64, below: [String])] = []
-        guard let own = displayName(of: type, in: machO).split(separator: ".").last.map(String.init) else { return text }
-        chain.append(own)
         var next: SymbolOrElement<ContextWrapper>?
         switch type {
         case .enum(let m): next = try? m.parent(in: machO)
@@ -161,51 +188,45 @@ public struct SwiftDeclarationDumper: Sendable {
                 case .struct(let m): name = try? m.descriptor.name(in: machO)
                 case .class(let m): name = try? m.descriptor.name(in: machO)
                 }
-                guard let name else { return text }
+                guard let name else { return nil }
                 chain.append(name)
             default:
                 break
             }
             next = try? wrapper.parent(in: machO)
         }
-        guard !anonymous.isEmpty else { return text }
-        var lines = text.components(separatedBy: "\n")
-        guard var header = lines.first,
-              let keyword = header.firstMatch(of: #/^(?:[a-z@]+ )*?(?:struct|class|enum|actor) /#)
-        else { return text }
-        // Each anonymous context sits just above the `below` names, which
-        // print last in the name, joined by dots.
-        func span(_ below: [String]) -> Range<String.Index>? {
-            let suffix = "." + below.reversed().joined(separator: ".")
-            var from = keyword.range.upperBound
-            while let found = header.range(of: suffix, range: from ..< header.endIndex) {
-                let after = found.upperBound
-                if after == header.endIndex || " <:{".contains(header[after]) { return found }
-                from = found.upperBound
-            }
-            return nil
+        return (own, anonymous)
+    }
+
+    /// Where the `below` names print last in a name, joined by dots, as a
+    /// whole component (followed by the end, a space, `<`, `:` or `{`).
+    static func nameSpan(of below: [String], in text: String, from start: String.Index) -> Range<String.Index>? {
+        let suffix = "." + below.reversed().joined(separator: ".")
+        var from = start
+        while let found = text.range(of: suffix, range: from ..< text.endIndex) {
+            let after = found.upperBound
+            if after == text.endIndex || " <:{".contains(text[after]) { return found }
+            from = found.upperBound
         }
-        let address = machO.address(forOffset: Self.descriptorOffset(of: type))
-        // A local type in a private function prints with its private
-        // discriminator, `.(unknown context at _H).(PlaneInfo in _H)`.
-        func privateSpan() -> Range<String.Index>? {
-            guard let open = header.range(of: ".(\(own) in _", range: keyword.range.upperBound ..< header.endIndex),
-                  let close = header[open.upperBound...].firstIndex(of: ")")
-            else { return nil }
-            return open.lowerBound ..< header.index(after: close)
+        return nil
+    }
+
+    /// Marks each dropped anonymous context where it belongs in `text`, as
+    /// the Swift runtime prints one. False, leaving `text` as it was, when a
+    /// place is not found.
+    static func markingUnknownContexts(
+        _ contexts: [(address: UInt64, below: [String])], in text: inout String, from start: String.Index
+    ) -> Bool {
+        var marked = text
+        let offset = text.distance(from: text.startIndex, to: start)
+        // Outermost first, so an earlier insertion does not move a later span.
+        for context in contexts.reversed() {
+            guard let found = nameSpan(of: context.below, in: marked, from: marked.index(marked.startIndex, offsetBy: offset))
+            else { return false }
+            marked.insert(contentsOf: ".(unknown context at $\(String(context.address, radix: 16)))", at: found.lowerBound)
         }
-        if let symbol = symbols[address], let full = Self.demangledDescriptorName(symbol),
-           let last = span([own]) ?? privateSpan() {
-            header.replaceSubrange(keyword.range.upperBound ..< last.upperBound, with: full)
-        } else {
-            // Outermost first, so an earlier insertion does not move a later span.
-            for context in anonymous.reversed() {
-                guard let found = span(context.below) else { return text }
-                header.insert(contentsOf: ".(unknown context at $\(String(context.address, radix: 16)))", at: found.lowerBound)
-            }
-        }
-        lines[0] = header
-        return lines.joined(separator: "\n")
+        text = marked
+        return true
     }
 
     static func descriptorOffset(of type: TypeContextWrapper) -> Int {
