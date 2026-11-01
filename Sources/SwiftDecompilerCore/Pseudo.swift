@@ -654,7 +654,11 @@ public extension DisassembledFunction {
              "objc_end_catch", "objc_terminate",
              // swift/include/swift/Runtime/Concurrency.h:1165,
              // `SerialExecutorRef (void)`.
-             "swift_task_getMainExecutor":
+             "swift_task_getMainExecutor",
+             // The stack probe takes the size in x9 (a dynamic allocation)
+             // or x15 (a fixed frame), never in an argument register:
+             // `mov x9, x8; blr x16` read `__chkstk_darwin(r0)`.
+             "__chkstk_darwin":
             return 0
         case "objc_opt_class", "objc_opt_self", "objc_alloc", "objc_allocWithZone",
              "objc_alloc_init", "objc_opt_new", "objc_retain", "objc_release",
@@ -687,7 +691,14 @@ public extension DisassembledFunction {
              "malloc", "objc_enumerationMutation", "CFRelease",
              // malloc/malloc.h:461, Block.h:34, ObjCBridge.h:49 and
              // os/lock.h:158: one pointer each.
-             "malloc_size", "_Block_release", "objc_destroyWeak", "os_unfair_lock_unlock":
+             "malloc_size", "_Block_release", "objc_destroyWeak", "os_unfair_lock_unlock",
+             // swift/include/swift/Runtime/HeapObject.h:249 and :260, one
+             // object or its bits; Exclusivity.h:46, `void (ValueBuffer *)`;
+             // unwind_itanium.h:61, `void (_Unwind_Exception *)`. With
+             // nothing tracked each read as a call that takes nothing
+             // (GoodLinks: 3,729 `isUniquelyReferenced_nonNull_native()`).
+             "swift_isUniquelyReferenced_nonNull_native", "swift_isUniquelyReferencedNonObjC_nonNull_bridgeObject",
+             "swift_endAccess", "_Unwind_Resume":
             return 1
         case "objc_opt_isKindOfClass", "objc_opt_respondsToSelector",
              "objc_storeStrong", "objc_storeWeak", "objc_initWeak",
@@ -716,7 +727,13 @@ public extension DisassembledFunction {
              // objc/runtime.h:1669, `(id, const void *)`; dispatch/once.h:74,
              // `(dispatch_once_t *, dispatch_block_t)`.
              "swift_dynamicCastClass", "swift_conformsToProtocol", "swift_task_isCurrentExecutor",
-             "sqlite3_column_type", "sqlite3_column_int64", "objc_getAssociatedObject", "dispatch_once":
+             "sqlite3_column_type", "sqlite3_column_int64", "objc_getAssociatedObject", "dispatch_once",
+             // swift/include/swift/Runtime/HeapObject.h:152, 205, 684 and
+             // 748, `(object, n)`; Casting.h:86, `(object, class)`;
+             // Metadata.h:229, `(request, descriptor)`; Heap.h:44,
+             // `(bytes, typeId)`.
+             "swift_retain_n", "swift_release_n", "swift_bridgeObjectRetain_n", "swift_bridgeObjectRelease_n",
+             "swift_dynamicCastObjCClass", "swift_getSingletonMetadata", "swift_coroFrameAlloc":
             return 2
         case "memcpy", "memmove", "memset",
              // swift/include/swift/Runtime/RuntimeFunctions.def
@@ -736,19 +753,36 @@ public extension DisassembledFunction {
              // size_t alignMask)`.
              "swift_once", "swift_slowDealloc",
              // _string.h:74, `(const void *, int, size_t)`.
-             "memchr":
+             "memchr",
+             // swift/include/swift/Runtime/Metadata.h:280, `(request,
+             // arguments, descriptor)`.
+             "swift_getGenericMetadata":
             return 3
-        case "swift_arrayInitWithCopy", "swift_arrayInitWithTakeFrontToBack", "swift_arrayInitWithTakeBackToFront":
+        case "swift_arrayInitWithCopy", "swift_arrayInitWithTakeFrontToBack", "swift_arrayInitWithTakeBackToFront",
+             // swift/include/swift/Runtime/Exclusivity.h:40, `(pointer,
+             // buffer, flags, pc)`; Error.h:40, `(type, conformance, value,
+             // isTake)`; Enum.h:99, `(value, emptyCases, payloadType,
+             // getTag)`.
+             "swift_beginAccess", "swift_allocError", "swift_getEnumTagSinglePayloadGeneric":
             return 4
         // swift/include/swift/Runtime/Metadata.h:690: `(self, flags,
         // numFields, fieldTypes, fieldOffsets)`; Metadata.h:388, `(request,
         // wtable, conformingType, reqBase, assocType)`; Concurrency.h:54,
         // `(flags, options, futureResultType, closureEntry, closureContext)`.
-        case "swift_initStructMetadata", "swift_getAssociatedTypeWitness", "swift_task_create":
+        case "swift_initStructMetadata", "swift_getAssociatedTypeWitness", "swift_task_create",
+             // swift/include/swift/Runtime/Casting.h:42 and :72,
+             // Metadata.h:412, 636 and 789, Enum.h:122, and
+             // stdlib/public/stubs/Assert.cpp:103: five parameters each.
+             "swift_dynamicCast", "swift_dynamicCastClassUnconditional", "swift_getAssociatedConformanceWitness",
+             "swift_getTupleTypeMetadata2", "swift_initClassMetadata2", "swift_storeEnumTagSinglePayloadGeneric",
+             "_swift_stdlib_reportUnimplementedInitializer":
             return 5
         // swift/include/swift/Runtime/Concurrency.h:1238: `(file,
         // fileLength, fileIsASCII, line, executor)`, the executor two words.
-        case "swift_task_reportUnexpectedExecutor":
+        case "swift_task_reportUnexpectedExecutor",
+             // swift/include/swift/Runtime/HeapObject.h:273, `(object,
+             // filename, filenameLength, line, column, type)`.
+             "swift_isEscapingClosureAtFileLocation":
             return 6
         // swift/include/swift/Runtime/Error.h:128: the error, the file name's
         // start and length, whether it is ASCII, and the line of the `try!`.

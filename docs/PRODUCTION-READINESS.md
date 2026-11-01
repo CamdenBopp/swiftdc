@@ -161,6 +161,17 @@ because it cannot be distinguished from a right one by reading the output.
   non-mutating method's `self` words print unlabelled after the
   parameters, and a value-type getter, which has no formal parameters,
   stays positional.
+- **FIXED (soundness) — Swift runtime entry points without a table
+  arity printed positional arguments.** `swift_endAccess`,
+  `swift_isUniquelyReferenced_nonNull_native`, `_Unwind_Resume` and others
+  with nothing tracked read as calls that take nothing; the stack probe
+  `__chkstk_darwin`, which takes its size in x9 or x15, read a stale x0
+  (`__chkstk_darwin(type metadata accessor for ABIOneWord(0))`); and an
+  in-image function that only forwards a register to such a call was
+  summarised as reading it, so its callers showed a stale value there.
+  23 entry points now have their header arity. GoodLinks: 508 changed
+  lines (`swift_initClassMetadata2`, `_Unwind_Resume`, and 25 `sub_` call
+  sites whose stale trailing values became `?`).
 - **FIXED (completeness) — a getter's String result lost its second
   word.** The tracer marks x1 as a call's String high word only for a
   callee whose signature returns a String, and a getter prints its type

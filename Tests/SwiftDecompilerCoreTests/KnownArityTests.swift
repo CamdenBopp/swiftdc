@@ -160,3 +160,28 @@ func aFailedForcedTryPassesItsFiveArgumentsIfPresent(path: String) async throws 
     let lists = argumentLists(of: "fprintf", in: fprintf)
     #expect(lists.count == 1 && lists.first?.count == 3 && lists.first?.last == "9", Comment(rawValue: fprintf))
 }
+
+/// Swift runtime entry points the table lacked, checked against their
+/// headers. With nothing tracked each read as a call that takes nothing
+/// (`swift_endAccess`, `swift_isUniquelyReferenced_nonNull_native`,
+/// `_Unwind_Resume`), and the stack probe, which takes its size in x9 or
+/// x15, read a stale x0 as an argument:
+/// `__chkstk_darwin(type metadata accessor for ABISource.ABIOneWord(0))`.
+@Test func swiftRuntimeEntryPointsTakeTheirHeadersParametersIfPresent() async throws {
+    func listing(_ name: String) async throws -> String? {
+        let path = "Fixtures/Sample/\(name)"
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
+        let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+        return functions.map { $0.render() + "\n" + $0.renderPseudo() }.joined(separator: "\n")
+    }
+    guard let grid = try await listing("libGridSampler.opt.dylib"), let sample = try await listing("libSample.dylib"),
+          let landing = try await listing("libLandingPadLoop.dylib"),
+          let probe = try await listing("abi-source-resilient-oracle")
+    else { return }
+    #expect(grid.contains("→ swift_isUniquelyReferenced_nonNull_native  args(?)"))
+    #expect(!grid.contains("→ swift_isUniquelyReferenced_nonNull_native\n"))
+    #expect(sample.contains("→ swift_endAccess  args(?)"))
+    #expect(!sample.contains("→ swift_endAccess\n"))
+    #expect(landing.contains("_Unwind_Resume(?)"))
+    #expect(probe.contains("→ __chkstk_darwin\n") && !probe.contains("__chkstk_darwin  args("))
+}
