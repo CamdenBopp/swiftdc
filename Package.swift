@@ -12,7 +12,7 @@ let package = Package(
         .executable(name: "swiftdc", targets: ["swiftdc"]),
     ],
     dependencies: [
-        // Pinned to 0.22.0 (was 0.19.0, before that 0.12.0). Each bump followed
+        // Pinned to 0.24.0 (was 0.22.0, 0.19.0, 0.12.0). Each bump followed
         // swiftdc's own priority ladder, so upstream's fixes are our fixes:
         //   Soundness. 0.16.0 closed four silent wrong-result paths (opaque types
         //   printing illegal Swift, a multi-payload enum cache falling back to a
@@ -24,7 +24,14 @@ let package = Package(
         //   from their method descriptors, so a main executable's vtable slots are
         //   named. 0.22.0 reads an optional-returning accessor at the field's own
         //   width and lays out Swift 6.4's raw-layout and Builtin.Borrow storage.
-        //   Completeness. 0.16.0 makes legacy LC_DYLD_INFO binaries parse at all;
+        //   0.24.0 prints a protocol requirement's generic right-hand side as
+        //   itself (0.22 printed `Element == Self.Payload` for `== Event<Payload>`,
+        //   libProtocolRHS), and with MachOObjCSection 0.8.205 reads cache
+        //   images' bare-colon Swift selectors (`enumerateRangesIn::`, printed
+        //   `enumerateRangesIn:` before).
+        //   Completeness. 0.23.0 names a local type by its declaring function when
+        //   the binary records it (Apple's cache images), and the ObjC properties
+        //   and protocols of cache classes, which 0.22 dropped. 0.16.0 makes legacy LC_DYLD_INFO binaries parse at all;
         //   0.21.0 prints `@objc(Name)` on classes renamed for the ObjC runtime
         //   and recovers their field offsets; 0.22.0 reads the ObjC classes a
         //   simulator runtime binds to itself.
@@ -36,31 +43,35 @@ let package = Package(
         // (Capstone 6 built from source) into the graph, which is why swiftdc's own
         // decoder links the same `capstone` package below rather than Homebrew's
         // libcapstone 5; 0.22.0 raised the swift-demangling floor to 0.7.1 and
-        // MachOKit's to 0.54.101 (see below).
+        // MachOKit's to 0.54.101 (see below). 0.24.0 moves to swift-capstone 7.0.0,
+        // a rewrite of the Swift wrapper only: the C library under it is still
+        // Capstone 6 (6.0.101), whose changes are an x86/Alpha fix, CS_OPT_OFF
+        // clearing detail, and cs_disasm_iter flags, none of which swiftdc's
+        // cs_disasm decoder reaches (listing and JSON of 192 fixtures:
+        // byte-identical).
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection",
-            exact: "0.22.0"
+            exact: "0.24.0"
         ),
         // MachOKit is the Mach-O container parser MachOSwiftSection is built on.
         // It is NOT re-exported, so we depend on the same identity directly to name
         // `MachOFile` / `loadFromFile` without a package-identity conflict.
         //
-        // INTERIM FORK: upstream 0.54.101 plus two changes:
-        //   1. Memoized negative result of `MachOFile.cache` (as 07d7633 was on
-        //      0.52.102; upstream MxIris-Reverse-Engineering/MachOKit#1 closed
-        //      unmerged). Without it a standalone binary re-opens and maps itself
-        //      as a would-be dyld cache on every `cache` access, which 0.22's
-        //      class dumper makes once per relative pointer. Memoized: layout
-        //      69.9s -> 4.4s, dump 168s -> 77s, interface 240s -> 74s.
-        //   2. 64-bit fat header support (cherry-picked p-x9 #340): fat_arch_64
-        //      entries were read with the 20-byte 32-bit layout, truncating
-        //      offsets >= 4 GiB. A two-slice file with arm64 past 4 GiB reported
-        //      "Available: x86_64, x86_64".
+        // INTERIM FORK: upstream 0.55.100 plus one change, a memoized negative
+        // result of `MachOFile.cache` (as 4c4738f was on 0.54.101 and 07d7633 on
+        // 0.52.102; upstream MxIris-Reverse-Engineering/MachOKit#1 closed
+        // unmerged). Without it a standalone binary re-opens and maps itself as
+        // a would-be dyld cache on every `cache` access, which the class dumper
+        // makes once per relative pointer. Memoized on 0.54.101: layout 69.9s ->
+        // 4.4s, dump 168s -> 77s, interface 240s -> 74s. The 64-bit fat header
+        // fix the old fork cherry-picked (p-x9 #340) is upstream in 0.55.0,
+        // line for line, and FatArch64Tests passes on it.
+        // Branch swiftdc-interim/0.55.100-memoize-cache.
         // As the root package this revision overrides the transitive range;
-        // return to an upstream version pin once both fixes ship.
+        // return to an upstream version pin once the memo ships.
         .package(
             url: "https://github.com/CamdenBopp/MachOKit.git",
-            revision: "4076fdaa526857d62217f28e76f3f2a92eb4b6d6"
+            revision: "02d5c675ffe17620bd51e69e83bf67f091885e38"
         ),
         // `Semantic` provides SemanticString, the return type of SwiftDump's
         // `.dump(...)`. Moves in lockstep with MachOSwiftSection: 0.15.0 raised its
@@ -81,15 +92,18 @@ let package = Package(
         // while MachOSwiftSection stayed at 0.12.0; both move together now.
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/swift-demangling",
-            "0.7.1" ..< "0.8.0"
+            "0.7.2" ..< "0.8.0"
         ),
         // Objective-C runtime metadata (classes/protocols/categories) for real
         // Swift+ObjC app binaries. Same fork URLs MachOSwiftSection resolves to,
         // so there's no package-identity conflict. ObjCDump renders the
-        // `@interface … @end` headers (with decoded type encodings).
+        // `@interface … @end` headers (with decoded type encodings). Exact:
+        // 0.8.201 and later require MachOKit 0.55.100, and a `from:` range
+        // resolved to 0.8.200, which lacks the selector, signed-IMP and
+        // relative-method-list fixes.
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/MachOObjCSection.git",
-            from: "0.8.105"
+            exact: "0.8.205"
         ),
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/swift-objc-dump",
@@ -105,7 +119,7 @@ let package = Package(
         // Only the AARCH64 backend is enabled, matching MachOSwiftSection's trait.
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/capstone",
-            from: "6.0.100",
+            from: "6.0.101",
             traits: [.trait(name: "AARCH64")]
         ),
         .package(

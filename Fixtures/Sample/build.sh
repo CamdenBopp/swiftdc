@@ -395,6 +395,15 @@ echo "==> local types and constrained existentials (localtypes.swift, -O; strip 
 xcrun swiftc -O -parse-as-library -emit-library localtypes.swift -module-name LocalTypes -o libLocalTypes.dylib
 cp libLocalTypes.dylib libLocalTypes.stripped.dylib
 strip -x libLocalTypes.stripped.dylib
+# Its own install name: MachOSwiftSection keys per-image caches by install
+# name and LC_UUID, so tests reading the original and this copy in parallel
+# would share them. libLocalTypesPair keeps the shared key on purpose.
+install_name_tool -id libLocalTypes.stripped.dylib libLocalTypes.stripped.dylib
+
+echo "==> a stripped copy and its original under an install name no other test loads (localtypes.swift, -O; strip -x)"
+xcrun swiftc -O -parse-as-library -emit-library localtypes.swift -module-name LocalTypes -o libLocalTypesPair.dylib
+cp libLocalTypesPair.dylib libLocalTypesPair.stripped.dylib
+strip -x libLocalTypesPair.stripped.dylib
 
 echo "==> a type no __swift5_types record lists (unrecordedtype.swift, -O -wmo; record removed by droptyperecord.py)"
 xcrun swiftc -O -wmo -parse-as-library -emit-library unrecordedtype.swift -module-name UnrecordedType -o libUnrecordedType.dylib

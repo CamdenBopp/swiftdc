@@ -1,5 +1,7 @@
 import Foundation
 import MachOKit
+@_spi(Internals) import MachOSymbols
+@_spi(Internals) import SwiftInspection
 
 /// A human-readable error surfaced to the CLI.
 public struct BinaryLoadError: Error, CustomStringConvertible {
@@ -44,6 +46,7 @@ public enum BinaryLoader {
         switch file {
         case .machO(let machO):
             if !allowingWideAddresses { try requireSignedAddresses(machO) }
+            forgetCachedImage(machO)
             return machO
 
         case .fat(let fat):
@@ -63,8 +66,26 @@ public enum BinaryLoader {
                 )
             }
             if !allowingWideAddresses { try requireSignedAddresses(match) }
+            forgetCachedImage(match)
             return match
         }
+    }
+
+    /// MachOSwiftSection keys its per-image caches by a file's install name
+    /// and `LC_UUID` (MachOKitExtensions `MachOTargetIdentifier.uuidFile`),
+    /// which a stripped copy keeps. Since 0.23 it names a local type from the
+    /// `_symbolic` symbols in the symbol index, so in one process the copy
+    /// loaded second read its original's symbols: libLocalTypes.stripped
+    /// printed `Local #1 in LocalTypes.Outer.make()`, a name nothing in it
+    /// records. A file starts from an empty symbol index and demangle memo.
+    /// Two such files alive at once still share them. Only a file with
+    /// Swift metadata has any: the key reads `MachOFile.cache`, whose
+    /// `DyldCache.init` traps (`try!`, MachOKit DyldCache.swift:87) on a file
+    /// shorter than a cache header, such as a bare object header.
+    static func forgetCachedImage(_ machO: MachOFile) {
+        guard machO.sections.contains(where: { $0.sectionName.hasPrefix("__swift5_") }) else { return }
+        SymbolIndexStore.shared.remove(for: machO)
+        SymbolicDemangler.removeCache(for: machO)
     }
 
     /// Fails when a segment's address or size is at or above 2^63. MachOKit

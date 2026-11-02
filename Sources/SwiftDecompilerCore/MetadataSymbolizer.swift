@@ -277,6 +277,10 @@ struct MetadataSymbolizer: Sendable {
         // Swift.Error` on `Swift.Result`); it is not part of the type's
         // identity, so it is left out.
         typeName = Self.withoutWhereClauses(typeName)
+        guard let unwrapped = SwiftDeclarationDumper.withoutPositionName(
+            typeName, contexts: contexts, from: typeName.startIndex
+        ) else { return nil }
+        typeName = unwrapped
         if !contexts.isEmpty, !typeName.contains("(unknown context at "), !typeName.contains("(\(own) in _"),
            !SwiftDeclarationDumper.markingUnknownContexts(contexts, in: &typeName, from: typeName.startIndex) {
             return nil
@@ -363,6 +367,10 @@ struct MetadataSymbolizer: Sendable {
         guard let (own, contexts) = SwiftDeclarationDumper.anonymousAncestors(of: type, in: machO) else { return nil }
         if let node = try? SymbolicDemangler.demangleContext(for: .type(.class(model.descriptor)), in: machO.context) {
             var printed = node.print(using: .default)
+            guard let unwrapped = SwiftDeclarationDumper.withoutPositionName(
+                printed, contexts: contexts, from: printed.startIndex
+            ) else { return nil }
+            printed = unwrapped
             if !printed.isEmpty {
                 // A private class's context is its file, which the private
                 // discriminator already names: `M.(Bundle in _A1B2)`.

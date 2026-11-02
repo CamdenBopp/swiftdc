@@ -347,3 +347,47 @@ func aStrippedValueWitnessIsNamedByItsTypesTableIfPresent(name: String) async th
         #expect(functions.contains { $0.displayName == "\(witness) value witness for SharedWitness.Laden" }, "\(witness)")
     }
 }
+
+/// MachOSwiftSection 0.23 spells a local type it cannot place by its
+/// anonymous context's address, `Outer.(Local in $1dbc)`. The bare name
+/// comes back only when that address is the innermost context's; another
+/// address is evidence that disagrees, and the name is declined.
+@Test func aPositionNameIsUnwrappedOnlyAtItsInnermostContext() {
+    let contexts: [(address: UInt64, below: [String])] = [(0x1dbc, ["Local"]), (0x1db4, ["Local"])]
+    let text = "LocalTypes.Outer.(Local in $1dbc)"
+    #expect(SwiftDeclarationDumper.withoutPositionName(text, contexts: contexts, from: text.startIndex)
+        == "LocalTypes.Outer.Local")
+    let other = "LocalTypes.Outer.(Local in $1db4)"
+    #expect(SwiftDeclarationDumper.withoutPositionName(other, contexts: contexts, from: other.startIndex) == nil)
+    let plain = "LocalTypes.Outer.Local"
+    #expect(SwiftDeclarationDumper.withoutPositionName(plain, contexts: contexts, from: plain.startIndex) == plain)
+}
+
+/// A type nested in a local type carries its parent's position name,
+/// `M.CostCache.(WorkItem in $3990c).State` (Xcode's SwiftUITap), and is
+/// placed through it, as the type directly under the innermost context.
+@Test func aNestedTypeIsUnwrappedThroughItsLocalParentsPositionName() {
+    let contexts: [(address: UInt64, below: [String])] = [(0x3990c, ["State", "WorkItem"]), (0x39904, ["State", "WorkItem"])]
+    let text = "M.CostCache.(WorkItem in $3990c).State"
+    var unwrapped = SwiftDeclarationDumper.withoutPositionName(text, contexts: contexts, from: text.startIndex)
+    #expect(unwrapped == "M.CostCache.WorkItem.State")
+    #expect(unwrapped.map { SwiftDeclarationDumper.markingUnknownContexts(contexts, in: &unwrapped!, from: $0.startIndex) } == true)
+    #expect(unwrapped == "M.CostCache.(unknown context at $39904).(unknown context at $3990c).WorkItem.State")
+}
+
+/// A stripped copy shares its original's install name and `LC_UUID`, the
+/// key of MachOSwiftSection's per-image caches. Loaded after the original
+/// in one process, it must not print the function names only the
+/// original's symbols record. The pair has an install name of its own, so
+/// no test running alongside loads a file with the same key.
+@Test func aStrippedCopyLoadedAfterItsOriginalReadsOnlyItselfIfPresent() async throws {
+    let original = "Fixtures/Sample/libLocalTypesPair.dylib", stripped = "Fixtures/Sample/libLocalTypesPair.stripped.dylib"
+    guard FileManager.default.fileExists(atPath: original), FileManager.default.fileExists(atPath: stripped) else { return }
+    let first = try BinaryLoader.load(path: original)
+    let named = await withStableDependencies { await SwiftDeclarationDumper().dump(first, sections: [.types]) }
+    #expect(named.contains("struct Local #1 in LocalTypes.Outer.make() -> Any {"))
+    let second = try BinaryLoader.load(path: stripped)
+    let text = await withStableDependencies { await SwiftDeclarationDumper().dump(second, sections: [.types]) }
+    #expect(!text.contains("Local #1 in"), Comment(rawValue: text))
+    #expect(text.contains("struct LocalTypes.Outer.(unknown context at $"), Comment(rawValue: text))
+}

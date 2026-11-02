@@ -167,6 +167,9 @@ public struct SwiftDeclarationDumper: Sendable {
             else { return nil }
             return open.lowerBound ..< header.index(after: close)
         }
+        guard let unwrapped = withoutPositionName(header, contexts: anonymous, from: keyword.range.upperBound)
+        else { return text }
+        header = unwrapped
         if let symbol = symbols[address], let full = Self.demangledDescriptorName(symbol),
            let last = nameSpan(of: [own], in: header, from: keyword.range.upperBound) ?? privateSpan() {
             header.replaceSubrange(keyword.range.upperBound ..< last.upperBound, with: full)
@@ -214,6 +217,32 @@ public struct SwiftDeclarationDumper: Sendable {
             next = try? wrapper.parent(in: machO)
         }
         return (own, anonymous)
+    }
+
+    /// MachOSwiftSection 0.23 and later name a local type whose function it
+    /// cannot name by the address of the anonymous context wrapping it,
+    /// spelled as a private declaration name: `LocalTypes.Outer.(Local in
+    /// $1dbc)`. That reads as a private member of `Outer`, and it drops the
+    /// function's own context, which two local types of one function share.
+    /// The position name is the one of the type directly under the innermost
+    /// anonymous context: a type nested in a local type prints as
+    /// `M.CostCache.(WorkItem in $3990c).State`. When its address is that
+    /// context's, the bare name is put back, so `markingUnknownContexts` can
+    /// mark every context as the runtime spells it. Nil when the name carries
+    /// another address: the evidence disagrees. The text is returned as it
+    /// is when it has no position name for that type, or no context.
+    static func withoutPositionName(
+        _ text: String, contexts: [(address: UInt64, below: [String])], from start: String.Index
+    ) -> String? {
+        guard let innermost = contexts.first, let placed = innermost.below.last,
+              let open = text.range(of: ".(\(placed) in $", range: start ..< text.endIndex)
+        else { return text }
+        guard let close = text[open.upperBound...].firstIndex(of: ")"),
+              text[open.upperBound ..< close] == String(innermost.address, radix: 16)
+        else { return nil }
+        var unwrapped = text
+        unwrapped.replaceSubrange(open.lowerBound ... close, with: ".\(placed)")
+        return unwrapped
     }
 
     /// Where the `below` names print last in a name, joined by dots, as a
