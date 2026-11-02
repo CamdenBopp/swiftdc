@@ -6589,3 +6589,19 @@ Findings:
   `map`, `ActiveSyntaxRewriter.init`) now take the arguments their bodies
   read. Still out: `swift_setAtWritableKeyPath` and `swift_getAtKeyPath`,
   whose lowering the table only infers.
+
+## 2026-11-02: specializations seeded from their original's signature
+
+- **FIXED — a dead-argument specialization credited a value to the
+  parameter it dropped.** A function signature specialization prints its
+  original's signature, but `Arg[n] = Dead` (and every other kind except
+  an ownership change) changes the registers. `<Arg[0] = Dead> of
+  helperI(Swift.Int, Swift.Int)` takes `b` in x0, and seeded from the
+  printed signature its `b &* 23` read `return (arg0 * 23)`
+  (`deadargs.swift`). `signatureSpecializationKeepsLayout` now seeds a
+  specialization only when every entry is `Owned To Guaranteed` or
+  `Guaranteed To Owned`; it renders `return ?`. Fixtures and the four
+  swift-syntax dylibs: no other render changes.
+- **OPEN — the same specializations' call sites.** `callI` renders
+  `helperI(arg1, arg1)` for the one-argument specialization, and
+  `self=r0` for a free function whose caller kept a value in x20.

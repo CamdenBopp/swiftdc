@@ -178,3 +178,31 @@ struct ABISourceLoweringTests {
     }
     #expect(Disassembler.isKnownDirectReturnCallee("swift_retain"))
 }
+
+/// A function signature specialization prints its original's signature,
+/// but `Arg[0] = Dead` drops that parameter: `<Arg[0] = Dead> of
+/// helperI(Swift.Int, Swift.Int)` takes `b` in x0, and seeded from the
+/// printed signature its `b &* 23` read `return (arg0 * 23)`, crediting
+/// the value to `a` (`deadargs.swift`). Only an ownership change keeps
+/// the layout; anything else seeds nothing.
+@Test func aSpecializationThatDropsAParameterIsNotSeededFromItsOriginalIfPresent() async throws {
+    let path = "Fixtures/Sample/libDeadArgs.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let specialization = try #require(functions.first {
+        $0.displayName.hasPrefix("function signature specialization <Arg[0] = Dead> of DeadArgs.helperI")
+    })
+    let text = specialization.renderStructured()
+    #expect(!text.contains("arg0"), Comment(rawValue: text))
+    #expect(Disassembler.signatureSpecializationKeepsLayout(
+        "function signature specialization <Arg[0] = Owned To Guaranteed, Arg[1] = Guaranteed To Owned> of M.f(Swift.Int, Swift.Int) -> Swift.Int"))
+    #expect(Disassembler.signatureSpecializationKeepsLayout("M.f(Swift.Int) -> Swift.Int"))
+    for name in [
+        "function signature specialization <Arg[0] = Dead> of M.f(Swift.Int, Swift.Int) -> Swift.Int",
+        "function signature specialization <Arg[0] = Dead and Owned To Guaranteed> of M.f(Swift.Int) -> Swift.Int",
+        "function signature specialization <Arg[0] = Exploded> of M.f(M.S) -> Swift.Int",
+        "merged function signature specialization <Arg[0] = Owned To Guaranteed> of M.f(Swift.Int) -> Swift.Int",
+    ] {
+        #expect(!Disassembler.signatureSpecializationKeepsLayout(name), "\(name)")
+    }
+}

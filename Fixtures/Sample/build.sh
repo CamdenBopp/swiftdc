@@ -454,6 +454,9 @@ $CLANG -arch arm64 -c resultbuffer.s -o resultbuffer.o
 $SWIFTC -parse-as-library -O -emit-library -module-name ResultBuffer resultbuffer.swift resultbuffer.o -o libResultBuffer.dylib
 rm -f resultbuffer.o
 
+echo "==> function signature specializations that drop a parameter (deadargs.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name DeadArgs deadargs.swift -o libDeadArgs.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

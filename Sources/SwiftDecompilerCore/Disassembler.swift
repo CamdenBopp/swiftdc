@@ -3851,6 +3851,24 @@ public struct Disassembler: Sendable {
         indirectResultUse(of: function) == .reads
     }
 
+    /// Whether a function's registers still follow the signature its name
+    /// prints. A function signature specialization prints its original's
+    /// signature but may change the parameters: `Arg[0] = Dead` drops one,
+    /// so `<Arg[0] = Dead> of helperI(Swift.Int, Swift.Int)` takes `b` in
+    /// x0 and its `b &* 23` read `return (arg0 * 23)`. Only an ownership
+    /// change (`Owned To Guaranteed`, `Guaranteed To Owned`) leaves every
+    /// register in place (swift/lib/Demangling/NodePrinter.cpp prints each
+    /// kind; any other, a `Return =` entry or a merged specialization,
+    /// declines). Every other name is its own signature.
+    static func signatureSpecializationKeepsLayout(_ name: String) -> Bool {
+        if name.hasPrefix("merged function signature specialization") { return false }
+        let prefix = "function signature specialization <"
+        guard name.hasPrefix(prefix) else { return true }
+        guard let end = name.range(of: "> of ") else { return false }
+        let clause = name[name.index(name.startIndex, offsetBy: prefix.count) ..< end.lowerBound]
+        return clause.wholeMatch(of: /Arg\[\d+\] = (Owned To Guaranteed|Guaranteed To Owned)(, Arg\[\d+\] = (Owned To Guaranteed|Guaranteed To Owned))*/) != nil
+    }
+
     /// The register→source-argument-index map to seed for a Swift free function
     /// or static method whose every parameter is a single-register scalar. In the
     /// Swift calling convention integer/pointer parameters fill x0… and
@@ -3864,6 +3882,7 @@ public struct Disassembler: Sendable {
     ) -> [String: Int]? {
         guard function.objcMethod == nil, let name = function.analysisName,
               Self.isSwiftMangled(function.symbol),
+              Self.signatureSpecializationKeepsLayout(name),
               // A getter/setter/accessor or a name without a call signature has no
               // ordinary parameter list to seed.
               let signature = DisassembledFunction.splitSignature(name)?.head
