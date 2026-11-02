@@ -3825,12 +3825,47 @@ public struct Disassembler: Sendable {
         ]
         if integerTypes.contains(returnType) || Self.isSingleRegisterPointer(returnType)
             || returnType == "Swift.AnyObject"
-            // Array's native value is one storage pointer.
-            || (returnType.hasPrefix("Swift.Array<") && returnType.hasSuffix(">"))
+            // `any Error` is one pointer to its box (SwiftError).
+            || returnType == "Swift.Error"
+            // Array's, ContiguousArray's, Dictionary's and Set's native value
+            // is one storage (or bridge) pointer, and so is an array buffer's.
+            || ["Swift.Array<", "Swift.ContiguousArray<", "Swift.Dictionary<", "Swift.Set<",
+                "Swift._ArrayBuffer<", "Swift._ContiguousArrayBuffer<"].contains(where: { returnType.hasPrefix($0) && returnType.hasSuffix(">") })
+            // The compiler's own scalars (`_stdlib_isOSVersionAtLeast…` returns
+            // `Builtin.Int1`).
+            || ["Builtin.Int1", "Builtin.Int8", "Builtin.Int16", "Builtin.Int32", "Builtin.Int64", "Builtin.Word",
+                "Builtin.RawPointer", "Builtin.NativeObject", "Builtin.BridgeObject", "Builtin.UnknownObject"].contains(returnType)
             || enumCaseIndex.isNoPayloadEnum(returnType) || classTypeIndex.isClass(returnType) {
             return .integer
         }
         return nil
+    }
+
+    /// Which register a Swift callee's whole result is in, from the result
+    /// type its name prints (`swiftReturnRegister(forReturnType:)`):
+    /// `.notOneRegister` for any type whose layout is not proven one
+    /// register, `.unknown` for a callee with no Swift signature or a result
+    /// type it cannot read, an async one, or a String (two words, modelled
+    /// apart).
+    static func callResultBank(
+        of callee: String, enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex
+    ) -> ValueTracer.CallResultBank {
+        guard !callee.hasPrefix("objc_msgSend") else { return .unknown }
+        if let signature = DisassembledFunction.splitSignature(callee) {
+            guard !signature.isAsync else { return .unknown }
+        } else if !callee.contains(".getter : ") {
+            return .unknown
+        }
+        guard let type = swiftReturnTypeName(forDemangledName: callee) else { return .unknown }
+        if twoWordStringTypes.contains(type) || type == "()" || type == "Swift.Never" { return .unknown }
+        // A generic parameter's layout is its substitution's: a
+        // specialization's printed `A1` may be a UInt in x0.
+        if type.contains(#/(^|[^A-Za-z0-9_.])[A-Z][0-9]*($|[^A-Za-z0-9_])/#) { return .unknown }
+        switch swiftReturnRegister(forReturnType: type, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
+        case .integer?: return .integer
+        case .floating?: return .floating
+        case nil: return .notOneRegister
+        }
     }
 
     /// The wrapped type of `Swift.Optional<T>`, `T?` or `T!`, or nil.
@@ -4832,12 +4867,39 @@ public struct Disassembler: Sendable {
             }
         }
 
+        /// Calls whose Swift result is not one register: x0 after one is a
+        /// part of the result, never the whole call.
+        /// Filled once the call sites are known: a call handed a frame buffer
+        /// in x8 returns through memory, and its `.callResult` is that whole
+        /// buffer.
+        var multiWordResultSites = Set<UInt64>()
+        /// A multi-word result's x0 and x1 passed on side by side are that
+        /// whole value, one argument: `UTF8View.count.getter(String.utf8.getter(…))`.
+        func collapsingMultiWordResults(_ values: [AbstractValue]) -> [AbstractValue] {
+            var out: [AbstractValue] = []
+            var index = 0
+            while index < values.count {
+                if index + 1 < values.count, case .callResult(let site) = values[index],
+                   multiWordResultSites.contains(site), values[index + 1] == .callResultHigh(site) {
+                    out.append(.aggregate([.callResult(site), .callResultHigh(site)]))
+                    index += 2
+                    continue
+                }
+                out.append(values[index])
+                index += 1
+            }
+            return out
+        }
+
         func sanitize(_ values: [AbstractValue]) -> [AbstractValue]? {
-            ValueTracer.trimTrailingUnknown(values.map(sanitizeValue))
+            ValueTracer.trimTrailingUnknown(collapsingMultiWordResults(values).map(sanitizeValue))
         }
 
         var tracer = ValueTracer(calleeConventions: calleeConventions, asyncContextSlots: asyncContextSlots)
         tracer.callFactsCache = callFactsCache
+        tracer.callResultBank = { callee in
+            Self.callResultBank(of: callee, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
+        }
         if let objcIndex {
             let selectors = resolver.selectors.bySelref
             let method = function.objcMethod
@@ -4922,6 +4984,8 @@ public struct Disassembler: Sendable {
         var reusedResultSites = Set<UInt64>()
         /// The site whose `let` is being rendered, which spells itself out.
         var definingSite: UInt64?
+        /// The multi-word call whose two words are being rendered together.
+        var wholeResultSite: UInt64?
         // Rendering limits can discard an otherwise evaluable tracer value.
         // Count actual placeholder emissions, rather than scanning text where
         // '?' can also be a ternary operator or part of a string literal.
@@ -5005,6 +5069,15 @@ public struct Disassembler: Sendable {
             return Self.swiftReturnRegister(forReturnType: type)
         }()
         var sites = analysis.callSites
+        for insn in function.instructions where insn.controlFlow == .call || insn.controlFlow == .branch {
+            guard let callee = DisassembledFunction.calleeName(of: insn),
+                  Self.callResultBank(of: callee, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) == .notOneRegister
+            else { continue }
+            switch sites[insn.address]?.indirectResult {
+            case .frame?, .indirectResultField?: continue
+            default: multiWordResultSites.insert(insn.address)
+            }
+        }
         // A resolved unconditional branch outside this function is a tail call.
         // Keep internal CFG branches out: they have no callee name.
         for insn in function.instructions where insn.controlFlow == .branch {
@@ -6290,8 +6363,21 @@ public struct Disassembler: Sendable {
                     }
                 }
             case .aggregate(let values):
+                // A multi-word result's two words together: the call.
+                if values.count == 2, case .callResult(let site) = values[0], values[1] == .callResultHigh(site),
+                   multiWordResultSites.contains(site) {
+                    let saved = wholeResultSite
+                    wholeResultSite = site
+                    defer { wholeResultSite = saved }
+                    return renderValue(values[0], depth: depth)
+                }
                 return "(" + values.map { renderValue($0, depth: depth + 1) }.joined(separator: ", ") + ")"
             case .callResult(let addr):
+                // x0 after a call whose result spans registers is one part of
+                // it: `mkPair(x).a + 2` read `(mkPair(x) + 2)`.
+                if multiWordResultSites.contains(addr), addr != definingSite, addr != wholeResultSite {
+                    return unknownRenderedValue()
+                }
                 // A call bound to a name for its field reads is that name
                 // everywhere, so it is never spelled out a second time.
                 if let name = boundResultSites[addr], addr != definingSite { return name }
@@ -6931,6 +7017,17 @@ public struct Disassembler: Sendable {
 
         func collectCallResults(in value: AbstractValue, into consumed: inout Set<UInt64>) {
             switch value {
+            case .callResult(let address) where multiWordResultSites.contains(address):
+                // One part of a multi-word result renders `?`, so the call
+                // still needs its own statement.
+                break
+            case .aggregate(let words) where words.count == 2:
+                if case .callResult(let site) = words[0], words[1] == .callResultHigh(site),
+                   multiWordResultSites.contains(site) {
+                    consumed.insert(site)
+                } else {
+                    for word in words { collectCallResults(in: word, into: &consumed) }
+                }
             case .callResult(let address), .indirectCallResultWord(let address, _):
                 consumed.insert(address)
             case .arrayLiteral(let site, _):

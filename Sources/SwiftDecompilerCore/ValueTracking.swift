@@ -577,6 +577,13 @@ public struct ValueTracer: Sendable {
     var voidCallSites = Set<UInt64>()
     var callReturnsVoid: (@Sendable (_ callee: String, CallSite) -> Bool)?
 
+    /// Where a Swift callee's printed result type puts the whole result.
+    enum CallResultBank: Sendable { case integer, floating, notOneRegister, unknown }
+    /// For a callee whose Swift signature names its result: x0 alone, v0
+    /// alone, or neither one register (a struct's words, a payload enum, a
+    /// generic value). `.unknown` claims nothing.
+    var callResultBank: (@Sendable (_ callee: String) -> CallResultBank)?
+
     public init(calleeConventions: [UInt64: CalleeResultConvention] = [:], asyncContextSlots: [Int: AbstractValue] = [:]) {
         self.calleeConventions = calleeConventions
         self.asyncContextSlots = asyncContextSlots
@@ -1542,6 +1549,18 @@ public struct ValueTracer: Sendable {
                 // result is not in holds whatever the callee left there.
                 registers[.x(0)] = result == "i" ? .callResult(insn.address) : .unknown
                 registers[.v(0)] = result == "f" || result == "d" ? .callResult(insn.address) : nil
+            } else if !call.returnsString, let bank = callResultBank?(call.callee), bank != .unknown {
+                // A Swift signature says which register is the whole result.
+                // Any other register holds one part of it or whatever the
+                // callee left: `mkPair(x).a + 2` (a two-word struct in x0 and
+                // x1) read `(mkPair(x) + 2)`, and a `{Int, Double}` result's d0
+                // read as the whole call.
+                // A result that is not one register keeps x0 and x1 as this
+                // call's words, as a String's are: passed on together they
+                // are the value; x0 alone is one part, which renders `?`.
+                registers[.x(0)] = bank == .floating ? .unknown : .callResult(insn.address)
+                registers[.v(0)] = bank == .floating ? .callResult(insn.address) : nil
+                if bank == .notOneRegister { registers[.x(1)] = .callResultHigh(insn.address) }
             } else {
                 // The result register — x0 for integer/pointer/reference returns,
                 // v0 for a floating-point one. The callee delivers into one; only

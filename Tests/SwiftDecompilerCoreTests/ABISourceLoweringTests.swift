@@ -279,3 +279,27 @@ struct ABISourceLoweringTests {
     // A String's getter takes its two words and nothing after them.
     #expect(takeTwo.contains("Swift.String.utf8.getter(?, ?))"), Comment(rawValue: takeTwo))
 }
+
+/// A call whose result spans registers is not its first register: Pair
+/// returns in x0 and x1, Mix in x0 and d0, PE as a payload and a tag, and
+/// a caller using one part read the whole call (`(mkPair((arg0 + 4)) +
+/// 2)`, `takeInt(r0)` for PE's payload; `multiresult.swift`). A
+/// one-register result still is the call, and so are a multi-word
+/// result's words passed on together (`count.getter(utf8.getter(…))`).
+@Test func onePartOfAMultiRegisterResultIsNotTheCallIfPresent() async throws {
+    let path = "Fixtures/Sample/libMultiResult.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("MultiResult.\(name)(") }).renderStructured()
+    }
+    // The call stays a statement; the part it hands on is `?`.
+    for (name, call) in [("pairA", "mkPair((arg0 + 4))"), ("mixI", "mkMix((arg0 + 17))"), ("mixD", "mkMix((arg0 + 19))")] {
+        let body = try text(name)
+        #expect(body.contains("    MultiResult.\(call)\n"), Comment(rawValue: body))
+        #expect(!body.contains("\(call) +"), Comment(rawValue: body))
+    }
+    let pe = try text("peOn")
+    #expect(!pe.contains("takeInt(r0)"), Comment(rawValue: pe))
+    #expect(try text("intCall").contains("return (MultiResult.takeInt((arg0 + 3)) + 1)"))
+}

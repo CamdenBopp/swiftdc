@@ -14,8 +14,8 @@ omitted.
 
 ## Soundness
 
-1. **One register of a multi-register call result is spelled as the whole
-   call.** `mkPair(x).a + 2` renders `(mkPair(x) + 2)`; a `{Int, Double}`
+1. **FIXED (this date, see PRODUCTION-READINESS) — One register of a
+   multi-register call result is spelled as the whole call.** `mkPair(x).a + 2` renders `(mkPair(x) + 2)`; a `{Int, Double}`
    result's d0 renders as the call; `if case .num(let n) = mkPE(x)` passes
    `r0`; the same for C 16-byte structs and ObjC `NSRange` sends.
    `ValueTracking.swift` post-call transfer writes `.callResult` into x0

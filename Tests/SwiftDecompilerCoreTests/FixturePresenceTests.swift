@@ -196,6 +196,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libResultBuffer.dylib",
         "Fixtures/Sample/libDeadArgs.dylib",
         "Fixtures/Sample/libEntryFootprints.dylib",
+        "Fixtures/Sample/libMultiResult.dylib",
     ]
 
     /// True on a run that must actually exercise the fixtures. `CI` is set by

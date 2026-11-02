@@ -460,6 +460,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name DeadArgs deadargs.swift 
 echo "==> an Int after parameters of fixed multi-word or unseeded footprint (entryfootprints.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name EntryFootprints entryfootprints.swift -o libEntryFootprints.dylib
 
+echo "==> calls whose results span registers, one part used (multiresult.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name MultiResult multiresult.swift -o libMultiResult.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

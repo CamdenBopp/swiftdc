@@ -6650,3 +6650,16 @@ Findings:
   async calls laid out positionally, among others) and the completeness
   gaps. The earlier entry that says the `swift_willThrow` select "no
   longer reproduces" is stale: `plainThrow` at -O still renders it.
+- **FIXED — one register of a multi-register call result read as the
+  whole call** (ABI review item 1). The tracer now writes a Swift call's
+  result only to the register its printed result type proves holds all
+  of it (`callResultBank`): x0 for a scalar, class, `any Error`, Builtin
+  scalar or one-word collection, v0 for a float. For any other type x0
+  and x1 are the call's words, as a String's are: passed on together they
+  are the value (`UTF8View.count.getter(String.utf8.getter(?, ?))`), and
+  x0 alone renders `?` while the call keeps its statement. `mkPair(x).a +
+  2` read `(mkPair(x) + 2)`; it reads `mkPair(x)` then `return (? + 2)`
+  (`multiresult.swift`). A call handed a frame buffer in x8, a generic
+  result and an unreadable result type claim nothing. Cost: in the
+  swift-syntax dylibs about 130 enum-tag tests that named the raw
+  register (`w9 >=ᵁ 4`) now read `? & 255`.
