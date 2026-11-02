@@ -1197,6 +1197,19 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 3. Robustness — what breaks it?
 
+- **FIXED — a corrupt witness table pattern trapped `dump`, `interface`,
+  `objc` and `disasm`.** The conformance check read the protocol, the type
+  and the resilient witnesses, not the pattern pointer at +8, which
+  MachOSwiftSection resolves at whatever file offset it makes. Fuzzing
+  (`Tools/fuzz.swift metadata <f> 200 9001`) set its top byte in
+  libSample.stripped (mutant 122) and libGaugeKit (mutant 75), and both
+  trapped with `Negative value is not representable` in
+  `MachOFile.readWrapperElement`. Preflight now requires a nonzero pattern
+  to land in a mapped segment. GaugeKit mutant 1 is also refused now: the
+  old build accepted it and printed `protocol Ga�ge` with its three
+  requirements gone. Seed 9001, 200 mutants: libSample.stripped 7 crashes
+  → 0, libGaugeKit 3 → 0. `swift-version` over the 6,127-binary host corpus
+  (arm64 slice of fat files): 0 status changes.
 - **FIXED — a corrupt resilient witness trapped `dump`, `interface` and
   `analyze`.** The conformance check (5d17c6f) stopped at the 16-byte
   header, but MachOSwiftSection also resolves each resilient witness's
@@ -6098,7 +6111,8 @@ at `--jobs 1`.
   no crash, timeout or memory kill. `xrefs` reports 2,113,414 of 2,113,414
   function starts on both. The three crashing fuzz mutants of seed 9001
   (libSample.stripped m122, libReconstruction m53, libGaugeKit m75)
-  reproduce identically on both and stay OPEN.
+  reproduce identically on both; fixed afterwards in preflight (see
+  Robustness: witness table pattern).
 - **Stripped-name oracle:** 235,241 names recovered, 165,432 exact,
   0 conflicts, identical per binary to dev.
 - **Determinism:** 160 outputs of the perf set × 3 processes, per build:

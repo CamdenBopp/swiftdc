@@ -1572,3 +1572,57 @@ private func rejectsContext(struct structure: Data? = nil, module: Data? = nil) 
     #expect(throws: BinaryLoadError.self) { try check(image(requirementOffset: -0x6200_0000)) }
     #expect(throws: BinaryLoadError.self) { try check(image(requirementOffset: -0x6200_0000 | 1)) }
 }
+
+/// A conformance's witness table pattern is a direct relative pointer the
+/// reader resolves at whatever file offset it makes: a fuzzed top byte made
+/// it negative and trapped `dump`, `interface`, `objc` and `disasm`
+/// (seed 9001: libSample.stripped mutant 122, libGaugeKit mutant 75).
+@Test func aWitnessTablePatternIsCheckedBeforeItIsResolved() throws {
+    // Image at 0x1000: the record at 0x1000, a conformance at 0x1010 whose
+    // pattern field is at 0x1018, and a protocol descriptor at 0x1030
+    // named "P" at 0x1040.
+    func image(patternOffset: Int32) -> Data {
+        var bytes = Data(count: 0x60)
+        func put32(_ value: UInt32, at offset: Int) {
+            withUnsafeBytes(of: value.littleEndian) { bytes.replaceSubrange(offset ..< offset + 4, with: $0) }
+        }
+        put32(0x10, at: 0x00)                               // record -> 0x1010
+        put32(0x20, at: 0x10)                               // protocol -> 0x1030
+        put32(0x1c, at: 0x14)                               // type -> 0x1030
+        put32(UInt32(bitPattern: patternOffset), at: 0x18)  // pattern, relative to 0x1018
+        put32(3, at: 0x30)
+        put32(0x08, at: 0x38)
+        bytes[0x40] = UInt8(ascii: "P")
+        return bytes
+    }
+    func check(_ bytes: Data) throws {
+        let reader = MachOPreflight.PointerReader(sections: [], encodings: [:])
+        try MachOPreflight.validateConformanceDescriptors(
+            records: bytes.prefix(4), address: 0x1000, reader: reader, segments: [0x1000 ..< 0x1060], path: "t",
+            read: { address, count in
+                guard address >= 0x1000, address + UInt64(count) <= 0x1060 else { return nil }
+                return bytes.subdata(in: Int(address - 0x1000) ..< Int(address - 0x1000) + count)
+            })
+    }
+    try check(image(patternOffset: 0))      // none
+    try check(image(patternOffset: 0x30))   // 0x1048, in the image
+    #expect(throws: BinaryLoadError.self) { try check(image(patternOffset: -0x1a00_0000)) }
+    #expect(throws: BinaryLoadError.self) { try check(image(patternOffset: 0x60)) }  // just past it
+}
+
+/// End to end, mutant 75's one byte: libGaugeKit's first conformance with
+/// its witness table pattern's top byte set is refused by its cause.
+@Test func aFuzzedWitnessTablePatternIsRefusedIfPresent() throws {
+    let path = "Fixtures/Sample/libGaugeKit.dylib"
+    guard var bytes = FileManager.default.contents(atPath: path) else { return }
+    try MachOPreflight.validate(url: URL(fileURLWithPath: path))
+    let machO = try BinaryLoader.load(path: path)
+    let proto = try #require(machO.sections.first { $0.sectionName == "__swift5_proto" })
+    let record = Int(proto.offset)
+    let relative = bytes[record ..< record + 4].withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
+    bytes[record + Int(relative) + 8 + 3] = 0x87
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("swiftdc-pattern-\(ProcessInfo.processInfo.processIdentifier)")
+    try bytes.write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+    #expect { try MachOPreflight.validate(url: url) } throws: { "\($0)".contains("witness table pattern") }
+}

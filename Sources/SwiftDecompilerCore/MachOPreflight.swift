@@ -1395,6 +1395,16 @@ public enum MachOPreflight {
                     try validateContextDescriptor(at: type, read: read, segments: segments, path: path, what: typeWhat)
                 }
             }
+            // The witness table pattern, a direct relative pointer the reader
+            // resolves at whatever file offset it makes: a fuzzed top byte
+            // made it negative and trapped (seed 9001: libSample.stripped
+            // mutant 122, libGaugeKit mutant 75).
+            if let patternField = header.u32(at: 8), patternField != 0 {
+                let pattern = (descriptor &+ 8) &+ UInt64(bitPattern: Int64(Int32(bitPattern: patternField)))
+                guard segments.contains(where: { $0.contains(pattern) }) else {
+                    throw fail(index, "has its witness table pattern at 0x\(String(pattern, radix: 16)), outside every mapped segment")
+                }
+            }
             try validateResilientWitnesses(
                 descriptor: descriptor, flags: flags, index: index, reader: reader, segments: segments, read: read, fail: fail)
             let relative = UInt64(bitPattern: Int64(Int32(bitPattern: protocolField & ~1)))
