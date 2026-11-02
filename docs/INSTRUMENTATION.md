@@ -201,6 +201,7 @@ now represented directly:
 | `values.loop-initialization` | name, value, stackOffset; proven constant entry binding, at the header branch |
 | `render.return-outcome` | status, type, path; recovered, partial, tail-call, unknown, void (the signature says so), no-signature (no result type known: nothing rendered, nothing claimed), throw, or unsupported layout/value |
 | `render.return-value` | value, register, type, rendered, path; a recovered return claim |
+| `render.memory-write` | level: frame, context, array or result (a target the tracer proved and another pass models; a result write is shown as `address` when the function has no known signature), semantic (a field write or other statement describes it), address (shown as `memN[base + off] = value`, unproven parts naming the instruction's registers), unresolved (an indexed address; not shown), unanalysed (no tracer state at the store) |
 | `render.function` | view, symbol, returns, returnStatements, unknownReturns, gotos, lines; committed output only |
 | `async.context-escape` | offset; possible aliases on either incoming path invalidate slots |
 | `async.context-escape-cap` | blocks, cap; no slots proven after an incomplete analysis |

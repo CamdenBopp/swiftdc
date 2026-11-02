@@ -65,6 +65,7 @@ private func isStatementNote(_ note: String) -> Bool {
     if note.hasPrefix("yield ") { return true }
     if note.hasPrefix("await hop_to_executor(") { return true }
     if note.hasPrefix("self = ") { return true }
+    if note.range(of: #"^mem\d+\["#, options: .regularExpression) != nil { return true }
     if note.hasPrefix("("), note.contains("self->") || note.contains("self."), note.contains(" = ") { return true }
     guard note.hasPrefix("self.") || note.hasPrefix("self->") else { return false }
     return [" = ", " += ", " -= "].contains(where: note.contains)

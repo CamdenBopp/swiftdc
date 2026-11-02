@@ -16,6 +16,8 @@ public extension ProbeEvent {
         "The recovered branch-taken condition, retaining signed versus unsigned operators.")
     static let returnOutcome = ProbeEvent("render.return-outcome", .render, .decision,
         "Whether an exit renders a recovered, partial, unknown, void, throwing or unsupported-layout return.")
+    static let memoryWrite = ProbeEvent("render.memory-write", .render, .decision,
+        "How a plain store is shown: frame, context, array or result (a target another pass models), semantic (another statement describes it), address (`memN[base + off] = value`), unresolved (an indexed address, not shown), or unanalysed (the tracer recorded no state there).")
     static let returnValue = ProbeEvent("render.return-value", .render, .claim,
         "The abstract value and rendered expression of a recovered return, for an independent oracle.")
     static let renderedFunction = ProbeEvent("render.function", .render, .metric,

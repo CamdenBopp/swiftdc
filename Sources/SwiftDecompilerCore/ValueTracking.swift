@@ -379,6 +379,32 @@ public struct CallSite: Equatable, Sendable {
 }
 
 /// A memory access into `self`, for field naming.
+/// A store the tracer does not otherwise model: memory outside the frame, the
+/// async context, an array literal and the indirect result. `base` is the
+/// base register's value before the store (unknown when not proven), and
+/// each stored value is the source register's, `bytes` wide, at
+/// `displacement + index * bytes`. A register index makes the address
+/// unknown, recorded as `indexed`. The register names are the instruction's,
+/// for a value the tracer did not prove.
+public struct MemoryWrite: Sendable, Equatable {
+    /// What the tracer proved the address is: `frame` (sp, or a register it
+    /// followed from sp), `context` (an async context), `array` (an array
+    /// literal), `result` (the indirect-result buffer), or `address` when
+    /// nothing models it.
+    public let kind: String
+    public let base: AbstractValue
+    public let baseRegister: String
+    public let valueRegisters: [String?]
+    public let displacement: Int64
+    /// An index register added to the base, shifted left by `indexShift`
+    /// (`[x20, x8, lsl #3]`). An extended index sets `indexed` instead.
+    public let indexRegister: String?
+    public let indexShift: Int
+    public let indexed: Bool
+    public let bytes: Int
+    public let values: [AbstractValue]
+}
+
 public struct SelfFieldAccess: Sendable, Equatable {
     /// Byte offset from the start of the instance.
     public var offset: Int
@@ -471,6 +497,8 @@ public struct FunctionAnalysis: Sendable {
     /// offset. Reconstructs `[e0, e1, …]` from the `_allocateUninitializedArray` +
     /// element-store + `_finalizeUninitializedArray` lowering.
     public var arrayElements: [UInt64: [Int: AbstractValue]] = [:]
+    /// Store address → the write, for stores no other fact describes.
+    public var memoryWrites: [UInt64: MemoryWrite] = [:]
     /// `ret` address → the stores through the incoming x8 that reach it. Only
     /// meaningful for a function that reads its incoming x8 (the enrichment pass
     /// checks that separately); for any other function the map is empty.
@@ -1073,6 +1101,9 @@ public struct ValueTracer: Sendable {
                     // branch on a named value (`cbnz x8` where x8 is `self.next`)
                     // reconstructs like the flag branches, not just as raw `x8`.
                     result.branchConditions[insn.address] = condition
+                }
+                if let detail = insn.detail, let write = memoryWrite(detail, in: registers) {
+                    result.memoryWrites[insn.address] = write
                 }
                 let before = Probe.isActive ? registers : nil
                 let writes = before == nil ? nil : TracerWriteLog()
@@ -4212,6 +4243,75 @@ public struct ValueTracer: Sendable {
         let (aEnd, aOverflow) = a.addingReportingOverflow(aBytes)
         let (bEnd, bOverflow) = b.addingReportingOverflow(bBytes)
         return aOverflow || bOverflow || (a < bEnd && b < aEnd)
+    }
+
+    static let plainStoreIDs: Set<UInt32> = Set([
+        AARCH64_INS_STR, AARCH64_INS_STUR, AARCH64_INS_STRB, AARCH64_INS_STURB,
+        AARCH64_INS_STRH, AARCH64_INS_STURH, AARCH64_INS_STP, AARCH64_INS_STNP,
+        // Release stores write like plain ones (`stlr x0, [x8]`, a lazy
+        // witness-table cache); the ordering is not shown.
+        AARCH64_INS_STLR, AARCH64_INS_STLRB, AARCH64_INS_STLRH,
+    ].map(\.rawValue))
+
+    /// The write a plain store makes, and which proven target it lands in:
+    /// the frame, the async contexts, an array literal and the indirect
+    /// result are each modelled by their own pass.
+    private func memoryWrite(_ detail: StructuredInsn, in registers: State) -> MemoryWrite? {
+        guard Self.plainStoreIDs.contains(detail.id.rawValue),
+              let operand = detail.operands.first(where: { $0.operand.isMemory }),
+              case .memory(let base, let index, let displacement) = operand.operand, let base
+        else { return nil }
+        let target = switch memoryTarget(detail, in: registers) {
+        case .stackSlot?: "frame"
+        case .asyncSlot?, .asyncCalleeSlot?: "context"
+        case .arrayElement?: "array"
+        case .resultSlot?: "result"
+        default: base.kind == .stackPointer ? "frame" : "address"
+        }
+        // A store of the function's own async context links a callee's
+        // context to it (`stp x22, resume, [x0]`): async-call bookkeeping,
+        // proven by the stored value, not by the base register's name.
+        let linksContext = detail.operands.contains { info in
+            !info.operand.isMemory && source(info, in: registers) == .asyncContext
+        }
+        let kind = linksContext && target == "address" ? "context" : target
+        let pair = detail.id == AARCH64_INS_STP || detail.id == AARCH64_INS_STNP
+        let sources = detail.operands.prefix(pair ? 2 : 1).filter { !$0.operand.isMemory }
+        // A release store's width is its own: stlrb writes one byte from a w
+        // register. Computed here so accessBytes, which other passes read,
+        // keeps its answers.
+        let releaseBytes: Int? = switch detail.id {
+        case AARCH64_INS_STLRB: 1
+        case AARCH64_INS_STLRH: 2
+        case AARCH64_INS_STLR: sources.first?.operand.register.map { $0.widthBits / 8 }
+        default: nil
+        }
+        guard !sources.isEmpty, let bytes = releaseBytes ?? Self.accessBytes(detail) else { return nil }
+        let each = pair ? bytes / 2 : bytes
+        func name(_ register: PhysReg?) -> String? {
+            guard let register else { return nil }
+            switch register.kind {
+            case .gpr: return (register.widthBits == 32 ? "w" : "x") + String(register.number)
+            case .zero: return "0"
+            case .vector: return (register.widthBits == 128 ? "q" : register.widthBits == 64 ? "d" : "s") + String(register.number)
+            default: return nil
+            }
+        }
+        return MemoryWrite(
+            kind: kind,
+            base: registers[Location(base)] ?? .unknown,
+            baseRegister: name(base) ?? "?",
+            valueRegisters: sources.map { name($0.operand.register) },
+            displacement: detail.postIndex ? 0 : displacement,
+            indexRegister: operand.extender == AARCH64_EXT_INVALID ? name(index) : nil,
+            indexShift: operand.shift.type == AARCH64_SFT_LSL ? Int(operand.shift.amount) : 0,
+            indexed: index != nil && (operand.extender != AARCH64_EXT_INVALID
+                || (operand.shift.type != AARCH64_SFT_INVALID && operand.shift.type != AARCH64_SFT_LSL)),
+            bytes: each,
+            values: sources.map { info in
+                let value = source(info, in: registers)
+                return info.operand.register?.kind == .gpr ? narrowed(value, bits: min(each * 8, 64)) : value
+            })
     }
 
     /// Where a memory operand points, when its base is a known frame offset or a

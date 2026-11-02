@@ -69,6 +69,22 @@ results do not replace previously recorded release performance measurements.
   branch's NZCV. At its first run: 9,287 verified, 1,871 refuted, 212
   unparsed, in four classes fixed below. Now: 9,936 verified, 2,708
   declined, 0 refuted, 0 unparsed.
+- **FIXED — a function that wrote memory could render empty.** The
+  compiler-grounded audit found 320 of 4,165 stripped swift-syntax functions
+  rendering `{ return }` or no statements while their code stored outside
+  the frame (setters, indirect results, caches). A store no other fact
+  describes now renders as the write it is, `memN[base + off] = value`,
+  N the bits it stores; an unproven part names the instruction's register,
+  a call result is named by its register (not spelled again), and a store
+  the tracer proves lands in the frame (sp or a register followed from it),
+  an async context (including linking a callee's context to the function's
+  own), an array literal or a signature-described indirect result stays
+  hidden. `render.memory-write` classifies every plain store. Swift-syntax
+  stripped: 13,933 frame or context, 311 described results, 7,769 shown,
+  44 semantic, 0 unresolved, 0 unanalysed; 297 of the 320 now show their
+  writes (23 OPEN: getters whose indirect result has a known signature but
+  no rendered return). Cost: functions with a goto 542 -> 572, since a
+  shared tail that now writes cannot be dropped.
 - **FIXED — a function with no signature reported a `void` return.** The
   `render.return-outcome` status was `void` whenever the signature did not
   say the function returns a value, including when there was no signature:

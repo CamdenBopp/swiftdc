@@ -4834,12 +4834,25 @@ public struct Disassembler: Sendable {
                 || function.instructions.contains(where: { $0.controlFlow == .branch && $0.branchTarget == nil })
         else {
             // No facts is still an observed unknown result, not an absent exit.
-            // Do not run unrelated enrichment when only this contract is known.
-            guard function.hasProvenMachineValueReturn else { return function }
+            // Do not run unrelated enrichment when only this contract is known:
+            // the exit, and the stores no other fact describes, are all added.
+            let stores = Self.leafMemoryWrites(function, analysis: analysis)
+            guard function.hasProvenMachineValueReturn || !stores.isEmpty else { return function }
             let type = DisassembledFunction.splitSignature(function.analysisDisplayName)?.result
                 ?? function.objcMethod?.signature ?? "unknown"
             let instructions = function.instructions.map { insn in
-                guard insn.controlFlow == .return else { return insn }
+                if let statement = stores[insn.address] {
+                    var facts = insn.facts
+                    facts.statement = .assignment(statement)
+                    return Instruction(
+                        address: insn.address, text: insn.text,
+                        annotation: [insn.annotation, statement].compactMap { $0 }.joined(separator: "  "),
+                        controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
+                        callArguments: insn.callArguments, callSelf: insn.callSelf,
+                        resultConsumed: insn.resultConsumed, sourceType: insn.sourceType, detail: insn.detail,
+                        calleeDisplayName: insn.calleeDisplayName, callee: .kept(insn.callee), facts: facts)
+                }
+                guard insn.controlFlow == .return, function.hasProvenMachineValueReturn else { return insn }
                 Probe.record(.returnOutcome, at: insn.address, ["status": .label("unknown"), "type": .name(type)])
                 var facts = insn.facts
                 facts.exit = .normal("?")
@@ -7111,6 +7124,37 @@ public struct Disassembler: Sendable {
             if observedReturnPaths == nil { observedReturnPaths = Probe.returnPathConditions(analysis, of: function) }
             return .abstractValue(observedReturnPaths?[address] ?? .unknown)
         }
+        /// `mem64[base + 0x10] = value`, one per stored register, its width the
+        /// bits the instruction stores. An assignment, not a call: a call's
+        /// arguments are filtered as plumbing, and `store64(r0 + 0x38, type
+        /// metadata for Swift.Int)` lost its value that way. A part the
+        /// tracer did not prove names the instruction's register (`x0`, its
+        /// value at the store); an indexed address is `base[?]`.
+        func memoryWriteStatement(_ write: MemoryWrite) -> String {
+            func rendered(_ value: AbstractValue, register: String?) -> String {
+                // A call's result is named by its register here: spelled out,
+                // `mem64[r0 + 0x28] = makeBox()` read as a second call.
+                var calls = Set<UInt64>()
+                collectCallResults(in: value, into: &calls)
+                if !calls.isEmpty { return register ?? "?" }
+                let text = renderValue(sanitizeValue(value), depth: 0)
+                return text == "?" || text.isEmpty ? (register ?? "?") : text
+            }
+            var base = rendered(write.base, register: write.baseRegister)
+            if let index = write.indexRegister {
+                base += write.indexShift == 0 ? " + \(index)" : " + (\(index) << \(write.indexShift))"
+            }
+            return zip(write.values, write.valueRegisters).enumerated().map { index, pair in
+                let (value, register) = pair
+                let offset = write.displacement + Int64(index * write.bytes)
+                let address = offset == 0 ? base
+                    : offset > 0 ? "\(base) + 0x\(String(offset, radix: 16))" : "\(base) - 0x\(String(-offset, radix: 16))"
+                return "mem\(write.bytes * 8)[\(address)] = \(rendered(value, register: register))"
+            }.joined(separator: "; ")
+        }
+
+        let signatureKnown = DisassembledFunction.signatureKnown(
+            displayName: function.analysisDisplayName, objcSignature: function.objcMethod?.signature)
         let instructions = function.instructions.map { insn -> Instruction in
             var sourceNotes: [String] = []
             var sourceType = insn.sourceType
@@ -7161,6 +7205,26 @@ public struct Disassembler: Sendable {
                         sourceNotes.append(readPath)
                     }
                 }
+            }
+
+            // A store nothing above described still writes memory. Unshown,
+            // a setter rendered as an empty body: the compiler-grounded audit
+            // found 320 of 4,165 stripped swift-syntax functions empty or a
+            // bare `return` while their code stored to memory.
+            // An indirect-result write is the function's result: shown by its
+            // return when a signature says what is returned, and only here
+            // when none does.
+            if let detail = insn.detail, ValueTracer.plainStoreIDs.contains(detail.id.rawValue) {
+                let level: String
+                if let write = analysis.memoryWrites[insn.address] {
+                    let shown = write.kind == "address" || (write.kind == "result" && !signatureKnown)
+                    level = !shown ? write.kind : !statements.isEmpty ? "semantic"
+                        : write.indexed ? "unresolved" : "address"
+                    if level == "address" { noteStatement(.assignment(memoryWriteStatement(write))) }
+                } else {
+                    level = "unanalysed"
+                }
+                Probe.record(.memoryWrite, at: insn.address, ["level": .label(level)])
             }
 
             // Parsed once per call or branch above; nil for anything else,
@@ -7510,6 +7574,49 @@ public struct Disassembler: Sendable {
             )
         }
         return function.replacingInstructions(instructions)
+    }
+
+    /// The `memN[...] = value` statements of a function the full enrichment
+    /// skips (no calls, no other facts), by store address, with each plain
+    /// store's level recorded. With no calls there is no call result to
+    /// spell: a value is a constant, an argument, an address or, unproven,
+    /// the instruction's register.
+    static func leafMemoryWrites(_ function: DisassembledFunction, analysis: FunctionAnalysis) -> [UInt64: String] {
+        func rendered(_ value: AbstractValue, register: String?) -> String {
+            switch value {
+            case .immediate(let bits): renderImmediate(bits)
+            case .argument(let index): "arg\(index)"
+            case .address(let address): "0x" + String(address, radix: 16)
+            case .indirectResultPointer: "&result"
+            default: register ?? "?"
+            }
+        }
+        var statements: [UInt64: String] = [:]
+        for insn in function.instructions {
+            guard let detail = insn.detail, ValueTracer.plainStoreIDs.contains(detail.id.rawValue) else { continue }
+            let level: String
+            if let write = analysis.memoryWrites[insn.address] {
+                // A result write leaves an indirect-result exit fact, which
+                // takes the function down the full enrichment instead.
+                level = write.kind != "address" ? write.kind : write.indexed ? "unresolved" : "address"
+                if level == "address" {
+                    var base = rendered(write.base, register: write.baseRegister)
+                    if let index = write.indexRegister {
+                        base += write.indexShift == 0 ? " + \(index)" : " + (\(index) << \(write.indexShift))"
+                    }
+                    statements[insn.address] = zip(write.values, write.valueRegisters).enumerated().map { index, pair in
+                        let offset = write.displacement + Int64(index * write.bytes)
+                        let address = offset == 0 ? base
+                            : offset > 0 ? "\(base) + 0x\(String(offset, radix: 16))" : "\(base) - 0x\(String(-offset, radix: 16))"
+                        return "mem\(write.bytes * 8)[\(address)] = \(rendered(pair.0, register: pair.1))"
+                    }.joined(separator: "; ")
+                }
+            } else {
+                level = "unanalysed"
+            }
+            Probe.record(.memoryWrite, at: insn.address, ["level": .label(level)])
+        }
+        return statements
     }
 
     /// The statement a field write makes. A tuple of Swift fields
