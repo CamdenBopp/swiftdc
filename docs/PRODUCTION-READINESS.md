@@ -6078,3 +6078,138 @@ symbols and at most 1.5 MB of `__text`.
   descriptor's flags do (an initializer never does). Stripped-name oracle,
   472 binaries, counting static-ness: 3,917 conflicts → 0, none lost
   (172,466 names).
+
+## 2026-11-01: MachOSwiftSection 0.24 and the dependency refresh
+
+An upgrade experiment on `exp/machoswiftsection-0.24`, from dev at
+`ba6d9d6`: MachOSwiftSection 0.22.0 → 0.24.0, MachOObjCSection 0.8.110 →
+0.8.205, MachOKit 0.54.101 → 0.55.100 (with the `cache` memo rebased onto
+it), swift-capstone 6.0.1 → 7.0.0 (C Capstone 6.0.100 → 6.0.101),
+swift-demangling 0.7.2, MachOKitExtensions 1.3.0, swift-semantic-string
+0.6.0. Not merged into dev.
+
+Measured on the same inputs as dev: 192 fixtures in eight views, 413
+dyld-cache images in six commands (`Tools/corpus.swift`), the 472-binary
+stripped-name oracle, and the 40-binary perf set, three alternating rounds
+at `--jobs 1`.
+
+- **Suite:** 926 tests pass with fixtures required.
+- **Robustness:** 2,478 of 2,478 corpus runs exit 0 on both builds, with
+  no crash, timeout or memory kill. `xrefs` reports 2,113,414 of 2,113,414
+  function starts on both. The three crashing fuzz mutants of seed 9001
+  (libSample.stripped m122, libReconstruction m53, libGaugeKit m75)
+  reproduce identically on both and stay OPEN.
+- **Stripped-name oracle:** 235,241 names recovered, 165,432 exact,
+  0 conflicts, identical per binary to dev.
+- **Determinism:** 160 outputs of the perf set × 3 processes, per build:
+  0 differ.
+- **Speed and memory:** dev against the upgrade, medians of three rounds,
+  sums over the perf set: `dump` 29 s / 28 s, `interface` 29 s / 27 s,
+  `objc` 13 s / 13 s, `xrefs` 933 s / 942 s. Peak footprint is within 3 MB
+  on each command. No single binary moved more than 1.5 s except
+  RealityFoundation `interface`, 6.2 s → 4.7 s.
+  SwiftUI, SwiftUICore and iOSSupport SwiftUI, same method, dev against
+  the upgrade: `dump` 50.3 / 15.5 s, 60.9 / 10.9 s and 43.6 / 13.7 s;
+  `interface` 55.5 / 19.5 s, 61.8 / 10.8 s and 47.0 / 15.9 s, with
+  interface peak footprint up 7 to 32 MB; `layout` and `xrefs` unchanged
+  (within 1 s). 0 of 108 runs failed, and no output differs between
+  processes.
+
+Findings:
+
+- **FIXED (soundness, by the upgrade): a protocol requirement's generic
+  right-hand side was replaced by its argument.** For
+  `Readiness.Element == Event<Payload>` and `Pending == [Payload]`, dev
+  printed `Self.Readiness.Element == Self.Payload` and `Self.Pending ==
+  Self.Payload`, requirements the protocol does not have (upstream
+  6b758d0e). On the cache, CloudKitDaemon
+  printed one. `aProtocolRequirementsGenericRightHandSideIsPrintedIfPresent`
+  on the new `libProtocolRHS.dylib` is red on dev.
+- **FIXED (soundness, by the upgrade): local types that share a name
+  shared their fields.** SwiftUI's `TableDataSource` declares six local
+  `Visitor` structs, one per drop and delete method. Dev printed all six
+  as members of `TableDataSource` with the same field, `var result:
+  SwiftUI.DeleteInteraction?`. The upgrade names each by its function
+  (`Visitor #1 in SwiftUI.TableDataSource.performDropOn(index:dropInfo:)`)
+  with its own fields (`dropInfo`, `strategy` and `items`,
+  `itemProvider`). A protocol requirement printed an unbound generic
+  parameter: `Self.Host == SwiftUI.AppKitPlatformViewHost<A>`, now
+  `<Self>`.
+- **FIXED (soundness, by the upgrade): bare-colon Objective-C selectors
+  lost their arguments.** Dev printed one-colon selectors that do not
+  exist. The ObjC runtime confirms `enumerateRangesIn::`, `decimal::`,
+  `formatDate::` and `createStyledButtons:buttonFont:isCompact::`.
+- **FIXED (completeness, by the upgrade): Objective-C properties and
+  protocol lists on cache images.** 32 of 413 `objc` outputs change. All
+  1,930 method lines that disappear return as properties. `CMOdometer` and
+  `CKAsset` attribute strings match the runtime's exactly.
+- **FIXED (correctness, by the upgrade): a local class's superclass was
+  misplaced.** libLocalTypes printed `LocalDouble: LocalTypes.Outer.LocalCounter`,
+  a type that does not exist. Local `bump()` methods are now named, and
+  deinit members are listed.
+- **FIXED (completeness, by the upgrade): Swift 6.4 `borrow` and `mutate`
+  accessors.** Dev omitted such a property from `dump` entirely.
+- **FIXED (correctness, by the upgrade): `layout` sizes for builtin
+  types.** `ExecutorJob`, `Job` and `LocalAllocator` now report 8 bytes,
+  which matches stdlib's `Builtin.Job`. The type itself still prints as
+  the raw mangling `Bj`.
+- **FIXED (correctness, on the branch): 0.23's position-named local
+  types defeated the placement cross-check.** 0.23 spells an unnamed local
+  type `Outer.(Local in $1dbc)`, where the discriminator is the address of
+  its innermost anonymous context. `withoutPositionName` unwraps it only
+  when that address is the context swiftdc already proved, and declines
+  otherwise. Before the fix the stripped fixture lost 13 names, and
+  SwiftUITap lost 7 for a nested `(WorkItem in $3990c).State`.
+- **FIXED (completeness, on the branch): a local type the binary names by
+  its function.** With `-enable-anonymous-context-mangled-names`, or a
+  `_symbolic` symbol on the cache, 0.23 names `Local #1 in M.T.f()`.
+  Accessor names now use that name when the mangling places the type on
+  each anonymous context swiftdc proved
+  (`namesEveryAnonymousContext`). Without this the upgrade lost 46 accessor
+  names on cache images to `sub_`. libLocalTypesNamed: 14 → 24 names
+  recovered, 12 → 22 exact, 0 conflicts. Class-method labels decline such
+  an owner, because `T.method` would read as a member of the function's
+  return type: allowing it produced 2 oracle conflicts.
+- **FIXED (soundness, on the branch): a stripped copy read its original's
+  names in the same process.** MachOKitExtensions keys
+  `SymbolIndexStore` and `SymbolicDemangler` caches by install name plus
+  UUID, and a stripped copy keeps both. `BinaryLoader` now evicts the
+  loaded file's entries. The guard only evicts Swift images, because
+  eviction reaches `MachOFile.cache`, and MachOKit's `DyldCache.init`
+  traps with `try!` on a file shorter than a cache header.
+  `aStrippedCopyLoadedAfterItsOriginalReadsOnlyItselfIfPresent` passes on
+  dev, so the contamination is new in the upgrade. OPEN: two same-key
+  files read at once in one process still share upstream's caches. No
+  CLI command does that (each loads one file), but the parallel suite
+  did: aStrippedLocalTypeKeepsItsUnknownContextIfPresent failed once in
+  six runs while another test read the original, so the stripped
+  fixture now has its own install name. The fix belongs upstream: key a
+  file by its path on disk, not its install name.
+- **MachOKit fork: the `cache` memo still matters; fat64 does not.** The
+  fat64 cherry-pick is upstream (p-x9 #340), identical, and its test
+  passes on 0.55.100. The negative `cache` memo is upstream nowhere.
+  Without it (upstream 0.55.100) the perf set takes `dump` 53 s,
+  `interface` 61 s, `objc` 48 s and `xrefs` 1,166 s, against 28 / 27 / 13 /
+  942 s with it, byte-identical output. SourceEditor `objc` goes 4.9 s →
+  21.3 s.
+- **Capstone: no decoding change.** swift-capstone 7 rewrites the Swift
+  wrapper; swiftdc calls the C API, so the wrapper is irrelevant. C
+  Capstone 6.0.101 changes `cs_disasm_iter` flag resets, `CS_OPT_OFF`,
+  custom mnemonic aliases and x86/Alpha tables, none of which swiftdc
+  uses, and no AArch64 table. All 192 fixture listings are byte-identical.
+- **Not integrated: CrossReferenceAnalysis.** It reads only an in-process
+  `MachOImage`, so it cannot read a file on disk, an iOS binary or a
+  foreign cache without loading untrusted code. On AppIntents, SwiftData
+  and Charts it decodes the same function table. Its site set contains
+  all of swiftdc's, with 0 target disagreements over about 172,000 sites.
+  Its extra sites are swiftdc's unresolved calls plus indirect `br`, none
+  resolved. swiftdc resolves 12,472 GOT and slot calls that it leaves as
+  bare indirect. It classifies no call as a vtable or witness dispatch;
+  the discriminator-to-declaration map is not in 0.24. It is much faster
+  (0.3–1.3 s against 9–37 s) because it does no value tracking, so the
+  times are not comparable. One thing it has that swiftdc lacks: selectors
+  on `objc_msgSendSuper2` (39 sites). Tool: `Sources/xrefcompare`.
+- **Not wired in:** 0.23's GenericSpecializer, module selectors,
+  private source-file recovery, `marksNestedDefinitions` and
+  `protocolRequirementPlacement` are opt-in. Each needs its own
+  measured change.
