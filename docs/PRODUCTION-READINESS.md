@@ -69,6 +69,11 @@ results do not replace previously recorded release performance measurements.
   branch's NZCV. At its first run: 9,287 verified, 1,871 refuted, 212
   unparsed, in four classes fixed below. Now: 9,936 verified, 2,708
   declined, 0 refuted, 0 unparsed.
+- **FIXED — a cmn's order read as a comparison with the negation.** `cmn
+  w0, #0; b.hs` is never taken but rendered `w0 >=ᵁ -0`; with w1 =
+  0x80000000, `cmn w0, w1; b.ge` disagrees with `w0 >= -w1`. An order
+  renders only against an immediate (nonzero when unsigned). z3: refuted
+  1,507 → 746; goProgram one line.
 - **FIXED — a tst's flags read as an unsigned comparison.** `tst w0, #0xff;
   b.hs` (never taken: tst clears C) rendered `(w0 & 0xff) >=ᵁ 0`, always
   true, and `b.mi` printed `(w0 & 0xff) < 0 // 0`. Signed orders compare

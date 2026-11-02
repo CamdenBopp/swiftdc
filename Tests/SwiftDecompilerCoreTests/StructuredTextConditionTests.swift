@@ -182,3 +182,29 @@ private func textPathFunction(_ words: [UInt32], undetailed: Set<Int> = []) thro
         #expect(!text.contains("//"), Comment(rawValue: text))
     }
 }
+
+/// `cmn a, b` sets the flags from `a + b`. Equality and an order against a
+/// nonzero immediate read as a comparison with `-b`; the others do not:
+/// `cmn w0, #0; b.hs` is never taken (adding 0 never carries) but rendered
+/// `w0 >=ᵁ -0`, and `cmn w0, w1; b.ge` with w1 = 0x80000000 disagrees with
+/// `w0 >= -w1`. Found by Tools/semantics/conditions.py.
+@Test func aTextConditionReadsAnAdditionsOrderOnlyAgainstAnImmediate() throws {
+    let tail: [UInt32] = [0x52800020, 0xd65f03c0, 0x52800040, 0xd65f03c0]
+    func render(_ test: UInt32, _ condition: UInt32) throws -> String {
+        try textPathFunction([test, 0x54000060 | condition] + tail).renderStructured()
+    }
+    let register = UInt32(0x2b01001f), zero = UInt32(0x3100001f), seven = UInt32(0x31001c1f)
+    let cases: [(UInt32, UInt32, String)] = [
+        (register, 0x0, "w0 == -w1"),
+        (register, 0xa, "if (?)"),          // b.ge
+        (register, 0x2, "if (?)"),          // b.hs
+        (zero, 0x2, "if (?)"),              // b.hs
+        (zero, 0xa, "w0 >= -0"),            // b.ge
+        (seven, 0x2, "w0 >=\u{1D41} -7"),   // b.hs
+        (seven, 0xb, "w0 < -7"),            // b.lt
+    ]
+    for (test, condition, expected) in cases {
+        let text = try render(test, condition)
+        #expect(text.contains(expected), Comment(rawValue: text))
+    }
+}

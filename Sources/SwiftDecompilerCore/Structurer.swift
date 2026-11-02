@@ -839,6 +839,15 @@ struct ControlFlowStructure {
                     // rendered `x0 == 1`. `b.mi`/`b.pl` test the sign of that
                     // difference or sum, not of lhs.
                     let sums = m == "cmn" || m == "adds"
+                    // `cmn a, b` sets the flags from `a + b`. Only equality, the
+                    // sign of the sum, and an order against a nonzero immediate
+                    // read as a comparison with `-b`: the carry of `a + 0` is
+                    // clear while `a >=ᵁ -0` always holds, and a signed order
+                    // against `-b` is wrong when b is the minimum.
+                    if sums, !["==", "!=", "< 0 //", ">= 0 //"].contains(op) {
+                        guard ops[rhsIndex].hasPrefix("#"), !(op.hasSuffix("\u{1D41}") && rawRHS == "0")
+                        else { return ("?", consumed) }
+                    }
                     func compare(_ l: String, _ r: String) -> String {
                         if op == "< 0 //" || op == ">= 0 //" {
                             return "(\(l) \(sums ? "+" : "-") \(r)) \(op == "< 0 //" ? "<" : ">=") 0"
