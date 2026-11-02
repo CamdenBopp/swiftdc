@@ -115,3 +115,18 @@ private func textPathFunction(_ words: [UInt32], undetailed: Set<Int> = []) thro
         #expect(text.contains(expected), Comment(rawValue: text))
     }
 }
+
+/// A definition that overwrites its own source leaves the result, not the
+/// source, in that register at the test: `lsr x8, x8, #3; cmp x8, #1`
+/// rendered `(x8 >>ᵁ 3) == 1`, shifting the result again.
+@Test func aTextConditionDeclinesADefinitionOfItsOwnSource() throws {
+    let tail: [UInt32] = [0xf100051f, 0x54000060, 0x52800020, 0xd65f03c0, 0x52800040, 0xd65f03c0]
+    let other = try textPathFunction([0xd343fc08] + tail).renderStructured()   // lsr x8, x0, #3
+    #expect(other.contains("(x0 >>ᵁ 3) == 1"), Comment(rawValue: other))
+    let own = try textPathFunction([0xd343fd08] + tail).renderStructured()     // lsr x8, x8, #3
+    #expect(!own.contains(">>"), Comment(rawValue: own))
+    #expect(own.contains("x8 == 1"), Comment(rawValue: own))
+    // and w8, w8, #0xff; cmp w8, #1: masking the result again changes nothing.
+    let mask = try textPathFunction([0x12001d08, 0x7100051f] + tail.dropFirst()).renderStructured()
+    #expect(mask.contains("(w8 & 0xff) == 1"), Comment(rawValue: mask))
+}

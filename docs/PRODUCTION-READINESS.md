@@ -50,6 +50,14 @@ results do not replace previously recorded release performance measurements.
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
 
+- **FIXED — a text condition re-applied a definition that overwrote its
+  own source.** `lsl x0, x0, #1; cmp x0, x8` (libReconstruction -O and
+  -Osize) rendered `(x0 << 1) < x8`, shifting the result again: the
+  survival check covered the instructions between definition and test, not
+  the definition's own write. Such a definition now keeps the tested
+  register, unless it is idempotent (`and`, `orr`, `mov`, a `ubfx` at bit
+  0), where re-applying it changes nothing. Fixtures: 38 structured lines in
+  6 files, each a shift or a `ubfx` above bit 0 of its own destination.
 - **FIXED — a frame of 4 KiB or more was laid out at its unshifted size.**
   `ValueTracer.frameLayout` parses its prologue from text and read `sub sp,
   sp, #0x1, lsl #12` as `sp -= 1`, so every later sp-relative local sat

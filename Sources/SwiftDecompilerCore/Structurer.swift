@@ -979,6 +979,14 @@ struct ControlFlowStructure {
             let sources = ops.dropFirst().compactMap(Self.canonicalRegister)
             let savesCallResult = mnemonic == "mov" && sources == ["x0"]
             if !savesCallResult, !Self.registers(sources, surviveFrom: index, to: before, in: block) { return token }
+            // Nor may the definition itself overwrite one: `lsr x8, x8, #3;
+            // cmp x8, #1` rendered `(x8 >>ᵁ 3) == 1`, shifting the result
+            // again. A mask, a set or a copy is idempotent, so `and x5, x5,
+            // #0x80; cbnz x5` still reads `(x5 & 0x80) != 0` truly, as does
+            // the mask `ubfx x4, x4, #0, #8`.
+            let idempotent = ["and", "ands", "orr", "mov"].contains(mnemonic)
+                || (mnemonic == "ubfx" && ops.count >= 3 && Self.immediateValue(ops[2]) == 0)
+            if !savesCallResult, sources.contains(register), !idempotent { return token }
             switch mnemonic {
             case "and" where ops.count >= 3, "orr" where ops.count >= 3:
                 guard let second = Self.applyingModifier(Self.cleanImmediate(ops[2]), operand: ops[2], trailing: ops[3...])
