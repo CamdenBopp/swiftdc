@@ -43,6 +43,29 @@ import MachOSwiftSection
     #expect(filtered.map(\.displayName) == [Disassembler.mangledNameMetadataHelperName])
 }
 
+/// The two helpers IRGen emitted before V2 are what an image built by an
+/// older toolchain carries: stripped, 818 calls in the swift-syntax dylibs
+/// read `sub_…`. Each body names its helper, and the call sites say so
+/// (`oldmangledhelper.s`).
+@Test func thePreV2MangledNameHelpersAreNamedByTheirBodiesIfPresent() async throws {
+    let path = "Fixtures/Sample/libOldMangledHelper.stripped.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let entry = try #require(functions.first { $0.displayName == "_entry" })
+    let calls = entry.instructions.compactMap(\.branchTarget)
+    try #require(calls.count == 2)
+    let names = calls.map { address in functions.first { $0.startAddress == address }?.displayName }
+    #expect(names == ["__swift_instantiateConcreteTypeFromMangledName",
+                      "__swift_instantiateConcreteTypeFromMangledNameAbstract"])
+    #expect(functions.filter { $0.source == .helperShape }.count == 2)
+    // Metadata plumbing, so the pseudocode hides the calls; the listing
+    // names their target.
+    let listing = entry.render()
+    #expect(listing.contains("→ __swift_instantiateConcreteTypeFromMangledName\n")
+        || listing.contains("→ __swift_instantiateConcreteTypeFromMangledName  "), Comment(rawValue: listing))
+    #expect(listing.contains("→ __swift_instantiateConcreteTypeFromMangledNameAbstract"), Comment(rawValue: listing))
+}
+
 /// The helper is a C function, so its x20 is no `self`: stripped, a call
 /// with x20 freshly written read `__swift_instantiateConcreteTypeFromMangledNameV2(self: arg0, …)`.
 @Test func theRecognizedHelperTakesNoSelfIfPresent() async throws {

@@ -1214,6 +1214,14 @@ because it cannot be distinguished from a right one by reading the output.
   against the `…MR` symbols of `mangledtypes.swift` (12 types, 12 exact).
   GoodLinks: `type metadata for` 2,268 → 11,240; 113 calls whose pair is
   untracked stay calls.
+  The table now also holds the two helpers IRGen emitted before V2,
+  `__swift_instantiateConcreteTypeFromMangledName` and `…Abstract`, which
+  an image from an older toolchain carries (the swift-syntax dylibs in
+  Xcode 27's toolchain). Stripped, the compiler-grounded audit counted 818
+  of their 5,434 unchecked direct calls going to these two unnamed bodies;
+  the four dylibs now name 831 call sites (`→ __swift_instantiate…`):
+  PluginMessageHandling 230, IfConfig 78, ParserDiagnostics 461,
+  Operators 62. Fixture `oldmangledhelper.s`.
 
 Silent omission is the worst failure mode: it is indistinguishable from a
 correct empty answer. See the empty-result rule in `CLAUDE.md`.

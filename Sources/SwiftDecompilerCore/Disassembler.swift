@@ -1977,6 +1977,49 @@ public struct Disassembler: Sendable {
     /// eight instructions (the `memcpy` value witnesses, a lone `ret`) are
     /// left out, since many functions share them.
     static let helperShapes: [(name: String, body: [String])] = [
+        // The pre-V2 helpers, which an image built by an older toolchain
+        // carries (the swift-syntax dylibs in Xcode 27's toolchain: 818 of
+        // their 5,434 unnamed direct calls): a negative cached word is a
+        // relative mangled-name reference, resolved and cached.
+        ("__swift_instantiateConcreteTypeFromMangledName", [
+            "mov x8, x0",
+            "ldr x0, [x0]",
+            "tbnz x0, #0x3f, +0x10",
+            "ret",
+            "stp x20, x19, [sp, #-0x20]!",
+            "stp x29, x30, [sp, #0x10]",
+            "add x29, sp, #0x10",
+            "neg x1, x0, asr #32",
+            "add x0, x8, w0, sxtw",
+            "mov x19, x8",
+            "mov x2, #0",
+            "mov x3, #0",
+            "bl <swift_getTypeByMangledNameInContext2>",
+            "str x0, [x19]",
+            "ldp x29, x30, [sp, #0x10]",
+            "ldp x20, x19, [sp], #0x20",
+            "ret",
+        ]),
+        ("__swift_instantiateConcreteTypeFromMangledNameAbstract", [
+            "mov x8, x0",
+            "ldr x0, [x0]",
+            "tbnz x0, #0x3f, +0x10",
+            "ret",
+            "stp x20, x19, [sp, #-0x20]!",
+            "stp x29, x30, [sp, #0x10]",
+            "add x29, sp, #0x10",
+            "neg x2, x0, asr #32",
+            "add x1, x8, w0, sxtw",
+            "mov x19, x8",
+            "mov w0, #0xff",
+            "mov x3, #0",
+            "mov x4, #0",
+            "bl <swift_getTypeByMangledNameInContextInMetadataState2>",
+            "str x0, [x19]",
+            "ldp x29, x30, [sp, #0x10]",
+            "ldp x20, x19, [sp], #0x20",
+            "ret",
+        ]),
         ("__swift_allocate_boxed_opaque_existential", [
             "ldr x8, [x0, #0x18]",
             "ldur x9, [x8, #-8]",

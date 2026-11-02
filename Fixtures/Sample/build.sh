@@ -444,6 +444,11 @@ $CLANG -arch arm64 -dynamiclib mangledhelper.s -L"$(xcrun --show-sdk-path)/usr/l
 cp libMangledHelper.dylib libMangledHelper.stripped.dylib
 strip -x libMangledHelper.stripped.dylib
 
+echo "==> the two pre-V2 mangled-name metadata helpers, stripped (oldmangledhelper.s)"
+$CLANG -arch arm64 -dynamiclib oldmangledhelper.s -L"$(xcrun --show-sdk-path)/usr/lib/swift" -lswiftCore -o libOldMangledHelper.dylib
+cp libOldMangledHelper.dylib libOldMangledHelper.stripped.dylib
+strip -x libOldMangledHelper.stripped.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib
