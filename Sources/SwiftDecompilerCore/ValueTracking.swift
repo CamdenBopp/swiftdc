@@ -2783,60 +2783,19 @@ public struct ValueTracer: Sendable {
                 registers[Self.flagsWidthKey] = .immediate(UInt64(dest.widthBits))
             }
 
-        case AARCH64_INS_ALIAS_MVN, AARCH64_INS_ORN:
-            // MVN is ORN with a zero first operand. Complement the optionally
-            // shifted source before OR, then normalize the destination width.
-            let operandCount = detail.id == AARCH64_INS_ALIAS_MVN ? 2 : 3
-            guard let dest = destinationRegister(detail), dest.kind == .gpr || dest.kind == .zero,
-                  detail.operands.count == operandCount,
-                  detail.operands.dropFirst().allSatisfy({ operand in
-                      guard let reg = operand.operand.register else { return false }
-                      return (reg.kind == .gpr || reg.kind == .zero) && reg.widthBits == dest.widthBits
-                  })
-            else { clobber(detail, into: &registers); return }
-            let inverted = bitwiseComplement(source(detail.operands[operandCount - 1], in: registers))
-            let result = detail.id == AARCH64_INS_ALIAS_MVN ? inverted
-                : expression(.bitOr, source(detail.operands[1], in: registers), inverted)
-            write(dest, result, into: &registers)
-
-        case AARCH64_INS_AND, AARCH64_INS_ANDS, AARCH64_INS_ORR, AARCH64_INS_EOR,
-             AARCH64_INS_MUL, AARCH64_INS_SMULH, AARCH64_INS_UMULH,
-             AARCH64_INS_LSL, AARCH64_INS_LSR, AARCH64_INS_ASR,
-             AARCH64_INS_SDIV, AARCH64_INS_UDIV:
-            guard let dest = destinationRegister(detail), detail.operands.count >= 3 else {
+        case let id where InstructionSemantics.covers(id):
+            // Logic, shifts, multiplies and divides, `mvn`/`orn`, extends and
+            // register moves: their meaning is InstructionSemantics', shared
+            // with the structurer's text path.
+            guard let effect = InstructionSemantics.effect(of: detail) else {
                 clobber(detail, into: &registers); return
             }
-            let op: AbstractBinaryOperator = switch detail.id {
-            case AARCH64_INS_AND, AARCH64_INS_ANDS: .bitAnd
-            case AARCH64_INS_ORR: .bitOr
-            case AARCH64_INS_EOR: .bitXor
-            case AARCH64_INS_MUL: .multiply
-            case AARCH64_INS_SMULH: .multiplyHigh
-            case AARCH64_INS_UMULH: .unsignedMultiplyHigh
-            case AARCH64_INS_SDIV: .divide
-            case AARCH64_INS_UDIV: .unsignedDivide
-            case AARCH64_INS_LSL: .shiftLeft
-            case AARCH64_INS_LSR: .shiftRight
-            case AARCH64_INS_ASR: .arithmeticShiftRight
-            default: .add // unreachable: the outer case is exhaustive
-            }
-            var shifted = source(detail.operands[1], in: registers)
-            // A 32-bit arithmetic shift shifts in the 32-bit sign: `asr w0,
-            // w8, #31` of 0x80000001 is 0xffffffff, not 1.
-            if dest.widthBits == 32, op == .arithmeticShiftRight || op == .divide {
-                shifted = signExtended(shifted, bits: 32)
-            }
-            var rhs = source(detail.operands[2], in: registers)
-            if op == .divide, dest.widthBits == 32 { rhs = signExtended(rhs, bits: 32) }
-            if op == .shiftLeft || op == .shiftRight || op == .arithmeticShiftRight {
-                rhs = expression(.bitAnd, rhs, .immediate(UInt64(dest.widthBits - 1)))
-            }
-            let result = expression(op, shifted, rhs)
-            write(dest, result, into: &registers)
+            let result = evaluate(effect.value, detail, in: registers)
+            write(effect.destination, result, into: &registers)
             if detail.id == AARCH64_INS_ANDS {
                 registers[Self.flagsKey] = constantFlags(.bitAnd, source(detail.operands[1], in: registers),
                                                          source(detail.operands[2], in: registers)) ?? result
-                registers[Self.flagsWidthKey] = .immediate(UInt64(dest.widthBits))
+                registers[Self.flagsWidthKey] = .immediate(UInt64(effect.destination.widthBits))
             }
 
         case AARCH64_INS_REV, AARCH64_INS_REV16, AARCH64_INS_REV32, AARCH64_INS_REV64:
@@ -3014,33 +2973,6 @@ public struct ValueTracer: Sendable {
                 return
             }
             guard detail.operands[1].operand.register != nil else {
-                clobber(detail, into: &registers); return
-            }
-            write(dest, source(detail.operands[1], in: registers), into: &registers)
-
-        case AARCH64_INS_SXTB, AARCH64_INS_SXTH, AARCH64_INS_SXTW,
-             AARCH64_INS_UXTB, AARCH64_INS_UXTH:
-            // Scalar extend aliases extract the low byte/half/word. Extend
-            // before write() so a W destination zero-extends the signed word.
-            guard let dest = destinationRegister(detail), dest.kind == .gpr,
-                  detail.operands.count == 2,
-                  let input = detail.operands[1].operand.register, input.kind == .gpr
-            else { clobber(detail, into: &registers); return }
-            let bits: Int = switch detail.id {
-            case AARCH64_INS_SXTB, AARCH64_INS_UXTB: 8
-            case AARCH64_INS_SXTH, AARCH64_INS_UXTH: 16
-            default: 32
-            }
-            // Capstone may repeat the alias's extension in operand.extender.
-            // Read the register once, then apply the instruction's semantics.
-            let value = source(StructuredOperandInfo(operand: .register(input),
-                shift: (AARCH64_SFT_INVALID, 0), extender: AARCH64_EXT_INVALID), in: registers)
-            let signed = detail.id == AARCH64_INS_SXTB || detail.id == AARCH64_INS_SXTH || detail.id == AARCH64_INS_SXTW
-            write(dest, signed ? signExtended(value, bits: bits) : narrowed(value, bits: bits), into: &registers)
-
-        case AARCH64_INS_MOV, AARCH64_INS_MOVZ:
-            // Capstone pre-folds MOVZ's shift into the immediate.
-            guard let dest = destinationRegister(detail), detail.operands.count >= 2 else {
                 clobber(detail, into: &registers); return
             }
             write(dest, source(detail.operands[1], in: registers), into: &registers)
@@ -3590,6 +3522,29 @@ public struct ValueTracer: Sendable {
         if bits == 64 { return low }
         guard bits < 64, case .immediate(let word) = low else { return .unknown }
         return .immediate(word & ((1 << UInt64(bits)) - 1))
+    }
+
+    /// An InstructionSemantics term over this state, folded by the same
+    /// helpers the transfer cases use.
+    private func evaluate(_ term: SemanticTerm, _ detail: StructuredInsn, in registers: State) -> AbstractValue {
+        switch term {
+        case .operand(let index):
+            return index < detail.operands.count ? source(detail.operands[index], in: registers) : .unknown
+        case .register(let index):
+            guard index < detail.operands.count, let register = detail.operands[index].operand.register else { return .unknown }
+            return source(StructuredOperandInfo(operand: .register(register),
+                shift: (AARCH64_SFT_INVALID, 0), extender: AARCH64_EXT_INVALID), in: registers)
+        case .constant(let value):
+            return .immediate(value)
+        case .binary(let op, let lhs, let rhs):
+            return expression(op, evaluate(lhs, detail, in: registers), evaluate(rhs, detail, in: registers))
+        case .complement(let inner):
+            return bitwiseComplement(evaluate(inner, detail, in: registers))
+        case .signExtend(let inner, let bits):
+            return signExtended(evaluate(inner, detail, in: registers), bits: bits)
+        case .zeroExtend(let inner, let bits):
+            return narrowed(evaluate(inner, detail, in: registers), bits: bits)
+        }
     }
 
     private func signExtended(_ value: AbstractValue, bits: Int) -> AbstractValue {
