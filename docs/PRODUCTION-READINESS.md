@@ -69,6 +69,14 @@ results do not replace previously recorded release performance measurements.
   branch's NZCV. At its first run: 9,287 verified, 1,871 refuted, 212
   unparsed, in four classes fixed below. Now: 9,936 verified, 2,708
   declined, 0 refuted, 0 unparsed.
+- **FIXED — a function with no signature reported a `void` return.** The
+  `render.return-outcome` status was `void` whenever the signature did not
+  say the function returns a value, including when there was no signature:
+  the compiler-grounded audit found all 109 value-returning stripped
+  functions in its corpus labelled `void`. Those now report
+  `no-signature`; `void` is kept for a signature that says so.
+  libReconstruction -O stripped: 116 outcomes move to `no-signature`.
+  Probe only: no render changes.
 - **FIXED — the tracer did not model `cinc`, `cneg` or `cinv`.** The
   compiler-grounded audit (branch audit/compiler-grounded) found `absSafe`
   (`cneg; csinv`) and `classify` (`cinc` in a select chain) returning `?`:

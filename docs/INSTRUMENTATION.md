@@ -199,7 +199,7 @@ now represented directly:
 | `values.call` | arguments, floatingArguments, stackArguments, receiver, indirectResult |
 | `values.condition` | value; signed and unsigned operators stay distinct |
 | `values.loop-initialization` | name, value, stackOffset; proven constant entry binding, at the header branch |
-| `render.return-outcome` | status, type, path; recovered, partial, tail-call, unknown, void, throw, or unsupported layout/value |
+| `render.return-outcome` | status, type, path; recovered, partial, tail-call, unknown, void (the signature says so), no-signature (no result type known: nothing rendered, nothing claimed), throw, or unsupported layout/value |
 | `render.return-value` | value, register, type, rendered, path; a recovered return claim |
 | `render.function` | view, symbol, returns, returnStatements, unknownReturns, gotos, lines; committed output only |
 | `async.context-escape` | offset; possible aliases on either incoming path invalidate slots |

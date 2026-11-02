@@ -53,3 +53,25 @@ import Testing
         #expect(!function.renderStructured().contains("return ?"))
     }
 }
+
+/// A function with no known result type reports `no-signature`, not
+/// `void`: a stripped `sub_…` may well return a value, and the
+/// compiler-grounded audit found all 109 value-returning stripped functions
+/// labelled `void`. A signature that returns nothing still says `void`.
+@Test func aFunctionWithoutASignatureIsNotCalledVoidIfPresent() async throws {
+    let path = "Fixtures/Sample/libReconstruction.opt.stripped.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let recorder = ProbeRecorder(includeNames: true)
+    _ = try await withStableDependencies {
+        // The outcome is recorded when the function renders.
+        try await Probe.recording(recorder) {
+            try await Disassembler().disassemble(path: path).map { $0.renderStructured() }
+        }
+    }
+    let outcomes = recorder.records.filter { $0.event == .returnOutcome }
+    let unnamed = outcomes.filter { $0.function?.name.hasPrefix("sub_") == true }
+    #expect(!unnamed.isEmpty)
+    #expect(unnamed.allSatisfy { $0["status"] == .label("no-signature") },
+            "\(unnamed.map { "\($0.function?.name ?? "?") \($0["status"].map(\.description) ?? "?")" })")
+    #expect(outcomes.contains { $0.function?.name.hasSuffix("-> ()") == true && $0["status"] == .label("void") })
+}

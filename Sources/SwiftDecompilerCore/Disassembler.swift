@@ -7438,7 +7438,9 @@ public struct Disassembler: Sendable {
                     : throwExits.contains(insn.address) ? "throw"
                     : renderedReturn == "return ?" ? "unknown"
                     : renderedReturn != nil ? (completeReturnRendering[insn.address] == false ? "partial" : "recovered")
-                    : !returnsValue ? "void" : "unsupported-layout-or-value"
+                    : !returnsValue ? (DisassembledFunction.signatureKnown(displayName: function.analysisDisplayName,
+                                          objcSignature: function.objcMethod?.signature) ? "void" : "no-signature")
+                    : "unsupported-layout-or-value"
                 Probe.record(.returnOutcome, at: insn.address, ["status": .label(status),
                     "type": .name(returnTypeName ?? function.objcMethod?.signature ?? "unknown"),
                     "path": returnPath(at: insn.address)])

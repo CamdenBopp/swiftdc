@@ -63,6 +63,14 @@ public extension DisassembledFunction {
     /// accessor) it returns false. Under-claiming prints a bare `return`, which
     /// is merely uninformative; over-claiming would assert a value exists that
     /// does not — the fabrication this project refuses to make.
+    /// Whether the function's result type is known at all: an ObjC method
+    /// signature, a Swift function type, or an accessor's ` : Type`. A
+    /// stripped `sub_…` or a C symbol has none, and "returns nothing" must
+    /// not be read into that.
+    static func signatureKnown(displayName: String, objcSignature: String?) -> Bool {
+        objcSignature != nil || Self.splitSignature(displayName) != nil || displayName.contains(" : ")
+    }
+
     static func signatureReturnsValue(displayName: String, objcSignature: String?) -> Bool {
         // Objective-C is authoritative when present: the metadata carries a real
         // return type, e.g. `- (long long)incrementBy:(long long)arg0;`.
