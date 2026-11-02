@@ -82,3 +82,14 @@ private func textPathFunction(_ words: [UInt32], undetailed: Set<Int> = []) thro
     #expect(signed.contains("x8 != 7"), Comment(rawValue: signed))
     #expect(!signed.contains("x0"), Comment(rawValue: signed))
 }
+
+/// A logical and an arithmetic right shift differ on a negative value:
+/// both printed `(x0 >> 3)`. Each now names its kind, as the tracer's
+/// expressions do.
+@Test func aTextConditionNamesItsShiftsKind() throws {
+    let tail: [UInt32] = [0xf1001d1f, 0x54000061, 0x52800020, 0xd65f03c0, 0x52800040, 0xd65f03c0]
+    let logical = try textPathFunction([0xd343fc08] + tail).renderStructured()     // lsr x8, x0, #3
+    #expect(logical.contains("(x0 >>ᵁ 3) != 7"), Comment(rawValue: logical))
+    let arithmetic = try textPathFunction([0x9343fc08] + tail).renderStructured()  // asr x8, x0, #3
+    #expect(arithmetic.contains("(x0 >>ˢ 3) != 7"), Comment(rawValue: arithmetic))
+}

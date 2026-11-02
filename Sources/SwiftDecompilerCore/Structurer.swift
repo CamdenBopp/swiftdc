@@ -970,7 +970,10 @@ struct ControlFlowStructure {
             switch mnemonic {
             case "and" where ops.count >= 3: return "(\(ops[1]) & \(Self.cleanImmediate(ops[2])))"
             case "orr" where ops.count >= 3: return "(\(ops[1]) | \(Self.cleanImmediate(ops[2])))"
-            case "lsr", "asr": return ops.count >= 3 ? "(\(ops[1]) >> \(Self.cleanImmediate(ops[2])))" : token
+            // A logical and an arithmetic shift differ on a negative value, so
+            // each names its kind, as the tracer's expressions do (`>>ᵁ`, `>>ˢ`).
+            case "lsr": return ops.count >= 3 ? "(\(ops[1]) >>\u{1D41} \(Self.cleanImmediate(ops[2])))" : token
+            case "asr": return ops.count >= 3 ? "(\(ops[1]) >>\u{02E2} \(Self.cleanImmediate(ops[2])))" : token
             case "lsl": return ops.count >= 3 ? "(\(ops[1]) << \(Self.cleanImmediate(ops[2])))" : token
             // `ubfx d, s, #lsb, #width` is `(s >> lsb) & (2^width - 1)`, not a
             // copy of s: read as one, the Go float test `ubfx x13, x12, #23,

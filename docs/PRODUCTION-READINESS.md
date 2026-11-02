@@ -65,8 +65,13 @@ results do not replace previously recorded release performance measurements.
   tested register (MangledTypes ×2, RuntimeArity, StringArity,
   RetainRegister, the Go float check `ubfx x13, x12, #23, #8; and x12, …;
   cmp x13, #0xff`, which read `x12 != 0xff`). Still OPEN on the same path:
-  `lsr` and `asr` both print `>>`, and a compare's shifted operand drops
-  its shift (`cmp x21, x8, lsr #1` reads `x21 >=ᵁ x8`).
+  a compare's shifted operand drops its shift (`cmp x21, x8, lsr #1` reads
+  `x21 >=ᵁ x8`).
+- **FIXED — the text path printed a logical and an arithmetic shift
+  alike.** `lsr` and `asr` both rendered `(x0 >> 3)`, which differ on a
+  negative value. They now print `>>ᵁ` and `>>ˢ`, as the tracer's
+  expressions do. Fixtures: 10 structured files, 208 `>>` → `>>ᵁ`, the
+  glyph the only change.
 - **FIXED — the text path read a bitfield extract as a copy.** `ubfx w8,
   w0, #3, #5; cmp w8, #7` rendered `w0 == 7`. `ubfx` now renders its
   field, `((w0 >>ᵁ 3) & 0x1f)`, and `sbfx`, whose sign extension no
