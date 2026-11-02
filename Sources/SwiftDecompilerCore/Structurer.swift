@@ -960,6 +960,21 @@ struct ControlFlowStructure {
         return token
     }
 
+    /// Whether x0 before `index` is a call's result whose declared type
+    /// fits in a word: its low word is the whole value.
+    private static func producesWordResult(before index: Int, in block: BasicBlock) -> Bool {
+        for earlier in stride(from: index - 1, through: 0, by: -1) {
+            let instruction = block.instructions[earlier]
+            if instruction.controlFlow == .call {
+                guard let callee = DisassembledFunction.calleeName(of: instruction) else { return false }
+                return DisassembledFunction.resultFitsInWord(callee)
+            }
+            guard let detail = instruction.detail else { return false }
+            if detail.writtenRegisterKeys.contains("x0") { return false }
+        }
+        return false
+    }
+
     /// A rendered number (`7`, `0x1c`, `-0x10`), or nil for anything else.
     private static func signedNumber(_ text: String) -> Int64? {
         let negative = text.hasPrefix("-")
@@ -1089,7 +1104,12 @@ struct ControlFlowStructure {
             // whose sign is not the 32-bit expression's. See `WidthRule` for
             // the exceptions (`lsr x8, x1, #62; cmp w8, #1`).
             if let tested = token.first, let defined = dest.first, "wx".contains(tested), "wx".contains(defined),
-               tested != defined {
+               tested != defined,
+               // A word test of a saved call result whose declared type is a
+               // word or narrower reads that result (`mov x26, x0; cmp w26,
+               // #1` after swift_getEnumCaseMultiPayload, `unsigned`).
+               !(tested == "w" && mnemonic == "mov" && ops.count == 2 && Self.canonicalRegister(ops[1]) == "x0"
+                 && Self.producesWordResult(before: index, in: block)) {
                 switch rule {
                 case .any: break
                 case .belowSignedWord:

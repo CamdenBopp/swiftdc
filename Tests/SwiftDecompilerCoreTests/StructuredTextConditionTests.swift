@@ -256,3 +256,35 @@ private func textPathFunction(_ words: [UInt32], undetailed: Set<Int> = []) thro
     let surrogate = try textPathFunction([0x529b0009, 0x6b09011f, 0x54000063] + tail).renderStructured()
     #expect(surrogate.contains("w8 <\u{1D41} 0xd800"), Comment(rawValue: surrogate))
 }
+
+/// A word test of a 64-bit copy of a call's result reads that result when
+/// its declared type is a word or narrower: `mov x26, x0; cmp w26, #1`
+/// after `swift_getEnumCaseMultiPayload` (`unsigned`, Enum.h:155) is a test
+/// of the case index. A result of unknown or wider type keeps the register,
+/// whose low word need not be the value (58 such tests in one framework
+/// read `w26 != 1` until this).
+@Test func aTextConditionReadsAWordResultsSavedCopy() throws {
+    let tail: [UInt32] = [0x52800020, 0xd65f03c0, 0x52800040, 0xd65f03c0]
+    // bl +0x100; mov x26, x0; cmp w26, #1; b.ne +12; ...
+    func render(_ callee: String) throws -> String {
+        let function = try textPathFunction([0x94000040, 0xaa0003fa, 0x7100075f, 0x54000061] + tail)
+        let instructions = function.instructions.enumerated().map { index, insn in
+            index == 0 ? Instruction(address: insn.address, text: insn.text, controlFlow: insn.controlFlow,
+                                     branchTarget: insn.branchTarget, detail: insn.detail, callee: .kept(callee))
+                : insn
+        }
+        return DisassembledFunction(symbol: function.symbol, demangledName: nil, startAddress: function.startAddress,
+                                    instructions: instructions, source: .symbol).renderStructured()
+    }
+    let cases: [(String, String)] = [
+        ("swift_getEnumCaseMultiPayload", "if (swift_getEnumCaseMultiPayload() != 1)"),
+        ("getEnumTag value witness for M.E", "if (getEnumTag value witness for M.E() != 1)"),
+        ("M.tag() -> Swift.UInt8", "if (M.tag() != 1)"),
+        ("M.count() -> Swift.Int", "if (w26 != 1)"),
+        ("sub_2000", "if (w26 != 1)"),
+    ]
+    for (callee, expected) in cases {
+        let text = try render(callee)
+        #expect(text.contains(expected), Comment(rawValue: text))
+    }
+}

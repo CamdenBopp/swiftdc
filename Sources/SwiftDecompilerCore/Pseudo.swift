@@ -646,6 +646,32 @@ public extension DisassembledFunction {
             || callee.hasPrefix("_os_log") || callee.contains(" ") || callee.contains("."))
     }
 
+    /// Whether a callee's declared result fits in a word, so a test of w0
+    /// (or a copy's low word) tests the whole result.
+    static func resultFitsInWord(_ callee: String) -> Bool {
+        switch callee {
+        // swift/include/swift/Runtime/Enum.h:99 and :155, `unsigned`;
+        // HeapObject.h:226-260 and :273, and Concurrency.h:1191, `bool`.
+        case "swift_getEnumTagSinglePayloadGeneric", "swift_getEnumCaseMultiPayload",
+             "swift_isUniquelyReferenced", "swift_isUniquelyReferenced_nonNull",
+             "swift_isUniquelyReferenced_nonNull_bridgeObject", "swift_isUniquelyReferencedNonObjC",
+             "swift_isUniquelyReferencedNonObjC_nonNull_bridgeObject", "swift_isUniquelyReferenced_native",
+             "swift_isUniquelyReferenced_nonNull_native", "swift_isEscapingClosureAtFileLocation",
+             "swift_task_isCurrentExecutor":
+            return true
+        default:
+            // swift/include/swift/ABI/ValueWitness.def:167 and :263: both
+            // tag witnesses return UINT_TYPE, `unsigned int`.
+            if callee.hasPrefix("getEnumTag value witness for ")
+                || callee.hasPrefix("getEnumTagSinglePayload value witness for ") {
+                return true
+            }
+            guard let result = splitSignature(callee)?.result else { return false }
+            return ["Swift.Bool", "Swift.Int8", "Swift.UInt8", "Swift.Int16", "Swift.UInt16",
+                    "Swift.Int32", "Swift.UInt32"].contains(result)
+        }
+    }
+
     static func knownCArity(of callee: String) -> Int? {
         switch callee {
         case "abort", "__stack_chk_fail", "objc_autoreleasePoolPush", "objc_exception_rethrow",
