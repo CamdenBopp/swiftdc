@@ -1187,7 +1187,20 @@ public struct ValueTracer: Sendable {
             }
             guard ops.count >= 2 else { continue }
             let (dest, source) = (ops[0], ops[1])
-            let delta = ops.count >= 3 ? immediate(Substring(ops[2])) : nil
+            // `#0x1, lsl #12`: a frame of 4 KiB or more is allocated with a
+            // shifted immediate, which read as its unshifted value put every
+            // later sp-relative local 4,095 bytes off.
+            var delta = ops.count >= 3 ? immediate(Substring(ops[2])) : nil
+            if ops.count == 4, let unshifted = delta {
+                let modifier = ops[3].split(separator: " ")
+                if modifier.count == 2, modifier[0] == "lsl", let amount = immediate(modifier[1]), (0...12).contains(amount) {
+                    delta = unshifted << amount
+                } else {
+                    delta = nil
+                }
+            } else if ops.count > 4 {
+                delta = nil
+            }
             switch (mnemonic, dest, source) {
             case ("sub", "sp", "sp"): if let delta { sp -= delta }
             case ("add", "sp", "sp"): if let delta { sp += delta }

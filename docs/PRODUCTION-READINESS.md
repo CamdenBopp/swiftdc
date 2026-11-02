@@ -50,6 +50,14 @@ results do not replace previously recorded release performance measurements.
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
 
+- **FIXED — a frame of 4 KiB or more was laid out at its unshifted size.**
+  `ValueTracer.frameLayout` parses its prologue from text and read `sub sp,
+  sp, #0x1, lsl #12` as `sp -= 1`, so every later sp-relative local sat
+  4,095 bytes off and the regions that bound an escaped address's writes
+  were misplaced. It now folds `lsl #n` and treats any other trailing
+  operand as an unknown delta. The perf set has such frames in CoreGraphics
+  (56), AppleMediaServicesKit (28), assetutil (27) and others; no fixture
+  has one, and no fixture render changes.
 - **FIXED — a text-path condition named a register its value had left.**
   When the tracer bakes no condition, the structurer substitutes the tested
   register's definition (`and`, `orr`, shifts, `ubfx`, `mov`) and prints its
