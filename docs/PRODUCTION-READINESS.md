@@ -69,6 +69,14 @@ results do not replace previously recorded release performance measurements.
   branch's NZCV. At its first run: 9,287 verified, 1,871 refuted, 212
   unparsed, in four classes fixed below. Now: 9,936 verified, 2,708
   declined, 0 refuted, 0 unparsed.
+- **FIXED — a definition substituted at the other width.** `eor x8, x0,
+  x1; cmp w8, #7` rendered `(x0 ^ x1) == 7`, and sample.debug's `mov w8,
+  #-1; cmp x8, x9; b.hs` rendered `-1 >=ᵁ x9` (x8 is 0xffffffff). A
+  definition of the other width keeps the register unless its value
+  cannot differ (proven in [0, 2^31) where nothing else sets the width, or
+  a bit test below 32); a 32-bit operand folding to constants keeps its
+  register unless one number in [-2^31, 2^31). z3: refuted 746 → 0;
+  goProgram 81 lines, sample.debug 5.
 - **FIXED — a cmn's order read as a comparison with the negation.** `cmn
   w0, #0; b.hs` is never taken but rendered `w0 >=ᵁ -0`; with w1 =
   0x80000000, `cmn w0, w1; b.ge` disagrees with `w0 >= -w1`. An order

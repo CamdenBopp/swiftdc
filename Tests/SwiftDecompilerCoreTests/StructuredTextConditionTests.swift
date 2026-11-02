@@ -208,3 +208,51 @@ private func textPathFunction(_ words: [UInt32], undetailed: Set<Int> = []) thro
         #expect(text.contains(expected), Comment(rawValue: text))
     }
 }
+
+/// A definition of the other width is not the value a compare tests: `eor
+/// x8, x0, x1; cmp w8, #7` compares the low word of the 64-bit result,
+/// `orr w8, w1, #…; cmp x8, #0; b.gt` the zero-extended word, which is
+/// positive where the 32-bit expression is negative, and `mov w8, #-1; cmp
+/// x8, x9` compares 0xffffffff, not the `-1` it rendered. A value proven in
+/// [0, 2^31) is the same at both widths against an immediate, and a bit
+/// test below 32 reads the same bit of either. Found by
+/// Tools/semantics/conditions.py.
+@Test func aTextConditionKeepsARegisterDefinedAtAnotherWidth() throws {
+    let tail: [UInt32] = [0x52800020, 0xd65f03c0, 0x52800040, 0xd65f03c0]
+    let cases: [([UInt32], String)] = [
+        ([0xca010008, 0x71001d1f, 0x54000060], "w8 == 7"),          // eor x8, x0, x1; cmp w8, #7; b.eq
+        ([0x320e8828, 0xf100011f, 0x5400006c], "x8 > 0"),           // orr w8, w1, #0x1c001c; cmp x8, #0; b.gt
+        ([0x0a010008, 0x6b02011f, 0x54000060], "(w0 & w1) == w2"),  // and w8, w0, w1; cmp w8, w2; b.eq
+        ([0x12800008, 0xeb09011f, 0x54000062], "x8 >=\u{1D41} x9"),   // mov w8, #-1; cmp x8, x9; b.hs
+        ([0xd37efc28, 0x7100051f, 0x54000060], "(x1 >>\u{1D41} 62) == 1"),  // lsr x8, x1, #62; cmp w8, #1
+        ([0x12800008, 0xf100051f, 0x5400006b], "x8 < 1"),           // mov w8, #-1; cmp x8, #1; b.lt
+        ([0xd37efc28, 0x6b02011f, 0x5400006b], "w8 < w2"),          // lsr x8, x1, #62; cmp w8, w2; b.lt
+        ([0xd37f3808, 0x7110011f, 0x54000068], "((x0 & 0x7fff) << 1) >\u{1D41} 0x400"),  // ubfiz x8, x0, #1, #15; cmp w8, #0x400; b.hi
+        ([0xd37f7808, 0x7110011f, 0x5400006c], "w8 > 0x400"),       // ubfiz x8, x0, #1, #31: bit 31 may be set
+        ([0xd37efc28, 0x6b02011f, 0x54000060], "(x1 >>\u{1D41} 62) == w2"),  // …; b.eq
+        ([0x529b0009, 0xeb09011f, 0x54000060], "x8 == 0xd800"),     // mov w9, #0xd800; cmp x8, x9
+        ([0x529b0008, 0xeb09011f, 0x5400006a], "0xd800 >= x9"),     // mov w8, #0xd800; cmp x8, x9; b.ge
+        ([0xd37efc29, 0x6b09011f, 0x54000068], "w8 >\u{1D41} (x1 >>\u{1D41} 62)"),  // lsr x9, x1, #62; cmp w8, w9; b.hi
+        ([0xca010008, 0x36180068], "bit 3 of (x0 ^ x1) clear"),     // eor x8, x0, x1; tbz w8, #3
+        ([0xca010008, 0x34000068], "w8 == 0"),                      // eor x8, x0, x1; cbz w8
+    ]
+    for (words, expected) in cases {
+        let text = try textPathFunction(words + tail).renderStructured()
+        #expect(text.contains(expected), Comment(rawValue: text))
+    }
+}
+
+/// A 32-bit operand that folds to a constant keeps its register: the
+/// number has no width to read it at. `eor w8, wzr, #0x801f801f; cmp w8,
+/// #0; b.lt` is taken, the word being negative, and rendered `0x801f801f <
+/// 0`. A number in [-2^31, 2^31) reads the same at either width and stays
+/// (`mov w9, #0xd800; cmp w8, w9`, a UTF-16 surrogate check). Found by
+/// Tools/semantics/conditions.py.
+@Test func aTextConditionKeepsAFoldedWordConstantsRegister() throws {
+    let tail: [UInt32] = [0x52800020, 0xd65f03c0, 0x52800040, 0xd65f03c0]
+    let text = try textPathFunction([0x520197e8, 0x7100011f, 0x5400006b] + tail).renderStructured()
+    #expect(text.contains("w8 < 0"), Comment(rawValue: text))
+    #expect(!text.contains("0x801f801f"), Comment(rawValue: text))
+    let surrogate = try textPathFunction([0x529b0009, 0x6b09011f, 0x54000063] + tail).renderStructured()
+    #expect(surrogate.contains("w8 <\u{1D41} 0xd800"), Comment(rawValue: surrogate))
+}

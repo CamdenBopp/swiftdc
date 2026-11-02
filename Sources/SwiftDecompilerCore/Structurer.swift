@@ -782,23 +782,29 @@ struct ControlFlowStructure {
         switch mnemonic {
         case "cbz":
             let operand = operands.first ?? "?"
-            let value = resolve(operand, before: last, in: block, consumed: &consumed)
+            let value = resolve(operand, before: last, in: block, consumed: &consumed, width: .belowSignedWord)
             return (isBoolean(value, operand: operand, before: last) ? "!\(value)" : "\(value) == 0", consumed)
         case "cbnz":
             let operand = operands.first ?? "?"
-            let value = resolve(operand, before: last, in: block, consumed: &consumed)
+            let value = resolve(operand, before: last, in: block, consumed: &consumed, width: .belowSignedWord)
             return (isBoolean(value, operand: operand, before: last) ? value : "\(value) != 0", consumed)
         case "tbz":
             let operand = operands.first ?? "?"
             let bit = Self.cleanImmediate(operands.count > 1 ? operands[1] : "?")
-            let value = resolve(operand, before: last, in: block, consumed: &consumed)
+            // A w operand tests a bit below 32, the same bit of a definition
+            // of either width.
+            let value = resolve(operand, before: last, in: block, consumed: &consumed,
+                                width: operand.hasPrefix("w") ? .any : .exact)
             // Bit 0 is the boolean bit: `tbz X, #0` branches when X is false.
             if bit == "0", isProvenBoolean(value, operand: operand, before: last) { return ("!\(value)", consumed) }
             return ("bit \(bit) of \(value) clear", consumed)
         case "tbnz":
             let operand = operands.first ?? "?"
             let bit = Self.cleanImmediate(operands.count > 1 ? operands[1] : "?")
-            let value = resolve(operand, before: last, in: block, consumed: &consumed)
+            // A w operand tests a bit below 32, the same bit of a definition
+            // of either width.
+            let value = resolve(operand, before: last, in: block, consumed: &consumed,
+                                width: operand.hasPrefix("w") ? .any : .exact)
             if bit == "0", isProvenBoolean(value, operand: operand, before: last) { return (value, consumed) }
             return ("bit \(bit) of \(value) set", consumed)
         default:
@@ -824,12 +830,21 @@ struct ControlFlowStructure {
                     let hasDestination = (m == "subs" || m == "adds") && ops.count >= 3
                     let lhsIndex = hasDestination ? 1 : 0
                     let rhsIndex = hasDestination ? 2 : 1
-                    let lhs = resolve(ops[lhsIndex], before: index, in: block, consumed: &consumed)
+                    // A value below 2^31 compares the same at either width
+                    // against an immediate, and under equality or an unsigned
+                    // order against a register too (zero-extension keeps
+                    // those). A signed order against a register does not, nor
+                    // does a sum, which may cross 2^31.
+                    let sums = m == "cmn" || m == "adds"
+                    let orderFree = op == "==" || op == "!=" || op.hasSuffix("\u{1D41}")
+                    let lhsRule: WidthRule = !sums && (ops[rhsIndex].hasPrefix("#") || orderFree) ? .belowSignedWord : .exact
+                    let rhsRule: WidthRule = !sums && orderFree ? .belowSignedWord : .exact
+                    let lhs = narrowResolve(ops[lhsIndex], before: index, in: block, consumed: &consumed, width: lhsRule)
                     // The second operand can carry a shift or an extend
                     // (`cmp x21, x8, lsr #1`, `cmp x0, #0x1, lsl #12`); read
                     // without it, the compare named another value.
                     guard let rhs = Self.applyingModifier(
-                        resolve(ops[rhsIndex], before: index, in: block, consumed: &consumed),
+                        narrowResolve(ops[rhsIndex], before: index, in: block, consumed: &consumed, width: rhsRule),
                         operand: ops[rhsIndex], trailing: ops[(rhsIndex + 1)...]),
                           let rawRHS = Self.applyingModifier(
                         Self.cleanImmediate(ops[rhsIndex]), operand: ops[rhsIndex], trailing: ops[(rhsIndex + 1)...])
@@ -838,7 +853,6 @@ struct ControlFlowStructure {
                     // with -rhs. Read like `cmp`, `cmn x0, #1; b.eq` (x == -1)
                     // rendered `x0 == 1`. `b.mi`/`b.pl` test the sign of that
                     // difference or sum, not of lhs.
-                    let sums = m == "cmn" || m == "adds"
                     // `cmn a, b` sets the flags from `a + b`. Only equality, the
                     // sign of the sum, and an order against a nonzero immediate
                     // read as a comparison with `-b`: the carry of `a + 0` is
@@ -878,7 +892,9 @@ struct ControlFlowStructure {
                           let mask = Self.applyingModifier(Self.cleanImmediate(ops[first + 1]), operand: ops[first + 1],
                                                            trailing: ops[(first + 2)...])
                     else { return ("?", consumed) }
-                    return ("(\(resolve(ops[first], before: index, in: block, consumed: &consumed)) & \(mask)) \(relation) 0", consumed)
+                    let tested = narrowResolve(ops[first], before: index, in: block, consumed: &consumed, keepsWordNumber: false,
+                                               width: ops[first + 1].hasPrefix("#") ? .belowSignedWord : .exact)
+                    return ("(\(tested) & \(mask)) \(relation) 0", consumed)
                 }
             }
             return (op == "?" ? terminator.text : "cond \(op)", consumed)
@@ -926,7 +942,91 @@ struct ControlFlowStructure {
     /// data-moving definition earlier in the same block. When the operand is the
     /// result of a boolean-returning message send, the send is inlined and its
     /// address recorded in `consumed`.
-    private func resolve(_ token: String, before: Int, in block: BasicBlock, consumed: inout Set<UInt64>) -> String {
+    /// `resolve` for an operand of a flag-setting compare. A 32-bit operand
+    /// that folds to a constant keeps its register: a number has no width
+    /// to read it at, and `eor w8, wzr, #0x801f801f; cmp w8, #0; b.lt`, taken
+    /// because the word is negative, rendered `0x801f801f < 0`. A single
+    /// number in [-2^31, 2^31) reads the same as a word and as a doubleword,
+    /// signed or not, so a compare keeps it (`w8 <ᵁ 0xd800`); a `tst`, whose
+    /// mask may set bit 31, does not.
+    private func narrowResolve(_ token: String, before: Int, in block: BasicBlock, consumed: inout Set<UInt64>,
+                               keepsWordNumber: Bool = true, width rule: WidthRule = .exact) -> String {
+        let value = resolve(token, before: before, in: block, consumed: &consumed, width: rule)
+        guard token.hasPrefix("w"),
+              value.replacingOccurrences(of: #"0x[0-9a-f]+|[0-9]+"#, with: "", options: .regularExpression)
+                .allSatisfy({ !$0.isLetter && !$0.isNumber })
+        else { return value }
+        if keepsWordNumber, let number = Self.signedNumber(value), number >= -(1 << 31), number < 1 << 31 { return value }
+        return token
+    }
+
+    /// A rendered number (`7`, `0x1c`, `-0x10`), or nil for anything else.
+    private static func signedNumber(_ text: String) -> Int64? {
+        let negative = text.hasPrefix("-")
+        let digits = negative ? text.dropFirst() : Substring(text)
+        guard let magnitude = digits.hasPrefix("0x") ? Int64(digits.dropFirst(2), radix: 16) : Int64(digits) else { return nil }
+        return negative ? -magnitude : magnitude
+    }
+
+    /// Whether a definition's value is provably in [0, 2^31): such a value
+    /// is the same as a word and as a doubleword, signed or not.
+    private static func isBelowSignedWord(_ instruction: Instruction, mnemonic: String, operands: [String]) -> Bool {
+        if mnemonic == "mov", operands.count >= 2, operands[1].hasPrefix("#") {
+            guard let number = signedNumber(cleanImmediate(operands[1])) else { return false }
+            return number >= 0 && number < 1 << 31
+        }
+        guard let detail = instruction.detail, InstructionSemantics.covers(detail.id),
+              let effect = InstructionSemantics.effect(of: detail)
+        else { return false }
+        func constant(_ term: SemanticTerm) -> UInt64? {
+            switch term {
+            case .constant(let value): return value
+            case .operand(let index):
+                guard index < detail.operands.count, detail.operands[index].operand.register == nil else { return nil }
+                return detail.operands[index].shiftedImmediate.map { UInt64(bitPattern: $0) }
+            case .binary(.bitAnd, let lhs, let rhs):
+                guard let left = constant(lhs), let right = constant(rhs) else { return nil }
+                return left & right
+            default: return nil
+            }
+        }
+        /// How many low bits can be set.
+        func bits(_ term: SemanticTerm) -> Int {
+            if let value = constant(term) { return 64 - value.leadingZeroBitCount }
+            switch term {
+            case .register(let index):
+                guard index < detail.operands.count, let register = detail.operands[index].operand.register else { return 64 }
+                return register.kind == .zero ? 0 : register.widthBits
+            case .operand(let index):
+                guard index < detail.operands.count, let register = detail.operands[index].operand.register else { return 64 }
+                let info = detail.operands[index]
+                if register.kind == .zero { return 0 }
+                return info.shift.type == AARCH64_SFT_INVALID && info.extender == AARCH64_EXT_INVALID ? register.widthBits : 64
+            case .binary(.bitAnd, let lhs, let rhs): return min(bits(lhs), bits(rhs))
+            case .binary(.bitOr, let lhs, let rhs), .binary(.bitXor, let lhs, let rhs): return max(bits(lhs), bits(rhs))
+            case .binary(.shiftRight, let lhs, let rhs):
+                guard let amount = constant(rhs) else { return bits(lhs) }
+                return max(0, bits(lhs) - Int(min(amount, 64)))
+            case .binary(.shiftLeft, let lhs, let rhs):
+                guard let amount = constant(rhs) else { return 64 }
+                return min(64, bits(lhs) + Int(min(amount, 64)))
+            case .zeroExtend(_, let width): return width
+            default: return 64
+            }
+        }
+        return min(bits(effect.value), effect.destination.widthBits) <= 31
+    }
+
+    /// When `resolve` may substitute a definition of the other width than
+    /// the tested register. A value of one width does not spell the other's
+    /// in general; `belowSignedWord` admits a value proven in [0, 2^31),
+    /// which reads the same at both when nothing else in the test has a
+    /// width (a zero test, or a compare with an immediate); `any` is for a
+    /// test that reads one low bit.
+    enum WidthRule { case exact, belowSignedWord, any }
+
+    private func resolve(_ token: String, before: Int, in block: BasicBlock, consumed: inout Set<UInt64>,
+                         width rule: WidthRule = .exact) -> String {
         if token.hasPrefix("#") { return Self.cleanImmediate(token) }
         guard let register = Self.canonicalRegister(token) else { return token }
         for index in stride(from: before - 1, through: 0, by: -1) {
@@ -982,6 +1082,24 @@ struct ControlFlowStructure {
                 // the pair was loaded from). Without detail it may be one.
                 guard let detail = instruction.detail, !detail.writtenRegisterKeys.contains(register) else { return token }
                 continue
+            }
+            // A definition of the other width is not the value tested: `eor
+            // x8, …; cmp w8, #7` compares the low word of a 64-bit result,
+            // and `orr w8, w1, #…; cmp x8, #0; b.gt` a zero-extended one,
+            // whose sign is not the 32-bit expression's. See `WidthRule` for
+            // the exceptions (`lsr x8, x1, #62; cmp w8, #1`).
+            if let tested = token.first, let defined = dest.first, "wx".contains(tested), "wx".contains(defined),
+               tested != defined {
+                switch rule {
+                case .any: break
+                case .belowSignedWord:
+                    if !Self.isBelowSignedWord(instruction, mnemonic: mnemonic, operands: ops) { return token }
+                case .exact:
+                    // A number has no width of its own: one in [0, 2^31) is
+                    // the same value at both (`mov w8, #0x7fffffff; cmp x8, x9`).
+                    let number = mnemonic == "mov" && ops.count >= 2 && ops[1].hasPrefix("#")
+                    if !number || !Self.isBelowSignedWord(instruction, mnemonic: mnemonic, operands: ops) { return token }
+                }
             }
             if let field = instruction.fieldRead { return field }
             // The substitution names the definition's source registers, which
