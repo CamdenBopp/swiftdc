@@ -50,6 +50,18 @@ results do not replace previously recorded release performance measurements.
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
 
+- **FIXED — the text path and the tracer each kept their own instruction
+  semantics.** They drifted (the text path read `ubfx` as a copy while the
+  tracer did not model it). `InstructionSemantics` now states a
+  data-processing instruction's result once, as a term over its operands;
+  the tracer evaluates it (3bfcddf, byte-identical) and the text path
+  renders it. The text path gains `mul`, `eor`, `mvn`/`orn` and the zero
+  extends, takes a register shift amount mod the width, and folds
+  constants; it declines a division, a high multiply and a sign extension
+  into a wider result. Fixtures: 54 structured lines in 8 files, each
+  showing what the tested register held (Swift's overflow test `x9 != ((x1
+  * x0) >>ˢ 63)`, `(x13 << (x11 & 0x3f))`, `xzr | 0x10` → `0x10`). `mov`
+  keeps its own handling (the saved call result).
 - **FIXED — a text condition re-applied a definition that overwrote its
   own source.** `lsl x0, x0, #1; cmp x0, x8` (libReconstruction -O and
   -Osize) rendered `(x0 << 1) < x8`, shifting the result again: the

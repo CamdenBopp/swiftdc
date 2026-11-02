@@ -1,4 +1,5 @@
 import Foundation
+import Ccapstone
 
 /// Folds the recovered call statements into structured `if`/`else`/`while` using
 /// the control-flow graph. Forward structure (the reducible DAG) is recovered via
@@ -987,6 +988,16 @@ struct ControlFlowStructure {
             let idempotent = ["and", "ands", "orr", "mov"].contains(mnemonic)
                 || (mnemonic == "ubfx" && ops.count >= 3 && Self.immediateValue(ops[2]) == 0)
             if !savesCallResult, sources.contains(register), !idempotent { return token }
+            // What the definition computes is InstructionSemantics', shared with
+            // the value tracer. A copy keeps its own handling below (the saved
+            // call result, an immediate as printed).
+            if let detail = instruction.detail, InstructionSemantics.covers(detail.id),
+               mnemonic != "mov", detail.id != AARCH64_INS_MOV, detail.id != AARCH64_INS_MOVZ {
+                guard let effect = InstructionSemantics.effect(of: detail),
+                      let text = Self.render(effect.value, detail, destinationBits: effect.destination.widthBits)
+                else { return token }
+                return text
+            }
             switch mnemonic {
             case "and" where ops.count >= 3, "orr" where ops.count >= 3:
                 guard let second = Self.applyingModifier(Self.cleanImmediate(ops[2]), operand: ops[2], trailing: ops[3...])
@@ -1118,6 +1129,99 @@ struct ControlFlowStructure {
         if let first = t.first, first.isNumber { return "-" + t }
         if t.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) { return "-" + t }
         return "-(\(t))"
+    }
+
+    /// An InstructionSemantics term over register names, as the tracer's
+    /// expressions print (`(x0 & 0xff)`, `(x1 >>ᵁ 3)`, `~x2`). Nil where no
+    /// operator here spells it: a sign extension that is not the register's
+    /// own width, a division or a high multiply (whose signedness the
+    /// operator does not show), an extend or a rotate on an operand, or a
+    /// register this path does not name.
+    static func render(_ term: SemanticTerm, _ detail: StructuredInsn, destinationBits: Int) -> String? {
+        func constant(_ value: UInt64) -> String { value < 10 ? String(value) : "0x" + String(value, radix: 16) }
+        func name(_ register: PhysReg) -> String? {
+            switch register.kind {
+            case .gpr: return (register.widthBits == 32 ? "w" : "x") + String(register.number)
+            case .zero: return "0"
+            default: return nil
+            }
+        }
+        /// An operand's own width: its register's, or nil for an immediate.
+        func width(_ term: SemanticTerm) -> Int? {
+            switch term {
+            case .operand(let index), .register(let index):
+                return index < detail.operands.count ? detail.operands[index].operand.register?.widthBits : nil
+            default: return nil
+            }
+        }
+        /// A term's value when it is a constant: an immediate, the zero
+        /// register, or constants combined.
+        func immediate(_ term: SemanticTerm) -> UInt64? {
+            switch term {
+            case .constant(let value): return value
+            case .operand(let index), .register(let index):
+                guard index < detail.operands.count else { return nil }
+                let info = detail.operands[index]
+                if case .register(let register) = info.operand, register.kind == .zero { return 0 }
+                if case .register = info.operand { return nil }
+                return info.shiftedImmediate.map { UInt64(bitPattern: $0) }
+            case .binary(let op, let lhs, let rhs):
+                guard let left = immediate(lhs), let right = immediate(rhs) else { return nil }
+                switch op {
+                case .bitAnd: return left & right
+                case .bitOr: return left | right
+                case .bitXor: return left ^ right
+                default: return nil
+                }
+            case .complement(let inner):
+                return immediate(inner).map { ~$0 & (destinationBits == 64 ? .max : (UInt64(1) << UInt64(destinationBits)) - 1) }
+            default: return nil
+            }
+        }
+        switch term {
+        case .constant(let value):
+            return constant(value)
+        case .register(let index):
+            guard index < detail.operands.count, let register = detail.operands[index].operand.register else { return nil }
+            return name(register)
+        case .operand(let index):
+            guard index < detail.operands.count else { return nil }
+            let info = detail.operands[index]
+            if let value = immediate(term) { return constant(value) }
+            guard let register = info.operand.register, let base = name(register),
+                  info.extender == AARCH64_EXT_INVALID else { return nil }
+            switch info.shift.type {
+            case AARCH64_SFT_INVALID: return base
+            case AARCH64_SFT_LSL: return "(\(base) << \(info.shift.amount))"
+            case AARCH64_SFT_LSR: return "(\(base) >>\u{1D41} \(info.shift.amount))"
+            case AARCH64_SFT_ASR: return "(\(base) >>\u{02E2} \(info.shift.amount))"
+            default: return nil
+            }
+        case .binary(let op, let lhs, let rhs):
+            if let value = immediate(term) { return constant(value) }
+            switch op {
+            case .divide, .unsignedDivide, .multiplyHigh, .unsignedMultiplyHigh: return nil
+            default: break
+            }
+            guard let left = render(lhs, detail, destinationBits: destinationBits) else { return nil }
+            // A shift amount reads in decimal, as Capstone prints it.
+            let shifts = op == .shiftLeft || op == .shiftRight || op == .arithmeticShiftRight
+            let right: String
+            if shifts, let amount = immediate(rhs) { right = String(amount) }
+            else if let other = render(rhs, detail, destinationBits: destinationBits) { right = other }
+            else { return nil }
+            return "(\(left) \(op.symbol) \(right))"
+        case .complement(let inner):
+            return render(inner, detail, destinationBits: destinationBits).map { "~\($0)" }
+        case .signExtend(let inner, let bits):
+            // A W register read in a W result is already its signed word.
+            guard bits == destinationBits, width(inner) == bits else { return nil }
+            return render(inner, detail, destinationBits: destinationBits)
+        case .zeroExtend(let inner, let bits):
+            guard let text = render(inner, detail, destinationBits: destinationBits) else { return nil }
+            if width(inner) == bits { return text }
+            return "(\(text) & \(constant(bits >= 64 ? .max : (UInt64(1) << UInt64(bits)) - 1)))"
+        }
     }
 
     /// An operand with the shift or extend Capstone prints after it: `x1,

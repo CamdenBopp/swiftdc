@@ -130,3 +130,29 @@ private func textPathFunction(_ words: [UInt32], undetailed: Set<Int> = []) thro
     let mask = try textPathFunction([0x12001d08, 0x7100051f] + tail.dropFirst()).renderStructured()
     #expect(mask.contains("(w8 & 0xff) == 1"), Comment(rawValue: mask))
 }
+
+/// The text path renders a definition from InstructionSemantics, the
+/// table the value tracer evaluates, so the two cannot disagree on what an
+/// instruction computes. A multiply, an exclusive or, a complement and an
+/// extend each named only the tested register before; a register shift
+/// amount is taken mod the width, as the hardware does. A division or a
+/// sign extension into a wider result, which no operator here spells,
+/// keeps the tested register.
+@Test func aTextConditionRendersTheSharedSemantics() throws {
+    let tail: [UInt32] = [0x54000060, 0x52800020, 0xd65f03c0, 0x52800040, 0xd65f03c0]   // b.eq +12; ...
+    let cmpX8 = UInt32(0xf1001d1f), cmpW8 = UInt32(0x71001d1f)
+    let cases: [(UInt32, UInt32, String)] = [
+        (0x9b017c08, cmpX8, "(x0 * x1) == 7"),              // mul x8, x0, x1
+        (0xca010008, cmpX8, "(x0 ^ x1) == 7"),              // eor x8, x0, x1
+        (0xaa2003e8, cmpX8, "~x0 == 7"),                    // mvn x8, x0
+        (0xaa210008, cmpX8, "(x0 | ~x1) == 7"),             // orn x8, x0, x1
+        (0x53001c08, cmpW8, "(w0 & 0xff) == 7"),            // uxtb w8, w0
+        (0x9ac12408, cmpX8, "(x0 >>ᵁ (x1 & 0x3f)) == 7"),   // lsr x8, x0, x1
+        (0x9ac10808, cmpX8, "x8 == 7"),                     // udiv x8, x0, x1
+        (0x93407c08, cmpX8, "x8 == 7"),                     // sxtw x8, w0
+    ]
+    for (definition, compare, expected) in cases {
+        let text = try textPathFunction([definition, compare] + tail).renderStructured()
+        #expect(text.contains(expected), Comment(rawValue: text))
+    }
+}
