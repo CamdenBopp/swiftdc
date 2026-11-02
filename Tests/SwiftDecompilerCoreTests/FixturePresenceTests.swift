@@ -191,6 +191,8 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libAsyncMethods.opt.stripped.dylib",
         "Fixtures/Sample/libCoroAccessors.opt.dylib",
         "Fixtures/Sample/libCoroAccessors.opt.stripped.dylib",
+        "Fixtures/Sample/libOldMangledHelper.stripped.dylib",
+        "Fixtures/Sample/libResultBuffer.dylib",
     ]
 
     /// True on a run that must actually exercise the fixtures. `CI` is set by
