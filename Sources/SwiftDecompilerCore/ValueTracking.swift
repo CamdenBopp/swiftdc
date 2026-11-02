@@ -475,6 +475,10 @@ public struct FunctionAnalysis: Sendable {
     /// from. A throw that falls into the normal epilogue merges with the
     /// return there, and only the per-path value tells them apart.
     public var exitErrorValuesByPredecessor: [UInt64: [UInt64: AbstractValue]] = [:]
+    /// x0 and v0 at the same `ret` along each path, keyed the same way: a
+    /// throwing path's x0 is no result, so the normal paths alone give it.
+    public var exitValuesByPredecessor: [UInt64: [UInt64: AbstractValue]] = [:]
+    public var exitFloatValuesByPredecessor: [UInt64: [UInt64: AbstractValue]] = [:]
     /// x20 at each proven async return (a `br` through ResumeParent): an
     /// async throwing function hands its error back in x20, zero for none.
     public var exitAsyncErrorValues: [UInt64: AbstractValue] = [:]
@@ -1150,6 +1154,8 @@ public struct ValueTracer: Sendable {
                         // Every path is recorded, unknown included, so a
                         // consumer can tell "all paths throw" from "some do".
                         result.exitErrorValuesByPredecessor[insn.address, default: [:]][end] = registers[.x(21)] ?? .unknown
+                        result.exitValuesByPredecessor[insn.address, default: [:]][end] = registers[.x(0)] ?? .unknown
+                        result.exitFloatValuesByPredecessor[insn.address, default: [:]][end] = registers[.v(0)] ?? .unknown
                         break
                     }
                     transfer(insn, into: &registers, record: nil, recordAccess: nil,

@@ -44,7 +44,7 @@ omitted.
    callee's result; a tail branch in an x8-returning method renders
    `return h(…)` for a void `h`. Classify the encoded return (x0, v0-v3,
    x0+x1, x8) and decline the rest.
-5. **The error path's x0 leaks into the return.** `plainThrow` renders
+5. **FIXED — The error path's x0 leaks into the return.** `plainThrow` renders
    `return ((arg0 < 0) ? r1 : (arg0 + (arg0 << 1)))` where `r1 =
    swift_willThrow(r0)`: `swift_willThrow` is void and that path throws.
    The FIXED entry that says this select no longer reproduces is stale.

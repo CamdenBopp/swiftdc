@@ -7161,6 +7161,17 @@ public struct Disassembler: Sendable {
                     mergedThrowExits.insert(exit)
                 } else {
                     mergedThrowEnds.formUnion(throwing)
+                    // The value returned is the normal paths' alone: the
+                    // throwing one's x0 is what `swift_willThrow` left, and
+                    // joined in, `plainThrow` read `return ((arg0 < 0) ? r1
+                    // : …)`. Paths that disagree leave it unknown.
+                    func normalValue(_ byPath: [UInt64: AbstractValue]?) -> AbstractValue {
+                        let normal = (byPath ?? [:]).filter { !throwing.contains($0.key) }.map(\.value)
+                        guard let first = normal.first, normal.allSatisfy({ $0 == first }) else { return .unknown }
+                        return first
+                    }
+                    analysis.exitValues[exit] = normalValue(analysis.exitValuesByPredecessor[exit])
+                    analysis.exitFloatValues[exit] = normalValue(analysis.exitFloatValuesByPredecessor[exit])
                 }
             }
         }

@@ -273,3 +273,13 @@ private func statementsAfterThrow(_ body: String) -> [String] {
     #expect(!text.contains("? r1 :"), Comment(rawValue: text))
     #expect(text.contains("throw ?"), Comment(rawValue: text))
 }
+
+/// Built from its normal paths alone, the shared exit returns the normal
+/// path's value: `return (arg0 + (arg0 << 1))`.
+@Test func aMergedThrowsExitReturnsTheNormalPathsValueIfPresent() async throws {
+    let path = "Fixtures/Sample/libThrowSelect.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = try #require(functions.first { $0.displayName.hasPrefix("ThrowSelect.plainThrow(") }).renderStructured()
+    #expect(text.contains("return (arg0 + (arg0 << 1))"), Comment(rawValue: text))
+}

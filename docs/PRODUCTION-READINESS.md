@@ -6688,3 +6688,10 @@ Findings:
   `return ((arg0 < 0) ? r1 : (arg0 + (arg0 << 1)))` with `r1 =
   swift_willThrow(r0)`; it reads `return ?`. The earlier entry that says
   this select "no longer reproduces at HEAD" was stale.
+- **FIXED — a `ret` a throw shares returned `?`** (ABI review item 5,
+  second half). The tracer now records x0 and v0 per incoming path at a
+  shared `ret`, as it did x21, and an exit whose throwing paths
+  `mergedThrowEnds` proves returns the value its normal paths agree on.
+  `plainThrow` reads `return (arg0 + (arg0 << 1))`; `typedPick` (four
+  builds) `return arg0`; the generic `transform` `return (… + 1)`.
+  swift-syntax byte-identical.
