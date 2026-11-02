@@ -6637,3 +6637,16 @@ Findings:
   words (`String.utf8.getter(?, ?, arg1)` -> `(?, ?)`). Fixtures: 156
   lines in 27 files, mostly `hash(into:)` and `_combine` naming their
   `inout` Hasher. swift-syntax `--structured`: 52 lines.
+
+## 2026-11-02: ABI review
+
+- **OPEN — fourteen ABI areas reviewed.** The ranked findings, each with a
+  reproduction checked against the compiler, are in
+  [ABI-REVIEW-2026-11-02.md](ABI-REVIEW-2026-11-02.md): 14 soundness
+  classes (multi-register call results spelled as the whole call, a
+  parked x20 taken as `self`, signed 32-bit comparisons rendered at 64
+  bits, ObjC returns read from x0 whatever the encoding, the throw path's
+  x0 in a return select, `swift_dynamicCast`'s Bool as the cast value,
+  async calls laid out positionally, among others) and the completeness
+  gaps. The earlier entry that says the `swift_willThrow` select "no
+  longer reproduces" is stale: `plainThrow` at -O still renders it.
