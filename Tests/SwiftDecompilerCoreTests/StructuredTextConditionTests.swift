@@ -61,3 +61,24 @@ private func textPathFunction(_ words: [UInt32], undetailed: Set<Int> = []) thro
     let unknown = try textPathFunction([0xd28000a8, 0xd503201f] + tail, undetailed: [1]).renderStructured()  // nop
     #expect(unknown.contains("x8 == 7"), Comment(rawValue: unknown))
 }
+
+/// `ubfx d, s, #lsb, #width` is `(s >> lsb) & (2^width - 1)`. Read as a
+/// copy of s, the Go float test `ubfx x13, x12, #23, #8; cmp x13, #0xff`
+/// (exponent all ones) rendered `x12 != 0xff`. `sbfx` sign-extends its
+/// field, which no operator spells, so its register stays.
+@Test func aTextConditionReadsABitfieldExtractAsItsField() throws {
+    let tail: [UInt32] = [0x52800020, 0xd65f03c0, 0x52800040, 0xd65f03c0]
+    func render(_ extract: UInt32, _ compare: UInt32) throws -> String {
+        try textPathFunction([extract, compare, 0x54000061] + tail).renderStructured()
+    }
+    let cmpW8 = UInt32(0x71001d1f), cmpX8 = UInt32(0xf1001d1f), cmpX8ff = UInt32(0xf103fd1f)
+    let unsigned = try render(0x53031c08, cmpW8)         // ubfx w8, w0, #3, #5; cmp w8, #7
+    #expect(unsigned.contains("((w0 >>ᵁ 3) & 0x1f) != 7"), Comment(rawValue: unsigned))
+    let low = try render(0x53000c08, cmpW8)              // ubfx w8, w0, #0, #4
+    #expect(low.contains("(w0 & 0xf) != 7"), Comment(rawValue: low))
+    let exponent = try render(0xd3577828, cmpX8ff)       // ubfx x8, x1, #23, #8; cmp x8, #0xff
+    #expect(exponent.contains("((x1 >>ᵁ 23) & 0xff) != 0xff"), Comment(rawValue: exponent))
+    let signed = try render(0x93442c08, cmpX8)           // sbfx x8, x0, #4, #8
+    #expect(signed.contains("x8 != 7"), Comment(rawValue: signed))
+    #expect(!signed.contains("x0"), Comment(rawValue: signed))
+}

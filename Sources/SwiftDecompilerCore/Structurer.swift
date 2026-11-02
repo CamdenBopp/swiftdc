@@ -972,7 +972,18 @@ struct ControlFlowStructure {
             case "orr" where ops.count >= 3: return "(\(ops[1]) | \(Self.cleanImmediate(ops[2])))"
             case "lsr", "asr": return ops.count >= 3 ? "(\(ops[1]) >> \(Self.cleanImmediate(ops[2])))" : token
             case "lsl": return ops.count >= 3 ? "(\(ops[1]) << \(Self.cleanImmediate(ops[2])))" : token
-            case "ubfx", "sbfx": return ops.count >= 2 ? sourceName(ops[1]) : sourceName(token)
+            // `ubfx d, s, #lsb, #width` is `(s >> lsb) & (2^width - 1)`, not a
+            // copy of s: read as one, the Go float test `ubfx x13, x12, #23,
+            // #8; cmp x13, #0xff` (exponent all ones) rendered `x12 != 0xff`.
+            // `sbfx` sign-extends its field, which no operator here spells.
+            case "ubfx" where ops.count >= 4:
+                guard let lsb = Self.immediateValue(ops[2]), let width = Self.immediateValue(ops[3]),
+                      width >= 1, lsb + width <= 64
+                else { return token }
+                let mask = width == 64 ? UInt64.max : (UInt64(1) << width) - 1
+                let field = lsb == 0 ? sourceName(ops[1]) : "(\(sourceName(ops[1])) >>\u{1D41} \(lsb))"
+                return "(\(field) & 0x\(String(mask, radix: 16)))"
+            case "ubfx", "sbfx": return token
             case "mov" where ops.count >= 2:
                 if ops[1].hasPrefix("#") { return Self.cleanImmediate(ops[1]) }
                 // Follow a copy out of the ABI return register, so a boolean moved
@@ -1082,6 +1093,13 @@ struct ControlFlowStructure {
         if let first = t.first, first.isNumber { return "-" + t }
         if t.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) { return "-" + t }
         return "-(\(t))"
+    }
+
+    /// `#5` or `#0x1f` as a number; nil for anything else.
+    private static func immediateValue(_ token: String) -> UInt64? {
+        guard token.hasPrefix("#") else { return nil }
+        let digits = token.dropFirst()
+        return digits.hasPrefix("0x") ? UInt64(digits.dropFirst(2), radix: 16) : UInt64(digits)
     }
 
     private static func cleanImmediate(_ token: String) -> String {

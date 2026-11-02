@@ -65,9 +65,16 @@ results do not replace previously recorded release performance measurements.
   tested register (MangledTypes ×2, RuntimeArity, StringArity,
   RetainRegister, the Go float check `ubfx x13, x12, #23, #8; and x12, …;
   cmp x13, #0xff`, which read `x12 != 0xff`). Still OPEN on the same path:
-  `ubfx`/`sbfx` are read as copies of their source, `lsr` and `asr` both
-  print `>>`, and a compare's shifted operand drops its shift (`cmp x21,
-  x8, lsr #1` reads `x21 >=ᵁ x8`).
+  `lsr` and `asr` both print `>>`, and a compare's shifted operand drops
+  its shift (`cmp x21, x8, lsr #1` reads `x21 >=ᵁ x8`).
+- **FIXED — the text path read a bitfield extract as a copy.** `ubfx w8,
+  w0, #3, #5; cmp w8, #7` rendered `w0 == 7`. `ubfx` now renders its
+  field, `((w0 >>ᵁ 3) & 0x1f)`, and `sbfx`, whose sign extension no
+  operator spells, keeps the tested register. Fixtures: goProgram and its
+  stripped copy change 129 conditions each, all wrong before: Go
+  zero-extends a byte with `ubfx x, x, #0, #8` (250 of its 515 `ubfx`),
+  so `x5 != w6` is now `(x5 & 0xff) != w6`; `sbfx x5, x5, #4, #28; cmp
+  w5, #1` read `x5 == 1`. Every other fixture is byte-identical.
 - **FIXED — the text path's definition search skipped a write that was
   not a first operand.** `mov x8, x1; ldp x9, x8, [sp]; cmp x8, #7`
   rendered `x1 == 7`: the walk accepted a definition only where the tested
