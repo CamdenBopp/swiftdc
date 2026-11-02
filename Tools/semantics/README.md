@@ -1,6 +1,7 @@
 # Semantics equivalence check
 
-Proves the value tracer's integer semantics against the Arm ARM with z3,
+Proves the value tracer's integer semantics, and the structurer's text-path
+branch conditions, against the Arm ARM with z3,
 for every value of the input registers. It runs only on a dev host and is
 not part of `swift test`: z3 is a test oracle, never a dependency.
 
@@ -33,6 +34,30 @@ Outcomes per instruction class:
 - **declined**: the tracer claims nothing. Sound, and the list of what to
   model next.
 - **refuted**: a counterexample, printed with the inputs. Exit status 1.
+
+## Branch conditions
+
+`conditions.py` does the same for the structurer's text-path branch
+conditions, the ones a function without tracer facts renders.
+`exportTextConditionsIfRequested` lays out about 12,600 sequences
+(`definition; test; branch`, the definition drawn from `check.py`'s
+encodings and retargeted to x8, the test a `cmp`, `cmn`, `tst`, `subs`,
+`adds` or `ands` against an immediate or a shifted register, every
+condition code, and `cbz`/`tbz` after a definition) and exports the
+condition rendered for the taken branch. The script parses it and proves
+it against NZCV from the Arm pseudocode.
+
+```bash
+PYTHON=/tmp/z3venv/bin/python Tools/semantics/run.sh [workdir]
+```
+
+How the text is read: a register name is its value at the branch; an
+expression over w registers is a 32-bit operation and over x registers a
+64-bit one; a comparison is at the wider of its operands' widths, a w
+operand zero-extended; `<` is signed and `<ᵁ` unsigned. Outcomes:
+verified, declined (`?`), refuted (with the registers that show it), and
+unparsed, a rendering this grammar cannot read, which is reported as a
+defect: a reader cannot know what it means either.
 
 To prove a semantics change, run it before and after, and break the change
 once to see it refuted: `sbfx` read as unsigned gave 2,507 refutations and

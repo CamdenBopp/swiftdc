@@ -41,3 +41,4 @@ Benchmarks/outputs/
 # record of the exact commit that builds.
 work/
 Tools/audit/apps.conf
+__pycache__/

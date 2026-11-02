@@ -152,8 +152,9 @@ def generate():
 
 
 def spec(word, x):
-    """x0 after the instruction, as a 64-bit z3 term over x[0..3], or None
-    for an encoding this spec does not cover (unallocated)."""
+    """Rd after the instruction, as a 64-bit z3 term over the registers x
+    (x[n] is xn at entry), or None for an encoding this spec does not
+    cover (unallocated, or a destination of sp or the zero register)."""
     sf = bits(word, 31, 31)
     w = 64 if sf else 32
     rd, rn, rm = bits(word, 4, 0), bits(word, 9, 5), bits(word, 20, 16)
@@ -175,7 +176,7 @@ def spec(word, x):
         assert value.size() == w
         return z3.ZeroExt(64 - w, value)
 
-    if rd != 0:
+    if rd == 31:
         return None
     top = bits(word, 28, 24)
     if top == 0b01010:   # logical (shifted register)
@@ -230,7 +231,7 @@ def spec(word, x):
         wmask = (((welem >> r) | (welem << (w - r))) & ((1 << w) - 1)) if r else welem
         tmask = (1 << (diff + 1)) - 1
         src = reg(rn)
-        dst = reg(0) if opc == 1 else z3.BitVecVal(0, w)
+        dst = reg(rd) if opc == 1 else z3.BitVecVal(0, w)
         bot = (dst & z3.BitVecVal(~wmask & ((1 << w) - 1), w)) | (z3.RotateRight(src, r) & z3.BitVecVal(wmask, w))
         if opc == 0:
             sign = z3.Extract(s, s, src)
@@ -307,7 +308,7 @@ def spec(word, x):
         pos = hw * 16
         if opc == 3:
             keep = ((1 << w) - 1) & ~(0xFFFF << pos)
-            return result((reg(0) & z3.BitVecVal(keep, w)) | z3.BitVecVal(imm16 << pos, w))
+            return result((reg(rd) & z3.BitVecVal(keep, w)) | z3.BitVecVal(imm16 << pos, w))
         value = (imm16 << pos) & ((1 << w) - 1)
         return result(z3.BitVecVal(value if opc == 2 else ~value & ((1 << w) - 1), w))
     return None
