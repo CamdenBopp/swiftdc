@@ -1132,7 +1132,11 @@ public struct ValueTracer: Sendable {
             let value = t.hasPrefix("0x") ? Int64(t.dropFirst(2), radix: 16) : Int64(t)
             return value.map { negative ? -$0 : $0 }
         }
-        var sp: Int64 = 0
+        // nil once the scan loses track of the register: a register delta
+        // (`sub sp, sp, x9`, a dynamic allocation) or a write it does not
+        // model. A base it cannot place claims no offset, which only widens
+        // the invalidation; a stale one placed every later local wrongly.
+        var sp: Int64? = 0
         var fp: Int64?
         var offsets = Set<Int64>()
         var prologue = true
@@ -1154,7 +1158,7 @@ public struct ValueTracer: Sendable {
                    let memory = detail.operands.first(where: { $0.operand.isMemory }),
                    case .memory(let base?, nil, let displacement) = memory.operand {
                     let effective = detail.postIndex ? 0 : displacement
-                    let slot: Int64? = base.kind == .stackPointer ? sp + effective
+                    let slot: Int64? = base.kind == .stackPointer ? sp.map { $0 + effective }
                         : base.key == "x29" ? fp.map { $0 + effective } : nil
                     if let slot {
                         for index in 0..<count {
@@ -1174,15 +1178,21 @@ public struct ValueTracer: Sendable {
             let mnemonic = parts[0].lowercased()
             let operandText = parts[1].split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)[0]
             let ops = operandText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            // Whether it writes x29: Capstone says; without detail, any
+            // instruction but a store that names x29 first may.
+            let writesFP = instruction.detail.map { $0.writtenRegisterKeys.contains("x29") }
+                ?? (!mnemonic.hasPrefix("st") && (ops.first == "x29" || ops.first == "w29" || ops.dropFirst().first == "x29"))
+            let writesSP = instruction.detail.map { $0.writtenRegisterKeys.contains("sp") }
+                ?? (!["cmp", "cmn", "tst"].contains(mnemonic) && ops.first == "sp")
             // sp writeback: `[sp, #-0x20]!` and `[sp], #0x20`.
             if let bracket = ops.firstIndex(where: { $0.hasPrefix("[sp") }) {
-                if ops[bracket].hasSuffix("]!") == false, ops.count > bracket + 1,
-                   operandText.contains("!"), let delta = immediate(Substring(ops[bracket + 1])) {
-                    sp += delta
-                } else if ops[bracket] == "[sp]", ops.count > bracket + 1,
-                          let delta = immediate(Substring(ops[bracket + 1])) {
-                    sp += delta
+                let preIndexed = ops[bracket].hasSuffix("]!") == false && ops.count > bracket + 1 && operandText.contains("!")
+                let postIndexed = ops[bracket] == "[sp]" && ops.count > bracket + 1
+                if preIndexed || postIndexed {
+                    let delta = immediate(Substring(ops[bracket + 1]))
+                    sp = delta.flatMap { delta in sp.map { $0 + delta } }
                 }
+                if writesFP { fp = nil }
                 continue
             }
             guard ops.count >= 2 else { continue }
@@ -1201,18 +1211,24 @@ public struct ValueTracer: Sendable {
             } else if ops.count > 4 {
                 delta = nil
             }
+            // A register or unparsed delta is unknown, never zero: `add x0,
+            // sp, x1` claimed a local at sp itself.
             switch (mnemonic, dest, source) {
-            case ("sub", "sp", "sp"): if let delta { sp -= delta }
-            case ("add", "sp", "sp"): if let delta { sp += delta }
-            case ("add", "x29", "sp"): fp = sp + (delta ?? 0)
+            case ("sub", "sp", "sp"): sp = delta.flatMap { delta in sp.map { $0 - delta } }
+            case ("add", "sp", "sp"): sp = delta.flatMap { delta in sp.map { $0 + delta } }
+            case ("mov", "sp", "x29"): sp = fp
+            case ("sub", "sp", "x29"): sp = delta.flatMap { delta in fp.map { $0 - delta } }
+            case ("add", "x29", "sp"): fp = delta.flatMap { delta in sp.map { $0 + delta } }
             case ("mov", "x29", "sp"): fp = sp
-            case ("mov", _, "sp") where dest != "sp": offsets.insert(sp)
-            case ("add", _, "sp") where dest != "sp": offsets.insert(sp + (delta ?? 0))
+            case ("mov", _, "sp") where dest != "sp": if let sp { offsets.insert(sp) }
+            case ("add", _, "sp") where dest != "sp": if let sp, let delta { offsets.insert(sp + delta) }
             case ("add", _, "x29") where dest != "sp" && dest != "x29":
-                if let fp { offsets.insert(fp + (delta ?? 0)) }
+                if let fp, let delta { offsets.insert(fp + delta) }
             case ("sub", _, "x29") where dest != "sp" && dest != "x29":
                 if let fp, let delta { offsets.insert(fp - delta) }
-            default: break
+            default:
+                if writesSP { sp = nil }
+                if writesFP { fp = nil }
             }
         }
         return FrameLayout(boundaries: offsets.sorted(), saveSlots: saveSlots)

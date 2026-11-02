@@ -58,6 +58,18 @@ results do not replace previously recorded release performance measurements.
   operand as an unknown delta. The perf set has such frames in CoreGraphics
   (56), AppleMediaServicesKit (28), assetutil (27) and others; no fixture
   has one, and no fixture render changes.
+- **FIXED — the frame layout kept a stale sp or x29 and read a register
+  delta as zero.** It ignored any write of sp it did not model, so after
+  Swift's dynamically sized allocation of a generic value's stack buffer
+  (`sub x8, sp, x9; mov sp, x8`) every sp-relative local was placed at its
+  pre-allocation offset; it ignored an `ldp`/`mov` that reloads x29; and
+  `add x0, sp, x1` claimed a local at sp itself. Each misplaced boundary
+  narrows how far an escaped write is assumed to reach. Once sp or x29 is
+  written in a way the scan cannot follow (by Capstone's written
+  registers), it claims nothing more through it, and a non-immediate delta
+  is unknown. The perf set has 13,033 `mov sp, xN` (RealityFoundation
+  3,292, SourceEditor 2,224, notarytool 2,154, libSwiftUIMacros 1,442,
+  AppIntentsMetadataExtractor 1,236). No fixture render changes.
 - **FIXED — a text-path condition named a register its value had left.**
   When the tracer bakes no condition, the structurer substitutes the tested
   register's definition (`and`, `orr`, shifts, `ubfx`, `mov`) and prints its
