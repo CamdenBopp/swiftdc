@@ -6602,6 +6602,17 @@ Findings:
   specialization only when every entry is `Owned To Guaranteed` or
   `Guaranteed To Owned`; it renders `return ?`. Fixtures and the four
   swift-syntax dylibs: no other render changes.
-- **OPEN — the same specializations' call sites.** `callI` renders
-  `helperI(arg1, arg1)` for the one-argument specialization, and
-  `self=r0` for a free function whose caller kept a value in x20.
+- **FIXED — a free function's specialization took a `self`.** The test
+  for a free function (`Module.name(…)`, no `self` in x20) read the whole
+  name, so a specialization's `function signature specialization <…> of`
+  clause defeated it, and `callI`'s second call read `helperI(self: r0,
+  arg0)` for the result its caller kept in x20. The clauses are stripped
+  first (`withoutSpecializationClauses`). Fixtures: only libDeadArgs
+  changes (2 lines); swift-syntax dylibs byte-identical.
+- **OPEN — the same specializations' arity.** `callI` renders
+  `helperI(arg1, arg1)` for the one-argument specialization: x1 still
+  holds `arg1` at the first call.
+- **OPEN — a stdlib value type's initializer takes a `self`.** 12
+  `Swift.Dictionary.init(self: _swiftEmptyArrayStorage, …)` calls in the
+  swift-syntax dylibs: `receivesThinMetatype` knows only the image's own
+  value types.

@@ -3851,6 +3851,19 @@ public struct Disassembler: Sendable {
         indirectResultUse(of: function) == .reads
     }
 
+    /// A specialization's name without its leading `function signature
+    /// specialization <…> of ` and `generic specialization <…> of ` clauses:
+    /// the function it specializes, as its name prints it. Any other name is
+    /// returned unchanged.
+    static func withoutSpecializationClauses(_ name: String) -> String {
+        var name = Substring(name)
+        while name.hasPrefix("function signature specialization <") || name.hasPrefix("generic specialization <"),
+              let of = name.range(of: "> of ") {
+            name = name[of.upperBound...]
+        }
+        return String(name)
+    }
+
     /// Whether a function's registers still follow the signature its name
     /// prints. A function signature specialization prints its original's
     /// signature but may change the parameters: `Arg[0] = Dead` drops one,
@@ -5075,7 +5088,12 @@ public struct Disassembler: Sendable {
             if let callee = calleeByAddress[insn.address] {
                 if DisassembledFunction.receivesThinMetatype(callee, classTypeIndex: classTypeIndex)
                     || DisassembledFunction.takesNoSelf(callee) { continue }
-                if let signature = DisassembledFunction.splitSignature(callee),
+                // A free function, `Module.name(…)`, has no `self`; nor does a
+                // specialization of one, whose name prints the original's
+                // after its clause (`function signature specialization
+                // <Arg[0] = Dead> of DeadArgs.helperI(…)` read `self=r0` for a
+                // value its caller kept in x20).
+                if let signature = DisassembledFunction.splitSignature(Self.withoutSpecializationClauses(callee)),
                    let range = DisassembledFunction.outermostArgumentListRange(of: signature.head) {
                     let name = signature.head[..<range.lowerBound].dropLast()
                     if name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }),

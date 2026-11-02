@@ -206,3 +206,21 @@ struct ABISourceLoweringTests {
         #expect(!Disassembler.signatureSpecializationKeepsLayout(name), "\(name)")
     }
 }
+
+/// A specialization of a free function has no `self`, whatever its caller
+/// keeps in x20: `callI` saves its first result there across the second
+/// call, which read `helperI(self: r0, arg0)` (`deadargs.swift`).
+@Test func aFreeFunctionsSpecializationTakesNoSelfIfPresent() async throws {
+    let path = "Fixtures/Sample/libDeadArgs.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    for name in ["DeadArgs.callI", "DeadArgs.callS"] {
+        let text = try #require(functions.first { $0.displayName.hasPrefix(name) }).renderStructured()
+        #expect(!text.contains("self"), Comment(rawValue: text))
+        #expect(text.contains("Dead> of DeadArgs.helper"), Comment(rawValue: text))
+    }
+    #expect(Disassembler.withoutSpecializationClauses(
+        "function signature specialization <Arg[0] = Dead> of generic specialization <Swift.Int> of M.f<A>(A) -> ()")
+        == "M.f<A>(A) -> ()")
+    #expect(Disassembler.withoutSpecializationClauses("M.T.f() -> ()") == "M.T.f() -> ()")
+}
