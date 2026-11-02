@@ -3328,6 +3328,36 @@ public struct ValueTracer: Sendable {
             }
             write(dest, result, into: &registers)
 
+        case AARCH64_INS_ALIAS_CINC, AARCH64_INS_ALIAS_CNEG, AARCH64_INS_ALIAS_CINV:
+            // `cinc d, n, cc` is `cc ? n + 1 : n`; `cneg` negates and `cinv`
+            // complements under the condition (CSINC/CSNEG/CSINV with both
+            // sources n and the condition inverted).
+            guard let dest = destinationRegister(detail), detail.operands.count == 2,
+                  let flags = registers[Self.flagsKey],
+                  let condition = flagCondition(flags, code: detail.conditionCode, width: registers[Self.flagsWidthKey]),
+                  condition != .unknown
+            else { clobber(detail, into: &registers); return }
+            let input = source(detail.operands[1], in: registers)
+            guard input != .unknown else { clobber(detail, into: &registers); return }
+            var changed: AbstractValue = switch detail.id {
+            case AARCH64_INS_ALIAS_CINC: expression(.add, input, .immediate(1))
+            case AARCH64_INS_ALIAS_CNEG:
+                if case .immediate(let bits) = input { .immediate(0 &- bits) } else { .unary(.negate, input) }
+            default:
+                if case .immediate(let bits) = input { .immediate(~bits) } else { .unary(.bitwiseNot, input) }
+            }
+            var unchanged = input
+            if dest.widthBits == 32 {
+                if case .immediate(let bits) = changed { changed = .immediate(bits & 0xffff_ffff) }
+                if case .immediate(let bits) = unchanged { unchanged = .immediate(bits & 0xffff_ffff) }
+            }
+            let result: AbstractValue = if case .immediate(let taken) = condition {
+                taken != 0 ? changed : unchanged
+            } else {
+                changed == .unknown ? .unknown : .select(condition: condition, whenTrue: changed, whenFalse: unchanged)
+            }
+            write(dest, result, into: &registers)
+
         case AARCH64_INS_CSEL, AARCH64_INS_CSINC, AARCH64_INS_CSINV, AARCH64_INS_CSNEG:
             // The branchless ternary: `csel d, n, m, cc` = cc ? n : m. The
             // `inc`/`inv`/`neg` variants apply +1 / bitwise-not / negate to the

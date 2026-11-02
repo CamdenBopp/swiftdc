@@ -16,7 +16,7 @@ import Testing
     let handle = try #require(dlopen(path, RTLD_NOW | RTLD_LOCAL))
     defer { dlclose(handle) }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
-    #expect(functions.count == 39)
+    #expect(functions.count == 44)
     let inputs = ResearchFixtures.inputs(seed: 11)
     let pairs = zip(inputs, inputs.reversed() + [0x8000_0000_0000_0000]).map { [$0, $1] }
     for function in functions {

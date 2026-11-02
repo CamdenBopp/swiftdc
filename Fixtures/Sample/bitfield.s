@@ -112,3 +112,33 @@ _bits_rbit_x:
 _bits_rbit_w:
     rbit w0, w0
     ret
+// Conditional increment, negate and invert after a compare of x0 and x1:
+// cinc d, n, cc = cc ? n + 1 : n, cneg negates and cinv complements.
+.globl _bits_cinc_lt
+_bits_cinc_lt:
+    cmp x0, x1
+    cinc x0, x0, lt
+    ret
+.globl _bits_cneg_mi
+_bits_cneg_mi:
+    cmp x0, #0
+    cneg x0, x0, mi
+    ret
+.globl _bits_cinv_hi
+_bits_cinv_hi:
+    cmp x0, x1
+    cinv x0, x1, hi
+    ret
+.globl _bits_cinc_w_eq
+_bits_cinc_w_eq:
+    cmp w0, w1
+    cinc w0, w0, eq
+    ret
+.globl _bits_abs_safe
+_bits_abs_safe:
+    cmp x0, #0
+    cneg x8, x0, mi
+    mov x9, #-0x8000000000000000
+    cmp x0, x9
+    csinv x0, x8, xzr, ne
+    ret

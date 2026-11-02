@@ -69,6 +69,15 @@ results do not replace previously recorded release performance measurements.
   branch's NZCV. At its first run: 9,287 verified, 1,871 refuted, 212
   unparsed, in four classes fixed below. Now: 9,936 verified, 2,708
   declined, 0 refuted, 0 unparsed.
+- **FIXED — the tracer did not model `cinc`, `cneg` or `cinv`.** The
+  compiler-grounded audit (branch audit/compiler-grounded) found `absSafe`
+  (`cneg; csinv`) and `classify` (`cinc` in a select chain) returning `?`:
+  the aliases have two operands and fell to clobber while `csinc`, `csneg`
+  and `csinv` were modelled. Each is now `cc ? f(n) : n`, its condition as
+  printed (a polarity mutation gives 251 native mismatches). Fixtures:
+  Reconstruction.polarity at -O and -Osize returns `((arg0 != 0) ? ((arg0 ==
+  1) ? -2 : -3) : -1)` for its `switch`. Real binaries: one swift-syntax
+  call argument; gamepolicyd unchanged.
 - **FIXED — the tracer did not model `clz`, `cls` or `rbit`.** Each
   cleared its destination, so Swift's `leadingZeroBitCount` (and
   `trailingZeroBitCount`, `rbit` then `clz`) read `return ?`. New unary
