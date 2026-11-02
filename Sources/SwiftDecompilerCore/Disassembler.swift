@@ -4270,6 +4270,16 @@ public struct Disassembler: Sendable {
             return String(Double(bitPattern: bits))
         case "Swift.Float", "Swift.Float32":
             return String(Float(bitPattern: UInt32(truncatingIfNeeded: bits)))
+        // A narrow integer is its register's low bits, read at the declared
+        // signedness: the callee reads no more, and the caller may leave the
+        // rest as it likes. Read whole, `takeNarrow(-1, -2, -3, …)` rendered
+        // `takeNarrow(255, 0xfffe, 0xfffffffd, …)`.
+        case "Swift.Int8": return String(Int8(truncatingIfNeeded: bits))
+        case "Swift.Int16": return String(Int16(truncatingIfNeeded: bits))
+        case "Swift.Int32": return String(Int32(truncatingIfNeeded: bits))
+        case "Swift.UInt8": return renderImmediate(UInt64(UInt8(truncatingIfNeeded: bits)))
+        case "Swift.UInt16": return renderImmediate(UInt64(UInt16(truncatingIfNeeded: bits)))
+        case "Swift.UInt32": return renderImmediate(UInt64(UInt32(truncatingIfNeeded: bits)))
         default:
             return nil
         }

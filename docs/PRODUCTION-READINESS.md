@@ -69,6 +69,13 @@ results do not replace previously recorded release performance measurements.
   branch's NZCV. At its first run: 9,287 verified, 1,871 refuted, 212
   unparsed, in four classes fixed below. Now: 9,936 verified, 2,708
   declined, 0 refuted, 0 unparsed.
+- **FIXED — a narrow integer constant rendered as its whole register.**
+  `takeNarrow(-1, -2, -3, …)` (Int8, Int16, Int32) rendered
+  `takeNarrow(255, 0xfffe, 0xfffffffd, …)`: right-looking, wrong values,
+  found by the calling-convention study on the audit branch. A constant of
+  a declared Int8/16/32 or UInt8/16/32 now reads its low bits at that
+  signedness, for arguments and typed returns (`minusOne32() -> Int32`
+  returns -1). No existing fixture render changes.
 - **FIXED — a function without a signature had no argument values.** A
   stripped `sub_…` or a C symbol was seeded with nothing, so every value
   built from its inputs was `?` (callers passed `(?, ?)`). Such a function

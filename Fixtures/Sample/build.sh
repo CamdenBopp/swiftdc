@@ -87,6 +87,8 @@ echo "==> bitfield moves, extends and negation (bitfield.s)"
 $CLANG -arch arm64 -dynamiclib bitfield.s -o libBitfield.dylib
 echo "==> memory writes the pseudocode must and must not show (memory_writes.s)"
 $CLANG -arch arm64 -dynamiclib memory_writes.s -o libMemoryWrites.dylib
+echo "==> narrow integer constants read at their declared type (narrow_constants.swift, -O)"
+$SWIFTC -O -emit-library -module-name Narrow narrow_constants.swift -o libNarrowConstants.dylib
 
 echo "==> writes that replace part of a value (partial_writes.s)"
 $CLANG -arch arm64 -dynamiclib partial_writes.s -o libPartialWrites.dylib
