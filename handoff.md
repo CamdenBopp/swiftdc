@@ -203,16 +203,14 @@ The authoritative OPEN/UNKNOWN tracker is
 [docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md). Highest value
 first:
 
-### 1. Soundness: folded and aliased call targets (needs a decision)
+### 1. Soundness: aliased call targets
 
-ld deduplicates identical functions in a release link, so one address carries
-many symbols, and a call into it is named after an arbitrary one. An -O probe
-put 11 symbols on one bare `ret`; `optK`'s call renders as `Sync3.pair(arg0)`
-under `--pseudo` and as `Sync3.P2.a.modify … .resume.0` under `disasm`. TinyCC
-shows the same class with linker markers: `add3`'s call is annotated `→
-_init_array_end`. Options: decline (`sub_…` plus a "folded: N functions" note),
-list the aliases, or rank them (a function symbol over a marker; the one a
-specialization names). Pick one, then make `disasm` and `--pseudo` agree.
+A call into an address ld folded several functions onto now declines on
+both views: it names `sub_<addr>`, as the heading does, and lays out what
+the body reads (`FoldedCallTargetTests`). Still open: TinyCC's linker
+markers, where `add3`'s call is annotated `→ _init_array_end`; a marker is
+not a second function, so it needs ranking (a function symbol over a
+marker), not the fold decline.
 
 ### 2. Soundness: unknown-arity and variadic C calls
 

@@ -565,6 +565,36 @@ because it cannot be distinguished from a right one by reading the output.
   first class read. An address claimed by two owners now goes to the existing
   fold path (`sub_…`, "N symbols folded … none can be attributed") (`e3ed073`,
   `MetadataNameOracleTests`, red with first-claim-wins restored).
+- **FIXED — a call to a folded address took one candidate's name and
+  argument layout.** The heading at a folded address already declined, but
+  `referenceIndex` still named the address after one symbol, and a call
+  laid out its arguments from that symbol's signature. libFoldedCalls -O:
+  `callBox(_:)`, which is `b.plus(6)`, rendered `pairPlus(6)` and lost
+  `self.a` in x1; `callPair()` named a function it does not call; the
+  calling-convention study saw `takeTuple((3, 2.5), 4)` render
+  `M.S2.consume(3, 4)`. A folded address is now named `sub_<addr>` for
+  calls, tail calls and operand references on both front-ends (objdump's
+  in-text symbol is replaced too), and a call there lays out what the
+  body reads: `sub_600(6, ?)`. Kept where an owner proves the candidate:
+  a vtable dispatch on self picks the one member of self's type (two
+  members folded together now decline), and a load from a symbolized
+  witness table picks the one candidate that is that conformance's
+  witness. Candidates that all demangle to one name keep it. Fixtures:
+  64 structured and 64 pseudo lines in 10 files, 328 listing lines in
+  30, all a candidate's name becoming `sub_<addr>` or a witness dispatch
+  naming the witness instead of the method. `FoldedCallTargetTests`.
+- **OPEN — a call to a folded address loses a result every candidate
+  agrees on.** libIndirect -O `wideSum` read `let r0 = Wide5.init(…);
+  return (r0.a + r0.e)` (the call is `makeWide`, folded with
+  `Wide5.init`); it now reads `sub_958(arg0, …, arg4)` and `return ?`.
+  Both candidates return `Wide5` indirectly, so a result type all
+  candidates share could be laid out without naming one. Same for
+  argument layouts that agree.
+- **OPEN — a body that returns an argument unchanged reads no argument.**
+  libCallArity -O `callGen` calls a folded `ret` and renders `sub_3e0()`:
+  the body summary does not count x0 passed through to the return as a
+  read, so its argument is dropped. True of any signatureless identity
+  function, folded or not.
 - **OPEN — a metadata name cannot see a fold partner that has no metadata
   record.** libReconstruction -O: `Counter.value.getter` shares its body with the
   accessors of the `final` classes `BoxA.Holder` / `BoxB.Holder`, which have no

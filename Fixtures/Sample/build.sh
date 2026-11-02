@@ -482,6 +482,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name CoroAccessors -enable-ex
 cp libCoroAccessors.opt.dylib libCoroAccessors.opt.stripped.dylib
 strip -x libCoroAccessors.opt.stripped.dylib
 
+echo "==> calls into a body the linker folds under two signatures (foldedcalls.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name FoldedCalls foldedcalls.swift -o libFoldedCalls.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release

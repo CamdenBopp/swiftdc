@@ -909,8 +909,10 @@ private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
 /// x29 restoration is now unproven, so post-call frame accesses must decline.
 /// The real initializer writes [-56,-16), disjoint from the save [-16,0),
 /// but that range proof is not yet available to the preservation analysis.
-/// (At -O the callee has
-/// been folded with an identical body, so its name is not asserted.)
+/// At -O the linker folds `makeWide` and `Wide5.init` onto one body, and a
+/// call to a folded address takes neither name nor either signature: it read
+/// `let r0 = Indirect.Wide5.init(…)` for a call to `makeWide`. With no
+/// signature the result has no type to lay out, so the -O sum declines.
 @Test func readsIndirectCallResultFromFrameSlotIfPresent() async throws {
     guard let onone = try await reconstructionPseudo("wideSum", in: indirectFixture) else { return }
     #expect(onone.contains("Indirect.makeWide(arg0, arg1, arg2, arg3, arg4)"))
@@ -919,9 +921,9 @@ private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
 
     guard let opt = try await reconstructionPseudo(
         "wideSum", in: "Fixtures/Sample/libIndirect.opt.dylib") else { return }
-    #expect(opt.contains("let r0 = ") && opt.contains("(arg0, arg1, arg2, arg3, arg4)"))
-    #expect(opt.contains("return (r0.a + r0.e)"))
-    #expect(!opt.contains("return ?"))
+    #expect(opt.contains("sub_") && opt.contains("(arg0, arg1, arg2, arg3, arg4)"), "\(opt)")
+    #expect(!opt.contains("Wide5.init") && !opt.contains("makeWide"), "\(opt)")
+    #expect(opt.contains("return ?"), "\(opt)")
 }
 
 /// Negative: a field stored on only one path does not meet at the shared `ret`,

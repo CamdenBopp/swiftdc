@@ -10,6 +10,8 @@ public struct Wide {
 public final class Holder {
     public var wide: Wide
     public init(_ w: Wide) { wide = w }
-    @inline(never) public func make() -> Wide { wide }
+    // Reversed, so the body is not `wide.getter`'s: the linker would fold
+    // the two, and a call to a folded address names neither.
+    @inline(never) public func make() -> Wide { Wide(a: wide.e, b: wide.d, c: wide.c, d: wide.b, e: wide.a) }
 }
 public func readWide(_ h: Holder) -> Int { let w = h.make(); return w.a &+ w.e }

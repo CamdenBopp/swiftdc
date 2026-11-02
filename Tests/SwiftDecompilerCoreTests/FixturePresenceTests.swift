@@ -65,6 +65,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libImportedEnum.dylib",
         "Fixtures/Sample/libDataStarts.dylib",
         "Fixtures/Sample/libSharedWitness.stripped.dylib",
+        "Fixtures/Sample/libFoldedCalls.dylib",
         "Fixtures/Sample/libStaleSlot.opt.dylib",
         "Fixtures/Sample/libImportedClassProbe.opt.dylib",
         "Fixtures/Sample/libScalarTailReturns.Onone.dylib",

@@ -748,7 +748,8 @@ public struct Disassembler: Sendable {
         let cacheSymbols = CacheSymbolResolver(machO: machO)
         var names = referenceIndex(
             functions: stubs, labelByAddress: labelByAddress,
-            metadataNames: metadataNames, objcIndex: objcIndex, in: machO
+            metadataNames: metadataNames, objcIndex: objcIndex,
+            foldedByAddress: foldedByAddress, in: machO
         )
         // Pass 1: gather cross-image call targets, one function's instructions at
         // a time, then resolve once — reproduces `crossImageNames` without holding
@@ -819,6 +820,7 @@ public struct Disassembler: Sendable {
             cacheReader: machO.fullCache.map { CacheReader(full: $0) },
             fileRanges: fileRanges,
             foldedCandidates: foldedByAddress,
+            witnessTables: foldedByAddress.isEmpty ? [] : witnessTables(in: machO),
             specializationSymbols: ReferenceResolver.specializationSymbols(
                 labels: labelByAddress, names: names, folded: foldedByAddress)
         )
@@ -1023,7 +1025,8 @@ public struct Disassembler: Sendable {
             for: functions,
             names: referenceIndex(
                 functions: functions, labelByAddress: labelByAddress,
-                metadataNames: metadataNames, objcIndex: objcIndex, in: machO
+                metadataNames: metadataNames, objcIndex: objcIndex,
+                foldedByAddress: foldedByAddress, in: machO
             ),
             resolver: cacheSymbols
         )
@@ -1038,6 +1041,7 @@ public struct Disassembler: Sendable {
             cacheReader: machO.fullCache.map { CacheReader(full: $0) },
             fileRanges: FileBackedRanges(standalone: machO),
             foldedCandidates: foldedByAddress,
+            witnessTables: foldedByAddress.isEmpty ? [] : witnessTables(in: machO),
             specializationSymbols: ReferenceResolver.specializationSymbols(
                 labels: labelByAddress, names: resolvedNames, folded: foldedByAddress)
         )
@@ -1844,6 +1848,36 @@ public struct Disassembler: Sendable {
             return value.isNormal || value.isZero ? "Swift.Double" : ""
         }
         return types.contains("Swift.Double") ? types : nil
+    }
+
+    /// Each symbolized protocol witness table (`…WP`), extended to the next
+    /// symbol's address, with the conformance its demangled name states.
+    private func witnessTables(in machO: MachOFile) -> [(range: Range<UInt64>, conformance: String)] {
+        let prefix = "protocol witness table for "
+        let starts = Set(machO.symbols.map { UInt64($0.offset) }).sorted()
+        var tables: [(range: Range<UInt64>, conformance: String)] = []
+        for symbol in machO.symbols where symbol.name.hasSuffix("WP") {
+            guard let name = demangle(symbol.name), name.hasPrefix(prefix) else { continue }
+            let start = UInt64(symbol.offset)
+            var low = 0, high = starts.count
+            while low < high {
+                let mid = (low + high) / 2
+                if starts[mid] <= start { low = mid + 1 } else { high = mid }
+            }
+            guard low < starts.count else { continue }
+            tables.append((start ..< starts[low], String(name.dropFirst(prefix.count))))
+        }
+        return tables.sorted { $0.range.lowerBound < $1.range.lowerBound }
+    }
+
+    /// The name a reference to a folded address takes: `sub_<addr>`, as its
+    /// heading, unless every candidate demangles to one name (and so one
+    /// signature), which then stands. Nil leaves the symbol's own name.
+    static func foldedTargetName(
+        at address: UInt64, candidates: [String], demangle: (String) -> String?
+    ) -> String? {
+        let distinct = Set(candidates.map { demangle($0) ?? stripLeadingUnderscore($0) })
+        return distinct.count > 1 ? "sub_\(String(address, radix: 16))" : nil
     }
 
     private static func stripLeadingUnderscore(_ symbol: String) -> String {
@@ -2693,6 +2727,7 @@ public struct Disassembler: Sendable {
         labelByAddress: [UInt64: String],
         metadataNames: [UInt64: String],
         objcIndex: ObjCMetadataIndex,
+        foldedByAddress: [UInt64: [String]],
         in machO: MachOFile
     ) -> [UInt64: String] {
         var names: [UInt64: String] = [:]
@@ -2700,11 +2735,19 @@ public struct Disassembler: Sendable {
         // filtered disassembly decoded only one function. Its direct and
         // indirect calls can still target any other known function.
         //
-        // Folded addresses are intentionally still named here: a metadata-resolved
-        // edge (a concrete witness-table or vtable dispatch) reaches its target
-        // through a specific type, so one of the folded symbols is the right label
-        // for that edge, and suppressing it loses a real call graph edge. The fold
-        // is declined where it matters — the function *heading* (see `makeFunction`).
+        // A folded address is named as its heading is, `sub_<addr>`: every
+        // symbol there is correct for at most one of the folded functions, and
+        // a call names its callee from here and lays out its arguments from
+        // that callee's signature. `callPair()`, which is
+        // `pairPlus((3, 2.5), 4)`, rendered as a call to whichever symbol the
+        // table listed, and `b.plus(6)` lost `self` to `pairPlus`'s layout.
+        // The address stays a named target, so every call graph edge survives.
+        // A consumer that knows the owner it reached the address through
+        // picks from `foldedCandidates` instead: a vtable dispatch on self
+        // (`name(at:ownedBy:)`) or a load from a conformance's witness
+        // table (`witnessName(at:loadedFrom:)`). Candidates that all
+        // demangle to one name name the same function, so that name stands;
+        // so does a bound ObjC IMP, as in `makeFunction`.
         for (address, symbol) in labelByAddress {
             names[address] = objcIndex.binding(for: address)?.displayName
                 ?? demangle(symbol)
@@ -2712,6 +2755,11 @@ public struct Disassembler: Sendable {
         }
         for (address, name) in metadataNames where names[address] == nil {
             names[address] = name
+        }
+        for (address, candidates) in foldedByAddress where objcIndex.binding(for: address) == nil {
+            if let name = Self.foldedTargetName(at: address, candidates: candidates, demangle: { self.demangle($0) }) {
+                names[address] = name
+            }
         }
         for address in objcIndex.addresses where names[address] == nil {
             names[address] = objcIndex.binding(for: address)?.displayName
@@ -2820,6 +2868,22 @@ public struct Disassembler: Sendable {
     ) -> DisassembledFunction {
         let branchFlows: Set<ControlFlow> = [.call, .branch, .conditionalBranch]
         let instructions = function.instructions.map { insn -> Instruction in
+            // objdump names a folded target after one of its symbols, in the
+            // text and the annotation it demangled from it. The address takes
+            // its heading's name on both front-ends.
+            if let flow = insn.controlFlow, branchFlows.contains(flow),
+               let target = insn.branchTarget, let name = resolver.declinedFoldName(at: target) {
+                var text = insn.text
+                for symbol in resolver.foldedCandidates[target] ?? [] {
+                    text = text.replacingOccurrences(of: symbol, with: "0x\(String(target, radix: 16))")
+                }
+                return Instruction(
+                    address: insn.address, text: text, annotation: "→ \(name)",
+                    controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
+                    callArguments: insn.callArguments, detail: insn.detail,
+                    callee: .kept(name)
+                )
+            }
             // Only name calls not already annotated — objdump's file-mode calls
             // carry their name in-text; this fills the bare-address in-process path.
             guard insn.annotation == nil,
@@ -2938,6 +3002,9 @@ public struct Disassembler: Sendable {
         /// metadata candidates). `names` holds one of them; a consumer that knows
         /// which owner it reached the address through picks from these instead.
         var foldedCandidates: [UInt64: [String]] = [:]
+        /// Every protocol witness table with a symbol: its extent (to the
+        /// next symbol) and the conformance it is for.
+        var witnessTables: [(range: Range<UInt64>, conformance: String)] = []
         /// The mangled symbol of each generic specialization in the image, by
         /// address, so a call to one can be laid out from its substituted
         /// signature (`specializedSignature`). An address the linker folded
@@ -2964,13 +3031,41 @@ public struct Disassembler: Sendable {
             return symbols
         }
 
+        /// The witness a conformance's table holds at `slot`, when `target`
+        /// is folded: the table's symbol names the conformance, and the one
+        /// candidate that is that conformance's witness is the function the
+        /// slot was filled with. Nil when the slot is in no table, or no
+        /// candidate (or more than one) is that conformance's witness.
+        func witnessName(at target: UInt64, loadedFrom slot: UInt64) -> String? {
+            // Two tables at one address (aliased symbols) disagree: decline.
+            let conformances = Set(witnessTables.filter { $0.range.contains(slot) }.map(\.conformance))
+            guard declinedFoldName(at: target) != nil, conformances.count == 1, let conformance = conformances.first
+            else { return nil }
+            let suffix = " in conformance \(conformance)"
+            let witnesses = Set((foldedCandidates[target] ?? []).compactMap { demangleSymbol($0) }
+                .filter { $0.hasPrefix("protocol witness for ") && $0.hasSuffix(suffix) })
+            return witnesses.count == 1 ? witnesses.first : nil
+        }
+
+        /// The heading's name, `sub_<addr>`, when `names` declines to pick
+        /// one of the symbols folded onto `address`; nil anywhere else.
+        func declinedFoldName(at address: UInt64) -> String? {
+            guard foldedCandidates[address] != nil, let name = names[address],
+                  name == "sub_\(String(address, radix: 16))"
+            else { return nil }
+            return name
+        }
+
         /// The candidate at `address` that belongs to `typeName` (its simple
         /// name is a component of the member's qualified context), or nil. At a
-        /// folded address `names` holds an arbitrary owner's symbol.
+        /// folded address `names` holds `sub_<addr>`, and the owner picks among
+        /// the folded symbols only when it proves one: two of `typeName`'s own
+        /// members folded together leave the slot's member unknown.
         func name(at address: UInt64, ownedBy typeName: String) -> String? {
             let candidates = (foldedCandidates[address] ?? []).map { demangleSymbol($0) ?? $0 }
                 + [name(at: address)].compactMap { $0 }
-            return candidates.first { Self.isMember($0, of: typeName) }
+            let members = Set(candidates.filter { Self.isMember($0, of: typeName) })
+            return members.count == 1 ? members.first : nil
         }
 
         static func isMember(_ name: String, of typeName: String) -> Bool {
@@ -3164,7 +3259,8 @@ public struct Disassembler: Sendable {
                 // starts (`next = other`).
                 guard holdsFixedPointer(at: slot) else { return nil }
                 if let target = pointerTarget(at: slot) {
-                    if let name = callTargetName(at: target)
+                    if let name = witnessName(at: target, loadedFrom: slot)
+                        ?? callTargetName(at: target)
                         ?? cacheSymbols?.name(forCallTarget: target) {
                         return (target, name)
                     }
