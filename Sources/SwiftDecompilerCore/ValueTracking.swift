@@ -762,6 +762,7 @@ public struct ValueTracer: Sendable {
             allocatesArray = callee.contains("_allocateUninitializedArray")
             returnsVoidByName = DisassembledFunction.splitSignature(callee)?.result == "()"
                 || DisassembledFunction.swiftAccessorProperty(callee)?.isGetter == false
+                || ValueTracer.voidRuntimeCalls.contains(runtimeName)
             isSuperSend = callee.hasPrefix("objc_msgSendSuper")
             hasTupleResult = DisassembledFunction.hasTupleResult(callee)
             // A getter prints its type after ` : `, with no arrow:
@@ -780,6 +781,14 @@ public struct ValueTracer: Sendable {
             return result
         }
     }
+
+    /// Runtime entry points that return nothing, so x0 after a call to one is
+    /// whatever the callee left: swift/include/swift/Runtime/Error.h:71
+    /// `swift_willThrow` and :116 `swift_willThrowTypedImpl`, and
+    /// Concurrency.h:1137 `swift_job_run`, all `void`. As a value,
+    /// `swift_willThrow`'s x0 joined the normal return: `return ((arg0 < 0) ?
+    /// r1 : …)` with `r1 = swift_willThrow(r0)` (`throwselect.swift`).
+    static let voidRuntimeCalls: Set<String> = ["swift_willThrow", "swift_willThrowTypedImpl", "swift_job_run"]
 
     /// `CallFacts` per callee name for one run. They are a pure function of
     /// the name, and a few thousand names serve a hundred thousand calls

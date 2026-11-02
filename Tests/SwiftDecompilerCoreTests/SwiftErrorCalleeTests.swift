@@ -259,3 +259,17 @@ private func statementsAfterThrow(_ body: String) -> [String] {
     }
     #expect(DisassembledFunction.knownCArity(of: "merged lazy protocol witness table accessor for type M.T") == nil)
 }
+
+/// `swift_willThrow` returns nothing, and a throw that shares the normal
+/// return's `ret` returns no value along its path: `plainThrow` read
+/// `return ((arg0 < 0) ? r1 : (arg0 + (arg0 << 1)))` with `r1 =
+/// swift_willThrow(r0)` (`throwselect.swift`, ABI review item 5).
+@Test func aThrowingPathsX0IsNoResultIfPresent() async throws {
+    let path = "Fixtures/Sample/libThrowSelect.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = try #require(functions.first { $0.displayName.hasPrefix("ThrowSelect.plainThrow(") }).renderStructured()
+    #expect(!text.contains("= swift_willThrow("), Comment(rawValue: text))
+    #expect(!text.contains("? r1 :"), Comment(rawValue: text))
+    #expect(text.contains("throw ?"), Comment(rawValue: text))
+}

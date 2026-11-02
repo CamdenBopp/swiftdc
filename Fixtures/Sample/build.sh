@@ -469,6 +469,9 @@ $SWIFTC -parse-as-library -Onone -emit-library -module-name OneCase onecase.swif
 echo "==> swift_dynamicCast's Bool result (dynamiccast.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name DynamicCast dynamiccast.swift -o libDynamicCast.dylib
 
+echo "==> a throw that shares the normal return's ret (throwselect.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name ThrowSelect throwselect.swift -o libThrowSelect.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

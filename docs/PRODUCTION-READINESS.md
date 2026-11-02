@@ -6680,3 +6680,11 @@ Findings:
   (`dynamiccast.swift`). The unconditional form, which traps on failure,
   keeps `(src as! T)`. Fixtures: 6 lines (the new fixture and the
   Reconstruction `castToString` statements); swift-syntax byte-identical.
+- **FIXED — a throw's x0 joined the return** (ABI review item 5, first
+  half). `swift_willThrow` (Error.h:71), `swift_willThrowTypedImpl`
+  (:116) and `swift_job_run` (Concurrency.h:1137) return nothing
+  (`voidRuntimeCalls`), so x0 after one is no value. `plainThrow`
+  (`throwselect.swift`, -O), whose throw shares the normal `ret`, read
+  `return ((arg0 < 0) ? r1 : (arg0 + (arg0 << 1)))` with `r1 =
+  swift_willThrow(r0)`; it reads `return ?`. The earlier entry that says
+  this select "no longer reproduces at HEAD" was stale.
