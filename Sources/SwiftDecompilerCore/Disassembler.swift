@@ -5618,9 +5618,14 @@ public struct Disassembler: Sendable {
             // whatever x0 held.
             // A Swift signature names its parameters even where the -O body
             // ignores them (`gen<A>(arg0, arg1)`), so only a callee with none
-            // (C, `sub_…`, an outlined fragment) is bounded by its body.
+            // (C, `sub_…`, an outlined fragment) is bounded by its body. A
+            // specialization that drops or reshapes parameters prints its
+            // original's signature, not its own, so it has none either:
+            // `<Arg[0] = Dead> of helperI(Swift.Int, Swift.Int)` takes x0
+            // alone, and positionally read `helperI(arg1, arg1)`.
             if let target = callTargets[address], let summary = registerSummaries[target],
-               calleeByAddress[address].flatMap({ DisassembledFunction.splitSignature($0) }) == nil,
+               calleeByAddress[address].flatMap({ DisassembledFunction.splitSignature($0) }) == nil
+                || calleeByAddress[address].map({ !Self.signatureSpecializationKeepsLayout($0) }) == true,
                calleeByAddress[address].flatMap({ selectorName(callee: $0, arguments: values) }) == nil,
                calleeByAddress[address].flatMap(DisassembledFunction.knownCArity(of:)) == nil || isNameTwin(address) {
                 // A register below the highest one read that the body never

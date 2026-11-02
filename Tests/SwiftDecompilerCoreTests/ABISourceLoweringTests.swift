@@ -224,3 +224,17 @@ struct ABISourceLoweringTests {
         == "M.f<A>(A) -> ()")
     #expect(Disassembler.withoutSpecializationClauses("M.T.f() -> ()") == "M.T.f() -> ()")
 }
+
+/// A call to a specialization that drops a parameter takes what the
+/// specialization's body reads, since the signature its name prints is its
+/// original's: `<Arg[0] = Dead> of helperI(Swift.Int, Swift.Int)` reads x0
+/// alone, and laid out positionally `callI`'s first call read
+/// `helperI(arg1, arg1)`, x1 still holding `arg1` (`deadargs.swift`).
+@Test func aCallToASpecializationThatDropsAParameterTakesWhatItReadsIfPresent() async throws {
+    let path = "Fixtures/Sample/libDeadArgs.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = try #require(functions.first { $0.displayName.hasPrefix("DeadArgs.callI") }).renderStructured()
+    #expect(text.contains("let r0 = function signature specialization <Arg[0] = Dead> of DeadArgs.helperI(arg1)\n"),
+            Comment(rawValue: text))
+}

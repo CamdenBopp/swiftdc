@@ -6609,9 +6609,12 @@ Findings:
   arg0)` for the result its caller kept in x20. The clauses are stripped
   first (`withoutSpecializationClauses`). Fixtures: only libDeadArgs
   changes (2 lines); swift-syntax dylibs byte-identical.
-- **OPEN — the same specializations' arity.** `callI` renders
+- **FIXED — the same specializations' arity.** `callI` rendered
   `helperI(arg1, arg1)` for the one-argument specialization: x1 still
-  holds `arg1` at the first call.
+  held `arg1` at the first call, and a callee with a printed Swift
+  signature was never bounded by its body's reads. A specialization whose
+  clause changes the layout now counts as having no signature of its own,
+  so its body bounds the call: `helperI(arg1)`.
 - **OPEN — a stdlib value type's initializer takes a `self`.** 12
   `Swift.Dictionary.init(self: _swiftEmptyArrayStorage, …)` calls in the
   swift-syntax dylibs: `receivesThinMetatype` knows only the image's own
