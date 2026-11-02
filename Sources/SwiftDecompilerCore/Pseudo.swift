@@ -211,8 +211,15 @@ public extension DisassembledFunction {
             // (dest, src, srcType, targetType, flags): the value is `src`, the
             // type is `targetType`, and `dest` is the out-parameter it's written
             // through — not a source expression, so it isn't shown.
-            guard arguments.count >= 5, let forced = castFlagsUnconditional(arguments[4]) else { return nil }
-            return cast(object: arguments[1], targetArgument: arguments[3], forced: forced)
+            // Its result is a Bool, whether the cast succeeded
+            // (RuntimeFunctions.def: `Int1Ty`); the cast value goes to `dest`.
+            // As `(src as? T)` a `-> Bool` function read as returning the
+            // Optional: `isInt<T>(_ a: T) -> Bool { a is Int }` rendered
+            // `return (? as? Swift.Int)`.
+            guard arguments.count >= 5, let forced = castFlagsUnconditional(arguments[4]),
+                  let rendered = cast(object: arguments[1], targetArgument: arguments[3], forced: forced)
+            else { return nil }
+            return forced ? rendered : "(\(rendered) != nil)"
         default:
             return nil
         }
@@ -657,7 +664,9 @@ public extension DisassembledFunction {
              "swift_isUniquelyReferenced_nonNull_bridgeObject", "swift_isUniquelyReferencedNonObjC",
              "swift_isUniquelyReferencedNonObjC_nonNull_bridgeObject", "swift_isUniquelyReferenced_native",
              "swift_isUniquelyReferenced_nonNull_native", "swift_isEscapingClosureAtFileLocation",
-             "swift_task_isCurrentExecutor":
+             "swift_task_isCurrentExecutor",
+             // RuntimeFunctions.def: `swift_dynamicCast` returns Int1Ty.
+             "swift_dynamicCast":
             return true
         default:
             // swift/include/swift/ABI/ValueWitness.def:167 and :263: both

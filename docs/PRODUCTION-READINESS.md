@@ -6672,3 +6672,11 @@ Findings:
   ?)` (`onecase.swift`). Three `(? == ?)` on one-case enums now read
   `__derived_enum_equals()`, which takes no registers. swift-syntax
   dylibs: byte-identical.
+- **FIXED — `swift_dynamicCast`'s Bool rendered as the cast value** (ABI
+  review item 6). The conditional cast renders `((src as? T) != nil)`, its
+  success, and the call is in `resultFitsInWord`; the value itself goes to
+  the dest buffer. `isInt<T>(_ a: T) -> Bool { a is Int }` read `return (?
+  as? Swift.Int)`, a Bool function returning an Optional
+  (`dynamiccast.swift`). The unconditional form, which traps on failure,
+  keeps `(src as! T)`. Fixtures: 6 lines (the new fixture and the
+  Reconstruction `castToString` statements); swift-syntax byte-identical.

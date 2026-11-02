@@ -466,6 +466,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name MultiResult multiresult.
 echo "==> a one-case enum parameter, zero-sized (onecase.swift, -Onone)"
 $SWIFTC -parse-as-library -Onone -emit-library -module-name OneCase onecase.swift -o libOneCase.dylib
 
+echo "==> swift_dynamicCast's Bool result (dynamiccast.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name DynamicCast dynamiccast.swift -o libDynamicCast.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

@@ -1092,3 +1092,17 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
     // back (`mov x19, x21` … `mov x21, x19`) once the throw path is set aside.
     #expect(!text.contains("machine_return()"), Comment(rawValue: text))
 }
+
+/// `swift_dynamicCast` returns whether the cast succeeded, not the value
+/// (which goes to its dest buffer): `isInt<T>(_ a: T) -> Bool { a is Int }`
+/// read `return (? as? Swift.Int)`, a Bool function returning an Optional
+/// (`dynamiccast.swift`, ABI review item 6).
+@Test func aDynamicCastsResultIsItsSuccessIfPresent() async throws {
+    let path = "Fixtures/Sample/libDynamicCast.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let isInt = try #require(functions.first { $0.displayName.hasPrefix("DynamicCast.isInt") }).renderStructured()
+    #expect(isInt.contains("return ((? as? Swift.Int) != nil)"), Comment(rawValue: isInt))
+    let isStr = try #require(functions.first { $0.displayName.hasPrefix("DynamicCast.isStr") }).renderStructured()
+    #expect(isStr.contains("as? Swift.String) != nil)"), Comment(rawValue: isStr))
+}

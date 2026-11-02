@@ -50,7 +50,7 @@ omitted.
    The FIXED entry that says this select no longer reproduces is stale.
    Mark `swift_willThrow` void and build an exit's value only from its
    non-throwing predecessors.
-6. **`swift_dynamicCast`'s Bool renders as the cast value.** `a is Int`
+6. **FIXED — `swift_dynamicCast`'s Bool renders as the cast value.** `a is Int`
    renders `return (? as? Swift.Int)`; `if let _ = a as? String` renders
    `return r0` for a Bool function. Render it as a success test; keep
    `(x as? T)` for the casts that return the object.
