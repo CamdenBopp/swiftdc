@@ -739,7 +739,7 @@ struct ControlFlowStructure {
     /// inlined into it — a `bool`-returning `[recv isSomething]` that only feeds
     /// the branch — so the caller can drop those from the straight-line body
     /// rather than print the send twice.
-    private func condition(of block: BasicBlock) -> (text: String, consumed: Set<UInt64>) {
+    func condition(of block: BasicBlock) -> (text: String, consumed: Set<UInt64>) {
         var consumed: Set<UInt64> = []
         guard let terminator = block.instructions.last else { return ("?", consumed) }
         // Prefer the value tracer's reconstructed comparison when the enrichment
