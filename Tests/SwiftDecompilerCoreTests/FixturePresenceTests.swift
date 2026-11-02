@@ -164,6 +164,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libAccessorExtent.dylib",
         "Fixtures/Sample/libAccessorExtentCustom.dylib",
         "Fixtures/Sample/libConstantGetter.dylib",
+        "Fixtures/Sample/libBitfield.dylib",
         "Fixtures/Sample/libLocalTypes.dylib",
         "Fixtures/Sample/libLocalTypes.stripped.dylib",
         "Fixtures/Sample/libLocalTypesNamed.dylib",

@@ -44,6 +44,9 @@ enum InstructionSemantics {
         AARCH64_INS_SXTB, AARCH64_INS_SXTH, AARCH64_INS_SXTW,
         AARCH64_INS_UXTB, AARCH64_INS_UXTH,
         AARCH64_INS_MOV, AARCH64_INS_MOVZ,
+        AARCH64_INS_ALIAS_UBFX, AARCH64_INS_ALIAS_SBFX, AARCH64_INS_ALIAS_UBFIZ, AARCH64_INS_ALIAS_SBFIZ,
+        AARCH64_INS_ALIAS_BFI, AARCH64_INS_ALIAS_BFXIL,
+        AARCH64_INS_NEG,
     ].map(\.rawValue))
 
     static func effect(of detail: StructuredInsn) -> SemanticEffect? {
@@ -117,6 +120,42 @@ enum InstructionSemantics {
             // Capstone pre-folds MOVZ's shift into the immediate.
             guard operands.count >= 2 else { return nil }
             return SemanticEffect(destination: dest, value: .operand(1))
+
+        case AARCH64_INS_ALIAS_UBFX, AARCH64_INS_ALIAS_SBFX, AARCH64_INS_ALIAS_UBFIZ, AARCH64_INS_ALIAS_SBFIZ,
+             AARCH64_INS_ALIAS_BFI, AARCH64_INS_ALIAS_BFXIL:
+            // `op d, s, #lsb, #width` on a field of `width` bits (Arm ARM
+            // UBFM/SBFM/BFM aliases): ubfx `(s >> lsb) & mask`, ubfiz `(s &
+            // mask) << lsb`, sbfx/sbfiz the same field sign-extended from
+            // its top bit, bfxil/bfi that field inserted into d, d's other
+            // bits kept.
+            guard dest.kind == .gpr, operands.count == 4,
+                  let source = operands[1].operand.register, isScalar(source), source.widthBits == dest.widthBits,
+                  let lsb = operands[2].operand.immediateValue, let width = operands[3].operand.immediateValue,
+                  lsb >= 0, width >= 1, lsb + width <= Int64(dest.widthBits)
+            else { return nil }
+            let mask: UInt64 = width == 64 ? .max : (1 << UInt64(width)) - 1
+            func shifted(_ term: SemanticTerm, _ op: AbstractBinaryOperator) -> SemanticTerm {
+                lsb == 0 ? term : .binary(op, term, .constant(UInt64(lsb)))
+            }
+            let field = SemanticTerm.binary(.bitAnd, shifted(.operand(1), .shiftRight), .constant(mask))
+            let low = SemanticTerm.binary(.bitAnd, .operand(1), .constant(mask))
+            let value: SemanticTerm = switch detail.id {
+            case AARCH64_INS_ALIAS_UBFX: field
+            case AARCH64_INS_ALIAS_SBFX: .signExtend(field, bits: Int(width))
+            case AARCH64_INS_ALIAS_UBFIZ: shifted(low, .shiftLeft)
+            case AARCH64_INS_ALIAS_SBFIZ: shifted(.signExtend(low, bits: Int(width)), .shiftLeft)
+            case AARCH64_INS_ALIAS_BFXIL: .binary(.bitOr, .binary(.bitAnd, .register(0), .constant(~mask)), field)
+            default: .binary(.bitOr, .binary(.bitAnd, .register(0), .constant(~(mask << UInt64(lsb)))),
+                             shifted(low, .shiftLeft))
+            }
+            return SemanticEffect(destination: dest, value: value)
+
+        case AARCH64_INS_NEG:
+            // `neg d, s{, shift}` is `0 - s`, the shift applied to s.
+            guard dest.kind == .gpr, operands.count == 2, let source = operands[1].operand.register,
+                  isScalar(source), source.widthBits == dest.widthBits
+            else { return nil }
+            return SemanticEffect(destination: dest, value: .binary(.subtract, .constant(0), .operand(1)))
 
         default:
             return nil

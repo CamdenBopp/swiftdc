@@ -62,6 +62,18 @@ results do not replace previously recorded release performance measurements.
   showing what the tested register held (Swift's overflow test `x9 != ((x1
   * x0) >>ˢ 63)`, `(x13 << (x11 & 0x3f))`, `xzr | 0x10` → `0x10`). `mov`
   keeps its own handling (the saved call result).
+- **FIXED — the tracer did not model the bitfield moves or `neg`.**
+  `ubfx`, `sbfx`, `ubfiz`, `sbfiz`, `bfi`, `bfxil` and `neg` left their
+  destination unknown. Each is now a table entry, checked against the
+  hardware: `libBitfield.dylib` (`bitfield.s`, 23 functions) is called
+  natively on edge inputs and every result matches the tracer's expression
+  (`bitfieldMovesMatchNativeInstructionsIfPresent`). Fixtures: only
+  goProgram changes (8 files), each line read back to its instruction: six
+  conditions read `0 - xN`, a `ubfiz` reads `((x4 & 0x7fff) << 1)`, and
+  call arguments gain the values these produce. Real binaries
+  (gamepolicyd, ManagedBackgroundAssetsXPC, libSwiftUIMacros): Swift's
+  `swift_task_create` flags now read `0x1c00 | (priority & 255)` from
+  `bfxil`, and `Bool._bridgeToObjectiveC` gets its extracted bit.
 - **FIXED — a text condition re-applied a definition that overwrote its
   own source.** `lsl x0, x0, #1; cmp x0, x8` (libReconstruction -O and
   -Osize) rendered `(x0 << 1) < x8`, shifting the result again: the

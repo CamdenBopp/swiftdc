@@ -83,6 +83,9 @@ $CLANG -arch arm64 -dynamiclib extract.s -o libExtract.dylib
 echo "==> scalar byte reversal (bytereversal.s)"
 $CLANG -arch arm64 -dynamiclib bytereversal.s -o libByteReversal.dylib
 
+echo "==> bitfield moves, extends and negation (bitfield.s)"
+$CLANG -arch arm64 -dynamiclib bitfield.s -o libBitfield.dylib
+
 echo "==> writes that replace part of a value (partial_writes.s)"
 $CLANG -arch arm64 -dynamiclib partial_writes.s -o libPartialWrites.dylib
 
