@@ -69,6 +69,13 @@ results do not replace previously recorded release performance measurements.
   branch's NZCV. At its first run: 9,287 verified, 1,871 refuted, 212
   unparsed, in four classes fixed below. Now: 9,936 verified, 2,708
   declined, 0 refuted, 0 unparsed.
+- **FIXED — the text path named a written argument register as the
+  argument.** In an ObjC method it named x2–x7 `arg0`–`arg5` wherever they
+  appeared: `add x2, x9, #1; cmp x2, #0` rendered `arg0 == 0`, as did a
+  test of x2 after a call. A forward may-write analysis over the blocks
+  now names one only where no path from entry can have written it. No
+  fixture or real-binary line changed: the tracer bakes most ObjC
+  conditions before the text path runs.
 - **FIXED — a word-sized call result lost to the width rule.** After
   dcb4ad9, `mov x26, x0; cmp w26, #1` following
   `swift_getEnumCaseMultiPayload` read `w26 != 1`. A word test of a saved

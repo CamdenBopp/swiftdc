@@ -144,6 +144,9 @@ struct ControlFlowStructure {
     let maxDepth: Int                          // recursion-depth guard (see emit)
     private let usesSwiftError: Bool           // x21 is the error register here
     private let isThrowing: Bool               // the signature says `throws`
+    /// Per block, the argument registers (x2–x7) some path from entry may
+    /// have written before the block starts. Empty unless ObjC arguments.
+    private let argumentsWrittenBefore: [Set<String>]
 
     init(blocks: [BasicBlock], objectiveCArguments: Bool = false, maxDepth: Int = ControlFlowStructure.defaultMaxDepth, isThrowing: Bool = false, threadsSwiftError: Bool? = nil, returnsValue: Bool = false) {
         self.returnsValue = returnsValue
@@ -178,6 +181,8 @@ struct ControlFlowStructure {
         var indexByAddress: [UInt64: Int] = [:]
         for (index, block) in blocks.enumerated() { indexByAddress[block.startAddress] = index }
         self.indexByAddress = indexByAddress
+        self.argumentsWrittenBefore = objectiveCArguments
+            ? Self.argumentsWrittenBefore(blocks, indexByAddress: indexByAddress) : blocks.map { _ in [] }
 
         let successors: [[Int]] = blocks.map { $0.successors.compactMap { indexByAddress[$0] } }
 
@@ -1167,7 +1172,7 @@ struct ControlFlowStructure {
                       width >= 1, lsb + width <= 64
                 else { return token }
                 let mask = width == 64 ? UInt64.max : (UInt64(1) << width) - 1
-                let field = lsb == 0 ? sourceName(ops[1]) : "(\(sourceName(ops[1])) >>\u{1D41} \(lsb))"
+                let field = lsb == 0 ? sourceName(ops[1], before: index, in: block) : "(\(sourceName(ops[1], before: index, in: block)) >>\u{1D41} \(lsb))"
                 return "(\(field) & 0x\(String(mask, radix: 16)))"
             case "ubfx", "sbfx": return token
             case "mov" where ops.count >= 2:
@@ -1181,11 +1186,11 @@ struct ControlFlowStructure {
                     let source = resolve(ops[1], before: index, in: block, consumed: &consumed)
                     return source == ops[1] ? token : source
                 }
-                return sourceName(ops[1])
-            default: return sourceName(token)
+                return sourceName(ops[1], before: index, in: block)
+            default: return sourceName(token, before: before, in: block)
             }
         }
-        return sourceName(token)
+        return sourceName(token, before: before, in: block)
     }
 
     /// The source-level expression a value-returning call denotes, for inlining
@@ -1262,13 +1267,51 @@ struct ControlFlowStructure {
         return true
     }
 
-    private func sourceName(_ token: String) -> String {
+    /// x2–x7 of an ObjC method named as the arguments they arrive as, where
+    /// no path from entry can have written them before `index` in `block`.
+    /// Named without that check, `add x2, x9, #1; cmp x2, #0` rendered
+    /// `arg0 == 0`, and so did a test of x2 after any call.
+    private func sourceName(_ token: String, before index: Int, in block: BasicBlock) -> String {
         guard objectiveCArguments,
               let register = Self.canonicalRegister(token),
               register.hasPrefix("x"),
-              let number = Int(register.dropFirst()), (2...7).contains(number)
+              let number = Int(register.dropFirst()), (2...7).contains(number),
+              let blockIndex = indexByAddress[block.startAddress],
+              !argumentsWrittenBefore[blockIndex].contains(register),
+              !block.instructions.prefix(index).contains(where: { Self.mayWriteArgument(register, $0) })
         else { return token }
         return "arg\(number - 2)"
+    }
+
+    private static let argumentRegisters = ["x2", "x3", "x4", "x5", "x6", "x7"]
+
+    /// Whether an instruction may write `register`: a call clobbers every
+    /// argument register, and one without detail may write anything.
+    private static func mayWriteArgument(_ register: String, _ instruction: Instruction) -> Bool {
+        if instruction.controlFlow == .call { return true }
+        guard let detail = instruction.detail else { return true }
+        return detail.writtenRegisterKeys.contains(register)
+    }
+
+    /// A forward may-analysis: the argument registers written on some path
+    /// from the entry block to each block's start, to a fixpoint.
+    private static func argumentsWrittenBefore(_ blocks: [BasicBlock], indexByAddress: [UInt64: Int]) -> [Set<String>] {
+        let written = blocks.map { block in
+            Set(argumentRegisters.filter { register in block.instructions.contains { mayWriteArgument(register, $0) } })
+        }
+        var before = blocks.map { _ in Set<String>() }
+        var changed = true
+        while changed {
+            changed = false
+            for (index, block) in blocks.enumerated() {
+                let out = before[index].union(written[index])
+                for successor in block.successors.compactMap({ indexByAddress[$0] }) where !out.isSubset(of: before[successor]) {
+                    before[successor].formUnion(out)
+                    changed = true
+                }
+            }
+        }
+        return before
     }
 
     /// `#0x1` → `1`, `#0xff` → `0xff` (keep masks hex), `#5` → `5`.

@@ -288,3 +288,26 @@ private func textPathFunction(_ words: [UInt32], undetailed: Set<Int> = []) thro
         #expect(text.contains(expected), Comment(rawValue: text))
     }
 }
+
+/// In an ObjC method the text path names x2–x7 as the arguments they
+/// arrive as, but only where no path from entry can have written them:
+/// `add x2, x9, #1; cmp x2, #0` rendered `arg0 == 0`, and so did a test of
+/// x2 in a block after a call, which clobbers it.
+@Test func aTextConditionNamesAnArgumentOnlyWhereItArrived() throws {
+    let engine = try #require(CapstoneEngine())
+    func condition(_ words: [UInt32], block: Int) throws -> String {
+        let bytes = words.flatMap { word in (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) } }
+        let decoded = engine.disassemble(Data(bytes), address: 0x1000)
+        try #require(decoded.count == words.count)
+        let function = DisassembledFunction(symbol: "_m", demangledName: nil, startAddress: 0x1000,
+            instructions: decoded.map { Instruction(address: $0.address, text: $0.text, controlFlow: $0.controlFlow,
+                                                    branchTarget: $0.branchTarget, detail: $0.detail) }, source: .symbol)
+        let blocks = function.basicBlocks()
+        return ControlFlowStructure(blocks: blocks, objectiveCArguments: true).condition(of: blocks[block]).text
+    }
+    let test: [UInt32] = [0xf100005f, 0x54000040, 0xd65f03c0, 0xd65f03c0]   // cmp x2, #0; b.eq +8; ret; ret
+    #expect(try condition(test, block: 0) == "arg0 == 0")
+    #expect(try condition([0x91000522] + test, block: 0) == "x2 == 0")              // add x2, x9, #1
+    #expect(try condition([0x94000040, 0x14000001] + test, block: 1) == "x2 == 0")  // bl +0x100; b +4
+    #expect(try condition([0x91000523, 0x14000001] + test, block: 1) == "arg0 == 0") // add x3, …: x2 untouched
+}
