@@ -238,3 +238,44 @@ struct ABISourceLoweringTests {
     #expect(text.contains("let r0 = function signature specialization <Arg[0] = Dead> of DeadArgs.helperI(arg1)\n"),
             Comment(rawValue: text))
 }
+
+/// A parameter whose footprint the ABI fixes but no one register holds (a
+/// String's two words, an `Int?`'s payload and tag, an `inout` address, a
+/// StaticString's three words) stopped every parameter from being seeded,
+/// so the Int after it read `return ?`. It is now skipped by its word
+/// count: `afterString(_:_:)` takes its Int in x2 (`entryfootprints.swift`).
+@Test func anIntAfterAFixedFootprintParameterIsSeededIfPresent() async throws {
+    let path = "Fixtures/Sample/libEntryFootprints.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let expected = [
+        "afterString": "return (arg1 + (arg1 << 1))",
+        "afterOptional": "return (arg1 + (arg1 << 2))",
+        "afterInout": "return ((arg1 << 3) - arg1)",
+        "afterStaticString": "return (arg1 + (arg1 << 3))",
+    ]
+    for (name, line) in expected.sorted(by: { $0.key < $1.key }) {
+        let text = try #require(functions.first { $0.displayName.hasPrefix("EntryFootprints.\(name)(") }).renderStructured()
+        #expect(text.contains(line), Comment(rawValue: text))
+    }
+}
+
+/// Seeded, a register a caller never touched still holds its own entry
+/// value at a call, and laid out by position it read as one more argument:
+/// `W.k(arg1, arg0, arg2)` for a one-word struct's `k(_:)` (its y and
+/// self's word, then callK's z, `entryfootprints.swift`), and
+/// `String.utf8.getter(?, ?, arg1)` for the String's two words and
+/// takeTwo's Int (`stringarity.swift`). After a value method's formals a
+/// trailing run of such registers is dropped, and a String's getter takes
+/// exactly its two words.
+@Test func aRegisterLeftFromEntryIsNoTrailingArgumentIfPresent() async throws {
+    let footprints = "Fixtures/Sample/libEntryFootprints.dylib", strings = "Fixtures/Sample/libStringArity.dylib"
+    guard FileManager.default.fileExists(atPath: footprints), FileManager.default.fileExists(atPath: strings) else { return }
+    let k = try await withStableDependencies { try await Disassembler().disassemble(path: footprints) }
+    let callK = try #require(k.first { $0.displayName.hasPrefix("EntryFootprints.callK(") }).renderStructured()
+    #expect(callK.contains("return (EntryFootprints.W.k(arg1, arg0) + arg2)"), Comment(rawValue: callK))
+    let s = try await withStableDependencies { try await Disassembler().disassemble(path: strings) }
+    let takeTwo = try #require(s.first { $0.displayName.hasPrefix("StringArity.takeTwo(") }).renderStructured()
+    // A String's getter takes its two words and nothing after them.
+    #expect(takeTwo.contains("Swift.String.utf8.getter(?, ?))"), Comment(rawValue: takeTwo))
+}

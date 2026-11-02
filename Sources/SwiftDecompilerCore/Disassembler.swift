@@ -3898,8 +3898,9 @@ public struct Disassembler: Sendable {
               Self.signatureSpecializationKeepsLayout(name),
               // A getter/setter/accessor or a name without a call signature has no
               // ordinary parameter list to seed.
-              let signature = DisassembledFunction.splitSignature(name)?.head
+              let split = DisassembledFunction.splitSignature(name)
         else { return nil }
+        let signature = split.head
         guard let paramsRange = DisassembledFunction.outermostArgumentListRange(of: signature)
         else { return nil }
         let parameters = DisassembledFunction.splitTopLevelArguments(signature[paramsRange])
@@ -3919,7 +3920,22 @@ public struct Disassembler: Sendable {
                 registers["v\(floatIndex)"] = index
                 floatIndex += 1
             case nil:
-                return nil // not provably single-register — seed nothing
+                // A footprint the ABI fixes (a String's two words, an
+                // Optional scalar's payload and tag, a StaticString's three
+                // words) is left unseeded, since no one register is the
+                // parameter, but the parameters after it
+                // still have proven registers: `afterString(_:_:)`'s Int is
+                // x2. Anything else is not provably laid out: seed nothing.
+                let type = Self.parameterType(parameter)
+                guard split.thrownType == nil,
+                      let words = Self.integerRegisterFootprint(ofParameterType: type),
+                      integerIndex + words <= 8
+                else { return nil }
+                // An `inout` parameter is its address, one register, as a
+                // call site lays it out: `mix(_ h: inout Hasher, …)` passes
+                // that `h` to `h.combine(v)` as `self` in x20.
+                if type.hasPrefix("inout ") { registers["x\(integerIndex)"] = index }
+                integerIndex += words
             }
         }
         return registers
@@ -3958,6 +3974,18 @@ public struct Disassembler: Sendable {
         guard name.contains(" in _") else { return name }
         return name.replacingOccurrences(of: #"\(([A-Za-z_][A-Za-z0-9_]*) in _[0-9A-F]+\)"#,
                                          with: "$1", options: .regularExpression)
+    }
+
+    /// Whether `callee` is an instance property getter of `Swift.String`
+    /// (`Swift.String.utf8.getter : Swift.String.UTF8View`), which takes
+    /// exactly the String's two words and nothing else. Its `get` is
+    /// nonmutating, so the words travel as the trailing formal, in x0, x1.
+    static func isStringInstanceGetter(_ callee: String) -> Bool {
+        guard callee.hasPrefix("Swift.String."), let colon = callee.range(of: ".getter : ") else { return false }
+        let property = callee[callee.index(callee.startIndex, offsetBy: "Swift.String.".count) ..< colon.lowerBound]
+        // A subscript's getter takes its index too.
+        return !property.isEmpty && property != "subscript"
+            && property.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" }
     }
 
     /// Whether a property getter takes nothing in x0–x7: a static property's
@@ -5078,6 +5106,25 @@ public struct Disassembler: Sendable {
         // using, and calling it `self` would be a fabrication. Decided once
         // per call, so the call's statement, its binding and its spelling
         // inside another expression all name the same `self`.
+        // The register each seeded parameter arrived in.
+        let entryArgumentRegisters: [String: Int] = switch entry {
+        case .swiftFunction(let map)?, .swiftInstance(let map)?: map
+        default: [:]
+        }
+        /// `values`, the registers from x`first` on, without its trailing run
+        /// of unknowns and of registers still holding their own entry value:
+        /// those were left by the caller, not set up for the call. Earlier
+        /// ones stay, since a pass-through receiver or argument is real
+        /// (`[arg0 take:3 and:4]`).
+        func withoutTrailingEntryValues(_ values: [AbstractValue], from first: Int) -> [AbstractValue] {
+            var values = values
+            while let last = values.last,
+                  last == .unknown || entryArgumentRegisters["x\(first + values.count - 1)"]
+                    .map({ last == .argument($0) }) == true {
+                values.removeLast()
+            }
+            return values
+        }
         var selfValueBySite: [UInt64: AbstractValue] = [:]
         for insn in function.instructions {
             guard let site = sites[insn.address], Self.isSwiftCall(insn, swiftTargets: swiftTargets),
@@ -5262,6 +5309,15 @@ public struct Disassembler: Sendable {
                 strategy = "no-parameters"
                 continue
             }
+            // A String's instance getter takes nothing but `self`, its two
+            // words in x0 and x1: a later register is whatever the caller
+            // left, and `takeTwo(_: String, _: Int)` read
+            // `String.utf8.getter(?, ?, arg1)` with its Int still in x2.
+            if let callee = calleeByAddress[address], Self.isStringInstanceGetter(callee) {
+                argumentsByAddress[address] = (0 ..< 2).map { $0 < values.count ? sanitizeValue(values[$0]) : .unknown }
+                strategy = "string-getter"
+                continue
+            }
             // A Swift callee with a proven layout gets exactly its parameters:
             // integer slots from x0… and float slots from v0…, each in order on
             // its own counter, with no trailing trim, so its arity shows.
@@ -5397,6 +5453,11 @@ public struct Disassembler: Sendable {
                     // arg2, arg3, arg4)` for a one-String `append(_:)`.
                     if selfValueBySite[address] == nil {
                         following = values.dropFirst(integer).map(sanitizeValue)
+                        // A register still holding the value it had at entry
+                        // was not set up for this call: `takeTwo(_: String,
+                        // _: Int)` read `utf8.getter(?, ?, arg1)` for its
+                        // String's words and the Int left in x2.
+                        following = withoutTrailingEntryValues(following, from: integer)
                         while following.last == .unknown { following.removeLast() }
                     }
                 }

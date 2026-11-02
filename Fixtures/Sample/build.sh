@@ -457,6 +457,9 @@ rm -f resultbuffer.o
 echo "==> function signature specializations that drop a parameter (deadargs.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name DeadArgs deadargs.swift -o libDeadArgs.dylib
 
+echo "==> an Int after parameters of fixed multi-word or unseeded footprint (entryfootprints.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name EntryFootprints entryfootprints.swift -o libEntryFootprints.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

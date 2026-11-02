@@ -16,7 +16,8 @@ struct ValueMethodArgumentTests {
     /// `append(10, 0xe100000000000000)`.
     @Test func aStringParameterOfAValueMethodIsOneArgumentIfPresent() async throws {
         guard let text = try await pseudo("newline") else { return }
-        #expect(text.contains("Swift.String.append(\"\\n\")"), Comment(rawValue: text))
+        // The `inout` String is `self`, by address in x20.
+        #expect(text.contains("Swift.String.append(self: arg0, \"\\n\")"), Comment(rawValue: text))
     }
 
     /// With nothing tracked the positional trim left `append()` and
@@ -24,7 +25,10 @@ struct ValueMethodArgumentTests {
     @Test func anUntrackedParameterOfAValueMethodIsUnknownIfPresent() async throws {
         guard let boxed = try await pseudo("appendBoxed"), let mix = try await pseudo("mix") else { return }
         #expect(boxed.contains("Swift.String.append(?)"), Comment(rawValue: boxed))
-        #expect(mix.contains("Swift.Hasher._combine(?)"), Comment(rawValue: mix))
+        // Seeded, the `inout` Hasher is `self` in x20 and v is x1, so the
+        // call is mutating and x1 is its one parameter, not a `self` word:
+        // as found it read `_combine(arg1, arg1)`.
+        #expect(mix.contains("Swift.Hasher._combine(self: arg0, arg1)\n"), Comment(rawValue: mix))
     }
 
     /// A call still takes exactly the parameters its signature proves:

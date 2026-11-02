@@ -6619,3 +6619,21 @@ Findings:
   `Swift.Dictionary.init(self: _swiftEmptyArrayStorage, …)` calls in the
   swift-syntax dylibs: `receivesThinMetatype` knows only the image's own
   value types.
+
+## 2026-11-02: parameters after a fixed-footprint parameter
+
+- **FIXED — one multi-word parameter left every parameter unseeded.** A
+  String, `Int?`, StaticString or `inout` parameter is not one scalar
+  register, and `swiftScalarArgumentRegisters` seeded nothing for the
+  whole signature, so `afterString(_: String, _ i: Int)` read `return ?`
+  for `i &* 3`. Such a parameter is now skipped by the word count the ABI
+  fixes (`integerRegisterFootprint`), and an `inout` one, which is its
+  address in one register, is seeded: `return (arg1 + (arg1 << 1))`, and
+  `mix(_ h: inout Hasher, …)` reads `Hasher._combine(self: arg0, arg1)`.
+  Two layouts that read seeded registers as arguments are bounded with
+  it: after a value method's formals, a trailing run of registers still
+  holding their own entry value is dropped (`W.k(arg1, arg0, arg2)` ->
+  `k(arg1, arg0)`), and a String's property getter takes exactly its two
+  words (`String.utf8.getter(?, ?, arg1)` -> `(?, ?)`). Fixtures: 156
+  lines in 27 files, mostly `hash(into:)` and `_combine` naming their
+  `inout` Hasher. swift-syntax `--structured`: 52 lines.
