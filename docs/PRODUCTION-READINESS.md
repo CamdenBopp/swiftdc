@@ -62,6 +62,14 @@ results do not replace previously recorded release performance measurements.
   showing what the tested register held (Swift's overflow test `x9 != ((x1
   * x0) >>ˢ 63)`, `(x13 << (x11 & 0x3f))`, `xzr | 0x10` → `0x10`). `mov`
   keeps its own handling (the saved call result).
+- **Harness — the tracer's integer semantics are proven against the Arm
+  ARM.** `Tools/semantics` (z3, dev host only) traces 58,515 encodings of
+  the integer data-processing instructions and asks z3 whether any input
+  makes the traced x0 differ from the Arm pseudocode written from the
+  encoding fields. At this commit: 54,946 verified for all inputs, 1
+  sampled (`sdiv w`, beyond the solver), 3,568 declined, 0 refuted. Every
+  decline is an unmodelled instruction: `bic`/`bics`/`eon`, a ROR-shifted
+  operand, `negs`, `mneg`, `movn`, `rbit`, `clz`, `cls`.
 - **FIXED — the tracer did not model the bitfield moves or `neg`.**
   `ubfx`, `sbfx`, `ubfiz`, `sbfiz`, `bfi`, `bfxil` and `neg` left their
   destination unknown. Each is now a table entry, checked against the
