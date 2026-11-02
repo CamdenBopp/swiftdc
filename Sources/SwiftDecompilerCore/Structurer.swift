@@ -951,6 +951,14 @@ struct ControlFlowStructure {
             let (mnemonic, ops) = Self.decode(instruction.text)
             guard let dest = ops.first, Self.canonicalRegister(dest) == register else { continue }
             if let field = instruction.fieldRead { return field }
+            // The substitution names the definition's source registers, which
+            // read as their values at the test. One written in between holds
+            // something else there: `and w8, w0, #0xff; add w0, w0, #1; cmp
+            // w8, #7` rendered `(w0 & 0xff) == 7`. A copy of x0 resolves to the
+            // call it saved, which no later write changes.
+            let sources = ops.dropFirst().compactMap(Self.canonicalRegister)
+            let savesCallResult = mnemonic == "mov" && sources == ["x0"]
+            if !savesCallResult, !Self.registers(sources, surviveFrom: index, to: before, in: block) { return token }
             switch mnemonic {
             case "and" where ops.count >= 3: return "(\(ops[1]) & \(Self.cleanImmediate(ops[2])))"
             case "orr" where ops.count >= 3: return "(\(ops[1]) | \(Self.cleanImmediate(ops[2])))"
@@ -1028,6 +1036,27 @@ struct ControlFlowStructure {
     /// At an Objective-C method entry x2...x7 are the first six explicit
     /// selector arguments. Use those names only when no definition inside the
     /// block supersedes the entry value.
+    /// Whether no instruction strictly between `definition` and `use` writes
+    /// one of `registers` (keys, `x0`…`x30`): a call clobbers the
+    /// caller-saved x0–x18 and x30, and an instruction without Capstone
+    /// detail may write anything.
+    private static func registers(
+        _ registers: [String], surviveFrom definition: Int, to use: Int, in block: BasicBlock
+    ) -> Bool {
+        guard !registers.isEmpty, definition + 1 < use else { return true }
+        let wanted = Set(registers)
+        for index in definition + 1 ..< use {
+            let instruction = block.instructions[index]
+            if instruction.controlFlow == .call {
+                if wanted.contains(where: { key in Int(key.dropFirst()).map { $0 <= 18 || $0 == 30 } ?? true }) { return false }
+                continue
+            }
+            guard let detail = instruction.detail else { return false }
+            if !detail.writtenRegisterKeys.isDisjoint(with: wanted) { return false }
+        }
+        return true
+    }
+
     private func sourceName(_ token: String) -> String {
         guard objectiveCArguments,
               let register = Self.canonicalRegister(token),

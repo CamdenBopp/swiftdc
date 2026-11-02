@@ -50,6 +50,26 @@ results do not replace previously recorded release performance measurements.
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
 
+- **FIXED — a text-path condition named a register its value had left.**
+  When the tracer bakes no condition, the structurer substitutes the tested
+  register's definition (`and`, `orr`, shifts, `ubfx`, `mov`) and prints its
+  source registers, which read as their values at the test. Nothing checked
+  that they still held them: `and w8, w0, #0xff; add w0, w0, #1; cmp w8,
+  #7` rendered `(w0 & 0xff) == 7`, and StringArity.takeOptString's `mov
+  x20, x1; bl swift_bridgeObjectRetain; cbz x20` rendered `x1 != 0` with x1
+  clobbered by the call. A substitution now declines when an instruction
+  between writes a source (Capstone's written registers; a call clobbers
+  x0–x18 and x30; an instruction without detail may write anything). A copy
+  of x0 still resolves to the call it saved. Fixtures, structured view: 7
+  files change, every line a previously wrong condition now reading the
+  tested register (MangledTypes ×2, RuntimeArity, StringArity,
+  RetainRegister, the Go float check `ubfx x13, x12, #23, #8; and x12, …;
+  cmp x13, #0xff`, which read `x12 != 0xff`). Still OPEN on the same path:
+  `ubfx`/`sbfx` are read as copies of their source, `lsr` and `asr` both
+  print `>>`, a definition is found only through an instruction's first
+  operand (`ldp x21, x8` is skipped as a write of x8), and a compare's
+  shifted operand drops its shift (`cmp x21, x8, lsr #1` reads `x21 >=ᵁ
+  x8`).
 The highest-severity category. A wrong render is worse than a missing one,
 because it cannot be distinguished from a right one by reading the output.
 
