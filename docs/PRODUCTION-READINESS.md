@@ -6495,3 +6495,44 @@ Findings:
   is `return ?`. The four swift-syntax dylibs' three `swift_getAtKeyPath`
   sites write a frame slot already forgotten as escaped, so their renders
   are byte-identical.
+
+## 2026-11-02: async methods and yielding accessors named from metadata
+
+- **FIXED (soundness): an async method's name landed on its async function
+  pointer, and the entry stayed `sub_`.** For an async method,
+  `MethodDescriptorFlags::isAsync()` (0x40) makes the descriptor's
+  implementation a relative pointer to an async function pointer record
+  (`{ i32 relative Function; u32 ExpectedContextSize }`, in `__TEXT,__const`),
+  not to code (`TargetMethodDescriptor::getImpl`, Metadata.h). An override
+  takes its base method's flags, and an async requirement's witness table
+  slot holds the witness's record (`ProtocolRequirementFlags` 0x20). A
+  callee-allocated coroutine (`yielding borrow` / `yielding mutate`, 0x40 on
+  a coroutine kind) is the same shape with a coroutine function pointer.
+  `classMethodClaims`, `witnessClaims`, `SelfTypeIndex` and `VTableIndex` read
+  every field as code. On `libAsyncMethods.opt.stripped.dylib`
+  (asyncmethods.swift, -O, `strip -x`) `Animal.fetch` stayed `sub_c64`,
+  `Animal.rest` `sub_d1c`, `Dog.fetch` `sub_e28` and the `Box: Fetcher.pull`
+  witness `sub_1054`, while `layout --self-index` bound `self` at the data
+  addresses 0x1718 and 0x1720 and a data reference to the witness's record
+  (`add x8, x8, #0x760`) rendered `→ Box: Fetcher.method`. The yielding
+  accessors of `libCoroAccessors.opt.stripped.dylib` (coroaccessors.swift,
+  -O, CoroutineAccessors) went the same way: five entries unnamed, three
+  `self` bindings on records. `MethodImplementation` now follows a record's
+  first field when the flags say the field is data, and names the result
+  only if it lies in a code section; a field read as code must lie in code
+  too, which also covers an override whose base descriptor is in another
+  image. A `VTableIndex` slot holding a record is left out: a `blr` straight
+  to the slot's value calls nothing it can name. Measured against the
+  pre-fix debug build: 200 of 204 fixtures byte-identical in all four
+  `disasm` views. AsyncMethods stripped: 4 entries named, 9 resume funclets
+  retitled `resume #n of …` after their entry, the false name on the
+  record reference gone. CoroAccessors: 5 entries named; the `self`
+  bindings move to code, so `x20 + 0x10` reads `&self.stored` and the
+  `blr` in `Box.value.yielding_borrow` resolves to `Box.stored.getter`
+  (unresolved indirect sites 11 → 10). One loss: a bound method seeds only
+  signature-proven arguments, so the yielding mutate's buffer in x0 renders
+  `x0`, not `arg0`, and `sub_a30(arg0)` becomes `sub_a30()` (the open
+  "calls with nothing tracked render `()`" item). `xrefs`, `analyze` and
+  `layout --self-index` change the same way; `dump` and `interface` do not
+  change. Tests: `AsyncMethodDescriptorTests` (unstripped symbol table as
+  the oracle).

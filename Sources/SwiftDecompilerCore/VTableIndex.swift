@@ -45,6 +45,7 @@ public struct VTableIndex: Sendable {
         let implementationDelta = MemoryLayout<MethodDescriptor.Layout>.offset(of: \.implementation) ?? 4
         let pointerSize = MemoryLayout<UInt64>.size
 
+        let implementations = MethodImplementation(machO)
         var methods: [String: [Int: UInt64]] = [:]
         // Keyed by simple name, so two classes that share one (`Alpha.Node`,
         // `Beta.Node`) would share a slot table: first writer won, and a dispatch
@@ -71,8 +72,15 @@ public struct VTableIndex: Sendable {
                 // A null relative pointer is a resilient / externally-defined slot.
                 guard relative != 0 else { continue }
                 let fieldOffset = method.offset + implementationDelta
-                let address = machO.address(forOffset: fieldOffset + relative)
-                guard address != 0 else { continue }
+                // An async (or callee-allocated coroutine) slot holds a
+                // function pointer record, which a dispatch loads and then
+                // reads the function from (`MethodImplementation`). A `blr`
+                // straight to the slot's value calls nothing this table can
+                // name, so the field is read as code, which the record is not,
+                // and the slot is left out.
+                guard let address = implementations.code(
+                    at: machO.address(forOffset: fieldOffset + relative), isData: false
+                ) else { continue }
                 let byteOffset = (base + slot) * pointerSize
                 if methods[typeName] == nil { methods[typeName] = [:] }
                 if methods[typeName]?[byteOffset] == nil {

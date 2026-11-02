@@ -66,6 +66,10 @@ public struct SelfTypeIndex: Sendable {
         // but its body is just this, over public types.
         let implementationDelta = MemoryLayout<MethodDescriptor.Layout>.offset(of: \.implementation) ?? 4
 
+        // An async method's field leads to its async function pointer, data;
+        // its entry, where `self` arrives in x20, is where that record leads
+        // (`MethodImplementation`).
+        let implementations = MethodImplementation(machO)
         var bindings: [UInt64: SelfBinding] = [:]
         // Identical code folding gives classes one body for byte-identical
         // methods. Its `self` is whichever class called it, so a body two
@@ -84,9 +88,10 @@ public struct SelfTypeIndex: Sendable {
                 let relative = Int(method.layout.implementation.relativeOffset)
                 // A null relative pointer means the slot has no implementation
                 // in this image (a resilient or externally-defined method).
-                guard relative != 0 else { continue }
-                let address = machO.address(forOffset: fieldOffset + relative)
-                guard address != 0 else { continue }
+                guard relative != 0,
+                      let address = implementations.code(at: machO.address(forOffset: fieldOffset + relative),
+                                                         isData: method.layout.flags.isData)
+                else { continue }
                 if let first = binder[address] {
                     if first != model.descriptor.offset { shared.insert(address) }
                     continue

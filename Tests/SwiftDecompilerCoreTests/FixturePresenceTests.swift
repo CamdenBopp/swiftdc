@@ -187,6 +187,10 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libObjCPairStores.dylib",
         "Fixtures/Sample/libArityTwin.dylib",
         "Fixtures/Sample/libLibcTwins.dylib",
+        "Fixtures/Sample/libAsyncMethods.opt.dylib",
+        "Fixtures/Sample/libAsyncMethods.opt.stripped.dylib",
+        "Fixtures/Sample/libCoroAccessors.opt.dylib",
+        "Fixtures/Sample/libCoroAccessors.opt.stripped.dylib",
     ]
 
     /// True on a run that must actually exercise the fixtures. `CI` is set by

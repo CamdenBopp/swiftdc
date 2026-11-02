@@ -333,29 +333,38 @@ struct MetadataSymbolizer: Sendable {
         var nameCounts: [String: Int] = [:]
         for entry in classes { nameCounts[entry.name, default: 0] += 1 }
 
+        // An async method's implementation field leads to its async function
+        // pointer, which is data; the method is where that record leads
+        // (`MethodImplementation`).
+        let implementations = MethodImplementation(machO)
         var claims: [Claim] = []
         for (typeName, owner, model) in classes where nameCounts[typeName] == 1 {
-            func record(_ address: UInt64, _ name: String) {
-                if address != 0 { claims.append(Claim(address: address, name: name, owner: owner)) }
+            func record(_ field: UInt64, isData: Bool, _ name: String) {
+                guard field != 0, let address = implementations.code(at: field, isData: isData) else { return }
+                claims.append(Claim(address: address, name: name, owner: owner))
             }
             for method in model.methodDescriptors {
                 let relative = Int(method.layout.implementation.relativeOffset)
                 // A null relative pointer is a resilient / externally-defined slot.
                 guard relative != 0 else { continue }
                 let address = machO.address(forOffset: method.offset + implementationDelta + relative)
-                record(address, Self.label(typeName, methodKindLabel(method.layout.flags.kind),
-                                           isInstance: method.layout.flags.isInstance))
+                record(address, isData: method.layout.flags.isData,
+                       Self.label(typeName, methodKindLabel(method.layout.flags.kind),
+                                  isInstance: method.layout.flags.isInstance))
             }
             for override in model.methodOverrideDescriptors {
                 guard let offset = override.implementationOffset else { continue }
                 // The overridden method's kind is known when its descriptor is
                 // in this image; across images it is a symbol, and the slot is
-                // labelled only as the override it is.
+                // labelled only as the override it is. Its flags, which say
+                // whether the field is code, are then unknown too: the field
+                // is named only when it already lies in code.
                 if case .element(let base)? = try? override.methodDescriptor(in: machO.context) {
-                    record(machO.address(forOffset: offset), Self.label(typeName, methodKindLabel(base.layout.flags.kind),
-                                                                        isInstance: base.layout.flags.isInstance))
+                    record(machO.address(forOffset: offset), isData: base.layout.flags.isData,
+                           Self.label(typeName, methodKindLabel(base.layout.flags.kind),
+                                      isInstance: base.layout.flags.isInstance))
                 } else {
-                    record(machO.address(forOffset: offset), "\(typeName).override")
+                    record(machO.address(forOffset: offset), isData: false, "\(typeName).override")
                 }
             }
         }
@@ -419,7 +428,7 @@ struct MetadataSymbolizer: Sendable {
 
         // Witness table layout: slot 0 is the conformance descriptor; the
         // requirements' implementations follow at slot (index + 1).
-        var slots: [(offset: Int, name: String, owner: String)] = []
+        var slots: [(offset: Int, name: String, owner: String, isData: Bool)] = []
         for conformance in conformances {
             guard let protocolDescriptor = conformance.protocol?.resolved,
                   let pattern = conformance.witnessTablePattern,
@@ -431,19 +440,25 @@ struct MetadataSymbolizer: Sendable {
             for (index, requirement) in proto.requirements.enumerated() {
                 guard let kind = functionKindLabel(requirement.layout.flags.kind) else { continue }
                 slots.append((pattern.offset + pointerSize * (index + 1),
-                              Self.label(label, kind, isInstance: requirement.layout.flags.isInstance), typeName ?? label))
+                              Self.label(label, kind, isInstance: requirement.layout.flags.isInstance), typeName ?? label,
+                              Self.isData(requirement.layout.flags)))
             }
         }
         guard let lowest = slots.map(\.offset).min(), let highest = slots.map(\.offset).max() else { return [] }
 
         // One walk of the fixup chains for every slot, not one per slot.
         let rebases = ChainedRebases(fileOffsets: lowest ..< highest + pointerSize, in: machO)
+        // An async requirement's slot holds the witness's async function
+        // pointer, which is data (`MethodImplementation`).
+        let implementations = MethodImplementation(machO)
         var claims: [Claim] = []
         for slot in slots {
             let runtimeOffset = rebases.map { $0.targets[slot.offset] }
                 ?? machO.resolveRebase(at: UInt64(slot.offset))
-            guard let runtimeOffset else { continue }
-            claims.append(Claim(address: imageBase + runtimeOffset, name: slot.name, owner: slot.owner, isWitness: true))
+            guard let runtimeOffset,
+                  let address = implementations.code(at: imageBase + runtimeOffset, isData: slot.isData)
+            else { continue }
+            claims.append(Claim(address: address, name: slot.name, owner: slot.owner, isWitness: true))
         }
         return claims
     }
@@ -490,4 +505,11 @@ struct MetadataSymbolizer: Sendable {
         }
     }
 
+    /// `ProtocolRequirementFlags::isData()` (swift/include/swift/ABI/
+    /// MetadataValues.h): the 0x20 bit marks an async requirement, or, on a
+    /// coroutine, a callee-allocated one; either way the witness table slot
+    /// holds a function pointer record, not code.
+    static func isData(_ flags: ProtocolRequirementFlags) -> Bool {
+        flags.isAsync || flags.isCoroutine && flags.contains(.maybeAsync)
+    }
 }

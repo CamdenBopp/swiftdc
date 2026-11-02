@@ -471,6 +471,17 @@ $SWIFTC -parse-as-library -O -emit-library -module-name SharedWitness sharedwitn
 cp libSharedWitness.dylib libSharedWitness.stripped.dylib
 strip -x libSharedWitness.stripped.dylib
 
+echo "==> async class methods and an async witness: descriptors lead to async function pointers (asyncmethods.swift, -O; strip -x copy)"
+$SWIFTC -parse-as-library -O -emit-library -module-name AsyncMethods asyncmethods.swift -o libAsyncMethods.opt.dylib
+cp libAsyncMethods.opt.dylib libAsyncMethods.opt.stripped.dylib
+strip -x libAsyncMethods.opt.stripped.dylib
+
+echo "==> yielding accessors and witnesses: descriptors lead to coroutine function pointers (coroaccessors.swift, -O, CoroutineAccessors; strip -x copy)"
+$SWIFTC -parse-as-library -O -emit-library -module-name CoroAccessors -enable-experimental-feature CoroutineAccessors \
+    coroaccessors.swift -o libCoroAccessors.opt.dylib
+cp libCoroAccessors.opt.dylib libCoroAccessors.opt.stripped.dylib
+strip -x libCoroAccessors.opt.stripped.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release
