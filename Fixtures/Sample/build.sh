@@ -449,6 +449,11 @@ $CLANG -arch arm64 -dynamiclib oldmangledhelper.s -L"$(xcrun --show-sdk-path)/us
 cp libOldMangledHelper.dylib libOldMangledHelper.stripped.dylib
 strip -x libOldMangledHelper.stripped.dylib
 
+echo "==> a struct result buffer a runtime call overwrites through x8, or leaves (resultbuffer.swift + .s, -O)"
+$CLANG -arch arm64 -c resultbuffer.s -o resultbuffer.o
+$SWIFTC -parse-as-library -O -emit-library -module-name ResultBuffer resultbuffer.swift resultbuffer.o -o libResultBuffer.dylib
+rm -f resultbuffer.o
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

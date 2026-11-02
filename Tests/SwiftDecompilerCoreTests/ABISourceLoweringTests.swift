@@ -154,3 +154,27 @@ struct ABISourceLoweringTests {
         #expect(register("m.f() -> Swift.Double") == .floating)
     }
 }
+
+/// `swift_getAtKeyPath` returns its generic `Value` through x8, so a
+/// caller's result buffer forwarded to it is overwritten: the stores before
+/// the call are not the result. Every `swift_` callee was taken to return
+/// in registers, and `staleAfterKeyPath` rendered
+/// `return ResultBuffer.Big(a: 7, b: 7, c: 7, d: 7, e: 7)`. The control,
+/// `swift_retain`, does ignore x8 and keeps the stores (`resultbuffer.s`).
+@Test func aRuntimeCallReturningThroughX8OverwritesTheResultBufferIfPresent() async throws {
+    let path = "Fixtures/Sample/libResultBuffer.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func structured(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.contains(name) }).renderStructured()
+    }
+    let stale = try structured("staleAfterKeyPath")
+    #expect(!stale.contains("Big(a: 7"), Comment(rawValue: stale))
+    #expect(stale.contains("return ?"), Comment(rawValue: stale))
+    let kept = try structured("keptAfterRetain")
+    #expect(kept.contains("return ResultBuffer.Big(a: 7, b: 7, c: 7, d: 7, e: 7)"), Comment(rawValue: kept))
+    for name in ["swift_getAtKeyPath", "_swift_getAtKeyPath", "swift_reflectAny", "_swift_stdlib_operatingSystemVersion"] {
+        #expect(!Disassembler.isKnownDirectReturnCallee(name), "\(name)")
+    }
+    #expect(Disassembler.isKnownDirectReturnCallee("swift_retain"))
+}

@@ -160,6 +160,16 @@ extension Disassembler {
         return .writes
     }
 
+    /// The runtime entry points that do return through x8: `swift_getAtKeyPath`
+    /// is the stdlib's generic `_getAtKeyPath<Root, Value>` (KeyPath.swift),
+    /// whose `Value` is indirect, and the rest return a C++ or C struct by
+    /// `sret` (Reflection.h, ReflectionMirror.cpp, Private.h,
+    /// FoundationShims.h). Leading underscores dropped.
+    static let swiftResultBufferRuntimeNames: Set<String> = [
+        "swift_getAtKeyPath", "swift_reflectAny", "swift_reflectionMirror_subscript",
+        "swift_getTypeByMangledName", "swift_getTypeByMangledNode", "swift_stdlib_operatingSystemVersion",
+    ]
+
     /// `memcpy`/`memmove`/`memset` and the compiler's outlined `__swift_memcpyN_M`
     /// value-witness copies: the fixed-ABI helpers the value tracker models as
     /// the stores they perform.
@@ -169,10 +179,12 @@ extension Disassembler {
     }
 
     /// Runtime and C-library entry points with a fixed public ABI that never
-    /// return through x8. Anything in the Swift and Objective-C runtimes returns
-    /// at most two words; the libc helpers here return a pointer or an integer.
+    /// return through x8. The Swift and Objective-C runtimes return at most two
+    /// words, except `swiftResultBufferRuntimeNames`; the libc helpers here
+    /// return a pointer or an integer.
     static func isKnownDirectReturnCallee(_ callee: String) -> Bool {
         let name = String(callee.drop(while: { $0 == "_" }))
+        if swiftResultBufferRuntimeNames.contains(name) { return false }
         if name.hasPrefix("swift_") || name.hasPrefix("objc_") { return true }
         let libc: Set<String> = [
             "memcpy", "memmove", "memset", "memcmp", "bzero", "strlen", "strcmp", "strncmp",

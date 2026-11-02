@@ -6479,3 +6479,19 @@ Findings:
   private source-file recovery, `marksNestedDefinitions` and
   `protocolRequirementPlacement` are opt-in. Each needs its own
   measured change.
+
+## 2026-11-02: runtime calls that return through x8
+
+- **FIXED — a result buffer survived a runtime call that overwrites it.**
+  `isKnownDirectReturnCallee` took every `swift_`/`objc_` callee to return
+  in registers, so a caller's x8 buffer forwarded to `swift_getAtKeyPath`
+  (the stdlib's generic `_getAtKeyPath<Root, Value>`, whose `Value` is
+  indirect) kept the stores made before the call:
+  `return ResultBuffer.Big(a: 7, b: 7, c: 7, d: 7, e: 7)` for a function
+  whose result is whatever the key path read (`resultbuffer.s`). Six
+  runtime functions return through x8 (`swiftResultBufferRuntimeNames`,
+  from the runtime-signature table on the audit branch); their calls now
+  leave the convention unknown, which poisons the buffer, and the render
+  is `return ?`. The four swift-syntax dylibs' three `swift_getAtKeyPath`
+  sites write a frame slot already forgotten as escaped, so their renders
+  are byte-identical.
