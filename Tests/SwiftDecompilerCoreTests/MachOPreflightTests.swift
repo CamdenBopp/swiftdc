@@ -1610,6 +1610,84 @@ private func rejectsContext(struct structure: Data? = nil, module: Data? = nil) 
     #expect(throws: BinaryLoadError.self) { try check(image(patternOffset: 0x60)) }  // just past it
 }
 
+/// A conformance and the trailing records its flags declare end inside the
+/// section that holds it: a fuzzed pack shape count moved the resilient
+/// witnesses past `__const`, still inside the file, and a requirement read
+/// there trapped (seed 9001, libReconstruction.opt.stripped mutant 53).
+@Test func aConformanceRecordEndsInsideItsSection() throws {
+    // Section `__const` at 0x1000 ..< 0x1060: the record at 0x1000, a
+    // conformance at 0x1010 with one resilient witness (count at 0x1020,
+    // witness at 0x1024, ending at 0x102c), a protocol descriptor at 0x1030
+    // named "P" at 0x1040.
+    func image(flags: UInt32, count: UInt32 = 1) -> Data {
+        var bytes = Data(count: 0x60)
+        func put32(_ value: UInt32, at offset: Int) {
+            withUnsafeBytes(of: value.littleEndian) { bytes.replaceSubrange(offset ..< offset + 4, with: $0) }
+        }
+        put32(0x10, at: 0x00)
+        put32(0x20, at: 0x10)
+        put32(0x1c, at: 0x14)
+        put32(flags, at: 0x1c)
+        put32(count, at: 0x20)
+        put32(0x0c, at: 0x24)    // requirement -> 0x1030
+        put32(3, at: 0x30)
+        put32(0x08, at: 0x38)
+        bytes[0x40] = UInt8(ascii: "P")
+        return bytes
+    }
+    func check(_ bytes: Data) throws {
+        let reader = MachOPreflight.PointerReader(sections: [("__const", 0x1000, 0x60, 0, bytes)], encodings: [:])
+        try MachOPreflight.validateConformanceDescriptors(
+            records: bytes.prefix(4), address: 0x1000, reader: reader, segments: [0x1000 ..< 0x2000], path: "t",
+            read: { address, count in
+                guard address >= 0x1000, address + UInt64(count) <= 0x2000 else { return nil }
+                let start = Int(address - 0x1000)
+                return start + count <= bytes.count ? bytes.subdata(in: start ..< start + count) : Data(count: count)
+            })
+    }
+    try check(image(flags: 1 << 16))                       // ends at 0x102c
+    try check(image(flags: 1 << 16 | 1 << 17))             // and a generic witness table, to 0x1038
+    try check(image(flags: 1 << 16 | 5 << 8))              // five conditional requirements, a zero count: to 0x1060
+    try check(image(flags: 1 << 16, count: 7))             // seven witnesses end at 0x105c
+    #expect(throws: BinaryLoadError.self) { try check(image(flags: 1 << 16, count: 8)) }        // eight, at 0x1064
+    #expect(throws: BinaryLoadError.self) { try check(image(flags: 1 << 16 | 1 << 17, count: 7)) } // a witness table past 0x105c
+    #expect(throws: BinaryLoadError.self) { try check(image(flags: 1 << 16 | 0xda << 24)) }     // mutant 53's count
+    #expect(throws: BinaryLoadError.self) { try check(image(flags: 0xda << 24)) }               // and with no witnesses
+    #expect(throws: BinaryLoadError.self) { try check(image(flags: 1 << 16 | 7 << 8)) }         // conditional requirements
+    #expect(throws: BinaryLoadError.self) { try check(image(flags: 1 << 16 | 5 << 8 | 1 << 19)) } // then an actor reference, to 0x1068
+}
+
+/// End to end, mutant 53's shape: in libReconstruction.opt.stripped, the
+/// conformance with resilient witnesses nearest the end of its section,
+/// given enough pack shapes to run past it, is refused by its cause.
+@Test func aFuzzedPackShapeCountIsRefusedIfPresent() throws {
+    let path = "Fixtures/Sample/libReconstruction.opt.stripped.dylib"
+    guard var bytes = FileManager.default.contents(atPath: path) else { return }
+    let machO = try BinaryLoader.load(path: path)
+    let proto = try #require(machO.sections.first { $0.sectionName == "__swift5_proto" })
+    func u32(_ offset: Int) -> UInt32 { bytes[offset ..< offset + 4].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) } }
+    // In this dylib a file offset is its address, so the section holding a
+    // descriptor is found by offset.
+    var best: (flags: Int, room: Int)?
+    for index in 0 ..< Int(proto.size) / 4 {
+        let record = Int(proto.offset) + index * 4
+        let descriptor = record + Int(Int32(bitPattern: u32(record)))
+        guard u32(descriptor + 12) & (1 << 16) != 0,
+              let section = machO.sections.first(where: { descriptor >= Int($0.offset) && descriptor < Int($0.offset) + $0.size })
+        else { continue }
+        let room = Int(section.offset) + section.size - descriptor
+        if best == nil || room < best!.room { best = (descriptor + 12, room) }
+    }
+    let target = try #require(best, "no conformance with resilient witnesses")
+    let shapes = target.room / 8 + 1
+    try #require(shapes <= 255, "the nearest conformance has \(target.room) bytes of room")
+    bytes[target.flags + 3] = UInt8(shapes)
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("swiftdc-shapes-\(ProcessInfo.processInfo.processIdentifier)")
+    try bytes.write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+    #expect { try MachOPreflight.validate(url: url) } throws: { "\($0)".contains("past the end of") }
+}
+
 /// End to end, mutant 75's one byte: libGaugeKit's first conformance with
 /// its witness table pattern's top byte set is refused by its cause.
 @Test func aFuzzedWitnessTablePatternIsRefusedIfPresent() throws {

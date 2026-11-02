@@ -1197,6 +1197,19 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 3. Robustness — what breaks it?
 
+- **FIXED — a conformance whose trailing records ran past its section
+  trapped `dump`.** A conformance's flags count the records after it
+  (retroactive pointer, conditional requirements, pack shapes, resilient
+  witnesses, generic witness table, global actor reference). Fuzzed to 218
+  pack shapes (libReconstruction.opt.stripped, seed 9001, mutant 53), the
+  resilient witnesses moved 1,744 bytes on, still in the file and a
+  segment, so the witness check passed them, and a requirement read there
+  trapped. Preflight now requires the whole record to end inside the
+  section that holds it. GaugeKit mutant 130 is also refused now: the old
+  build accepted it and printed `struct GaumeKit.Tank` with its
+  initializer and members gone. Seed 9001, 200 mutants:
+  libReconstruction.opt.stripped 2 crashes → 0. Host corpus: 0 status
+  changes.
 - **FIXED — a corrupt witness table pattern trapped `dump`, `interface`,
   `objc` and `disasm`.** The conformance check read the protocol, the type
   and the resilient witnesses, not the pattern pointer at +8, which
@@ -6112,7 +6125,7 @@ at `--jobs 1`.
   function starts on both. The three crashing fuzz mutants of seed 9001
   (libSample.stripped m122, libReconstruction m53, libGaugeKit m75)
   reproduce identically on both; fixed afterwards in preflight (see
-  Robustness: witness table pattern).
+  Robustness: witness table pattern, conformance record extent).
 - **Stripped-name oracle:** 235,241 names recovered, 165,432 exact,
   0 conflicts, identical per binary to dev.
 - **Determinism:** 160 outputs of the perf set × 3 processes, per build:

@@ -1405,6 +1405,7 @@ public enum MachOPreflight {
                     throw fail(index, "has its witness table pattern at 0x\(String(pattern, radix: 16)), outside every mapped segment")
                 }
             }
+            try validateConformanceExtent(descriptor: descriptor, flags: flags, index: index, reader: reader, read: read, fail: fail)
             try validateResilientWitnesses(
                 descriptor: descriptor, flags: flags, index: index, reader: reader, segments: segments, read: read, fail: fail)
             let relative = UInt64(bitPattern: Int64(Int32(bitPattern: protocolField & ~1)))
@@ -1431,6 +1432,46 @@ public enum MachOPreflight {
                 break
             }
         }
+    }
+
+    /// A conformance and the trailing records its flags declare, in the order
+    /// MachOSwiftSection reads them (`ProtocolConformance.swift`): a 4-byte
+    /// retroactive context pointer if bit 6, 12-byte conditional requirements
+    /// counted in bits 8–15, 8-byte pack shapes counted in bits 24–31, a
+    /// witness count and 8-byte witnesses if bit 16, a 12-byte generic
+    /// witness table if bit 17, and an 8-byte global actor reference if bit
+    /// 19. The compiler emits them as one record, so it ends inside the
+    /// section that holds it. A fuzzed pack shape count of 218 moved the
+    /// witnesses 1,744 bytes on, still in the file and a segment, and a
+    /// requirement read there trapped `dump` (seed 9001,
+    /// libReconstruction.opt.stripped mutant 53). A descriptor in no listed
+    /// section is not judged here.
+    static func validateConformanceExtent(
+        descriptor: UInt64, flags: UInt32, index: Int, reader: PointerReader,
+        read: (UInt64, Int) -> Data?, fail: (Int, String) -> BinaryLoadError
+    ) throws {
+        guard let section = reader.sections.first(where: {
+            descriptor >= $0.addr && descriptor - $0.addr < UInt64($0.size)
+        }) else { return }
+        let limit = section.addr &+ UInt64(section.size)
+        var end = descriptor &+ 16
+        if flags & (1 << 6) != 0 { end &+= 4 }
+        end &+= 12 * UInt64((flags >> 8) & 0xff) + 8 * UInt64(flags >> 24)
+        func check(_ what: String) throws {
+            guard end <= limit else {
+                throw fail(index, "has \(what) running to 0x\(String(end, radix: 16)), past the end of \(section.name) at 0x\(String(limit, radix: 16))")
+            }
+        }
+        try check("conditional requirements and pack shapes")
+        if flags & (1 << 16) != 0 {
+            end &+= 4
+            try check("a resilient witness count")
+            guard let header = read(end &- 4, 4), let count = header.u32(at: 0) else { return }
+            end &+= 8 * UInt64(count)
+            try check("\(count) resilient witnesses")
+        }
+        if flags & (1 << 17) != 0 { end &+= 12; try check("a generic witness table") }
+        if flags & (1 << 19) != 0 { end &+= 8; try check("a global actor reference") }
     }
 
     /// The resilient witnesses a conformance carries after its header, at the
