@@ -51,7 +51,13 @@ ___swift_instantiateConcreteTypeFromMangledNameAbstract:
 .p2align 2
 _entry:
     stp x29, x30, [sp, #-0x10]!
+    // x4 and x5 hold values the helper never reads: it takes the cache
+    // variable in x0 alone, and sets x0-x3 for its own runtime call.
+    mov x4, #9
+    mov x5, #10
     bl ___swift_instantiateConcreteTypeFromMangledName
+    mov x4, #9
+    mov x5, #10
     bl ___swift_instantiateConcreteTypeFromMangledNameAbstract
     ldp x29, x30, [sp], #0x10
     ret

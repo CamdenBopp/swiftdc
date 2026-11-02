@@ -725,6 +725,9 @@ public extension DisassembledFunction {
              // unwind_itanium.h:61, `void (_Unwind_Exception *)`. With
              // nothing tracked each read as a call that takes nothing
              // (GoodLinks: 3,729 `isUniquelyReferenced_nonNull_native()`).
+             // swift/include/swift/Runtime/HeapObject.h:108, 472 and 476, and
+             // Metadata.h:839: one type, object or instance type each.
+             "swift_allocBox", "swift_unownedRetain", "swift_unownedRelease", "swift_getMetatypeMetadata",
              "swift_isUniquelyReferenced_nonNull_native", "swift_isUniquelyReferencedNonObjC_nonNull_bridgeObject",
              "swift_endAccess", "_Unwind_Resume":
             return 1
@@ -784,6 +787,10 @@ public extension DisassembledFunction {
              "memchr",
              // swift/include/swift/Runtime/Metadata.h:280, `(request,
              // arguments, descriptor)`.
+             // swift/include/swift/Runtime/Metadata.h:307, `(description,
+             // arguments, pattern)`, and :832, `(metadata, method,
+             // description)`.
+             "swift_allocateGenericClassMetadata", "swift_lookUpClassMethod",
              "swift_getGenericMetadata":
             return 3
         case "swift_arrayInitWithCopy", "swift_arrayInitWithTakeFrontToBack", "swift_arrayInitWithTakeBackToFront",
@@ -791,6 +798,11 @@ public extension DisassembledFunction {
              // buffer, flags, pc)`; Error.h:40, `(type, conformance, value,
              // isTake)`; Enum.h:99, `(value, emptyCases, payloadType,
              // getTag)`.
+             // swift/include/swift/Runtime/Metadata.h:329, `(description,
+             // arguments, pattern, extraDataSize)`, and stdlib/public/runtime/
+             // MetadataLookup.cpp:2735, `(typeNameStart, typeNameLength,
+             // context, genericArgs)`.
+             "swift_allocateGenericValueMetadata", "swift_getTypeByMangledNameInContext2",
              "swift_beginAccess", "swift_allocError", "swift_getEnumTagSinglePayloadGeneric":
             return 4
         // swift/include/swift/Runtime/Metadata.h:690: `(self, flags,
@@ -798,6 +810,9 @@ public extension DisassembledFunction {
         // wtable, conformingType, reqBase, assocType)`; Concurrency.h:54,
         // `(flags, options, futureResultType, closureEntry, closureContext)`.
         case "swift_initStructMetadata", "swift_getAssociatedTypeWitness", "swift_task_create",
+             // stdlib/public/runtime/MetadataLookup.cpp:2804, `(metadataState,
+             // typeNameStart, typeNameLength, context, genericArgs)`.
+             "swift_getTypeByMangledNameInContextInMetadataState2",
              // swift/include/swift/Runtime/Casting.h:42 and :72,
              // Metadata.h:412, 636 and 789, Enum.h:122, and
              // stdlib/public/stubs/Assert.cpp:103: five parameters each.

@@ -6536,3 +6536,26 @@ Findings:
   `layout --self-index` change the same way; `dump` and `interface` do not
   change. Tests: `AsyncMethodDescriptorTests` (unstripped symbol table as
   the oracle).
+
+## 2026-11-02: runtime arities from the signature table
+
+- **FIXED — nine runtime functions had no arity, and the helpers that call
+  them took fabricated arguments.** The runtime-signature table (audit
+  branch) found `knownCArity` covering 44 of the 57 runtime stubs the
+  swift-syntax dylibs call. Nine, each checked against its declaration in
+  the Swift checkout, are now in it: `swift_allocBox`,
+  `swift_unownedRetain`, `swift_unownedRelease`,
+  `swift_getMetatypeMetadata` (1), `swift_allocateGenericClassMetadata`,
+  `swift_lookUpClassMethod` (3), `swift_allocateGenericValueMetadata`,
+  `swift_getTypeByMangledNameInContext2` (4) and
+  `swift_getTypeByMangledNameInContextInMetadataState2` (5). The pre-V2
+  mangled-name helpers set x0-x3 (x0-x4) for their runtime call, so with
+  its arity unknown their bodies read as taking x0-x5:
+  `__swift_instantiateConcreteTypeFromMangledName(arg4, ?, ?, ?, arg4,
+  arg5)` is now `(arg4)`. Stripped swift-syntax `--structured`: 113
+  changed lines, every one a fabricated argument dropped or a `()` call
+  given its true count; three specialized callers checked against their
+  symbols (`Dictionary.init(dictionaryLiteral:)`, a closure-specialized
+  `map`, `ActiveSyntaxRewriter.init`) now take the arguments their bodies
+  read. Still out: `swift_setAtWritableKeyPath` and `swift_getAtKeyPath`,
+  whose lowering the table only infers.

@@ -64,6 +64,12 @@ import MachOSwiftSection
     #expect(listing.contains("→ __swift_instantiateConcreteTypeFromMangledName\n")
         || listing.contains("→ __swift_instantiateConcreteTypeFromMangledName  "), Comment(rawValue: listing))
     #expect(listing.contains("→ __swift_instantiateConcreteTypeFromMangledNameAbstract"), Comment(rawValue: listing))
+    // Each takes the cache variable in x0 alone; the x4 and x5 `_entry`
+    // sets are no arguments. With its runtime callee's arity unknown, the
+    // helper's body read as taking x0-x5: `args(?, ?, ?, ?, 9, 10)`.
+    #expect(listing.contains("→ __swift_instantiateConcreteTypeFromMangledName  args(?)\n"), Comment(rawValue: listing))
+    #expect(listing.contains("→ __swift_instantiateConcreteTypeFromMangledNameAbstract  args(__swift_instantiateConcreteTypeFromMangledName(?))\n"),
+            Comment(rawValue: listing))
 }
 
 /// The helper is a C function, so its x20 is no `self`: stripped, a call
