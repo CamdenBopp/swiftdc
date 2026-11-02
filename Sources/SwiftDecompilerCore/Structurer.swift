@@ -857,16 +857,19 @@ struct ControlFlowStructure {
                     }
                     return (compare(lhs, rhs), consumed)
                 }
-                if m == "tst", ops.count >= 2 {
-                    guard let mask = Self.applyingModifier(Self.cleanImmediate(ops[1]), operand: ops[1], trailing: ops[2...])
+                // `tst` sets N and Z from the masked value and clears C and V,
+                // so a signed order compares it with 0, and `b.mi`/`b.pl` test
+                // its sign. A carry or overflow condition is constant, never a
+                // comparison: `tst w8, #0xff; b.hs` is never taken. `ands` is
+                // `tst` that also keeps the result.
+                if (m == "tst" && ops.count >= 2) || (m == "ands" && ops.count >= 3) {
+                    let first = m == "tst" ? 0 : 1
+                    let relation = op == "< 0 //" ? "<" : op == ">= 0 //" ? ">=" : op
+                    guard ["==", "!=", "<", "<=", ">", ">="].contains(relation),
+                          let mask = Self.applyingModifier(Self.cleanImmediate(ops[first + 1]), operand: ops[first + 1],
+                                                           trailing: ops[(first + 2)...])
                     else { return ("?", consumed) }
-                    return ("(\(resolve(ops[0], before: index, in: block, consumed: &consumed)) & \(mask)) \(op) 0", consumed)
-                }
-                // `ands` is `tst` that also keeps the result.
-                if m == "ands", ops.count >= 3 {
-                    guard let mask = Self.applyingModifier(Self.cleanImmediate(ops[2]), operand: ops[2], trailing: ops[3...])
-                    else { return ("?", consumed) }
-                    return ("(\(resolve(ops[1], before: index, in: block, consumed: &consumed)) & \(mask)) \(op) 0", consumed)
+                    return ("(\(resolve(ops[first], before: index, in: block, consumed: &consumed)) & \(mask)) \(relation) 0", consumed)
                 }
             }
             return (op == "?" ? terminator.text : "cond \(op)", consumed)

@@ -156,3 +156,29 @@ private func textPathFunction(_ words: [UInt32], undetailed: Set<Int> = []) thro
         #expect(text.contains(expected), Comment(rawValue: text))
     }
 }
+
+/// `tst` and `ands` set N and Z from the masked value and clear C and V. A
+/// carry condition after one is constant: `tst w0, #0xff; b.hs` is never
+/// taken, and rendered `(w0 & 0xff) >=ᵁ 0`, always true. `b.mi` printed
+/// `(w0 & 0xff) < 0 // 0`. Found by Tools/semantics/conditions.py.
+@Test func aTextConditionReadsTestFlagsAsTheirSign() throws {
+    let tail: [UInt32] = [0x52800020, 0xd65f03c0, 0x52800040, 0xd65f03c0]
+    func render(_ test: UInt32, _ condition: UInt32) throws -> String {
+        try textPathFunction([test, 0x54000060 | condition] + tail).renderStructured()
+    }
+    let tst = UInt32(0x72001c1f), ands = UInt32(0x72001c08)   // tst w0, #0xff; ands w8, w0, #0xff
+    let cases: [(UInt32, UInt32, String)] = [
+        (tst, 0x0, "(w0 & 0xff) == 0"),
+        (tst, 0x4, "(w0 & 0xff) < 0"),     // b.mi
+        (tst, 0x5, "(w0 & 0xff) >= 0"),    // b.pl
+        (tst, 0xc, "(w0 & 0xff) > 0"),     // b.gt
+        (tst, 0x2, "if (?)"),              // b.hs: never taken
+        (tst, 0x9, "if (?)"),              // b.ls: always taken
+        (ands, 0x3, "if (?)"),             // b.lo
+    ]
+    for (test, condition, expected) in cases {
+        let text = try render(test, condition)
+        #expect(text.contains(expected), Comment(rawValue: text))
+        #expect(!text.contains("//"), Comment(rawValue: text))
+    }
+}

@@ -69,6 +69,11 @@ results do not replace previously recorded release performance measurements.
   branch's NZCV. At its first run: 9,287 verified, 1,871 refuted, 212
   unparsed, in four classes fixed below. Now: 9,936 verified, 2,708
   declined, 0 refuted, 0 unparsed.
+- **FIXED — a tst's flags read as an unsigned comparison.** `tst w0, #0xff;
+  b.hs` (never taken: tst clears C) rendered `(w0 & 0xff) >=ᵁ 0`, always
+  true, and `b.mi` printed `(w0 & 0xff) < 0 // 0`. Signed orders compare
+  the masked value with 0, mi/pl test its sign, carry and overflow
+  conditions decline. z3: refuted 1,871 → 1,507, unparsed 212 → 0.
 - **Harness — the tracer's integer semantics are proven against the Arm
   ARM.** `Tools/semantics` (z3, dev host only) traces 58,515 encodings of
   the integer data-processing instructions and asks z3 whether any input
