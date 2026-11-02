@@ -46,7 +46,10 @@ enum InstructionSemantics {
         AARCH64_INS_MOV, AARCH64_INS_MOVZ,
         AARCH64_INS_ALIAS_UBFX, AARCH64_INS_ALIAS_SBFX, AARCH64_INS_ALIAS_UBFIZ, AARCH64_INS_ALIAS_SBFIZ,
         AARCH64_INS_ALIAS_BFI, AARCH64_INS_ALIAS_BFXIL,
-        AARCH64_INS_NEG,
+        AARCH64_INS_NEG, AARCH64_INS_ALIAS_NEG, AARCH64_INS_ALIAS_NEGS,
+        AARCH64_INS_BIC, AARCH64_INS_ALIAS_BIC, AARCH64_INS_BICS, AARCH64_INS_ALIAS_BICS,
+        AARCH64_INS_EON, AARCH64_INS_ALIAS_EON,
+        AARCH64_INS_ALIAS_MNEG, AARCH64_INS_MOVN, AARCH64_INS_ALIAS_MOVN,
     ].map(\.rawValue))
 
     static func effect(of detail: StructuredInsn) -> SemanticEffect? {
@@ -150,12 +153,36 @@ enum InstructionSemantics {
             }
             return SemanticEffect(destination: dest, value: value)
 
-        case AARCH64_INS_NEG:
-            // `neg d, s{, shift}` is `0 - s`, the shift applied to s.
+        case AARCH64_INS_NEG, AARCH64_INS_ALIAS_NEG, AARCH64_INS_ALIAS_NEGS:
+            // `neg d, s{, shift}` is `0 - s`, the shift applied to s. The
+            // flags `negs` sets are the reader's to clear.
             guard dest.kind == .gpr, operands.count == 2, let source = operands[1].operand.register,
                   isScalar(source), source.widthBits == dest.widthBits
             else { return nil }
             return SemanticEffect(destination: dest, value: .binary(.subtract, .constant(0), .operand(1)))
+
+        case AARCH64_INS_BIC, AARCH64_INS_ALIAS_BIC, AARCH64_INS_BICS, AARCH64_INS_ALIAS_BICS,
+             AARCH64_INS_EON, AARCH64_INS_ALIAS_EON, AARCH64_INS_ALIAS_MNEG:
+            // `bic d, n, m` is `n & ~m` and `eon` is `n ^ ~m`, m shifted
+            // before the complement; `mneg` is `0 - n * m`.
+            guard isScalar(dest), operands.count == 3,
+                  operands.dropFirst().allSatisfy({ operand in
+                      guard let register = operand.operand.register else { return false }
+                      return isScalar(register) && register.widthBits == dest.widthBits
+                  })
+            else { return nil }
+            let value: SemanticTerm = switch detail.id {
+            case AARCH64_INS_ALIAS_MNEG: .binary(.subtract, .constant(0), .binary(.multiply, .operand(1), .operand(2)))
+            case AARCH64_INS_EON, AARCH64_INS_ALIAS_EON: .binary(.bitXor, .operand(1), .complement(.operand(2)))
+            default: .binary(.bitAnd, .operand(1), .complement(.operand(2)))
+            }
+            return SemanticEffect(destination: dest, value: value)
+
+        case AARCH64_INS_MOVN, AARCH64_INS_ALIAS_MOVN:
+            // `movn d, #imm{, lsl #s}` is `~(imm << s)`; Capstone folds the
+            // shift into the operand.
+            guard dest.kind == .gpr, operands.count == 2, operands[1].operand.register == nil else { return nil }
+            return SemanticEffect(destination: dest, value: .complement(.operand(1)))
 
         default:
             return nil

@@ -4052,6 +4052,14 @@ public struct ValueTracer: Sendable {
                 value = signExtended(value, bits: 32)
             }
             return expression(op, value, .immediate(UInt64(operand.shift.amount)))
+        case AARCH64_SFT_ROR where reg.kind == .gpr:
+            // A rotate within the register's width, which only the logical
+            // instructions apply: `(v >> n) | (v << (W - n))`. A W rotate's
+            // bits past 32 fall to the instruction's W write.
+            let width = UInt64(reg.widthBits), amount = UInt64(operand.shift.amount) % width
+            guard amount != 0 else { return value }
+            return expression(.bitOr, expression(.shiftRight, value, .immediate(amount)),
+                              expression(.shiftLeft, value, .immediate(width - amount)))
         default:
             return .unknown
         }

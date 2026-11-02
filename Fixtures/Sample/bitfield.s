@@ -3,7 +3,9 @@
 // ubfx d, s, #l, #w = (s >> l) & (2^w - 1); ubfiz = (s & (2^w - 1)) << l;
 // sbfx/sbfiz sign-extend the w-bit field; bfi/bfxil insert into d and keep
 // its other bits; sxt*/uxt* extend the low byte, halfword or word; neg is
-// 0 - s. A W destination zero-extends into x0.
+// 0 - s. bic is n & ~m and eon n ^ ~m, m shifted first; mneg is 0 - n * m;
+// movn is ~(imm << s); a ROR operand rotates within its register's width.
+// A W destination zero-extends into x0.
 .text
 .p2align 2
 .macro probe name, a, b, c, d, e
@@ -43,4 +45,36 @@ probe2 neg_w, neg, w0, w0
 .globl _bits_neg_shift
 _bits_neg_shift:
     neg x0, x1, lsl #3
+    ret
+.globl _bits_bic_x
+_bits_bic_x:
+    bic x0, x0, x1, lsl #5
+    ret
+.globl _bits_bics_w
+_bits_bics_w:
+    bics w0, w0, w1, asr #3
+    ret
+.globl _bits_eon_x
+_bits_eon_x:
+    eon x0, x0, x1, lsr #7
+    ret
+.globl _bits_negs_w
+_bits_negs_w:
+    negs w0, w1, lsl #2
+    ret
+.globl _bits_mneg_x
+_bits_mneg_x:
+    mneg x0, x0, x1
+    ret
+.globl _bits_movn_w
+_bits_movn_w:
+    movn w0, #0xffff
+    ret
+.globl _bits_and_ror_x
+_bits_and_ror_x:
+    and x0, x0, x1, ror #13
+    ret
+.globl _bits_orr_ror_w
+_bits_orr_ror_w:
+    orr w0, w0, w1, ror #31
     ret

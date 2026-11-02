@@ -70,6 +70,13 @@ results do not replace previously recorded release performance measurements.
   sampled (`sdiv w`, beyond the solver), 3,568 declined, 0 refuted. Every
   decline is an unmodelled instruction: `bic`/`bics`/`eon`, a ROR-shifted
   operand, `negs`, `mneg`, `movn`, `rbit`, `clz`, `cls`.
+- **FIXED — the tracer did not model `bic`, `bics`, `eon`, `negs`, `mneg`,
+  `movn` or a ROR-shifted operand.** Each left its destination unknown:
+  Swift's `-O` `!flag` (`bic w0, w8, w0`) and `max(n, 0)` (`bic x0, x0, x0,
+  asr #63`) rendered `return ?`. z3 check: 58,506 verified, 8 declined
+  (`rbit`, `clz`, `cls`, register `ror`), 0 refuted. Fixtures: two returns
+  in libReconstruction -O and -Osize. libSwiftUIMacros: nine lines, the
+  capacity clamp `(r & ~(r >>ˢ 63))` and `!=` as `1 & ~(==)`.
 - **FIXED — the tracer did not model the bitfield moves or `neg`.**
   `ubfx`, `sbfx`, `ubfiz`, `sbfiz`, `bfi`, `bfxil` and `neg` left their
   destination unknown. Each is now a table entry, checked against the
