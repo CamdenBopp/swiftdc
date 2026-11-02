@@ -123,6 +123,12 @@ public enum AbstractUnaryOperator: Equatable, Sendable {
     /// Reverse bytes independently within each 16/32/64-bit chunk of the
     /// operand's bit pattern. Register-width normalization stays explicit.
     case byteSwap(bits: Int)
+    /// Leading zeros of the operand's low `bits` (`clz`).
+    case leadingZeros(bits: Int)
+    /// The bits after the sign bit of the low `bits` that equal it (`cls`).
+    case leadingSignBits(bits: Int)
+    /// The operand's low `bits` in reverse order (`rbit`).
+    case bitReverse(bits: Int)
     /// An integer or a float converted to a float of `bits` width (`scvtf`,
     /// `ucvtf`, `fcvt`): `Double(x)` at 64, `Float(x)` at 32.
     case toFloat(bits: Int)
@@ -2797,6 +2803,24 @@ public struct ValueTracer: Sendable {
                                                          source(detail.operands[2], in: registers)) ?? result
                 registers[Self.flagsWidthKey] = .immediate(UInt64(effect.destination.widthBits))
             }
+
+        case AARCH64_INS_CLZ, AARCH64_INS_CLS, AARCH64_INS_RBIT:
+            // `clz` counts a register's leading zeros, `cls` the bits after
+            // its sign bit that equal it, and `rbit` reverses its bits.
+            guard let dest = destinationRegister(detail), [32, 64].contains(dest.widthBits), dest.kind == .gpr,
+                  detail.operands.count == 2, let input = detail.operands[1].operand.register,
+                  input.kind == .gpr || input.kind == .zero, input.widthBits == dest.widthBits
+            else { clobber(detail, into: &registers); return }
+            let op: AbstractUnaryOperator = detail.id == AARCH64_INS_CLZ ? .leadingZeros(bits: dest.widthBits)
+                : detail.id == AARCH64_INS_CLS ? .leadingSignBits(bits: dest.widthBits) : .bitReverse(bits: dest.widthBits)
+            let value = source(detail.operands[1], in: registers)
+            let result: AbstractValue
+            if case .immediate(let constant) = value, let folded = BitCounting.apply(op, constant) {
+                result = .immediate(folded)
+            } else if value == .unknown || Self.expressionDepth(value) >= 8 {
+                result = .unknown
+            } else { result = .unary(op, value) }
+            write(dest, result, into: &registers)
 
         case AARCH64_INS_REV, AARCH64_INS_REV16, AARCH64_INS_REV32, AARCH64_INS_REV64:
             guard let dest = destinationRegister(detail), [32, 64].contains(dest.widthBits),

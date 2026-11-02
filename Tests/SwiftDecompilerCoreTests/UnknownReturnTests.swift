@@ -9,10 +9,10 @@ import Testing
         let recorder = ProbeRecorder()
         let functions = try await withStableDependencies {
             try await Probe.recording(recorder) {
-                try await Disassembler(preset: preset).disassemble(path: path, functionFilter: "leadingZeros")
+                try await Disassembler(preset: preset).disassemble(path: path, functionFilter: "bitCount")
             }
         }
-        let function = try #require(functions.first { $0.symbol.contains("leadingZeros") })
+        let function = try #require(functions.first { $0.symbol.contains("bitCount") })
         #expect(function.renderPseudo().contains("return ?"))
         #expect(function.renderStructured().contains("return ?"))
         let outcomes = recorder.records.filter { $0.event == .returnOutcome }

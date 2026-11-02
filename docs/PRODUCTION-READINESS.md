@@ -69,6 +69,16 @@ results do not replace previously recorded release performance measurements.
   branch's NZCV. At its first run: 9,287 verified, 1,871 refuted, 212
   unparsed, in four classes fixed below. Now: 9,936 verified, 2,708
   declined, 0 refuted, 0 unparsed.
+- **FIXED — the tracer did not model `clz`, `cls` or `rbit`.** Each
+  cleared its destination, so Swift's `leadingZeroBitCount` (and
+  `trailingZeroBitCount`, `rbit` then `clz`) read `return ?`. New unary
+  operators `leadingZeros`, `leadingSignBits` and `bitReverse` carry them,
+  folded on constants and exported to `swiftdc-value/1`. z3: 58,514
+  verified, 0 declined but the sampled `sdiv w`, 0 refuted. Fixtures:
+  libUnknownReturn now reads `return leadingZeros64(arg0)` (the fixture moved
+  to a popcount to keep its unknown), goProgram gains `((64 -
+  leadingZeros64(r0)) * 0x13441)` as an argument, and libFixpointOrder's
+  hidden target reads `bitReverse64(bitReverse64(0x364))`, still unfollowed.
 - **FIXED — the tracer did not model `ror` by a register.** Capstone 6
   gives `ror x0, x0, x1` two operands, the amount as a ROR_REG shift on
   the source, which `unfoldShiftAlias` did not restore as it does for
@@ -2890,8 +2900,9 @@ if a test was observed to fail without the fix.
   transfers. Reproduce with `swiftdc disasm
   Fixtures/Sample/libJumpTableBounds.dylib --cfg`.
 - **VALIDATION MAINTENANCE — unknown-return coverage survives REV support.**
-  Scalar REV recovery makes byteSwap a recovered result. `unknownreturn.swift`
-  now supplies an independently checked CLZ/RET lowering; `UnknownReturnTests`
+  Scalar REV recovery makes byteSwap a recovered result, and CLZ, CLS and
+  RBIT recovery a leading-zero count. `unknownreturn.swift` now supplies a
+  popcount (`cnt`/`addv`, still unmodelled); `UnknownReturnTests`
   still requires `return ?`
   and an unknown probe outcome. All new fixtures, including byte reversal,
   are built by `Fixtures/Sample/build.sh` and required by the enforcing suite.

@@ -132,6 +132,17 @@ public extension ProbeValue {
                         throw ProbeScoreError.unsupported("unsupported byte-swap chunk width")
                     }
                     return result
+                case "leading-zeros", "leading-sign-bits", "bit-reverse":
+                    guard case .int(let bits)? = node["bits"] else { throw ProbeScoreError.invalid("missing bits") }
+                    let op: AbstractUnaryOperator = switch node["operator"]?.description {
+                    case "leading-zeros": .leadingZeros(bits: bits)
+                    case "leading-sign-bits": .leadingSignBits(bits: bits)
+                    default: .bitReverse(bits: bits)
+                    }
+                    guard let result = BitCounting.apply(op, operand) else {
+                        throw ProbeScoreError.unsupported("unsupported bit-count width")
+                    }
+                    return result
                 default: throw ProbeScoreError.unsupported("unsupported unary operator")
                 }
             case "binary": break

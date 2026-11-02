@@ -364,6 +364,16 @@ def traced_term(node, x, obligations):
                 piece = [z3.Extract(lo + 8 * b + 7, lo + 8 * b, operand) for b in range(size // 8)]
                 chunks.append(z3.Concat(*piece))
             return z3.Concat(*reversed(chunks)) if len(chunks) > 1 else chunks[0]
+        if op in ("leading-zeros", "leading-sign-bits", "bit-reverse"):
+            size = node["bits"]
+            low = z3.Extract(size - 1, 0, operand)
+            if op == "bit-reverse":
+                return z3.ZeroExt(64 - size, z3.Concat(*[z3.Extract(i, i, low) for i in range(size)]))
+            if op == "leading-sign-bits":
+                sign = z3.Extract(size - 1, size - 1, low)
+                flipped = low ^ z3.If(sign == 1, z3.BitVecVal((1 << size) - 1, size), z3.BitVecVal(0, size))
+                low = z3.Concat(z3.Extract(size - 2, 0, flipped), z3.BitVecVal(1, 1))
+            return z3.ZeroExt(64 - size, count_leading(low, size))
         raise Unsupported(f"unary {op}")
     if kind != "binary":
         raise Unsupported(kind)

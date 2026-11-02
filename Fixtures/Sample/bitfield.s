@@ -5,7 +5,8 @@
 // its other bits; sxt*/uxt* extend the low byte, halfword or word; neg is
 // 0 - s. bic is n & ~m and eon n ^ ~m, m shifted first; mneg is 0 - n * m;
 // movn is ~(imm << s); a ROR operand rotates within its register's width,
-// and ror by a register rotates by its value mod the width.
+// and ror by a register rotates by its value mod the width. clz counts
+// leading zeros, cls the bits after the sign equal to it, rbit reverses.
 // A W destination zero-extends into x0.
 .text
 .p2align 2
@@ -86,4 +87,28 @@ _bits_rorv_x:
 .globl _bits_rorv_w
 _bits_rorv_w:
     ror w0, w0, w1
+    ret
+.globl _bits_clz_x
+_bits_clz_x:
+    clz x0, x0
+    ret
+.globl _bits_clz_w
+_bits_clz_w:
+    clz w0, w0
+    ret
+.globl _bits_cls_x
+_bits_cls_x:
+    cls x0, x0
+    ret
+.globl _bits_cls_w
+_bits_cls_w:
+    cls w0, w0
+    ret
+.globl _bits_rbit_x
+_bits_rbit_x:
+    rbit x0, x0
+    ret
+.globl _bits_rbit_w
+_bits_rbit_w:
+    rbit w0, w0
     ret

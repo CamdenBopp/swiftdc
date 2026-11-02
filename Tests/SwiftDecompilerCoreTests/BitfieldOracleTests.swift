@@ -4,7 +4,8 @@ import Testing
 @testable import SwiftDecompilerCore
 
 /// The tracer's value for each bitfield move, extend, negation, bit clear,
-/// negated multiply, inverted move, rotated operand and register rotate in
+/// negated multiply, inverted move, rotated operand, register rotate and
+/// bit count or reversal in
 /// `bitfield.s` against the instruction executed natively, over edge and
 /// random inputs. Unmodelled, each one cleared its destination: sound, but
 /// `ubfx` alone is about 1 in 700 instructions in the perf set (25,768 of
@@ -15,7 +16,7 @@ import Testing
     let handle = try #require(dlopen(path, RTLD_NOW | RTLD_LOCAL))
     defer { dlclose(handle) }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
-    #expect(functions.count == 33)
+    #expect(functions.count == 39)
     let inputs = ResearchFixtures.inputs(seed: 11)
     let pairs = zip(inputs, inputs.reversed() + [0x8000_0000_0000_0000]).map { [$0, $1] }
     for function in functions {
