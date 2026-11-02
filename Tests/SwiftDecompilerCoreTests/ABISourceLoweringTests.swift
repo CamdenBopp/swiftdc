@@ -303,3 +303,17 @@ struct ABISourceLoweringTests {
     #expect(!pe.contains("takeInt(r0)"), Comment(rawValue: pe))
     #expect(try text("intCall").contains("return (MultiResult.takeInt((arg0 + 3)) + 1)"))
 }
+
+/// A one-case enum is zero-sized and takes no register. Counted as one,
+/// `oneMid(_ a: Int, _ o: One, _ b: Int)` read `return ((7 * arg0) - arg1)`
+/// with `arg1` the enum, and its caller `oneMid(arg0, arg1, ?)`
+/// (`onecase.swift`, ABI review item 8).
+@Test func aOneCaseEnumTakesNoRegisterIfPresent() async throws {
+    let path = "Fixtures/Sample/libOneCase.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let callee = try #require(functions.first { $0.displayName.hasPrefix("OneCase.oneMid(") }).renderStructured()
+    #expect(callee.contains("return ((7 * arg0) - arg2)"), Comment(rawValue: callee))
+    let caller = try #require(functions.first { $0.displayName.hasPrefix("OneCase.callOneMid(") }).renderStructured()
+    #expect(!caller.contains("oneMid(arg0, arg1, ?)"), Comment(rawValue: caller))
+}

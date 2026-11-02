@@ -6663,3 +6663,12 @@ Findings:
   result and an unreadable result type claim nothing. Cost: in the
   swift-syntax dylibs about 130 enum-tag tests that named the raw
   register (`w9 >=ᵁ 4`) now read `? & 255`.
+- **FIXED — a one-case enum counted as one register** (ABI review item 8).
+  `isNoPayloadEnum`, the one-register gate for seeding, call layout and
+  return registers, now needs two or more cases; a one-case enum is
+  zero-sized, and the entry skips it. `oneMid(_ a: Int, _ o: One, _ b:
+  Int)` read `return ((7 * arg0) - arg1)` with `arg1` the enum; it reads
+  `- arg2`, and its caller `oneMid(arg0, arg1)` instead of `(arg0, arg1,
+  ?)` (`onecase.swift`). Three `(? == ?)` on one-case enums now read
+  `__derived_enum_equals()`, which takes no registers. swift-syntax
+  dylibs: byte-identical.

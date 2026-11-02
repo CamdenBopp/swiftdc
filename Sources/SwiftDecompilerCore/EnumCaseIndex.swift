@@ -68,10 +68,19 @@ public struct EnumCaseIndex: Sendable {
 
     /// Whether `typeName` (possibly module-qualified) names a no-payload enum
     /// this image publishes unambiguously — i.e. one whose cases this index can
-    /// name. A no-payload enum is a trivial integer tag in a single register, so
-    /// this is also the safe gate for seeding such a parameter as a scalar.
+    /// name — that takes a register. A no-payload enum of two or more cases
+    /// is a trivial integer tag in a single register, so this is also the safe
+    /// gate for seeding such a parameter as a scalar. One case is zero-sized
+    /// and takes none: `oneMid(_ a: Int, _ o: One, _ b: Int)` takes b in x1,
+    /// and counted as a register it read `7 * arg0 - arg1` for `a * 7 - b`.
     public func isNoPayloadEnum(_ typeName: String) -> Bool {
-        cases(for: typeName) != nil
+        (cases(for: typeName)?.count ?? 0) >= 2
+    }
+
+    /// Whether `typeName` names a no-payload enum of exactly one case, which
+    /// is zero-sized and passed in no register.
+    func isSingleCaseEnum(_ typeName: String) -> Bool {
+        cases(for: typeName)?.count == 1
     }
 
     /// All valid tags must survive a proposed integer projection before that

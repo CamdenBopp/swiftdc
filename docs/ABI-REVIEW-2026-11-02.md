@@ -61,7 +61,7 @@ omitted.
    function with an indirect result, `arg0` names the buffer. Give async
    calls a layout (result in x0, formals from x1, self x20, floats in v),
    or decline the arity.
-8. **A single-case enum counts as one register.** It is zero-sized:
+8. **FIXED — A single-case enum counts as one register.** It is zero-sized:
    `oneMid(_ a: Int, _ o: One, _ b: Int)` renders `7 * arg0 - arg1` with
    `arg1` the enum, and callers shift every later argument.
 9. **Narrow integers.** A non-constant Int8/16/32 return renders unnarrowed

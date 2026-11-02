@@ -3962,6 +3962,8 @@ public struct Disassembler: Sendable {
                 // still have proven registers: `afterString(_:_:)`'s Int is
                 // x2. Anything else is not provably laid out: seed nothing.
                 let type = Self.parameterType(parameter)
+                // A one-case enum is zero-sized: it takes no register.
+                if enumCaseIndex.isSingleCaseEnum(type) { continue }
                 guard split.thrownType == nil,
                       let words = Self.integerRegisterFootprint(ofParameterType: type),
                       integerIndex + words <= 8

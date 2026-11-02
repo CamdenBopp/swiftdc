@@ -463,6 +463,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name EntryFootprints entryfoo
 echo "==> calls whose results span registers, one part used (multiresult.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MultiResult multiresult.swift -o libMultiResult.dylib
 
+echo "==> a one-case enum parameter, zero-sized (onecase.swift, -Onone)"
+$SWIFTC -parse-as-library -Onone -emit-library -module-name OneCase onecase.swift -o libOneCase.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib
