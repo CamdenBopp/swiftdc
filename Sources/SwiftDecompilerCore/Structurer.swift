@@ -824,7 +824,15 @@ struct ControlFlowStructure {
                     let lhsIndex = hasDestination ? 1 : 0
                     let rhsIndex = hasDestination ? 2 : 1
                     let lhs = resolve(ops[lhsIndex], before: index, in: block, consumed: &consumed)
-                    let rhs = resolve(ops[rhsIndex], before: index, in: block, consumed: &consumed)
+                    // The second operand can carry a shift or an extend
+                    // (`cmp x21, x8, lsr #1`, `cmp x0, #0x1, lsl #12`); read
+                    // without it, the compare named another value.
+                    guard let rhs = Self.applyingModifier(
+                        resolve(ops[rhsIndex], before: index, in: block, consumed: &consumed),
+                        operand: ops[rhsIndex], trailing: ops[(rhsIndex + 1)...]),
+                          let rawRHS = Self.applyingModifier(
+                        Self.cleanImmediate(ops[rhsIndex]), operand: ops[rhsIndex], trailing: ops[(rhsIndex + 1)...])
+                    else { return ("?", consumed) }
                     // `cmn`/`adds` set the flags from `lhs + rhs`: they compare lhs
                     // with -rhs. Read like `cmp`, `cmn x0, #1; b.eq` (x == -1)
                     // rendered `x0 == 1`. `b.mi`/`b.pl` test the sign of that
@@ -839,7 +847,7 @@ struct ControlFlowStructure {
                     // If back-substitution collapsed distinct operands to the same
                     // text, it lost information — show the raw registers instead.
                     if lhs == rhs, ops[lhsIndex] != ops[rhsIndex] {
-                        return (compare(ops[lhsIndex], Self.cleanImmediate(ops[rhsIndex])), consumed)
+                        return (compare(ops[lhsIndex], rawRHS), consumed)
                     }
                     if !sums, rhs == "0" ? isBoolean(lhs, operand: ops[lhsIndex], before: index)
                                          : isProvenBoolean(lhs, operand: ops[lhsIndex], before: index),
@@ -849,11 +857,15 @@ struct ControlFlowStructure {
                     return (compare(lhs, rhs), consumed)
                 }
                 if m == "tst", ops.count >= 2 {
-                    return ("(\(resolve(ops[0], before: index, in: block, consumed: &consumed)) & \(Self.cleanImmediate(ops[1]))) \(op) 0", consumed)
+                    guard let mask = Self.applyingModifier(Self.cleanImmediate(ops[1]), operand: ops[1], trailing: ops[2...])
+                    else { return ("?", consumed) }
+                    return ("(\(resolve(ops[0], before: index, in: block, consumed: &consumed)) & \(mask)) \(op) 0", consumed)
                 }
                 // `ands` is `tst` that also keeps the result.
                 if m == "ands", ops.count >= 3 {
-                    return ("(\(resolve(ops[1], before: index, in: block, consumed: &consumed)) & \(Self.cleanImmediate(ops[2]))) \(op) 0", consumed)
+                    guard let mask = Self.applyingModifier(Self.cleanImmediate(ops[2]), operand: ops[2], trailing: ops[3...])
+                    else { return ("?", consumed) }
+                    return ("(\(resolve(ops[1], before: index, in: block, consumed: &consumed)) & \(mask)) \(op) 0", consumed)
                 }
             }
             return (op == "?" ? terminator.text : "cond \(op)", consumed)
@@ -968,8 +980,10 @@ struct ControlFlowStructure {
             let savesCallResult = mnemonic == "mov" && sources == ["x0"]
             if !savesCallResult, !Self.registers(sources, surviveFrom: index, to: before, in: block) { return token }
             switch mnemonic {
-            case "and" where ops.count >= 3: return "(\(ops[1]) & \(Self.cleanImmediate(ops[2])))"
-            case "orr" where ops.count >= 3: return "(\(ops[1]) | \(Self.cleanImmediate(ops[2])))"
+            case "and" where ops.count >= 3, "orr" where ops.count >= 3:
+                guard let second = Self.applyingModifier(Self.cleanImmediate(ops[2]), operand: ops[2], trailing: ops[3...])
+                else { return token }
+                return "(\(ops[1]) \(mnemonic == "and" ? "&" : "|") \(second))"
             // A logical and an arithmetic shift differ on a negative value, so
             // each names its kind, as the tracer's expressions do (`>>ᵁ`, `>>ˢ`).
             case "lsr": return ops.count >= 3 ? "(\(ops[1]) >>\u{1D41} \(Self.cleanImmediate(ops[2])))" : token
@@ -1096,6 +1110,28 @@ struct ControlFlowStructure {
         if let first = t.first, first.isNumber { return "-" + t }
         if t.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) { return "-" + t }
         return "-(\(t))"
+    }
+
+    /// An operand with the shift or extend Capstone prints after it: `x1,
+    /// lsr #1` is `(x1 >>ᵁ 1)` and `#0x1, lsl #12` is `0x1000`. `trailing`
+    /// is what follows the operand. Nil when it carries a modifier this
+    /// spells no operator for (an extend, `ror`), so the caller declines.
+    private static func applyingModifier(_ value: String, operand: String, trailing: ArraySlice<String>) -> String? {
+        guard let modifier = trailing.first else { return value }
+        let parts = modifier.split(separator: " ")
+        guard trailing.count == 1, parts.count == 2, let amount = immediateValue(String(parts[1])), amount < 64
+        else { return nil }
+        if operand.hasPrefix("#") {
+            guard parts[0] == "lsl", let base = immediateValue(operand), base <= UInt64.max >> amount else { return nil }
+            let shifted = base << amount
+            return shifted < 10 ? String(shifted) : "0x" + String(shifted, radix: 16)
+        }
+        switch parts[0] {
+        case "lsl": return "(\(value) << \(amount))"
+        case "lsr": return "(\(value) >>\u{1D41} \(amount))"
+        case "asr": return "(\(value) >>\u{02E2} \(amount))"
+        default: return nil
+        }
     }
 
     /// `#5` or `#0x1f` as a number; nil for anything else.

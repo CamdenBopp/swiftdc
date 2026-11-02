@@ -93,3 +93,25 @@ private func textPathFunction(_ words: [UInt32], undetailed: Set<Int> = []) thro
     let arithmetic = try textPathFunction([0x9343fc08] + tail).renderStructured()  // asr x8, x0, #3
     #expect(arithmetic.contains("(x0 >>ˢ 3) != 7"), Comment(rawValue: arithmetic))
 }
+
+/// An operand's printed shift or extend is part of its value. Dropped,
+/// `cmp x0, #0x1, lsl #12` read `x0 == 1` (it compares with 4096) and
+/// `cmp x21, x8, lsr #1` read `x21 >=ᵁ x8` (RetainRegister.enroll).
+/// An extend or a rotate, which no operator here spells, declines.
+@Test func aTextConditionKeepsAnOperandsShift() throws {
+    let tail: [UInt32] = [0x54000060, 0x52800020, 0xd65f03c0, 0x52800040, 0xd65f03c0]  // b.eq +12; ...
+    func render(_ words: [UInt32]) throws -> String { try textPathFunction(words + tail).renderStructured() }
+    let cases: [([UInt32], String)] = [
+        ([0xeb41041f], "x0 == (x1 >>ᵁ 1)"),                  // cmp x0, x1, lsr #1
+        ([0xf140041f], "x0 == 0x1000"),                      // cmp x0, #1, lsl #12
+        ([0xab81081f], "x0 == -((x1 >>ˢ 2))"),               // cmn x0, x1, asr #2
+        ([0xea010c1f], "(x0 & (x1 << 3)) == 0"),             // tst x0, x1, lsl #3
+        ([0x0a010808, 0x71001d1f], "(w0 & (w1 << 2)) == 7"), // and w8, w0, w1, lsl #2; cmp w8, #7
+        ([0xeb21401f], "if (?)"),                            // cmp x0, w1, uxtw
+        ([0x0ac10808, 0x71001d1f], "w8 == 7"),               // and w8, w0, w1, ror #2; cmp w8, #7
+    ]
+    for (words, expected) in cases {
+        let text = try render(words)
+        #expect(text.contains(expected), Comment(rawValue: text))
+    }
+}

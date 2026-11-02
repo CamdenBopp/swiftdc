@@ -64,9 +64,18 @@ results do not replace previously recorded release performance measurements.
   files change, every line a previously wrong condition now reading the
   tested register (MangledTypes ×2, RuntimeArity, StringArity,
   RetainRegister, the Go float check `ubfx x13, x12, #23, #8; and x12, …;
-  cmp x13, #0xff`, which read `x12 != 0xff`). Still OPEN on the same path:
-  a compare's shifted operand drops its shift (`cmp x21, x8, lsr #1` reads
-  `x21 >=ᵁ x8`).
+  cmp x13, #0xff`, which read `x12 != 0xff`).
+- **FIXED — a text condition dropped its operand's shift.** Capstone
+  prints a shifted or extended operand as a trailing operand (`cmp x21,
+  x8, lsr #1`, `cmp x0, #0x1, lsl #12`), and the text path read only the
+  register or immediate: those rendered `x21 >=ᵁ x8` and `x0 == 1` (it
+  compares with 4096). The compare's second operand, `tst`/`ands` masks
+  and `and`/`orr` definitions now apply `lsl`, `lsr` and `asr`, fold a
+  shifted immediate, and decline an extend or a rotate. Fixtures: 18
+  structured files, 363 lines, each gaining the shift it lacked: Swift's
+  multiply-overflow test `cmp x8, x9, asr #63` read `x8 != x9`, the array
+  capacity test `cmp x21, x8, lsr #1` read `x21 >=ᵁ x8`, Go's `cmp x6,
+  #0x100, lsl #12` read `>=ᵁ 0x100`. No line became `?`.
 - **FIXED — the text path printed a logical and an arithmetic shift
   alike.** `lsr` and `asr` both rendered `(x0 >> 3)`, which differ on a
   negative value. They now print `>>ᵁ` and `>>ˢ`, as the tracer's
