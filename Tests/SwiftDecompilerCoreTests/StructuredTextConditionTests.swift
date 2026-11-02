@@ -40,3 +40,24 @@ private func textPathFunction(_ words: [UInt32], undetailed: Set<Int> = []) thro
     #expect(!called.contains("x1 == 0") && !called.contains("!x1"), Comment(rawValue: called))
     #expect(called.contains("x20 == 0"), Comment(rawValue: called))
 }
+
+/// The tested register's last write need not be its first operand: `ldp
+/// x9, x8, [sp]` loads x8, and `ldr x9, [x8], #8` moves it. Walking past
+/// either found `mov x8, x1` and rendered `x1 == 7` (RetainRegister.enroll
+/// read the pointer an `ldp` had loaded from).
+@Test func aTextConditionStopsAtAnyWriteOfTheTestedRegister() throws {
+    let tail: [UInt32] = [0xf1001d1f, 0x54000060, 0x52800020, 0xd65f03c0, 0x52800040, 0xd65f03c0]
+    let copied = try textPathFunction([0xaa0103e8] + tail).renderStructured()
+    #expect(copied.contains("x1 == 7"), Comment(rawValue: copied))
+    for write: UInt32 in [0xa94023e9, 0xf8408509] {   // ldp x9, x8, [sp]; ldr x9, [x8], #8
+        let text = try textPathFunction([0xaa0103e8, write] + tail).renderStructured()
+        #expect(!text.contains("x1 == 7"), Comment(rawValue: text))
+        #expect(text.contains("x8 == 7"), Comment(rawValue: text))
+    }
+    // Without detail the instruction between may load x8. An immediate has
+    // no source for the survival check to catch: `mov x8, #5` read `5 == 7`.
+    let constant = try textPathFunction([0xd28000a8] + tail).renderStructured()
+    #expect(constant.contains("if (0)") || constant.contains("5 == 7"), Comment(rawValue: constant))
+    let unknown = try textPathFunction([0xd28000a8, 0xd503201f] + tail, undetailed: [1]).renderStructured()  // nop
+    #expect(unknown.contains("x8 == 7"), Comment(rawValue: unknown))
+}

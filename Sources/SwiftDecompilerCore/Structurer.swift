@@ -949,7 +949,15 @@ struct ControlFlowStructure {
                 return token
             }
             let (mnemonic, ops) = Self.decode(instruction.text)
-            guard let dest = ops.first, Self.canonicalRegister(dest) == register else { continue }
+            guard let dest = ops.first, Self.canonicalRegister(dest) == register else {
+                // The register's last write need not be a first operand: `ldp
+                // x21, x8, [x8, #0x10]` loads x8, and a writeback moves its
+                // base. Walking past it found an older definition
+                // (RetainRegister.enroll read `x8 & 0x…ff8`, the pointer
+                // the pair was loaded from). Without detail it may be one.
+                guard let detail = instruction.detail, !detail.writtenRegisterKeys.contains(register) else { return token }
+                continue
+            }
             if let field = instruction.fieldRead { return field }
             // The substitution names the definition's source registers, which
             // read as their values at the test. One written in between holds

@@ -66,10 +66,16 @@ results do not replace previously recorded release performance measurements.
   RetainRegister, the Go float check `ubfx x13, x12, #23, #8; and x12, …;
   cmp x13, #0xff`, which read `x12 != 0xff`). Still OPEN on the same path:
   `ubfx`/`sbfx` are read as copies of their source, `lsr` and `asr` both
-  print `>>`, a definition is found only through an instruction's first
-  operand (`ldp x21, x8` is skipped as a write of x8), and a compare's
-  shifted operand drops its shift (`cmp x21, x8, lsr #1` reads `x21 >=ᵁ
-  x8`).
+  print `>>`, and a compare's shifted operand drops its shift (`cmp x21,
+  x8, lsr #1` reads `x21 >=ᵁ x8`).
+- **FIXED — the text path's definition search skipped a write that was
+  not a first operand.** `mov x8, x1; ldp x9, x8, [sp]; cmp x8, #7`
+  rendered `x1 == 7`: the walk accepted a definition only where the tested
+  register was operand 0, so `ldp`'s second destination and a writeback
+  base were read as not writing it. The walk now stops at any instruction
+  whose written registers include it, and at one without detail. No
+  fixture render changes (the previous fix had already declined the one
+  fixture case, RetainRegister.enroll).
 The highest-severity category. A wrong render is worse than a missing one,
 because it cannot be distinguished from a right one by reading the output.
 
