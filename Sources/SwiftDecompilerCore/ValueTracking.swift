@@ -2816,9 +2816,23 @@ public struct ValueTracer: Sendable {
             write(dest, reversed, into: &registers)
 
         case AARCH64_INS_EXTR, AARCH64_INS_ROR, AARCH64_INS_ALIAS_ROR:
+            // `ror d, n, m` (RORV) rotates by m mod W: `(n >> k) | (n << ((W -
+            // k) mod W))`, both halves n itself at k = 0.
+            if detail.id == AARCH64_INS_ROR, detail.operands.count == 3,
+               let dest = destinationRegister(detail), dest.kind == .gpr, [32, 64].contains(dest.widthBits),
+               let input = detail.operands[1].operand.register, input.kind == .gpr || input.kind == .zero,
+               let amount = detail.operands[2].operand.register, amount.kind == .gpr || amount.kind == .zero,
+               input.widthBits == dest.widthBits, amount.widthBits == dest.widthBits {
+                let width = UInt64(dest.widthBits)
+                let value = source(detail.operands[1], in: registers)
+                let k = expression(.bitAnd, source(detail.operands[2], in: registers), .immediate(width - 1))
+                let back = expression(.bitAnd, expression(.subtract, .immediate(width), k), .immediate(width - 1))
+                write(dest, expression(.bitOr, expression(.shiftRight, value, k), expression(.shiftLeft, value, back)),
+                      into: &registers)
+                return
+            }
             // Extract a width-sized window from high:low. The immediate ROR
-            // alias supplies the same register for both halves. Register ROR
-            // has a different operand shape and fails the immediate guard.
+            // alias supplies the same register for both halves.
             let rotating = detail.id != AARCH64_INS_EXTR
             let shift: Int64? = rotating
                 ? (detail.operands.count == 2 && detail.operands[1].shift.type == AARCH64_SFT_ROR

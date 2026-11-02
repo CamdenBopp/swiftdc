@@ -283,7 +283,9 @@ public struct StructuredInsn: Sendable {
     /// Restore that shape: the shift becomes its own operand and the source
     /// operand's shift is cleared, so the tracer does not apply it twice.
     private static func unfoldShiftAlias(_ id: aarch64_insn, _ operands: inout [StructuredOperandInfo]) {
-        guard id == AARCH64_INS_LSL || id == AARCH64_INS_LSR || id == AARCH64_INS_ASR,
+        // `ror d, n, m` arrives the same way, as ROR_REG on n; the
+        // immediate `ror` (an EXTR alias) keeps its two-operand shape.
+        guard id == AARCH64_INS_LSL || id == AARCH64_INS_LSR || id == AARCH64_INS_ASR || id == AARCH64_INS_ROR,
               operands.count == 2
         else { return }
         let source = operands[1]
@@ -291,7 +293,7 @@ public struct StructuredInsn: Sendable {
         switch source.shift.type {
         case AARCH64_SFT_LSL, AARCH64_SFT_LSR, AARCH64_SFT_ASR:
             amount = .immediate(Int64(source.shift.amount))
-        case AARCH64_SFT_LSL_REG, AARCH64_SFT_LSR_REG, AARCH64_SFT_ASR_REG:
+        case AARCH64_SFT_LSL_REG, AARCH64_SFT_LSR_REG, AARCH64_SFT_ASR_REG, AARCH64_SFT_ROR_REG:
             guard let register = PhysReg.canonical(aarch64_reg(rawValue: source.shift.amount)) else { return }
             amount = .register(register)
         default:

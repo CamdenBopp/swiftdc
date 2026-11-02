@@ -4,7 +4,8 @@
 // sbfx/sbfiz sign-extend the w-bit field; bfi/bfxil insert into d and keep
 // its other bits; sxt*/uxt* extend the low byte, halfword or word; neg is
 // 0 - s. bic is n & ~m and eon n ^ ~m, m shifted first; mneg is 0 - n * m;
-// movn is ~(imm << s); a ROR operand rotates within its register's width.
+// movn is ~(imm << s); a ROR operand rotates within its register's width,
+// and ror by a register rotates by its value mod the width.
 // A W destination zero-extends into x0.
 .text
 .p2align 2
@@ -77,4 +78,12 @@ _bits_and_ror_x:
 .globl _bits_orr_ror_w
 _bits_orr_ror_w:
     orr w0, w0, w1, ror #31
+    ret
+.globl _bits_rorv_x
+_bits_rorv_x:
+    ror x0, x0, x1
+    ret
+.globl _bits_rorv_w
+_bits_rorv_w:
+    ror w0, w0, w1
     ret

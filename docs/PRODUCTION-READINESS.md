@@ -69,6 +69,12 @@ results do not replace previously recorded release performance measurements.
   branch's NZCV. At its first run: 9,287 verified, 1,871 refuted, 212
   unparsed, in four classes fixed below. Now: 9,936 verified, 2,708
   declined, 0 refuted, 0 unparsed.
+- **FIXED — the tracer did not model `ror` by a register.** Capstone 6
+  gives `ror x0, x0, x1` two operands, the amount as a ROR_REG shift on
+  the source, which `unfoldShiftAlias` did not restore as it does for
+  `lsl`/`lsr`/`asr`. The tracer now reads it as `(n >> (m & (W-1))) | (n
+  << ((W - m) & (W-1)))`. z3: 58,508 verified, 6 declined (`rbit`, `clz`,
+  `cls`). No fixture or real-binary line changed.
 - **FIXED — the text path named a written argument register as the
   argument.** In an ObjC method it named x2–x7 `arg0`–`arg5` wherever they
   appeared: `add x2, x9, #1; cmp x2, #0` rendered `arg0 == 0`, as did a
