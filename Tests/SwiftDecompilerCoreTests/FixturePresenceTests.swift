@@ -168,6 +168,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libLocalTypes.stripped.dylib",
         "Fixtures/Sample/libLocalTypesNamed.dylib",
         "Fixtures/Sample/libLocalTypesNamed.stripped.dylib",
+        "Fixtures/Sample/libProtocolRHS.dylib",
         "Fixtures/Sample/libLocalTypesPair.dylib",
         "Fixtures/Sample/libLocalTypesPair.stripped.dylib",
         "Fixtures/Sample/libUnrecordedType.dylib",

@@ -405,6 +405,9 @@ xcrun swiftc -O -parse-as-library -emit-library localtypes.swift -module-name Lo
 cp libLocalTypesPair.dylib libLocalTypesPair.stripped.dylib
 strip -x libLocalTypesPair.stripped.dylib
 
+echo "==> a protocol requirement whose right-hand side is a generic type (protocolrhs.swift, -O)"
+xcrun swiftc -O -parse-as-library -emit-library protocolrhs.swift -module-name ProtocolRHS -o libProtocolRHS.dylib
+
 echo "==> local types whose anonymous contexts keep their mangled names, as Apple's cache images do (localtypes.swift, -O; strip -x)"
 xcrun swiftc -O -parse-as-library -emit-library localtypes.swift -module-name LocalTypes -Xfrontend -enable-anonymous-context-mangled-names -o libLocalTypesNamed.dylib
 cp libLocalTypesNamed.dylib libLocalTypesNamed.stripped.dylib

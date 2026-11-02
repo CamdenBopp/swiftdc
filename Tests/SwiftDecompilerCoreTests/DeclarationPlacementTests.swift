@@ -405,6 +405,21 @@ func aStrippedValueWitnessIsNamedByItsTypesTableIfPresent(name: String) async th
     #expect(!SwiftDeclarationDumper.namesEveryAnonymousContext(box, contexts: contexts))
 }
 
+/// A protocol requirement's right-hand side prints as the type it is
+/// (`protocolrhs.swift`). MachOSwiftSection 0.22 printed only the
+/// associated types it found there, `Self.Readiness.Element ==
+/// Self.Payload` for `== Event<Payload>`: a requirement the protocol does
+/// not have. CloudKitDaemon's `CommonCheckProtocol` printed the same way.
+@Test func aProtocolRequirementsGenericRightHandSideIsPrintedIfPresent() async throws {
+    let path = "Fixtures/Sample/libProtocolRHS.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let machO = try BinaryLoader.load(path: path)
+    let interface = try await withStableDependencies { try await InterfaceReconstructor().reconstruct(machO) }
+    #expect(interface.contains("Self.Readiness.Element == ProtocolRHS.Event<Self.Payload>"), Comment(rawValue: interface))
+    #expect(interface.contains("Self.Pending == [Self.Payload]"), Comment(rawValue: interface))
+    #expect(!interface.contains("Self.Readiness.Element == Self.Payload"), Comment(rawValue: interface))
+}
+
 /// A type nested in a local type carries its parent's position name,
 /// `M.CostCache.(WorkItem in $3990c).State` (Xcode's SwiftUITap), and is
 /// placed through it, as the type directly under the innermost context.
