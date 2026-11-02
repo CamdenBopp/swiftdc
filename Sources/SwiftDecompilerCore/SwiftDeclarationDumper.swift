@@ -245,6 +245,29 @@ public struct SwiftDeclarationDumper: Sendable {
         return unwrapped
     }
 
+    /// MachOSwiftSection 0.23 and later name a local type by the function or
+    /// closure that declares it when the binary records one: `Result #1 in
+    /// AppIntentsIndex.MetadataIndex.properties(forIdentifiers:)`. Such a name
+    /// drops no context when the type directly under each anonymous context
+    /// is a local declaration on the name's context spine (each node's first
+    /// child), not one that only appears in a signature.
+    static func namesEveryAnonymousContext(_ node: Node, contexts: [(address: UInt64, below: [String])]) -> Bool {
+        guard !contexts.isEmpty else { return false }
+        var local: Set<String> = []
+        var current: Node? = node
+        var hops = 0
+        while let spine = current, hops < 64 {
+            hops += 1
+            let children = Array(spine.children)
+            if children.count >= 2, children[1].kind == .localDeclName,
+               let name = Array(children[1].children).last?.text {
+                local.insert(name)
+            }
+            current = children.first
+        }
+        return contexts.allSatisfy { context in context.below.last.map(local.contains) ?? false }
+    }
+
     /// Where the `below` names print last in a name, joined by dots, as a
     /// whole component (followed by the end, a space, `<`, `:` or `{`).
     static func nameSpan(of below: [String], in text: String, from start: String.Index) -> Range<String.Index>? {

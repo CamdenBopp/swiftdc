@@ -363,6 +363,48 @@ func aStrippedValueWitnessIsNamedByItsTypesTableIfPresent(name: String) async th
     #expect(SwiftDeclarationDumper.withoutPositionName(plain, contexts: contexts, from: plain.startIndex) == plain)
 }
 
+/// Built with its anonymous contexts' mangled names, as Apple's cache
+/// images are, a stripped local type is named by the function that
+/// declares it (MachOSwiftSection 0.23), and its accessor and value
+/// witnesses take that name, as their symbols demangle. A vtable label,
+/// `T.method`, would append to the function's result type and is not
+/// written for such a type.
+@Test func aFunctionNamedLocalTypesAccessorIsNamedAsItsSymbolIfPresent() async throws {
+    let original = "Fixtures/Sample/libLocalTypesNamed.dylib", stripped = "Fixtures/Sample/libLocalTypesNamed.stripped.dylib"
+    guard FileManager.default.fileExists(atPath: original), FileManager.default.fileExists(atPath: stripped) else { return }
+    let machO = try BinaryLoader.load(path: original)
+    var truth: [UInt64: Set<String>] = [:]
+    for symbol in machO.symbols where symbol.name.hasPrefix("_$s") {
+        guard let address = Disassembler.sectionAddress(of: symbol),
+              let printed = accessorSymbolPrinted(String(symbol.name.dropFirst()))
+        else { continue }
+        truth[address, default: []].insert(printed)
+    }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: stripped) }
+    let local = functions.filter { $0.displayName.contains(" #1 in ") }
+    #expect(local.contains { $0.displayName == "type metadata accessor for Local #1 in LocalTypes.Outer.make() -> Any" },
+            "\(local.map(\.displayName))")
+    #expect(local.count >= 8, "\(local.map(\.displayName))")
+    for function in local {
+        #expect(truth[function.startAddress]?.contains(function.displayName) == true,
+                "0x\(String(function.startAddress, radix: 16)): \(function.displayName) vs \(truth[function.startAddress] ?? [])")
+    }
+    #expect(!functions.contains { $0.displayName.hasSuffix("AnyObject.method") })
+}
+
+/// Only a local declaration on a name's context spine places a type: one
+/// that appears in a generic argument (`Box<Local #1 in f()>`) says nothing
+/// about where `Box` sits.
+@Test func aLocalDeclarationPlacesATypeOnlyOnItsContextSpine() throws {
+    let contexts: [(address: UInt64, below: [String])] = [(0x10, ["Local"]), (0x8, ["Local"])]
+    let descriptor = try demangleAsNodeTransient("$s10LocalTypes5OuterV4makeypyF0A0L_VMn")
+    #expect(SwiftDeclarationDumper.namesEveryAnonymousContext(descriptor, contexts: contexts))
+    #expect(!SwiftDeclarationDumper.namesEveryAnonymousContext(descriptor, contexts: [(0x10, ["Other"])]))
+    // `demangling cache variable for type metadata for M.Box<Local #1 in M.f() -> Any>`
+    let box = try demangleAsNodeTransient("$s1M3BoxVyAA1fypyF5LocalL_VGMd")
+    #expect(!SwiftDeclarationDumper.namesEveryAnonymousContext(box, contexts: contexts))
+}
+
 /// A type nested in a local type carries its parent's position name,
 /// `M.CostCache.(WorkItem in $3990c).State` (Xcode's SwiftUITap), and is
 /// placed through it, as the type directly under the innermost context.

@@ -281,6 +281,12 @@ struct MetadataSymbolizer: Sendable {
             typeName, contexts: contexts, from: typeName.startIndex
         ) else { return nil }
         typeName = unwrapped
+        // A name that spells each context by its function reads as a
+        // prefix's object (`type metadata accessor for Result #1 in
+        // M.T.f()`); a vtable label appends `.kind` to its owner, which on
+        // such a name reads as a member of the function's result type, so
+        // `contextName` does not take this path.
+        if SwiftDeclarationDumper.namesEveryAnonymousContext(node, contexts: contexts) { return typeName }
         if !contexts.isEmpty, !typeName.contains("(unknown context at "), !typeName.contains("(\(own) in _"),
            !SwiftDeclarationDumper.markingUnknownContexts(contexts, in: &typeName, from: typeName.startIndex) {
             return nil
