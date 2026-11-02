@@ -15,7 +15,7 @@ import Foundation
     }
     let text = functions.map { expandingResultBindingsForAssertions($0.renderPseudo()) }.joined(separator: "\n")
     // churn's own four arguments are untracked C parameters.
-    #expect(text.contains(#"stringWithFormat:@"%ld %ld", churn(?, ?, ?, ?), ?]"#), "\(text)")
+    #expect(text.contains(#"stringWithFormat:@"%ld %ld", churn(arg0, ?, ?, ?), arg0]"#), "\(text)")
 }
 
 @Test func theFormatParserCountsOnlyWhatItCanProve() {
@@ -49,9 +49,11 @@ import Foundation
         return functions.map { $0.renderPseudo() }.joined(separator: "\n")
     }
     let list = try await pseudo("listOf")
-    #expect(list.contains("[NSArray arrayWithObjects:?, ?, 0]"), "\(list)")
+    // The C functions have no signature; their bodies prove the parameters
+    // they read, so `listOf(a, b)` passes them on by name.
+    #expect(list.contains("[NSArray arrayWithObjects:arg0, arg1, 0]"), "\(list)")
     let formatted = try await pseudo("describeWith")
-    #expect(formatted.contains("[NSString stringWithFormat:?, …]"), "\(formatted)")
+    #expect(formatted.contains("[NSString stringWithFormat:arg0, …]"), "\(formatted)")
 }
 
 /// A call counted as printed when a later call's registers held its result,

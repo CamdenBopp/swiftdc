@@ -36,6 +36,12 @@ func anUntypedSendPassingAFloatDeclinesItsArgumentsIfPresent(path: String) async
     // -O0 reloads the double parameter into d0; -O2 passes it untouched,
     // and a C function has no signature to say d0 holds an argument (OPEN).
     if !path.hasSuffix(".opt.dylib") { expected["_putPassed"] = "[? put:? at:?]" }
+    // At -O2 the C functions keep `o` from their entry, and a signatureless
+    // body that reads it proves it is their first parameter.
+    if optimized {
+        expected["_putLoaded"] = "[arg0 put:? at:?]"
+        for name in ["_takeAfterBranch", "_takeAfterCall", "_copyThenTake"] { expected[name] = "[arg0 take:3 and:4]" }
+    }
     for (name, send) in expected.sorted(by: { $0.key < $1.key }) {
         guard let function = functions.first(where: { $0.displayName == name }) else {
             Issue.record("no \(name) in \(path)")

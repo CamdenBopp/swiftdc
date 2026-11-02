@@ -64,9 +64,12 @@ func aKnownCArityMatchesTheHeaderIfPresent(path: String) async throws {
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let expected: [(function: String, callee: String, arguments: [String])] = [
         ("_quit", "exit", ["3"]),
-        ("_loadSlot", "objc_loadWeakRetained", ["?"]),
-        ("_copySlot", "objc_copyWeak", ["?", "?"]),
-        ("_moveSlot", "objc_moveWeak", ["?", "?"]),
+        // The bodies' own reads prove their parameters: `&h->delegate` is
+        // `h + 8`. At -O2 copySlot and moveSlot tail-call without reading
+        // theirs, which proves nothing, so they stay unknown.
+        ("_loadSlot", "objc_loadWeakRetained", ["(arg0 + 8)"]),
+        ("_copySlot", "objc_copyWeak", path.hasSuffix(".opt.dylib") ? ["?", "?"] : ["arg0", "arg1"]),
+        ("_moveSlot", "objc_moveWeak", path.hasSuffix(".opt.dylib") ? ["?", "?"] : ["arg0", "arg1"]),
         ("_lastErrno", "__error", []),
         ("_mainOr", "pthread_main_np", []),
         ("_roll", "arc4random", []),

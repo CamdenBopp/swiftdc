@@ -399,6 +399,8 @@ public struct MemoryWrite: Sendable, Equatable {
     /// An index register added to the base, shifted left by `indexShift`
     /// (`[x20, x8, lsl #3]`). An extended index sets `indexed` instead.
     public let indexRegister: String?
+    /// The index register's value, when proven.
+    public let index: AbstractValue
     public let indexShift: Int
     public let indexed: Bool
     public let bytes: Int
@@ -4304,6 +4306,7 @@ public struct ValueTracer: Sendable {
             valueRegisters: sources.map { name($0.operand.register) },
             displacement: detail.postIndex ? 0 : displacement,
             indexRegister: operand.extender == AARCH64_EXT_INVALID ? name(index) : nil,
+            index: index.flatMap { registers[Location($0)] } ?? .unknown,
             indexShift: operand.shift.type == AARCH64_SFT_LSL ? Int(operand.shift.amount) : 0,
             indexed: index != nil && (operand.extender != AARCH64_EXT_INVALID
                 || (operand.shift.type != AARCH64_SFT_INVALID && operand.shift.type != AARCH64_SFT_LSL)),

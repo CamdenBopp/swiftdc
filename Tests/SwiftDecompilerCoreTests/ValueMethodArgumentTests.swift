@@ -27,16 +27,19 @@ struct ValueMethodArgumentTests {
         #expect(mix.contains("Swift.Hasher._combine(?)"), Comment(rawValue: mix))
     }
 
-    /// A call the tracer recorded nothing for still takes the parameters
-    /// its signature proves: stripped, `appendTwo` is unnamed, its entry
-    /// proves nothing, and its first call has no snapshot.
+    /// A call still takes exactly the parameters its signature proves:
+    /// stripped, `appendTwo` is unnamed and its entry seeds only what its
+    /// body reads. The entry arguments still in x2-x4 at the first call
+    /// are not more parameters of a stub (`append(self: arg0, ?, arg2,
+    /// arg3, arg4)` for a one-String `append(_:)`).
     @Test func aValueMethodCallWithNothingTrackedTakesItsParametersIfPresent() async throws {
         let path = "Fixtures/Sample/libValueMethod.stripped.dylib"
         guard FileManager.default.fileExists(atPath: path) else { return }
         let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
         let unnamed = try #require(functions.first { $0.displayName.hasPrefix("sub_") && $0.renderPseudo().contains("String.append") })
         let text = unnamed.renderPseudo()
-        #expect(text.components(separatedBy: "Swift.String.append(?)").count == 3, Comment(rawValue: text))
+        #expect(text.contains("Swift.String.append(self: arg0, ?)\n"), Comment(rawValue: text))
+        #expect(text.contains("Swift.String.append(?)"), Comment(rawValue: text))
     }
 
     /// A non-mutating method's `self` follows its formal parameters and is

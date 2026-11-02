@@ -16,10 +16,10 @@ import Testing
         try #require(functions.first { $0.symbol == "_\(name)" }).renderStructured()
     }
     let cases: [(String, String)] = [
-        ("mw_field", "mem64[x0 + 0x10] = x1"),
-        ("mw_release", "mem8[x0] = w1"),
-        ("mw_indexed", "mem64[x0 + (x1 << 3)] = x2"),
-        ("mw_result", "mem64[&result] = x0; mem64[&result + 0x8] = x1"),
+        ("mw_field", "mem64[arg0 + 0x10] = arg1"),
+        ("mw_release", "mem8[arg0] = (arg1 & 255)"),
+        ("mw_indexed", "mem64[arg0 + (arg1 << 3)] = arg2"),
+        ("mw_result", "mem64[&result] = arg0; mem64[&result + 0x8] = arg1"),
     ]
     for (name, expected) in cases {
         let text = try body(name)

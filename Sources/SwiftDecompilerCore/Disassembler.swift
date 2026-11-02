@@ -1375,6 +1375,15 @@ public struct Disassembler: Sendable {
             .swiftInstance(scalarArguments: Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex) ?? [:])
         } else if let scalarArgs = Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex) {
             .swiftFunction(scalarArguments: scalarArgs)
+        } else if !DisassembledFunction.signatureKnown(displayName: function.analysisDisplayName, objcSignature: nil),
+                  let summary = context.registerSummaries[function.startAddress], summary.provenArgumentCount > 0 {
+            // No signature (a stripped `sub_…`, a C symbol): the body's own
+            // reads prove its integer arguments, x0 through the highest
+            // register it reads before writing, the gaps below filled as the
+            // positional AAPCS64 assignment requires. Unseeded, every value
+            // built from them was `?`, and `_cs_viaHelper` passed `(?, ?)`.
+            .swiftFunction(scalarArguments: Dictionary(uniqueKeysWithValues:
+                (0 ..< summary.provenArgumentCount).map { ("x\($0)", $0) }))
         } else {
             nil
         }
@@ -5195,8 +5204,15 @@ public struct Disassembler: Sendable {
                 }
                 var following: [AbstractValue] = []
                 if leadingSlots != nil {
-                    following = values.dropFirst(integer).map(sanitizeValue)
-                    while following.last == .unknown { following.removeLast() }
+                    // The registers after the formal parameters are `self`'s
+                    // words only for a non-mutating method. A call whose
+                    // `self` is proven in x20 is mutating, and what follows is
+                    // whatever the caller still held: `append(self: arg0, ?,
+                    // arg2, arg3, arg4)` for a one-String `append(_:)`.
+                    if selfValueBySite[address] == nil {
+                        following = values.dropFirst(integer).map(sanitizeValue)
+                        while following.last == .unknown { following.removeLast() }
+                    }
                 }
                 if !(laidOut + unplaced + following).isEmpty {
                     argumentsByAddress[address] = (laidOut + unplaced).map(sanitizeValue) + following
@@ -7141,7 +7157,8 @@ public struct Disassembler: Sendable {
                 return text == "?" || text.isEmpty ? (register ?? "?") : text
             }
             var base = rendered(write.base, register: write.baseRegister)
-            if let index = write.indexRegister {
+            if let register = write.indexRegister {
+                let index = rendered(write.index, register: register)
                 base += write.indexShift == 0 ? " + \(index)" : " + (\(index) << \(write.indexShift))"
             }
             return zip(write.values, write.valueRegisters).enumerated().map { index, pair in
@@ -7601,7 +7618,8 @@ public struct Disassembler: Sendable {
                 level = write.kind != "address" ? write.kind : write.indexed ? "unresolved" : "address"
                 if level == "address" {
                     var base = rendered(write.base, register: write.baseRegister)
-                    if let index = write.indexRegister {
+                    if let register = write.indexRegister {
+                        let index = rendered(write.index, register: register)
                         base += write.indexShift == 0 ? " + \(index)" : " + (\(index) << \(write.indexShift))"
                     }
                     statements[insn.address] = zip(write.values, write.valueRegisters).enumerated().map { index, pair in

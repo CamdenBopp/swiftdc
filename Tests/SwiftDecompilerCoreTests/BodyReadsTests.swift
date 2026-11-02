@@ -51,7 +51,9 @@ private func noteArguments(_ callee: String, in function: DisassembledFunction) 
         try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "describe")
     }
     let text = functions.map { $0.renderPseudo() }.joined(separator: "\n")
-    #expect(text.contains("churn(?, ?, ?, ?)"), Comment(rawValue: text))
+    // describe's own body reads only a (x0); b, c and d it hands on
+    // untouched, which proves nothing about them, so they stay `?`.
+    #expect(text.contains("churn(arg0, ?, ?, ?)"), Comment(rawValue: text))
 }
 
 /// The padding counts only what the body's own instructions read. A call

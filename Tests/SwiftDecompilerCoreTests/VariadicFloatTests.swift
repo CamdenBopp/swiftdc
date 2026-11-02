@@ -17,7 +17,9 @@ import Foundation
         let text = functions.map { $0.renderPseudo() }.joined(separator: "\n")
         let expected = [
             #"[NSString stringWithFormat:@"%f", 1.5]"#,
-            #"[NSString stringWithFormat:@"%ld %f %@ %g", ?, 2.25, ?, 0.1]"#,
+            // n and o are vfMixed's parameters; -O2 keeps them from entry.
+            level == "O0" ? #"[NSString stringWithFormat:@"%ld %f %@ %g", ?, 2.25, ?, 0.1]"#
+                : #"[NSString stringWithFormat:@"%ld %f %@ %g", arg0, 2.25, arg1, 0.1]"#,
             #"[NSString stringWithFormat:@"%f %f %f", 1e+300, 123456789.125, 1e-07]"#,
             // An infinity, a NaN and a subnormal keep their bits.
             #"[NSString stringWithFormat:@"%f %f %f %f %f", 0.0, -0.0, 0x7ff0000000000000, 0x7ff8000000000000, 1]"#,
@@ -25,9 +27,9 @@ import Foundation
             #"[NSString stringWithFormat:@"%f", 3]"#,
             #"[NSString stringWithFormat:@"%d", 0x3ff8000000000000]"#,
             ", 1.5, 2.5, 3.5, 4.5, 0.5)",
-            level == "O0" ? #"__snprintf_chk(?, 64, 0, -1, "%d %f %s", 3, 2.5, "x")"#
+            level == "O0" ? #"__snprintf_chk(arg0, 64, 0, -1, "%d %f %s", 3, 2.5, "x")"#
                 : #"snprintf(?, 64, "%d %f %s", 3, 2.5, "x")"#,
-            level == "O0" ? #"__sprintf_chk(?, 0, -1, "%f", 2.5)"# : #"sprintf(?, "%f", 2.5)"#,
+            level == "O0" ? #"__sprintf_chk(arg0, 0, -1, "%f", 2.5)"# : #"sprintf(?, "%f", 2.5)"#,
         ]
         for line in expected {
             #expect(text.contains(line), "\(level): \(line)\n\(text)")

@@ -69,6 +69,24 @@ results do not replace previously recorded release performance measurements.
   branch's NZCV. At its first run: 9,287 verified, 1,871 refuted, 212
   unparsed, in four classes fixed below. Now: 9,936 verified, 2,708
   declined, 0 refuted, 0 unparsed.
+- **FIXED — a function without a signature had no argument values.** A
+  stripped `sub_…` or a C symbol was seeded with nothing, so every value
+  built from its inputs was `?` (callers passed `(?, ?)`). Such a function
+  is now seeded with x0 through the highest register its own body reads
+  before writing (CalleeRegisterSummary.provenArgumentCount), named argN.
+  argN there is the Nth integer argument register at entry: in a stripped
+  Swift function it may carry generic metadata, a witness table or a
+  closure context rather than a source parameter. Registers a body only
+  passes on to a call prove nothing and stay unseeded. With values now
+  known, a value-type method call kept the caller's leftover registers as
+  more arguments (`append(self: arg0, ?, arg2, arg3, arg4)`); a call whose
+  self is proven in x20 now takes none after its formal parameters.
+  Audit (stripped): tracer x0 at ret verified 0 -> 67 of 189, condition
+  notes verified 0 -> 21, structured entry conditions verified 51 -> 70,
+  0 refuted. Cost: enum-tag value witnesses print their computed
+  condition, an unknown term inside, where a register printed before.
+  OPEN: `[? put:7 at:?]` for `[o put:x at:7]` (a double in d0) at -O2 in
+  libObjCUntypedFloat predates this and misplaces the integer argument.
 - **FIXED — a function that wrote memory could render empty.** The
   compiler-grounded audit found 320 of 4,165 stripped swift-syntax functions
   rendering `{ return }` or no statements while their code stored outside
