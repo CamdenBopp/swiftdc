@@ -567,6 +567,9 @@ strip -x libStrippedAccessor.stripped.dylib
 echo "==> a setter dispatch folds to its value as its type travels (setterfold.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name SetterFold setterfold.swift -o libSetterFold.dylib
 
+echo "==> a class inheriting from Objective-C reads its metadata through its masked isa (isamask.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name IsaMask isamask.swift -o libIsaMask.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

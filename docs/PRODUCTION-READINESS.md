@@ -1345,6 +1345,14 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — a class inheriting from Objective-C read its metadata through
+  a masked isa the tracer did not follow.** `ldr x8, [x20]; ldr x9,
+  [swift_isaMask@GOT]; ldr x9, [x9]; and x8, x9, x8` is self's class
+  metadata, and every vtable call and generic-argument witness call
+  through it was unresolved. The tracer now takes the isa masked with a
+  slot bound to `swift_isaMask` as self's metadata. GoodLinks
+  `-f ViewController` (483 indirect calls): unresolved 313 → 273, value
+  witnesses named 58 → 80. Fixture `isamask.swift`.
 - **FIXED — a dynamic allocation's address lost its bound at a join.** A
   register holding an allocation's address on one path and none on the
   other, and sp itself after allocations on two paths, became a frame

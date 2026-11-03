@@ -589,6 +589,10 @@ public struct ValueTracer: Sendable {
     /// Loader-owned slots bound to `___chkstk_darwin`: a `blr` through one
     /// is the stack probe, which preserves everything but x9 and the flags.
     var stackProbeSlots: Set<UInt64> = []
+    /// Loader-owned slots holding `swift_isaMask`'s address: `ldr x9,
+    /// [slot]; ldr x9, [x9]; and x8, x9, isa` is the class metadata of an
+    /// object whose class inherits from Objective-C.
+    var isaMaskSlots: Set<UInt64> = []
 
     /// Callees that use the caller's x29 as a pointer
     /// (`CalleeRegisterSummary.readsFramePointer`): a call to one may write
@@ -2919,7 +2923,24 @@ public struct ValueTracer: Sendable {
             guard let effect = InstructionSemantics.effect(of: detail) else {
                 clobber(detail, into: &registers); return
             }
-            let result = evaluate(effect.value, detail, in: registers)
+            var result = evaluate(effect.value, detail, in: registers)
+            // `self`'s isa masked with swift_isaMask is `self`'s class
+            // metadata, the base of its vtable and generic arguments, as
+            // the unmasked isa of a native Swift class is.
+            if detail.id == AARCH64_INS_AND, detail.operands.count == 3,
+               let lhs = detail.operands[1].operand.register, let rhs = detail.operands[2].operand.register,
+               detail.operands[2].shift.1 == 0 {
+                let values = [registers[Location(lhs)] ?? .unknown, registers[Location(rhs)] ?? .unknown]
+                func isIsa(_ value: AbstractValue) -> Bool {
+                    value == .selfFieldValue(offset: 0) || value == .selfIsaSnapshot
+                }
+                func isMask(_ value: AbstractValue) -> Bool {
+                    if case .loadedThrough(let slot, 0) = value { isaMaskSlots.contains(slot) } else { false }
+                }
+                if (isIsa(values[0]) && isMask(values[1])) || (isMask(values[0]) && isIsa(values[1])) {
+                    result = .selfIsaSnapshot
+                }
+            }
             write(effect.destination, result, into: &registers)
             if detail.id == AARCH64_INS_ANDS {
                 registers[Self.flagsKey] = constantFlags(.bitAnd, source(detail.operands[1], in: registers),

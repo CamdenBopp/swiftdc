@@ -5398,8 +5398,9 @@ public struct Disassembler: Sendable {
             callTargets[address].flatMap { resolver.specializedSignature(at: $0, printedName: callee) } ?? callee
         }
         // The GOT slots `adrp; ldr` pairs load the stack probe from, for a
-        // `blr x16` the tracer cannot name before it runs.
-        if function.instructions.contains(where: { $0.controlFlow == .call && $0.branchTarget == nil }) {
+        // `blr x16` the tracer cannot name before it runs, and the one
+        // holding `swift_isaMask`'s address.
+        do {
             let pairTracer = ValueTracer()
             for (index, insn) in function.instructions.enumerated().dropLast() {
                 guard insn.detail?.id == AARCH64_INS_ADRP else { continue }
@@ -5407,8 +5408,11 @@ public struct Disassembler: Sendable {
                 guard let destination = next.detail?.operands.first?.operand.register?.key,
                       case .loaded(let slot)? = pairTracer.finalState(of: [insn, next])[destination]
                 else { continue }
-                guard resolver.loadedName(at: slot) == "__chkstk_darwin" else { continue }
-                tracer.stackProbeSlots.insert(slot)
+                switch resolver.loadedName(at: slot) {
+                case "__chkstk_darwin": tracer.stackProbeSlots.insert(slot)
+                case "swift_isaMask": tracer.isaMaskSlots.insert(slot)
+                default: break
+                }
             }
         }
         for insn in function.instructions where insn.controlFlow == .call || insn.controlFlow == .branch {

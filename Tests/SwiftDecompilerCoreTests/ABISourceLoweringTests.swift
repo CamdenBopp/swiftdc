@@ -845,3 +845,15 @@ struct ABISourceLoweringTests {
     #expect(DisassembledFunction.knownCArity(of: "destroy value witness for Swift.Optional") == 2)
     #expect(DisassembledFunction.knownCArity(of: "getEnumTagSinglePayload value witness for B") == 3)
 }
+
+/// A generic class that inherits from Objective-C masks its isa with
+/// swift_isaMask before reading its metadata; the masked isa is its class
+/// metadata, so a witness call on its generic argument is named
+/// (isamask.swift).
+@Test func aMaskedIsaIsTheClassMetadataIfPresent() async throws {
+    let path = "Fixtures/Sample/libIsaMask.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let set = try #require(functions.first { $0.displayName.hasPrefix("IsaMask.Box.set(") }).renderStructured()
+    #expect(set.contains("assignWithCopy value witness for A("), Comment(rawValue: set))
+}
