@@ -195,7 +195,6 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         var writesFloatResult = false
         var readsFramePointer = false
         var readsContextRegister = false
-        var readsSelfRegister = false
         // By call address: a block revisited with fewer registers written
         // widens the mask, as it widens `reads`.
         var pending: [UInt64: PendingRead] = [:]
@@ -220,7 +219,6 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 }
                 if !written.contains("x29"), Self.uses("x29", in: detail) { readsFramePointer = true }
                 if !written.contains("x22"), Self.uses("x22", in: detail) { readsContextRegister = true }
-                if !written.contains("x20"), Self.uses("x20", in: detail) { readsSelfRegister = true }
                 let internalBranch = insn.branchTarget.map(addresses.contains) == true
                 let leavesThroughCall = insn.controlFlow == .call
                     || (insn.controlFlow == .branch && !internalBranch && block.switchCases == nil)
@@ -237,13 +235,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                         }
                         if !written.contains("x29") { unwritten |= Self.framePointerBit }
                         if !written.contains("x22") { unwritten |= Self.contextRegisterBit }
-                        if !written.contains("x20") { unwritten |= Self.selfRegisterBit }
                         pending[insn.address] = PendingRead(target: target, unwritten: unwritten)
                     } else {
                         let known = insn.branchTarget.flatMap(calleeArity)
-                        // A callee with no C arity may be a Swift method
-                        // handed this x20 as its `self`.
-                        if known == nil, !written.contains("x20") { readsSelfRegister = true }
                         argumentKeys.prefix(known ?? argumentKeys.count).forEach { read($0, proven: false) }
                     }
                 }
@@ -325,25 +319,39 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             guard let target = insn.branchTarget, !addresses.contains(target) else { return nil }
             return target
         }
+        let callEffect = { (insn: Instruction) -> CalleeEffect in
+            insn.controlFlow == .call ? external(insn).map(calleeEffects) ?? CalleeEffect() : CalleeEffect()
+        }
+        let callInputs = { (insn: Instruction) -> Set<String>? in
+            guard let target = insn.branchTarget else {
+                // An indirect call reaches no outlined fragment: the
+                // machine outliner calls its fragments directly.
+                return Preservation.abiCallInputs
+            }
+            // A callee of known arity is a named function, not a
+            // fragment, and takes exactly its parameters, and x8 when
+            // it returns a large struct through it.
+            if let arity = calleeArity(target) { return Set((0..<min(arity, 8)).map { "x\($0)" } + ["x8"]) }
+            return isImportStub(target) ? Preservation.abiCallInputs : nil
+        }
+        // Where the incoming x20 may be, through moves and spills. A call to
+        // an in-image function with it still in x20 reads it if that
+        // function does: its pending read carries the bit.
+        let selfFlow = Preservation.selfRegisterFlow(
+            blocks: blocks, entry: entry, addresses: addresses, callEffect: callEffect, callInputs: callInputs,
+            forwards: { insn in insn.branchTarget.map { calleeArity($0) == nil && isFunction($0) } ?? false })
+        for (address, call) in pending where selfFlow?.forwardedAt.contains(address) ?? true {
+            pending[address] = PendingRead(target: call.target, unwritten: call.unwritten | Self.selfRegisterBit)
+        }
+        let readsSelfRegister = selfFlow?.reads ?? true
         var clobbered = Set<String>()
         var restoredFrom: [String: Int64] = [:]
         if !writtenCalleeSaved.isEmpty {
             let exits = Preservation.exitValues(
                 blocks: blocks, entry: entry, addresses: addresses,
-                callEffect: { insn in insn.controlFlow == .call ? external(insn).map(calleeEffects) ?? CalleeEffect() : CalleeEffect() },
+                callEffect: callEffect,
                 exitEffect: { insn in insn.controlFlow == .branch ? external(insn).map(calleeEffects) ?? CalleeEffect() : CalleeEffect() },
-                callInputs: { insn in
-                    guard let target = insn.branchTarget else {
-                        // An indirect call reaches no outlined fragment: the
-                        // machine outliner calls its fragments directly.
-                        return Preservation.abiCallInputs
-                    }
-                    // A callee of known arity is a named function, not a
-                    // fragment, and takes exactly its parameters, and x8 when
-                    // it returns a large struct through it.
-                    if let arity = calleeArity(target) { return Set((0..<min(arity, 8)).map { "x\($0)" } + ["x8"]) }
-                    return isImportStub(target) ? Preservation.abiCallInputs : nil
-                },
+                callInputs: callInputs,
                 // A callee's definite clobber is an unknown value, not a frame
                 // address: read as one, a later store through it unproved
                 // every save the caller made, and a method one call up lost
@@ -1149,5 +1157,270 @@ enum Preservation {
         for key in detail.writtenRegisterKeys {
             state.setRegister(key, to: .unknown, mayAliasStack: readsStackAlias)
         }
+    }
+}
+
+/// Where the x20 a body was called with may live, and whether the body reads
+/// it: `CalleeRegisterSummary.readsSelfRegister`.
+///
+/// A forward may-analysis over the CFG. The incoming x20 starts in x20 and
+/// moves with the body: a 64-bit `mov` copies it to another register, an
+/// eight-byte store to a known frame address spills it to that slot, and an
+/// eight-byte load from such a slot (the epilogue's restore, or -Onone's
+/// `str x20, [sp, #8]; ldr x20, [sp, #8]`) brings it back. Frame addresses
+/// come from `Preservation`'s state, run alongside, so sp adjustments,
+/// pre- and post-index writeback and x29-based addresses all resolve to
+/// offsets from entry sp. Joins keep a register or slot that holds it on
+/// any path.
+///
+/// Anything else that touches a register or slot holding it reads it: an
+/// arithmetic use, a memory base or index, a narrow copy, a store to an
+/// address that is not a known frame slot, a load overlapping such a slot
+/// at another width, a call that takes one of those registers as an
+/// input, or a `ret` with it in a result register. A load the body cannot place reads it when its address may reach
+/// a slot holding it; so does a call while an escaped frame address may
+/// reach one. A call to an in-image function with x20 still holding it reads
+/// it only if that function does (`forwardedAt`, resolved by
+/// `closeOverReads`).
+extension Preservation {
+    struct SelfRegisterFlow: Equatable {
+        /// The body may read its incoming x20.
+        var reads = false
+        /// The in-image calls and tail branches, by address, where x20 may
+        /// still hold it.
+        var forwardedAt: Set<UInt64> = []
+    }
+
+    /// The registers a function returns its result in.
+    private static let resultKeys: Set<String> = Set((0...7).map { "x\($0)" })
+
+    private struct SelfState: Equatable {
+        var frame: State
+        /// Registers that may hold the incoming x20.
+        var registers: Set<String> = ["x20"]
+        /// Eight-byte frame slots (offsets from entry sp) that may hold it.
+        var slots: Set<Int64> = []
+
+        func merged(with other: SelfState) -> SelfState {
+            SelfState(
+                frame: frame.merged(with: other.frame),
+                registers: registers.union(other.registers),
+                slots: slots.union(other.slots))
+        }
+
+        /// A slot holding it overlaps `[address, address + bytes)`.
+        func overlaps(_ address: Int64, bytes: Int64) -> Bool {
+            let (end, overflow) = address.addingReportingOverflow(bytes)
+            return slots.contains { slot in overflow || (slot < end && slot &+ 8 > address) }
+        }
+
+        /// An escaped frame address may reach a slot holding it.
+        var escapeReachesSlot: Bool {
+            guard !slots.isEmpty else { return false }
+            if frame.stackAddressEscaped { return true }
+            return slots.contains { slot in frame.escapedRanges.contains { slot < $0.bound && slot &+ 8 > $0.floor } }
+        }
+    }
+
+    /// Nil when the body is not fully decoded or the fixpoint is capped:
+    /// nothing is claimed then.
+    ///
+    /// `callInputs` gives the registers a call or tail branch can take an
+    /// input in, nil when it may take any. `forwards` marks those to an
+    /// in-image function of unknown arity: x20 there is judged by the
+    /// target's own summary, and the call goes into `forwardedAt` instead.
+    static func selfRegisterFlow(
+        blocks: [BasicBlock], entry: UInt64, addresses: Set<UInt64>,
+        callEffect: (Instruction) -> CalleeEffect,
+        callInputs: (Instruction) -> Set<String>?,
+        forwards: (Instruction) -> Bool
+    ) -> SelfRegisterFlow? {
+        var frame = State(registers: ["sp": .stack(0)], slots: [:])
+        for index in 19...29 { frame.registers["x\(index)"] = .entry("x\(index)") }
+        let blockAt = Dictionary(blocks.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
+        var inState: [UInt64: SelfState] = [entry: SelfState(frame: frame)]
+        var flow = SelfRegisterFlow()
+        var worklist = [entry]
+        var visits = 0
+        while let start = worklist.popLast() {
+            visits += 1
+            guard visits <= 64 * max(blocks.count, 1) else {
+                Probe.record(.summaryCap, at: entry, ["pass": .label("self-register")])
+                return nil
+            }
+            guard let block = blockAt[start], var state = inState[start] else { return nil }
+            for insn in block.instructions {
+                guard let detail = insn.detail else { return nil }
+                let internalBranch = insn.branchTarget.map(addresses.contains) == true
+                let isTailBranch = insn.controlFlow == .branch && !internalBranch && block.switchCases == nil
+                if insn.controlFlow == .call || isTailBranch {
+                    // An indirect target register is read as a value.
+                    if !state.registers.isDisjoint(with: detail.readRegisterKeys) { flow.reads = true }
+                    if forwards(insn) {
+                        if state.registers.contains("x20") { flow.forwardedAt.insert(insn.address) }
+                        // An in-image function may be an outlined fragment,
+                        // which takes an input in any register.
+                        if !state.registers.subtracting(["x20"]).isEmpty { flow.reads = true }
+                    } else if let inputs = callInputs(insn) {
+                        if !state.registers.isDisjoint(with: inputs) { flow.reads = true }
+                    } else if !state.registers.isEmpty {
+                        flow.reads = true
+                    }
+                    if isTailBranch { continue }
+                    let effect = callEffect(insn)
+                    let spBefore = state.frame.value("sp")
+                    applyCall(effect, inputs: callInputs(insn), to: &state.frame, clobbersMayAliasStack: true)
+                    if state.escapeReachesSlot { flow.reads = true }
+                    for index in 0...18 { state.registers.remove("x\(index)") }
+                    state.registers.remove("x30")
+                    // A register the callee reloads from this frame holds
+                    // what that slot holds. A clobbered one may still hold
+                    // the value it had, so it keeps its membership.
+                    for (key, offset) in effect.restores.sorted(by: { $0.key < $1.key }) {
+                        var address: Int64?
+                        if case .stack(let sp) = spBefore {
+                            let (sum, overflow) = sp.addingReportingOverflow(offset)
+                            address = overflow ? nil : sum
+                        }
+                        if let address, !state.overlaps(address, bytes: 8) {
+                            state.registers.remove(key)
+                        } else if address != nil || !state.slots.isEmpty {
+                            state.registers.insert(key)
+                        }
+                    }
+                    continue
+                }
+                if insn.controlFlow == .return {
+                    // Returned: `mov x0, x20; …; ret` is an initializer
+                    // handing back the self it was given.
+                    if !state.registers.isDisjoint(with: resultKeys) { flow.reads = true }
+                    continue
+                }
+                if transfer(detail, to: &state) { flow.reads = true }
+                apply(detail, to: &state.frame)
+            }
+            for successor in block.successors where addresses.contains(successor) {
+                let merged = inState[successor].map { $0.merged(with: state) } ?? state
+                if merged != inState[successor] {
+                    inState[successor] = merged
+                    worklist.append(successor)
+                }
+            }
+        }
+        return flow
+    }
+
+    /// Moves the incoming x20 through one instruction that is no call or
+    /// exit, with `state.frame` as it was before it. True when the
+    /// instruction reads it.
+    private static func transfer(_ detail: StructuredInsn, to state: inout SelfState) -> Bool {
+        let operands = detail.operands
+        func register(_ index: Int) -> PhysReg? {
+            index < operands.count ? operands[index].operand.register : nil
+        }
+        var reads = false
+        var memoryBase: PhysReg?
+        for info in operands {
+            guard case .memory(let base, let index, _) = info.operand else { continue }
+            // Used as an address.
+            if let base, state.registers.contains(base.key) { reads = true }
+            if let index, state.registers.contains(index.key) { reads = true }
+            memoryBase = base
+        }
+        // Whether an access the body cannot place may reach a slot holding it.
+        func unplacedReachesSlot() -> Bool {
+            guard !state.slots.isEmpty else { return false }
+            if let memoryBase, state.frame.stackAliases.contains(memoryBase.key) { return true }
+            return state.escapeReachesSlot
+        }
+        switch detail.id {
+        case AARCH64_INS_MOV:
+            if let destination = register(0), let source = register(1),
+               destination.kind == .gpr, destination.widthBits == 64,
+               source.kind == .gpr, source.widthBits == 64 {
+                if state.registers.contains(source.key) { state.registers.insert(destination.key) }
+                else { state.registers.remove(destination.key) }
+                return reads
+            }
+        case AARCH64_INS_STR, AARCH64_INS_STUR, AARCH64_INS_STP, AARCH64_INS_STNP,
+             AARCH64_INS_STRB, AARCH64_INS_STURB, AARCH64_INS_STRH, AARCH64_INS_STURH:
+            let address = access(detail, in: state.frame).address
+            let count = detail.id == AARCH64_INS_STP || detail.id == AARCH64_INS_STNP ? 2 : 1
+            var spilled: [Int64] = []
+            for offset in 0..<count {
+                guard let source = register(offset) else { continue }
+                let bytes: Int
+                switch detail.id {
+                case AARCH64_INS_STRB, AARCH64_INS_STURB: bytes = 1
+                case AARCH64_INS_STRH, AARCH64_INS_STURH: bytes = 2
+                default: bytes = source.widthBits / 8
+                }
+                let slot = address.map { $0 &+ Int64(offset * bytes) }
+                if source.kind == .gpr, state.registers.contains(source.key) {
+                    // A spill to a known slot moves it; anything else (a
+                    // narrow store, a store into memory the body cannot
+                    // place) uses its value.
+                    if let slot, bytes == 8 { spilled.append(slot) } else { reads = true }
+                } else if let slot, bytes == 8 {
+                    // An exact overwrite ends it there; a partial one leaves
+                    // the rest of it.
+                    state.slots.remove(slot)
+                }
+            }
+            state.slots.formUnion(spilled)
+            // Writeback leaves an address in the base.
+            for key in detail.writtenRegisterKeys { state.registers.remove(key) }
+            return reads
+        case AARCH64_INS_LDR, AARCH64_INS_LDUR, AARCH64_INS_LDP:
+            let address = access(detail, in: state.frame).address
+            let count = detail.id == AARCH64_INS_LDP ? 2 : 1
+            var loaded: [(key: String, holdsIt: Bool)] = []
+            for offset in 0..<count {
+                guard let destination = register(offset) else { continue }
+                let whole = destination.kind == .gpr && destination.widthBits == 64
+                let bytes = Int64(max(destination.widthBits / 8, 1))
+                if let address {
+                    let start = address &+ Int64(offset) * bytes
+                    if whole, state.slots.contains(start) {
+                        loaded.append((destination.key, true))
+                        continue
+                    }
+                    // Part of it, at another width or alignment.
+                    if state.overlaps(start, bytes: bytes) { reads = true }
+                    loaded.append((destination.key, false))
+                } else if unplacedReachesSlot() {
+                    if whole { loaded.append((destination.key, true)) } else { reads = true }
+                } else {
+                    loaded.append((destination.key, false))
+                }
+            }
+            // Writeback leaves an address in the base.
+            for key in detail.writtenRegisterKeys { state.registers.remove(key) }
+            for (key, holdsIt) in loaded {
+                if holdsIt { state.registers.insert(key) } else { state.registers.remove(key) }
+            }
+            return reads
+        default:
+            break
+        }
+        // Any other read of a register holding it uses its value.
+        for info in operands {
+            if case .register(let register) = info.operand, register.kind == .gpr,
+               info.access == 0 || info.isRead, state.registers.contains(register.key) {
+                reads = true
+            }
+        }
+        if !state.registers.isDisjoint(with: detail.readRegisterKeys) { reads = true }
+        // Any other memory read that may reach a slot holding it.
+        if operands.contains(where: { $0.operand.isMemory && ($0.isRead || $0.access == 0) }) {
+            if let address = access(detail, in: state.frame).address {
+                // The widest access (`ld1` of four q registers) is 64 bytes.
+                if state.overlaps(address, bytes: 64) { reads = true }
+            } else if unplacedReachesSlot() {
+                reads = true
+            }
+        }
+        for key in detail.writtenRegisterKeys { state.registers.remove(key) }
+        return reads
     }
 }

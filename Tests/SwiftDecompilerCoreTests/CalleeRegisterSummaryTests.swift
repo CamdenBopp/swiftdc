@@ -448,3 +448,97 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "field")))
     #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
 }
+
+/// Where the incoming x20 lives decides whether a body reads it, not
+/// whether x20 is ever named. Assembled with `xcrun clang -arch arm64 -c`:
+///
+///     overwrite: stp x20, x19, [sp, #-0x20]!; stp x29, x30, [sp, #0x10]
+///                add x29, sp, #0x10; mov x20, x0; ldr x0, [x20]; bl far
+///                ldp x29, x30, [sp, #0x10]; ldp x20, x19, [sp], #0x20; ret
+///     spill:     sub sp, sp, #0x20; stp x29, x30, [sp, #0x10]
+///                add x29, sp, #0x10; str x20, [sp, #0x8]; mov x20, x0
+///                ldr x20, [sp, #0x8]; bl far
+///                ldp x29, x30, [sp, #0x10]; add sp, sp, #0x20; ret
+///     other:     (as spill, but) stur x20, [x29, #-0x8]; mov x20, x0
+///                ldr x0, [sp, #0x8]; bl far
+///     join:      cbz x0, 1f; mov x20, x0; 1: ldr x1, [x20]; ret
+private let overwriteWords: [UInt32] = [
+    0xa9be4ff4, 0xa9017bfd, 0x910043fd, 0xaa0003f4, 0xf9400280, 0x940000fb, 0xa9417bfd, 0xa8c24ff4, 0xd65f03c0,
+]
+private let spillWords: [UInt32] = [
+    0xd10083ff, 0xa9017bfd, 0x910043fd, 0xf90007f4, 0xaa0003f4, 0xf94007f4, 0x940000be, 0xa9417bfd, 0x910083ff,
+    0xd65f03c0,
+]
+private let otherRegisterWords: [UInt32] = [
+    0xd10083ff, 0xa9017bfd, 0x910043fd, 0xf81f83b4, 0xaa0003f4, 0xf94007e0, 0x94000082, 0xa9417bfd, 0x910083ff,
+    0xd65f03c0,
+]
+private let joinWords: [UInt32] = [0xb4000040, 0xaa0003f4, 0xf9400281, 0xd65f03c0]
+
+private func callTarget(_ function: DisassembledFunction) throws -> UInt64 {
+    try #require(function.instructions.first { $0.controlFlow == .call }?.branchTarget)
+}
+
+@Test func aBodyThatOverwritesX20BeforeUsingItReadsNoSelf() throws {
+    let function = try body(overwriteWords, name: "overwrite")
+    let target = try callTarget(function)
+    // x20 is the body's own x0 at the load and the call; the save and the
+    // epilogue's restore only move the caller's value.
+    let stub = try #require(CalleeRegisterSummary.of(function, isImportStub: { $0 == target }))
+    #expect(!stub.readsSelfRegister)
+    // A call to an in-image function hands it no incoming x20.
+    let inImage = try #require(CalleeRegisterSummary.of(function, isFunction: { $0 == target }))
+    #expect(!inImage.readsSelfRegister)
+    #expect(inImage.pendingReads.allSatisfy { $0.unwritten & (1 << 20) == 0 })
+}
+
+@Test func aSpilledSelfReloadedIntoX20IsRead() throws {
+    // -Onone: `str x20, [sp, #8]; …; ldr x20, [sp, #8]; bl Animal.init`.
+    let function = try body(spillWords, name: "spill")
+    let target = try callTarget(function)
+    let stub = try #require(CalleeRegisterSummary.of(function, isImportStub: { $0 == target }))
+    #expect(stub.readsSelfRegister)
+    // An in-image callee is asked: the reload is back in x20 at the call.
+    let inImage = try #require(CalleeRegisterSummary.of(function, isFunction: { $0 == target }))
+    #expect(!inImage.readsSelfRegister)
+    #expect(inImage.pendingReads.contains { $0.target == target && $0.unwritten & (1 << 20) != 0 })
+}
+
+@Test func aSpilledSelfReloadedIntoAnArgumentIsRead() throws {
+    // Spilled through x29, reloaded through sp into x0: the same slot.
+    let function = try body(otherRegisterWords, name: "other")
+    let target = try callTarget(function)
+    let takesIt = try #require(CalleeRegisterSummary.of(function, calleeArity: { $0 == target ? 1 : nil }))
+    #expect(takesIt.readsSelfRegister)
+    // A callee that takes no argument never sees x0.
+    let takesNothing = try #require(CalleeRegisterSummary.of(function, calleeArity: { $0 == target ? 0 : nil }))
+    #expect(!takesNothing.readsSelfRegister)
+}
+
+@Test func x20OverwrittenOnOnePathStillHoldsSelfOnTheOther() throws {
+    let function = try body(joinWords, name: "join")
+    #expect(try #require(CalleeRegisterSummary.of(function)).readsSelfRegister)
+}
+
+/// -Onone `Animal.init` hands back the self it was given:
+/// `mov x0, x20; mov x20, x1; ret`.
+@Test func aReturnedSelfIsRead() throws {
+    let function = try body([0xaa1403e0, 0xaa0103f4, 0xd65f03c0], name: "returnsSelf")
+    #expect(try #require(CalleeRegisterSummary.of(function)).readsSelfRegister)
+}
+
+/// The -Onone initializers spill self (`str x20, [sp, #8]; ldr x20,
+/// [sp, #8]; bl Animal.init`), and `Animal.init` returns it: both keep it.
+@Test func anInitializerThatSpillsSelfKeepsItIfPresent() async throws {
+    guard let text = try await structured("__allocating_init", in: "Fixtures/Sample/libReconstruction.dylib") else { return }
+    #expect(text.contains("return Reconstruction.Dog.init(self: swift_allocObject(?, 16, 7))"), Comment(rawValue: text))
+    #expect(text.contains("return Reconstruction.Animal.init(self: swift_allocObject(?, 16, 7))"), Comment(rawValue: text))
+}
+
+/// An enum method takes its payload words, not x20: `Tree.sum` loads x20
+/// (`ldrb w20, [x0, #0x28]`) before any use of it.
+@Test func aByValueEnumMethodTakesNoSelfIfPresent() async throws {
+    guard let text = try await structured("Sample.run", in: "Fixtures/Sample/libSample.dylib") else { return }
+    #expect(text.contains("Sample.Tree.sum(r"), Comment(rawValue: text))
+    #expect(!text.contains("Sample.Tree.sum(self:"), Comment(rawValue: text))
+}

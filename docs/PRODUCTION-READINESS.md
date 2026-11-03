@@ -78,23 +78,29 @@ results do not replace previously recorded release performance measurements.
   getEnumTagSinglePayload 3, storeEnumTagSinglePayload 4, getEnumTag 2,
   destructiveProjectEnumData 2, destructiveInjectEnumTag 3. Blast radius:
   30 files, 205 witness calls at their exact arity.
-- **OPEN — `CalleeRegisterSummary.readsSelfRegister` is wrong both
-  ways.** Its forward pass tracks writes to x0-x7, x29 and x22, but not
-  x20. A body that overwrites x20 before using it is counted as reading
-  its caller's x20, and the caller then shows a `self:` that is no
-  argument. The plugin library's `_ArrayBuffer._consumeAndCreateNew`
-  specializations (`mov x20, x0` second) had this, and f904fac now covers
-  them for frozen system types. Adding x20 to the tracked writes is not
-  enough: `uses` treats any store of x20 to an sp-based slot as a
-  register save, and -Onone spills the incoming `self` that way.
-  `Reconstruction.Dog.init` does `str x20, [sp, #8]; ldr x20, [sp, #8];
-  bl Animal.init`, and with x20 tracked it lost its real `self` (blast:
-  8 files, 126 lines, among them `Dog.init(self: swift_allocObject(…))` →
-  `Dog.init()`). A spilled `self` reloaded into another register and
-  used only for runtime calls is already missed today. The fix needs the
-  sp slots that hold the incoming x20, tracked relative to the CFA
-  through sp adjustments and joins, with a load from one counted as a
-  read.
+- **FIXED — `CalleeRegisterSummary.readsSelfRegister` was wrong
+  both ways.** Its forward pass tracked writes to x0-x7, x29 and x22, but
+  not x20, so a body that overwrites x20 before using it counted as
+  reading its caller's x20, and the caller showed a `self:` that is no
+  argument. Tracking x20 as a write was not enough: `uses` ignored any
+  store of x20 to an sp-based slot as a register save, and -Onone spills
+  the incoming `self` that way (`Reconstruction.Dog.init`: `str x20,
+  [sp, #8]; ldr x20, [sp, #8]; bl Animal.init`). A spilled `self`
+  reloaded into another register was missed outright. Now
+  `Preservation.selfRegisterFlow` is a may-analysis of where the incoming
+  x20 lives: registers through 64-bit moves, frame slots (offsets from
+  entry sp, via `Preservation`'s sp/x29 tracking) through spills and
+  reloads, unions at joins. Any other use, a store it cannot place, a
+  call input, a `ret` with it in x0-x7 (`Animal.init` returns its self),
+  an unplaceable load or a call while an escaped frame address may reach
+  a slot holding it, is a read. Blast radius (`Tools/blast-radius.sh
+  --real`): structured 6 files, 104 lines; 18 `self:` arguments dropped
+  from in-image callees that load x20 before using it (`Tree.sum` on a
+  by-value enum, `childNameForDiagnostics`, `resolveLexicalContext`,
+  specializations of `Sequence.contains`, `_copySequenceContents`,
+  `_copySequenceToContiguousArray` and the allocating and region-visitor
+  inits), each checked against its body; `Dog.init(self:
+  swift_allocObject(…))` and `Animal.init(self: …)` keep it.
 - **FIXED — x20 was named `self` for a frozen system struct's
   non-mutating member.** Swift passes a loadable `self` as its words after
   the formals and uses x20 (`swiftself`) only for an address: an
