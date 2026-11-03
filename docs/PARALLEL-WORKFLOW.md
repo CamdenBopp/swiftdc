@@ -152,11 +152,29 @@ Four tiers. Each one is a superset of the tier before it.
 Tier 4 is never skipped before a push; CLAUDE.md requires it per commit, and
 the gate enforces it. Tiers 1-3 are what an agent runs while it iterates.
 
-A `--filter` regex matches the test's file name as well as its name, so
-`'SmokeTests\.swift'` runs exactly that file. That is why the filters work
-without tags. Swift Testing tags (`.slow`, `.wholeImage`, `.dyldCache`,
-`.subprocess`) are stage 3, so the outliers are skipped by tag instead of by
-a regex of names.
+`Tools/test.sh` runs each tier:
+- `file <NameTests>…`
+- `<subsystem>…`
+- `affected`, which maps the files changed against origin/dev to subsystems.
+- `full`
+- `quick`, which is tier 4 without the dyld-cache memory test and the Go
+  tests. It is for iterating, never for a push.
+
+A `--filter` regex matches a test's file name as well as its name, so
+`'SmokeTests\.swift'` runs exactly that file. Measured 2026-11-02 at load
+near 50 (time includes the no-op build):
+
+| Run | Tests | Time |
+|---|---|---|
+| `file SmokeTests` | 38 | 4 s |
+| `abi` | 246 | 21 s |
+| `render` | 126 | 34 s |
+| `affected` after a `ValueTracking.swift` edit | 165 | 67 s (including the rebuild) |
+| `affected` with nothing changed (Determinism, FixturePresence) | 7 | 33 s |
+
+DEAD END: Swift Testing tags. SwiftPM's `swift test` on this toolchain has
+only `--filter` and `--skip` regexes and no tag filter, so a tag cannot
+select or skip a tier. The tiers stay name regexes.
 
 ### Mutation proofs are unchanged
 
