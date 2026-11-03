@@ -578,6 +578,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name SetterFold setterfold.sw
 echo "==> a class inheriting from Objective-C reads its metadata through its masked isa (isamask.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name IsaMask isamask.swift -o libIsaMask.dylib
 
+echo "==> a String return read from both of its words, x0 and x1 (stringreturns.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name StringReturns stringreturns.swift -o libStringReturns.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

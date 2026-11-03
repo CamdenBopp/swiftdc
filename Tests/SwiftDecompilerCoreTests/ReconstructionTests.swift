@@ -1143,3 +1143,50 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
     #expect(try text("half").contains("self.scale = 0.5"))
     #expect(try text("seven").contains("self.count = 7"))
 }
+
+/// A String return is read from both of its words, x0 and x1: a literal they
+/// spell, a String field of self, or the whole result of a call that itself
+/// returns a String. Each rendered `return ?` before. A String? field read
+/// back as a String (`nickname!`), the two words of a
+/// call returning a struct that holds a String, an Optional String, and a
+/// join of two literals stay `return ?` (stringreturns.swift).
+@Test func aStringReturnIsReadFromBothWordsIfPresent() async throws {
+    let path = "Fixtures/Sample/libStringReturns.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("StringReturns.\(name)(") }).renderStructured()
+    }
+    #expect(try text("small").contains("return \"ok\""))
+    #expect(try text("large").contains("return \"a literal longer than fifteen bytes\""))
+    #expect(try text("Person.current").contains("return self.name"))
+    // Kept across a call, the result is bound where the call runs.
+    let forward = try text("forward")
+    #expect(forward.contains("let r0 = StringReturns.greeting()\n    StringReturns.sink()\n    return r0"),
+            Comment(rawValue: forward))
+    // With nothing between, the call is the return, not also a statement.
+    let fromLocal = try text("fromLocal")
+    #expect(fromLocal.contains("return StringReturns.describe("), Comment(rawValue: fromLocal))
+    #expect(!fromLocal.contains("    StringReturns.describe("), Comment(rawValue: fromLocal))
+    for name in ["Person.forced", "inner", "maybe", "either"] {
+        let body = try text(name)
+        #expect(body.contains("return ?"), Comment(rawValue: body))
+    }
+    // `Box.make()` is no String result, so the return does not use it: it
+    // is not bound for a use that never renders.
+    let inner = try text("inner")
+    #expect(!inner.contains("let r"), Comment(rawValue: inner))
+}
+
+/// -Onone returns a literal straight from its initializer, which now is
+/// the return: `return "..."`, not `return Swift.String.init("...", 3, 1)`
+/// (sample.swift's `Animal.speak()`).
+@Test func aStringReturnedFromItsLiteralInitializerIsTheLiteralIfPresent() async throws {
+    let path = "Fixtures/Sample/sample.debug"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler().disassemble(path: path, functionFilter: "speak")
+    }
+    let speak = try #require(functions.first { $0.displayName.hasPrefix("sample.Animal.speak(") }).renderStructured()
+    #expect(speak.contains("return \"...\"") && !speak.contains("String.init"), Comment(rawValue: speak))
+}

@@ -88,7 +88,8 @@ private func body(_ functions: [String: String], _ prefix: String) throws -> Str
     let stored = try body(functions, "LiteralEscapes.storeQuote(")
     #expect(stored.contains(#"    "q\""\#n"#) && !stored.contains("String.init"), "\(stored)")
     let interpolated = try body(functions, "LiteralEscapes.interpolatedQuote(")
-    #expect(interpolated.contains(#""q\"\(local_"#) && !interpolated.contains("appendLiteral"), "\(interpolated)")
+    #expect(interpolated.contains(#"return "q\"\(local_"#) && !interpolated.contains("appendLiteral")
+            && !interpolated.contains("String.init"), "\(interpolated)")
 }
 
 /// -Onone builds a literal from its bytes' address and count. Named as a C
@@ -99,12 +100,13 @@ private func body(_ functions: [String: String], _ prefix: String) throws -> Str
 /// took for the string. Read as exactly its count, each is whole.
 @Test func anOnoneLiteralIsReadAsItsByteCountIfPresent() async throws {
     guard let functions = try await pseudo("Fixtures/Sample/libLiteralEscapes.Onone.dylib") else { return }
+    // Each function but `longStore` returns its interpolation.
     for (name, literal) in [
-        ("bell", #""\u{7}ring \(local_40) done""#),
-        ("middleBell", #""x=\(local_48) \u{7} y=\(local_50)""#),
-        ("accented", #""café \(local_40)""#),
+        ("bell", #"return "\u{7}ring \(local_40) done""#),
+        ("middleBell", #"return "x=\(local_48) \u{7} y=\(local_50)""#),
+        ("accented", #"return "café \(local_40)""#),
         ("longStore", #""a literal that is longer than forty-eight characters, by a few""#),
-        ("longInterp", #""a literal that is longer than forty-eight characters: \(local_40)""#),
+        ("longInterp", #"return "a literal that is longer than forty-eight characters: \(local_40)""#),
     ] {
         let text = try body(functions, "LiteralEscapes.\(name)(")
         #expect(text.contains("    \(literal)\n") && !text.contains("DefaultStringInterpolation"), "\(name): \(text)")

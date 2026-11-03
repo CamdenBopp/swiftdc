@@ -22,6 +22,13 @@ extension DisassembledFunction {
                 index += 1
                 continue
             }
+            // A String returned straight from its literal initializer.
+            if statements[index].hasPrefix("return "),
+               let literal = standaloneStringLiteral(String(statements[index].dropFirst("return ".count))) {
+                out.append("return \(literal)")
+                index += 1
+                continue
+            }
             out.append(statements[index])
             index += 1
         }
@@ -72,6 +79,13 @@ extension DisassembledFunction {
             } else {
                 break
             }
+        }
+        // A String return of that closing `String(stringInterpolation:)` is
+        // the interpolation returned: `return "q\(x)"`, not the literal and
+        // then `return Swift.String.init(?)`.
+        if sawInterpolation, sawBuilderInit, index < statements.count,
+           statements[index] == "return Swift.String.init(?)" {
+            return ("return \"\(components)\"", index + 1 - start)
         }
         // The `let s = "…"` that consumes the builder into a String — part of the
         // same lowering, so fold it away if it trails the run.

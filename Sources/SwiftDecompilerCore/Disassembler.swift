@@ -7795,6 +7795,51 @@ public struct Disassembler: Sendable {
             return ("\(returnTypeName)(\(parts.joined(separator: ", ")))", values)
         }
 
+        /// The two words of the String a Swift function returns at this
+        /// `ret`, x0 and x1. A String is never read from x0 alone.
+        func swiftStringReturnWords(at address: UInt64) -> (low: AbstractValue, high: AbstractValue)? {
+            guard returnTypeName == "Swift.String",
+                  let low = analysis.exitValues[address].map(sanitizeValue),
+                  // Alone, a String call's second word sanitizes to unknown;
+                  // here it is read beside its first.
+                  let high = analysis.exitYieldValues[address].map({ value in
+                      if case .callResultHigh = value { return value }
+                      return sanitizeValue(value)
+                  })
+            else { return nil }
+            return (low, high)
+        }
+
+        /// The call whose whole String result a Swift function returns at
+        /// this `ret`. A call whose result is some other two-word type (a
+        /// struct holding a String) has the same bits, but is not the String.
+        func swiftStringReturnCall(at address: UInt64) -> UInt64? {
+            guard let (low, high) = swiftStringReturnWords(at: address),
+                  let site = stringCallResult(low, high),
+                  calleeByAddress[site].flatMap({ Self.swiftReturnTypeName(forDemangledName: $0) }) == "Swift.String"
+            else { return nil }
+            return site
+        }
+
+        /// The String a Swift function returns at this `ret`, read from both
+        /// of its words: a literal they spell, the whole result of a call
+        /// that itself returns a String, or one String field of self. With
+        /// the call it consumes, if any.
+        func swiftStringReturn(at address: UInt64) -> (rendered: String, consumedSite: UInt64?)? {
+            guard let (low, high) = swiftStringReturnWords(at: address) else { return nil }
+            if let literal = swiftStringLiteral(low, high) { return (literal, nil) }
+            if let site = swiftStringReturnCall(at: address) {
+                let rendered = renderValue(.callResult(site), depth: 0)
+                guard rendered != "?", !rendered.hasPrefix("/* unresolved") else { return nil }
+                return (rendered, site)
+            }
+            if case .selfFieldValue(let offset) = low, high == .selfFieldValue(offset: offset + 8),
+               case .success(.whole(let name, "SS"))? = fieldMap?.lookup(offset: offset, bytes: 16) {
+                return (fieldPath(name), nil)
+            }
+            return nil
+        }
+
         func collectCallResults(in value: AbstractValue, into consumed: inout Set<UInt64>) {
             switch value {
             case .callResult(let address) where multiWordResultSites.contains(address):
@@ -8152,6 +8197,13 @@ public struct Disassembler: Sendable {
                     .map { countDirectUses($0, at: insn.address) }
             }
         }
+        // A String returned whole from a call uses that call, so one with an
+        // effect between them is bound, not moved to the `return`.
+        if function.objcMethod == nil, returnsDirectly {
+            for insn in function.instructions where isReturn(insn) && normalReturnIsProven(at: insn.address) && !throwExits.contains(insn.address) {
+                swiftStringReturnCall(at: insn.address).map { countDirectUses(.callResult($0), at: insn.address) }
+            }
+        }
         for address in asyncReturns where normalReturnIsProven(at: address) && !throwExits.contains(address) {
             let value = asyncReturnRegister == .floating ? analysis.exitFloatValues[address] : analysis.exitValues[address]
             if asyncReturnRegister != nil, let value { countDirectUses(value, at: address) }
@@ -8257,6 +8309,12 @@ public struct Disassembler: Sendable {
                     ? analysis.exitFloatValues[insn.address]
                     : analysis.exitValues[insn.address]
                 if let value { collectCallResults(in: value, into: &consumedCallResults) }
+            } else if function.objcMethod == nil, isReturn(insn),
+                      normalReturnIsProven(at: insn.address),
+                      !throwExits.contains(insn.address), returnsDirectly,
+                      let site = swiftStringReturn(at: insn.address)?.consumedSite {
+                // A String return that is a call's whole result consumes it.
+                consumedCallResults.insert(site)
             } else if asyncReturns.contains(insn.address), normalReturnIsProven(at: insn.address), !throwExits.contains(insn.address),
                       let returnRegister = asyncReturnRegister {
                 let value = returnRegister == .floating
@@ -8500,6 +8558,10 @@ public struct Disassembler: Sendable {
                       normalReturnIsProven(at: insn.address), let returnTypeName,
                       let field = swiftTwoWordFieldReturn(at: insn.address, type: returnTypeName) {
                 noteExit(.normal(field))
+            } else if function.objcMethod == nil, isReturn(insn), returnsDirectly,
+                      normalReturnIsProven(at: insn.address),
+                      let string = swiftStringReturn(at: insn.address) {
+                noteExit(.normal(string.rendered))
             } else if function.objcMethod == nil, isReturn(insn), returnsDirectly,
                       normalReturnIsProven(at: insn.address), let returnTypeName,
                       case .immediate(let x0)? = analysis.exitValues[insn.address].map(sanitizeValue) {
