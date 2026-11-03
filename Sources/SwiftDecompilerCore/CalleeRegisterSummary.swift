@@ -66,6 +66,10 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// The width each of those is read at (16 h, 32 s, 64 d), when every read
     /// of it agrees: a constant passed there is a float of that width.
     var floatArgumentWidths: [Int: Int] = [:]
+    /// The body may leave a value in v0 for its caller: one of its own
+    /// instructions writes v0, or it calls or tail-branches out (whatever it
+    /// calls may return there). True when nothing is known.
+    var mayWriteFloatResult = true
     /// Calls and tail branches to other in-image functions, with the argument
     /// registers (bit n for xn) the body has not written at them on some
     /// path: the call reads those of them its target reads.
@@ -187,6 +191,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         var provenReads = Set<Int>()
         var provenFloatReads = Set<Int>()
         var floatWidths: [Int: Int] = [:]
+        var writesFloatResult = false
         var readsFramePointer = false
         var readsContextRegister = false
         var readsSelfRegister = false
@@ -263,6 +268,12 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                         written.insert(register.key)
                     }
                 }
+                for info in detail.operands where info.isWritten {
+                    if case .register(let register) = info.operand, register.kind == .vector, register.number == 0 {
+                        writesFloatResult = true
+                    }
+                }
+                if leavesThroughCall { writesFloatResult = true }
                 detail.readRegisterKeys.forEach { read($0) }
                 written.formUnion(detail.writtenRegisterKeys.intersection(argumentKeys + ["x29", "x22"]))
                 if insn.controlFlow == .call { written.formUnion(argumentKeys + floatArgumentKeys) }
@@ -346,6 +357,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             provenArgumentReads: provenReads,
             provenFloatArgumentReads: provenFloatReads,
             floatArgumentWidths: floatWidths.filter { [16, 32, 64].contains($0.value) },
+            mayWriteFloatResult: writesFloatResult,
             pendingReads: pending.keys.sorted().compactMap { pending[$0] },
             readsFramePointer: readsFramePointer,
             readsContextRegister: readsContextRegister,
@@ -395,7 +407,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         CalleeRegisterSummary(
             argumentReads: argumentReads, provenArgumentReads: provenArgumentReads,
             provenFloatArgumentReads: provenFloatArgumentReads, floatArgumentWidths: floatArgumentWidths,
-            pendingReads: pendingReads,
+            mayWriteFloatResult: true, pendingReads: pendingReads,
             readsFramePointer: readsFramePointer,
             readsContextRegister: readsContextRegister, clobberedCalleeSaved: Self.calleeSavedKeys,
             definitelyClobbered: Self.calleeSavedKeys, callees: callees)
@@ -467,7 +479,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         CalleeRegisterSummary(
             argumentReads: reads, provenArgumentReads: provenArgumentReads,
             provenFloatArgumentReads: provenFloatArgumentReads, floatArgumentWidths: floatArgumentWidths,
-            pendingReads: pendingReads,
+            mayWriteFloatResult: mayWriteFloatResult, pendingReads: pendingReads,
             readsFramePointer: readsFramePointer,
             readsContextRegister: readsContextRegister, readsSelfRegister: readsSelfRegister,
             clobberedCalleeSaved: clobberedCalleeSaved,
@@ -562,6 +574,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 provenArgumentReads: old.provenArgumentReads,
                 provenFloatArgumentReads: old.provenFloatArgumentReads,
                 floatArgumentWidths: old.floatArgumentWidths,
+                mayWriteFloatResult: old.mayWriteFloatResult,
                 pendingReads: old.pendingReads,
                 readsFramePointer: old.readsFramePointer,
                 readsContextRegister: old.readsContextRegister,

@@ -5478,6 +5478,27 @@ public struct Disassembler: Sendable {
             let colons = method.selector.filter { $0 == ":" }.count
             return ObjCArgumentABI.floatRegisterCount(encoding: method.typeEncoding, argumentCount: colons) ?? 0
         }()
+        /// Whether a call may leave its result in v0: unless its name's
+        /// signature or C prototype returns an integer, a pointer or
+        /// nothing, or its in-image body never writes v0 or calls out.
+        func callMayReturnFloat(_ insn: Instruction) -> Bool {
+            if let target = insn.branchTarget, let summary = registerSummaries[target], !summary.mayWriteFloatResult {
+                return false
+            }
+            guard let callee = calleeByAddress[insn.address] else { return true }
+            if let result = DisassembledFunction.cPrototype(of: callee)?.result, !isNameTwin(insn.address) {
+                return !"iv".contains(result)
+            }
+            if let result = DisassembledFunction.splitSignature(callee)?.result {
+                switch SwiftLowering.of(result, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
+                case .oneInteger, .zeroSized: return false
+                default: return true
+                }
+            }
+            // Runtime entry points of known arity return an integer, a
+            // pointer or nothing.
+            return DisassembledFunction.knownCArity(of: callee) == nil
+        }
         func setsFloatingPointArgument(before address: UInt64) -> Bool {
             guard let callIndex = instructionIndex[address] else { return false }
             var settled = Set<Int>()
@@ -5487,6 +5508,13 @@ public struct Disassembler: Sendable {
             while index > 0, !blockStarts.contains(function.instructions[index].address) {
                 index -= 1
                 let insn = function.instructions[index]
+                // A call writes v0 with its result, if it has one, and that
+                // may be the argument: `[o zput:f() at:7]` passes f()'s
+                // double in d0 and rendered `zput:7 at:?`.
+                if insn.controlFlow == .call {
+                    if !settled.contains(0), !stored.contains(0), callMayReturnFloat(insn) { return true }
+                    break
+                }
                 if let flow = insn.controlFlow, flow != .sequential { break }
                 guard let detail = insn.detail else { break }
                 // The write happens after the instruction's reads, so it is

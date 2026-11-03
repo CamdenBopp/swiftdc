@@ -8,7 +8,9 @@ import Testing
 /// write to v0–v7 left for the send (in its block, after the previous call,
 /// not stored to memory) disproves the integer layout, and the arguments
 /// decline. A register stored after its write was a copy temporary (a
-/// double copied through d0), not an argument.
+/// double copied through d0), not an argument. A call before the send
+/// writes v0 with its result, if it has one: a callee no signature or body
+/// proves leaves nothing there declines the send too.
 @Test(arguments: ["Fixtures/Sample/libObjCUntypedFloat.dylib", "Fixtures/Sample/libObjCUntypedFloat.opt.dylib"])
 func anUntypedSendPassingAFloatDeclinesItsArgumentsIfPresent(path: String) async throws {
     guard FileManager.default.fileExists(atPath: path) else { return }
@@ -16,11 +18,18 @@ func anUntypedSendPassingAFloatDeclinesItsArgumentsIfPresent(path: String) async
     var expected: [String: String] = [
         "_putValue": "[? put:? at:?]",
         "_putLoaded": "[? put:? at:?]",
+        // A call's double result in d0: an indirect call proves nothing.
+        "_putCall": "[? put:? at:?]",
+        // A callee whose body writes no v register leaves nothing there.
+        "_takeAfterIntCall": "[? take:3 and:4]",
         "_takeInts": "[? take:3 and:4]",
-        // A double computed in a branch before the send's block, or before
-        // an intervening call, is not left for the send.
+        // A double computed in a branch before the send's block is not
+        // left for the send.
         "_takeAfterBranch": "[? take:3 and:4]",
-        "_takeAfterCall": "[? take:3 and:4]",
+        // `useDouble`'s body ends `fcvtzs d0, d0; str d0, [x8]`: it leaves
+        // a value in d0, which a callee returning a double does the same
+        // way, so the send after the call declines.
+        "_takeAfterCall": "[? take:? and:?]",
         // A double copied through d0 just before the send is a temporary.
         "_copyThenTake": "[? take:3 and:4]",
         // The 128-bit zeroing of the enumeration state is no float.
@@ -31,8 +40,9 @@ func anUntypedSendPassingAFloatDeclinesItsArgumentsIfPresent(path: String) async
     let optimized = path.hasSuffix(".opt.dylib")
     expected["-[Relay relay:to:]"] = optimized ? "[arg1 put:? at:?]" : "[? put:? at:?]"
     expected["-[Relay relayCount:to:]"] = optimized ? "[arg1 take:arg0 and:4]" : "[? take:? and:4]"
-    // A call since the entry has clobbered the double.
-    expected["-[Relay relayAfterCall:to:]"] = optimized ? "[arg1 take:3 and:4]" : "[? take:3 and:4]"
+    // The call to `useDouble` since the entry clobbered the double, and
+    // leaves d0 written, so the send declines as `takeAfterCall`'s does.
+    expected["-[Relay relayAfterCall:to:]"] = optimized ? "[arg1 take:? and:?]" : "[? take:? and:?]"
     // -O0 reloads the double parameter into d0; -O2 passes it untouched,
     // and a C function has no signature to say d0 holds an argument (OPEN).
     if !path.hasSuffix(".opt.dylib") { expected["_putPassed"] = "[? put:? at:?]" }
@@ -40,7 +50,10 @@ func anUntypedSendPassingAFloatDeclinesItsArgumentsIfPresent(path: String) async
     // body that reads it proves it is their first parameter.
     if optimized {
         expected["_putLoaded"] = "[arg0 put:? at:?]"
-        for name in ["_takeAfterBranch", "_takeAfterCall", "_copyThenTake"] { expected[name] = "[arg0 take:3 and:4]" }
+        for name in ["_takeAfterBranch", "_copyThenTake"] { expected[name] = "[arg0 take:3 and:4]" }
+        expected["_takeAfterCall"] = "[arg0 take:? and:?]"
+        expected["_putCall"] = "[arg0 put:? at:?]"
+        expected["_takeAfterIntCall"] = "[arg0 take:3 and:4]"
     }
     for (name, send) in expected.sorted(by: { $0.key < $1.key }) {
         guard let function = functions.first(where: { $0.displayName == name }) else {

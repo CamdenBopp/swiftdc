@@ -50,6 +50,18 @@ results do not replace previously recorded release performance measurements.
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
 
+- **FIXED — an untyped ObjC send after a call returning a double read by
+  position.** `[o put:f() at:7]` rendered `[o put:7 at:?]`, with the 7 in
+  the Double's place. The float guard stopped at the call instead of
+  asking whether the call left its result in d0. Now a call counts as
+  setting the send's d0 unless one of these proves it returns no float:
+  its signature, its C prototype, its known C arity, or its in-image body
+  (`mayWriteFloatResult`: the body writes v0 nowhere and calls out
+  nowhere). `takeAfterCall` and `-[Relay relayAfterCall:to:]` now decline
+  their `take:3 and:4`. `useDouble`'s body leaves `fcvtzs d0, d0` in d0,
+  exactly as a function returning a double would. Fixture
+  `objc_untyped_float.m`. Blast radius against d33e29b: 3 files,
+  16 lines.
 - **FIXED — a printf integer argument rendered its whole slot.**
   `printf("%d %hd %hhd …", -1, -2, -3, …)` read `0xffffffff, 0xfffffffe,
   0xfffffffd`. Each integer conversion now types its slot: `%d` as Int32,

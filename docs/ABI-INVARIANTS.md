@@ -140,7 +140,7 @@ soundness change, measured on its own).
 | 12 | Struct/SIMD/closure params | `swiftCallArgumentLayout` unplaced tail | FIXED (unplaced from the first unprovable parameter) | soundness | structargs.swift | any call passing a struct by value | shared lowering |
 | 13 | Body-reads sees only x0-x7 | `CalleeRegisterSummary` | v0-v7 FIXED; incoming stack area open | soundness (arity) | floatreads.c | C callees with float or stack args | isolated (summary) |
 | 14 | -Onone stack reloads in conditions | `Structurer.condition` | open | soundness | a14 #1 | -Onone payload switches | isolated (text path) |
-| 15 | Untyped ObjC float guard is block-local | `setsFloatingPointArgument` | open | soundness | a10 #2 | sends of image-only selectors with floats | isolated |
+| 15 | Untyped ObjC float guard is block-local | `setsFloatingPointArgument` | a call's float result FIXED; a predecessor block's write open (the compiler duplicated the send in the probe) | soundness | objc_untyped_float.m | sends of image-only selectors with floats | isolated |
 | 16 | Register preservation edge cases (x18, below-sp, blr summaries, flags across calls) | `ValueTracer` call transfer | open | soundness | a12 #3-#8 | mostly hand-written assembly | isolated |
 | 17 | x21 after a throwing call | tracer | open | completeness | a6 #2/#3 | every `try?` / do-catch / propagating caller | isolated |
 | 18 | Async function pointer records, context escapes | AsyncFuncletIndex, tracer | open | completeness | a7 #3/#4, a6 #4 | async code | isolated |

@@ -41,6 +41,13 @@ void takeInts(id o) { [o take:3 and:4]; }
 void takeAfterBranch(id o, int c, double *p) { if (c) gSink = (long)(*p * 2.0) + 1; [o take:3 and:4]; }
 void copyThenTake(id o, double *src, double *dst) { *dst = *src; [o take:3 and:4]; }
 void takeAfterCall(id o, double *p) { useDouble(*p * 2.0); [o take:3 and:4]; }
+// The double is a call's result, written to d0 by the call itself:
+// [o put:f() at:7], not `put:7 at:?`.
+void putCall(id o, double (*f)(void)) { [o put:f() at:7]; }
+// touchInt's body writes no v register and calls nothing, so it leaves no
+// value in d0: the send after it keeps take:3 and:4.
+__attribute__((noinline)) void touchInt(long *p) { *p = 1; }
+void takeAfterIntCall(id o, long *p) { touchInt(p); [o take:3 and:4]; }
 long countAll(id<NSFastEnumeration> o) { long n = 0; for (id x in o) { (void)x; n++; } return n; }
 NSString *formatLocal(void) { double d = 1.5; return [NSString stringWithFormat:@"%f", d]; }
 
