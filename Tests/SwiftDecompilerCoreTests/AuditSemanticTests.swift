@@ -251,6 +251,54 @@ func structuredLoops(_ text: String) -> [(header: String, body: [String], after:
     #expect(text.contains("let awaited1 = await AsyncFns.fetchOrThrow(arg0)"), Comment(rawValue: text))
 }
 
+/// An await names its result only when the callee returns it in x0 (or v0)
+/// alone. A generic `T` and a five-word struct are written into a buffer
+/// the caller passes in x0, a String comes back in x0 and x1, an `Int?`
+/// keeps its nil tag in x1, and `Task.value` and an async-let's
+/// `swift_asyncLet_get` write the value into a buffer and resume with
+/// nothing of it in x0. `useInt` is the control. Each `use…` and its resume
+/// funclets are checked at -O and -Onone, unfiltered and filtered.
+@Test func anAwaitNamesOnlyAOneRegisterResultIfPresent() async throws {
+    let declined: [(function: String, await: String)] = [
+        ("useGeneric", "await AwaitResults.genericResult<A>("),
+        ("useBig", "await AwaitResults.bigResult("),
+        ("useString", "await AwaitResults.stringResult("),
+        ("useOptional", "await AwaitResults.optionalResult("),
+        ("useTaskValue", ".value.getter("),
+        ("useAsyncLet", "await swift_asyncLet_get("),
+        ("useAsyncLetReturning", "await swift_asyncLet_get("),
+    ]
+    for path in ["Fixtures/Sample/libAwaitResults.opt.dylib", "Fixtures/Sample/libAwaitResults.onone.dylib"] {
+        guard FileManager.default.fileExists(atPath: path) else { return }
+        for filter in [nil, "AwaitResults.use"] as [String?] {
+            let functions = try await withStableDependencies {
+                try await Disassembler(preset: .default).disassemble(path: path, functionFilter: filter)
+            }
+            // The function and its own resume funclets, not the async-let
+            // child closure (`closure #1 … in AwaitResults.useAsyncLet(…)`),
+            // whose own await of `intResult` is a proven Int.
+            func renders(of name: String) -> [String] {
+                let own = functions.filter {
+                    $0.displayName.hasPrefix("AwaitResults.\(name)(")
+                        || $0.displayName.contains("partial function for AwaitResults.\(name)(")
+                }
+                return own.flatMap { [$0.renderStructured(), $0.renderPseudo()] }
+            }
+            let where_ = "\(path), filter \(filter ?? "none")"
+            let control = renders(of: "useInt")
+            #expect(control.count >= 4, "\(where_): useInt not found")
+            #expect(control.contains { $0.contains("let awaited1 = await AwaitResults.intResult(arg0)") },
+                    "\(where_): \(control.joined(separator: "\n"))")
+            for (name, awaitText) in declined {
+                let texts = renders(of: name)
+                #expect(texts.count >= 4, "\(where_): \(name) not found")
+                #expect(texts.contains { $0.contains(awaitText) }, "\(where_) \(name): \(texts.joined(separator: "\n"))")
+                #expect(!texts.contains { $0.contains("awaited") }, "\(where_) \(name): \(texts.joined(separator: "\n"))")
+            }
+        }
+    }
+}
+
 /// `var n = 7; let r = await g(a); bump(&n); return n + r`: after the
 /// await, the resume funclet reloads its own context (`ldr x19, [x22]`) and
 /// passes `&n` as `x19 + 0x10`. The chain-slot pass only saw addresses

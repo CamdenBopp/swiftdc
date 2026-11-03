@@ -900,8 +900,26 @@ because it cannot be distinguished from a right one by reading the output.
   plain listing and three filtered runs: only those call lines.
   `aCallIntoAMergedFunctionNamesNoTypeIfPresent` and
   `aMergedCalleeDoesNotNameItsRepresentativeType` were seen red.
-- **OPEN — `awaitedN` is bound for a generic or indirect async result.** The
-  result is written into a context buffer, so x0 at the resume is not it.
+- **FIXED (`096868b`) — `awaitedN` was bound for a generic or indirect async
+  result.** The result is written into a buffer the caller passes in x0, so
+  x0 at the resume is not it. This entry was written hours before `096868b`
+  made the result register proof-based (`SwiftLowering`), which declines a
+  generic `A`, a struct, `String` and `Int?` for an await as for a call; no
+  test pinned the await path. Fixture `libAwaitResults` (-O and -Onone)
+  awaits each shape plus `Task.value` and two `async let`s: all render a bare
+  `await`, and only the `Int` control binds `let awaited1`.
+  `anAwaitNamesOnlyAOneRegisterResultIfPresent` (unfiltered and filtered)
+  was seen red with the type rule defaulting to x0. The system
+  libswift_Concurrency binds one await result
+  (`AsyncSequence.contains(where:)`, a Bool in x0).
+- **OPEN — an awaited result that crosses an executor hop is not followed.**
+  In `libAwaitResults` each nonisolated async function hops back to the
+  generic executor after its await, so the resume that receives x0 spills it
+  (`str x0, [x9, #0x18]`) and the next funclet reads the slot. The chain-slot
+  proof takes stores from the entry funclet only, so even `useInt` renders
+  `AwaitResults.sink(?)` where `sink(awaited1 + 2)` is true. An indirect
+  result needs the same, plus the buffer the caller passed (`add x0, x22,
+  #0x10`): `useGeneric` reads its Int back from `[x22, #0x10]`.
 - **FIXED — one call could read as two.** A call consumed by both a branch
   condition and the return printed in both: `if ((Compares.sink(arg0) + …) <
   0) { trap() } else { return (Compares.sink(arg0) << 1) }` for one `bl sink`.
