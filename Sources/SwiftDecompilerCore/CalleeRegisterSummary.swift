@@ -724,6 +724,11 @@ enum Preservation {
                 case (.stack(let k), let saveStart?) where k < saveStart:
                     escapeFloor = min(escapeFloor ?? k, k)
                     escapeBound = max(escapeBound ?? saveStart, saveStart)
+                // An address inside a dynamic allocation that hangs below
+                // k: the callee reaches that allocation, below k.
+                case (.below(let k), let saveStart?) where k <= saveStart:
+                    escapeFloor = Int64.min
+                    escapeBound = max(escapeBound ?? k, k)
                 default:
                     stackAddressEscaped = true
                 }
