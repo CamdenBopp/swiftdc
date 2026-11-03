@@ -538,6 +538,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name GenericWitness genericwi
 echo "==> value-witness calls on a demangling cache variable's metadata (codablewitness.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name CodableWitness codablewitness.swift -o libCodableWitness.dylib
 
+echo "==> a value-witness call on metadata loaded from the GOT (gotwitness.s)"
+$CLANG -arch arm64 -dynamiclib gotwitness.s -L"$(xcrun --show-sdk-path)/usr/lib/swift" -lswiftCore -o libGOTWitness.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

@@ -1263,6 +1263,13 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — value-witness calls on GOT-loaded metadata were unresolved.**
+  `adrp x2, _$sSiN@GOTPAGE; ldr x2, [x2, …]; ldur x8, [x2, #-0x8]; ldr x8,
+  [x8, #0x10]; blr x8` is Int's initializeWithCopy. The tracer follows
+  the load one hop further. A slot the loader binds to `type metadata for
+  X` names the call; a writable slot does not. Fixture `gotwitness.s`.
+  Blast radius: 9 files, 37 calls named. Unresolved calls in IfConfig
+  fell from 141 to 126, and in ParserDiagnostics from 121 to 112.
 - **FIXED — value-witness calls on a demangling cache variable's metadata
   were unresolved.** Codable code fetches `KeyedEncodingContainer<CodingKeys>`
   through `__swift_instantiateConcreteTypeFromMangledName(cache)` and

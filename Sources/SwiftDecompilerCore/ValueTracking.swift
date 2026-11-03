@@ -4453,7 +4453,8 @@ public struct ValueTracer: Sendable {
         case .frame(let offset): return .stackSlot(Self.stackKey(offset &+ effective))
         case .address(let address): return .absolute(address &+ UInt64(bitPattern: effective))
         case .loaded(let slot): return .throughStaticPointer(slot: slot, offset: Int(effective))
-        case .callResult, .loadedFrom(.callResult, _), .genericMetadata, .loadedFrom(.genericMetadata, _):
+        case .callResult, .loadedFrom(.callResult, _), .genericMetadata, .loadedFrom(.genericMetadata, _),
+             .loadedThrough(_, -8):
             return .throughValue(registers[Location(base)] ?? .unknown, offset: Int(effective))
         case .selfPointer: return .selfField(Int(effective))
         case .selfField(let field): return .selfField(field + Int(effective))

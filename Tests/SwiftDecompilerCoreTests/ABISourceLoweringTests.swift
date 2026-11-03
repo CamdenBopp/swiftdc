@@ -745,3 +745,18 @@ struct ABISourceLoweringTests {
     #expect(MangledNamePair.typeName(at: 0x1830, in: machO) != nil)
     #expect(MangledNamePair.typeName(atCacheVariable: 0x1830, in: machO) == nil)
 }
+
+/// Metadata loaded from a slot the loader binds (a GOT entry for `type
+/// metadata for Swift.Int`) names the value-witness call through it; the
+/// same pointer in writable data does not (gotwitness.s).
+@Test func aValueWitnessCallOnGOTLoadedMetadataIsNamedIfPresent() async throws {
+    let path = "Fixtures/Sample/libGOTWitness.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func call(_ name: String) throws -> String {
+        let function = try #require(functions.first { $0.displayName == name })
+        return try #require(function.instructions.first { $0.text.hasPrefix("blr") }).annotation ?? ""
+    }
+    #expect(try call("_copyThroughGOT").contains("→ initializeWithCopy value witness for Swift.Int"))
+    #expect(try !call("_copyThroughWritable").contains("→"))
+}

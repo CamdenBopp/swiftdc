@@ -2941,6 +2941,16 @@ public struct Disassembler: Sendable {
         /// Only the eight function slots every table has; past them come
         /// the size, stride and flags.
         func valueWitnessCall(_ value: AbstractValue) -> String? {
+            // Metadata loaded from a slot the loader fixes (a GOT or literal
+            // pool entry bound to `type metadata for X`): `ldr x2, [x2,
+            // #0x60]; ldur x8, [x2, #-0x8]; ldr x8, [x8, #k]; blr x8`.
+            if case .loadedFrom(.loadedThrough(let slot, offset: -8), let offset) = value,
+               offset >= 0, offset % 8 == 0, offset / 8 < MetadataSymbolizer.valueWitnessNames.count,
+               // `loadedName` names only a slot the loader owns.
+               let name = resolver.loadedName(at: slot), name.hasPrefix("type metadata for "),
+               name.count > "type metadata for ".count {
+                return "\(MetadataSymbolizer.valueWitnessNames[offset / 8]) value witness for \(name.dropFirst("type metadata for ".count))"
+            }
             guard case .loadedFrom(.loadedFrom(let metadata, offset: -8), let offset) = value,
                   offset >= 0, offset % 8 == 0, offset / 8 < MetadataSymbolizer.valueWitnessNames.count
             else { return nil }
