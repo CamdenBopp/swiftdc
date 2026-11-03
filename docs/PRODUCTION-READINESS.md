@@ -1263,6 +1263,16 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — an isa kept in a register across a call lost its meaning.**
+  Any call but a retain forgets every alias of a `self` field, the isa
+  included, so `ldr x27, [x20]; bl ___chkstk_darwin; ldr x23, [x27,
+  #0x58]` no longer read the class's generic argument B. The register
+  still holds the word, and metadata never changes, so a bare `self[0]`
+  alias now becomes an isa snapshot: unknown as a value, but still the
+  base of vtable and generic-argument reads. Fixture `spillwitness.swift`.
+  Blast radius: 4 files. Value-witness calls named in
+  libSwiftCompilerPluginMessageHandling 375 → 379, unresolved calls 434 →
+  430.
 - **FIXED — a generic class's value-witness calls on its own type
   parameters were unresolved.** A method reads the metadata from `self`'s
   isa at the class descriptor's generic-argument offset (the

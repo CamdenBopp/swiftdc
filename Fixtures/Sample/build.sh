@@ -544,6 +544,9 @@ $CLANG -arch arm64 -dynamiclib gotwitness.s -L"$(xcrun --show-sdk-path)/usr/lib/
 echo "==> a generic class's value witnesses through self's metadata (classwitness.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name ClassWitness classwitness.swift -o libClassWitness.dylib
 
+echo "==> a generic class's isa kept across calls names its witnesses (spillwitness.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name SpillWitness spillwitness.swift -o libSpillWitness.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

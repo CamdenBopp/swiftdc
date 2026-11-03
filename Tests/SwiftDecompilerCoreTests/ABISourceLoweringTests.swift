@@ -777,3 +777,15 @@ struct ABISourceLoweringTests {
     let setU = try #require(functions.first { $0.displayName.contains("Inner.setU(") }).renderStructured()
     #expect(!setU.contains("value witness for B"), Comment(rawValue: setU))
 }
+
+/// A register that loaded self's isa still holds it after a call, and
+/// metadata does not change, so a generic argument read through it after
+/// the call names its witnesses (spillwitness.swift).
+@Test func anIsaKeptAcrossACallNamesItsGenericArgumentsWitnessesIfPresent() async throws {
+    let path = "Fixtures/Sample/libSpillWitness.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let put = try #require(functions.first { $0.displayName.hasPrefix("SpillWitness.Store.put(") }).renderStructured()
+    #expect(put.contains("getEnumTagSinglePayload value witness for B("), Comment(rawValue: put))
+    #expect(!put.contains("value witness for A"), Comment(rawValue: put))
+}

@@ -5216,9 +5216,10 @@ public struct Disassembler: Sendable {
                 // Async plumbing: the context pointer, the continuation, and an
                 // unproven context slot are not source values.
                 return .unknown
-            case .loadedThrough, .loadedFrom:
+            case .loadedThrough, .loadedFrom, .selfIsaSnapshot:
                 // A word read through a loaded pointer: named only as a call
-                // target (`indirectCallTarget`), unknown as a value.
+                // target (`indirectCallTarget`), unknown as a value. So is an
+                // isa kept across a call.
                 return .unknown
             case .binary(let op, let lhs, let rhs):
                 let lhs = sanitizeValue(lhs)
@@ -6715,7 +6716,7 @@ public struct Disassembler: Sendable {
             switch value {
             case .genericMetadata(let name):
                 return "type metadata for \(name)"
-            case .unknown, .callResultHigh, .loadedThrough, .loadedFrom:
+            case .unknown, .callResultHigh, .loadedThrough, .loadedFrom, .selfIsaSnapshot:
                 // A String result's second word alone is no source value, nor
                 // is a word read through a loaded pointer (a call through one
                 // is named by its target, `annotateIndirectControlFlowTargets`).

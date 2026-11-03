@@ -206,6 +206,12 @@ public indirect enum AbstractValue: Equatable, Sendable {
     /// the target of a `ldr x8,[x20]; ldr x8,[x8,#off]; blr x8` dispatch. Named
     /// against `self`'s type via `VTableIndex` at enrichment time.
     case selfVTableMethod(offset: Int)
+    /// The word a register loaded from `self + 0` before a call: no longer
+    /// `self`'s field 0 (the call may have written it), but still the
+    /// pointer that was there. For a class instance that is its isa, and
+    /// metadata does not change, so a load through it still reaches the
+    /// vtable and the generic arguments. Unknown as a value.
+    case selfIsaSnapshot
     /// A field, at a byte offset, of a struct argument passed by value in
     /// registers (an HFA). Renders as `arg<n>.field`; seeded for a nonmutating
     /// method whose parameter is a small floating-point aggregate.
@@ -4166,7 +4172,10 @@ public struct ValueTracer: Sendable {
 
     private static func invalidateSelfFieldAliases(in registers: inout State) {
         let keys = registers.compactMap { key, value in containsSelfFieldValue(value) ? key : nil }
-        for key in keys { registers[key] = nil }
+        // A register keeps its word across the call; only the name `self[0]`
+        // goes stale. `ldr x27, [x20]; bl …; ldr x23, [x27, #0x58]` still
+        // reads the class's second generic argument.
+        for key in keys { registers[key] = registers[key] == .selfFieldValue(offset: 0) ? .selfIsaSnapshot : nil }
     }
 
     private static func containsSelfFieldValue(_ value: AbstractValue) -> Bool {
@@ -4460,7 +4469,7 @@ public struct ValueTracer: Sendable {
         case .selfField(let field): return .selfField(field + Int(effective))
         // A load through the metadata pointer at `self + 0` (a class instance's
         // isa) reaches the vtable — the second `ldr` of a virtual dispatch.
-        case .selfFieldValue(0): return .vtableMethod(Int(effective))
+        case .selfFieldValue(0), .selfIsaSnapshot: return .vtableMethod(Int(effective))
         // A store into a freshly-allocated array literal, keyed by its site.
         case .arrayLiteral(let site, _): return .arrayElement(site: site, offset: Int(effective))
         case .indirectResultPointer: return .resultSlot(Int(effective))
