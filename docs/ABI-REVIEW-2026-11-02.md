@@ -22,7 +22,8 @@ omitted.
    and v0 for every non-void callee; only tuples, String and C prototypes
    are excluded. Write it only when the result is a proven single-register
    scalar of that bank.
-2. **A parked x20 becomes `self`.** Any Swift call after a callee-saved
+2. **MITIGATED — A parked x20 becomes `self`.** In-image callees are
+   now gated on their body reading x20; out-of-image value methods are not. Any Swift call after a callee-saved
    temporary lands in x20 takes `self:`: a non-mutating enum method
    (`Mode.weight(self: r0, r0)`, its real self dropped), a one-word struct
    method (`W.g(self: arg1)`), a generic free function (`gen<A>(self: …)`,

@@ -317,3 +317,17 @@ struct ABISourceLoweringTests {
     let caller = try #require(functions.first { $0.displayName.hasPrefix("OneCase.callOneMid(") }).renderStructured()
     #expect(!caller.contains("oneMid(arg0, arg1, ?)"), Comment(rawValue: caller))
 }
+
+/// A callee whose body never reads the x20 it is handed takes no `self`
+/// there, whatever the caller parked in the callee-saved register:
+/// `freshEnum` keeps `v` in x20 across `md.weight(v)`, a by-value enum
+/// method whose self is a trailing word, and read `Mode.weight(self: r0,
+/// r0)` (`parkedself.swift`, ABI review item 2).
+@Test func aCalleeThatNeverReadsX20TakesNoSelfIfPresent() async throws {
+    let path = "Fixtures/Sample/libParkedSelf.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = try #require(functions.first { $0.displayName.hasPrefix("ParkedSelf.freshEnum(") }).renderStructured()
+    #expect(text.contains("ParkedSelf.Mode.weight(r0)"), Comment(rawValue: text))
+    #expect(!text.contains("self"), Comment(rawValue: text))
+}

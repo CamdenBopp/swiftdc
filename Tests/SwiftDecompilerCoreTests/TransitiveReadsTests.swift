@@ -41,8 +41,8 @@ private func pseudo(_ path: String) async throws -> (array: String, streamed: St
 
 /// `mov x0, #5; bl +0x100; ret` with the target an in-image function: the
 /// body reads nothing itself, and the call waits on its target with every
-/// argument register but x0 (which the body wrote), and x29 and x22, still
-/// unwritten.
+/// argument register but x0 (which the body wrote), and x29, x22 and x20,
+/// still unwritten.
 @Test func aCallToAnInImageFunctionWaitsForItsTargetsReads() throws {
     let engine = try #require(CapstoneEngine())
     let words: [UInt32] = [0xd28000a0, 0x94000040, 0xd65f03c0]
@@ -56,11 +56,14 @@ private func pseudo(_ path: String) async throws -> (array: String, streamed: St
         }, source: .symbol)
     let summary = try #require(CalleeRegisterSummary.of(function, isFunction: { $0 == 0x1104 }))
     #expect(summary.argumentReads.isEmpty)
-    // x29 and x22 are unwritten there too.
-    #expect(summary.pendingReads == [.init(target: 0x1104, unwritten: 0b1111_1110 | 1 << 29 | 1 << 22)])
-    // Not an in-image function: the call may read every unwritten register.
+    // x29, x22 and x20 are unwritten there too.
+    #expect(summary.pendingReads == [.init(target: 0x1104, unwritten: 0b1111_1110 | 1 << 29 | 1 << 22 | 1 << 20)])
+    #expect(!summary.readsSelfRegister)
+    // Not an in-image function: the call may read every unwritten register,
+    // x20 as a Swift method's `self` among them.
     let unknown = try #require(CalleeRegisterSummary.of(function))
     #expect(unknown.argumentReads == Set(1...7))
+    #expect(unknown.readsSelfRegister)
 }
 
 /// The reads fixpoint over a hand-built call graph: a call reads its

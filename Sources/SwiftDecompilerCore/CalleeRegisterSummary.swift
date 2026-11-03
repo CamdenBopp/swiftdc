@@ -69,6 +69,13 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// The same for x22, the async context register: the body may write the
     /// context the caller holds there.
     var readsContextRegister = false
+    /// Whether the body may read the x20 it was called with: as a value, or
+    /// by a call that may (an in-image one that does, or one with no C
+    /// arity, which may take it as `self`). A body that does not is no
+    /// method of a `self` in x20, and a caller's x20 at a call to it is a
+    /// temporary: `Mode.weight(self: r0, r0)` for a by-value enum method.
+    /// True when nothing is known.
+    var readsSelfRegister = true
     /// Callee-saved registers (`x19`…`x29`) the body writes and does not
     /// provably hand back: at some exit (a `ret` or a tail branch out) the
     /// register does not hold its entry value. Anything unproven counts as
@@ -129,6 +136,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     private static let argumentKeys = (0...7).map { "x\($0)" }
     private static let framePointerBit: UInt32 = 1 << 29
     private static let contextRegisterBit: UInt32 = 1 << 22
+    private static let selfRegisterBit: UInt32 = 1 << 20
     private static let calleeSavedKeys = Set((19...29).map { "x\($0)" })
 
     /// Nil when any instruction lacks structured detail: nothing is claimed
@@ -165,6 +173,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         var provenReads = Set<Int>()
         var readsFramePointer = false
         var readsContextRegister = false
+        var readsSelfRegister = false
         // By call address: a block revisited with fewer registers written
         // widens the mask, as it widens `reads`.
         var pending: [UInt64: PendingRead] = [:]
@@ -189,6 +198,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 }
                 if !written.contains("x29"), Self.uses("x29", in: detail) { readsFramePointer = true }
                 if !written.contains("x22"), Self.uses("x22", in: detail) { readsContextRegister = true }
+                if !written.contains("x20"), Self.uses("x20", in: detail) { readsSelfRegister = true }
                 let internalBranch = insn.branchTarget.map(addresses.contains) == true
                 let leavesThroughCall = insn.controlFlow == .call
                     || (insn.controlFlow == .branch && !internalBranch && block.switchCases == nil)
@@ -205,9 +215,13 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                         }
                         if !written.contains("x29") { unwritten |= Self.framePointerBit }
                         if !written.contains("x22") { unwritten |= Self.contextRegisterBit }
+                        if !written.contains("x20") { unwritten |= Self.selfRegisterBit }
                         pending[insn.address] = PendingRead(target: target, unwritten: unwritten)
                     } else {
                         let known = insn.branchTarget.flatMap(calleeArity)
+                        // A callee with no C arity may be a Swift method
+                        // handed this x20 as its `self`.
+                        if known == nil, !written.contains("x20") { readsSelfRegister = true }
                         argumentKeys.prefix(known ?? argumentKeys.count).forEach { read($0, proven: false) }
                     }
                 }
@@ -303,6 +317,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             pendingReads: pending.keys.sorted().compactMap { pending[$0] },
             readsFramePointer: readsFramePointer,
             readsContextRegister: readsContextRegister,
+            readsSelfRegister: readsSelfRegister,
             clobberedCalleeSaved: clobbered,
             definitelyClobbered: definitelyClobbered,
             restoredFrom: restoredFrom.filter { definitelyClobbered.contains($0.key) },
@@ -384,6 +399,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             var reads = summary.argumentReads
             var readsFramePointer = summary.readsFramePointer
             var readsContextRegister = summary.readsContextRegister
+            var readsSelfRegister = summary.readsSelfRegister
             for call in summary.pendingReads {
                 let targetReads = summaries[call.target]?.argumentReads ?? Set(0 ..< argumentKeys.count)
                 for index in targetReads where call.unwritten & (1 << index) != 0 { reads.insert(index) }
@@ -393,12 +409,17 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 if call.unwritten & contextRegisterBit != 0, summaries[call.target]?.readsContextRegister ?? true {
                     readsContextRegister = true
                 }
+                if call.unwritten & selfRegisterBit != 0, summaries[call.target]?.readsSelfRegister ?? true {
+                    readsSelfRegister = true
+                }
             }
             guard reads != summary.argumentReads || readsFramePointer != summary.readsFramePointer
                 || readsContextRegister != summary.readsContextRegister
+                || readsSelfRegister != summary.readsSelfRegister
             else { continue }
             summaries[start] = summary.replacingReads(
-                reads, readsFramePointer: readsFramePointer, readsContextRegister: readsContextRegister)
+                reads, readsFramePointer: readsFramePointer, readsContextRegister: readsContextRegister,
+                readsSelfRegister: readsSelfRegister)
             for caller in callers[start] ?? [] where queued.insert(caller).inserted {
                 worklist.append(caller)
             }
@@ -407,12 +428,13 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     }
 
     private func replacingReads(
-        _ reads: Set<Int>, readsFramePointer: Bool, readsContextRegister: Bool
+        _ reads: Set<Int>, readsFramePointer: Bool, readsContextRegister: Bool, readsSelfRegister: Bool
     ) -> CalleeRegisterSummary {
         CalleeRegisterSummary(
             argumentReads: reads, provenArgumentReads: provenArgumentReads, pendingReads: pendingReads,
             readsFramePointer: readsFramePointer,
-            readsContextRegister: readsContextRegister, clobberedCalleeSaved: clobberedCalleeSaved,
+            readsContextRegister: readsContextRegister, readsSelfRegister: readsSelfRegister,
+            clobberedCalleeSaved: clobberedCalleeSaved,
             definitelyClobbered: definitelyClobbered, restoredFrom: restoredFrom, callees: callees,
             outgoingCalls: outgoingCalls, storesOnlyToStack: storesOnlyToStack)
     }

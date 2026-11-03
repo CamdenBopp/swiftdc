@@ -5207,6 +5207,13 @@ public struct Disassembler: Sendable {
             else { continue }
             // A String result's second word moved into x20 is no receiver.
             if case .callResultHigh = site.selfValue { continue }
+            // An in-image callee whose body never reads the x20 it is
+            // handed has no `self` there: the caller parked a temporary in
+            // the callee-saved register (`Mode.weight(self: r0, r0)` for a
+            // by-value enum method, `inner #1 (self: r1, r0)`).
+            if let target = insn.branchTarget, let summary = registerSummaries[target], !summary.readsSelfRegister {
+                continue
+            }
             if let callee = calleeByAddress[insn.address] {
                 if DisassembledFunction.receivesThinMetatype(callee, classTypeIndex: classTypeIndex)
                     || DisassembledFunction.takesNoSelf(callee) { continue }

@@ -472,6 +472,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name DynamicCast dynamiccast.
 echo "==> a throw that shares the normal return's ret (throwselect.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name ThrowSelect throwselect.swift -o libThrowSelect.dylib
 
+echo "==> a temporary parked in x20 before a callee with no self there (parkedself.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name ParkedSelf parkedself.swift -o libParkedSelf.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

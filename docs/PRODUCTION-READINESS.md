@@ -6695,3 +6695,15 @@ Findings:
   `plainThrow` reads `return (arg0 + (arg0 << 1))`; `typedPick` (four
   builds) `return arg0`; the generic `transform` `return (… + 1)`.
   swift-syntax byte-identical.
+- **MITIGATED — a parked x20 taken as `self`** (ABI review item 2). A
+  callee's register summary now records whether its body may read the x20
+  it is handed (`readsSelfRegister`: a read before any write, other than
+  a prologue's save to the stack; an in-image call that does; or a call
+  with no C arity, which may take it as `self`). An in-image callee that
+  does not takes no `self`: `freshEnum` read `Mode.weight(self: r0, r0)`
+  for a by-value enum method and reads `Mode.weight(r0)`
+  (`parkedself.swift`). swift-syntax: 30 lines, each a `self:` dropped
+  from a callee that never reads x20 (`sub_35e8(self:
+  swift_allocObject(…), …)`, `Descriptor.init(self: …stringValue.getter())`
+  for `init(rawValue: Int)`). Still OPEN: an out-of-image value method
+  (`String._bridgeToObjectiveC(self: arg0)`) is decided by name.
