@@ -50,6 +50,23 @@ results do not replace previously recorded release performance measurements.
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
 
+- **OPEN — `CalleeRegisterSummary.readsSelfRegister` is wrong both
+  ways.** Its forward pass tracks writes to x0-x7, x29 and x22, but not
+  x20. A body that overwrites x20 before using it is counted as reading
+  its caller's x20, and the caller then shows a `self:` that is no
+  argument. The plugin library's `_ArrayBuffer._consumeAndCreateNew`
+  specializations (`mov x20, x0` second) had this, and f904fac now covers
+  them for frozen system types. Adding x20 to the tracked writes is not
+  enough: `uses` treats any store of x20 to an sp-based slot as a
+  register save, and -Onone spills the incoming `self` that way.
+  `Reconstruction.Dog.init` does `str x20, [sp, #8]; ldr x20, [sp, #8];
+  bl Animal.init`, and with x20 tracked it lost its real `self` (blast:
+  8 files, 126 lines, among them `Dog.init(self: swift_allocObject(…))` →
+  `Dog.init()`). A spilled `self` reloaded into another register and
+  used only for runtime calls is already missed today. The fix needs the
+  sp slots that hold the incoming x20, tracked relative to the CFA
+  through sp adjustments and joins, with a load from one counted as a
+  read.
 - **FIXED — x20 was named `self` for a frozen system struct's
   non-mutating member.** Swift passes a loadable `self` as its words after
   the formals and uses x20 (`swiftself`) only for an address: an
