@@ -58,8 +58,7 @@ results do not replace previously recorded release performance measurements.
   codes. The typed-constant rendering reads each at its type: `close(-1)`,
   `usleep(0xee6b2800)`. Fixture `cnarrowargs.c`. Blast radius: one line.
   A variadic argument's width comes from its format conversion, which is
-  still open. So is a format string in an image's first page, which reads
-  as an address (`printf(0x48c, …)`).
+  still open.
 - **FIXED — a computed narrow integer result rendered its whole
   register.** `add16(_ x: UInt16) -> UInt16 { x &+ 72 }` read `return
   (((arg0 & 0xffffffff) + 72) & 0xffffffff)`, which is 0x10047 for 0xffff,
@@ -1246,6 +1245,13 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — a C string literal with a newline rendered as its address.**
+  `printf("%d\n", x)` read `printf(0x1000004bc, x)`. The literal gate
+  accepted printable ASCII only, and most format strings end in `\n`.
+  Tab, newline and carriage return are now accepted and rendered escaped.
+  They are text in a `cstring_literals` section. An earlier note blamed
+  the image's first page for a dylib's `printf(0x48c, …)`; the newline was
+  the cause there too. Fixture `cformat.c`.
 - **FIXED — variadic, `String.Index`, string-guts, `Any.Type` and owned
   parameters were not laid out.** A call taking one fell back to reading
   registers by position. The stdlib fixes each layout:

@@ -68,13 +68,15 @@ private func body(_ functions: [String: String], _ prefix: String) throws -> Str
 }
 
 /// The C-string text both readers share, the dyld cache's included: printable
-/// ASCII only, escaped, and cut after 48 characters.
+/// ASCII, tab, newline and carriage return, escaped, and cut after 48
+/// characters.
 @Test func aCStringRendersPrintableEscapedAndCut() {
     #expect(Disassembler.ReferenceResolver.printableLiteralText(#"a\b"c"#) == #"a\\b\"c"#)
     let long = #"\"# + String(repeating: "x", count: 49)
     #expect(Disassembler.ReferenceResolver.printableLiteralText(long) == #"\\"# + String(repeating: "x", count: 47) + "…")
     #expect(Disassembler.ReferenceResolver.printableLiteralText("") == nil)
-    #expect(Disassembler.ReferenceResolver.printableLiteralText("a\nb") == nil)
+    #expect(Disassembler.ReferenceResolver.printableLiteralText("a\nb") == #"a\nb"#)
+    #expect(Disassembler.ReferenceResolver.printableLiteralText("a\u{1}b") == nil)
 }
 
 /// The folds find a call's arguments by scanning its text, and toggled at

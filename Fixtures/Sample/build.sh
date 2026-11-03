@@ -514,6 +514,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name NarrowReturns narrowretu
 echo "==> narrow C integer arguments read at their declared width (cnarrowargs.c, -O2)"
 $CLANG -O2 -dynamiclib cnarrowargs.c -o libCNarrowArgs.dylib
 
+echo "==> C format strings and printf arguments (cformat.c, -O2)"
+$CLANG -O2 -dynamiclib cformat.c -o libCFormat.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

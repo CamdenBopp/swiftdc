@@ -563,3 +563,14 @@ struct ABISourceLoweringTests {
     #expect(text.contains("lseek(?, -5, 2)"), Comment(rawValue: text))
     #expect(DisassembledFunction.cPrototype(of: "close")?.parameters == ["w"])
 }
+
+/// A C string literal with a tab, newline or carriage return reads as the
+/// literal, escaped, not as its address (cformat.c).
+@Test func aCStringWithWhitespaceEscapesIsALiteralIfPresent() async throws {
+    let path = "Fixtures/Sample/libCFormat.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(text.contains(#"printf("%d %hd %hhd %u %ld %c\n", "#), Comment(rawValue: text))
+    #expect(text.contains(#"puts("a\tb\r\n")"#), Comment(rawValue: text))
+}

@@ -3341,11 +3341,15 @@ public struct Disassembler: Sendable {
             rawCString(at: target, in: machO, ranges: ranges).flatMap(printableLiteralText)
         }
 
-        /// A C string's text for a rendered literal: printable ASCII only,
-        /// escaped, and cut after 48 characters with `…`, which no such string
-        /// contains. Nil for an empty string or any other byte.
+        /// A C string's text for a rendered literal: printable ASCII, tab,
+        /// newline and carriage return, escaped, and cut after 48 characters
+        /// with `…`, which no such string contains. Nil for an empty string or
+        /// any other byte. Printable-only, `printf("%d\n", x)` read
+        /// `printf(0x1000004bc, x)`: most format strings end in a newline.
         static func printableLiteralText(_ s: String) -> String? {
-            guard !s.isEmpty, s.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value < 0x7f }) else { return nil }
+            guard !s.isEmpty, s.unicodeScalars.allSatisfy({
+                ($0.value >= 0x20 && $0.value < 0x7f) || [9, 10, 13].contains($0.value)
+            }) else { return nil }
             return s.count > 48 ? escapedLiteralText(String(s.prefix(48))) + "…" : escapedLiteralText(s)
         }
     }
@@ -5755,18 +5759,27 @@ public struct Disassembler: Sendable {
                let variadic = Self.cFormatVariadics[callee] ?? Self.cFormatVariadics[Self.stripLeadingUnderscore(callee)] {
                 let fixed = (0 ..< variadic.fixed).map { $0 < values.count ? values[$0] : AbstractValue.unknown }
                 var kinds: [DisassembledFunction.MessageSend.FormatArgumentKind]?
+                var formatText: String?
                 if case .address(let format) = fixed[variadic.format] {
-                    let text: String? = resolver.cfString(at: format)
+                    formatText = resolver.cfString(at: format)
                         ?? ReferenceResolver.rawCString(at: format, in: resolver.machO, ranges: resolver.fileRanges)
                             .map { "\"\($0)\"" }
-                    kinds = text.flatMap(DisassembledFunction.MessageSend.formatArgumentKinds)
+                    kinds = formatText.flatMap(DisassembledFunction.MessageSend.formatArgumentKinds)
                 }
                 if let kinds {
                     let variadicValues = (0 ..< kinds.count).map {
                         $0 < site.stackArguments.count ? sanitizeValue(site.stackArguments[$0]) : AbstractValue.unknown
                     }
                     argumentsByAddress[address] = fixed.map(sanitizeValue) + variadicValues
-                    if let types = Self.formatSlotTypes(kinds, values: variadicValues, storedBytes: site.stackArgumentWidths) {
+                    // A Double's slot by its stored bits, an integer's by its
+                    // conversion: `printf("%d", -1)` read `printf(…, 0xffffffff)`.
+                    let doubles = Self.formatSlotTypes(kinds, values: variadicValues, storedBytes: site.stackArgumentWidths)
+                    let integers = formatText.flatMap(DisassembledFunction.MessageSend.formatIntegerTypes)
+                    let types = (0 ..< kinds.count).map { index -> String in
+                        let double = doubles.map { $0[index] } ?? ""
+                        return double.isEmpty ? integers.map { index < $0.count ? $0[index] : "" } ?? "" : double
+                    }
+                    if types.contains(where: { !$0.isEmpty }) {
                         laidOutTypes[address] = Array(repeating: "", count: fixed.count) + types
                     }
                     strategy = "c-format"

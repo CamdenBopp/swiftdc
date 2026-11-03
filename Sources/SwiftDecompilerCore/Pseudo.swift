@@ -369,6 +369,49 @@ public extension DisassembledFunction {
             return kinds
         }
 
+        /// For each variadic argument a printf-style format consumes, the
+        /// integer type its conversion reads it at, "" for any other
+        /// argument; nil where `formatArgumentKinds` is. A caller passes a
+        /// narrow value in a whole slot (`printf("%d", -1)` stores
+        /// 0xffffffff), and the conversion says how much of it counts:
+        /// `%d` an Int32, `%hd` an Int16, `%hhd` an Int8, `%ld` an Int, and
+        /// the unsigned conversions (`o u x X`) the UInt of that width.
+        static func formatIntegerTypes(_ literal: String) -> [String]? {
+            guard formatArgumentKinds(literal) != nil else { return nil }
+            var text = Substring(literal)
+            if text.hasPrefix("@") { text = text.dropFirst() }
+            let characters = Array(text.dropFirst().dropLast())
+            var types: [String] = [], index = 0
+            while index < characters.count {
+                guard characters[index] == "%" else { index += 1; continue }
+                index += 1
+                if characters[index] == "%" { index += 1; continue }
+                while index < characters.count, "-+ #0'".contains(characters[index]) { index += 1 }
+                while index < characters.count, characters[index].isNumber { index += 1 }
+                if index < characters.count, characters[index] == "." {
+                    index += 1
+                    while index < characters.count, characters[index].isNumber { index += 1 }
+                }
+                let lengthStart = index
+                while index < characters.count, "hlqLjzt".contains(characters[index]) { index += 1 }
+                let length = String(characters[lengthStart ..< index])
+                let conversion = characters[index]
+                index += 1
+                let signed = "di".contains(conversion)
+                guard signed || "ouxX".contains(conversion) else { types.append(""); continue }
+                let bits: Int? = switch length {
+                case "": 32
+                case "h": 16
+                case "hh": 8
+                case "l", "ll", "q", "j", "z", "t": 64
+                default: nil
+                }
+                guard let bits else { types.append(""); continue }
+                types.append(bits == 64 ? (signed ? "Swift.Int" : "Swift.UInt") : "Swift.\(signed ? "" : "U")Int\(bits)")
+            }
+            return types
+        }
+
         static func isVariadicSelector(_ selector: String) -> Bool {
             guard !selector.contains("arguments:") else { return false }
             return selector.hasSuffix("WithFormat:")
