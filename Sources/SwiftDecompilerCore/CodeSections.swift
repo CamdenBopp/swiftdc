@@ -46,6 +46,19 @@ struct CodeSection: Equatable, Sendable {
         return sections.sorted { $0.range.lowerBound < $1.range.lowerBound }
     }
 
+    /// The import stub sections (`S_SYMBOL_STUBS`, `__objc_stubs`): a call
+    /// into one reaches another image's exported function, never an
+    /// outlined fragment of this one.
+    static func importStubRanges(of machO: MachOFile) -> [Range<UInt64>] {
+        machO.sections.compactMap { section in
+            guard section.segmentName == "__TEXT", section.size > 0,
+                  section.flags.type == .symbol_stubs || section.sectionName == "__objc_stubs"
+            else { return nil }
+            let start = UInt64(section.address)
+            return start ..< start + UInt64(section.size)
+        }
+    }
+
     /// Code sections by image, so a per-function decode does not re-read
     /// `LC_FUNCTION_STARTS`.
     final class Cache: Sendable {

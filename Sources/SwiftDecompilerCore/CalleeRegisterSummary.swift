@@ -174,7 +174,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     static func of(
         _ function: DisassembledFunction, calleeEffects: (UInt64) -> CalleeEffect = { _ in CalleeEffect() },
         calleeArity: (UInt64) -> Int? = { _ in nil },
-        isFunction: (UInt64) -> Bool = { _ in false }
+        isFunction: (UInt64) -> Bool = { _ in false },
+        isImportStub: (UInt64) -> Bool = { _ in false }
     ) -> CalleeRegisterSummary? {
         let instructions = function.instructions
         guard !instructions.isEmpty, instructions.allSatisfy({ $0.detail != nil }) else { return nil }
@@ -331,6 +332,18 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 blocks: blocks, entry: entry, addresses: addresses,
                 callEffect: { insn in insn.controlFlow == .call ? external(insn).map(calleeEffects) ?? CalleeEffect() : CalleeEffect() },
                 exitEffect: { insn in insn.controlFlow == .branch ? external(insn).map(calleeEffects) ?? CalleeEffect() : CalleeEffect() },
+                callInputs: { insn in
+                    guard let target = insn.branchTarget else {
+                        // An indirect call reaches no outlined fragment: the
+                        // machine outliner calls its fragments directly.
+                        return Preservation.abiCallInputs
+                    }
+                    // A callee of known arity is a named function, not a
+                    // fragment, and takes exactly its parameters, and x8 when
+                    // it returns a large struct through it.
+                    if let arity = calleeArity(target) { return Set((0..<min(arity, 8)).map { "x\($0)" } + ["x8"]) }
+                    return isImportStub(target) ? Preservation.abiCallInputs : nil
+                },
                 // A callee's definite clobber is an unknown value, not a frame
                 // address: read as one, a later store through it unproved
                 // every save the caller made, and a method one call up lost
@@ -756,6 +769,7 @@ enum Preservation {
         excluding excludedEdges: Set<CFGEdge> = [],
         callEffect: (Instruction) -> CalleeEffect = { _ in CalleeEffect() },
         exitEffect: (Instruction) -> CalleeEffect = { _ in CalleeEffect() },
+        callInputs: (Instruction) -> Set<String>? = { _ in nil },
         clobbersMayAliasStack: Bool = true
     ) -> [UInt64: [String: Value]]? {
         let calleeSaved = (19...29).map { "x\($0)" }
@@ -798,7 +812,18 @@ enum Preservation {
                     // reach. sp/x29 alone are ordinary frame bookkeeping;
                     // any other frame alias can be an outgoing argument,
                     // including an outlined fragment's nonstandard input.
-                    if !state.stackAliases.subtracting(["sp", "x29"]).isEmpty
+                    // A callee that keeps the calling convention (`callInputs`)
+                    // takes inputs only in the argument registers, x8, and
+                    // Swift's x20 and x21; x22 is an async context, never a
+                    // stack address. A frame alias parked in another
+                    // callee-saved register, the sp a dynamic allocation
+                    // restores (`mov x22, sp; …; bl String.init; mov sp,
+                    // x22`), is no argument to it. An outlined fragment may
+                    // take any register, so a call to an unknown in-image
+                    // target escapes every alias.
+                    let inputs = callInputs(insn).map { state.stackAliases.intersection($0) }
+                        ?? state.stackAliases.subtracting(["sp", "x29"])
+                    if !inputs.isEmpty
                         || (effect.readsFramePointer && state.stackAliases.contains("x29")) {
                         state.stackAddressEscaped = true
                     }
@@ -823,6 +848,10 @@ enum Preservation {
         }
         return exits
     }
+
+    /// The registers a function that keeps the calling convention can take
+    /// an input in: the arguments, x8, and Swift's x20 and x21.
+    static let abiCallInputs: Set<String> = Set((0...8).map { "x\($0)" } + ["x20", "x21"])
 
     /// The memory operand's address and the base's value after writeback.
     private static func access(_ detail: StructuredInsn, in state: State) -> (address: Int64?, base: String?, after: Value?) {

@@ -225,3 +225,62 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     let control = try #require(CalleeRegisterSummary.of(try body(indexed, name: "indexed")))
     #expect(control.clobberedCalleeSaved.contains("x29"), "\(control.clobberedCalleeSaved)")
 }
+
+/// A frame alias reaches a call only through a register the callee can take
+/// an input in. One that keeps the calling convention takes the argument
+/// registers, x8, x20 and x21: an indirect call (the machine outliner calls
+/// its fragments directly), a call through an import stub, or a callee of
+/// known arity, which takes exactly its parameters and x8. The alias here is
+/// parked in x19, the sp a dynamic allocation restores after the call:
+///
+///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
+///     mov x19, sp; mov x0, sp; <call>; mov x0, x19
+///     ldp x20, x19, [sp, #0x10]; ldp x29, x30, [sp], #0x20; ret
+///
+/// Taken for an argument, it escaped the frame, the call forgot every save,
+/// and the summary claimed x19, x20 and x29 clobbered.
+@Test func aFrameAliasEscapesOnlyThroughACallsInputs() throws {
+    func parked(_ call: UInt32) -> [UInt32] {
+        [0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0x910003f3, 0x910003e0, call,
+         0xaa1303e0, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0]
+    }
+    let indirect: UInt32 = 0xd63f0020 // blr x1
+    let direct: UInt32 = 0x940003fb // bl 0x2000
+    func clobbers(_ call: UInt32, arity: Int? = nil, stub: Bool = false) throws -> Set<String> {
+        let function = try body(parked(call), name: "parked")
+        return try #require(CalleeRegisterSummary.of(
+            function, calleeArity: { _ in arity }, isImportStub: { _ in stub })).clobberedCalleeSaved
+    }
+    // x0 holds a frame address too, so only a callee that cannot take x0
+    // keeps the saves: the indirect and stub calls take it.
+    #expect(try clobbers(indirect).contains("x29"))
+    #expect(try clobbers(direct, stub: true).contains("x29"))
+    // A callee of arity 0 takes no x0: the parked x19 is no input.
+    #expect(try clobbers(direct, arity: 0).isEmpty)
+    // Arity 1 takes x0, a frame address.
+    #expect(try clobbers(direct, arity: 1).contains("x29"))
+    // Any callee may return a large struct through x8: a frame address
+    // there is an input even at arity 0 (`mov x8, sp`).
+    var result = parked(direct)
+    result[4] = 0x910003e8
+    let function = try body(result, name: "result")
+    let summary = try #require(CalleeRegisterSummary.of(function, calleeArity: { _ in 0 }))
+    #expect(summary.clobberedCalleeSaved.contains("x29"))
+}
+
+/// The same with no frame address in an argument register: an indirect call
+/// or an import stub cannot take the x19 alias; an unknown in-image target,
+/// possibly an outlined fragment, can.
+@Test func aParkedFrameAliasIsNoInputOfACallThatKeepsTheConvention() throws {
+    func parked(_ call: UInt32) -> [UInt32] {
+        [0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0x910003f3, call,
+         0xaa1303e0, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0]
+    }
+    func clobbers(_ call: UInt32, stub: Bool = false) throws -> Set<String> {
+        let function = try body(parked(call), name: "parked")
+        return try #require(CalleeRegisterSummary.of(function, isImportStub: { _ in stub })).clobberedCalleeSaved
+    }
+    #expect(try clobbers(0xd63f0020).isEmpty) // blr x1
+    #expect(try clobbers(0x940003fc, stub: true).isEmpty) // bl 0x2000, a stub
+    #expect(try clobbers(0x940003fc).contains("x29")) // bl 0x2000, unknown
+}

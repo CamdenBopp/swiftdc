@@ -763,6 +763,8 @@ public struct Disassembler: Sendable {
             self.knownArity(ofCallTarget: target, names: names, cacheSymbols: cacheSymbols, isFunction: isFunction)
         }
         let fileRanges = FileBackedRanges(standalone: machO)
+        let importStubs = CodeSection.importStubRanges(of: machO)
+        let isImportStub = { (target: UInt64) in importStubs.contains { $0.contains(target) } }
         let section = textSection(in: machO)
         func decode(_ span: (start: UInt64, stop: UInt64)) -> [Instruction] {
             section?.instructions(span: span) ?? capstoneInstructions(in: machO, span: span)
@@ -783,7 +785,7 @@ public struct Disassembler: Sendable {
                 indirectResultUses[boundaries[index]] = Self.indirectResultUse(of: function)
                 registerSummaries[boundaries[index]] = CalleeRegisterSummary.of(
                     Self.withJumpTables(function, machO: machO, ranges: fileRanges),
-                    calleeArity: arity, isFunction: isFunction)
+                    calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub)
             }
         }
         // Reads first: whether a callee uses the caller's x29 is part of
@@ -804,7 +806,7 @@ public struct Disassembler: Sendable {
             return Probe.muted {
                 CalleeRegisterSummary.of(
                     Self.withJumpTables(function, machO: machO, ranges: fileRanges),
-                    calleeEffects: effects, calleeArity: arity, isFunction: isFunction)
+                    calleeEffects: effects, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub)
             }
         }
         names = resolveCrossImageNames(targets, into: names, resolver: cacheSymbols)
@@ -1112,6 +1114,8 @@ public struct Disassembler: Sendable {
             ),
             registerSummaries: {
                 let isFunction = { (target: UInt64) in boundaries.contains(target) }
+                let importStubs = CodeSection.importStubRanges(of: machO)
+                let isImportStub = { (target: UInt64) in importStubs.contains { $0.contains(target) } }
                 let arity = { target in
                     self.knownArity(
                         ofCallTarget: target, names: resolver.names, cacheSymbols: cacheSymbols, isFunction: isFunction)
@@ -1124,7 +1128,7 @@ public struct Disassembler: Sendable {
                 )
                 var summaries = Dictionary(
                     bodies.keys.sorted().compactMap { start in
-                        bodies[start].flatMap { CalleeRegisterSummary.of($0, calleeArity: arity, isFunction: isFunction) }
+                        bodies[start].flatMap { CalleeRegisterSummary.of($0, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub) }
                             .map { (start, $0) }
                     },
                     uniquingKeysWith: { a, _ in a }
@@ -1152,7 +1156,7 @@ public struct Disassembler: Sendable {
                             machO: machO, ranges: resolver.fileRanges)
                         bodies[target] = body
                         guard let summary = Probe.muted({
-                            CalleeRegisterSummary.of(body, calleeArity: arity, isFunction: isFunction)
+                            CalleeRegisterSummary.of(body, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub)
                         }) else { continue }
                         summaries[target] = summary
                         next.formUnion(summary.callees.filter { summaries[$0] == nil && boundaries.contains($0) })
@@ -1164,7 +1168,8 @@ public struct Disassembler: Sendable {
                     bodies[start].flatMap { function in
                         Probe.muted {
                             CalleeRegisterSummary.of(
-                                function, calleeEffects: effects, calleeArity: arity, isFunction: isFunction)
+                                function, calleeEffects: effects, calleeArity: arity, isFunction: isFunction,
+                                isImportStub: isImportStub)
                         }
                     }
                 }
