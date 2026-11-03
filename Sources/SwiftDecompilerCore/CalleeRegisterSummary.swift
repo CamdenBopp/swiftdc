@@ -642,6 +642,13 @@ enum Preservation {
         case unknown
     }
 
+    /// The frame addresses a register may hold: these offsets, or any
+    /// address inside a dynamic allocation below `below`.
+    struct FrameReach: Hashable {
+        var offsets: Set<Int64> = []
+        var below: Int64?
+    }
+
     /// Frame offsets `[floor, bound)` an escaped address can reach.
     struct EscapeRange: Hashable {
         let floor: Int64
@@ -666,14 +673,15 @@ enum Preservation {
         // there with no slot fact still reads the caller's bytes. Any call,
         // any write of unknown extent and any store reaching that far ends it.
         var incomingIntact = true
-        // For a frame alias whose exact value a join lost, the frame offsets
-        // it may hold: x1 is `sub x1, x29, #0x48` on one path and no frame
-        // address on the other. Absent means any offset.
-        var aliasOffsets: [String: Set<Int64>] = [:]
+        // For a frame alias whose exact value a join lost, the frame
+        // addresses it may hold: x1 is `sub x1, x29, #0x48` on one path and
+        // no frame address on the other, x25 a dynamic allocation on one and
+        // no frame address on the other. Absent means any.
+        var aliasReach: [String: FrameReach] = [:]
 
         mutating func setRegister(_ key: String, to value: Value, mayAliasStack: Bool = false) {
             registers[key] = value == .unknown ? nil : value
-            aliasOffsets[key] = nil
+            aliasReach[key] = nil
             if case .stack = value { stackAliases.insert(key) }
             else if case .below = value { stackAliases.insert(key) }
             else if mayAliasStack { stackAliases.insert(key) }
@@ -714,11 +722,13 @@ enum Preservation {
         func merged(with other: State) -> State {
             let registers = registers.filter { other.registers[$0.key] == $0.value }
             let aliases = stackAliases.union(other.stackAliases)
-            var offsets: [String: Set<Int64>] = [:]
+            var offsets: [String: FrameReach] = [:]
             for key in aliases where registers[key] == nil {
-                guard let mine = frameOffsets(key), let theirs = other.frameOffsets(key) else { continue }
-                let union = mine.union(theirs)
-                if !union.isEmpty { offsets[key] = union }
+                guard let mine = frameReach(key), let theirs = other.frameReach(key) else { continue }
+                let union = FrameReach(
+                    offsets: mine.offsets.union(theirs.offsets),
+                    below: [mine.below, theirs.below].compactMap { $0 }.max())
+                if !union.offsets.isEmpty || union.below != nil { offsets[key] = union }
             }
             return State(
                 registers: registers,
@@ -727,17 +737,21 @@ enum Preservation {
                 stackAddressEscaped: stackAddressEscaped || other.stackAddressEscaped,
                 escapedRanges: escapedRanges.union(other.escapedRanges),
                 incomingIntact: incomingIntact && other.incomingIntact,
-                aliasOffsets: offsets
+                aliasReach: offsets
             )
         }
 
-        /// The frame offsets `key` may hold here: one for a known stack
-        /// address, none for a register that is no frame alias, and nil
-        /// when it may be any.
-        func frameOffsets(_ key: String) -> Set<Int64>? {
-            if case .stack(let k) = value(key) { return [k] }
-            if let offsets = aliasOffsets[key] { return offsets }
-            return stackAliases.contains(key) ? nil : []
+        /// The frame addresses `key` may hold here: a known stack address,
+        /// a dynamic allocation's, nothing for a register that is no frame
+        /// alias, and nil when it may be any.
+        func frameReach(_ key: String) -> FrameReach? {
+            switch value(key) {
+            case .stack(let k): return FrameReach(offsets: [k])
+            case .below(let k): return FrameReach(below: k)
+            default: break
+            }
+            if let reach = aliasReach[key] { return reach }
+            return stackAliases.contains(key) ? nil : FrameReach()
         }
 
         /// The frame addresses in `keys` reach code this body does not see.
@@ -768,10 +782,15 @@ enum Preservation {
                 case .below(let k) where entrySlots.contains(where: { $0 >= k }):
                     reached = [EscapeRange(floor: Int64.min, bound: k)]
                 // A join that lost the exact offset may still bound it.
-                case .unknown where aliasOffsets[key] != nil:
-                    for offset in (aliasOffsets[key] ?? []).sorted() {
+                case .unknown where aliasReach[key] != nil:
+                    let possible = aliasReach[key] ?? FrameReach()
+                    for offset in possible.offsets.sorted() {
                         guard let range = reach(from: offset) else { reached = nil; break }
                         reached?.append(range)
+                    }
+                    if let k = possible.below {
+                        if entrySlots.contains(where: { $0 >= k }) { reached?.append(EscapeRange(floor: Int64.min, bound: k)) }
+                        else { reached = nil }
                     }
                 default:
                     reached = nil
@@ -982,9 +1001,9 @@ enum Preservation {
         switch detail.id {
         case AARCH64_INS_MOV:
             if let destination = register(0), let source = register(1), destination.widthBits == 64 {
-                let offsets = state.aliasOffsets[source.key]
+                let offsets = state.aliasReach[source.key]
                 state.setRegister(destination.key, to: state.value(source.key), mayAliasStack: state.stackAliases.contains(source.key))
-                state.aliasOffsets[destination.key] = offsets
+                state.aliasReach[destination.key] = offsets
                 return
             }
         case AARCH64_INS_ADD, AARCH64_INS_SUB:
