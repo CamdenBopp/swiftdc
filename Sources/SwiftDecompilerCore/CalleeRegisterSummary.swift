@@ -642,6 +642,12 @@ enum Preservation {
         case unknown
     }
 
+    /// Frame offsets `[floor, bound)` an escaped address can reach.
+    struct EscapeRange: Hashable {
+        let floor: Int64
+        let bound: Int64
+    }
+
     struct State: Equatable {
         var registers: [String: Value]
         // Each fact covers exactly eight bytes. A store at a different start
@@ -651,13 +657,11 @@ enum Preservation {
         // join can lose an exact address while retaining a feasible alias.
         var stackAliases: Set<String> = ["sp"]
         var stackAddressEscaped = false
-        // An escaped address below the register save area reaches only the
-        // locals under it, `[escapeFloor, escapeBound)`: a callee handed
-        // `&local` writes that local, not the saves above it, as the
-        // tracer's `escapedReach` assumes of a local's extent. Two escapes
-        // widen the range.
-        var escapeFloor: Int64?
-        var escapeBound: Int64?
+        // What escaped frame addresses can reach, each `[floor, bound)`: a
+        // callee handed `&local` writes that local, not the saved values
+        // beside it, as the tracer's `escapedReach` assumes of a local's
+        // extent (`markEscape`).
+        var escapedRanges: Set<EscapeRange> = []
         // No write since entry can have reached entry sp or above, so a load
         // there with no slot fact still reads the caller's bytes. Any call,
         // any write of unknown extent and any store reaching that far ends it.
@@ -721,8 +725,7 @@ enum Preservation {
                 slots: slots.filter { other.slots[$0.key] == $0.value },
                 stackAliases: aliases,
                 stackAddressEscaped: stackAddressEscaped || other.stackAddressEscaped,
-                escapeFloor: [escapeFloor, other.escapeFloor].compactMap { $0 }.min(),
-                escapeBound: [escapeBound, other.escapeBound].compactMap { $0 }.max(),
+                escapedRanges: escapedRanges.union(other.escapedRanges),
                 incomingIntact: incomingIntact && other.incomingIntact,
                 aliasOffsets: offsets
             )
@@ -741,37 +744,39 @@ enum Preservation {
         /// One strictly below every save made so far reaches up to the
         /// lowest save; anything else may reach every slot.
         mutating func markEscape(_ keys: Set<String>) {
-            // The save area is the run of entry values at the top of the
-            // frame, eight bytes apart or one padding word (`str x28, [sp,
-            // #-0x60]!` then pairs from `[sp, #0x10]`). An entry value
-            // spilled further down, among the locals (`str x19, [sp]`), is
-            // no part of it, and a local above that spill is still a local.
-            let saves = slots.filter { if case .entry = $0.value { true } else { false } }.keys.sorted(by: >)
-            var saveStart = saves.first
-            for slot in saves.dropFirst() {
-                guard let lowest = saveStart, slot >= lowest - 16 else { break }
-                saveStart = slot
+            // Each saved or spilled entry value is a slot of its own. An
+            // escaped address outside every one reaches up to the next one
+            // above it, the extent of the object it points at: a local below
+            // the save area, or one in a gap inside it (a byte local in the
+            // padding word `str x28, [sp, #-0x60]!` leaves at sp + 8). An
+            // address inside a saved value, or with no saved value above it,
+            // may reach every slot.
+            let entrySlots = slots.filter { if case .entry = $0.value { true } else { false } }.keys.sorted()
+            func reach(from k: Int64) -> EscapeRange? {
+                guard !entrySlots.contains(where: { k >= $0 && k < $0 &+ 8 }),
+                      let next = entrySlots.first(where: { $0 > k })
+                else { return nil }
+                return EscapeRange(floor: k, bound: next)
             }
             for key in keys {
-                // A join that lost the exact offset may still bound it.
-                if case .unknown = value(key), let offsets = aliasOffsets[key], let saveStart,
-                   let low = offsets.min(), let high = offsets.max(), high < saveStart {
-                    escapeFloor = min(escapeFloor ?? low, low)
-                    escapeBound = max(escapeBound ?? saveStart, saveStart)
-                    continue
-                }
-                switch (value(key), saveStart) {
-                case (.stack(let k), let saveStart?) where k < saveStart:
-                    escapeFloor = min(escapeFloor ?? k, k)
-                    escapeBound = max(escapeBound ?? saveStart, saveStart)
+                var reached: [EscapeRange]? = []
+                switch value(key) {
+                case .stack(let k):
+                    reached = reach(from: k).map { [$0] }
                 // An address inside a dynamic allocation that hangs below
                 // k: the callee reaches that allocation, below k.
-                case (.below(let k), let saveStart?) where k <= saveStart:
-                    escapeFloor = Int64.min
-                    escapeBound = max(escapeBound ?? k, k)
+                case .below(let k) where entrySlots.contains(where: { $0 >= k }):
+                    reached = [EscapeRange(floor: Int64.min, bound: k)]
+                // A join that lost the exact offset may still bound it.
+                case .unknown where aliasOffsets[key] != nil:
+                    for offset in (aliasOffsets[key] ?? []).sorted() {
+                        guard let range = reach(from: offset) else { reached = nil; break }
+                        reached?.append(range)
+                    }
                 default:
-                    stackAddressEscaped = true
+                    reached = nil
                 }
+                if let reached { escapedRanges.formUnion(reached) } else { stackAddressEscaped = true }
             }
         }
 
@@ -781,10 +786,10 @@ enum Preservation {
                 slots.removeAll()
                 return
             }
-            if let floor = escapeFloor, let bound = escapeBound {
+            if !escapedRanges.isEmpty {
                 slots = slots.filter { start, _ in
                     let (end, overflow) = start.addingReportingOverflow(8)
-                    return start >= bound || (!overflow && end <= floor)
+                    return !overflow && !escapedRanges.contains { start < $0.bound && end > $0.floor }
                 }
             }
             // Incoming pointers can reach caller-owned memory at entry SP

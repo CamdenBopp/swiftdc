@@ -1317,6 +1317,17 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — a local inside the register save area escaped every save.**
+  Swift keeps byte locals in gaps of the save area, such as the padding
+  word `str x28, [sp, #-0x60]!` leaves at sp + 8. Their addresses go to
+  `KeyedDecodingContainer.decode(_:forKey:)` and its kin, and counted as
+  pointing at the saves. An escaped address now reaches the object it
+  points at, up to the next saved value above it; only an address inside
+  a saved value escapes them all. Escapes in different places keep
+  separate ranges. Functions summarized as clobbering x29: 63 → 41
+  (plugin library), 18 → 16 (libSwiftIfConfig), 52 → 41
+  (libSwiftParserDiagnostics). Raw `mem[x29 …]` stores: plugin library
+  15 → 1, libSwiftParserDiagnostics 419 → 325.
 - **FIXED — a frame alias whose offset a join lost escaped every saved
   register.** x1 is `sub x1, x29, #0x48` on one path into a block and no
   frame address on the other. The join kept x1 as a possible alias but

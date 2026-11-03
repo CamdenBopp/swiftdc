@@ -369,3 +369,27 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     let control = try #require(CalleeRegisterSummary.of(try body(record, name: "record")))
     #expect(control.clobberedCalleeSaved.contains("x29"), "\(control.clobberedCalleeSaved)")
 }
+
+/// An escaped address reaches the object it points at, up to the next saved
+/// value above it, wherever it lies: a local below the save area, or a byte
+/// local the compiler keeps in the padding word `str x28, [sp, #-0x60]!`
+/// leaves at sp + 8. Two escapes keep two ranges; one widened interval
+/// spanned the saves between them.
+///
+///     str x28, [sp, #-0x60]!; stp x27, x26, [sp, #0x10]
+///     stp x29, x30, [sp, #0x50]; add x29, sp, #0x50; sub sp, sp, #0x10
+///     mov x27, x0; mov x0, sp; bl 0x2000; add x0, sp, #0x1f; bl 0x2000
+///     add sp, sp, #0x10; ldp x29, x30, [sp, #0x50]; ldp x27, x26, [sp, #0x10]
+///     ldr x28, [sp], #0x60; ret
+@Test func anEscapedAddressReachesUpToTheNextSave() throws {
+    var words: [UInt32] = [
+        0xf81a0ffc, 0xa9016bfb, 0xa9057bfd, 0x910143fd, 0xd10043ff, 0xaa0003fb, 0x910003e0,
+        0x940003f9, 0x91007fe0, 0x940003f7, 0x910043ff, 0xa9457bfd, 0xa9416bfb, 0xf84607fc, 0xd65f03c0,
+    ]
+    let gaps = try #require(CalleeRegisterSummary.of(try body(words, name: "gaps")))
+    #expect(gaps.clobberedCalleeSaved.isEmpty, "\(gaps.clobberedCalleeSaved)")
+    // The control: `add x0, sp, #0x20` is x27's own save slot.
+    words[8] = 0x910083e0
+    let saved = try #require(CalleeRegisterSummary.of(try body(words, name: "saved")))
+    #expect(saved.clobberedCalleeSaved.contains("x29"), "\(saved.clobberedCalleeSaved)")
+}
