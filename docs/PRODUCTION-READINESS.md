@@ -1429,6 +1429,43 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — a call through a generic class's protocol witness table was
+  unresolved.** A method of `Gauge<M: Meter>` calls `m.reading()` as
+  `ldr x1, [isa, #0x58]; ldr x8, [x1, #8]; blr x8`: the witness table
+  that follows M's metadata among self's generic arguments, word N+1
+  being requirement N. VTableIndex now records, for a top-level generic
+  class with only plain type parameters, each key conformance
+  requirement's subject parameter and in-image protocol descriptor
+  (checked against the header's key-argument count). The resolver reads
+  the requirement from the protocol descriptor (24-byte header, 12 bytes
+  per requirement-signature entry, 8 per requirement; Metadata.h) and
+  names it only when the slot is a synchronous method, initializer,
+  getter or setter and its address carries exactly one `method
+  descriptor for <the protocol>.…` symbol. The call renders
+  `Meter.scaled(by:) witness for A(arg0)` and takes the requirement's
+  dispatch-thunk layout, so the Self metadata and table in x0 and x1 are
+  no arguments; a requirement whose formals it cannot place shows `(…)`.
+  libSwiftCompilerPluginMessageHandling structured, unstripped and
+  `strip -x`: unresolved calls 292 → 289, the three calls of
+  `handleNextMessage` named (MessageConnection.waitForNextMessage,
+  PluginMessageHandler.handleMessage, MessageConnection.sendMessage).
+  Fixture `classprotowitness.swift`.
+- **OPEN — protocol witness calls left unresolved.** Measured on the
+  plugin library and the fixture:
+  - a protocol from another image (`K: Hashable`): its requirements need a
+    generated table like `SDKMetadataAccessors`;
+  - a non-resilient protocol has no `method descriptor` symbols, so a
+    fragile build names nothing;
+  - a generic function's witness tables passed after its metadata
+    arguments (`genericMetadataRegisters` seeds only the metadata);
+  - a table reached through a base-protocol slot (`P: Precise` calling
+    Meter's requirement) or an associated conformance;
+  - `CompilerPluginMessageListener.main`: x22 holds self's isa from
+    before the loop, and the loop header's join of `selfFieldValue(0)`
+    (entry) and `selfIsaSnapshot` (back edge) drops it, so the call
+    through `[x22 + 0x68]` has no proven table;
+  - an image in a dyld cache: the descriptor reads use file offsets.
+
 - **FIXED — a class inheriting from Objective-C read its metadata through
   a masked isa the tracer did not follow.** `ldr x8, [x20]; ldr x9,
   [swift_isaMask@GOT]; ldr x9, [x9]; and x8, x9, x8` is self's class

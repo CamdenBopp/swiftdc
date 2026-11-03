@@ -581,6 +581,10 @@ $SWIFTC -parse-as-library -O -emit-library -module-name IsaMask isamask.swift -o
 echo "==> a String return read from both of its words, x0 and x1 (stringreturns.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name StringReturns stringreturns.swift -o libStringReturns.dylib
 
+echo "==> a generic class's protocol requirements through self's metadata (classprotowitness.swift, -O; resilient, and a fragile copy with no method descriptor symbols)"
+$SWIFTC -parse-as-library -O -enable-library-evolution -emit-library -module-name ClassProtoWitness classprotowitness.swift -o libClassProtoWitness.dylib
+$SWIFTC -parse-as-library -O -emit-library -module-name ClassProtoWitness classprotowitness.swift -o libClassProtoWitness.fragile.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

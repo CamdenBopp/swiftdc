@@ -857,3 +857,137 @@ struct ABISourceLoweringTests {
     let set = try #require(functions.first { $0.displayName.hasPrefix("IsaMask.Box.set(") }).renderStructured()
     #expect(set.contains("assignWithCopy value witness for A("), Comment(rawValue: set))
 }
+
+/// A generic class's method calls a requirement of its parameter's
+/// conformance through the witness table among self's generic arguments:
+/// word N+1 of the table is requirement N, named by its method descriptor
+/// symbol (classprotowitness.swift). The call takes the requirement's
+/// dispatch-thunk layout, so x0 and x1 (Self's metadata and the table) are
+/// no arguments. Declined: a table reached through a base-protocol slot, a
+/// protocol from another image, and a fragile build with no method
+/// descriptor symbols.
+@Test func aProtocolWitnessCallOnAClassParameterIsNamedIfPresent() async throws {
+    let path = "Fixtures/Sample/libClassProtoWitness.dylib"
+    let fragilePath = "Fixtures/Sample/libClassProtoWitness.fragile.dylib"
+    guard FileManager.default.fileExists(atPath: path), FileManager.default.fileExists(atPath: fragilePath) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("ClassProtoWitness.\(name)(") }).renderStructured()
+    }
+    let reading = try text("Gauge.reading")
+    #expect(reading.contains("ClassProtoWitness.Meter.reading() witness for A()"), Comment(rawValue: reading))
+    let scaled = try text("Gauge.scaled")
+    #expect(scaled.contains("ClassProtoWitness.Meter.scaled(by:) witness for A(arg0)"), Comment(rawValue: scaled))
+    let label = try text("Gauge.label")
+    #expect(label.contains("ClassProtoWitness.Meter.label.getter witness for A()"), Comment(rawValue: label))
+    // `m.level += 1` calls level.modify, a coroutine, through word 7.
+    let bump = try text("Gauge.bump")
+    #expect(!namesARequirementWitness(bump), Comment(rawValue: bump))
+    // A requirement whose parameters are not placed reads none by position.
+    let split = try text("Gauge.split")
+    #expect(split.contains("ClassProtoWitness.Meter.split(_:) witness for A(…)"), Comment(rawValue: split))
+    // B's table follows A's and B's metadata.
+    let pair = try text("Pair.reading")
+    #expect(pair.contains("ClassProtoWitness.Meter.reading() witness for B()"), Comment(rawValue: pair))
+    // Precise's requirement 1 (requirement 0 is its base protocol).
+    let error = try text("Lab.error")
+    #expect(error.contains("ClassProtoWitness.Precise.error() witness for A()"), Comment(rawValue: error))
+    // Meter's requirement reached through Precise's base-protocol slot.
+    let labReading = try text("Lab.reading")
+    #expect(!namesARequirementWitness(labReading), Comment(rawValue: labReading))
+    // Hashable lives in another image.
+    let hash = try text("Keyed.hash")
+    #expect(!namesARequirementWitness(hash), Comment(rawValue: hash))
+    let fragile = try await withStableDependencies { try await Disassembler().disassemble(path: fragilePath) }
+    let fragileReading = try #require(fragile.first { $0.displayName.hasPrefix("ClassProtoWitness.Gauge.reading(") })
+        .renderStructured()
+    #expect(!namesARequirementWitness(fragileReading), Comment(rawValue: fragileReading))
+}
+
+/// A witness-table word names a requirement only when the descriptor's own
+/// bytes and its symbols agree: Meter's requirements are reading, scaled,
+/// label.getter, fetch (async), level.getter, level.setter, level.modify, split,
+/// words 1-8 (classprotowitness.swift). Each guard is checked against a
+/// symbol that would otherwise pass: an async requirement or a coroutine
+/// given a plain method's name, a word past the count, a requirement of
+/// another protocol, two symbols at one address.
+@Test func aProtocolRequirementIsReadFromItsDescriptorIfPresent() throws {
+    let path = "Fixtures/Sample/libClassProtoWitness.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let machO = try BinaryLoader.load(path: path)
+    let protocolSymbol = try #require(machO.symbols.first { $0.name == "_$s17ClassProtoWitness5MeterMp" })
+    let meter = UInt64(protocolSymbol.offset)
+    func word(_ n: UInt64) -> UInt64 { meter + 24 + 8 * (n - 1) }
+    let owner = "protocol descriptor for ClassProtoWitness.Meter"
+    let method = "method descriptor for ClassProtoWitness.Meter."
+    func resolver(_ symbols: [UInt64: [String]]) -> Disassembler.ReferenceResolver {
+        var resolver = Disassembler.ReferenceResolver(names: [:], stringRanges: [], machO: machO, demangleSymbol: { _ in nil })
+        resolver.protocolDescriptorSymbols = symbols.merging([meter: [owner]]) { $1 }
+        return resolver
+    }
+    let real = resolver([word(1): [method + "reading() -> Swift.Int"], word(3): [method + "label.getter : Swift.Int"]])
+    #expect(real.protocolRequirement(descriptor: meter, word: 1)?.name == "ClassProtoWitness.Meter.reading()")
+    #expect(real.protocolRequirement(descriptor: meter, word: 1)?.signature == "ClassProtoWitness.Meter.reading() -> Swift.Int")
+    #expect(real.protocolRequirement(descriptor: meter, word: 3)?.name == "ClassProtoWitness.Meter.label.getter")
+    // A word with no symbol.
+    #expect(real.protocolRequirement(descriptor: meter, word: 2) == nil)
+    // fetch is async (flags 0x20), level.modify a coroutine (kind 6).
+    let plain = resolver([word(4): [method + "fetch() -> Swift.Int"], word(7): [method + "level.getter : Swift.Int"]])
+    #expect(plain.protocolRequirement(descriptor: meter, word: 4) == nil)
+    #expect(plain.protocolRequirement(descriptor: meter, word: 7) == nil)
+    // Past NumRequirements (8): word 9 is Precise's descriptor, whose flags (0x...43) read as a getter.
+    let precise = try #require(machO.symbols.first { $0.name == "_$s17ClassProtoWitness7PreciseMp" })
+    #expect(word(9) == UInt64(precise.offset))
+    let past = resolver([word(9): [method + "reading() -> Swift.Int"]])
+    #expect(past.protocolRequirement(descriptor: meter, word: 9) == nil)
+    // Another protocol's requirement, and two symbols at one address.
+    let other = resolver([word(1): ["method descriptor for ClassProtoWitness.Precise.error() -> Swift.Int"]])
+    #expect(other.protocolRequirement(descriptor: meter, word: 1) == nil)
+    let two = resolver([word(1): [method + "reading() -> Swift.Int", method + "scaled(by: Swift.Int) -> Swift.Int"]])
+    #expect(two.protocolRequirement(descriptor: meter, word: 1) == nil)
+    // Word 0 is the conformance descriptor.
+    #expect(real.protocolRequirement(descriptor: meter, word: 0) == nil)
+}
+
+/// A generic class's key witness tables follow its parameters' metadata,
+/// one per key conformance requirement, each for the parameter its
+/// requirement names (classprotowitness.swift). A conformance to a protocol
+/// in another image is reached through a bind (the relative pointer's
+/// indirect bit) and has no in-image descriptor.
+@Test func aGenericClassesKeyWitnessTablesAreIndexedIfPresent() throws {
+    let path = "Fixtures/Sample/libClassProtoWitness.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let machO = try BinaryLoader.load(path: path)
+    let meter = try #require(machO.symbols.first { $0.name == "_$s17ClassProtoWitness5MeterMp" })
+    let index = VTableIndex.build(in: machO)
+    // Gauge<A: Meter>: A at 0x50, A's Meter table at 0x58.
+    #expect(index.genericParameter(type: "Gauge", offset: 0x50) == "A")
+    let gauge = try #require(index.witnessTable(type: "Gauge", offset: 0x58))
+    #expect(gauge.parameter == "A" && gauge.protocolDescriptor == UInt64(meter.offset))
+    #expect(index.witnessTable(type: "Gauge", offset: 0x50) == nil)
+    #expect(index.witnessTable(type: "Gauge", offset: 0x60) == nil)
+    // Pair<A, B: Meter>: the table at 0x60 is B's.
+    let pair = try #require(index.witnessTable(type: "Pair", offset: 0x60))
+    #expect(pair.parameter == "B" && pair.protocolDescriptor == UInt64(meter.offset))
+    // Keyed<A: Swift.Hashable>: indexed, but its table's protocol is not here.
+    #expect(index.genericParameter(type: "Keyed", offset: 0x50) == "A")
+    #expect(index.witnessTable(type: "Keyed", offset: 0x58) == nil)
+}
+
+/// Whether a render names a call through a protocol witness table (a value
+/// witness's name also ends `witness for A`).
+private func namesARequirementWitness(_ text: String) -> Bool {
+    text.split(separator: "\n").contains { $0.contains(" witness for ") && !$0.contains(" value witness for ") }
+}
+
+/// A requirement's name keeps its argument labels and drops its types.
+@Test func aProtocolRequirementNameKeepsOnlyItsLabels() {
+    typealias R = Disassembler.ReferenceResolver
+    #expect(R.requirementName("M.P.scaled(by: Swift.Int) -> Swift.Int") == "M.P.scaled(by:)")
+    #expect(R.requirementName("M.P.reading() -> Swift.Int") == "M.P.reading()")
+    #expect(R.requirementName("M.P.add(Swift.Int, to: [Swift.String : Swift.Int]) -> ()") == "M.P.add(_:to:)")
+    #expect(R.requirementName("M.P.send<A where A1: Swift.Encodable>(A1) throws -> ()") == "M.P.send(_:)")
+    #expect(R.requirementName("M.P.label.getter : Swift.Int") == "M.P.label.getter")
+    #expect(R.requirementName("M.P.subscript.getter : (Swift.Int) -> Swift.Int") == nil)
+    #expect(R.requirementName("M.P.label.modify : Swift.Int") == nil)
+}

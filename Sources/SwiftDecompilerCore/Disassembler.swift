@@ -160,6 +160,10 @@ public struct Instruction: Sendable {
         /// For a call through self's own vtable slot (`dispatch=self`): an
         /// override in a subclass runs instead when self is one.
         public var isSelfDispatch: Bool
+        /// For a call through a protocol witness table (`<requirement>
+        /// witness for A`): the requirement's printed signature, which
+        /// gives the call its parameters. The note is the callee's name.
+        public var witnessRequirement: String?
 
         public init(
             exit: Exit? = nil,
@@ -172,8 +176,10 @@ public struct Instruction: Sendable {
             loopUpdates: [String] = [],
             loopInitializations: [String] = [],
             fieldRead: String? = nil,
-            isSelfDispatch: Bool = false
+            isSelfDispatch: Bool = false,
+            witnessRequirement: String? = nil
         ) {
+            self.witnessRequirement = witnessRequirement
             self.exit = exit
             self.binding = binding
             self.thenThrows = thenThrows
@@ -823,6 +829,7 @@ public struct Disassembler: Sendable {
             fileRanges: fileRanges,
             foldedCandidates: foldedByAddress,
             witnessTables: foldedByAddress.isEmpty ? [] : witnessTables(in: machO),
+            protocolDescriptorSymbols: protocolDescriptorSymbols(in: machO),
             specializationSymbols: ReferenceResolver.specializationSymbols(
                 labels: labelByAddress, names: names, folded: foldedByAddress)
         )
@@ -1044,6 +1051,7 @@ public struct Disassembler: Sendable {
             fileRanges: FileBackedRanges(standalone: machO),
             foldedCandidates: foldedByAddress,
             witnessTables: foldedByAddress.isEmpty ? [] : witnessTables(in: machO),
+            protocolDescriptorSymbols: protocolDescriptorSymbols(in: machO),
             specializationSymbols: ReferenceResolver.specializationSymbols(
                 labels: labelByAddress, names: resolvedNames, folded: foldedByAddress)
         )
@@ -1927,6 +1935,19 @@ public struct Disassembler: Sendable {
             tables.append((start ..< starts[low], String(name.dropFirst(prefix.count))))
         }
         return tables.sorted { $0.range.lowerBound < $1.range.lowerBound }
+    }
+
+    /// Every protocol descriptor (`…Mp`) and method descriptor (`…Tq`)
+    /// symbol the image defines, demangled, by address: what names a
+    /// protocol requirement a witness table slot holds. An address with two
+    /// such symbols keeps both, and names neither.
+    private func protocolDescriptorSymbols(in machO: MachOFile) -> [UInt64: [String]] {
+        var symbols: [UInt64: [String]] = [:]
+        for symbol in machO.symbols where symbol.name.hasSuffix("Mp") || symbol.name.hasSuffix("Tq") {
+            guard symbol.offset > 0, let name = demangle(symbol.name) else { continue }
+            symbols[UInt64(symbol.offset), default: []].append(name)
+        }
+        return symbols
     }
 
     /// The name a reference to a folded address takes: `sub_<addr>`, as its
@@ -2988,7 +3009,23 @@ public struct Disassembler: Sendable {
                 return (address, Self.namingItsProperty(name, ownedBy: selfTypeName), true)
             }
             if let witness = valueWitnessCall(value) { return (nil, witness, false) }
+            if let witness = protocolWitnessCall(value) { return (nil, witness.name, false) }
             return resolver.indirectCallTarget(for: value).map { ($0.address, $0.name, false) }
+        }
+        /// A call through word `k` of a witness table that is one of the key
+        /// arguments in `self`'s class metadata: `ldr x22, [x20]; ldr x1,
+        /// [x22, #0x58]; ldr x8, [x1, #8]; blr x8` in a method of `Gauge<M:
+        /// Meter>` calls Meter's requirement 0 on M. Named `<requirement>
+        /// witness for <parameter>`, with the requirement's signature for
+        /// laying out the call, only when the table's protocol and the
+        /// slot's requirement are both proven.
+        func protocolWitnessCall(_ value: AbstractValue) -> (name: String, signature: String)? {
+            guard case .loadedFrom(.selfVTableMethod(let tableOffset), let offset) = value,
+                  offset >= 8, offset % 8 == 0, let selfTypeName,
+                  let table = vtableIndex.witnessTable(type: selfTypeName, offset: tableOffset),
+                  let requirement = resolver.protocolRequirement(descriptor: table.protocolDescriptor, word: offset / 8)
+            else { return nil }
+            return ("\(requirement.name) witness for \(table.parameter)", requirement.signature)
         }
         /// A call through slot `k` of the value-witness table of the
         /// metadata a type metadata accessor returned: `[[metadata - 8] +
@@ -3059,6 +3096,9 @@ public struct Disassembler: Sendable {
                 ? nil : resolved.address
             var facts = insn.facts
             facts.isSelfDispatch = resolved.isSelfDispatch
+            if let witness = protocolWitnessCall(value), witness.name == resolved.name {
+                facts.witnessRequirement = witness.signature
+            }
             return Instruction(
                 address: insn.address, text: insn.text, annotation: annotation,
                 controlFlow: insn.controlFlow, branchTarget: target,
@@ -3117,6 +3157,9 @@ public struct Disassembler: Sendable {
         /// Every protocol witness table with a symbol: its extent (to the
         /// next symbol) and the conformance it is for.
         var witnessTables: [(range: Range<UInt64>, conformance: String)] = []
+        /// Every protocol and method descriptor symbol, demangled, by address
+        /// (`protocolRequirement(descriptor:word:)`).
+        var protocolDescriptorSymbols: [UInt64: [String]] = [:]
         /// The mangled symbol of each generic specialization in the image, by
         /// address, so a call to one can be laid out from its substituted
         /// signature (`specializedSignature`). An address the linker folded
@@ -3130,6 +3173,88 @@ public struct Disassembler: Sendable {
             guard printedName.hasPrefix("generic specialization <"), let symbol = specializationSymbols[target]
             else { return nil }
             return DisassembledFunction.specializedSignature(symbol: symbol, printedName: printedName)
+        }
+
+        /// The requirement a witness table of the protocol whose descriptor
+        /// is at `descriptor` holds in word `word`: its printed signature
+        /// (`M.P.scaled(by: Swift.Int) -> Swift.Int`, as its method
+        /// descriptor's symbol demangles) and its name with argument labels
+        /// only (`M.P.scaled(by:)`). Word 0 is the conformance descriptor
+        /// and requirement N is word N+1 (WitnessTableFirstRequirementOffset,
+        /// swift/include/swift/ABI/MetadataValues.h).
+        ///
+        /// The descriptor (swift/include/swift/ABI/Metadata.h,
+        /// TargetProtocolDescriptor) is a 24-byte header (flags, parent, name,
+        /// NumRequirementsInSignature, NumRequirements, associated type
+        /// names), then 12 bytes per requirement-signature entry, then 8
+        /// bytes per requirement (flags, default implementation). Declined:
+        /// a cache image or an unreadable descriptor; a descriptor not of a
+        /// protocol, or of a special one (Error; a COM protocol carries an
+        /// interface ID before its requirements); a requirement past the
+        /// count, or not a synchronous method, initializer, getter or setter
+        /// (a base protocol or associated type, a coroutine, an async
+        /// function whose slot holds a function pointer record); and any
+        /// requirement whose address has no `method descriptor for` symbol
+        /// naming a member of the protocol the descriptor's own symbol names.
+        func protocolRequirement(descriptor: UInt64, word: Int) -> (signature: String, name: String)? {
+            guard machO.cache == nil, word >= 1,
+                  let base = machO.fileOffset(of: descriptor).map(Int.init),
+                  let flags = UnrecordedTypes.read(base, as: UInt32.self, in: machO),
+                  let signatureCount = UnrecordedTypes.read(base + 12, as: UInt32.self, in: machO),
+                  let requirementCount = UnrecordedTypes.read(base + 16, as: UInt32.self, in: machO),
+                  // ContextDescriptorKind::Protocol is 3; SpecialProtocol
+                  // is bits 2-7 of the kind-specific flags (bits 16-31).
+                  flags & 0x1F == 3, (flags >> 18) & 0x3F == 0,
+                  word - 1 < Int(requirementCount), signatureCount < 0x10000
+            else { return nil }
+            let offset = 24 + 12 * Int(signatureCount) + 8 * (word - 1)
+            let address = descriptor + UInt64(offset)
+            // ProtocolRequirementFlags: kind in bits 0-3 (Method 1, Init 2,
+            // Getter 3, Setter 4), IsAsync 0x20.
+            guard let requirementFlags = UnrecordedTypes.read(base + offset, as: UInt32.self, in: machO),
+                  (1 ... 4).contains(requirementFlags & 0x0F), requirementFlags & 0x20 == 0,
+                  let protocolSymbols = protocolDescriptorSymbols[descriptor], protocolSymbols.count == 1,
+                  let requirementSymbols = protocolDescriptorSymbols[address], requirementSymbols.count == 1,
+                  let protocolName = protocolSymbols.first, protocolName.hasPrefix("protocol descriptor for "),
+                  let requirement = requirementSymbols.first, requirement.hasPrefix("method descriptor for ")
+            else { return nil }
+            let owner = protocolName.dropFirst("protocol descriptor for ".count) + "."
+            var signature = String(requirement.dropFirst("method descriptor for ".count))
+            let isStatic = signature.hasPrefix("static ")
+            if isStatic { signature.removeFirst("static ".count) }
+            guard owner.count > 1, signature.hasPrefix(owner),
+                  let name = Self.requirementName(signature)
+            else { return nil }
+            return ((isStatic ? "static " : "") + signature, (isStatic ? "static " : "") + name)
+        }
+
+        /// A requirement's name with its argument labels and no types:
+        /// `M.P.scaled(by: Swift.Int) -> Swift.Int` is `M.P.scaled(by:)`,
+        /// `M.P.send<A where A1: Swift.Encodable>(A1) throws -> ()` is
+        /// `M.P.send(_:)`, `M.P.label.getter : Swift.Int` is
+        /// `M.P.label.getter`. Nil for anything else.
+        static func requirementName(_ signature: String) -> String? {
+            func isQualifiedIdentifier(_ text: Substring) -> Bool {
+                !text.isEmpty && text.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }
+            }
+            if let parts = DisassembledFunction.splitSignature(signature),
+               let range = DisassembledFunction.outermostArgumentListRange(of: parts.head) {
+                var name = parts.head[..<range.lowerBound].dropLast()
+                if let open = name.firstIndex(of: "<"), name.hasSuffix(">") { name = name[..<open] }
+                guard isQualifiedIdentifier(name) else { return nil }
+                let labels = DisassembledFunction.splitTopLevelArguments(parts.head[range]).map { parameter -> String in
+                    guard let colon = parameter.range(of: ": "),
+                          isQualifiedIdentifier(parameter[..<colon.lowerBound]),
+                          !parameter[..<colon.lowerBound].contains(".")
+                    else { return "_:" }
+                    return parameter[..<colon.lowerBound] + ":"
+                }
+                return name + "(" + labels.joined() + ")"
+            }
+            guard let colon = DisassembledFunction.topLevelRange(of: " : ", in: signature) else { return nil }
+            let name = signature[..<colon.lowerBound]
+            guard isQualifiedIdentifier(name), name.hasSuffix(".getter") || name.hasSuffix(".setter") else { return nil }
+            return String(name)
         }
 
         static func specializationSymbols(
@@ -5493,8 +5618,14 @@ public struct Disassembler: Sendable {
         /// printed `A` is. `bump<Double>(d)` passes d in d0, and read from its
         /// printed `(A)` it rendered `bump(arg1)`, the Int then in x0.
         func layoutName(at address: UInt64, callee: String) -> String {
-            callTargets[address].flatMap { resolver.specializedSignature(at: $0, printedName: callee) } ?? callee
+            if let thunk = witnessLayoutNames[address] { return thunk }
+            return callTargets[address].flatMap { resolver.specializedSignature(at: $0, printedName: callee) } ?? callee
         }
+        /// A call through a protocol witness table, laid out as the
+        /// requirement's dispatch thunk, which takes the same arguments:
+        /// `self` in x20, the formals from x0, and the requirement's Self
+        /// metadata and witness table after them.
+        var witnessLayoutNames: [UInt64: String] = [:]
         // The GOT slots `adrp; ldr` pairs load the stack probe from, for a
         // `blr x16` the tracer cannot name before it runs, and the one
         // holding `swift_isaMask`'s address.
@@ -5590,6 +5721,11 @@ public struct Disassembler: Sendable {
             resolver: resolver, selfTypeName: selfTypeName, vtableIndex: vtableIndex,
             callArguments: analysis.callSites.mapValues(\.arguments)
         )
+        for insn in function.instructions {
+            if let requirement = insn.facts.witnessRequirement {
+                witnessLayoutNames[insn.address] = Self.dispatchThunkPrefix + requirement
+            }
+        }
         // A self dispatch resolved to its class's implementation takes that
         // body's parameters: an override keeps the signature, so the same
         // registers. A stripped binary names such an accessor by its kind
@@ -6041,7 +6177,8 @@ public struct Disassembler: Sendable {
             // A getter that takes no explicit argument shows none, whatever
             // x0 held: `static DispatchQoS.unspecified.getter(r0)` was a stale
             // register (55 static getters in one app).
-            if let callee = calleeByAddress[address],
+            // A witness call's getter is its requirement's dispatch thunk's.
+            if let callee = witnessLayoutNames[address] ?? calleeByAddress[address],
                Self.getterTakesNoArguments(callee, classTypeIndex: classTypeIndex) {
                 argumentsByAddress[address] = []
                 strategy = "no-parameters"
@@ -6244,6 +6381,16 @@ public struct Disassembler: Sendable {
                     laidOutTypes[address] = slots.map(\.type) + (unplaced + following).map { _ in "" }
                 }
                 strategy = leadingSlots != nil ? "swift-leading" : cLayout == nil ? "swift-signature" : "c-declaration"
+                continue
+            }
+            // A witness call whose requirement's parameters this cannot
+            // place takes nothing it can show: its x0 and x1 may be the
+            // requirement's Self metadata and witness table, so they are not
+            // read by position. Its arguments render as `…`.
+            if witnessLayoutNames[address] != nil {
+                argumentsByAddress[address] = []
+                unprovenVariadicSites.insert(address)
+                strategy = "witness-unplaced"
                 continue
             }
             // A runtime entry point of known C arity takes exactly its
