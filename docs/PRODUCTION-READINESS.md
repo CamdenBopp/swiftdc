@@ -50,6 +50,26 @@ results do not replace previously recorded release performance measurements.
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
 
+- **FIXED — x20 was named `self` for a frozen system struct's
+  non-mutating member.** Swift passes a loadable `self` as its words after
+  the formals and uses x20 (`swiftself`) only for an address: an
+  address-only or resilient type, or a mutating member. Read from the IR:
+  `One<T>.get()` is `(i64, ptr T)`, `Date.timeIntervalSince1970` is
+  `(ptr swiftself)`, and `Duration.components` is `(i64, i64)`. Only a
+  hand-listed set of standard-library structs had the rule, so the
+  stripped plugin library read `_ArrayBuffer._isNative.getter(self: arg0,
+  …)`, the caller's x20. `SDKFrozenTypes` is generated from the SDK's
+  266 macOS module interfaces: 920 `@frozen` or `@_fixed_layout` value
+  types, with the methods each type or extension declares `mutating`. A
+  member of one, other than a mutating method, a setter, a modify
+  accessor or an addressor, takes x20 only when it holds an address.
+  A resilient type such as `Date` keeps x20. Fixture `frozenself.s`.
+  Blast radius: 5 files, 7 calls, among them three in-image
+  `_ArrayBuffer._consumeAndCreateNew` specializations whose `self` is in
+  x3 and whose x20 is only saved. Still open: a large frozen struct such
+  as `Hasher` passes a non-mutating `self` by address in x20, and an
+  incoming argument holding that address is not provably one, so the
+  `self` is dropped rather than shown.
 - **FIXED — a generic system type's metadata accessor took every live
   register.** An accessor takes the metadata request, then the type's key
   generic arguments, up to three directly and past three one pointer to

@@ -3978,6 +3978,52 @@ public struct Disassembler: Sendable {
         return isStatic || head.hasSuffix(".init")
     }
 
+    /// For a member of a struct or an enum a system module declares
+    /// `@frozen` (`SDKFrozenTypes`), whether it is static (an initializer
+    /// too); nil for anything else. Swift passes a frozen type's `self` in
+    /// x20 only by address, when it is address-only or the member is
+    /// mutating; a loadable one travels as its words after the formals
+    /// (`One<T>.get()` is `(i64 self, ptr T)`). A resilient one's always
+    /// travels by address in x20: `Date.timeIntervalSince1970` is `(ptr
+    /// swiftself)`, and its caller may forward an address it was handed.
+    static func systemValueTypeMember(_ callee: String) -> Bool? {
+        var name = Substring(withoutSpecializationClauses(callee))
+        let isStatic = name.hasPrefix("static ")
+        if isStatic { name = name.dropFirst("static ".count) }
+        while name.hasPrefix("(extension in "), let colon = name.firstIndex(of: ":") {
+            name = name[name.index(after: colon)...]
+        }
+        // `Swift.Array< where A: Swift.Equatable>.f`: the constrained
+        // extension's clause is no part of the type's name.
+        var head = ""
+        var depth = 0
+        for character in name {
+            if depth == 0, character == "(" || character == " " { break }
+            if character == "<" { depth += 1 } else if character == ">", depth > 0 { depth -= 1 } else if depth == 0 {
+                head.append(character)
+            }
+        }
+        let parts = head.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count >= 3 else { return nil }
+        for length in stride(from: parts.count - 1, through: 2, by: -1) {
+            let owner = parts.prefix(length).joined(separator: ".")
+            if let mutating = SDKFrozenTypes.mutatingMembers[owner] {
+                // A mutating member (an accessor that writes, or a method
+                // the interface declares `mutating`) takes `self`'s address
+                // in x20: `Hasher._combine(self: arg0, 0)` is the caller's
+                // `inout Hasher`.
+                let member = parts[length...]
+                guard let first = member.first, !mutating.contains(String(first)),
+                      !["setter", "modify", "unsafeMutableAddressor"].contains(String(member.last ?? ""))
+                else { return nil }
+                return isStatic || first == "init"
+            }
+            // A resilient value type or a class: x20 may be `self`.
+            if SDKMetadataAccessors.types[owner] != nil { return nil }
+        }
+        return nil
+    }
+
     /// Members the standard library's frozen structs declare `mutating`
     /// (String.swift, StringRangeReplaceableCollection.swift, Array.swift,
     /// Dictionary.swift, Set.swift).
@@ -5656,6 +5702,14 @@ public struct Disassembler: Sendable {
                 // `String.UTF16View.index(self: ((arg0 >>ᵁ 14) & 3), 15, …)`
                 // named a scalar left in x20 as the view.
                 if let isStatic = Self.standardLibraryStructMethod(callee),
+                   isStatic || !isAddressValue(site.selfValue) { continue }
+                // The same for any system struct or enum:
+                // `_ArrayBuffer._isNative.getter(self: arg0, …)` named the
+                // caller's x20, where the buffer is the one word in x0.
+                // A specialization keeps the convention: `generic
+                // specialization <Diagnostic> of _ArrayBuffer._consumeAndCreateNew`
+                // takes the buffer in x3, after its formals, and only saves x20.
+                if let isStatic = Self.systemValueTypeMember(callee),
                    isStatic || !isAddressValue(site.selfValue) { continue }
                 // A free function, `Module.name(…)`, has no `self`; nor does a
                 // specialization of one, whose name prints the original's

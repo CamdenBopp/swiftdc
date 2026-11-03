@@ -553,6 +553,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name ChkstkWitness chkstkwitn
 echo "==> a system metadata accessor takes its key generic arguments only (accessorarity.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name AccessorArity accessorarity.swift -o libAccessorArity.dylib
 
+echo "==> x20 is self for a resilient system value type, not a frozen one (frozenself.s)"
+$CLANG -arch arm64 -dynamiclib frozenself.s -L"$(xcrun --show-sdk-path)/usr/lib/swift" -lswiftCore -framework Foundation -o libFrozenSelf.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

@@ -200,3 +200,41 @@ private func noteArguments(_ callee: String, in function: DisassembledFunction) 
     #expect(try accessorArguments("optionalType") == "args(0, type metadata for A)")
     #expect(try accessorArguments("dictionaryType") == "args(0, type metadata for A, type metadata for B, ?)")
 }
+
+/// A frozen system struct's loadable `self` travels as its words, so a
+/// value in x20 is not its receiver; a resilient one's travels by address
+/// in x20, so x20 is (frozenself.s).
+@Test func x20IsSelfOnlyForAResilientSystemValueTypeIfPresent() async throws {
+    let path = "Fixtures/Sample/libFrozenSelf.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ symbol: String) throws -> String {
+        try #require(functions.first { $0.symbol == symbol }).renderStructured()
+    }
+    let frozen = try text("_frozenSelf")
+    #expect(frozen.contains("Swift.Duration.components.getter(1, 2)"), Comment(rawValue: frozen))
+    let resilient = try text("_resilientSelf")
+    #expect(resilient.contains("Foundation.Date.timeIntervalSince1970.getter(self: 7)"), Comment(rawValue: resilient))
+}
+
+/// The owner lookup: nested frozen types, constrained extensions, statics
+/// and initializers, and types the table does not hold.
+@Test func aSystemValueTypeMemberIsFoundByItsFrozenOwner() {
+    #expect(Disassembler.systemValueTypeMember("Swift.Duration.components.getter : (seconds: Swift.Int64, attoseconds: Swift.Int64)") == false)
+    #expect(Disassembler.systemValueTypeMember("Swift.Unicode.Scalar.value.getter : Swift.UInt32") == false)
+    #expect(Disassembler.systemValueTypeMember("static Swift.Duration.seconds(Swift.Int64) -> Swift.Duration") == true)
+    #expect(Disassembler.systemValueTypeMember("Swift.Duration.init(secondsComponent: Swift.Int64, attosecondsComponent: Swift.Int64) -> Swift.Duration") == true)
+    #expect(Disassembler.systemValueTypeMember("(extension in Foundation):Swift.Duration.formatted() -> Swift.String") == false)
+    #expect(Disassembler.systemValueTypeMember("Foundation.Date.timeIntervalSince1970.getter : Swift.Double") == nil)
+    #expect(Disassembler.systemValueTypeMember("Swift._DictionaryStorage.count.getter : Swift.Int") == nil)
+    #expect(Disassembler.systemValueTypeMember("Swift.Collection.count.getter : Swift.Int") == nil)
+    #expect(Disassembler.systemValueTypeMember("MyApp.Model.name.getter : Swift.String") == nil)
+}
+
+/// A frozen type's mutating member takes `self`'s address in x20.
+@Test func aFrozenTypesMutatingMemberKeepsX20() {
+    #expect(Disassembler.systemValueTypeMember("Swift.Hasher._combine(Swift.UInt) -> ()") == nil)
+    #expect(Disassembler.systemValueTypeMember("Swift.String.append(Swift.String) -> ()") == nil)
+    #expect(Disassembler.systemValueTypeMember("Swift.Duration.components.setter : (seconds: Swift.Int64, attoseconds: Swift.Int64)") == nil)
+    #expect(Disassembler.systemValueTypeMember("Swift.Hasher.finalize() -> Swift.Int") == false)
+}
