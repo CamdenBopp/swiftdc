@@ -251,14 +251,18 @@ own.
      and a fixture test. The rebase conflicts without the attribute and is
      clean with it, keeping both entries.
    - `build.sh` stays a conflict point until stage 4.
-3. **Test tiers.**
-   - Tag the outliers. The Go tests leave the default run (Go is not a
-     target) but stay in the gate.
-   - A process-wide analysis cache in the test target, keyed by file
-     identity. The sweeps and ReconstructionTests stop redoing whole-image
-     work.
-   - Acceptance: tier 4 falls by at least 30 s at matched load, with the
-     test count unchanged.
+3. **Test tiers: DONE (`Tools/test.sh`). Shared analysis cache: deferred
+   on measurement.**
+   - Each every-fixture sweep costs 22-28 CPU-seconds, measured alone
+     (FunctionCFG 27.9, ExitFact 22.5, CalleeFact 22.2), out of about 850
+     for the suite.
+   - Sharing one analysis across the three saves about 45 CPU-seconds,
+     around 5%, against the 30 s wall-time target. ReconstructionTests'
+     61 filtered setups (about 100 CPU-seconds) are the larger share.
+   - The suite's floor is its longest test, the 76 s dyld-cache memory
+     test, so no cache moves wall time below that.
+   - Not built until a measurement shows the suite on the critical path of
+     the gate (the gate measured 111-153 s for the suite).
 4. **build.sh in parallel.**
    - One stanza per file, sorted and run with bounded parallelism.
    - Acceptance: a miss in under 30 s with byte-identical swiftdc renders.

@@ -61,13 +61,15 @@ inputs=$(while read -r f; do echo "$(shasum -a 256 < "$f" | cut -c1-64) $(basena
 
 render() { # render <binary> <view> -> prints the render directory
   local bin=$1 view=$2 dir
-  dir=$cache/$(shasum -a 256 "$bin" | cut -c1-16)-$inputs-$view
+  dir=$cache/v2-$(shasum -a 256 "$bin" | cut -c1-16)-$inputs-$view
   if [ ! -f "$dir/.done" ]; then
     rm -rf "$dir"; mkdir -p "$dir"
     local flag=--$view; [ "$view" = listing ] && flag=
+    # A message that names its input names it by a placeholder, so renders
+    # from two worktrees (the gate's and the caller's) compare equal.
     tr '\n' '\0' < "$list" | xargs -0 -P "$jobs" -I{} sh -c \
-      '"$1" disasm "$2" $3 > "$4/$(basename "$2")" 2>&1; echo "rc=$?" >> "$4/$(basename "$2")"' \
-      _ "$bin" {} "$flag" "$dir"
+      '{ "$1" disasm "$2" $3 2>&1; echo "rc=$?"; } | sed -e "s|$5/|<repo>/|g" -e "s|$6/|<out>/|g" > "$4/$(basename "$2")"' \
+      _ "$bin" {} "$flag" "$dir" "$repo" "$out"
     touch "$dir/.done"
   fi
   echo "$dir"
