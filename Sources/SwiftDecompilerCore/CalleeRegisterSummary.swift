@@ -651,6 +651,13 @@ enum Preservation {
         // join can lose an exact address while retaining a feasible alias.
         var stackAliases: Set<String> = ["sp"]
         var stackAddressEscaped = false
+        // An escaped address below the register save area reaches only the
+        // locals under it, `[escapeFloor, escapeBound)`: a callee handed
+        // `&local` writes that local, not the saves above it, as the
+        // tracer's `escapedReach` assumes of a local's extent. Two escapes
+        // widen the range.
+        var escapeFloor: Int64?
+        var escapeBound: Int64?
         // No write since entry can have reached entry sp or above, so a load
         // there with no slot fact still reads the caller's bytes. Any call,
         // any write of unknown extent and any store reaching that far ends it.
@@ -701,8 +708,26 @@ enum Preservation {
                 slots: slots.filter { other.slots[$0.key] == $0.value },
                 stackAliases: stackAliases.union(other.stackAliases),
                 stackAddressEscaped: stackAddressEscaped || other.stackAddressEscaped,
+                escapeFloor: [escapeFloor, other.escapeFloor].compactMap { $0 }.min(),
+                escapeBound: [escapeBound, other.escapeBound].compactMap { $0 }.max(),
                 incomingIntact: incomingIntact && other.incomingIntact
             )
+        }
+
+        /// The frame addresses in `keys` reach code this body does not see.
+        /// One strictly below every save made so far reaches up to the
+        /// lowest save; anything else may reach every slot.
+        mutating func markEscape(_ keys: Set<String>) {
+            let saves = slots.filter { if case .entry = $0.value { true } else { false } }.keys
+            for key in keys {
+                switch (value(key), saves.min()) {
+                case (.stack(let k), let saveStart?) where k < saveStart:
+                    escapeFloor = min(escapeFloor ?? k, k)
+                    escapeBound = max(escapeBound ?? saveStart, saveStart)
+                default:
+                    stackAddressEscaped = true
+                }
+            }
         }
 
         mutating func invalidateSlotsForUnknownWrite(throughStackAlias: Bool) {
@@ -710,6 +735,12 @@ enum Preservation {
             if throughStackAlias || stackAddressEscaped {
                 slots.removeAll()
                 return
+            }
+            if let floor = escapeFloor, let bound = escapeBound {
+                slots = slots.filter { start, _ in
+                    let (end, overflow) = start.addingReportingOverflow(8)
+                    return start >= bound || (!overflow && end <= floor)
+                }
             }
             // Incoming pointers can reach caller-owned memory at entry SP
             // or above it. A save is private only if all eight bytes lie
@@ -823,10 +854,10 @@ enum Preservation {
                     // target escapes every alias.
                     let inputs = callInputs(insn).map { state.stackAliases.intersection($0) }
                         ?? state.stackAliases.subtracting(["sp", "x29"])
-                    if !inputs.isEmpty
-                        || (effect.readsFramePointer && state.stackAliases.contains("x29")) {
+                    if effect.readsFramePointer && state.stackAliases.contains("x29") {
                         state.stackAddressEscaped = true
                     }
+                    state.markEscape(inputs)
                     state.invalidateSlotsForUnknownWrite(throughStackAlias: false)
                     // The callee keeps the ABI: x19–x29 and sp survive it.
                     for index in 0...18 { state.setRegister("x\(index)", to: .unknown) }
@@ -941,7 +972,7 @@ enum Preservation {
             // future save. Do not tie escape lifetime to existing slot facts.
             for offset in 0..<count {
                 if let source = register(offset), state.stackAliases.contains(source.key) {
-                    state.stackAddressEscaped = true
+                    state.markEscape([source.key])
                 }
             }
             if let address {

@@ -1317,6 +1317,22 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — a callee that handed a local's address to a call was read as
+  clobbering every register it saved.** Preservation, the pass that proves
+  a callee restores x19-x29, forgot every saved slot once a frame address
+  reached a call: `__swift_project_boxed_opaque_existential_1`,
+  `swift_beginAccess`, `Hasher._seed` and a result buffer passed to an
+  initializer all do that. The summary then claimed x29 clobbered for 204
+  of the plugin library's 1,519 functions and 138 of libSwiftIfConfig's
+  742, and every caller lost its frame pointer, and with it every spilled
+  value, across each call. An escaped address strictly below the register
+  save area now reaches only the locals under it, the extent the tracer's
+  `escapedReach` gives a local. Together with the two commits before it
+  (dynamic allocations, a call's real inputs): x29 clobbers 204 → 89 and
+  138 → 33. libSwiftCompilerPluginMessageHandling: unresolved calls 415 →
+  397, value witnesses named 394 → 416, raw `mem[x29 …]` stores 136 →
+  71. libSwiftIfConfig: unresolved 126 → 119, raw stores 223 → 132.
+  -Onone `wideSum` now reads `return (r0.a + r0.e)`.
 - **FIXED — a dynamic allocation of unknown size escaped the whole
   frame.** `mov x9, sp; sub x9, x9, x8; mov sp, x9` with x8 unknown (a
   value-witness size read through unseeded metadata) folded `frame -

@@ -905,18 +905,16 @@ private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
 /// from one is a field of the result, not a stale local. The call is bound once
 /// (`let r0 = …`) and each field read is `r0.field`: spelling the call out at
 /// every read would show it executed once per field. At -Onone makeWide passes
-/// a frame buffer to calls; without interprocedural write footprints its saved
-/// x29 restoration is now unproven, so post-call frame accesses must decline.
-/// The real initializer writes [-56,-16), disjoint from the save [-16,0),
-/// but that range proof is not yet available to the preservation analysis.
-/// At -O the linker folds `makeWide` and `Wide5.init` onto one body, and a
+/// a frame buffer to its initializer; the buffer lies below the register save
+/// area, so the saved x29 survives the call (`Preservation.State.markEscape`)
+/// and the sum reads the result's fields. At -O the linker folds `makeWide` and `Wide5.init` onto one body, and a
 /// call to a folded address takes neither name nor either signature: it read
 /// `let r0 = Indirect.Wide5.init(…)` for a call to `makeWide`. With no
 /// signature the result has no type to lay out, so the -O sum declines.
 @Test func readsIndirectCallResultFromFrameSlotIfPresent() async throws {
     guard let onone = try await reconstructionPseudo("wideSum", in: indirectFixture) else { return }
     #expect(onone.contains("Indirect.makeWide(arg0, arg1, arg2, arg3, arg4)"))
-    #expect(onone.contains("return ?"))
+    #expect(onone.contains("return (r0.a + r0.e)"), "\(onone)")
     #expect(onone.components(separatedBy: "makeWide(").count == 2, "the call must render once: \(onone)")
 
     guard let opt = try await reconstructionPseudo(
@@ -973,16 +971,10 @@ private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
 @Test func recoversPartiallyOverwrittenIndirectResultIfPresent() async throws {
     for fixture in [indirectFixture, "Fixtures/Sample/libIndirect.opt.dylib"] {
         guard let modified = try await reconstructionPseudo("modifiedWide", in: fixture) else { continue }
-        if fixture == indirectFixture {
-            // otherWide also passes a local result buffer to its initializer.
-            // The preservation summary lacks its bounded memory effects;
-            // decline frame-derived fields after its unproven x29 restore.
-            #expect(modified.contains("Indirect.otherWide("))
-            #expect(modified.contains("return Indirect.Wide5(a: arg0, b: ?, c: ?, d: ?, e: ?)"))
-        } else {
-            #expect(modified.contains("let r0 = Indirect.otherWide("), "in \(fixture)")
-            #expect(modified.contains("return Indirect.Wide5(a: arg0, b: r0.b, c: r0.c, d: r0.d, e: r0.e)"), "in \(fixture)")
-        }
+        // otherWide passes its initializer a result buffer below the
+        // register save area, so its x29 restore holds at -Onone too.
+        #expect(modified.contains("let r0 = Indirect.otherWide("), "in \(fixture)")
+        #expect(modified.contains("return Indirect.Wide5(a: arg0, b: r0.b, c: r0.c, d: r0.d, e: r0.e)"), "in \(fixture)")
         #expect(!modified.contains("return arg0"))
     }
 }

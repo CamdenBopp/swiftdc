@@ -284,3 +284,28 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     #expect(try clobbers(0x940003fc, stub: true).isEmpty) // bl 0x2000, a stub
     #expect(try clobbers(0x940003fc).contains("x29")) // bl 0x2000, unknown
 }
+
+/// A local's address handed to a call reaches that local, below the
+/// register save area, not the saves above it, the extent the tracer's
+/// `escapedReach` gives a local:
+///
+///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
+///     sub sp, sp, #0x10; mov x19, x0; mov x0, sp; bl 0x2000
+///     add sp, sp, #0x10; ldp x20, x19, [sp, #0x10]; ldp x29, x30, [sp], #0x20; ret
+///
+/// The escape forgot every save, and the summary claimed x19, x20 and x29
+/// clobbered: `-Onone` `makeWide` passing its result buffer to its
+/// initializer read `return ?` in `wideSum` after it.
+@Test func anEscapedLocalReachesNoSaveAboveIt() throws {
+    var words: [UInt32] = [
+        0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xaa0003f3, 0x910003e0, 0x940003fa,
+        0x910043ff, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
+    ]
+    let local = try #require(CalleeRegisterSummary.of(try body(words, name: "local")))
+    #expect(local.clobberedCalleeSaved.isEmpty, "\(local.clobberedCalleeSaved)")
+    // The control: x29's own address, the frame record among the saves, may
+    // reach every one of them (`mov x0, x29`).
+    words[5] = 0x910003a0
+    let record = try #require(CalleeRegisterSummary.of(try body(words, name: "record")))
+    #expect(record.clobberedCalleeSaved.contains("x29"), "\(record.clobberedCalleeSaved)")
+}
