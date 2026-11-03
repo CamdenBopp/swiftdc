@@ -49,7 +49,8 @@ import Foundation
     #expect(DisassembledFunction.cPrototype(of: "noSuchFunction_ZZ") == nil)
     // `void (*signal(int, void (*)(int)))(int)` returns a function pointer:
     // read up to its first parenthesis, it looked like a void function.
-    #expect(DisassembledFunction.cPrototype(of: "signal") == DisassembledFunction.CPrototype(result: "i", parameters: ["i", "i"], isVariadic: false))
+    // Its `int` signal number is a narrow integer, `w`.
+    #expect(DisassembledFunction.cPrototype(of: "signal") == DisassembledFunction.CPrototype(result: "i", parameters: ["w", "i"], isVariadic: false))
     // clang prints `DISPATCH_RETURNS_RETAINED dispatch_queue_t`: the macro
     // is no part of the type, which is a pointer.
     #expect(DisassembledFunction.cPrototype(of: "dispatch_queue_create")?.result == "i")

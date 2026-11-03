@@ -53,7 +53,10 @@ import Testing
     /// `f`, `d`, `D<n>` or `F<n>` for a struct of `n` doubles or floats
     /// passed in `n` v registers (an HFA such as CGRect, `D4`), or `s` for
     /// any other struct or a type that could not be classified), with `...`
-    /// for a variadic one.
+    /// for a variadic one. A parameter narrower than a register carries its
+    /// width and signedness instead of `i`: `w` int, `u` unsigned, `h` short,
+    /// `H` unsigned short, `b` char (signed on arm64), `B` unsigned char,
+    /// `z` bool.
     enum SDKCPrototypes {
         static let table: [String: String] = {
             var table: [String: String] = [:]
@@ -219,6 +222,23 @@ private enum CPrototypeDump {
             }
             return nil
         }
+        // A parameter's width and signedness when it is a C integer narrower
+        // than a register, which the caller may leave junk above: `int`
+        // `w`, `unsigned` `u`, `short` `h`, `unsigned short` `H`, `char`
+        // (signed on Apple arm64) `b`, `unsigned char` `B`, `bool` `z`.
+        // A `long`, pointer or enum stays `i`.
+        func narrowInteger(_ type: String) -> Character? {
+            let type = resolve(type)
+            guard !type.contains("*"), !type.contains("^"), !type.hasPrefix("enum ") else { return nil }
+            let words = Set(type.split(separator: " ").map(String.init))
+            let integerWords: Set<String> = ["char", "short", "int", "long", "_Bool", "bool", "unsigned", "signed"]
+            guard !words.isEmpty, words.isSubset(of: integerWords), !words.contains("long") else { return nil }
+            let unsigned = words.contains("unsigned")
+            if words.contains("_Bool") || words.contains("bool") { return "z" }
+            if words.contains("char") { return unsigned ? "B" : "b" }
+            if words.contains("short") { return unsigned ? "H" : "h" }
+            return unsigned ? "u" : "w"
+        }
         // Each struct definition's field types, nil for one with a member
         // this cannot classify (a nested record, an anonymous member).
         var records: [String: [String]?] = [:]
@@ -285,7 +305,7 @@ private enum CPrototypeDump {
                 if let parameter = declaration(lines[index]) {
                     let type = parameter.desugared ?? parameter.type
                     if let scalar = bank(type), scalar != "v", scalar != "s" {
-                        parameters.append(scalar)
+                        parameters.append(scalar == "i" ? narrowInteger(type) ?? scalar : scalar)
                     } else if let aggregate = homogeneousFloats(type) {
                         parameters += "\(aggregate.bank)\(aggregate.count)"
                     } else {

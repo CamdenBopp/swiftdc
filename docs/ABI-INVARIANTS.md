@@ -133,7 +133,7 @@ soundness change, measured on its own).
 | 6 | swift_dynamicCast returns Int1 | `swiftCastIdiom` | FIXED 0488667 | soundness | dynamiccast.swift | `is`/`as?` on non-class types | isolated |
 | 7 | Async calls: x0 context/result, formals from x1 | none (positional) | open | soundness | a7 #1 probes | every async caller | shared lowering + async convention |
 | 8 | One-case enums are zero-sized | `isNoPayloadEnum` | FIXED 4aa9d18 | soundness | onecase.swift | functions taking unit-like enums | shared lowering |
-| 9 | Narrow ints: high bits undefined | `renderTypedConstant`, `narrowedResult` | constants FIXED 1fd4b94; computed returns FIXED; C constants open | soundness | narrowreturns.swift, a11 #2 | Int8-32 returns; C APIs taking `int` | shared (type width) |
+| 9 | Narrow ints: high bits undefined | `renderTypedConstant`, `narrowedResult` | constants FIXED 1fd4b94; computed returns FIXED; C declared parameters FIXED; printf conversions open | soundness | narrowreturns.swift, a11 #2 | Int8-32 returns; C APIs taking `int` | shared (type width) |
 | 10 | Vector lanes, Float16, vector immediates, ucvtf | `InstructionSemantics`, fmov | open | soundness | a2 #1/#3/#4, a12 #1 | SIMD code, struct copies via q regs | isolated (instruction semantics) |
 | 11 | Generic x0 indirect result; `Tt`; closure-prop survivors | positional, `specializedSignature` | open | soundness | a8 #1-#3 | unspecialized generics, stdlib specializations | shared lowering + specialization parse |
 | 12 | Struct/SIMD/closure params | `swiftCallArgumentLayout` unplaced tail | FIXED (unplaced from the first unprovable parameter) | soundness | structargs.swift | any call passing a struct by value | shared lowering |

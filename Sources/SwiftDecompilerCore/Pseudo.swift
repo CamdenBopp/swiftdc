@@ -862,7 +862,7 @@ public extension DisassembledFunction {
             // A C function the SDK declares with only integer and pointer
             // parameters (`SDKCPrototypes`, generated from the headers).
             if let prototype = cPrototype(of: callee), !prototype.isVariadic,
-               prototype.parameters.allSatisfy({ $0 == "i" }) {
+               prototype.parameters.allSatisfy({ cIntegerParameterTypes[$0] != nil }) {
                 return prototype.parameters.count
             }
             return nil
@@ -879,6 +879,15 @@ public extension DisassembledFunction {
         let parameters: [String]
         let isVariadic: Bool
     }
+
+    /// The integer parameter codes of `SDKCPrototypes` and the type each is
+    /// read at: `i` a register (a long, a pointer or an enum), and the
+    /// narrow C integers, which a caller may leave junk above: `close(-1)`
+    /// read `close(0xffffffff)`.
+    static let cIntegerParameterTypes: [String: String] = [
+        "i": "Swift.Int", "w": "Swift.Int32", "u": "Swift.UInt32", "h": "Swift.Int16", "H": "Swift.UInt16",
+        "b": "Swift.Int8", "B": "Swift.UInt8", "z": "Swift.Bool",
+    ]
 
     static func cPrototype(of callee: String) -> CPrototype? {
         guard let entry = SDKCPrototypes.table[callee], let result = entry.first else { return nil }

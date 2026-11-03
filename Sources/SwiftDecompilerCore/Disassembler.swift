@@ -4363,7 +4363,9 @@ public struct Disassembler: Sendable {
         var slots: [(kind: ScalarParameterClass, registers: Int, type: String)] = []
         for parameter in prototype.parameters {
             switch parameter {
-            case "i": integers += 1; slots.append((.integer, 1, "Swift.Int"))
+            case _ where DisassembledFunction.cIntegerParameterTypes[parameter] != nil:
+                integers += 1
+                slots.append((.integer, 1, DisassembledFunction.cIntegerParameterTypes[parameter] ?? "Swift.Int"))
             case "f": floats += 1; slots.append((.floating, 1, "Swift.Float"))
             case "d": floats += 1; slots.append((.floating, 1, "Swift.Double"))
             default:

@@ -550,3 +550,16 @@ struct ABISourceLoweringTests {
     // An Int result keeps the conversion the code makes.
     #expect(try text("widen").contains("return (((arg0 & 0xffffffff) + 72) & 0xffff)\n"))
 }
+
+/// A narrow C integer argument reads at the width and signedness its SDK
+/// declaration gives it (cnarrowargs.c).
+@Test func aNarrowCIntegerArgumentReadsAtItsDeclaredWidthIfPresent() async throws {
+    let path = "Fixtures/Sample/libCNarrowArgs.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(text.contains("close(-1)"), Comment(rawValue: text))
+    #expect(text.contains("usleep(0xee6b2800)"), Comment(rawValue: text))
+    #expect(text.contains("lseek(?, -5, 2)"), Comment(rawValue: text))
+    #expect(DisassembledFunction.cPrototype(of: "close")?.parameters == ["w"])
+}

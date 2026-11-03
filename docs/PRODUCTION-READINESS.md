@@ -50,6 +50,16 @@ results do not replace previously recorded release performance measurements.
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
 
+- **FIXED — a narrow C integer argument rendered its whole register.**
+  `close(-1)` read `close(0xffffffff)`. The caller writes `mov w0, #-1`,
+  and the SDK table recorded only that an `int` travels in an x register.
+  The generator now records a parameter narrower than a register by width
+  and signedness. Of 20,279 declarations, 6,300 change, and only in those
+  codes. The typed-constant rendering reads each at its type: `close(-1)`,
+  `usleep(0xee6b2800)`. Fixture `cnarrowargs.c`. Blast radius: one line.
+  A variadic argument's width comes from its format conversion, which is
+  still open. So is a format string in an image's first page, which reads
+  as an address (`printf(0x48c, …)`).
 - **FIXED — a computed narrow integer result rendered its whole
   register.** `add16(_ x: UInt16) -> UInt16 { x &+ 72 }` read `return
   (((arg0 & 0xffffffff) + 72) & 0xffffffff)`, which is 0x10047 for 0xffff,

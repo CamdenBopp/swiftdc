@@ -511,6 +511,9 @@ $CLANG -O2 -dynamiclib floatreads.c -o libFloatReads.dylib
 echo "==> computed narrow integer results (narrowreturns.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name NarrowReturns narrowreturns.swift -o libNarrowReturns.dylib
 
+echo "==> narrow C integer arguments read at their declared width (cnarrowargs.c, -O2)"
+$CLANG -O2 -dynamiclib cnarrowargs.c -o libCNarrowArgs.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib
