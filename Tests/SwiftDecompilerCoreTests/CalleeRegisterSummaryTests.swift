@@ -325,3 +325,19 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "belowEscape")))
     #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
 }
+
+/// The save area is the run of entry values at the top of the frame. An
+/// entry value spilled among the locals (`str x21, [sp]`) is no save, and a
+/// local above it (`add x0, sp, #8`) is still a local:
+///
+///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
+///     sub sp, sp, #0x20; mov x19, x0; str x21, [sp]; add x0, sp, #8
+///     bl 0x2000; add sp, sp, #0x20; ldp …; ldp …; ret
+@Test func aSpilledEntryValueIsNoPartOfTheSaveArea() throws {
+    let words: [UInt32] = [
+        0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10083ff, 0xaa0003f3, 0xf90003f5, 0x910023e0,
+        0x940003f9, 0x910083ff, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
+    ]
+    let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "spilled")))
+    #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
+}

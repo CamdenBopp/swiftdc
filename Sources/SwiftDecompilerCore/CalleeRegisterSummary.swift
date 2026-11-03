@@ -718,9 +718,19 @@ enum Preservation {
         /// One strictly below every save made so far reaches up to the
         /// lowest save; anything else may reach every slot.
         mutating func markEscape(_ keys: Set<String>) {
-            let saves = slots.filter { if case .entry = $0.value { true } else { false } }.keys
+            // The save area is the run of entry values at the top of the
+            // frame, eight bytes apart or one padding word (`str x28, [sp,
+            // #-0x60]!` then pairs from `[sp, #0x10]`). An entry value
+            // spilled further down, among the locals (`str x19, [sp]`), is
+            // no part of it, and a local above that spill is still a local.
+            let saves = slots.filter { if case .entry = $0.value { true } else { false } }.keys.sorted(by: >)
+            var saveStart = saves.first
+            for slot in saves.dropFirst() {
+                guard let lowest = saveStart, slot >= lowest - 16 else { break }
+                saveStart = slot
+            }
             for key in keys {
-                switch (value(key), saves.min()) {
+                switch (value(key), saveStart) {
                 case (.stack(let k), let saveStart?) where k < saveStart:
                     escapeFloor = min(escapeFloor ?? k, k)
                     escapeBound = max(escapeBound ?? saveStart, saveStart)
