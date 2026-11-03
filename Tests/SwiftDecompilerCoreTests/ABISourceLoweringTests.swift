@@ -454,15 +454,21 @@ struct ABISourceLoweringTests {
     func text(_ name: String) throws -> String {
         try #require(functions.first { $0.displayName.hasPrefix("StructArgs.\(name)(") }).renderStructured()
     }
-    #expect(try text("callMix").contains("return StructArgs.fMix(?, ?)"))
-    #expect(try text("callPt").contains("return StructArgs.fPt(?, ?)"))
+    // Mix and Pt are laid out in full here, so what follows them is placed
+    // (`aStructArgumentTakesItsFieldsRegistersIfPresent`): Mix takes x0, x1
+    // and d0, so 2.0 is d1; Pt takes d0 and d1, so k is x0.
+    #expect(try text("callMix").contains("return StructArgs.fMix(?, 2.0)"))
+    #expect(try text("callPt").contains("return StructArgs.fPt(?, arg1)"))
     #expect(try text("callSIMD").contains("return StructArgs.fSIMD(?, ?)"))
     #expect(try text("callLead").contains("return StructArgs.fLead(arg0, ?)"))
     // A value type's method: its formal is unplaced, and `self`'s words,
     // which follow it, are not shown either.
     #expect(try text("callScaled").contains("return StructArgs.Pt.scaled(?)"))
-    // `self`'s 9 in x2, after a Mix whose end is not known, is no argument.
-    #expect(try text("callTake").contains("return StructArgs.W.take(?)\n"))
+    // The Mix ends at x1, and W is one integer word: `self`'s 9 in x2
+    // follows the formal, as a value method's `self` does.
+    #expect(try text("callTake").contains("return StructArgs.W.take(?, 9)\n"))
+    // MD's self is an Int in x1 and a Double in d0: no part of it shows.
+    #expect(try text("callMD").contains("return StructArgs.MD.f(3)\n"))
     // An Array, a Dictionary and a variadic parameter are one word each,
     // so what follows them is placed.
     #expect(try text("callArr").contains("return StructArgs.fArr(arg0, arg1)"))
@@ -635,4 +641,34 @@ struct ABISourceLoweringTests {
         callee: "M.f<A where A1: Swift.Equatable>(A1.Type, Swift.Int) -> Swift.Int",
         enumCaseIndex: EnumCaseIndex(), classTypeIndex: ClassTypeIndex(), anyContext: false)
     #expect(layout?.slots.count == 2 && layout?.unplaced == 0)
+}
+
+/// A struct this image lays out takes the registers the Swift calling
+/// convention gives its fields, so the Int after it is placed (structlowering
+/// .swift; the footprints are `swiftc -emit-ir`'s, docs/ABI-INVARIANTS.md).
+@Test func aStructArgumentTakesItsFieldsRegistersIfPresent() async throws {
+    let path = "Fixtures/Sample/libStructLowering.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let shapes = ["S1", "S2", "S32", "SID", "SD4", "SI4", "SI5", "SB", "S8", "SNest", "SOpt", "FF", "FI32",
+                  "Mixed", "I32I64I32", "F4I", "WithEmpty"]
+    for shape in shapes {
+        let text = try #require(functions.first { $0.displayName.hasPrefix("StructLowering.pass_\(shape)(") }).renderStructured()
+        #expect(text.contains("return StructLowering.take_\(shape)(?, 7)\n"), Comment(rawValue: text))
+    }
+    // An empty struct has no field map here, so its footprint is not proven.
+    let empty = try #require(functions.first { $0.displayName.hasPrefix("StructLowering.pass_Empty(") }).renderStructured()
+    #expect(empty.contains("return StructLowering.take_Empty(?, ?)\n"), Comment(rawValue: empty))
+}
+
+/// A value method's `self` follows its formals in the receiver's own
+/// registers: two Doubles for ABIVec2, in d registers, so no x register
+/// after the formals is `self` (abi_source.swift, the oracle executable).
+@Test func aFloatReceiversSelfIsNoIntegerWordIfPresent() async throws {
+    let path = "Fixtures/Sample/abi-source-oracle"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(text.contains("ABISource.ABIVec2.dot(?)\n"), Comment(rawValue: text.components(separatedBy: "\n").filter { $0.contains("dot(") }.joined(separator: "\n")))
+    #expect(!text.contains("ABIVec2.dot(?, "))
 }

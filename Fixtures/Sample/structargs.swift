@@ -39,3 +39,8 @@ public func callTake(_ k: Int) -> Int { W(v: 9).take(Mix(i: k, d: 0.5, j: 3)) }
 public func callArr(_ xs: [Int], _ k: Int) -> Int { fArr(xs, k) }
 public func callVar(_ k: Int) -> Int { fVar(1, 2, k: k) }
 public func callDict(_ d: [String: Int], _ k: Int) -> Int { fDict(d, k) }
+// A receiver of both banks: `md.f(3)` passes 3 in x0, then self's Int in
+// x1 and its Double in d0. Part of `self` is no argument: rendered f(3).
+public struct MD { public var i: Int; public var d: Double }
+extension MD { @inline(never) public func f(_ k: Int) -> Int { k &+ i &+ Int(d) } }
+public func callMD(_ i: Int) -> Int { MD(i: i &* 5, d: 2.5).f(3) }

@@ -148,3 +148,76 @@ enum SwiftLowering: Equatable, Sendable {
         return false
     }
 }
+
+extension SwiftLowering {
+    /// The registers a struct this image lays out in full takes as a direct
+    /// argument: how many x and how many v registers, or one x register (its
+    /// address) when it is passed indirectly. Nil when any field's
+    /// representation is not proven.
+    ///
+    /// Measured against `swiftc -O -emit-ir` (docs/ABI-INVARIANTS.md, the
+    /// struct-lowering oracle): IRGen explodes the struct into its scalar
+    /// fields at their byte offsets, nested structs flattened and empty
+    /// ones dropped, and the Swift calling convention then merges the
+    /// integer data in each 8-byte chunk into one register (`{Int32, Int32}`
+    /// is one i64, `{Bool, Bool}` one i16) while every float or double keeps
+    /// its own (`{Float, Float}` is two floats, `{Float, Int32}` a float and
+    /// an i32). More than four registers in all go indirect (`{Int ×5}`,
+    /// `{Float ×4, Int}`).
+    static func aggregateRegisters(
+        of type: String, fieldMaps: [String: FieldMap],
+        enumCaseIndex: EnumCaseIndex = EnumCaseIndex(), classTypeIndex: ClassTypeIndex = ClassTypeIndex()
+    ) -> (integers: Int, floats: Int)? {
+        // An empty struct is laid out, complete, in zero bytes: no register.
+        if !classTypeIndex.isClass(type), let map = fieldMaps[type], map.instanceSize == 0,
+           map.trustLimitReason == nil, map.fields.isEmpty {
+            return (0, 0)
+        }
+        var integerChunks = Set<Int>()
+        var floats = 0
+        guard collectScalars(of: type, at: 0, fieldMaps: fieldMaps, enumCaseIndex: enumCaseIndex,
+                             classTypeIndex: classTypeIndex, depth: 0,
+                             integerChunks: &integerChunks, floats: &floats)
+        else { return nil }
+        if integerChunks.count + floats > 4 { return (1, 0) }
+        return (integerChunks.count, floats)
+    }
+
+    private static func collectScalars(
+        of type: String, at base: Int, fieldMaps: [String: FieldMap],
+        enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex, depth: Int,
+        integerChunks: inout Set<Int>, floats: inout Int
+    ) -> Bool {
+        guard depth < 8,
+              let map = Disassembler.completeValueLayout(of: type, fieldMaps: fieldMaps, classTypeIndex: classTypeIndex)
+        else { return false }
+        for field in map.fields {
+            let offset = base + field.offset
+            guard let fieldType = map.fieldTypeNames[field.name] else { return false }
+            switch of(fieldType, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
+            case .oneInteger:
+                // An integer field never straddles a chunk: it is aligned to
+                // its size.
+                guard field.bytes <= 8, offset % 8 + field.bytes <= 8 else { return false }
+                integerChunks.insert(offset / 8)
+            case .oneFloat:
+                floats += 1
+            case .zeroSized:
+                continue
+            default:
+                if Disassembler.twoWordStringTypes.contains(fieldType), field.bytes == 16 {
+                    integerChunks.formUnion([offset / 8, offset / 8 + 1])
+                } else if let payload = Disassembler.optionalScalarPayload(ofParameterType: fieldType) {
+                    // Its payload's bytes, a Double's included, then a tag byte.
+                    integerChunks.insert(offset / 8)
+                    integerChunks.insert((offset + payload.bytes) / 8)
+                } else if !collectScalars(of: fieldType, at: offset, fieldMaps: fieldMaps,
+                                          enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex,
+                                          depth: depth + 1, integerChunks: &integerChunks, floats: &floats) {
+                    return false
+                }
+            }
+        }
+        return true
+    }
+}

@@ -4010,6 +4010,9 @@ public struct Disassembler: Sendable {
                 guard floatIndex < 8 else { return nil }
                 registers["v\(floatIndex)"] = index
                 floatIndex += 1
+            case .aggregate?:
+                // `scalarParameterClass` classifies scalars only.
+                return nil
             case nil:
                 // A footprint the ABI fixes (a String's two words, an
                 // Optional scalar's payload and tag, a StaticString's three
@@ -4166,6 +4169,19 @@ public struct Disassembler: Sendable {
         return generics.contains(root) && type.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }
     }
 
+    /// The type a method of `callee` belongs to: `M.W.take(…)` -> `M.W`.
+    /// Nil for a free function or a name this cannot split.
+    static func valueMethodReceiver(_ callee: String) -> String? {
+        guard let signature = DisassembledFunction.splitSignature(callee),
+              let range = DisassembledFunction.outermostArgumentListRange(of: signature.head)
+        else { return nil }
+        let name = withoutPrivateDiscriminators(String(signature.head[..<range.lowerBound].dropLast()))
+        guard name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }),
+              let dot = name.lastIndex(of: "."), name[..<dot].contains(".")
+        else { return nil }
+        return String(name[..<dot])
+    }
+
     /// Whether the metatype of `instance` is one word: a generic
     /// parameter's (`A.Type`, `A1.Type`), which is its metadata pointer, or
     /// a class's, whose metatype is thick. A concrete struct or enum's
@@ -4201,7 +4217,7 @@ public struct Disassembler: Sendable {
     /// x0-x7 as eight arguments.
     static func swiftCallArgumentLayout(
         callee: String, enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex,
-        anyContext: Bool = false
+        anyContext: Bool = false, fieldMaps: [String: FieldMap] = [:]
     ) -> SwiftArgumentLayout? {
         // A dispatch thunk calls a class method or a protocol requirement
         // through its vtable or witness table: `self` travels in x20 and the
@@ -4294,6 +4310,9 @@ public struct Disassembler: Sendable {
                 (kind, registers) = (.integer, 1)
             } else if signature.thrownType == nil, let words = integerRegisterFootprint(ofParameterType: type) {
                 (kind, registers) = (.integer, words)
+            } else if let banks = SwiftLowering.aggregateRegisters(
+                of: type, fieldMaps: fieldMaps, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
+                (kind, registers) = (.aggregate(integers: banks.integers, floats: banks.floats), 1)
             } else {
                 // A struct, tuple, SIMD vector or closure takes registers its
                 // name does not give (`Mix { Int, Double, Int }` takes x0, d0,
@@ -4310,6 +4329,7 @@ public struct Disassembler: Sendable {
             switch kind {
             case .integer: integers += registers
             case .floating: floats += registers
+            case .aggregate(let x, let v): integers += x; floats += v
             }
             if spilled || integers > 8 || floats > 8 {
                 // A StaticString renders only its first word, so it is
@@ -4818,6 +4838,9 @@ public struct Disassembler: Sendable {
             case .floating:
                 guard floatIndex < 8 else { return nil }
                 seeded["v\(floatIndex)"] = .argument(index); floatIndex += 1
+            case .aggregate?:
+                // `scalarParameterClass` classifies scalars only.
+                return nil
             case nil:
                 // The only other shape we decompose is an HFA-float struct.
                 guard let map = Self.namedFieldMap(Self.parameterType(parameter), in: fieldMaps),
@@ -4870,7 +4893,12 @@ public struct Disassembler: Sendable {
         fieldMaps[typeName]
     }
 
-    enum ScalarParameterClass { case integer, floating }
+    enum ScalarParameterClass: Equatable {
+        case integer, floating
+        /// A struct passed in registers of both banks (`SwiftLowering.
+        /// aggregateRegisters`): one argument, rendered `?`.
+        case aggregate(integers: Int, floats: Int)
+    }
 
     /// The register class of a demangled parameter, or nil when it isn't provably
     /// a single-register scalar. Deliberately an under-approximation: an unlisted
@@ -5307,7 +5335,7 @@ public struct Disassembler: Sendable {
             guard DisassembledFunction.knownCArity(of: callee) != nil
                     || Self.swiftCallArgumentLayout(
                         callee: layoutName(at: insn.address, callee: callee),
-                        enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, anyContext: true
+                        enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, anyContext: true, fieldMaps: typeFieldMaps
                     ).map { !$0.slots.isEmpty || $0.unplaced > 0 } == true
                     || (!(callTargets[insn.address] != nil && DisassembledFunction.knownArityNameMayHaveTwin(callee))
                         && Self.cPrototypeLayout(callee: callee) != nil)
@@ -5668,7 +5696,7 @@ public struct Disassembler: Sendable {
             let swiftLayout: SwiftArgumentLayout? = calleeByAddress[address].flatMap {
                 Self.swiftCallArgumentLayout(
                     callee: layoutName(at: address, callee: $0),
-                    enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
+                    enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, fieldMaps: typeFieldMaps)
             }
             let swiftSlots = swiftLayout?.slots
             let cLayout = swiftSlots != nil || isNameTwin(address)
@@ -5687,7 +5715,7 @@ public struct Disassembler: Sendable {
                 ? calleeByAddress[address].flatMap {
                     Self.swiftCallArgumentLayout(
                         callee: layoutName(at: address, callee: $0),
-                        enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, anyContext: true)
+                        enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, anyContext: true, fieldMaps: typeFieldMaps)
                 }
                 : nil
             let leadingSlots = leadingLayout?.slots
@@ -5771,6 +5799,11 @@ public struct Disassembler: Sendable {
                                 || selfStringField(words[0], words[1]) != nil ? .aggregate(words) : .unknown
                         }
                         return words[0]
+                    case .aggregate(let x, let v):
+                        // A struct's registers: its value is not one of them.
+                        integer += x
+                        floating += v
+                        return .unknown
                     case .floating:
                         defer { floating += slot.registers }
                         // An HFA argument spans its registers; it renders `?`.
@@ -5815,7 +5848,17 @@ public struct Disassembler: Sendable {
                             } ?? true
                         } ?? true
                     } ?? true
-                    if selfValueBySite[address] == nil, leadingLayout?.unplaced == 0, !isGeneric {
+                    // When the receiver's own registers are known and any of
+                    // them is a v register, no x register after the formals
+                    // is all of `self`: `ABIVec2.dot(_:)` takes
+                    // `self`'s two Doubles in d2 and d3, and read `dot(?,
+                    // sub_…())`, a stale x0 as `self`.
+                    let receiver = calleeByAddress[address].flatMap(Self.valueMethodReceiver).flatMap {
+                        SwiftLowering.aggregateRegisters(of: $0, fieldMaps: typeFieldMaps,
+                                                         enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
+                    }
+                    if selfValueBySite[address] == nil, leadingLayout?.unplaced == 0, !isGeneric,
+                       receiver.map({ $0.floats == 0 }) ?? true {
                         following = values.dropFirst(integer).map(sanitizeValue)
                         // A register still holding the value it had at entry
                         // was not set up for this call: `takeTwo(_: String,

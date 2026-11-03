@@ -1263,6 +1263,24 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — a struct argument this image lays out now takes its fields'
+  registers.** Since b26d282 a struct parameter, and everything after it,
+  rendered `?`. `SwiftLowering.aggregateRegisters` now computes a fully
+  laid-out struct's registers from its field records, by the rules the
+  struct-lowering oracle measured (ABI-INVARIANTS.md):
+  - integer data merges per 8-byte chunk;
+  - each float or double takes its own v register;
+  - an Optional's tag takes its own register;
+  - an empty or zero-sized field takes none;
+  - more than four registers go by address.
+
+  `fMix(?, ?)` now reads `fMix(?, 2.0)`, and each of the 17 oracle shapes in
+  `structlowering.swift` places the Int after the struct. A value method
+  whose receiver has float fields no longer shows an x register as part of
+  `self`: `ABIVec2.scaled(5.0, sub_…())` reads `scaled(5.0)`, and
+  `MD.f(3, …)` reads `MD.f(3)`. An empty struct has no field map here and
+  stays unplaced. Blast radius against e2c837b, structured view: 5 files,
+  52 lines.
 - **FIXED — generic and class metatype parameters were not placed.**
   `container<A where A1: CodingKey>(keyedBy: A1.Type)` read `container(?)`,
   and `classMeta(Base.self, k)` read `classMeta(?, ?)`. A generic

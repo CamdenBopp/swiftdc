@@ -159,7 +159,8 @@ threshold (swift/lib/IRGen/GenCall.cpp, clang's SwiftCallingConv). They
 must be checked against a compiler oracle (`-emit-ir` signatures for a
 fixture of field shapes) before any layout uses them. This is the
 largest remaining completeness item in the argument layouts. Observed
-2026-11-03; the work has not started.
+2026-11-03. Call layouts now use it (`SwiftLowering.aggregateRegisters`);
+entry seeding of a function that takes a struct still declines.
 
 First oracle, `swiftc -O -emit-ir` (Swift 6.3, arm64), each struct passed
 before an `Int`:
