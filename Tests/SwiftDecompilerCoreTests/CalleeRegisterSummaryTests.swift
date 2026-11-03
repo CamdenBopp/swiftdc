@@ -341,3 +341,31 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "spilled")))
     #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
 }
+
+/// A join that loses a frame alias's exact offset keeps the offsets it may
+/// hold: x1 is `mov x1, sp`, a local, on one path and no frame address on the
+/// other, so the call reaches at most that local:
+///
+///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
+///     sub sp, sp, #0x10; mov x19, x0; cbz x0, 1f; mov x1, sp
+///     1: bl 0x2000; add sp, sp, #0x10; ldp …; ldp …; ret
+@Test func aJoinKeepsTheFrameOffsetsAnAliasMayHold() throws {
+    let words: [UInt32] = [
+        0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xaa0003f3, 0xb4000040, 0x910003e1,
+        0x940003f9, 0x910043ff, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
+    ]
+    let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "joined")))
+    #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
+    // A copy of the alias keeps the offsets: `mov x2, x1` before the call.
+    var copied = words
+    copied.insert(0xaa0103e2, at: 7)
+    copied[8] = 0x940003f8 // bl 0x2000 from its new address
+    let copy = try #require(CalleeRegisterSummary.of(try body(copied, name: "copied")))
+    #expect(copy.clobberedCalleeSaved.isEmpty, "\(copy.clobberedCalleeSaved)")
+    // The control: the same join where the other path holds x29's own
+    // address, the frame record, may reach every save.
+    var record = words
+    record[4] = 0x910003a1 // mov x1, x29
+    let control = try #require(CalleeRegisterSummary.of(try body(record, name: "record")))
+    #expect(control.clobberedCalleeSaved.contains("x29"), "\(control.clobberedCalleeSaved)")
+}

@@ -662,9 +662,14 @@ enum Preservation {
         // there with no slot fact still reads the caller's bytes. Any call,
         // any write of unknown extent and any store reaching that far ends it.
         var incomingIntact = true
+        // For a frame alias whose exact value a join lost, the frame offsets
+        // it may hold: x1 is `sub x1, x29, #0x48` on one path and no frame
+        // address on the other. Absent means any offset.
+        var aliasOffsets: [String: Set<Int64>] = [:]
 
         mutating func setRegister(_ key: String, to value: Value, mayAliasStack: Bool = false) {
             registers[key] = value == .unknown ? nil : value
+            aliasOffsets[key] = nil
             if case .stack = value { stackAliases.insert(key) }
             else if case .below = value { stackAliases.insert(key) }
             else if mayAliasStack { stackAliases.insert(key) }
@@ -703,15 +708,33 @@ enum Preservation {
         }
 
         func merged(with other: State) -> State {
-            State(
-                registers: registers.filter { other.registers[$0.key] == $0.value },
+            let registers = registers.filter { other.registers[$0.key] == $0.value }
+            let aliases = stackAliases.union(other.stackAliases)
+            var offsets: [String: Set<Int64>] = [:]
+            for key in aliases where registers[key] == nil {
+                guard let mine = frameOffsets(key), let theirs = other.frameOffsets(key) else { continue }
+                let union = mine.union(theirs)
+                if !union.isEmpty { offsets[key] = union }
+            }
+            return State(
+                registers: registers,
                 slots: slots.filter { other.slots[$0.key] == $0.value },
-                stackAliases: stackAliases.union(other.stackAliases),
+                stackAliases: aliases,
                 stackAddressEscaped: stackAddressEscaped || other.stackAddressEscaped,
                 escapeFloor: [escapeFloor, other.escapeFloor].compactMap { $0 }.min(),
                 escapeBound: [escapeBound, other.escapeBound].compactMap { $0 }.max(),
-                incomingIntact: incomingIntact && other.incomingIntact
+                incomingIntact: incomingIntact && other.incomingIntact,
+                aliasOffsets: offsets
             )
+        }
+
+        /// The frame offsets `key` may hold here: one for a known stack
+        /// address, none for a register that is no frame alias, and nil
+        /// when it may be any.
+        func frameOffsets(_ key: String) -> Set<Int64>? {
+            if case .stack(let k) = value(key) { return [k] }
+            if let offsets = aliasOffsets[key] { return offsets }
+            return stackAliases.contains(key) ? nil : []
         }
 
         /// The frame addresses in `keys` reach code this body does not see.
@@ -730,6 +753,13 @@ enum Preservation {
                 saveStart = slot
             }
             for key in keys {
+                // A join that lost the exact offset may still bound it.
+                if case .unknown = value(key), let offsets = aliasOffsets[key], let saveStart,
+                   let low = offsets.min(), let high = offsets.max(), high < saveStart {
+                    escapeFloor = min(escapeFloor ?? low, low)
+                    escapeBound = max(escapeBound ?? saveStart, saveStart)
+                    continue
+                }
                 switch (value(key), saveStart) {
                 case (.stack(let k), let saveStart?) where k < saveStart:
                     escapeFloor = min(escapeFloor ?? k, k)
@@ -947,7 +977,9 @@ enum Preservation {
         switch detail.id {
         case AARCH64_INS_MOV:
             if let destination = register(0), let source = register(1), destination.widthBits == 64 {
+                let offsets = state.aliasOffsets[source.key]
                 state.setRegister(destination.key, to: state.value(source.key), mayAliasStack: state.stackAliases.contains(source.key))
+                state.aliasOffsets[destination.key] = offsets
                 return
             }
         case AARCH64_INS_ADD, AARCH64_INS_SUB:

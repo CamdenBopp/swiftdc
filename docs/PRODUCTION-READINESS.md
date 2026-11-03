@@ -1317,6 +1317,20 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — a frame alias whose offset a join lost escaped every saved
+  register.** x1 is `sub x1, x29, #0x48` on one path into a block and no
+  frame address on the other. The join kept x1 as a possible alias but
+  lost its value, and the call that received it forgot every save. That
+  was the plugin library's JSONMapValue.equals(to:), whose x29 clobber
+  took its callers' spilled values with it. A join now keeps the frame
+  offsets such a register may hold, `mov` carries them, and an escape
+  bounds them like a known local. Together with eb834b9 and b4f2968:
+  functions summarized as clobbering x29, 89 → 63 of 1,519 (plugin
+  library), 33 → 18 (libSwiftIfConfig), 94 → 52 of 1,594
+  (libSwiftParserDiagnostics). libSwiftCompilerPluginMessageHandling:
+  unresolved calls 397 → 292, value witnesses named 416 → 521, raw
+  `mem[x29 …]` stores 70 → 15. libSwiftParserDiagnostics raw stores 570
+  → 419.
 - **FIXED — a callee that handed a local's address to a call was read as
   clobbering every register it saved.** Preservation, the pass that proves
   a callee restores x19-x29, forgot every saved slot once a frame address
