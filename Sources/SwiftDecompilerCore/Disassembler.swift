@@ -4615,6 +4615,41 @@ public struct Disassembler: Sendable {
     static let builtinStringLiteralInit =
         "Swift.String.init(_builtinStringLiteral: Builtin.RawPointer, utf8CodeUnitCount: Builtin.Word, isASCII: Builtin.Int1)"
 
+    /// A computed result of a narrow integer type is its register's low bits
+    /// at the type's signedness: the caller reads no more. Rendered whole,
+    /// `add16(_ x: UInt16) -> UInt16 { x &+ 72 }` read `return (((arg0 &
+    /// 0xffffffff) + 72) & 0xffffffff)`, which is 0x10047 for 0xffff where
+    /// the function returns 0x47. An argument or call result is that type
+    /// already, and an expression already masked (or sign-extended) to the
+    /// width is left as it is.
+    static func narrowedResult(_ value: AbstractValue, type: String) -> AbstractValue {
+        let widths: [String: (bits: Int, signed: Bool)] = [
+            "Swift.Int8": (8, true), "Swift.Int16": (16, true), "Swift.Int32": (32, true),
+            "Swift.UInt8": (8, false), "Swift.UInt16": (16, false), "Swift.UInt32": (32, false),
+        ]
+        guard let (bits, signed) = widths[type] else { return value }
+        switch value {
+        case .binary, .unary: break
+        default: return value
+        }
+        let mask = (UInt64(1) << UInt64(bits)) - 1
+        let shift = UInt64(64 - bits)
+        // A mask covering the whole width says nothing the narrowing does not.
+        var inner = value
+        if case .binary(.bitAnd, let masked, .immediate(let existing)) = value, existing & mask == mask {
+            inner = masked
+        }
+        if signed {
+            if case .binary(.arithmeticShiftRight, .binary(.shiftLeft, _, .immediate(let left)), .immediate(let right)) = value,
+               left == right, left >= shift {
+                return value
+            }
+            return .binary(.arithmeticShiftRight, .binary(.shiftLeft, inner, .immediate(shift)), .immediate(shift))
+        }
+        if case .binary(.bitAnd, _, .immediate(let existing)) = value, existing <= mask { return value }
+        return .binary(.bitAnd, inner, .immediate(mask))
+    }
+
     static func renderTypedConstant(bits: UInt64, type: String) -> String? {
         switch type {
         case "Swift.Bool":
@@ -7124,6 +7159,7 @@ public struct Disassembler: Sendable {
                let name = fieldName(at: matchingStore.offset, bytes: matchingStore.bytes) {
                 return fieldPath(name)
             }
+            if let returnTypeName { return renderValue(Self.narrowedResult(value, type: returnTypeName), depth: 0) }
             return renderValue(value, depth: 0)
         }
 

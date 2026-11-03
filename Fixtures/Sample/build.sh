@@ -508,6 +508,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name StdSelf stdself.swift -o
 echo "==> float argument reads of signatureless C callees (floatreads.c, -O2)"
 $CLANG -O2 -dynamiclib floatreads.c -o libFloatReads.dylib
 
+echo "==> computed narrow integer results (narrowreturns.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name NarrowReturns narrowreturns.swift -o libNarrowReturns.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

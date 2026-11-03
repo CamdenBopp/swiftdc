@@ -533,3 +533,20 @@ struct ABISourceLoweringTests {
     // d1 is written before it is read: one parameter.
     #expect(try text("_callAfterWrite").contains("afterWrite(?)\n"))
 }
+
+/// A computed narrow integer result is its register's low bits at its
+/// type's signedness (narrowreturns.swift).
+@Test func aComputedNarrowResultIsItsTypesLowBitsIfPresent() async throws {
+    let path = "Fixtures/Sample/libNarrowReturns.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("NarrowReturns.\(name)(") }).renderStructured()
+    }
+    #expect(try text("add16").contains("return (((arg0 & 0xffffffff) + 72) & 0xffff)\n"))
+    #expect(try text("add8").contains("return ((((arg0 & 0xffffffff) + 100) << 56) >>ˢ 56)\n"))
+    #expect(try text("mul32").contains("<< 32) >>ˢ 32)\n"))
+    #expect(try text("shl16").contains("return (((arg0 & 0xffffffff) << 3) & 0xffff)\n"))
+    // An Int result keeps the conversion the code makes.
+    #expect(try text("widen").contains("return (((arg0 & 0xffffffff) + 72) & 0xffff)\n"))
+}

@@ -50,6 +50,15 @@ results do not replace previously recorded release performance measurements.
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
 
+- **FIXED — a computed narrow integer result rendered its whole
+  register.** `add16(_ x: UInt16) -> UInt16 { x &+ 72 }` read `return
+  (((arg0 & 0xffffffff) + 72) & 0xffffffff)`, which is 0x10047 for 0xffff,
+  where the function returns 0x47. A computed result of Int8, Int16,
+  Int32, UInt8, UInt16 or UInt32 now renders at its type's low bits and
+  signedness: `& 0xffff` unsigned, `((… << k) >>ˢ k)` signed. An argument
+  or call result is that type already and is left as it is. Fixture
+  `narrowreturns.swift`. Blast radius against b65c05b: 1 file, the
+  fixture's four returns.
 - **FIXED — a signatureless callee's float parameters were invisible.**
   Body-read arity counted x0-x7 only. A C callee that takes doubles
   rendered `takef3()` and `CGRectMake()`. A mixed callee rendered
