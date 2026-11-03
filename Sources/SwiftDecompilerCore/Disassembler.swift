@@ -2927,7 +2927,24 @@ public struct Disassembler: Sendable {
                let name = resolver.name(at: address, ownedBy: selfTypeName) {
                 return (address, name, true)
             }
+            if let witness = valueWitnessCall(value) { return (nil, witness, false) }
             return resolver.indirectCallTarget(for: value).map { ($0.address, $0.name, false) }
+        }
+        /// A call through slot `k` of the value-witness table of the
+        /// metadata a type metadata accessor returned: `[[metadata - 8] +
+        /// k]` (swift/include/swift/ABI/Metadata.h puts the table pointer
+        /// just before the metadata; ValueWitness.def orders the slots).
+        /// Only the eight function slots every table has; past them come
+        /// the size, stride and flags.
+        func valueWitnessCall(_ value: AbstractValue) -> String? {
+            guard case .loadedFrom(.loadedFrom(.callResult(let site), offset: -8), let offset) = value,
+                  offset >= 0, offset % 8 == 0, offset / 8 < MetadataSymbolizer.valueWitnessNames.count,
+                  let call = function.instructions.first(where: { $0.address == site }),
+                  let callee = DisassembledFunction.calleeName(of: call)
+            else { return nil }
+            let prefix = "type metadata accessor for "
+            guard callee.hasPrefix(prefix), callee.count > prefix.count else { return nil }
+            return "\(MetadataSymbolizer.valueWitnessNames[offset / 8]) value witness for \(callee.dropFirst(prefix.count))"
         }
         let ownAddresses = Set(function.instructions.map(\.address))
         let instructions = function.instructions.map { insn -> Instruction in
@@ -5091,7 +5108,7 @@ public struct Disassembler: Sendable {
                 // Async plumbing: the context pointer, the continuation, and an
                 // unproven context slot are not source values.
                 return .unknown
-            case .loadedThrough:
+            case .loadedThrough, .loadedFrom:
                 // A word read through a loaded pointer: named only as a call
                 // target (`indirectCallTarget`), unknown as a value.
                 return .unknown
@@ -6587,7 +6604,7 @@ public struct Disassembler: Sendable {
                 return boolean
             }
             switch value {
-            case .unknown, .callResultHigh, .loadedThrough:
+            case .unknown, .callResultHigh, .loadedThrough, .loadedFrom:
                 // A String result's second word alone is no source value, nor
                 // is a word read through a loaded pointer (a call through one
                 // is named by its target, `annotateIndirectControlFlowTargets`).

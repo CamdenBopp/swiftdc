@@ -175,6 +175,12 @@ public indirect enum AbstractValue: Equatable, Sendable {
     /// (both pointers fixups in read-only memory) is the resolver's to
     /// decide; as a value it is unknown.
     case loadedThrough(slot: UInt64, offset: Int)
+    /// The word at `offset` in what `base` points to, for a call's result
+    /// and one load through it: `bl type metadata accessor for X; ldur x8,
+    /// [x0, #-0x8]; ldr x8, [x8, #0x10]` reads X's value-witness table and
+    /// its initializeWithCopy. Unknown as a value; the enrichment names a
+    /// call through it.
+    case loadedFrom(AbstractValue, offset: Int)
     /// The `self` pointer as it arrives at a Swift instance method — x20 under
     /// the Swift calling convention.
     ///
@@ -3191,6 +3197,10 @@ public struct ValueTracer: Sendable {
                 let isPointerLoad = (detail.id == AARCH64_INS_LDR || detail.id == AARCH64_INS_LDUR)
                     && dest.kind == .gpr && dest.widthBits == 64
                 write(dest, isPointerLoad ? .loadedThrough(slot: slot, offset: offset) : .unknown, into: &registers)
+            case .throughValue(let base, let offset):
+                let isPointerLoad = (detail.id == AARCH64_INS_LDR || detail.id == AARCH64_INS_LDUR)
+                    && dest.kind == .gpr && dest.widthBits == 64
+                write(dest, isPointerLoad ? .loadedFrom(base, offset: offset) : .unknown, into: &registers)
             case .vtableMethod(let offset):
                 // The dispatch loads the vtable slot only through a pointer-width
                 // read; a narrower load isn't a method pointer.
@@ -3366,7 +3376,8 @@ public struct ValueTracer: Sendable {
                 case .asyncCalleeSlot(let offset) where register.kind == .gpr && registerBytes == 8
                     && offset + index * 8 == 0:
                     registers[Self.calleeParentKey] ?? .unknown
-                case .absolute, .vtableMethod, .arrayElement, .asyncSlot, .asyncCalleeSlot, .throughStaticPointer, .none:
+                case .absolute, .vtableMethod, .arrayElement, .asyncSlot, .asyncCalleeSlot, .throughStaticPointer,
+                     .throughValue, .none:
                     .unknown
                 }
                 write(register, value, into: &registers)
@@ -4275,6 +4286,9 @@ public struct ValueTracer: Sendable {
         case absolute(UInt64)
         /// A byte offset into the object an image slot points to.
         case throughStaticPointer(slot: UInt64, offset: Int)
+        /// A byte offset into what a call's result, or a load through it,
+        /// points to.
+        case throughValue(AbstractValue, offset: Int)
         /// A byte offset into `self`.
         case selfField(Int)
         /// A byte offset into `self`'s class metadata vtable — a load through the
@@ -4433,6 +4447,8 @@ public struct ValueTracer: Sendable {
         case .frame(let offset): return .stackSlot(Self.stackKey(offset &+ effective))
         case .address(let address): return .absolute(address &+ UInt64(bitPattern: effective))
         case .loaded(let slot): return .throughStaticPointer(slot: slot, offset: Int(effective))
+        case .callResult, .loadedFrom(.callResult, _):
+            return .throughValue(registers[Location(base)] ?? .unknown, offset: Int(effective))
         case .selfPointer: return .selfField(Int(effective))
         case .selfField(let field): return .selfField(field + Int(effective))
         // A load through the metadata pointer at `self + 0` (a class instance's
@@ -4764,7 +4780,7 @@ public struct ValueTracer: Sendable {
             break
         // A store through a loaded pointer is the untracked store it was
         // before loads through one were named.
-        case nil, .throughStaticPointer?:
+        case nil, .throughStaticPointer?, .throughValue?:
             let base = memory.base.flatMap { registers[Location($0)] }
             let indexed = memory.index != nil
             if let base, Self.containsFrame(base) {

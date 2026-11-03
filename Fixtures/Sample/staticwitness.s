@@ -75,3 +75,19 @@ _callTableWritable:
     blr x8
     ldp x29, x30, [sp], #16
     ret
+// The value-witness shape on an ordinary call's result proves nothing: only
+// a type metadata accessor returns metadata, so this call stays unresolved.
+    .p2align 2
+_plain:
+    adrp x0, _meta@PAGE
+    add x0, x0, _meta@PAGEOFF
+    ret
+    .globl _callAfterPlainCall
+_callAfterPlainCall:
+    stp x29, x30, [sp, #-16]!
+    bl _plain
+    ldur x8, [x0, #-0x8]
+    ldr x9, [x8, #0x10]
+    blr x9
+    ldp x29, x30, [sp], #16
+    ret

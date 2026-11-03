@@ -207,6 +207,10 @@ Two provenances for `meta`:
   (`ldr x2, [x0, #0x18]`, an `outlined init with copy` of `any P`). The
   slot is still provable, but the type is not: render the slot name only.
 
+- **A type metadata accessor's result**: FIXED, named by the accessor's
+  type. Measured: 44 of the sites take metadata from a call's result,
+  the most common provenance.
+
 A load at `-8` from anything else is not proven to be metadata and
 declines.
 

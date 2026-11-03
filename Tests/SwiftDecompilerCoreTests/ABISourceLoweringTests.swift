@@ -689,4 +689,19 @@ struct ABISourceLoweringTests {
     #expect(try !call("_callThroughWritable").contains("→"))
     #expect(try !call("_callSlotWritable").contains("→"))
     #expect(try !call("_callTableWritable").contains("→"))
+    // The same shape on a call that is no metadata accessor.
+    #expect(try !call("_callAfterPlainCall").contains("→"))
+}
+
+/// A call through slot k of the value-witness table of the metadata a type
+/// metadata accessor returned is that type's witness (accessorwitness.swift).
+@Test func aValueWitnessCallOnAnAccessorResultIsNamedIfPresent() async throws {
+    let path = "Fixtures/Sample/libAccessorWitness.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(text.contains("initializeWithCopy value witness for Foundation.URL("), Comment(rawValue: text))
+    #expect(text.contains("destroy value witness for Foundation.URL("))
+    #expect(text.contains("assignWithCopy value witness for Foundation.URL("))
+    #expect(!text.contains("unresolved call"))
 }

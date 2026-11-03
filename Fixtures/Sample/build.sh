@@ -529,6 +529,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name StructLowering structlow
 echo "==> a call through two pointers the image fixes, read-only and writable (staticwitness.s)"
 $CLANG -arch arm64 -dynamiclib staticwitness.s -o libStaticWitness.dylib
 
+echo "==> value-witness calls on a metadata accessor's result (accessorwitness.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name AccessorWitness accessorwitness.swift -o libAccessorWitness.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

@@ -1263,6 +1263,17 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — a value-witness call on a metadata accessor's result was
+  unresolved.** `bl type metadata accessor for Foundation.URL; ldur x8,
+  [x0, #-0x8]; ldr x9, [x8, #k]; blr x9` rendered `/* unresolved call */`.
+  The tracer now carries a load through a call's result, and through one
+  load of it (`.loadedFrom`). A call through `[[accessor() - 8] + k]` is
+  named `<slot k/8> value witness for X`, for the eight function slots of
+  ValueWitness.def. An ordinary call's result proves nothing and stays
+  unresolved. Fixtures: `accessorwitness.swift`, `staticwitness.s`. Blast
+  radius against 80ccc13, structured view: 7 files, 136 lines. The
+  unresolved calls in the swift-syntax CompilerPluginMessageHandling dylib
+  fell from 523 to 504.
 - **FIXED — a call through two pointers the image fixes was unresolved.**
   `ldur x8, [meta, #-0x8]; ldr x8, [x8, #0x28]; blr x8` calls slot 5 of a
   type's value-witness table, and it rendered `/* unresolved call */`. The
