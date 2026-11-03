@@ -50,6 +50,23 @@ results do not replace previously recorded release performance measurements.
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
 
+- **FIXED — a generic system type's metadata accessor took every live
+  register.** An accessor takes the metadata request, then the type's key
+  generic arguments, up to three directly and past three one pointer to
+  them all (swift/lib/IRGen/MetadataRequest.cpp). Only non-generic system
+  accessors had an arity, so `accessorarity.swift`'s
+  `optionalType(_:_:_:_:)` read `type metadata accessor for
+  Swift.Optional(0, type metadata for A, arg2, arg3, type metadata for
+  A)`. `SDKMetadataAccessors` replaces `NonGenericMetadataAccessors`. It
+  is a generated table of each exported accessor's key-argument count,
+  `NumKeyArguments` from the `…Mn` descriptor's generic header: 17,840
+  types from 205 images of the macOS 27.2 cache. `Optional` is 1,
+  `KeyedDecodingContainer` 2, `Dictionary` 3, and 282 types are 4.
+  Blast radius: 6 files structured, 11 listing. 45 Optional, 18 Array and
+  6 Dictionary accessor calls now show exactly their arity, both gaining
+  (`Optional(0)` → `Optional(0, ?)`) and losing (`Optional(0, ?, arg2,
+  arg3, arg4)` → `Optional(0, ?)`, `Array(0, arg1, arg2)` → `Array(0,
+  arg1)`).
 - **FIXED — an untyped ObjC send after a call returning a double read by
   position.** `[o put:f() at:7]` rendered `[o put:7 at:?]`, with the 7 in
   the Double's place. The float guard stopped at the call instead of
@@ -1330,8 +1347,8 @@ because it cannot be distinguished from a right one by reading the output.
   `load<T>(_:_:)` reads `initializeWithCopy value witness for A(&result,
   ?)`. Fixture `genericwitness.swift`. In the listing, a call taking T's
   metadata shows it as `type metadata for A`. For a callee of unknown
-  arity, a stale copy may follow: `Optional`'s accessor reads `args(0, ?,
-  type metadata for A)`, the existing positional-argument limit. A
+  arity, a stale copy could follow (`Optional`'s accessor read `args(0, ?,
+  type metadata for A)`), fixed since by `SDKMetadataAccessors`. A
   function whose formals include a generic value is now seeded too, as
   that value's address: `pick` reads `initializeWithCopy value witness for
   A(&result, ((arg0 > 0) ? arg1 : arg2))`, and `gen<T>(_ a: Int, _ t: T)

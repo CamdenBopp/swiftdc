@@ -550,6 +550,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name SpillWitness spillwitnes
 echo "==> the stack probe keeps the frame across dynamic allocations (chkstkwitness.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name ChkstkWitness chkstkwitness.swift -o libChkstkWitness.dylib
 
+echo "==> a system metadata accessor takes its key generic arguments only (accessorarity.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name AccessorArity accessorarity.swift -o libAccessorArity.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

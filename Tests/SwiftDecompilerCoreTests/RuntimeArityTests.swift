@@ -124,19 +124,26 @@ private func noteArguments(_ callee: String, in function: DisassembledFunction) 
     #expect(text.contains("type metadata accessor for Swift.MainActor(0))"), Comment(rawValue: text))
 }
 
-/// The generated table against the descriptors it was read from: MainActor,
-/// String and URL are not generic; Array and SwiftUI's ModifiedContent are,
-/// so their accessors also take generic arguments and are absent.
-@Test func theNonGenericAccessorTableLeavesGenericTypesOut() {
-    let types = NonGenericMetadataAccessors.types
-    #expect(types.count > 10_000)
-    #expect(types.contains("Swift.MainActor"))
-    #expect(types.contains("Swift.String"))
-    #expect(types.contains("Foundation.URL"))
-    #expect(!types.contains("Swift.Array"))
-    #expect(!types.contains("SwiftUI.ModifiedContent"))
+/// The generated table against the declarations: MainActor, String and URL
+/// are not generic; `Optional<Wrapped>` takes one key argument,
+/// `KeyedDecodingContainer<K: CodingKey>` two (K and its witness table),
+/// `Dictionary<Key: Hashable, Value>` three, and a type with more than three
+/// takes a pointer to them after the request.
+@Test func theAccessorTableCountsKeyGenericArguments() {
+    let table = SDKMetadataAccessors.keyArguments
+    #expect(table.count > 10_000)
+    #expect(table["Swift.MainActor"] == 0)
+    #expect(table["Swift.String"] == 0)
+    #expect(table["Foundation.URL"] == 0)
+    #expect(table["Swift.Optional"] == 1)
+    #expect(table["Swift.KeyedDecodingContainer"] == 2)
+    #expect(table["Swift.Dictionary"] == 3)
+    #expect(table["Swift.Result"] == 3)
     #expect(DisassembledFunction.knownCArity(of: "type metadata accessor for Swift.MainActor") == 1)
-    #expect(DisassembledFunction.knownCArity(of: "type metadata accessor for Swift.Array") == nil)
+    #expect(DisassembledFunction.knownCArity(of: "type metadata accessor for Swift.Optional") == 2)
+    #expect(DisassembledFunction.knownCArity(of: "type metadata accessor for Swift.Dictionary") == 4)
+    if let wide = table.first(where: { $0.value > 3 }) { #expect(DisassembledFunction.knownCArity(of: "type metadata accessor for \(wide.key)") == 2) }
+    #expect(DisassembledFunction.knownCArity(of: "type metadata accessor for NotASystem.Type") == nil)
 }
 
 /// Runtime entry points outside the table printed only the operands that
@@ -172,4 +179,24 @@ private func noteArguments(_ callee: String, in function: DisassembledFunction) 
     for (name, arity) in expected.sorted(by: { $0.key < $1.key }) {
         #expect(DisassembledFunction.knownCArity(of: name) == arity, "\(name)")
     }
+}
+
+/// A generic system type's accessor takes the request and its key generic
+/// arguments: Optional's one, Dictionary's three. The caller's own
+/// arguments left in later registers are not its (accessorarity.swift).
+@Test func aGenericSystemAccessorTakesItsKeyArgumentsIfPresent() async throws {
+    let path = "Fixtures/Sample/libAccessorArity.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    // The structured view folds the call into `return ?`; the call's note
+    // carries its arguments.
+    func accessorArguments(_ name: String) throws -> String {
+        let function = try #require(functions.first { $0.displayName.hasPrefix("AccessorArity.\(name)") })
+        let call = try #require(function.instructions.first { ($0.annotation ?? "").contains("type metadata accessor for Swift.") })
+        let note = call.annotation ?? ""
+        let start = try #require(note.range(of: "args("))
+        return String(note[start.lowerBound...])
+    }
+    #expect(try accessorArguments("optionalType") == "args(0, type metadata for A)")
+    #expect(try accessorArguments("dictionaryType") == "args(0, type metadata for A, type metadata for B, ?)")
 }
