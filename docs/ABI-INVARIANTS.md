@@ -147,6 +147,43 @@ soundness change, measured on its own).
 | 19 | Value witness calls | none | open | completeness | a13 #4 | every generic function | isolated |
 | 20 | `Wvd` field offsets, inherited fields, class-param fields | FieldMap | open | completeness | a14 #3-#5 | classes over resilient or ObjC bases | isolated |
 
+## Next: struct lowering from field metadata
+
+Since b26d282 a struct, SIMD or closure parameter, and every parameter
+after it, renders `?`, and entry seeding declines a function with one
+(`callPut(_ b: Box, _ k: Int)` shows `k` as `?`). An in-image struct's
+field records give its stored types, so its register footprint is
+derivable. The rules are IRGen's explosion of a loadable struct (one
+scalar per field, nested structs flattened) and its indirect-passing
+threshold (swift/lib/IRGen/GenCall.cpp, clang's SwiftCallingConv). They
+must be checked against a compiler oracle (`-emit-ir` signatures for a
+fixture of field shapes) before any layout uses them. This is the
+largest remaining completeness item in the argument layouts. Observed
+2026-11-03; the work has not started.
+
+First oracle, `swiftc -O -emit-ir` (Swift 6.3, arm64), each struct passed
+before an `Int`:
+
+| Struct | IR parameters |
+|---|---|
+| `{Int}` | i64 |
+| `{Int32, Int32}` | one i64: integer fields in one 8-byte chunk merge |
+| `{Int8, Int8}` | one i16 |
+| `{Bool, Int}` | i1, i64 |
+| `{Int?, Int}` | i64, i8 (the Optional's tag), i64 |
+| `{Int, Double}` | i64, double |
+| `{Double, Double, Double, Double}` | four doubles |
+| `{Int, Int, Int, Int}`, `{{Int, Int}, {Int, Int}}` | four i64 |
+| `{Int ×5}`, `{Float ×5}` | by address (`ptr`) |
+| `{String, Int}` | i64, ptr, i64 |
+| `{AnyObject, Int}` | ptr, i64 |
+
+So the footprint is clang's SwiftCallingConv on the field byte layout
+(integer data merged per 8-byte chunk, more than four legal values
+passed indirectly), not one register per field. A layout from field
+metadata needs the fields' offsets and scalar types, and a second oracle
+for floats sharing a chunk and for enums with payloads.
+
 ## Oracle limits
 
 Fixture tests compare renders to expectations written from the source and
