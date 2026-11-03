@@ -6736,3 +6736,13 @@ Findings:
   `rangeShifted`, one word of a two-word NSRange result, now `return ?`.
   swift-syntax byte-identical. OPEN: a tail branch in an x8-returning
   method still reads `return h(…)` when x8 is not proven forwarded.
+- **FIXED — the x8 convention called a closure tuple or a nested
+  collection type direct** (ABI review a3 #4). `isKnownDirectReturnType`
+  kept its own type list, which took any type spelling ` -> ` as a closure
+  and any `Swift.Dictionary<` prefix as the one-pointer collection, so
+  `((Int) -> Int, (Int) -> Int, (Int) -> Int)` (six words) and
+  `Dictionary<Int, Int>.Iterator` (40 bytes) were taken as returned in
+  registers. It now asks `SwiftLowering`, the classification
+  `swiftReturnRegister` uses (a93b674). Latent in the fixtures and the
+  swift-syntax dylibs (byte-identical): the frame-slot escape rule masked
+  it, and a forwarded result pointer exposed it (reported, a3).

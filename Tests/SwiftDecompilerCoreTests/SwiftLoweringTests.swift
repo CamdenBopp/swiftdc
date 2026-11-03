@@ -26,3 +26,17 @@ import Testing
     #expect(Disassembler.swiftReturnRegister(forReturnType: "Swift.String") == nil)
     #expect(Disassembler.swiftReturnRegister(forReturnType: "Swift.Optional<Swift.Int>") == nil)
 }
+
+/// A result through x8 is no direct result: a tuple of closures, or a type
+/// nested in a one-pointer collection, is not that collection or a closure
+/// (ABI review a3 #4).
+@Test func aTupleOfClosuresOrANestedCollectionTypeIsNoDirectResult() {
+    let index = ClassTypeIndex()
+    #expect(!Disassembler.isKnownDirectReturnType(
+        "((Swift.Int) -> Swift.Int, (Swift.Int) -> Swift.Int, (Swift.Int) -> Swift.Int)", classTypeIndex: index))
+    #expect(!Disassembler.isKnownDirectReturnType("Swift.Dictionary<Swift.Int, Swift.Int>.Iterator", classTypeIndex: index))
+    #expect(!Disassembler.isKnownDirectReturnType("Swift.Array<(Swift.Int) -> Swift.Int>.Index.Stride", classTypeIndex: index))
+    #expect(Disassembler.isKnownDirectReturnType("(Swift.Int) -> Swift.Int", classTypeIndex: index))
+    #expect(Disassembler.isKnownDirectReturnType("Swift.Dictionary<Swift.Int, Swift.Int>", classTypeIndex: index))
+    #expect(Disassembler.isKnownDirectReturnType("Swift.Optional<Swift.String>", classTypeIndex: index))
+}

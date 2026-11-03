@@ -196,37 +196,14 @@ extension Disassembler {
     }
 
     /// Whether a demangled Swift return type is provably delivered in registers
-    /// (so x8 is unused): the scalar and reference types, `String`, the
-    /// single-pointer collections, closures, metatypes, and `Optional` of those.
-    /// Any struct, enum, generic, existential, or tuple result returns nil
-    /// (unproven) rather than claiming direct delivery.
+    /// (so x8 is unused): `SwiftLowering.isDirect`. Its own list took any type
+    /// spelling ` -> ` as a closure and any `Swift.Dictionary<` prefix as the
+    /// one-pointer collection, so `((Int) -> Int, (Int) -> Int, (Int) ->
+    /// Int)` (six words) and `Dictionary<Int, Int>.Iterator` (40 bytes, read
+    /// back from the caller's x8 slot at -Onone) were called direct, and a
+    /// forwarded result buffer kept its stores across the call.
     static func isKnownDirectReturnType(_ type: String, classTypeIndex: ClassTypeIndex) -> Bool {
-        var type = type.trimmingCharacters(in: .whitespaces)
-        if type == "()" || type == "Swift.Void" || type == "Swift.Never" { return true }
-        if type.hasPrefix("Swift.Optional<"), type.hasSuffix(">") {
-            type = String(type.dropFirst("Swift.Optional<".count).dropLast())
-            // A tagged optional of a scalar is two registers at most; of a
-            // reference it is one. Both are direct.
-        }
-        let scalars: Set<String> = [
-            "Swift.Int", "Swift.Int8", "Swift.Int16", "Swift.Int32", "Swift.Int64",
-            "Swift.UInt", "Swift.UInt8", "Swift.UInt16", "Swift.UInt32", "Swift.UInt64",
-            "Swift.Bool", "Swift.Double", "Swift.Float", "Swift.Float16", "Swift.Float32",
-            "Swift.Float64", "Swift.CGFloat", "CoreGraphics.CGFloat", "Swift.String",
-            "Swift.Substring", "Swift.Character", "Swift.Unicode.Scalar", "Swift.StaticString",
-            "Swift.AnyObject", "Swift.Error", "Swift.AnyKeyPath", "Swift.OpaquePointer",
-            "Swift.UnsafeRawPointer", "Swift.UnsafeMutableRawPointer",
-        ]
-        if scalars.contains(type) { return true }
-        if type.hasSuffix(".Type") || type.hasSuffix(".Protocol") { return true }
-        for prefix in ["Swift.Array<", "Swift.ContiguousArray<", "Swift.Dictionary<", "Swift.Set<",
-                       "Swift.UnsafePointer<", "Swift.UnsafeMutablePointer<",
-                       "Swift.UnsafeBufferPointer<", "Swift.UnsafeMutableBufferPointer<",
-                       "Swift.Unmanaged<"] where type.hasPrefix(prefix) {
-            return true
-        }
-        if type.contains(" -> ") { return true } // a closure: context + function pointer
-        return classTypeIndex.isClass(type)
+        SwiftLowering.of(type, classTypeIndex: classTypeIndex).isDirect
     }
 
     /// The result type's demangled name from a demangled function name, or nil
