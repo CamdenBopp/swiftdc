@@ -1127,3 +1127,19 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
     #expect(!text.contains("getter(StrippedAccessor."), Comment(rawValue: text))
     #expect(text.contains(".getter()"), Comment(rawValue: text))
 }
+
+/// A vtable dispatch to self's own setter folds into an assignment of the
+/// setter's parameter as its type travels: a String's two words, a Double in
+/// d0. Read as x0 alone, `label = ""` rendered `self.label = 0` and `scale =
+/// 0.5` the setter's own address left in x0 (setterfold.swift).
+@Test func aSetterFoldTakesItsValueAsItsTypeTravelsIfPresent() async throws {
+    let path = "Fixtures/Sample/libSetterFold.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("SetterFold.Named.\(name)(") }).renderStructured()
+    }
+    #expect(try text("reset").contains("self.label = \"\""))
+    #expect(try text("half").contains("self.scale = 0.5"))
+    #expect(try text("seven").contains("self.count = 7"))
+}

@@ -50,6 +50,15 @@ results do not replace previously recorded release performance measurements.
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
 
+- **FIXED — a setter dispatch folded into an assignment of x0 whatever
+  the property's type.** A vtable call to self's own setter renders as
+  `self.property = value`, and the value was x0. A String is two words, so
+  `label = ""` read `self.label = 0`. A Double travels in d0, so `scale =
+  0.5` read `self.scale = <the setter's own address>`. The value is now
+  the parameter as its type travels: one integer register, one float
+  register (a constant at the type's width), or a String's two words as a
+  literal, a String call result or a String field. Anything else is not
+  folded. Fixture `setterfold.swift`.
 - **FIXED — a stripped binary's vtable accessor named its type as the
   property.** Metadata names a vtable accessor by its kind alone,
   `Reconstruction.Counter.getter`. Read as `Owner.property.getter`, its

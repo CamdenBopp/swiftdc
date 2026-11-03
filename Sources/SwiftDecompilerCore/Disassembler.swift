@@ -8527,10 +8527,34 @@ public struct Disassembler: Sendable {
             // call's first argument. Getters aren't baked here: their result is
             // consumed inline (rendered as `self.prop` where it's used), so a
             // statement note would duplicate them.
+            // The value is the setter's parameter as its type travels: one
+            // integer register, one floating-point register, or a String's
+            // two words. Read as the first integer register alone, `label =
+            // ""` (0, 0xe000000000000000) rendered `self.label = 0`.
             if let callee, let access = selfAccessors[callee], !access.isGetter,
-               let value = sites[insn.address]?.arguments.first {
-                let rendered = renderValue(sanitizeValue(value), depth: 0)
-                if rendered != "?" {
+               let site = sites[insn.address],
+               let type = callee.range(of: " : ").map({ String(callee[$0.upperBound...]) }) {
+                var rendered: String?
+                switch SwiftLowering.of(type, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
+                case .oneInteger:
+                    rendered = site.arguments.first.map { renderValue(sanitizeValue($0), depth: 0) }
+                case .oneFloat:
+                    // A constant is the float its bits spell, at the type's width.
+                    let bits = ["Swift.Float", "Swift.Float32"].contains(type) ? 32 : type == "Swift.Float16" ? 16 : 64
+                    rendered = site.floatArguments.first.map { value in
+                        let value = sanitizeValue(value)
+                        if case .immediate = value { return renderValue(.unary(.floatConstant(bits: bits), value), depth: 0) }
+                        return renderValue(value, depth: 0)
+                    }
+                default:
+                    if Self.twoWordStringTypes.contains(type), site.arguments.count >= 2 {
+                        let (low, high) = (site.arguments[0], site.arguments[1])
+                        rendered = swiftStringLiteral(low, high)
+                            ?? stringCallResult(low, high).map { renderValue(.callResult($0), depth: 0) }
+                            ?? selfStringField(low, high)
+                    }
+                }
+                if let rendered, rendered != "?" {
                     noteStatement(.assignment("self.\(access.property) = \(rendered)"))
                 }
             }
