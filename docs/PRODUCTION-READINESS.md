@@ -1317,6 +1317,18 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — a dynamic allocation of unknown size escaped the whole
+  frame.** `mov x9, sp; sub x9, x9, x8; mov sp, x9` with x8 unknown (a
+  value-witness size read through unseeded metadata) folded `frame -
+  unknown` to unknown. A frame address transformed past the tracer's
+  arithmetic escapes every slot, so each later call forgot every spill.
+  The tracer now keeps `frame - unknown` symbolic. It is an allocation
+  below the frame (`allocationBase`, `.frameDynamic`) once sp takes it,
+  and a plain escape otherwise. Fixture `unknownalloca.s`: `keptLocal`
+  reads its local back (`return 5`), and the control writing through the
+  allocation at an unknown index still declines. Blast radius: 6 files,
+  mostly spilled arguments read back after an allocation in the
+  swift-syntax libraries.
 - **FIXED — a result-buffer store was hidden when no return rendered
   it.** The renderer left an indirect-result write to the return whenever
   a signature named the result. A return it could not rebuild, a type

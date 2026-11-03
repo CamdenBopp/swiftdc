@@ -3785,6 +3785,12 @@ public struct ValueTracer: Sendable {
         _ lhs: AbstractValue,
         _ rhs: AbstractValue
     ) -> AbstractValue {
+        // A frame address less an unknown size stays a frame address below
+        // it: `sub x9, sp, x12; mov sp, x9` allocates x12 bytes whatever x12
+        // is, and the allocation (`allocationBase`, `.frameDynamic`) bounds
+        // what the buffer reaches. Folded to unknown, it escaped the whole
+        // frame, and every spilled value with it.
+        if op == .subtract, rhs == .unknown, Self.containsFrame(lhs) { return .binary(.subtract, lhs, .unknown) }
         guard lhs != .unknown, rhs != .unknown else { return .unknown }
         if op == .bitAnd, case .immediate(let mask) = rhs {
             if mask == .max { return lhs }

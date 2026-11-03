@@ -556,6 +556,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name AccessorArity accessorar
 echo "==> x20 is self for a resilient system value type, not a frozen one (frozenself.s)"
 $CLANG -arch arm64 -dynamiclib frozenself.s -L"$(xcrun --show-sdk-path)/usr/lib/swift" -lswiftCore -framework Foundation -o libFrozenSelf.dylib
 
+echo "==> a dynamic allocation of unknown size keeps the frame (unknownalloca.s)"
+$CLANG -arch arm64 -dynamiclib unknownalloca.s -o libUnknownAlloca.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

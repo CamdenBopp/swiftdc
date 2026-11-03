@@ -170,3 +170,20 @@ private let compiledCallEffectFixtures = [
     let text = function.renderStructured()
     #expect(text.contains("frame_escape_fill((local_30 - ((arg0 + 1) << 4)))"), Comment(rawValue: text))
 }
+
+/// A dynamic allocation whose size the tracer does not know still hangs
+/// below the frame: a local stored before it survives a later call, and a
+/// write through the allocation at an unknown index still forgets it
+/// (unknownalloca.s).
+@Test func anUnknownSizeAllocationKeepsTheFrameIfPresent() async throws {
+    let path = "Fixtures/Sample/libUnknownAlloca.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("UnknownAlloca.\(name)(") }).renderStructured()
+    }
+    let kept = try text("keptLocal")
+    #expect(kept.contains("return 5"), Comment(rawValue: kept))
+    let clobbered = try text("clobberedLocal")
+    #expect(clobbered.contains("return ?"), Comment(rawValue: clobbered))
+}
