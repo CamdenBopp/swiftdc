@@ -111,3 +111,35 @@ private func sharedBodyAddress() throws -> UInt64? {
     aliased.witnessTables = [(0x100 ..< 0x120, "M.Left : M.P in M"), (0x100 ..< 0x120, "M.Right : M.P in M")]
     #expect(aliased.witnessName(at: 0x30, loadedFrom: 0x108) == nil)
 }
+
+/// `libMarkerSymbols.dylib` (markersymbols.s): TinyCC's linker marker
+/// symbols (`__start_text`, `__init_array_start`, `__init_array_end`) sit
+/// on `add3`'s address. The heading declined to `sub_<addr>`, but the call
+/// in `callAdd3`, which is `add3(1, 2, 3)`, read `→ _init_array_end`
+/// (filtered) and `bl _add3  ; → add3` (unfiltered, objdump's pick). A
+/// marker is one more symbol at the address, so the call takes the
+/// heading's name, on both front ends and in every view.
+@Test func aCallToAnAddressCarryingMarkerSymbolsTakesNoMarkersNameIfPresent() async throws {
+    let markers = "Fixtures/Sample/libMarkerSymbols.dylib"
+    guard FileManager.default.fileExists(atPath: markers) else { return }
+    let machO = try BinaryLoader.load(path: markers)
+    let add3 = try #require(machO.symbols.first { $0.name == "_add3" })
+    let names = Set(machO.symbols.filter { $0.offset == add3.offset }.map(\.name))
+    #expect(names == ["_add3", "__start_text", "__init_array_start", "__init_array_end"], "\(names)")
+    let sub = "sub_\(String(add3.offset, radix: 16))"
+    for filter in [nil, "callAdd3"] as [String?] {
+        let functions = try await withStableDependencies {
+            try await Disassembler(preset: .default).disassemble(path: markers, functionFilter: filter)
+        }
+        let caller = try #require(functions.first { $0.symbol == "_callAdd3" }, "\(functions.map(\.symbol))")
+        for (view, text) in [("pseudo", caller.renderPseudo()), ("structured", caller.renderStructured()),
+                             ("listing", caller.render())] {
+            // objdump writes the symbol it picked into the text (`bl _add3`).
+            #expect(!text.contains("init_array") && !text.contains("start_text") && !text.contains("_add3")
+                        && !text.contains("add3("),
+                    "\(filter ?? "unfiltered") \(view): \(text)")
+            #expect(text.contains(view == "listing" ? "→ \(sub)  args(1, 2, 3)" : "\(sub)(1, 2, 3)"),
+                    "\(filter ?? "unfiltered") \(view): \(text)")
+        }
+    }
+}

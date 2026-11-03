@@ -612,6 +612,9 @@ strip -x libCoroAccessors.opt.stripped.dylib
 echo "==> calls into a body the linker folds under two signatures (foldedcalls.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name FoldedCalls foldedcalls.swift -o libFoldedCalls.dylib
 
+echo "==> a call into a function whose address also carries linker marker symbols, as TinyCC emits (markersymbols.s)"
+$CLANG -arch arm64 -dynamiclib markersymbols.s -o libMarkerSymbols.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release

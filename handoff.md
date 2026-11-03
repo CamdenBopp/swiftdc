@@ -207,10 +207,10 @@ first:
 
 A call into an address ld folded several functions onto now declines on
 both views: it names `sub_<addr>`, as the heading does, and lays out what
-the body reads (`FoldedCallTargetTests`). Still open: TinyCC's linker
-markers, where `add3`'s call is annotated `→ _init_array_end`; a marker is
-not a second function, so it needs ranking (a function symbol over a
-marker), not the fold decline.
+the body reads (`FoldedCallTargetTests`). TinyCC's linker markers take the
+same decline: `add3`'s call reads `sub_288(1, 2, 3)`, not
+`→ _init_array_end` (`markersymbols.s`). Ranking `add3` above its markers
+is a reconstruction-quality item, OPEN without binary evidence.
 
 ### 2. Soundness: unknown-arity and variadic C calls
 

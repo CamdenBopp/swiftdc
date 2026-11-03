@@ -987,16 +987,15 @@ because it cannot be distinguished from a right one by reading the output.
   register; an indirect result arrives as a buffer pointer in x0 and the
   compiler branches through x0 itself (`7b20cfc`).
   `declinesTwoRegisterAsyncReturnIfPresent` was seen red on the `Int?` case.
-- **OPEN — a call into a linker-deduplicated function is named after an
-  arbitrary alias.** ld folds identical functions by default in a release link,
-  so one address carries every folded symbol. In an -O probe (`func optK(_ k:
-  K?) -> K? { k }` beside struct accessors), 11 symbols share one bare `ret` at
-  0xa78; `optK`'s specialization calls it, and swiftdc renders that call as
-  `Sync3.pair(arg0)` under `--pseudo` and `Sync3.P2.a.modify … .resume.0` under
-  `disasm`. Neither is what the source called, and the two modes disagree.
-  Repro: `nm libX.dylib | awk '$1=="<addr>"'` lists the aliases. The rendering
-  needs a decision: decline (`sub_…` with a "folded: N functions" note), list the
-  aliases, or prefer the one a specialization names.
+- **FIXED (`a00dbe3`) — a call into a linker-deduplicated function was named
+  after an arbitrary alias.** ld folds identical functions by default in a
+  release link, so one address carries every folded symbol. In an -O probe
+  (`func optK(_ k: K?) -> K? { k }` beside struct accessors), 11 symbols share
+  one bare `ret`, and the call to it rendered `Sync3.pair(arg0)` under
+  `--pseudo` and `Sync3.P2.a.modify … .resume.0` under `disasm`. The decision
+  taken is decline: the call names `sub_<addr>`, as the heading does, on both
+  front ends. See "a call to a folded address took one candidate's name and
+  argument layout" for the fixture and tests.
 - **FIXED — an unknown-arity call was shown consuming the previous call's
   result.** A callee with no signature rendered x0 left over from the last call
   as its argument: `bump(printf(…))` for `long bump(void)`. Three causes, three
@@ -1046,20 +1045,30 @@ because it cannot be distinguished from a right one by reading the output.
   the TinyCC probe, `printf("%s %ld %ld\n", greet(), add3(1,2,3), sum_to(10))`
   renders `printf(0x100004020, greet())`: x1 held `greet()` only on its way to
   `[sp]`, and the `add3`/`sum_to` calls vanish from the structured view.
-- **PARTLY FIXED — `-f` cannot select a folded function, and its callers ignore the
-  fold.** Selection is fixed: every symbol folded onto an address, raw or
-  demangled, now selects it, on both the range matcher and the final filter
+- **FIXED — `-f` cannot select a folded function, and its callers ignore the
+  fold.** Selection: every symbol folded onto an address, raw or demangled,
+  selects it, on both the range matcher and the final filter
   (`everyFoldedSymbolSelectsItsFunctionIfPresent`, seen red; five fixture
-  symbols had printed "No function matched"). Still open: naming a direct call
-  into a folded address (needs the decline/list/rank decision). Original: The definition declines as `sub_5d8` with its candidates
-  (`foldedByAddress`), but call sites name an arbitrary alias, and `disasm -f
-  '$s1P7secondsySiAA7SecondsVF'` prints "No function matched" for a symbol in
-  the export table: the empty-result class this project's rules forbid.
-- **OPEN — a call to an address that also carries linker marker symbols is
-  named after the marker.** TinyCC places `__start_text`, `__init_array_start`
-  and friends on `add3`'s address; the function header declines
-  (`sub_100001000`) but the call is annotated `→ _init_array_end`. Same class as
-  the deduplicated-function alias entry above.
+  symbols had printed "No function matched"). Callers: a direct call into a
+  folded address names `sub_<addr>` and lays out what the body reads
+  (`a00dbe3`, `FoldedCallTargetTests`). Original: the definition declined as
+  `sub_5d8` with its candidates (`foldedByAddress`), but call sites named an
+  arbitrary alias, and `disasm -f '$s1P7secondsySiAA7SecondsVF'` printed "No
+  function matched" for a symbol in the export table.
+- **FIXED (`a00dbe3`) — a call to an address that also
+  carries linker marker symbols was named after the marker.** TinyCC places
+  `__start_text`, `__init_array_start` and friends on `add3`'s address; the
+  function header declined (`sub_100001000`) but the call was annotated
+  `→ _init_array_end`. A marker is one more symbol at the address, so the
+  folded-call decline covers it: fixture `markersymbols.s` (the TinyCC shape,
+  hand-written) reads `sub_288(1, 2, 3)` in every view and `→ sub_288
+  args(1, 2, 3)` in the listing, unfiltered and filtered
+  (`aCallToAnAddressCarryingMarkerSymbolsTakesNoMarkersNameIfPresent`).
+- **OPEN (reconstruction quality) — a marker symbol hides the one function
+  name at its address.** `add3` and its markers decline to `sub_288`, which is
+  sound but loses `add3`. A marker looks like any other `T` symbol in the
+  table; ranking `add3` above it would need evidence the binary carries, not
+  a guess from the marker's spelling.
 - **FIXED — a float argument to a call was not tracked.** -Onone
   `Double(f) * 1.5` rendered `(Swift.Double.init() * 1.5)`: the Float argument
   is in s0 and call sites read only general registers. Call sites now snapshot
