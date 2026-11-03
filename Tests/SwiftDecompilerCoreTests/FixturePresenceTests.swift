@@ -205,6 +205,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libObjCReturns.dylib",
         "Fixtures/Sample/libAsyncCalls.dylib",
         "Fixtures/Sample/libGenericCalls.dylib",
+        "Fixtures/Sample/libDroppedMeta.dylib",
     ]
 
     /// True on a run that must actually exercise the fixtures. `CI` is set by

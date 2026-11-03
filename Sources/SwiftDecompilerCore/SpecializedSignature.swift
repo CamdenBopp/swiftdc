@@ -33,10 +33,19 @@ extension DisassembledFunction {
         guard parts.count == 2, parts[0].kind == .genericSpecialization else { return nil }
 
         var substitutions: [Node] = []
+        // A `Tt` specialization drops arguments the substitution made
+        // trivial, a metatype among them, but prints exactly like one that
+        // keeps them (NodePrinter skips `DroppedArgument`):
+        // `generic specialization <Swift.Double> of tt<A>(A.Type, A, Int)`
+        // takes the Double in d0 and the Int in x0.
+        var dropped = Set<Int>()
         for child in parts[0].children {
             switch child.kind {
             case .isSerialized, .specializationPassID:
                 continue
+            case .droppedArgument:
+                guard let index = child.index else { return nil }
+                dropped.insert(Int(index))
             case .genericSpecializationParam:
                 guard child.children.count == 1, let type = child.children.first, type.kind == .type else { return nil }
                 substitutions.append(type)
@@ -69,8 +78,12 @@ extension DisassembledFunction {
             }
         }
         guard let parameterCount, parameterCount == UInt64(substitutions.count),
-              let substituted = substituting(functionType, with: substitutions)
+              var substituted = substituting(functionType, with: substitutions)
         else { return nil }
+        if !dropped.isEmpty {
+            guard let pruned = droppingArguments(dropped, from: substituted) else { return nil }
+            substituted = pruned
+        }
 
         let specialized = Node.create(
             kind: .function,
@@ -78,6 +91,22 @@ extension DisassembledFunction {
         )
         let entity = isStatic ? Node.create(kind: .static, child: specialized) : specialized
         return Node.create(kind: .global, child: entity).print(using: .default)
+    }
+
+    /// A function type without the arguments at `indices`, or nil when its
+    /// argument list is not a tuple of that many elements.
+    private static func droppingArguments(_ indices: Set<Int>, from functionType: Node) -> Node? {
+        guard let argumentIndex = functionType.children.firstIndex(where: { $0.kind == .argumentTuple }),
+              let argumentType = functionType.children[argumentIndex].children.first, argumentType.kind == .type,
+              let tuple = argumentType.children.first, tuple.kind == .tuple,
+              indices.allSatisfy({ $0 < tuple.children.count })
+        else { return nil }
+        let kept = tuple.children.enumerated().filter { !indices.contains($0.offset) }.map(\.element)
+        let newTuple = Node.create(kind: .tuple, children: kept)
+        let newArgument = Node.create(kind: .argumentTuple, child: Node.create(kind: .type, child: newTuple))
+        var children = Array(functionType.children)
+        children[argumentIndex] = newArgument
+        return Node.create(kind: functionType.kind, children: children)
     }
 
     /// `node` with each depth-0 generic parameter replaced by its

@@ -6790,3 +6790,13 @@ Findings:
   `_print_unlocked<A, B>(…, 0x…)` without the metadata, Bool arguments
   typed (`rewrite<A>(…, 1)` -> `true`), `appendInterpolation<A>()` ->
   `(?)`.
+- **FIXED — a `Tt` specialization read against its unspecialized
+  parameters** (ABI review a8 #2). A generic specialization that drops
+  the arguments its substitution made trivial prints like the declaration
+  (the demangler's printer skips `DroppedArgument`), and
+  `specializedSignature` declined on the dropped-argument node, so the
+  call fell to position: `tt<Double>(Double.self, d, k)` read
+  `tt<…>(arg0)`, `k` as the metatype and `d` gone. The substituted
+  signature now drops those arguments: `tt<…>(arg1, arg0)`, d from d0 and
+  k from x0 (`droppedmeta.swift`). Fixtures: that line; swift-syntax
+  byte-identical.

@@ -382,3 +382,16 @@ struct ABISourceLoweringTests {
     #expect(text.contains("GenericCalls.identity<A>(local_20)\n"), Comment(rawValue: text))
     #expect(text.contains("GenericCalls.split<A>(?, ?)\n"), Comment(rawValue: text))
 }
+
+/// A `Tt` generic specialization drops the arguments its substitution made
+/// trivial, here the metatype, but prints like the unspecialized
+/// declaration: `tt<Double>` takes d in d0 and k in x0, and read against
+/// the printed `(A.Type, A, Swift.Int)` it rendered `tt<…>(arg0)`, `k` as
+/// the metatype and `d` gone (`droppedmeta.swift`, ABI review a8 #2).
+@Test func aSpecializationThatDropsItsMetatypeTakesTheRestIfPresent() async throws {
+    let path = "Fixtures/Sample/libDroppedMeta.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = try #require(functions.first { $0.displayName.hasPrefix("DroppedMeta.useTT(") }).renderStructured()
+    #expect(text.contains("Swift.BinaryFloatingPoint>(arg1, arg0)"), Comment(rawValue: text))
+}

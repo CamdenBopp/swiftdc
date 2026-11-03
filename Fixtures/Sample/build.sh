@@ -487,6 +487,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name AsyncCalls asynccalls.sw
 echo "==> calls to unspecialized generic functions (genericcalls.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name GenericCalls genericcalls.swift -o libGenericCalls.dylib
 
+echo "==> a generic specialization that drops its metatype argument, Tt (droppedmeta.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name DroppedMeta droppedmeta.swift -o libDroppedMeta.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib
