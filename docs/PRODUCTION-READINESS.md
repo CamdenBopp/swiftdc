@@ -7351,3 +7351,35 @@ Findings:
   -> `Double(UInt(bitPattern: arg1))`, exact (the compiler chose `ucvtf`
   after proving n >= 0 on that path; a path-aware simplification is
   future work). swift-syntax byte-identical.
+
+## 2026-11-03: whole-image runs on swift-syntax
+
+Measured with release builds (`.build-release`, each binary copied out),
+`/usr/bin/time -l` under `Tools/audit/guard.sh`, on the toolchain's
+`lib/swift/host/libSwiftSyntax.dylib` and `libSwiftParser.dylib`. The host
+was shared with other agents, so the figure is instructions retired (three
+repeats spread 0.15%), not wall time. Baseline: origin/dev `20dcc5d`.
+
+- **FIXED (speed): every method of a type rebuilt that type's accessor
+  map.** `enrichCallArguments` built `selfAccessors` for each function
+  whose `self` type is known by calling `ReferenceResolver.name(at:ownedBy:)`
+  on every vtable method of the type, and that call demangles and splits
+  every symbol folded onto the address. libSwiftSyntax's `SyntaxVisitor`
+  has 880 `visit` methods whose default bodies fold up to 871 symbols onto
+  one address, so the cost was methods x slots x folded symbols: a sample
+  put 99% of the main thread in that initializer. `SelfMemberCache` on
+  `PerFunctionContext` (one per image) now memoizes the map per type name
+  and `name(at:ownedBy:)` per (address, type name); both are pure
+  functions of the context's resolver and vtable index, and the cache is
+  only looked up, never iterated. Instructions retired, before and after:
+
+  | run | before | after | peak footprint |
+  |---|---|---|---|
+  | libSwiftSyntax `disasm --structured` | 4,199.6G | 642.4G (-84.7%) | 208 MB to 248 MB |
+  | libSwiftSyntax `xrefs --unreferenced` | 4,109.4G | 565.5G (-86.2%) | 207 MB to 199 MB |
+  | libSwiftParser `disasm --structured` | 241.9G | 241.9G | 70 MB to 71 MB |
+  | libSwiftParser `xrefs --unreferenced` | 211.5G | 211.7G | 73 MB to 72 MB |
+
+  Wall time on libSwiftSyntax `--structured` went from 254 s to 47 s.
+  Every output is byte-identical (`cmp`), and `Tools/blast-radius.sh` over
+  the 243 fixture inputs changed 0 lines in all four views.

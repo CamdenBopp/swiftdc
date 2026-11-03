@@ -1229,6 +1229,38 @@ public struct Disassembler: Sendable {
         /// Per resume funclet, the context-slot values definitely initialized
         /// before every entry suspension and stable throughout the chain.
         let asyncChainSlots: [UInt64: [Int: AbstractValue]]
+        /// The members of `self`'s type each method's analysis looks up,
+        /// computed once per type for the image.
+        let selfMembers = SelfMemberCache()
+    }
+
+    /// `name(at:ownedBy:)` per (address, type) and the accessor map of each
+    /// type, for one image. Both are pure functions of the context's fixed
+    /// resolver and vtable index, and every method of a type asked for the
+    /// same ones: libSwiftSyntax's `SyntaxVisitor` has 880 methods whose
+    /// default bodies fold up to 871 symbols onto one address, and rebuilding
+    /// the map per method was 99% of a whole-image run. Lookups only, never
+    /// iterated, so the cache cannot change an order.
+    final class SelfMemberCache: Sendable {
+        struct OwnedAddress: Hashable { let address: UInt64; let typeName: String }
+        typealias Accessors = [String: (property: String, isGetter: Bool)]
+        private let owned = Mutex<[OwnedAddress: String?]>([:])
+        private let accessors = Mutex<[String: Accessors]>([:])
+
+        func name(at address: UInt64, ownedBy typeName: String, resolver: ReferenceResolver) -> String? {
+            let key = OwnedAddress(address: address, typeName: typeName)
+            if let hit = owned.withLock({ $0[key] }) { return hit }
+            let name = resolver.name(at: address, ownedBy: typeName)
+            owned.withLock { $0[key] = name }
+            return name
+        }
+
+        func accessors(of typeName: String, build: () -> Accessors) -> Accessors {
+            if let hit = accessors.withLock({ $0[typeName] }) { return hit }
+            let map = build()
+            accessors.withLock { $0[typeName] = map }
+            return map
+        }
     }
 
     /// Build the async funclet index for an image. The hint sections are read
@@ -1442,7 +1474,8 @@ public struct Disassembler: Sendable {
             asyncContextSlots: chainSlots,
             asyncSuspensions: Self.asyncSuspensionNotes(in: function, index: context.asyncIndex),
             objcIndex: context.objcIndex,
-            registerSummaries: context.registerSummaries
+            registerSummaries: context.registerSummaries,
+            selfMembers: context.selfMembers
         )
     }
 
@@ -5197,7 +5230,8 @@ public struct Disassembler: Sendable {
         asyncContextSlots: [Int: AbstractValue] = [:],
         asyncSuspensions: [UInt64: AsyncSuspensionNote] = [:],
         objcIndex: ObjCMetadataIndex? = nil,
-        registerSummaries: [UInt64: CalleeRegisterSummary] = [:]
+        registerSummaries: [UInt64: CalleeRegisterSummary] = [:],
+        selfMembers: SelfMemberCache = SelfMemberCache()
     ) -> DisassembledFunction {
         // Floating-point signature info: which arguments are float, and whether
         // the function's float type is double-precision — so a literal operand
@@ -5237,7 +5271,7 @@ public struct Disassembler: Sendable {
             else { return nil }
             // The slot is self's own, so the name must be: at a folded address
             // `name(at:)` may be another class's symbol for the same bytes.
-            return resolver.name(at: address, ownedBy: selfTypeName)
+            return selfMembers.name(at: address, ownedBy: selfTypeName, resolver: resolver)
         }
 
         /// `self`'s own getters/setters, keyed by resolved method name, so a
@@ -5245,15 +5279,17 @@ public struct Disassembler: Sendable {
         /// instead of `Type.property.getter(…)` with stale argument registers.
         let selfAccessors: [String: (property: String, isGetter: Bool)] = {
             guard let selfTypeName else { return [:] }
-            var map: [String: (String, Bool)] = [:]
-            for address in vtableIndex.methodAddresses(type: selfTypeName) {
-                guard let name = resolver.name(at: address, ownedBy: selfTypeName),
-                      Self.namingItsProperty(name, ownedBy: selfTypeName) == name,
-                      let access = DisassembledFunction.swiftAccessorProperty(name)
-                else { continue }
-                map[name] = access
+            return selfMembers.accessors(of: selfTypeName) {
+                var map: [String: (property: String, isGetter: Bool)] = [:]
+                for address in vtableIndex.methodAddresses(type: selfTypeName) {
+                    guard let name = selfMembers.name(at: address, ownedBy: selfTypeName, resolver: resolver),
+                          Self.namingItsProperty(name, ownedBy: selfTypeName) == name,
+                          let access = DisassembledFunction.swiftAccessorProperty(name)
+                    else { continue }
+                    map[name] = access
+                }
+                return map
             }
-            return map
         }()
 
         func fieldInfo(at offset: Int, bytes: Int) -> (names: [String], type: String?)? {
