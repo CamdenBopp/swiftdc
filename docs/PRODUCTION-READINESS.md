@@ -6746,3 +6746,15 @@ Findings:
   `swiftReturnRegister` uses (a93b674). Latent in the fixtures and the
   swift-syntax dylibs (byte-identical): the frame-slot escape rule masked
   it, and a forwarded result pointer exposed it (reported, a3).
+- **FIXED — a collection, `any Error` or `AnyObject` parameter stopped
+  seeding and call layout.** `scalarParameterClass` kept its own scalar
+  list; it now asks `SwiftLowering` (a93b674), so a one-pointer
+  collection, `any Error`, `AnyObject` and the Builtin scalars are one
+  integer register, as a result of those types already was.
+  `afterArray(_ xs: [Int], _ i: Int)` read `return ?` and reads `return
+  (arg1 * 11)`; `firstCount<[Int]>()` reads `(arg0)`. swift-syntax: 160
+  lines, calls laid out by their signatures: `nodesDescriptionAndCommon
+  Parent<A>(_: [A], format: Bool)` lost a fabricated third argument
+  (`(local, ?, 0)` -> `(local, ?)`), `_findStringSwitchCase(cases:
+  string:)` gained its String as `?`, raw `x0 == x1` became `arg0 ==
+  arg1`.

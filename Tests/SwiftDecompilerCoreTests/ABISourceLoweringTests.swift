@@ -253,6 +253,10 @@ struct ABISourceLoweringTests {
         "afterOptional": "return (arg1 + (arg1 << 2))",
         "afterInout": "return ((arg1 << 3) - arg1)",
         "afterStaticString": "return (arg1 + (arg1 << 3))",
+        // A one-pointer collection is one integer register (SwiftLowering).
+        "afterArray": "return (arg1 * 11)",
+        "afterDictionary": "return (arg1 * 13)",
+        "afterSet": "return (arg1 + (arg1 << 4))",
     ]
     for (name, line) in expected.sorted(by: { $0.key < $1.key }) {
         let text = try #require(functions.first { $0.displayName.hasPrefix("EntryFootprints.\(name)(") }).renderStructured()

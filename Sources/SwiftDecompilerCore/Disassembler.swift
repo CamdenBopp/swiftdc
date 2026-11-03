@@ -4638,36 +4638,16 @@ public struct Disassembler: Sendable {
             type = String(type[colon.upperBound...])
         }
         type = type.trimmingCharacters(in: .whitespaces)
-        let floating: Set<String> = [
-            "Swift.Double", "Swift.Float", "Swift.Float16", "Swift.Float32",
-            "Swift.Float64", "Swift.CGFloat", "CoreGraphics.CGFloat",
-        ]
-        if floating.contains(type) { return .floating }
-        let integers: Set<String> = [
-            "Swift.Int", "Swift.UInt", "Swift.Int8", "Swift.Int16", "Swift.Int32",
-            "Swift.Int64", "Swift.UInt8", "Swift.UInt16", "Swift.UInt32", "Swift.UInt64",
-            "Swift.Bool", "Swift.OpaquePointer", "Swift.UnsafeRawPointer",
-            "Swift.UnsafeMutableRawPointer",
-        ]
-        if integers.contains(type) { return .integer }
-        if Self.isSingleRegisterPointer(type) { return .integer }
-        // A pointer optional is nil-or-a-pointer in ONE register (nil == 0), so it
-        // seeds like a scalar — which is what lets `x ?? f` over a pointer optional
-        // reconstruct via the `cbz`/diamond select. A tagged optional (`Int?`,
-        // multi-register) is deliberately NOT matched here.
-        if type.hasPrefix("Swift.Optional<"), type.hasSuffix(">") {
-            let inner = String(type.dropFirst("Swift.Optional<".count).dropLast())
-            if Self.isSingleRegisterPointer(inner) { return .integer }
+        // The one classification of how a value travels (`SwiftLowering`),
+        // which a result's register also follows: a one-pointer collection
+        // (`[Int]`, a Dictionary, a Set), `any Error` and `AnyObject` are one
+        // integer register too, and seeded so: `afterArray(_ xs: [Int], _ i:
+        // Int)` read `return ?` for `i &* 11`.
+        switch SwiftLowering.of(type, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
+        case .oneInteger: return .integer
+        case .oneFloat: return .floating
+        default: break
         }
-        // A reference (class) optional is also nil-or-a-pointer in ONE register
-        // (nil == 0), so it seeds like a scalar — which lets `r != nil` / `r ?? x`
-        // reconstruct. A value-typed (tagged) optional is not a class and stays
-        // unseeded here.
-        if classTypeIndex.isClass(type) || classTypeIndex.referenceOptionalInner(type) != nil { return .integer }
-        // A no-payload enum is a trivial integer tag in one register, so it seeds
-        // like a scalar — which is what lets `c == .case` over an enum parameter
-        // reconstruct. Payload enums are absent from the index and stay unseeded.
-        if enumCaseIndex.isNoPayloadEnum(type) { return .integer }
         // An imported C enum or option set the image proves an integer.
         if enumCaseIndex.isImportedInteger(type) { return .integer }
         return nil
