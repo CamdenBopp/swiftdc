@@ -535,6 +535,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name AccessorWitness accessor
 echo "==> unspecialized generic functions' metadata and witnesses (genericwitness.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name GenericWitness genericwitness.swift -o libGenericWitness.dylib
 
+echo "==> value-witness calls on a demangling cache variable's metadata (codablewitness.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name CodableWitness codablewitness.swift -o libCodableWitness.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

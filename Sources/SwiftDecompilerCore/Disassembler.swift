@@ -2918,7 +2918,8 @@ public struct Disassembler: Sendable {
         targets: [UInt64: AbstractValue],
         resolver: ReferenceResolver,
         selfTypeName: String? = nil,
-        vtableIndex: VTableIndex = VTableIndex()
+        vtableIndex: VTableIndex = VTableIndex(),
+        callArguments: [UInt64: [AbstractValue]] = [:]
     ) -> DisassembledFunction {
         /// Resolve a `blr` target to a (name, address). A class vtable dispatch is
         /// resolved through the class's metadata layout; anything else through the
@@ -2951,8 +2952,21 @@ public struct Disassembler: Sendable {
                   let callee = DisassembledFunction.calleeName(of: call)
             else { return nil }
             let prefix = "type metadata accessor for "
-            guard callee.hasPrefix(prefix), callee.count > prefix.count else { return nil }
-            return "\(slot) value witness for \(callee.dropFirst(prefix.count))"
+            if callee.hasPrefix(prefix), callee.count > prefix.count {
+                return "\(slot) value witness for \(callee.dropFirst(prefix.count))"
+            }
+            // The mangled-name metadata helpers fetch the type their cache
+            // variable (V1) or name pair (V2) spells.
+            let arguments = callArguments[site] ?? []
+            if callee == "__swift_instantiateConcreteTypeFromMangledName", case .address(let cache)? = arguments.first,
+               let type = MangledNamePair.typeName(atCacheVariable: cache, in: resolver.machO) {
+                return "\(slot) value witness for \(type)"
+            }
+            if callee == Self.mangledNameMetadataHelperName, arguments.count >= 2, case .address(let pair) = arguments[1],
+               let type = MangledNamePair.typeName(at: pair, in: resolver.machO) {
+                return "\(slot) value witness for \(type)"
+            }
+            return nil
         }
         let ownAddresses = Set(function.instructions.map(\.address))
         let instructions = function.instructions.map { insn -> Instruction in
@@ -5356,7 +5370,8 @@ public struct Disassembler: Sendable {
         })
         let function = annotateIndirectControlFlowTargets(
             in: function, targets: analysis.indirectControlFlowTargets,
-            resolver: resolver, selfTypeName: selfTypeName, vtableIndex: vtableIndex
+            resolver: resolver, selfTypeName: selfTypeName, vtableIndex: vtableIndex,
+            callArguments: analysis.callSites.mapValues(\.arguments)
         )
         // Vtable targets become named only after the first trace. A newly
         // resolved setter must invalidate its result before downstream values

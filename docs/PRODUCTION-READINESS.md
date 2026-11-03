@@ -1263,6 +1263,18 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — value-witness calls on a demangling cache variable's metadata
+  were unresolved.** Codable code fetches `KeyedEncodingContainer<CodingKeys>`
+  through `__swift_instantiateConcreteTypeFromMangledName(cache)` and
+  destroys it through that metadata's table. Before its first use the
+  cache variable holds the relative address of the mangled name and the
+  name's length negated (swift/lib/IRGen/MetadataRequest.cpp), so it names
+  its type statically: `destroy value witness for
+  Swift.KeyedEncodingContainer<CodableWitness.Point.(CodingKeys in …)>(?)`.
+  V2's name pair is read the same way. Fixture `codablewitness.swift`. In
+  the swift-syntax CompilerPluginMessageHandling dylib, unresolved calls
+  fell from 504 to 440. Blast radius: 5 files, 154 calls named, nothing
+  else changed.
 - **FIXED (partly) — a generic function's value-witness calls on its
   own type parameter were unresolved.** An unspecialized generic free
   function receives each type parameter's metadata right after its

@@ -727,3 +727,21 @@ struct ABISourceLoweringTests {
     // x0 is a result buffer there, not its T.
     #expect(try !text("dup").contains("arg0"))
 }
+
+/// The metadata `__swift_instantiateConcreteTypeFromMangledName(cache)`
+/// returns is the type its cache variable spells (relative name address,
+/// negated length), so a value-witness call on it is that type's
+/// (codablewitness.swift). A V2 name pair's positive length is no cache.
+@Test func aValueWitnessCallOnACacheVariablesMetadataIsNamedIfPresent() async throws {
+    let path = "Fixtures/Sample/libCodableWitness.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(text.contains("destroy value witness for Swift.KeyedEncodingContainer<CodableWitness.Point."), Comment(rawValue: text))
+    #expect(text.contains("destroy value witness for Swift.KeyedDecodingContainer<CodableWitness.Point."))
+    let pairs = "Fixtures/Sample/libMangledTypes.stripped.dylib"
+    guard FileManager.default.fileExists(atPath: pairs) else { return }
+    let machO = try BinaryLoader.load(path: pairs)
+    #expect(MangledNamePair.typeName(at: 0x1830, in: machO) != nil)
+    #expect(MangledNamePair.typeName(atCacheVariable: 0x1830, in: machO) == nil)
+}

@@ -14,7 +14,26 @@ enum MangledNamePair {
     /// The demangled type, or nil when the pair or the name cannot be read,
     /// the name's length disagrees with the pair's, or it does not demangle
     /// to a type.
+    /// The type a `__swift_instantiateConcreteTypeFromMangledName` demangling
+    /// cache variable fetches. Until its first use the variable holds the
+    /// relative address of the mangled name and the name's length negated, a
+    /// negative 64-bit value marking it uninitialized
+    /// (swift/lib/IRGen/MetadataRequest.cpp); the runtime then stores the
+    /// metadata there, of the same type.
+    static func typeName(atCacheVariable address: UInt64, in machO: MachOFile) -> String? {
+        guard machO.cache == nil, let fileOffset = machO.fileOffset(of: address),
+              let negated = UnrecordedTypes.read(Int(fileOffset) + 4, as: Int32.self, in: machO)
+        else { return nil }
+        // An initialized (positive) word negates to no length and declines.
+        return typeName(at: address, in: machO, length: Int(-Int64(negated)))
+    }
+
     static func typeName(at address: UInt64, in machO: MachOFile) -> String? {
+        typeName(at: address, in: machO, length: nil)
+    }
+
+    /// `length` is the name's length when the pair's second word is not it.
+    private static func typeName(at address: UInt64, in machO: MachOFile, length knownLength: Int?) -> String? {
         let offset: Int
         if let cache = machO.cache {
             offset = Int(address) - Int(cache.mainCacheHeader.sharedRegionStart)
@@ -23,7 +42,8 @@ enum MangledNamePair {
             offset = Int(fileOffset)
         }
         guard let relative = UnrecordedTypes.read(offset, as: Int32.self, in: machO),
-              let length = UnrecordedTypes.read(offset + 4, as: Int32.self, in: machO), length > 0,
+              let length = knownLength.map({ Int32(clamping: $0) }) ?? UnrecordedTypes.read(offset + 4, as: Int32.self, in: machO),
+              length > 0,
               byteLength(at: offset + Int(relative), in: machO) == Int(length),
               machO.cache == nil,
               referencesAreSound(nameAddress: UInt64(Int64(address) + Int64(relative)), length: Int(length), in: machO),
