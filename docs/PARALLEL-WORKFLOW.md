@@ -297,8 +297,6 @@ own.
 - `DeclarationPlacementTests.aStrippedCopyLoadedAfterItsOriginalReadsOnlyItselfIfPresent`
   failed once in eight full runs. The stripped copy printed the original's
   `Local #1 in` names, through the per-image cache keyed by install name and
-  UUID. It looks like a race, so it is soundness, OPEN.
-- The release build in `.build-release` after this session's edits took
-  530 s against the 70 s that CLAUDE.md quotes. Another project's build was
-  running at load 400+, so this needs a re-measurement before the table
-  changes.
+  UUID. FIXED: reproduced deterministically and keyed by path instead.
+- The 530 s release build was host load. Rebuilt at low load it took 77 s,
+  in line with CLAUDE.md.

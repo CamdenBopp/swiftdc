@@ -45,7 +45,8 @@ public enum BinaryLoader {
         }
 
         switch file {
-        case .machO(let machO):
+        case .machO(let loaded):
+            let machO = try withOwnIdentity(loaded, url: url)
             if !allowingWideAddresses { try requireSignedAddresses(machO) }
             forgetCachedImage(machO)
             return machO
@@ -70,6 +71,21 @@ public enum BinaryLoader {
             forgetCachedImage(match)
             return match
         }
+    }
+
+    /// The same file, named by its own path instead of its install name.
+    /// MachOSwiftSection keys its per-image caches by `imagePath` and
+    /// `LC_UUID`, and a stripped copy keeps both, so in one process the copy
+    /// read whatever the original last put there: after a disassembly of
+    /// libLocalTypesPair.dylib, a dump of the stripped copy loaded before it
+    /// printed `struct Local #1 in LocalTypes.Outer.make()`, a name only the
+    /// original's symbols record. Keyed by path, two files never share an
+    /// entry, whatever order they are used in. A fat slice keeps its install
+    /// name: MachOKit has no public way to name one.
+    static func withOwnIdentity(_ machO: MachOFile, url: URL) throws -> MachOFile {
+        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+        guard machO.imagePath != path else { return machO }
+        return try MachOFile(url: url, imagePath: path, headerStartOffsetInCache: 0)
     }
 
     /// MachOSwiftSection keys its per-image caches by a file's install name

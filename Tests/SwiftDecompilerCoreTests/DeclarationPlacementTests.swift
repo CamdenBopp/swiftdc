@@ -448,3 +448,18 @@ func aStrippedValueWitnessIsNamedByItsTypesTableIfPresent(name: String) async th
     #expect(!text.contains("Local #1 in"), Comment(rawValue: text))
     #expect(text.contains("struct LocalTypes.Outer.(unknown context at $"), Comment(rawValue: text))
 }
+
+/// The order the full suite produced once in eight runs, made deterministic:
+/// the stripped copy is loaded, then the original is analysed (as the
+/// every-fixture sweeps do, concurrently), then the copy is dumped. Keyed by
+/// install name and `LC_UUID`, the copy read the original's symbol index and
+/// printed `Local #1 in`.
+@Test func aStrippedCopyIgnoresItsOriginalAnalysedAfterItLoadedIfPresent() async throws {
+    let original = "Fixtures/Sample/libLocalTypesPair.dylib", stripped = "Fixtures/Sample/libLocalTypesPair.stripped.dylib"
+    guard FileManager.default.fileExists(atPath: original), FileManager.default.fileExists(atPath: stripped) else { return }
+    let copy = try BinaryLoader.load(path: stripped)
+    _ = try await withStableDependencies { try await Disassembler().disassemble(path: original) }
+    let text = await withStableDependencies { await SwiftDeclarationDumper().dump(copy, sections: [.types]) }
+    #expect(!text.contains("Local #1 in"), Comment(rawValue: text))
+    #expect(text.contains("struct LocalTypes.Outer.(unknown context at $"), Comment(rawValue: text))
+}

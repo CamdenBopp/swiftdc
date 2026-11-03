@@ -1989,14 +1989,21 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 4. Determinism
 
-- **OPEN — a stripped copy once printed its original's local names.**
+- **FIXED — a stripped copy printed its original's local names.**
   `DeclarationPlacementTests.aStrippedCopyLoadedAfterItsOriginalReadsOnlyItselfIfPresent`
-  failed in 1 of 8 full enforcing runs at c340e62 (2026-11-02, a parallel
-  worktree under load): the stripped copy rendered the original's
-  `Local #1 in` names, which come from the per-image cache keyed by install
-  name and UUID. It passed in every isolated run and in 40 repetitions.
-  A race between concurrent tests sharing that cache is the leading
-  hypothesis, not yet shown.
+  failed in 1 of 8 full enforcing runs at c340e62: the stripped copy
+  rendered `Local #1 in` names that only the original's symbols record.
+  MachOSwiftSection keys its per-image caches (the symbol index among them)
+  by `imagePath` and `LC_UUID`, and a stripped copy keeps both. Clearing
+  them on load (`forgetCachedImage`) did not help when the original was
+  analysed after the copy loaded, which the every-fixture sweeps do
+  concurrently. Made deterministic as: load the copy, disassemble the
+  original, dump the copy. `BinaryLoader.load` now names a thin file by its
+  resolved path, so two files never share an entry. Fat slices keep their
+  install name, because MachOKit has no public initializer for one. No
+  output changed in the four disasm views, `dump`, `objc`, `interface` or
+  `layout` on any fixture or swift-syntax dylib. The CLI opens one file per
+  process and was never exposed. Library callers and the test suite were.
 - **Measured — `--structured` and `--pseudo` on dyld cache images are
   stable across processes.** Release 4d39b01, every 8th entry of the
   cache manifest (249 Swift images), each command run twice in separate
