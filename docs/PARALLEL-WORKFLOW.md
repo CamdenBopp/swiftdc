@@ -202,7 +202,12 @@ The gate then proves the restored tree green at tier 4.
 ## The integration gate
 
 `Tools/integration-gate.sh [--push]` is the only path to `origin/dev`. It
-runs one at a time on the host, behind a lock:
+runs one at a time on the host, behind a lock. It checks the caller's
+committed HEAD in a persistent worktree of its own (`<repo>-gate`), reset to
+that commit on each run, so the caller keeps editing and building while it
+runs. Its first version ran in the caller's tree. An edit and test build
+during a gate there was harmless only because the suite had already
+finished, so it was moved.
 
 1. HEAD is on `dev`, clean, and fast-forwards `origin/dev`. An agent's branch
    is rebased onto dev by the integrator, one branch at a time.

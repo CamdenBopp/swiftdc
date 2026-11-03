@@ -5,10 +5,14 @@
 #   Tools/integration-gate.sh --push   check, then push HEAD to dev
 #
 # One gate runs at a time on this host (a lock), so two agents never
-# measure or push over each other. In order:
+# measure or push over each other. It checks the committed HEAD of the
+# worktree it is called from, in a worktree of its own ($SWIFTDC_GATE_TREE,
+# default <repo>-gate, created on first use and kept for its incremental
+# builds), so the caller can keep editing and building while it runs.
+# Never edit in the gate's tree: each run resets it to the commit under
+# test. In order:
 #
-#   1. HEAD is on dev, the tree is clean, and HEAD fast-forwards
-#      origin/dev (rebase first if it does not).
+#   1. HEAD fast-forwards origin/dev (rebase first if it does not).
 #   2. Fixtures come from the content-addressed cache (Tools/fixtures.sh).
 #   3. The full enforcing suite, while the release build runs beside it
 #      in .build-release.
@@ -43,17 +47,23 @@ trap 'rm -rf "$lockdir"' EXIT
 step() { echo "gate: [$((SECONDS))s] $*" >&2; }
 fail() { echo "gate: FAILED: $*" >&2; exit 1; }
 
-# 1. Shape of the change.
-[ "$(git rev-parse --abbrev-ref HEAD)" = dev ] || fail "not on dev"
-[ -z "$(git status --porcelain --untracked-files=no)" ] || fail "uncommitted changes"
+# 1. Shape of the change, then the gate's own tree at that commit.
 git fetch -q origin dev
 base=$(git rev-parse origin/dev)
 head=$(git rev-parse HEAD)
 git merge-base --is-ancestor "$base" "$head" || fail "HEAD does not fast-forward origin/dev; rebase onto it"
 [ "$base" != "$head" ] || fail "nothing to integrate: HEAD is origin/dev"
-out=${SWIFTDC_GATE_OUT:-$repo/.build/gate}/$(git rev-parse --short HEAD)
+tree=${SWIFTDC_GATE_TREE:-$repo-gate}
+if ! git -C "$tree" rev-parse --git-dir > /dev/null 2>&1; then
+  step "creating the gate tree $tree (its first build is cold)"
+  git worktree add -q --detach "$tree" "$head"
+fi
+git -C "$tree" checkout -q --detach --force "$head"
+git -C "$tree" clean -fdq
+cd "$tree"
+out=${SWIFTDC_GATE_OUT:-$tree/.build/gate}/$(git rev-parse --short HEAD)
 rm -rf "$out"; mkdir -p "$out"
-step "$(git rev-list --count "$base..$head") commit(s) over origin/dev; output in $out"
+step "$(git rev-list --count "$base..$head") commit(s) over origin/dev, in $tree; output in $out"
 
 release() { # release <sha> <scratch-path> <source-dir>
   (cd "$3" && swift build -c release --scratch-path "$2" > "$out/release-$1.log" 2>&1) ||
@@ -68,7 +78,7 @@ Tools/fixtures.sh 2> "$out/fixtures.log" || fail "fixtures (see $out/fixtures.lo
 
 # 3. Suite, with the head's release build beside it.
 step "release build of HEAD (background) and debug build"
-release "$head" "$repo/.build-release" "$repo" &
+release "$head" "$tree/.build-release" "$tree" &
 rel=$!
 swift build --build-tests > "$out/build.log" 2>&1 || fail "debug build (see $out/build.log)"
 step "full enforcing suite"
@@ -96,6 +106,6 @@ fi
 # 5. Push.
 if [ $push = 1 ]; then
   step "pushing $head to origin/dev"
-  git push origin HEAD:dev
+  git push origin "$head:refs/heads/dev"
 fi
 step "passed"

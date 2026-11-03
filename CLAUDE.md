@@ -184,7 +184,9 @@ around what a rebuild costs:
   the memory guard.
 - **Push only through the gate:** `Tools/integration-gate.sh --push`
   (fast-forward check, cached fixtures, full suite, release build, blast
-  radius against origin/dev, one gate at a time on the host).
+  radius against origin/dev, one gate at a time on the host). It tests the
+  committed HEAD in its own worktree (`../compiler-gate`), so keep working
+  while it runs; never edit in that tree.
 - **Chain the long pipeline in the background:** suite, fixture views, the
   release build, then the apps, in one command. Review the fixture diffs
   while the release build runs.
