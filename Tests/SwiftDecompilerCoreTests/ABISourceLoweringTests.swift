@@ -717,4 +717,13 @@ struct ABISourceLoweringTests {
         try #require(functions.first { $0.displayName.hasPrefix("GenericWitness.\(name)<") }).renderStructured()
     }
     #expect(try text("load").contains("initializeWithCopy value witness for A(&result, "))
+    // A value of a type parameter arrives as its address: pick's a and b
+    // are arg1 and arg2, and first's T metadata (x2) precedes its U's (x3).
+    #expect(try text("pick").contains("initializeWithCopy value witness for A(&result, ((arg0 > 0) ? arg1 : arg2))"))
+    #expect(try text("first").contains("initializeWithCopy value witness for A(&result, arg0)"))
+    // A tuple result with a generic element takes x0 and x1 for its buffers:
+    // nothing is seeded, so nothing is named.
+    #expect(try !text("dup").contains("value witness for"))
+    // x0 is a result buffer there, not its T.
+    #expect(try !text("dup").contains("arg0"))
 }

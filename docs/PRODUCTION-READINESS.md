@@ -1274,8 +1274,12 @@ because it cannot be distinguished from a right one by reading the output.
   metadata shows it as `type metadata for A`. For a callee of unknown
   arity, a stale copy may follow: `Optional`'s accessor reads `args(0, ?,
   type metadata for A)`, the existing positional-argument limit. A
-  function whose formals include a generic value is seeded in the next
-  commit.
+  function whose formals include a generic value is now seeded too, as
+  that value's address: `pick` reads `initializeWithCopy value witness for
+  A(&result, ((arg0 > 0) ? arg1 : arg2))`, and `gen<T>(_ a: Int, _ t: T)
+  -> Int { a }` reads `return arg0`, where it read `return ?`. A tuple
+  result with a generic element takes x0 and x1 for its buffers and is not
+  seeded.
 - **FIXED — a value-witness call on a metadata accessor's result was
   unresolved.** `bl type metadata accessor for Foundation.URL; ldur x8,
   [x0, #-0x8]; ldr x9, [x8, #k]; blr x9` rendered `/* unresolved call */`.

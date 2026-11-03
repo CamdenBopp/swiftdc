@@ -4073,7 +4073,10 @@ public struct Disassembler: Sendable {
                                                  classTypeIndex: classTypeIndex).isDirect
         else { return nil }
         let signature = split.head
-        guard let paramsRange = DisassembledFunction.outermostArgumentListRange(of: signature)
+        // A tuple result with a generic element takes its buffers first,
+        // from x0 (`dup<A>(A) -> (A, A)` receives its A in x2).
+        guard !Self.returnsGenericTupleFromX0(name),
+              let paramsRange = DisassembledFunction.outermostArgumentListRange(of: signature)
         else { return nil }
         let parameters = DisassembledFunction.splitTopLevelArguments(signature[paramsRange])
         guard !parameters.isEmpty else { return nil }
@@ -4104,6 +4107,15 @@ public struct Disassembler: Sendable {
                 let type = Self.parameterType(parameter)
                 // A one-case enum is zero-sized: it takes no register.
                 if enumCaseIndex.isSingleCaseEnum(type) { continue }
+                // A value of a generic parameter (`A`, `A.Element`) arrives as
+                // its address, one integer register (as `swiftCallArgumentLayout`
+                // lays it out), and that address is the parameter.
+                if Self.isGenericValue(type, Self.genericParameterNames(in: split.head)) {
+                    guard integerIndex < 8 else { return nil }
+                    registers["x\(integerIndex)"] = index
+                    integerIndex += 1
+                    continue
+                }
                 // A struct this image lays out takes its fields' registers
                 // (`SwiftLowering.aggregateRegisters`): no one of them is the
                 // parameter, but those after it are placed. Declined,
@@ -4283,6 +4295,19 @@ public struct Disassembler: Sendable {
     static func isOneWordMetatype(_ instance: String, _ generics: Set<String>, _ classTypeIndex: ClassTypeIndex) -> Bool {
         if generics.contains(instance) { return true }
         return classTypeIndex.isClass(instance)
+    }
+
+    /// The type parameters a demangled signature head declares in its
+    /// generic clause (`M.f<A, B where A: P>(…)`): A and B.
+    static func genericParameterNames(in head: String) -> Set<String> {
+        guard let range = DisassembledFunction.outermostArgumentListRange(of: head) else { return [] }
+        let name = head[..<range.lowerBound].dropLast()
+        guard let open = name.firstIndex(of: "<"), name.hasSuffix(">") else { return [] }
+        let clause = name[name.index(after: open)..<name.index(before: name.endIndex)]
+        let names = (clause.range(of: " where ").map { clause[..<$0.lowerBound] } ?? clause)
+            .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard names.allSatisfy({ $0.wholeMatch(of: #/[A-Z][0-9]*/#) != nil }) else { return [] }
+        return Set(names)
     }
 
     /// Whether `type` names one of `generics` as a whole word.
