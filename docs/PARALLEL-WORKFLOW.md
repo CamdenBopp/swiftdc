@@ -289,8 +289,8 @@ own.
   `Fixtures/Sample/abi_source_aliased.o`, a 424-byte object file, at a
   `try!` in MachOKit's `DyldCache.swift:87` (`offsetOutOfBounds`).
   `sample_objc.o` fails cleanly. The old render scripts never ran `.o`
-  files; the new blast radius renders every Mach-O product. Robustness,
-  OPEN.
+  files; the new blast radius renders every Mach-O product. FIXED: every
+  command now refuses a file shorter than the 568-byte cache header.
 - 23 stale products were left in the main checkout's `Fixtures/Sample` from
   removed fixtures. No test, script or source referenced them, but the
   every-fixture sweeps were reading them. A cache restore clears them.

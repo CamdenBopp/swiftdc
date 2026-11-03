@@ -1465,14 +1465,18 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 3. Robustness — what breaks it?
 
-- **OPEN — a small arm64 object file traps four commands.** `disasm`,
-  `interface`, `objc` and `analyze` on `Fixtures/Sample/abi_source_aliased.o`
-  (424 bytes, `MH_OBJECT`, one load command) end in `Trace/BPT trap` at a
-  `try!` in MachOKit `DyldCache.swift:87` (`FileIOError.offsetOutOfBounds`);
-  `dump` and `layout` succeed, `xrefs` exits 64, and `sample_objc.o` fails
-  cleanly with rc 1. Found by `Tools/blast-radius.sh`, which renders every
-  Mach-O product; the earlier render scripts read only dylibs and
-  executables. Release c340e62.
+- **FIXED — a file shorter than a dyld cache header trapped four
+  commands.** `disasm`, `interface`, `objc` and `analyze` on
+  `Fixtures/Sample/abi_source_aliased.o` (424 bytes, `MH_OBJECT`, one
+  `__text`) ended in `Trace/BPT trap` at MachOKit `DyldCache.swift:87`:
+  `MachOFile.fileOffset(of:)` asks `cache` whether a standalone file is a
+  dyld cache, and `DyldCache.init` reads the 568-byte header with `try!`.
+  `dump` and `layout` survived only because the file has no Swift section
+  to read. `BinaryLoader.load` now refuses any file shorter than that
+  header with an error naming both sizes, for every command. Found by
+  `Tools/blast-radius.sh`, which renders every Mach-O product; the earlier
+  render scripts read only dylibs and executables. The `try!` itself is in
+  the pinned MachOKit fork and is not changed.
 - **FIXED — a conformance whose trailing records ran past its section
   trapped `dump`.** A conformance's flags count the records after it
   (retroactive pointer, conditional requirements, pack shapes, resilient

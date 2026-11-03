@@ -35,6 +35,7 @@ public enum BinaryLoader {
         // structure has to be checked before it is handed over. See
         // MachOPreflight.
         try MachOPreflight.validate(url: url)
+        try requireRoomForCacheProbe(path: path)
 
         let file: File
         do {
@@ -86,6 +87,26 @@ public enum BinaryLoader {
         guard machO.sections.contains(where: { $0.sectionName.hasPrefix("__swift5_") }) else { return }
         SymbolIndexStore.shared.remove(for: machO)
         SymbolicDemangler.removeCache(for: machO)
+    }
+
+    /// Fails on a file shorter than a dyld shared cache header (568 bytes).
+    /// MachOKit's `MachOFile.fileOffset(of:)` asks `cache` whether a
+    /// standalone file is a cache, and `DyldCache.init` reads that header with
+    /// `try!` (DyldCache.swift:87), so the first address a command resolved
+    /// in such a file trapped: `disasm`, `interface`, `objc` and `analyze` on
+    /// `abi_source_aliased.o` (424 bytes, one `__text`). `dump` and `layout`
+    /// got through only because that file has no Swift section to read; one
+    /// that had would trap them too, so every command refuses it.
+    static func requireRoomForCacheProbe(path: String) throws {
+        let header = MemoryLayout<DyldCacheHeader.Layout>.size
+        guard let size = try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int else { throw BinaryLoadError("Cannot read the size of \(path)") }
+        if size < header {
+            throw BinaryLoadError(
+                "\(path) is \(size) bytes, shorter than a dyld shared cache header (\(header) bytes). "
+                + "MachOKit reads one, and traps, the first time it resolves an address in a standalone file, "
+                + "so swiftdc does not open it."
+            )
+        }
     }
 
     /// Fails when a segment's address or size is at or above 2^63. MachOKit

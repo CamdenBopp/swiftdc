@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 @testable import SwiftDecompilerCore
+import MachOKit
 
 /// MachOKit and its `FileIOBinary` dependency use `try!` and `precondition` on
 /// malformed input: a bad file does not throw, it **aborts the process**. Those
@@ -1703,4 +1704,38 @@ private func rejectsContext(struct structure: Data? = nil, module: Data? = nil) 
     try bytes.write(to: url)
     defer { try? FileManager.default.removeItem(at: url) }
     #expect { try MachOPreflight.validate(url: url) } throws: { "\($0)".contains("witness table pattern") }
+}
+
+/// MachOKit asks whether a standalone file is a dyld cache the first time it
+/// resolves an address in it, reading a 568-byte cache header with `try!`, so
+/// a shorter file trapped every command that read its sections.
+private func loadPadded(_ header: Data, to size: Int) throws -> MachOFile {
+    var data = header
+    data.append(Data(count: size - data.count))
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("swiftdc-short-\(size)-\(UUID().uuidString).o")
+    try data.write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+    return try BinaryLoader.load(path: url.path)
+}
+
+@Test func aFileShorterThanACacheHeaderIsRefusedNotTrapped() throws {
+    let header = machHeader64(ncmds: 0, sizeofcmds: 0, filetype: 1)
+    for size in [32, 424, 567] {
+        #expect(throws: BinaryLoadError.self) { _ = try loadPadded(header, to: size) }
+    }
+    // At the header's size the cache probe reads it, finds no `dyld_` magic
+    // and answers nil instead of trapping.
+    let machO = try loadPadded(header, to: MemoryLayout<DyldCacheHeader.Layout>.size)
+    #expect(machO.cache == nil)
+}
+
+/// The real 424-byte object (one `__text`) that trapped `disasm`,
+/// `interface`, `objc` and `analyze` at MachOKit DyldCache.swift:87.
+@Test func theShortObjectFixtureFailsAsAnErrorIfPresent() async throws {
+    let path = "Fixtures/Sample/abi_source_aliased.o"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    await #expect(throws: BinaryLoadError.self) {
+        _ = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    }
 }
