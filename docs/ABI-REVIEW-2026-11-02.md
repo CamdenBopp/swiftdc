@@ -39,8 +39,8 @@ omitted.
    `comparisonValue` ignores width 32 and the w sign-bit test does not
    sign-extend. The z3 harness covers only the text path; extend it to the
    tracer's facts.
-4. **An Objective-C method's return is read from x0 whatever its
-   encoding.** `-(double)scaled:` and `-(CGRect)…` render `return self`; a
+4. **FIXED (x8 tail forwarding still OPEN) — An Objective-C method's
+   return is read from x0 whatever its encoding.** `-(double)scaled:` and `-(CGRect)…` render `return self`; a
    24- or 40-byte struct written through x8 renders `return self` or a
    callee's result; a tail branch in an x8-returning method renders
    `return h(…)` for a void `h`. Classify the encoded return (x0, v0-v3,

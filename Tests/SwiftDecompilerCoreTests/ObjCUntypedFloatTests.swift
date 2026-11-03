@@ -51,3 +51,40 @@ func anUntypedSendPassingAFloatDeclinesItsArgumentsIfPresent(path: String) async
         #expect(lines.contains { $0.hasPrefix(send) }, "\(path) \(name):\n\(lines.joined(separator: "\n"))")
     }
 }
+
+/// An Objective-C method's return is read from the register its encoding
+/// says: `-(double)scaled:` from v0, and a struct returned in d0-d3 or
+/// through x8 from none. Read from x0 whatever the encoding, each read
+/// `return self` (`objcreturns.m`, ABI review item 4).
+@Test func anObjCReturnIsReadWhereItsEncodingPutsItIfPresent() async throws {
+    let path = "Fixtures/Sample/libObjCReturns.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName == name }).renderStructured()
+    }
+    #expect(try text("-[Rets scaled:]").contains("return (arg0 * self->_scale)"))
+    for name in ["-[Rets big]", "-[Rets rect:]"] {
+        let body = try text(name)
+        #expect(body.contains("return ?") && !body.contains("return self"), Comment(rawValue: body))
+    }
+    #expect(try text("-[Rets count]").contains("return self->_n"))
+    // A double constant returned in d0 is its value, not its bit pattern.
+    let outgoing = "Fixtures/Sample/libObjCOutgoing.dylib"
+    if FileManager.default.fileExists(atPath: outgoing) {
+        let probe = try await withStableDependencies { try await Disassembler().disassemble(path: outgoing) }
+        let float = try #require(probe.first { $0.displayName == "-[SDOutgoingProbe floatResult]" }).renderStructured()
+        #expect(float.contains("return 2.5\n"), Comment(rawValue: float))
+    }
+}
+
+/// A struct of floats comes back in v0-v3, so a method returning a CGRect
+/// that tail-calls a C function declared to return one forwards it whole:
+/// `-[SDLanes scaledFrame]` is `return CGRectInset(…)` (`objc_struct_lanes.m`).
+@Test func aFloatStructReturnForwardedByATailCallIsThatCallIfPresent() async throws {
+    let path = "Fixtures/Sample/libObjCStructLanes.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = try #require(functions.first { $0.displayName == "-[SDLanes scaledFrame]" }).renderStructured()
+    #expect(text.contains("return CGRectInset(?, [self scale], 0.5)"), Comment(rawValue: text))
+}

@@ -7548,6 +7548,14 @@ public struct Disassembler: Sendable {
 
         let signatureKnown = DisassembledFunction.signatureKnown(
             displayName: function.analysisDisplayName, objcSignature: function.objcMethod?.signature)
+        // Where the encoded return comes back: x0 for an integer, pointer
+        // or object, v0 for one float or double. A struct of floats, one
+        // of nine to sixteen bytes (`twoWordFieldReturn` aside) or one
+        // returned through x8 is no one register: `-(double)scaled:` and
+        // a 40-byte `-(S5)big` read `return self`.
+        let objcReturnType = function.objcMethod.flatMap { ObjCArgumentABI.returnType(encoding: $0.typeEncoding) }
+        let objcReturnsInX0 = objcReturnType.map(ObjCArgumentABI.takesOneXRegister) == true
+        let objcReturnsOneFloat = function.objcMethod?.returnsOneFloat == true
         let instructions = function.instructions.map { insn -> Instruction in
             var sourceNotes: [String] = []
             var sourceType = insn.sourceType
@@ -7629,10 +7637,20 @@ public struct Disassembler: Sendable {
             }
             if isObjCNonVoid, insn.controlFlow == .return, let field = twoWordFieldReturn(at: insn.address) {
                 noteExit(.normal(field))
-            } else if isObjCNonVoid, let rawExit = analysis.exitValues[insn.address] {
+            } else if isObjCNonVoid, objcReturnsInX0 || objcReturnsOneFloat,
+                      let rawExit = insn.controlFlow == .branch || objcReturnsInX0
+                        ? analysis.exitValues[insn.address] : analysis.exitFloatValues[insn.address] {
                 let exit = sanitizeValue(rawExit)
                 if insn.controlFlow == .return, exit != .unknown {
-                    noteExit(.normal(renderReturnValue(exit, before: insn.address)))
+                    // A float constant is its value, not its bit pattern.
+                    if objcReturnsOneFloat, case .immediate(let bits) = exit,
+                       let constant = Self.renderTypedConstant(
+                        bits: bits, type: function.objcMethod?.typeEncoding.first { !"rnNoORVA".contains($0) } == "f"
+                            ? "Swift.Float" : "Swift.Double") {
+                        noteExit(.normal(constant))
+                    } else {
+                        noteExit(.normal(renderReturnValue(exit, before: insn.address)))
+                    }
                 } else if insn.controlFlow == .branch, let callee {
                     if passthroughReturnHelpers.contains(where: callee.hasPrefix), exit != .unknown {
                         noteExit(.normal(renderReturnValue(exit, before: insn.address)))
@@ -7641,6 +7659,15 @@ public struct Disassembler: Sendable {
                         noteExit(.normal(callExpression(callee: callee, values: values, site: insn.address)))
                     }
                 }
+            }
+            // A struct of floats comes back in v0-v3, so a tail call to a C
+            // function declared to return a struct forwards it whole:
+            // `return CGRectInset(…)`.
+            if isObjCNonVoid, exits.isEmpty, insn.controlFlow == .branch, let callee,
+               function.objcMethod?.returnsFloatAggregate == true,
+               DisassembledFunction.cPrototype(of: callee)?.result == "s",
+               let values = argumentsByAddress[insn.address] {
+                noteExit(.normal(callExpression(callee: callee, values: values, site: insn.address)))
             }
             if isObjCNonVoid, insn.controlFlow == .return, exits.isEmpty {
                 noteExit(.normal("?"))

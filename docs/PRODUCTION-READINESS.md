@@ -6722,3 +6722,17 @@ Findings:
   < 0` (getEnumTagSinglePayload's count is `unsigned`); swift-syntax 218
   lines, the same shapes. The z3 condition harness covers only the text
   path; these tracer facts are checked by the fixture test alone.
+- **FIXED — an Objective-C method's return read from x0 whatever its
+  encoding** (ABI review item 4). The return is now read where the method
+  encoding puts it: x0 for an integer, pointer or object, v0 for a lone
+  `float`/`double` (a constant printed as its value), and nothing for a
+  struct of floats, a 9-16-byte composite whose two ivars differ, or an
+  x8 return. A tail call forwards a one-register result, or a float struct
+  from a C function declared to return a struct (`return
+  CGRectInset(…)`). `-(double)scaled:` read `return self` and reads
+  `return (arg0 * self->_scale)`; `-(S5)big` and `-(CGRect)rect:` read
+  `return ?` (`objcreturns.m`). Fixtures: 17 `return self` replaced by
+  the true value (`return 2.5`, `(arg0 + arg0)`) or `?`; `rangeHead` and
+  `rangeShifted`, one word of a two-word NSRange result, now `return ?`.
+  swift-syntax byte-identical. OPEN: a tail branch in an x8-returning
+  method still reads `return h(…)` when x8 is not proven forwarded.

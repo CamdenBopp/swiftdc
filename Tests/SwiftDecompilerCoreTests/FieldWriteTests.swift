@@ -155,9 +155,11 @@ import Testing
 /// struct read from one ivar rendered its first word: `range`
 /// (`ldp x8, x1, [x0, #0x8]; mov x0, x8; ret`) read
 /// `return self->_range[0..<8]`. Both words of one whole 16-byte ivar are
-/// that ivar now. A first word paired with another ivar's (`rangeHead`),
-/// a second word (`rangeShifted`) and a one-word return that leaves the
-/// second word in x1 (`wordOfRange`) keep the x0 reading.
+/// that ivar now. A first word paired with another ivar's (`rangeHead`) or
+/// a second word (`rangeShifted`) is one word of a two-word result, and
+/// read `return self->_range[0..<8]` as if it were all of it: those return
+/// `?` (ABI review item 4). A one-word return that leaves the second word
+/// in x1 (`wordOfRange`) keeps the x0 reading.
 @Test func aTwoWordStructReturnOfOneFieldIsThatFieldIfPresent() async throws {
     let path = "Fixtures/Sample/libObjCPairStores.dylib"
     guard FileManager.default.fileExists(atPath: path) else { return }
@@ -168,9 +170,9 @@ import Testing
     let range = try text("-[SDPairReturns range]")
     #expect(range.contains("return self->_range\n"), Comment(rawValue: range))
     let head = try text("-[SDPairReturns rangeHead]")
-    #expect(head.contains("return self->_range[0..<8]"), Comment(rawValue: head))
+    #expect(head.contains("return ?") && !head.contains("return self->_range[0..<8]"), Comment(rawValue: head))
     let shifted = try text("-[SDPairReturns rangeShifted]")
-    #expect(shifted.contains("return self->_range[8..<16]"), Comment(rawValue: shifted))
+    #expect(shifted.contains("return ?") && !shifted.contains("return self->_range[8..<16]"), Comment(rawValue: shifted))
     // One word returned, whatever x1 holds.
     let word = try text("-[SDPairReturns wordOfRange]")
     #expect(word.contains("return self->_range[0..<8]"), Comment(rawValue: word))
