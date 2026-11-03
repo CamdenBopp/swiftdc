@@ -186,6 +186,30 @@ passed indirectly), not one register per field. A layout from field
 metadata needs the fields' offsets and scalar types, and a second oracle
 for floats sharing a chunk and for enums with payloads.
 
+## Next: value-witness call sites
+
+`ldur xN, [meta, #-0x8]; ldr xN, [xN, #k]; blr xN` calls slot `k / 8` of
+a type's value-witness table (swift/include/swift/ABI/ValueWitness.def):
+0 initializeBufferWithCopyOfBuffer, 1 destroy, 2 initializeWithCopy,
+3 assignWithCopy, 4 initializeWithTake, 5 assignWithTake, and so on.
+Measured 2026-11-03 at the struct-seeding commit, in the four swift-syntax
+host dylibs: 187 of 810 `/* unresolved call */` sites have this shape
+(Operators 4/23, IfConfig 32/142, ParserDiagnostics 21/122,
+CompilerPluginMessageHandling 130/523).
+
+Two provenances for `meta`:
+- **A static metadata address.** Example: `outlined assign with take of
+  PrecedenceGroup`, `adrp x2, …; add x2, x2, #0xda8`, slot 5. `[meta - 8]`
+  and `[vwt + k]` are pointers in the image (rebases or binds), so the call
+  target is provable by reading them. The tracer does not follow loads
+  through image pointers yet.
+- **Metadata loaded from an existential container's type word**
+  (`ldr x2, [x0, #0x18]`, an `outlined init with copy` of `any P`). The
+  slot is still provable, but the type is not: render the slot name only.
+
+A load at `-8` from anything else is not proven to be metadata and
+declines.
+
 ## Oracle limits
 
 Fixture tests compare renders to expectations written from the source and
