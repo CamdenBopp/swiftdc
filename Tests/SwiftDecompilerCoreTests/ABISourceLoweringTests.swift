@@ -425,3 +425,21 @@ struct ABISourceLoweringTests {
     #expect(try text("half").contains("return ((arg0 * 3.0) + 0.5)"))
     #expect(try text("callHalf").contains("FPImmediates.half(1.5)"))
 }
+
+/// An integer-to-float conversion respects the source's width and
+/// signedness: `scvtf d0, w0` converts the word sign-extended (read
+/// zero-extended, Int32 -1 became 4294967295.0), and `ucvtf d0, x0`
+/// rendered `Double(arg0)`, a signed conversion of an Int: an unsigned one
+/// reads `Double(UInt(bitPattern: x))` unless x is a UInt or provably
+/// non-negative (`intconvert.swift`, ABI review a2 #4).
+@Test func anIntegerToFloatConversionKeepsItsSignednessIfPresent() async throws {
+    let path = "Fixtures/Sample/libIntConvert.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("IntConvert.\(name)(") }).renderStructured()
+    }
+    #expect(try text("u2d").contains("return Double(UInt(bitPattern: arg0))"))
+    #expect(try text("s32").contains("return Double((((arg0 & 0xffffffff) << 32) >>ˢ 32))"))
+    #expect(try text("u32").contains("return Double((arg0 & 0xffffffff))"))
+}

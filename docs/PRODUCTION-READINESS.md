@@ -6821,3 +6821,15 @@ Findings:
   Float16 constant renders as its value: `half(_ h: Float16)` reads
   `return ((arg0 * 3.0) + 0.5)` and its caller `half(1.5)`
   (`fpimmediates.swift`). swift-syntax byte-identical.
+- **FIXED — integer-to-float conversions lost their signedness and
+  width** (ABI review a2 #4). `ucvtf` and `scvtf` were both `Double(x)`:
+  `ucvtf d0, x0` read as a signed conversion (`Double(UInt(bitPattern:
+  k))` rendered `Double(arg0)`, wrong for every negative k), and `scvtf
+  d0, w0` converted a word's zero-extended bits (Int32 -1 as
+  4294967295.0). `ucvtf` is now `unsignedToFloat`, rendered `Double(x)`
+  only when x is a UInt or provably non-negative, else `Double(UInt(
+  bitPattern: x))`; `scvtf` from a w register sign-extends
+  (`intconvert.swift`). Fixtures: 7 lines, the -O typedScale `Double(arg1)`
+  -> `Double(UInt(bitPattern: arg1))`, exact (the compiler chose `ucvtf`
+  after proving n >= 0 on that path; a path-aware simplification is
+  future work). swift-syntax byte-identical.

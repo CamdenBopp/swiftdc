@@ -208,6 +208,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libDroppedMeta.dylib",
         "Fixtures/Sample/libVectorLanes.dylib",
         "Fixtures/Sample/libFPImmediates.dylib",
+        "Fixtures/Sample/libIntConvert.dylib",
     ]
 
     /// True on a run that must actually exercise the fixtures. `CI` is set by

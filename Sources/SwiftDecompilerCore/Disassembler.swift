@@ -5500,7 +5500,7 @@ public struct Disassembler: Sendable {
                 case .callResult(let site): return returnsOneFloat(site)
                 case .binary(_, let lhs, let rhs):
                     return holdsWholeResults(lhs, depth: depth + 1) && holdsWholeResults(rhs, depth: depth + 1)
-                case .unary(.toFloat, _): return true
+                case .unary(.toFloat, _), .unary(.unsignedToFloat, _): return true
                 case .unary(_, let operand): return holdsWholeResults(operand, depth: depth + 1)
                 case .select(let condition, let whenTrue, let whenFalse):
                     return holdsWholeResults(condition, depth: depth + 1) && holdsWholeResults(whenTrue, depth: depth + 1)
@@ -6218,7 +6218,8 @@ public struct Disassembler: Sendable {
                 }
             case .binary(_, let lhs, let rhs):
                 return floatWidth(lhs) ?? floatWidth(rhs)
-            case .unary(.toFloat(let bits), _), .unary(.floatConstant(let bits), _):
+            case .unary(.toFloat(let bits), _), .unary(.unsignedToFloat(let bits), _),
+                 .unary(.floatConstant(let bits), _):
                 return bits
             case .unary(.toInteger, _):
                 return nil
@@ -6424,6 +6425,16 @@ public struct Disassembler: Sendable {
                 case .absoluteValue: return "abs(\(inner))"
                 case .toFloat(let bits):
                     return "\(bits == 64 ? "Double" : bits == 32 ? "Float" : "Float\(bits)")(\(inner))"
+                case .unsignedToFloat(let bits):
+                    // `Double(x)` converts a UInt as unsigned, and a value whose
+                    // bit 63 is clear the same either way; anything else is
+                    // spelled as its bits read unsigned.
+                    let type = bits == 64 ? "Double" : bits == 32 ? "Float" : "Float\(bits)"
+                    let clear: Bool = switch operand {
+                    case .binary(.bitAnd, _, .immediate(let mask)), .immediate(let mask): mask <= UInt64(Int64.max)
+                    default: TypeInference.typeOf(operand, arguments: argumentTypes).isUnsignedInteger
+                    }
+                    return clear ? "\(type)(\(inner))" : "\(type)(UInt(bitPattern: \(inner)))"
                 case .toInteger(let signed, let bits):
                     return "\(signed ? "Int" : "UInt")\(bits == 64 ? "" : String(bits))(\(inner))"
                 case .floatConstant(let bits):

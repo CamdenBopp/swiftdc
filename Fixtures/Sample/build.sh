@@ -496,6 +496,9 @@ $CLANG -arch arm64 -dynamiclib vectorlanes.s -o libVectorLanes.dylib
 echo "==> fmov immediates in vector and half-precision registers (fpimmediates.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name FPImmediates fpimmediates.swift -o libFPImmediates.dylib
 
+echo "==> scvtf and ucvtf from word and doubleword registers (intconvert.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name IntConvert intconvert.swift -o libIntConvert.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

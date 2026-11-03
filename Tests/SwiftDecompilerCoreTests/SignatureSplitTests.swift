@@ -83,8 +83,11 @@ private func structured(_ name: String, in path: String) async throws -> String?
         #expect(!body.contains("arg0 < ") && !body.contains("arg0 >= "), "\(level): \(body)")
         #expect(body.contains("arg1 < 0") || body.contains("arg1 >= 0"), "\(level): \(body)")
         // The success value is recovered from both real parameters, the Int
-        // one through its conversion (`d * 2.0 + Double(n)`).
-        #expect(body.contains("+ Double(arg1))"), "\(level): \(body)")
+        // one through its conversion (`d * 2.0 + Double(n)`). At -O the
+        // compiler, having proven n >= 0 on that path, converts with `ucvtf`,
+        // which reads as its unsigned conversion.
+        #expect(body.contains("+ Double(arg1))") || body.contains("+ Double(UInt(bitPattern: arg1)))"),
+                "\(level): \(body)")
     }
 }
 

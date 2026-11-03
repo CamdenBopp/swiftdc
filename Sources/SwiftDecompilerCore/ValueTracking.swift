@@ -132,6 +132,10 @@ public enum AbstractUnaryOperator: Equatable, Sendable {
     /// An integer or a float converted to a float of `bits` width (`scvtf`,
     /// `ucvtf`, `fcvt`): `Double(x)` at 64, `Float(x)` at 32.
     case toFloat(bits: Int)
+    /// `ucvtf`: the operand's bits as an unsigned integer, converted. As
+    /// `Double(x)` it reads as a signed conversion, which differs whenever
+    /// bit 63 is set.
+    case unsignedToFloat(bits: Int)
     /// A float truncated toward zero to an integer of `bits` width (`fcvtzs`,
     /// `fcvtzu`): `Int(x)`, `UInt32(x)`.
     case toInteger(signed: Bool, bits: Int)
@@ -3048,17 +3052,25 @@ public struct ValueTracer: Sendable {
             let op: AbstractUnaryOperator = switch detail.id {
             case AARCH64_INS_FCVTZS: .toInteger(signed: true, bits: dest.widthBits)
             case AARCH64_INS_FCVTZU: .toInteger(signed: false, bits: dest.widthBits)
+            case AARCH64_INS_UCVTF: .unsignedToFloat(bits: dest.widthBits)
             default: .toFloat(bits: dest.widthBits)
             }
             // `scvtf`/`ucvtf` convert an integer register, whose immediate is
             // the integer it says; `fcvt`/`fcvtz*` a float register.
             let input = detail.operands[1].operand.register
-            let converted = floatUnary(op, source(detail.operands[1], in: registers),
+            var operand = source(detail.operands[1], in: registers)
+            if input?.kind == .gpr, input?.widthBits == 32, detail.id == AARCH64_INS_SCVTF {
+                // A signed word converts its sign-extended value: read as its
+                // zero-extended bits, Int32 -1 converted to 4294967295.0.
+                operand = Self.signExtended32(operand) { .binary($0, $1, $2) }
+            }
+            let converted = floatUnary(op, operand,
                                        operandBits: input?.kind == .vector ? input?.widthBits : nil)
             guard detail.operands.count == 3 else { write(dest, converted, into: &registers); return }
             // Fixed point: `ucvtf d0, x0, #2` is `Double(x0) / 4`, the compiler's
             // folding of `* 0.25`. Only the int-to-float direction is modelled.
-            guard case .toFloat = op, dest.widthBits == 64 || dest.widthBits == 32,
+            switch op { case .toFloat, .unsignedToFloat: break; default: clobber(detail, into: &registers); return }
+            guard dest.widthBits == 64 || dest.widthBits == 32,
                   let fractionBits = detail.operands[2].operand.immediateValue,
                   (1...64).contains(fractionBits)
             else { clobber(detail, into: &registers); return }
