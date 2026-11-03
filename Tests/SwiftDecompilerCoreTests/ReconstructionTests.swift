@@ -1099,6 +1099,22 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
     #expect(isStr.contains("as? Swift.String) != nil)"), Comment(rawValue: isStr))
 }
 
+/// A stripped binary's metadata names a vtable accessor by its kind alone
+/// (`StrippedAccessor.Counter.getter`). A self dispatch to it is to some
+/// property of self; read as `Owner.property.getter`, its type became the
+/// property, `self.Counter = (self.Counter + 1)` (strippedaccessor.swift).
+@Test func aStrippedAccessorNamesNoPropertyIfPresent() async throws {
+    let path = "Fixtures/Sample/libStrippedAccessor.stripped.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(!text.contains("self.Counter"), Comment(rawValue: text))
+    #expect(text.contains("self.(unknown).setter("), Comment(rawValue: text))
+    #expect(Disassembler.namingItsProperty("Sample.Widget.setter", ownedBy: "Widget") == "Sample.Widget.(unknown).setter")
+    #expect(Disassembler.namingItsProperty("Sample.Widget.label.setter", ownedBy: "Widget") == "Sample.Widget.label.setter")
+    #expect(Disassembler.namingItsProperty("Sample.Widget.bump() -> Swift.Int", ownedBy: "Widget") == "Sample.Widget.bump() -> Swift.Int")
+}
+
 /// A self dispatch resolved to its class's implementation takes that body's
 /// parameters (an override keeps the signature). In a stripped binary the
 /// accessor has no signature, and positionally the getter dispatch read the

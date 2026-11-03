@@ -50,6 +50,14 @@ results do not replace previously recorded release performance measurements.
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
 
+- **FIXED — a stripped binary's vtable accessor named its type as the
+  property.** Metadata names a vtable accessor by its kind alone,
+  `Reconstruction.Counter.getter`. Read as `Owner.property.getter`, its
+  type became the property: `self.Counter = (r0 + r1)` in the stripped
+  Reconstruction fixtures, `self.Animal.getter()`, `self.Box.getter()`.
+  An accessor whose name is its owner and its kind now reads
+  `self.(unknown).getter()` and `self.(unknown).setter(v)`, and is never
+  folded into a property access.
 - **FIXED — a value-witness call took the registers around it as
   arguments.** A call through a value-witness table (`destroy value
   witness for X`) had no signature, so its arguments were laid out

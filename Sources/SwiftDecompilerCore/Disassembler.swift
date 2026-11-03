@@ -2934,7 +2934,7 @@ public struct Disassembler: Sendable {
                let selfTypeName,
                let address = vtableIndex.methodAddress(type: selfTypeName, offset: offset),
                let name = resolver.name(at: address, ownedBy: selfTypeName) {
-                return (address, name, true)
+                return (address, Self.namingItsProperty(name, ownedBy: selfTypeName), true)
             }
             if let witness = valueWitnessCall(value) { return (nil, witness, false) }
             return resolver.indirectCallTarget(for: value).map { ($0.address, $0.name, false) }
@@ -3955,6 +3955,22 @@ public struct Disassembler: Sendable {
     /// specialization <…> of ` and `generic specialization <…> of ` clauses:
     /// the function it specializes, as its name prints it. Any other name is
     /// returned unchanged.
+    /// An accessor's name with its property, or with `(unknown)` in its
+    /// place. A stripped binary's metadata names a vtable accessor by its
+    /// kind alone, `Sample.Widget.setter`, and read as `Owner.property.setter`
+    /// its type became the property: `self.Widget = 0` for the `label`
+    /// setter. `owner` is the type the accessor belongs to, as its simple or
+    /// qualified name.
+    static func namingItsProperty(_ name: String, ownedBy owner: String) -> String {
+        let accessors = ["getter", "setter", "modify", "read"]
+        let head = name.range(of: " : ").map { String(name[..<$0.lowerBound]) } ?? name
+        guard let dot = head.lastIndex(of: "."), accessors.contains(String(head[head.index(after: dot)...]))
+        else { return name }
+        let base = head[..<dot]
+        guard base == owner || base.hasSuffix("." + owner) || owner.hasSuffix("." + base) else { return name }
+        return String(base) + ".(unknown)" + name[dot...]
+    }
+
     /// For a method of a frozen standard-library struct (or a type nested in
     /// one), whether it is static; nil for anything else. A protocol
     /// requirement (`Swift.Collection.endIndex.getter`) is not one: it takes
@@ -5224,6 +5240,7 @@ public struct Disassembler: Sendable {
             var map: [String: (String, Bool)] = [:]
             for address in vtableIndex.methodAddresses(type: selfTypeName) {
                 guard let name = resolver.name(at: address, ownedBy: selfTypeName),
+                      Self.namingItsProperty(name, ownedBy: selfTypeName) == name,
                       let access = DisassembledFunction.swiftAccessorProperty(name)
                 else { continue }
                 map[name] = access
