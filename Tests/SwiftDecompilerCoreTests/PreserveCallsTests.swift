@@ -158,3 +158,23 @@ private func fragment(_ words: [UInt32]) throws -> DisassembledFunction {
     #expect(failed[0x20]?.clobberedCalleeSaved == all)
     #expect(failed[0x40]?.definitelyClobbered == all)
 }
+
+/// The closure over calls rebuilds a body for its callees' clobbers and keeps
+/// what `closeOverReads` proved about its reads: a function that never reads
+/// x20 still does not after a callee of it turns out to clobber x19.
+@Test func aRebuildForClobbersKeepsTheSelfRegisterRead() {
+    var summaries: [UInt64: CalleeRegisterSummary] = [
+        0x10: CalleeRegisterSummary(argumentReads: [], clobberedCalleeSaved: ["x19"], definitelyClobbered: ["x19"]),
+        0x20: CalleeRegisterSummary(argumentReads: [0], provenArgumentReads: [0], readsSelfRegister: false,
+                                    clobberedCalleeSaved: [], callees: [0x10]),
+    ]
+    let original = summaries
+    CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects in
+        let callees = original[start]?.callees ?? []
+        let clobbers = callees.reduce(into: Set<String>()) { $0.formUnion(effects($1).clobbers) }
+        return CalleeRegisterSummary(argumentReads: [], clobberedCalleeSaved: clobbers, definitelyClobbered: clobbers, callees: callees)
+    }
+    #expect(summaries[0x20]?.clobberedCalleeSaved == ["x19"])
+    #expect(summaries[0x20]?.readsSelfRegister == false)
+    #expect(summaries[0x20]?.provenArgumentReads == [0])
+}

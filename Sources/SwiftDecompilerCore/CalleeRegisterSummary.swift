@@ -565,6 +565,11 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 pendingReads: old.pendingReads,
                 readsFramePointer: old.readsFramePointer,
                 readsContextRegister: old.readsContextRegister,
+                // Reads are closed over already (`closeOverReads`); a
+                // rebuild for clobbers keeps them. Left to its default, a
+                // function calling a clobbering fragment read as reading x20
+                // again, and a temporary its caller parked there as `self`.
+                readsSelfRegister: old.readsSelfRegister,
                 clobberedCalleeSaved: rebuilt.clobberedCalleeSaved,
                 definitelyClobbered: rebuilt.definitelyClobbered,
                 restoredFrom: rebuilt.restoredFrom,
