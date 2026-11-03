@@ -3797,48 +3797,20 @@ public struct Disassembler: Sendable {
         forReturnType returnType: String, enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
         classTypeIndex: ClassTypeIndex = ClassTypeIndex()
     ) -> SwiftReturnRegister? {
-        // Double/Float come back in v0 (d0/s0).
-        let floatingTypes: Set<String> = [
-            "Swift.Double", "Swift.Float", "Swift.Float16", "Swift.Float32",
-            "Swift.Float64", "Swift.CGFloat", "CoreGraphics.CGFloat",
-        ]
-        if floatingTypes.contains(returnType) { return .floating }
-        // An optional of a value type marks nil outside x0: a tag in x1 (`Int?`)
-        // or an extra inhabitant of the payload (`3` for a three-case enum).
-        // Read alone, x0 printed nil as `0`. Only a pointer or class payload,
-        // whose nil is the null pointer, is the one register.
-        if let payload = Self.optionalPayload(returnType) {
-            return Self.isSingleRegisterPointer(payload) || classTypeIndex.isClass(payload)
-                || payload == "Swift.AnyObject" ? .integer : nil
-        }
         // A printed nominal type does not determine its register class: a
         // one-Double struct returns in v0, a two-word struct in x0 and x1, a
         // larger one through x8. Read x0 only for layouts the signature or the
-        // image's metadata proves are one integer register. Defaulting every
-        // other type to x0 rendered a stale register as the result
-        // (`abiOneDoubleFromInt` returned its callee's Int; recovered from the
-        // pre-merge stash 983aa25 with its ABISource execution oracle).
-        let integerTypes: Set<String> = [
-            "Swift.Bool", "Swift.Int", "Swift.UInt", "Swift.Int8", "Swift.UInt8",
-            "Swift.Int16", "Swift.UInt16", "Swift.Int32", "Swift.UInt32",
-            "Swift.Int64", "Swift.UInt64",
-        ]
-        if integerTypes.contains(returnType) || Self.isSingleRegisterPointer(returnType)
-            || returnType == "Swift.AnyObject"
-            // `any Error` is one pointer to its box (SwiftError).
-            || returnType == "Swift.Error"
-            // Array's, ContiguousArray's, Dictionary's and Set's native value
-            // is one storage (or bridge) pointer, and so is an array buffer's.
-            || ["Swift.Array<", "Swift.ContiguousArray<", "Swift.Dictionary<", "Swift.Set<",
-                "Swift._ArrayBuffer<", "Swift._ContiguousArrayBuffer<"].contains(where: { returnType.hasPrefix($0) && returnType.hasSuffix(">") })
-            // The compiler's own scalars (`_stdlib_isOSVersionAtLeast…` returns
-            // `Builtin.Int1`).
-            || ["Builtin.Int1", "Builtin.Int8", "Builtin.Int16", "Builtin.Int32", "Builtin.Int64", "Builtin.Word",
-                "Builtin.RawPointer", "Builtin.NativeObject", "Builtin.BridgeObject", "Builtin.UnknownObject"].contains(returnType)
-            || enumCaseIndex.isNoPayloadEnum(returnType) || classTypeIndex.isClass(returnType) {
-            return .integer
+        // image's metadata proves are one integer register (`SwiftLowering`).
+        // Defaulting every other type to x0 rendered a stale register as the
+        // result (`abiOneDoubleFromInt` returned its callee's Int; recovered
+        // from the pre-merge stash 983aa25 with its ABISource execution
+        // oracle), and an Optional of a value type, whose nil is a tag or an
+        // extra inhabitant, printed nil as `0`.
+        switch SwiftLowering.of(returnType, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
+        case .oneInteger: .integer
+        case .oneFloat: .floating
+        default: nil
         }
-        return nil
     }
 
     /// Which register a Swift callee's whole result is in, from the result
@@ -4702,7 +4674,7 @@ public struct Disassembler: Sendable {
     }
 
     /// A single-register pointer type (nil-representable as 0).
-    private static func isSingleRegisterPointer(_ type: String) -> Bool {
+    static func isSingleRegisterPointer(_ type: String) -> Bool {
         ["Swift.OpaquePointer", "Swift.UnsafeRawPointer", "Swift.UnsafeMutableRawPointer"]
             .contains(type)
             || type.hasPrefix("Swift.UnsafePointer<")
