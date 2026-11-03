@@ -620,6 +620,12 @@ enum Preservation {
         case stack(Int64)
         /// The eight bytes at entry sp + k, as they were at entry.
         case incoming(Int64)
+        /// An address inside a dynamic stack allocation that hangs below
+        /// entry sp + k: `sub x9, sp, x12; mov sp, x9` with x12 its size.
+        /// A store through it reaches no save at or above k plus its own
+        /// displacement and extent, the same bound the tracer's
+        /// `.frameDynamic` uses.
+        case below(Int64)
         case unknown
     }
 
@@ -640,6 +646,7 @@ enum Preservation {
         mutating func setRegister(_ key: String, to value: Value, mayAliasStack: Bool = false) {
             registers[key] = value == .unknown ? nil : value
             if case .stack = value { stackAliases.insert(key) }
+            else if case .below = value { stackAliases.insert(key) }
             else if mayAliasStack { stackAliases.insert(key) }
             else { stackAliases.remove(key) }
         }
@@ -830,6 +837,22 @@ enum Preservation {
         return (k &+ displacement, base.key, detail.writeback ? .stack(k &+ displacement) : nil)
     }
 
+    /// An access through an address inside a dynamic allocation below k
+    /// (`Value.below`), with no index register: the highest offset it can
+    /// start at, k plus a nonnegative displacement, and the base's value
+    /// after writeback.
+    private static func dynamicAccess(_ detail: StructuredInsn, in state: State) -> (limit: Int64, base: String, after: Value?)? {
+        guard let memory = detail.operands.first(where: { $0.operand.isMemory }),
+              case .memory(let base?, let index, let displacement) = memory.operand, index == nil,
+              case .below(let k) = state.value(base.key)
+        else { return nil }
+        let delta = detail.postIndex ? (detail.operands.last?.operand.immediateValue ?? 0) : displacement
+        let (limit, overflow) = k.addingReportingOverflow(max(detail.postIndex ? 0 : displacement, 0))
+        guard !overflow else { return nil }
+        let after: Value? = detail.writeback || detail.postIndex ? .below(k &+ max(delta, 0)) : nil
+        return (limit, base.key, after)
+    }
+
     private static func apply(_ detail: StructuredInsn, to state: inout State) {
         let operands = detail.operands
         let hasStackBase = operands.contains { info in
@@ -858,6 +881,28 @@ enum Preservation {
                case .stack(let k) = state.value(source.key) {
                 state.setRegister(destination.key, to: .stack(detail.id == AARCH64_INS_ADD ? k &+ immediate : k &- immediate))
                 return
+            }
+            // Within a dynamic allocation: a constant moves the bound by
+            // as much at most.
+            if let destination = register(0), let source = register(1), destination.widthBits == 64,
+               operands.count == 3, let immediate = operands[2].shiftedImmediate,
+               case .below(let k) = state.value(source.key) {
+                let up = detail.id == AARCH64_INS_ADD ? max(immediate, 0) : 0
+                state.setRegister(destination.key, to: .below(k &+ up))
+                return
+            }
+            // A stack address less a size in a register: the allocation
+            // `sub x9, x9, x12` makes, below that address.
+            if detail.id == AARCH64_INS_SUB, let destination = register(0), let source = register(1),
+               destination.widthBits == 64, operands.count == 3, let size = register(2),
+               operands[2].shift.1 == 0, !state.stackAliases.contains(size.key) {
+                switch state.value(source.key) {
+                case .stack(let k), .below(let k):
+                    state.setRegister(destination.key, to: .below(k))
+                    return
+                default:
+                    break
+                }
             }
         case AARCH64_INS_STR, AARCH64_INS_STUR, AARCH64_INS_STP, AARCH64_INS_STNP,
              AARCH64_INS_STRB, AARCH64_INS_STURB, AARCH64_INS_STRH, AARCH64_INS_STURH:
@@ -888,6 +933,19 @@ enum Preservation {
                         state.slots[slot] = state.value(source.key)
                     }
                 }
+            } else if let (limit, base, after) = dynamicAccess(detail, in: state) {
+                // Inside a dynamic allocation below k: nothing at or above
+                // k plus the access's own reach.
+                let bytes = Int64(count * ((register(0)?.widthBits ?? 64) / 8))
+                let (end, overflow) = limit.addingReportingOverflow(bytes)
+                if overflow {
+                    state.invalidateSlotsForUnknownWrite(throughStackAlias: true)
+                } else {
+                    if end > 0 { state.incomingIntact = false }
+                    state.slots = state.slots.filter { start, _ in start >= end }
+                }
+                if let after { state.setRegister(base, to: after) }
+                return
             } else {
                 state.invalidateSlotsForUnknownWrite(throughStackAlias: hasStackBase)
             }

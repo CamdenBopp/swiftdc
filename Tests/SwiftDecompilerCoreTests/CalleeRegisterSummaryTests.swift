@@ -176,3 +176,52 @@ private func structured(_ filter: String, in fixture: String) async throws -> St
         #expect(twoCall.filter { $0 == "," }.count == 2, "\(level): \(twoCall)")
     }
 }
+
+/// A synthetic body decoded at 0x1000, as one function.
+private func body(_ words: [UInt32], name: String) throws -> DisassembledFunction {
+    let engine = try #require(CapstoneEngine())
+    let bytes = words.flatMap { word in (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) } }
+    let decoded = engine.disassemble(Data(bytes), address: 0x1000)
+    try #require(decoded.count == words.count)
+    return DisassembledFunction(
+        symbol: name, demangledName: nil, startAddress: 0x1000,
+        instructions: decoded.map {
+            Instruction(address: $0.address, text: $0.text, controlFlow: $0.controlFlow,
+                        branchTarget: $0.branchTarget, detail: $0.detail)
+        }, source: .symbol)
+}
+
+/// A dynamic allocation hangs below the frame, so a store into it reaches no
+/// save, and an epilogue that takes sp back from x29 reloads them:
+///
+///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
+///     sub sp, sp, #0x10
+///     mov x19, x0; ldr x8, [x0]; mov x9, sp; sub x9, x9, x8; mov sp, x9
+///     str xzr, [x9]
+///     mov sp, x29; ldp x20, x19, [sp, #0x10]; ldp x29, x30, [sp], #0x20; ret
+///
+/// Read as a write of unknown extent through a frame alias, the store
+/// forgot every save, and the summary claimed x19, x20 and x29 clobbered:
+/// each caller lost its frame pointer across the call. The allocation hangs
+/// below the 16 bytes of locals; a store reaches at most its own extent
+/// above them (the bound the tracer's `.frameDynamic` uses), never a save.
+@Test func aStoreIntoADynamicAllocationKeepsTheSaves() throws {
+    let dynamic: [UInt32] = [
+        0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xaa0003f3, 0xf9400008, 0x910003e9,
+        0xcb080129, 0x9100013f, 0xf900013f, 0x910003bf, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
+    ]
+    let summary = try #require(CalleeRegisterSummary.of(try body(dynamic, name: "dynamic")))
+    #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
+    // An address a constant above the allocation's base stays inside it:
+    // `add x10, x9, #8; str xzr, [x10]`.
+    var offset = dynamic
+    offset.replaceSubrange(9...9, with: [0x9100212a, 0xf900015f])
+    let shifted = try #require(CalleeRegisterSummary.of(try body(offset, name: "offset")))
+    #expect(shifted.clobberedCalleeSaved.isEmpty, "\(shifted.clobberedCalleeSaved)")
+    // The control: a store through an unbounded frame alias (`str xzr, [x9,
+    // x8]`, the allocation indexed by its own size) may reach the saves.
+    var indexed = dynamic
+    indexed[9] = 0xf828693f
+    let control = try #require(CalleeRegisterSummary.of(try body(indexed, name: "indexed")))
+    #expect(control.clobberedCalleeSaved.contains("x29"), "\(control.clobberedCalleeSaved)")
+}
