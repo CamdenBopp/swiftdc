@@ -787,5 +787,22 @@ struct ABISourceLoweringTests {
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let put = try #require(functions.first { $0.displayName.hasPrefix("SpillWitness.Store.put(") }).renderStructured()
     #expect(put.contains("getEnumTagSinglePayload value witness for B("), Comment(rawValue: put))
-    #expect(!put.contains("value witness for A"), Comment(rawValue: put))
+    // `table[k] = v` copies k, of type A.
+    #expect(put.contains("initializeWithCopy value witness for A("), Comment(rawValue: put))
+}
+
+/// `___chkstk_darwin` writes only x9 and the flags, so the size in x8 and
+/// the frame survive it: a dynamic allocation stays bounded, and a value
+/// spilled to the frame before it is still there after later calls
+/// (chkstkwitness.swift).
+@Test func theStackProbeKeepsTheFrameAcrossADynamicAllocationIfPresent() async throws {
+    let path = "Fixtures/Sample/libChkstkWitness.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let decode = try #require(functions.first { $0.displayName.contains("of ChkstkWitness.Message.init(from:") }).renderStructured()
+    #expect(decode.contains("destroy value witness for Swift.KeyedDecodingContainer<ChkstkWitness.Message.(PingCodingKeys"),
+            Comment(rawValue: decode))
+    // The allocation's address is no source value.
+    #expect(!decode.contains("& -16"), Comment(rawValue: decode))
+    #expect(decode.contains("allKeys.getter(self: ?)"), Comment(rawValue: decode))
 }

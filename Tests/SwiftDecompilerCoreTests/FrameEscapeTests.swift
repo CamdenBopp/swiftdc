@@ -160,3 +160,13 @@ private let compiledCallEffectFixtures = [
     #expect(callee("bl\t___clang_call_terminate") == "__clang_call_terminate")
     #expect(callee("bl\t_$s1M1fyyF") == "$s1M1fyyF")
 }
+
+/// A dynamic allocation whose size the tracer knows renders its address;
+/// only one with an unknown size reads `?` (chkstkwitness.swift).
+@Test func aKnownSizeDynamicAllocationRendersItsAddressIfPresent() async throws {
+    guard FileManager.default.fileExists(atPath: frameEscapeFixture) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: frameEscapeFixture) }
+    let function = try #require(functions.first { $0.displayName.contains("FrameEscape.dynamicAllocation(") })
+    let text = function.renderStructured()
+    #expect(text.contains("frame_escape_fill((local_30 - ((arg0 + 1) << 4)))"), Comment(rawValue: text))
+}

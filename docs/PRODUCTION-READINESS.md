@@ -1263,6 +1263,25 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — `___chkstk_darwin` was read as an ordinary call, and a
+  dynamic stack allocation after it escaped the whole frame.** A generic
+  -O function sizes each buffer from a value-witness size: `mov x9, x8;
+  blr x16` (the probe), `mov x9, sp; sub x8, x9, x8; mov sp, x8`. The
+  probe's body (libsystem_pthread, read from the dyld cache) saves and
+  restores x10 and x11 and writes only x9, the flags, and the 16 bytes
+  below sp. As a call, it forgot x8, so the buffer's address was an
+  unknown frame offset, and every later call forgot every frame slot. A
+  value-witness table spilled to the frame and reloaded for a `destroy`
+  was lost that way. The tracer now models the probe exactly, by name or
+  by the GOT slot bound to it. An allocation of unknown size renders `?`;
+  one of known size still renders its address. Fixture
+  `chkstkwitness.swift`, a synthesized `Decodable` enum: 10 container
+  destroys named. libSwiftCompilerPluginMessageHandling: unresolved calls
+  430 → 415, value witnesses named 379 → 394. Seven stripped-binary sites
+  now show the positional-argument limit (below): the probe used to erase
+  the caller's argument registers, and an unproven external callee lists
+  them, as in `type metadata accessor for Swift.Optional(0, ?, arg2, arg3,
+  arg4)`.
 - **FIXED — an isa kept in a register across a call lost its meaning.**
   Any call but a retain forgets every alias of a `self` field, the isa
   included, so `ldr x27, [x20]; bl ___chkstk_darwin; ldr x23, [x27,

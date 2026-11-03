@@ -547,6 +547,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name ClassWitness classwitnes
 echo "==> a generic class's isa kept across calls names its witnesses (spillwitness.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name SpillWitness spillwitness.swift -o libSpillWitness.dylib
 
+echo "==> the stack probe keeps the frame across dynamic allocations (chkstkwitness.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name ChkstkWitness chkstkwitness.swift -o libChkstkWitness.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

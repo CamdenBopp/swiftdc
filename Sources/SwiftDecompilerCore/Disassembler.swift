@@ -4810,6 +4810,21 @@ public struct Disassembler: Sendable {
     /// The negative window is deliberately narrow (down to `-0x10000`): a genuine
     /// large *unsigned* value near `UInt64.max` must never be relabelled negative,
     /// and real negative literals are overwhelmingly small in magnitude.
+    /// Whether a frame address less a size (`frame - n`, nested for
+    /// successive allocations) subtracts a size with an unknown part.
+    static func sizeIsUnknown(_ value: AbstractValue) -> Bool {
+        func unknownPart(_ value: AbstractValue) -> Bool {
+            switch value {
+            case .unknown, .callResultHigh, .loadedThrough, .loadedFrom, .selfIsaSnapshot: return true
+            case .binary(_, let lhs, let rhs): return unknownPart(lhs) || unknownPart(rhs)
+            case .unary(_, let operand): return unknownPart(operand)
+            default: return false
+            }
+        }
+        guard case .binary(.subtract, let lhs, let rhs) = value, !ValueTracer.containsFrame(rhs) else { return false }
+        return unknownPart(rhs) || sizeIsUnknown(lhs)
+    }
+
     static func renderImmediate(_ v: UInt64) -> String {
         if v < 4096 { return String(v) }
         let signed = Int64(bitPattern: v)
@@ -5313,6 +5328,20 @@ public struct Disassembler: Sendable {
         /// printed `(A)` it rendered `bump(arg1)`, the Int then in x0.
         func layoutName(at address: UInt64, callee: String) -> String {
             callTargets[address].flatMap { resolver.specializedSignature(at: $0, printedName: callee) } ?? callee
+        }
+        // The GOT slots `adrp; ldr` pairs load the stack probe from, for a
+        // `blr x16` the tracer cannot name before it runs.
+        if function.instructions.contains(where: { $0.controlFlow == .call && $0.branchTarget == nil }) {
+            let pairTracer = ValueTracer()
+            for (index, insn) in function.instructions.enumerated().dropLast() {
+                guard insn.detail?.id == AARCH64_INS_ADRP else { continue }
+                let next = function.instructions[index + 1]
+                guard let destination = next.detail?.operands.first?.operand.register?.key,
+                      case .loaded(let slot)? = pairTracer.finalState(of: [insn, next])[destination],
+                      resolver.loadedName(at: slot) == "__chkstk_darwin"
+                else { continue }
+                tracer.stackProbeSlots.insert(slot)
+            }
         }
         for insn in function.instructions where insn.controlFlow == .call || insn.controlFlow == .branch {
             guard let target = insn.branchTarget, registerSummaries[target] != nil else { continue }
@@ -6720,6 +6749,13 @@ public struct Disassembler: Sendable {
                 // A String result's second word alone is no source value, nor
                 // is a word read through a loaded pointer (a call through one
                 // is named by its target, `annotateIndirectControlFlowTargets`).
+                return unknownRenderedValue()
+            case .binary(.subtract, let lhs, _) where ValueTracer.containsFrame(lhs) && Self.sizeIsUnknown(value):
+                // A dynamic stack allocation of an unknown size, `sub x8, sp,
+                // x8; mov sp, x8` with x8 a value-witness size: the tracer
+                // keeps it to bound what the buffer reaches, but `local_120
+                // - ((? + 15) & -16)` names nothing. A size it knows
+                // (`local_30 - ((arg0 + 1) << 4)`) still renders.
                 return unknownRenderedValue()
             case .immediate(let v):
                 return Self.renderImmediate(v)

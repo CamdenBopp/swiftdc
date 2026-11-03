@@ -586,6 +586,9 @@ public struct ValueTracer: Sendable {
     /// In-image call targets whose bodies write no field of any object
     /// (`CalleeRegisterSummary.writesNoFields`).
     var fieldPreservingCallees: Set<UInt64> = []
+    /// Loader-owned slots bound to `___chkstk_darwin`: a `blr` through one
+    /// is the stack probe, which preserves everything but x9 and the flags.
+    var stackProbeSlots: Set<UInt64> = []
 
     /// Callees that use the caller's x29 as a pointer
     /// (`CalleeRegisterSummary.readsFramePointer`): a call to one may write
@@ -1426,6 +1429,27 @@ public struct ValueTracer: Sendable {
             // ordinary call: a `memset(&a, 0, 8)` whose body writes nothing
             // rendered the `a` loaded after it as 0.
             let call = facts.call(insn)
+            // `___chkstk_darwin` probes the pages of a dynamic allocation of
+            // x9 bytes. Its body (libsystem_pthread) saves and restores x10
+            // and x11 and writes only x9 and the flags, so the size in x8
+            // and every other register live across it: `mov x9, x8; blr
+            // x16; mov x9, sp; sub x8, x9, x8` allocates x8 bytes. As an
+            // ordinary call it forgot x8, and the allocation's address
+            // became an unknown offset of the frame, escaping all of it.
+            let probeSlot: Bool = if insn.branchTarget == nil,
+                case .loaded(let slot)? = Self.indirectTarget(of: insn, in: registers) {
+                stackProbeSlots.contains(slot)
+            } else { false }
+            if probeSlot || (call.knownArityApplies && call.callee == "__chkstk_darwin") {
+                for location in [Location.x(9), .x(16), .x(17), .x(30)] { registers[location] = .unknown }
+                // Its one store saves x10 and x11 in the 16 bytes below sp.
+                if case .frame(let top)? = registers[.sp] {
+                    Self.forgetFrame(in: &registers) { offset, bytes in offset < top && offset &+ bytes > top &- 16 }
+                }
+                registers[Self.flagsKey] = nil
+                registers[Self.flagsWidthKey] = nil
+                return
+            }
             let handledAsMemoryHelper = call.knownArityApplies
                 && applyMemoryHelper(callee: call.callee, site: site, into: &registers)
             // A local whose address the call receives may be written by it: an
@@ -4633,7 +4657,7 @@ public struct ValueTracer: Sendable {
         markFrameEscape(value, into: &registers)
     }
 
-    private static func containsFrame(_ value: AbstractValue) -> Bool {
+    static func containsFrame(_ value: AbstractValue) -> Bool {
         switch value {
         case .frame: return true
         case .binary(_, let lhs, let rhs): return containsFrame(lhs) || containsFrame(rhs)

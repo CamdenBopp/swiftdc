@@ -291,3 +291,33 @@ private func asyncMemoryObservation(_ words: [UInt32], seeds: [Int: AbstractValu
         #expect(storage[0] == UInt64(UInt(bitPattern: replacement)))
     }
 }
+
+/// `___chkstk_darwin`'s body writes x9, the flags, and the 16 bytes below
+/// sp where it saves x10 and x11; every other register survives it.
+private func stackProbeExit(_ words: [UInt32]) throws -> AbstractValue? {
+    let engine = try #require(CapstoneEngine())
+    let bytes = words.flatMap { word in (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) } }
+    let function = DisassembledFunction(symbol: "probe", demangledName: nil, startAddress: 0x1000,
+        instructions: engine.disassemble(Data(bytes), address: 0x1000).map { insn in
+            Instruction(address: insn.address, text: insn.text,
+                annotation: insn.controlFlow == .call ? "→ __chkstk_darwin" : nil,
+                controlFlow: insn.controlFlow, branchTarget: insn.controlFlow == .call ? nil : insn.branchTarget,
+                detail: insn.detail)
+        }, source: .address)
+    let ret = try #require(function.instructions.last)
+    return ValueTracer().analyze(function, entry: .swiftFunction(scalarArguments: [:])).exitValues[ret.address]
+}
+
+@Test func theStackProbePreservesTheRegistersItDoesNotWrite() throws {
+    // mov x8, #5; bl probe; mov x0, x8; ret
+    #expect(try stackProbeExit([0xd28000a8, 0x94000000, 0xaa0803e0, 0xd65f03c0]) == .immediate(5))
+    // mov x9, #5; bl probe; mov x0, x9; ret: x9 is the probe's counter.
+    #expect(try stackProbeExit([0xd28000a9, 0x94000000, 0xaa0903e0, 0xd65f03c0]) != .immediate(5))
+}
+
+@Test func theStackProbeOverwritesTheSixteenBytesBelowSP() throws {
+    // mov x1, #7; stur x1, [sp, #-8]; bl probe; ldur x0, [sp, #-8]; ret
+    #expect(try stackProbeExit([0xd28000e1, 0xf81f83e1, 0x94000000, 0xf85f83e0, 0xd65f03c0]) != .immediate(7))
+    // At -0x18, below what it writes, the word survives.
+    #expect(try stackProbeExit([0xd28000e1, 0xf81e83e1, 0x94000000, 0xf85e83e0, 0xd65f03c0]) == .immediate(7))
+}
