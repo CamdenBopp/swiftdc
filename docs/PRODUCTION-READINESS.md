@@ -1263,6 +1263,17 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — a call through two pointers the image fixes was unresolved.**
+  `ldur x8, [meta, #-0x8]; ldr x8, [x8, #0x28]; blr x8` calls slot 5 of a
+  type's value-witness table, and it rendered `/* unresolved call */`. The
+  tracer now carries a word read through a loaded pointer
+  (`.loadedThrough`). The resolver follows both pointers when each is a
+  rebase in read-only memory, and names the target:
+  `assignWithTake value witness for CompilerSwiftOperators.PrecedenceGroup(arg1,
+  arg0, 0x18da8)`. Either pointer in writable memory declines. Fixture
+  `staticwitness.s`. In the swift-syntax dylibs this covers the
+  static-metadata sites only. Metadata from an existential's type word or
+  a generic argument is still unresolved, which is most of the 187.
 - **FIXED — a struct argument this image lays out now takes its fields'
   registers.** Since b26d282 a struct parameter, and everything after it,
   rendered `?`. `SwiftLowering.aggregateRegisters` now computes a fully

@@ -526,6 +526,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name MetatypeArgs metatypearg
 echo "==> structs passed in their fields' registers (structlowering.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name StructLowering structlowering.swift -o libStructLowering.dylib
 
+echo "==> a call through two pointers the image fixes, read-only and writable (staticwitness.s)"
+$CLANG -arch arm64 -dynamiclib staticwitness.s -o libStaticWitness.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

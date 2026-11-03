@@ -3266,6 +3266,18 @@ public struct Disassembler: Sendable {
                     }
                 }
                 return loadedName(at: slot).map { (nil, $0) }
+            case .loadedThrough(let slot, let offset):
+                // Two loads the image's own bytes fix: the pointer in `slot`,
+                // then the pointer at `offset` in what it points to, each a
+                // rebase in read-only memory. `ldur x8, [meta, #-0x8]; ldr x8,
+                // [x8, #0x28]; blr x8` reads a type's value-witness table and
+                // calls its assignWithTake, named as its symbol demangles.
+                guard offset >= 0, holdsFixedPointer(at: slot), let object = pointerTarget(at: slot) else { return nil }
+                let field = object &+ UInt64(offset)
+                guard holdsFixedPointer(at: field), let target = pointerTarget(at: field),
+                      let name = callTargetName(at: target) ?? cacheSymbols?.name(forCallTarget: target)
+                else { return nil }
+                return (target, name)
             default:
                 return nil
             }
@@ -5079,6 +5091,10 @@ public struct Disassembler: Sendable {
                 // Async plumbing: the context pointer, the continuation, and an
                 // unproven context slot are not source values.
                 return .unknown
+            case .loadedThrough:
+                // A word read through a loaded pointer: named only as a call
+                // target (`indirectCallTarget`), unknown as a value.
+                return .unknown
             case .binary(let op, let lhs, let rhs):
                 let lhs = sanitizeValue(lhs)
                 let rhs = sanitizeValue(rhs)
@@ -6571,8 +6587,10 @@ public struct Disassembler: Sendable {
                 return boolean
             }
             switch value {
-            case .unknown, .callResultHigh:
-                // A String result's second word alone is no source value.
+            case .unknown, .callResultHigh, .loadedThrough:
+                // A String result's second word alone is no source value, nor
+                // is a word read through a loaded pointer (a call through one
+                // is named by its target, `annotateIndirectControlFlowTargets`).
                 return unknownRenderedValue()
             case .immediate(let v):
                 return Self.renderImmediate(v)

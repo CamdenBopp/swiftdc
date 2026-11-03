@@ -673,3 +673,20 @@ struct ABISourceLoweringTests {
     #expect(text.contains("ABISource.ABIVec2.dot(?)\n"), Comment(rawValue: text.components(separatedBy: "\n").filter { $0.contains("dot(") }.joined(separator: "\n")))
     #expect(!text.contains("ABIVec2.dot(?, "))
 }
+
+/// A call through a pointer loaded through another pointer is named when the
+/// image's read-only bytes fix both (a value-witness table slot), and not
+/// when either lies in writable memory (staticwitness.s).
+@Test func aCallThroughTwoFixedPointersIsNamedIfPresent() async throws {
+    let path = "Fixtures/Sample/libStaticWitness.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func call(_ name: String) throws -> String {
+        let function = try #require(functions.first { $0.displayName == name })
+        return try #require(function.instructions.first { $0.text.hasPrefix("blr") }).annotation ?? ""
+    }
+    #expect(try call("_callThroughWitness").contains("→ slot5"))
+    #expect(try !call("_callThroughWritable").contains("→"))
+    #expect(try !call("_callSlotWritable").contains("→"))
+    #expect(try !call("_callTableWritable").contains("→"))
+}
