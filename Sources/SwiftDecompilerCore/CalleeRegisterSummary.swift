@@ -910,33 +910,9 @@ enum Preservation {
                     continue
                 }
                 if insn.controlFlow == .call {
-                    let effect = callEffect(insn)
-                    // The callee reads its reloads before it can write anything.
-                    let reloaded = state.reloaded(effect)
-                    // A callee may mutate any save whose address it can
-                    // reach. sp/x29 alone are ordinary frame bookkeeping;
-                    // any other frame alias can be an outgoing argument,
-                    // including an outlined fragment's nonstandard input.
-                    // A callee that keeps the calling convention (`callInputs`)
-                    // takes inputs only in the argument registers, x8, and
-                    // Swift's x20 and x21; x22 is an async context, never a
-                    // stack address. A frame alias parked in another
-                    // callee-saved register, the sp a dynamic allocation
-                    // restores (`mov x22, sp; …; bl String.init; mov sp,
-                    // x22`), is no argument to it. An outlined fragment may
-                    // take any register, so a call to an unknown in-image
-                    // target escapes every alias.
-                    let inputs = callInputs(insn).map { state.stackAliases.intersection($0) }
-                        ?? state.stackAliases.subtracting(["sp", "x29"])
-                    if effect.readsFramePointer && state.stackAliases.contains("x29") {
-                        state.stackAddressEscaped = true
-                    }
-                    state.markEscape(inputs)
-                    state.invalidateSlotsForUnknownWrite(throughStackAlias: false)
-                    // The callee keeps the ABI: x19–x29 and sp survive it.
-                    for index in 0...18 { state.setRegister("x\(index)", to: .unknown) }
-                    state.setRegister("x30", to: .unknown)
-                    state.apply(effect, reloaded: reloaded, clobbersMayAliasStack: clobbersMayAliasStack)
+                    applyCall(
+                        callEffect(insn), inputs: callInputs(insn), to: &state,
+                        clobbersMayAliasStack: clobbersMayAliasStack)
                     continue
                 }
                 apply(detail, to: &state)
@@ -952,6 +928,40 @@ enum Preservation {
             }
         }
         return exits
+    }
+
+    /// What a call does to the state: `effect` is the callee's, and
+    /// `callInputs` the registers it can take an input in (nil when it may
+    /// take any).
+    static func applyCall(
+        _ effect: CalleeEffect, inputs callInputs: Set<String>?, to state: inout State, clobbersMayAliasStack: Bool
+    ) {
+        // The callee reads its reloads before it can write anything.
+        let reloaded = state.reloaded(effect)
+        // A callee may mutate any save whose address it can
+        // reach. sp/x29 alone are ordinary frame bookkeeping;
+        // any other frame alias can be an outgoing argument,
+        // including an outlined fragment's nonstandard input.
+        // A callee that keeps the calling convention (`callInputs`)
+        // takes inputs only in the argument registers, x8, and
+        // Swift's x20 and x21; x22 is an async context, never a
+        // stack address. A frame alias parked in another
+        // callee-saved register, the sp a dynamic allocation
+        // restores (`mov x22, sp; …; bl String.init; mov sp,
+        // x22`), is no argument to it. An outlined fragment may
+        // take any register, so a call to an unknown in-image
+        // target escapes every alias.
+        let inputs = callInputs.map { state.stackAliases.intersection($0) }
+            ?? state.stackAliases.subtracting(["sp", "x29"])
+        if effect.readsFramePointer && state.stackAliases.contains("x29") {
+            state.stackAddressEscaped = true
+        }
+        state.markEscape(inputs)
+        state.invalidateSlotsForUnknownWrite(throughStackAlias: false)
+        // The callee keeps the ABI: x19–x29 and sp survive it.
+        for index in 0...18 { state.setRegister("x\(index)", to: .unknown) }
+        state.setRegister("x30", to: .unknown)
+        state.apply(effect, reloaded: reloaded, clobbersMayAliasStack: clobbersMayAliasStack)
     }
 
     /// The registers a function that keeps the calling convention can take
