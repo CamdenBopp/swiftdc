@@ -6758,3 +6758,17 @@ Findings:
   (`(local, ?, 0)` -> `(local, ?)`), `_findStringSwitchCase(cases:
   string:)` gained its String as `?`, raw `x0 == x1` became `arg0 ==
   arg1`.
+- **FIXED — async calls laid out by position** (ABI review item 7). An
+  async callee's context is its `swiftasync` parameter (x22) and its
+  formals take the ordinary registers (`define swifttailcc void @dbl(ptr
+  swiftasync %0, double %1)`), unless an indirect result's buffer comes
+  first (`@bigRes(ptr %0, ptr swiftasync %1, i64 %2)`). A callee whose
+  result `SwiftLowering` proves direct is laid out as a synchronous one;
+  any other shows its declared parameters, each `?`; a resume funclet,
+  which takes only the context, is left as it was. `bumpG(?)` (x0 the
+  callee context) reads `bumpG()`, `dbl(?)` reads `dbl(arg0)` from d0,
+  `bigRes(?, arg0)` reads `bigRes(?)` (`asynccalls.swift`). Fixtures: 74
+  lines, 20 `Task.yield(?)` -> `yield()` and hand-written leaves
+  matching their declared parameters; swift-syntax byte-identical. OPEN:
+  inside an async function with an indirect result, `arg0` names the
+  buffer (a7 #2).

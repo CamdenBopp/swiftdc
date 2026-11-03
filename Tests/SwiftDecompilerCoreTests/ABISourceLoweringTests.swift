@@ -335,3 +335,20 @@ struct ABISourceLoweringTests {
     #expect(text.contains("ParkedSelf.Mode.weight(r0)"), Comment(rawValue: text))
     #expect(!text.contains("self"), Comment(rawValue: text))
 }
+
+/// An async callee takes its formals as a synchronous one does when its
+/// result travels in registers, and behind an indirect result's buffer in
+/// x0 otherwise. Laid out by position, `bumpG()` read `bumpG(?)` (x0 the
+/// callee context), `dbl(_: Double)` read `dbl(?)` with the Double in d0
+/// dropped, and `bigRes(_: Int) -> Big5` read `bigRes(?, arg0)`
+/// (`asynccalls.swift`, ABI review item 7).
+@Test func anAsyncCallTakesItsDeclaredParametersIfPresent() async throws {
+    let path = "Fixtures/Sample/libAsyncCalls.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    for line in ["await AsyncCalls.bumpG()\n", "await AsyncCalls.dbl(arg0)\n",
+                 "await AsyncCalls.twoArgs(arg0, arg1)\n", "await AsyncCalls.bigRes(?)\n"] {
+        #expect(text.contains(line), "\(line)")
+    }
+}

@@ -55,10 +55,15 @@ private func pseudo(_ filter: String, in fixture: String) async throws -> String
     #expect(layout("M.mixed(Swift.Int, Swift.Double, Swift.Int) -> Swift.Double") == [.integer, .floating, .integer])
     #expect(layout("static M.S.make(Swift.Int) -> M.S") == [.integer])
     #expect(layout("M.S.init(x: Swift.Int) -> M.S") != nil)
-    // Generics carry trailing metadata; async has a context. A String's two
+    // Generics carry trailing metadata. An async callee's context is its
+    // `swiftasync` parameter (x22) and its formals take the ordinary
+    // registers (`define swifttailcc void @dbl(ptr swiftasync %0, double
+    // %1)`), unless an indirect result's buffer comes first (`@bigRes(ptr
+    // %0, ptr swiftasync %1, i64 %2)`), which is not laid out. A String's two
     // registers and an inout address are sized in StringArityTests.
     #expect(layout("M.gen<A>(Swift.Int, A) -> Swift.Int") == nil)
-    #expect(layout("M.wait(Swift.Int) async -> Swift.Int") == nil)
+    #expect(layout("M.wait(Swift.Int) async -> Swift.Int") == [.integer])
+    #expect(layout("M.wait(Swift.Int) async -> M.Big") == nil)
     // An instance method of a type not known to be a class: its self may be a
     // value passed after the formals.
     #expect(layout("M.S.scaled(Swift.Int) -> M.S") == nil)

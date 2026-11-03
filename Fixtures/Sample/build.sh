@@ -481,6 +481,9 @@ $CLANG -arch arm64 -O2 -dynamiclib -undefined dynamic_lookup signed32.c -o libSi
 echo "==> Objective-C returns in v0, d0-d3 and through x8 (objcreturns.m, -O2)"
 $CLANG -arch arm64 -O2 -fobjc-arc -dynamiclib -framework Foundation objcreturns.m -o libObjCReturns.dylib
 
+echo "==> calls to async functions, direct and indirect results (asynccalls.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name AsyncCalls asynccalls.swift -o libAsyncCalls.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

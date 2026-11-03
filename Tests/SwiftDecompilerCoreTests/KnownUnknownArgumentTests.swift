@@ -26,7 +26,9 @@ import Testing
 // Negative layout controls constrain any missing-site completion to supported
 // layouts; no signature parser expansion belongs in this correction.
 @Test func missingValuesDoNotJustifyUnknownOrAggregateArgumentLayouts() {
-    for callee in ["externalUnknown", "M.f<T>(T) -> ()", "M.f((Swift.Int, Swift.Int)) -> ()", "M.f(Swift.Int) async -> ()"] {
+    // An async callee whose result may be indirect is not laid out; one with
+    // a register result is, as a synchronous one (CallArityTests).
+    for callee in ["externalUnknown", "M.f<T>(T) -> ()", "M.f((Swift.Int, Swift.Int)) -> ()", "M.f(Swift.Int) async -> M.S"] {
         #expect(Disassembler.swiftCallArgumentSlots(callee: callee,
             enumCaseIndex: EnumCaseIndex(), classTypeIndex: ClassTypeIndex()) == nil)
     }

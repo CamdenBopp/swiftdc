@@ -4079,8 +4079,14 @@ public struct Disassembler: Sendable {
         if let colon = declared.range(of: ".subscript.getter : ("), !declared[..<colon.lowerBound].contains(" ") {
             declared.replaceSubrange(colon, with: ".subscript(")
         }
+        // An async callee takes its context in x22 and its formals as a
+        // synchronous one does, unless its result is indirect, whose buffer
+        // then comes first in x0 (swift/lib/IRGen/GenCall.cpp, the async
+        // signature). Only a result proven to travel in registers is laid
+        // out here.
         guard let signature = DisassembledFunction.splitSignature(declared),
-              !signature.isAsync,
+              !signature.isAsync || SwiftLowering.of(signature.result, enumCaseIndex: enumCaseIndex,
+                                                     classTypeIndex: classTypeIndex).isDirect,
               let range = DisassembledFunction.outermostArgumentListRange(of: signature.head)
         else { return nil }
         var name = Substring(Self.withoutPrivateDiscriminators(String(signature.head[..<range.lowerBound].dropLast())))
@@ -5740,6 +5746,22 @@ public struct Disassembler: Sendable {
                 while bounded.count > proven, bounded.last == .unknown { bounded.removeLast() }
                 if !bounded.isEmpty { argumentsByAddress[address] = bounded }
                 strategy = "body-reads"
+                continue
+            }
+            // An async callee not laid out above takes its formals behind an
+            // indirect result's buffer in x0, and x0 may hold the callee
+            // context: by position `bigRes(_ x: Int) async -> Big5` read
+            // `bigRes(?, arg0)` and `bumpG()` read `bumpG(?)`. Its declared
+            // parameters are shown, each unknown.
+            // A resume funclet's name prints its function's signature, but it
+            // takes only the context.
+            if let callee = calleeByAddress[address], !callee.contains("resume partial function for "),
+               let signature = DisassembledFunction.splitSignature(callee),
+               signature.isAsync, let range = DisassembledFunction.outermostArgumentListRange(of: signature.head) {
+                let parameters = DisassembledFunction.splitTopLevelArguments(signature.head[range])
+                    .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                argumentsByAddress[address] = parameters.map { _ in .unknown }
+                strategy = "async-declared-count"
                 continue
             }
             if let values = sanitize(values) { argumentsByAddress[address] = values }
