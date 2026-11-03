@@ -1263,6 +1263,19 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED (partly) — a generic function's value-witness calls on its
+  own type parameter were unresolved.** An unspecialized generic free
+  function receives each type parameter's metadata right after its
+  formals. `pick<T>(Int, T, T) -> T` is `(sret, i64, ptr, ptr, ptr %T)`.
+  Entry seeding now names those registers (`.genericMetadata`), and a call
+  through `[[T - 8] + k]` is `<slot> value witness for A`:
+  `load<T>(_:_:)` reads `initializeWithCopy value witness for A(&result,
+  ?)`. Fixture `genericwitness.swift`. In the listing, a call taking T's
+  metadata shows it as `type metadata for A`. For a callee of unknown
+  arity, a stale copy may follow: `Optional`'s accessor reads `args(0, ?,
+  type metadata for A)`, the existing positional-argument limit. A
+  function whose formals include a generic value is seeded in the next
+  commit.
 - **FIXED — a value-witness call on a metadata accessor's result was
   unresolved.** `bl type metadata accessor for Foundation.URL; ldur x8,
   [x0, #-0x8]; ldr x9, [x8, #k]; blr x9` rendered `/* unresolved call */`.

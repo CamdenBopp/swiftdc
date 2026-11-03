@@ -57,6 +57,7 @@ public extension ProbeValue {
             case .selfVTableMethod(let offset): return leaf("self-vtable-method", ["offset": .int(offset)])
             case .loadedThrough(let slot, let offset): return leaf("loaded-through", ["slot": .address(slot), "offset": .int(offset)])
             case .loadedFrom(let base, let offset): return leaf("loaded-from", ["base": child(base), "offset": .int(offset)])
+            case .genericMetadata(let name): return leaf("generic-metadata", ["parameter": .label(name)])
             case .argumentField(let argument, let offset): return leaf("argument-field", ["argument": .int(argument), "offset": .int(offset)])
             case .arrayLiteral(let site, let count): return leaf("array-literal", ["site": .address(site), "count": .int(count)])
             case .frame(let offset): return leaf("frame", ["offset": .int(Int(offset))])

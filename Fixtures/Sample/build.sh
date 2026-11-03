@@ -532,6 +532,9 @@ $CLANG -arch arm64 -dynamiclib staticwitness.s -o libStaticWitness.dylib
 echo "==> value-witness calls on a metadata accessor's result (accessorwitness.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name AccessorWitness accessorwitness.swift -o libAccessorWitness.dylib
 
+echo "==> unspecialized generic functions' metadata and witnesses (genericwitness.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name GenericWitness genericwitness.swift -o libGenericWitness.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

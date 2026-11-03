@@ -181,6 +181,9 @@ public indirect enum AbstractValue: Equatable, Sendable {
     /// its initializeWithCopy. Unknown as a value; the enrichment names a
     /// call through it.
     case loadedFrom(AbstractValue, offset: Int)
+    /// A generic function's type parameter's metadata, as its entry receives
+    /// it after the formals (`pick<T>(_:_:_:)`: T's in x3).
+    case genericMetadata(String)
     /// The `self` pointer as it arrives at a Swift instance method — x20 under
     /// the Swift calling convention.
     ///
@@ -338,7 +341,9 @@ public enum MethodEntryConvention: Sendable, Equatable {
     /// source argument index — integers in x0…, floats in v0…). Seeded only under
     /// that proof (see `swiftScalarArgumentRegisters`) so a multi-register
     /// parameter never shifts the mapping and mislabels a register.
-    case swiftFunction(scalarArguments: [String: Int])
+    /// `genericMetadata` names the registers holding a generic function's
+    /// type parameters' metadata (register key -> parameter name).
+    case swiftFunction(scalarArguments: [String: Int], genericMetadata: [String: String] = [:])
     /// A nonmutating instance method of a small homogeneous floating-point
     /// aggregate struct: `self` (and any HFA parameters) are passed by value in
     /// consecutive SIMD registers, so `seededRegisters` maps each register key to
@@ -895,11 +900,12 @@ public struct ValueTracer: Sendable {
             for argument in 6 ..< max(6, min(max(argumentCount, 0), 32)) {
                 state[Self.stackKey(Int64(argument - 6) * 8)] = .argument(argument)
             }
-        case .swiftFunction(let scalarArguments):
+        case .swiftFunction(let scalarArguments, let genericMetadata):
             // No `self`/`_cmd` prefix: a Swift function's integer arguments occupy
             // x0…, its floating-point ones v0…. A proven all-scalar signature
             // never spills, so there is nothing past the eighth of each to recover.
             for (register, argument) in scalarArguments { if let location = Location(key: register) { state[location] = .argument(argument) } }
+            for (register, name) in genericMetadata { if let location = Location(key: register) { state[location] = .genericMetadata(name) } }
         case .swiftValueInstance(let seededRegisters):
             // `self` (and HFA parameters) arrive decomposed across SIMD registers;
             // each holds a field's value directly, so they read as `self.field` /
@@ -4447,7 +4453,7 @@ public struct ValueTracer: Sendable {
         case .frame(let offset): return .stackSlot(Self.stackKey(offset &+ effective))
         case .address(let address): return .absolute(address &+ UInt64(bitPattern: effective))
         case .loaded(let slot): return .throughStaticPointer(slot: slot, offset: Int(effective))
-        case .callResult, .loadedFrom(.callResult, _):
+        case .callResult, .loadedFrom(.callResult, _), .genericMetadata, .loadedFrom(.genericMetadata, _):
             return .throughValue(registers[Location(base)] ?? .unknown, offset: Int(effective))
         case .selfPointer: return .selfField(Int(effective))
         case .selfField(let field): return .selfField(field + Int(effective))

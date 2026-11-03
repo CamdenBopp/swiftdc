@@ -1378,7 +1378,10 @@ public struct Disassembler: Sendable {
         } else if classSelfTypeName != nil {
             .swiftInstance(scalarArguments: Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps) ?? [:])
         } else if let scalarArgs = Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps) {
-            .swiftFunction(scalarArguments: scalarArgs)
+            .swiftFunction(scalarArguments: scalarArgs,
+                           genericMetadata: Self.genericMetadataRegisters(
+                               of: function, enumCaseIndex: context.enumCaseIndex,
+                               classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps))
         } else if !DisassembledFunction.signatureKnown(displayName: function.analysisDisplayName, objcSignature: nil),
                   let summary = context.registerSummaries[function.startAddress], summary.provenArgumentCount > 0 {
             // No signature (a stripped `sub_…`, a C symbol): the body's own
@@ -2937,14 +2940,19 @@ public struct Disassembler: Sendable {
         /// Only the eight function slots every table has; past them come
         /// the size, stride and flags.
         func valueWitnessCall(_ value: AbstractValue) -> String? {
-            guard case .loadedFrom(.loadedFrom(.callResult(let site), offset: -8), let offset) = value,
-                  offset >= 0, offset % 8 == 0, offset / 8 < MetadataSymbolizer.valueWitnessNames.count,
+            guard case .loadedFrom(.loadedFrom(let metadata, offset: -8), let offset) = value,
+                  offset >= 0, offset % 8 == 0, offset / 8 < MetadataSymbolizer.valueWitnessNames.count
+            else { return nil }
+            let slot = MetadataSymbolizer.valueWitnessNames[offset / 8]
+            // A generic parameter's metadata, as the function received it.
+            if case .genericMetadata(let name) = metadata { return "\(slot) value witness for \(name)" }
+            guard case .callResult(let site) = metadata,
                   let call = function.instructions.first(where: { $0.address == site }),
                   let callee = DisassembledFunction.calleeName(of: call)
             else { return nil }
             let prefix = "type metadata accessor for "
             guard callee.hasPrefix(prefix), callee.count > prefix.count else { return nil }
-            return "\(MetadataSymbolizer.valueWitnessNames[offset / 8]) value witness for \(callee.dropFirst(prefix.count))"
+            return "\(slot) value witness for \(callee.dropFirst(prefix.count))"
         }
         let ownAddresses = Set(function.instructions.map(\.address))
         let instructions = function.instructions.map { insn -> Instruction in
@@ -4002,6 +4010,50 @@ public struct Disassembler: Sendable {
     /// tracked separately. Nil for any signature with an aggregate, generic,
     /// `inout`, `String`, or otherwise multi-register parameter (or none), so a
     /// register is never mislabeled `arg k` when the real layout differs.
+    /// The registers an unspecialized generic free function receives its
+    /// type parameters' metadata in: the integer registers right after its
+    /// formals, one per parameter in order, before any witness table
+    /// (swift/docs/ABI/CallingConvention.rst; `pick<T>(Int, T, T) -> T` is
+    /// `(sret, i64, ptr, ptr, ptr %T)`, T's metadata in x3). Empty for
+    /// anything whose formals are not laid out in full, a method (its `self`
+    /// and Self metadata have other places), or an async function.
+    static func genericMetadataRegisters(
+        of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex,
+        fieldMaps: [String: FieldMap]
+    ) -> [String: String] {
+        guard let name = function.analysisName, isSwiftMangled(function.symbol),
+              signatureSpecializationKeepsLayout(name), !name.hasPrefix("function signature specialization"),
+              !name.hasPrefix("generic specialization"),
+              let signature = DisassembledFunction.splitSignature(name), !signature.isAsync,
+              let range = DisassembledFunction.outermostArgumentListRange(of: signature.head)
+        else { return [:] }
+        let head = signature.head[..<range.lowerBound].dropLast()
+        guard let open = head.firstIndex(of: "<"), head.hasSuffix(">"),
+              head[..<open].filter({ $0 == "." }).count == 1,
+              head[..<open].allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." })
+        else { return [:] }
+        let clause = head[head.index(after: open)..<head.index(before: head.endIndex)]
+        let names = (clause.range(of: " where ").map { clause[..<$0.lowerBound] } ?? clause)
+            .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard !names.isEmpty, names.allSatisfy({ $0.wholeMatch(of: #/[A-Z][0-9]*/#) != nil }),
+              let layout = swiftCallArgumentLayout(callee: name, enumCaseIndex: enumCaseIndex,
+                                                   classTypeIndex: classTypeIndex, fieldMaps: fieldMaps),
+              layout.stack.isEmpty
+        else { return [:] }
+        let integers = layout.slots.reduce(0) { total, slot in
+            switch slot.kind {
+            case .integer: total + slot.registers
+            case .floating: total
+            case .aggregate(let x, _): total + x
+            }
+        }
+        var registers: [String: String] = [:]
+        for (index, parameter) in names.enumerated() where integers + index < 8 {
+            registers["x\(integers + index)"] = parameter
+        }
+        return registers
+    }
+
     static func swiftScalarArgumentRegisters(
         of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
         classTypeIndex: ClassTypeIndex = ClassTypeIndex(), fieldMaps: [String: FieldMap] = [:]
@@ -5456,7 +5508,7 @@ public struct Disassembler: Sendable {
         // inside another expression all name the same `self`.
         // The register each seeded parameter arrived in.
         let entryArgumentRegisters: [String: Int] = switch entry {
-        case .swiftFunction(let map)?, .swiftInstance(let map)?: map
+        case .swiftFunction(let map, _)?, .swiftInstance(let map)?: map
         default: [:]
         }
         /// `values`, the registers from x`first` on, without its trailing run
@@ -6604,6 +6656,8 @@ public struct Disassembler: Sendable {
                 return boolean
             }
             switch value {
+            case .genericMetadata(let name):
+                return "type metadata for \(name)"
             case .unknown, .callResultHigh, .loadedThrough, .loadedFrom:
                 // A String result's second word alone is no source value, nor
                 // is a word read through a loaded pointer (a call through one

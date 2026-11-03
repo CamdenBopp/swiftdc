@@ -705,3 +705,16 @@ struct ABISourceLoweringTests {
     #expect(text.contains("assignWithCopy value witness for Foundation.URL("))
     #expect(!text.contains("unresolved call"))
 }
+
+/// An unspecialized generic function receives its type parameters' metadata
+/// after its formals; a call through slot k of [metadata - 8] is that
+/// parameter's value witness (genericwitness.swift).
+@Test func aGenericParametersValueWitnessCallIsNamedIfPresent() async throws {
+    let path = "Fixtures/Sample/libGenericWitness.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("GenericWitness.\(name)<") }).renderStructured()
+    }
+    #expect(try text("load").contains("initializeWithCopy value witness for A(&result, "))
+}
