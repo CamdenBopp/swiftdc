@@ -55,8 +55,7 @@ omitted.
    renders `return (? as? Swift.Int)`; `if let _ = a as? String` renders
    `return r0` for a Bool function. Render it as a success test; keep
    `(x as? T)` for the casts that return the object.
-7. **FIXED (call sites; the callee's own `arg0` for an indirect result
-   still OPEN) — Async callees are laid out positionally.** `await bumpG(?)` for a
+7. **FIXED — Async callees are laid out positionally.** `await bumpG(?)` for a
    function with no parameters (x0 is the callee context), `await dbl(?)`
    dropping the Double in d0, `await bigRes(?, arg0)` showing the x0 result
    buffer as a parameter, `leafB(awaited1)` dropping x1. Inside an async

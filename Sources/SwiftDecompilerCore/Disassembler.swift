@@ -3905,7 +3905,14 @@ public struct Disassembler: Sendable {
               Self.signatureSpecializationKeepsLayout(name),
               // A getter/setter/accessor or a name without a call signature has no
               // ordinary parameter list to seed.
-              let split = DisassembledFunction.splitSignature(name)
+              let split = DisassembledFunction.splitSignature(name),
+              // An async function with an indirect result takes the buffer
+              // first, in x0 (`@bigRes(ptr %0, ptr swiftasync %1, i64 %2)`):
+              // seeded from the printed signature, `arg0` named the buffer
+              // and `x` read as raw x1. A result not proven direct may be
+              // indirect, so nothing is seeded.
+              !split.isAsync || SwiftLowering.of(split.result, enumCaseIndex: enumCaseIndex,
+                                                 classTypeIndex: classTypeIndex).isDirect
         else { return nil }
         let signature = split.head
         guard let paramsRange = DisassembledFunction.outermostArgumentListRange(of: signature)

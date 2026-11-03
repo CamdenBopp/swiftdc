@@ -352,3 +352,18 @@ struct ABISourceLoweringTests {
         #expect(text.contains(line), "\(line)")
     }
 }
+
+/// Inside an async function whose result may be indirect, x0 may be the
+/// result's buffer, which comes before the formals: `bigRes(_ x: Int) async
+/// -> Big5` read `mem64[arg0] = x1`, `arg0` naming the buffer
+/// (`asynccalls.swift`, ABI review a7 #2). One with a direct result is
+/// seeded as before.
+@Test func anAsyncFunctionWithAnUnprovenResultIsNotSeededIfPresent() async throws {
+    let path = "Fixtures/Sample/libAsyncCalls.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let big = try #require(functions.first { $0.displayName.hasPrefix("AsyncCalls.bigRes(") }).renderStructured()
+    #expect(!big.contains("arg0"), Comment(rawValue: big))
+    let two = try #require(functions.first { $0.displayName.hasPrefix("AsyncCalls.twoArgs(") }).renderStructured()
+    #expect(two.contains("return ((arg1 - arg0) + (arg0 << 3))"), Comment(rawValue: two))
+}

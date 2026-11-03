@@ -6769,6 +6769,10 @@ Findings:
   callee context) reads `bumpG()`, `dbl(?)` reads `dbl(arg0)` from d0,
   `bigRes(?, arg0)` reads `bigRes(?)` (`asynccalls.swift`). Fixtures: 74
   lines, 20 `Task.yield(?)` -> `yield()` and hand-written leaves
-  matching their declared parameters; swift-syntax byte-identical. OPEN:
-  inside an async function with an indirect result, `arg0` names the
-  buffer (a7 #2).
+  matching their declared parameters; swift-syntax byte-identical.
+- **FIXED — inside an async function with an indirect result, `arg0`
+  named the buffer** (a7 #2). Such a function takes the result's buffer
+  in x0 before its formals, so an async function whose result
+  `SwiftLowering` does not prove direct is not seeded: `bigRes(_ x: Int)
+  async -> Big5` read `mem64[arg0] = x1` and reads `mem64[x0] = x1`.
+  Fixtures: 6 lines, that function; swift-syntax byte-identical.
