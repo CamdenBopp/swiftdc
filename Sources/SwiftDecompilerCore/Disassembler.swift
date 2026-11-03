@@ -1232,6 +1232,8 @@ public struct Disassembler: Sendable {
         /// The members of `self`'s type each method's analysis looks up,
         /// computed once per type for the image.
         let selfMembers = SelfMemberCache()
+        /// Where each callee's result is, computed once per callee name.
+        let callResultBanks = CallResultBankCache()
     }
 
     /// `name(at:ownedBy:)` per (address, type) and the accessor map of each
@@ -1475,7 +1477,8 @@ public struct Disassembler: Sendable {
             asyncSuspensions: Self.asyncSuspensionNotes(in: function, index: context.asyncIndex),
             objcIndex: context.objcIndex,
             registerSummaries: context.registerSummaries,
-            selfMembers: context.selfMembers
+            selfMembers: context.selfMembers,
+            callResultBanks: context.callResultBanks
         )
     }
 
@@ -3954,6 +3957,49 @@ public struct Disassembler: Sendable {
     /// type it cannot read, an async one, or a String (two words, modelled
     /// apart).
     static func callResultBank(
+        of callee: String, enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex,
+        cache: CallResultBankCache
+    ) -> ValueTracer.CallResultBank {
+        cache.bank(for: callee) {
+            callResultBank(of: callee, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
+        }
+    }
+
+    /// `callResultBank` per callee name, for one image: a pure function of
+    /// the name and the image's enum and class indexes, and the tracer asks
+    /// at every call on every fixpoint iteration. Lookups only, never
+    /// iterated, so the cache cannot change an order.
+    final class CallResultBankCache: Sendable {
+        private let store = Mutex<[String: ValueTracer.CallResultBank]>([:])
+
+        func bank(for callee: String, compute: () -> ValueTracer.CallResultBank) -> ValueTracer.CallResultBank {
+            if let hit = store.withLock({ $0[callee] }) { return hit }
+            let bank = compute()
+            store.withLock { $0[callee] = bank }
+            return bank
+        }
+    }
+
+    /// Whether a printed type holds a generic parameter (`A`, `B1`) as a
+    /// whole token: what `#/(^|[^A-Za-z0-9_.])[A-Z][0-9]*($|[^A-Za-z0-9_])/#`
+    /// matches, scanned by hand because a regex literal is parsed again each
+    /// time it is evaluated (9.6% of a libSwiftParser run), and a `Regex` is
+    /// not `Sendable`, so it cannot be a static. Over `Character`s, like the
+    /// regex: an uppercase letter not after a word character or `.`, its
+    /// digits, then the end or a non-word character.
+    static func containsGenericParameterToken(_ type: String) -> Bool {
+        func isWord(_ c: Character) -> Bool { c == "_" || (c.isASCII && (c.isLetter || c.isNumber)) }
+        let characters = Array(type)
+        for (index, c) in characters.enumerated() where c.isASCII && c.isUppercase {
+            if index > 0, isWord(characters[index - 1]) || characters[index - 1] == "." { continue }
+            var end = index + 1
+            while end < characters.count, characters[end].isASCII, characters[end].isNumber { end += 1 }
+            if end == characters.count || !isWord(characters[end]) { return true }
+        }
+        return false
+    }
+
+    static func callResultBank(
         of callee: String, enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex
     ) -> ValueTracer.CallResultBank {
         guard !callee.hasPrefix("objc_msgSend") else { return .unknown }
@@ -3966,7 +4012,7 @@ public struct Disassembler: Sendable {
         if twoWordStringTypes.contains(type) || type == "()" || type == "Swift.Never" { return .unknown }
         // A generic parameter's layout is its substitution's: a
         // specialization's printed `A1` may be a UInt in x0.
-        if type.contains(#/(^|[^A-Za-z0-9_.])[A-Z][0-9]*($|[^A-Za-z0-9_])/#) { return .unknown }
+        if containsGenericParameterToken(type) { return .unknown }
         switch swiftReturnRegister(forReturnType: type, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
         case .integer?: return .integer
         case .floating?: return .floating
@@ -5231,7 +5277,8 @@ public struct Disassembler: Sendable {
         asyncSuspensions: [UInt64: AsyncSuspensionNote] = [:],
         objcIndex: ObjCMetadataIndex? = nil,
         registerSummaries: [UInt64: CalleeRegisterSummary] = [:],
-        selfMembers: SelfMemberCache = SelfMemberCache()
+        selfMembers: SelfMemberCache = SelfMemberCache(),
+        callResultBanks: CallResultBankCache = CallResultBankCache()
     ) -> DisassembledFunction {
         // Floating-point signature info: which arguments are float, and whether
         // the function's float type is double-precision — so a literal operand
@@ -5409,7 +5456,7 @@ public struct Disassembler: Sendable {
         var tracer = ValueTracer(calleeConventions: calleeConventions, asyncContextSlots: asyncContextSlots)
         tracer.callFactsCache = callFactsCache
         tracer.callResultBank = { callee in
-            Self.callResultBank(of: callee, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
+            Self.callResultBank(of: callee, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cache: callResultBanks)
         }
         if let objcIndex {
             let selectors = resolver.selectors.bySelref
@@ -5611,7 +5658,7 @@ public struct Disassembler: Sendable {
         var sites = analysis.callSites
         for insn in function.instructions where insn.controlFlow == .call || insn.controlFlow == .branch {
             guard let callee = DisassembledFunction.calleeName(of: insn),
-                  Self.callResultBank(of: callee, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) == .notOneRegister
+                  Self.callResultBank(of: callee, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cache: callResultBanks) == .notOneRegister
             else { continue }
             switch sites[insn.address]?.indirectResult {
             case .frame?, .indirectResultField?: continue

@@ -7383,3 +7383,28 @@ repeats spread 0.15%), not wall time. Baseline: origin/dev `20dcc5d`.
   Wall time on libSwiftSyntax `--structured` went from 254 s to 47 s.
   Every output is byte-identical (`cmp`), and `Tools/blast-radius.sh` over
   the 243 fixture inputs changed 0 lines in all four views.
+
+- **FIXED (speed): `callResultBank` re-derived per call and re-parsed a
+  regex each time.** The tracer asks where a callee's result is at every
+  call on every fixpoint iteration, and `Disassembler.callResultBank`
+  re-parsed the demangled name each time and evaluated the regex literal
+  `#/(^|[^A-Za-z0-9_.])[A-Z][0-9]*($|[^A-Za-z0-9_])/#`, which Swift
+  parses again on every evaluation: 20% of a libSwiftParser
+  `--structured` sample, `Regex.init` alone 9.6%. `CallResultBankCache`
+  on `PerFunctionContext` keeps the answer per callee name for the image
+  (lookups only), and `containsGenericParameterToken` scans for the token
+  by hand over `Character`s. A `Regex` is not `Sendable`, so it cannot be
+  a static. `genericParameterTokenScanMatchesTheRegex` checks the scan
+  against the regex on printed types and 3,000 short strings over the
+  characters that decide it. Instructions retired, after the change above
+  and after this one:
+
+  | run | before | after | peak footprint |
+  |---|---|---|---|
+  | libSwiftParser `disasm --structured` | 241.9G | 191.3G (-20.9%) | 71 MB to 72 MB |
+  | libSwiftParser `xrefs --unreferenced` | 211.7G | 161.1G (-23.9%) | 72 MB to 73 MB |
+  | libSwiftSyntax `disasm --structured` | 642.4G | 587.5G (-8.5%) | 248 MB to 221 MB |
+  | libSwiftSyntax `xrefs --unreferenced` | 565.5G | 510.9G (-9.7%) | 199 MB to 198 MB |
+
+  Every output is byte-identical (`cmp`), and the fixture blast radius
+  changed 0 lines in all four views.
