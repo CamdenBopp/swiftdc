@@ -50,6 +50,32 @@ results do not replace previously recorded release performance measurements.
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
 
+- **FIXED — a structured sink without a `ret` read as falling through
+  into the next label.** A block that leaves the function by a tail call
+  (`b C`), or by a call with no instruction after it (`bl abort`), printed
+  its call and stopped. The drain appends unvisited blocks as labels after
+  the main walk, so `s9` in `tailcallsinks.c` read `C()` then
+  `loc_570: B(r0)`, and -Osize `Direction`'s store-tag witness ran
+  `OUTLINED_FUNCTION_33(?)` into `loc_2034: mem16[x0 + 0x1] = 0`. Neither
+  happens. Every such sink now ends visibly:
+  - a synchronous direct tail call, and an async function's proven return
+    `br`, with `return` (`return ?` where the signature has a value);
+  - anything that proves no return with `// no fall-through`: a call at the
+    end of the function's code (`abort`, `__stack_chk_fail`, a `.cold`
+    split), an async tail call, a suspension or executor hop, and a
+    synchronous register branch nothing explains;
+  - a trap (`trap()`), an `indirect_jump(…)` and an already proven exit
+    (`return D.work(…)`, `throw`) unchanged.
+
+  Blast radius against origin/dev (fixtures plus the four swift-syntax
+  dylibs, structured only; pseudo, listing and JSON byte-identical): 54
+  files, 804 lines. 505 `return`, 47 `return ?` and 48 `// no fall-through`
+  added; 130 `} else {` and 35 flipped conditions where an arm that printed
+  nothing (a hidden runtime tail call) now prints its `return`, so the
+  `if` is no longer inverted around an empty arm. In unstripped inputs, 11
+  sinks sat directly on a label: 6 in Reconstruction -Osize, 4 in
+  SwiftIfConfig, 1 in the fixture. Others sat after a `}`. Fixture
+  `tailcallsinks.c` (-O2) and `.swift` (-O); `SinkTerminatorTests`.
 - **FIXED — a setter dispatch folded into an assignment of x0 whatever
   the property's type.** A vtable call to self's own setter renders as
   `self.property = value`, and the value was x0. A String is two words, so

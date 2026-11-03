@@ -61,6 +61,10 @@ echo "==> indirect tail calls and awaits (indirecttail.c -O2, indirectawait.swif
 xcrun clang -arch arm64 -O2 -dynamiclib indirecttail.c -o libIndirectTail.dylib
 $SWIFTC -parse-as-library -O -emit-library -module-name IndirectAwait indirectawait.swift -o libIndirectAwait.opt.dylib
 
+echo "==> sinks without a ret above a detached block: tail call, br, noreturn call, trap (tailcallsinks.c -O2, tailcallsinks.swift -O)"
+xcrun clang -arch arm64 -O2 -dynamiclib -undefined dynamic_lookup tailcallsinks.c -o libTailCallSinks.dylib
+$SWIFTC -parse-as-library -O -emit-library -module-name TailCallSinks tailcallsinks.swift -o libTailCallSinks.opt.dylib
+
 echo "==> audit semantic reductions (auditsemantics.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name AuditSemantics auditsemantics.swift -o libAuditSemantics.opt.dylib
 $CLANG -arch arm64 -O1 -dynamiclib -framework Foundation auditvoid.m -o libAuditVoid.dylib

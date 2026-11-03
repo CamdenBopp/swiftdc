@@ -35,7 +35,8 @@ public extension DisassembledFunction {
             threadsSwiftError: Self.splitSignature(analysisDisplayName)?.isThrowing ?? false,
             returnsValue: Self.signatureReturnsValue(
                 displayName: analysisDisplayName, objcSignature: objcMethod?.signature
-            )
+            ),
+            isAsync: asyncFunclet != nil || Self.splitSignature(analysisDisplayName)?.isAsync == true
         )
         let header = "\(displayName) {"
         // The ObjC signature and the async-chain line share one header slot: at
@@ -140,6 +141,9 @@ struct ControlFlowStructure {
     /// difference between `return` (void, or unknown) and `return ?` (a value we
     /// could not recover). Default false: unknown declines.
     let returnsValue: Bool
+    /// The function is async (its signature, or a recovered funclet): a tail
+    /// call there passes a continuation, so it is not proven a return.
+    let isAsync: Bool
 
     let blocks: [BasicBlock]
     let exit: Int
@@ -156,8 +160,9 @@ struct ControlFlowStructure {
     /// have written before the block starts. Empty unless ObjC arguments.
     private let argumentsWrittenBefore: [Set<String>]
 
-    init(blocks: [BasicBlock], objectiveCArguments: Bool = false, maxDepth: Int = ControlFlowStructure.defaultMaxDepth, isThrowing: Bool = false, threadsSwiftError: Bool? = nil, returnsValue: Bool = false) {
+    init(blocks: [BasicBlock], objectiveCArguments: Bool = false, maxDepth: Int = ControlFlowStructure.defaultMaxDepth, isThrowing: Bool = false, threadsSwiftError: Bool? = nil, returnsValue: Bool = false, isAsync: Bool = false) {
         self.returnsValue = returnsValue
+        self.isAsync = isAsync
         self.blocks = blocks
         self.exit = blocks.count
         self.objectiveCArguments = objectiveCArguments
@@ -640,11 +645,54 @@ struct ControlFlowStructure {
                 }
                 current = only
             } else {
+                // A sink: no successor here and no `ret`. It must end
+                // visibly, or the label the drain appends after it reads as
+                // its fall-through.
+                if !emittedReturn, let end = sinkTerminator(block) { lines.append("\(pad)\(end)") }
                 break
             }
         }
         return lines
     }
+
+    /// What ends a sink that leaves the function without a `ret`, or nil when
+    /// its own statement already does (`trap()`, `indirect_jump(…)`).
+    ///
+    /// - A direct tail call of a synchronous function: the callee returns
+    ///   to this function's caller, so the call then `return` is what runs.
+    ///   The value is not claimed (`return ?` where the signature has one).
+    /// - An async function's `br` with no callee and no jump target: the
+    ///   enrichment proved it the return to the caller's continuation.
+    /// - Anything else proves no return, and says only that nothing in this
+    ///   function follows. A suspension, an executor hop or an async tail
+    ///   call continues in another funclet. A call or straight-line
+    ///   instruction with nothing after it in the function's code is not a
+    ///   return either: abort() does not return. A synchronous register
+    ///   branch with no recovered target is not explained at all.
+    private func sinkTerminator(_ block: BasicBlock) -> String? {
+        guard let last = block.instructions.last else { return nil }
+        if last.isTrap { return nil }
+        switch last.controlFlow {
+        case .branch?:
+            if last.indirectJumpTarget != nil { return nil }
+            if last.awaitBinding != nil { return Self.noFallThrough }
+            if case .executorHop? = last.statement { return Self.noFallThrough }
+            if last.branchTarget == nil, DisassembledFunction.calleeName(of: last) == nil {
+                // A register branch enrichment gave no jump target: in an
+                // async function, the proven return to the continuation.
+                return isAsync ? valuelessReturn : Self.noFallThrough
+            }
+            return isAsync ? Self.noFallThrough : valuelessReturn
+        case .call?, .sequential?:
+            return Self.noFallThrough
+        case .conditionalBranch?, .return?, nil:
+            return nil
+        }
+    }
+
+    /// The end of a sink whose transfer proves no return: nothing in this
+    /// function runs after it.
+    static let noFallThrough = "// no fall-through"
 
     /// Emit one branch edge `u → v`: a back-edge becomes `continue`/`goto`, the
     /// loop exit becomes `break`, the merge point is empty, else recurse.
