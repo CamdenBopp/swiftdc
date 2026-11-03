@@ -4193,7 +4193,17 @@ public struct Disassembler: Sendable {
             } else if signature.thrownType == nil, let words = integerRegisterFootprint(ofParameterType: type) {
                 (kind, registers) = (.integer, words)
             } else {
-                return nil
+                // A struct, tuple, SIMD vector or closure takes registers its
+                // name does not give (`Mix { Int, Double, Int }` takes x0, d0,
+                // x1), so neither it nor any later parameter can be placed:
+                // each renders `?`, as a parameter past x7 does, and the ones
+                // before it keep their values. Read by position instead,
+                // `fMix(Mix(i: k, d: 1.5, j: 7), 2.0)` rendered `fMix(arg0,
+                // 7)`, the 7 as the Double, and `fPt(Pt(x: a, y: 3.0), k)`
+                // rendered `fPt(arg1)`, `k` as the Pt.
+                stack.append((type, .integer))
+                spilled = true
+                continue
             }
             switch kind {
             case .integer: integers += registers
@@ -5475,13 +5485,17 @@ public struct Disassembler: Sendable {
             // found. `String.append(_:)` with an untracked argument read
             // `append(self: s)`, and with a small literal `append(10,
             // 0xe100000000000000)`.
-            let leadingSlots = swiftSlots == nil && cLayout == nil
+            // A formal it cannot place (a struct, a parameter past x7) and
+            // every one after it are `?`, and then where `self`'s words start
+            // is unknown too, so nothing after them is shown.
+            let leadingLayout = swiftSlots == nil && cLayout == nil
                 ? calleeByAddress[address].flatMap {
-                    Self.swiftCallArgumentSlots(
+                    Self.swiftCallArgumentLayout(
                         callee: layoutName(at: address, callee: $0),
                         enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, anyContext: true)
                 }
                 : nil
+            let leadingSlots = leadingLayout?.slots
             /// Whether a call's v0 is its whole result: a `float` or `double`
             /// its declaration proves. A struct comes back in several v
             /// registers, so a later argument holding one of them is a part
@@ -5561,7 +5575,7 @@ public struct Disassembler: Sendable {
                     }
                 }
                 var unplaced = Array(repeating: AbstractValue.unknown,
-                                     count: cLayout?.unplaced ?? swiftLayout?.unplaced ?? 0)
+                                     count: cLayout?.unplaced ?? swiftLayout?.unplaced ?? leadingLayout?.unplaced ?? 0)
                 if cLayout == nil, let swiftLayout, !swiftLayout.stack.isEmpty {
                     let stackWords = Self.stackParameterWords(
                         swiftLayout, stackArguments: site.stackArguments, widths: site.stackArgumentWidths)
@@ -5585,7 +5599,7 @@ public struct Disassembler: Sendable {
                     // `self` is proven in x20 is mutating, and what follows is
                     // whatever the caller still held: `append(self: arg0, ?,
                     // arg2, arg3, arg4)` for a one-String `append(_:)`.
-                    if selfValueBySite[address] == nil {
+                    if selfValueBySite[address] == nil, leadingLayout?.unplaced == 0 {
                         following = values.dropFirst(integer).map(sanitizeValue)
                         // A register still holding the value it had at entry
                         // was not set up for this call: `takeTwo(_: String,

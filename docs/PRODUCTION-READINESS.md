@@ -50,6 +50,21 @@ results do not replace previously recorded release performance measurements.
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
 
+- **FIXED — a struct, SIMD or closure parameter was read by position.**
+  `fMix(Mix(i: k, d: 1.5, j: 7), 2.0)` rendered `fMix(arg0, 7)`, with the 7
+  shown as the Double. `fPt(Pt(x: a, y: 3.0), k)` rendered `fPt(arg1)`,
+  with `k` shown as the Pt. `W(v: 9).take(Mix(…))` rendered
+  `take(arg0, 3, 9)`, where the 9 is `self`. The layout declined the whole
+  call, and the positional snapshot took its place. Now a parameter whose
+  registers its type does not give, and every parameter after it, render
+  `?`, while the ones before it keep their values (`fLead(arg0, ?)`). For a
+  value type's method, nothing after an unplaced formal is shown as
+  `self`'s words. Fixture `structargs.swift`. Blast radius against
+  69bbad8, structured view: 20 files, 3,331 lines.
+  - 398 values declined to `?`.
+  - 350 arities corrected (`subscript.getter()` → `(?)`).
+  - 234 misplaced trailing values removed.
+  - The rest are nesting and binding changes that follow from these.
 - **FIXED — the text path and the tracer each kept their own instruction
   semantics.** They drifted (the text path read `ubfx` as a copy while the
   tracer did not model it). `InstructionSemantics` now states a

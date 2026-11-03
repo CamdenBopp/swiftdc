@@ -444,6 +444,32 @@ struct ABISourceLoweringTests {
     #expect(try text("u32").contains("return Double((arg0 & 0xffffffff))"))
 }
 
+/// A struct, SIMD or closure parameter takes registers its type's name does
+/// not give, so it and every parameter after it render `?`; the ones before
+/// it keep their values (structargs.swift).
+@Test func aStructParameterAndThoseAfterItAreUnplacedIfPresent() async throws {
+    let path = "Fixtures/Sample/libStructArgs.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("StructArgs.\(name)(") }).renderStructured()
+    }
+    #expect(try text("callMix").contains("return StructArgs.fMix(?, ?)"))
+    #expect(try text("callPt").contains("return StructArgs.fPt(?, ?)"))
+    #expect(try text("callSIMD").contains("return StructArgs.fSIMD(?, ?)"))
+    #expect(try text("callLead").contains("return StructArgs.fLead(arg0, ?)"))
+    // A value type's method: its formal is unplaced, and `self`'s words,
+    // which follow it, are not shown either.
+    #expect(try text("callScaled").contains("return StructArgs.Pt.scaled(?)"))
+    // `self`'s 9 in x2, after a Mix whose end is not known, is no argument.
+    #expect(try text("callTake").contains("return StructArgs.W.take(?)\n"))
+    // An Array, a Dictionary and a variadic parameter are one word each,
+    // so what follows them is placed.
+    #expect(try text("callArr").contains("return StructArgs.fArr(arg0, arg1)"))
+    #expect(try text("callDict").contains("return StructArgs.fDict(arg0, arg1)"))
+    #expect(try text("callVar").contains(", arg0)"))
+}
+
 /// `_stringCompareWithSmolCheck(_: _StringGuts, _: _StringGuts, expecting:)`
 /// takes each `_StringGuts` as a String's two words and the expected result
 /// as a one-byte enum: three arguments, not the five registers they fill.

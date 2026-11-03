@@ -499,6 +499,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name FPImmediates fpimmediate
 echo "==> scvtf and ucvtf from word and doubleword registers (intconvert.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name IntConvert intconvert.swift -o libIntConvert.dylib
 
+echo "==> struct, SIMD and closure parameters (structargs.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name StructArgs structargs.swift -o libStructArgs.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib
