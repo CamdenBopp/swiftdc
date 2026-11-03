@@ -50,6 +50,22 @@ results do not replace previously recorded release performance measurements.
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
 
+- **FIXED — a signatureless callee's float parameters were invisible.**
+  Body-read arity counted x0-x7 only. A C callee that takes doubles
+  rendered `takef3()` and `CGRectMake()`. A mixed callee rendered
+  `mixed(?, 7)`, with the 7 in its Double's place. The summary now records
+  the v0-v7 reads the body's own instructions make before writing them,
+  and the width each is read at. A float-only callee shows its v
+  arguments in order, constants typed (`takef3(?, 2.5, 4.0)`,
+  `CGRectMake(1.5, 2.5, 3.5, 4.5)`). A callee with both kinds shows one
+  `?` per parameter, since the body does not say how the two counters
+  interleave. A float only passed on to another call is still not
+  counted. Fixture `floatreads.c`. Blast radius against 8afb235,
+  structured view: 13 files, 314 lines.
+  - 7 calls gain their float arguments.
+  - 6 outlined fragments gain theirs.
+  - 145 lines are Go runtime hash helpers, whose AES bodies read vector
+    registers and now show `?` parameters.
 - **FIXED — a frozen standard-library struct's method took x20 as
   `self`.** A non-mutating method of a struct at most four words long takes
   `self`'s words after its formals, and an initializer or static method

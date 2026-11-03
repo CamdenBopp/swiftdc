@@ -515,3 +515,21 @@ struct ABISourceLoweringTests {
     #expect(Disassembler.standardLibraryStructMethod("Swift.Collection.endIndex.getter : A.Index") == nil)
     #expect(Disassembler.standardLibraryStructMethod("Swift._DictionaryStorage.resize(original: Swift.__RawDictionaryStorage, capacity: Swift.Int, move: Swift.Bool) -> Swift._DictionaryStorage<A, B>") == nil)
 }
+
+/// A signatureless callee's floating-point argument reads count as
+/// parameters: alone they are its arguments, in order and typed by the width
+/// they are read at; beside integer reads the interleaving is unknown, so
+/// every parameter is `?` (floatreads.c).
+@Test func floatArgumentReadsCountAsParametersIfPresent() async throws {
+    let path = "Fixtures/Sample/libFloatReads.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName == name }).renderStructured()
+    }
+    #expect(try text("_callf3").contains("takef3(?, 2.5, 4.0)"))
+    #expect(try text("_callMixed").contains("mixed(?, ?, ?)"))
+    #expect(try text("_callInts").contains("ints(?, 9)"))
+    // d1 is written before it is read: one parameter.
+    #expect(try text("_callAfterWrite").contains("afterWrite(?)\n"))
+}

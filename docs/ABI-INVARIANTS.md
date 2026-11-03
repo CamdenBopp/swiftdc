@@ -137,7 +137,7 @@ soundness change, measured on its own).
 | 10 | Vector lanes, Float16, vector immediates, ucvtf | `InstructionSemantics`, fmov | open | soundness | a2 #1/#3/#4, a12 #1 | SIMD code, struct copies via q regs | isolated (instruction semantics) |
 | 11 | Generic x0 indirect result; `Tt`; closure-prop survivors | positional, `specializedSignature` | open | soundness | a8 #1-#3 | unspecialized generics, stdlib specializations | shared lowering + specialization parse |
 | 12 | Struct/SIMD/closure params | `swiftCallArgumentLayout` unplaced tail | FIXED (unplaced from the first unprovable parameter) | soundness | structargs.swift | any call passing a struct by value | shared lowering |
-| 13 | Body-reads sees only x0-x7 | `CalleeRegisterSummary` | open | soundness (arity) | a11 #3 | C callees with float or stack args | isolated (summary) |
+| 13 | Body-reads sees only x0-x7 | `CalleeRegisterSummary` | v0-v7 FIXED; incoming stack area open | soundness (arity) | floatreads.c | C callees with float or stack args | isolated (summary) |
 | 14 | -Onone stack reloads in conditions | `Structurer.condition` | open | soundness | a14 #1 | -Onone payload switches | isolated (text path) |
 | 15 | Untyped ObjC float guard is block-local | `setsFloatingPointArgument` | open | soundness | a10 #2 | sends of image-only selectors with floats | isolated |
 | 16 | Register preservation edge cases (x18, below-sp, blr summaries, flags across calls) | `ValueTracer` call transfer | open | soundness | a12 #3-#8 | mostly hand-written assembly | isolated |

@@ -505,6 +505,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name StructArgs structargs.sw
 echo "==> standard-library value methods' self in x20 (stdself.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name StdSelf stdself.swift -o libStdSelf.dylib
 
+echo "==> float argument reads of signatureless C callees (floatreads.c, -O2)"
+$CLANG -O2 -dynamiclib floatreads.c -o libFloatReads.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

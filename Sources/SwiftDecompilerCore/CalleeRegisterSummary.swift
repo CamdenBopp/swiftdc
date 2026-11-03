@@ -57,6 +57,15 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// witness table accessor hands its untouched x2 to
     /// `swift_getWitnessTable`).
     var provenArgumentReads: Set<Int> = []
+    /// The floating-point argument registers v0…v7 (by number) the body's own
+    /// instructions read before writing them. A call proves none, as for
+    /// the integer registers. C passes floats on their own counter, so a
+    /// body that reads one has parameters the integer reads do not count:
+    /// `takef3(double, double, double)` rendered `takef3()`.
+    var provenFloatArgumentReads: Set<Int> = []
+    /// The width each of those is read at (16 h, 32 s, 64 d), when every read
+    /// of it agrees: a constant passed there is a float of that width.
+    var floatArgumentWidths: [Int: Int] = [:]
     /// Calls and tail branches to other in-image functions, with the argument
     /// registers (bit n for xn) the body has not written at them on some
     /// path: the call reads those of them its target reads.
@@ -133,7 +142,12 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// them: through the highest register it reads itself.
     var provenArgumentCount: Int { (provenArgumentReads.max() ?? -1) + 1 }
 
+    /// The floating-point parameters the body proves: through the highest v
+    /// register it reads itself.
+    var provenFloatArgumentCount: Int { (provenFloatArgumentReads.max() ?? -1) + 1 }
+
     private static let argumentKeys = (0...7).map { "x\($0)" }
+    private static let floatArgumentKeys = (0...7).map { "v\($0)" }
     private static let framePointerBit: UInt32 = 1 << 29
     private static let contextRegisterBit: UInt32 = 1 << 22
     private static let selfRegisterBit: UInt32 = 1 << 20
@@ -171,6 +185,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         var inState: [UInt64: Set<String>] = [entry: []]
         var reads = Set<Int>()
         var provenReads = Set<Int>()
+        var provenFloatReads = Set<Int>()
+        var floatWidths: [Int: Int] = [:]
         var readsFramePointer = false
         var readsContextRegister = false
         var readsSelfRegister = false
@@ -232,10 +248,24 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                        info.access == 0 || info.isRead {
                         read(register.key)
                     }
+                    if case .register(let register) = info.operand, register.kind == .vector,
+                       register.number < 8, info.access == 0 || info.isRead, !written.contains(register.key) {
+                        provenFloatReads.insert(register.number)
+                        // Disagreeing widths (or a vector read) leave it unmarked.
+                        let width = info.vectorIndex == nil ? register.widthBits : 0
+                        floatWidths[register.number] = floatWidths[register.number].map { $0 == width ? width : 0 } ?? width
+                    }
+                }
+                // A whole-register write ends the argument; a lane insert
+                // (`mov v0.s[1], w1`) keeps the rest of it.
+                for info in detail.operands where info.isWritten && info.vectorIndex == nil {
+                    if case .register(let register) = info.operand, register.kind == .vector, register.number < 8 {
+                        written.insert(register.key)
+                    }
                 }
                 detail.readRegisterKeys.forEach { read($0) }
                 written.formUnion(detail.writtenRegisterKeys.intersection(argumentKeys + ["x29", "x22"]))
-                if insn.controlFlow == .call { written.formUnion(argumentKeys) }
+                if insn.controlFlow == .call { written.formUnion(argumentKeys + floatArgumentKeys) }
             }
             for successor in block.successors where addresses.contains(successor) {
                 let merged = inState[successor].map { $0.intersection(written) } ?? written
@@ -314,6 +344,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         return CalleeRegisterSummary(
             argumentReads: reads,
             provenArgumentReads: provenReads,
+            provenFloatArgumentReads: provenFloatReads,
+            floatArgumentWidths: floatWidths.filter { [16, 32, 64].contains($0.value) },
             pendingReads: pending.keys.sorted().compactMap { pending[$0] },
             readsFramePointer: readsFramePointer,
             readsContextRegister: readsContextRegister,
@@ -361,7 +393,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// A summary that claims nothing about callee-saved registers.
     private func claimingNothing() -> CalleeRegisterSummary {
         CalleeRegisterSummary(
-            argumentReads: argumentReads, provenArgumentReads: provenArgumentReads, pendingReads: pendingReads,
+            argumentReads: argumentReads, provenArgumentReads: provenArgumentReads,
+            provenFloatArgumentReads: provenFloatArgumentReads, floatArgumentWidths: floatArgumentWidths,
+            pendingReads: pendingReads,
             readsFramePointer: readsFramePointer,
             readsContextRegister: readsContextRegister, clobberedCalleeSaved: Self.calleeSavedKeys,
             definitelyClobbered: Self.calleeSavedKeys, callees: callees)
@@ -431,7 +465,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         _ reads: Set<Int>, readsFramePointer: Bool, readsContextRegister: Bool, readsSelfRegister: Bool
     ) -> CalleeRegisterSummary {
         CalleeRegisterSummary(
-            argumentReads: reads, provenArgumentReads: provenArgumentReads, pendingReads: pendingReads,
+            argumentReads: reads, provenArgumentReads: provenArgumentReads,
+            provenFloatArgumentReads: provenFloatArgumentReads, floatArgumentWidths: floatArgumentWidths,
+            pendingReads: pendingReads,
             readsFramePointer: readsFramePointer,
             readsContextRegister: readsContextRegister, readsSelfRegister: readsSelfRegister,
             clobberedCalleeSaved: clobberedCalleeSaved,
@@ -524,6 +560,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             let new = CalleeRegisterSummary(
                 argumentReads: old.argumentReads,
                 provenArgumentReads: old.provenArgumentReads,
+                provenFloatArgumentReads: old.provenFloatArgumentReads,
+                floatArgumentWidths: old.floatArgumentWidths,
                 pendingReads: old.pendingReads,
                 readsFramePointer: old.readsFramePointer,
                 readsContextRegister: old.readsContextRegister,

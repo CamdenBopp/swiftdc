@@ -5932,6 +5932,28 @@ public struct Disassembler: Sendable {
                         ? sanitizeValue(values[$0]) : AbstractValue.unknown
                 }
                 while bounded.count > proven, bounded.last == .unknown { bounded.removeLast() }
+                // A body that reads v registers has floating-point parameters
+                // on their own counter. Alone, they are its arguments in
+                // order. Beside integer ones, the order between the two banks
+                // is not in the body, so each parameter is `?`: `mixed(long,
+                // double, long)` rendered `mixed(?, 7)`, the 7 in the Double's
+                // place, and `takef3(double, double, double)` `takef3()`.
+                let floats = summary.provenFloatArgumentCount
+                if floats > 0 {
+                    // A constant renders as a float of the width the body
+                    // reads it at, not as its bit pattern.
+                    func floatArgument(_ index: Int) -> AbstractValue {
+                        guard index < site.floatArguments.count else { return .unknown }
+                        let value = sanitizeValue(site.floatArguments[index])
+                        if case .immediate = value, let bits = summary.floatArgumentWidths[index] {
+                            return .unary(.floatConstant(bits: bits), value)
+                        }
+                        return value
+                    }
+                    bounded = bounded.isEmpty
+                        ? (0 ..< floats).map(floatArgument)
+                        : Array(repeating: .unknown, count: bounded.count + floats)
+                }
                 if !bounded.isEmpty { argumentsByAddress[address] = bounded }
                 strategy = "body-reads"
                 continue
