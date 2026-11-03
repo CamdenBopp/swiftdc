@@ -15,201 +15,48 @@ import Foundation
 /// This is why the ~80 `…IfPresent` skips are safe under CI: if any fixture is
 /// missing here, those tests are not merely skipping, and this test says so.
 struct FixturePresenceTests {
-    /// Every artifact `Fixtures/Sample/build.sh` produces that a test reads.
+    /// Every artifact `Fixtures/Sample/build.sh` produces that a test reads:
+    /// each complete `"Fixtures/Sample/…"` literal in this target's sources,
+    /// found at run time, plus the paths a test builds by interpolation or
+    /// through a helper. Deriving the list means a new fixture's test no
+    /// longer edits this file too; a hand-kept list here was the third most
+    /// conflicted file (115 commits from 2026-10-01 to 2026-11-02).
     /// Paths are repo-relative, matching how the fixture-gated tests resolve them
     /// (`swift test` runs with the package root as the working directory).
-    static let requiredFixtures = [
-        "Fixtures/Sample/sample.debug",
-        "Fixtures/Sample/sample.release",
-        "Fixtures/Sample/sample.stripped",
-        "Fixtures/Sample/libSample.dylib",
-        "Fixtures/Sample/libSample.stripped.dylib",
-        "Fixtures/Sample/libReconstruction.dylib",
-        "Fixtures/Sample/libReconstruction.opt.dylib",
-        "Fixtures/Sample/libReconstruction.opt.stripped.dylib",
-        "Fixtures/Sample/libReconstruction.resilient.dylib",
-        "Fixtures/Sample/libSwiftErrorProbe.dylib",
-        "Fixtures/Sample/libSwiftErrorProbe.stripped.dylib",
-        "Fixtures/Sample/libIndirect.dylib",
-        "Fixtures/Sample/libIndirect.opt.dylib",
-        "Fixtures/Sample/libConversions.dylib",
-        "Fixtures/Sample/libConversions.opt.dylib",
-        "Fixtures/Sample/libRuntimeIvars.dylib",
-        "Fixtures/Sample/libCow.dylib",
-        "Fixtures/Sample/libSameName.dylib",
-        "Fixtures/Sample/libAsyncInout.dylib",
-        "Fixtures/Sample/libCompares.dylib",
-        "Fixtures/Sample/libAsyncFns.dylib",
-        "Fixtures/Sample/libAsyncFns.opt.dylib",
-        "Fixtures/Sample/libAsyncFns.opt.stripped.dylib",
-        "Fixtures/Sample/libIndirectTail.dylib",
-        "Fixtures/Sample/libIndirectAwait.opt.dylib",
-        "Fixtures/Sample/libAuditSemantics.opt.dylib",
-        "Fixtures/Sample/libAuditVoid.dylib",
-        "Fixtures/Sample/libConditionalFlags.dylib",
-        "Fixtures/Sample/libLargeStrings.opt.dylib",
-        "Fixtures/Sample/libRetainRegister.sim.dylib",
-        "Fixtures/Sample/libRethrowCleanup.opt.dylib",
-        "Fixtures/Sample/libWidthFlagProbes.dylib",
-        "Fixtures/Sample/libTypedThrowsAwait.opt.dylib",
-        "Fixtures/Sample/libTypedThrowsNever.dylib",
-        "Fixtures/Sample/libSubscriptGetter.dylib",
-        "Fixtures/Sample/libGaugeKit.dylib",
-        "Fixtures/Sample/libGaugeClient.dylib",
-        "Fixtures/Sample/libValueMethod.dylib",
-        "Fixtures/Sample/libValueMethod.stripped.dylib",
-        "Fixtures/Sample/libStaticText.dylib",
-        "Fixtures/Sample/libMangledHelper.stripped.dylib",
-        "Fixtures/Sample/libMangledTypes.dylib",
-        "Fixtures/Sample/libMangledTypes.stripped.dylib",
-        "Fixtures/Sample/libImportedEnum.dylib",
-        "Fixtures/Sample/libDataStarts.dylib",
-        "Fixtures/Sample/libSharedWitness.stripped.dylib",
-        "Fixtures/Sample/libFoldedCalls.dylib",
-        "Fixtures/Sample/libStaleSlot.opt.dylib",
-        "Fixtures/Sample/libImportedClassProbe.opt.dylib",
-        "Fixtures/Sample/libScalarTailReturns.Onone.dylib",
-        "Fixtures/Sample/libScalarTailReturns.O.dylib",
-        "Fixtures/Sample/libScalarTailReturns.Osize.dylib",
-        "Fixtures/Sample/libReturnPaths.dylib",
-        "Fixtures/Sample/libExtract.dylib",
-        "Fixtures/Sample/libByteReversal.dylib",
-        "Fixtures/Sample/libUnknownReturn.dylib",
-        "Fixtures/Sample/libABISavedSlots.dylib",
-        "Fixtures/Sample/libABIEscapedSaves.dylib",
-        "Fixtures/Sample/libABIFrameOwnership.dylib",
-        "Fixtures/Sample/libAsyncAliasEscape.dylib",
-        "Fixtures/Sample/libAsyncSlotChronology.dylib",
-        "Fixtures/Sample/libAsyncMemoryEffects.dylib",
-        "Fixtures/Sample/libErrorExitControls.dylib",
-        "Fixtures/Sample/libAsyncCallEffects.dylib",
-        "Fixtures/Sample/libFrameEscapeControls.dylib",
-        "Fixtures/Sample/libMarkerOscillation.opt.dylib",
-        "Fixtures/Sample/libPartialWrites.dylib",
-        "Fixtures/Sample/libRenderOrder.dylib",
-        "Fixtures/Sample/libBoundSelf.opt.dylib",
-        "Fixtures/Sample/libFixpointOrder.dylib",
-        "Fixtures/Sample/libNoteText.opt.dylib",
-        "Fixtures/Sample/libObjCPackedStack.dylib",
-        "Fixtures/Sample/libObjCPackedStack.opt.dylib",
-        "Fixtures/Sample/libObjCAggregateArgs.dylib",
-        "Fixtures/Sample/libObjCAggregateArgs.opt.dylib",
-        "Fixtures/Sample/libUntrackedArgs.dylib",
-        "Fixtures/Sample/libUntrackedArgs.opt.dylib",
-        "Fixtures/Sample/libKnownArity.dylib",
-        "Fixtures/Sample/libKnownArity.opt.dylib",
-        "Fixtures/Sample/libForcedTry.dylib",
-        "Fixtures/Sample/libForcedTry.opt.dylib",
-        "Fixtures/Sample/libObjCUntypedFloat.dylib",
-        "Fixtures/Sample/libObjCUntypedFloat.opt.dylib",
-        "Fixtures/Sample/libSelfTail.opt.dylib",
-        "Fixtures/Sample/libLoopEscape.dylib",
-        "Fixtures/Sample/libPreserveCalls.dylib",
-        "Fixtures/Sample/libStackCallEffects.dylib",
-        "Fixtures/Sample/libStackCallEffects.opt.dylib",
-        "Fixtures/Sample/libStackCallEffects.osize.dylib",
-        "Fixtures/Sample/libJumpTableBounds.dylib",
-        "Fixtures/Sample/libLoopSwitch.dylib",
-        "Fixtures/Sample/libSelectFlow.dylib",
-        "Fixtures/Sample/libResearchOnone.dylib",
-        "Fixtures/Sample/libResearchOptimized.dylib",
-        "Fixtures/Sample/libResearchSize.dylib",
-        "Fixtures/Sample/libVariadicFloat.O0.dylib",
-        "Fixtures/Sample/libVariadicFloat.O2.dylib",
-        "Fixtures/Sample/libVectorLane.O0.dylib",
-        "Fixtures/Sample/libVectorLane.O2.dylib",
-        "Fixtures/Sample/libVectorLaneSwift.O.dylib",
-        "Fixtures/Sample/libVectorLaneSwift.Onone.dylib",
-        "Fixtures/Sample/libDupLanes.dylib",
-        "Fixtures/Sample/libBodyReads.dylib",
-        "Fixtures/Sample/libStringHighReceiver.dylib",
-        "Fixtures/Sample/libWritablePointer.dylib",
-        "Fixtures/Sample/libWritableTables.dylib",
-        "Fixtures/Sample/libStringArity.dylib",
-        "Fixtures/Sample/libOptionalScalars.dylib",
-        "Fixtures/Sample/libABISource.dylib",
-        "Fixtures/Sample/libABISource.opt.dylib",
-        "Fixtures/Sample/libABISource.resilient.dylib",
-        "Fixtures/Sample/libAddFlags.dylib",
-        "Fixtures/Sample/libCallArity.dylib",
-        "Fixtures/Sample/libCallArity.opt.dylib",
-        "Fixtures/Sample/libClassIdentityLocal.dylib",
-        "Fixtures/Sample/libCodegen.opt.dylib",
-        "Fixtures/Sample/libCodegen.opt.stripped.dylib",
-        "Fixtures/Sample/libEnumIdentityLocal.dylib",
-        "Fixtures/Sample/libFieldIdentityLocal.dylib",
-        "Fixtures/Sample/libGridSampler.opt.dylib",
-        "Fixtures/Sample/libLandingPadLoop.dylib",
-        "Fixtures/Sample/libLoopEntry.dylib",
-        "Fixtures/Sample/libMergedThrow.opt.dylib",
-        "Fixtures/Sample/libObjCNonselfOutgoing.dylib",
-        "Fixtures/Sample/libObjCNonselfOutgoing.stripped.dylib",
-        "Fixtures/Sample/libObjCOutgoing.conflict.dylib",
-        "Fixtures/Sample/libObjCOutgoing.dylib",
-        "Fixtures/Sample/libObjCOutgoing.opt.dylib",
-        "Fixtures/Sample/libReconstruction.osize.dylib",
-        "Fixtures/Sample/libSwitches.arm64e.dylib",
-        "Fixtures/Sample/libSwitches.dylib",
-        "Fixtures/Sample/libVariadic.dylib",
+    static let requiredFixtures: [String] = Array(Set(literalFixturePaths + indirectFixtures)).sorted()
+
+    /// Paths no literal spells out whole: `"Fixtures/Sample/lib\(module).dylib"`,
+    /// `libConditions.\(level)`, `types("libLocalTypes.dylib")`. Add a fixture
+    /// here only when its test names it this way.
+    static let indirectFixtures = [
         "Fixtures/Sample/libConditions.opt.dylib",
         "Fixtures/Sample/libConditions.osize.dylib",
-        "Fixtures/Sample/libObjCUntypedStruct.dylib",
-        "Fixtures/Sample/libObjCUntypedStruct.opt.dylib",
-        "Fixtures/Sample/libRuntimeArity.dylib",
-        "Fixtures/Sample/libEncryptable.dylib",
-        "Fixtures/Sample/libCodeSections.dylib",
-        "Fixtures/Sample/libAbsoluteSymbols.dylib",
-        "Fixtures/Sample/libSVERegisters.dylib",
-        "Fixtures/Sample/libLocalFirst.stripped.dylib",
-        "Fixtures/Sample/libNoFunctionStarts.dylib",
-        "Fixtures/Sample/libAccessorExtent.dylib",
-        "Fixtures/Sample/libAccessorExtentCustom.dylib",
-        "Fixtures/Sample/libConstantGetter.dylib",
-        "Fixtures/Sample/libBitfield.dylib",
-        "Fixtures/Sample/libMemoryWrites.dylib",
-        "Fixtures/Sample/libNarrowConstants.dylib",
         "Fixtures/Sample/libLocalTypes.dylib",
-        "Fixtures/Sample/libLocalTypes.stripped.dylib",
-        "Fixtures/Sample/libLocalTypesNamed.dylib",
-        "Fixtures/Sample/libLocalTypesNamed.stripped.dylib",
-        "Fixtures/Sample/libProtocolRHS.dylib",
-        "Fixtures/Sample/libLocalTypesPair.dylib",
-        "Fixtures/Sample/libLocalTypesPair.stripped.dylib",
-        "Fixtures/Sample/libUnrecordedType.dylib",
-        "Fixtures/Sample/goProgram",
-        "Fixtures/Sample/goProgram.stripped",
-        "Fixtures/Sample/libObjCSDKSelectors.dylib",
-        "Fixtures/Sample/libObjCSDKSelectors.opt.dylib",
-        "Fixtures/Sample/libSwitchClobbers.dylib",
-        "Fixtures/Sample/libSwitchSummary.dylib",
-        "Fixtures/Sample/libFieldWrites.dylib",
-        "Fixtures/Sample/libObjCFieldCopy.dylib",
-        "Fixtures/Sample/libObjCFieldCopy.O0.dylib",
-        "Fixtures/Sample/libObjCPairStores.dylib",
-        "Fixtures/Sample/libArityTwin.dylib",
-        "Fixtures/Sample/libLibcTwins.dylib",
-        "Fixtures/Sample/libAsyncMethods.opt.dylib",
-        "Fixtures/Sample/libAsyncMethods.opt.stripped.dylib",
-        "Fixtures/Sample/libCoroAccessors.opt.dylib",
-        "Fixtures/Sample/libCoroAccessors.opt.stripped.dylib",
-        "Fixtures/Sample/libOldMangledHelper.stripped.dylib",
-        "Fixtures/Sample/libResultBuffer.dylib",
-        "Fixtures/Sample/libDeadArgs.dylib",
-        "Fixtures/Sample/libEntryFootprints.dylib",
-        "Fixtures/Sample/libMultiResult.dylib",
-        "Fixtures/Sample/libOneCase.dylib",
-        "Fixtures/Sample/libDynamicCast.dylib",
-        "Fixtures/Sample/libThrowSelect.dylib",
-        "Fixtures/Sample/libParkedSelf.dylib",
-        "Fixtures/Sample/libSigned32.dylib",
-        "Fixtures/Sample/libObjCReturns.dylib",
-        "Fixtures/Sample/libAsyncCalls.dylib",
-        "Fixtures/Sample/libGenericCalls.dylib",
-        "Fixtures/Sample/libDroppedMeta.dylib",
-        "Fixtures/Sample/libVectorLanes.dylib",
-        "Fixtures/Sample/libFPImmediates.dylib",
-        "Fixtures/Sample/libIntConvert.dylib",
+        "Fixtures/Sample/libResearchSize.dylib",
+        "Fixtures/Sample/libScalarTailReturns.Onone.dylib",
+        "Fixtures/Sample/libScalarTailReturns.Osize.dylib",
+        "Fixtures/Sample/libVariadicFloat.O0.dylib",
+        "Fixtures/Sample/libVariadicFloat.O2.dylib",
     ]
+
+    /// The complete `"Fixtures/Sample/…"` string literals in the test sources
+    /// beside this file. A literal that continues into an interpolation
+    /// (`"Fixtures/Sample/lib\(module)…"`) does not match: the closing quote
+    /// must follow the path, and the path is file-name characters only.
+    static let literalFixturePaths: [String] = {
+        let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil
+        ) else { return [] }
+        var paths: Set<String> = []
+        for file in files where file.pathExtension == "swift" {
+            guard let source = try? String(contentsOf: file, encoding: .utf8) else { continue }
+            for match in source.matches(of: #/"(Fixtures/Sample/[A-Za-z0-9_.+\-/]+)"/#) {
+                paths.insert(String(match.1))
+            }
+        }
+        return paths.sorted()
+    }()
 
     /// True on a run that must actually exercise the fixtures. `CI` is set by
     /// GitHub Actions and virtually every other CI system, so any CI enforces
@@ -225,6 +72,16 @@ struct FixturePresenceTests {
         case "", "0", "false", "no", "off": return false
         default: return true
         }
+    }
+
+    /// The derived list must not come back empty or short: an empty scan
+    /// (sources moved, `#filePath` remapped) would make the presence check
+    /// pass while checking nothing.
+    @Test func theFixtureListIsReadFromTheTestSources() throws {
+        #expect(Self.literalFixturePaths.count >= 150)
+        #expect(Self.literalFixturePaths.contains("Fixtures/Sample/sample.debug"))
+        #expect(Self.literalFixturePaths.contains("Fixtures/Sample/libIntConvert.dylib"))
+        #expect(!Self.literalFixturePaths.contains { $0.hasSuffix(".") || $0.hasSuffix("/lib") })
     }
 
     @Test func fixturesArePresentWhenRequired() throws {
