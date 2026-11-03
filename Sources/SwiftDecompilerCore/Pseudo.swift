@@ -724,6 +724,16 @@ public extension DisassembledFunction {
         }
     }
 
+    /// Each value witness function's parameter count
+    /// (swift/include/swift/ABI/ValueWitness.def), by the slot name a
+    /// call through it is named with.
+    static let valueWitnessArity: [String: Int] = [
+        "initializeBufferWithCopyOfBuffer": 3, "destroy": 2, "initializeWithCopy": 3,
+        "assignWithCopy": 3, "initializeWithTake": 3, "assignWithTake": 3,
+        "getEnumTagSinglePayload": 3, "storeEnumTagSinglePayload": 4,
+        "getEnumTag": 2, "destructiveProjectEnumData": 2, "destructiveInjectEnumTag": 3,
+    ]
+
     static func knownCArity(of callee: String) -> Int? {
         switch callee {
         case "abort", "__stack_chk_fail", "objc_autoreleasePoolPush", "objc_exception_rethrow",
@@ -901,6 +911,15 @@ public extension DisassembledFunction {
             if callee.hasPrefix(accessorPrefix),
                let keyArguments = SDKMetadataAccessors.keyArguments[String(callee.dropFirst(accessorPrefix.count))] {
                 return 1 + (keyArguments <= 3 ? keyArguments : 1)
+            }
+            // A value witness has its ABI signature whatever the type
+            // (swift/include/swift/ABI/ValueWitness.def): `destroy(T *,
+            // Self)`, `initializeWithCopy(T *dest, T *src, Self)`. Laid out
+            // positionally, `destroy value witness for X` read three
+            // registers, or one where the metadata had gone unnamed.
+            if let range = callee.range(of: " value witness for "),
+               let arity = valueWitnessArity[String(callee[..<range.lowerBound])] {
+                return arity
             }
             // Historical prefix match: some selectors resolve as
             // `objc_opt_isKindOfClass` with a trailing disambiguator.

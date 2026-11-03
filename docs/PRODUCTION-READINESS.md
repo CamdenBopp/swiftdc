@@ -50,6 +50,17 @@ results do not replace previously recorded release performance measurements.
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
 
+- **FIXED — a value-witness call took the registers around it as
+  arguments.** A call through a value-witness table (`destroy value
+  witness for X`) had no signature, so its arguments were laid out
+  positionally. They gained stale registers (`genericwitness.swift`'s
+  `pick` read `initializeWithCopy value witness for A(&result, …, type
+  metadata for A, type metadata for A)`) or lost trailing ones (`destroy
+  value witness for Swift.Optional(?)`). Each slot now takes its
+  ValueWitness.def signature: destroy 2, the copies and takes 3,
+  getEnumTagSinglePayload 3, storeEnumTagSinglePayload 4, getEnumTag 2,
+  destructiveProjectEnumData 2, destructiveInjectEnumTag 3. Blast radius:
+  30 files, 205 witness calls at their exact arity.
 - **OPEN — `CalleeRegisterSummary.readsSelfRegister` is wrong both
   ways.** Its forward pass tracks writes to x0-x7, x29 and x22, but not
   x20. A body that overwrites x20 before using it is counted as reading

@@ -825,3 +825,23 @@ struct ABISourceLoweringTests {
     let kept = try structured("keptAfterRetain")
     #expect(!kept.contains("mem64[&result"), Comment(rawValue: kept))
 }
+
+/// A value witness has its ABI signature whatever the type it serves
+/// (swift/include/swift/ABI/ValueWitness.def): initializeWithCopy is `(dest,
+/// src, Self)`. Laid out positionally, `pick`'s tail call through it read a
+/// stale fourth argument, the metadata left in x3 (genericwitness.swift).
+@Test func aValueWitnessCallTakesItsABIParametersIfPresent() async throws {
+    let path = "Fixtures/Sample/libGenericWitness.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let pick = try #require(functions.first { $0.displayName.hasPrefix("GenericWitness.pick") })
+    let call = try #require(pick.instructions.first { ($0.annotation ?? "").contains("initializeWithCopy value witness for A") })
+    let note = call.annotation ?? ""
+    let start = try #require(note.range(of: "args("))
+    #expect(String(note[start.lowerBound...]) == "args(&result, ((arg0 > 0) ? arg1 : arg2), type metadata for A)", Comment(rawValue: note))
+    let arity = DisassembledFunction.valueWitnessArity
+    #expect(arity["destroy"] == 2 && arity["initializeWithCopy"] == 3 && arity["storeEnumTagSinglePayload"] == 4)
+    #expect(arity["getEnumTag"] == 2 && arity["destructiveInjectEnumTag"] == 3)
+    #expect(DisassembledFunction.knownCArity(of: "destroy value witness for Swift.Optional") == 2)
+    #expect(DisassembledFunction.knownCArity(of: "getEnumTagSinglePayload value witness for B") == 3)
+}
