@@ -99,7 +99,7 @@ if [ ! -x "$bins/$base/swiftdc" ]; then
 fi
 step "blast radius"
 Tools/blast-radius.sh "$bins/$base/swiftdc" "$bins/$head/swiftdc" "$out/blast" --real | tee "$out/blast.txt" >&2
-if grep -q '^> rc=13[0-9]' "$out/blast/"*.diff 2> /dev/null; then
+if grep -q '^+rc=13[0-9]' "$out/blast/"*.diff 2> /dev/null; then
   fail "a render that did not trap before traps now (grep rc=13 in $out/blast)"
 fi
 

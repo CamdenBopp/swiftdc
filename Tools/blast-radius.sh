@@ -10,8 +10,8 @@
 # diffs against it. Copy each binary out of .build first: the key is its
 # content, and a binary rebuilt in place is a different key.
 #
-# Writes <outdir>/<view>.diff and prints one line per view: files and
-# lines changed. Every changed line belongs in the commit message.
+# Writes <outdir>/<view>.diff (unified) and prints one line per view:
+# files and lines changed. Every changed line belongs in the commit message.
 set -euo pipefail
 
 usage() { echo "usage: $0 <baseline-swiftdc> <new-swiftdc> <outdir> [--real] [view...]" >&2; exit 2; }
@@ -79,9 +79,11 @@ for view in "${views[@]}"; do
   start=$SECONDS
   b=$(render "$base" "$view")
   n=$(render "$new" "$view")
-  diff -r -x .done "$b" "$n" > "$out/$view.diff" || true
-  files=$(grep -c '^diff ' "$out/$view.diff" || true)
-  lines=$(grep -c '^[<>]' "$out/$view.diff" || true)
+  # git's histogram diff: `diff -r` took over 25 minutes on JSON renders
+  # whose lines all shifted, git 0.9 s on the same pair.
+  git diff --no-index --no-color --diff-algorithm=histogram "$b" "$n" > "$out/$view.diff" || true
+  files=$(grep -c '^diff --git ' "$out/$view.diff" || true)
+  lines=$(grep -E '^[-+]' "$out/$view.diff" | grep -cvE '^(\+\+\+|---) ' || true)
   printf '%-10s %4d files %7d lines changed  (%d s)  %s\n' "$view" "$files" "$lines" $((SECONDS - start)) "$out/$view.diff"
 done
 # Drop render directories untouched for two weeks.
