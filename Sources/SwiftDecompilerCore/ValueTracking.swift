@@ -4454,7 +4454,7 @@ public struct ValueTracer: Sendable {
         case .address(let address): return .absolute(address &+ UInt64(bitPattern: effective))
         case .loaded(let slot): return .throughStaticPointer(slot: slot, offset: Int(effective))
         case .callResult, .loadedFrom(.callResult, _), .genericMetadata, .loadedFrom(.genericMetadata, _),
-             .loadedThrough(_, -8):
+             .loadedThrough(_, -8), .selfVTableMethod, .loadedFrom(.selfVTableMethod, _):
             return .throughValue(registers[Location(base)] ?? .unknown, offset: Int(effective))
         case .selfPointer: return .selfField(Int(effective))
         case .selfField(let field): return .selfField(field + Int(effective))

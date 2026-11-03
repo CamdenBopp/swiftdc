@@ -2957,6 +2957,13 @@ public struct Disassembler: Sendable {
             let slot = MetadataSymbolizer.valueWitnessNames[offset / 8]
             // A generic parameter's metadata, as the function received it.
             if case .genericMetadata(let name) = metadata { return "\(slot) value witness for \(name)" }
+            // A generic argument of `self`'s class, read from its isa:
+            // `ldr x12, [x20]; ldr x23, [x12, #0x50]` in a method of
+            // `LRUCache<A, B>`.
+            if case .selfVTableMethod(let argument) = metadata, let selfTypeName,
+               let parameter = vtableIndex.genericParameter(type: selfTypeName, offset: argument) {
+                return "\(slot) value witness for \(parameter)"
+            }
             guard case .callResult(let site) = metadata,
                   let call = function.instructions.first(where: { $0.address == site }),
                   let callee = DisassembledFunction.calleeName(of: call)

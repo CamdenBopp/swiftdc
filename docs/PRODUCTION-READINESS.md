@@ -1263,6 +1263,16 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — a generic class's value-witness calls on its own type
+  parameters were unresolved.** A method reads the metadata from `self`'s
+  isa at the class descriptor's generic-argument offset (the
+  immediate-members offset, for a class without a resilient superclass).
+  `ldr x21, [x20]; ldr x2, [x21, #0x58]` is Holder<A, B>'s B. `self.b = x`
+  now reads `assignWithCopy value witness for B(…)`. A class nested in a
+  generic type, whose own parameters print as A1 and so on, is not named
+  by position. Fixture `classwitness.swift`. Blast radius: 5 files, 17 calls
+  named. Most swift-syntax sites of this shape reload the table from a
+  frame slot after calls, and stay unresolved.
 - **FIXED — value-witness calls on GOT-loaded metadata were unresolved.**
   `adrp x2, _$sSiN@GOTPAGE; ldr x2, [x2, …]; ldur x8, [x2, #-0x8]; ldr x8,
   [x8, #0x10]; blr x8` is Int's initializeWithCopy. The tracer follows

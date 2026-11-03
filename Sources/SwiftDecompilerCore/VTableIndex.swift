@@ -22,8 +22,28 @@ import MachOSwiftSection
 public struct VTableIndex: Sendable {
     /// typeName → (dispatch byte offset → method implementation address).
     private let methods: [String: [Int: UInt64]]
+    /// typeName → where a top-level generic class's generic arguments start
+    /// in its metadata (bytes) and how many there are.
+    private let genericArguments: [String: (offset: Int, count: Int)]
 
-    public init(methods: [String: [Int: UInt64]] = [:]) { self.methods = methods }
+    public init(methods: [String: [Int: UInt64]] = [:], genericArguments: [String: (offset: Int, count: Int)] = [:]) {
+        self.methods = methods
+        self.genericArguments = genericArguments
+    }
+
+    /// The name a class's generic parameter prints as in its members'
+    /// demangled signatures (`A`, `B`, …) when byte `offset` of its metadata
+    /// is that parameter's metadata. The arguments start at the descriptor's
+    /// immediate-members offset for a class without a resilient superclass
+    /// (`TargetClassDescriptor::getGenericArgumentOffset`), one word per key
+    /// parameter in order.
+    public func genericParameter(type: String, offset: Int) -> String? {
+        guard let arguments = genericArguments[type], offset >= arguments.offset, (offset - arguments.offset) % 8 == 0
+        else { return nil }
+        let index = (offset - arguments.offset) / 8
+        guard index < arguments.count, index < 26, let scalar = Unicode.Scalar(65 + index) else { return nil }
+        return String(Character(scalar))
+    }
 
     public var isEmpty: Bool { methods.isEmpty }
 
@@ -47,6 +67,7 @@ public struct VTableIndex: Sendable {
 
         let implementations = MethodImplementation(machO)
         var methods: [String: [Int: UInt64]] = [:]
+        var genericArguments: [String: (offset: Int, count: Int)] = [:]
         // Keyed by simple name, so two classes that share one (`Alpha.Node`,
         // `Beta.Node`) would share a slot table: first writer won, and a dispatch
         // in `Beta.Node.work()` rendered `Alpha.Node.launchMissiles()`. A
@@ -61,10 +82,20 @@ public struct VTableIndex: Sendable {
         }
         for type in UnrecordedTypes.all(in: machO) {
             guard case .class(let model) = type,
-                  let header = model.vTableDescriptorHeader,
                   let typeName = try? model.descriptor.name(in: machO),
                   descriptorsByName[typeName, default: []].count == 1
             else { continue }
+            // A top-level generic class (a nested one's parameters include its
+            // parent's, which print at another depth), every parameter a key
+            // argument, and no resilient superclass, whose bounds only the
+            // runtime knows.
+            if let generic = model.genericContext, !generic.parameters.isEmpty,
+               generic.currentParameters.count == generic.parameters.count,
+               generic.parameters.allSatisfy(\.hasKeyArgument), !model.descriptor.hasResilientSuperclass {
+                genericArguments[typeName] = (Int(model.descriptor.nonResilientImmediateMembersOffset) * pointerSize,
+                                              generic.parameters.count)
+            }
+            guard let header = model.vTableDescriptorHeader else { continue }
 
             let base = Int(header.layout.vTableOffset)
             for (slot, method) in model.methodDescriptors.enumerated() {
@@ -88,6 +119,6 @@ public struct VTableIndex: Sendable {
                 }
             }
         }
-        return VTableIndex(methods: methods)
+        return VTableIndex(methods: methods, genericArguments: genericArguments)
     }
 }

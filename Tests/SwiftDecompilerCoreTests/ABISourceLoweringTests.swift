@@ -760,3 +760,20 @@ struct ABISourceLoweringTests {
     #expect(try call("_copyThroughGOT").contains("→ initializeWithCopy value witness for Swift.Int"))
     #expect(try !call("_copyThroughWritable").contains("→"))
 }
+
+/// A generic class's method reads its type parameters' metadata from self's
+/// isa, at the descriptor's generic-argument offset; a value-witness call on
+/// one is that parameter's (classwitness.swift).
+@Test func aGenericClassParametersValueWitnessCallIsNamedIfPresent() async throws {
+    let path = "Fixtures/Sample/libClassWitness.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("ClassWitness.Holder.\(name)(") }).renderStructured()
+    }
+    #expect(try text("setB").contains("assignWithCopy value witness for B("))
+    #expect(try text("setA").contains("assignWithCopy value witness for A("))
+    // A nested class's own parameter prints as A1: no positional name.
+    let setU = try #require(functions.first { $0.displayName.contains("Inner.setU(") }).renderStructured()
+    #expect(!setU.contains("value witness for B"), Comment(rawValue: setU))
+}
