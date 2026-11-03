@@ -1465,6 +1465,14 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 3. Robustness — what breaks it?
 
+- **OPEN — a small arm64 object file traps four commands.** `disasm`,
+  `interface`, `objc` and `analyze` on `Fixtures/Sample/abi_source_aliased.o`
+  (424 bytes, `MH_OBJECT`, one load command) end in `Trace/BPT trap` at a
+  `try!` in MachOKit `DyldCache.swift:87` (`FileIOError.offsetOutOfBounds`);
+  `dump` and `layout` succeed, `xrefs` exits 64, and `sample_objc.o` fails
+  cleanly with rc 1. Found by `Tools/blast-radius.sh`, which renders every
+  Mach-O product; the earlier render scripts read only dylibs and
+  executables. Release c340e62.
 - **FIXED — a conformance whose trailing records ran past its section
   trapped `dump`.** A conformance's flags count the records after it
   (retroactive pointer, conditional requirements, pack shapes, resilient
@@ -1977,6 +1985,14 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 4. Determinism
 
+- **OPEN — a stripped copy once printed its original's local names.**
+  `DeclarationPlacementTests.aStrippedCopyLoadedAfterItsOriginalReadsOnlyItselfIfPresent`
+  failed in 1 of 8 full enforcing runs at c340e62 (2026-11-02, a parallel
+  worktree under load): the stripped copy rendered the original's
+  `Local #1 in` names, which come from the per-image cache keyed by install
+  name and UUID. It passed in every isolated run and in 40 repetitions.
+  A race between concurrent tests sharing that cache is the leading
+  hypothesis, not yet shown.
 - **Measured — `--structured` and `--pseudo` on dyld cache images are
   stable across processes.** Release 4d39b01, every 8th entry of the
   cache manifest (249 Swift images), each command run twice in separate

@@ -155,14 +155,17 @@ does not fit in it, so a new whole-image mode should stream
 
 ## Iterating fast
 
-Measured on this host (2026-10-24). Plan the cycle around what a rebuild
-costs:
+Measured on this host (2026-11-02, see
+[docs/PARALLEL-WORKFLOW.md](docs/PARALLEL-WORKFLOW.md)). Plan the cycle
+around what a rebuild costs:
 
 | Step | Cost |
 |---|---|
-| no-op `swift build` | 5 s, nearly all manifest loading and planning |
-| body edit, `swift build --build-tests` | about 30 s: any change to the module recompiles all test files |
-| interface edit, `--build-tests` | about 60 s |
+| no-op `swift build` | 7 s, nearly all manifest loading and planning |
+| body edit, `swift build --build-tests` | about 20 s: one Core object, no test files recompile |
+| internal signature edit, `--build-tests` | about 24 s |
+| full enforcing suite | about 145 s; `--parallel` changes nothing (Swift Testing already runs concurrently) |
+| one test file, `--filter 'NameTests\.swift'` | 1.7 s plus its tests |
 | `swift build -c release --scratch-path .build-release` after a change | about 70 s |
 | release in the shared `.build` after a debug build | about 5 min: every dependency rebuilds |
 
@@ -173,12 +176,15 @@ costs:
   once), rebuild, run the filtered tests, restore the saved files. End with
   one rebuild and a green run. A mutation that does not compile proves
   nothing: check the build for `error:` before reading the test result.
-- **Keep the last commit's renders.** Render every fixture in all four
-  views (structured, pseudo, listing, JSON), six at a time, into a
-  directory per commit, and the five apps' `--pseudo` under the memory
-  guard. The next change diffs against those directories instead of
-  rebuilding the baseline. A commit that leaves a view byte-identical keeps
-  its renders as the baseline for that view.
+- **Blast radius:** `Tools/blast-radius.sh <base> <new> <outdir> --real`
+  renders every fixture Mach-O and the toolchain's swift-syntax dylibs in
+  all four views with both binaries and diffs them. Renders are cached by
+  binary hash, so the baseline is rendered once. Copy each binary out of
+  `.build-release` first. The five apps' `--pseudo` still run by hand under
+  the memory guard.
+- **Push only through the gate:** `Tools/integration-gate.sh --push`
+  (fast-forward check, cached fixtures, full suite, release build, blast
+  radius against origin/dev, one gate at a time on the host).
 - **Chain the long pipeline in the background:** suite, fixture views, the
   release build, then the apps, in one command. Review the fixture diffs
   while the release build runs.
@@ -193,7 +199,9 @@ costs:
 ## Fixtures
 
 Everything lives in `Fixtures/Sample/`. The built products are git-ignored.
-Run `Fixtures/Sample/build.sh` once after a fresh checkout.
+Run `Tools/fixtures.sh` after a fresh checkout or a fixture edit: it
+restores the products from a content-addressed cache and runs `build.sh`
+only for an input it has not built before.
 
 To add a fixture:
 
@@ -319,7 +327,7 @@ prune `handoff.md` as items ship.
 ## Build
 
 ```bash
-Fixtures/Sample/build.sh                # build fixtures once (git-ignored)
+Tools/fixtures.sh                       # fixtures from the cache (git-ignored)
 swift build                             # .build/debug/swiftdc
 swift build --build-tests               # before any `swift test --skip-build`
 SWIFTDC_REQUIRE_FIXTURES=1 swift test   # enforcing: a missing fixture fails
