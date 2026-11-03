@@ -614,3 +614,25 @@ struct ABISourceLoweringTests {
         "function signature specialization <Arg[0] = [Closure Propagated : $s1M1fyS2iFS2iXEfU_, Argument Types : [Swift.Int]> of M.apply((Swift.Int) -> Swift.Int, Swift.Int) -> Swift.Int")
     #expect(split?.result == "Swift.Int")
 }
+
+/// A generic parameter's metatype and a class's are one word; a metatype
+/// slot shows only metadata (metatypeargs.swift).
+@Test func aGenericOrClassMetatypeParameterIsOneWordIfPresent() async throws {
+    let path = "Fixtures/Sample/libMetatypeArgs.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("MetatypeArgs.\(name)(") }).renderStructured()
+    }
+    // x0 still holds `k`: the callee ignores `t`, so nothing set it.
+    #expect(try text("callDescribe").contains("MetatypeArgs.describe<A>(?, arg0)"))
+    #expect(try text("callClassMeta").contains("MetatypeArgs.classMeta(type metadata accessor for MetatypeArgs.Base(), arg0)"))
+    // A generic value-type method: `self` and then T's metadata follow the
+    // formals, so nothing past them is shown.
+    #expect(try text("callPut").contains("MetatypeArgs.Box.put<A>(?, ?)\n"))
+    // A member's own parameter is named in the requirements only.
+    let layout = Disassembler.swiftCallArgumentLayout(
+        callee: "M.f<A where A1: Swift.Equatable>(A1.Type, Swift.Int) -> Swift.Int",
+        enumCaseIndex: EnumCaseIndex(), classTypeIndex: ClassTypeIndex(), anyContext: false)
+    #expect(layout?.slots.count == 2 && layout?.unplaced == 0)
+}

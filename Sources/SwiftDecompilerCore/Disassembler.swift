@@ -4166,6 +4166,17 @@ public struct Disassembler: Sendable {
         return generics.contains(root) && type.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }
     }
 
+    /// Whether the metatype of `instance` is one word: a generic
+    /// parameter's (`A.Type`, `A1.Type`), which is its metadata pointer, or
+    /// a class's, whose metatype is thick. A concrete struct or enum's
+    /// metatype is thin and takes no register, and a protocol's carries
+    /// witness tables, so neither is placed: `container<A>(keyedBy:
+    /// A1.Type)` read `container(?)`.
+    static func isOneWordMetatype(_ instance: String, _ generics: Set<String>, _ classTypeIndex: ClassTypeIndex) -> Bool {
+        if generics.contains(instance) { return true }
+        return classTypeIndex.isClass(instance)
+    }
+
     /// Whether `type` names one of `generics` as a whole word.
     static func mentionsGenericParameter(_ type: String, _ generics: Set<String>) -> Bool {
         var word = ""
@@ -4230,6 +4241,17 @@ public struct Disassembler: Sendable {
                 .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
             guard !names.isEmpty, names.allSatisfy({ $0.wholeMatch(of: #/[A-Z][0-9]*/#) != nil }) else { return nil }
             genericParameters = Set(names)
+            // A member's own parameters are named in the requirements only
+            // (`container<A where A1: Swift.CodingKey>(A1.Type)`: A is the
+            // protocol's Self, A1 the method's Key). A demangled type is
+            // module-qualified, so a bare `A1` there is a parameter.
+            if let whereRange = clause.range(of: " where ") {
+                let words = clause[whereRange.upperBound...].split { !($0.isLetter || $0.isNumber || $0 == "_" || $0 == ".") }
+                for word in words {
+                    let root = word.split(separator: ".", maxSplits: 1).first.map(String.init) ?? ""
+                    if root.wholeMatch(of: #/[A-Z][0-9]*/#) != nil { genericParameters.insert(root) }
+                }
+            }
             name = name[..<open]
             // A tuple result with a generic element is not returned through
             // x8: an indirect result beside a direct one, or two indirect ones,
@@ -4266,6 +4288,9 @@ public struct Disassembler: Sendable {
                 (kind, registers) = (scalar, 1)
             } else if Self.isGenericValue(type, genericParameters) {
                 // Its address.
+                (kind, registers) = (.integer, 1)
+            } else if type.hasSuffix(".Type"), Self.isOneWordMetatype(String(type.dropLast(".Type".count)),
+                                                                   genericParameters, classTypeIndex) {
                 (kind, registers) = (.integer, 1)
             } else if signature.thrownType == nil, let words = integerRegisterFootprint(ofParameterType: type) {
                 (kind, registers) = (.integer, words)
@@ -5728,6 +5753,16 @@ public struct Disassembler: Sendable {
                             if case .address = words[0] { return words[0] }
                             return .unknown
                         }
+                        // A metatype is metadata: a static address, a load of
+                        // one, or an accessor's result. Anything else in its
+                        // register was not set up for it: `describe(Int.self,
+                        // k)`, whose callee ignores `t`, leaves `k` in x0.
+                        if slot.type.hasSuffix(".Type") {
+                            switch words[0] {
+                            case .address, .loaded, .callResult: return words[0]
+                            default: return .unknown
+                            }
+                        }
                         if words.count == 2 {
                             if let site = stringCallResult(raw[0], raw[1]) {
                                 return .aggregate([.callResult(site), .callResultHigh(site)])
@@ -5769,7 +5804,18 @@ public struct Disassembler: Sendable {
                     // `self` is proven in x20 is mutating, and what follows is
                     // whatever the caller still held: `append(self: arg0, ?,
                     // arg2, arg3, arg4)` for a one-String `append(_:)`.
-                    if selfValueBySite[address] == nil, leadingLayout?.unplaced == 0 {
+                    // A generic method's generic metadata and witness tables
+                    // follow `self`, so its registers past the formals are
+                    // not `self`'s words alone: `nestedContainer<A where
+                    // A1: …>(0x46910, local_448, <metadata>, 0x46910)`.
+                    let isGeneric = calleeByAddress[address].map {
+                        DisassembledFunction.splitSignature($0).map { signature in
+                            DisassembledFunction.outermostArgumentListRange(of: signature.head).map {
+                                signature.head[..<$0.lowerBound].contains("<")
+                            } ?? true
+                        } ?? true
+                    } ?? true
+                    if selfValueBySite[address] == nil, leadingLayout?.unplaced == 0, !isGeneric {
                         following = values.dropFirst(integer).map(sanitizeValue)
                         // A register still holding the value it had at entry
                         // was not set up for this call: `takeTwo(_: String,

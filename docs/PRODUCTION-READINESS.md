@@ -1263,6 +1263,19 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — generic and class metatype parameters were not placed.**
+  `container<A where A1: CodingKey>(keyedBy: A1.Type)` read `container(?)`,
+  and `classMeta(Base.self, k)` read `classMeta(?, ?)`. A generic
+  parameter's metatype is its metadata pointer, and a class's metatype is
+  thick, one word each. A member's own generic parameters, which the
+  demangler names only in the `where` clause (`A1`), now count as generic.
+  A metatype slot shows a value only when it is metadata (a static
+  address, a load, or an accessor result), because a callee that ignores
+  its `t` leaves the caller's `k` in x0 (`describe<A>(?, arg0)`). A
+  generic value-type method shows nothing past its formals, since its
+  metadata follows `self` there. Fixture `metatypeargs.swift`. Blast
+  radius against dc7e2c1, structured view: 8 files, 486 lines; 176
+  recover values.
 - **FIXED — a closure-propagated specialization's signature did not
   parse.** The demangler prints its clause with an unclosed `[`, which hid
   the arrow, so a tail call to one rendered as a bare statement, and the
