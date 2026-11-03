@@ -1055,6 +1055,17 @@ because it cannot be distinguished from a right one by reading the output.
   `sub_5d8` with its candidates (`foldedByAddress`), but call sites named an
   arbitrary alias, and `disasm -f '$s1P7secondsySiAA7SecondsVF'` printed "No
   function matched" for a symbol in the export table.
+- **FIXED — `xrefs --function` could not select a folded function.** The
+  call graph names a folded address `sub_<addr>`, and `xrefs` matched only
+  graph names, so `xrefs libFoldedCalls.dylib --function Box.plus` (and
+  `_add3` on libMarkerSymbols) printed "No function matched" for a symbol
+  the binary exports, while `disasm -f Box.plus` found it. `xrefs` now also
+  selects a function whose folded symbols match, raw or demangled, with the
+  matcher `disasm -f` uses (`foldedSymbolMatches`):
+  `sub_600  0x600` with its four callers
+  (`xrefsSelectsAFoldedFunctionByAnyOfItsSymbolsIfPresent`). Every folded
+  text symbol in the fixtures (1,318 in 62 dylibs): 1,317 unmatched before,
+  0 after.
 - **FIXED (`a00dbe3`) — a call to an address that also
   carries linker marker symbols was named after the marker.** TinyCC places
   `__start_text`, `__init_array_start` and friends on `add3`'s address; the

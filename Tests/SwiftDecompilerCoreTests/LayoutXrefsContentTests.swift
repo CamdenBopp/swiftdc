@@ -138,4 +138,31 @@ struct LayoutXrefsContentTests {
         let address = try #require(UInt64(line.prefix { $0 != " " }, radix: 16))
         #expect(output.contains("0x\(String(address, radix: 16))  Reconstruction.isEqual"), "\(output)")
     }
+
+    /// A folded address is `sub_<addr>` in the call graph, so `xrefs
+    /// --function` on one of its symbols printed "No function matched" for a
+    /// symbol the binary exports, while `disasm -f` on the same symbol found
+    /// it. Each folded symbol, raw or demangled, selects the address, with
+    /// its callers.
+    @Test func xrefsSelectsAFoldedFunctionByAnyOfItsSymbolsIfPresent() throws {
+        let cases: [(fixture: String, needle: String, callers: [String])] = [
+            // The `add` body: Box.plus and pairPlus's specialization.
+            ("Fixtures/Sample/libFoldedCalls.dylib", "Box.plus", ["callPair()", "callAdd(", "callBox("]),
+            ("Fixtures/Sample/libFoldedCalls.dylib", "8pairPlusyS2i_Sdt_SitFTf4ndn_n", ["callPair()", "callAdd(", "callBox("]),
+            ("Fixtures/Sample/libMarkerSymbols.dylib", "__init_array_end", ["_callAdd3"]),
+            ("Fixtures/Sample/libMarkerSymbols.dylib", "_add3", ["_callAdd3"]),
+        ]
+        for (fixture, needle, callers) in cases {
+            guard FileManager.default.fileExists(atPath: fixture),
+                  let output = try run(["xrefs", fixture, "--function", needle]) else { continue }
+            #expect(!output.contains("No function matched"), "\(needle): \(output)")
+            guard let heading = output.split(separator: "\n").first(where: { $0.hasPrefix("sub_") }) else {
+                Issue.record("\(needle): no folded function selected: \(output)"); continue
+            }
+            #expect(heading.contains("  0x"), "\(heading)")
+            for caller in callers {
+                #expect(output.contains(caller), "\(needle) should list caller \(caller): \(output)")
+            }
+        }
+    }
 }

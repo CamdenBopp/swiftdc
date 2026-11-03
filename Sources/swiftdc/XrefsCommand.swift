@@ -101,7 +101,12 @@ struct XrefsCommand: AsyncParsableCommand {
             try emit(renderUnreferenced(graph), to: output)
             return
         }
-        try emit(renderCrossReferences(graph, needle: function!), to: output)
+        // A folded address is named `sub_<addr>` in the graph, so its own
+        // symbols select it here, as they do for `disasm -f`: `xrefs
+        // --function Box.plus` printed "No function matched" for a symbol
+        // the binary exports.
+        let folded = functions.filter { disassembler.foldedSymbolMatches($0, needle: function!) }.map(\.startAddress)
+        try emit(renderCrossReferences(graph, needle: function!, folded: folded), to: output)
     }
 
     private func renderUnreferenced(_ graph: CallGraph) -> String {
@@ -127,8 +132,8 @@ struct XrefsCommand: AsyncParsableCommand {
         return lines.joined(separator: "\n")
     }
 
-    private func renderCrossReferences(_ graph: CallGraph, needle: String) -> String {
-        let matches = graph.addresses(matching: needle)
+    private func renderCrossReferences(_ graph: CallGraph, needle: String, folded: [UInt64]) -> String {
+        let matches = Set(graph.addresses(matching: needle) + folded).sorted()
         guard !matches.isEmpty else {
             return json ? "[]" : "// No function matched '\(needle)'."
         }
