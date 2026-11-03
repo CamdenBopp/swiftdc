@@ -452,9 +452,11 @@ struct AsyncFuncletIndex: Sendable {
                     guard let detail = insn.detail else {
                         pages.removeAll(); held.removeAll(); contexts.removeAll(); resumeFields.removeAll(); continue
                     }
-                    let name = insn.branchTarget.flatMap(nameOf)
-                        ?? DisassembledFunction.calleeName(of: insn)
                     if insn.controlFlow == .call {
+                        // Named only here: for any other instruction the
+                        // name was parsed from its text and never read.
+                        let name = insn.branchTarget.flatMap(nameOf)
+                            ?? DisassembledFunction.calleeName(of: insn)
                         if Self.isTaskAlloc(name) || Self.isTaskSwitch(name) || Self.isContinuationInit(name) {
                             allocatesContext.insert(start)
                         }

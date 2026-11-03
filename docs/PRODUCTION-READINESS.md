@@ -7436,3 +7436,31 @@ repeats spread 0.15%), not wall time. Baseline: origin/dev `20dcc5d`.
   own table, at most two more walks per image. They are not hot: a 25 s
   sample of the start of the fixed GoodLinks run, which covers both index
   builds, has no `ChainedFixupTable` frame. Left as is.
+
+- **FIXED (speed): the async funclet scan named every instruction.** In an
+  image without the async hint sections (libSwiftSyntax and
+  libSwiftParser have none), `AsyncFuncletIndex.build` scans every
+  function, and for each instruction on each path it computed
+  `branchTarget.flatMap(nameOf) ?? calleeName(of:)`. For a non-call,
+  `calleeName` fell through to `parsedCalleeName`, which splits the
+  instruction's text. The name is read only for a `.call`, so it is now
+  computed only there. That was 13.6% of a libSwiftParser sample.
+  Instructions retired, against the change above:
+
+  | run | before | after | peak footprint |
+  |---|---|---|---|
+  | libSwiftParser `disasm --structured` | 191.7G | 176.5G (-7.9%) | 72 MB to 64 MB |
+  | libSwiftParser `xrefs --unreferenced` | 161.5G | 146.1G (-9.5%) | 64 MB to 64 MB |
+  | libSwiftSyntax `disasm --structured` | 586.9G | 557.6G (-5.0%) | 210 MB to 217 MB |
+  | libSwiftSyntax `xrefs --unreferenced` | 509.6G | 479.5G (-5.9%) | 201 MB to 238 MB |
+
+  Every output is byte-identical (`cmp`), and the fixture blast radius
+  changed 0 lines in all four views. OPEN: the same scan still builds
+  54 string keys per call (`pages["x\(n)"]` for n in 0...17), and it
+  decodes each function a third time. Folding it into pass 1 would remove
+  a whole-image decode and CFG build.
+
+  Over the four changes, libSwiftSyntax `--structured` went from 4,199.6G
+  to 557.6G instructions (-86.7%), its `xrefs` from 4,109.4G to 479.5G
+  (-88.3%), libSwiftParser `--structured` from 241.9G to 176.5G (-27.0%)
+  and its `xrefs` from 211.5G to 146.1G (-30.9%).
