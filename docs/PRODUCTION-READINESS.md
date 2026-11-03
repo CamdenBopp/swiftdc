@@ -6776,3 +6776,17 @@ Findings:
   `SwiftLowering` does not prove direct is not seeded: `bigRes(_ x: Int)
   async -> Big5` read `mem64[arg0] = x1` and reads `mem64[x0] = x1`.
   Fixtures: 6 lines, that function; swift-syntax byte-identical.
+- **FIXED — unspecialized generic calls laid out by position** (ABI
+  review item 11, first part). A generic function takes a generic value
+  by address, one register, and its metadata and witness tables after the
+  formals, so it is now laid out from its declared parameters and the
+  metadata is not shown; a tuple result with a generic element takes its
+  buffer first, from x0 (GenCall.cpp: `CanUseSRet = false` for a direct
+  result beside an indirect one, or two indirect ones), so such a call
+  shows its declared parameters as `?`. `identity<A>(local_20, 0x4010)`
+  reads `identity<A>(local_20)`; `split<A>(local_18, local_20, ?,
+  0x4010)` reads `split<A>(?, ?)` (`genericcalls.swift`). Fixtures: 30
+  lines, `_hashValue<A>(local, 0x…)` -> `(local)`; swift-syntax 132 lines,
+  `_print_unlocked<A, B>(…, 0x…)` without the metadata, Bool arguments
+  typed (`rewrite<A>(…, 1)` -> `true`), `appendInterpolation<A>()` ->
+  `(?)`.

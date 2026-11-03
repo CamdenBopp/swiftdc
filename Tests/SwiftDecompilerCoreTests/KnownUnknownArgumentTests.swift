@@ -28,7 +28,7 @@ import Testing
 @Test func missingValuesDoNotJustifyUnknownOrAggregateArgumentLayouts() {
     // An async callee whose result may be indirect is not laid out; one with
     // a register result is, as a synchronous one (CallArityTests).
-    for callee in ["externalUnknown", "M.f<T>(T) -> ()", "M.f((Swift.Int, Swift.Int)) -> ()", "M.f(Swift.Int) async -> M.S"] {
+    for callee in ["externalUnknown", "M.f<T>(T) -> (T, Swift.Int)", "M.f((Swift.Int, Swift.Int)) -> ()", "M.f(Swift.Int) async -> M.S"] {
         #expect(Disassembler.swiftCallArgumentSlots(callee: callee,
             enumCaseIndex: EnumCaseIndex(), classTypeIndex: ClassTypeIndex()) == nil)
     }

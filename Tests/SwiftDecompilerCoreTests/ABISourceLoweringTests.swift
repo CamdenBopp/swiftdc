@@ -367,3 +367,18 @@ struct ABISourceLoweringTests {
     let two = try #require(functions.first { $0.displayName.hasPrefix("AsyncCalls.twoArgs(") }).renderStructured()
     #expect(two.contains("return ((arg1 - arg0) + (arg0 << 3))"), Comment(rawValue: two))
 }
+
+/// A generic function takes a generic value by address and its metadata
+/// after the formals, and a tuple result with a generic element takes its
+/// buffer first, from x0 (GenCall.cpp). By position `identity<A>(w)` read
+/// `identity<A>(local_20, 0x4010)`, the metadata as an argument, and
+/// `split<A>(w, n)` read `(local_18, local_20, ?, 0x4010)`, the buffer as
+/// `x` (`genericcalls.swift`, ABI review item 11).
+@Test func aGenericCallTakesItsDeclaredParametersIfPresent() async throws {
+    let path = "Fixtures/Sample/libGenericCalls.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(text.contains("GenericCalls.identity<A>(local_20)\n"), Comment(rawValue: text))
+    #expect(text.contains("GenericCalls.split<A>(?, ?)\n"), Comment(rawValue: text))
+}

@@ -484,6 +484,9 @@ $CLANG -arch arm64 -O2 -fobjc-arc -dynamiclib -framework Foundation objcreturns.
 echo "==> calls to async functions, direct and indirect results (asynccalls.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name AsyncCalls asynccalls.swift -o libAsyncCalls.dylib
 
+echo "==> calls to unspecialized generic functions (genericcalls.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name GenericCalls genericcalls.swift -o libGenericCalls.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

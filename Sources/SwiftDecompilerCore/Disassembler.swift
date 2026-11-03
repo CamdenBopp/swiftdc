@@ -4062,6 +4062,49 @@ public struct Disassembler: Sendable {
             .flatMap { $0.stack.isEmpty ? $0.slots : nil }
     }
 
+    /// Whether a generic function's printed result is a tuple with a generic
+    /// element, whose buffers come before the formals from x0.
+    static func returnsGenericTupleFromX0(_ callee: String) -> Bool {
+        guard let signature = DisassembledFunction.splitSignature(callee),
+              let range = DisassembledFunction.outermostArgumentListRange(of: signature.head)
+        else { return false }
+        let name = signature.head[..<range.lowerBound].dropLast()
+        guard let open = name.firstIndex(of: "<"), name.hasSuffix(">") else { return false }
+        let clause = name[name.index(after: open)..<name.index(before: name.endIndex)]
+        let names = (clause.range(of: " where ").map { clause[..<$0.lowerBound] } ?? clause)
+            .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard names.allSatisfy({ $0.wholeMatch(of: #/[A-Z][0-9]*/#) != nil }) else { return false }
+        let result = signature.result.trimmingCharacters(in: .whitespaces)
+        return result.hasPrefix("(") && !result.hasPrefix("()") && mentionsGenericParameter(result, Set(names))
+    }
+
+    /// Whether `type` is a value of one of `generics`, or of an associated
+    /// type of one (`A`, `A.Element`), which a generic function takes by
+    /// address; `inout A` is an address too.
+    static func isGenericValue(_ type: String, _ generics: Set<String>) -> Bool {
+        guard !generics.isEmpty else { return false }
+        var type = Substring(type.trimmingCharacters(in: .whitespaces))
+        if type.hasPrefix("inout ") { type = type.dropFirst("inout ".count) }
+        let root = type.split(separator: ".", maxSplits: 1).first.map(String.init) ?? ""
+        return generics.contains(root) && type.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }
+    }
+
+    /// Whether `type` names one of `generics` as a whole word.
+    static func mentionsGenericParameter(_ type: String, _ generics: Set<String>) -> Bool {
+        var word = ""
+        for character in type + " " {
+            if character.isLetter || character.isNumber || character == "_" || character == "." {
+                word.append(character)
+            } else {
+                if generics.contains(word.split(separator: ".").first.map(String.init) ?? "") && !word.hasPrefix(".") {
+                    return true
+                }
+                word = ""
+            }
+        }
+        return false
+    }
+
     /// The slots of the parameters that fit in registers, and how many
     /// parameters follow them on the stack. Past x7 or v7 a parameter's
     /// words go to the stack, packed to their own alignment, and so does
@@ -4099,8 +4142,30 @@ public struct Disassembler: Sendable {
         var name = Substring(Self.withoutPrivateDiscriminators(String(signature.head[..<range.lowerBound].dropLast())))
         let isStatic = name.hasPrefix("static ")
         if isStatic { name = name.dropFirst("static ".count) }
-        // An ordinary qualified identifier only: no generic clause, no
-        // `closure #1 in`, `specialization <…> of`, `(X in _HASH)` or thunk prose.
+        // A generic function's clause (`M.gen<A where A: P>`) names its type
+        // parameters. A value of one is passed indirectly, one pointer, and the
+        // metadata and witness tables follow the formals, which this lays out
+        // without them (swift/docs/ABI/CallingConvention.rst).
+        var genericParameters: Set<String> = []
+        if let open = name.firstIndex(of: "<"), name.hasSuffix(">") {
+            let clause = name[name.index(after: open)..<name.index(before: name.endIndex)]
+            let names = (clause.range(of: " where ").map { clause[..<$0.lowerBound] } ?? clause)
+                .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            guard !names.isEmpty, names.allSatisfy({ $0.wholeMatch(of: #/[A-Z][0-9]*/#) != nil }) else { return nil }
+            genericParameters = Set(names)
+            name = name[..<open]
+            // A tuple result with a generic element is not returned through
+            // x8: an indirect result beside a direct one, or two indirect ones,
+            // take their buffers first, from x0 (GenCall.cpp, `CanUseSRet =
+            // false`), and laid out from x0 `split<A>(_: A, _: Int) -> (A,
+            // Swift.Int)` read the buffer as its `x`.
+            let result = signature.result.trimmingCharacters(in: .whitespaces)
+            if result.hasPrefix("("), !result.hasPrefix("()"), Self.mentionsGenericParameter(result, genericParameters) {
+                return nil
+            }
+        }
+        // An ordinary qualified identifier only: no `closure #1 in`,
+        // `specialization <…> of`, `(X in _HASH)` or thunk prose.
         guard !name.isEmpty,
               name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }),
               let dot = name.lastIndex(of: ".")
@@ -4122,6 +4187,9 @@ public struct Disassembler: Sendable {
             if let scalar = scalarParameterClass(parameter, enumCaseIndex: enumCaseIndex,
                                                  classTypeIndex: classTypeIndex) {
                 (kind, registers) = (scalar, 1)
+            } else if Self.isGenericValue(type, genericParameters) {
+                // Its address.
+                (kind, registers) = (.integer, 1)
             } else if signature.thrownType == nil, let words = integerRegisterFootprint(ofParameterType: type) {
                 (kind, registers) = (.integer, words)
             } else {
@@ -5762,13 +5830,18 @@ public struct Disassembler: Sendable {
             // parameters are shown, each unknown.
             // A resume funclet's name prints its function's signature, but it
             // takes only the context.
+            // So does a generic function whose tuple result takes its buffers
+            // first, from x0: `split<A>(_: A, _: Int) -> (A, Swift.Int)` read
+            // `split<A>(local_18, local_20, ?, 0x4010)`, the buffer as `x` and
+            // the metadata as an argument.
             if let callee = calleeByAddress[address], !callee.contains("resume partial function for "),
                let signature = DisassembledFunction.splitSignature(callee),
-               signature.isAsync, let range = DisassembledFunction.outermostArgumentListRange(of: signature.head) {
+               signature.isAsync || Self.returnsGenericTupleFromX0(callee),
+               let range = DisassembledFunction.outermostArgumentListRange(of: signature.head) {
                 let parameters = DisassembledFunction.splitTopLevelArguments(signature.head[range])
                     .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
                 argumentsByAddress[address] = parameters.map { _ in .unknown }
-                strategy = "async-declared-count"
+                strategy = "declared-count"
                 continue
             }
             if let values = sanitize(values) { argumentsByAddress[address] = values }
