@@ -574,3 +574,15 @@ struct ABISourceLoweringTests {
     #expect(text.contains(#"printf("%d %hd %hhd %u %ld %c\n", "#), Comment(rawValue: text))
     #expect(text.contains(#"puts("a\tb\r\n")"#), Comment(rawValue: text))
 }
+
+/// A printf integer argument reads at the width and signedness its
+/// conversion gives it (cformat.c).
+@Test func aPrintfIntegerArgumentReadsAtItsConversionIfPresent() async throws {
+    let path = "Fixtures/Sample/libCFormat.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(text.contains(#"printf("%d %hd %hhd %u %ld %c\n", -1, -2, -3, 0xee6b2800, -4, 65)"#), Comment(rawValue: text))
+    #expect(DisassembledFunction.MessageSend.formatIntegerTypes(#""%5.2f %lu %x %s %hhu""#)
+            == ["", "Swift.UInt", "Swift.UInt32", "", "Swift.UInt8"])
+}

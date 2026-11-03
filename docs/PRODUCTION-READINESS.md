@@ -50,6 +50,12 @@ results do not replace previously recorded release performance measurements.
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
 
+- **FIXED — a printf integer argument rendered its whole slot.**
+  `printf("%d %hd %hhd …", -1, -2, -3, …)` read `0xffffffff, 0xfffffffe,
+  0xfffffffd`. Each integer conversion now types its slot: `%d` as Int32,
+  `%hd` as Int16, `%hhd` as Int8, `%ld` as Int, and the unsigned
+  conversions as the UInt of that width. A Double keeps its own typing.
+  Fixture `cformat.c`. Blast radius: one line.
 - **FIXED — a narrow C integer argument rendered its whole register.**
   `close(-1)` read `close(0xffffffff)`. The caller writes `mov w0, #-1`,
   and the SDK table recorded only that an `int` travels in an x register.
