@@ -806,3 +806,22 @@ struct ABISourceLoweringTests {
     #expect(!decode.contains("& -16"), Comment(rawValue: decode))
     #expect(decode.contains("allKeys.getter(self: ?)"), Comment(rawValue: decode))
 }
+
+/// A result-buffer store is shown by the return that renders it; when no
+/// return can, it is shown as itself. `staleAfterKeyPath` stores five 7s
+/// that `swift_getAtKeyPath` then overwrites, and it read only
+/// `swift_getAtKeyPath(); return ?` (resultbuffer.s).
+@Test func aResultStoreNoReturnRendersIsShownIfPresent() async throws {
+    let path = "Fixtures/Sample/libResultBuffer.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func structured(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.contains(name) }).renderStructured()
+    }
+    let stale = try structured("staleAfterKeyPath")
+    let store = try #require(stale.range(of: "mem64[&result] = 7"), Comment(rawValue: stale))
+    let call = try #require(stale.range(of: "swift_getAtKeyPath("), Comment(rawValue: stale))
+    #expect(store.lowerBound < call.lowerBound, Comment(rawValue: stale))
+    let kept = try structured("keptAfterRetain")
+    #expect(!kept.contains("mem64[&result"), Comment(rawValue: kept))
+}

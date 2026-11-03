@@ -1317,6 +1317,15 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — a result-buffer store was hidden when no return rendered
+  it.** The renderer left an indirect-result write to the return whenever
+  a signature named the result. A return it could not rebuild, a type
+  with no layout or a buffer a later call overwrites, read `return ?`,
+  and the stores were silently dropped. `resultbuffer.s`'s
+  `staleAfterKeyPath` stores five 7s that `swift_getAtKeyPath` then
+  overwrites, and read only `swift_getAtKeyPath(); return ?`. The stores
+  now show (`mem64[&result] = 7`) unless every exit renders the result.
+  Blast radius: 40 files, 1,116 stores shown, none removed.
 - **FIXED — `___chkstk_darwin` was read as an ordinary call, and a
   dynamic stack allocation after it escaped the whole frame.** A generic
   -O function sizes each buffer from a value-witness size: `mov x9, x8;

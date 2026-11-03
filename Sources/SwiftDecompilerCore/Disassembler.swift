@@ -8185,6 +8185,9 @@ public struct Disassembler: Sendable {
 
         let signatureKnown = DisassembledFunction.signatureKnown(
             displayName: function.analysisDisplayName, objcSignature: function.objcMethod?.signature)
+        // Whether each exit's indirect result renders as its return value.
+        let everyExitRendersResult = !analysis.exitIndirectResults.isEmpty
+            && analysis.exitIndirectResults.keys.allSatisfy { indirectReturn(at: $0) != nil }
         // Where the encoded return comes back: x0 for an integer, pointer
         // or object, v0 for one float or double. A struct of floats, one
         // of nine to sixteen bytes (`twoWordFieldReturn` aside) or one
@@ -8250,12 +8253,14 @@ public struct Disassembler: Sendable {
             // found 320 of 4,165 stripped swift-syntax functions empty or a
             // bare `return` while their code stored to memory.
             // An indirect-result write is the function's result: shown by its
-            // return when a signature says what is returned, and only here
-            // when none does.
+            // return when a signature says what is returned and every exit
+            // renders it, and only here otherwise. A return that could not
+            // be rebuilt reads `return ?`, and the stores were all it said.
             if let detail = insn.detail, ValueTracer.plainStoreIDs.contains(detail.id.rawValue) {
                 let level: String
                 if let write = analysis.memoryWrites[insn.address] {
-                    let shown = write.kind == "address" || (write.kind == "result" && !signatureKnown)
+                    let shown = write.kind == "address"
+                        || (write.kind == "result" && !(signatureKnown && everyExitRendersResult))
                     level = !shown ? write.kind : !statements.isEmpty ? "semantic"
                         : write.indexed ? "unresolved" : "address"
                     if level == "address" { noteStatement(.assignment(memoryWriteStatement(write))) }
