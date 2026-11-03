@@ -4341,7 +4341,11 @@ public struct Disassembler: Sendable {
     }
 
     /// The two-word String types `swiftCallArgumentSlots` lays out.
-    static let twoWordStringTypes: Set<String> = ["Swift.String", "Swift.Optional<Swift.String>", "Swift.String?"]
+    /// `_StringGuts` is String's own two words (`_object: _StringObject`,
+    /// stdlib/public/core/StringGuts.swift): `_stringCompareWithSmolCheck`
+    /// compares two of them.
+    static let twoWordStringTypes: Set<String> = ["Swift.String", "Swift.Optional<Swift.String>", "Swift.String?",
+                                                  "Swift._StringGuts"]
     /// The same types as a field record's mangled names spell them.
     static let twoWordStringMangledTypes: Set<String> = ["SS", "SSSg"]
 
@@ -4691,9 +4695,22 @@ public struct Disassembler: Sendable {
     /// A demangled parameter's type, with any `label:` prefix removed.
     private static func parameterType(_ parameter: String) -> String {
         if let colon = parameter.range(of: ": ", options: .backwards) {
-            return String(parameter[colon.upperBound...]).trimmingCharacters(in: .whitespaces)
+            return withoutOwnership(String(parameter[colon.upperBound...]))
         }
-        return parameter.trimmingCharacters(in: .whitespaces)
+        return withoutOwnership(parameter)
+    }
+
+    /// A parameter's type without its ownership specifier, which says who
+    /// releases the value, not how it travels: `__owned Swift.Array<A>` is
+    /// the Array's one word (`_finalizeUninitializedArray`, whose argument
+    /// is the array literal being built).
+    static func withoutOwnership(_ type: String) -> String {
+        var type = Substring(type.trimmingCharacters(in: .whitespaces))
+        for specifier in ["__owned ", "__shared ", "__consuming ", "consuming ", "borrowing "]
+        where type.hasPrefix(specifier) {
+            type = type.dropFirst(specifier.count)
+        }
+        return String(type)
     }
 
     /// A field map for a demangled type name, trying the qualified name then its
@@ -4720,7 +4737,7 @@ public struct Disassembler: Sendable {
         if let colon = type.range(of: ": ", options: .backwards) {
             type = String(type[colon.upperBound...])
         }
-        type = type.trimmingCharacters(in: .whitespaces)
+        type = withoutOwnership(type)
         // The one classification of how a value travels (`SwiftLowering`),
         // which a result's register also follows: a one-pointer collection
         // (`[Int]`, a Dictionary, a Set), `any Error` and `AnyObject` are one

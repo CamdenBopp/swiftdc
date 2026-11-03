@@ -443,3 +443,15 @@ struct ABISourceLoweringTests {
     #expect(try text("s32").contains("return Double((((arg0 & 0xffffffff) << 32) >>ˢ 32))"))
     #expect(try text("u32").contains("return Double((arg0 & 0xffffffff))"))
 }
+
+/// `_stringCompareWithSmolCheck(_: _StringGuts, _: _StringGuts, expecting:)`
+/// takes each `_StringGuts` as a String's two words and the expected result
+/// as a one-byte enum: three arguments, not the five registers they fill.
+@Test func aStringComparisonTakesTwoGutsAndAnExpectationIfPresent() async throws {
+    let path = "Fixtures/Sample/libLargeStrings.opt.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(text.contains(#"Swift._stringCompareWithSmolCheck(?, "A literal laid out 32 bytes later", 0)"#))
+    #expect(!text.contains("_stringCompareWithSmolCheck(?, ?, "))
+}

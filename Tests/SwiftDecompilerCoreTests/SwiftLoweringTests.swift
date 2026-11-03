@@ -8,6 +8,11 @@ import Testing
         ("()", .zeroSized), ("Swift.Never", .zeroSized),
         ("Swift.Int", .oneInteger), ("Swift.Bool", .oneInteger), ("Swift.UInt32", .oneInteger),
         ("Swift.Error", .oneInteger), ("Swift.AnyObject", .oneInteger), ("Builtin.Int1", .oneInteger),
+        // A variadic parameter is its Array; a String.Index is its raw bits.
+        ("Any...", .oneInteger), ("Swift.Int...", .oneInteger), ("Swift.String.Index", .oneInteger),
+        ("...", .unknown),
+        ("Swift._StringComparisonResult", .oneInteger), ("Swift._StringGuts", .direct),
+        ("Any.Type", .oneInteger),
         ("Swift.UnsafeMutableRawPointer", .oneInteger), ("Swift.UnsafePointer<Swift.Int>", .oneInteger),
         ("Swift.Array<Swift.Int>", .oneInteger), ("Swift.Dictionary<Swift.Int, Swift.String>", .oneInteger),
         ("Swift.Optional<Swift.UnsafeRawPointer>", .oneInteger),

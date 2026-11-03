@@ -52,11 +52,18 @@ enum SwiftLowering: Equatable, Sendable {
             return of(payload, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex).isDirect
                 ? .direct : .unknown
         }
+        // A variadic parameter (`Any...`) is passed as its Array.
+        if type.hasSuffix("..."), type.count > 3 { return .oneInteger }
         if integers.contains(type) || Disassembler.isSingleRegisterPointer(type)
             || onePointerGenerics.contains(where: { isWhole(type, generic: $0) })
             || enumCaseIndex.isNoPayloadEnum(type) || classTypeIndex.isClass(type) {
             return .oneInteger
         }
+        // An `Any` existential metatype is its metadata pointer alone: `Any`
+        // has no protocol, so no witness table follows it (`_typeName(_:
+        // qualified:)`). Any other `.Type` may be thin (no register) or carry
+        // witness tables.
+        if type == "Any.Type" || type == "Swift.Any.Type" { return .oneInteger }
         if multiWord.contains(type) || multiWordGenerics.contains(where: { isWhole(type, generic: $0) })
             || type.hasSuffix(".Type") || type.hasSuffix(".Protocol") || isFunctionType(type) {
             return .direct
@@ -73,6 +80,10 @@ enum SwiftLowering: Equatable, Sendable {
         "Swift.Int32", "Swift.UInt32", "Swift.Int64", "Swift.UInt64", "Swift.AnyObject",
         // `any Error` is one pointer to its box (SwiftError).
         "Swift.Error",
+        // `_rawBits: UInt64` (stdlib/public/core/StringIndex.swift).
+        "Swift.String.Index",
+        // `case equal, less` (StringComparison.swift).
+        "Swift._StringComparisonResult",
         // The compiler's own scalars (`_stdlib_isOSVersionAtLeast…` returns
         // `Builtin.Int1`).
         "Builtin.Int1", "Builtin.Int8", "Builtin.Int16", "Builtin.Int32", "Builtin.Int64", "Builtin.Word",
@@ -86,7 +97,7 @@ enum SwiftLowering: Equatable, Sendable {
     ]
     /// Two to four words.
     private static let multiWord: Set<String> = [
-        "Swift.String", "Swift.Substring", "Swift.Character", "Swift.Unicode.Scalar", "Swift.StaticString",
+        "Swift.String", "Swift._StringGuts", "Swift.Substring", "Swift.Character", "Swift.Unicode.Scalar", "Swift.StaticString",
         "Swift.AnyKeyPath",
     ]
     private static let multiWordGenerics = [

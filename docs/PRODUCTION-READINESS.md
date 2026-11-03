@@ -1183,6 +1183,28 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — variadic, `String.Index`, string-guts, `Any.Type` and owned
+  parameters were not laid out.** A call taking one fell back to reading
+  registers by position. The stdlib fixes each layout:
+  - `T...` is passed as its Array, one word.
+  - `String.Index` is `_rawBits: UInt64`.
+  - `_StringGuts` is String's own two words.
+  - `_StringComparisonResult` is `case equal, less`.
+  - An `Any` existential metatype is its metadata pointer alone.
+  - `__owned`, `__shared`, `consuming` and `borrowing` say who releases a
+    value, not how it travels.
+
+  `print(r0, " ", 10, 0xe100000000000000)` now reads `print(r0, " ", "\n")`,
+  and `_stringCompareWithSmolCheck(self.status[0..<8],
+  self.status[8..<16], ?, ?, 0)` now reads
+  `_stringCompareWithSmolCheck(self.status, ?, 0)`. Blast radius against
+  cc1a7d5, structured view: 26 files, 2,344 lines.
+  - 757 lines recover values.
+  - 158 lines gain the parameters their arity was missing.
+  - 195 lines are `UTF16View.index(self: …)`, where a laid-out call now
+    exposes the open out-of-image value-method `self` defect (§1, ABI
+    invariant 5) instead of hiding it behind a wrong arity.
+  - The rest are bindings and nesting that follow from these.
 - **FIXED — a stripped value witness was an anonymous `sub_`.** A
   struct's or enum's metadata record is its value witness table pointer,
   its kind and its descriptor, so the record is found by the rebase that

@@ -112,14 +112,15 @@ private let fixture = "Fixtures/Sample/libStringArity.dylib"
 /// A String result's second word is an argument only in a String slot.
 /// In a positional list (a value type's method, which is not laid out) it
 /// trims like any unknown: `runtimearity.swift`'s `String.append` of a
-/// `_typeName` call keeps reading `append(self: …, Swift._typeName(?, 0))`,
-/// with no `?` for the high word after it.
+/// `_typeName` call keeps reading `append(self: …, Swift._typeName(?, false))`,
+/// with no `?` for the high word after it. (`_typeName(_: Any.Type,
+/// qualified: Bool)` is laid out, so its Bool prints as one.)
 @Test func aStringResultsSecondWordAloneIsNoArgumentIfPresent() async throws {
     let path = "Fixtures/Sample/libRuntimeArity.dylib"
     guard FileManager.default.fileExists(atPath: path) else { return }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let text = functions.map { $0.renderPseudo() }.joined(separator: "\n")
-    #expect(text.contains("Swift._typeName(?, 0))") && !text.contains("Swift._typeName(?, 0), ?)"),
+    #expect(text.contains("Swift._typeName(?, false))") && !text.contains("Swift._typeName(?, false), ?)"),
             Comment(rawValue: text.components(separatedBy: "\n").filter { $0.contains("_typeName") }.joined(separator: "\n")))
 }
 
