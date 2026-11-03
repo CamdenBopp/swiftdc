@@ -559,6 +559,11 @@ $CLANG -arch arm64 -dynamiclib frozenself.s -L"$(xcrun --show-sdk-path)/usr/lib/
 echo "==> a dynamic allocation of unknown size keeps the frame (unknownalloca.s)"
 $CLANG -arch arm64 -dynamiclib unknownalloca.s -o libUnknownAlloca.dylib
 
+echo "==> a stripped vtable accessor names no property (strippedaccessor.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name StrippedAccessor strippedaccessor.swift -o libStrippedAccessor.dylib
+cp libStrippedAccessor.dylib libStrippedAccessor.stripped.dylib
+strip -x libStrippedAccessor.stripped.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

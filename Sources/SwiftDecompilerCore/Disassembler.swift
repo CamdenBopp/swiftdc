@@ -5388,9 +5388,9 @@ public struct Disassembler: Sendable {
                 guard insn.detail?.id == AARCH64_INS_ADRP else { continue }
                 let next = function.instructions[index + 1]
                 guard let destination = next.detail?.operands.first?.operand.register?.key,
-                      case .loaded(let slot)? = pairTracer.finalState(of: [insn, next])[destination],
-                      resolver.loadedName(at: slot) == "__chkstk_darwin"
+                      case .loaded(let slot)? = pairTracer.finalState(of: [insn, next])[destination]
                 else { continue }
+                guard resolver.loadedName(at: slot) == "__chkstk_darwin" else { continue }
                 tracer.stackProbeSlots.insert(slot)
             }
         }
@@ -5471,6 +5471,16 @@ public struct Disassembler: Sendable {
             resolver: resolver, selfTypeName: selfTypeName, vtableIndex: vtableIndex,
             callArguments: analysis.callSites.mapValues(\.arguments)
         )
+        // A self dispatch resolved to its class's implementation takes that
+        // body's parameters: an override keeps the signature, so the same
+        // registers. A stripped binary names such an accessor by its kind
+        // alone (`self.(unknown).getter`), and laid out positionally it read
+        // whatever x0 held.
+        for insn in function.instructions where insn.isSelfDispatch && (insn.controlFlow == .call || insn.controlFlow == .branch) {
+            if let target = insn.branchTarget, registerSummaries[target] != nil, callTargets[insn.address] == nil {
+                callTargets[insn.address] = target
+            }
+        }
         // Vtable targets become named only after the first trace. A newly
         // resolved setter must invalidate its result before downstream values
         // are recovered; rendering-time suppression leaves fabricated values

@@ -1098,3 +1098,16 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
     let isStr = try #require(functions.first { $0.displayName.hasPrefix("DynamicCast.isStr") }).renderStructured()
     #expect(isStr.contains("as? Swift.String) != nil)"), Comment(rawValue: isStr))
 }
+
+/// A self dispatch resolved to its class's implementation takes that body's
+/// parameters (an override keeps the signature). In a stripped binary the
+/// accessor has no signature, and positionally the getter dispatch read the
+/// slot's own address, left in x0, as an argument (strippedaccessor.swift).
+@Test func aSelfDispatchTakesItsImplementationsParametersIfPresent() async throws {
+    let path = "Fixtures/Sample/libStrippedAccessor.stripped.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(!text.contains("getter(StrippedAccessor."), Comment(rawValue: text))
+    #expect(text.contains(".getter()"), Comment(rawValue: text))
+}
