@@ -50,7 +50,7 @@ results do not replace previously recorded release performance measurements.
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
 
-- **FIXED — a structured sink without a `ret` read as falling through
+- **FIXED (`1f9f0ed`) — a structured sink without a `ret` read as falling through
   into the next label.** A block that leaves the function by a tail call
   (`b C`), or by a call with no instruction after it (`bl abort`), printed
   its call and stopped. The drain appends unvisited blocks as labels after
