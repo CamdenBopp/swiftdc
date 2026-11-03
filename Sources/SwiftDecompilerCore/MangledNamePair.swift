@@ -20,20 +20,26 @@ enum MangledNamePair {
     /// negative 64-bit value marking it uninitialized
     /// (swift/lib/IRGen/MetadataRequest.cpp); the runtime then stores the
     /// metadata there, of the same type.
-    static func typeName(atCacheVariable address: UInt64, in machO: MachOFile) -> String? {
+    static func typeName(
+        atCacheVariable address: UInt64, in machO: MachOFile, fixups: Disassembler.ChainedFixupTable = .init()
+    ) -> String? {
         guard machO.cache == nil, let fileOffset = machO.fileOffset(of: address),
               let negated = UnrecordedTypes.read(Int(fileOffset) + 4, as: Int32.self, in: machO)
         else { return nil }
         // An initialized (positive) word negates to no length and declines.
-        return typeName(at: address, in: machO, length: Int(-Int64(negated)))
+        return typeName(at: address, in: machO, length: Int(-Int64(negated)), fixups: fixups)
     }
 
-    static func typeName(at address: UInt64, in machO: MachOFile) -> String? {
-        typeName(at: address, in: machO, length: nil)
+    static func typeName(
+        at address: UInt64, in machO: MachOFile, fixups: Disassembler.ChainedFixupTable = .init()
+    ) -> String? {
+        typeName(at: address, in: machO, length: nil, fixups: fixups)
     }
 
     /// `length` is the name's length when the pair's second word is not it.
-    private static func typeName(at address: UInt64, in machO: MachOFile, length knownLength: Int?) -> String? {
+    private static func typeName(
+        at address: UInt64, in machO: MachOFile, length knownLength: Int?, fixups: Disassembler.ChainedFixupTable
+    ) -> String? {
         let offset: Int
         if let cache = machO.cache {
             offset = Int(address) - Int(cache.mainCacheHeader.sharedRegionStart)
@@ -46,7 +52,8 @@ enum MangledNamePair {
               length > 0,
               byteLength(at: offset + Int(relative), in: machO) == Int(length),
               machO.cache == nil,
-              referencesAreSound(nameAddress: UInt64(Int64(address) + Int64(relative)), length: Int(length), in: machO),
+              referencesAreSound(
+                  nameAddress: UInt64(Int64(address) + Int64(relative)), length: Int(length), in: machO, fixups: fixups),
               let name = try? MangledName.resolve(at: offset + Int(relative), in: machO.context),
               let node = try? SymbolicDemangler.demangleType(for: name, in: machO.context)
         else { return nil }
@@ -67,7 +74,13 @@ enum MangledNamePair {
     /// "module" whose name lay at -2063597537 (`Tools/fuzz.swift metadata`
     /// on libMangledTypes.stripped and libSample.stripped with `__const`
     /// in reach, seed 777: mutants 56 and 11).
-    static func referencesAreSound(nameAddress: UInt64, length: Int, in machO: MachOFile) -> Bool {
+    ///
+    /// `fixups` is the image's chained-fixup table. It is built by walking
+    /// every chain of the image, so a run passes the one its resolver holds:
+    /// a fresh table per name was 89% of a GoodLinks `xrefs` sample.
+    static func referencesAreSound(
+        nameAddress: UInt64, length: Int, in machO: MachOFile, fixups: Disassembler.ChainedFixupTable = .init()
+    ) -> Bool {
         guard let typeref = machO.sections.first(where: { $0.segmentName == "__TEXT" && $0.sectionName == "__swift5_typeref" }),
               nameAddress >= UInt64(typeref.address),
               nameAddress + UInt64(length) < UInt64(typeref.address + typeref.size),
@@ -99,7 +112,6 @@ enum MangledNamePair {
         // Indirect references: the slot is a bind (another image's
         // descriptor, which the demangler names from the symbol) or a
         // rebase onto a context descriptor of this file.
-        let fixups = Disassembler.ChainedFixupTable()
         let base = machO.segments.first(where: { $0.segmentName == "__TEXT" }).map { UInt64($0.virtualMemoryAddress) } ?? 0
         var cursor = 0
         while cursor < length {

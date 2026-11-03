@@ -3025,11 +3025,11 @@ public struct Disassembler: Sendable {
             // variable (V1) or name pair (V2) spells.
             let arguments = callArguments[site] ?? []
             if callee == "__swift_instantiateConcreteTypeFromMangledName", case .address(let cache)? = arguments.first,
-               let type = MangledNamePair.typeName(atCacheVariable: cache, in: resolver.machO) {
+               let type = MangledNamePair.typeName(atCacheVariable: cache, in: resolver.machO, fixups: resolver.chainedFixups) {
                 return "\(slot) value witness for \(type)"
             }
             if callee == Self.mangledNameMetadataHelperName, arguments.count >= 2, case .address(let pair) = arguments[1],
-               let type = MangledNamePair.typeName(at: pair, in: resolver.machO) {
+               let type = MangledNamePair.typeName(at: pair, in: resolver.machO, fixups: resolver.chainedFixups) {
                 return "\(slot) value witness for \(type)"
             }
             return nil
@@ -7191,7 +7191,7 @@ public struct Disassembler: Sendable {
                 // not `__swift_instantiateConcreteTypeFromMangledNameV2(0x8008, 0xde8)`.
                 if callee == Self.mangledNameMetadataHelperName, inner.count >= 2,
                    case .address(let pair) = sanitizeValue(inner[1]),
-                   let type = MangledNamePair.typeName(at: pair, in: resolver.machO) {
+                   let type = MangledNamePair.typeName(at: pair, in: resolver.machO, fixups: resolver.chainedFixups) {
                     return "type metadata for \(type)"
                 }
                 // `_finalizeUninitializedArray(array)` IS the array — render its

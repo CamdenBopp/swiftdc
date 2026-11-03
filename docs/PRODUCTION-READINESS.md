@@ -7408,3 +7408,31 @@ repeats spread 0.15%), not wall time. Baseline: origin/dev `20dcc5d`.
 
   Every output is byte-identical (`cmp`), and the fixture blast radius
   changed 0 lines in all four views.
+
+- **FIXED (speed): every mangled-name pair walked the image's chains.**
+  `MangledNamePair.referencesAreSound` (from `dba6e5e`) built a fresh
+  `ChainedFixupTable` per lookup, and the first indirect (`\x02`) reference
+  in a name walked every chain of the image. `renderValue` reaches it at
+  each `__swift_instantiateConcreteTypeFromMangledName` call. On GoodLinks
+  `xrefs --arch arm64 --unreferenced`, a sample put 3,534 of 3,960
+  main-thread samples (89%) in `ChainedFixupTable.build`. The resolver's
+  `chainedFixups`, built once and shared by every copy, now goes to
+  `typeName(at:in:fixups:)` and `referencesAreSound` from all three
+  callers. A caller with no resolver (the tests) still gets a fresh table.
+  Instructions retired, against the change above:
+
+  | run | before | after | peak footprint |
+  |---|---|---|---|
+  | GoodLinks `xrefs --unreferenced` | 14,989.4G | 1,473.9G (-90.2%) | 449 MB to 480 MB |
+  | libSwiftParser `disasm --structured` | 191.3G | 191.7G | 72 MB to 72 MB |
+  | libSwiftParser `xrefs --unreferenced` | 161.1G | 161.5G | 73 MB to 64 MB |
+  | libSwiftSyntax `disasm --structured` | 587.5G | 586.9G | 221 MB to 210 MB |
+  | libSwiftSyntax `xrefs --unreferenced` | 510.9G | 509.6G | 198 MB to 201 MB |
+
+  GoodLinks wall time went from 1,605 s to 168 s. The swift-syntax dylibs
+  hardly reach the check. Every output is byte-identical (`cmp`, GoodLinks
+  included), and the fixture blast radius changed 0 lines in all four
+  views. `EnumCaseIndex` and `MetadataSymbolizer` each still build their
+  own table, at most two more walks per image. They are not hot: a 25 s
+  sample of the start of the fixed GoodLinks run, which covers both index
+  builds, has no `ChainedFixupTable` frame. Left as is.
