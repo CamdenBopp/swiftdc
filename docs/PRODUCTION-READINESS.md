@@ -7464,3 +7464,38 @@ repeats spread 0.15%), not wall time. Baseline: origin/dev `20dcc5d`.
   to 557.6G instructions (-86.7%), its `xrefs` from 4,109.4G to 479.5G
   (-88.3%), libSwiftParser `--structured` from 241.9G to 176.5G (-27.0%)
   and its `xrefs` from 211.5G to 146.1G (-30.9%).
+## 2026-11-03: typed returns that render `return ?`
+
+Measured on the toolchain's `libSwiftCompilerPluginMessageHandling.dylib`
+(`swiftdc disasm <lib> --structured --probe <file>`, the
+`render.return-outcome` event's `status`), at 20dcc5d: of 1,425 return
+outcomes, 513 void, 440 no-signature, 248 `unknown`, 179
+`unsupported-layout-or-value`, 39 `recovered`, 5 `partial`. Causes, read
+from each event's function in a plain listing (a type-and-shape
+heuristic, so the bins are approximate):
+
+- **FIXED (4e3efb9) — a String return was never read from its two
+  words.** 37 of the 248 `unknown`. A literal, a String call's whole
+  result or a String field of self is now the return. After: unknown
+  248 -> 241, recovered 39 -> 46; over all four swift-syntax dylibs,
+  unknown 972 -> 933, recovered 100 -> 139. Fixture `stringreturns.swift`.
+- **OPEN — a value picked per path.** The 30 String returns left in the
+  plugin library are CodingKey `stringValue` and enum `rawValue` getters:
+  `csel x0, …; csel x1, …` chains over the case tag, so each word is a
+  select, and two selects on the same condition were never paired into
+  one `c ? "a" : "b"`. One-register scalars that join at a block (23,
+  `mov w0, #0` / `mov w0, #1` before a shared `ret`) are the same cause.
+- **OPEN — `unsupported-layout-or-value` is all throwing functions whose
+  normal exit is not proven** (179 of 179). 119 `ret` straight after a
+  throwing call, mostly protocol witnesses forwarding a `decode`; x21 at
+  the `ret` is the callee's error, so the exit is the callee's outcome,
+  `return try callee(…)`, which nothing models. The status name hides
+  this; it reads as a layout gap.
+- **OPEN — generic results** (102): `A`, `Optional<A>`, `A.Index`,
+  returned through x8 with a layout only the caller's metadata fixes.
+- **OPEN — Optional results** (38): a payload's tag or extra inhabitant
+  is not modelled (SwiftLowering's `.direct`/`.unknown`).
+- **OPEN — nominal structs, enums and existentials** (37) with no
+  complete layout in the image, and **tuples** (11, such as
+  `(bucket: _HashTable.Bucket, found: Bool)` in x0 and x1), which no
+  direct path assembles.
