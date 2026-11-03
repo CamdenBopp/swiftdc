@@ -6322,6 +6322,13 @@ public struct Disassembler: Sendable {
                        let decimal = Self.renderTypedConstant(bits: bits, type: floatType) {
                         return decimal
                     }
+                    // A signed order reads its constant as a signed number: a
+                    // 32-bit compare against -100000 sign-extends it to
+                    // 0xfffffffffffe7960, which is that value.
+                    if [.less, .lessEqual, .greater, .greaterEqual].contains(op), case .immediate(let bits) = value,
+                       Int64(bitPattern: bits) < 0, Int64(bitPattern: bits) >= Int64(Int32.min) {
+                        return String(Int64(bitPattern: bits))
+                    }
                     return renderValue(value, depth: depth + 1)
                 }
                 // `0 - x` is unary negation — the shape the compiler emits for a

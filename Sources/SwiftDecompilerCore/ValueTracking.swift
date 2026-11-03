@@ -2661,8 +2661,12 @@ public struct ValueTracer: Sendable {
             let width = detail.operands[0].operand.register.map({ $0.widthBits }) ?? 64
             if bit == width - 1 {
                 // Sign bit: tbz taken = non-negative, tbnz taken = negative.
+                // A w register's sign is bit 31, so the value compared is its
+                // low half sign-extended: `tbnz w0, #31` read `arg0 < 0`,
+                // the sign of a high half the ABI leaves undefined.
+                let signed: AbstractValue = width == 32 ? Self.signExtended32(value) { .binary($0, $1, $2) } : value
                 return .binary(detail.id == AARCH64_INS_TBZ ? .greaterEqual : .less,
-                               value, .immediate(0))
+                               signed, .immediate(0))
             }
             // Any other bit is an honest mask test — `(v & (1<<bit)) == 0` for
             // tbz (bit clear taken), `!= 0` for tbnz. This is how a `Bool` (bit 0)
@@ -3913,7 +3917,14 @@ public struct ValueTracer: Sendable {
             // `pl` is false, though the 64-bit difference is positive.
             var constants = false
             if case .immediate = lhs, case .immediate = rhs { constants = true }
-            if requireComplete || constants {
+            // A signed order of 32-bit operands compares their sign-extended
+            // values: a w register reads as its zero-extended bits, and
+            // `cmp w9, w8; b.lt` with w8 = -100000 read `… < 0xfffe7960`,
+            // the branch inverted for every non-negative w9. MI and PL are
+            // the difference's sign, which is not `a < b` when it overflows.
+            let signedOrder = [AArch64CC_LT, AArch64CC_GE, AArch64CC_GT, AArch64CC_LE].contains(code)
+            if requireComplete || constants || (signedOrder && width == .immediate(32))
+                || code == AArch64CC_MI || code == AArch64CC_PL {
                 return subtractionCondition(lhs, rhs, code: code, width: width == .immediate(32) ? 32 : 64)
             }
             guard let op = Self.comparisonOperator(code) else { return nil }
@@ -3979,12 +3990,30 @@ public struct ValueTracer: Sendable {
         }
     }
 
+    /// A 32-bit value's low half sign-extended, `(v << 32) >>ˢ 32`, through
+    /// `build`. A value masked below bit 31 (`v & 0xff`), a small constant,
+    /// or a choice between such values has a clear sign bit and is its own
+    /// extension.
+    static func signExtended32(
+        _ value: AbstractValue, _ build: (AbstractBinaryOperator, AbstractValue, AbstractValue) -> AbstractValue
+    ) -> AbstractValue {
+        func signBitClear(_ value: AbstractValue) -> Bool {
+            switch value {
+            case .binary(.bitAnd, _, .immediate(let mask)), .immediate(let mask): mask <= 0x7fff_ffff
+            case .select(_, let whenTrue, let whenFalse): signBitClear(whenTrue) && signBitClear(whenFalse)
+            default: false
+            }
+        }
+        if signBitClear(value) { return value }
+        return build(.arithmeticShiftRight, build(.shiftLeft, value, .immediate(32)), .immediate(32))
+    }
+
     private func subtractionCondition(_ lhs: AbstractValue, _ rhs: AbstractValue, code: AArch64CC_CondCode, width: Int) -> AbstractValue {
         func unsigned(_ value: AbstractValue) -> AbstractValue {
             width == 32 ? expression(.bitAnd, value, .immediate(0xffff_ffff)) : value
         }
         func signed(_ value: AbstractValue) -> AbstractValue {
-            width == 32 ? expression(.arithmeticShiftRight, expression(.shiftLeft, value, .immediate(32)), .immediate(32)) : value
+            width == 32 ? Self.signExtended32(value) { expression($0, $1, $2) } : value
         }
         let a = unsigned(lhs), b = unsigned(rhs)
         if code == AArch64CC_MI || code == AArch64CC_PL {

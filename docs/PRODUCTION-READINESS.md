@@ -6707,3 +6707,18 @@ Findings:
   swift_allocObject(…), …)`, `Descriptor.init(self: …stringValue.getter())`
   for `init(rawValue: Int)`). Still OPEN: an out-of-image value method
   (`String._bridgeToObjectiveC(self: arg0)`) is decided by name.
+- **FIXED — signed 32-bit comparisons rendered at 64 bits** (ABI review
+  item 3). A w register reads as its zero-extended bits, so a signed order
+  over two of them compared the wrong numbers: `cmp w9, w8; b.lt` with w8
+  = -100000 read `… < 0xfffe7960`, the branch inverted for every
+  non-negative sum, and `tbnz w0, #31` read `arg0 < 0`, the sign of an
+  undefined high half (`signed32.c`). A signed order (LT/GE/GT/LE) at
+  width 32 now goes through the exact `subtractionCondition`, MI/PL (the
+  difference's sign) at every width, and a w sign-bit test sign-extends
+  the low half; a value whose bit 31 is provably clear (a small mask, a
+  small constant, a choice of them) is not extended, and a signed order
+  prints a negative constant in decimal. Fixtures: 140 lines, 67 of them
+  value-witness and Int32 sign tests `arg1 < 0` -> `((arg1 << 32) >>ˢ 32)
+  < 0` (getEnumTagSinglePayload's count is `unsigned`); swift-syntax 218
+  lines, the same shapes. The z3 condition harness covers only the text
+  path; these tracer facts are checked by the fixture test alone.

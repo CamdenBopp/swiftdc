@@ -32,7 +32,7 @@ omitted.
    `String._bridgeToObjectiveC(self: arg0)`. Take x20 as `self` only when
    the callee's body is proven to read it before writing it, or the value
    is a proven address (mutating); decline out-of-image value methods.
-3. **Signed 32-bit comparisons render at 64 bits.** `cmp w9, w8; b.lt`
+3. **FIXED — Signed 32-bit comparisons render at 64 bits.** `cmp w9, w8; b.lt`
    with `w8 = -100000` renders `… < 0xfffe7960`, inverting the branch for
    every non-negative sum; `cmp w0, #0; cinc ge` renders `>= 0`, always
    true; `tbnz w0, #31` renders `arg0 < 0` on an undefined high half.

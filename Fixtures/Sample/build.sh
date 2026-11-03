@@ -475,6 +475,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name ThrowSelect throwselect.
 echo "==> a temporary parked in x20 before a callee with no self there (parkedself.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name ParkedSelf parkedself.swift -o libParkedSelf.dylib
 
+echo "==> 32-bit signed comparisons and a w sign-bit test (signed32.c, -O2)"
+$CLANG -arch arm64 -O2 -dynamiclib -undefined dynamic_lookup signed32.c -o libSigned32.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

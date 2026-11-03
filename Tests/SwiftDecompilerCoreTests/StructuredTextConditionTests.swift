@@ -311,3 +311,22 @@ private func textPathFunction(_ words: [UInt32], undetailed: Set<Int> = []) thro
     #expect(try condition([0x94000040, 0x14000001] + test, block: 1) == "x2 == 0")  // bl +0x100; b +4
     #expect(try condition([0x91000523, 0x14000001] + test, block: 1) == "arg0 == 0") // add x3, …: x2 untouched
 }
+
+/// A signed order of 32-bit operands compares their sign-extended values,
+/// and a w register's sign is bit 31 of its low half. `cmp w9, w8; b.lt`
+/// with w8 = -100000 read `… < 0xfffe7960` over zero-extended operands,
+/// taking the wrong branch for every non-negative sum, and `tbnz w0, #31`
+/// read `arg0 < 0`, the sign of an undefined high half (`signed32.c`, ABI
+/// review item 3).
+@Test func aSigned32BitComparisonSignExtendsItsOperandsIfPresent() async throws {
+    let path = "Fixtures/Sample/libSigned32.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName == name }).renderStructured()
+    }
+    let cmp = try text("_s_cmp")
+    #expect(cmp.contains("<< 32) >>ˢ 32) < -100000)"), Comment(rawValue: cmp))
+    let neg = try text("_s_neg")
+    #expect(neg.contains("if (((arg0 << 32) >>ˢ 32) < 0)"), Comment(rawValue: neg))
+}

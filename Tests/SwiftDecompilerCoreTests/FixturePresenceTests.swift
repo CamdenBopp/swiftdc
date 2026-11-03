@@ -201,6 +201,7 @@ struct FixturePresenceTests {
         "Fixtures/Sample/libDynamicCast.dylib",
         "Fixtures/Sample/libThrowSelect.dylib",
         "Fixtures/Sample/libParkedSelf.dylib",
+        "Fixtures/Sample/libSigned32.dylib",
     ]
 
     /// True on a run that must actually exercise the fixtures. `CI` is set by
