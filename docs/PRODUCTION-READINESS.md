@@ -6800,3 +6800,14 @@ Findings:
   signature now drops those arguments: `tt<…>(arg1, arg0)`, d from d0 and
   k from x0 (`droppedmeta.swift`). Fixtures: that line; swift-syntax
   byte-identical.
+- **FIXED — a vector lane move modelled as a whole move** (ABI review
+  a12 #1, item 10). `ins`/`umov` canonicalize to `mov` with a lane
+  operand, and the structured operand did not carry the lane, so `mov
+  v0.d[1], x2` read as `v0 = x2`. Compiled code does this: the
+  `storeEnumTagSinglePayload` value witnesses build a 16-byte payload
+  with `mov v0.d[0], x11; mov v0.d[1], x10; str q0, [x9]` and read
+  `mem128[arg0] = 0`, the last lane as the whole store. The operand now
+  carries Capstone's `vector_index`, and a lane move is not modelled (the
+  register is clobbered): `mem128[arg0] = q0`. Fixtures: 20 lines, six
+  value witnesses in five fixtures and `vectorlanes.s`; swift-syntax
+  byte-identical.

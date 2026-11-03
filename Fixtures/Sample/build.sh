@@ -490,6 +490,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name GenericCalls genericcall
 echo "==> a generic specialization that drops its metatype argument, Tt (droppedmeta.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name DroppedMeta droppedmeta.swift -o libDroppedMeta.dylib
 
+echo "==> vector lane moves, ins and umov (vectorlanes.s)"
+$CLANG -arch arm64 -dynamiclib vectorlanes.s -o libVectorLanes.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

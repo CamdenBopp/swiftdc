@@ -120,8 +120,11 @@ enum InstructionSemantics {
                                   value: signed ? .signExtend(.register(1), bits: bits) : .zeroExtend(.register(1), bits: bits))
 
         case AARCH64_INS_MOV, AARCH64_INS_MOVZ:
-            // Capstone pre-folds MOVZ's shift into the immediate.
-            guard operands.count >= 2 else { return nil }
+            // Capstone pre-folds MOVZ's shift into the immediate. A lane move
+            // (`ins`/`umov`, `mov v0.d[1], x2`) writes or reads one element,
+            // not the register: modelled as a whole move, `fmov d0, x1; mov
+            // v0.d[1], x2; str q0, [x0]` stored `arg2` alone.
+            guard operands.count >= 2, operands.allSatisfy({ $0.vectorIndex == nil }) else { return nil }
             return SemanticEffect(destination: dest, value: .operand(1))
 
         case AARCH64_INS_ALIAS_UBFX, AARCH64_INS_ALIAS_SBFX, AARCH64_INS_ALIAS_UBFIZ, AARCH64_INS_ALIAS_SBFIZ,

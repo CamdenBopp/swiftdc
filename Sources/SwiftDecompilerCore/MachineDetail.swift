@@ -141,6 +141,10 @@ public struct StructuredOperandInfo: Sendable {
     /// both (`movk` reads the register it writes). For a memory operand they
     /// describe the memory; its base and index registers are always read.
     public var access: UInt8 = 0
+    /// The lane a vector operand names (`v0.d[1]` is lane 1), or nil for a
+    /// whole register. `ins`/`umov` canonicalize to `mov`, and only this
+    /// tells `mov v0.d[1], x2` (one lane written) from a whole move.
+    public var vectorIndex: Int? = nil
 
     public var isRead: Bool { access & 1 != 0 }
     public var isWritten: Bool { access & 2 != 0 }
@@ -255,7 +259,8 @@ public struct StructuredInsn: Sendable {
                         operand: value,
                         shift: (op.shift.type, op.shift.value),
                         extender: op.ext,
-                        access: UInt8(truncatingIfNeeded: op.access.rawValue)
+                        access: UInt8(truncatingIfNeeded: op.access.rawValue),
+                        vectorIndex: op.vector_index == -1 ? nil : Int(op.vector_index)
                     )
                 )
             }

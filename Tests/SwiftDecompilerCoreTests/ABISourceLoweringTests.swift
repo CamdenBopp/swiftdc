@@ -395,3 +395,15 @@ struct ABISourceLoweringTests {
     let text = try #require(functions.first { $0.displayName.hasPrefix("DroppedMeta.useTT(") }).renderStructured()
     #expect(text.contains("Swift.BinaryFloatingPoint>(arg1, arg0)"), Comment(rawValue: text))
 }
+
+/// `ins`/`umov` canonicalize to `mov` with a lane operand: `mov v0.d[1],
+/// x2` writes one element, and modelled as a whole move `fmov d0, x1; mov
+/// v0.d[1], x2; str q0, [x0]` stored `arg2` alone (`vectorlanes.s`, ABI
+/// review a12 #1).
+@Test func aVectorLaneMoveIsNoWholeMoveIfPresent() async throws {
+    let path = "Fixtures/Sample/libVectorLanes.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = try #require(functions.first { $0.displayName == "_ins" }).renderStructured()
+    #expect(!text.contains("= arg2"), Comment(rawValue: text))
+}
