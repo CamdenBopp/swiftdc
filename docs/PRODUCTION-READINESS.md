@@ -6811,3 +6811,13 @@ Findings:
   register is clobbered): `mem128[arg0] = q0`. Fixtures: 20 lines, six
   value witnesses in five fixtures and `vectorlanes.s`; swift-syntax
   byte-identical.
+- **FIXED — `fmov` immediates read at the wrong precision or shape**
+  (ABI review a2 #1, #3). A vector `fmov.2d v0, #3.0` fills every lane and
+  was stored as one Double (lane 1 reading 0: `mem128[x0 + 0x10] =
+  0x3ff0000000000000` in a compiled initializer); a Float vector read as
+  a Double pattern; `fmov h1, #3.0` carried a Double's pattern, whose low
+  16 bits rendered `0.0`. A 128-bit destination or a lane operand is now
+  not modelled, an `h` destination takes the Float16 pattern, and a
+  Float16 constant renders as its value: `half(_ h: Float16)` reads
+  `return ((arg0 * 3.0) + 0.5)` and its caller `half(1.5)`
+  (`fpimmediates.swift`). swift-syntax byte-identical.

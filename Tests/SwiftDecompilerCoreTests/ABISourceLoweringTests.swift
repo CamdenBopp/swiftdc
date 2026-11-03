@@ -407,3 +407,21 @@ struct ABISourceLoweringTests {
     let text = try #require(functions.first { $0.displayName == "_ins" }).renderStructured()
     #expect(!text.contains("= arg2"), Comment(rawValue: text))
 }
+
+/// An `fmov` immediate is encoded at its destination's precision and
+/// shape: a vector one fills every lane (`fmov.2d v0, #3.0; str q0` read
+/// as one Double, lane 1 zero), and an `h` register holds a Float16
+/// (`fmov h1, #3.0` read as a Double's pattern rendered `0.0`)
+/// (`fpimmediates.swift`, ABI review a2 #1 and #3).
+@Test func anFmovImmediateIsEncodedAtItsDestinationsPrecisionIfPresent() async throws {
+    let path = "Fixtures/Sample/libFPImmediates.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("FPImmediates.\(name)(") }).renderStructured()
+    }
+    #expect(!(try text("fill")).contains("0x4008000000000000"))
+    #expect(!(try text("fillF")).contains("0x3ff8000000000000"))
+    #expect(try text("half").contains("return ((arg0 * 3.0) + 0.5)"))
+    #expect(try text("callHalf").contains("FPImmediates.half(1.5)"))
+}

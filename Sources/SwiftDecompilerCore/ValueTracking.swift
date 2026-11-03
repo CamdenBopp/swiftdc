@@ -3076,8 +3076,23 @@ public struct ValueTracer: Sendable {
             // `fmov d0, #<imm>` — decode the encoded float and carry its bit
             // pattern (single- or double-precision per the destination width), so
             // a float context renders it as `0.5`/`2.5` rather than dropping it.
+            // A vector immediate (`fmov.2d v0, #3.0`, `fmov.4s`) fills every
+            // lane, and a lane move (`fmov v0.d[1], x1`) one; neither is the
+            // scalar the register would read as: `fmov.2d v0, #3.0; str q0`
+            // stored one Double, lane 1 reading 0, and a Float vector a
+            // Double pattern.
+            if dest.widthBits == 128 || detail.operands.contains(where: { $0.vectorIndex != nil }) {
+                clobber(detail, into: &registers); return
+            }
             if let fp = detail.operands[1].operand.floatingPointValue {
-                let bits = dest.widthBits == 32 ? UInt64(Float(fp).bitPattern) : fp.bitPattern
+                // Each precision's own bit pattern: an `h` register holds a
+                // Float16, which as a Double's pattern read `0.0` (its low 16
+                // bits) for `fmov h1, #3.0`.
+                let bits: UInt64 = switch dest.widthBits {
+                case 16: UInt64(Float16(fp).bitPattern)
+                case 32: UInt64(Float(fp).bitPattern)
+                default: fp.bitPattern
+                }
                 write(dest, .immediate(bits), into: &registers)
                 return
             }

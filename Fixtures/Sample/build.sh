@@ -493,6 +493,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name DroppedMeta droppedmeta.
 echo "==> vector lane moves, ins and umov (vectorlanes.s)"
 $CLANG -arch arm64 -dynamiclib vectorlanes.s -o libVectorLanes.dylib
 
+echo "==> fmov immediates in vector and half-precision registers (fpimmediates.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name FPImmediates fpimmediates.swift -o libFPImmediates.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

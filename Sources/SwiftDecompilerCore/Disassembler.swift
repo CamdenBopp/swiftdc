@@ -4559,6 +4559,8 @@ public struct Disassembler: Sendable {
             return String(Double(bitPattern: bits))
         case "Swift.Float", "Swift.Float32":
             return String(Float(bitPattern: UInt32(truncatingIfNeeded: bits)))
+        case "Swift.Float16":
+            return String(Float(Float16(bitPattern: UInt16(truncatingIfNeeded: bits))))
         // A narrow integer is its register's low bits, read at the declared
         // signedness: the callee reads no more, and the caller may leave the
         // rest as it likes. Read whole, `takeNarrow(-1, -2, -3, …)` rendered
