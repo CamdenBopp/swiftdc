@@ -720,7 +720,12 @@ enum Preservation {
         }
 
         func merged(with other: State) -> State {
-            let registers = registers.filter { other.registers[$0.key] == $0.value }
+            var registers = registers.filter { other.registers[$0.key] == $0.value }
+            // Two dynamic allocations' addresses are both below the higher
+            // bound: a store through either reaches no further.
+            for (key, mine) in self.registers where registers[key] == nil {
+                if case .below(let a) = mine, case .below(let b)? = other.registers[key] { registers[key] = .below(max(a, b)) }
+            }
             let aliases = stackAliases.union(other.stackAliases)
             var offsets: [String: FrameReach] = [:]
             for key in aliases where registers[key] == nil {

@@ -1317,6 +1317,17 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — a dynamic allocation's address lost its bound at a join.** A
+  register holding an allocation's address on one path and none on the
+  other, and sp itself after allocations on two paths, became a frame
+  alias of unknown offset, and the next call or store through it forgot
+  every saved register. A join now keeps an allocation's bound: for an
+  escape, as the allocation the register may point into, and for a value,
+  as the higher of two bounds. Functions summarized as clobbering x29: 41
+  → 30 (plugin library), 41 → 39 (libSwiftParserDiagnostics). The rest
+  pass a call an address inside a saved register's slot (a dead `x8 =
+  x29 - 0x10` from an earlier store) or one whose offset arithmetic the
+  pass does not follow.
 - **FIXED — a local inside the register save area escaped every save.**
   Swift keeps byte locals in gaps of the save area, such as the padding
   word `str x28, [sp, #-0x60]!` leaves at sp + 8. Their addresses go to

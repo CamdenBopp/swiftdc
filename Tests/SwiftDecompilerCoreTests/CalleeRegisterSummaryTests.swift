@@ -394,6 +394,24 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     #expect(saved.clobberedCalleeSaved.contains("x29"), "\(saved.clobberedCalleeSaved)")
 }
 
+/// A join of two dynamic allocations keeps sp below the higher bound, so a
+/// store through it still reaches no save:
+///
+///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
+///     sub sp, sp, #0x10; mov x19, x0; ldr x8, [x0]; cbz x0, 1f
+///     mov x9, sp; sub x9, x9, x8; mov sp, x9; b 2f
+///     1: sub sp, sp, #0x10; mov x9, sp; sub x9, x9, x8; mov sp, x9
+///     2: str xzr, [sp]; mov sp, x29; ldp …; ldp …; ret
+@Test func aJoinOfTwoAllocationsKeepsTheirBound() throws {
+    let words: [UInt32] = [
+        0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xaa0003f3, 0xf9400008, 0xb40000a0,
+        0x910003e9, 0xcb080129, 0x9100013f, 0x14000005, 0xd10043ff, 0x910003e9, 0xcb080129,
+        0x9100013f, 0xf90003ff, 0x910003bf, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
+    ]
+    let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "twoAllocs")))
+    #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
+}
+
 /// A join that leaves a register a dynamic allocation's address on one path
 /// and no frame address on the other keeps that bound for an escape:
 ///
