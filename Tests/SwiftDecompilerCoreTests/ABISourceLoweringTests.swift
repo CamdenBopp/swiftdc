@@ -586,3 +586,15 @@ struct ABISourceLoweringTests {
     #expect(DisassembledFunction.MessageSend.formatIntegerTypes(#""%5.2f %lu %x %s %hhu""#)
             == ["", "Swift.UInt", "Swift.UInt32", "", "Swift.UInt8"])
 }
+
+/// A specialization of a specialization keeps its original's registers only
+/// when every clause does: an ownership change over a dropped parameter
+/// takes the inner one's layout.
+@Test func aNestedSpecializationKeepsItsLayoutOnlyIfEveryClauseDoes() {
+    #expect(Disassembler.signatureSpecializationKeepsLayout(
+        "function signature specialization <Arg[0] = Owned To Guaranteed> of M.f(Swift.Int, Swift.Int) -> Swift.Int"))
+    #expect(!Disassembler.signatureSpecializationKeepsLayout(
+        "function signature specialization <Arg[1] = Owned To Guaranteed> of function signature specialization <Arg[0] = Dead> of M.f(Swift.Int, Swift.Int) -> Swift.Int"))
+    #expect(Disassembler.signatureSpecializationKeepsLayout(
+        "function signature specialization <Arg[1] = Owned To Guaranteed> of function signature specialization <Arg[0] = Guaranteed To Owned> of M.f(Swift.Int, Swift.Int) -> Swift.Int"))
+}

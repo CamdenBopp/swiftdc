@@ -3791,7 +3791,8 @@ public struct Disassembler: Sendable {
                   insn.branchTarget.map({ $0 < first.address || $0 > last.address }) ?? true,
                   let name = DisassembledFunction.calleeName(of: insn),
                   let callee = DisassembledFunction.splitSignature(name), !callee.isAsync, !callee.isThrowing,
-                  caller.result == callee.result, ordinaryHead(callee.head)
+                  caller.result == callee.result,
+                  ordinaryHead(callee.head)
             else { return nil }
             return insn.address
         })
@@ -3942,7 +3943,12 @@ public struct Disassembler: Sendable {
         guard name.hasPrefix(prefix) else { return true }
         guard let end = name.range(of: "> of ") else { return false }
         let clause = name[name.index(name.startIndex, offsetBy: prefix.count) ..< end.lowerBound]
-        return clause.wholeMatch(of: /Arg\[\d+\] = (Owned To Guaranteed|Guaranteed To Owned)(, Arg\[\d+\] = (Owned To Guaranteed|Guaranteed To Owned))*/) != nil
+        guard clause.wholeMatch(of: /Arg\[\d+\] = (Owned To Guaranteed|Guaranteed To Owned)(, Arg\[\d+\] = (Owned To Guaranteed|Guaranteed To Owned))*/) != nil
+        else { return false }
+        // A specialization of a specialization keeps the layout only if
+        // both do: `<Arg[1] = Owned To Guaranteed> of <Arg[0] = [Closure
+        // Propagated …]> of …` takes the inner one's registers.
+        return signatureSpecializationKeepsLayout(String(name[end.upperBound...]))
     }
 
     /// The register→source-argument-index map to seed for a Swift free function
