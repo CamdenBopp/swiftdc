@@ -1495,6 +1495,14 @@ public struct Disassembler: Sendable {
            !["any Swift.Error", "Swift.Error", "Error", "any Error"].contains(thrown) {
             return nil
         }
+        // A closure's name prints its source type, not its convention: one
+        // passed where a generic function is expected is emitted at that
+        // abstraction, so an async-let child `implicit closure #1 @Sendable ()
+        // async -> Swift.Int in …` takes an indirect result buffer in x0
+        // (`str x0, [x22, #0x10]` at its entry) and resumes its caller with
+        // nothing of the Int in x0. The name's last arrow is also the
+        // enclosing function's result, not the closure's.
+        if callee.contains("closure #") { return nil }
         switch swiftReturnRegister(forDemangledName: callee) {
         case .integer?: return "x0"
         case .floating?: return "v0"

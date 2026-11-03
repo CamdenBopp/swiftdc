@@ -909,8 +909,15 @@ because it cannot be distinguished from a right one by reading the output.
   awaits each shape plus `Task.value` and two `async let`s: all render a bare
   `await`, and only the `Int` control binds `let awaited1`.
   `anAwaitNamesOnlyAOneRegisterResultIfPresent` (unfiltered and filtered)
-  was seen red with the type rule defaulting to x0. The system
-  libswift_Concurrency binds one await result
+  was seen red with the type rule defaulting to x0. One gap was left: a
+  closure's name prints its source type, not its convention. The `async
+  let` child `implicit closure #1 @Sendable () async -> Swift.Int in
+  ….useAsyncLetReturning(…) async -> Swift.Int` takes an indirect buffer in
+  x0, and the name's last arrow (the enclosing function's) read as one
+  register. An awaited closure now binds no result
+  (`anAwaitedClosureNamesNoResult`, seen red). No render changed: that
+  forwarder's branch is not yet recognised as a suspension. The system
+  libswift_Concurrency binds one await result before and after
   (`AsyncSequence.contains(where:)`, a Bool in x0).
 - **OPEN — an awaited result that crosses an executor hop is not followed.**
   In `libAwaitResults` each nonisolated async function hops back to the
@@ -920,6 +927,13 @@ because it cannot be distinguished from a right one by reading the output.
   `AwaitResults.sink(?)` where `sink(awaited1 + 2)` is true. An indirect
   result needs the same, plus the buffer the caller passed (`add x0, x22,
   #0x10`): `useGeneric` reads its Int back from `[x22, #0x10]`.
+- **OPEN — a closure's demangled name is read as its signature elsewhere.**
+  A closure emitted at a generic abstraction returns through a buffer
+  whatever its printed type, and `swiftReturnRegister(forDemangledName:)`
+  returns `.integer` for the async-let closure above. Only the await path
+  declines closures; the synchronous call-result and async-return paths
+  still read their names. Unmeasured: how a closure whose type and
+  enclosing result differ parses, and whether any render is wrong.
 - **FIXED — one call could read as two.** A call consumed by both a branch
   condition and the return printed in both: `if ((Compares.sink(arg0) + …) <
   0) { trap() } else { return (Compares.sink(arg0) << 1) }` for one `bl sink`.

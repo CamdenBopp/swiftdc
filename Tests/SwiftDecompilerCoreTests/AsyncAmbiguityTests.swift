@@ -55,6 +55,30 @@ private func asyncBody(at start: UInt64, resume: UInt64, stored: Bool = true, ca
     #expect(Disassembler.awaitedResultRegister(into: 0x3000, index: index) == "x0")
 }
 
+/// A closure's name prints its source type, not its convention. The
+/// async-let child closure in `AwaitResults.useAsyncLetReturning` (fixture
+/// libAwaitResults) is spelled `() async -> Swift.Int` but is emitted at the
+/// generic abstraction of `async let`: it takes an indirect result buffer in
+/// x0 (`str x0, [x22, #0x10]`) and resumes its caller with nothing of the Int
+/// in x0. Its name's last arrow is the enclosing function's `Swift.Int`, so
+/// the type rule alone read it as one register. A plain function of the same
+/// spelling is the control.
+@Test func anAwaitedClosureNamesNoResult() throws {
+    let closure = "implicit closure #1 @Sendable () async -> Swift.Int in AwaitResults.useAsyncLetReturning(Swift.Int) async -> Swift.Int"
+    let cases: [(callee: String, register: String?)] = [
+        (closure, nil), ("AwaitResults.intResult(Swift.Int) async -> Swift.Int", "x0"),
+    ]
+    for (callee, register) in cases {
+        let body = try asyncBody(at: 0x1000, resume: 0x3000)
+        let index = AsyncFuncletIndex.build(
+            hints: .init(entries: [0x1000], awaitReturns: [0x3000]),
+            functionStarts: [0x1000, 0x3000], instructions: { $0 == 0x1000 ? body : [] },
+            nameOf: { _ in callee })
+        #expect(index.suspension(into: 0x3000)?.1.calleeName == callee)
+        #expect(Disassembler.awaitedResultRegister(into: 0x3000, index: index) == register, "\(callee)")
+    }
+}
+
 /// Two sites of one function resuming into one funclet is a loop
 /// (libswift_Concurrency's `AsyncCompactMapSequence.Iterator.next()` re-awaits
 /// into resume #1 from resume #4): the owner is proven, but no single
