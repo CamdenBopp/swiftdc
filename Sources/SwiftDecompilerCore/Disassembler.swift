@@ -1191,17 +1191,24 @@ public struct Disassembler: Sendable {
                 return function.startAddress <= address && address <= last
             }
         }
-        // A folded address declines to pick one of its symbols, so each of them
-        // selects it: `-f` on any folded symbol printed "No function matched"
-        // for a symbol the binary exports.
         return functions.filter {
             $0.symbol.lowercased().contains(needle)
                 || ($0.demangledName?.lowercased().contains(needle) ?? false)
                 || ($0.semanticName?.lowercased().contains(needle) ?? false)
-                || ($0.foldedCandidates ?? []).contains { candidate in
-                    candidate.lowercased().contains(needle)
-                        || (self.demangle(candidate).map { self.matchesName($0, needle: needle) } ?? false)
-                }
+                || foldedSymbolMatches($0, needle: needle)
+        }
+    }
+
+    /// Whether `needle` (case-insensitive) is in one of the symbols folded
+    /// onto `function`'s address, raw or demangled. A folded address
+    /// declines to pick one of its symbols, so each of them selects it:
+    /// `-f` on any folded symbol printed "No function matched" for a symbol
+    /// the binary exports.
+    public func foldedSymbolMatches(_ function: DisassembledFunction, needle: String) -> Bool {
+        let needle = needle.lowercased()
+        return (function.foldedCandidates ?? []).contains { candidate in
+            candidate.lowercased().contains(needle)
+                || (demangle(candidate).map { matchesName($0, needle: needle) } ?? false)
         }
     }
 
