@@ -50,6 +50,19 @@ results do not replace previously recorded release performance measurements.
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
 
+- **FIXED — a frozen standard-library struct's method took x20 as
+  `self`.** A non-mutating method of a struct at most four words long takes
+  `self`'s words after its formals, and an initializer or static method
+  takes a thin metatype. So a scalar the caller parked in x20 printed as
+  the receiver: `String.UTF16View.index(self: ((arg0 >>ᵁ 14) & 3), 15, …)`,
+  `Dictionary.init(self: r0, …)`, `Double.significandWidth.getter(self:
+  r0, r0)`. Now x20 is `self` for these only when it is provably an
+  address: a frame slot, a static address, the function's own `self` or a
+  field of it, or an `inout` parameter. A mutating member the stdlib
+  declares (`append`, setters, `modify`) keeps x20 whatever it holds, and
+  so does Hasher, which is passed by address. Fixture `stdself.swift`.
+  Blast radius against b26d282, structured view: 9 files, 62 lines, every
+  one a removed `self:`.
 - **FIXED — a struct, SIMD or closure parameter was read by position.**
   `fMix(Mix(i: k, d: 1.5, j: 7), 2.0)` rendered `fMix(arg0, 7)`, with the 7
   shown as the Double. `fPt(Pt(x: a, y: 3.0), k)` rendered `fPt(arg1)`,

@@ -72,9 +72,10 @@ today.
    `[` defeats `splitSignature` (a9 #1, reported).
 5. **A receiver is never taken from a callee-saved register without
    proof.** Needs: whether the callee reads x20. Enforced for in-image
-   callees (6c07b3e). Open: out-of-image value methods
-   (`String._bridgeToObjectiveC(self: arg0)`, a6 #7, reported), stdlib
-   value-type initializers (`Dictionary.init(self: …)`, verified OPEN).
+   callees (6c07b3e), and for methods and initializers of frozen
+   standard-library structs, which take x20 only as a mutating method's
+   address (`standardLibraryStructMethod`). Open: value types of other
+   modules seen only by name.
 6. **No value flows from a throwing or unreachable path into a normal
    return.** Enforced for merged `ret`s (e2ecce1, 77cf9ef). Open: x21
    after a throwing call has no value of its own, so `try?`/do-catch
@@ -125,7 +126,7 @@ soundness change, measured on its own).
 | # | Rule | Modelled in | Failure | Kind | Reproducer | Scope | Fix belongs in |
 |---|---|---|---|---|---|---|---|
 | 1 | Struct/enum results span registers | `callResultBank` | FIXED 5b2135d | soundness | multiresult.swift | every -O Swift caller of a struct-returning function | shared lowering |
-| 2 | x20 is self only for a method taking it | `selfValueBySite` + `readsSelfRegister` | in-image FIXED 6c07b3e; out-of-image open | soundness | parkedself.swift; a6 #7 | any -O caller parking a temp in x20 | shared callee facts |
+| 2 | x20 is self only for a method taking it | `selfValueBySite` + `readsSelfRegister` + `standardLibraryStructMethod` | in-image FIXED 6c07b3e; stdlib struct methods and inits FIXED; other out-of-image value types open | soundness | parkedself.swift, stdself.swift | any -O caller parking a temp in x20 | shared callee facts |
 | 3 | w compares are 32-bit | `flagCondition`, tbz/tbnz | FIXED c78254f | soundness | signed32.c | C, ObjC, Int32, value witnesses | isolated (flag model) |
 | 4 | ObjC return register from encoding | method exits | FIXED f25743d; x8 tail open | soundness | objcreturns.m | ObjC methods returning float/struct | shared lowering (ObjC side) |
 | 5 | swift_willThrow is void; throw paths are not returns | `voidRuntimeCalls`, merged exits | FIXED e2ecce1, 77cf9ef | soundness | throwselect.swift | throwing Swift functions at -O | isolated |

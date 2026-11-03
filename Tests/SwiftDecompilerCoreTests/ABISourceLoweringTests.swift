@@ -481,3 +481,37 @@ struct ABISourceLoweringTests {
     #expect(text.contains(#"Swift._stringCompareWithSmolCheck(?, "A literal laid out 32 bytes later", 0)"#))
     #expect(!text.contains("_stringCompareWithSmolCheck(?, ?, "))
 }
+
+/// A frozen standard-library struct's method takes `self` in x20 only as an
+/// address (mutating): a scalar left there is not the view (stdself.swift).
+@Test func aStandardLibraryValueMethodTakesOnlyAnAddressAsSelfIfPresent() async throws {
+    let path = "Fixtures/Sample/libStdSelf.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("StdSelf.\(name)(") }).renderStructured()
+    }
+    let all = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(!all.contains("UTF16View.index(self:"), Comment(rawValue: all))
+    #expect(!all.contains("_foreignIndex(self:"), Comment(rawValue: all))
+    #expect(try text("mutate").contains("Swift.String.append(self: arg0, "))
+    #expect(try text("local").contains("Swift.String.append(self: local_"))
+}
+
+/// Which standard-library methods take `self` by value (nil: not decided
+/// here, x20 may be `self`; false: an instance method of a frozen struct;
+/// true: static).
+@Test func standardLibraryStructMethodsAreClassified() {
+    #expect(Disassembler.standardLibraryStructMethod(
+        "Swift.String.UTF16View.index(_: Swift.String.Index, offsetBy: Swift.Int) -> Swift.String.Index") == false)
+    #expect(Disassembler.standardLibraryStructMethod("static Swift.String._fromSubstring(Swift.Substring) -> Swift.String") == true)
+    #expect(Disassembler.standardLibraryStructMethod("Swift.Dictionary.init(_: Swift.Int) -> Swift.Dictionary<A, B>") == true)
+    // Mutating: a declared mutating member, or a writing accessor.
+    #expect(Disassembler.standardLibraryStructMethod("Swift.String.append(Swift.String) -> ()") == nil)
+    #expect(Disassembler.standardLibraryStructMethod("Swift.Array.subscript.modify : (Swift.Int) -> A") == nil)
+    // Hasher is passed by address: every method's x20 is `self`.
+    #expect(Disassembler.standardLibraryStructMethod("Swift.Hasher._combine(Swift.UInt64) -> ()") == nil)
+    // A protocol requirement and a stdlib class take `self` in x20.
+    #expect(Disassembler.standardLibraryStructMethod("Swift.Collection.endIndex.getter : A.Index") == nil)
+    #expect(Disassembler.standardLibraryStructMethod("Swift._DictionaryStorage.resize(original: Swift.__RawDictionaryStorage, capacity: Swift.Int, move: Swift.Bool) -> Swift._DictionaryStorage<A, B>") == nil)
+}

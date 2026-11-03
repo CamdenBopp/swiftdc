@@ -502,6 +502,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name IntConvert intconvert.sw
 echo "==> struct, SIMD and closure parameters (structargs.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name StructArgs structargs.swift -o libStructArgs.dylib
 
+echo "==> standard-library value methods' self in x20 (stdself.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name StdSelf stdself.swift -o libStdSelf.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

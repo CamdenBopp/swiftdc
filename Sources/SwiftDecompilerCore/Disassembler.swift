@@ -3862,6 +3862,58 @@ public struct Disassembler: Sendable {
     /// specialization <…> of ` and `generic specialization <…> of ` clauses:
     /// the function it specializes, as its name prints it. Any other name is
     /// returned unchanged.
+    /// For a method of a frozen standard-library struct (or a type nested in
+    /// one), whether it is static; nil for anything else. A protocol
+    /// requirement (`Swift.Collection.endIndex.getter`) is not one: it takes
+    /// an address-only `self` in x20. Nor is a stdlib class
+    /// (`Swift._DictionaryStorage`), whose `self` is its reference in x20.
+    static func standardLibraryStructMethod(_ callee: String) -> Bool? {
+        var name = Substring(withoutSpecializationClauses(callee))
+        let isStatic = name.hasPrefix("static ")
+        if isStatic { name = name.dropFirst("static ".count) }
+        guard name.hasPrefix("Swift.") else { return nil }
+        let root = name.dropFirst("Swift.".count).prefix { $0.isLetter || $0.isNumber || $0 == "_" }
+        // A method has a member after its type: `Swift.String.append`.
+        guard name.dropFirst("Swift.".count + root.count).hasPrefix("."),
+              standardLibraryStructs.contains(String(root))
+        else { return nil }
+        // A mutating method's x20 is `self`'s address whatever the caller
+        // computed it from: an accessor that writes, or a method the
+        // standard library declares `mutating`.
+        let head = name.prefix { $0 != "(" && $0 != " " }
+        if head.hasSuffix(".setter") || head.hasSuffix(".modify") || head.hasSuffix(".unsafeMutableAddressor")
+            || standardLibraryMutatingMembers.contains(String(head.split(separator: ".").last ?? "")) {
+            return nil
+        }
+        // An initializer takes its thin metatype, as a static method does:
+        // `Dictionary.init(self: r0, …)` named a value left in x20.
+        return isStatic || head.hasSuffix(".init")
+    }
+
+    /// Members the standard library's frozen structs declare `mutating`
+    /// (String.swift, StringRangeReplaceableCollection.swift, Array.swift,
+    /// Dictionary.swift, Set.swift).
+    static let standardLibraryMutatingMembers: Set<String> = [
+        "append", "insert", "remove", "removeAll", "removeLast", "removeFirst", "removeSubrange",
+        "replaceSubrange", "reserveCapacity", "updateValue", "removeValue", "popLast", "popFirst",
+        "_appendElementAssumeUniqueAndCapacity", "_makeUniqueAndReserveCapacityIfNotUnique",
+        "_reserveCapacityAssumingUniqueBuffer", "_appendElement", "_makeMutableAndUnique",
+    ]
+
+    /// Frozen value types of the standard library whose methods' `self`
+    /// travels by value (stdlib/public/core, `@frozen public struct`), each
+    /// at most four words. Not Hasher: larger than four words, every one of
+    /// its methods takes `self` by address in x20.
+    static let standardLibraryStructs: Set<String> = [
+        "String", "Substring", "Character", "StaticString", "Array", "ArraySlice", "ContiguousArray",
+        "Dictionary", "Set", "Optional", "Range", "ClosedRange", "Int", "Int8", "Int16", "Int32", "Int64",
+        "UInt", "UInt8", "UInt16", "UInt32", "UInt64", "Double", "Float", "Float16", "Bool",
+        "UnsafePointer", "UnsafeMutablePointer", "UnsafeRawPointer", "UnsafeMutableRawPointer",
+        "UnsafeBufferPointer", "UnsafeMutableBufferPointer", "UnsafeRawBufferPointer",
+        "UnsafeMutableRawBufferPointer", "IndexingIterator", "_StringGuts", "_StringObject",
+        "_NativeDictionary", "_NativeSet",
+    ]
+
     static func withoutSpecializationClauses(_ name: String) -> String {
         var name = Substring(name)
         while name.hasPrefix("function signature specialization <") || name.hasPrefix("generic specialization <"),
@@ -5262,6 +5314,25 @@ public struct Disassembler: Sendable {
             }
             return values
         }
+        // The parameters this function received as `inout`, whose entry
+        // register holds an address.
+        let inoutArguments: Set<Int> = {
+            guard let signature = DisassembledFunction.splitSignature(function.analysisDisplayName),
+                  let range = DisassembledFunction.outermostArgumentListRange(of: signature.head)
+            else { return [] }
+            let parameters = DisassembledFunction.splitTopLevelArguments(signature.head[range])
+            return Set(parameters.indices.filter { Self.parameterType(parameters[$0]).hasPrefix("inout ") })
+        }()
+        /// Whether `value` is provably an address: a frame slot, a static
+        /// address, this function's own `self` or a field of it, an indirect
+        /// result, or an `inout` parameter.
+        func isAddressValue(_ value: AbstractValue) -> Bool {
+            switch value {
+            case .frame, .address, .selfPointer, .selfField, .indirectResultPointer, .indirectResultField: true
+            case .argument(let index): inoutArguments.contains(index)
+            default: false
+            }
+        }
         var selfValueBySite: [UInt64: AbstractValue] = [:]
         for insn in function.instructions {
             guard let site = sites[insn.address], Self.isSwiftCall(insn, swiftTargets: swiftTargets),
@@ -5279,6 +5350,15 @@ public struct Disassembler: Sendable {
             if let callee = calleeByAddress[insn.address] {
                 if DisassembledFunction.receivesThinMetatype(callee, classTypeIndex: classTypeIndex)
                     || DisassembledFunction.takesNoSelf(callee) { continue }
+                // A frozen standard-library struct's method takes `self` in
+                // x20 only by address, when it is mutating; a non-mutating
+                // one takes `self`'s words after its formals, and a static
+                // one a thin metatype, nothing. Its name does not say which,
+                // so x20 is `self` only when it holds an address:
+                // `String.UTF16View.index(self: ((arg0 >>ᵁ 14) & 3), 15, …)`
+                // named a scalar left in x20 as the view.
+                if let isStatic = Self.standardLibraryStructMethod(callee),
+                   isStatic || !isAddressValue(site.selfValue) { continue }
                 // A free function, `Module.name(…)`, has no `self`; nor does a
                 // specialization of one, whose name prints the original's
                 // after its clause (`function signature specialization
