@@ -1027,6 +1027,23 @@ enum Preservation {
                 state.setRegister(destination.key, to: .below(k &+ up))
                 return
             }
+            // An address inside a dynamic allocation plus an offset in a
+            // register stays inside it: `add x1, x27, x24` with x24 a field
+            // offset read from metadata projects a field of the value the
+            // buffer holds (the tracer's `allocationBase` reads the same).
+            if detail.id == AARCH64_INS_ADD, let destination = register(0), destination.widthBits == 64,
+               operands.count == 3, let lhs = register(1), let rhs = register(2) {
+                let pair: (PhysReg, PhysReg)? = switch (state.value(lhs.key), state.value(rhs.key)) {
+                case (.below, _): (lhs, rhs)
+                case (_, .below): (rhs, lhs)
+                default: nil
+                }
+                if let (base, offset) = pair, !state.stackAliases.contains(offset.key),
+                   case .below(let k) = state.value(base.key) {
+                    state.setRegister(destination.key, to: .below(k))
+                    return
+                }
+            }
             // A stack address less a size in a register: the allocation
             // `sub x9, x9, x12` makes, below that address.
             if detail.id == AARCH64_INS_SUB, let destination = register(0), let source = register(1),

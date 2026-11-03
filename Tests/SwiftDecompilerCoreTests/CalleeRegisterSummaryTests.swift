@@ -428,3 +428,23 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "allocOrNot")))
     #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
 }
+
+/// An address inside a dynamic allocation plus an offset in a register
+/// stays inside it: Swift projects a field of the value a buffer holds with
+/// `add x1, x9, x10`, x10 a field offset read from metadata. Handed to a
+/// call, it reaches that allocation, below the frame's locals, and no save:
+///
+///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
+///     sub sp, sp, #0x10; mov x19, x0; ldr x8, [x0]
+///     mov x9, sp; sub x9, x9, x8; mov sp, x9
+///     ldrsw x10, [x0, #48]; add x1, x9, x10; blr x2
+///     mov sp, x29; ldp …; ldp …; ret
+@Test func aFieldOfADynamicAllocationStaysInIt() throws {
+    let words: [UInt32] = [
+        0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xaa0003f3, 0xf9400008, 0x910003e9,
+        0xcb080129, 0x9100013f, 0xb980300a, 0x8b0a0121, 0xd63f0040, 0x910003bf, 0xa9414ff4,
+        0xa8c27bfd, 0xd65f03c0,
+    ]
+    let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "field")))
+    #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
+}
