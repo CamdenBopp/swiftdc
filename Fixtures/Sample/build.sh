@@ -235,6 +235,10 @@ $SWIFTC -parse-as-library -O -emit-library -module-name FieldWrites fieldwrites.
 $CLANG -fobjc-arc -O2 -dynamiclib -framework Foundation objc_field_copy.m -o libObjCFieldCopy.dylib
 $CLANG -fobjc-arc -O0 -dynamiclib -framework Foundation objc_field_copy.m -o libObjCFieldCopy.O0.dylib
 
+echo "==> an ARC factory that configures the object it returns through a tail objc_autoreleaseReturnValue (objc_factory_return.m, -O2 and -O0)"
+$CLANG -fobjc-arc -O2 -dynamiclib -framework Foundation objc_factory_return.m -o libObjCFactoryReturn.dylib
+$CLANG -fobjc-arc -O0 -dynamiclib -framework Foundation objc_factory_return.m -o libObjCFactoryReturn.O0.dylib
+
 echo "==> paired stores covering two ivars, aligned or not with them (objc_pair_stores.m, -O2)"
 $CLANG -fobjc-arc -O2 -dynamiclib -framework Foundation objc_pair_stores.m -o libObjCPairStores.dylib
 

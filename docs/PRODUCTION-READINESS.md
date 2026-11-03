@@ -915,6 +915,32 @@ because it cannot be distinguished from a right one by reading the output.
   (`--structured`) are never read by name because the structurer's text path
   renders their uses as registers: one evaluation either way.
   `aReusedCallResultIsEvaluatedOnceIfPresent` was seen red.
+- **FIXED — an ARC factory read as two allocations.** `X *x = [[X alloc]
+  init]; x.limit = v; return x;` (`objc_factory_return.m`, -O2) rendered
+  `[[[self alloc] init] setLimit:arg0]` then `return [[self alloc] init]`.
+  An ARC method returning an object exits through a tail `b
+  objc_autoreleaseReturnValue`, not a `ret`, and the use counter counted
+  the ObjC return only at a `ret`. The configured object had one counted
+  use, inlined, and the return printed the allocation again. It reproduced
+  for `objc_alloc_init`, a custom `initWithLimit:` send, `objc_opt_new` and
+  `alloc` + `initWithCapacity:`. The counter and the renderer now ask one
+  predicate (`objcPassthroughReturnValue`) whether a tail branch to a
+  `passthroughReturnHelpers` callee returns x0, so a rendered return is
+  always a counted use: `let r0 = [[self alloc] init]`, `[r0 setLimit:arg0]`,
+  `return r0`. The other tails were checked: a non-noise tail call renders
+  its arguments, which were already counted; no `objc_retain`,
+  `swift_retain`, `objc_release` or `swift_release` tail renders a return
+  value (0 of 189 in the fixture listings). Blast radius against origin/dev (`20dcc5d`), every fixture
+  and the swift-syntax dylibs: 8 files, 89 structured lines. The four
+  factories collapse to one allocation each. Every other change is a
+  tail-returned send that crosses its own `objc_claimAutoreleasedReturnValue`
+  (or, at -O0, an `objc_storeStrong` release) and is now bound by the
+  existing crossing rule: `let r0 = [arg0 stringByAppendingString:…]; return
+  r0` in Sample, `_bridgeToObjectiveC()` in Sample's @objc thunks, `-[SDSDKSender
+  fetch:at:]` (-O0, where the send runs before the release that the old
+  inline return read as preceding it). `anObjCFactoryReturnsTheObjectItConfiguredIfPresent`
+  was seen red with the tail branch not counted, and
+  `anObjCFactoryWithOneUseStaysInlineIfPresent` red with it counted twice.
 - **FIXED — the uniqueness check was read as the object it checks.**
   `swift_isUniquelyReferenced_nonNull_native` (the lowering of
   `isKnownUniquelyReferenced`) returns a Bool, but the renderer read every
@@ -1879,6 +1905,14 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   with zero gaps across 1,391 functions — implausible, since real binaries have
   alignment padding between functions. Comparing a decoder against itself proves
   nothing; the numbers above use an external tool.
+
+- **OPEN — a send whose receiver is another send's result drops a known
+  argument.** `objc_factory_return.m` (-O2): `[r0 setLimit:?]` with `mov w2,
+  #4` right before the send, and `[r0 addObject:?]` with `x2 = @"y"`, where
+  r0 came from `initWithLimit:`/`initWithCapacity:`. The same argument
+  renders when the receiver comes from `objc_alloc_init` or `objc_opt_new`
+  (`setLimit:arg0`, `addObject:@"x"`). A decline, not a wrong value; the
+  mechanism is not yet found.
 
 ## 3. Robustness — what breaks it?
 
@@ -2874,6 +2908,14 @@ Real, but last. Everything above must hold first.
   `hop_to_executor(?)`; and a value spilled twice to the same slot is never
   named. Repro: `swiftdc disasm --structured -f twoAwaits
   Fixtures/Sample/libAsyncFns.opt.stripped.dylib`.
+- **OPEN — a result that crosses only its own ARC hand-off is bound.**
+  `return [arg0 stringByAppendingString:self->_name]` at -O2 renders `let r0
+  = …; return r0`, because `objc_claimAutoreleasedReturnValue(r0)` sits
+  between the send and the tail return and counts as an ordering effect.
+  Sound (one evaluation either way) but verbose, and common in ObjC.
+  Exempting a passthrough helper whose argument is the producer's own
+  result from `crossesEffect` would inline it again; it would also inline
+  non-return uses (`-[W q1]`, `peerCopy`), so it is its own change.
 - **PLATEAU — condition naming.** ~70% of raw-register conditions are compiler
   plumbing (value witnesses, generic specializations, Codable machinery) with no
   source-level named value to recover. Investigated and documented as

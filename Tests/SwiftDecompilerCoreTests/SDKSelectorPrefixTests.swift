@@ -10,7 +10,10 @@ private func sends(in path: String) async throws -> [String: String] {
     }
     var lines: [String: String] = [:]
     for function in functions {
-        lines[function.displayName] = function.renderPseudo().components(separatedBy: "\n")
+        // Layout, not binding: a tail-returned send bound as `let r0` reads
+        // here as the send it names.
+        lines[function.displayName] = expandingResultBindingsForAssertions(function.renderPseudo())
+            .components(separatedBy: "\n")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { $0.hasPrefix("[") || $0.hasPrefix("return [") }
             .joined(separator: "; ")

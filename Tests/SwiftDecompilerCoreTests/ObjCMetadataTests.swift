@@ -201,7 +201,7 @@ import Testing
     guard let method = functions.first(where: { $0.objcMethod?.selector == "greetingWithPrefix:" }) else {
         return
     }
-    #expect(method.renderPseudo().contains("return [arg0 stringByAppendingString:self->_name]"))
+    #expect(expandingResultBindingsForAssertions(method.renderPseudo()).contains("return [arg0 stringByAppendingString:self->_name]"))
 }
 
 @Test func preservesObjCCategoryOwnership() async throws {
@@ -219,7 +219,7 @@ import Testing
     #expect(method.objcMethod?.className == "NSString")
     #expect(method.objcMethod?.categoryName == "SDSampleExtras")
     #expect(method.displayName == "-[NSString(SDSampleExtras) sd_stringByAddingBang]")
-    #expect(method.renderPseudo().contains("return [self stringByAppendingString:@\"!\"]"))
+    #expect(expandingResultBindingsForAssertions(method.renderPseudo()).contains("return [self stringByAppendingString:@\"!\"]"))
 }
 
 /// Stage 2 retains values through arithmetic, runtime property helpers, subword

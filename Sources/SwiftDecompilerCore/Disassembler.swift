@@ -7980,6 +7980,32 @@ public struct Disassembler: Sendable {
             guard exit.whole == nil, wholeCallResult(from: exit.stores) == nil else { continue }
             for store in exit.stores.values { collectWordSites(in: store.value, into: &wordSites) }
         }
+        // Where the encoded return comes back: x0 for an integer, pointer
+        // or object, v0 for one float or double. A struct of floats, one
+        // of nine to sixteen bytes (`twoWordFieldReturn` aside) or one
+        // returned through x8 is no one register: `-(double)scaled:` and
+        // a 40-byte `-(S5)big` read `return self`.
+        let objcReturnType = function.objcMethod.flatMap { ObjCArgumentABI.returnType(encoding: $0.typeEncoding) }
+        let objcReturnsInX0 = objcReturnType.map(ObjCArgumentABI.takesOneXRegister) == true
+        let objcReturnsOneFloat = function.objcMethod?.returnsOneFloat == true
+        // An ARC method returning an object exits through a tail branch,
+        // `b objc_autoreleaseReturnValue`, not a `ret`, and renders that
+        // branch as `return <x0>`. The use counter and the renderer both
+        // ask this one question, so a return the renderer prints is
+        // always a counted use: missed, the configured object of
+        // `f = [[X alloc] init]; f.limit = v; return f` had one use left,
+        // inlined, and read as two allocations.
+        func objcPassthroughReturnValue(at insn: Instruction) -> AbstractValue? {
+            guard function.objcMethod.map({ !$0.returnsVoid }) == true,
+                  objcReturnsInX0 || objcReturnsOneFloat,
+                  insn.controlFlow == .branch,
+                  let callee = calleeByAddress[insn.address],
+                  passthroughReturnHelpers.contains(where: callee.hasPrefix),
+                  let raw = analysis.exitValues[insn.address]
+            else { return nil }
+            let exit = sanitizeValue(raw)
+            return exit == .unknown ? nil : exit
+        }
         // A direct call result rendered in more than one place (a branch
         // condition and the return, two arguments) is one evaluation; spelled
         // out at each use it reads as the call running once per use:
@@ -8024,6 +8050,9 @@ public struct Disassembler: Sendable {
         if function.objcMethod.map({ !$0.returnsVoid }) == true {
             for insn in function.instructions where insn.controlFlow == .return {
                 analysis.exitValues[insn.address].map { countDirectUses($0, at: insn.address) }
+            }
+            for insn in function.instructions {
+                objcPassthroughReturnValue(at: insn).map { countDirectUses($0, at: insn.address) }
             }
         } else if function.objcMethod == nil, returnsDirectly,
                   let register = functionReturnRegister {
@@ -8224,14 +8253,6 @@ public struct Disassembler: Sendable {
         // Whether each exit's indirect result renders as its return value.
         let everyExitRendersResult = !analysis.exitIndirectResults.isEmpty
             && analysis.exitIndirectResults.keys.allSatisfy { indirectReturn(at: $0) != nil }
-        // Where the encoded return comes back: x0 for an integer, pointer
-        // or object, v0 for one float or double. A struct of floats, one
-        // of nine to sixteen bytes (`twoWordFieldReturn` aside) or one
-        // returned through x8 is no one register: `-(double)scaled:` and
-        // a 40-byte `-(S5)big` read `return self`.
-        let objcReturnType = function.objcMethod.flatMap { ObjCArgumentABI.returnType(encoding: $0.typeEncoding) }
-        let objcReturnsInX0 = objcReturnType.map(ObjCArgumentABI.takesOneXRegister) == true
-        let objcReturnsOneFloat = function.objcMethod?.returnsOneFloat == true
         let instructions = function.instructions.map { insn -> Instruction in
             var sourceNotes: [String] = []
             var sourceType = insn.sourceType
@@ -8330,8 +8351,10 @@ public struct Disassembler: Sendable {
                         noteExit(.normal(renderReturnValue(exit, before: insn.address)))
                     }
                 } else if insn.controlFlow == .branch, let callee {
-                    if passthroughReturnHelpers.contains(where: callee.hasPrefix), exit != .unknown {
-                        noteExit(.normal(renderReturnValue(exit, before: insn.address)))
+                    if let passthrough = objcPassthroughReturnValue(at: insn) {
+                        noteExit(.normal(renderReturnValue(passthrough, before: insn.address)))
+                    } else if passthroughReturnHelpers.contains(where: callee.hasPrefix) {
+                        // A passthrough of an unknown value returns nothing provable.
                     } else if !DisassembledFunction.isRuntimeNoise(callee),
                               let values = argumentsByAddress[insn.address] {
                         noteExit(.normal(callExpression(callee: callee, values: values, site: insn.address)))
