@@ -1376,8 +1376,8 @@ public struct Disassembler: Sendable {
         } else if let valueSelf {
             .swiftValueInstance(seededRegisters: valueSelf.seeded)
         } else if classSelfTypeName != nil {
-            .swiftInstance(scalarArguments: Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex) ?? [:])
-        } else if let scalarArgs = Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex) {
+            .swiftInstance(scalarArguments: Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps) ?? [:])
+        } else if let scalarArgs = Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps) {
             .swiftFunction(scalarArguments: scalarArgs)
         } else if !DisassembledFunction.signatureKnown(displayName: function.analysisDisplayName, objcSignature: nil),
                   let summary = context.registerSummaries[function.startAddress], summary.provenArgumentCount > 0 {
@@ -3975,7 +3975,7 @@ public struct Disassembler: Sendable {
     /// register is never mislabeled `arg k` when the real layout differs.
     static func swiftScalarArgumentRegisters(
         of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
-        classTypeIndex: ClassTypeIndex = ClassTypeIndex()
+        classTypeIndex: ClassTypeIndex = ClassTypeIndex(), fieldMaps: [String: FieldMap] = [:]
     ) -> [String: Int]? {
         guard function.objcMethod == nil, let name = function.analysisName,
               Self.isSwiftMangled(function.symbol),
@@ -4023,6 +4023,17 @@ public struct Disassembler: Sendable {
                 let type = Self.parameterType(parameter)
                 // A one-case enum is zero-sized: it takes no register.
                 if enumCaseIndex.isSingleCaseEnum(type) { continue }
+                // A struct this image lays out takes its fields' registers
+                // (`SwiftLowering.aggregateRegisters`): no one of them is the
+                // parameter, but those after it are placed. Declined,
+                // `callPut(_ b: Box, _ k: Int)` seeded nothing, `k` included.
+                if let banks = SwiftLowering.aggregateRegisters(
+                    of: type, fieldMaps: fieldMaps, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
+                    guard integerIndex + banks.integers <= 8, floatIndex + banks.floats <= 8 else { return nil }
+                    integerIndex += banks.integers
+                    floatIndex += banks.floats
+                    continue
+                }
                 guard split.thrownType == nil,
                       let words = Self.integerRegisterFootprint(ofParameterType: type),
                       integerIndex + words <= 8

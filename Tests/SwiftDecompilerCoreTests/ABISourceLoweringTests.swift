@@ -634,8 +634,9 @@ struct ABISourceLoweringTests {
     #expect(try text("callDescribe").contains("MetatypeArgs.describe<A>(?, arg0)"))
     #expect(try text("callClassMeta").contains("MetatypeArgs.classMeta(type metadata accessor for MetatypeArgs.Base(), arg0)"))
     // A generic value-type method: `self` and then T's metadata follow the
-    // formals, so nothing past them is shown.
-    #expect(try text("callPut").contains("MetatypeArgs.Box.put<A>(?, ?)\n"))
+    // formals, so nothing past them is shown. callPut's own `k` is seeded
+    // after its Box (one Int word), so it reads arg1.
+    #expect(try text("callPut").contains("MetatypeArgs.Box.put<A>(?, arg1)\n"))
     // A member's own parameter is named in the requirements only.
     let layout = Disassembler.swiftCallArgumentLayout(
         callee: "M.f<A where A1: Swift.Equatable>(A1.Type, Swift.Int) -> Swift.Int",
