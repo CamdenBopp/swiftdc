@@ -1,0 +1,6 @@
+# Append-only logs: concurrent branches each add an entry at the same spot.
+# A union merge keeps both sides' lines instead of conflicting. It also keeps
+# both sides of an in-place edit of one entry, so change an existing entry's
+# status in a commit of its own and check the merged text.
+docs/PRODUCTION-READINESS.md merge=union
+handoff.md merge=union

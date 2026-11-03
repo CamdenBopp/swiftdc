@@ -218,14 +218,16 @@ own.
 1. **DONE: fixture cache, blast radius, gate scripts.** No source change.
    Measured on a fresh build: miss 50 s, hit 0.35-0.54 s, and the suite
    passes on restored products (984 tests).
-2. **Conflict hotspots.**
-   - `FixturePresenceTests` derives its required list from the
-     `Fixtures/Sample/…` literals in the test sources, so adding a fixture no
-     longer edits it.
-   - `docs/PRODUCTION-READINESS.md` and `handoff.md` get `merge=union` in
-     `.gitattributes`, so appended entries never conflict.
-   - Acceptance: a rebase of two concurrent fixture-adding branches merges
-     with no conflict in either file.
+2. **DONE: conflict hotspots.**
+   - `FixturePresenceTests` derives its required list from the complete
+     `Fixtures/Sample/…` literals in the test sources, plus eight paths
+     tests build by interpolation. That is 209 paths against the 190
+     hand-listed, and every old entry is kept.
+   - `docs/PRODUCTION-READINESS.md` and `handoff.md` merge with `union`.
+   - Measured: two branches that each add a readiness entry at the same spot
+     and a fixture test. The rebase conflicts without the attribute and is
+     clean with it, keeping both entries.
+   - `build.sh` stays a conflict point until stage 4.
 3. **Test tiers.**
    - Tag the outliers. The Go tests leave the default run (Go is not a
      target) but stay in the gate.
