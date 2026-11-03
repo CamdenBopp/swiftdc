@@ -517,6 +517,9 @@ $CLANG -O2 -dynamiclib cnarrowargs.c -o libCNarrowArgs.dylib
 echo "==> C format strings and printf arguments (cformat.c, -O2)"
 $CLANG -O2 -dynamiclib cformat.c -o libCFormat.dylib
 
+echo "==> closure-propagated specializations tail-called for a result (closprop.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name ClosProp closprop.swift -o libClosProp.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

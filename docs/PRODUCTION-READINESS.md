@@ -1251,6 +1251,17 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — a closure-propagated specialization's signature did not
+  parse.** The demangler prints its clause with an unclosed `[`, which hid
+  the arrow, so a tail call to one rendered as a bare statement, and the
+  specialization's own body had no signature. The signature after `> of `
+  now parses. A tail call to a function signature specialization with no
+  `Return =` entry, for the same result, is a `return`. Fixture
+  `closprop.swift`. Blast radius against the nested-clause fix,
+  structured view: 8 files, 369 lines, all in closure-propagated
+  specializations and their callers. They gain `return`, `error` for
+  `x21`, `return ?` for leaves that computed an unrendered value, and
+  reordered branch arms.
 - **FIXED — a C string literal with a newline rendered as its address.**
   `printf("%d\n", x)` read `printf(0x1000004bc, x)`. The literal gate
   accepted printable ASCII only, and most format strings end in `\n`.

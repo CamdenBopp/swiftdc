@@ -68,8 +68,9 @@ today.
    the specialization clause, parsed once. Enforced for function signature
    specializations (dcb54c3, 8c1f202). Open: `Tt` (dropped metatype)
    specializations print like `Tg` (a8 #2, reported); closure-propagated
-   survivors (a8 #3, reported); closure-propagation names whose unclosed
-   `[` defeats `splitSignature` (a9 #1, reported).
+   survivors (a8 #3, reported). The unclosed `[` of a closure-propagation
+   name is FIXED: its signature parses, and nested clauses must all keep
+   the layout.
 5. **A receiver is never taken from a callee-saved register without
    proof.** Needs: whether the callee reads x20. Enforced for in-image
    callees (6c07b3e), and for methods and initializers of frozen

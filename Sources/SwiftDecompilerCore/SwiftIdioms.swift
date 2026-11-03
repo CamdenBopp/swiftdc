@@ -210,7 +210,17 @@ extension DisassembledFunction {
     static func splitSignature(
         _ name: String
     ) -> (head: String, result: String, isAsync: Bool, isThrowing: Bool, thrownType: String?)? {
-        guard let arrow = topLevelRange(of: " -> ", in: name) else { return nil }
+        guard let arrow = topLevelRange(of: " -> ", in: name) else {
+            // The demangler prints a closure-propagated specialization with
+            // an unclosed `[` (`<Arg[0] = [Closure Propagated : …, Argument
+            // Types : [Swift.Int]> of M.apply(…) -> Swift.Int`), which hides
+            // every arrow after it. The clause comes first and ends at `> of
+            // `; the signature is the function's after it.
+            let core = Disassembler.withoutSpecializationClauses(name)
+            guard core.count < name.count, let inner = splitSignature(core) else { return nil }
+            return (String(name.dropLast(core.count)) + inner.head, inner.result, inner.isAsync,
+                    inner.isThrowing, inner.thrownType)
+        }
         var result = String(name[arrow.upperBound...])
         if let context = topLevelRange(of: " in ", in: result) {
             result = String(result[..<context.lowerBound])

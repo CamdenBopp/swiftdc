@@ -598,3 +598,19 @@ struct ABISourceLoweringTests {
     #expect(Disassembler.signatureSpecializationKeepsLayout(
         "function signature specialization <Arg[1] = Owned To Guaranteed> of function signature specialization <Arg[0] = Guaranteed To Owned> of M.f(Swift.Int, Swift.Int) -> Swift.Int"))
 }
+
+/// A closure-propagated specialization's name has an unclosed `[`; its
+/// signature is still the one after `> of `, and a tail call to it for the
+/// same result is a return (closprop.swift).
+@Test func aClosurePropagatedSpecializationTailCallIsAReturnIfPresent() async throws {
+    let path = "Fixtures/Sample/libClosProp.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    for name in ["noCapture", "captures", "capturesTwo"] {
+        let text = try #require(functions.first { $0.displayName.hasPrefix("ClosProp.\(name)(") }).renderStructured()
+        #expect(text.contains("    return function signature specialization <Arg[0] = [Closure Propagated"), Comment(rawValue: text))
+    }
+    let split = DisassembledFunction.splitSignature(
+        "function signature specialization <Arg[0] = [Closure Propagated : $s1M1fyS2iFS2iXEfU_, Argument Types : [Swift.Int]> of M.apply((Swift.Int) -> Swift.Int, Swift.Int) -> Swift.Int")
+    #expect(split?.result == "Swift.Int")
+}

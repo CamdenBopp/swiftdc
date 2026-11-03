@@ -3792,10 +3792,25 @@ public struct Disassembler: Sendable {
                   let name = DisassembledFunction.calleeName(of: insn),
                   let callee = DisassembledFunction.splitSignature(name), !callee.isAsync, !callee.isThrowing,
                   caller.result == callee.result,
-                  ordinaryHead(callee.head)
+                  ordinaryHead(callee.head) || signatureSpecializationKeepsResult(callee.head) && ordinaryHead(withoutSpecializationClauses(callee.head))
             else { return nil }
             return insn.address
         })
+    }
+
+    /// Whether a function signature specialization returns what the
+    /// function it specializes returns: its clause rewrites parameters
+    /// (dropped, propagated, re-owned) and has no `Return =` entry, which
+    /// would change the result's convention. A closure-propagated
+    /// specialization (`<Arg[0] = [Closure Propagated : …]> of
+    /// M.apply(…) -> Swift.Int`) tail-called for a function returning Int
+    /// rendered as a statement, not `return`.
+    static func signatureSpecializationKeepsResult(_ head: String) -> Bool {
+        let prefix = "function signature specialization <"
+        guard head.hasPrefix(prefix), let end = head.range(of: "> of ") else { return false }
+        let clause = head[head.index(head.startIndex, offsetBy: prefix.count) ..< end.lowerBound]
+        return !clause.contains("Return") && !head[end.upperBound...].hasPrefix("function signature specialization <")
+            && !head[end.upperBound...].hasPrefix("generic specialization <")
     }
 
     static func swiftReturnRegister(
