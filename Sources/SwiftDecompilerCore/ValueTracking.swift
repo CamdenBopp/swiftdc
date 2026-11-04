@@ -219,7 +219,10 @@ public indirect enum AbstractValue: Equatable, Sendable {
     case selfIsaSnapshot
     /// A field, at a byte offset, of a struct argument passed by value in
     /// registers (an HFA). Renders as `arg<n>.field`; seeded for a nonmutating
-    /// method whose parameter is a small floating-point aggregate.
+    /// method whose parameter is a small floating-point aggregate. Also the
+    /// value a load read from a field of a class argument
+    /// (`ValueTracer.argumentObjectFields`): there it is mutable memory, and
+    /// a store or a call forgets it.
     case argumentField(argument: Int, offset: Int)
     /// A value merged from the two arms of a control-flow diamond — the phi at a
     /// join. Renders as `condition ? whenTrue : whenFalse`, reconstructing a
@@ -591,6 +594,10 @@ public struct ValueTracer: Sendable {
     /// In-image call targets whose bodies write no field of any object
     /// (`CalleeRegisterSummary.writesNoFields`).
     var fieldPreservingCallees: Set<UInt64> = []
+    /// Argument index → offset → width of the fields a load through that
+    /// class argument may name (`Disassembler.wholeWordFieldWidths`). Only a
+    /// load of exactly a field's width reads that field.
+    var argumentObjectFields: [Int: [Int: Int]] = [:]
     /// Loader-owned slots bound to `___chkstk_darwin`: a `blr` through one
     /// is the stack probe, which preserves everything but x9 and the flags.
     var stackProbeSlots: Set<UInt64> = []
@@ -1534,6 +1541,7 @@ public struct ValueTracer: Sendable {
             // a field.
             if !call.writesNoFields, !(insn.branchTarget.map(fieldPreservingCallees.contains) ?? false) {
                 Self.invalidateSelfFieldAliases(in: &registers)
+                if !argumentObjectFields.isEmpty { Self.invalidateArgumentFieldAliases(in: &registers) }
             }
             if !handledAsMemoryHelper { applyCallToResultBuffers(insn, site: site, into: &registers) }
             // AAPCS64: x0–x17 are caller-saved, so a call clobbers them. x18 is
@@ -1654,6 +1662,7 @@ public struct ValueTracer: Sendable {
         }
         let hadSelf = registers[Self.selfFreshKey]
         let inputs = noteFrameMemoryWrite(insn, into: &registers, frame: facts.frame)
+        if !argumentObjectFields.isEmpty, let detail = insn.detail { noteArgumentObjectWrite(detail, into: &registers) }
         apply(insn, into: &registers, recordAccess: recordAccess,
               recordArrayElement: recordArrayElement, recordSlotStore: recordSlotStore,
               recordUnboundedMemoryWrite: recordUnboundedMemoryWrite, recordFieldAlias: recordFieldAlias)
@@ -3273,7 +3282,22 @@ public struct ValueTracer: Sendable {
             guard let dest = destinationRegister(detail) else { clobber(detail, into: &registers); return }
             noteFieldAccess(insn, detail, in: registers, recordAccess)
             let target = memoryTarget(detail, in: registers)
+            let objectField = argumentObjectAccess(detail, in: registers).flatMap { access in
+                Self.accessBytes(detail).flatMap { argumentObjectField(access, bytes: $0) }
+            }
             applyWriteback(detail, into: &registers)
+            if let objectField {
+                switch detail.id {
+                case AARCH64_INS_LDRSB, AARCH64_INS_LDURSB, AARCH64_INS_LDRSH, AARCH64_INS_LDURSH,
+                     AARCH64_INS_LDRSW, AARCH64_INS_LDURSW:
+                    write(dest, signExtended(objectField, bits: (Self.accessBytes(detail) ?? 8) * 8), into: &registers)
+                default:
+                    write(dest, objectField, into: &registers)
+                    // A load is already the field's width: nothing to mask.
+                    registers[Location(dest)] = objectField
+                }
+                return
+            }
             switch target {
             case .stackSlot(let key):
                 let offset = Self.stackOffset(from: key)
@@ -3464,8 +3488,18 @@ public struct ValueTracer: Sendable {
             noteFieldAccess(insn, detail, in: registers, recordAccess)
             let target = memoryTarget(detail, in: registers)
             let registerBytes = detail.operands.first?.operand.register.map { $0.widthBits / 8 } ?? 8
+            let objectAccess = argumentObjectAccess(detail, in: registers)
             for (index, operand) in detail.operands.prefix(2).enumerated() {
                 guard let register = operand.operand.register else { continue }
+                // Each register is its own load: a pair that covers one wide
+                // field (a String) reads no field in either half.
+                if let objectAccess {
+                    let word = (argument: objectAccess.argument, offset: objectAccess.offset + index * registerBytes)
+                    let field = argumentObjectField(word, bytes: registerBytes)
+                    write(register, field ?? .unknown, into: &registers)
+                    if let field { registers[Location(register)] = field }
+                    continue
+                }
                 let value: AbstractValue = switch target {
                 case .stackSlot(let key):
                     Self.stackOffset(from: key).flatMap {
@@ -4279,6 +4313,83 @@ public struct ValueTracer: Sendable {
         // goes stale. `ldr x27, [x20]; bl …; ldr x23, [x27, #0x58]` still
         // reads the class's second generic argument.
         for key in keys { registers[key] = registers[key] == .selfFieldValue(offset: 0) ? .selfIsaSnapshot : nil }
+    }
+
+    /// Forget every value read from a field of a class argument. Unlike
+    /// `self`'s, these fields can be reached through other names: two
+    /// parameters may be one object, and a pointer of unknown origin may be
+    /// any of them, so every write outside the frame reaches this, not only
+    /// one through the argument.
+    private static func invalidateArgumentFieldAliases(in registers: inout State) {
+        for key in registers.compactMap({ key, value in containsArgumentField(value) ? key : nil }) {
+            registers[key] = nil
+        }
+    }
+
+    private static func containsArgumentField(_ value: AbstractValue) -> Bool {
+        switch value {
+        case .argumentField: return true
+        case .unary(_, let operand): return containsArgumentField(operand)
+        case .binary(_, let lhs, let rhs): return containsArgumentField(lhs) || containsArgumentField(rhs)
+        case .select(let condition, let yes, let no):
+            return containsArgumentField(condition) || containsArgumentField(yes) || containsArgumentField(no)
+        case .aggregate(let values): return values.contains(where: containsArgumentField)
+        default: return false
+        }
+    }
+
+    /// The class argument and byte offset an instruction's memory operand
+    /// names: through the argument itself, or through `arg + constant`. A
+    /// register index is not a constant offset (`Wvd` access reads
+    /// `[x19, x20]`), and a post-index access reads the base itself, the
+    /// object's header, so neither names a field.
+    private func argumentObjectAccess(_ detail: StructuredInsn, in registers: State) -> (argument: Int, offset: Int)? {
+        guard !argumentObjectFields.isEmpty,
+              let operand = detail.operands.first(where: { $0.operand.isMemory }),
+              case .memory(let base, let index, let displacement) = operand.operand,
+              let base, index == nil, !detail.postIndex
+        else { return nil }
+        let effective = Int(displacement)
+        switch registers[Location(base)] {
+        case .argument(let argument)? where argumentObjectFields[argument] != nil:
+            return (argument, effective)
+        case .binary(.add, .argument(let argument), .immediate(let delta))?
+            where argumentObjectFields[argument] != nil && delta < 1 << 32:
+            return (argument, Int(delta) + effective)
+        default:
+            return nil
+        }
+    }
+
+    /// The value an access of `bytes` at `access` reads, when that is exactly
+    /// one field. Part of a field, or a wider read that runs past it, is not.
+    private func argumentObjectField(_ access: (argument: Int, offset: Int), bytes: Int) -> AbstractValue? {
+        guard argumentObjectFields[access.argument]?[access.offset] == bytes else { return nil }
+        return .argumentField(argument: access.argument, offset: access.offset)
+    }
+
+    /// A write outside the frame forgets what was read from class arguments.
+    /// The register a full-width store stored from then holds the field's new
+    /// value, so `h.v += 1; return h.v` needs no reload. Runs before the store
+    /// is applied, which reads no field value from the state.
+    private func noteArgumentObjectWrite(_ detail: StructuredInsn, into registers: inout State) {
+        guard detail.operands.contains(where: { $0.operand.isMemory }),
+              !Self.readOnlyMemoryIDs.contains(detail.id.rawValue)
+        else { return }
+        if case .stackSlot? = memoryTarget(detail, in: registers) { return }
+        var stored: (register: PhysReg, field: AbstractValue)?
+        if detail.id == AARCH64_INS_STR || detail.id == AARCH64_INS_STUR,
+           let source = detail.operands.first, let register = source.operand.register,
+           let bytes = Self.accessBytes(detail),
+           let field = argumentObjectAccess(detail, in: registers).flatMap({ argumentObjectField($0, bytes: bytes) }) {
+            let value = self.source(source, in: registers)
+            if value != .unknown, !Self.isConstant(value), !Self.isArgument(value) { stored = (register, field) }
+        }
+        Self.invalidateArgumentFieldAliases(in: &registers)
+        if let stored {
+            write(stored.register, stored.field, into: &registers)
+            registers[Location(stored.register)] = stored.field
+        }
     }
 
     private static func containsSelfFieldValue(_ value: AbstractValue) -> Bool {

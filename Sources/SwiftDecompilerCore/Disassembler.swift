@@ -872,14 +872,17 @@ public struct Disassembler: Sendable {
             },
             enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex
         )
+        let fieldMaps = (try? FieldMapBuilder.build(in: machO)) ?? [:]
         let context = PerFunctionContext(
             resolver: resolver, swiftTargets: swiftTargets, objcIndex: objcIndex,
-            fieldMaps: (try? FieldMapBuilder.build(in: machO)) ?? [:],
+            fieldMaps: fieldMaps,
             selfIndex: SelfTypeIndex.build(in: machO),
             vtableIndex: VTableIndex.build(in: machO),
             enumCaseIndex: enumCaseIndex,
             payloadEnumIndex: PayloadEnumCaseIndex.build(in: machO),
             classTypeIndex: classTypeIndex,
+            classParameterFields: ClassParameterFieldIndex.build(
+                in: machO, fieldMaps: fieldMaps, classTypeIndex: classTypeIndex, demangle: demangle),
             indirectResultUses: indirectResultUses,
             registerSummaries: registerSummaries,
             asyncIndex: asyncIndex, asyncChainSlots: chainSlots
@@ -1209,6 +1212,8 @@ public struct Disassembler: Sendable {
             fieldMaps: fieldMaps, selfIndex: selfIndex, vtableIndex: vtableIndex,
             enumCaseIndex: enumCaseIndex, payloadEnumIndex: payloadEnumIndex,
             classTypeIndex: classTypeIndex,
+            classParameterFields: ClassParameterFieldIndex.build(
+                in: machO, fieldMaps: fieldMaps, classTypeIndex: classTypeIndex, demangle: demangle),
             indirectResultUses: indirectResultUses,
             registerSummaries: summaries,
             asyncIndex: asyncIndex, asyncChainSlots: chainSlots
@@ -1373,6 +1378,8 @@ public struct Disassembler: Sendable {
             fieldMaps: fieldMaps, selfIndex: selfIndex, vtableIndex: vtableIndex,
             enumCaseIndex: enumCaseIndex, payloadEnumIndex: payloadEnumIndex,
             classTypeIndex: classTypeIndex,
+            classParameterFields: ClassParameterFieldIndex.build(
+                in: machO, fieldMaps: fieldMaps, classTypeIndex: classTypeIndex, demangle: demangle),
             indirectResultUses: Dictionary(
                 functions.map { ($0.startAddress, Self.indirectResultUse(of: $0)) },
                 uniquingKeysWith: { a, _ in a }
@@ -1490,6 +1497,8 @@ public struct Disassembler: Sendable {
         let enumCaseIndex: EnumCaseIndex
         let payloadEnumIndex: PayloadEnumCaseIndex
         let classTypeIndex: ClassTypeIndex
+        /// The classes whose fields a free function names through a parameter.
+        let classParameterFields: ClassParameterFieldIndex
         /// Function start → whether its body reads the incoming x8, so a call to
         /// it is known to write (or not write) through the caller's x8.
         var indirectResultUses: [UInt64: IndirectResultUse] = [:]
@@ -1723,6 +1732,11 @@ public struct Disassembler: Sendable {
         // chain pass proved.
         let asyncEntry = Self.asyncConvention(for: function, base: entry, index: context.asyncIndex)
         let chainSlots = context.asyncChainSlots[function.startAddress] ?? [:]
+        let classArgumentFieldMaps: [Int: FieldMap] = if case .swiftFunction(let scalarArguments, _)? = entry {
+            Self.classArgumentFieldMaps(of: function, scalarArguments: scalarArguments, index: context.classParameterFields)
+        } else {
+            [:]
+        }
         return enrichCallArguments(
             in: function, resolver: context.resolver, swiftTargets: context.swiftTargets,
             entry: asyncEntry ?? entry,
@@ -1730,6 +1744,7 @@ public struct Disassembler: Sendable {
             objcFieldSyntax: objcMethod != nil || symbolEntry != nil,
             selfTypeName: selfTypeName, vtableIndex: context.vtableIndex,
             argumentFieldMaps: valueSelf?.argumentFieldMaps ?? [:],
+            classArgumentFieldMaps: classArgumentFieldMaps,
             enumCaseIndex: context.enumCaseIndex,
             payloadEnumIndex: context.payloadEnumIndex,
             argumentEnumTypes: Self.swiftEnumArgumentTypes(of: function, enumCaseIndex: context.enumCaseIndex),
@@ -5584,7 +5599,7 @@ public struct Disassembler: Sendable {
     }
 
     /// A demangled parameter's type, with any `label:` prefix removed.
-    private static func parameterType(_ parameter: String) -> String {
+    static func parameterType(_ parameter: String) -> String {
         if let colon = parameter.range(of: ": ", options: .backwards) {
             return withoutOwnership(String(parameter[colon.upperBound...]))
         }
@@ -5667,6 +5682,7 @@ public struct Disassembler: Sendable {
         selfTypeName: String? = nil,
         vtableIndex: VTableIndex = VTableIndex(),
         argumentFieldMaps: [Int: FieldMap] = [:],
+        classArgumentFieldMaps: [Int: FieldMap] = [:],
         enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
         payloadEnumIndex: PayloadEnumCaseIndex = PayloadEnumCaseIndex(),
         argumentEnumTypes: [Int: String] = [:],
@@ -5699,7 +5715,8 @@ public struct Disassembler: Sendable {
         /// Render a by-value struct argument's field — `arg1.y` — from the
         /// parameter's own field map, falling back to a byte offset.
         func argumentFieldName(argument: Int, offset: Int) -> String {
-            if case .success(let hit)? = argumentFieldMaps[argument]?.lookup(offset: offset, bytes: 1) {
+            if case .success(let hit)? = (argumentFieldMaps[argument] ?? classArgumentFieldMaps[argument])?
+                .lookup(offset: offset, bytes: 1) {
                 switch hit {
                 case .whole(let name, _), .part(let name, _, _, _):
                     return "arg\(argument).\(name)"
@@ -5857,6 +5874,7 @@ public struct Disassembler: Sendable {
 
         var tracer = ValueTracer(calleeConventions: calleeConventions, asyncContextSlots: asyncContextSlots)
         tracer.callFactsCache = callFactsCache
+        tracer.argumentObjectFields = classArgumentFieldMaps.mapValues(Self.wholeWordFieldWidths)
         tracer.callResultBank = { callee in
             Self.callResultBank(of: callee, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cache: callResultBanks)
         }

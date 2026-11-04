@@ -654,6 +654,18 @@ $SWIFTC -parse-as-library -O -emit-library -module-name WitnessNaming witnessnam
 cp libWitnessNaming.dylib libWitnessNaming.stripped.dylib
 strip -x libWitnessNaming.stripped.dylib
 
+echo "==> a class parameter's fields in a free function (classparam.swift, classparamsmall.swift, -Onone, -O and -Osize)"
+$SWIFTC -parse-as-library -Onone -emit-library -module-name ClassParam classparam.swift -o libClassParam.dylib
+$SWIFTC -parse-as-library -O -emit-library -module-name ClassParam classparam.swift -o libClassParam.opt.dylib
+$SWIFTC -parse-as-library -Osize -emit-library -module-name ClassParam classparam.swift -o libClassParam.size.dylib
+$SWIFTC -parse-as-library -Onone -emit-library -module-name ClassParamSmall classparamsmall.swift -o libClassParamSmall.dylib
+$SWIFTC -parse-as-library -O -emit-library -module-name ClassParamSmall classparamsmall.swift -o libClassParamSmall.opt.dylib
+$SWIFTC -parse-as-library -Osize -emit-library -module-name ClassParamSmall classparamsmall.swift -o libClassParamSmall.size.dylib
+echo "==> class parameters whose layout another module owns (classparamkit, classparamtwin, classparamclient, -O)"
+$SWIFTC -parse-as-library -O -enable-library-evolution -emit-library -emit-module -module-name ClassParamKit classparamkit.swift -o libClassParamKit.dylib
+$SWIFTC -parse-as-library -O -emit-library -emit-module -module-name ClassParamTwin classparamtwin.swift -o libClassParamTwin.dylib
+$SWIFTC -parse-as-library -O -emit-library -module-name ClassParamClient classparamclient.swift -I . -L . -lClassParamKit -lClassParamTwin -o libClassParamClient.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release

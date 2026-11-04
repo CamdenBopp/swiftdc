@@ -1537,6 +1537,24 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — a free function's class parameter read no field.**
+  `func readHolder(_ h: Holder) -> Int { h.v + 1 }` rendered `return ?`
+  at -Onone, -O and -Osize: a load through `.argument` was unknown, though
+  the parameter is one pointer and `FieldMap` has the offset. It now
+  renders `return (arg0.v + 1)`. A load names a field only at the field's
+  own width, through the parameter or `arg + constant`, with no index
+  register, and a pair is two loads. The value is a snapshot: every write
+  outside the frame and every call but a retain or an access marker forget
+  it, since two parameters may be one object. `ClassParameterFieldIndex`
+  admits a class by its exact qualified name, and declines a simple name a
+  value type shares, a field-map collision, a published `…CMo` (library
+  evolution, or a resilient base) and, by having no key, a bound generic.
+  Free functions only: methods, statics, closures, specializations and
+  async functions are untouched. Open: a two-word field (a String reads
+  `?`), inherited fields, and -Osize images whose outliner moves `mov x19,
+  x0` into a shared prologue fragment, which decline. Fixtures
+  `classparam*.swift`.
+
 - **FIXED — a call through a generic class's protocol witness table was
   unresolved.** A method of `Gauge<M: Meter>` calls `m.reading()` as
   `ldr x1, [isa, #0x58]; ldr x8, [x1, #8]; blr x8`: the witness table

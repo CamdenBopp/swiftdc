@@ -145,7 +145,7 @@ soundness change, measured on its own).
 | 17 | x21 after a throwing call | tracer | open | completeness | a6 #2/#3 | every `try?` / do-catch / propagating caller | isolated |
 | 18 | Async function pointer records, context escapes | AsyncFuncletIndex, tracer | open | completeness | a7 #3/#4, a6 #4 | async code | isolated |
 | 19 | Value witness calls | none | open | completeness | a13 #4 | every generic function | isolated |
-| 20 | `Wvd` field offsets, inherited fields, class-param fields | FieldMap | open | completeness | a14 #3-#5 | classes over resilient or ObjC bases | isolated |
+| 20 | `Wvd` field offsets, inherited fields, class-param fields | FieldMap, `ClassParameterFieldIndex` | a free function's class parameter: loads FIXED; `Wvd` offsets, inherited fields and stores open | completeness | a14 #3-#5, classparam.swift | classes over resilient or ObjC bases | isolated |
 
 ## Next: struct lowering from field metadata
 
