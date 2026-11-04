@@ -502,6 +502,9 @@ $SWIFTC -parse-as-library -Onone -emit-library -module-name OneCase onecase.swif
 echo "==> swift_dynamicCast's Bool result (dynamiccast.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name DynamicCast dynamiccast.swift -o libDynamicCast.dylib
 
+echo "==> bridging from Objective-C in @objc thunks (objcbridge.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name ObjCBridge objcbridge.swift -o libObjCBridge.dylib
+
 echo "==> a throw that shares the normal return's ret (throwselect.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name ThrowSelect throwselect.swift -o libThrowSelect.dylib
 

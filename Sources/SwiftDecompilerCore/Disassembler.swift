@@ -5116,6 +5116,19 @@ public struct Disassembler: Sendable {
         var name = Substring(Self.withoutPrivateDiscriminators(String(signature.head[..<range.lowerBound].dropLast())))
         let isStatic = name.hasPrefix("static ")
         if isStatic { name = name.dropFirst("static ".count) }
+        // The module an extension is declared in does not change how its
+        // members are called. The prefix failed the identifier test below, so
+        // `static (extension in Foundation):Swift.String.
+        // _unconditionallyBridgeFromObjectiveC(Swift.Optional<__C.NSString>)`,
+        // one word in x0, went positional and read every register the thunk
+        // still held: `(arg1, ?, arg0, arg1, arg2)`. An instance member of a
+        // value type stays positional: its `self` words come after the
+        // formals, and the `anyContext` layout trims a word still holding its
+        // entry value, which there is `self` itself.
+        if name.hasPrefix("(extension in "), let close = name.range(of: "):") {
+            guard !anyContext else { return nil }
+            name = name[close.upperBound...]
+        }
         // A generic function's clause (`M.gen<A where A: P>`) names its type
         // parameters. A value of one is passed indirectly, one pointer, and the
         // metadata and witness tables follow the formals, which this lays out

@@ -1136,6 +1136,45 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
     #expect(DisassembledFunction.swiftCastIdiom(callee: "swift_dynamicCastMetatype", arguments: ["x", "?"]) == nil)
 }
 
+/// `_unconditionallyBridgeFromObjectiveC` takes one word. Its name carries
+/// `(extension in Foundation):`, which failed the identifier test and sent it
+/// positional, so a thunk's other registers read as arguments: `-[OB setS:]`
+/// rendered `(arg0, ?, arg0)` (`objcbridge.swift`).
+@Test func aBridgeFromObjectiveCTakesOneWordIfPresent() async throws {
+    let path = "Fixtures/Sample/libObjCBridge.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func render(_ selector: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasSuffix(" \(selector)]") }).renderStructured()
+    }
+    for (selector, bridged) in [("setName:", "String._unconditionallyBridgeFromObjectiveC(arg0)"),
+                                ("setTags:", "Array._unconditionallyBridgeFromObjectiveC(arg0)"),
+                                ("middle:s::", "String._unconditionallyBridgeFromObjectiveC(arg1)"),
+                                ("first:::", "Array._unconditionallyBridgeFromObjectiveC(arg0)"),
+                                ("first:::", "Set._unconditionallyBridgeFromObjectiveC(arg1)"),
+                                ("optional::", "String._unconditionallyBridgeFromObjectiveC(arg0)"),
+                                ("optional::", "Array._unconditionallyBridgeFromObjectiveC(arg1)")] {
+        let text = try render(selector)
+        #expect(text.contains(bridged), Comment(rawValue: text))
+    }
+}
+
+/// An extension's module does not change a static member's layout, and an
+/// instance member of a value type stays out of it: its `self` follows the
+/// formals, and the leading layout would trim it.
+@Test func anExtensionsStaticMemberIsLaidOutFromItsSignature() throws {
+    let index = ClassTypeIndex(qualifiedClassNames: ["__C.NSString"])
+    let bridge = "static (extension in Foundation):Swift.String._unconditionallyBridgeFromObjectiveC("
+        + "Swift.Optional<__C.NSString>) -> Swift.String"
+    let layout: Disassembler.SwiftArgumentLayout = try #require(Disassembler.swiftCallArgumentLayout(
+        callee: bridge, enumCaseIndex: EnumCaseIndex(), classTypeIndex: index, anyContext: false))
+    #expect(layout.slots.map(\.registers) == [1])
+    #expect(layout.unplaced == 0)
+    let instance = "(extension in Foundation):Swift.String._bridgeToObjectiveC() -> __C.NSString"
+    #expect(Disassembler.swiftCallArgumentLayout(
+        callee: instance, enumCaseIndex: EnumCaseIndex(), classTypeIndex: index, anyContext: true) == nil)
+}
+
 /// A stripped binary's metadata names a vtable accessor by its kind alone
 /// (`StrippedAccessor.Counter.getter`). A self dispatch to it is to some
 /// property of self; read as `Owner.property.getter`, its type became the

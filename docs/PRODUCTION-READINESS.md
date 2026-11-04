@@ -667,6 +667,28 @@ because it cannot be distinguished from a right one by reading the output.
   non-mutating method's `self` words print unlabelled after the
   parameters, and a value-type getter, which has no formal parameters,
   stays positional.
+- **FIXED (soundness) — a member of an extension in another module took
+  every register a call found.** `(extension in Foundation):` failed the
+  layout's identifier test, so `static (extension in
+  Foundation):Swift.String._unconditionallyBridgeFromObjectiveC(
+  Swift.Optional<__C.NSString>)` went `positional`, not through the
+  layout: `-[OB setS:]` read `(arg0, ?, arg0)` and `-[OB setArr:]` `(arg0,
+  type metadata for Swift.String, arg0)`, in every `@objc` thunk bridging
+  a String or a collection. The prefix no longer decides the layout, so a
+  static member, an initializer and a class's member take their declared
+  parameters (`objcbridge.swift`,
+  `aBridgeFromObjectiveCTakesOneWordIfPresent`). OPEN: an instance member
+  of a value type (`(extension in Foundation):Swift.String.
+  _bridgeToObjectiveC()`) stays positional, because its `self` follows the
+  formals and the leading layout trims a word that still holds its entry
+  value. Also OPEN: a parameter
+  whose size its name does not prove declines it and every later one, so
+  `FixIt.init(message:changes:)` reads `(?, ?)` at all 39 sites of
+  libSwiftParserDiagnostics, where positional reading gave `()`, one
+  argument or two, and the `changes:` array is one word it could have
+  shown. Renders: 12 files, 556 structured lines; every line is an
+  extension member's argument list, a binding renumbered, or a call that
+  fed only a dropped argument and now stands alone.
 - **FIXED (soundness) — a signature with parameters on the stack read
   x0-x7 as its arguments.** A Swift signature needing more than eight
   integer (or float) registers declined whole, so the call was
