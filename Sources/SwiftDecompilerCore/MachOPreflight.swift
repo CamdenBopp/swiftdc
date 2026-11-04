@@ -213,6 +213,11 @@ public enum MachOPreflight {
             )
         }
 
+        // Relative pointers are VM displacements: every check below maps them
+        // through the image's own segments.
+        let map = segmentTable(prefix: prefix).map(FileBackedRanges.init(segments:))
+            ?? FileBackedRanges(identityOver: fileSize)
+
         let objc = sectionExtents(named: ["__objc_methlist", "__objc_selrefs"], prefix: prefix)
         if let methlist = objc["__objc_methlist"], let selrefs = objc["__objc_selrefs"],
            methlist.size > 0, methlist.offset <= fileSize, methlist.size <= fileSize - methlist.offset,
@@ -220,7 +225,7 @@ public enum MachOPreflight {
             try validateObjCMethodLists(
                 bytes: bytes, sectionAddress: methlist.addr,
                 selrefs: (selrefs.addr, selrefs.size), path: path,
-                sectionOffset: methlist.offset, fileSize: fileSize
+                sectionOffset: methlist.offset, fileSize: fileSize, map: map
             )
         }
 
@@ -360,34 +365,9 @@ public enum MachOPreflight {
             }
         }
 
-        var mangledNames: [Int] = []
-        for table in relativePointerTables(prefix: prefix, fileSize: fileSize) {
-            guard table.size > 0, let bytes = image.read(offset: table.offset, count: table.size)
-            else { continue }
-            if table.name == "__swift5_assocty" {
-                mangledNames += try validateAssociatedTypeTable(
-                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: path
-                )
-            } else if table.name == "__swift5_builtin" {
-                mangledNames += try validateBuiltinTypeTable(
-                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: path
-                )
-
-            } else if table.name == "__swift5_fieldmd" {
-                mangledNames += try validateFieldDescriptorTable(
-                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: path
-                )
-            } else if table.name == "__swift5_mpenum" {
-                mangledNames += try validateMultiPayloadEnumTable(
-                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: path
-                )
-            } else {
-                try validateRelativePointerTable(
-                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize,
-                    name: table.name, path: path, code: codeRanges(prefix: prefix)
-                )
-            }
-        }
+        let mangledNames = try validateRelativeTables(
+            prefix: prefix, image: image, map: map, path: path
+        )
 
         // The mangled type names those records point at, parsed from there.
         if !mangledNames.isEmpty,
@@ -886,11 +866,12 @@ public enum MachOPreflight {
     static func validateObjCMethodLists(
         bytes: Data, sectionAddress: UInt64,
         selrefs: (addr: UInt64, size: Int), path: String = "<data>",
-        sectionOffset: Int? = nil, fileSize: Int? = nil
+        sectionOffset: Int? = nil, fileSize: Int? = nil, map known: FileBackedRanges? = nil
     ) throws {
         func fail(_ why: String) -> BinaryLoadError {
             BinaryLoadError("Malformed Mach-O: \(path) — __objc_methlist \(why)")
         }
+        let map = known ?? fileSize.map(FileBackedRanges.init(identityOver:))
         let selrefEnd = selrefs.addr &+ UInt64(selrefs.size)
         var cursor = 0
         while cursor + 8 <= bytes.count, let header = bytes.u32(at: cursor), let count = bytes.u32(at: cursor + 4) {
@@ -913,18 +894,15 @@ public enum MachOPreflight {
                         )
                     }
                     // The type encoding (a string in `__objc_methtype`) and the
-                    // IMP sit in `__TEXT` beside the list, so their offsets
-                    // resolve in file space. A types offset flipped out of the
-                    // file sent `strlen` off the mapping (`metadata-fuzz.py
-                    // sample.release 150 4242`, mutant 105).
-                    if let sectionOffset, let fileSize {
+                    // IMP must lead to file bytes. A types offset flipped out
+                    // of the file sent `strlen` off the mapping
+                    // (`metadata-fuzz.py sample.release 150 4242`, mutant 105).
+                    if let sectionOffset, let map {
                         for (slot, what) in [(4, "type encoding"), (8, "implementation")] {
                             guard let delta = bytes.u32(at: field + slot) else { break }
-                            let resolved = sectionOffset + field + slot + Int(Int32(bitPattern: delta))
-                            guard resolved >= 0, resolved < fileSize else {
-                                throw fail(
-                                    "list at +\(cursor) method \(method)'s \(what) is a relative pointer to offset \(resolved), outside the \(fileSize)-byte file"
-                                )
+                            let (resolved, reason) = relativeFileOffset(delta, at: sectionOffset + field + slot, in: map)
+                            guard resolved != nil else {
+                                throw fail("list at +\(cursor) method \(method)'s \(what) \(reason)")
                             }
                         }
                     }
@@ -1116,6 +1094,8 @@ public enum MachOPreflight {
         let fileoff: UInt64
         let filesize: UInt64
         let sections: [String]
+        /// The VM ranges of its sections of a zero-fill type.
+        var zeroFill: [Range<UInt64>] = []
     }
 
     /// Every segment command, in command order, or nil when a load command
@@ -1139,20 +1119,54 @@ public enum MachOPreflight {
                       let nsects = prefix.u32(at: cursor + 64)
                 else { return nil }
                 var sections: [String] = []
+                var zeroFill: [Range<UInt64>] = []
                 for section in 0..<Int(nsects) {
                     let base = cursor + 72 + section * 80
-                    guard base + 80 <= limit else { return nil }
+                    guard base + 80 <= limit,
+                          let addr = prefix.u64(at: base + 32), let size = prefix.u64(at: base + 40),
+                          let flags = prefix.u32(at: base + 64)
+                    else { return nil }
                     let raw = prefix[(prefix.startIndex + base)..<(prefix.startIndex + base + 16)]
                     sections.append(String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self))
+                    let (end, overflow) = addr.addingReportingOverflow(size)
+                    if SectionType.zerofill.contains(flags & 0xff), !overflow { zeroFill.append(addr ..< end) }
                 }
                 segments.append(SegmentEntry(
                     name: segmentName(at: cursor, prefix: prefix) ?? "", vmaddr: vmaddr, vmsize: vmsize,
-                    fileoff: fileoff, filesize: filesize, sections: sections
+                    fileoff: fileoff, filesize: filesize, sections: sections, zeroFill: zeroFill
                 ))
             }
             cursor += Int(cmdsize)
         }
         return segments
+    }
+
+    /// Where the relative pointer `raw`, stored at header-relative file
+    /// offset `place`, leads: the file offset of its target, or nil and why
+    /// the target has no file bytes. The displacement is in VM space, so it
+    /// is applied to the pointer's address and the result is mapped back
+    /// through the target's own segment (`FileBackedRanges.relativeTarget`).
+    static func relativeFileOffset(
+        _ raw: UInt32, at place: Int, in map: FileBackedRanges
+    ) -> (offset: Int?, reason: String) {
+        let displacement = Int64(Int32(bitPattern: raw))
+        guard let pointer = map.address(ofFileOffset: place) else {
+            return (nil, "sits at file offset \(place), which no segment's file bytes hold")
+        }
+        let (address, overflow) = displacement >= 0
+            ? pointer.addingReportingOverflow(displacement.magnitude)
+            : pointer.subtractingReportingOverflow(displacement.magnitude)
+        guard !overflow else {
+            return (nil, "is a relative pointer \(displacement) from 0x\(String(pointer, radix: 16)), past the address space")
+        }
+        switch map.relativeTarget(fromFileOffset: place, displacement: displacement) {
+        case .file(let offset, _):
+            return (offset, "")
+        case .zeroFill:
+            return (nil, "is a relative pointer to 0x\(String(address, radix: 16)), zero fill with no file bytes")
+        case .unmapped:
+            return (nil, "is a relative pointer to 0x\(String(address, radix: 16)), which no segment maps")
+        }
     }
 
     /// The segments whose bytes lie at a different offset from `__TEXT` in
@@ -1277,6 +1291,42 @@ public enum MachOPreflight {
         return (dataoff, datasize, segments)
     }
 
+    /// The Swift record tables walked for their relative pointers, through
+    /// `map`, with the mangled names they point at, by file offset.
+    static func validateRelativeTables(
+        prefix: Data, image: ImageReader, map: FileBackedRanges, path: String
+    ) throws -> [Int] {
+        let fileSize = image.size
+        var mangledNames: [Int] = []
+        for table in relativePointerTables(prefix: prefix, fileSize: fileSize) {
+            guard table.size > 0, let bytes = image.read(offset: table.offset, count: table.size)
+            else { continue }
+            if table.name == "__swift5_assocty" {
+                mangledNames += try validateAssociatedTypeTable(
+                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: path, map: map
+                )
+            } else if table.name == "__swift5_builtin" {
+                mangledNames += try validateBuiltinTypeTable(
+                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: path, map: map
+                )
+            } else if table.name == "__swift5_fieldmd" {
+                mangledNames += try validateFieldDescriptorTable(
+                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: path, map: map
+                )
+            } else if table.name == "__swift5_mpenum" {
+                mangledNames += try validateMultiPayloadEnumTable(
+                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: path, map: map
+                )
+            } else {
+                try validateRelativePointerTable(
+                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize,
+                    name: table.name, path: path, code: codeRanges(prefix: prefix), map: map
+                )
+            }
+        }
+        return mangledNames
+    }
+
     private static func relativePointerTables(
         prefix: Data, fileSize: Int
     ) -> [(name: String, offset: Int, size: Int)] {
@@ -1346,8 +1396,9 @@ public enum MachOPreflight {
     /// libSample.dylib 100 1234`).
     @discardableResult
     static func validateAssociatedTypeTable(
-        bytes: Data, sectionOffset: Int, fileSize: Int, path: String = "<data>"
+        bytes: Data, sectionOffset: Int, fileSize: Int, path: String = "<data>", map known: FileBackedRanges? = nil
     ) throws -> [Int] {
+        let map = known ?? FileBackedRanges(identityOver: fileSize)
         var names: [Int] = []
         func fail(_ why: String) -> BinaryLoadError {
             BinaryLoadError("Malformed Mach-O: \(path) — __swift5_assocty \(why)")
@@ -1355,10 +1406,8 @@ public enum MachOPreflight {
         @discardableResult
         func checkPointer(at offset: Int, _ what: String) throws -> Int {
             guard let raw = bytes.u32(at: offset) else { throw fail("\(what) is truncated") }
-            let target = sectionOffset + offset + Int(Int32(bitPattern: raw))
-            guard target >= 0, target < fileSize else {
-                throw fail("\(what) is a relative pointer to offset \(target), outside the \(fileSize)-byte file")
-            }
+            let (resolved, reason) = relativeFileOffset(raw, at: sectionOffset + offset, in: map)
+            guard let target = resolved else { throw fail("\(what) \(reason)") }
             return target
         }
         var cursor = 0
@@ -1395,8 +1444,9 @@ public enum MachOPreflight {
     /// libReconstruction.opt.dylib 150 777`).
     @discardableResult
     static func validateBuiltinTypeTable(
-        bytes: Data, sectionOffset: Int, fileSize: Int, path: String = "<data>"
+        bytes: Data, sectionOffset: Int, fileSize: Int, path: String = "<data>", map known: FileBackedRanges? = nil
     ) throws -> [Int] {
+        let map = known ?? FileBackedRanges(identityOver: fileSize)
         var names: [Int] = []
         guard bytes.count % 20 == 0 else {
             throw BinaryLoadError(
@@ -1405,10 +1455,10 @@ public enum MachOPreflight {
         }
         for record in stride(from: 0, to: bytes.count, by: 20) {
             guard let raw = bytes.u32(at: record) else { break }
-            let target = sectionOffset + record + Int(Int32(bitPattern: raw))
-            guard target >= 0, target < fileSize else {
+            let (resolved, reason) = relativeFileOffset(raw, at: sectionOffset + record, in: map)
+            guard let target = resolved else {
                 throw BinaryLoadError(
-                    "Malformed Mach-O: \(path) — __swift5_builtin descriptor \(record / 20)'s type name is a relative pointer to offset \(target), outside the \(fileSize)-byte file"
+                    "Malformed Mach-O: \(path) — __swift5_builtin descriptor \(record / 20)'s type name \(reason)"
                 )
             }
             names.append(target)
@@ -1697,8 +1747,9 @@ public enum MachOPreflight {
     /// representable` (`metadata-fuzz.py sample.release 150 4242`, mutant 5).
     @discardableResult
     static func validateFieldDescriptorTable(
-        bytes: Data, sectionOffset: Int, fileSize: Int, path: String = "<data>"
+        bytes: Data, sectionOffset: Int, fileSize: Int, path: String = "<data>", map known: FileBackedRanges? = nil
     ) throws -> [Int] {
+        let map = known ?? FileBackedRanges(identityOver: fileSize)
         var names: [Int] = []
         func fail(_ why: String) -> BinaryLoadError {
             BinaryLoadError("Malformed Mach-O: \(path) — __swift5_fieldmd \(why)")
@@ -1706,10 +1757,8 @@ public enum MachOPreflight {
         @discardableResult
         func checkPointer(at offset: Int, _ what: String) throws -> Int {
             guard let raw = bytes.u32(at: offset) else { throw fail("\(what) is truncated") }
-            let target = sectionOffset + offset + Int(Int32(bitPattern: raw))
-            guard target >= 0, target < fileSize else {
-                throw fail("\(what) is a relative pointer to offset \(target), outside the \(fileSize)-byte file")
-            }
+            let (resolved, reason) = relativeFileOffset(raw, at: sectionOffset + offset, in: map)
+            guard let target = resolved else { throw fail("\(what) \(reason)") }
             return target
         }
         var cursor = 0
@@ -1749,8 +1798,9 @@ public enum MachOPreflight {
     /// (fuzz mutant 19).
     @discardableResult
     static func validateMultiPayloadEnumTable(
-        bytes: Data, sectionOffset: Int, fileSize: Int, path: String = "<data>"
+        bytes: Data, sectionOffset: Int, fileSize: Int, path: String = "<data>", map known: FileBackedRanges? = nil
     ) throws -> [Int] {
+        let map = known ?? FileBackedRanges(identityOver: fileSize)
         var names: [Int] = []
         func fail(_ why: String) -> BinaryLoadError {
             BinaryLoadError("Malformed Mach-O: \(path) — __swift5_mpenum \(why)")
@@ -1765,11 +1815,9 @@ public enum MachOPreflight {
             guard words > 0, 4 + 4 * words <= bytes.count - cursor else {
                 throw fail("descriptor \(descriptor) declares \(words) content word(s), not fitting the section")
             }
-            let target = sectionOffset + cursor + Int(Int32(bitPattern: typeName))
-            guard target >= 0, target < fileSize else {
-                throw fail(
-                    "descriptor \(descriptor)'s type name is a relative pointer to offset \(target), outside the \(fileSize)-byte file"
-                )
+            let (resolved, reason) = relativeFileOffset(typeName, at: sectionOffset + cursor, in: map)
+            guard let target = resolved else {
+                throw fail("descriptor \(descriptor)'s type name \(reason)")
             }
             // With the spare-bits flag set, the mask's byte count is the next
             // word and the mask must fit the record; the runtime asserts
@@ -1805,20 +1853,14 @@ public enum MachOPreflight {
     /// `strlen` (SIGSEGV) — neither catchable from here.
     static func validateRelativePointerTable(
         bytes: Data, sectionOffset: Int, fileSize: Int, name: String, path: String = "<data>",
-        code: [Range<Int>] = []
+        code: [Range<Int>] = [], map known: FileBackedRanges? = nil
     ) throws {
+        let map = known ?? FileBackedRanges(identityOver: fileSize)
         for index in stride(from: 0, to: bytes.count - (bytes.count % 4), by: 4) {
             guard let raw = bytes.u32(at: index) else { break }
-            let delta = Int(Int32(bitPattern: raw))
-            let pointer = sectionOffset + index
-            let target = pointer + delta
-            guard target >= 0, target < fileSize else {
-                throw BinaryLoadError(
-                    """
-                    Malformed Mach-O: \(path) — \(name)[\(index / 4)] is a relative pointer to \
-                    offset \(target), outside the \(fileSize)-byte file
-                    """
-                )
+            let (resolved, reason) = relativeFileOffset(raw, at: sectionOffset + index, in: map)
+            guard let target = resolved else {
+                throw BinaryLoadError("Malformed Mach-O: \(path) — \(name)[\(index / 4)] \(reason)")
             }
             // Descriptors are 4-byte-aligned records. A conformance record is
             // a plain relative pointer, so a misaligned one is the middle of a

@@ -7965,9 +7965,35 @@ bitcode; Electron's `PROTECTED_MEMORY`).
 - **OPEN — a declined layout could still be read.** The decline is whole
   image, so `disasm` loses even code no fixup touches (libsystem_pthread,
   whose four `__DATA_DIRTY` fixups are the only slid ones). Lifting it
-  needs the two dependency fixes (the patches are in the 2026-11-03
-  report): MachOKit reading each chain's pages at its segment's file
+  needs the two dependency fixes: MachOKit reading each chain's pages at its segment's file
   offset and reporting slots by file offset, and MachOSwiftSection
   advancing a file offset through VM (`fileOffset → vmaddr + delta →
   fileOffset`). swiftdc's own `address(forOffset:)` uses (20 sites) need
   the same mapping before the decline can go.
+- **FIXED (soundness) — the preflight's own record checks added a VM
+  displacement to a file offset.** `__swift5_fieldmd`, `__swift5_assocty`,
+  `__swift5_builtin`, `__swift5_mpenum`, the flat relative tables and a
+  method list's type and IMP fields each computed `file offset + delta`.
+  That called a valid image malformed when a pointer crossed a slide (the
+  -8840232 above), and it accepted a pointer into zero fill whenever the
+  offset it computed fell inside the file, leaving the dependency to read
+  whatever lay there. One helper now does the mapping,
+  `FileBackedRanges.relativeTarget(fromFileOffset:displacement:)`: pointer
+  file offset → VM address, checked add, then back through the target's own
+  segment. A target is `.file`, `.zeroFill` (a zero-fill section, or past the
+  segment's file bytes) or `.unmapped`; overlapping segments claim nothing.
+  A pointer into zero fill is now refused by that cause. Fixture blast
+  radius: none beyond the commit above. A preflight sweep of 2,527 real
+  arm64 images (a third of /Applications, /usr/lib/swift, the command line
+  tools and Homebrew, by `swift-version`): 0 newly refused, 3 declined by
+  layout, 3 malformed under both binaries, no signals.
+- **OPEN — readers that take their offsets from the dependency.**
+  `VTableIndex`, `SelfTypeIndex` and `MetadataSymbolizer` (`fieldOffset +
+  relative`), `MangledNamePair`, `UnrecordedTypes.types`,
+  `MethodImplementation.code` and the 20 `address(forOffset:)` sites still
+  assume one slide. They are not converted: a slid image that could reach
+  them is declined above, and every one starts from a descriptor the
+  dependency parsed, so no fixture can show a change until the dependency
+  resolves it through VM. They move to `relativeTarget` with the decline's
+  removal. MachOObjCSection's relative method lists are a third dependency
+  site: `resolvedOffset(base: fileOffset, relative:)` in `ObjCMethodList`.

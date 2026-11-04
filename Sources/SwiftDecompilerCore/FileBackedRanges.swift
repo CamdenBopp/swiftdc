@@ -89,3 +89,88 @@ extension MachOFile {
         return nil
     }
 }
+
+// MARK: - Relative pointers
+
+extension FileBackedRanges {
+    /// The ranges of a thin image, from the segment table the preflight
+    /// reads out of its load commands.
+    init(segments entries: [MachOPreflight.SegmentEntry]) {
+        base = entries.first { $0.name == "__TEXT" }?.vmaddr ?? 0
+        segments = entries.compactMap { entry in
+            let (end, overflow) = entry.vmaddr.addingReportingOverflow(entry.vmsize)
+            guard !overflow else { return nil }
+            // A filesize past the vmsize maps no more than the vmsize.
+            return Segment(
+                vm: entry.vmaddr ..< end, fileOffset: entry.fileoff,
+                fileEnd: entry.vmaddr + min(entry.filesize, entry.vmsize)
+            )
+        }
+        zeroFill = entries.flatMap(\.zeroFill)
+    }
+
+    /// Every byte of a `fileSize`-byte file at the address equal to its
+    /// offset: one segment, one slide. What the preflight's table checks
+    /// assumed before they mapped through segments, and what their
+    /// synthetic tests still describe.
+    init(identityOver fileSize: Int) {
+        base = 0
+        let size = UInt64(max(fileSize, 0))
+        segments = [Segment(vm: 0 ..< size, fileOffset: 0, fileEnd: size)]
+        zeroFill = []
+    }
+
+    /// Where an address lies.
+    enum Target: Equatable {
+        /// In file bytes: the header-relative file offset holding it, and how
+        /// many file bytes follow in its segment.
+        case file(offset: Int, available: Int)
+        /// In a segment, in memory the loader fills with zeros: a section of
+        /// a zero-fill type, or past the segment's file bytes (vmsize >
+        /// filesize). No file byte belongs to it.
+        case zeroFill
+        /// In no segment, or past the end of the address space.
+        case unmapped
+    }
+
+    func target(at address: UInt64) -> Target {
+        let holding = segments.filter { $0.vm.contains(address) }
+        // Two segments over one address: which bytes are meant is unknown.
+        guard holding.count == 1, let segment = holding.first else { return .unmapped }
+        guard address < segment.fileEnd, !zeroFill.contains(where: { $0.contains(address) }) else {
+            return .zeroFill
+        }
+        let (offset, overflow) = segment.fileOffset.addingReportingOverflow(address - segment.vm.lowerBound)
+        guard !overflow, let fileOffset = Int(exactly: offset), let available = Int(exactly: segment.fileEnd - address)
+        else { return .unmapped }
+        return .file(offset: fileOffset, available: available)
+    }
+
+    /// The VM address of the byte at header-relative file offset `offset`,
+    /// or nil when no segment's file bytes hold it, or more than one does.
+    func address(ofFileOffset offset: Int) -> UInt64? {
+        guard offset >= 0 else { return nil }
+        let offset = UInt64(offset)
+        let holding = segments.filter { segment in
+            let size = segment.fileEnd - segment.vm.lowerBound
+            return offset >= segment.fileOffset && offset - segment.fileOffset < size
+        }
+        guard holding.count == 1, let segment = holding.first else { return nil }
+        return segment.vm.lowerBound + (offset - segment.fileOffset)
+    }
+
+    /// Where a relative pointer stored at header-relative file offset
+    /// `place` leads. The displacement is in VM space, so the pointer's
+    /// address is found first and the target is mapped back through its own
+    /// segment: `place + displacement` is the target's file offset only when
+    /// both lie in segments with one slide. A target past the address space
+    /// is unmapped, never wrapped.
+    func relativeTarget(fromFileOffset place: Int, displacement: Int64) -> Target {
+        guard let pointer = address(ofFileOffset: place) else { return .unmapped }
+        let (address, overflow) = displacement >= 0
+            ? pointer.addingReportingOverflow(displacement.magnitude)
+            : pointer.subtractingReportingOverflow(displacement.magnitude)
+        guard !overflow else { return .unmapped }
+        return target(at: address)
+    }
+}
