@@ -1537,6 +1537,16 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — a store through a free function's class parameter named no
+  field.** `func writeHolder(_ h: Holder, _ x: Int) { h.v = x }` rendered
+  `mem64[arg0 + 0x10] = arg1`, now `arg0.v = arg1`. The store must be
+  exactly one field of the object the argument still is, at a constant
+  offset: a reassigned parameter's base is no longer `.argument`, and part
+  of a field, a word of a String included, keeps its raw `memN[…]`. A
+  store the enrichment skips as a leaf keeps it too. No Swift shape was
+  found that reaches that path, since a void function's x0 still holds
+  the argument and counts as an exit value.
+
 - **FIXED — a free function's class parameter read no field.**
   `func readHolder(_ h: Holder) -> Int { h.v + 1 }` rendered `return ?`
   at -Onone, -O and -Osize: a load through `.argument` was unknown, though

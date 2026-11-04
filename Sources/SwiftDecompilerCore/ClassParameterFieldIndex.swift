@@ -96,6 +96,29 @@ extension Disassembler {
         return maps
     }
 
+    /// `arg<n>.field` when a store of `write.bytes` at `offset` from the
+    /// write's base is exactly one field of a class argument. The base must be
+    /// that argument at this store: a parameter reassigned in the body is not
+    /// `.argument` any more, so its stores keep their raw address.
+    static func classArgumentFieldTarget(of write: MemoryWrite, offset: Int64, maps: [Int: FieldMap]) -> String? {
+        guard !maps.isEmpty, write.kind == "address", write.bytes <= 8,
+              write.indexRegister == nil, !write.indexed
+        else { return nil }
+        let argument: Int, delta: Int64
+        switch write.base {
+        case .argument(let index):
+            (argument, delta) = (index, 0)
+        case .binary(.add, .argument(let index), .immediate(let constant)) where constant < 1 << 32:
+            (argument, delta) = (index, Int64(constant))
+        default:
+            return nil
+        }
+        guard let map = maps[argument], case .success(.whole(let name, _)) =
+            map.lookup(offset: Int(delta + offset), bytes: write.bytes)
+        else { return nil }
+        return "arg\(argument).\(name)"
+    }
+
     /// Per field, the width a load must have to read that field and nothing
     /// else: offset to bytes, for each field one register can hold.
     static func wholeWordFieldWidths(of map: FieldMap) -> [Int: Int] {

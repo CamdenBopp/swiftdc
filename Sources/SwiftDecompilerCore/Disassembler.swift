@@ -8852,6 +8852,9 @@ public struct Disassembler: Sendable {
             return zip(write.values, write.valueRegisters).enumerated().map { index, pair in
                 let (value, register) = pair
                 let offset = write.displacement + Int64(index * write.bytes)
+                if let field = Self.classArgumentFieldTarget(of: write, offset: offset, maps: classArgumentFieldMaps) {
+                    return "\(field) = \(rendered(value, register: register))"
+                }
                 let address = offset == 0 ? base
                     : offset > 0 ? "\(base) + 0x\(String(offset, radix: 16))" : "\(base) - 0x\(String(-offset, radix: 16))"
                 return "mem\(write.bytes * 8)[\(address)] = \(rendered(value, register: register))"
