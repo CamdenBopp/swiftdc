@@ -206,3 +206,26 @@ private func linkeditPasses(cmd: UInt32, filetype: UInt32, dataoff: UInt32, data
     #expect(linkeditPasses(cmd: 0x26, filetype: 10, dataoff: 0x10_0000, datasize: 64))
 }
 
+// MARK: - Fat slices
+
+/// `thin` as the only slice of a fat file.
+private func fat(_ thin: Data) -> Data {
+    var header = Data()
+    for word: UInt32 in [0xcafe_babe, 1, 0x0100_000c, 0, 4096, UInt32(thin.count), 12] {
+        withUnsafeBytes(of: word.bigEndian) { header.append(contentsOf: $0) }
+    }
+    return header + Data(repeating: 0, count: 4096 - header.count) + thin
+}
+
+@Test func aFatSlicesLoadCommandPayloadsAreChecked() throws {
+    let lying = words([0x32, 32, 1, 0, 0, 0xdb00_0001, 3, 0])   // ntools past the command
+    let thin = image(filetype: 1, commands: [lying]) + Data(repeating: 0, count: 256)
+    #expect(try !validatesFile(thin))
+    #expect(try !validatesFile(fat(thin)))
+}
+
+@Test func aFatSlicesWellFormedPayloadsPass() throws {
+    let honest = words([0x32, 32, 1, 0, 0, 1, 3, 0])
+    let thin = image(filetype: 1, commands: [honest]) + Data(repeating: 0, count: 256)
+    #expect(try validatesFile(fat(thin)))
+}

@@ -154,7 +154,13 @@ public enum MachOPreflight {
             // still trapped in `objc --arch arm64`).
             let image = ImageReader(handle: handle, base: extent.offset, size: extent.size)
             if let slicePrefix = image.read(offset: 0, count: min(extent.size, 1 << 20)) {
-                try validateImageContents(prefix: slicePrefix, image: image, path: "\(url.path) (slice \(index))")
+                let slicePath = "\(url.path) (slice \(index))"
+                // The load-command payload checks too: the header check above
+                // stops at the header, so a corrupted `LC_BUILD_VERSION` that
+                // is declined in a thin file trapped `swift-version --arch`
+                // once wrapped in a fat header.
+                try validate(prefix: slicePrefix, fileSize: extent.size, path: slicePath)
+                try validateImageContents(prefix: slicePrefix, image: image, path: slicePath)
             }
         }
 
