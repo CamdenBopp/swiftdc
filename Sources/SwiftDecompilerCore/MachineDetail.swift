@@ -145,6 +145,9 @@ public struct StructuredOperandInfo: Sendable {
     /// whole register. `ins`/`umov` canonicalize to `mov`, and only this
     /// tells `mov v0.d[1], x2` (one lane written) from a whole move.
     public var vectorIndex: Int? = nil
+    /// Element width and count (`.4s`, `.8b`, `.2d`) of a vector operand, or
+    /// the element size of a lane (`.d` in `v0.d[1]`).
+    public var vectorArrangement: AArch64Layout_VectorLayout = AARCH64LAYOUT_INVALID
 
     public var isRead: Bool { access & 1 != 0 }
     public var isWritten: Bool { access & 2 != 0 }
@@ -260,7 +263,8 @@ public struct StructuredInsn: Sendable {
                         shift: (op.shift.type, op.shift.value),
                         extender: op.ext,
                         access: UInt8(truncatingIfNeeded: op.access.rawValue),
-                        vectorIndex: op.vector_index == -1 ? nil : Int(op.vector_index)
+                        vectorIndex: op.vector_index == -1 ? nil : Int(op.vector_index),
+                        vectorArrangement: op.vas
                     )
                 )
             }

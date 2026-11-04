@@ -8507,3 +8507,12 @@ Commit messages on dev stay as they are; these are the true records.
   libSwiftSyntax --unreferenced`: 200 to 231 MB before, 285 MB after.
 - **OPEN (speed): `isGlobalVariableAddressor` allocates an array per unknown
   callee.** A single pass over `callee.utf8` should be cheaper; not measured.
+- **FIXED (soundness): a frame address passed in a float register.**
+  `Preservation.abiCallInputs` left out v0-v7, so an unknown callee handed a
+  save slot's address in d0 or v0.d[1] could not touch it, and the save
+  counted as restored. `FPAlias.indirect()` and `upper()` rendered `return
+  7` and return 99 natively (`disasm Fixtures/Sample/libFPAlias.dylib
+  --structured`); both are `return ?` now. The analysis follows may-aliases
+  through `fmov`, whole-register moves, upper-lane inserts and SVE writes,
+  and a call or vector write ends them. Blast radius: that fixture alone.
+  Instructions +2.20% in total, within budget, from carrying the v bank.

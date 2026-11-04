@@ -556,6 +556,9 @@ $CLANG -arch arm64 -dynamiclib vectorlanes.s -o libVectorLanes.dylib
 echo "==> upper lanes of v8-v15 across calls, which AAPCS64 does not preserve (vectorcallclobber.s)"
 $CLANG -arch arm64 -dynamiclib vectorcallclobber.s -o libVectorCallClobber.dylib
 
+echo "==> a saved register's slot passed to a callback through d0 or v0.d[1] (fpaliascalls.s)"
+$CLANG -arch arm64 -dynamiclib fpaliascalls.s -o libFPAlias.dylib
+
 echo "==> fmov immediates in vector and half-precision registers (fpimmediates.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name FPImmediates fpimmediates.swift -o libFPImmediates.dylib
 

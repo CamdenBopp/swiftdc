@@ -636,6 +636,28 @@ struct CalleeRegisterSummary: Sendable, Equatable {
 /// is not preserved. Joins keep only what every path agrees on, and an
 /// unfinished fixpoint gives up on every written register.
 enum Preservation {
+    /// MachineDetail's shared keys intentionally cover general registers only.
+    /// A vector write also ends what this analysis knows of that register.
+    /// Missing access flags cannot prove that an operand was left untouched.
+    static func writtenRegisterKeys(in detail: StructuredInsn) -> Set<String> {
+        var keys = detail.writtenRegisterKeys
+        for info in detail.operands where info.isWritten || info.access == 0 {
+            if let register = info.operand.register, register.kind == .vector {
+                keys.insert(register.key)
+            }
+        }
+        if writesUnmodeledRegister(detail) {
+            keys.formUnion((0..<32).map { "v\($0)" })
+        }
+        return keys
+    }
+
+    private static func writesUnmodeledRegister(_ detail: StructuredInsn) -> Bool {
+        detail.operands.contains {
+            ($0.isWritten || $0.access == 0) && $0.operand.register?.kind == .other
+        }
+    }
+
     enum Value: Hashable {
         case entry(String)
         case stack(Int64)
@@ -969,12 +991,15 @@ enum Preservation {
         // The callee keeps the ABI: x19–x29 and sp survive it.
         for index in 0...18 { state.setRegister("x\(index)", to: .unknown) }
         state.setRegister("x30", to: .unknown)
+        for index in Array(0...7) + Array(16...31) { state.setRegister("v\(index)", to: .unknown) }
         state.apply(effect, reloaded: reloaded, clobbersMayAliasStack: clobbersMayAliasStack)
     }
 
-    /// The registers a function that keeps the calling convention can take
-    /// an input in: the arguments, x8, and Swift's x20 and x21.
-    static let abiCallInputs: Set<String> = Set((0...8).map { "x\($0)" } + ["x20", "x21"])
+    /// The registers an unknown ABI-conforming callee may consume: general
+    /// and vector arguments, x8, and Swift's x20 and x21. A double can carry
+    /// pointer bits in its low word, and a short-vector parameter above that
+    /// too. A known integer-only arity stays the precise path.
+    static let abiCallInputs: Set<String> = Set((0...8).map { "x\($0)" } + (0...7).map { "v\($0)" } + ["x20", "x21"])
 
     /// The memory operand's address and the base's value after writeback.
     private static func access(_ detail: StructuredInsn, in state: State) -> (address: Int64?, base: String?, after: Value?) {
@@ -1006,6 +1031,16 @@ enum Preservation {
     }
 
     private static func apply(_ detail: StructuredInsn, to state: inout State) {
+        // SVE z registers overlap v registers, and other unmodeled register
+        // groups may overlap several. Invalidate before modeled load/copy
+        // paths can return, retaining possible aliases already in the bank.
+        if writesUnmodeledRegister(detail) {
+            let mayAliasStack = state.stackAliases.contains { $0.hasPrefix("v") }
+                || !detail.readRegisterKeys.isDisjoint(with: state.stackAliases)
+            for number in 0..<32 {
+                state.setRegister("v\(number)", to: .unknown, mayAliasStack: mayAliasStack)
+            }
+        }
         let operands = detail.operands
         let hasStackBase = operands.contains { info in
             guard case .memory(let base?, _, _) = info.operand else { return false }
@@ -1022,8 +1057,44 @@ enum Preservation {
             index < operands.count ? operands[index].operand.register : nil
         }
         switch detail.id {
-        case AARCH64_INS_MOV:
-            if let destination = register(0), let source = register(1), destination.widthBits == 64 {
+        case AARCH64_INS_MOV, AARCH64_INS_FMOV:
+            // INS aliases MOV. A proven upper-half insertion does not touch
+            // the low word's value, but it may add a frame address to the
+            // register's independent may-alias facts.
+            if operands.count == 2, let destination = register(0),
+               destination.kind == .vector, destination.widthBits == 128,
+               let index = operands[0].vectorIndex {
+                let bits: Int
+                switch operands[0].vectorArrangement {
+                case AARCH64LAYOUT_VL_B: bits = 8
+                case AARCH64LAYOUT_VL_H: bits = 16
+                case AARCH64LAYOUT_VL_S: bits = 32
+                case AARCH64LAYOUT_VL_D: bits = 64
+                default: bits = 0
+                }
+                if bits > 0, index >= 64 / bits, index < 128 / bits {
+                    if let source = register(1), state.stackAliases.contains(source.key) {
+                        // One low-word value cannot bound two different lane
+                        // pointers. Lose an exact low pointer rather than
+                        // hide what the new upper pointer may reach.
+                        switch state.value(destination.key) {
+                        case .stack, .below:
+                            state.setRegister(destination.key, to: .unknown, mayAliasStack: true)
+                        default:
+                            state.stackAliases.insert(destination.key)
+                            state.aliasReach[destination.key] = nil
+                        }
+                    }
+                    return
+                }
+            }
+            // Full-width bit copies keep the low lane. A lane insert or a
+            // narrow scalar move does not prove all 64 bits were copied.
+            if let destination = register(0), let source = register(1),
+               operands.allSatisfy({ $0.vectorIndex == nil }),
+               (destination.widthBits == 64 && source.widthBits == 64
+                || destination.kind == .vector && source.kind == .vector
+                   && destination.widthBits == 128 && source.widthBits == 128) {
                 let offsets = state.aliasReach[source.key]
                 state.setRegister(destination.key, to: state.value(source.key), mayAliasStack: state.stackAliases.contains(source.key))
                 state.aliasReach[destination.key] = offsets
@@ -1154,7 +1225,10 @@ enum Preservation {
         if operands.contains(where: { $0.operand.isMemory && ($0.isWritten || $0.access == 0) }), readsStackAlias {
             state.stackAddressEscaped = true
         }
-        for key in detail.writtenRegisterKeys {
+        for key in writtenRegisterKeys(in: detail) {
+            // The unmodeled overlapping bank was already invalidated above,
+            // including aliases that an SVE register spelling cannot name.
+            if writesUnmodeledRegister(detail) && key.hasPrefix("v") { continue }
             state.setRegister(key, to: .unknown, mayAliasStack: readsStackAlias)
         }
     }
