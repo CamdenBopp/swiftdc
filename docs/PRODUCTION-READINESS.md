@@ -8482,3 +8482,28 @@ this Mac.
   (Disassembler.swift, the `isObjCNonVoid` arm of the probe). The render is
   right; the claim an outside oracle would check is not. A fix needs its own
   test.
+
+## 2026-11-04: corrections to landed commit messages
+
+Commit messages on dev stay as they are; these are the true records.
+
+- `a927cca` holds the unfilled placeholders `BLAST_RESULT` and
+  `SUITE_RESULT`: it was taken from its branch before its author handed it
+  back. Blast radius against `0e4b26c`: 1 file, the new fixture, structured 3
+  lines, pseudo 3, listing 4, json 14. Suite at that commit: 1221 tests. On
+  its own it cost +2.67% instructions over all renders, +0.9% on
+  libReconstruction. Its only addition is `isGlobalVariableAddressor`, whose
+  `range(of:)` is the likely cause; that was not profiled.
+- `0e4b26c` quotes 1079 tests and +0.36%/+0.11% from an earlier base. Measured
+  on `0a9adbb`: 1185 tests, 7 files, structured 141 lines, pseudo 137, listing
+  140, json 471, instructions +0.26%, footprint +0.45%. Its Terminal and
+  TextEdit numbers come from an earlier base and were not rerun.
+- `9f46c76` names three causes without weighing them; see `a927cca` above.
+- **OPEN (soundness): `56766c0` is an older version of the inlining commit.**
+  It lacks the `float-argument` decline, so a prefix that sets v0-v7 before a
+  call can render a wrong argument (4 corpus sites), and its author declared
+  its mutation proofs void because they did not check for `Build complete`.
+- **OPEN (memory): `4266f7c` raised whole-image footprint.** `xrefs
+  libSwiftSyntax --unreferenced`: 200 to 231 MB before, 285 MB after.
+- **OPEN (speed): `isGlobalVariableAddressor` allocates an array per unknown
+  callee.** A single pass over `callee.utf8` should be cheaper; not measured.
