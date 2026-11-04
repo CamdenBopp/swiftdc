@@ -7582,3 +7582,33 @@ heuristic, so the bins are approximate):
   complete layout in the image, and **tuples** (11, such as
   `(bucket: _HashTable.Bucket, found: Bool)` in x0 and x1), which no
   direct path assembles.
+
+## 2026-11-03: a cost budget in the gate
+
+- **FIXED (tests): no load-independent speed guard** (`6dabd5f`). Three
+  superlinear costs reached dev through the gate: libSwiftSyntax
+  `--structured` at 4,200G instructions retired, its `xrefs` at 4,110G,
+  and GoodLinks `xrefs` at 15,000G (all fixed above). The outputs were
+  right, so the blast radius was silent, and wall time on this host
+  moves 8% or more between identical runs. `Tools/blast-radius.sh` now
+  records instructions retired and peak footprint for every render, and
+  `--perf` adds libSwiftSyntax and libSwiftParser `disasm --structured`
+  and `xrefs --unreferenced` under the memory guard. Over budget
+  (defaults: +10% instructions on an input from 2G, +3% in total, +50%
+  footprint on an input from 64 MB, +10% in total) it exits 3, and the
+  gate fails unless a commit under test carries `Perf-cost: <reason>`.
+  Measured: two runs of one binary agree to 0.11% in total instructions
+  and 2.3% on the worst large input; footprint 1.2% in total and 25% on
+  one input. `7c31327` against `8fabd02`, which reverts the four fixes,
+  is red: +636% and +733% on libSwiftSyntax, +175% in total. A release
+  build with `CallResultBankCache`'s lookup disabled is red: +12.9% and
+  +15.3% on libSwiftParser, +4.45% in total. The restored build is
+  green at +0.08%. Cost and method: [PARALLEL-WORKFLOW.md](PARALLEL-WORKFLOW.md),
+  "The cost budget".
+- **OPEN: GoodLinks is not in the budget.** The 15,000G `xrefs` regression
+  was on a private app, which the public gate cannot carry. The swift-syntax
+  dylibs hardly reach the mangled-name path it took (their counts moved
+  under 0.3% with its fix), so the `--perf` runs would likely have missed
+  it; whether a fixture render moves is not measured. A fixture that
+  reaches `__swift_instantiateConcreteTypeFromMangledName` through an
+  indirect reference at many call sites would close it.

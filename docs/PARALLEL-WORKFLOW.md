@@ -294,6 +294,14 @@ took 92 and 144 s with the old script and 167 and 139 s with `--perf`
 (alternating, load 20 to 85): within the noise of the host, at most 75 s
 more.
 
+One whole gate (no push) over this change, with the release build a no-op
+and nothing yet in the v3 cache: priming rendered and measured HEAD in
+133 s, inside the suite's 169 s, and the blast step then took 7 s. The
+gate passed in 198 s. The suite's 169 s against 145 s measured alone
+may be the priming's contention or the host's load (not separated). The
+first gate after this change also renders its baseline in the blast
+step, once, because the v3 cache key is new.
+
 ### Expensive audit verification stays separate
 
 The compiler-grounded audit (`Benchmarks/compiler-grounded`, native-execution
