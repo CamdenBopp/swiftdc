@@ -1116,3 +1116,36 @@ private func namesARequirementWitness(_ text: String) -> Bool {
     let pair = try #require(functions.first { $0.displayName.hasPrefix("FuncProtoWitness.pair<") })
     #expect(Disassembler.genericWitnessTableRegisters(of: pair, metadata: ["x2": "A", "x4": "B"]) == [:])
 }
+
+/// A generic function passes one metadata argument per parameter only when
+/// no formal or requirement supplies or removes one. Counting parameters
+/// otherwise names the wrong one: `keep<A, B>(Box<A>, B)` has B's metadata
+/// in x2, and copying its `u` read `initializeWithCopy value witness for A`
+/// (metadatasource.swift, each register read from the listing).
+@Test func aGenericFunctionsMetadataIsNotCountedPastASourceIfPresent() async throws {
+    let path = "Fixtures/Sample/libMetadataSource.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func function(_ name: String) throws -> DisassembledFunction {
+        try #require(functions.first { $0.displayName.hasPrefix("MetadataSource.\(name)<") })
+    }
+    // Nothing is missing: the name is the parameter's.
+    for (name, parameter) in [("plain", "B"), ("optional", "B"), ("inoutBox", "B"), ("array", "B"),
+                              ("plainBound", "B"), ("sameMember", "C")] {
+        let text = try function(name).renderStructured()
+        #expect(text.contains("initializeWithCopy value witness for \(parameter)("), Comment(rawValue: text))
+    }
+    // A parameter's metadata is not passed: no name by position.
+    for name in ["keep", "nested", "owned", "bound", "sameParam", "sameConcrete"] {
+        let text = try function(name).renderStructured()
+        #expect(!text.contains(" value witness for "), Comment(rawValue: text))
+    }
+    // Declined by the layout today, and by the signature whatever it does.
+    for name in ["classType", "tupled"] {
+        #expect(try !Disassembler.passesEveryGenericMetadata(symbol: function(name).symbol), Comment(rawValue: name))
+    }
+    // A closure, escaping or not, supplies nothing.
+    for name in ["closure", "escaping"] {
+        #expect(try Disassembler.passesEveryGenericMetadata(symbol: function(name).symbol), Comment(rawValue: name))
+    }
+}

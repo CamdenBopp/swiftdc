@@ -50,6 +50,22 @@ results do not replace previously recorded release performance measurements.
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
 
+- **FIXED — a generic function's metadata was counted past an argument
+  IRGen does not pass.** Metadata was seeded one register per type
+  parameter after the formals, and two kinds of signature pass fewer. A
+  formal that supplies a parameter fulfills it (`keep<A, B>(Box<A>, B)`
+  takes B's metadata in x2), as does a generic superclass bound (`A:
+  Box<B>`). A parameter that is not canonical has no argument (`where B
+  == A`, `where A == Int`). The next parameter's metadata then took the
+  missing one's name: `keep` copied its `B` with `initializeWithCopy
+  value witness for A`. The mangled signature now decides, and a
+  function that passes fewer seeds no metadata and no tables, its call
+  left unnamed. Sources checked against each shape's listing: a class
+  built from a parameter, nested or `__owned`; a class in a tuple; a
+  class metatype. Not sources, and still named: `Box<A>?`, `inout
+  Box<A>`, `[A]`, a closure, a non-generic superclass, `B == A.Item`.
+  Six wrong names in the fixture `metadatasource.swift`; no swift-syntax
+  dylib or the GoodLinks `-f ViewController` slice held one.
 - **FIXED (`1f9f0ed`) — a structured sink without a `ret` read as falling through
   into the next label.** A block that leaves the function by a tail call
   (`b C`), or by a call with no instruction after it (`bl abort`), printed

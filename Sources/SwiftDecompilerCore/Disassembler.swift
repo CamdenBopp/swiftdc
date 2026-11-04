@@ -4671,7 +4671,9 @@ public struct Disassembler: Sendable {
     /// (swift/docs/ABI/CallingConvention.rst; `pick<T>(Int, T, T) -> T` is
     /// `(sret, i64, ptr, ptr, ptr %T)`, T's metadata in x3). Empty for
     /// anything whose formals are not laid out in full, a method (its `self`
-    /// and Self metadata have other places), or an async function.
+    /// and Self metadata have other places), an async function, or a
+    /// signature that does not pass one metadata argument per parameter
+    /// (`passesEveryGenericMetadata`).
     static func genericMetadataRegisters(
         of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex,
         fieldMaps: [String: FieldMap]
@@ -4693,7 +4695,7 @@ public struct Disassembler: Sendable {
         guard !names.isEmpty, names.allSatisfy({ $0.wholeMatch(of: #/[A-Z][0-9]*/#) != nil }),
               let layout = swiftCallArgumentLayout(callee: name, enumCaseIndex: enumCaseIndex,
                                                    classTypeIndex: classTypeIndex, fieldMaps: fieldMaps),
-              layout.stack.isEmpty
+              layout.stack.isEmpty, passesEveryGenericMetadata(symbol: function.symbol)
         else { return [:] }
         let integers = layout.slots.reduce(0) { total, slot in
             switch slot.kind {
@@ -4707,6 +4709,77 @@ public struct Disassembler: Sendable {
             registers["x\(integers + index)"] = parameter
         }
         return registers
+    }
+
+    /// Whether a generic function's signature passes one metadata argument
+    /// for each of its type parameters, read from its mangled nodes. IRGen
+    /// passes fewer in two cases, and the arguments after a missing one move
+    /// down a register: `keep<A, B>(Box<A>, B)` has B's metadata in x2,
+    /// where counting parameters puts A's.
+    /// - A parameter that is not canonical has no argument
+    ///   (GenProto.cpp, enumerateGenericSignatureRequirements): one made
+    ///   equal to another parameter or to a concrete type. One made equal
+    ///   to a member type (`B == A.Item`) stays canonical.
+    /// - A parameter a formal can supply is fulfilled from it
+    ///   (PolymorphicConvention::considerParameter): see `isMetadataSource`.
+    ///   So is the argument of a generic superclass bound (`A: Box<B>`),
+    ///   whose instance is a source.
+    /// False for any requirement or parameter this does not know.
+    static func passesEveryGenericMetadata(symbol: String) -> Bool {
+        var mangled = Substring(symbol)
+        if mangled.hasPrefix("_$s") { mangled = mangled.dropFirst() }
+        guard mangled.hasPrefix("$s"), let global = try? demangleAsNode(String(mangled)), global.kind == .global,
+              global.children.count == 1, let declaration = global.children.first, declaration.kind == .function,
+              let type = declaration.children.last, type.kind == .type,
+              let generic = type.children.first, generic.kind == .dependentGenericType
+        else { return false }
+        let parts = Array(generic.children)
+        guard parts.count == 2, parts[0].kind == .dependentGenericSignature, parts[1].kind == .type,
+              let function = parts[1].children.first, function.kind == .functionType,
+              let arguments = function.children.first(where: { $0.kind == .argumentTuple })
+        else { return false }
+        for entry in parts[0].children {
+            let sides = Array(entry.children)
+            switch entry.kind {
+            case .dependentGenericParamCount, .dependentGenericLayoutRequirement:
+                continue
+            case .dependentGenericConformanceRequirement:
+                guard sides.count == 2, let constraint = sides[1].children.first,
+                      constraint.kind == .protocol || constraint.kind == .class
+                else { return false }
+            case .dependentGenericSameTypeRequirement:
+                guard sides.count == 2, sides[1].children.first?.kind == .dependentMemberType else { return false }
+            default:
+                return false
+            }
+        }
+        return !isMetadataSource(arguments)
+    }
+
+    /// Whether a formal's type node can supply a type parameter's metadata,
+    /// as PolymorphicConvention::considerParameter reads one: a class built
+    /// from a parameter (its instance leads to its metadata), or a metatype
+    /// of anything but a bare parameter (a bare one is inexact, and
+    /// fulfills nothing). A tuple's elements are parameters of their own. An
+    /// `inout` is an address, and a struct, an enum or a function supplies
+    /// nothing. A type this does not know counts if it mentions a parameter.
+    private static func isMetadataSource(_ node: Node) -> Bool {
+        func mentionsParameter(_ node: Node) -> Bool {
+            node.contains { $0.kind == .dependentGenericParamType }
+        }
+        switch node.kind {
+        case .argumentTuple, .type, .tuple, .tupleElement, .owned, .shared:
+            return node.children.contains(where: isMetadataSource)
+        case .inOut, .dependentGenericParamType, .dependentMemberType, .structure, .enum,
+             .boundGenericStructure, .boundGenericEnum, .functionType, .noEscapeFunctionType:
+            return false
+        case .metatype:
+            guard let instance = node.children.last, instance.kind == .type, instance.children.count == 1
+            else { return true }
+            return instance.children.first?.kind != .dependentGenericParamType && mentionsParameter(instance)
+        default:
+            return mentionsParameter(node)
+        }
     }
 
     /// The registers holding a generic free function's witness tables

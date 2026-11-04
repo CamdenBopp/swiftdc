@@ -636,6 +636,9 @@ $CLANG -arch arm64 -dynamiclib throw_forward.s -o libThrowForwardAsm.dylib
 echo "==> a generic function's witness-table arguments (funcprotowitness.swift, -O, resilient)"
 $SWIFTC -parse-as-library -O -enable-library-evolution -emit-library -module-name FuncProtoWitness funcprotowitness.swift -o libFuncProtoWitness.dylib
 
+echo "==> generic functions that pass fewer metadata arguments than parameters (metadatasource.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name MetadataSource metadatasource.swift -o libMetadataSource.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib
