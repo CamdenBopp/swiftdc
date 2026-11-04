@@ -8091,3 +8091,41 @@ bitcode; Electron's `PROTECTED_MEMORY`).
   type does not have) and `PluginMessage.Diagnostic` its 72 bytes to
   `CompilerSwiftDiagnostics.Diagnostic`. A foreign value this image cannot
   lay out now declines, parameters after it included.
+
+## 2026-11-04: load-command fuzz and crash reports
+
+A fuzz of load commands (`swift Tools/fuzz.swift container`, four fixtures,
+12,000 runs) crashed the CLI 31 times. Each rule below had no false positive
+on 7,809 to 10,169 real images (34.5M symbols, 14.5M trie nodes, 5,263
+chained headers). After them all 31 crashers exit 1 with a stated cause, and
+18,000 runs on fresh seeds had no crash and no timeout.
+
+- **FIXED (correctness): `disasm` and `analyze` trapped on libswiftCore.**
+  `witnessTables` converted a negative `Symbol.offset`. Found in
+  `~/Library/Logs/DiagnosticReports`: 18 reports, no test failing.
+  `ee49e86`.
+- **FIXED (validation): one flipped byte in a load command crashed the
+  CLI.** `LC_BUILD_VERSION` contents `1409c2c` (20 crashes), symbol strings
+  `96cc04f` (4), the chained fixups header `8d3a1a7` (4), export tries
+  `cf219b1` (2), `linkedit_data` ranges `a6b10a7`.
+- **FIXED (correctness): `dump` trapped on Swift metadata past 2^63.**
+  It now declines, and an image without Swift metadata still dumps.
+  `5b7af42`.
+- **FIXED (validation): no payload check ran on a fat slice.** `7f9051a`.
+- **FIXED (soundness): bitfield ivars took the last name at their offset.**
+  `alignmentSatisfied` rendered `self->_isCatalyst`. An offset two ivars
+  claim now names neither. `aef64e0`.
+- **OPEN (completeness): a bitfield read could name its field from the
+  bit.** `ubfx #5` of a byte of one-bit ivars identifies `_alignmentSatisfied`,
+  and it stays `self[0x88]`.
+- **OPEN (soundness): headers print a bitfield as `int`.** An encoding like
+  `b1` has no sign.
+- **OPEN (usability): `-f "-[Class sel]"` reads as an option.** Argument
+  parsing rejects the leading `-`. `-f "[Class sel]"` works.
+- **DEAD END: a preflight rule on a segment address past 2^63.** It took
+  `dump` and `swift-version` away from every such image, as
+  WideSegmentAddressTests showed. Skipping `descriptorSymbols` alone did not
+  help: the same trap is reached through `resolveBind`.
+- **DEAD END: `SIGSTOP` on a session to clear the build queue.** A stopped
+  `lockf` can still be granted a lock, and a stopped reader fills a holder's
+  stdout pipe. Three stalls, about two hours.
