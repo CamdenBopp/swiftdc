@@ -409,6 +409,59 @@ public struct ObjCMetadataIndex: Sendable {
     /// `xrefs`, and its dictionary order made "the first declaration" vary
     /// between runs.
     private let bySelector: [String: [ObjCMethodBinding]]
+    /// What every send of a selector asks of all its implementations, worked
+    /// out once. `-owner` implemented by 1,600 classes and sent from 3,200
+    /// methods parsed 1,600 type encodings per send: 3,066 of 4,244 samples.
+    private let sendFacts = SelectorSendFacts()
+
+    /// The facts of one selector's instance or class methods.
+    private struct SendFacts {
+        /// The first declaration of each class, in `bySelector` order.
+        let firstByClass: [String: ObjCMethodBinding]
+        /// The parameter types every declaration has, or nil when they
+        /// disagree or one does not parse.
+        let agreedTypes: [String]?
+        let classesReturningVoid: Set<String>
+        let allReturnVoid: Bool
+    }
+
+    private final class SelectorSendFacts: @unchecked Sendable {
+        private let lock = NSLock()
+        private var facts: [String: [Bool: SendFacts]] = [:]
+        private var prefixes: [String: Int?] = [:]
+
+        func sendFacts(_ selector: String, isClassMethod: Bool, build: () -> SendFacts) -> SendFacts {
+            lock.lock()
+            defer { lock.unlock() }
+            if let known = facts[selector]?[isClassMethod] { return known }
+            let built = build()
+            facts[selector, default: [:]][isClassMethod] = built
+            return built
+        }
+
+        func positionalPrefix(_ selector: String, build: () -> Int?) -> Int? {
+            lock.lock()
+            defer { lock.unlock() }
+            if let known = prefixes[selector] { return known }
+            let built = build()
+            prefixes[selector] = .some(built)
+            return built
+        }
+    }
+
+    private func sendFacts(_ selector: String, isClassMethod: Bool) -> SendFacts {
+        sendFacts.sendFacts(selector, isClassMethod: isClassMethod) {
+            let matching = (bySelector[selector] ?? []).filter { $0.isClassMethod == isClassMethod }
+            let types = matching.map {
+                ObjCArgumentABI.parameterTypes(encoding: $0.typeEncoding, argumentCount: $0.argumentCount)
+            }
+            return SendFacts(
+                firstByClass: Dictionary(matching.map { ($0.className, $0) }, uniquingKeysWith: { first, _ in first }),
+                agreedTypes: types.first.flatMap { first in types.allSatisfy { $0 == first } ? first : nil },
+                classesReturningVoid: Set(matching.filter(\.returnsVoid).map(\.className)),
+                allReturnVoid: matching.allSatisfy(\.returnsVoid))
+        }
+    }
 
     init(methods: [UInt64: [ObjCMethodBinding]], fieldMaps: [String: FieldMap]) {
         self.methods = methods
@@ -457,13 +510,9 @@ public struct ObjCMetadataIndex: Sendable {
     /// declaration is not an all-integer signature, and a disagreement
     /// declines. Recovered from the pre-merge stash (983aa25).
     func outgoingSignature(selector: String, className: String, isClassMethod: Bool) -> OutgoingSignature {
-        let matching = (bySelector[selector] ?? []).filter { $0.isClassMethod == isClassMethod }
-        guard let declared = matching.first(where: { $0.className == className }) else { return .unavailable }
-        guard let types = ObjCArgumentABI.parameterTypes(encoding: declared.typeEncoding,
-                                                        argumentCount: declared.argumentCount),
-              matching.allSatisfy({ ObjCArgumentABI.parameterTypes(encoding: $0.typeEncoding,
-                                      argumentCount: $0.argumentCount) == types })
-        else { return .declined }
+        let facts = sendFacts(selector, isClassMethod: isClassMethod)
+        guard let declared = facts.firstByClass[className] else { return .unavailable }
+        guard let types = facts.agreedTypes else { return .declined }
         return .known(encoding: declared.typeEncoding, types: types)
     }
 
@@ -495,9 +544,8 @@ public struct ObjCMetadataIndex: Sendable {
     }
 
     func outgoingReturnsVoid(selector: String, className: String, isClassMethod: Bool) -> Bool {
-        let matching = (bySelector[selector] ?? []).filter { $0.isClassMethod == isClassMethod }
-        guard matching.contains(where: { $0.className == className && $0.returnsVoid }) else { return false }
-        return matching.allSatisfy(\.returnsVoid)
+        let facts = sendFacts(selector, isClassMethod: isClassMethod)
+        return facts.classesReturningVoid.contains(className) && facts.allReturnVoid
     }
 
     /// With no receiver identity, the explicit arguments are read one x
@@ -519,11 +567,13 @@ public struct ObjCMetadataIndex: Sendable {
     /// declaration passes in one x register each, or nil when they all pass
     /// every argument so.
     func positionalArgumentPrefix(_ selector: String) -> Int? {
-        let image = (bySelector[selector] ?? []).compactMap { method in
-            ObjCArgumentABI.parameterTypes(encoding: method.typeEncoding, argumentCount: method.argumentCount)?
-                .firstIndex { !ObjCArgumentABI.takesOneXRegister($0) }
-        }.min()
-        return [image, SDKSelectorPrefixes.table[selector]].compactMap { $0 }.min()
+        sendFacts.positionalPrefix(selector) {
+            let image = (bySelector[selector] ?? []).compactMap { method in
+                ObjCArgumentABI.parameterTypes(encoding: method.typeEncoding, argumentCount: method.argumentCount)?
+                    .firstIndex { !ObjCArgumentABI.takesOneXRegister($0) }
+            }.min()
+            return [image, SDKSelectorPrefixes.table[selector]].compactMap { $0 }.min()
+        }
     }
 
     /// The runtime `__text` address of a method IMP as it appears in the ObjC

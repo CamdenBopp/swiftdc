@@ -8026,6 +8026,17 @@ bitcode; Electron's `PROTECTED_MEMORY`).
   resolves it through VM. They move to `relativeTarget` with the decline's
   removal. MachOObjCSection's relative method lists are a third dependency
   site: `resolvedOffset(base: fileOffset, relative:)` in `ObjCMethodList`.
+- **FIXED (speed): `ObjCMetadataIndex.outgoingSignature` dominated
+  `objc` on many classes.** `sample` of the 1,600-class run put 3,066 of
+  4,244 main-thread samples in it: `-owner`, implemented by 1,600 classes
+  and sent from 3,200 methods, parsed 1,600 type encodings per send. The
+  index now works out what a send asks of a selector's implementations
+  once (`SendFacts`; `outgoingReturnsVoid` and `positionalArgumentPrefix`
+  read the same way). Instructions retired, `/usr/bin/time -l`, before
+  and after, output `cmp`-identical: 1,600 classes 280.3G to 87.2G
+  (-69%), 800 classes 91.9G to 43.7G, AppKit 362.0G to 358.0G (-1%),
+  UIKitCore 781.7G to 764.8G (-2%). Real images have few selectors with
+  that many implementations.
 - **FIXED (soundness): an accessor that computes read as synthesized.**
   `- (void)setLimit:(int)limit { _limit = limit > 10 ? 10 : limit; }` at
   -O1 is `mov w8, #0xa; cmp w2, #0xa; csel w8, w2, w8, lt; str w8, [x0,
