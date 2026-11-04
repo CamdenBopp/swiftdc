@@ -668,6 +668,10 @@ public struct ValueTracer: Sendable {
         /// at or above sp kept as a possible outgoing stack argument.
         case stack(Int64)
         case stackWidth(Int64)
+        /// The register file that stored a frame word: `.immediate(0)` a
+        /// general register, `.immediate(bits)` a float register of that
+        /// width. Absent, the store is not known (an entry argument, a copy).
+        case stackFile(Int64)
         case outgoing(Int64)
         /// A word of the function's own async context, by byte offset.
         case contextSlot(Int)
@@ -729,6 +733,7 @@ public struct ValueTracer: Sendable {
             case .otherRegister(let n): "reg\(n)"
             case .stack(let k): "stack@\(k)"
             case .stackWidth(let k): "stack-width@\(k)"
+            case .stackFile(let k): "stack-file@\(k)"
             case .outgoing(let k): "outgoing@\(k)"
             case .contextSlot(let k): "ownctx@\(k)"
             case .calleeParent: "callee-context.parent"
@@ -1871,6 +1876,8 @@ public struct ValueTracer: Sendable {
                 } else if accumulator[key] != value {
                     if case .stackWidth(let offset) = key {
                         unsizedSlots.append(offset)
+                    } else if case .stackFile(let offset) = key {
+                        unsizedSlots.append(offset)
                     } else if key == .flagsWidth {
                         unsizedFlags = true
                     } else if holdsValue(key), containsFrame(value) || containsContext(value) {
@@ -2072,6 +2079,9 @@ public struct ValueTracer: Sendable {
                     registers[Self.stackKey(base + Int64(offset))] =
                         .indirectCallResultWord(site: insn.address, offset: offset)
                     registers[Self.stackWidthKey(base + Int64(offset))] = .immediate(UInt64(min(8, size - offset)))
+                    // No register stored this word. The slot's value may already
+                    // be forgotten, so its old file is cleared here, not there.
+                    registers[Self.stackFileKey(base + Int64(offset))] = nil
                 }
             case .indirect(nil)?, nil:
                 break // already forgotten by the escaped-local invalidation above
@@ -3317,6 +3327,26 @@ public struct ValueTracer: Sendable {
                 let offset = Self.stackOffset(from: key)
                 let bytes = Self.accessBytes(detail) ?? max(dest.widthBits / 8, 1)
                 var value = offset.map { Self.stackValue(at: $0, bytes: bytes, in: registers) } ?? .unknown
+                // A word stored from one register file and reloaded into the
+                // other is its bits reinterpreted, as an `fmov` would be: -Onone
+                // `unsafeBitCast(a, to: Int.self)` is `str d0, [sp]; ldr x9,
+                // [sp]`. Carried bare, `~bits == 7` rendered
+                // `((-arg0 - 5e-324) != 3.5e-323)`.
+                // A `q` load gathers words whatever stored them, so it stays out.
+                if value != .unknown, let offset, dest.widthBits <= 64,
+                   case .immediate(let file)? = registers[Self.stackFileKey(offset)] {
+                    switch (dest.kind, file) {
+                    case (.gpr, 32), (.gpr, 64):
+                        value = Self.bitPattern(of: value, bits: Int(file))
+                    case (.vector, 0):
+                        let stored = registers[Self.stackWidthKey(offset)]
+                        value = dest.widthBits >= 32 && stored == .immediate(UInt64(bytes))
+                            ? Self.float(fromBits: value, bits: dest.widthBits) : .unknown
+                    case (.vector, _) where file != UInt64(dest.widthBits):
+                        value = .unknown // a Double's word read as a Float, or the reverse
+                    default: break
+                    }
+                }
                 if dest.kind == .gpr {
                     switch detail.id {
                     case AARCH64_INS_LDRSB, AARCH64_INS_LDURSB,
@@ -3384,7 +3414,8 @@ public struct ValueTracer: Sendable {
                         let bytes = Self.accessBytes(detail) ?? 8
                         let stored = first.operand.register?.kind == .gpr
                             ? narrowed(value, bits: min(bytes * 8, 64)) : value
-                        Self.storeStack(stored, at: offset, bytes: bytes, outgoing: true, into: &registers)
+                        Self.storeStack(stored, at: offset, bytes: bytes, outgoing: true,
+                                        from: first.operand.register, into: &registers)
                     }
                 }
                 if case .arrayElement(let site, let offset)? = target {
@@ -3440,7 +3471,7 @@ public struct ValueTracer: Sendable {
                     Self.storeStack(
                         source(operand, in: registers),
                         at: offset + Int64(index * bytes), bytes: bytes,
-                        outgoing: true, into: &registers
+                        outgoing: true, from: operand.operand.register, into: &registers
                     )
                 }
             } else if case .selfField(let offset)? = target,
@@ -4466,6 +4497,7 @@ public struct ValueTracer: Sendable {
         at offset: Int64,
         bytes: Int,
         outgoing: Bool,
+        from register: PhysReg? = nil,
         into registers: inout State
     ) {
         // A byte/halfword store can overwrite part of an older tracked word.
@@ -4480,6 +4512,15 @@ public struct ValueTracer: Sendable {
             registers[stackWidthKey(previous)] = nil
             registers[outgoingKey(previous)] = nil
         }
+        // Which register file wrote the word: a reload into the other one
+        // reinterprets its bits. A store with no register (a modelled copy)
+        // or a wider one leaves it unknown.
+        var file: AbstractValue?
+        if let register, register.kind == .gpr {
+            file = .immediate(0)
+        } else if let register, register.kind == .vector, register.widthBits == 64 || register.widthBits == 32 {
+            file = .immediate(UInt64(register.widthBits))
+        }
         let words: [AbstractValue]
         if case .aggregate(let packed) = value, bytes > 8 {
             words = Array(packed.prefix(max(1, (bytes + 7) / 8)))
@@ -4490,6 +4531,7 @@ public struct ValueTracer: Sendable {
             let wordOffset = offset + Int64(index * 8)
             registers[stackKey(wordOffset)] = word
             registers[stackWidthKey(wordOffset)] = .immediate(UInt64(min(8, bytes - index * 8)))
+            registers[stackFileKey(wordOffset)] = file
             if outgoing { registers[outgoingKey(wordOffset)] = word }
         }
     }
@@ -4796,6 +4838,7 @@ public struct ValueTracer: Sendable {
     /// Stack slots share the register map, under a key no register can collide with.
     private static func stackKey(_ frameOffset: Int64) -> Location { .stack(frameOffset) }
     private static func stackWidthKey(_ frameOffset: Int64) -> Location { .stackWidth(frameOffset) }
+    private static func stackFileKey(_ frameOffset: Int64) -> Location { .stackFile(frameOffset) }
 
     /// The register-state key for a word of the function's own async context
     /// this funclet stored, by byte offset.

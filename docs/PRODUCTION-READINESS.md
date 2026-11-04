@@ -182,6 +182,22 @@ results do not replace previously recorded release performance measurements.
   imported `__C` type and 117 of a position-named local type. A
   conformance descriptor could settle the private ones if the printer's
   extension said which descriptor it came from; it does not.
+- **FIXED — a word spilled from one register file and reloaded into the
+  other carried its value bare.** -Onone `unsafeBitCast(a, to: Int.self)`
+  is `str d0, [sp]; ldr x9, [sp]`, with no `fmov`, and `~bits == 7`,
+  lowered to `0 - x - 1`, rendered `((-arg0 - 5e-324) != 3.5e-323)`. The
+  other way, `str x0, [sp]; ldr d0, [sp]` rendered the Int as the Double.
+  A frame word now records the register file that stored it
+  (`Location.stackFile`), and a reload into the other file is
+  `.bitPattern` or `.floatFromBits`: `((-arg0.bitPattern - 1) != 7)`,
+  `(Double(bitPattern: arg0) + 1.0)`. A float register reading a word of
+  another width declines, as does one reading part of a general store. A
+  `q` load is left alone, and a word with no known file (an entry
+  argument, a `memcpy`, an indirect result) claims nothing; paths that
+  disagree on a word's file lose the word. A self field declared as that
+  float stays the field: -Onone copies `self.radius` through x8. The
+  bit-level stop above is
+  what still types a `memcpy`'d word's constants (`floatbitswidth.s`).
 
 - **FIXED — a setter dispatch folded into an assignment of x0 whatever
   the property's type.** A vtable call to self's own setter renders as

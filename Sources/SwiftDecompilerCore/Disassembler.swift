@@ -7858,8 +7858,14 @@ public struct Disassembler: Sendable {
                     }
                     return inner
                 case .floatFromBits(let bits):
-                    // The tracer folds a float's own bits back to it, so what
-                    // is left is an integer's bits reinterpreted.
+                    // The tracer folds a float's own bits back to it. A field
+                    // declared as this float, copied through a general register
+                    // (-Onone `ldr x8, [x20, #0x10]; str x8, [sp]; ldr d1, [sp]`),
+                    // is that float too. What is left is an integer's bits.
+                    if case .selfFieldValue(let offset) = operand,
+                       fieldInfo(at: offset, bytes: bits / 8)?.type == (bits == 64 ? "Sd" : "Sf") {
+                        return inner
+                    }
                     return "\(bits == 64 ? "Double" : "Float")(bitPattern: \(inner))"
                 case .floatConstant(let bits):
                     guard case .immediate(let pattern) = operand else { return unknownRenderedValue() }

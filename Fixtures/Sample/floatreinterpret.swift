@@ -25,3 +25,14 @@
 @inline(never) public func complement(_ a: Double) {
     if ~unsafeBitCast(a, to: Int.self) == 7 { sink(3) } else { sink(4) }
 }
+
+// -Onone copies a Float field through a general register, twice: `ldr w8,
+// [x20]; str w8, [sp, #0xc]; ldr s0, [sp, #0xc]`. It is the declared Float, so
+// the product is `scale * scale`, with no reinterpretation.
+public struct Labelled {
+    public var scale: Float
+    public var name: String
+    public var other: String
+    public var third: String
+    public var squared: Float { scale * scale }
+}
