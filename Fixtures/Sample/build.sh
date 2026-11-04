@@ -589,6 +589,9 @@ echo "==> a generic class's protocol requirements through self's metadata (class
 $SWIFTC -parse-as-library -O -enable-library-evolution -emit-library -module-name ClassProtoWitness classprotowitness.swift -o libClassProtoWitness.dylib
 $SWIFTC -parse-as-library -O -emit-library -module-name ClassProtoWitness classprotowitness.swift -o libClassProtoWitness.fragile.dylib
 
+echo "==> self's isa loaded before a loop and read after it (loopisa.swift, -O, resilient)"
+$SWIFTC -parse-as-library -O -enable-library-evolution -emit-library -module-name LoopIsa loopisa.swift -o libLoopIsa.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

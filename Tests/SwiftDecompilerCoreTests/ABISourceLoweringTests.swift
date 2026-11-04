@@ -991,3 +991,58 @@ private func namesARequirementWitness(_ text: String) -> Bool {
     #expect(R.requirementName("M.P.subscript.getter : (Swift.Int) -> Swift.Int") == nil)
     #expect(R.requirementName("M.P.label.modify : Swift.Int") == nil)
 }
+
+/// Self's isa loaded before a loop whose body calls is still self's isa
+/// after it: the loop header joins the field read (entry) with its snapshot
+/// (back edge), and self stays in x20 on both (loopisa.swift).
+@Test func selfsIsaSurvivesALoopHeaderIfPresent() async throws {
+    let path = "Fixtures/Sample/libLoopIsa.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let run = try #require(functions.first { $0.displayName.hasPrefix("LoopIsa.Listener.run(") }).renderStructured()
+    #expect(run.contains("LoopIsa.Link.close() witness for A()"), Comment(rawValue: run))
+}
+
+/// The same join, as machine code: `ldr x22, [x20]; loop: bl; mov x?, x0;
+/// cbnz w0, loop; ldr x1, [x22, #0x58]; ldr x9, [x1, #8]; blr x9`.
+/// - x19 written in the body: self stays in x20, and x22 is its isa at the
+///   call.
+/// - x20 written: self is not the same on both paths into the header, and
+///   the join claims nothing about x22.
+/// - x22 written: the back edge brings a call's result, not the isa.
+/// - x20 written after self was spilled (`sub sp, sp, #0x10; str x20,
+///   [sp]`): the frame slot holds self on both paths, so x22 is its isa.
+@Test func aLoopHeaderKeepsSelfsIsaOnlyWhileSelfIsUnchanged() throws {
+    let engine = try #require(CapstoneEngine())
+    let isaTable = AbstractValue.loadedFrom(.selfVTableMethod(offset: 0x58), offset: 8)
+    func target(_ words: [UInt32], call: UInt64) -> AbstractValue? {
+        let bytes = words.flatMap { word in (0 ..< 4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) } }
+        let decoded = engine.disassemble(Data(bytes), address: 0x1000)
+        let function = DisassembledFunction(
+            symbol: "loop", demangledName: nil, startAddress: 0x1000,
+            instructions: decoded.map { insn in
+                Instruction(address: insn.address, text: insn.text, annotation: nil, controlFlow: insn.controlFlow,
+                            branchTarget: insn.controlFlow == .call ? nil : insn.branchTarget, detail: insn.detail)
+            }, source: .address)
+        return ValueTracer().analyze(function, entry: .swiftInstance(scalarArguments: [:]))
+            .indirectControlFlowTargets[call]
+    }
+    func loop(writing register: UInt32) -> AbstractValue? {
+        target([0xF940_0296, 0x9400_003F, 0xAA00_03E0 | register, 0x35FF_FFC0,
+                0xF940_2EC1, 0xF940_0429, 0xD63F_0120, 0xD65F_03C0], call: 0x1018)
+    }
+    #expect(loop(writing: 19) == isaTable)
+    #expect(loop(writing: 20) != isaTable)
+    // `ldr x22, [x20]; L: bl; cbz w0, exit; mov x?, x0; b L; exit: …`: the
+    // loop leaves from its header, whose x22 joins the entry's isa with
+    // what the back edge brings.
+    func exitLoop(writing register: UInt32) -> AbstractValue? {
+        target([0xF940_0296, 0x9400_003F, 0x3400_0060, 0xAA00_03E0 | register, 0x17FF_FFFD,
+                0xF940_2EC1, 0xF940_0429, 0xD63F_0120, 0xD65F_03C0], call: 0x101C)
+    }
+    #expect(exitLoop(writing: 19) == isaTable)
+    #expect(exitLoop(writing: 22) != isaTable)
+    let spilled = target([0xD100_43FF, 0xF900_03F4, 0xF940_0296, 0x9400_003D, 0xAA00_03F4, 0x35FF_FFC0,
+                          0xF940_2EC1, 0xF940_0429, 0xD63F_0120, 0x9100_43FF, 0xD65F_03C0], call: 0x1020)
+    #expect(spilled == isaTable)
+}

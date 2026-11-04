@@ -1529,11 +1529,21 @@ because it cannot be distinguished from a right one by reading the output.
     arguments (`genericMetadataRegisters` seeds only the metadata);
   - a table reached through a base-protocol slot (`P: Precise` calling
     Meter's requirement) or an associated conformance;
-  - `CompilerPluginMessageListener.main`: x22 holds self's isa from
-    before the loop, and the loop header's join of `selfFieldValue(0)`
-    (entry) and `selfIsaSnapshot` (back edge) drops it, so the call
-    through `[x22 + 0x68]` has no proven table;
   - an image in a dyld cache: the descriptor reads use file offsets.
+- **FIXED — self's isa loaded before a loop was lost at the loop
+  header.** `CompilerPluginMessageListener.main` is `ldr x22, [x20];
+  loop: bl handleNextMessage; tbnz w0, loop; ldr x1, [x22, #0x68]; …;
+  blr x9`. The header joined x22 as self's field 0 (entry) with its
+  snapshot after the call (back edge), the exact-equality meet dropped
+  it, and the call through B's table stayed unresolved. The meet now
+  keeps `.selfIsaSnapshot` where every path holds one of the two, and
+  only when some register or frame slot holds `.selfPointer` on every
+  path, so self itself is unchanged. Plugin library structured,
+  unstripped and `strip -x`: unresolved calls 289 → 288, main's call
+  named `PluginMessageHandler.shutDown() witness for B()`. Nothing else
+  in the fixtures or the four swift-syntax dylibs changed. Fixture
+  `loopisa.swift`; the self-changed, other-value and spilled-self cases
+  are machine-code tests.
 
 - **FIXED — a class inheriting from Objective-C read its metadata through
   a masked isa the tracer did not follow.** `ldr x8, [x20]; ldr x9,

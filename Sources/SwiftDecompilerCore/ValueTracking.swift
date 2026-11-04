@@ -1801,11 +1801,34 @@ public struct ValueTracer: Sendable {
         return true
     }
 
+    /// Self's isa where the paths disagree only on how they hold it: one
+    /// read it from field 0 (`.selfFieldValue(0)`), another kept it across
+    /// a call (`.selfIsaSnapshot`). Both are the word at self + 0, a class's
+    /// metadata, which no call changes, so the join keeps the snapshot.
+    /// Only while self itself is the same on every path: some register or
+    /// frame slot holds `.selfPointer` in each state. A loop that loads the
+    /// isa before it and calls in its body (CompilerPluginMessageListener.main:
+    /// `ldr x22, [x20]; loop: bl …; tbnz …`) joined the two and lost it.
+    private static func keepSelfIsa(from states: [State], into accumulator: inout State) {
+        func isIsa(_ value: AbstractValue?) -> Bool {
+            value == .selfFieldValue(offset: 0) || value == .selfIsaSnapshot
+        }
+        guard states.count > 1, let first = states.first,
+              accumulator.contains(where: { key, value in
+                  value == .selfPointer && { if case .x = key { true } else if case .stack = key { true } else { false } }()
+              })
+        else { return }
+        for (key, value) in first where accumulator[key] == nil && holdsValue(key) && isIsa(value) {
+            if states.allSatisfy({ isIsa($0[key]) }) { accumulator[key] = .selfIsaSnapshot }
+        }
+    }
+
     private static func meet(_ states: [State]) -> State {
         guard var accumulator = states.first else { return [:] }
         for state in states.dropFirst() {
             accumulator = accumulator.filter { state[$0.key] == $0.value }
         }
+        keepSelfIsa(from: states, into: &accumulator)
         if states.contains(where: { $0[resultPoisonKey] != nil }) {
             accumulator[resultPoisonKey] = .immediate(1)
         }
