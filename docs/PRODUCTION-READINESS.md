@@ -7933,7 +7933,7 @@ in GameServices, Geometry, libsystem_pthread and simulator CoreGraphics;
 `__TPRO_CONST` in dyld_sim; `__FONT_DATA` in NanoTimeKit; `__LLVM`
 bitcode; Electron's `PROTECTED_MEMORY`).
 
-- **FIXED (validation) — such an image trapped, was called malformed, or
+- **FIXED (validation, d0ec3db) — such an image trapped, was called malformed, or
   was read from the wrong bytes.** Two dependencies treat a VM offset as a
   file offset. MachOKit reads a segment's fixup chains at
   `dyld_chained_starts_in_segment.segment_offset`, which dyld defines as
@@ -7970,7 +7970,7 @@ bitcode; Electron's `PROTECTED_MEMORY`).
   advancing a file offset through VM (`fileOffset → vmaddr + delta →
   fileOffset`). swiftdc's own `address(forOffset:)` uses (20 sites) need
   the same mapping before the decline can go.
-- **FIXED (soundness) — the preflight's own record checks added a VM
+- **FIXED (soundness, 8dd56e4) — the preflight's own record checks added a VM
   displacement to a file offset.** `__swift5_fieldmd`, `__swift5_assocty`,
   `__swift5_builtin`, `__swift5_mpenum`, the flat relative tables and a
   method list's type and IMP fields each computed `file offset + delta`.
