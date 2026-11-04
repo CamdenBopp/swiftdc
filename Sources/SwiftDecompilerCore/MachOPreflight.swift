@@ -181,6 +181,7 @@ public enum MachOPreflight {
                 + "(cryptid \(crypt.cryptid)), so its code and metadata cannot be read. Analyze a decrypted copy."
             )
         }
+        try validateSymbolStrings(prefix: prefix, image: image, path: path)
 
         // Section CONTENTS, for a thin little-endian image. A fat file's
         // slices come through here one at a time from `validate(url:)`.
@@ -1271,6 +1272,63 @@ public enum MachOPreflight {
             cursor += Int(cmdsize)
         }
         return nil
+    }
+
+    /// The command and its offset for each load command of a thin
+    /// little-endian image that the prefix holds, in order.
+    static func loadCommands(prefix: Data) -> [(cmd: UInt32, offset: Int)] {
+        guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE || magic == Magic.machO32LE,
+              let ncmds = prefix.u32(at: 16), let sizeofcmds = prefix.u32(at: 20)
+        else { return [] }
+        let header = magic == Magic.machO64LE ? Layout.machHeader64 : Layout.machHeader32
+        let limit = min(header + Int(sizeofcmds), prefix.count)
+        var commands: [(cmd: UInt32, offset: Int)] = []
+        var cursor = header
+        for _ in 0..<Int(ncmds) {
+            guard cursor + Layout.minLoadCommand <= limit,
+                  let cmd = prefix.u32(at: cursor), let cmdsize = prefix.u32(at: cursor + 4),
+                  cmdsize >= UInt32(Layout.minLoadCommand)
+            else { break }
+            commands.append((cmd, cursor))
+            cursor += Int(cmdsize)
+        }
+        return commands
+    }
+
+    /// Every symbol's name must start, and end, inside the string table.
+    ///
+    /// MachOKit's symbol iterator builds each name with `String(cString:)` at
+    /// `n_strx`, unchecked. The table's own range can be in bounds with its
+    /// entries wrong: one flipped `symoff` byte reads other bytes as `nlist`s,
+    /// and `interface` died by SIGSEGV in `strlen`.
+    static func validateSymbolStrings(prefix: Data, image: ImageReader, path: String) throws {
+        guard let magic = prefix.u32(at: 0),
+              let command = loadCommands(prefix: prefix).first(where: { $0.cmd == Command.symtab }),
+              let symoff = prefix.u32(at: command.offset + 8), let nsyms = prefix.u32(at: command.offset + 12),
+              let stroff = prefix.u32(at: command.offset + 16), let strsize = prefix.u32(at: command.offset + 20),
+              nsyms > 0
+        else { return }
+        let entrySize = magic == Magic.machO64LE ? 16 : 12   // nlist_64 / nlist
+        guard let entries = image.read(offset: Int(symoff), count: Int(nsyms) * entrySize),
+              let strings = image.read(offset: Int(stroff), count: Int(strsize))
+        else { return }
+        let furthest = entries.withUnsafeBytes { bytes -> UInt32 in
+            var furthest: UInt32 = 0
+            for index in 0..<Int(nsyms) {
+                furthest = max(furthest, bytes.loadUnaligned(fromByteOffset: index * entrySize, as: UInt32.self))
+            }
+            return furthest
+        }
+        guard furthest < strsize else {
+            throw BinaryLoadError(
+                "Malformed Mach-O: \(path) — a symbol names its string at offset \(furthest) of a \(strsize)-byte string table"
+            )
+        }
+        guard let terminator = strings.lastIndex(of: 0), Int(furthest) <= terminator - strings.startIndex else {
+            throw BinaryLoadError(
+                "Malformed Mach-O: \(path) — the string at offset \(furthest) has no terminator in its \(strsize)-byte string table"
+            )
+        }
     }
 
     static func chainedFixups(prefix: Data) -> (dataoff: Int, datasize: Int, segments: Int)? {
