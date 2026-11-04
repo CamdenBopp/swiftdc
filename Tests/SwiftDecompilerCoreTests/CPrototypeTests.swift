@@ -22,12 +22,12 @@ import Foundation
     #expect(try statements("_drawQuad") == ["glBegin(7)", "glTexCoord2f(?, ?)", "glVertex3f(?, ?, ?)", "glEnd()"])
     #expect(try statements("_drawConstant") == ["glVertex3f(1.0, 2.0, 0.5)"])
     #expect(try statements("_findChar") == ["strchr(?, ?)"])
-    #expect(try statements("_flushThenNotify") == ["glFlush()", "notifyDone()"])
+    #expect(try statements("_flushThenNotify") == ["glFlush()", "notifyDone(…)"])
     // CGRectInset's CGRect comes back in d0-d3: d0 is its origin.x, not the
     // call (`glVertex2d(CGRectInset(), ?)`).
     #expect(try statements("_insetVertex").last == "glVertex2d(?, ?)")
     // strtod's double is in d0; x0 after it is not its result.
-    #expect(try statements("_parseThenNotify") == ["strtod(?, 0)", "notifyDone()"])
+    #expect(try statements("_parseThenNotify") == ["strtod(?, 0)", "notifyDone(…)"])
     // What precedes a struct parameter is placed (`CGRectInset()` took
     // nothing, and `CGContextFillRect` only x0). A CGRect is an HFA in four
     // v registers, so what follows it is placed too.

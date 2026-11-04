@@ -166,6 +166,7 @@ To reproduce, run the same command with and without `--probe <file>`
 | `values.outlined-inlined` | decision | fragment, kind, instructions | A `bl`/`b` to an outlined fragment became what the fragment does there: `call`, `tail-call`, `value`, `store` or `return`. |
 | `values.outlined-declined` | decline | fragment, reason | A site kept its call to a fragment the model cannot carry exactly (`memory`, `result-register`, `callee-saved`, `stack-pointer`, `error-or-context-register`, `link-register`, `chained`, `float-argument`, `empty`, `terminator`, `undecoded`). |
 | `abi.argument-layout` | decision | strategy, callee, count | Which layout set a call's arguments. `positional` is where stale-register fabrications have come from. |
+| `abi.argument-layout` | decision | strategy, callee, count | Which layout set a call's arguments. `positional` is where stale-register fabrications have come from; `unproven-arity` is an undeclared C callee rendered `(…)`. |
 | `abi.summary-cap` | limit | pass | A callee summary gave up: it claims nothing (`argument-reads`), or that every written register is clobbered (`preservation`). For `call-clobbers` the closure over calls stopped, and each function still waiting and every caller of one claims every callee-saved register clobbered. |
 | `types.field-named` | claim | type, offset, bytes, field, fieldType, coverage | A field name at an offset, checkable against DWARF. |
 | `types.field-unnamed` | decline | type, offset, bytes, reason | Why an access stayed `+0x…`. |

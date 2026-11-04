@@ -65,6 +65,10 @@ echo "==> sinks without a ret above a detached block: tail call, br, noreturn ca
 xcrun clang -arch arm64 -O2 -dynamiclib -undefined dynamic_lookup tailcallsinks.c -o libTailCallSinks.dylib
 $SWIFTC -parse-as-library -O -emit-library -module-name TailCallSinks tailcallsinks.swift -o libTailCallSinks.opt.dylib
 
+echo "==> C imports with no prototype: a stale result, a forwarded parameter, an entry value (importarity.c -O2, importarity.swift -O)"
+xcrun clang -arch arm64 -O2 -dynamiclib -undefined dynamic_lookup importarity.c -o libImportArity.dylib
+$SWIFTC -parse-as-library -O -emit-library -Xlinker -undefined -Xlinker dynamic_lookup -module-name ImportArity importarity.swift -o libImportArity.opt.dylib
+
 echo "==> audit semantic reductions (auditsemantics.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name AuditSemantics auditsemantics.swift -o libAuditSemantics.opt.dylib
 $CLANG -arch arm64 -O1 -dynamiclib -framework Foundation auditvoid.m -o libAuditVoid.dylib

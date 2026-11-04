@@ -66,6 +66,52 @@ results do not replace previously recorded release performance measurements.
   Box<A>`, `[A]`, a closure, a non-generic superclass, `B == A.Item`.
   Six wrong names in the fixture `metadatasource.swift`; no swift-syntax
   dylib or the GoodLinks `-f ViewController` slice held one.
+- **FIXED — an undeclared C import took the registers its call found as
+  its arguments.** A direct call or tail call to a C function no table,
+  SDK declaration or body bounds was laid out by position from the
+  tracked x registers, trimmed of trailing unknowns. In
+  `tailcallsinks.c` (-O2), `extern void A(void)` called after `P(a)`
+  read `A(r0)`, P's stale result; `P(a + 1)` with x0 untracked read
+  `P()`, a call with no arguments; `signed32.c`'s `sinkA(long)` read
+  `sinkA(arg2, arg1, arg2)`. Such a call now renders `A(…)` (probe
+  strategy `unproven-arity`). `importarity.c` and `.swift` pin the other
+  shapes, `@_silgen_name` imports included: `g0(); h0();` read
+  `h0(g0())`, `ext(a)` read `ext()`, and `ext(1)` read `ext(1, arg1)`.
+  `sinkD(extd() * 2)` read `sinkD(extd())`; it is now `sinkD(…)`, which no
+  longer states the wrong value, but the lost `fadd` itself is OPEN for a
+  callee of proven arity.
+
+  The cost is real. A true argument goes too (`P(arg0)` is now `P(…)`), and
+  "undeclared" means absent from `SDKCPrototypes`, which lacks functions
+  such as `closedir`, `open`, `sysctl`, `fcntl` and `ioctl`, so those
+  decline until the table covers them. Measured with `--pseudo` against
+  origin/dev: TextEdit, 7 calls to one private function lose their
+  arguments, string literals included. Terminal, 125 calls to 69 functions
+  become `(…)`: 17 of the old lines were an empty `()`, and 46 calls that
+  had been nested inside a false argument list become their own statements.
+  Binding names renumber around them.
+- **OPEN (completeness): recover the arguments the unproven-arity decline
+  costs, from declarations.** Terminal's 125 calls to 69 functions and
+  TextEdit's 7 render `(…)` (entry above). Add the functions the SDK headers
+  declare to `SDKCPrototypes`, and render a variadic such as `open`, `fcntl`
+  or `ioctl` by its fixed arguments only. A function no header declares
+  (TextEdit's is private) stays `(…)`. Keeping the registers written since
+  the previous call was rejected: it guesses at arity, which the rule forbids.
+
+  Not covered: a call through a register (`blr x8` can land on an
+  in-image body), and names whose arity is knowable though no table holds
+  it yet: an Itanium-mangled C++ name, a reserved `__` name, and the Swift
+  and Objective-C runtimes' entry points. Those keep the positional
+  layout and stay OPEN: `_ZSt9terminatev(__cxa_begin_catch())`
+  (`std::terminate()` takes nothing), `__cxa_begin_catch()`, and
+  `objc_retain_x20`'s listing note `args(arg0)` (it takes x20). Blast
+  radius against origin/dev: 7 files (the two new fixtures included),
+  structured 141 lines, pseudo 137,
+  listing 140, all argument lists of `A`, `B`, `C`, `P`, `Q`,
+  `notifyDone`, `sinkA`, `sinkB` and the Go trampolines' libc calls,
+  plus the bindings that dissolved with them (`let r0 = P()` became
+  `if (!P(…))`). The swift-syntax dylibs are byte-identical.
+
 - **FIXED (`1f9f0ed`) — a structured sink without a `ret` read as falling through
   into the next label.** A block that leaves the function by a tail call
   (`b C`), or by a call with no instruction after it (`bl abort`), printed
@@ -90,7 +136,7 @@ results do not replace previously recorded release performance measurements.
   nothing (a hidden runtime tail call) now prints its `return`, so the
   `if` is no longer inverted around an empty arm. In unstripped inputs, 11
   sinks sat directly on a label: 6 in Reconstruction -Osize, 4 in
-  SwiftIfConfig, 1 in the fixture. Others sat after a `}`. Fixture
+  SwiftIfConfig, 1 in the fixture. Of all 600 added terminators (stripped copies counted), 401 sit before a `}`, 178 before `} else {` and 21 on a label. Fixture
   `tailcallsinks.c` (-O2) and `.swift` (-O); `SinkTerminatorTests`.
 - **FIXED — a float's bit pattern rendered as the float, and integer
   constants beside it as float literals.** `fmov x8, d0` carried the
@@ -4887,7 +4933,8 @@ if a test was observed to fail without the fix.
   `CFRelease`, `dispatch_async`, `dispatch_sync`, `swift_getKeyPath`,
   `swift_slowAlloc`, `swift_once` and `swift_slowDealloc` are in the table
   too (below), and since 2026-10-24 every C function the SDK declares
-  takes its declared parameters (below); an undeclared C callee, or a
+  takes its declared parameters (below); an undeclared C import renders
+  `(…)` since the unproven-arity fix (section 1); a call through a register to one, or a
   variadic one, still prints only what was tracked.
 
 ## 2026-10-22: findings from a read-only audit

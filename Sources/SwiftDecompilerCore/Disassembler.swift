@@ -6033,6 +6033,25 @@ public struct Disassembler: Sendable {
             || type.hasPrefix("Swift.UnsafeMutablePointer<")
     }
 
+    /// A callee named by a bare C identifier: no Swift signature, no
+    /// Objective-C send, and not a name this tool gives an in-image body
+    /// (`sub_…`, an outliner fragment). Nothing in such a name bounds its
+    /// parameters. Some families are left out because their arity is known
+    /// even where no table holds it yet: an Itanium-mangled C++ name
+    /// (`_Z1gi` is `g(int)`), a name reserved to the implementation
+    /// (`__memset_chk(dest, c, len, destlen)`, `__cxa_begin_catch`), and
+    /// the Swift and Objective-C runtimes' entry points, whose ABI their
+    /// headers fix (`swift_setAtWritableKeyPath(root, keyPath, value)`,
+    /// `objc_setProperty_nonatomic_copy(self, _cmd, value, offset)`).
+    static func isUndeclaredCSymbol(_ callee: String) -> Bool {
+        guard let first = callee.unicodeScalars.first,
+              first == "_" || (first.isASCII && CharacterSet.letters.contains(first)),
+              callee.unicodeScalars.allSatisfy({ $0 == "_" || $0 == "$" || ($0.isASCII && CharacterSet.alphanumerics.contains($0)) })
+        else { return false }
+        return !["objc_", "sub_", "OUTLINED_FUNCTION", "_Z", "__", "swift_", "_swift_"]
+            .contains { callee.hasPrefix($0) }
+    }
+
     private func enrichCallArguments(
         in function: DisassembledFunction,
         resolver: ReferenceResolver,
@@ -6475,6 +6494,16 @@ public struct Disassembler: Sendable {
         // snapshot is not evidence of zero parameters: `memmove` whose
         // operands were all loaded through an unknown pointer read
         // `memmove()`.
+        //
+        // A direct call or tail call to an undeclared C import, by name: its
+        // arity is unknown, not absent. Not a call through a register the
+        // tracer resolved, which may land on an in-image body (`blr x8`
+        // into `twice(long)`), nor an in-image callee with a summary.
+        let undeclaredCImportCalls = Set(function.instructions.lazy.filter { insn in
+            let mnemonic = insn.text.prefix { $0 != " " && $0 != "\t" }
+            return (mnemonic == "bl" || mnemonic == "b")
+                && DisassembledFunction.calleeName(of: insn).map(Self.isUndeclaredCSymbol) == true
+        }.map(\.address))
         for insn in function.instructions
         where insn.controlFlow == .call || insn.controlFlow == .branch {
             guard sites[insn.address] == nil,
@@ -6492,6 +6521,9 @@ public struct Disassembler: Sendable {
                     || (!(callTargets[insn.address] != nil && DisassembledFunction.knownArityNameMayHaveTwin(callee))
                         && Self.cPrototypeLayout(callee: callee) != nil)
                     || (insn.branchTarget.flatMap { registerSummaries[$0] }?.provenArgumentCount ?? 0) > 0
+                    // An undeclared C callee's arity is unknown, which is
+                    // not zero: `P()` read as a call with no arguments.
+                    || undeclaredCImportCalls.contains(insn.address)
             else { continue }
             sites[insn.address] = CallSite()
         }
@@ -7336,6 +7368,17 @@ public struct Disassembler: Sendable {
                     .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
                 argumentsByAddress[address] = parameters.map { _ in .unknown }
                 strategy = "declared-count"
+                continue
+            }
+            // A bare C symbol outside this image that no table, declaration
+            // or body bounds: its arity is not in the binary. The registers
+            // the call found are not its arguments: `extern void A(void)`
+            // called after `P(a)` read `A(r0)`, P's stale result, and `P(a +
+            // 1)` with x0 untracked read `P()`. It renders `A(…)`.
+            if undeclaredCImportCalls.contains(address) {
+                argumentsByAddress[address] = []
+                unprovenVariadicSites.insert(address)
+                strategy = "unproven-arity"
                 continue
             }
             if let values = sanitize(values) { argumentsByAddress[address] = values }
