@@ -143,6 +143,11 @@ public enum AbstractUnaryOperator: Equatable, Sendable {
     /// immediate: a float operation's constant operand. Bare, it read as the
     /// integer it is spelled as (`t / 0x4059000000000000`, for `t / 100.0`).
     case floatConstant(bits: Int)
+    /// A float's IEEE bits of `bits` width read as an integer (`fmov x8,
+    /// d0`): `a.bitPattern`. Everything done to it is integer arithmetic, a
+    /// constant beside it is an integer, and its sign is the reading
+    /// instruction's.
+    case bitPattern(bits: Int)
 }
 
 /// A small abstract-value lattice for CFG-aware data-flow. Alongside constants
@@ -3149,8 +3154,8 @@ public struct ValueTracer: Sendable {
                   into: &registers)
 
         case AARCH64_INS_FMOV:
-            // A register-to-register FP move carries the bits through unchanged
-            // (`fmov x8, d0` reinterprets them; the bit-level rendering relies on that).
+            // A register-to-register FP move carries the bits through unchanged;
+            // between a float and a general register it changes what they mean.
             guard let dest = destinationRegister(detail), detail.operands.count >= 2 else {
                 clobber(detail, into: &registers); return
             }
@@ -3177,10 +3182,32 @@ public struct ValueTracer: Sendable {
                 write(dest, .immediate(bits), into: &registers)
                 return
             }
-            guard detail.operands[1].operand.register != nil else {
+            guard let input = detail.operands[1].operand.register else {
                 clobber(detail, into: &registers); return
             }
-            write(dest, source(detail.operands[1], in: registers), into: &registers)
+            let value = source(detail.operands[1], in: registers)
+            // A float register read into a general one is its bit pattern, an
+            // integer: `fmov x8, d0; cmp x8, #0x65` compares `a.bitPattern`,
+            // not `a`, and its constants are integers. Carried bare, the
+            // Double rendered `(arg0 & 0x7fffffffffffffff) > 1.7976931348623157e+308`
+            // for `Int(a)`'s finiteness guard, a float compare false on NaN
+            // where the binary traps. An immediate is the same bits either
+            // way; the reverse move of a bit pattern is the float again.
+            if dest.kind == .gpr, input.kind == .vector, input.widthBits == dest.widthBits {
+                switch value {
+                case .unknown, .immediate: write(dest, value, into: &registers)
+                default:
+                    write(dest, Self.expressionDepth(value) < 8
+                          ? .unary(.bitPattern(bits: dest.widthBits), value) : .unknown, into: &registers)
+                }
+                return
+            }
+            if dest.kind == .vector, input.kind == .gpr,
+               case .unary(.bitPattern(let bits), let float) = value, bits == dest.widthBits {
+                write(dest, float, into: &registers)
+                return
+            }
+            write(dest, value, into: &registers)
 
         case AARCH64_INS_DUP:
             // `dup v0.2d, x9` replicates a general register into both vector
@@ -3751,6 +3778,8 @@ public struct ValueTracer: Sendable {
         let mask: UInt64 = bits == 64 ? .max : (1 << bits) - 1
         if case .binary(let op, _, _) = value, op.isComparison { return value }
         if case .binary(.bitAnd, _, .immediate(let existing)) = value, existing & mask == existing { return value }
+        // `fmov w0, s1` writes a Float's 32 bits, which already fit the word.
+        if case .unary(.bitPattern(let width), _) = value, width <= bits { return value }
         return expression(.bitAnd, value, .immediate(mask))
     }
 

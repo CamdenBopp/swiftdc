@@ -143,6 +143,11 @@ public enum TypeInference {
                 return .floating(bits)
             case .toInteger(let signed, let bits):
                 return signed ? .signedInteger(bits) : .unsignedInteger(bits)
+            case .bitPattern(let bits):
+                // A raw word: each instruction that reads it says its sign.
+                // As a proven UInt, a signed `b.gt` on it rendered a plain
+                // `>`, which reads as the unsigned compare.
+                return ValueType(category: .integer, width: bits, signedness: .unknownSign)
             }
         default:
             return .unknown

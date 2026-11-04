@@ -623,6 +623,12 @@ $SWIFTC -parse-as-library -O -emit-library -module-name FoldedCalls foldedcalls.
 echo "==> a call into a function whose address also carries linker marker symbols, as TinyCC emits (markersymbols.s)"
 $CLANG -arch arm64 -dynamiclib markersymbols.s -o libMarkerSymbols.dylib
 
+echo "==> a float's bit pattern compared as an integer (floatbits.swift, -O and -Onone): fmov x8, d0 reinterprets"
+$SWIFTC -parse-as-library -O -emit-library -module-name FloatBits floatbits.swift -o libFloatBits.opt.dylib
+$SWIFTC -parse-as-library -Onone -emit-library -module-name FloatBits floatbits.swift -o libFloatBits.dylib
+echo "==> a Float's bits read at its own and at a wider width (floatbitswidth.s): fmov w0, s0 and fmov x0, d0"
+$CLANG -arch arm64 -dynamiclib floatbitswidth.s -o libFloatBitsWidth.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release

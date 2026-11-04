@@ -7041,8 +7041,9 @@ public struct Disassembler: Sendable {
         /// integer. Only a float ARGUMENT, a conversion to float, or a call whose
         /// callee's signature returns a float anchors it: a bare immediate is
         /// exactly the ambiguous case being resolved, so it is never a base
-        /// case, and an integer body never matches. A conversion to integer ends
-        /// the float context below it.
+        /// case, and an integer body never matches. A conversion to integer, or
+        /// a float's bits read as an integer (`fmov x8, d0`), ends the float
+        /// context below it.
         func floatWidth(_ value: AbstractValue) -> Int? {
             switch value {
             case .argument(let index):
@@ -7060,7 +7061,7 @@ public struct Disassembler: Sendable {
             case .unary(.toFloat(let bits), _), .unary(.unsignedToFloat(let bits), _),
                  .unary(.floatConstant(let bits), _):
                 return bits
-            case .unary(.toInteger, _):
+            case .unary(.toInteger, _), .unary(.bitPattern, _):
                 return nil
             case .unary(_, let operand):
                 return floatWidth(operand)
@@ -7287,6 +7288,15 @@ public struct Disassembler: Sendable {
                     return clear ? "\(type)(\(inner))" : "\(type)(UInt(bitPattern: \(inner)))"
                 case .toInteger(let signed, let bits):
                     return "\(signed ? "Int" : "UInt")\(bits == 64 ? "" : String(bits))(\(inner))"
+                case .bitPattern(let bits):
+                    // A proven float of this width reads `a.bitPattern`; a
+                    // value not known to be a float is its own bits. A float
+                    // of another or an unknown width read whole is neither.
+                    let type = TypeInference.typeOf(operand, arguments: argumentTypes)
+                    if let width = floatWidth(operand) ?? (type.category == .floatingPoint ? type.width ?? 0 : nil) {
+                        return width == bits ? "\(inner).bitPattern" : unknownRenderedValue()
+                    }
+                    return inner
                 case .floatConstant(let bits):
                     guard case .immediate(let pattern) = operand else { return unknownRenderedValue() }
                     switch bits {

@@ -76,6 +76,36 @@ results do not replace previously recorded release performance measurements.
   sinks sat directly on a label: 6 in Reconstruction -Osize, 4 in
   SwiftIfConfig, 1 in the fixture. Others sat after a `}`. Fixture
   `tailcallsinks.c` (-O2) and `.swift` (-O); `SinkTerminatorTests`.
+- **FIXED — a float's bit pattern rendered as the float, and integer
+  constants beside it as float literals.** `fmov x8, d0` carried the
+  Double into the general register unchanged, so every integer operation
+  on its bits read as one on the Double and `floatWidth` typed the
+  constants as Doubles. Swift -O `Int(a)` guards finiteness with `fmov x8,
+  d0; and x8, x8, #0x7fffffffffffffff; cmp x8, x9; b.gt trap`, which read
+  `(arg0 & 0x7fffffffffffffff) > 1.7976931348623157e+308`: a float compare
+  that is false on NaN, where the binary traps. `a.bitPattern ==
+  0x7ff8000000000001` read `arg0 != nan`, always true as written. The
+  move now writes `.unary(.bitPattern(bits:), v)`, rendered `v.bitPattern`
+  for a proven float of that width, `?` for a float of another width
+  (`fmov x0, d0` over a Float argument read `return arg0`), and `v` for a
+  value not known to be a float. It types as an integer of unknown sign,
+  so each compare keeps its machine signedness (`<=ᵁ`). `fmov dN, xM` of a
+  bit pattern is the float again. Fixtures `floatbits.swift` (-O and
+  -Onone) and `floatbitswidth.s`; blast radius 6 files, 36 structured
+  lines, all `fmov xN, dM` sites, swift-syntax byte-identical.
+- **OPEN — the reverse move, `fmov dN, xM` of an integer, carries the
+  integer bare.** `Double(bitPattern: i) * 2.0` at -O is `fmov d0, x0;
+  fadd d0, d0, d0` and renders `sd((arg0 + arg0))`, an integer add of the
+  UInt64. It needs a `Double(bitPattern:)` operator, the mirror of the
+  `.bitPattern` one.
+- **OPEN — a float spilled and reloaded into a general register carries
+  the float bare.** -Onone `unsafeBitCast(a, to: Int.self)` stores d0 and
+  reloads x8 from the slot, with no `fmov`, so its constants still read as
+  floats: `& 0xff == 7` renders `((arg0 & 255) != 3.5e-323)`, and `~bits
+  == 7`, lowered to `0 - x - 1`, renders `((-arg0 - 5e-324) != 3.5e-323)`.
+  A slot needs the register file it was stored from, so a GPR reload of
+  an FPR store reads as `.bitPattern`.
+
 - **FIXED — a setter dispatch folded into an assignment of x0 whatever
   the property's type.** A vtable call to self's own setter renders as
   `self.property = value`, and the value was x0. A String is two words, so

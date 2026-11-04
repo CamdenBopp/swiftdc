@@ -65,7 +65,8 @@ import Foundation
 /// Soundness regression: a literal in a bit-level expression over a float
 /// argument is a shift count or a mask, not an IEEE double. `Int(d)` inlines a
 /// range check on `d`'s bit pattern; the old policy rendered every literal in
-/// a float-valued expression as a double (`>> 2.57e-322` for `>> 52`).
+/// a float-valued expression as a double (`>> 2.57e-322` for `>> 52`). The
+/// shifted value is the bit pattern `fmov x8, d0` read, not the Double.
 @Test func bitLevelLiteralsOverAFloatStayIntegersIfPresent() async throws {
     let path = "Fixtures/Sample/libReconstruction.dylib"
     guard FileManager.default.fileExists(atPath: path) else { return }
@@ -73,7 +74,7 @@ import Foundation
         try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "Reconstruction.truncated(")
     }
     let body = functions.map { $0.renderStructured() + "\n" + $0.renderPseudo() }.joined(separator: "\n")
-    #expect(body.contains("(arg0 >>ᵁ 52)"), "\(body)")
+    #expect(body.contains("(arg0.bitPattern >>ᵁ 52)"), "\(body)")
     #expect(body.contains("& 2047)"), "\(body)")
     #expect(!body.contains("e-32"), "\(body)")
 }
