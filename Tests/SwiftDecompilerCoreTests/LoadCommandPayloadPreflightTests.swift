@@ -180,3 +180,29 @@ private func chainedFailure(_ data: Data) throws -> String? {
     #expect(!passed)
 }
 
+// MARK: - linkedit_data ranges
+
+private func linkeditPasses(cmd: UInt32, filetype: UInt32, dataoff: UInt32, datasize: UInt32) -> Bool {
+    let data = image(filetype: filetype, commands: [words([cmd, 16, dataoff, datasize])])
+    do {
+        try MachOPreflight.validate(prefix: data, fileSize: 4096)
+        return true
+    } catch {
+        // A loadable image with no segments fails for that instead.
+        return "\(error)".contains("segment")
+    }
+}
+
+@Test func everyLinkeditCommandStaysInsideTheFile() {
+    for cmd: UInt32 in [0x1d, 0x1e, 0x26, 0x29, 0x2b, 0x2e, 0x8000_0033, 0x8000_0034] {
+        #expect(!linkeditPasses(cmd: cmd, filetype: 6, dataoff: 4000, datasize: 97), "cmd \(cmd)")
+        #expect(!linkeditPasses(cmd: cmd, filetype: 6, dataoff: 4097, datasize: 0), "cmd \(cmd)")
+        #expect(linkeditPasses(cmd: cmd, filetype: 6, dataoff: 4000, datasize: 96), "cmd \(cmd)")
+    }
+}
+
+@Test func aDebugSymbolFileKeepsItsLinkeditOffsets() {
+    // MH_DSYM: the offsets belong to the binary it was split from.
+    #expect(linkeditPasses(cmd: 0x26, filetype: 10, dataoff: 0x10_0000, datasize: 64))
+}
+

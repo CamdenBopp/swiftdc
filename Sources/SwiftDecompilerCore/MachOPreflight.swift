@@ -53,6 +53,18 @@ public enum MachOPreflight {
         static let chainedFixups: UInt32 = 0x8000_0034   // LC_DYLD_CHAINED_FIXUPS
         static let exportsTrie: UInt32 = 0x8000_0033     // LC_DYLD_EXPORTS_TRIE
         static let dyldInfo: Set<UInt32> = [0x22, 0x8000_0022]   // LC_DYLD_INFO(_ONLY)
+        /// Every `linkedit_data_command`: `dataoff` and `datasize` after
+        /// `cmd` and `cmdsize`.
+        static let linkeditData: Set<UInt32> = [
+            0x1d,           // LC_CODE_SIGNATURE
+            0x1e,           // LC_SEGMENT_SPLIT_INFO
+            0x26,           // LC_FUNCTION_STARTS
+            0x29,           // LC_DATA_IN_CODE
+            0x2b,           // LC_DYLIB_CODE_SIGN_DRS
+            0x2e,           // LC_LINKER_OPTIMIZATION_HINT
+            exportsTrie,
+            chainedFixups,
+        ]
         static let encryptionInfo: Set<UInt32> = [0x21, 0x2c]   // LC_ENCRYPTION_INFO(_64)
         /// Every command whose payload is a `struct dylib` (a name as an
         /// `lc_str` offset into the command, then three version words).
@@ -2247,6 +2259,15 @@ public enum MachOPreflight {
             try validateDylib(at: offset, prefix: prefix, bigEndian: bigEndian, index: index, fail: fail)
         case Command.buildVersion:
             try validateBuildVersion(at: offset, prefix: prefix, bigEndian: bigEndian, index: index, fail: fail)
+        case let cmd where Command.linkeditData.contains(cmd) && loadable:
+            // Only a loadable image: a dSYM keeps these commands with offsets
+            // into the binary it was split from.
+            guard let dataoff = prefix.u32(at: offset + 8, bigEndian: bigEndian),
+                  let datasize = prefix.u32(at: offset + 12, bigEndian: bigEndian)
+            else { return }   // beyond the prefix: our limit, not a bad file
+            guard Int(dataoff) <= fileSize, Int(datasize) <= fileSize - Int(dataoff) else {
+                throw fail("load command \(index) claims \(datasize) byte(s) at offset \(dataoff) of a \(fileSize)-byte file")
+            }
         default:
             break
         }
