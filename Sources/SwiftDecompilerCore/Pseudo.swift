@@ -751,8 +751,12 @@ public extension DisassembledFunction {
     /// call are only what the caller left there. Exactly two components: a
     /// member's addressor (`Module.Type.name…`) can take self.
     static func isGlobalVariableAddressor(_ callee: String) -> Bool {
-        guard let range = callee.range(of: " : ") else { return false }
-        let parts = callee[..<range.lowerBound].split(separator: ".", omittingEmptySubsequences: false)
+        // By bytes: this runs on every call, and `range(of:)` bridges to Foundation.
+        let bytes = Array(callee.utf8)
+        guard let colon = bytes.indices.dropLast(2).first(where: {
+            bytes[$0] == 0x20 && bytes[$0 + 1] == 0x3a && bytes[$0 + 2] == 0x20
+        }) else { return false }
+        let parts = String(decoding: bytes[..<colon], as: UTF8.self).split(separator: ".", omittingEmptySubsequences: false)
         return parts.count == 3 && parts[2] == "unsafeMutableAddressor"
             && parts[..<2].allSatisfy { part in
                 !part.isEmpty && part.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" }

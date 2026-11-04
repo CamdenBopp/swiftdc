@@ -6081,9 +6081,12 @@ public struct Disassembler: Sendable {
     /// headers fix (`swift_setAtWritableKeyPath(root, keyPath, value)`,
     /// `objc_setProperty_nonatomic_copy(self, _cmd, value, offset)`).
     static func isUndeclaredCSymbol(_ callee: String) -> Bool {
-        guard let first = callee.unicodeScalars.first,
-              first == "_" || (first.isASCII && CharacterSet.letters.contains(first)),
-              callee.unicodeScalars.allSatisfy({ $0 == "_" || $0 == "$" || ($0.isASCII && CharacterSet.alphanumerics.contains($0)) })
+        func isLetter(_ byte: UInt8) -> Bool { (byte | 0x20) >= 0x61 && (byte | 0x20) <= 0x7a }
+        guard let first = callee.utf8.first, first == UInt8(ascii: "_") || isLetter(first),
+              callee.utf8.allSatisfy({ byte in
+                  byte == UInt8(ascii: "_") || byte == UInt8(ascii: "$") || isLetter(byte)
+                      || (byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9"))
+              })
         else { return false }
         return !["objc_", "sub_", "OUTLINED_FUNCTION", "_Z", "__", "swift_", "_swift_"]
             .contains { callee.hasPrefix($0) }
@@ -8742,8 +8745,10 @@ public struct Disassembler: Sendable {
 
         /// Whether the body stores outside its own frame. A call needs no
         /// check: the tracer forgets a value read from memory across one.
-        let writesMemory = function.instructions.contains { insn in
-            (insn.controlFlow ?? .sequential) == .sequential && Self.isOrderingEffect(insn)
+        func writesMemory() -> Bool {
+            function.instructions.contains { insn in
+                (insn.controlFlow ?? .sequential) == .sequential && Self.isOrderingEffect(insn)
+            }
         }
 
         /// The literal a String's two words spell, or the pick between two
@@ -8760,7 +8765,7 @@ public struct Disassembler: Sendable {
             guard depth < 6,
                   case .select(let condition, let lowTrue, let lowFalse) = low,
                   case .select(condition, let highTrue, let highFalse) = high,
-                  !Self.readsMemory(condition) || !writesMemory,
+                  !Self.readsMemory(condition) || !writesMemory(),
                   let whenTrue = swiftStringPick(lowTrue, highTrue, depth: depth + 1),
                   let whenFalse = swiftStringPick(lowFalse, highFalse, depth: depth + 1)
             else { return nil }
