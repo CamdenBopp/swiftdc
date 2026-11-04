@@ -1583,6 +1583,32 @@ because it cannot be distinguished from a right one by reading the output.
   in the fixtures or the four swift-syntax dylibs changed. Fixture
   `loopisa.swift`; the self-changed, other-value and spilled-self cases
   are machine-code tests.
+- **FIXED — a stripped image left its witnesses of other images'
+  protocols unnamed.** Metadata named a witness only through the witness
+  table pattern of an in-image protocol, so `Point: Equatable`'s `==` read
+  `sub_100001164` in `sample.stripped`. The conformance descriptor's
+  resilient witness list has what is needed: the requirement's bound method
+  descriptor and the witness's code. Each is now named as its `TW` symbol
+  demangles, `protocol witness for static Swift.Equatable.== infix(A, A) ->
+  Swift.Bool in conformance sample.Point : Swift.Equatable in sample`. A
+  retroactive conformance, an imported C type, a generic type (its symbol
+  spells `Box<A>`) or a type without a qualified name is not named, and its
+  witness's address is credited to nothing else: the linker folds such
+  bodies with named ones (`witnessnaming.swift`, and
+  `StaticBuildConfiguration.Error`'s `==` with a private `CodingKeys`' in
+  swift-syntax). Fixtures and swift-syntax: 297 functions named, every name
+  one the unstripped image renders; 214 bodies match it exactly. A known
+  return type also replaces a bare `return` with `return ?` (101 lines) and
+  gives a throwing witness `machine_return()` (38). GoodLinks: 0 to 1,569
+  witnesses named.
+- **OPEN — a metadata-named witness seeds no parameters.** 83 of those 297
+  bodies differ from the unstripped render. Most lines are a helper still
+  `sub_` (42), which only a symbol can name. The rest are the cost of the
+  name: an unstripped witness reads `Swift.Hasher.init(arg0)`, and the
+  stripped one, which printed that as `sub_`, now reads
+  `Swift.Hasher.init(?)` (34 lines), or drops `self: arg0` from
+  `Swift.Hasher._combine`. Sound, but less than before. The mechanism is
+  not yet read: the unstripped path has a mangled symbol to lower.
 
 - **FIXED — a class inheriting from Objective-C read its metadata through
   a masked isa the tracer did not follow.** `ldr x8, [x20]; ldr x9,

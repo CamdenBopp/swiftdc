@@ -642,6 +642,11 @@ $SWIFTC -parse-as-library -O -emit-library -module-name PrivateWitness privatewi
 cp libPrivateWitness.dylib libPrivateWitness.stripped.dylib
 strip -x libPrivateWitness.stripped.dylib
 
+echo "==> witnesses metadata reads but must not name: a generic type's, and bodies folded with a private type's (witnessnaming.swift, -O; strip -x copy)"
+$SWIFTC -parse-as-library -O -emit-library -module-name WitnessNaming witnessnaming.swift -o libWitnessNaming.dylib
+cp libWitnessNaming.dylib libWitnessNaming.stripped.dylib
+strip -x libWitnessNaming.stripped.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release

@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import Demangling
 @testable import SwiftDecompilerCore
 
 /// A stripped binary's functions are named from Swift metadata alone:
@@ -125,8 +126,16 @@ private func demangledTextSymbols(_ path: String) -> [UInt64: [String]]? {
     guard lines.count >= mangled.count else { return nil }
     var map: [UInt64: [String]] = [:]
     for (index, entry) in mangled.enumerated() {
-        let name = String(lines[index])
-        if map[entry.0]?.contains(name) != true { map[entry.0, default: []].append(name) }
+        var names = [String(lines[index])]
+        // A protocol witness is named whole from its conformance and its
+        // requirement's descriptor, printed by swiftdc's demangler, which
+        // spells some types unsugared (`Swift.Optional<Swift.AnyObject>`
+        // where swift-demangle has `Swift.AnyObject?`). The symbol at the
+        // address is still the truth; only its spelling is swiftdc's.
+        if entry.1.hasSuffix("TW"), let node = try? demangleAsNode(String(entry.1.dropFirst())) {
+            names.append(node.print(using: .default))
+        }
+        for name in names where map[entry.0]?.contains(name) != true { map[entry.0, default: []].append(name) }
     }
     return map
 }

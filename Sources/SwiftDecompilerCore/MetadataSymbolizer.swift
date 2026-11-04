@@ -32,6 +32,9 @@ struct MetadataSymbolizer: Sendable {
         let name: String
         let owner: String
         var isWitness = false
+        /// A witness whose owner metadata cannot name: it names nothing, but
+        /// keeps any other claim to its address from being credited alone.
+        var isUnnamed = false
     }
 
     /// Every address metadata names, classes before witnesses.
@@ -45,12 +48,19 @@ struct MetadataSymbolizer: Sendable {
     /// descriptions, and keeps the class name.
     func functionNames(in machO: MachOFile) -> Names {
         var claims: [UInt64: [Claim]] = [:]
-        for claim in classMethodClaims(in: machO) + witnessClaims(in: machO) + accessorClaims(in: machO)
-            + valueWitnessClaims(in: machO) {
+        for claim in classMethodClaims(in: machO) + witnessClaims(in: machO) + resilientWitnessClaims(in: machO)
+            + accessorClaims(in: machO) + valueWitnessClaims(in: machO) {
             claims[claim.address, default: []].append(claim)
         }
         var names = Names()
         for (address, list) in claims {
+            if list.contains(where: \.isUnnamed) {
+                // An owner metadata cannot name shares this body: whatever
+                // else claims it is a fold candidate, never the name.
+                let named = Set(list.filter { !$0.isUnnamed }.map(\.name))
+                if !named.isEmpty { names.folded[address] = named.sorted() }
+                continue
+            }
             let methods = list.filter { !$0.isWitness }
             let witnesses = list.filter(\.isWitness)
             let methodNames = Set(methods.map(\.name))
@@ -459,6 +469,47 @@ struct MetadataSymbolizer: Sendable {
                   let address = implementations.code(at: imageBase + runtimeOffset, isData: slot.isData)
             else { continue }
             claims.append(Claim(address: address, name: slot.name, owner: slot.owner, isWitness: true))
+        }
+        return claims
+    }
+
+    // MARK: - Resilient witnesses (conformances to another image's protocol)
+
+    /// Each witness of a conformance to a protocol in another image, read
+    /// from the conformance descriptor's resilient witness list and named
+    /// as its `TW` symbol demangles: `protocol witness for static
+    /// Swift.Equatable.== infix(A, A) -> Swift.Bool in conformance
+    /// sample.Point : Swift.Equatable in sample`. The requirement's name is
+    /// its bound method descriptor's; the conformance's module is the
+    /// conforming type's, which holds for a conformance that is not
+    /// retroactive (the protocol's module is another image). A retroactive
+    /// conformance, an imported C type (whose synthesized conformances
+    /// belong to no module of the image), a generic type (whose symbols spell
+    /// its parameters), a type whose qualified name cannot be built, or a
+    /// requirement whose descriptor does not demangle is not named, and its
+    /// witness's address is named for nothing else: identical code folding
+    /// can give it another witness's body (`StaticBuildConfiguration.Error`'s
+    /// `==` is a private `CodingKeys`' in swift-syntax's IfConfig).
+    private func resilientWitnessClaims(in machO: MachOFile) -> [Claim] {
+        var claims: [Claim] = []
+        for conformance in ResilientWitnessIndex(machO).conformances {
+            let nameable = !conformance.isRetroactive && conformance.isNonGeneric
+            for witness in conformance.witnesses {
+                guard let address = witness.implementation else { continue }
+                guard nameable, let typeName = conformance.typeName, let protocolName = conformance.protocolName,
+                      let module = typeName.split(separator: ".").first, module != "__C",
+                      let owner = typeName.split(separator: ".").last,
+                      let requirement = witness.requirementName
+                else {
+                    claims.append(Claim(address: address, name: "", owner: "", isWitness: true, isUnnamed: true))
+                    continue
+                }
+                claims.append(Claim(
+                    address: address,
+                    name: "protocol witness for \(requirement) in conformance \(typeName) : \(protocolName) in \(module)",
+                    owner: String(owner), isWitness: true
+                ))
+            }
         }
         return claims
     }
