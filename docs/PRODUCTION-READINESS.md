@@ -78,7 +78,7 @@ results do not replace previously recorded release performance measurements.
   `tailcallsinks.c` (-O2) and `.swift` (-O); `SinkTerminatorTests`.
 - **FIXED — a float's bit pattern rendered as the float, and integer
   constants beside it as float literals.** `fmov x8, d0` carried the
-- **FIXED (168e39a) — a float's bit pattern rendered as the float, and
+- **FIXED (3e1b1df) — a float's bit pattern rendered as the float, and
   integer constants beside it as float literals.** `fmov x8, d0` carried the
   Double into the general register unchanged, so every integer operation
   on its bits read as one on the Double and `floatWidth` typed the
@@ -95,8 +95,8 @@ results do not replace previously recorded release performance measurements.
   bit pattern is the float again. Fixtures `floatbits.swift` (-O and
   -Onone) and `floatbitswidth.s`; blast radius 6 files, 36 structured
   lines, all `fmov xN, dM` sites, swift-syntax byte-identical.
-- **FIXED — a constant beside a bit-level operator over a float read as a
-  float.** `floatWidth` recursed through every binary operator, so `(x &
+- **FIXED (c146d65) — a constant beside a bit-level operator over a
+  float read as a float.** `floatWidth` recursed through every binary operator, so `(x &
   mask) cmp imm` over a float argument typed `imm` as a Double; the
   float-literal rule skipped only an outer bit-level operator. A bit-level
   binary (`& | ^ << >> >>ᵁ`) and an integer-only unary (`~`, byte swap,
