@@ -7730,3 +7730,44 @@ heuristic, so the bins are approximate):
   it; whether a fixture render moves is not measured. A fixture that
   reaches `__swift_instantiateConcreteTypeFromMangledName` through an
   indirect reference at many call sites would close it.
+## 2026-11-03: `objc` accessor classification memory
+
+A user reported `objc` on a large iOS app past 4.5 GB and killed. The
+header path classifies every property accessor by its body, and
+`classifyAccessors` decoded all of them into one instruction list, then
+segmented, summarized and analysed the lot through `assemble`, holding
+every decoded and analysed body until the last was classified. The 4 KB
+per-accessor prefix (`10712d8`) bounds one body, not the sum.
+
+- **OPEN (memory): `objc` holds every accessor body at once.** Measured
+  with `gen-manyaccessors.sh` (N classes of 14 accessors, 11 synthesized
+  and 3 custom; `build.sh` builds 100 and 800 classes), release
+  `/usr/bin/time -l swiftdc objc <image>` peak footprint at 9a2446a:
+
+  | image | property lines | footprint | wall |
+  |---|---|---|---|
+  | 100 classes (1,400 accessors) | 800 | 20 MB | 0.7 s |
+  | 400 classes (5,600) | 3,200 | 56 MB | 3.9 s |
+  | 1,600 classes (22,400) | 12,800 | 191 MB | 17 to 29 s |
+  | GoodLinks (`--arch arm64`) | 946 | 91 MB | 9.8 s |
+  | AppKit (`--image AppKit`) | 14,841 | 472 MB | 24.5 s |
+  | UIKitCore (`--image UIKitCore`) | 37,540 | 843 MB | 51.5 s |
+
+  From 400 to 1,600 classes the footprint grows by 8.0 KB per accessor,
+  with each accessor 2 to 10 instructions long. An app whose accessors
+  run to the 4 KB prefix (no `LC_FUNCTION_STARTS`, or long gaps between
+  IMPs) holds up to 1,024 analysed instructions each.
+- **OPEN (speed): `ObjCMetadataIndex.outgoingSignature` dominates
+  `objc` on many classes.** `sample` of the 1,600-class run puts 3,066
+  of 4,244 main-thread samples in it (2,081 in
+  `ObjCArgumentABI.parameterTypes`), under `enrichCallArguments`: every
+  `-description` send looks up a signature across every class that
+  implements the selector. Wall time grows faster than the accessor
+  count (5,600 to 22,400 accessors: 3.9 s to 17 to 29 s).
+- **OPEN (soundness): a branchless custom setter reads as
+  synthesized.** `- (void)setLimit:(int)limit { _limit = limit > 10 ? 10
+  : limit; }` at -O1 is `mov w8, #0xa; cmp w2, #0xa; csel w8, w2, w8, lt;
+  str w8, [x0, #8]; ret`: one block, a store through self, no call, so
+  `isSynthesizedAccessor` calls it synthesized and the header drops
+  `-setLimit:`. A synthesized setter stores its argument register
+  unchanged; a store of any other value is custom.

@@ -407,6 +407,13 @@ strip -x libAccessorExtent.dylib
 xcrun clang -arch arm64 -O1 -dynamiclib -framework Foundation accessorextentcustom.m -o libAccessorExtentCustom.dylib -Wl,-no_function_starts
 strip -x libAccessorExtentCustom.dylib
 
+echo "==> 100 and 800 classes of 14 accessors (gen-manyaccessors.sh, -O1, ARC): objc's memory against the accessor count"
+for classes in 100 800; do
+  ./gen-manyaccessors.sh $classes > manyaccessors$classes.m
+  xcrun clang -arch arm64 -O1 -fobjc-arc -dynamiclib -framework Foundation manyaccessors$classes.m -o libManyAccessors$classes.dylib
+  rm manyaccessors$classes.m
+done
+
 echo "==> a getter that returns a constant (constantgetter.m): custom, not synthesized"
 xcrun clang -arch arm64 -O1 -dynamiclib -framework Foundation constantgetter.m -o libConstantGetter.dylib
 
