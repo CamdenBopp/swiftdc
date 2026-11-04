@@ -71,3 +71,57 @@ private func symbolStringsFailure(_ data: Data) throws -> String? {
     #expect(try symbolStringsFailure(symbolImage(strx: [0, 1, 3], strings: Data([0, 0x61, 0, 0x62, 0]))) == nil)
 }
 
+// MARK: - Chained fixups header
+
+/// An image with one segment and a fixups payload holding the given header.
+private func chainedImage(
+    datasize: UInt32 = 64, starts: UInt32 = 32, imports: UInt32 = 40, symbols: UInt32 = 44,
+    format: UInt32 = 1, segCount: UInt32 = 1
+) -> Data {
+    let dataoff = UInt32(32 + 72 + 16)
+    let segment = words([0x19, 72]) + Data(repeating: 0, count: 64)
+    let command = words([0x8000_0034, 16, dataoff, datasize])
+    var data = image(commands: [segment, command])
+    data += words([0, starts, imports, symbols, 0, format, 0, 0, segCount, 0])
+    return data + Data(repeating: 0, count: 64)
+}
+
+/// Why the chained fixups header was declined, or nil.
+private func chainedFailure(_ data: Data) throws -> String? {
+    try withReader(data) { reader in
+        do {
+            try MachOPreflight.validateChainedFixupsHeader(prefix: data, image: reader, path: "t")
+            return nil
+        } catch { return "\(error)" }
+    }
+}
+
+@Test func aWellFormedChainedFixupsHeaderPasses() throws {
+    #expect(try chainedFailure(chainedImage()) == nil)
+}
+
+@Test func chainedStartsPastThePayloadAreDeclined() throws {
+    #expect(try chainedFailure(chainedImage(starts: 61))?.contains("starts") == true)
+}
+
+@Test func chainedImportsPastThePayloadAreDeclined() throws {
+    #expect(try chainedFailure(chainedImage(imports: 65))?.contains("imports") == true)
+}
+
+@Test func chainedSymbolsPastThePayloadAreDeclined() throws {
+    #expect(try chainedFailure(chainedImage(symbols: 65))?.contains("symbols") == true)
+}
+
+@Test func anUnknownChainedImportFormatIsDeclined() throws {
+    #expect(try chainedFailure(chainedImage(format: 4))?.contains("format") == true)
+    #expect(try chainedFailure(chainedImage(format: 0))?.contains("format") == true)
+}
+
+@Test func chainedSegmentsPastThePayloadAreDeclined() throws {
+    #expect(try chainedFailure(chainedImage(segCount: 8))?.contains("segment(s)") == true)
+}
+
+@Test func aChainedPayloadTooShortForItsHeaderIsDeclined() throws {
+    #expect(try chainedFailure(chainedImage(datasize: 27))?.contains("too short") == true)
+}
+

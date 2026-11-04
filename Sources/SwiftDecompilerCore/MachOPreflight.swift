@@ -182,6 +182,7 @@ public enum MachOPreflight {
             )
         }
         try validateSymbolStrings(prefix: prefix, image: image, path: path)
+        try validateChainedFixupsHeader(prefix: prefix, image: image, path: path)
 
         // Section CONTENTS, for a thin little-endian image. A fat file's
         // slices come through here one at a time from `validate(url:)`.
@@ -1328,6 +1329,41 @@ public enum MachOPreflight {
             throw BinaryLoadError(
                 "Malformed Mach-O: \(path) — the string at offset \(furthest) has no terminator in its \(strsize)-byte string table"
             )
+        }
+    }
+
+    /// `sizeof(struct dyld_chained_fixups_header)`.
+    private static let chainedFixupsHeader = 28
+
+    /// The header's offsets must lie inside its own payload, the checks dyld
+    /// makes before it reads one.
+    ///
+    /// MachOKit's `startsInImage` reads at `starts_offset` unchecked, and the
+    /// checks in this file skipped a header they could not follow: one flipped
+    /// `dataoff` byte reads other bytes as the header, and `objc` died by
+    /// SIGSEGV.
+    static func validateChainedFixupsHeader(prefix: Data, image: ImageReader, path: String) throws {
+        guard let fixups = chainedFixups(prefix: prefix) else { return }
+        func fail(_ why: String) -> BinaryLoadError {
+            BinaryLoadError("Malformed Mach-O: \(path) — chained fixups \(why)")
+        }
+        guard fixups.datasize >= chainedFixupsHeader else {
+            throw fail("are \(fixups.datasize) bytes, too short for their header")
+        }
+        guard let header = image.read(offset: fixups.dataoff, count: chainedFixupsHeader),
+              let starts = header.u32(at: 4), let imports = header.u32(at: 8), let symbols = header.u32(at: 12),
+              let format = header.u32(at: 20)
+        else { throw fail("lie outside the file") }
+        let size = UInt64(fixups.datasize)
+        guard UInt64(starts) + 4 <= size else { throw fail("put their starts at \(starts) of \(size) bytes") }
+        guard UInt64(imports) <= size else { throw fail("put their imports at \(imports) of \(size) bytes") }
+        guard UInt64(symbols) <= size else { throw fail("put their symbols at \(symbols) of \(size) bytes") }
+        guard (1...3).contains(format) else { throw fail("use unknown import format \(format)") }
+        guard let table = image.read(offset: fixups.dataoff + Int(starts), count: 4), let count = table.u32(at: 0) else {
+            throw fail("lie outside the file")
+        }
+        guard UInt64(starts) + 4 + 4 * UInt64(count) <= size else {
+            throw fail("list \(count) segment(s) past their \(size) bytes")
         }
     }
 
