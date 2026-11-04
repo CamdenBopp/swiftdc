@@ -2961,7 +2961,13 @@ public struct ValueTracer: Sendable {
             write(dest, .address(UInt64(bitPattern: target)), into: &registers)
 
         case AARCH64_INS_ADD, AARCH64_INS_ADDS, AARCH64_INS_SUB, AARCH64_INS_SUBS:
-            guard let dest = destinationRegister(detail), detail.operands.count >= 3 else {
+            // Packed SIMD lanes do not carry or borrow into one another.
+            // Until their lane-wise operation is modelled, no scalar result
+            // may be inferred from a known word held in a vector register.
+            guard let dest = destinationRegister(detail),
+                  dest.kind != .vector || (dest.widthBits == 64
+                    && detail.operands[0].vectorArrangement == AARCH64LAYOUT_INVALID),
+                  detail.operands.count >= 3 else {
                 clobber(detail, into: &registers); return
             }
             let lhs = source(detail.operands[1], in: registers)
@@ -3179,7 +3185,12 @@ public struct ValueTracer: Sendable {
                   into: &registers)
 
         case AARCH64_INS_FADD, AARCH64_INS_FSUB, AARCH64_INS_FMUL, AARCH64_INS_FDIV, AARCH64_INS_FNMUL:
-            guard let dest = destinationRegister(detail), detail.operands.count >= 3 else {
+            // The same opcode also has packed vector forms. Their register's
+            // bits are several floats, not one scalar floating expression.
+            guard let dest = destinationRegister(detail), dest.kind == .vector,
+                  [16, 32, 64].contains(dest.widthBits),
+                  detail.operands[0].vectorArrangement == AARCH64LAYOUT_INVALID,
+                  detail.operands.count >= 3 else {
                 clobber(detail, into: &registers); return
             }
             let op: AbstractBinaryOperator = switch detail.id {
@@ -3195,7 +3206,10 @@ public struct ValueTracer: Sendable {
                   into: &registers)
 
         case AARCH64_INS_FNEG, AARCH64_INS_FSQRT, AARCH64_INS_FABS:
-            guard let dest = destinationRegister(detail), detail.operands.count >= 2 else {
+            guard let dest = destinationRegister(detail), dest.kind == .vector,
+                  [16, 32, 64].contains(dest.widthBits),
+                  detail.operands[0].vectorArrangement == AARCH64LAYOUT_INVALID,
+                  detail.operands.count >= 2 else {
                 clobber(detail, into: &registers); return
             }
             let op: AbstractUnaryOperator = switch detail.id {
@@ -3215,8 +3229,16 @@ public struct ValueTracer: Sendable {
             guard let dest = destinationRegister(detail),
                   detail.operands.count == 2 || detail.operands.count == 3,
                   detail.operands[1].operand.register != nil,
-                  [16, 32, 64].contains(dest.widthBits)
+                  [16, 32, 64].contains(dest.widthBits),
+                  detail.operands.allSatisfy({ $0.vectorArrangement == AARCH64LAYOUT_INVALID })
             else { clobber(detail, into: &registers); return }
+            // Integer-to-float SIMD forms read integer bits from an FP-bank
+            // register, not a floating value. Until bit reinterpretation is
+            // modelled for symbolic inputs, preserve only GPR-input forms.
+            if (detail.id == AARCH64_INS_SCVTF || detail.id == AARCH64_INS_UCVTF),
+               detail.operands[1].operand.register?.kind == .vector {
+                clobber(detail, into: &registers); return
+            }
             let op: AbstractUnaryOperator = switch detail.id {
             case AARCH64_INS_FCVTZS: .toInteger(signed: true, bits: dest.widthBits)
             case AARCH64_INS_FCVTZU: .toInteger(signed: false, bits: dest.widthBits)

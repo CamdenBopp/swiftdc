@@ -62,7 +62,10 @@ enum InstructionSemantics {
              AARCH64_INS_MUL, AARCH64_INS_SMULH, AARCH64_INS_UMULH,
              AARCH64_INS_LSL, AARCH64_INS_LSR, AARCH64_INS_ASR,
              AARCH64_INS_SDIV, AARCH64_INS_UDIV:
-            guard operands.count >= 3 else { return nil }
+            // Shared opcode IDs include packed SIMD operations. In particular,
+            // multiplying a whole packed word invents cross-lane products.
+            // This table supplies scalar expressions, not vector expressions.
+            guard isScalar(dest) || dest.kind == .stackPointer, operands.count >= 3 else { return nil }
             let op: AbstractBinaryOperator = switch detail.id {
             case AARCH64_INS_AND, AARCH64_INS_ANDS: .bitAnd
             case AARCH64_INS_ORR: .bitOr

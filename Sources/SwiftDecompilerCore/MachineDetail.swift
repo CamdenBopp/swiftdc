@@ -77,8 +77,9 @@ public struct PhysReg: Hashable, Sendable {
     }
 
     /// Contiguous register banks, verified against capstone 6.0.100's aarch64.h.
-    /// Capstone 6 has no separate `V` bank: a vector operand (`v0.4s`) is its
-    /// `Q` register plus a vector-arrangement specifier.
+    /// Capstone 6 has no separate `V` bank: packed operands use IDs from
+    /// the scalar/vector banks plus an arrangement. Some packed forms use a
+    /// 64-bit ID (`v0.2s`), so width alone does not prove scalar semantics.
     private static let banks: [(range: Range<Int>, kind: Kind, widthBits: Int)] = {
         func span(_ first: aarch64_reg, count: Int) -> Range<Int> {
             let low = Int(first.rawValue)

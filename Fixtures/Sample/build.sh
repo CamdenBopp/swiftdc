@@ -562,6 +562,9 @@ $CLANG -arch arm64 -dynamiclib fpaliascalls.s -o libFPAlias.dylib
 echo "==> Objective-C struct results read one field at a time (objc_send_results.m, -O2)"
 $CLANG -arch arm64 -O2 -dynamiclib -lobjc objc_send_results.m -o libObjCSendResults.dylib
 
+echo "==> packed SIMD forms of scalar opcodes (packedarithmetic.s)"
+$CLANG -arch arm64 -dynamiclib packedarithmetic.s -o libPackedArithmetic.dylib
+
 echo "==> fmov immediates in vector and half-precision registers (fpimmediates.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name FPImmediates fpimmediates.swift -o libFPImmediates.dylib
 

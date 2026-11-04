@@ -8529,3 +8529,14 @@ Commit messages on dev stay as they are; these are the true records.
   aggregate and the receiver is not self, so a right `return` became a
   statement and `return ?`. The selector alone proves nothing about the
   receiver; using the ivar's class would.
+- **FIXED (soundness): packed SIMD read as scalar arithmetic.** One opcode
+  covers scalar and packed forms, and width does not tell them apart (`.2s`
+  decodes at width 64). `fadd.2d` rendered `((0x4000…, 0x4000…) + (…))` and
+  `scvtf d0, d1` on integer bits 2 rendered `Double(1e-323)`. Packed forms
+  and SIMD-input integer conversions now decline; scalar controls stay
+  (`Fixtures/Sample/libPackedArithmetic.dylib`, 54 functions). No lane-wise
+  evaluator is added.
+- **Accepted decline: `abiMakeTwo` in libABISource.resilient.dylib.**
+  `mem128[&result] = ((arg0, arg0) + (1, 2))` is now `= q0`. That `add.2d`
+  was right by luck of lane width: the same path carried across lanes for
+  `.8b`.
