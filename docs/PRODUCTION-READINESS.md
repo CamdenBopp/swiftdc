@@ -8545,3 +8545,7 @@ Commit messages on dev stay as they are; these are the true records.
   it is `return (arg1 + 1)`, with the same for the five functions in
   `Fixtures/Sample/libVoidArguments.dylib`. `()` and `Swift.Void` now take no
   register and keep their source slot.
+- **FIXED (soundness): `movi` with a zero immediate that is not zero.**
+  `movi v0.4s, #0, msl #8` puts 0xff in each element and rendered `return 0`.
+  Every arrangement, LSL and MSL form now expands to its words, checked by
+  running all 19 functions of `Fixtures/Sample/libVectorImmediates.dylib`.

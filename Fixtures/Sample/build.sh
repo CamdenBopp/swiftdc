@@ -568,6 +568,9 @@ $CLANG -arch arm64 -dynamiclib packedarithmetic.s -o libPackedArithmetic.dylib
 echo "==> explicit Void parameters, which take no register (voidarguments.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name VoidArguments voidarguments.swift -o libVoidArguments.dylib
 
+echo "==> MOVI by arrangement and shift, LSL and MSL (vectorimmediates.s)"
+$CLANG -arch arm64 -dynamiclib vectorimmediates.s -o libVectorImmediates.dylib
+
 echo "==> fmov immediates in vector and half-precision registers (fpimmediates.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name FPImmediates fpimmediates.swift -o libFPImmediates.dylib
 

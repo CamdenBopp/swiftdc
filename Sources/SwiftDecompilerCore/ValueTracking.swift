@@ -3336,15 +3336,10 @@ public struct ValueTracer: Sendable {
             write(dest, value == .unknown ? .unknown : .aggregate([value, value]), into: &registers)
 
         case AARCH64_INS_MOVI:
-            // `movi v0.2d, #0` zeroes a vector register: the two words the
-            // compiler then stores as a pair (`stp q0, q0, [x8]`) to zero-fill a
-            // buffer. Only the all-zero form is modelled; any other replicated
-            // byte pattern is left unknown.
-            guard let dest = destinationRegister(detail), detail.operands.count >= 2,
-                  detail.operands[1].operand.immediateValue == 0
-            else { clobber(detail, into: &registers); return }
-            write(dest, dest.widthBits > 64
-                  ? .aggregate([.immediate(0), .immediate(0)]) : .immediate(0), into: &registers)
+            guard let dest = destinationRegister(detail), let value = Self.moviValue(detail) else {
+                clobber(detail, into: &registers); return
+            }
+            write(dest, value, into: &registers)
 
         case AARCH64_INS_MOVK:
             // MOVK's shift is NOT pre-folded, and it merges into the existing value.
@@ -3960,6 +3955,64 @@ public struct ValueTracer: Sendable {
         default:
             return value
         }
+    }
+
+    /// Expand a decoded Advanced SIMD MOVI into its eight-byte words. An
+    /// immediate of zero is not always zero: `movi v0.4s, #0, msl #8`
+    /// puts 0xff in every 32-bit element. The arrangement is therefore part
+    /// of the operation, alongside the immediate and its LSL/MSL modifier.
+    static func moviValue(_ detail: StructuredInsn) -> AbstractValue? {
+        guard detail.id == AARCH64_INS_MOVI, detail.operands.count == 2,
+              let dest = detail.operands[0].operand.register, dest.kind == .vector,
+              dest.widthBits == 64 || dest.widthBits == 128,
+              detail.operands.allSatisfy({ $0.vectorIndex == nil && $0.extender == AARCH64_EXT_INVALID }),
+              let immediate = detail.operands[1].operand.immediateValue else { return nil }
+        let shift = detail.operands[1].shift
+        let elementBits: Int, totalBits: Int
+        switch detail.operands[0].vectorArrangement {
+        case AARCH64LAYOUT_VL_8B: (elementBits, totalBits) = (8, 64)
+        case AARCH64LAYOUT_VL_16B: (elementBits, totalBits) = (8, 128)
+        case AARCH64LAYOUT_VL_4H: (elementBits, totalBits) = (16, 64)
+        case AARCH64LAYOUT_VL_8H: (elementBits, totalBits) = (16, 128)
+        case AARCH64LAYOUT_VL_2S: (elementBits, totalBits) = (32, 64)
+        case AARCH64LAYOUT_VL_4S: (elementBits, totalBits) = (32, 128)
+        case AARCH64LAYOUT_VL_D, AARCH64LAYOUT_VL_1D: (elementBits, totalBits) = (64, 64)
+        case AARCH64LAYOUT_VL_2D: (elementBits, totalBits) = (64, 128)
+        default:
+            // Existing synthetic zero instructions lack layout metadata.
+            // Only an unmodified zero has the same bits for every layout.
+            guard detail.operands[0].vectorArrangement == AARCH64LAYOUT_INVALID,
+                  immediate == 0, shift.type == AARCH64_SFT_INVALID, shift.amount == 0 else { return nil }
+            return dest.widthBits == 128 ? .aggregate([.immediate(0), .immediate(0)]) : .immediate(0)
+        }
+        guard totalBits <= dest.widthBits else { return nil }
+        let element: UInt64
+        if elementBits == 64 {
+            // Capstone already expands the encoded eight-bit byte mask.
+            guard shift.type == AARCH64_SFT_INVALID, shift.amount == 0 else { return nil }
+            element = UInt64(bitPattern: immediate)
+            guard (0..<8).allSatisfy({
+                let byte = (element >> UInt64($0 * 8)) & 0xff
+                return byte == 0 || byte == 0xff
+            }) else { return nil }
+        } else {
+            guard (0...255).contains(immediate) else { return nil }
+            switch shift.type {
+            case AARCH64_SFT_INVALID:
+                guard shift.amount == 0 else { return nil }
+                element = UInt64(immediate)
+            case AARCH64_SFT_LSL:
+                guard shift.amount % 8 == 0, shift.amount < UInt32(elementBits) else { return nil }
+                element = UInt64(immediate) << UInt64(shift.amount)
+            case AARCH64_SFT_MSL:
+                guard elementBits == 32, shift.amount == 8 || shift.amount == 16 else { return nil }
+                element = (UInt64(immediate) << UInt64(shift.amount)) | ((1 << UInt64(shift.amount)) - 1)
+            default: return nil
+            }
+        }
+        var word: UInt64 = 0
+        for offset in stride(from: 0, to: 64, by: elementBits) { word |= element << UInt64(offset) }
+        return totalBits == 128 ? .aggregate([.immediate(word), .immediate(word)]) : .immediate(word)
     }
 
     /// What a scalar view of a vector register holds: `d0` is the low 64 bits
