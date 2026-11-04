@@ -7739,7 +7739,7 @@ segmented, summarized and analysed the lot through `assemble`, holding
 every decoded and analysed body until the last was classified. The 4 KB
 per-accessor prefix (`10712d8`) bounds one body, not the sum.
 
-- **FIXED (df4c78b, memory): `objc` held every accessor body at once.** Measured
+- **FIXED (61430e5, memory): `objc` held every accessor body at once.** Measured
   with `gen-manyaccessors.sh` (N classes of 14 accessors, 11 synthesized
   and 3 custom; `build.sh` builds 100 and 800 classes), release
   `/usr/bin/time -l swiftdc objc <image>` peak footprint at 9a2446a:
@@ -7780,7 +7780,7 @@ per-accessor prefix (`10712d8`) bounds one body, not the sum.
   Framework is the nearest shape on this host. The growth left is 2.7 KB
   per accessor from 400 to 1,600 classes, against 8.0 KB. `objc` over all
   255 fixture Mach-Os: identical.
-- **FIXED (usability): `objc --metadata-only` exports headers without
+- **FIXED (0a0e3b8, usability): `objc --metadata-only` exports headers without
   reading code.** The default path decides each accessor from its body.
   With no body the status is unknown, and the existing unknown case
   (`blocks(_:)`, off arm64, a declined accessor) drops the line as
