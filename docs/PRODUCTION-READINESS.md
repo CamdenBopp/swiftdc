@@ -1711,6 +1711,14 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — a class parameter declined on a simple name its qualified
+  name settles.** `func readShared(_ s: A.Shared)` read `?` because
+  `B.Shared` is a struct, and `C1.Dup` because `C2.Dup` collided in the
+  simple-name map, though each signature prints the whole name and each
+  type has its own key. A parameter now answers to its qualified key
+  alone. A private class has no such key, since its parent is an anonymous
+  context, and a private twin of a visible class does not compile.
+
 - **FIXED — a store through a free function's class parameter named no
   field.** `func writeHolder(_ h: Holder, _ x: Int) { h.v = x }` rendered
   `mem64[arg0 + 0x10] = arg1`, now `arg0.v = arg1`. The store must be
@@ -1730,9 +1738,9 @@ because it cannot be distinguished from a right one by reading the output.
   register, and a pair is two loads. The value is a snapshot: every write
   outside the frame and every call but a retain or an access marker forget
   it, since two parameters may be one object. `ClassParameterFieldIndex`
-  admits a class by its exact qualified name, and declines a simple name a
-  value type shares, a field-map collision, a published `…CMo` (library
-  evolution, or a resilient base) and, by having no key, a bound generic.
+  admits a class by its exact qualified name, and declines a published
+  `…CMo` (library evolution, or a resilient base) and, by having no key, a
+  bound generic.
   Free functions only: methods, statics, closures, specializations and
   async functions are untouched. Open: a two-word field (a String reads
   `?`), inherited fields, and -Osize images whose outliner moves `mov x19,

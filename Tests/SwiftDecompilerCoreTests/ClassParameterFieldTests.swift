@@ -32,6 +32,7 @@ private func body(_ rendered: [(name: String, text: String)], _ name: String) th
         for (name, expected) in [
             ("readHolder", "(arg0.v + 1)"), ("afterString", "(arg1.v + 2)"), ("readWithGeneric", "(arg0.v + 8)"),
             ("twoReads", "(arg0.v + arg1.v)"), ("branchOnField", "(arg0.v > 3)"), ("readOwn", "(arg0.b + 11)"),
+            ("readShared", "(arg0.a + 9)"), ("readDup", "(arg0.a + 10)"), ("readOtherDup", "(arg0.z + 17)"),
             ("readFlag", "arg0.flag"), ("readSmall", "arg0.small"), ("readTiny", "arg0.tiny"),
             ("readHalf", "arg0.half"), ("readFloat", "arg0.f"), ("readDouble", "arg0.d"),
             ("readNext", "arg0.next"),
@@ -75,8 +76,7 @@ private func body(_ rendered: [(name: String, text: String)], _ name: String) th
     for path in ["Fixtures/Sample/libClassParam.dylib", "Fixtures/Sample/libClassParam.opt.dylib",
                  "Fixtures/Sample/libClassParam.size.dylib"] {
         guard let rendered = try await structured(path) else { continue }
-        for name in ["optionalParam", "inoutRead", "readBoxHead", "readBoxTail", "readBoxGeneric",
-                     "readShared", "readDup", "readInherited"] {
+        for name in ["optionalParam", "inoutRead", "readBoxHead", "readBoxTail", "readBoxGeneric", "readInherited"] {
             let text = try body(rendered, "ClassParam.\(name)")
             #expect(!text.contains("arg0."), Comment(rawValue: "\(path)\n\(text)"))
         }
@@ -101,6 +101,8 @@ private func body(_ rendered: [(name: String, text: String)], _ name: String) th
     }
     let own = try body(client, "ClassParamClient.readOwnTwin")
     #expect(own.contains("(arg0.other + 3)"), Comment(rawValue: own))
+    let pair = try body(client, "ClassParamClient.readOwnPair")
+    #expect(pair.contains("(arg0.mine + 6)"), Comment(rawValue: pair))
 }
 
 // MARK: - The tracer, on exact instructions
@@ -198,16 +200,21 @@ private let holderMap = FieldMap(typeName: "Holder", instanceSize: 24,
     }
 }
 
-@Test func theIndexDeclinesADoubtfulClass() {
+@Test func theQualifiedKeyAloneDecidesASharedSimpleName() {
     let maps = ["Holder": holderMap, "F.Holder": holderMap]
     // The simple name is also a value type's: `adding` took it out.
     let shared = ClassTypeIndex(classNames: [], qualifiedClassNames: ["F.Holder"])
     #expect(ClassParameterFieldIndex(fieldMaps: maps, classTypeIndex: shared)
-        .fieldMap(ofParameterType: "F.Holder") == nil)
+        .fieldMap(ofParameterType: "F.Holder") != nil)
     // The simple key was dropped as a collision.
     let classes = ClassTypeIndex(classNames: ["Holder"], qualifiedClassNames: ["F.Holder"])
     #expect(ClassParameterFieldIndex(fieldMaps: ["F.Holder": holderMap], classTypeIndex: classes)
-        .fieldMap(ofParameterType: "F.Holder") == nil)
+        .fieldMap(ofParameterType: "F.Holder") != nil)
+}
+
+@Test func theIndexDeclinesADoubtfulClass() {
+    let maps = ["Holder": holderMap, "F.Holder": holderMap]
+    let classes = ClassTypeIndex(classNames: ["Holder"], qualifiedClassNames: ["F.Holder"])
     // No proof it is a class at all.
     let struct_ = ClassTypeIndex(classNames: ["Holder"], qualifiedNonClassNames: ["F.Holder"])
     #expect(ClassParameterFieldIndex(fieldMaps: maps, classTypeIndex: struct_)

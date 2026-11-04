@@ -33,6 +33,7 @@ private func body(_ rendered: [(name: String, text: String)], _ name: String) th
             ("writeHolder", "arg0.v = arg1"), ("writeFlag", "arg0.flag = "), ("writeSmall", "arg0.small = "),
             ("writeDouble", "arg0.d = arg1"), ("copyField", "arg0.v = arg1.v"),
             ("quietWrite", "arg0.w = arg1"), ("quietCopy", "arg0.v = arg0.w"),
+            ("writeShared", "arg0.a = "), ("writeDup", "arg0.a = "),
         ] {
             let text = try body(rendered, "ClassParam.\(name)")
             #expect(text.contains(expected), Comment(rawValue: "\(path)\n\(text)"))
@@ -50,7 +51,7 @@ private func body(_ rendered: [(name: String, text: String)], _ name: String) th
                  "Fixtures/Sample/libClassParam.size.dylib"] {
         guard let rendered = try await structured(path) else { continue }
         for name in ["optionalWrite", "inoutWrite", "reassignedOnBranch", "reassignedFresh", "walk",
-                     "writeBoxHead", "writeShared", "writeDup"] {
+                     "writeBoxHead"] {
             let text = try body(rendered, "ClassParam.\(name)")
             #expect(text.contains("mem64["), Comment(rawValue: "\(path)\n\(text)"))
             #expect(!text.contains(".v = ") && !text.contains(".head = ") && !text.contains(".a = "),

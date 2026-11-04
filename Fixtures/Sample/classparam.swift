@@ -82,6 +82,7 @@ public func writeBoxHead(_ b: Box<Int>, _ x: Int) { b.head = x + 1 }
 public func readWithGeneric<T>(_ h: Holder, _ t: T) -> Int { h.v + 8 }
 
 // A name a class shares with a value type, and a collision between classes.
+// The qualified name still says which one a parameter is.
 public enum A { public final class Shared { public var a = 1; public init() {} } }
 public enum B { public struct Shared { public var b = 2; public var c = 3; public init() {} } }
 public func readShared(_ s: A.Shared) -> Int { s.a + 9 }
@@ -90,6 +91,7 @@ public enum C1 { public final class Dup { public var a = 1; public var b = 2; pu
 public enum C2 { public final class Dup { public var z = 1; public init() {} } }
 public func readDup(_ d: C1.Dup) -> Int { d.a + 10 }
 public func writeDup(_ d: C1.Dup, _ x: Int) { d.a = x + 3 }
+public func readOtherDup(_ d: C2.Dup) -> Int { d.z + 17 }
 
 // An own field names at its real offset. An inherited one is not in the map.
 public class Base { public final var a = 1; public init() {} }

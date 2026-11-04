@@ -8,13 +8,11 @@ import MachOKit
 /// An entry is a claim that the demangled name in a signature IS this class,
 /// and that its `FieldMap` offsets are what the code uses. So it is keyed by
 /// the exact qualified name (never a last-component match, which would hand
-/// `Other.Holder` this module's `Holder`), and a class goes in only when
-/// nothing about its name or layout is in doubt:
+/// `Other.Holder` this module's `Holder`). That key is what makes a shared
+/// simple name harmless: `A.Shared` and `B.Shared` are different keys, whatever
+/// `FieldMapBuilder` did with the simple one, and a private class has no
+/// qualified key at all. A class goes in unless its layout is in doubt:
 ///
-/// - a simple name a value type also claims, in this image or in any signature
-///   it mentions, is out (`ClassTypeIndex` already refuses to call it a class);
-/// - a simple name `FieldMapBuilder` dropped as a collision is out, though its
-///   qualified key survives: a parameter gets no benefit of the doubt;
 /// - a class published with a class metadata base offset (`…CMo`, what library
 ///   evolution emits, and any class over a resilient base) is out: its offsets
 ///   are the runtime's to give, through `Wvd` globals.
@@ -33,9 +31,7 @@ struct ClassParameterFieldIndex: Sendable {
     ) {
         var maps: [String: FieldMap] = [:]
         for (name, map) in fieldMaps where name.contains(".") {
-            guard let simple = name.split(separator: ".").last.map(String.init),
-                  classTypeIndex.isClass(name), !classTypeIndex.isValueType(name),
-                  classTypeIndex.isClass(simple), fieldMaps[simple] != nil,
+            guard classTypeIndex.isClass(name), !classTypeIndex.isValueType(name),
                   !runtimeLaidOut.contains(name)
             else { continue }
             maps[name] = map
