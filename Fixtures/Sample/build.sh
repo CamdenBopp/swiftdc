@@ -632,6 +632,16 @@ $SWIFTC -parse-as-library -Onone -emit-library -module-name FloatBits floatbits.
 echo "==> a Float's bits read at its own and at a wider width (floatbitswidth.s): fmov w0, s0 and fmov x0, d0"
 $CLANG -arch arm64 -dynamiclib floatbitswidth.s -o libFloatBitsWidth.dylib
 
+echo "==> async witness of another image's protocol: the resilient witness leads to a function pointer record (asyncwitness.swift, -O; strip -x copy)"
+$SWIFTC -parse-as-library -O -emit-library -module-name AsyncWitness asyncwitness.swift -o libAsyncWitness.dylib
+cp libAsyncWitness.dylib libAsyncWitness.stripped.dylib
+strip -x libAsyncWitness.stripped.dylib
+
+echo "==> private types' witnesses of another image's protocol, two under one name (privatewitness.swift, -O; strip -x copy)"
+$SWIFTC -parse-as-library -O -emit-library -module-name PrivateWitness privatewitness.swift -o libPrivateWitness.dylib
+cp libPrivateWitness.dylib libPrivateWitness.stripped.dylib
+strip -x libPrivateWitness.stripped.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release

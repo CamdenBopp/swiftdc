@@ -74,6 +74,9 @@ public struct InterfaceReconstructor: Sendable {
             builder.addExtraDataProvider(SwiftInterfaceBuilderOpaqueTypeProvider(machO: machO))
         }
         try await builder.prepare()
-        return try await builder.printRoot().string
+        let text = try await builder.printRoot().string
+        // The printer's address is the symbol it attributed a member to,
+        // which for a stripped witness is a data slot; see MemberAddressAudit.
+        return options.memberAddresses ? MemberAddressAudit(machO).audit(text).text : text
     }
 }

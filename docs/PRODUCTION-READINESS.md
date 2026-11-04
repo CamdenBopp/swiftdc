@@ -118,6 +118,45 @@ results do not replace previously recorded release performance measurements.
   x - 1`, renders `((-arg0 - 5e-324) != 3.5e-323)`. A slot needs the
   register file it was stored from, so a GPR reload of an FPR store reads
   as `.bitPattern`.
+- **FIXED — `interface --member-addresses` printed data addresses as a
+  member's code.** The printer (MachOSwiftSection) prints the address of
+  the symbol it attributed a member to. A stripped witness of a
+  conformance to another image's protocol has no symbol, so it was named
+  from its requirement, and its address was the `__DATA_CONST,__const`
+  slot dyld binds to the requirement's method descriptor: `sample.stripped`
+  printed `0x1000084B0` for both `Point ==` and `Direction ==`, where the
+  witnesses are `0x100001164` and `0x100001508`. GoodLinks' `StatusView.body`
+  printed a `__const` slot the same way. A protocol requirement printed its
+  method descriptor (`…Tq`), and an async witness its function pointer
+  record (`…TWTu`). Every address comment is now checked
+  (`MemberAddressAudit`): a function start in a code section is kept; a
+  `…Tu` record prints the function it leads to; a requirement slot inside
+  `extension T: P` prints the witness the conformance descriptor lists for
+  it, when exactly one conformance is `T`'s (by qualified name, or for a
+  private type by its own name when no other conformance to `P` could be
+  it); a requirement in a `protocol` body prints no address; anything else
+  prints `?`. Fixtures (`interface --member-addresses`, 247 images): 12
+  files, 96 slots replaced by their witnesses, 2 records by their code,
+  9 requirement addresses dropped, 10 declined (`libPrivateWitness`'s two
+  private `Badge`s, `libAsyncWitness.stripped`'s two async witnesses). Every
+  stripped fixture address now equals its unstripped original's. GoodLinks
+  (stripped): 8,468 address comments, of which 3 were function starts
+  before and 5,151 are now (5,148 recovered), and 3,317 print `?`; the
+  interface is otherwise byte-identical.
+- **OPEN — what `--member-addresses` still declines.** A stripped async
+  witness: the conformance leads to its function pointer record, which no
+  symbol identifies once stripped, and the requirement's flags (the async
+  bit) live in the other image, so the record is not followed. A static
+  stored property whose storage the printer found (`runnerState` in the
+  dyld cache's `libswiftObservation`): its address is data, and nothing
+  yet shows it is that property's storage. Two private types of one name
+  conforming to one protocol (`libPrivateWitness`'s `Badge`s), and a local
+  type (`(Badge in $1340)`): the extension header does not say which
+  conformance it is. Of GoodLinks' 3,317 `?`, 2,786 are in extensions of
+  a `CodingKeys` (private, and one name across many types), 329 of an
+  imported `__C` type and 117 of a position-named local type. A
+  conformance descriptor could settle the private ones if the printer's
+  extension said which descriptor it came from; it does not.
 
 - **FIXED — a setter dispatch folded into an assignment of x0 whatever
   the property's type.** A vtable call to self's own setter renders as
