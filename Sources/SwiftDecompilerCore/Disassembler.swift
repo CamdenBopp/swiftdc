@@ -9155,6 +9155,20 @@ public struct Disassembler: Sendable {
             let exit = sanitizeValue(raw)
             return exit == .unknown ? nil : exit
         }
+        // What an Objective-C exit returns, read from the register the
+        // encoding puts the result in: a `ret`'s x0 or v0, or a passthrough
+        // branch's x0. Anything else is nil. x0 in a method that returns in
+        // v0, v1.. or through x8 is whatever the last call left there, so
+        // `sinkL(1); return 2.5` must not read that call as the result.
+        func objcReturnValue(at insn: Instruction) -> AbstractValue? {
+            guard insn.controlFlow == .return else { return objcPassthroughReturnValue(at: insn) }
+            guard function.objcMethod.map({ !$0.returnsVoid }) == true,
+                  objcReturnsInX0 || objcReturnsOneFloat,
+                  let raw = (objcReturnsInX0 ? analysis.exitValues : analysis.exitFloatValues)[insn.address]
+            else { return nil }
+            let exit = sanitizeValue(raw)
+            return exit == .unknown ? nil : exit
+        }
         // A direct call result rendered in more than one place (a branch
         // condition and the return, two arguments) is one evaluation; spelled
         // out at each use it reads as the call running once per use:
@@ -9305,16 +9319,10 @@ public struct Disassembler: Sendable {
                     collectCallResults(in: value, into: &consumedCallResults)
                 }
             }
-            if function.objcMethod.map({ !$0.returnsVoid }) == true,
-               let value = analysis.exitValues[insn.address] {
-                if insn.controlFlow == .return {
-                    collectCallResults(in: value, into: &consumedCallResults)
-                } else if insn.controlFlow == .branch,
-                          let callee = DisassembledFunction.calleeName(of: insn),
-                          passthroughReturnHelpers.contains(where: callee.hasPrefix)
-                            || !DisassembledFunction.isRuntimeNoise(callee) {
-                    collectCallResults(in: value, into: &consumedCallResults)
-                }
+            // A tail call's own arguments were taken above: x0 at the branch
+            // is one of them or nothing, never the method's result.
+            if let value = objcReturnValue(at: insn) {
+                collectCallResults(in: value, into: &consumedCallResults)
             } else if function.objcMethod == nil, isReturn(insn),
                       normalReturnIsProven(at: insn.address),
                       !throwExits.contains(insn.address), returnsDirectly,
@@ -9508,21 +9516,19 @@ public struct Disassembler: Sendable {
             }
             if isObjCNonVoid, insn.controlFlow == .return, let field = twoWordFieldReturn(at: insn.address) {
                 noteExit(.normal(field))
+            } else if isObjCNonVoid, insn.controlFlow == .return, let exit = objcReturnValue(at: insn) {
+                // A float constant is its value, not its bit pattern.
+                if objcReturnsOneFloat, case .immediate(let bits) = exit,
+                   let constant = Self.renderTypedConstant(
+                    bits: bits, type: function.objcMethod?.typeEncoding.first { !"rnNoORVA".contains($0) } == "f"
+                        ? "Swift.Float" : "Swift.Double") {
+                    noteExit(.normal(constant))
+                } else {
+                    noteExit(.normal(renderReturnValue(exit, before: insn.address)))
+                }
             } else if isObjCNonVoid, objcReturnsInX0 || objcReturnsOneFloat,
-                      let rawExit = insn.controlFlow == .branch || objcReturnsInX0
-                        ? analysis.exitValues[insn.address] : analysis.exitFloatValues[insn.address] {
-                let exit = sanitizeValue(rawExit)
-                if insn.controlFlow == .return, exit != .unknown {
-                    // A float constant is its value, not its bit pattern.
-                    if objcReturnsOneFloat, case .immediate(let bits) = exit,
-                       let constant = Self.renderTypedConstant(
-                        bits: bits, type: function.objcMethod?.typeEncoding.first { !"rnNoORVA".contains($0) } == "f"
-                            ? "Swift.Float" : "Swift.Double") {
-                        noteExit(.normal(constant))
-                    } else {
-                        noteExit(.normal(renderReturnValue(exit, before: insn.address)))
-                    }
-                } else if insn.controlFlow == .branch, let callee {
+                      analysis.exitValues[insn.address] != nil {
+                if insn.controlFlow == .branch, let callee {
                     if let passthrough = objcPassthroughReturnValue(at: insn) {
                         noteExit(.normal(renderReturnValue(passthrough, before: insn.address)))
                     } else if passthroughReturnHelpers.contains(where: callee.hasPrefix) {

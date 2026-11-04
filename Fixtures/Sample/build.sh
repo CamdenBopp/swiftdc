@@ -532,6 +532,10 @@ $CLANG -arch arm64 -O2 -dynamiclib -undefined dynamic_lookup signed32.c -o libSi
 echo "==> Objective-C returns in v0, d0-d3 and through x8 (objcreturns.m, -O2)"
 $CLANG -arch arm64 -O2 -fobjc-arc -dynamiclib -framework Foundation objcreturns.m -o libObjCReturns.dylib
 
+echo "==> Objective-C results outside x0 after a last call (objcvreturns.m, -O2 and -O0)"
+$CLANG -arch arm64 -O2 -fobjc-arc -dynamiclib -framework Foundation objcvreturns.m -o libObjCVReturns.dylib
+$CLANG -arch arm64 -O0 -fobjc-arc -dynamiclib -framework Foundation objcvreturns.m -o libObjCVReturnsO0.dylib
+
 echo "==> calls to async functions, direct and indirect results (asynccalls.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name AsyncCalls asynccalls.swift -o libAsyncCalls.dylib
 

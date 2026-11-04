@@ -8405,3 +8405,22 @@ this Mac.
   is declined, not misplaced. Found beside
   `closureCollectionLoweringMatchesTheCompilersIRIfPresent`, whose own 11
   functions at -Onone, -O and -Osize all agree.
+
+## 2026-11-04: Objective-C results outside x0
+
+- **FIXED ("Keep the last call of an Objective-C method whose result is not
+  in x0", soundness) — a stale x0 erased a method's last call.**
+  `-(double)a4 { sinkL(1); return 2.5; }` is `bl sinkL; fmov d0, #2.5; ret`
+  and rendered `return 2.5` alone. The pass that decides which calls are
+  already printed read x0 at every exit of a non-void method, so the last
+  call counted as consumed by a return that never showed it. The rendered
+  return had moved to the encoded register; this pass had stayed on x0. A
+  tail branch had the same fault, for x0 results too: `sinkL(8); return
+  mkL()` lost `sinkL`. Both now ask `objcReturnValue(at:)`, which reads a
+  `ret`'s x0 or v0 by the encoding and defers to
+  `objcPassthroughReturnValue(at:)` for a branch. A tail call's own
+  arguments are consumed by the argument pass. Fixture `objcvreturns.m`, at
+  -O2 and -O0. Blast radius against the parent commit, every fixture and the
+  swift-syntax dylibs: 3 files, 17 lines, all added statements; listing
+  unchanged. Beyond the fixture: `[self closeRect]` in `-[SDLanes
+  offsetFrame]`, the `bl` at 0x8f8.
