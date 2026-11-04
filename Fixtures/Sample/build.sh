@@ -605,6 +605,12 @@ $SWIFTC -parse-as-library -O -emit-library -module-name StringSelects stringsele
 echo "==> two selects that are no one String pick (string_selects.s)"
 $CLANG -arch arm64 -dynamiclib string_selects.s -o libStringSelectsAsm.dylib
 
+echo "==> a throwing function that hands on a throwing call's outcome (throwforward.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name ThrowForward throwforward.swift -o libThrowForward.dylib
+
+echo "==> forwards and near-forwards of a throwing call, by hand (throw_forward.s)"
+$CLANG -arch arm64 -dynamiclib throw_forward.s -o libThrowForwardAsm.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

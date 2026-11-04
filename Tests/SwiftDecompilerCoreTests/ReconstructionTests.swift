@@ -1217,3 +1217,38 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
         #expect(body.contains("return ?") && !body.contains("\"yes\""), Comment(rawValue: body))
     }
 }
+
+/// A throwing function whose `ret` ends a block ending in a throwing call,
+/// x21 proven zero into the call and untouched after it, hands on the
+/// callee's outcome: `return try` the call's result, in x0, d0 or a
+/// String's two words, or an expression of it. Each read an unresolved
+/// exit. An x21 armed before the call or written after it, a result that
+/// is not the call's, a callee that throws nothing, and a typed-throws
+/// callee stay unresolved (throwforward.swift, throw_forward.s).
+@Test func aThrowingForwardReturnsTryTheCallIfPresent() async throws {
+    let path = "Fixtures/Sample/libThrowForward.dylib"
+    let asm = "Fixtures/Sample/libThrowForwardAsm.dylib"
+    guard FileManager.default.fileExists(atPath: path), FileManager.default.fileExists(atPath: asm) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let byHand = try await withStableDependencies { try await Disassembler().disassemble(path: asm) }
+    func text(_ name: String, in functions: [DisassembledFunction]) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix(name) }).renderStructured()
+    }
+    for (requirement, call) in [("count", "Reader.count(?)"), ("ratio", "Reader.ratio(?)"), ("title", "Reader.title()")] {
+        let body = try text("protocol witness for ThrowForward.Source.\(requirement)()", in: functions)
+        // The call is the return's, not also a statement of its own.
+        #expect(body.contains("return try ") && body.components(separatedBy: call).count == 2
+                && !body.contains("unresolved"), Comment(rawValue: body))
+    }
+    let shifted = try text("ThrowForward.Reader.shifted()", in: functions)
+    #expect(shifted.contains("return try (") && shifted.contains("Reader.count(?) + 1)"), Comment(rawValue: shifted))
+    #expect(try text("ThrowAsm.forward(", in: byHand).contains("return try ThrowAsm.risky(arg0)"))
+    // A call before the forwarded one is bound where it runs.
+    let combined = try text("ThrowAsm.combined(", in: byHand)
+    #expect(combined.contains("let r0 = ThrowAsm.base(arg0)") && combined.contains("return try (ThrowAsm.risky(arg0) + r0)"),
+            Comment(rawValue: combined))
+    for name in ["ThrowAsm.armed(", "ThrowAsm.ignored(", "ThrowAsm.restored(", "ThrowAsm.clobbered(", "ThrowAsm.boxes("] {
+        let body = try text(name, in: byHand)
+        #expect(body.contains("unresolved Swift success/error exit") && !body.contains("return try"), Comment(rawValue: body))
+    }
+}

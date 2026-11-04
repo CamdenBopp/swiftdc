@@ -7708,8 +7708,7 @@ heuristic, so the bins are approximate):
   result or a String field of self is now the return. After: unknown
   248 -> 241, recovered 39 -> 46; over all four swift-syntax dylibs,
   unknown 972 -> 933, recovered 100 -> 139. Fixture `stringreturns.swift`.
-- **FIXED ("Read a String picked by a condition as a ternary", the commit
-  after 766585a) — two selects on one condition were never
+- **FIXED (6f7d865) — two selects on one condition were never
   paired into one String.** A String whose x0 and x1 are selects on the
   same condition is now the ternary of the two Strings each side's words
   spell, nested for a chain: `return (arg0 ? "yes" : "no")`. Selects on
@@ -7728,12 +7727,28 @@ heuristic, so the bins are approximate):
   `mov w0, #0` / `mov w0, #1` before a shared `ret`) are a separate
   cause: a join of more than two predecessors, which the tracer's
   diamond merge does not model.
-- **OPEN — `unsupported-layout-or-value` is all throwing functions whose
-  normal exit is not proven** (179 of 179). 119 `ret` straight after a
-  throwing call, mostly protocol witnesses forwarding a `decode`; x21 at
-  the `ret` is the callee's error, so the exit is the callee's outcome,
-  `return try callee(…)`, which nothing models. The status name hides
-  this; it reads as a layout gap.
+- **FIXED ("Forward a throwing call's outcome as return try", the commit
+  after 6f7d865) — a `ret` straight after a throwing call was an
+  unresolved exit.** `unsupported-layout-or-value` is all throwing
+  functions whose normal exit is not proven (179 of 179 in the plugin
+  library), and 119 of them `ret` straight after a throwing call, mostly
+  protocol witnesses forwarding a `decode`. The exit is the callee's
+  outcome, neither a return nor a throw: where x21 is proven zero into the
+  call and nothing after it writes x21, and the caller's result register
+  is built from the call's result (or a String's two words are it), it
+  now reads `return try callee(…)`, a new `Exit.forwarded` fact with its
+  own probe status, `forwarded`. Plugin library: 179 -> 134, 45
+  forwarded; four dylibs: 273 -> 219, 54 forwarded. Fixtures
+  `throwforward.swift`, `throw_forward.s`.
+- **OPEN — forwards the above does not read.** 74 such `ret`s remain in the
+  plugin library. Most return through x8 or as a multi-word value (`A`,
+  `Optional<Int>`, `UInt128`, existentials); a forward through the
+  caller's x8 buffer needs a fixture before it is claimed, and -O's
+  concrete witnesses copy through a temporary and test x21 instead. A
+  function that saves its entry x21 across an earlier call and restores
+  it (`mov x19, x21` ... `mov x21, x19`, `Reader.combined()`) also stays
+  unresolved: the zero proof does not follow the copy. 60 further exits
+  in the plugin library are unproven for other reasons.
 - **OPEN — generic results** (102): `A`, `Optional<A>`, `A.Index`,
   returned through x8 with a layout only the caller's metadata fixes.
 - **OPEN — Optional results** (38): a payload's tag or extra inhabitant

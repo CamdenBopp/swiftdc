@@ -233,6 +233,10 @@ public struct Instruction: Sendable {
         case `throw`(String)
         /// A throwing function's exit proven neither a return nor a throw.
         case unclassified
+        /// A throwing function's exit that hands on a throwing call's
+        /// outcome, its error in x21 or the rendered value of its result:
+        /// `return try value`.
+        case forwarded(String)
 
         /// The annotation note that carries this exit.
         public var note: String {
@@ -241,6 +245,7 @@ public struct Instruction: Sendable {
             case .normal(nil): DisassembledFunction.normalSwiftExitNote
             case .throw(let error): "throw \(error)"
             case .unclassified: DisassembledFunction.unresolvedSwiftExitNote
+            case .forwarded(let value): "return try \(value)"
             }
         }
 
@@ -258,6 +263,7 @@ public struct Instruction: Sendable {
             case .normal(nil): "return"
             case .throw(let error): "throw \(error)"
             case .unclassified: DisassembledFunction.unresolvedSwiftExitStatement
+            case .forwarded(let value): "return try \(value)"
             }
         }
     }
@@ -8558,6 +8564,73 @@ public struct Disassembler: Sendable {
             return syncNoErrorPoints.contains(address) || entryX21Exits.contains(address)
         }
 
+        // A synchronous throwing function whose `ret` ends a block that
+        // ends in a throwing call, with nothing after the call writing x21,
+        // and x21 proven zero going into the call: the callee leaves x21 as
+        // its error, or as the zero it was handed, so the exit throws
+        // exactly when the callee threw. It is neither a proven return nor
+        // a throw but the callee's outcome handed on (`return try …`).
+        // Without the zero into the call, a callee's success could leave a
+        // stale x21 the caller reads as an error.
+        let throwingForwardCalls: [UInt64: UInt64] = {
+            guard let signature = throwsSignature, signature.isThrowing, !signature.isAsync,
+                  function.objcMethod == nil, !opaqueErrorProofTransfer, !errorProofBlocks.isEmpty
+            else { return [:] }
+            var calls: [UInt64: UInt64] = [:]
+            for block in errorProofBlocks {
+                guard let last = block.instructions.last, last.controlFlow == .return,
+                      !normalReturnIsProven(at: last.address), !throwExits.contains(last.address),
+                      !mergedThrowExits.contains(last.address),
+                      let callIndex = block.instructions.lastIndex(where: { $0.controlFlow == .call })
+                else { continue }
+                let after = block.instructions[(callIndex + 1)...].dropLast()
+                guard after.allSatisfy({ insn in
+                    (insn.controlFlow ?? .sequential) == .sequential && insn.detail.map { !$0.writtenRegisterKeys.contains("x21") } == true
+                }) else { continue }
+                let call = block.instructions[callIndex]
+                guard syncNoErrorPoints.contains(call.address),
+                      let callee = DisassembledFunction.calleeName(of: call),
+                      let calleeSignature = DisassembledFunction.splitSignature(callee),
+                      calleeSignature.isThrowing, !calleeSignature.isAsync,
+                      // A typed error does not travel as an `any Error` in
+                      // x21; forwarding one is a box or a rethrow of it.
+                      calleeSignature.thrownType == nil, signature.thrownType == nil
+                else { continue }
+                calls[last.address] = call.address
+            }
+            return calls
+        }()
+
+        /// What a forwarding `ret` returns when the callee did not throw,
+        /// as a value: the caller's result register built from the call's
+        /// result (`count() + 1`), or a String's two words that are the
+        /// call's whole String result. Nil when the value is not the call's
+        /// (`mov x0, #7`), or the result does not travel in those registers.
+        func throwingForwardValue(at address: UInt64) -> AbstractValue? {
+            guard let site = throwingForwardCalls[address] else { return nil }
+            // A result through x8 is not read here.
+            guard returnsDirectly else { return nil }
+            if let register = functionReturnRegister {
+                guard let raw = (register == .floating ? analysis.exitFloatValues : analysis.exitValues)[address]
+                else { return nil }
+                var calls = Set<UInt64>()
+                collectCallResults(in: sanitizeValue(raw), into: &calls)
+                return calls.contains(site) ? raw : nil
+            }
+            if swiftStringReturnCall(at: address) == site { return .callResult(site) }
+            return nil
+        }
+
+        /// A forwarding `ret`'s value rendered, or nil when it is `?` or an
+        /// unresolved call.
+        func throwingForward(at address: UInt64) -> String? {
+            guard let value = throwingForwardValue(at: address) else { return nil }
+            let rendered = functionReturnRegister != nil
+                ? renderReturnValue(value, before: address) : renderValue(value, depth: 0)
+            guard rendered != "?", !rendered.contains("/* unresolved") else { return nil }
+            return rendered
+        }
+
         // Which calls' indirect results are read back by word anywhere that
         // renders: a return value, a call argument, a condition, a field store,
         // or a field-wise indirect return. Each such call is bound once.
@@ -8683,6 +8756,9 @@ public struct Disassembler: Sendable {
                 swiftStringReturnCall(at: insn.address).map { countDirectUses(.callResult($0), at: insn.address) }
             }
         }
+        for address in throwingForwardCalls.keys {
+            throwingForwardValue(at: address).map { countDirectUses($0, at: address) }
+        }
         for address in asyncReturns where normalReturnIsProven(at: address) && !throwExits.contains(address) {
             let value = asyncReturnRegister == .floating ? analysis.exitFloatValues[address] : analysis.exitValues[address]
             if asyncReturnRegister != nil, let value { countDirectUses(value, at: address) }
@@ -8794,6 +8870,9 @@ public struct Disassembler: Sendable {
                       let site = swiftStringReturn(at: insn.address)?.consumedSite {
                 // A String return that is a call's whole result consumes it.
                 consumedCallResults.insert(site)
+            } else if let value = throwingForwardValue(at: insn.address) {
+                // So does a forwarded throwing call.
+                collectCallResults(in: value, into: &consumedCallResults)
             } else if asyncReturns.contains(insn.address), normalReturnIsProven(at: insn.address), !throwExits.contains(insn.address),
                       let returnRegister = asyncReturnRegister {
                 let value = returnRegister == .floating
@@ -8897,6 +8976,7 @@ public struct Disassembler: Sendable {
             // A `return …` or `throw …` note, not a throwing function's verdict.
             var notedReturnOrThrow: Bool { exits.contains { $0 != .unclassified && $0 != .normal(nil) } }
             var notedThrow: Bool { exits.contains { if case .throw = $0 { true } else { false } } }
+            var notedForward: Bool { exits.contains { if case .forwarded = $0 { true } else { false } } }
             // Each statement is a note and a fact, appended in step; the
             // instruction carries the first, as the notes' order gave it.
             var statements: [Instruction.Statement] = []
@@ -9257,9 +9337,12 @@ public struct Disassembler: Sendable {
                 noteExit(.normal("?"))
             }
 
+            if isReturn(insn), let forwarded = throwingForward(at: insn.address) {
+                noteExit(.forwarded(forwarded))
+            }
             if isReturn(insn), throwsSignature?.isThrowing == true,
                !normalReturnIsProven(at: insn.address), !throwExits.contains(insn.address),
-               !mergedThrowExits.contains(insn.address), !notedThrow {
+               !mergedThrowExits.contains(insn.address), !notedThrow, !notedForward {
                 noteExit(.unclassified)
             }
             // A proven normal exit with no result to print still says so: with
@@ -9280,6 +9363,7 @@ public struct Disassembler: Sendable {
                     displayName: function.analysisDisplayName, objcSignature: function.objcMethod?.signature)
                 let status = scalarTailReturns.contains(insn.address) ? "tail-call"
                     : throwExits.contains(insn.address) ? "throw"
+                    : notedForward ? "forwarded"
                     : renderedReturn == "return ?" ? "unknown"
                     : renderedReturn != nil ? (completeReturnRendering[insn.address] == false ? "partial" : "recovered")
                     : !returnsValue ? (DisassembledFunction.signatureKnown(displayName: function.analysisDisplayName,
