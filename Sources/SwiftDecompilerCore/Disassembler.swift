@@ -4750,6 +4750,28 @@ public struct Disassembler: Sendable {
         return String(name)
     }
 
+    /// Whether a function signature specialization changed `self`'s
+    /// parameter, which makes it thin: no swiftself, so x20 at a call to it
+    /// is whatever the caller left there (`shouldModifySelfArgument`,
+    /// swift/lib/SILOptimizer/FunctionSignatureTransforms). Self is the
+    /// parameter after the formals, so an `Arg[n]` at or past their count
+    /// names it. With an indirect result counted in, that `n` may be the
+    /// last formal instead, and self is declined all the same.
+    /// `<Arg[2] = Dead> of static FixIt.MultiNodeChange.makeMissing(_:_:)`
+    /// read `makeMissing(self: sub_85a0(?), …)` for a value parked in x20.
+    static func signatureSpecializationRewritesSelf(_ callee: String) -> Bool {
+        let name = callee.hasPrefix("merged ") ? String(callee.dropFirst("merged ".count)) : callee
+        guard name.hasPrefix("function signature specialization <") else { return false }
+        let original = withoutSpecializationClauses(name)
+        let formals = DisassembledFunction.splitSignature(original).flatMap { signature in
+            DisassembledFunction.outermostArgumentListRange(of: signature.head).map {
+                DisassembledFunction.splitTopLevelArguments(signature.head[$0]).count
+            }
+        } ?? 0
+        let clauses = name.dropLast(original.count)
+        return clauses.matches(of: #/Arg\[(\d+)\]/#).contains { Int($0.output.1).map { $0 >= formals } ?? true }
+    }
+
     /// Whether a function's registers still follow the signature its name
     /// prints. A function signature specialization prints its original's
     /// signature but may change the parameters: `Arg[0] = Dead` drops one,
@@ -6663,7 +6685,8 @@ public struct Disassembler: Sendable {
             }
             if let callee = calleeByAddress[insn.address] {
                 if DisassembledFunction.receivesThinMetatype(callee, classTypeIndex: classTypeIndex)
-                    || DisassembledFunction.takesNoSelf(callee) { continue }
+                    || DisassembledFunction.takesNoSelf(callee)
+                    || Self.signatureSpecializationRewritesSelf(callee) { continue }
                 // A frozen standard-library struct's method takes `self` in
                 // x20 only by address, when it is mutating; a non-mutating
                 // one takes `self`'s words after its formals, and a static

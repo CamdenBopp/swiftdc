@@ -7936,6 +7936,15 @@ heuristic, so the bins are approximate):
   to the field itself replaced the value; both are tested. A condition on
   an argument still pairs across a store. Fixtures `selectstore.swift`,
   `select_store.s`.
+- **FIXED (soundness) — a specialization that rewrote self's parameter
+  took a parked x20 as its `self:`.** Changing self (`Dead`, `Exploded`,
+  `Owned To Guaranteed`) makes the specialization thin
+  (`shouldModifySelfArgument` in FunctionSignatureOpts.cpp), so x20 at a
+  call to it is whatever the caller left there.
+  `<Arg[2] = Dead> of static FixIt.MultiNodeChange.makeMissing(_:_:)` read
+  `makeMissing(self: sub_85a0(?), …)`. Self is the parameter after the
+  formals, so an `Arg[n]` at or past their count now declines the label.
+  Fixtures `tfself.swift`, `tf_self.s`.
 - **OPEN — a resilient value type's self is not seeded through x20.** The
   30 String returns left in the plugin library are CodingKey
   `stringValue` and enum `rawValue` getters of types in a

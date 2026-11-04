@@ -659,6 +659,11 @@ $CLANG -arch arm64 -c select_store.s -o select_store.o
 $SWIFTC -parse-as-library -O -emit-library -module-name SelectStore selectstore.swift select_store.o -o libSelectStore.dylib
 rm -f select_store.o
 
+echo "==> a specialization that rewrites self's parameter takes no self in x20 (tfself.swift, tf_self.s, -O)"
+$CLANG -arch arm64 -c tf_self.s -o tf_self.o
+$SWIFTC -parse-as-library -O -emit-library -module-name TfSelf tfself.swift tf_self.o -o libTfSelf.dylib
+rm -f tf_self.o
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

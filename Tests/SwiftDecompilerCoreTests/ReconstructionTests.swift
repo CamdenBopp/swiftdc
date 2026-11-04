@@ -1400,3 +1400,24 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
         #expect(body.contains("return ?") && !body.contains("\"yes\""), Comment(rawValue: body))
     }
 }
+
+/// A function signature specialization that rewrites self's parameter is
+/// thin, so x20 at a call to it is no `self:`. `Arg[2] = Dead` of a two-formal
+/// static drops the metatype, and the caller's value parked in x20 read as
+/// its self. `Arg[0] = Dead` drops a formal, and self stays
+/// (tfself.swift, tf_self.s).
+@Test func aSpecializationThatRewritesSelfTakesNoSelfIfPresent() async throws {
+    let path = "Fixtures/Sample/libTfSelf.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix(name) }).renderStructured()
+    }
+    let caller = try text("TfSelf.caller(")
+    #expect(caller.contains("TfSelf.Maker.make(") && !caller.contains("self:"), Comment(rawValue: caller))
+    let outer = try text("TfSelf.Box.outer(")
+    #expect(outer.contains("self: arg0"), Comment(rawValue: outer))
+    #expect(Disassembler.signatureSpecializationRewritesSelf(
+        "merged function signature specialization <Arg[1] = Dead> of M.T.x.getter : Swift.Int"))
+    #expect(!Disassembler.signatureSpecializationRewritesSelf("generic specialization <Swift.Int> of M.T.f(Swift.Int) -> ()"))
+}
