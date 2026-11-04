@@ -626,11 +626,12 @@ public struct ObjCMetadataIndex: Sendable {
             visiting.insert(className)
             var result = cls.superClassName.map { ivars(of: $0, visiting: visiting) } ?? []
             result.append(contentsOf: cls.ivars.filter { $0.offset != ObjCMetadataSnapshot.runtimeIvarOffset })
-            // A corrupt image should not create overlapping ranges. Prefer the
-            // most-derived declaration at a duplicate absolute offset.
-            var byOffset: [Int: ObjCIvarInfo] = [:]
-            for ivar in result { byOffset[ivar.offset] = ivar }
-            let normalized = byOffset.values.sorted { $0.offset < $1.offset }
+            // An offset two ivars claim names neither: bitfields in one byte
+            // all report that byte, and only the bit the code reads tells them
+            // apart. A corrupt image reaches the same answer.
+            let normalized = Dictionary(grouping: result, by: \.offset).values
+                .compactMap { $0.count == 1 ? $0[0] : nil }
+                .sorted { $0.offset < $1.offset }
             ivarCache[className] = normalized
             return normalized
         }

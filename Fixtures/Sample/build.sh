@@ -386,6 +386,9 @@ xcrun clang -arch arm64 -dynamiclib absolutesymbols.s -o libAbsoluteSymbols.dyli
 echo "==> a negative symbol offset (negativeabsolute.s): N_ABS with bit 63 set, beside a folded address"
 xcrun clang -arch arm64 -dynamiclib negativeabsolute.s -o libNegativeAbsolute.dylib
 
+echo "==> bitfield ivars sharing an offset (objcbitfields.m, -O1): only the bit tells them apart"
+xcrun clang -arch arm64 -O1 -dynamiclib -framework Foundation objcbitfields.m -o libObjCBitfields.dylib
+
 echo "==> SVE writes to z registers (sveregisters.s): no scalar model, and z0 aliases v0"
 xcrun clang -arch arm64 -march=armv8-a+sve -dynamiclib sveregisters.s -o libSVERegisters.dylib
 
