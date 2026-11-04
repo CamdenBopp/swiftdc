@@ -1216,11 +1216,48 @@ because it cannot be distinguished from a right one by reading the output.
   `OUTLINED_FUNCTION`s); async funclets are flagged too but are never `bl`ed. In
   -Osize code a function whose epilogue is itself a fragment (`b
   OUTLINED_FUNCTION_9` restores x19/x20) is flagged as well: sound, imprecise,
-  and fixed by following fragments (below). Not fixed: readability. `ReconError.hashValue` reads
-  `OUTLINED_FUNCTION_36(); Hasher._combine(0); OUTLINED_FUNCTION_9(
-  OUTLINED_FUNCTION_35())` where the source is `Hasher(_seed: 0)`, `_combine`,
-  `_finalize`; inlining each fragment's few instructions into its caller would
-  read as source. Fixtures `libReconstruction.osize{,.stripped}.dylib`.
+  and fixed by following fragments (below). Fixtures
+  `libReconstruction.osize{,.stripped}.dylib`.
+  - **PARTLY FIXED (readability): a fragment the tracer can model whole is
+    inlined at its site.** `ReconError.hashValue` read
+    `OUTLINED_FUNCTION_36(); Hasher._combine(0); OUTLINED_FUNCTION_9(
+    OUTLINED_FUNCTION_35())`; it now reads `Swift.Hasher.init(0)`,
+    `Swift.Hasher._combine(self: local_68, 0)`, `return
+    Swift.Hasher._finalize(self: local_68)`, named and stripped, as the -O
+    build does. A fragment (`OutlinedFragment`) is at most 12 straight-line
+    instructions ending in `ret` or a direct `b`, named `OUTLINED_FUNCTION_n`,
+    or nameless with a body that breaks AAPCS64 on entry (reads x9–x19 or
+    x23–x29, writes a callee-saved register it never saved, or uses sp before
+    making a frame). The site becomes what the fragment does there: its call
+    (`bl` to `b T`), tail call (`b` to `b T`), last instruction (`bl` to
+    `ret`) or the caller's return (`b` to an epilogue), and the tracer runs
+    the rest first, at the site's address. `xrefs` still reads the site as a
+    `bl`/`b` to the fragment (`Facts.inlinedFragment`), the listing notes
+    `inlined bl OUTLINED_FUNCTION_36`, and the passes that read instructions
+    rather than tracer states take the prefix's writes as the call's clobbers
+    (`clobbers(atCall:)`). Measured with `--probe` (`values.outlined-*`):
+    Reconstruction -Osize inlines 60 sites (37 call, 4 tail call, 6 value, 13
+    return) and declines 82; stripped, 31 and 13; system libswift_Concurrency
+    10 and 1, its 20 changed structured lines all `dispatch_once_f(…)`,
+    `concurrencyEnableTaskSlabAllocator()`, a store and `w8 == 1` in place
+    of fragment calls. Tests `outlinedFragmentsReadAsTheCodeTheyReplaceIfPresent`,
+    `anInlinedSiteStaysACallToItsFragmentInTheCallGraphIfPresent` and the
+    synthetic plan tests, each seen red. `libOutlinedFrame` (`outlined_frame.s`)
+    pins three of the four `clobbers(atCall:)` sites: a fragment that moves
+    x29 ahead of an x21 reload, and two that rewrite an async function's x20.
+    The fourth, `callPreservesX21`, cannot differ while the plan declines any
+    prefix touching x21.
+  - **OPEN: what is still declined.** A site keeps the call whenever a pass
+    outside the tracer would miss the fragment's effect: a store or load
+    before the site's own instruction, x21/x22 touched, sp moved or a
+    callee-saved register written mid-function, x30 read, v0-v7 set for a
+    call (an untyped send counts them in its own block). The largest group
+    is a `b` to a fragment that sets the result (`b OUTLINED_FUNCTION_8`,
+    `add w0, w8, #1; ret`): 53 of the 82 Reconstruction declines, since
+    exit passes that scan back from a `ret` would not see x0 written. A
+    nameless fragment whose body reads like an AAPCS64 function (`mov w2,
+    #7; b swift_allocObject`) stays `sub_…` stripped. A fragment that
+    tail-calls another stays a call (`chained`).
 - **FIXED for the printf family — a variadic call's stack arguments were
   dropped, and a scratch x1 read as one.** `printf`, `fprintf`, `dprintf`,
   `sprintf`, `snprintf`, `asprintf`, `syslog`, `NSLog` and

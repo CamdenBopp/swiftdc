@@ -114,6 +114,9 @@ $CLANG -arch arm64 -dynamiclib fixpoint_order.s -o libFixpointOrder.dylib
 echo "==> callee-saved registers clobbered through nested and tail calls (preserve_calls.s)"
 $CLANG -arch arm64 -dynamiclib preserve_calls.s -o libPreserveCalls.dylib
 
+echo "==> an inlined outlined fragment that moves x29 before an x21 reload (outlined_frame.s)"
+$CLANG -arch arm64 -dynamiclib -undefined dynamic_lookup outlined_frame.s -o libOutlinedFrame.dylib
+
 echo "==> a String result's second word copied into x20 before a call (string_high_receiver.s)"
 $CLANG -arch arm64 -dynamiclib string_high_receiver.s -o libStringHighReceiver.dylib -L"$(xcrun --show-sdk-path)/usr/lib/swift" -lswiftCore
 

@@ -65,7 +65,14 @@ public struct CallGraph: Sendable {
         for function in functions {
             let first = function.startAddress
             let last = function.instructions.last?.address ?? first
-            for insn in function.instructions {
+            for analysed in function.instructions {
+                // A site rewritten to what its outlined fragment does is,
+                // in the binary, a `bl` or `b` to the fragment.
+                let insn = analysed.inlinedFragment.map { origin in
+                    Instruction(address: analysed.address, text: analysed.text,
+                                controlFlow: origin.reachedByCall ? .call : .branch,
+                                branchTarget: origin.address, callee: .kept(nil))
+                } ?? analysed
                 let isTailCall: Bool
                 switch insn.controlFlow {
                 case .call:
@@ -125,7 +132,8 @@ public struct CallGraph: Sendable {
         let instructions = function.instructions
         var kept: [Instruction] = []
         for (index, insn) in instructions.enumerated()
-        where insn.controlFlow == .call || insn.controlFlow == .branch || index == instructions.count - 1 {
+        where insn.controlFlow == .call || insn.controlFlow == .branch || insn.inlinedFragment != nil
+            || index == instructions.count - 1 {
             kept.append(Instruction(
                 address: insn.address, text: insn.text, annotation: insn.annotation,
                 controlFlow: insn.controlFlow, branchTarget: insn.branchTarget, callee: .kept(insn.callee),

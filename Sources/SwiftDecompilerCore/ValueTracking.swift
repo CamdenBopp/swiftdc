@@ -604,6 +604,34 @@ public struct ValueTracer: Sendable {
     /// saving (`CalleeRegisterSummary`): an outlined fragment reached by `bl`
     /// does not preserve them, so they are forgotten after a call to it.
     var calleeClobbers: [UInt64: Set<String>] = [:]
+    /// Site address → the outlined fragment's instructions that run before
+    /// the site's own (`Disassembler.inliningOutlinedFragments`), each at the
+    /// site's address. The site is what the fragment does there: its call,
+    /// tail call, last instruction or return.
+    var inlinedPrefixes: [UInt64: [Instruction]] = [:]
+
+    /// The registers a call may leave changed that AAPCS64 says it keeps:
+    /// its callee's own clobbers, and what an inlined fragment wrote before
+    /// it. A pass that reads the instructions rather than the tracer's
+    /// states asks this, since a fragment's prefix is in no instruction list.
+    func clobbers(atCall insn: Instruction) -> Set<String> {
+        var keys = insn.branchTarget.flatMap { calleeClobbers[$0] } ?? []
+        for prefix in inlinedPrefixes[insn.address] ?? [] { keys.formUnion(prefix.detail?.writtenRegisterKeys ?? []) }
+        return keys
+    }
+
+    /// The function's blocks with each inlined site's prefix before it.
+    private func expandingInlinedPrefixes(_ blocks: [BasicBlock]) -> [BasicBlock] {
+        guard !inlinedPrefixes.isEmpty else { return blocks }
+        return blocks.map { block in
+            guard block.instructions.contains(where: { inlinedPrefixes[$0.address] != nil }) else { return block }
+            return BasicBlock(
+                startAddress: block.startAddress,
+                instructions: block.instructions.flatMap { (inlinedPrefixes[$0.address] ?? []) + [$0] },
+                successors: block.successors, switchCases: block.switchCases)
+        }
+    }
+
     /// In-image call targets whose bodies write no field of any object
     /// (`CalleeRegisterSummary.writesNoFields`).
     var fieldPreservingCallees: Set<UInt64> = []
@@ -995,9 +1023,12 @@ public struct ValueTracer: Sendable {
         _ function: DisassembledFunction,
         entry: MethodEntryConvention?
     ) -> FunctionAnalysis {
-        let blocks = function.basicBlocks()
+        let blocks = expandingInlinedPrefixes(function.basicBlocks())
         guard !blocks.isEmpty else { return FunctionAnalysis() }
         let blockByStart = Dictionary(blocks.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
+        // The frame layout reads the function's own instructions: an address
+        // a fragment takes is a boundary it misses, which only widens what an
+        // escape forgets.
         let facts = FunctionFacts(function, cache: callFactsCache, inImageTargets: inImageCallTargets)
 
         var predecessors: [UInt64: [UInt64]] = [:]

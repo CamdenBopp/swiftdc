@@ -59,6 +59,16 @@ extension ProbeEvent {
 }
 
 extension ProbeEvent {
+    // MARK: values (outlined fragments)
+    static let outlinedFragmentInlined = ProbeEvent(
+        "values.outlined-inlined", .values, .decision,
+        "A `bl` or `b` to an outlined fragment became what the fragment does there; kind is call, tail-call, value, store or return, instructions how many it ran.")
+    static let outlinedFragmentDeclined = ProbeEvent(
+        "values.outlined-declined", .values, .decline,
+        "A `bl` or `b` to an outlined fragment stays a call; reason is undecoded, link-register, error-or-context-register, chained, float-argument, memory, stack-pointer, callee-saved, empty, terminator or result-register.")
+}
+
+extension ProbeEvent {
     // MARK: abi
     static let argumentLayout = ProbeEvent(
         "abi.argument-layout", .abi, .decision,

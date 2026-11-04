@@ -164,6 +164,10 @@ public struct Instruction: Sendable {
         /// witness for A`): the requirement's printed signature, which
         /// gives the call its parameters. The note is the callee's name.
         public var witnessRequirement: String?
+        /// The site was a `bl` or `b` to an outlined fragment, and is now
+        /// what the fragment does there (`inlined …`). The call graph reads
+        /// the site as the call or branch to the fragment it is in the binary.
+        public var inlinedFragment: InlinedFragment? = nil
 
         public init(
             exit: Exit? = nil,
@@ -193,6 +197,17 @@ public struct Instruction: Sendable {
             self.isSelfDispatch = isSelfDispatch
         }
     }
+
+    /// Where an inlined site's instruction came from (`Facts.inlinedFragment`).
+    public struct InlinedFragment: Sendable, Equatable {
+        /// The fragment's start: the site's branch target in the binary.
+        public let address: UInt64
+        /// The site was a `bl`; otherwise a `b`.
+        public let reachedByCall: Bool
+    }
+
+    /// `facts.inlinedFragment`.
+    public var inlinedFragment: InlinedFragment? { factBox?.facts.inlinedFragment }
 
     private final class FactBox: Sendable {
         let facts: Facts
@@ -769,6 +784,7 @@ public struct Disassembler: Sendable {
         var targets = Set<UInt64>()
         var indirectResultUses: [UInt64: IndirectResultUse] = [:]
         var registerSummaries: [UInt64: CalleeRegisterSummary] = [:]
+        var outlinedFragments: [UInt64: OutlinedFragment] = [:]
         let functionStarts = Set(boundaries)
         let isFunction = { (target: UInt64) in functionStarts.contains(target) }
         let arity = { [names] target in
@@ -795,6 +811,8 @@ public struct Disassembler: Sendable {
                     metadataNames: metadataNames, objcIndex: objcIndex
                 )
                 indirectResultUses[boundaries[index]] = Self.indirectResultUse(of: function)
+                outlinedFragments[boundaries[index]] = OutlinedFragment(
+                    start: boundaries[index], instructions: function.instructions)
                 registerSummaries[boundaries[index]] = CalleeRegisterSummary.of(
                     Self.withJumpTables(function, machO: machO, ranges: fileRanges),
                     calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub)
@@ -891,6 +909,7 @@ public struct Disassembler: Sendable {
                 in: machO, fieldMaps: fieldMaps, classTypeIndex: classTypeIndex, demangle: demangle),
             indirectResultUses: indirectResultUses,
             registerSummaries: registerSummaries,
+            outlinedFragments: outlinedFragments,
             asyncIndex: asyncIndex, asyncChainSlots: chainSlots
         )
 
@@ -1379,18 +1398,10 @@ public struct Disassembler: Sendable {
             function: { groupedByStart[$0] },
             enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex
         )
-        let context = PerFunctionContext(
-            resolver: resolver, swiftTargets: swiftTargets, objcIndex: objcIndex,
-            fieldMaps: fieldMaps, selfIndex: selfIndex, vtableIndex: vtableIndex,
-            enumCaseIndex: enumCaseIndex, payloadEnumIndex: payloadEnumIndex,
-            classTypeIndex: classTypeIndex,
-            classParameterFields: ClassParameterFieldIndex.build(
-                in: machO, fieldMaps: fieldMaps, classTypeIndex: classTypeIndex, demangle: demangle),
-            indirectResultUses: Dictionary(
-                functions.map { ($0.startAddress, Self.indirectResultUse(of: $0)) },
-                uniquingKeysWith: { a, _ in a }
-            ),
-            registerSummaries: {
+        // The bodies the summaries decode, the filtered run's callees
+        // included, are where a call site finds its outlined fragment.
+        var outlinedFragments: [UInt64: OutlinedFragment] = [:]
+        let registerSummaries: [UInt64: CalleeRegisterSummary] = {
                 let isFunction = { (target: UInt64) in boundaries.contains(target) }
                 let importStubs = CodeSection.importStubRanges(of: machO)
                 let isImportStub = { (target: UInt64) in importStubs.contains { $0.contains(target) } }
@@ -1452,8 +1463,24 @@ public struct Disassembler: Sendable {
                     }
                 }
                 CalleeRegisterSummary.closeOverFieldWrites(&summaries) { resolvedNames[$0] }
+                for (start, body) in bodies {
+                    outlinedFragments[start] = OutlinedFragment(start: start, instructions: body.instructions)
+                }
                 return summaries
-            }(),
+            }()
+        let context = PerFunctionContext(
+            resolver: resolver, swiftTargets: swiftTargets, objcIndex: objcIndex,
+            fieldMaps: fieldMaps, selfIndex: selfIndex, vtableIndex: vtableIndex,
+            enumCaseIndex: enumCaseIndex, payloadEnumIndex: payloadEnumIndex,
+            classTypeIndex: classTypeIndex,
+            classParameterFields: ClassParameterFieldIndex.build(
+                in: machO, fieldMaps: fieldMaps, classTypeIndex: classTypeIndex, demangle: demangle),
+            indirectResultUses: Dictionary(
+                functions.map { ($0.startAddress, Self.indirectResultUse(of: $0)) },
+                uniquingKeysWith: { a, _ in a }
+            ),
+            registerSummaries: registerSummaries,
+            outlinedFragments: outlinedFragments,
             asyncIndex: asyncIndex, asyncChainSlots: chainSlots
         )
         functions = functions.map { analyzeFunction($0, context: context) }
@@ -1511,6 +1538,9 @@ public struct Disassembler: Sendable {
         /// Function start → what its body proves about the registers a call to
         /// it reads and clobbers, for callees no signature describes.
         var registerSummaries: [UInt64: CalleeRegisterSummary] = [:]
+        /// Function start → its body, when it is short and straight-line
+        /// enough to be an outlined fragment a call site can inline.
+        var outlinedFragments: [UInt64: OutlinedFragment] = [:]
         /// Async funclet chains and their suspension points.
         let asyncIndex: AsyncFuncletIndex
         /// Per resume funclet, the context-slot values definitely initialized
@@ -1659,6 +1689,8 @@ public struct Disassembler: Sendable {
         var function = annotateReferences(in: rawFunction, resolver: context.resolver)
         function = annotateCallTargets(in: function, resolver: context.resolver)
         function = Self.droppingSelfBranchCallees(function)
+        let inlined = inliningOutlinedFragments(in: function, context: context)
+        function = inlined.function
         let tables = JumpTables.recognize(
             in: function, machO: context.resolver.machO, ranges: context.resolver.fileRanges)
         if !tables.isEmpty { function = function.attachingSwitchTargets(tables) }
@@ -1774,9 +1806,77 @@ public struct Disassembler: Sendable {
             objcIndex: context.objcIndex,
             registerSummaries: context.registerSummaries,
             selfMembers: context.selfMembers,
-            callResultBanks: context.callResultBanks
+            callResultBanks: context.callResultBanks,
+            inlinedPrefixes: inlined.prefixes
         )
     }
+
+    /// Each `bl` or `b` to an outlined fragment the tracer can model whole,
+    /// rewritten to what the fragment does there (`OutlinedFragment.plan`),
+    /// and the fragment instructions the tracer runs first at each.
+    ///
+    /// A fragment is the function at the target when the binary names it
+    /// `OUTLINED_FUNCTION_n`, or when it has no name and its body breaks the
+    /// calling convention (`breaksCallingConvention`): a stripped binary
+    /// keeps only the body. A named function is never inlined, however
+    /// short: its call is the source's.
+    private func inliningOutlinedFragments(
+        in function: DisassembledFunction, context: PerFunctionContext
+    ) -> (function: DisassembledFunction, prefixes: [UInt64: [Instruction]]) {
+        guard !context.outlinedFragments.isEmpty else { return (function, [:]) }
+        let own = Set(function.instructions.map(\.address))
+        let resolver = context.resolver
+        func isFragment(_ target: UInt64) -> Bool {
+            guard let fragment = context.outlinedFragments[target] else { return false }
+            let name = resolver.callTargetName(at: target)
+            if name?.hasPrefix(Self.outlinedFragmentPrefix) == true { return true }
+            return (name == nil || name?.hasPrefix("sub_") == true) && fragment.breaksCallingConvention
+        }
+        var annotated: [UInt64: OutlinedFragment] = [:]
+        var prefixes: [UInt64: [Instruction]] = [:]
+        var changed = false
+        let instructions = function.instructions.map { insn -> Instruction in
+            guard insn.controlFlow == .call || insn.controlFlow == .branch,
+                  let target = insn.branchTarget, !own.contains(target),
+                  let fragment = context.outlinedFragments[target], isFragment(target)
+            else { return insn }
+            // Named as the caller's own passes name its instructions, so a
+            // call the fragment makes reads like a call the caller makes.
+            let named: OutlinedFragment
+            if let cached = annotated[target] {
+                named = cached
+            } else {
+                var pieces = DisassembledFunction(
+                    symbol: "sub_\(String(target, radix: 16))", demangledName: nil, startAddress: target,
+                    instructions: fragment.body + [fragment.terminator], source: .address)
+                pieces = annotateReferences(in: pieces, resolver: resolver)
+                pieces = annotateCallTargets(in: pieces, resolver: resolver)
+                guard let rebuilt = OutlinedFragment(start: target, instructions: pieces.instructions) else { return insn }
+                annotated[target] = rebuilt
+                named = rebuilt
+            }
+            let name = resolver.callTargetName(at: target) ?? "sub_\(String(target, radix: 16))"
+            switch fragment.plan(site: insn, reachedByCall: insn.controlFlow == .call, annotated: named,
+                                 name: name, isFragment: isFragment) {
+            case .declined(let reason):
+                Probe.record(.outlinedFragmentDeclined, at: insn.address, [
+                    "fragment": .int(Int(target)), "reason": .label(reason),
+                ])
+                return insn
+            case .inlined(let plan):
+                Probe.record(.outlinedFragmentInlined, at: insn.address, [
+                    "fragment": .int(Int(target)), "kind": .label(plan.kind), "instructions": .int(plan.prefix.count + 1),
+                ])
+                prefixes[insn.address] = plan.prefix
+                changed = true
+                return plan.visible
+            }
+        }
+        return changed ? (function.replacingInstructions(instructions), prefixes) : (function, [:])
+    }
+
+    /// LLVM's machine outliner names its fragments `OUTLINED_FUNCTION_<n>`.
+    static let outlinedFragmentPrefix = "OUTLINED_FUNCTION_"
 
     // MARK: - Async funclets
 
@@ -5957,7 +6057,8 @@ public struct Disassembler: Sendable {
         objcIndex: ObjCMetadataIndex? = nil,
         registerSummaries: [UInt64: CalleeRegisterSummary] = [:],
         selfMembers: SelfMemberCache = SelfMemberCache(),
-        callResultBanks: CallResultBankCache = CallResultBankCache()
+        callResultBanks: CallResultBankCache = CallResultBankCache(),
+        inlinedPrefixes: [UInt64: [Instruction]] = [:]
     ) -> DisassembledFunction {
         // Floating-point signature info: which arguments are float, and whether
         // the function's float type is double-precision — so a literal operand
@@ -6136,6 +6237,7 @@ public struct Disassembler: Sendable {
         var tracer = ValueTracer(calleeConventions: calleeConventions, asyncContextSlots: asyncContextSlots)
         tracer.callFactsCache = callFactsCache
         tracer.argumentObjectFields = classArgumentFieldMaps.mapValues(Self.wholeWordFieldWidths)
+        tracer.inlinedPrefixes = inlinedPrefixes
         tracer.callResultBank = { callee in
             Self.callResultBank(of: callee, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cache: callResultBanks)
         }
@@ -8668,7 +8770,7 @@ public struct Disassembler: Sendable {
             // right after such calls itself.
             func writesX20(_ insn: Instruction) -> Bool {
                 if insn.controlFlow == .call {
-                    return insn.branchTarget.flatMap { tracer.calleeClobbers[$0] }?.contains("x20") ?? false
+                    return tracer.clobbers(atCall: insn).contains("x20")
                 }
                 return insn.detail?.writtenRegisterKeys.contains("x20") != false
             }
@@ -8780,7 +8882,7 @@ public struct Disassembler: Sendable {
         // x21 is callee-saved: a call keeps it unless the callee may throw or
         // its own body does not restore it (an outlined fragment).
         func callPreservesX21(_ call: Instruction) -> Bool {
-            if call.branchTarget.flatMap({ tracer.calleeClobbers[$0] })?.contains("x21") == true { return false }
+            if tracer.clobbers(atCall: call).contains("x21") { return false }
             return ValueTracer.provablyDoesNotThrow(DisassembledFunction.calleeName(of: call) ?? "")
         }
         let syncNoErrorPoints = errorProofBlocks.isEmpty ? [] : SwiftErrorExitProof.noErrorPoints(
@@ -8797,7 +8899,7 @@ public struct Disassembler: Sendable {
                       blocks: errorProofBlocks, entry: function.startAddress,
                       addresses: Set(function.instructions.map(\.address)), excluding: mergedThrowEdges,
                       callEffect: { call in
-                          var clobbered = call.branchTarget.flatMap { tracer.calleeClobbers[$0] } ?? []
+                          var clobbered = tracer.clobbers(atCall: call)
                           if !callPreservesX21(call) { clobbered.insert("x21") }
                           return CalleeEffect(clobbers: clobbered)
                       })
@@ -8815,7 +8917,7 @@ public struct Disassembler: Sendable {
         let asyncNoErrorPoints = errorProofBlocks.isEmpty || asyncReturns.isEmpty ? [] : SwiftErrorExitProof.noErrorPoints(
             blocks: errorProofBlocks, entry: function.startAddress, key: "x20", entryIsNoError: false
         ) { call in
-            call.branchTarget.flatMap { tracer.calleeClobbers[$0] }?.contains("x20") != true
+            !tracer.clobbers(atCall: call).contains("x20")
         }
 
         func normalReturnIsProven(at address: UInt64) -> Bool {

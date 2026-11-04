@@ -120,7 +120,8 @@ private func pseudo(_ filter: String, in path: String) async throws -> String? {
             try await Disassembler().disassemble(path: path, functionFilter: "typedScale")
         }
         let function = try #require(functions.first)
-        let name = path.contains("osize") ? "OUTLINED_FUNCTION_4" : "Swift._stdlib_isOSVersionAtLeastOrVariantVersionAtLeast"
-        #expect(function.renderPseudo().contains(name + "("))
+        // At -Osize the check is `bl OUTLINED_FUNCTION_4`, a fragment that
+        // tail-calls it, inlined at the site.
+        #expect(function.renderPseudo().contains("Swift._stdlib_isOSVersionAtLeastOrVariantVersionAtLeast("))
     }
 }
