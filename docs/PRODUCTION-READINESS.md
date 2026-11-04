@@ -66,6 +66,15 @@ results do not replace previously recorded release performance measurements.
   Box<A>`, `[A]`, a closure, a non-generic superclass, `B == A.Item`.
   Six wrong names in the fixture `metadatasource.swift`; no swift-syntax
   dylib or the GoodLinks `-f ViewController` slice held one.
+- **FIXED — a global variable's addressor took x20 and the argument
+  registers.** `Module.name.unsafeMutableAddressor` takes nothing, and an
+  imported one read `lib.libVar.unsafeMutableAddressor(self: (? + arg0),
+  lib.libConst.unsafeMutableAddressor(self: arg0, arg0, arg1))`, with one
+  call nested inside the other's false arguments. Both now read `()`. A
+  member's addressor can take self, so only the two-component name
+  qualifies; a private global (`lib.(x in _ABC)…`) and a static one keep
+  their old layout. Fixture `importedaddressor.swift` (-O).
+
 - **FIXED — an undeclared C import took the registers its call found as
   its arguments.** A direct call or tail call to a C function no table,
   SDK declaration or body bounds was laid out by position from the

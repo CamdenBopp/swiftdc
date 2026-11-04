@@ -77,6 +77,29 @@ private func importStatements(_ name: String) async throws -> [String]? {
     #expect(d4.contains("return (ext_one(…) + arg1)"), "\(d4)")
 }
 
+/// A global's addressor takes nothing: `importedaddressor.swift` read
+/// `lib.libVar.unsafeMutableAddressor(self: (? + arg0),
+/// lib.libConst.unsafeMutableAddressor(self: arg0, arg0, arg1))`.
+@Test func globalAddressorTakesNoSelfAndNoArgumentsIfPresent() async throws {
+    let path = "Fixtures/Sample/libImportedAddressor.opt.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "readBoth")
+    }
+    let text = try #require(functions.first).renderPseudo()
+    #expect(text.contains("lib.libConst.unsafeMutableAddressor()"), "\(text)")
+    #expect(text.contains("lib.libVar.unsafeMutableAddressor()"), "\(text)")
+    #expect(!text.contains("self:"), "\(text)")
+}
+
+@Test func globalVariableAddressorIsTwoComponents() {
+    #expect(DisassembledFunction.isGlobalVariableAddressor("lib.libVar.unsafeMutableAddressor : Swift.Int"))
+    for name in ["lib.S.x.unsafeMutableAddressor : Swift.Int", "lib.libVar.getter : Swift.Int",
+                 "lib.libVar.unsafeMutableAddressor", "lib.(x in _ABC).unsafeMutableAddressor : Swift.Int"] {
+        #expect(!DisassembledFunction.isGlobalVariableAddressor(name), "\(name)")
+    }
+}
+
 /// A C function the SDK declares keeps its declared arguments: `puts` in
 /// `indirecttail.c`'s `choose`.
 @Test func declaredCCalleeKeepsItsArgumentsIfPresent() async throws {

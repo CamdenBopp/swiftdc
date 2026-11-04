@@ -746,6 +746,19 @@ public extension DisassembledFunction {
         "getEnumTag": 2, "destructiveProjectEnumData": 2, "destructiveInjectEnumTag": 3,
     ]
 
+    /// `Module.name.unsafeMutableAddressor : Type`: the addressor of a global
+    /// variable, which takes no parameters and no self, so x0 and x20 at the
+    /// call are only what the caller left there. Exactly two components: a
+    /// member's addressor (`Module.Type.name…`) can take self.
+    static func isGlobalVariableAddressor(_ callee: String) -> Bool {
+        guard let range = callee.range(of: " : ") else { return false }
+        let parts = callee[..<range.lowerBound].split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count == 3 && parts[2] == "unsafeMutableAddressor"
+            && parts[..<2].allSatisfy { part in
+                !part.isEmpty && part.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" }
+            }
+    }
+
     static func knownCArity(of callee: String) -> Int? {
         switch callee {
         case "abort", "__stack_chk_fail", "objc_autoreleasePoolPush", "objc_exception_rethrow",
@@ -933,6 +946,7 @@ public extension DisassembledFunction {
                let arity = valueWitnessArity[String(callee[..<range.lowerBound])] {
                 return arity
             }
+            if isGlobalVariableAddressor(callee) { return 0 }
             // Historical prefix match: some selectors resolve as
             // `objc_opt_isKindOfClass` with a trailing disambiguator.
             if callee.hasPrefix("objc_opt_isKindOfClass") { return 2 }

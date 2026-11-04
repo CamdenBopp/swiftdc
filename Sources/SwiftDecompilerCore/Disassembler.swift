@@ -6666,6 +6666,8 @@ public struct Disassembler: Sendable {
                 // takes the buffer in x3, after its formals, and only saves x20.
                 if let isStatic = Self.systemValueTypeMember(callee),
                    isStatic || !isAddressValue(site.selfValue) { continue }
+                // Nor does a global variable's addressor.
+                if DisassembledFunction.isGlobalVariableAddressor(callee) { continue }
                 // A free function, `Module.name(…)`, has no `self`; nor does a
                 // specialization of one, whose name prints the original's
                 // after its clause (`function signature specialization
