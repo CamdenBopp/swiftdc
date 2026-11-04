@@ -8322,3 +8322,11 @@ this Mac.
   a scalar joined with the same scalar from a path with no call would stop
   matching. Any non-aggregate value read through q8 has this gap, a 16-byte
   field load (`ldr q8, [x20, #16]`) included.
+- **OPEN (completeness): two one-word types classified `.direct`.**
+  `swiftc -target arm64-apple-macos15.0 -O -emit-ir` lowers
+  `Optional<[Handler]>` to one i64 and `Unmanaged<C>` to one ptr, and
+  SwiftLowering calls both `.direct`, which `multiWordGenerics` files under
+  two to four words for Unmanaged. The direction is safe: an Int after one
+  is declined, not misplaced. Found beside
+  `closureCollectionLoweringMatchesTheCompilersIRIfPresent`, whose own 11
+  functions at -Onone, -O and -Osize all agree.
