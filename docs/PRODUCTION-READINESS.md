@@ -7883,12 +7883,17 @@ per-accessor prefix (`10712d8`) bounds one body, not the sum.
   Its growth is 1.2 KB per accessor from 400 to 1,600 classes, so of the
   default path's 2.7 KB, 1.2 KB is metadata and header text and 1.5 KB is
   the classification's cross-function state.
-- **OPEN (soundness): the default header still drops a declined
-  accessor.** `isSynthesizedAccessor` returning nil (the entry block runs
-  off the 4 KB prefix) leaves `objc` treating the accessor as synthesized,
-  so a custom accessor that long loses its line with no mark. The
-  `.marked` form exists now; using it there changes output, so it is a
-  change of its own.
+- **FIXED (soundness): the default header dropped an accessor with no
+  verdict, with no mark.** An accessor the classifier declines (its entry
+  block runs off the 4 KB prefix), or one with no code to decode (an IMP
+  outside `__TEXT,__text`), read as synthesized and lost its line. Each
+  now stays, typed from its property, ending `// unclassified accessor:
+  body runs past the 4 KB decode limit` or `// unclassified accessor: no
+  body decoded`: two causes, two notes. Output lines changed: the two of
+  the new fixture `accessordeclined.m`. No other fixture and none of
+  GoodLinks, Keynote, Electron Framework, AppKit or UIKitCore has such an
+  accessor, so nothing else moves. Off arm64 the classifier does not run
+  and accessors still drop, as class-dump's do.
 - **OPEN (speed): `ObjCMetadataIndex.outgoingSignature` dominates
   `objc` on many classes.** `sample` of the 1,600-class run puts 3,066
   of 4,244 main-thread samples in it (2,081 in

@@ -22,7 +22,7 @@ extension ObjCDumper {
     /// this architecture, so treat every property-backed accessor as synthesized,
     /// which is class-dump's metadata-only behaviour. `unknown: .marked` keeps
     /// such an accessor instead, typed from its property (the metadata proves
-    /// that much) and carrying `unclassifiedAccessorNote`: dropping it says the
+    /// that much) and ending with the note for its IMP: dropping it says the
     /// `@property` covers all there is, which only its body can show.
     static func rewritingPropertyAccessors(
         _ header: String,
@@ -44,8 +44,8 @@ extension ObjCDumper {
             if verdict == false {
                 let typed = retyping(line, accessor: accessor)
                 if typed != line { retype[line] = typed }
-            } else if verdict == nil, unknown == .marked {
-                retype[line] = retyping(line, accessor: accessor) + " " + unclassifiedAccessorNote
+            } else if verdict == nil, case .marked(let note) = unknown {
+                retype[line] = retyping(line, accessor: accessor) + " " + note(method.imp)
             } else {
                 suppress.insert(line)
             }
@@ -65,13 +65,19 @@ extension ObjCDumper {
     enum UnknownAccessor {
         /// Left to its `@property`, as class-dump does.
         case dropped
-        /// Kept, with `unclassifiedAccessorNote`.
-        case marked
+        /// Kept, ending with the note for its raw IMP.
+        case marked((UInt64) -> String)
     }
 
     /// Ends the line of an accessor `objc --metadata-only` did not classify:
     /// it may be synthesized or custom.
     static let unclassifiedAccessorNote = "// unclassified accessor: body not analyzed"
+
+    /// The same, for the two ways the default header gets no verdict: the
+    /// entry block ran off the decoded prefix, or no code was found at the
+    /// IMP. One note for both would read as one cause.
+    static let declinedAccessorNote = "// unclassified accessor: body runs past the 4 KB decode limit"
+    static let undecodedAccessorNote = "// unclassified accessor: no body decoded"
 
     /// Selector → accessor descriptor for every getter and setter a property
     /// declares, honouring `getter=`/`setter=` and `readonly`.
@@ -120,8 +126,10 @@ extension ObjCDumper {
 
     /// Disassemble every property-backed accessor and classify it: `true` =
     /// synthesized (a trivial ivar load/store its @property already covers),
-    /// `false` = custom (real code, keep and type it). Keyed by the raw
-    /// `ObjCMethodInfo.imp` so `rewritingPropertyAccessors` can look it up.
+    /// `false` = custom (real code, keep and type it), nil = the classifier
+    /// declined. Keyed by the raw `ObjCMethodInfo.imp` so
+    /// `rewritingPropertyAccessors` can look it up; an IMP with no key decoded
+    /// nothing.
     /// How much of an IMP's extent is decoded to classify an accessor: 1,024
     /// instructions, far past any synthesized getter or setter.
     static let accessorPrefixBytes: UInt64 = 4096
@@ -130,7 +138,7 @@ extension ObjCDumper {
         _ snapshot: ObjCMetadataSnapshot,
         in machO: MachOFile,
         disassembler: Disassembler
-    ) async -> [UInt64: Bool] {
+    ) async -> [UInt64: Bool?] {
         let rawToRuntime = accessorImplementations(snapshot, in: machO)
         guard !rawToRuntime.isEmpty else { return [:] }
 
@@ -139,13 +147,13 @@ extension ObjCDumper {
         // released before the next is decoded: only the verdicts stay.
         let byAddress = await disassembler.analyzeEachFunction(
             at: Set(rawToRuntime.values), in: machO, prefixBytes: Self.accessorPrefixBytes
-        ) { function in
-            isSynthesizedAccessor(function, prefixBytes: Self.accessorPrefixBytes)
+        ) { function -> Bool?? in
+            .some(isSynthesizedAccessor(function, prefixBytes: Self.accessorPrefixBytes))
         }
 
-        var result: [UInt64: Bool] = [:]
+        var result: [UInt64: Bool?] = [:]
         for (raw, runtime) in rawToRuntime {
-            if let synthesized = byAddress[runtime] { result[raw] = synthesized }
+            if let verdict = byAddress[runtime] { result[raw] = verdict }
         }
         return result
     }

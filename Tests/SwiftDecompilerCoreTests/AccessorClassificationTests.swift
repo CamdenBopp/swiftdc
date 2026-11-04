@@ -261,3 +261,14 @@ private let accessorGrowthCeiling = 4_096
         #expect(methods.filter { $0 != "- (void).cxx_destruct;" }.sorted() == (expected + memcpyCopies).sorted(), "\(level)")
     }
 }
+
+/// With no verdict the default header keeps the accessor and says why, one
+/// note per cause; a synthesized control beside them still goes.
+@Test func anAccessorWithNoVerdictIsMarkedWithItsCauseIfPresent() throws {
+    let path = "Fixtures/Sample/libAccessorDeclined.dylib"
+    guard FileManager.default.fileExists(atPath: path), let run = try runCLI(["objc", path]) else { return }
+    let lines = run.stdout.split(separator: "\n").map(String.init)
+    #expect(lines.contains("- (int)depth; // unclassified accessor: body runs past the 4 KB decode limit"), "\(lines)")
+    #expect(lines.contains("- (int)width; // unclassified accessor: no body decoded"), "\(lines)")
+    #expect(!lines.contains { $0.hasPrefix("- (int)count") || $0.hasPrefix("- (void)setCount:") }, "\(lines)")
+}

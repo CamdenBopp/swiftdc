@@ -425,6 +425,9 @@ for level in O0 O1 Os; do
   xcrun clang -arch arm64 -$level -fobjc-arc -dynamiclib -framework Foundation accessorshapes.m -o libAccessorShapes.$level.dylib
 done
 
+echo "==> accessors with no verdict: past the decode prefix, outside __text (accessordeclined.m, -O1, ARC)"
+xcrun clang -arch arm64 -O1 -fobjc-arc -dynamiclib -framework Foundation accessordeclined.m -o libAccessorDeclined.dylib
+
 echo "==> a getter that returns a constant (constantgetter.m): custom, not synthesized"
 xcrun clang -arch arm64 -O1 -dynamiclib -framework Foundation constantgetter.m -o libConstantGetter.dylib
 
