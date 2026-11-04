@@ -29,8 +29,7 @@ private func runCLI(_ arguments: [String], timed: Bool = false) throws -> (stdou
     process.standardOutput = out
     process.standardError = err
     try process.run()
-    let stdout = out.fileHandleForReading.readDataToEndOfFile()
-    let stderr = err.fileHandleForReading.readDataToEndOfFile()
+    let (stdout, stderr) = Shell.drain(out, err)
     process.waitUntilExit()
     guard process.terminationStatus == 0 else { return nil }
     let footprint = String(decoding: stderr, as: UTF8.self).split(separator: "\n").lazy.compactMap { line -> Int? in

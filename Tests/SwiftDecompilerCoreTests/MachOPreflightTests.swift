@@ -1432,8 +1432,8 @@ private func fairPlayCopy(scrambled: Bool) throws -> Data? {
             process.standardOutput = out
             process.standardError = err
             try process.run()
-            let stdout = out.fileHandleForReading.readDataToEndOfFile()
-            let stderr = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            let (stdout, errData) = Shell.drain(out, err)
+            let stderr = String(decoding: errData, as: UTF8.self)
             process.waitUntilExit()
             #expect(process.terminationReason == .exit && process.terminationStatus == 1,
                     "\(command) scrambled \(scrambled): status \(process.terminationStatus)")

@@ -44,8 +44,9 @@ private func misread(_ path: String) throws -> [String]? {
         process.standardOutput = out
         process.standardError = err
         try process.run()
-        let stdout = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        let stderr = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let drained = Shell.drain(out, err)
+        let stdout = String(decoding: drained.out, as: UTF8.self)
+        let stderr = String(decoding: drained.err, as: UTF8.self)
         process.waitUntilExit()
         #expect(process.terminationReason == .exit, "\(command): killed by signal \(process.terminationStatus)\n\(stderr)")
         #expect(process.terminationStatus == 1, "\(command): exit \(process.terminationStatus)\n\(stderr)")

@@ -13,6 +13,24 @@ enum Shell {
         try run("/usr/bin/xcrun", [tool] + args)
     }
 
+    /// Everything two pipes carry, read at once. Reading one to its end first
+    /// stops for good when the process fills the other: it waits for a reader
+    /// while the first pipe stays open. A `Thread`, not a dispatch queue: this
+    /// blocks its caller, and callers on the cooperative pool would starve the
+    /// queue that had to finish the read (12 of them hung a suite).
+    static func drain(_ out: Pipe, _ err: Pipe) -> (out: Data, err: Data) {
+        nonisolated(unsafe) var errData = Data()
+        let done = DispatchSemaphore(value: 0)
+        let errHandle = err.fileHandleForReading
+        Thread.detachNewThread {
+            errData = errHandle.readDataToEndOfFile()
+            done.signal()
+        }
+        let outData = out.fileHandleForReading.readDataToEndOfFile()
+        done.wait()
+        return (outData, errData)
+    }
+
     /// Run an executable at an absolute path with `args` and capture output.
     static func run(_ executable: String, _ args: [String]) throws -> Result {
         let process = Process()
@@ -26,8 +44,7 @@ enum Shell {
 
         try process.run()
         // Read before waiting to avoid deadlock on large output.
-        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        let (outData, errData) = drain(outPipe, errPipe)
         process.waitUntilExit()
 
         return Result(

@@ -8129,3 +8129,15 @@ chained headers). After them all 31 crashers exit 1 with a stated cause, and
 - **DEAD END: `SIGSTOP` on a session to clear the build queue.** A stopped
   `lockf` can still be granted a lock, and a stopped reader fills a holder's
   stdout pipe. Three stalls, about two hours.
+
+## 2026-11-04: reading two pipes
+
+- **FIXED (robustness): `Shell.run` could hang for good.** It read a tool's
+  stdout to its end, then stderr. A tool that fills stderr waits for a
+  reader while stdout stays open. `/usr/bin/time -l` did this to a suite
+  under memory pressure, which shrinks a pipe's buffer to 16 KB, and
+  llvm-objdump's warnings take the same path. `Shell.drain` reads both at
+  once, and the five test helpers with this shape use it.
+- **DEAD END: draining on a dispatch queue.** The caller blocks, and on the
+  cooperative pool enough blocked callers starve the queue meant to finish
+  the read: 12 test tasks hung a suite. It is a `Thread`.

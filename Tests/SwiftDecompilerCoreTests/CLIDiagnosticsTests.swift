@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+@testable import SwiftDecompilerCore
 
 /// Diagnostics regression. A dyld-cache image that isn't found fails with one
 /// shared message, "Use --list-images to see what's available", but only
@@ -93,8 +94,9 @@ struct CLIDiagnosticsTests {
         process.standardOutput = out
         process.standardError = err
         try process.run()
-        let stdout = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        let stderr = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let drained = Shell.drain(out, err)
+        let stdout = String(decoding: drained.out, as: UTF8.self)
+        let stderr = String(decoding: drained.err, as: UTF8.self)
         process.waitUntilExit()
         #expect(process.terminationStatus != 0, "\(arguments): exit 0\n\(stdout)")
         #expect(stderr.contains("disassembly failed"), "\(arguments): \(stderr)")
