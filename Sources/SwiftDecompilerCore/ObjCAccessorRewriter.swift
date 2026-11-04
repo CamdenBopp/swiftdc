@@ -112,6 +112,29 @@ extension ObjCDumper {
         in machO: MachOFile,
         disassembler: Disassembler
     ) async -> [UInt64: Bool] {
+        let rawToRuntime = accessorImplementations(snapshot, in: machO)
+        guard !rawToRuntime.isEmpty else { return [:] }
+
+        // Only a prefix of each extent: the accessor is the block its entry
+        // starts, a handful of instructions. Each body is classified and
+        // released before the next is decoded: only the verdicts stay.
+        let byAddress = await disassembler.analyzeEachFunction(
+            at: Set(rawToRuntime.values), in: machO, prefixBytes: Self.accessorPrefixBytes
+        ) { function in
+            isSynthesizedAccessor(function, prefixBytes: Self.accessorPrefixBytes)
+        }
+
+        var result: [UInt64: Bool] = [:]
+        for (raw, runtime) in rawToRuntime {
+            if let synthesized = byAddress[runtime] { result[raw] = synthesized }
+        }
+        return result
+    }
+
+    /// Every property-backed instance accessor's IMP: the raw
+    /// `ObjCMethodInfo.imp` the rewriter looks up, to the address its body
+    /// starts at.
+    static func accessorImplementations(_ snapshot: ObjCMetadataSnapshot, in machO: MachOFile) -> [UInt64: UInt64] {
         var rawToRuntime: [UInt64: UInt64] = [:]
         for cls in snapshot.classes {
             let accessors = propertyAccessors(cls.properties)
@@ -123,23 +146,7 @@ extension ObjCDumper {
                 }
             }
         }
-        guard !rawToRuntime.isEmpty else { return [:] }
-
-        // Only a prefix of each extent: the accessor is the block its entry
-        // starts, a handful of instructions.
-        let functions = await disassembler.disassembleFunctions(
-            at: Set(rawToRuntime.values), in: machO, prefixBytes: Self.accessorPrefixBytes,
-            groupsAsyncFunclets: false)
-        let byAddress = Dictionary(functions.map { ($0.startAddress, $0) }, uniquingKeysWith: { first, _ in first })
-
-        var result: [UInt64: Bool] = [:]
-        for (raw, runtime) in rawToRuntime {
-            if let function = byAddress[runtime],
-               let synthesized = isSynthesizedAccessor(function, prefixBytes: Self.accessorPrefixBytes) {
-                result[raw] = synthesized
-            }
-        }
-        return result
+        return rawToRuntime
     }
 
     /// Whether a disassembled accessor body is synthesized: the block its

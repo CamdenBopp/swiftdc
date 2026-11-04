@@ -970,6 +970,263 @@ public struct Disassembler: Sendable {
         )
     }
 
+    /// What `disassembleFunctions(at:in:prefixBytes:groupsAsyncFunclets: false)`
+    /// returns, one function at a time: each analysed function is handed to
+    /// `transform` and released before the next is decoded, and only what
+    /// `transform` returns stays resident, keyed by the function's start.
+    ///
+    /// The array call decoded every span into one instruction list and held
+    /// it, the segmented functions, a copy of each with its jump tables for
+    /// the register summaries, and every analysed function at once: `objc`
+    /// on a large app passed 4.5 GB classifying accessors. This keeps the
+    /// same cross-function state (names, cross-image names, register
+    /// summaries, indirect-result uses), built the same way, but decodes a
+    /// span again for each pass instead of holding it: one for the names
+    /// and call targets, one for the summaries (which read the resolved
+    /// names), one to analyse.
+    ///
+    /// No async grouping: a caller that only reads these bodies (accessor
+    /// classification) has no async function to group.
+    func analyzeEachFunction<T>(
+        at addresses: Set<UInt64>,
+        in machO: MachOFile,
+        prefixBytes: UInt64? = nil,
+        transform: (DisassembledFunction) -> T?
+    ) async -> [UInt64: T] {
+        guard !addresses.isEmpty else { return [:] }
+        let objcIndex = ObjCMetadataIndex.build(in: machO)
+        let labels = symbolLabels(in: machO)
+        var spanBoundarySet = Set(functionStarts(of: machO))
+        spanBoundarySet.formUnion(objcIndex.addresses)
+        spanBoundarySet.formUnion(labels.keys)
+        let spanBoundaries = spanBoundarySet.sorted()
+        let sections = codeSections(in: machO)
+
+        // Each requested address's decode span, as `disassembleFunctions`
+        // cuts it. An empty span decodes nothing there either.
+        let spans: [(start: UInt64, stop: UInt64)] = addresses.sorted().compactMap { start in
+            guard let end = CodeSection.containing(start, in: sections)?.range.upperBound else { return nil }
+            var low = 0, high = spanBoundaries.count
+            while low < high {
+                let mid = (low + high) / 2
+                if spanBoundaries[mid] <= start { low = mid + 1 } else { high = mid }
+            }
+            var stop = min(low < spanBoundaries.count ? spanBoundaries[low] : end, end)
+            if let prefixBytes, stop - start > prefixBytes { stop = start + prefixBytes }
+            guard stop > start else { return nil }
+            return (start, stop)
+        }
+        guard !spans.isEmpty else { return [:] }
+
+        // From here on, what `assemble` builds, in its order.
+        Probe.image(machO)
+        var labelByAddress = labels
+        goLabels(in: machO, adding: &labelByAddress)
+        var boundaries = Set(functionStarts(of: machO))
+        boundaries.formUnion(labelByAddress.keys)
+        boundaries.formUnion(objcIndex.addresses)
+        let unlabeled = boundaries.subtracting(labelByAddress.keys)
+        var metadataNames: [UInt64: String] = [:]
+        var metadataFolds: [UInt64: [String]] = [:]
+        if Double(unlabeled.count) > Double(max(boundaries.count, 1)) * 0.25 {
+            let metadata = MetadataSymbolizer().functionNames(in: machO)
+            metadataNames = metadata.unique
+            metadataFolds = metadata.folded
+        }
+        let sortedBoundaries = boundaries.sorted()
+        metadataNames.merge(recognizedHelperNames(in: machO, boundaries: sortedBoundaries, labels: labelByAddress)) { a, _ in a }
+        var foldedByAddress = foldedSymbolAddresses(in: machO)
+        Self.mergeMetadataFolds(metadataFolds, into: &foldedByAddress, labels: labelByAddress)
+
+        // One Capstone engine for every span; each span's bytes are read on
+        // their own, so no section is held.
+        let engine = CapstoneEngine()
+        func decode(_ span: (start: UInt64, stop: UInt64)) -> [Instruction] {
+            guard let engine else { return [] }
+            var decoded: [Instruction] = []
+            for section in sections {
+                let lo = max(span.start, section.range.lowerBound)
+                let hi = min(span.stop, section.range.upperBound)
+                guard hi > lo, let bytes = sectionBytes(address: lo, size: Int(hi - lo), in: machO) else { continue }
+                decoded += engine.disassemble(bytes, address: lo).map(Self.instruction(decoded:))
+            }
+            return decoded
+        }
+        // The functions of one span, as `segment` cuts the whole list: a
+        // span ends at the next span boundary, so no function crosses two.
+        func functions(of span: (start: UInt64, stop: UInt64)) -> [DisassembledFunction] {
+            segment(
+                decode(span), boundaries: boundaries, labelByAddress: labelByAddress,
+                foldedByAddress: foldedByAddress, metadataNames: metadataNames, objcIndex: objcIndex,
+                sortedBoundaries: sortedBoundaries)
+        }
+
+        // Pass 1: name-level stubs for the name index, and every call
+        // target; the ones the index leaves unnamed are the cross-image
+        // targets `crossImageNames` resolves.
+        var stubs: [DisassembledFunction] = []
+        var spanOfStart: [UInt64: Int] = [:]
+        var callTargets = Set<UInt64>()
+        let cacheSymbols = CacheSymbolResolver(machO: machO)
+        Probe.muted {
+            for (index, span) in spans.enumerated() {
+                for function in functions(of: span) {
+                    collectUnnamedCallTargets(in: function.instructions, names: [:], into: &callTargets)
+                    stubs.append(function.replacingInstructions([]))
+                    if spanOfStart[function.startAddress] == nil { spanOfStart[function.startAddress] = index }
+                }
+            }
+        }
+        let names = referenceIndex(
+            functions: stubs, labelByAddress: labelByAddress,
+            metadataNames: metadataNames, objcIndex: objcIndex,
+            foldedByAddress: foldedByAddress, in: machO
+        )
+        let targets = callTargets.filter { names[$0] == nil }
+        let resolvedNames = cacheSymbols != nil
+            ? resolveCrossImageNames(targets, into: names, resolver: cacheSymbols)
+            : names
+        let resolver = ReferenceResolver(
+            names: resolvedNames,
+            stringRanges: stringSectionRanges(in: machO),
+            machO: machO,
+            demangleSymbol: { self.demangle($0) },
+            selectors: ObjCSelectors.selectorTable(in: machO),
+            cfStringRange: sectionRange(named: "__cfstring", in: machO),
+            cacheSymbols: cacheSymbols,
+            cacheReader: machO.fullCache.map { CacheReader(full: $0) },
+            fileRanges: FileBackedRanges(standalone: machO),
+            foldedCandidates: foldedByAddress,
+            witnessTables: foldedByAddress.isEmpty ? [] : witnessTables(in: machO),
+            protocolDescriptorSymbols: protocolDescriptorSymbols(in: machO),
+            specializationSymbols: ReferenceResolver.specializationSymbols(
+                labels: labelByAddress, names: resolvedNames, folded: foldedByAddress)
+        )
+        var swiftTargets = Set(labelByAddress.compactMap { address, symbol in
+            Self.isSwiftMangled(symbol) ? address : nil
+        })
+        swiftTargets.formUnion(metadataNames.keys)
+        swiftTargets.subtract(metadataNames.filter { Self.helperShapeNames.contains($0.value) }.keys)
+        swiftTargets.formUnion(stubs.filter {
+            $0.objcMethod == nil && (Self.isSwiftMangled($0.symbol) || $0.source == .metadata)
+        }.map(\.startAddress))
+        swiftTargets.formUnion(swiftStubAddresses(in: machO))
+        swiftTargets.subtract(objcIndex.addresses)
+        stubs = []
+
+        let asyncIndex = AsyncFuncletIndex.build(hints: nil, functionStarts: [], instructions: { _ in [] }, nameOf: { _ in nil })
+        let fieldMaps = (try? FieldMapBuilder.build(in: machO)) ?? [:]
+        let selfIndex = SelfTypeIndex.build(in: machO)
+        let vtableIndex = VTableIndex.build(in: machO)
+        let enumCaseIndex = EnumCaseIndex.build(in: machO)
+        let payloadEnumIndex = PayloadEnumCaseIndex.build(in: machO)
+        let classTypeIndex = ClassTypeIndex.build(in: machO).adding(demangleCache.nominalTypes)
+        let chainSlots = asyncChainSlots(
+            index: asyncIndex, function: { _ in nil },
+            enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex
+        )
+
+        // Pass 2: the indirect-result uses and register summaries, as
+        // `assemble` builds them, each body decoded again when it is read.
+        let isFunction = { (target: UInt64) in boundaries.contains(target) }
+        let importStubs = CodeSection.importStubRanges(of: machO)
+        let isImportStub = { (target: UInt64) in importStubs.contains { $0.contains(target) } }
+        let arity = { target in
+            self.knownArity(
+                ofCallTarget: target, names: resolver.names, cacheSymbols: cacheSymbols, isFunction: isFunction)
+        }
+        var indirectResultUses: [UInt64: IndirectResultUse] = [:]
+        var summaries: [UInt64: CalleeRegisterSummary] = [:]
+        // The callees decoded below the requested functions, rebuilt from
+        // their address when a closure reads them again.
+        var calleeBodies = Set<UInt64>()
+        // A callee decoded there replaces a requested function's body at the
+        // same start, as it does in `assemble`'s `bodies`.
+        func body(at start: UInt64) -> DisassembledFunction? {
+            if !calleeBodies.contains(start), let index = spanOfStart[start] {
+                return functions(of: spans[index]).first { $0.startAddress == start }
+                    .map { Self.withJumpTables($0, machO: machO, ranges: resolver.fileRanges) }
+            }
+            guard calleeBodies.contains(start) else { return nil }
+            return calleeBody(at: start, instructions: decodeFunction(at: start, boundaries: sortedBoundaries, in: machO))
+        }
+        func calleeBody(at start: UInt64, instructions: [Instruction]) -> DisassembledFunction? {
+            guard !instructions.isEmpty else { return nil }
+            return Self.withJumpTables(
+                DisassembledFunction(
+                    symbol: "sub_\(String(start, radix: 16))", demangledName: nil,
+                    startAddress: start, instructions: instructions, source: .address),
+                machO: machO, ranges: resolver.fileRanges)
+        }
+        // `assemble` keys both by function start, the first function at a
+        // start winning.
+        var firstAtStart: Set<UInt64> = []
+        for span in spans {
+            for function in Probe.muted({ functions(of: span) }) where firstAtStart.insert(function.startAddress).inserted {
+                indirectResultUses[function.startAddress] = Self.indirectResultUse(of: function)
+                if let summary = CalleeRegisterSummary.of(
+                    Self.withJumpTables(function, machO: machO, ranges: resolver.fileRanges),
+                    calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub) {
+                    summaries[function.startAddress] = summary
+                }
+            }
+        }
+        var level = Set(summaries.values.flatMap(\.callees)).filter {
+            summaries[$0] == nil && boundaries.contains($0)
+        }.sorted()
+        var decodedCallees = 0
+        while !level.isEmpty, decodedCallees < 512 {
+            var next = Set<UInt64>()
+            for target in level where decodedCallees < 512 && summaries[target] == nil {
+                let instructions = Probe.muted {
+                    self.decodeFunction(at: target, boundaries: sortedBoundaries, in: machO)
+                }
+                guard !instructions.isEmpty else { continue }
+                decodedCallees += 1
+                calleeBodies.insert(target)
+                guard let callee = calleeBody(at: target, instructions: instructions), let summary = Probe.muted({
+                    CalleeRegisterSummary.of(callee, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub)
+                }) else { continue }
+                summaries[target] = summary
+                next.formUnion(summary.callees.filter { summaries[$0] == nil && boundaries.contains($0) })
+            }
+            level = next.sorted()
+        }
+        CalleeRegisterSummary.closeOverReads(&summaries)
+        CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects in
+            body(at: start).flatMap { function in
+                Probe.muted {
+                    CalleeRegisterSummary.of(
+                        function, calleeEffects: effects, calleeArity: arity, isFunction: isFunction,
+                        isImportStub: isImportStub)
+                }
+            }
+        }
+        CalleeRegisterSummary.closeOverFieldWrites(&summaries) { resolvedNames[$0] }
+
+        let context = PerFunctionContext(
+            resolver: resolver, swiftTargets: swiftTargets, objcIndex: objcIndex,
+            fieldMaps: fieldMaps, selfIndex: selfIndex, vtableIndex: vtableIndex,
+            enumCaseIndex: enumCaseIndex, payloadEnumIndex: payloadEnumIndex,
+            classTypeIndex: classTypeIndex,
+            indirectResultUses: indirectResultUses,
+            registerSummaries: summaries,
+            asyncIndex: asyncIndex, asyncChainSlots: chainSlots
+        )
+
+        // Pass 3: analyse each function, keep what `transform` returns.
+        var result: [UInt64: T] = [:]
+        var seen: Set<UInt64> = []
+        for span in spans {
+            for function in functions(of: span) where seen.insert(function.startAddress).inserted {
+                if let value = transform(analyzeFunction(function, context: context)) {
+                    result[function.startAddress] = value
+                }
+            }
+        }
+        return result
+    }
+
     // MARK: - Shared pipeline
 
     /// Segment the flat instruction stream into functions, name them, resolve
@@ -2410,7 +2667,8 @@ public struct Disassembler: Sendable {
         foldedByAddress: [UInt64: [String]],
         metadataNames: [UInt64: String],
         objcIndex: ObjCMetadataIndex,
-        emitsUndecodedSpans: Bool = false
+        emitsUndecodedSpans: Bool = false,
+        sortedBoundaries: [UInt64]? = nil
     ) -> [DisassembledFunction] {
         var functions: [DisassembledFunction] = []
         var current: [Instruction] = []
@@ -2433,8 +2691,20 @@ public struct Disassembler: Sendable {
         // ran on from the function before it, and a filtered run named it
         // `sub_24ae3fc74`. The function holding an instruction starts at the
         // last boundary at or below it.
-        let sorted = boundaries.sorted()
+        let sorted = sortedBoundaries ?? boundaries.sorted()
         var next = 0
+        // A caller decoding one span at a time passes the boundaries
+        // sorted once, and the walk starts at the last boundary at or below
+        // the first instruction: the earlier ones are crossed with no
+        // instruction between them, which only a whole decode reports.
+        if sortedBoundaries != nil, !emitsUndecodedSpans, let first = instructions.first?.address {
+            var low = 0, high = sorted.count
+            while low < high {
+                let mid = (low + high) / 2
+                if sorted[mid] <= first { low = mid + 1 } else { high = mid }
+            }
+            next = max(low - 1, 0)
+        }
         for insn in instructions {
             var crossed: UInt64?
             while next < sorted.count, sorted[next] <= insn.address {

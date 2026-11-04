@@ -7739,7 +7739,7 @@ segmented, summarized and analysed the lot through `assemble`, holding
 every decoded and analysed body until the last was classified. The 4 KB
 per-accessor prefix (`10712d8`) bounds one body, not the sum.
 
-- **OPEN (memory): `objc` holds every accessor body at once.** Measured
+- **FIXED (memory): `objc` held every accessor body at once.** Measured
   with `gen-manyaccessors.sh` (N classes of 14 accessors, 11 synthesized
   and 3 custom; `build.sh` builds 100 and 800 classes), release
   `/usr/bin/time -l swiftdc objc <image>` peak footprint at 9a2446a:
@@ -7757,6 +7757,29 @@ per-accessor prefix (`10712d8`) bounds one body, not the sum.
   with each accessor 2 to 10 instructions long. An app whose accessors
   run to the 4 KB prefix (no `LC_FUNCTION_STARTS`, or long gaps between
   IMPs) holds up to 1,024 analysed instructions each.
+
+  `analyzeEachFunction` now builds the same cross-function state and
+  decodes each span once per pass, classifying and releasing one accessor
+  at a time. What stays per accessor is its verdict, its name-level stub
+  until the name index is built, and its register summary. After, same
+  command, every output `cmp`-identical to the baseline's:
+
+  | image | before | after | wall before, after |
+  |---|---|---|---|
+  | Electron Framework (Discord, `--arch arm64`, no function starts) | 2,157 MB | 295 MB | 25.1 s, 15.1 s |
+  | UIKitCore | 843 to 857 MB | 411 to 440 MB | 49 to 61 s, 52 to 56 s |
+  | AppKit | 472 MB | 280 MB | 24.5 s, 27.6 s |
+  | Keynote (`--arch arm64`) | 381 MB | 269 MB | 34.9 s, 33.4 s |
+  | 1,600 classes | 188 to 191 MB | 66 to 70 MB | 17 to 29 s, 17 to 25 s |
+  | 400 classes | 56 MB | 22 to 25 MB | 3.9 s, 2.5 s |
+  | 100 classes | 20 MB | 12 MB | 0.7 s, 0.6 s |
+  | GoodLinks (median of 3) | 87 MB | 83 MB | 8.5 s, 8.5 s |
+
+  GoodLinks does not move: its 946 properties are not what sets its peak.
+  The 4.5 GB app itself was not available to re-measure; Electron
+  Framework is the nearest shape on this host. The growth left is 2.7 KB
+  per accessor from 400 to 1,600 classes, against 8.0 KB. `objc` over all
+  255 fixture Mach-Os: identical.
 - **OPEN (speed): `ObjCMetadataIndex.outgoingSignature` dominates
   `objc` on many classes.** `sample` of the 1,600-class run puts 3,066
   of 4,244 main-thread samples in it (2,081 in
