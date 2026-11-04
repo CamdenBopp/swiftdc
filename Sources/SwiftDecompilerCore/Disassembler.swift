@@ -9140,8 +9140,9 @@ public struct Disassembler: Sendable {
         // An ARC method returning an object exits through a tail branch,
         // `b objc_autoreleaseReturnValue`, not a `ret`, and renders that
         // branch as `return <x0>`. The use counter and the renderer both
-        // ask this one question, so a return the renderer prints is
-        // always a counted use: missed, the configured object of
+        // ask this one question (through `objcReturnValue`), so a return
+        // the renderer prints is always a counted use: missed, the
+        // configured object of
         // `f = [[X alloc] init]; f.limit = v; return f` had one use left,
         // inlined, and read as two allocations.
         func objcPassthroughReturnValue(at insn: Instruction) -> AbstractValue? {
@@ -9211,11 +9212,8 @@ public struct Disassembler: Sendable {
             else if let value = access.storedValue { countDirectUses(value, at: address) }
         }
         if function.objcMethod.map({ !$0.returnsVoid }) == true {
-            for insn in function.instructions where insn.controlFlow == .return {
-                analysis.exitValues[insn.address].map { countDirectUses($0, at: insn.address) }
-            }
             for insn in function.instructions {
-                objcPassthroughReturnValue(at: insn).map { countDirectUses($0, at: insn.address) }
+                objcReturnValue(at: insn).map { countDirectUses($0, at: insn.address) }
             }
         } else if function.objcMethod == nil, returnsDirectly,
                   let register = functionReturnRegister {

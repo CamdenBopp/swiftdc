@@ -8424,3 +8424,21 @@ this Mac.
   swift-syntax dylibs: 3 files, 17 lines, all added statements; listing
   unchanged. Beyond the fixture: `[self closeRect]` in `-[SDLanes
   offsetFrame]`, the `bl` at 0x8f8.
+- **FIXED ("Bind a send a float return uses twice", soundness) — one float
+  send printed twice.** `-(double)d { return [super d]*2; }` is one `bl`,
+  then `fadd d0, d0, d0`, and read `return ([super d] + [super d])`. The use
+  counter read x0 at a `ret` while the return read v0, so it saw no use and
+  nothing bound the send. It now asks `objcReturnValue(at:)`, like the
+  consumed-call pass and the renderer: `let r0 = [super d]`, `return (r0 +
+  r0)`. The stale x0 also stops binding a call nothing reads (`let r0 =
+  sinkL(6)`). Blast radius against the previous commit: only the two
+  `objcvreturns.m` dylibs, 20 structured lines; swift-syntax byte-identical.
+- **OPEN — a tail call to a C function reads as a statement, not a return.**
+  `-(double)tailD { sinkL(7); return mkD(); }` ends `b mkD` and renders
+  `mkD()` with no `return`, as do `tailL` and a CGRect-returning `tailR`. The
+  call is shown, so nothing is lost but the return. Cause not established.
+- **OPEN — the `.returnValue` probe reports x0 for every Objective-C method.**
+  A method returning in v0 is recorded as `register: x0` with x0's value
+  (Disassembler.swift, the `isObjCNonVoid` arm of the probe). The render is
+  right; the claim an outside oracle would check is not. A fix needs its own
+  test.

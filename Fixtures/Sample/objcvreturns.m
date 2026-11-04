@@ -6,7 +6,8 @@
 // sinkL, then tail-branch to a callee taking no argument, so x0 at the `b`
 // is stale there too. -keep is the x0 control: it returns 3.
 // -d is one `bl`, then `fadd d0, d0, d0`: one send, used twice. -f is the
-// same in s0, and -sum: uses one send twice around a call.
+// same in s0, and -sum: uses one send twice around a call. -argTwice is one
+// `bl`, then `fadd d0, d0, d0` into sinkD's argument.
 #import <Foundation/Foundation.h>
 typedef struct { double x, y; } V2;
 typedef struct { long a, b, c, d, e; } Big;
@@ -44,4 +45,5 @@ __attribute__((noinline)) long mkL(void) { return gl; }
 - (double)d { return [super d] * 2; }
 - (float)f { return [super f] * 2; }
 - (double)sum:(double)x { double a = [self d]; sinkD(a); return a + a + x; }
+- (double)argTwice { double a = [super d]; sinkD(a + a); return 0; }
 @end

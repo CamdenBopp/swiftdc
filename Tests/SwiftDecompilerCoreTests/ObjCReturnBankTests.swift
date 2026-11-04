@@ -37,3 +37,42 @@ private let objcReturnBankFixtures = [
         #expect(try text("-[VRets rect]").contains("return ?"), "\(path)")
     }
 }
+
+/// How many times `text` appears in `body`.
+private func occurrences(of text: String, in body: String) -> Int {
+    body.components(separatedBy: text).count - 1
+}
+
+/// `-[VRets d]` is one `bl`, then `fadd d0, d0, d0`. The use counter read x0
+/// while the return read v0, so it saw no use and the return spelled the send
+/// out at both: `return ([super d] + [super d])`, two sends for one.
+@Test func aSendUsedTwiceInAFloatReturnIsSentOnceIfPresent() async throws {
+    for path in objcReturnBankFixtures {
+        guard FileManager.default.fileExists(atPath: path) else { continue }
+        let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+        func text(_ name: String) throws -> String {
+            try #require(functions.first { $0.displayName == name }).renderStructured()
+        }
+        for (name, send) in [("-[VRets d]", "[super d]"), ("-[VRets f]", "[super f]"), ("-[VRets sum:]", "[self d]")] {
+            let body = try text(name)
+            #expect(occurrences(of: send, in: body) == 1, "\(path) \(name):\n\(body)")
+        }
+    }
+    let path = objcReturnBankFixtures[0]
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let body = try #require(functions.first { $0.displayName == "-[VRets d]" }).renderStructured()
+    #expect(body.contains("let r0 = [super d]") && body.contains("return (r0 + r0)"), Comment(rawValue: body))
+}
+
+/// The argument path of the same rule: `-[VRets argTwice]` is one `bl`, then
+/// `fadd d0, d0, d0` into sinkD. It binds the send and adds the name.
+@Test func aSendUsedTwiceAsAnArgumentIsSentOnceIfPresent() async throws {
+    for path in objcReturnBankFixtures {
+        guard FileManager.default.fileExists(atPath: path) else { continue }
+        let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+        let body = try #require(functions.first { $0.displayName == "-[VRets argTwice]" }).renderStructured()
+        #expect(occurrences(of: "[super d]", in: body) == 1, "\(path):\n\(body)")
+        #expect(body.contains("sinkD((r0 + r0))"), "\(path):\n\(body)")
+    }
+}
