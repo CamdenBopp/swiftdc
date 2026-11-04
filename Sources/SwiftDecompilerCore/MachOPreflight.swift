@@ -51,6 +51,8 @@ public enum MachOPreflight {
         /// `sizeof(struct build_tool_version)`: tool, version.
         static let buildToolVersion = 8
         static let chainedFixups: UInt32 = 0x8000_0034   // LC_DYLD_CHAINED_FIXUPS
+        static let exportsTrie: UInt32 = 0x8000_0033     // LC_DYLD_EXPORTS_TRIE
+        static let dyldInfo: Set<UInt32> = [0x22, 0x8000_0022]   // LC_DYLD_INFO(_ONLY)
         static let encryptionInfo: Set<UInt32> = [0x21, 0x2c]   // LC_ENCRYPTION_INFO(_64)
         /// Every command whose payload is a `struct dylib` (a name as an
         /// `lc_str` offset into the command, then three version words).
@@ -183,6 +185,7 @@ public enum MachOPreflight {
         }
         try validateSymbolStrings(prefix: prefix, image: image, path: path)
         try validateChainedFixupsHeader(prefix: prefix, image: image, path: path)
+        try validateExportTries(prefix: prefix, image: image, path: path)
 
         // Section CONTENTS, for a thin little-endian image. A fat file's
         // slices come through here one at a time from `validate(url:)`.
@@ -1365,6 +1368,75 @@ public enum MachOPreflight {
         guard UInt64(starts) + 4 + 4 * UInt64(count) <= size else {
             throw fail("list \(count) segment(s) past their \(size) bytes")
         }
+    }
+
+    /// Every export trie's nodes must lie inside it, and each be reached once.
+    static func validateExportTries(prefix: Data, image: ImageReader, path: String) throws {
+        guard let filetype = prefix.u32(at: 12), FileType.loadable.contains(filetype) else { return }
+        for command in loadCommands(prefix: prefix) {
+            let range: (offset: UInt32, size: UInt32)?
+            if command.cmd == Command.exportsTrie,
+               let offset = prefix.u32(at: command.offset + 8), let size = prefix.u32(at: command.offset + 12) {
+                range = (offset, size)
+            } else if Command.dyldInfo.contains(command.cmd),
+                      let offset = prefix.u32(at: command.offset + 40), let size = prefix.u32(at: command.offset + 44) {
+                range = (offset, size)
+            } else {
+                range = nil
+            }
+            guard let range, range.size > 0,
+                  let trie = image.read(offset: Int(range.offset), count: Int(range.size))
+            else { continue }
+            if let why = exportTrieDefect(trie) {
+                throw BinaryLoadError("Malformed Mach-O: \(path) — export trie \(why)")
+            }
+        }
+    }
+
+    /// What is wrong with an export trie, or nil. An iterative walk with a
+    /// visited set, the check dyld makes: MachOKit recurses through the
+    /// children and keeps every node, so a cycle read from bytes that are not
+    /// a trie overflowed the stack (`interface`, SIGBUS).
+    static func exportTrieDefect(_ trie: Data) -> String? {
+        let bytes = [UInt8](trie)
+        func uleb(_ cursor: inout Int) -> UInt64? {
+            var value: UInt64 = 0
+            var shift: UInt64 = 0
+            while cursor < bytes.count, shift < 64 {
+                let byte = bytes[cursor]
+                cursor += 1
+                value |= UInt64(byte & 0x7f) << shift
+                if byte & 0x80 == 0 { return value }
+                shift += 7
+            }
+            return nil
+        }
+        var seen: Set<Int> = [0]
+        var pending = [0]
+        while let node = pending.popLast() {
+            var cursor = node
+            guard let terminal = uleb(&cursor), terminal <= UInt64(bytes.count - cursor) else {
+                return "node at \(node) overruns its \(bytes.count) bytes"
+            }
+            cursor += Int(terminal)
+            guard cursor < bytes.count else { return "node at \(node) has no child count" }
+            let children = bytes[cursor]
+            cursor += 1
+            for _ in 0..<children {
+                guard let end = bytes[cursor...].firstIndex(of: 0) else {
+                    return "node at \(node) has an unterminated edge"
+                }
+                cursor = end + 1
+                guard let child = uleb(&cursor), child > 0, child < UInt64(bytes.count) else {
+                    return "node at \(node) points outside its \(bytes.count) bytes"
+                }
+                guard seen.insert(Int(child)).inserted else {
+                    return "reaches the node at \(child) twice"
+                }
+                pending.append(Int(child))
+            }
+        }
+        return nil
     }
 
     static func chainedFixups(prefix: Data) -> (dataoff: Int, datasize: Int, segments: Int)? {

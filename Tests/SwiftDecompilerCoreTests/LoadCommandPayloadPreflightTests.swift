@@ -125,3 +125,58 @@ private func chainedFailure(_ data: Data) throws -> String? {
     #expect(try chainedFailure(chainedImage(datasize: 27))?.contains("too short") == true)
 }
 
+// MARK: - Export trie
+
+@Test func aWellFormedExportTrieHasNoDefect() {
+    // Root: no terminal, one child "a" at 5. Child: an empty terminal.
+    #expect(MachOPreflight.exportTrieDefect(Data([0, 1, 0x61, 0, 5, 0, 0])) == nil)
+}
+
+@Test func anExportTrieCycleIsADefect() {
+    #expect(MachOPreflight.exportTrieDefect(Data([0, 1, 0x61, 0, 5, 0, 1, 0x62, 0, 5]))?.contains("twice") == true)
+}
+
+@Test func anExportTrieChildOutsideItIsADefect() {
+    #expect(MachOPreflight.exportTrieDefect(Data([0, 1, 0x61, 0, 9, 0]))?.contains("outside") == true)
+    #expect(MachOPreflight.exportTrieDefect(Data([0, 1, 0x61, 0, 0, 0]))?.contains("outside") == true)
+}
+
+@Test func anExportTrieTerminalOverrunIsADefect() {
+    #expect(MachOPreflight.exportTrieDefect(Data([9, 0, 0]))?.contains("overruns") == true)
+}
+
+@Test func anExportTrieNodeWithNoChildCountIsADefect() {
+    #expect(MachOPreflight.exportTrieDefect(Data([1, 0]))?.contains("no child count") == true)
+}
+
+@Test func anUnterminatedExportTrieEdgeIsADefect() {
+    #expect(MachOPreflight.exportTrieDefect(Data([0, 1, 0x61, 0x62]))?.contains("unterminated") == true)
+}
+
+@Test func theLegacyExportTrieIsWalkedToo() throws {
+    let trieOffset = UInt32(32 + 48)
+    let trie = Data([0, 1, 0x61, 0, 5, 0, 1, 0x62, 0, 5])
+    let command = words([0x8000_0022, 48, 0, 0, 0, 0, 0, 0, 0, 0, trieOffset, UInt32(trie.count)])
+    let data = image(commands: [command]) + trie
+    let passed = try withReader(data) { reader -> Bool in
+        do {
+            try MachOPreflight.validateExportTries(prefix: data, image: reader, path: "t")
+            return true
+        } catch { return false }
+    }
+    #expect(!passed)
+}
+
+@Test func theExportsTrieCommandIsWalked() throws {
+    let trie = Data([0, 1, 0x61, 0, 5, 0, 1, 0x62, 0, 5])
+    let command = words([0x8000_0033, 16, UInt32(32 + 16), UInt32(trie.count)])
+    let data = image(commands: [command]) + trie
+    let passed = try withReader(data) { reader -> Bool in
+        do {
+            try MachOPreflight.validateExportTries(prefix: data, image: reader, path: "t")
+            return true
+        } catch { return false }
+    }
+    #expect(!passed)
+}
+
