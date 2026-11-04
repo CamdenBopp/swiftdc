@@ -19,6 +19,14 @@ public struct ObjCDumper: Sendable {
         Self.render(ObjCMetadataSnapshot.build(in: machO), isSynthesized: { _ in nil })
     }
 
+    /// Header blocks from metadata alone, on any architecture: no code is
+    /// decoded, so whether a property's accessor is synthesized or custom is
+    /// unknown. Each one stays in the header, typed from its property and
+    /// marked `unclassifiedAccessorNote`.
+    public func metadataOnlyBlocks(_ machO: MachOFile) -> [String] {
+        Self.render(ObjCMetadataSnapshot.build(in: machO), unknown: .marked, isSynthesized: { _ in nil })
+    }
+
     /// Header blocks with disassembly-backed accessor classification: on arm64,
     /// each property-backed accessor's body is disassembled — synthesized ones
     /// (a trivial ivar load/store the `@property` already implies) are dropped,
@@ -35,6 +43,7 @@ public struct ObjCDumper: Sendable {
 
     private static func render(
         _ snapshot: ObjCMetadataSnapshot,
+        unknown: UnknownAccessor = .dropped,
         isSynthesized: (UInt64) -> Bool?
     ) -> [String] {
         let classes = snapshot.classes.map { info -> String in
@@ -42,7 +51,7 @@ public struct ObjCDumper: Sendable {
                 info.headerString, class: info.name,
                 superclass: snapshot.superclassBinds[info.name]
             )
-            return rewritingPropertyAccessors(withSuper, class: info, isSynthesized: isSynthesized)
+            return rewritingPropertyAccessors(withSuper, class: info, unknown: unknown, isSynthesized: isSynthesized)
         }
         return (classes
             + snapshot.protocols.map(\.headerString)

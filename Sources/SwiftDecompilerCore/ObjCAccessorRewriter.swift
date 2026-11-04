@@ -20,10 +20,14 @@ extension ObjCDumper {
     /// `isSynthesized(imp)` is the disassembly-backed oracle: `true` = trivial
     /// (suppress), `false` = custom (keep + type), `nil` = unknown — no disasm on
     /// this architecture, so treat every property-backed accessor as synthesized,
-    /// which is class-dump's metadata-only behaviour.
+    /// which is class-dump's metadata-only behaviour. `unknown: .marked` keeps
+    /// such an accessor instead, typed from its property (the metadata proves
+    /// that much) and carrying `unclassifiedAccessorNote`: dropping it says the
+    /// `@property` covers all there is, which only its body can show.
     static func rewritingPropertyAccessors(
         _ header: String,
         class info: ObjCClassInfo,
+        unknown: UnknownAccessor = .dropped,
         isSynthesized: (UInt64) -> Bool?
     ) -> String {
         guard !info.properties.isEmpty, !info.methods.isEmpty else { return header }
@@ -36,9 +40,12 @@ extension ObjCDumper {
         for method in info.methods where !method.isClassMethod {
             guard let accessor = accessors[method.name] else { continue }
             let line = method.headerString
-            if isSynthesized(method.imp) == false {
+            let verdict = isSynthesized(method.imp)
+            if verdict == false {
                 let typed = retyping(line, accessor: accessor)
                 if typed != line { retype[line] = typed }
+            } else if verdict == nil, unknown == .marked {
+                retype[line] = retyping(line, accessor: accessor) + " " + unclassifiedAccessorNote
             } else {
                 suppress.insert(line)
             }
@@ -53,6 +60,18 @@ extension ObjCDumper {
         }
         return lines.joined(separator: "\n")
     }
+
+    /// What the header does with an accessor no body has classified.
+    enum UnknownAccessor {
+        /// Left to its `@property`, as class-dump does.
+        case dropped
+        /// Kept, with `unclassifiedAccessorNote`.
+        case marked
+    }
+
+    /// Ends the line of an accessor `objc --metadata-only` did not classify:
+    /// it may be synthesized or custom.
+    static let unclassifiedAccessorNote = "// unclassified accessor: body not analyzed"
 
     /// Selector → accessor descriptor for every getter and setter a property
     /// declares, honouring `getter=`/`setter=` and `readonly`.

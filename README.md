@@ -134,6 +134,7 @@ swiftdc interface Binary --opaque-return-types     # experimental
 
 # objc — headers, bodies, structured bodies
 swiftdc objc Binary                                # headers only
+swiftdc objc Binary --metadata-only                # headers, no code read (below)
 swiftdc objc Binary --methods                      # + every metadata-backed IMP
 swiftdc objc Binary --function incrementBy --pseudo
 swiftdc objc Binary --function incrementIfEnabled --structured
@@ -158,6 +159,19 @@ swiftdc xrefs Binary --unreferenced                # nothing statically calls th
 ```
 
 `-f` is short for `--function`; `-s` for `--sections`; `-t` for `--type`.
+
+`objc` decides whether each property accessor is synthesized or custom by
+reading its body: a synthesized one is implied by its `@property` and dropped,
+a custom one stays. `--metadata-only` reads no code, for an image too large to
+analyze or a quick look. It can't tell the two apart, so it keeps every
+accessor and says so:
+
+```text
+@property(copy, nonatomic) NSString *name; // @synthesize name=_name
+
+- (NSString *)name; // unclassified accessor: body not analyzed
+- (void)setName:(NSString *)arg0; // unclassified accessor: body not analyzed
+```
 
 ### Swift version
 

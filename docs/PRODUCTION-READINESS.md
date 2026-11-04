@@ -7739,7 +7739,7 @@ segmented, summarized and analysed the lot through `assemble`, holding
 every decoded and analysed body until the last was classified. The 4 KB
 per-accessor prefix (`10712d8`) bounds one body, not the sum.
 
-- **FIXED (memory): `objc` held every accessor body at once.** Measured
+- **FIXED (df4c78b, memory): `objc` held every accessor body at once.** Measured
   with `gen-manyaccessors.sh` (N classes of 14 accessors, 11 synthesized
   and 3 custom; `build.sh` builds 100 and 800 classes), release
   `/usr/bin/time -l swiftdc objc <image>` peak footprint at 9a2446a:
@@ -7780,6 +7780,34 @@ per-accessor prefix (`10712d8`) bounds one body, not the sum.
   Framework is the nearest shape on this host. The growth left is 2.7 KB
   per accessor from 400 to 1,600 classes, against 8.0 KB. `objc` over all
   255 fixture Mach-Os: identical.
+- **FIXED (usability): `objc --metadata-only` exports headers without
+  reading code.** The default path decides each accessor from its body.
+  With no body the status is unknown, and the existing unknown case
+  (`blocks(_:)`, off arm64, a declined accessor) drops the line as
+  class-dump does, which reads as "synthesized". This mode keeps every
+  accessor instead, typed from its property, which the metadata proves,
+  and ends the line `// unclassified accessor: body not analyzed`. It
+  refuses `--methods`, `--pseudo`, `--structured` and `--function`.
+  Release peak footprint and wall, default then `--metadata-only`:
+
+  | image | default | `--metadata-only` |
+  |---|---|---|
+  | UIKitCore | 431 to 446 MB, 56 to 61 s | 109 MB, 28.0 s |
+  | AppKit | 259 to 280 MB, 26 to 28 s | 48 MB, 11.4 s |
+  | Keynote | 269 to 271 MB, 24 to 33 s | 113 MB, 9.2 s |
+  | Electron Framework (Discord) | 269 to 295 MB, 14 to 15 s | 156 MB, 0.5 s |
+  | GoodLinks | 83 MB, 8.5 s | 42 MB, 1.4 s |
+  | 1,600 classes | 66 to 70 MB, 17 to 25 s | 33 MB, 3.5 s |
+
+  Its growth is 1.2 KB per accessor from 400 to 1,600 classes, so of the
+  default path's 2.7 KB, 1.2 KB is metadata and header text and 1.5 KB is
+  the classification's cross-function state.
+- **OPEN (soundness): the default header still drops a declined
+  accessor.** `isSynthesizedAccessor` returning nil (the entry block runs
+  off the 4 KB prefix) leaves `objc` treating the accessor as synthesized,
+  so a custom accessor that long loses its line with no mark. The
+  `.marked` form exists now; using it there changes output, so it is a
+  change of its own.
 - **OPEN (speed): `ObjCMetadataIndex.outgoingSignature` dominates
   `objc` on many classes.** `sample` of the 1,600-class run puts 3,066
   of 4,244 main-thread samples in it (2,081 in

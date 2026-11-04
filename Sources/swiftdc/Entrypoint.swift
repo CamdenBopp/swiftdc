@@ -65,7 +65,15 @@ struct ObjCCommand: AsyncParsableCommand {
     @Option(name: [.short, .long], help: "Only include Objective-C methods whose owner, selector, or signature contains this string. Implies --methods.")
     var function: String?
 
-    func validate() throws { try validateFunctionFilter(function) }
+    @Flag(name: .customLong("metadata-only"), help: "Export declarations from metadata alone, without analyzing accessor bodies. Whether an accessor is synthesized or custom is then unknown, so each property accessor stays in the header, marked `// unclassified accessor: body not analyzed`. Not with --methods, --pseudo, --structured or --function.")
+    var metadataOnly = false
+
+    func validate() throws {
+        try validateFunctionFilter(function)
+        if metadataOnly, methods || pseudo || structured || function != nil {
+            throw ValidationError("--metadata-only analyzes no bodies, so it cannot be combined with --methods, --pseudo, --structured or --function.")
+        }
+    }
 
     func run() async throws {
         if listImages {
@@ -81,7 +89,9 @@ struct ObjCCommand: AsyncParsableCommand {
             cachePath: cache,
             binary: binary
         )
-        let blocks = await ObjCDumper().blocks(machO, disassembler: Disassembler(preset: .simplified))
+        let blocks = metadataOnly
+            ? ObjCDumper().metadataOnlyBlocks(machO)
+            : await ObjCDumper().blocks(machO, disassembler: Disassembler(preset: .simplified))
         let includeMethods = methods || pseudo || structured || function != nil
         guard includeMethods else {
             if json {

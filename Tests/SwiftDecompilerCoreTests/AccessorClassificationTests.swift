@@ -97,10 +97,11 @@ private func runCLI(_ arguments: [String], timed: Bool = false) throws -> (stdou
 }
 
 /// Peak footprint against the accessor count: 1,400 accessors, then 11,200.
-/// Measured per added accessor, debug build: one at a time, 2.8 KB (the
-/// metadata, the header text and the cross-function summaries); holding
-/// every analysed body as well, 5.3 KB; the array decode this replaced,
-/// 9.2 KB. The bound sits between the first two.
+/// Measured per added accessor, debug build: one at a time, 2.8 KB;
+/// holding every analysed body as well, 5.3 KB; the array decode this
+/// replaced, 9.2 KB. The bound sits between the first two. In release,
+/// 1.2 KB of what is left is metadata and header text (`--metadata-only`
+/// grows that much) and the rest is cross-function state.
 @Test func accessorClassificationMemoryStaysFlatAsAccessorsGrowIfPresent() throws {
     let small = "Fixtures/Sample/libManyAccessors100.dylib", large = "Fixtures/Sample/libManyAccessors800.dylib"
     guard FileManager.default.fileExists(atPath: small), FileManager.default.fileExists(atPath: large),
@@ -123,3 +124,54 @@ private func runCLI(_ arguments: [String], timed: Bool = false) throws -> (stdou
 
 /// Bytes of peak footprint per added accessor, debug build.
 private let accessorGrowthCeiling = 4_096
+
+/// `--metadata-only` reads no body, so it cannot know which accessors are
+/// synthesized. All 14 of each class stay, typed from the property and
+/// marked; a line that is no accessor is not marked; no custom accessor is
+/// reported as custom and none is dropped as synthesized.
+@Test func metadataOnlyMarksEveryAccessorUnclassifiedIfPresent() throws {
+    let path = "Fixtures/Sample/libManyAccessors100.dylib"
+    guard FileManager.default.fileExists(atPath: path),
+          let run = try runCLI(["objc", path, "--metadata-only"])
+    else { return }
+    let lines = run.stdout.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+    let note = "// unclassified accessor: body not analyzed"
+    let marked = lines.filter { $0.hasSuffix(note) }
+    #expect(marked.count == 100 * accessorsPerClass)
+    func count(_ line: String) -> Int { lines.filter { $0 == "\(line) \(note)" }.count }
+    // A synthesized accessor and a custom one read alike, with the type
+    // the property proves in place of the encoding's `id`.
+    #expect(count("- (NSString *)name;") == 100)
+    #expect(count("- (void)setName:(NSString *)arg0;") == 100)
+    #expect(count("- (int)count;") == 100)
+    #expect(count("- (NSString *)label;") == 100)
+    #expect(count("- (void)setLimit:(int)arg0;") == 100)
+    // Every method line is an accessor or not; only the first kind is marked.
+    #expect(lines.filter { $0 == "- (void).cxx_destruct;" }.count == 100)
+    #expect(!lines.contains("- (int)total;"))
+}
+
+/// The mark belongs to the mode: neither the body-reading header nor the
+/// library's plain metadata header carries it.
+@Test func onlyMetadataOnlyCarriesTheMarkIfPresent() throws {
+    let path = "Fixtures/Sample/libManyAccessors100.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let machO = try BinaryLoader.load(path: path)
+    let note = ObjCDumper.unclassifiedAccessorNote
+    #expect(!ObjCDumper().dump(machO).contains(note))
+    #expect(ObjCDumper().metadataOnlyBlocks(machO).joined().contains(note))
+    if let run = try runCLI(["objc", path]) { #expect(!run.stdout.contains(note)) }
+}
+
+/// The flag excludes the modes that analyze bodies, and `--help` documents it.
+@Test func metadataOnlyRefusesBodyModesAndIsDocumentedIfPresent() throws {
+    let path = "Fixtures/Sample/libManyAccessors100.dylib"
+    guard FileManager.default.fileExists(atPath: path), FileManager.default.fileExists(atPath: cli.path)
+    else { return }
+    for mode in [["--methods"], ["--pseudo"], ["--structured"], ["--function", "total"]] {
+        #expect(try runCLI(["objc", path, "--metadata-only"] + mode) == nil, "\(mode)")
+    }
+    let help = try #require(try runCLI(["objc", "--help"]))
+    #expect(help.stdout.contains("--metadata-only"))
+    #expect(help.stdout.contains("unclassified accessor"))
+}
