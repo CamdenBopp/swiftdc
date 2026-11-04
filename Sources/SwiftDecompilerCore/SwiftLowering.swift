@@ -110,9 +110,14 @@ enum SwiftLowering: Equatable, Sendable {
     private static func isWhole(_ type: String, generic: String) -> Bool {
         guard type.hasPrefix(generic + "<"), type.hasSuffix(">") else { return false }
         var depth = 0
+        var previous: Character?
         for (offset, character) in type.dropFirst(generic.count).enumerated() {
+            defer { previous = character }
             if character == "<" { depth += 1 }
-            if character == ">" {
+            // A function-valued element still belongs to the collection:
+            // `Array<(Int) -> Int>` is one pointer. The arrow's `>` closes
+            // neither this generic nor one nested inside it.
+            if character == ">", previous != "-" {
                 depth -= 1
                 if depth == 0 { return offset == type.count - generic.count - 1 }
             }

@@ -8271,3 +8271,25 @@ chained headers). After them all 31 crashers exit 1 with a stated cause, and
 - **DEAD END: draining on a dispatch queue.** The caller blocks, and on the
   cooperative pool enough blocked callers starve the queue meant to finish
   the read: 12 test tasks hung a suite. It is a `Thread`.
+
+## 2026-11-04: ABI fixes from a Linux prototype
+
+Both fixes came as an unverified patch from a Linux prototype. Nothing here
+rests on that run: each symptom, test and blast radius below was redone on
+this Mac.
+
+- **FIXED (completeness): a collection of closures lost its lowering.**
+  `SwiftLowering.isWhole` counted the `>` of `->` as closing the generic, so
+  `Swift.Array<(Swift.Int) -> Swift.Int>` was no whole `Array`, classified
+  `.unknown`, and an Int after it lost x1:
+  `ClosureCollections.takeArray(?, ?)` is now `takeArray(arg0, arg1)` in
+  `disasm Fixtures/Sample/libClosureCollections.dylib --structured`, with
+  the same change for ContiguousArray, Dictionary and a Dictionary of
+  Arrays. `Tools/blast-radius.sh --real`: that fixture alone, 8 structured
+  lines; no other fixture or swift-syntax line moved.
+- **OPEN (correctness): two more scanners count the arrow's `>`.** By
+  reading, not reproduced: `Disassembler.systemValueTypeMember` drops out at
+  the space after the arrow, so `Swift.Array<(Swift.Int) -> Swift.Int>.append`
+  keeps only `Swift.Array` and is judged no member, and
+  `MetadataSymbolizer.withoutWhereClauses` ends a `< where …>` group early
+  at an arrow in its requirement.

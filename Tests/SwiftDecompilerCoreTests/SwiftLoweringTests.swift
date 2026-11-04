@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import SwiftDecompilerCore
 
@@ -44,4 +45,62 @@ import Testing
     #expect(Disassembler.isKnownDirectReturnType("(Swift.Int) -> Swift.Int", classTypeIndex: index))
     #expect(Disassembler.isKnownDirectReturnType("Swift.Dictionary<Swift.Int, Swift.Int>", classTypeIndex: index))
     #expect(Disassembler.isKnownDirectReturnType("Swift.Optional<Swift.String>", classTypeIndex: index))
+}
+
+/// `>` in a function arrow is not the end of a generic argument list.
+/// Closure arrays and dictionaries keep their one-pointer representation;
+/// names nested in those collections still do not inherit that layout.
+@Test func functionValuedCollectionsKeepTheirOwnLowering() {
+    let oneWord = [
+        "Swift.Array<(Swift.Int) -> Swift.Int>",
+        "Swift.ContiguousArray<@Sendable (Swift.Int) async throws -> Swift.String>",
+        "Swift.Dictionary<Swift.String, (Swift.Int) -> Swift.Int>",
+        "Swift.Dictionary<Swift.String, Swift.Array<(Swift.Int) -> Swift.Int>>",
+        "Swift.Array<((Swift.Int) -> Swift.Int) -> (Swift.Int) -> Swift.Int>",
+        "Swift.Array<() -> Swift.Array<Swift.Int>>",
+        "Swift._ArrayBuffer<(Swift.Int) -> Swift.Int>",
+        "Swift._ContiguousArrayBuffer<(Swift.Int) -> Swift.Int>",
+    ]
+    for type in oneWord {
+        #expect(SwiftLowering.of(type) == .oneInteger, "\(type)")
+        #expect(Disassembler.swiftReturnRegister(forReturnType: type) == .integer, "\(type)")
+        #expect(SwiftLowering.of(type + ".Iterator") == .unknown, "\(type).Iterator")
+        #expect(SwiftLowering.of(type + ".Nested<Swift.Int>") == .unknown, "\(type).Nested<Swift.Int>")
+    }
+    for generic in ["Swift.UnsafeBufferPointer", "Swift.UnsafeMutableBufferPointer"] {
+        let type = generic + "<(Swift.Int) -> Swift.Int>"
+        #expect(SwiftLowering.of(type) == .direct, "\(type)")
+        #expect(Disassembler.swiftReturnRegister(forReturnType: type) == nil, "\(type)")
+        #expect(SwiftLowering.of(type + ".Iterator") == .unknown, "\(type).Iterator")
+    }
+    #expect(SwiftLowering.of("Swift.Optional<Swift.Array<(Swift.Int) -> Swift.Int>>") == .direct)
+}
+
+/// The shared lowering reaches both entry seeding and call layout, so an
+/// Int after a collection of closures is still x1, not left unknown.
+@Test func functionValuedCollectionsDoNotHideFollowingArguments() {
+    for type in ["Swift.Array<(Swift.Int) -> Swift.Int>",
+                 "Swift.Dictionary<Swift.String, (Swift.Int) -> Swift.Int>"] {
+        let name = "M.take(\(type), Swift.Int) -> Swift.Int"
+        let function = DisassembledFunction(symbol: "$s1M4take", demangledName: name,
+                                            startAddress: 0x1000, instructions: [], source: .symbol)
+        #expect(Disassembler.swiftScalarArgumentRegisters(of: function) == ["x0": 0, "x1": 1])
+        let layout: [Disassembler.ScalarParameterClass]? = Disassembler.swiftCallArgumentLayout(
+            callee: name, enumCaseIndex: EnumCaseIndex(), classTypeIndex: ClassTypeIndex())
+        #expect(layout == [.integer, .integer])
+    }
+}
+
+@Test func functionValuedCollectionCallsKeepFollowingArgumentsIfPresent() async throws {
+    let path = "Fixtures/Sample/libClosureCollections.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    for (shape, constant) in [("Array", 1), ("Contiguous", 2), ("Dictionary", 3), ("Nested", 4)] {
+        let function = try #require(functions.first {
+            $0.displayName.hasPrefix("ClosureCollections.pass\(shape)(")
+        })
+        let text = function.renderStructured()
+        #expect(text.contains("return (ClosureCollections.take\(shape)(arg0, arg1) + \(constant))"),
+                Comment(rawValue: text))
+    }
 }

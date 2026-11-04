@@ -546,6 +546,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name IntConvert intconvert.sw
 echo "==> struct, SIMD and closure parameters (structargs.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name StructArgs structargs.swift -o libStructArgs.dylib
 
+echo "==> function-valued collection ABI, the > of -> in a generic argument (closurecollections.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name ClosureCollections closurecollections.swift -o libClosureCollections.dylib
+
 echo "==> standard-library value methods' self in x20 (stdself.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name StdSelf stdself.swift -o libStdSelf.dylib
 
