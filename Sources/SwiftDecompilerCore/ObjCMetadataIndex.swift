@@ -409,6 +409,10 @@ public struct ObjCMetadataIndex: Sendable {
     /// `xrefs`, and its dictionary order made "the first declaration" vary
     /// between runs.
     private let bySelector: [String: [ObjCMethodBinding]]
+    /// One aggregate declaration vetoes a scalar result. Record that union
+    /// once: popular selectors may have hundreds of scalar declarations,
+    /// and proving the absence of an aggregate must not rescan them per send.
+    private let aggregateReturnSelectors: Set<String>
     /// What every send of a selector asks of all its implementations, worked
     /// out once. `-owner` implemented by 1,600 classes and sent from 3,200
     /// methods parsed 1,600 type encodings per send: 3,066 of 4,244 samples.
@@ -467,12 +471,18 @@ public struct ObjCMetadataIndex: Sendable {
         self.methods = methods
         self.fieldMaps = fieldMaps
         var bySelector: [String: [ObjCMethodBinding]] = [:]
+        var aggregateReturnSelectors = Set<String>()
         for address in methods.keys.sorted() {
             for binding in methods[address] ?? [] {
                 bySelector[binding.selector, default: []].append(binding)
+                if let code = binding.typeEncoding.first(where: { !"rnNoORVA".contains($0) }),
+                   "{([j".contains(code) {
+                    aggregateReturnSelectors.insert(binding.selector)
+                }
             }
         }
         self.bySelector = bySelector
+        self.aggregateReturnSelectors = aggregateReturnSelectors
     }
 
     /// Primary binding at an implementation address. Multiple selectors may
@@ -554,10 +564,7 @@ public struct ObjCMetadataIndex: Sendable {
     /// Indexed aggregate declarations remain a veto even when a receiver's
     /// own declaration could override an unrelated SDK-wide selector hint.
     func selectorHasAggregateDeclaration(_ selector: String) -> Bool {
-        return (bySelector[selector] ?? []).contains { method in
-            guard let code = method.typeEncoding.first(where: { !"rnNoORVA".contains($0) }) else { return false }
-            return "{([j".contains(code)
-        }
+        aggregateReturnSelectors.contains(selector)
     }
 
     func outgoingReturnsVoid(selector: String, className: String, isClassMethod: Bool) -> Bool {

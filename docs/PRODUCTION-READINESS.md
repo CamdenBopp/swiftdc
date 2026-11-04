@@ -8389,7 +8389,7 @@ chained headers). After them all 31 crashers exit 1 with a stated cause, and
 
 ## 2026-11-04: ABI fixes from a Linux prototype
 
-Both fixes came as an unverified patch from a Linux prototype. Nothing here
+These fixes came as an unverified patch from a Linux prototype. Nothing here
 rests on that run: each symptom, test and blast radius below was redone on
 this Mac.
 
@@ -8507,7 +8507,7 @@ Commit messages on dev stay as they are; these are the true records.
   libSwiftSyntax --unreferenced`: 200 to 231 MB before, 285 MB after.
 - **OPEN (speed): `isGlobalVariableAddressor` allocates an array per unknown
   callee.** A single pass over `callee.utf8` should be cheaper; not measured.
-- **FIXED (soundness): a frame address passed in a float register.**
+- **FIXED (`3cb9a7e`, soundness): a frame address passed in a float register.**
   `Preservation.abiCallInputs` left out v0-v7, so an unknown callee handed a
   save slot's address in d0 or v0.d[1] could not touch it, and the save
   counted as restored. `FPAlias.indirect()` and `upper()` rendered `return
@@ -8516,12 +8516,13 @@ Commit messages on dev stay as they are; these are the true records.
   through `fmov`, whole-register moves, upper-lane inserts and SVE writes,
   and a call or vector write ends them. Blast radius: that fixture alone.
   Instructions +2.20% in total, within budget, from carrying the v bank.
-- **FIXED (soundness): an Objective-C struct result read as a scalar.** A
+- **FIXED (`37f81ad`, soundness): an Objective-C struct result read as a scalar.** A
   send whose selector any indexed declaration or the SDK table returns as an
   aggregate is no longer a whole scalar value: `[self range:value].location`
-  rendered `return [self range:arg0]` and is `[self range:arg0]`, then
-  `return ?` (`disasm Fixtures/Sample/libObjCSendResults.dylib
-  --structured`). A send to proven `self` keeps its result when its own
+  rendered `return [self range:arg0]` and now shows the send as a statement
+  (`disasm Fixtures/Sample/libObjCSendResults.dylib --structured`). These tail
+  sends currently omit an explicit unknown return; a scalar consumer such as
+  `consumeLong` receives `?`. A send to proven `self` keeps its result when its own
   class's declarations all return one float and no indexed declaration is an
   aggregate, so `[self scale]` survives the SDK's aggregate `scale`.
 - **Accepted decline: `[self->_inner value]` in
@@ -8529,7 +8530,7 @@ Commit messages on dev stay as they are; these are the true records.
   aggregate and the receiver is not self, so a right `return` became a
   statement and `return ?`. The selector alone proves nothing about the
   receiver; using the ivar's class would.
-- **FIXED (soundness): packed SIMD read as scalar arithmetic.** One opcode
+- **FIXED (`a283d79`, soundness): packed SIMD read as scalar arithmetic.** One opcode
   covers scalar and packed forms, and width does not tell them apart (`.2s`
   decodes at width 64). `fadd.2d` rendered `((0x4000…, 0x4000…) + (…))` and
   `scvtf d0, d1` on integer bits 2 rendered `Double(1e-323)`. Packed forms
@@ -8540,12 +8541,70 @@ Commit messages on dev stay as they are; these are the true records.
   `mem128[&result] = ((arg0, arg0) + (1, 2))` is now `= q0`. That `add.2d`
   was right by luck of lane width: the same path carried across lanes for
   `.8b`.
-- **FIXED (completeness): an explicit Void parameter hid what follows it.**
+- **FIXED (`ec2faaf`, completeness): an explicit Void parameter hid what follows it.**
   `afterVoid(_: (), _ tail: Int)` takes `tail` in x0 and rendered `return ?`;
   it is `return (arg1 + 1)`, with the same for the five functions in
   `Fixtures/Sample/libVoidArguments.dylib`. `()` and `Swift.Void` now take no
   register and keep their source slot.
-- **FIXED (soundness): `movi` with a zero immediate that is not zero.**
+- **FIXED (`1187951`, soundness): `movi` with a zero immediate that is not zero.**
   `movi v0.4s, #0, msl #8` puts 0xff in each element and rendered `return 0`.
   Every arrangement, LSL and MSL form now expands to its words, checked by
   running all 19 functions of `Fixtures/Sample/libVectorImmediates.dylib`.
+
+
+## 2026-11-04: aggregate-result validation without repeated declaration scans
+
+- **FIXED (speed): `37f81ad` rescanned every declaration for every send.**
+  `libManyAccessors800.dylib` repeats `count` and `owner` across 800 classes.
+  `selectorHasAggregateDeclaration` repeated roughly 1.92 million scalar
+  return-encoding checks, reintroducing the repeated-selector cost removed
+  for outgoing signatures by `dc43daf`. A release profile attributed 193 of
+  2,288 cooperative-thread samples to this new scan. Fresh same-toolchain
+  release builds of `8e749ed` and each of the five ABI commits isolate the
+  cliff to `37f81ad`: three alternating pseudo rounds give 39.145G at its
+  parent `3cb9a7e` and 43.446G at `37f81ad` (+10.99%), with identical output.
+  The following three commits each move less than 0.27% on this input.
+- The index now builds an immutable set of selectors having any aggregate
+  return declaration, during its existing sorted binding-index pass. The
+  qualified-return-code predicate is unchanged, and its union still includes
+  all IMP aliases, classes, and instance/class methods. Membership replaces
+  the per-send scan; there is no mutable cache, new lock, or iteration of the
+  set in output generation.
+- **MEASURED**, three alternating dev/batch/fixed rounds in each view, using
+  `/usr/bin/time -l swiftdc disasm libManyAccessors800.dylib` and the relevant
+  `--structured`, `--pseudo`, no-view, or `--json` flag:
+
+  | View | dev | ABI batch | Indexed validation | Fixed over dev |
+  | --- | ---: | ---: | ---: | ---: |
+  | structured | 38.694G | 43.842G | 39.523G | +2.14% |
+  | pseudo | 38.341G | 43.512G | 39.214G | +2.28% |
+  | listing | 42.238G | 47.336G | 43.151G | +2.16% |
+  | JSON | 45.234G | 50.315G | 46.063G | +1.83% |
+
+  All 36 output hashes match within their view. The four per-input budgets
+  pass without a `Perf-cost` override or any widened threshold. An independent
+  pseudo rerun retired 39.273G, reproducing the improvement.
+  The old per-commit "within budget" figures were on an earlier, slower base;
+  they did not prove the rebased batch's cost. Whole-corpus integration-gate
+  results remain a separate check.
+- **VERIFIED:** 17 focused ObjC result/receiver tests pass. Independent
+  mutations, each with its own successful build, fail: omit collection
+  (48 issues), collect scalar declarations too (83), keep only the first IMP
+  alias (10), ignore class methods (2). Restored source rebuilt and passed
+  all 17; `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build` then passed
+  1,274 tests in 18 suites. No new semantic tests were added for this lookup
+  optimization; the existing whole-analyzer regressions exercise the veto.
+- **VERIFIED:** the ABI batch's two unfinished FP shape mutations now have
+  their own successful builds and real test results: binary guards removed,
+  60 issues; unary guards removed, 29 issues. Restored source rebuilt and all
+  11 packed/MOVI filtered tests passed. Native oracles execute the fixtures
+  independently of swiftdc and are not claimed red under a decompiler mutation.
+- **REVIEWED:** the rebased `8e749ed` to `1187951` blast radius has eight
+  changed files in each view (structured 76 lines, pseudo 75, listing 74,
+  JSON 159). All lines match the five commits' explanations: FPAlias loses
+  false constants; ObjCSendResults declines aggregate scalar uses;
+  AccessorExtentCustom retains the accepted decline; PackedArithmetic and
+  ABISource.resilient lose unproven scalar expressions; VoidArguments keeps
+  source positions; VectorImmediates expands constants; AsyncMemoryEffects
+  gains its four MOVI arguments. ObjCStructLanes was already corrected in the
+  rebased baseline. No other opcode/address/name/metadata change appeared.
