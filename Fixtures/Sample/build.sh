@@ -455,6 +455,11 @@ strip -x libLocalTypes.stripped.dylib
 # would share them. libLocalTypesPair keeps the shared key on purpose.
 install_name_tool -id libLocalTypes.stripped.dylib libLocalTypes.stripped.dylib
 
+echo "==> declarations against what the binary proves (interfacefacts.swift: -O, -Onone, -O without reflection metadata)"
+xcrun swiftc -O -parse-as-library -emit-library interfacefacts.swift -module-name InterfaceFacts -o libInterfaceFacts.dylib
+xcrun swiftc -Onone -parse-as-library -emit-library interfacefacts.swift -module-name InterfaceFacts -o libInterfaceFacts.Onone.dylib
+xcrun swiftc -O -disable-reflection-metadata -parse-as-library -emit-library interfacefacts.swift -module-name InterfaceFacts -o libInterfaceFacts.noreflection.dylib
+
 echo "==> a stripped copy and its original under an install name no other test loads (localtypes.swift, -O; strip -x)"
 xcrun swiftc -O -parse-as-library -emit-library localtypes.swift -module-name LocalTypes -o libLocalTypesPair.dylib
 cp libLocalTypesPair.dylib libLocalTypesPair.stripped.dylib

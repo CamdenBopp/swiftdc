@@ -76,7 +76,11 @@ struct LayoutCommand: AsyncParsableCommand {
         if let needle = type?.lowercased() {
             maps = maps.filter { $0.key.lowercased().contains(needle) }
         }
-        guard !maps.isEmpty else {
+        var unnamed = UnnamedStorage.comments(in: machO)
+        if let needle = type?.lowercased() {
+            unnamed = unnamed.filter { $0.type.lowercased().contains(needle) }
+        }
+        guard !maps.isEmpty || !unnamed.isEmpty else {
             try emit(json ? "[]" : "// No Swift types with a resolvable field layout.", to: output)
             return
         }
@@ -85,7 +89,7 @@ struct LayoutCommand: AsyncParsableCommand {
             try emit(renderLookup(maps, at: at), to: output)
             return
         }
-        try emit(json ? renderJSON(maps) : renderText(maps), to: output)
+        try emit(json ? renderJSON(maps, unnamed: unnamed) : renderText(maps, unnamed: unnamed), to: output)
     }
 
     private func renderSelfIndex(_ index: SelfTypeIndex) -> String {
@@ -136,7 +140,7 @@ struct LayoutCommand: AsyncParsableCommand {
         return lines.joined(separator: "\n")
     }
 
-    private func renderText(_ maps: [String: FieldMap]) -> String {
+    private func renderText(_ maps: [String: FieldMap], unnamed: [(type: String, comment: String)]) -> String {
         var blocks: [String] = []
         for (name, map) in maps.sorted(by: { $0.key < $1.key }) {
             // A layout that stopped at a field it could not resolve has an
@@ -157,6 +161,9 @@ struct LayoutCommand: AsyncParsableCommand {
             }
             blocks.append(lines.joined(separator: "\n"))
         }
+        // A layout of nothing is no layout: these types have storage the
+        // binary does not describe.
+        blocks += unnamed.map { "\($0.type)  // \($0.comment)" }
         return blocks.joined(separator: "\n\n")
     }
 
@@ -164,8 +171,8 @@ struct LayoutCommand: AsyncParsableCommand {
         FieldMap.printableTypeName(mangled: field.typeMangledName, resolved: map.fieldTypeNames[field.name])
     }
 
-    private func renderJSON(_ maps: [String: FieldMap]) -> String {
-        let payload = maps.sorted { $0.key < $1.key }.map { name, map in
+    private func renderJSON(_ maps: [String: FieldMap], unnamed: [(type: String, comment: String)]) -> String {
+        var payload: [[String: Any]] = maps.sorted { $0.key < $1.key }.map { name, map in
             [
                 "type": name,
                 "instanceSize": map.trustLimitReason == nil ? map.instanceSize as Any : NSNull(),
@@ -176,6 +183,7 @@ struct LayoutCommand: AsyncParsableCommand {
                 },
             ] as [String: Any]
         }
+        payload += unnamed.map { ["type": $0.type, "unnamedStorage": $0.comment] as [String: Any] }
         guard let data = try? JSONSerialization.data(
             withJSONObject: payload, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         ) else { return "[]" }

@@ -76,7 +76,8 @@ public struct SwiftDeclarationDumper: Sendable {
             for type in types {
                 switch await dumpType(type, typesConfiguration, in: machO) {
                 case .success(let text):
-                    blocks.append(Self.placingLocalType(text, type, symbols: descriptorSymbols, in: machO))
+                    let placed = Self.placingLocalType(text, type, symbols: descriptorSymbols, in: machO)
+                    blocks.append(UnnamedStorage.comment(of: type, in: machO).map { UnnamedStorage.placing($0, in: placed) } ?? placed)
                 case .failure(let error):
                     blocks.append("// \(Self.kind(of: type)) \(Self.displayName(of: type, in: machO)): not rendered: \(error)")
                 }

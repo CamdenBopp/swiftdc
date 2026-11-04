@@ -147,6 +147,38 @@ results do not replace previously recorded release performance measurements.
   sinks sat directly on a label: 6 in Reconstruction -Osize, 4 in
   SwiftIfConfig, 1 in the fixture. Of all 600 added terminators (stripped copies counted), 401 sit before a `}`, 178 before `} else {` and 21 on a label. Fixture
   `tailcallsinks.c` (-O2) and `.swift` (-O); `SinkTerminatorTests`.
+- **FIXED — `dump` and `layout` printed a type with no field records as
+  empty.** An `@objc` enum has no field descriptor, and neither has anything
+  built with `-disable-reflection-metadata`, so `enum OE {}` read as an enum
+  without cases, and `layout` of such a binary said it had no Swift types.
+  The descriptor holds the count (`NumEmptyCases`, payload cases, `NumFields`);
+  the names are not in the binary. `UnnamedStorage` prints the count: `// 2
+  cases: the binary has no field records, so no names`. A type with records,
+  or with nothing to name, is left alone. Fixture `interfacefacts.swift`,
+  built -O, -Onone and without reflection metadata.
+- **OPEN — `interface` prints wrong declarations, and the fixes are in
+  MachOSwiftSection.** The declaration model is read-only outside that package
+  (`package(set)`) and the printer has no hook for these, so each needs a
+  change there. Measured against 0.24.0 with `interfacefacts.swift`:
+  constrained existentials print their arguments (`var b: Swift.Int` for
+  `any P<Int>`, `any Two` without its arguments, `any Any` for `any
+  ~Copyable`, blank for a field of that type); `@resultBuilder`,
+  `@propertyWrapper`, `@dynamicMemberLookup` and `@dynamicCallable` are
+  printed from a member's name; a hand-written `_a` beside `a` prints as
+  `@W var a` and hides `_a`, where the proof of a wrapper is its backing
+  initializer symbol (`…vpfP`); an `@objc` thunk marks every member of its base
+  name, so `@objc init()` reaches `init(t:)` and one overload reaches another;
+  `enum OE {}` for the case above; every global prints `let`; a vtable offset
+  under a resilient superclass reads as absolute. A patch series covering all
+  of these passes the enforcing suite; it waits on the dependency pin.
+  A global's storage decides `let` from `var`, over 31 declarations at each of
+  -O, -Onone, -Osize and library evolution: `__DATA,__data` initialized in the
+  file was always a `var`, a `__const` section always a `let`. A lazily
+  initialized global of either kind is all zero in the file and must decline.
+  That is usually zero-fill (`__common`, `__bss`), but the section alone does
+  not prove it: the toolchain's `libSwiftOperators` keeps `standardOperators`,
+  with its `_Wz` token, in `__data`. So `__data` also needs a nonzero first
+  byte, and a `var` whose first byte is zero declines with it.
 - **FIXED — a float's bit pattern rendered as the float, and integer
   constants beside it as float literals.** `fmov x8, d0` carried the
 - **FIXED (3e1b1df) — a float's bit pattern rendered as the float, and
