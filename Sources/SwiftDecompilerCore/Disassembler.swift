@@ -7041,9 +7041,9 @@ public struct Disassembler: Sendable {
         /// integer. Only a float ARGUMENT, a conversion to float, or a call whose
         /// callee's signature returns a float anchors it: a bare immediate is
         /// exactly the ambiguous case being resolved, so it is never a base
-        /// case, and an integer body never matches. A conversion to integer, or
-        /// a float's bits read as an integer (`fmov x8, d0`), ends the float
-        /// context below it.
+        /// case, and an integer body never matches. A conversion to integer, a
+        /// float's bits read as an integer (`fmov x8, d0`), or a bit-level
+        /// operator ends the float context below it.
         func floatWidth(_ value: AbstractValue) -> Int? {
             switch value {
             case .argument(let index):
@@ -7056,8 +7056,17 @@ public struct Disassembler: Sendable {
                 case "Swift.Float"?, "Swift.Float32"?: return 32
                 default: return nil
                 }
+            case .binary(.bitAnd, _, _), .binary(.bitOr, _, _), .binary(.bitXor, _, _),
+                 .binary(.shiftLeft, _, _), .binary(.shiftRight, _, _), .binary(.arithmeticShiftRight, _, _):
+                // A bit-level operator's result is an integer, whatever it read:
+                // `str d0, [sp]; ldrb w8, [sp]; cmp x8, #7` is `(arg0 & 255)`,
+                // and through it the 7 rendered `3.5e-323`.
+                return nil
             case .binary(_, let lhs, let rhs):
                 return floatWidth(lhs) ?? floatWidth(rhs)
+            case .unary(.bitwiseNot, _), .unary(.byteSwap, _), .unary(.leadingZeros, _),
+                 .unary(.leadingSignBits, _), .unary(.bitReverse, _):
+                return nil
             case .unary(.toFloat(let bits), _), .unary(.unsignedToFloat(let bits), _),
                  .unary(.floatConstant(let bits), _):
                 return bits

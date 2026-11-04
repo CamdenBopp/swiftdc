@@ -26,6 +26,26 @@ import Testing
     #expect(try render("bitsEqualPayload").contains("((arg0.bitPattern != 0x7ff8000000000001) ? 18 : 17)"))
 }
 
+/// A bit-level operator's result is an integer whatever it read. -Onone
+/// `unsafeBitCast(a, to: Int.self) & 0xff == 7` spills the Double and reloads
+/// its low byte with no `fmov` (`str d0, [sp]; ldrb w8, [sp]; subs x8, x8,
+/// #0x7`), and the 7 rendered as the Double `3.5e-323`. A byte reversal
+/// (`ldr x8, [sp]; rev x8, x8`) is integer-only the same way.
+@Test func aConstantBesideABitLevelOperatorOnAFloatIsAnIntegerIfPresent() async throws {
+    let path = "Fixtures/Sample/libFloatBits.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func render(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("FloatBits.\(name)(") }).renderStructured()
+    }
+    let lowByte = try render("bitCastLowByte")
+    #expect(lowByte.contains("if ((arg0 & 255) != 7) {"))
+    #expect(!lowByte.contains("e-323"))
+    let swapped = try render("bitCastByteSwapped")
+    #expect(swapped.contains("if (byteSwap64(arg0) != 7) {"))
+    #expect(!swapped.contains("e-323"))
+}
+
 /// The tracer's half: `fmov x0, d1` is the bit pattern of d1 at its own
 /// width, an immediate stays the immediate, and moving a bit pattern back
 /// into a float register of that width is the float again.

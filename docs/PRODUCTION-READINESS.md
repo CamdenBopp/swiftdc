@@ -78,6 +78,8 @@ results do not replace previously recorded release performance measurements.
   `tailcallsinks.c` (-O2) and `.swift` (-O); `SinkTerminatorTests`.
 - **FIXED — a float's bit pattern rendered as the float, and integer
   constants beside it as float literals.** `fmov x8, d0` carried the
+- **FIXED (168e39a) — a float's bit pattern rendered as the float, and
+  integer constants beside it as float literals.** `fmov x8, d0` carried the
   Double into the general register unchanged, so every integer operation
   on its bits read as one on the Double and `floatWidth` typed the
   constants as Doubles. Swift -O `Int(a)` guards finiteness with `fmov x8,
@@ -93,6 +95,16 @@ results do not replace previously recorded release performance measurements.
   bit pattern is the float again. Fixtures `floatbits.swift` (-O and
   -Onone) and `floatbitswidth.s`; blast radius 6 files, 36 structured
   lines, all `fmov xN, dM` sites, swift-syntax byte-identical.
+- **FIXED — a constant beside a bit-level operator over a float read as a
+  float.** `floatWidth` recursed through every binary operator, so `(x &
+  mask) cmp imm` over a float argument typed `imm` as a Double; the
+  float-literal rule skipped only an outer bit-level operator. A bit-level
+  binary (`& | ^ << >> >>ᵁ`) and an integer-only unary (`~`, byte swap,
+  leading zeros or sign bits, bit reverse) now end the float context. It
+  covers routes with no `fmov`: -Onone `unsafeBitCast(a, to: Int.self)`
+  spills d0 and reloads it, and `& 0xff == 7` read `((arg0 & 255) !=
+  3.5e-323)`, now `!= 7`; `.byteSwapped == 7` read `byteSwap64(arg0) !=
+  3.5e-323`. Blast radius: those 2 lines, swift-syntax byte-identical.
 - **OPEN — the reverse move, `fmov dN, xM` of an integer, carries the
   integer bare.** `Double(bitPattern: i) * 2.0` at -O is `fmov d0, x0;
   fadd d0, d0, d0` and renders `sd((arg0 + arg0))`, an integer add of the
@@ -100,11 +112,12 @@ results do not replace previously recorded release performance measurements.
   `.bitPattern` one.
 - **OPEN — a float spilled and reloaded into a general register carries
   the float bare.** -Onone `unsafeBitCast(a, to: Int.self)` stores d0 and
-  reloads x8 from the slot, with no `fmov`, so its constants still read as
-  floats: `& 0xff == 7` renders `((arg0 & 255) != 3.5e-323)`, and `~bits
-  == 7`, lowered to `0 - x - 1`, renders `((-arg0 - 5e-324) != 3.5e-323)`.
-  A slot needs the register file it was stored from, so a GPR reload of
-  an FPR store reads as `.bitPattern`.
+  reloads x8 from the slot, with no `fmov`. A bit-level operator on it
+  now types its constants as integers (`(arg0 & 255) != 7`, still without
+  `.bitPattern`), but arithmetic does not: `~bits == 7`, lowered to `0 -
+  x - 1`, renders `((-arg0 - 5e-324) != 3.5e-323)`. A slot needs the
+  register file it was stored from, so a GPR reload of an FPR store reads
+  as `.bitPattern`.
 
 - **FIXED — a setter dispatch folded into an assignment of x0 whatever
   the property's type.** A vtable call to self's own setter renders as
