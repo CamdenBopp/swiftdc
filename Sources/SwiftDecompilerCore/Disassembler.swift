@@ -8283,13 +8283,30 @@ public struct Disassembler: Sendable {
             return site
         }
 
+        /// The literal a String's two words spell, or the pick between two
+        /// of them: x0 and x1 both selects on one condition, as a ternary
+        /// lowers to a `csel` per word over the same flags. Each arm pairs
+        /// the two words its own side selects. Selects on two conditions
+        /// (two flag setters, or `ne` and `eq` of one) pick words that need
+        /// not belong to one String, and are no pick.
+        func swiftStringPick(_ low: AbstractValue, _ high: AbstractValue, depth: Int) -> String? {
+            if let literal = swiftStringLiteral(low, high) { return literal }
+            guard depth < 6,
+                  case .select(let condition, let lowTrue, let lowFalse) = low,
+                  case .select(condition, let highTrue, let highFalse) = high,
+                  let whenTrue = swiftStringPick(lowTrue, highTrue, depth: depth + 1),
+                  let whenFalse = swiftStringPick(lowFalse, highFalse, depth: depth + 1)
+            else { return nil }
+            return "(\(renderValue(condition, depth: 0)) ? \(whenTrue) : \(whenFalse))"
+        }
+
         /// The String a Swift function returns at this `ret`, read from both
-        /// of its words: a literal they spell, the whole result of a call
-        /// that itself returns a String, or one String field of self. With
-        /// the call it consumes, if any.
+        /// of its words: a literal they spell or a pick between literals,
+        /// the whole result of a call that itself returns a String, or one
+        /// String field of self. With the call it consumes, if any.
         func swiftStringReturn(at address: UInt64) -> (rendered: String, consumedSite: UInt64?)? {
             guard let (low, high) = swiftStringReturnWords(at: address) else { return nil }
-            if let literal = swiftStringLiteral(low, high) { return (literal, nil) }
+            if let literal = swiftStringPick(low, high, depth: 0) { return (literal, nil) }
             if let site = swiftStringReturnCall(at: address) {
                 let rendered = renderValue(.callResult(site), depth: 0)
                 guard rendered != "?", !rendered.hasPrefix("/* unresolved") else { return nil }

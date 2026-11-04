@@ -1148,8 +1148,8 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
 /// spell, a String field of self, or the whole result of a call that itself
 /// returns a String. Each rendered `return ?` before. A String? field read
 /// back as a String (`nickname!`), the two words of a
-/// call returning a struct that holds a String, an Optional String, and a
-/// join of two literals stay `return ?` (stringreturns.swift).
+/// call returning a struct that holds a String, and an Optional String stay
+/// `return ?`; a pick between two literals is a ternary (stringreturns.swift).
 @Test func aStringReturnIsReadFromBothWordsIfPresent() async throws {
     let path = "Fixtures/Sample/libStringReturns.dylib"
     guard FileManager.default.fileExists(atPath: path) else { return }
@@ -1168,12 +1168,14 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
     let fromLocal = try text("fromLocal")
     #expect(fromLocal.contains("return StringReturns.describe("), Comment(rawValue: fromLocal))
     #expect(!fromLocal.contains("    StringReturns.describe("), Comment(rawValue: fromLocal))
-    for name in ["Person.forced", "inner", "maybe", "either"] {
+    for name in ["Person.forced", "inner", "maybe"] {
         let body = try text(name)
         #expect(body.contains("return ?"), Comment(rawValue: body))
     }
     // `Box.make()` is no String result, so the return does not use it: it
     // is not bound for a use that never renders.
+    let either = try text("either")
+    #expect(either.contains(#"return (arg0 ? "yes" : "no")"#), Comment(rawValue: either))
     let inner = try text("inner")
     #expect(!inner.contains("let r"), Comment(rawValue: inner))
 }
@@ -1189,4 +1191,29 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
     }
     let speak = try #require(functions.first { $0.displayName.hasPrefix("sample.Animal.speak(") }).renderStructured()
     #expect(speak.contains("return \"...\"") && !speak.contains("String.init"), Comment(rawValue: speak))
+}
+
+/// A String picked by a condition is a `csel` per word over one compare,
+/// so each word is a select on the same condition: the pick is the ternary
+/// of the two literals (`flag ? "yes" : "no"`), and a chain of picks nests.
+/// Selects on two flag setters, or on `ne` and `eq` of one, mix two
+/// Strings' words and stay `return ?` (stringselects.swift,
+/// string_selects.s).
+@Test func aStringPickedByAConditionIsATernaryIfPresent() async throws {
+    let path = "Fixtures/Sample/libStringSelects.dylib"
+    let asm = "Fixtures/Sample/libStringSelectsAsm.dylib"
+    guard FileManager.default.fileExists(atPath: path), FileManager.default.fileExists(atPath: asm) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String, in functions: [DisassembledFunction]) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix(name) }).renderStructured()
+    }
+    let either = try text("StringSelects.either(", in: functions)
+    #expect(either.contains(#" ? "yes" : "no")"#), Comment(rawValue: either))
+    let pick = try text("StringSelects.pick(", in: functions)
+    #expect(pick.contains(#"return ((arg0 == 0) ? "zero" : ((arg0 != 1) ? "many" : "one"))"#), Comment(rawValue: pick))
+    let picks = try await withStableDependencies { try await Disassembler().disassemble(path: asm) }
+    for name in ["Picks.mixed(", "Picks.swapped("] {
+        let body = try text(name, in: picks)
+        #expect(body.contains("return ?") && !body.contains("\"yes\""), Comment(rawValue: body))
+    }
 }

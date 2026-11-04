@@ -7708,12 +7708,26 @@ heuristic, so the bins are approximate):
   result or a String field of self is now the return. After: unknown
   248 -> 241, recovered 39 -> 46; over all four swift-syntax dylibs,
   unknown 972 -> 933, recovered 100 -> 139. Fixture `stringreturns.swift`.
-- **OPEN — a value picked per path.** The 30 String returns left in the
-  plugin library are CodingKey `stringValue` and enum `rawValue` getters:
-  `csel x0, …; csel x1, …` chains over the case tag, so each word is a
-  select, and two selects on the same condition were never paired into
-  one `c ? "a" : "b"`. One-register scalars that join at a block (23,
-  `mov w0, #0` / `mov w0, #1` before a shared `ret`) are the same cause.
+- **FIXED ("Read a String picked by a condition as a ternary", the commit
+  after 766585a) — two selects on one condition were never
+  paired into one String.** A String whose x0 and x1 are selects on the
+  same condition is now the ternary of the two Strings each side's words
+  spell, nested for a chain: `return (arg0 ? "yes" : "no")`. Selects on
+  two conditions (two flag setters, or `ne` and `eq` of one) stay `return
+  ?`. Fixtures `stringselects.swift`, `string_selects.s`. It moved no
+  swift-syntax return (unknown 933 before and after over the four
+  dylibs): see the next entry.
+- **OPEN — a resilient value type's self is not seeded through x20.** The
+  30 String returns left in the plugin library are CodingKey
+  `stringValue` and enum `rawValue` getters of types in a
+  library-evolution module. Their self is passed indirectly, `ldrb w8,
+  [x20]` reads the case tag, and the tracer does not know x20 there, so
+  the compares, their `csel` chains and the branch conditions are all
+  unknown (`b.le` with no `cond:` note). The pairing above applies once
+  that tag is known. One-register scalars that join at a block (23,
+  `mov w0, #0` / `mov w0, #1` before a shared `ret`) are a separate
+  cause: a join of more than two predecessors, which the tracer's
+  diamond merge does not model.
 - **OPEN — `unsupported-layout-or-value` is all throwing functions whose
   normal exit is not proven** (179 of 179). 119 `ret` straight after a
   throwing call, mostly protocol witnesses forwarding a `decode`; x21 at

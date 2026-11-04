@@ -16,7 +16,7 @@
 //   Box.make()` would be a different value, and it stays `return ?`;
 // - `maybe()` is a String? (`.some("m")`), whose layout this does not
 //   model: `return ?`;
-// - `either(_:)` joins two literals: no one value, `return ?`.
+// - `either(_:)` picks one of two literals: `flag ? "yes" : "no"`.
 public final class Person {
     public var name: String
     public var reads = 0

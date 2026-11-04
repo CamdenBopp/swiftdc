@@ -599,6 +599,12 @@ $SWIFTC -parse-as-library -O -emit-library -module-name ClassProtoWitness classp
 echo "==> self's isa loaded before a loop and read after it (loopisa.swift, -O, resilient)"
 $SWIFTC -parse-as-library -O -enable-library-evolution -emit-library -module-name LoopIsa loopisa.swift -o libLoopIsa.dylib
 
+echo "==> a String picked by a condition, one csel per word (stringselects.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name StringSelects stringselects.swift -o libStringSelects.dylib
+
+echo "==> two selects that are no one String pick (string_selects.s)"
+$CLANG -arch arm64 -dynamiclib string_selects.s -o libStringSelectsAsm.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib
