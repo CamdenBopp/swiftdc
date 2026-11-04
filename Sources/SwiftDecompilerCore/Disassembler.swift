@@ -2202,11 +2202,14 @@ public struct Disassembler: Sendable {
     /// symbol's address, with the conformance its demangled name states.
     private func witnessTables(in machO: MachOFile) -> [(range: Range<UInt64>, conformance: String)] {
         let prefix = "protocol witness table for "
-        let starts = Set(machO.symbols.map { UInt64($0.offset) }).sorted()
+        // `compactMap`: an N_ABS symbol is a constant, and one with bit 63 set
+        // (`_swiftImmortalRefCount` in libswiftCore) reads as a negative offset.
+        let starts = Set(machO.symbols.compactMap { UInt64(exactly: $0.offset) }).sorted()
         var tables: [(range: Range<UInt64>, conformance: String)] = []
         for symbol in machO.symbols where symbol.name.hasSuffix("WP") {
-            guard let name = demangle(symbol.name), name.hasPrefix(prefix) else { continue }
-            let start = UInt64(symbol.offset)
+            guard let start = UInt64(exactly: symbol.offset), let name = demangle(symbol.name),
+                  name.hasPrefix(prefix)
+            else { continue }
             var low = 0, high = starts.count
             while low < high {
                 let mid = (low + high) / 2

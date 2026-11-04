@@ -62,6 +62,28 @@ private struct SymbolTable {
     }
 }
 
+/// `_immortal` and a symbol named as a witness table are N_ABS with bit 63
+/// set, so each `Symbol.offset` is negative, and `_first` and `_second` share an address, which sends a disassembly to
+/// `witnessTables`. `disasm` and `analyze` trapped there, on
+/// `/usr/lib/swift/libswiftCore.dylib` too.
+@Test func aNegativeSymbolOffsetBesideAFoldedAddressIsNoTrapIfPresent() throws {
+    let binary = URL(fileURLWithPath: ".build/debug/swiftdc")
+    let fixture = "Fixtures/Sample/libNegativeAbsolute.dylib"
+    guard FileManager.default.fileExists(atPath: fixture),
+          FileManager.default.fileExists(atPath: binary.path) else { return }
+    for command in [["disasm"], ["disasm", "--structured"], ["disasm", "-f", "first"], ["analyze"]] {
+        let process = Process()
+        process.executableURL = binary
+        process.arguments = [command[0], fixture] + command.dropFirst()
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        #expect(process.terminationReason == .exit && process.terminationStatus == 0,
+                "\(command): status \(process.terminationStatus), reason \(process.terminationReason.rawValue)")
+    }
+}
+
 /// A copy whose `_abs_value` equals `_real`'s address: a constant that
 /// happens to match code. `_real` keeps its own name, unfolded.
 @Test func anAbsoluteSymbolNamesNoFunctionIfPresent() async throws {

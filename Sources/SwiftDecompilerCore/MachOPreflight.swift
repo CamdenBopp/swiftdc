@@ -175,6 +175,7 @@ public enum MachOPreflight {
                 + "(cryptid \(crypt.cryptid)), so its code and metadata cannot be read. Analyze a decrypted copy."
             )
         }
+
         // Section CONTENTS, for a thin little-endian image. A fat file's
         // slices come through here one at a time from `validate(url:)`.
         //
