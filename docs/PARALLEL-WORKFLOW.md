@@ -212,17 +212,87 @@ finished, so it was moved.
 1. HEAD is on `dev`, clean, and fast-forwards `origin/dev`. An agent's branch
    is rebased onto dev by the integrator, one branch at a time.
 2. Fixtures come from the cache.
-3. The full enforcing suite runs, with the release build beside it.
+3. The full enforcing suite runs, with the release build beside it. Once
+   the release binary exists, HEAD's renders and cost runs go into the
+   blast-radius cache while the suite finishes.
 4. Blast radius against `origin/dev`'s release binary covers all four views,
    the fixtures and the swift-syntax dylibs. The gate fails on a render that
    traps now but did not before. Every other changed line must be explained
-   in the commit, and the gate prints where the diffs are.
+   in the commit, and the gate prints where the diffs are. The same step
+   holds HEAD to the cost budget (below).
 5. `--push` pushes.
 
 Release binaries are kept per commit, so the next gate's baseline is already
 built. The expected gate time on a cache hit is the suite (145 s) plus the
 blast radius (about 75 s). That makes about 4 minutes, while a release build
 that overlaps the suite stays off the critical path.
+
+### The cost budget
+
+Three superlinear costs passed this gate unnoticed before it had one.
+libSwiftSyntax `disasm --structured` retired 4,200G instructions where it
+now retires 572G, and GoodLinks `xrefs` 15,000G where it now retires
+1,474G. Every output was right, so no diff showed them. Wall time could
+not have caught them either: on this host it moves 8% or more between
+identical runs, with load from 15 to 85.
+
+`Tools/blast-radius.sh` now runs every render under `/usr/bin/time -l` and
+caches its instructions retired and peak footprint beside the render, so a
+baseline is measured once. `--perf` adds four whole-image runs on the
+toolchain's dylibs, each under `Tools/audit/guard.sh`: libSwiftSyntax and
+libSwiftParser, `disasm --structured` and `xrefs --unreferenced`. Their
+outputs are not diffed, but the report says whether each one's hash
+changed. The report goes to `<out>/perf.txt`, and the script exits 3 over
+budget:
+
+| Check | Default | Noise, two runs of one binary |
+|---|---|---|
+| instructions, any input from 2G | +10% | 2.3% worst of 98 inputs |
+| instructions, all renders | +3% | 0.11% |
+| footprint, any input from 64 MB | +50% | 25% worst (goProgram `--pseudo`) |
+| footprint, summed over renders | +10% | 1.2% |
+
+The noise column comes from two full `--real --perf` runs of the dev
+binary at `8fabd02` into separate caches, at load 15 to 30. Footprint is
+the noisy figure, so its per-input limit sits at twice the worst spread
+seen. Small inputs are judged only through the totals: under 2G, a render
+moved by up to 3.8%. Two release builds of one commit from different
+trees (the gate's and an agent's) retired the same counts to 0.1%, but
+counts depend on code generation, so compare binaries built the same way.
+Every limit is an environment variable (`SWIFTDC_PERF_*`, listed in the
+script's header). The gate takes no override from the environment: a
+commit that pays a cost on purpose says why in a `Perf-cost: <reason>`
+line, and the gate prints the reason and passes. A render without counts
+fails the budget as unknown (exit 4), never as cheap.
+
+Proof that it catches what it is for, both on 2026-11-03:
+
+- **The real regressions.** The dev binary at `7c31327`, before the four
+  speed fixes, against `8fabd02` as the base: exit 3. libSwiftSyntax
+  `--structured` +636%, its `xrefs` +733%, libSwiftParser +35% and +42%,
+  44 fixture and swift-syntax renders over the per-input limit, +175% in
+  total. Every output hash was the same: the fixes changed only cost.
+- **A deliberate one.** `CallResultBankCache.bank` with its lookup
+  disabled (`if false, let hit = …`), built release, against the same tree
+  rebuilt with the lookup restored: exit 3. libSwiftParser `--structured`
+  +12.9%, its `xrefs` +15.3%, libSwiftParserDiagnostics +10.1% to +13.0%
+  in five renders, +4.45% in total. libSwiftSyntax moved only +4.8% and +5.6%, so
+  the per-input limit alone would have missed it on that dylib. The
+  restored build against the gate's `8fabd02` binary: within budget,
+  +0.08% in total. With `SWIFTDC_PERF_OVERRIDE` set, the regressed pair
+  exits 0 and prints the reason.
+
+What it costs. The four `--perf` runs take 134 CPU-seconds per new binary
+(libSwiftSyntax `--structured` 57, its `xrefs` 44, libSwiftParser 18 and
+15), against 276 for that binary's renders in all four views. The longest
+is a single thread of 60 to 100 s wall under load. In the gate they run,
+with HEAD's renders, in the background after the release build, beside
+the suite, so the blast step finds them cached. A fully cached blast
+radius took 9 s against 8 s for the old script (three rounds each). A
+blast radius that renders one new binary from scratch, as before priming,
+took 92 and 144 s with the old script and 167 and 139 s with `--perf`
+(alternating, load 20 to 85): within the noise of the host, at most 75 s
+more.
 
 ### Expensive audit verification stays separate
 

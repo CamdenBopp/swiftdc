@@ -182,9 +182,20 @@ around what a rebuild costs:
   binary hash, so the baseline is rendered once. Copy each binary out of
   `.build-release` first. The five apps' `--pseudo` still run by hand under
   the memory guard.
+- **Cost budget:** the blast radius records instructions retired and peak
+  footprint for every render, and `--perf` adds whole-image `disasm
+  --structured` and `xrefs --unreferenced` on libSwiftSyntax and
+  libSwiftParser. It exits 3, and the gate fails, at +10% instructions on
+  any input from 2G, +3% in total, or +50% footprint on an input from
+  64 MB, +10% in total (`SWIFTDC_PERF_*`, see the script's header). A
+  commit that pays a cost on purpose carries a `Perf-cost: <reason>` line.
+  Judge speed by instructions retired, never by wall time on this host:
+  two runs agree to 0.1% in total at any load. Counts depend on code
+  generation, so compare binaries built the same way.
 - **Push only through the gate:** `Tools/integration-gate.sh --push`
   (fast-forward check, cached fixtures, full suite, release build, blast
-  radius against origin/dev, one gate at a time on the host). It tests the
+  radius and cost budget against origin/dev, one gate at a time on the
+  host). It tests the
   committed HEAD in its own worktree (`../compiler-gate`), so keep working
   while it runs; never edit in that tree.
 - **Chain the long pipeline in the background:** suite, fixture views, the

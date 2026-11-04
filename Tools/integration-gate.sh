@@ -15,11 +15,16 @@
 #   1. HEAD fast-forwards origin/dev (rebase first if it does not).
 #   2. Fixtures come from the content-addressed cache (Tools/fixtures.sh).
 #   3. The full enforcing suite, while the release build runs beside it
-#      in .build-release.
+#      in .build-release, then renders and measures HEAD into the
+#      blast-radius cache.
 #   4. Blast radius against origin/dev's release binary, all four views,
 #      fixtures and the swift-syntax dylibs. Every changed line must be
 #      explained in its commit; the gate prints the counts and the diffs'
-#      paths, it cannot judge them.
+#      paths, it cannot judge them. The same step holds HEAD to the cost
+#      budget (instructions retired and peak footprint, per render and on
+#      four whole-image runs; Tools/blast-radius.sh --perf). A commit that
+#      pays for something on purpose says so in a `Perf-cost: <reason>`
+#      line, and the gate passes with the reason printed.
 #   5. With --push: git push origin HEAD:dev.
 #
 # Release binaries are kept per commit under $SWIFTDC_BINARY_CACHE, so the
@@ -78,7 +83,14 @@ Tools/fixtures.sh 2> "$out/fixtures.log" || fail "fixtures (see $out/fixtures.lo
 
 # 3. Suite, with the head's release build beside it.
 step "release build of HEAD (background) and debug build"
-release "$head" "$tree/.build-release" "$tree" &
+# Once the release binary exists, render and measure it into the cache
+# while the suite still runs (instruction counts do not depend on load),
+# so step 4 finds HEAD's renders and cost runs already done.
+{
+  release "$head" "$tree/.build-release" "$tree" || exit 1
+  Tools/blast-radius.sh "$bins/$head/swiftdc" "$bins/$head/swiftdc" "$out/prime" --real --perf \
+    > "$out/prime.log" 2>&1 || exit 2
+} &
 rel=$!
 swift build --build-tests > "$out/build.log" 2>&1 || fail "debug build (see $out/build.log)"
 step "full enforcing suite"
@@ -87,7 +99,13 @@ if ! SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build > "$out/suite.log" 2>&1;
   fail "suite (see $out/suite.log)"
 fi
 grep -E "Test run with" "$out/suite.log" >&2 || true
-wait $rel || fail "release build (see $out/release-$head.log)"
+relrc=0
+wait $rel || relrc=$?
+case $relrc in
+  0) ;;
+  1) fail "release build (see $out/release-$head.log)" ;;
+  *) fail "rendering and measuring HEAD (see $out/prime.log)" ;;
+esac
 
 # 4. Blast radius against origin/dev.
 if [ ! -x "$bins/$base/swiftdc" ]; then
@@ -97,11 +115,23 @@ if [ ! -x "$bins/$base/swiftdc" ]; then
   release "$base" "$wt/.build-release" "$wt" || { git worktree remove --force "$wt"; fail "baseline build"; }
   git worktree remove --force "$wt"
 fi
-step "blast radius"
-Tools/blast-radius.sh "$bins/$base/swiftdc" "$bins/$head/swiftdc" "$out/blast" --real | tee "$out/blast.txt" >&2
+step "blast radius and cost budget"
+# The only override is a `Perf-cost: <reason>` line in a commit under test,
+# so an accepted cost is on the record.
+reason=$(git log --format=%B "$base..$head" | sed -n 's/^Perf-cost:[[:space:]]*//p' | paste -sd ';' -)
+brc=0
+SWIFTDC_PERF_OVERRIDE=$reason Tools/blast-radius.sh "$bins/$base/swiftdc" "$bins/$head/swiftdc" "$out/blast" --real --perf \
+  > "$out/blast.txt" 2>&1 || brc=$?
+cat "$out/blast.txt" >&2
 if grep -q '^+rc=13[0-9]' "$out/blast/"*.diff 2> /dev/null; then
   fail "a render that did not trap before traps now (grep rc=13 in $out/blast)"
 fi
+case $brc in
+  0) ;;
+  3) fail "over the cost budget ($out/blast/perf.txt); if the cost is intended, say why in a 'Perf-cost: <reason>' line of the commit" ;;
+  4) fail "cost unknown: renders without counts ($out/blast/perf.txt)" ;;
+  *) fail "blast radius exited $brc (see $out/blast.txt)" ;;
+esac
 
 # 5. Push.
 if [ $push = 1 ]; then
