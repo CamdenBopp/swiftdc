@@ -7926,6 +7926,16 @@ heuristic, so the bins are approximate):
   ?`. Fixtures `stringselects.swift`, `string_selects.s`. It moved no
   swift-syntax return (unknown 933 before and after over the four
   dylibs): see the next entry.
+- **FIXED (soundness) — equal conditions on one load were taken for one
+  condition across a store.** `AbstractValue` names what was read, not
+  when, so `self.flag != 0` compared on both sides of a store through an
+  argument that may be self spelled the same, and x0 and x1 paired into
+  one String though they can come from different arms. A condition that
+  reads memory now pairs only in a body with no store outside its frame.
+  The tracer already forgets a loaded value across a call, and a store
+  to the field itself replaced the value; both are tested. A condition on
+  an argument still pairs across a store. Fixtures `selectstore.swift`,
+  `select_store.s`.
 - **OPEN — a resilient value type's self is not seeded through x20.** The
   30 String returns left in the plugin library are CodingKey
   `stringValue` and enum `rawValue` getters of types in a

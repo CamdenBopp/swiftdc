@@ -654,6 +654,10 @@ $SWIFTC -parse-as-library -O -enable-library-evolution -emit-library -module-nam
 
 echo "==> generic functions that pass fewer metadata arguments than parameters (metadatasource.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MetadataSource metadatasource.swift -o libMetadataSource.dylib
+echo "==> two selects on one load with memory written between them (selectstore.swift, select_store.s, -O)"
+$CLANG -arch arm64 -c select_store.s -o select_store.o
+$SWIFTC -parse-as-library -O -emit-library -module-name SelectStore selectstore.swift select_store.o -o libSelectStore.dylib
+rm -f select_store.o
 
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib

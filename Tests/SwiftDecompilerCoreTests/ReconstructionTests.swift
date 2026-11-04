@@ -1376,3 +1376,27 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
         #expect(body.contains("unresolved Swift success/error exit") && !body.contains("return try"), Comment(rawValue: body))
     }
 }
+
+/// Two equal conditions that read memory are one condition only if nothing
+/// wrote it between them. `self.flag != 0` compared on both sides of a store
+/// through an argument, which may be self, spells the same and may not be:
+/// x0 and x1 can come from different arms. A store, a store that may alias
+/// and a call between the loads all stay `return ?`. Nothing between them is
+/// the pick, and so is a condition on an argument, which no store reaches
+/// (selectstore.swift, select_store.s).
+@Test func aPickOnALoadDeclinesAcrossAWriteIfPresent() async throws {
+    let path = "Fixtures/Sample/libSelectStore.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("SelectStore.Box.\(name)(") }).renderStructured()
+    }
+    let steady = try text("steady")
+    #expect(steady.contains(#"return ((self.flag != 0) ? "yes" : "no")"#), Comment(rawValue: steady))
+    let argued = try text("argued")
+    #expect(argued.contains(#"return (arg0 ? "yes" : "no")"#), Comment(rawValue: argued))
+    for name in ["stored", "aliased", "called"] {
+        let body = try text(name)
+        #expect(body.contains("return ?") && !body.contains("\"yes\""), Comment(rawValue: body))
+    }
+}

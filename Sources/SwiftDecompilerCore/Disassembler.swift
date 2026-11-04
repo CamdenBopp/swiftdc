@@ -1650,6 +1650,21 @@ public struct Disassembler: Sendable {
         return true
     }
 
+    /// Whether `value` depends on what memory holds. Everything but a
+    /// constant, an address, an argument, self's pointer, a call's result and
+    /// arithmetic on them does: a load's value is that of its moment, and
+    /// `AbstractValue` does not say which moment.
+    static func readsMemory(_ value: AbstractValue) -> Bool {
+        switch value {
+        case .immediate, .address, .argument, .selfPointer, .callResult: false
+        case .binary(_, let lhs, let rhs): readsMemory(lhs) || readsMemory(rhs)
+        case .unary(_, let operand): readsMemory(operand)
+        case .select(let condition, let whenTrue, let whenFalse):
+            readsMemory(condition) || readsMemory(whenTrue) || readsMemory(whenFalse)
+        default: true
+        }
+    }
+
     /// The address a Swift String object word `(address − 32) | 1<<63`
     /// holds, for a literal's object (see `swiftLargeStringLiteral`).
     static func largeStringObjectAddress(_ value: AbstractValue) -> UInt64? {
@@ -8702,17 +8717,27 @@ public struct Disassembler: Sendable {
             return site
         }
 
+        /// Whether the body stores outside its own frame. A call needs no
+        /// check: the tracer forgets a value read from memory across one.
+        let writesMemory = function.instructions.contains { insn in
+            (insn.controlFlow ?? .sequential) == .sequential && Self.isOrderingEffect(insn)
+        }
+
         /// The literal a String's two words spell, or the pick between two
         /// of them: x0 and x1 both selects on one condition, as a ternary
         /// lowers to a `csel` per word over the same flags. Each arm pairs
         /// the two words its own side selects. Selects on two conditions
         /// (two flag setters, or `ne` and `eq` of one) pick words that need
-        /// not belong to one String, and are no pick.
+        /// not belong to one String, and are no pick. Two equal conditions
+        /// that read memory are one condition only where nothing can write
+        /// it: `self.flag != 0` before and after `*p = 1` spell the same
+        /// and may differ.
         func swiftStringPick(_ low: AbstractValue, _ high: AbstractValue, depth: Int) -> String? {
             if let literal = swiftStringLiteral(low, high) { return literal }
             guard depth < 6,
                   case .select(let condition, let lowTrue, let lowFalse) = low,
                   case .select(condition, let highTrue, let highFalse) = high,
+                  !Self.readsMemory(condition) || !writesMemory,
                   let whenTrue = swiftStringPick(lowTrue, highTrue, depth: depth + 1),
                   let whenFalse = swiftStringPick(lowFalse, highFalse, depth: depth + 1)
             else { return nil }
