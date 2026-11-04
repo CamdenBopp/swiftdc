@@ -147,6 +147,13 @@ soundness change, measured on its own).
 | 19 | Value witness calls | none | open | completeness | a13 #4 | every generic function | isolated |
 | 20 | `Wvd` field offsets, inherited fields, class-param fields | FieldMap, `ClassParameterFieldIndex` | a free function's class parameter FIXED; `Wvd` offsets and inherited fields open | completeness | a14 #3-#5, classparam.swift | classes over resilient or ObjC bases | isolated |
 
+## Runtime entry points
+
+`SwiftRuntimeSignatures` carries 609 of the 661 functions derived from the
+compiler's sources (arity, void, narrow parameters), behind `cPrototype`. The
+hand-kept tables stay first. Noreturn is still unmodelled: see
+PRODUCTION-READINESS, 2026-11-03.
+
 ## Next: struct lowering from field metadata
 
 Since b26d282 a struct, SIMD or closure parameter, and every parameter

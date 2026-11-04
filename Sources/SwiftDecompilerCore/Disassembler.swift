@@ -6120,6 +6120,7 @@ public struct Disassembler: Sendable {
             // argument register: `readsFirst(?)`, not `readsFirst()`, when
             // its argument was loaded through an unknown pointer.
             guard DisassembledFunction.knownCArity(of: callee) != nil
+                    || Self.isStringInstanceGetter(callee)
                     || Self.swiftCallArgumentLayout(
                         callee: layoutName(at: insn.address, callee: callee),
                         enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, anyContext: true, fieldMaps: typeFieldMaps
