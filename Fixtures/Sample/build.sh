@@ -559,6 +559,9 @@ $CLANG -arch arm64 -dynamiclib vectorcallclobber.s -o libVectorCallClobber.dylib
 echo "==> a saved register's slot passed to a callback through d0 or v0.d[1] (fpaliascalls.s)"
 $CLANG -arch arm64 -dynamiclib fpaliascalls.s -o libFPAlias.dylib
 
+echo "==> Objective-C struct results read one field at a time (objc_send_results.m, -O2)"
+$CLANG -arch arm64 -O2 -dynamiclib -lobjc objc_send_results.m -o libObjCSendResults.dylib
+
 echo "==> fmov immediates in vector and half-precision registers (fpimmediates.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name FPImmediates fpimmediates.swift -o libFPImmediates.dylib
 

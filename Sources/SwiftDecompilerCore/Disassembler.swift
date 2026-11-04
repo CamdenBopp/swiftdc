@@ -6271,6 +6271,11 @@ public struct Disassembler: Sendable {
         /// in x8 returns through memory, and its `.callResult` is that whole
         /// buffer.
         var multiWordResultSites = Set<UInt64>()
+        // An aggregate ObjC result is not any one scalar register read from
+        // the send. Keep separate from Swift's proven two-word results: an
+        // HFA, opaque aggregate or indirect result cannot be reassembled by
+        // merely finding x0 and x1 beside each other.
+        var nonScalarObjCResultSites = Set<UInt64>()
         /// A multi-word result's x0 and x1 passed on side by side are that
         /// whole value, one argument: `UTF8View.count.getter(String.utf8.getter(…))`.
         func collapsingMultiWordResults(_ values: [AbstractValue]) -> [AbstractValue] {
@@ -6737,6 +6742,28 @@ public struct Disassembler: Sendable {
                   case .loaded(let slot) = arguments[1]
             else { return nil }
             return resolver.selector(at: slot)
+        }
+
+        if let objcIndex {
+            for (address, site) in sites {
+                guard let callee = calleeByAddress[address],
+                      let selector = selectorName(callee: callee, arguments: site.arguments),
+                      objcIndex.selectorMayReturnAggregate(selector)
+                else { continue }
+                // Keep the existing FP proof for a send to self: SDK `scale`
+                // is globally ambiguous, but self's own declarations may all
+                // prove one float. Do not override any indexed aggregate veto
+                // or infer a superclass's declaration from the current owner.
+                if SDKSelectorReturns.table[selector] == "h",
+                   callee == "objc_msgSend" || callee.hasPrefix("objc_msgSend$"),
+                   site.arguments.first == .selfPointer, let method = function.objcMethod,
+                   objcIndex.selectorReturnsOneFloat(selector, className: method.className,
+                                                    isClassMethod: method.isClassMethod) == true,
+                   !objcIndex.selectorHasAggregateDeclaration(selector) {
+                    continue
+                }
+                nonScalarObjCResultSites.insert(address)
+            }
         }
 
         func isVariadicObjCSelector(_ selector: String) -> Bool {
@@ -7567,6 +7594,7 @@ public struct Disassembler: Sendable {
             case .immediate(let k):
                 return k == 0 || k == 1
             case .callResult(let addr):
+                guard !nonScalarObjCResultSites.contains(addr) else { return false }
                 return calleeByAddress[addr].map {
                     $0.contains("__derived_enum_equals") || $0.contains("__derived_struct_equals")
                 } ?? false
@@ -7761,7 +7789,7 @@ public struct Disassembler: Sendable {
                 return "(\(l) \(effectiveOp.symbol) \(r))"
             case .callResult(let addr):
                 // `Enum.__derived_enum_equals(a, b)` is the synthesized `==`.
-                guard let callee = calleeByAddress[addr],
+                guard !nonScalarObjCResultSites.contains(addr), let callee = calleeByAddress[addr],
                       callee.contains("__derived_enum_equals"),
                       let args = argumentsByAddress[addr], args.count == 2
                 else { return nil }
@@ -7819,6 +7847,12 @@ public struct Disassembler: Sendable {
         }
 
         func renderValue(_ value: AbstractValue, depth: Int) -> String {
+            // A whole aggregate is not the scalar word read from the send.
+            // Check before name-based idioms too: an ObjC selector may contain
+            // a Swift helper's spelling without having its scalar result.
+            if case .callResult(let site) = value, nonScalarObjCResultSites.contains(site), site != definingSite {
+                return unknownRenderedValue()
+            }
             if depth < 8, case .binary(.bitAnd, let inner, .immediate(let mask)) = value,
                mask & 1 == 1, isBooleanValued(inner) {
                 return renderValue(inner, depth: depth + 1)
@@ -8793,7 +8827,7 @@ public struct Disassembler: Sendable {
 
         func collectCallResults(in value: AbstractValue, into consumed: inout Set<UInt64>) {
             switch value {
-            case .callResult(let address) where multiWordResultSites.contains(address):
+            case .callResult(let address) where multiWordResultSites.contains(address) || nonScalarObjCResultSites.contains(address):
                 // One part of a multi-word result renders `?`, so the call
                 // still needs its own statement.
                 break
@@ -9187,6 +9221,7 @@ public struct Disassembler: Sendable {
         func countDirectUses(_ value: AbstractValue, at consumer: UInt64) {
             switch value {
             case .callResult(let site):
+                guard !nonScalarObjCResultSites.contains(site) else { return }
                 directUses[site, default: 0] += 1
                 directConsumers[site, default: []].insert(consumer)
             case .binary(_, let lhs, let rhs): countDirectUses(lhs, at: consumer); countDirectUses(rhs, at: consumer)
@@ -9537,6 +9572,7 @@ public struct Disassembler: Sendable {
                     } else if passthroughReturnHelpers.contains(where: callee.hasPrefix) {
                         // A passthrough of an unknown value returns nothing provable.
                     } else if !DisassembledFunction.isRuntimeNoise(callee),
+                              !nonScalarObjCResultSites.contains(insn.address),
                               let values = argumentsByAddress[insn.address] {
                         noteExit(.normal(callExpression(callee: callee, values: values, site: insn.address)))
                     }

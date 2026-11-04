@@ -54,11 +54,11 @@ public struct ObjCMethodBinding: Sendable, Equatable {
         typeEncoding.first { !"rnNoORVA".contains($0) } == "v"
     }
 
-    /// Whether the encoding declares a `double` or `float` return, which
-    /// comes back whole in v0.
+    /// Whether the encoding declares a floating scalar returned whole in v0.
+    /// Darwin arm64's `long double` (`D`) has the same 64-bit ABI as `double`.
     var returnsOneFloat: Bool {
         let code = typeEncoding.first { !"rnNoORVA".contains($0) }
-        return code == "d" || code == "f"
+        return code == "d" || code == "f" || code == "D"
     }
 
     /// Whether the encoding declares a struct returned in v registers (one
@@ -541,6 +541,23 @@ public struct ObjCMetadataIndex: Sendable {
         let sdk = SDKSelectorReturns.table[selector]
         guard sdk != "h", !matching.contains(where: \.returnsFloatAggregate) else { return false }
         return sdk == "f" || matching.contains(where: \.returnsOneFloat)
+    }
+
+    /// One aggregate declaration is enough to doubt a scalar interpretation
+    /// of this selector's result. Argument agreement proves no return layout,
+    /// and an unknown receiver can select any indexed implementation. Even a
+    /// one-word struct is not its scalar field as a source-level value.
+    func selectorMayReturnAggregate(_ selector: String) -> Bool {
+        SDKSelectorReturns.table[selector] == "h" || selectorHasAggregateDeclaration(selector)
+    }
+
+    /// Indexed aggregate declarations remain a veto even when a receiver's
+    /// own declaration could override an unrelated SDK-wide selector hint.
+    func selectorHasAggregateDeclaration(_ selector: String) -> Bool {
+        return (bySelector[selector] ?? []).contains { method in
+            guard let code = method.typeEncoding.first(where: { !"rnNoORVA".contains($0) }) else { return false }
+            return "{([j".contains(code)
+        }
     }
 
     func outgoingReturnsVoid(selector: String, className: String, isClassMethod: Bool) -> Bool {

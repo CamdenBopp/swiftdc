@@ -8516,3 +8516,16 @@ Commit messages on dev stay as they are; these are the true records.
   through `fmov`, whole-register moves, upper-lane inserts and SVE writes,
   and a call or vector write ends them. Blast radius: that fixture alone.
   Instructions +2.20% in total, within budget, from carrying the v bank.
+- **FIXED (soundness): an Objective-C struct result read as a scalar.** A
+  send whose selector any indexed declaration or the SDK table returns as an
+  aggregate is no longer a whole scalar value: `[self range:value].location`
+  rendered `return [self range:arg0]` and is `[self range:arg0]`, then
+  `return ?` (`disasm Fixtures/Sample/libObjCSendResults.dylib
+  --structured`). A send to proven `self` keeps its result when its own
+  class's declarations all return one float and no indexed declaration is an
+  aggregate, so `[self scale]` survives the SDK's aggregate `scale`.
+- **Accepted decline: `[self->_inner value]` in
+  libAccessorExtentCustom.dylib.** The SDK table lists `value` as an
+  aggregate and the receiver is not self, so a right `return` became a
+  statement and `return ?`. The selector alone proves nothing about the
+  receiver; using the ivar's class would.
