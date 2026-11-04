@@ -146,6 +146,7 @@ soundness change, measured on its own).
 | 18 | Async function pointer records, context escapes | AsyncFuncletIndex, tracer | open | completeness | a7 #3/#4, a6 #4 | async code | isolated |
 | 19 | Value witness calls | none | open | completeness | a13 #4 | every generic function | isolated |
 | 20 | `Wvd` field offsets, inherited fields, class-param fields | FieldMap, `ClassParameterFieldIndex` | a free function's class parameter FIXED; `Wvd` offsets and inherited fields open | completeness | a14 #3-#5, classparam.swift | classes over resilient or ObjC bases | isolated |
+| 21 | A layout belongs to its own descriptor, and `inout` is an address | `completeValueLayout` | FIXED: no last-component fallback | soundness | entryseed.swift | `inout` of a laid-out struct; a foreign type sharing a local simple name | shared (field maps) |
 
 ## Runtime entry points
 

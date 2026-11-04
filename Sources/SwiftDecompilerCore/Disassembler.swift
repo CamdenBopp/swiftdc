@@ -5770,8 +5770,7 @@ public struct Disassembler: Sendable {
         return String(type)
     }
 
-    /// A field map for a demangled type name, trying the qualified name then its
-    /// last (unqualified) component, since `FieldMap` is keyed unqualified.
+    /// A field map for a demangled type name.
     /// A qualified type name requires its own descriptor's map; simple keys
     /// serve genuinely unqualified names.
     private static func namedFieldMap(_ typeName: String, in fieldMaps: [String: FieldMap]) -> FieldMap? {

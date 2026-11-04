@@ -8069,3 +8069,25 @@ bitcode; Electron's `PROTECTED_MEMORY`).
 - **OPEN (soundness): a getter's result is not followed to the `ret`.**
   An accessor that loads an ivar and then returns a constant passes
   `AccessorValueFlow`, which does not ask whether the value reached x0.
+
+## 2026-11-04: which register holds a parameter at entry
+
+- **FIXED (soundness): a type name's last component borrowed another
+  type's layout.** `completeValueLayout` fell back from `fieldMaps[name]`
+  to the name's last dotted component, and every consumer of a struct's
+  layout goes through it: entry seeding, call layout, an x8 result's fields
+  and a read of a call's result. So `inout M.P3` found `P3` and counted
+  three registers for one address, and `a3(_ p: inout P3, _ k: Int, _ j:
+  Int, _ l: Int)` read `l`'s x3 as `k`. `aStore(_ p: inout PD, _ k: Int)`
+  printed `mem64[arg1]`, the address `p` as the Int `k`. A foreign
+  `Foundation.Data` or `Swift.Duration` found a local `Data` or `Duration`
+  of one word, and x2 read as `j` where it is `k`. On the result side a
+  foreign `Rec` printed `r0.wrongThird`, a local `Rec`'s field. The class,
+  enum, payload-enum and self-type lookups already required a qualified
+  name's own entry; this one did not. `Tools/blast-radius.sh --real`
+  against the previous dev: the new fixture, and
+  libSwiftCompilerPluginMessageHandling, where `PluginMessage.Syntax` lent
+  its fields to `CompilerSwiftSyntax.Syntax` (`r0.source`, a field that
+  type does not have) and `PluginMessage.Diagnostic` its 72 bytes to
+  `CompilerSwiftDiagnostics.Diagnostic`. A foreign value this image cannot
+  lay out now declines, parameters after it included.

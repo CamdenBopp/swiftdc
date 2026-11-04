@@ -704,6 +704,11 @@ $SWIFTC -O -module-name SlidSegments slidsegments.swift slidsegments_zerofill.o 
     -Xlinker -rename_section -Xlinker __DATA -Xlinker __objc_selrefs -Xlinker __DATA_DIRTY -Xlinker __objc_selrefs \
     -Xlinker -rename_section -Xlinker __DATA_CONST -Xlinker __got -Xlinker __DATA_DIRTY -Xlinker __got \
     -Xlinker -rename_section -Xlinker __TEXT -Xlinker __swift5_fieldmd -Xlinker __SWIFT_FIELDS -Xlinker __swift5_fieldmd
+echo "==> which register holds each parameter at entry (entryseedkit, entryseed, -Onone, -O and -Osize)"
+$SWIFTC -parse-as-library -O -emit-library -emit-module -module-name EntrySeedKit entryseedkit.swift -o libEntrySeedKit.dylib
+$SWIFTC -parse-as-library -Onone -emit-library -module-name EntrySeed entryseed.swift -I . -L . -lEntrySeedKit -o libEntrySeed.dylib
+$SWIFTC -parse-as-library -O -emit-library -module-name EntrySeed entryseed.swift -I . -L . -lEntrySeedKit -o libEntrySeed.opt.dylib
+$SWIFTC -parse-as-library -Osize -emit-library -module-name EntrySeed entryseed.swift -I . -L . -lEntrySeedKit -o libEntrySeed.size.dylib
 
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib

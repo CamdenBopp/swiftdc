@@ -328,8 +328,8 @@ public enum FieldMapBuilder {
     /// Index the built maps by simple name, DROPPING any name that two distinct
     /// nominal types claim with different layouts.
     ///
-    /// Maps are keyed by the descriptor's SIMPLE name, and `namedFieldMap`
-    /// resolves a demangled self-type through a last-component fallback — so two
+    /// Maps are keyed by the descriptor's SIMPLE name, and an unqualified
+    /// receiver resolves through that key — so two
     /// distinct types sharing a simple name (`FatArch.Layout` vs `MachHeader.Layout`,
     /// a plain-struct `Options` vs a dependency's OptionSet `Options`) collide on one
     /// key. Whichever is built last would otherwise win, and a getter for any of the

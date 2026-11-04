@@ -234,14 +234,15 @@ extension Disassembler {
     /// The stored-property layout of a named struct type when it is complete,
     /// so the whole result can be covered field by field. A class (returned by
     /// reference), a type with a collided simple name, or a layout with an
-    /// untrusted suffix returns nil.
+    /// untrusted suffix returns nil. So does any name without a map of its
+    /// own: `typeName`'s last component is no evidence, since a foreign
+    /// `Foundation.Data` is not this image's `Data`, and `inout M.P` is an
+    /// address, not `P`.
     static func completeValueLayout(
         of typeName: String, fieldMaps: [String: FieldMap], classTypeIndex: ClassTypeIndex
     ) -> FieldMap? {
         guard !classTypeIndex.isClass(typeName) else { return nil }
-        let map = fieldMaps[typeName]
-            ?? typeName.split(separator: ".").last.flatMap { fieldMaps[String($0)] }
-        guard let map, map.trustLimitReason == nil, !map.fields.isEmpty else { return nil }
+        guard let map = fieldMaps[typeName], map.trustLimitReason == nil, !map.fields.isEmpty else { return nil }
         return map
     }
 
