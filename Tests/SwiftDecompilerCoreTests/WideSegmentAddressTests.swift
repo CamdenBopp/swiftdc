@@ -62,3 +62,22 @@ func aSegmentFieldPastInt64FailsToLoadIfPresent(segment: String, field: String, 
     // The untouched fixture still loads.
     #expect(throws: Never.self) { _ = try BinaryLoader.load(path: source) }
 }
+
+/// Swift metadata resolves through `__LINKEDIT`, so `dump` trapped on its
+/// address (a load-command fuzz, 2026-11-04). It says why instead.
+@Test func dumpDeclinesSwiftMetadataPastASignedAddressIfPresent() throws {
+    let source = "Fixtures/Sample/libReconstruction.resilient.dylib"
+    let binary = URL(fileURLWithPath: ".build/debug/swiftdc")
+    guard FileManager.default.fileExists(atPath: source),
+          FileManager.default.fileExists(atPath: binary.path) else { return }
+    let url = try corrupted(source, segment: "__LINKEDIT", field: "vmaddr", value: 0x9d00_0000_0000_0000)
+    defer { try? FileManager.default.removeItem(at: url) }
+    let process = Process()
+    process.executableURL = binary
+    process.arguments = ["dump", url.path]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    process.waitUntilExit()
+    #expect(process.terminationReason == .exit && process.terminationStatus == 1, "status \(process.terminationStatus)")
+}

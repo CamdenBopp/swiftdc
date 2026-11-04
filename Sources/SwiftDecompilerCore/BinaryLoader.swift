@@ -135,16 +135,37 @@ public enum BinaryLoader {
     /// `__LINKEDIT` has no sections to check. `dump` and `swift-version`
     /// read such an image without that arithmetic, so they opt out.
     public static func requireSignedAddresses(_ machO: MachOFile) throws {
+        if let wide = wideSegment(of: machO) {
+            throw BinaryLoadError(
+                "Segment \(wide.name) has a virtual \(wide.field) of 0x\(String(wide.value, radix: 16)), "
+                + "at or above 2^63: past the signed 64-bit addresses swiftdc computes with. "
+                + "`dump` and `swift-version` can still read this image."
+            )
+        }
+    }
+
+    /// `dump` reads such an image's load commands, but not its Swift metadata:
+    /// that resolves through chained fixups and the symbol table, which live
+    /// in `__LINKEDIT`, and MachOKit narrows the segment address to reach them
+    /// with a trapping `numericCast`.
+    public static func requireReadableSwiftMetadata(_ machO: MachOFile) throws {
+        guard machO.sections.contains(where: { $0.sectionName.hasPrefix("__swift5_") }),
+              let wide = wideSegment(of: machO)
+        else { return }
+        throw BinaryLoadError(
+            "Segment \(wide.name) has a virtual \(wide.field) of 0x\(String(wide.value, radix: 16)), "
+            + "at or above 2^63, and the image holds Swift metadata, which cannot be read past that address."
+        )
+    }
+
+    private static func wideSegment(of machO: MachOFile) -> (name: String, field: String, value: UInt64)? {
         for segment in machO.loadCommands.infos(of: LoadCommand.segment64) {
             for (field, value) in [("address", segment.layout.vmaddr), ("size", segment.layout.vmsize)]
             where value >= 1 << 63 {
-                throw BinaryLoadError(
-                    "Segment \(segment.segmentName) has a virtual \(field) of 0x\(String(value, radix: 16)), "
-                    + "at or above 2^63: past the signed 64-bit addresses swiftdc computes with. "
-                    + "`dump` and `swift-version` can still read this image."
-                )
+                return (segment.segmentName, field, value)
             }
         }
+        return nil
     }
 
     /// Best-effort architecture name for a thin Mach-O slice.

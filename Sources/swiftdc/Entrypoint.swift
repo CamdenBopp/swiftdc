@@ -285,6 +285,7 @@ struct DumpCommand: AsyncParsableCommand {
             binary: binary,
             allowingWideAddresses: true
         )
+        try BinaryLoader.requireReadableSwiftMetadata(machO)
         let dumper = SwiftDeclarationDumper(preset: demangle)
         let selected = sections.isEmpty
             ? Set(SwiftDeclarationDumper.Section.allCases)
