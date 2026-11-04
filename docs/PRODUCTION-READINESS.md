@@ -1565,6 +1565,21 @@ because it cannot be distinguished from a right one by reading the output.
   x0` into a shared prologue fragment, which decline. Fixtures
   `classparam*.swift`.
 
+- **FIXED — a call through a generic function's witness-table argument
+  was unresolved.** `feed<T: Sink>(_ s: T, _ v: Int)` takes T's metadata
+  in x2 and its Sink table in x3, and calls `ldr x8, [x3, #8]; blr x8`.
+  The entry now seeds each table after the metadata, one per protocol
+  requirement, in the order of the mangled generic signature
+  (GenProto.cpp, enumerateGenericSignatureRequirements). The mangled
+  signature is what tells a protocol from a superclass, which print
+  alike. A call is named only when that requirement and every one before
+  it has a protocol descriptor in this image, which an `@objc` or marker
+  protocol lacks, so each is proven to take a table; the slot goes
+  through the requirement reader. Declined: a superclass or same-type
+  requirement, and a formal that is a metadata source (`Box<A>`). Fixture
+  `funcprotowitness.swift`: 10 calls named. No real binary moved: the
+  four swift-syntax dylibs stay at 21, 119, 116 and 289 unresolved calls,
+  and GoodLinks `-f ViewController` stays at 280, byte-identical.
 - **FIXED — a call through a generic class's protocol witness table was
   unresolved.** A method of `Gauge<M: Meter>` calls `m.reading()` as
   `ldr x1, [isa, #0x58]; ldr x8, [x1, #8]; blr x8`: the witness table
@@ -1592,8 +1607,17 @@ because it cannot be distinguished from a right one by reading the output.
     generated table like `SDKMetadataAccessors`;
   - a non-resilient protocol has no `method descriptor` symbols, so a
     fragile build names nothing;
-  - a generic function's witness tables passed after its metadata
-    arguments (`genericMetadataRegisters` seeds only the metadata);
+  - a generic function whose metadata registers are not proven, which
+    leaves its tables unplaced: `evaluateIfConfig<A: BuildConfiguration>`
+    takes an `ExprSyntax` from another image, whose footprint the layout
+    does not know, and its 11 unresolved calls stay;
+  - a generic function's table after a requirement on another image's
+    protocol, or after an `@objc` or marker protocol: no descriptor here
+    proves whether that requirement took a table. Every generic free
+    function in the swift-syntax dylibs other than `evaluateIfConfig`
+    is of this kind (`SyntaxProtocol`, `Decodable`, `Encodable`);
+  - a generic method's tables, and a table for an associated type
+    (`A.Item: Sink`), which is passed but is no parameter's;
   - a table reached through a base-protocol slot (`P: Precise` calling
     Meter's requirement) or an associated conformance;
   - an image in a dyld cache: the descriptor reads use file offsets.

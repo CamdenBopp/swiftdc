@@ -611,6 +611,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name ThrowForward throwforwar
 echo "==> forwards and near-forwards of a throwing call, by hand (throw_forward.s)"
 $CLANG -arch arm64 -dynamiclib throw_forward.s -o libThrowForwardAsm.dylib
 
+echo "==> a generic function's witness-table arguments (funcprotowitness.swift, -O, resilient)"
+$SWIFTC -parse-as-library -O -enable-library-evolution -emit-library -module-name FuncProtoWitness funcprotowitness.swift -o libFuncProtoWitness.dylib
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

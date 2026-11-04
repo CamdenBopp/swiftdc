@@ -1704,10 +1704,13 @@ public struct Disassembler: Sendable {
         } else if classSelfTypeName != nil {
             .swiftInstance(scalarArguments: Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps) ?? [:])
         } else if let scalarArgs = Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps) {
-            .swiftFunction(scalarArguments: scalarArgs,
-                           genericMetadata: Self.genericMetadataRegisters(
-                               of: function, enumCaseIndex: context.enumCaseIndex,
-                               classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps))
+            {
+                let metadata = Self.genericMetadataRegisters(
+                    of: function, enumCaseIndex: context.enumCaseIndex,
+                    classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps)
+                return .swiftFunction(scalarArguments: scalarArgs, genericMetadata: metadata,
+                                      genericWitnessTables: Self.genericWitnessTableRegisters(of: function, metadata: metadata))
+            }()
         } else if !DisassembledFunction.signatureKnown(displayName: function.analysisDisplayName, objcSignature: nil),
                   let summary = context.registerSummaries[function.startAddress], summary.provenArgumentCount > 0 {
             // No signature (a stripped `sub_…`, a C symbol): the body's own
@@ -1738,7 +1741,7 @@ public struct Disassembler: Sendable {
         // chain pass proved.
         let asyncEntry = Self.asyncConvention(for: function, base: entry, index: context.asyncIndex)
         let chainSlots = context.asyncChainSlots[function.startAddress] ?? [:]
-        let classArgumentFieldMaps: [Int: FieldMap] = if case .swiftFunction(let scalarArguments, _)? = entry {
+        let classArgumentFieldMaps: [Int: FieldMap] = if case .swiftFunction(let scalarArguments, _, _)? = entry {
             Self.classArgumentFieldMaps(of: function, scalarArguments: scalarArguments, index: context.classParameterFields)
         } else {
             [:]
@@ -3292,6 +3295,11 @@ public struct Disassembler: Sendable {
         /// Resolve a `blr` target to a (name, address). A class vtable dispatch is
         /// resolved through the class's metadata layout; anything else through the
         /// generic indirect-target resolver.
+        // A generic function's protocol requirements, read once, only when a
+        // call goes through one of its witness tables.
+        let genericRequirements = targets.values.contains(where: {
+            if case .loadedFrom(.genericWitnessTable, _) = $0 { true } else { false }
+        }) ? Self.genericProtocolRequirements(of: function) : nil
         func resolve(_ value: AbstractValue) -> (address: UInt64?, name: String, isSelfDispatch: Bool)? {
             if case .selfVTableMethod(let offset) = value,
                let selfTypeName,
@@ -3311,12 +3319,38 @@ public struct Disassembler: Sendable {
         /// laying out the call, only when the table's protocol and the
         /// slot's requirement are both proven.
         func protocolWitnessCall(_ value: AbstractValue) -> (name: String, signature: String)? {
+            if case .loadedFrom(.genericWitnessTable(let index), let offset) = value {
+                return genericWitnessCall(table: index, offset: offset)
+            }
             guard case .loadedFrom(.selfVTableMethod(let tableOffset), let offset) = value,
                   offset >= 8, offset % 8 == 0, let selfTypeName,
                   let table = vtableIndex.witnessTable(type: selfTypeName, offset: tableOffset),
                   let requirement = resolver.protocolRequirement(descriptor: table.protocolDescriptor, word: offset / 8)
             else { return nil }
             return ("\(requirement.name) witness for \(table.parameter)", requirement.signature)
+        }
+        /// A call through word `k` of the witness table a generic function
+        /// received for its protocol requirement `table`: `feed<A where A:
+        /// M.Sink>(A, Int)` takes A's Sink table in x3, and `ldr x8, [x3,
+        /// #8]; blr x8` calls Sink's requirement 0 on A. Its register assumed
+        /// a table for every protocol requirement before it
+        /// (`genericWitnessTableRegisters`); each of those, and this one, must
+        /// be a protocol with a descriptor in this image, which only a Swift
+        /// protocol that needs a table has (an `@objc` or marker protocol has
+        /// none). The table must be for a parameter, not a member type.
+        func genericWitnessCall(table: Int, offset: Int) -> (name: String, signature: String)? {
+            guard offset >= 8, offset % 8 == 0,
+                  let requirements = genericRequirements?.requirements, table < requirements.count,
+                  let subject = requirements[table].subject
+            else { return nil }
+            var descriptor: UInt64?
+            for index in 0 ... table {
+                guard let address = resolver.protocolDescriptor(named: requirements[index].protocolName) else { return nil }
+                descriptor = address
+            }
+            guard let descriptor, let requirement = resolver.protocolRequirement(descriptor: descriptor, word: offset / 8)
+            else { return nil }
+            return ("\(requirement.name) witness for \(subject)", requirement.signature)
         }
         /// A call through slot `k` of the value-witness table of the
         /// metadata a type metadata accessor returned: `[[metadata - 8] +
@@ -3487,6 +3521,16 @@ public struct Disassembler: Sendable {
         /// function whose slot holds a function pointer record); and any
         /// requirement whose address has no `method descriptor for` symbol
         /// naming a member of the protocol the descriptor's own symbol names.
+        /// The address of the in-image descriptor of the protocol printed
+        /// `name`: the one address whose only descriptor symbol is
+        /// `protocol descriptor for <name>`.
+        func protocolDescriptor(named name: String) -> UInt64? {
+            let symbol = "protocol descriptor for " + name
+            let addresses = protocolDescriptorSymbols.filter { $0.value.contains(symbol) }
+            guard addresses.count == 1, let match = addresses.first, match.value.count == 1 else { return nil }
+            return match.key
+        }
+
         func protocolRequirement(descriptor: UInt64, word: Int) -> (signature: String, name: String)? {
             guard machO.cache == nil, word >= 1,
                   let base = machO.fileOffset(of: descriptor).map(Int.init),
@@ -4662,6 +4706,104 @@ public struct Disassembler: Sendable {
         return registers
     }
 
+    /// The registers holding a generic free function's witness tables
+    /// (register key -> index among `genericProtocolRequirements`), when
+    /// their places are proven. The polymorphic arguments follow the
+    /// formals: each type parameter's metadata, then one table per
+    /// requirement that needs one, in signature order
+    /// (swift/lib/IRGen/GenProto.cpp, enumerateGenericSignatureRequirements).
+    /// Each register here assumes every protocol requirement before it took
+    /// a table; whoever names a table proves that, by the protocol's
+    /// in-image descriptor.
+    ///
+    /// Declined: a function whose metadata arguments are not all in
+    /// registers, and one whose requirements `genericProtocolRequirements`
+    /// declines. Also any formal that is a source of metadata for IRGen's
+    /// PolymorphicConvention, which then passes less: a class instance or a
+    /// metatype built from a type parameter (`Box<A>`, `Box<A>.Type`).
+    /// Only a parameter's bare value, `inout` or `.Type` (an inexact
+    /// metatype, no source) may mention one.
+    static func genericWitnessTableRegisters(
+        of function: DisassembledFunction, metadata: [String: String]
+    ) -> [String: Int] {
+        guard !metadata.isEmpty, let name = function.analysisName,
+              let signature = DisassembledFunction.splitSignature(name),
+              let range = DisassembledFunction.outermostArgumentListRange(of: signature.head)
+        else { return [:] }
+        let parameters = genericParameterNames(in: signature.head)
+        let registers = metadata.keys.compactMap { $0.hasPrefix("x") ? Int($0.dropFirst()) : nil }
+        guard parameters.count == metadata.count, registers.count == metadata.count,
+              let first = registers.min(), Set(registers) == Set(first ..< first + metadata.count),
+              let generic = genericProtocolRequirements(of: function), generic.parameters == parameters.count
+        else { return [:] }
+        let requirements = generic.requirements
+        for parameter in DisassembledFunction.splitTopLevelArguments(signature.head[range]) {
+            var type = Substring(parameterType(parameter))
+            if type.hasPrefix("inout ") { type = type.dropFirst("inout ".count) }
+            if type.hasSuffix(".Type") { type = type.dropLast(".Type".count) }
+            guard parameters.contains(String(type)) || !mentionsGenericParameter(String(type), parameters)
+            else { return [:] }
+        }
+        var tables: [String: Int] = [:]
+        for index in requirements.indices where first + metadata.count + index < 8 {
+            tables["x\(first + metadata.count + index)"] = index
+        }
+        return tables
+    }
+
+    /// A generic free function's protocol requirements, in signature order:
+    /// the depth-0 parameter each constrains (nil for a member type such as
+    /// `A.Element`) and the protocol, printed. Read from the mangled
+    /// signature, where a conformance names a protocol node and a superclass
+    /// a class node, which the printed `where A: M.X` does not tell apart.
+    /// A layout requirement takes no table and is skipped. Nil, declining
+    /// every table, for a superclass (a metadata source), a same-type
+    /// requirement (it removes a parameter), any other kind, or a signature
+    /// with more than one depth.
+    static func genericProtocolRequirements(
+        of function: DisassembledFunction
+    ) -> (parameters: Int, requirements: [(subject: String?, protocolName: String)])? {
+        var mangled = Substring(function.symbol)
+        if mangled.hasPrefix("_$s") { mangled = mangled.dropFirst() }
+        guard mangled.hasPrefix("$s"), let global = try? demangleAsNode(String(mangled)), global.kind == .global,
+              global.children.count == 1, let declaration = global.children.first, declaration.kind == .function,
+              let type = declaration.children.last, type.kind == .type,
+              let generic = type.children.first, generic.kind == .dependentGenericType,
+              let signature = generic.children.first, signature.kind == .dependentGenericSignature
+        else { return nil }
+        let entries = Array(signature.children)
+        guard let count = entries.first, count.kind == .dependentGenericParamCount, let parameters = count.index,
+              !entries.dropFirst().contains(where: { $0.kind == .dependentGenericParamCount })
+        else { return nil }
+        var requirements: [(subject: String?, protocolName: String)] = []
+        for entry in entries.dropFirst() {
+            switch entry.kind {
+            case .dependentGenericLayoutRequirement:
+                continue
+            case .dependentGenericConformanceRequirement:
+                let parts = Array(entry.children)
+                guard parts.count == 2, parts[0].kind == .type, parts[1].kind == .type,
+                      let subject = parts[0].children.first, let constraint = parts[1].children.first,
+                      constraint.kind == .protocol
+                else { return nil }
+                var name: String?
+                if subject.kind == .dependentGenericParamType {
+                    let indices = Array(subject.children)
+                    guard indices.count == 2, indices[0].index == 0, let index = indices[1].index,
+                          index < parameters, index < 26, let scalar = Unicode.Scalar(65 + Int(index))
+                    else { return nil }
+                    name = String(Character(scalar))
+                } else if subject.kind != .dependentMemberType {
+                    return nil
+                }
+                requirements.append((name, constraint.print(using: .default)))
+            default:
+                return nil
+            }
+        }
+        return (Int(parameters), requirements)
+    }
+
     static func swiftScalarArgumentRegisters(
         of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
         classTypeIndex: ClassTypeIndex = ClassTypeIndex(), fieldMaps: [String: FieldMap] = [:]
@@ -5392,7 +5534,7 @@ public struct Disassembler: Sendable {
     static func sizeIsUnknown(_ value: AbstractValue) -> Bool {
         func unknownPart(_ value: AbstractValue) -> Bool {
             switch value {
-            case .unknown, .callResultHigh, .loadedThrough, .loadedFrom, .selfIsaSnapshot: return true
+            case .unknown, .callResultHigh, .loadedThrough, .loadedFrom, .selfIsaSnapshot, .genericWitnessTable: return true
             case .binary(_, let lhs, let rhs): return unknownPart(lhs) || unknownPart(rhs)
             case .unary(_, let operand): return unknownPart(operand)
             default: return false
@@ -5815,7 +5957,7 @@ public struct Disassembler: Sendable {
                 // Async plumbing: the context pointer, the continuation, and an
                 // unproven context slot are not source values.
                 return .unknown
-            case .loadedThrough, .loadedFrom, .selfIsaSnapshot:
+            case .loadedThrough, .loadedFrom, .selfIsaSnapshot, .genericWitnessTable:
                 // A word read through a loaded pointer: named only as a call
                 // target (`indirectCallTarget`), unknown as a value. So is an
                 // isa kept across a call.
@@ -6206,7 +6348,7 @@ public struct Disassembler: Sendable {
         // inside another expression all name the same `self`.
         // The register each seeded parameter arrived in.
         let entryArgumentRegisters: [String: Int] = switch entry {
-        case .swiftFunction(let map, _)?, .swiftInstance(let map)?: map
+        case .swiftFunction(let map, _, _)?, .swiftInstance(let map)?: map
         default: [:]
         }
         /// `values`, the registers from x`first` on, without its trailing run
@@ -7385,7 +7527,7 @@ public struct Disassembler: Sendable {
             switch value {
             case .genericMetadata(let name):
                 return "type metadata for \(name)"
-            case .unknown, .callResultHigh, .loadedThrough, .loadedFrom, .selfIsaSnapshot:
+            case .unknown, .callResultHigh, .loadedThrough, .loadedFrom, .selfIsaSnapshot, .genericWitnessTable:
                 // A String result's second word alone is no source value, nor
                 // is a word read through a loaded pointer (a call through one
                 // is named by its target, `annotateIndirectControlFlowTargets`).

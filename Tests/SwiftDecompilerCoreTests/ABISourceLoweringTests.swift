@@ -1046,3 +1046,73 @@ private func namesARequirementWitness(_ text: String) -> Bool {
                           0xF940_2EC1, 0xF940_0429, 0xD63F_0120, 0x9100_43FF, 0xD65F_03C0], call: 0x1020)
     #expect(spilled == isaTable)
 }
+
+/// A generic function receives each type parameter's metadata and then one
+/// witness table per protocol requirement, after its formals; a call
+/// through word k+1 of one is requirement k of its protocol
+/// (funcprotowitness.swift). Declined: a table after an @objc protocol's
+/// requirement, which takes none, so the count does not place it.
+@Test func aGenericFunctionsWitnessTableCallIsNamedIfPresent() async throws {
+    let path = "Fixtures/Sample/libFuncProtoWitness.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("FuncProtoWitness.\(name)<") }).renderStructured()
+    }
+    let feed = try text("feed")
+    #expect(feed.contains("FuncProtoWitness.Sink.put(_:) witness for A(arg1)"), Comment(rawValue: feed))
+    #expect(feed.contains("return FuncProtoWitness.Sink.level.getter witness for A()"), Comment(rawValue: feed))
+    let pair = try text("pair")
+    #expect(pair.contains("FuncProtoWitness.Sink.put(_:) witness for A(1)")
+            && pair.contains("FuncProtoWitness.Sink.put(_:) witness for B(2)"), Comment(rawValue: pair))
+    let both = try text("both")
+    #expect(both.contains("FuncProtoWitness.Tap.tap() witness for A()")
+            && both.contains("FuncProtoWitness.Sink.put(_:) witness for A(3)"), Comment(rawValue: both))
+    let unit = try text("unitOf")
+    #expect(unit.contains("static FuncProtoWitness.Sink.unit.getter witness for A()"), Comment(rawValue: unit))
+    let hashed = try text("hashed")
+    #expect(hashed.contains("FuncProtoWitness.Sink.put(_:) witness for A(4)"), Comment(rawValue: hashed))
+    let anyObject = try text("anyObject")
+    #expect(anyObject.contains("FuncProtoWitness.Sink.put(_:) witness for A(8)"), Comment(rawValue: anyObject))
+    // A.Item's Sink table is not a parameter's.
+    let deep = try text("deep")
+    #expect(deep.contains("FuncProtoWitness.Holder.item.getter witness for A()")
+            && !deep.contains("Sink.put"), Comment(rawValue: deep))
+    for name in ["mixed", "mixedTap", "feedBox", "based"] {
+        let declined = try text(name)
+        #expect(!namesARequirementWitness(declined), Comment(rawValue: declined))
+    }
+}
+
+/// Where the tables are, from the signature and the formals. Each assumes a
+/// table for every protocol requirement before it (the naming proves that
+/// by descriptor). A class instance built from a parameter is a metadata
+/// source, and a superclass requirement is declined.
+@Test func aGenericFunctionsWitnessTableRegistersFollowItsMetadataIfPresent() async throws {
+    let path = "Fixtures/Sample/libFuncProtoWitness.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func tables(_ name: String) throws -> [String: Int] {
+        let function = try #require(functions.first { $0.displayName.hasPrefix("FuncProtoWitness.\(name)<") })
+        let metadata = Disassembler.genericMetadataRegisters(
+            of: function, enumCaseIndex: EnumCaseIndex(), classTypeIndex: ClassTypeIndex(), fieldMaps: [:])
+        return Disassembler.genericWitnessTableRegisters(of: function, metadata: metadata)
+    }
+    #expect(try tables("feed") == ["x3": 0])
+    #expect(try tables("pair") == ["x4": 0, "x5": 1])
+    #expect(try tables("both") == ["x2": 0, "x3": 1])
+    #expect(try tables("unitOf") == ["x2": 0])
+    #expect(try tables("hashed") == ["x2": 0, "x3": 1])
+    #expect(try tables("mixedTap") == ["x2": 0, "x3": 1, "x4": 2])
+    #expect(try tables("based") == [:])
+    #expect(try tables("anyObject") == ["x2": 0])
+    #expect(try tables("deep") == ["x2": 0, "x3": 1])
+    // feedBox's Box<A> is laid out as one word, so its metadata map is
+    // complete; the formal is a source and declines it.
+    let feedBox = try #require(functions.first { $0.displayName.hasPrefix("FuncProtoWitness.feedBox<") })
+    let metadata = ["x1": "A"]
+    #expect(Disassembler.genericWitnessTableRegisters(of: feedBox, metadata: metadata) == [:])
+    // Metadata not in consecutive registers proves no place.
+    let pair = try #require(functions.first { $0.displayName.hasPrefix("FuncProtoWitness.pair<") })
+    #expect(Disassembler.genericWitnessTableRegisters(of: pair, metadata: ["x2": "A", "x4": "B"]) == [:])
+}
