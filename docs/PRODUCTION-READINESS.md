@@ -8293,3 +8293,32 @@ this Mac.
   keeps only `Swift.Array` and is judged no member, and
   `MetadataSymbolizer.withoutWhereClauses` ends a `< where …>` group early
   at an arrow in its requirement.
+- **FIXED (soundness): a call kept the upper lane of v8-v15.** AAPCS64
+  preserves only the bottom 64 bits of those registers, and the tracer kept
+  a whole vector across every call: `movi v8.2d, #0; bl …; str q8, [sp];
+  ldr x0, [sp, #8]` rendered `return 0` where the fixture, run natively,
+  returns 19. A call now keeps the low lane and forgets the high one, in
+  each arm of a selected vector too. `disasm
+  Fixtures/Sample/libVectorCallClobber.dylib --structured`: `high()` is
+  `return ?`; `low()`, `scalar()` and `dupLow()` keep 0, 7 and 7.
+  `Tools/blast-radius.sh --real`: that fixture alone, `return 0` ->
+  `return ?` in `high()` and `untouched()`. No compiler output moved, as
+  expected: no compiler reads q8 after a call.
+- **Accepted decline: a high lane that really survives.** `untouched()`
+  calls a helper that writes nothing, returns 0 natively and renders
+  `return ?`. Nothing summarises v8, so no callee proves it preserved.
+- **OPEN (soundness): nothing summarises d8-d15.**
+  `CalleeRegisterSummary` tracks x19-x29 only, so `calleeClobbers` never
+  holds a v register outside a test, and the low lane survives on the ABI's
+  promise alone. An in-image helper that writes d8 breaks it:
+  `movi v8.2d, #0; bl changeLow; fmov x0, d8` renders `return 0` and returns
+  19 natively (scratch reduction, not a fixture). The machine outliner can
+  produce such a helper, as it does for x19. Nobody has measured how often.
+- **OPEN (soundness): a scalar's whole-register store after a call.**
+  `fmov d8, x9; bl …; str q8, [x19]` renders `mem128[arg0] = 7`, which reads
+  as a high lane of 0; the helper set it to 19. Wrapping a scalar as
+  `.aggregate([value, .unknown])` at the call would decline it, and is not
+  done: `s8` views of a non-constant Float decline through an aggregate, and
+  a scalar joined with the same scalar from a path with no call would stop
+  matching. Any non-aggregate value read through q8 has this gap, a 16-byte
+  field load (`ldr q8, [x20, #16]`) included.

@@ -1615,6 +1615,11 @@ public struct ValueTracer: Sendable {
             // what stops a stale `d0` from before the call being read as the
             // call's floating-point result after it.
             for index in 0...7 { registers[.v(index)] = nil }
+            for index in 8...15 {
+                if let value = registers[.v(index)] {
+                    registers[.v(index)] = Self.callPreservedVectorValue(value)
+                }
+            }
             for index in 16...31 { registers[.v(index)] = nil }
             let outgoingKeys = registers.keys.filter { if case .outgoing = $0 { true } else { false } }
             for key in outgoingKeys { registers[key] = nil }
@@ -3914,6 +3919,25 @@ public struct ValueTracer: Sendable {
         // `fmov w0, s1` writes a Float's 32 bits, which already fit the word.
         if case .unary(.bitPattern(let width), _) = value, width <= bits { return value }
         return expression(.bitAnd, value, .immediate(mask))
+    }
+
+    /// An ordinary call preserves only the low 64 bits of v8-v15. A whole
+    /// vector is tracked as two lanes, so keeping it unchanged invents the
+    /// upper lane after a call (`movi v8.2d, #0; bl ...; str q8, [sp]`).
+    /// Keep the low lane, including scalar values already tracked on their
+    /// own, and forget the high lane. A CFG join may select whole vectors.
+    static func callPreservedVectorValue(_ value: AbstractValue) -> AbstractValue {
+        switch value {
+        case .aggregate(let lanes):
+            guard let low = lanes.first else { return .unknown }
+            return .aggregate([low, .unknown])
+        case .select(let condition, let whenTrue, let whenFalse):
+            return .select(condition: condition,
+                           whenTrue: callPreservedVectorValue(whenTrue),
+                           whenFalse: callPreservedVectorValue(whenFalse))
+        default:
+            return value
+        }
     }
 
     /// What a scalar view of a vector register holds: `d0` is the low 64 bits

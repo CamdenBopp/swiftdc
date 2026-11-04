@@ -537,6 +537,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name DroppedMeta droppedmeta.
 echo "==> vector lane moves, ins and umov (vectorlanes.s)"
 $CLANG -arch arm64 -dynamiclib vectorlanes.s -o libVectorLanes.dylib
 
+echo "==> upper lanes of v8-v15 across calls, which AAPCS64 does not preserve (vectorcallclobber.s)"
+$CLANG -arch arm64 -dynamiclib vectorcallclobber.s -o libVectorCallClobber.dylib
+
 echo "==> fmov immediates in vector and half-precision registers (fpimmediates.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name FPImmediates fpimmediates.swift -o libFPImmediates.dylib
 
