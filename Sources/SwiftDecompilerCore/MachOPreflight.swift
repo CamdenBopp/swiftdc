@@ -44,6 +44,12 @@ public enum MachOPreflight {
         static let segment32: UInt32 = 0x1
         static let segment64: UInt32 = 0x19
         static let symtab: UInt32 = 0x2
+        static let buildVersion: UInt32 = 0x32
+        /// `sizeof(struct build_version_command)`: `cmd`, `cmdsize`, platform,
+        /// minos, sdk, ntools. The tools follow it.
+        static let buildVersionHeader = 24
+        /// `sizeof(struct build_tool_version)`: tool, version.
+        static let buildToolVersion = 8
         static let chainedFixups: UInt32 = 0x8000_0034   // LC_DYLD_CHAINED_FIXUPS
         static let encryptionInfo: Set<UInt32> = [0x21, 0x2c]   // LC_ENCRYPTION_INFO(_64)
         /// Every command whose payload is a `struct dylib` (a name as an
@@ -2073,6 +2079,8 @@ public enum MachOPreflight {
             )
         case let cmd where Command.dylibCommands.contains(cmd):
             try validateDylib(at: offset, prefix: prefix, bigEndian: bigEndian, index: index, fail: fail)
+        case Command.buildVersion:
+            try validateBuildVersion(at: offset, prefix: prefix, bigEndian: bigEndian, index: index, fail: fail)
         default:
             break
         }
@@ -2103,6 +2111,33 @@ public enum MachOPreflight {
             throw fail(
                 "load command \(index) puts its dylib name at offset \(nameOffset) of a \(cmdsize)-byte command"
             )
+        }
+    }
+
+    /// An `LC_BUILD_VERSION`'s tools must be the ones its `cmdsize` holds.
+    ///
+    /// MachOKit's `BuildVersionCommand.tools(in:)` reads `ntools` entries with
+    /// a trapping `readDataSequence`, and `BuildToolVersion.tool` narrows each
+    /// to `Int32` with a trapping conversion. `MachOFile.exportTrie` reads the
+    /// tools, so `dump`, `interface` and `swift-version` all died by SIGTRAP on
+    /// one flipped byte (20 of 31 crashes in a 2026-11-04 load-command fuzz).
+    /// dyld holds `cmdsize` to the same sum.
+    private static func validateBuildVersion(
+        at offset: Int, prefix: Data, bigEndian: Bool, index: Int, fail: (String) -> BinaryLoadError
+    ) throws {
+        guard let cmdsize = prefix.u32(at: offset + 4, bigEndian: bigEndian),
+              let ntools = prefix.u32(at: offset + 20, bigEndian: bigEndian)
+        else { return }   // beyond the prefix: our limit, not a bad file
+        let expected = UInt64(Command.buildVersionHeader) + UInt64(ntools) * UInt64(Command.buildToolVersion)
+        guard UInt64(cmdsize) == expected else {
+            throw fail("load command \(index) lists \(ntools) build tool(s) in a \(cmdsize)-byte LC_BUILD_VERSION")
+        }
+        for tool in 0..<Int(ntools) {
+            let entry = offset + Command.buildVersionHeader + tool * Command.buildToolVersion
+            guard let value = prefix.u32(at: entry, bigEndian: bigEndian) else { return }
+            guard Int32(exactly: value) != nil else {
+                throw fail("load command \(index) names build tool \(value), which no tool enumeration can hold")
+            }
         }
     }
 

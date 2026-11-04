@@ -291,6 +291,41 @@ private func imageWith(_ command: Data, fileSize: Int) -> (Data, Int) {
     return (header + command, fileSize)
 }
 
+/// An `LC_BUILD_VERSION` declaring `ntools` over `tools` actual entries.
+private func buildVersion(ntools: UInt32, tools: [UInt32]) -> Data {
+    var data = Data()
+    let size = UInt32(24 + 8 * tools.count)
+    for word: UInt32 in [0x32, size, 1, 0x000f_0000, 0x000f_0000, ntools] {
+        withUnsafeBytes(of: word.littleEndian) { data.append(contentsOf: $0) }
+    }
+    for tool in tools {
+        for word: UInt32 in [tool, 0x0400_0000] {
+            withUnsafeBytes(of: word.littleEndian) { data.append(contentsOf: $0) }
+        }
+    }
+    return data
+}
+
+@Test func rejectsABuildVersionClaimingMoreToolsThanItHolds() {
+    let (data, size) = imageWith(buildVersion(ntools: 0xdb00_0001, tools: [3]), fileSize: 4096)
+    #expect(rejects(data, fileSize: size))
+}
+
+@Test func rejectsABuildVersionClaimingFewerToolsThanItHolds() {
+    let (data, size) = imageWith(buildVersion(ntools: 0, tools: [3]), fileSize: 4096)
+    #expect(rejects(data, fileSize: size))
+}
+
+@Test func rejectsABuildToolThatDoesNotFitItsEnumeration() {
+    let (data, size) = imageWith(buildVersion(ntools: 1, tools: [0xe700_0003]), fileSize: 4096)
+    #expect(rejects(data, fileSize: size))
+}
+
+@Test func acceptsAWellFormedBuildVersion() {
+    let (data, size) = imageWith(buildVersion(ntools: 2, tools: [3, 1024]), fileSize: 4096)
+    #expect(!rejects(data, fileSize: size))
+}
+
 @Test func rejectsASegmentStartingBeyondTheFile() {
     let (data, size) = imageWith(segment64(fileoff: 0xffff_0000, filesize: 16), fileSize: 4096)
     #expect(rejects(data, fileSize: size))
