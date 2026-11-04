@@ -176,7 +176,7 @@ results do not replace previously recorded release performance measurements.
   spills d0 and reloads it, and `& 0xff == 7` read `((arg0 & 255) !=
   3.5e-323)`, now `!= 7`; `.byteSwapped == 7` read `byteSwap64(arg0) !=
   3.5e-323`. Blast radius: those 2 lines, swift-syntax byte-identical.
-- **FIXED (7e591f0) — the reverse move, `fmov dN, xM` of an integer,
+- **FIXED (07db3fe) — the reverse move, `fmov dN, xM` of an integer,
   carried the integer bare.** `Double(bitPattern: i) * 2.0` at -O is `fmov d0, x0;
   fadd d0, d0, d0` and rendered `sd((arg0 + arg0))`, an integer add of the
   UInt64. The move now writes `.unary(.floatFromBits(bits:), v)`, the
@@ -239,7 +239,7 @@ results do not replace previously recorded release performance measurements.
   extension said which descriptor it came from; it does not.
 - **FIXED — a word spilled from one register file and reloaded into the
   other carried its value bare.** -Onone `unsafeBitCast(a, to: Int.self)`
-- **FIXED (220efff) — a word spilled from one register file and reloaded
+- **FIXED (4266f7c) — a word spilled from one register file and reloaded
   into the other carried its value bare.** -Onone `unsafeBitCast(a, to: Int.self)`
   is `str d0, [sp]; ldr x9, [sp]`, with no `fmov`, and `~bits == 7`,
   lowered to `0 - x - 1`, rendered `((-arg0 - 5e-324) != 3.5e-323)`. The
