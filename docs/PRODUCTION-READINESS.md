@@ -7451,6 +7451,17 @@ Findings:
   (`dynamiccast.swift`). The unconditional form, which traps on failure,
   keeps `(src as! T)`. Fixtures: 6 lines (the new fixture and the
   Reconstruction `castToString` statements); swift-syntax byte-identical.
+- **FIXED (soundness) — a metatype cast read as a cast of an object.**
+  `swift_dynamicCastMetatype` and its `Unconditional` form take two
+  metadata pointers and return the first, and the target metadata names the
+  instance type. `swiftCastIdiom` shared the class helpers' spelling, so `x
+  as? C.Type` rendered `(x as? C)`, `x as! C.Type` `(? as! C)` and `a is
+  C.Type` `((? as? C) != 0)`. Both helpers now print `.Type`
+  (`dynamiccast.swift`, `aMetatypeCastIsSpelledAsOneIfPresent`). Still
+  raw, which is sound: `swift_dynamicCastObjCClassMetatype`,
+  `swift_dynamicCastForeignClassMetatype` and a target behind a merged
+  accessor, which no rendered metadata names. Renders: those three lines of
+  `libDynamicCast` and nothing else, the swift-syntax dylibs included.
 - **FIXED — a throw's x0 joined the return** (ABI review item 5, first
   half). `swift_willThrow` (Error.h:71), `swift_willThrowTypedImpl`
   (:116) and `swift_job_run` (Concurrency.h:1137) return nothing

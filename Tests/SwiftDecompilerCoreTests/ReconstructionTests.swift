@@ -1099,6 +1099,43 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
     #expect(isStr.contains("as? Swift.String) != nil)"), Comment(rawValue: isStr))
 }
 
+/// `swift_dynamicCastMetatype` casts a type, and its target metadata names
+/// the instance type: `x as? C.Type` read `(x as? C)`, a cast of an object
+/// (`dynamiccast.swift`).
+@Test func aMetatypeCastIsSpelledAsOneIfPresent() async throws {
+    let path = "Fixtures/Sample/libDynamicCast.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func render(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("DynamicCast.\(name)") }).renderStructured()
+    }
+    let optional = try render("metaOptional")
+    #expect(optional.contains("as? DynamicCast.MetaBase.Type)"), Comment(rawValue: optional))
+    let forced = try render("metaForced")
+    #expect(forced.contains("as! DynamicCast.MetaBase.Type)"), Comment(rawValue: forced))
+    let test = try render("metaIs")
+    #expect(test.contains("as? DynamicCast.MetaBase.Type)"), Comment(rawValue: test))
+    // The object cast beside them is not a metatype's.
+    let instance = try render("instanceOptional")
+    #expect(!instance.contains("MetaBase.Type"), Comment(rawValue: instance))
+}
+
+@Test func onlyTheMetatypeHelpersSpellDotType() {
+    let target = "type metadata accessor for M.C(0)"
+    #expect(DisassembledFunction.swiftCastIdiom(callee: "swift_dynamicCastMetatype", arguments: ["x", target])
+        == "(x as? M.C.Type)")
+    #expect(DisassembledFunction.swiftCastIdiom(
+        callee: "swift_dynamicCastMetatypeUnconditional", arguments: ["x", target, "0", "0", "0"])
+        == "(x as! M.C.Type)")
+    #expect(DisassembledFunction.swiftCastIdiom(callee: "swift_dynamicCastClass", arguments: ["x", target])
+        == "(x as? M.C)")
+    #expect(DisassembledFunction.swiftCastIdiom(
+        callee: "swift_dynamicCastClassUnconditional", arguments: ["x", target, "0", "0", "0"])
+        == "(x as! M.C)")
+    // A target this cannot name stays the raw call.
+    #expect(DisassembledFunction.swiftCastIdiom(callee: "swift_dynamicCastMetatype", arguments: ["x", "?"]) == nil)
+}
+
 /// A stripped binary's metadata names a vtable accessor by its kind alone
 /// (`StrippedAccessor.Counter.getter`). A self dispatch to it is to some
 /// property of self; read as `Owner.property.getter`, its type became the

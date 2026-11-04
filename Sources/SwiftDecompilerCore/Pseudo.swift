@@ -193,20 +193,32 @@ public extension DisassembledFunction {
     /// of its flags operand. Returns nil — leaving the raw call — when the target
     /// type is an unrecoverable mangled-name instantiation or the flags are
     /// unknown, so the cast is never rendered with a guessed type or direction.
+    ///
+    /// The metatype helpers take two metadata pointers and return the first:
+    /// the value cast is a type, and the target metadata names the instance
+    /// type (`swift_dynamicCastMetatype(sourceType, targetType)`,
+    /// include/swift/Runtime/Casting.h). `x as? C.Type` is a question about
+    /// subclassing, not about an object, and printed without `.Type` it read
+    /// `(x as? C)`.
     static func swiftCastIdiom(callee: String, arguments: [String]) -> String? {
-        func cast(object: String, targetArgument: String, forced: Bool) -> String? {
+        func cast(object: String, targetArgument: String, forced: Bool, metatype: Bool = false) -> String? {
             guard let type = swiftTypeName(fromMetadata: targetArgument) else { return nil }
-            return "(\(object) \(forced ? "as!" : "as?") \(type))"
+            return "(\(object) \(forced ? "as!" : "as?") \(type)\(metatype ? ".Type" : ""))"
         }
         switch callee {
-        case "swift_dynamicCastClass", "swift_dynamicCastObjCClass",
-             "swift_dynamicCastUnknownClass", "swift_dynamicCastMetatype":
+        case "swift_dynamicCastClass", "swift_dynamicCastObjCClass", "swift_dynamicCastUnknownClass":
             guard arguments.count >= 2 else { return nil }
             return cast(object: arguments[0], targetArgument: arguments[1], forced: false)
         case "swift_dynamicCastClassUnconditional", "swift_dynamicCastObjCClassUnconditional",
-             "swift_dynamicCastUnknownClassUnconditional", "swift_dynamicCastMetatypeUnconditional":
+             "swift_dynamicCastUnknownClassUnconditional":
             guard arguments.count >= 2 else { return nil }
             return cast(object: arguments[0], targetArgument: arguments[1], forced: true)
+        case "swift_dynamicCastMetatype":
+            guard arguments.count >= 2 else { return nil }
+            return cast(object: arguments[0], targetArgument: arguments[1], forced: false, metatype: true)
+        case "swift_dynamicCastMetatypeUnconditional":
+            guard arguments.count >= 2 else { return nil }
+            return cast(object: arguments[0], targetArgument: arguments[1], forced: true, metatype: true)
         case "swift_dynamicCast":
             // (dest, src, srcType, targetType, flags): the value is `src`, the
             // type is `targetType`, and `dest` is the out-parameter it's written
