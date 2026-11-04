@@ -78,6 +78,11 @@ for level in Onone O Osize; do
     $SWIFTC -$level -emit-library -module-name ScalarTailReturns scalartailreturns.swift -o libScalarTailReturns.$level.dylib
 done
 
+for level in Onone O; do
+    echo "==> a setter reached through a vtable (setterarity.swift, -$level)"
+    $SWIFTC -parse-as-library -$level -emit-library -module-name SetterArity setterarity.swift -o libSetterArity.$level.dylib
+done
+
 echo "==> guarded returns across CFG layouts (returnpaths.s)"
 $CLANG -arch arm64 -dynamiclib returnpaths.s -o libReturnPaths.dylib
 

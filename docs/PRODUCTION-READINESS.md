@@ -689,6 +689,23 @@ because it cannot be distinguished from a right one by reading the output.
   shown. Renders: 12 files, 556 structured lines; every line is an
   extension member's argument list, a binding renumbered, or a call that
   fed only a dropped argument and now stands alone.
+- **FIXED (soundness) — a filtered and a whole-image run disagreed on a
+  setter's arity.** `M.C.x.setter : Swift.Int` prints no parameter list, so
+  its arity came from its body, and a filtered run decodes its matches and
+  their direct callees, not a callee reached through a vtable. It went
+  `positional`: `disasm -f` read `self.x.setter()` where the whole image
+  read `self.x.setter(?)`, and at -O `self.s.setter(?, M.B0.s.setter :
+  Swift.Int)`, the `br x1` target as an argument. IR: `void
+  @"$s2m14BaseC1xSivs"(i64 %0, ptr swiftself %1)`. A class's, a static
+  and a global setter now take their arguments from the property's type, in
+  both runs (`setterarity.swift`,
+  `filteredAndWholeImageRunsAgreeOnASettersArityIfPresent`, which compares
+  every function). A String setter's two words are one
+  argument too, `self.s.setter(?, ?)` before. Filtered runs still differ
+  from the whole image elsewhere, in names only: a function pointer reads
+  `0x4bbc` for `sub_4bbc`, and a resume funclet's and a literal pool's
+  annotations are missing from the listing. Renders: 6 files, 18 structured
+  lines, each one of those two shapes.
 - **FIXED (soundness) — a signature with parameters on the stack read
   x0-x7 as its arguments.** A Swift signature needing more than eight
   integer (or float) registers declined whole, so the call was

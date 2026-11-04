@@ -4977,6 +4977,31 @@ public struct Disassembler: Sendable {
         return isDispatchThunk || isStatic || !context.contains(".") || classTypeIndex.isClass(context)
     }
 
+    /// A setter as the function it is, for `swiftCallArgumentLayout`: a
+    /// class instance property's, a static one's or a global's takes the new
+    /// value from x0 (`self` or the metatype rides in x20), so `M.C.x.setter
+    /// : Swift.Int` is `M.C.setter(Swift.Int) -> ()`. Its name prints no
+    /// parameter list, so its arity came from its body, and a filtered run
+    /// has no body for a callee it reached through a vtable: `self.x.setter()`
+    /// and `self.s.setter(?, <the br x1 target>)` beside the whole image's
+    /// `(?)`. Nil for anything else: a value type's non-mutating setter
+    /// takes `self` after the value, and a subscript's takes its index.
+    static func setterLayoutName(_ callee: String, classTypeIndex: ClassTypeIndex) -> String? {
+        guard let colon = callee.range(of: " : ") else { return nil }
+        var base = withoutPrivateDiscriminators(String(callee[..<colon.lowerBound]))
+        guard base.hasSuffix(".setter") else { return nil }
+        base.removeLast(".setter".count)
+        let isStatic = base.hasPrefix("static ")
+        if isStatic { base.removeFirst("static ".count) }
+        guard !base.isEmpty, base.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }),
+              let dot = base.lastIndex(of: "."), !base[base.index(after: dot)...].isEmpty,
+              base[base.index(after: dot)...] != "subscript"
+        else { return nil }
+        let context = String(base[..<dot])
+        guard isStatic || !context.contains(".") || classTypeIndex.isClass(context) else { return nil }
+        return "\(isStatic ? "static " : "")\(context).setter(\(callee[colon.upperBound...])) -> ()"
+    }
+
     static let dispatchThunkPrefix = "dispatch thunk of "
 
     /// Each source parameter's register bank, how many registers of it the
@@ -6070,6 +6095,7 @@ public struct Disassembler: Sendable {
         /// printed `(A)` it rendered `bump(arg1)`, the Int then in x0.
         func layoutName(at address: UInt64, callee: String) -> String {
             if let thunk = witnessLayoutNames[address] { return thunk }
+            if let setter = Self.setterLayoutName(callee, classTypeIndex: classTypeIndex) { return setter }
             return callTargets[address].flatMap { resolver.specializedSignature(at: $0, printedName: callee) } ?? callee
         }
         /// A call through a protocol witness table, laid out as the

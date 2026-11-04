@@ -1175,6 +1175,54 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
         callee: instance, enumCaseIndex: EnumCaseIndex(), classTypeIndex: index, anyContext: true) == nil)
 }
 
+/// A setter's name prints no parameter list and its arity came from its body,
+/// which a filtered run did not decode for a callee reached through a vtable:
+/// `self.x.setter()` where the whole image read `self.x.setter(?)`, and at -O
+/// `self.s.setter(?, <setter>)`, the `br x1` target as an argument
+/// (`setterarity.swift`). A filtered and a whole-image run must agree on every
+/// function.
+@Test func filteredAndWholeImageRunsAgreeOnASettersArityIfPresent() async throws {
+    for (level, path) in [("Onone", "Fixtures/Sample/libSetterArity.Onone.dylib"),
+                          ("O", "Fixtures/Sample/libSetterArity.O.dylib")] {
+        guard FileManager.default.fileExists(atPath: path) else { continue }
+        let whole = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+        let dispatching = whole.filter { $0.displayName.hasPrefix("SetterArity.Base.prop.setter")
+            || $0.displayName.hasPrefix("SetterArity.Base.plain.setter")
+            || $0.displayName.hasPrefix("SetterArity.Base.title.setter") }
+        #expect(dispatching.count == 3, "\(level)")
+        for function in dispatching {
+            let text = function.renderStructured()
+            #expect(text.contains(".setter("), Comment(rawValue: text))
+            #expect(!text.contains(".setter()"), Comment(rawValue: text))
+            #expect(!text.contains(", SetterArity."), Comment(rawValue: text))
+        }
+        for function in whole {
+            let address = "0x" + String(function.startAddress, radix: 16)
+            let filtered = try await withStableDependencies {
+                try await Disassembler().disassemble(path: path, functionFilter: address)
+            }
+            let match = try #require(filtered.first { $0.startAddress == function.startAddress })
+            #expect(match.renderStructured() == function.renderStructured(), "\(level) \(address)")
+            #expect(match.renderPseudo() == function.renderPseudo(), "\(level) \(address)")
+        }
+    }
+}
+
+@Test func onlyASetterTakingItsValueFromX0IsLaidOut() {
+    let index = ClassTypeIndex(qualifiedClassNames: ["M.C"])
+    #expect(Disassembler.setterLayoutName("M.C.x.setter : Swift.Int", classTypeIndex: index)
+        == "M.C.setter(Swift.Int) -> ()")
+    #expect(Disassembler.setterLayoutName("static M.S.x.setter : Swift.Int", classTypeIndex: index)
+        == "static M.S.setter(Swift.Int) -> ()")
+    // A value type's: `self` may follow the value.
+    #expect(Disassembler.setterLayoutName("M.S.x.setter : Swift.Int", classTypeIndex: index) == nil)
+    // A subscript's takes its index too.
+    #expect(Disassembler.setterLayoutName("M.C.subscript.setter : (Swift.Int) -> Swift.Int", classTypeIndex: index) == nil)
+    #expect(Disassembler.setterLayoutName("M.C.x.getter : Swift.Int", classTypeIndex: index) == nil)
+    // A stripped accessor names no property or type.
+    #expect(Disassembler.setterLayoutName("M.C.setter", classTypeIndex: index) == nil)
+}
+
 /// A stripped binary's metadata names a vtable accessor by its kind alone
 /// (`StrippedAccessor.Counter.getter`). A self dispatch to it is to some
 /// property of self; read as `Owner.property.getter`, its type became the
