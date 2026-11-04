@@ -8021,3 +8021,35 @@ bitcode; Electron's `PROTECTED_MEMORY`).
   resolves it through VM. They move to `relativeTarget` with the decline's
   removal. MachOObjCSection's relative method lists are a third dependency
   site: `resolvedOffset(base: fileOffset, relative:)` in `ObjCMethodList`.
+- **FIXED (soundness): an accessor that computes read as synthesized.**
+  `- (void)setLimit:(int)limit { _limit = limit > 10 ? 10 : limit; }` at
+  -O1 is `mov w8, #0xa; cmp w2, #0xa; csel w8, w2, w8, lt; str w8, [x0,
+  #8]; ret`: one block, a store through self, no call, so the header
+  dropped `-setLimit:`. The getters of the class were read the same way:
+  `return _next + 1`, a floor, `return _node->value`. In
+  `accessorshapes.m` all seven hand-written accessors were dropped at -O1
+  and -Os and five at -O0. `isSynthesizedAccessor` now follows the value:
+  it may move between registers and stack slots, but an instruction that
+  computes with it, memory read through it, a store through self of
+  anything but an argument, an argument stored twice, or a store outside
+  self and the stack is custom. A struct over 16 bytes moves through the
+  x2 it arrives by and the x8 result buffer, allowed only when the
+  method's encoding has a struct.
+
+  Every changed line is a line added to the header, none removed:
+  GoodLinks 1, Electron Framework 1, Keynote 50, AppKit 703, UIKitCore
+  1,210. A sample of about 40 bodies read by hand (AppKit, GoodLinks and
+  Keynote) was bitfield flag accessors (`ldrb; ubfx`, `tst; cset`, and
+  `csel; orr; strb` setters), compares (`ldr; cmp; cset`), constants
+  stored beside a value, and forwarding. The sample's only false customs
+  were struct copies through x2 and x8, which took 173 lines and are
+  what `movesAggregate` allows. The other added lines were not read.
+  Fixtures: only the new ones change.
+- **OPEN (correctness): an -O0 wide struct accessor reads as custom.**
+  -O0 copies a struct over 16 bytes with `bl memcpy`, and `memcpy` is no
+  accessor helper, so a synthesized one keeps its line (`-wide5` in
+  `accessorshapes.m`, as it did before). A kept line is the safe way
+  round.
+- **OPEN (soundness): a getter's result is not followed to the `ret`.**
+  An accessor that loads an ivar and then returns a constant passes
+  `AccessorValueFlow`, which does not ask whether the value reached x0.

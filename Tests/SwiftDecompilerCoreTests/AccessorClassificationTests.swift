@@ -175,3 +175,89 @@ private let accessorGrowthCeiling = 4_096
     #expect(help.stdout.contains("--metadata-only"))
     #expect(help.stdout.contains("unclassified accessor"))
 }
+
+/// One block, no call, a store through self or a load from it: what makes
+/// an accessor synthesized is that the value moves unchanged.
+@Test func aSynthesizedAccessorMovesItsValueUnchanged() throws {
+    let engine = try #require(CapstoneEngine())
+    func verdict(_ words: [UInt32], callee: Int? = nil, encoding: String? = nil) -> Bool? {
+        var data = Data()
+        for word in words + [0xd65f_03c0] { withUnsafeBytes(of: word.littleEndian) { data.append(contentsOf: $0) } }
+        let instructions = engine.disassemble(data, address: 0x1000).enumerated().map { index, decoded in
+            let insn = Disassembler.instruction(decoded: decoded)
+            guard index == callee else { return insn }
+            return Instruction(address: insn.address, text: insn.text, annotation: "→ objc_retain",
+                               controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
+                               detail: insn.detail, callee: .kept("objc_retain"))
+        }
+        let binding = encoding.map {
+            ObjCMethodBinding(className: "C", selector: "s", typeEncoding: $0, isClassMethod: false, signature: "")
+        }
+        return ObjCDumper.isSynthesizedAccessor(DisassembledFunction(
+            symbol: "accessor", demangledName: nil, startAddress: 0x1000, instructions: instructions, source: .address,
+            objcMethod: binding))
+    }
+    let storeW2: UInt32 = 0xb900_0c02    // str w2, [x0, #12]
+    let storeW8: UInt32 = 0xb900_0808    // str w8, [x0, #8]
+    let loadW8: UInt32 = 0xb940_0808     // ldr w8, [x0, #8]
+    // Unchanged: a store of the argument, of a copy, of a slot it went
+    // through, a BOOL's mask, a narrow extension, a float, a register pair.
+    #expect(verdict([storeW2]) == true)
+    #expect(verdict([0xaa02_03e8, 0xf900_0408]) == true)            // mov x8, x2; str x8, [x0, #8]
+    #expect(verdict([0xb900_0fe2, 0xb940_0fe8, storeW8]) == true)   // str w2, [sp, #12]; ldr w8, [sp, #12]
+    #expect(verdict([0x1200_0048, 0x3900_2008]) == true)            // and w8, w2, #1; strb w8, [x0, #8]
+    #expect(verdict([0x1300_1c48, storeW8]) == true)                // sxtb w8, w2
+    #expect(verdict([0xfd00_0400]) == true)                         // str d0, [x0, #8]
+    #expect(verdict([0xa900_8c02]) == true)                         // stp x2, x3, [x0, #8]
+    #expect(verdict([0xfd40_0400]) == true)                         // ldr d0, [x0, #8]
+    // A field offset read through the isa is address arithmetic.
+    #expect(verdict([0xf940_0008, 0xf940_2908, 0xf868_6800]) == true) // ldr x8, [x0]; ldr x8, [x8, #80]; ldr x0, [x0, x8]
+    // Computed: a compare and select, arithmetic on the argument, on the
+    // ivar, a constant, an ivar stored back, one argument stored twice.
+    #expect(verdict([0x5280_0148, 0x7100_285f, 0x1a88_b048, storeW8]) == false)
+    #expect(verdict([0x1100_0448, storeW8]) == false)               // add w8, w2, #1
+    #expect(verdict([loadW8, 0x1100_0500]) == false)                // add w0, w8, #1
+    #expect(verdict([0x5280_0148, storeW8]) == false)               // mov w8, #10
+    #expect(verdict([0xb900_081f]) == false)                        // str wzr, [x0, #8]
+    #expect(verdict([loadW8, 0xb900_0c08]) == false)                // str w8, [x0, #12]
+    #expect(verdict([storeW2, 0xb900_0802]) == false)               // str w2, [x0, #8] as well
+    #expect(verdict([0xaa02_03e8, storeW2, 0xf900_0408]) == false)  // the same argument through a copy
+    // Memory through the value, and a store that is not self's.
+    #expect(verdict([0xf940_0408, 0xf940_0500]) == false)           // ldr x8, [x0, #8]; ldr x0, [x8, #8]
+    #expect(verdict([0xb940_0840]) == false)                        // ldr w0, [x2, #8]
+    #expect(verdict([storeW2, 0xf900_0422]) == false)               // str x2, [x1, #8]
+    // A call ends an argument in x2, not one kept in x19.
+    let call: UInt32 = 0x9400_0400
+    #expect(verdict([0xaa00_03f3, call, 0xb900_0e62], callee: 1) == false) // mov x19, x0; bl; str w2, [x19, #12]
+    #expect(verdict([0xaa00_03f4, 0xaa02_03f3, call, 0xf900_0693], callee: 2) == true) // mov x20, x0; mov x19, x2; bl; str x19, [x20, #8]
+    // A struct moves through x2 and x8 only when the method's type has one.
+    let wide = "{Wide=qqqqq}16@0:8"
+    let copyIn: [UInt32] = [0xad40_0440, 0xad02_8400]   // ldp q0, q1, [x2]; stp q0, q1, [x0, #80]
+    let copyOut: [UInt32] = [0xad43_8400, 0xad00_0500]  // ldp q0, q1, [x0, #112]; stp q0, q1, [x8]
+    #expect(verdict(copyIn, encoding: wide) == true)
+    #expect(verdict(copyOut, encoding: wide) == true)
+    #expect(verdict(copyIn) == false)
+    #expect(verdict(copyOut) == false)
+    // x8 once overwritten is no result buffer, and only an ivar goes to one.
+    #expect(verdict([0xaa01_03e8] + copyOut, encoding: wide) == false) // mov x8, x1
+    #expect(verdict([0xb940_0809, 0xf900_0102], encoding: wide) == false) // ldr w9, [x0, #8]; str x2, [x8]
+}
+
+/// `accessorshapes.m` at each level: nothing of `Plain` in the header, and
+/// exactly the hand-written accessors of `Computed`.
+@Test func aComputedAccessorStaysInTheHeaderIfPresent() throws {
+    let expected = [
+        "- (void)setClamped:(int)arg0;", "- (void)setBumped:(int)arg0;", "- (void)setFixedValue:(int)arg0;",
+        "- (void)setTwice:(int)arg0;", "- (int)next;", "- (int)floorValue;", "- (long long)nodeValue;",
+        "- (void)setPatched:(Wide)arg0;",
+    ]
+    for level in ["O0", "O1", "Os"] {
+        let path = "Fixtures/Sample/libAccessorShapes.\(level).dylib"
+        guard FileManager.default.fileExists(atPath: path), let run = try runCLI(["objc", path]) else { continue }
+        let methods = run.stdout.split(separator: "\n").map(String.init).filter { $0.hasPrefix("- (") }
+        // -O0 copies a wide struct with `bl memcpy`, no accessor helper, so
+        // those accessors read as custom: a kept line, the safe way round.
+        let memcpyCopies = level == "O0" ? ["- (Wide)wide5;", "- (void)setWide5:(Wide)arg0;", "- (Wide)patched;"] : []
+        #expect(methods.filter { $0 != "- (void).cxx_destruct;" }.sorted() == (expected + memcpyCopies).sorted(), "\(level)")
+    }
+}

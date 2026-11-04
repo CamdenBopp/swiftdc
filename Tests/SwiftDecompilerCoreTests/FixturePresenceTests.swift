@@ -29,6 +29,9 @@ struct FixturePresenceTests {
     /// `libConditions.\(level)`, `types("libLocalTypes.dylib")`. Add a fixture
     /// here only when its test names it this way.
     static let indirectFixtures = [
+        "Fixtures/Sample/libAccessorShapes.O0.dylib",
+        "Fixtures/Sample/libAccessorShapes.O1.dylib",
+        "Fixtures/Sample/libAccessorShapes.Os.dylib",
         "Fixtures/Sample/libConditions.opt.dylib",
         "Fixtures/Sample/libConditions.osize.dylib",
         "Fixtures/Sample/libLocalTypes.dylib",

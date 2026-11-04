@@ -184,6 +184,10 @@ extension ObjCDumper {
     /// copy of it), or a property-storage helper. A getter
     /// that returns a constant, `mov w0, #-1; ret`, is one block with no
     /// call, and read as synthesized: its line was dropped.
+    ///
+    /// And it moves the value unchanged (`AccessorValueFlow`): a clamp, `csel
+    /// w8, w2, w8, lt; str w8, [x0, #8]; ret`, is one block that stores
+    /// through self, and read as synthesized too.
     static func isSynthesizedAccessor(_ function: DisassembledFunction, prefixBytes: UInt64? = nil) -> Bool? {
         let cfg = FunctionCFG(function)
         guard let entry = cfg.entry else { return nil }
@@ -202,8 +206,11 @@ extension ObjCDumper {
         // was spilled to. Any other write ends one, and a call ends every one
         // but the callee-saved x19 to x28.
         var touchesIvar = false, selfRegisters: Set<Int> = [0], selfSlots: Set<Int64> = []
+        var flow = AccessorValueFlow(
+            movesAggregate: function.objcMethod.map { $0.typeEncoding.contains("{") || $0.typeEncoding.contains("(") } ?? false)
         for insn in function.instructions[block.range] {
             let operands = insn.detail?.operands ?? []
+            if let detail = insn.detail, !flow.admits(insn.text, detail, selfRegisters: selfRegisters) { return false }
             // -O0 spills self to the stack and reloads it: `str x0, [sp, #8]`
             // … `ldr x8, [sp, #8]`.
             var reloaded: Int?
@@ -219,7 +226,10 @@ extension ObjCDumper {
             }) {
                 touchesIvar = true
             }
-            if insn.controlFlow == .call { selfRegisters = selfRegisters.filter { (19...28).contains($0) } }
+            if insn.controlFlow == .call {
+                selfRegisters = selfRegisters.filter { (19...28).contains($0) }
+                flow.endCall()
+            }
             if let detail = insn.detail {
                 let copied: Int? = {
                     guard insn.text.hasPrefix("mov") && operands.count == 2 || insn.text.hasPrefix("add") && operands.count == 3,
@@ -246,6 +256,149 @@ extension ObjCDumper {
             if propertyStorageHelpers.contains(where: { callee.hasPrefix($0) }) { touchesIvar = true }
         }
         return touchesIvar
+    }
+
+    /// What a synthesized accessor does to its value: nothing. A setter
+    /// stores its argument, once, and a getter loads the ivar; both may copy
+    /// the value between registers and stack slots on the way, as -O0 does.
+    /// The rest of the block is address arithmetic, which never reads the
+    /// value. So an accessor is custom when it computes with the value
+    /// (`cmp`, `csel`, `add`), reads memory through it (`return _node->x`),
+    /// stores anything but an argument through self (a constant, an ivar) or
+    /// the same argument twice (`_a = x; _b = x`), or stores anywhere but
+    /// through self and the stack. A BOOL's `and w8, w8, #1` and a narrow
+    /// type's extension change no value the type can hold, so they pass.
+    /// A struct over 16 bytes is copied through memory: its setter reads it
+    /// through the x2 it was passed by, its getter writes it through the x8
+    /// the caller gave, which is what `movesAggregate` allows.
+    ///
+    /// Not modelled: whether the value reaches x0 at the `ret`, so a getter
+    /// that loads an ivar and then returns a constant still passes.
+    private struct AccessorValueFlow {
+        /// Registers holding an incoming argument unchanged, to the argument
+        /// register it came in. x0 is self and x1 `_cmd`; a getter that uses
+        /// x2 as scratch writes it first, which ends it.
+        private var arguments: [String: String] = Dictionary(
+            uniqueKeysWithValues: ((2...7).map { "x\($0)" } + (0...7).map { "v\($0)" }).map { ($0, $0) })
+        /// Registers holding a value loaded through self.
+        private var ivarValues: Set<String> = []
+        /// The same, for what a stack slot holds.
+        private var argumentSlots: [String: String] = [:]
+        private var ivarSlots: Set<String> = []
+        /// Arguments already stored through self.
+        private var storedArguments: Set<String> = []
+        private let movesAggregate: Bool
+        /// x8 still holds the caller's result buffer.
+        private var resultBufferLive = true
+
+        init(movesAggregate: Bool) { self.movesAggregate = movesAggregate }
+
+        private static let loads = ["ldr", "ldur", "ldp", "ldar", "ldapr", "ldapur"]
+        private static let stores = ["str", "stur", "stp", "stlr", "stlur"]
+        private static let extensions: Set<String> = ["sxtb", "sxth", "sxtw", "uxtb", "uxth"]
+
+        private func holdsValue(_ register: PhysReg?) -> Bool {
+            guard let register else { return false }
+            return arguments[register.key] != nil || ivarValues.contains(register.key)
+        }
+
+        private mutating func clear(_ key: String) {
+            arguments[key] = nil
+            ivarValues.remove(key)
+            if key == "x8" { resultBufferLive = false }
+        }
+
+        /// A call leaves only the callee-saved x19 to x28.
+        mutating func endCall() {
+            arguments = arguments.filter { Self.survivesCall($0.key) }
+            ivarValues = ivarValues.filter(Self.survivesCall)
+        }
+
+        private static func survivesCall(_ key: String) -> Bool {
+            key.first == "x" && Int(key.dropFirst()).map((19...28).contains) == true
+        }
+
+        /// Steps over one instruction of the entry block; false when it does
+        /// something to the value a synthesized accessor never does.
+        mutating func admits(_ text: String, _ detail: StructuredInsn, selfRegisters: Set<Int>) -> Bool {
+            let mnemonic = String(text.prefix { !$0.isWhitespace })
+            let registers = detail.operands.compactMap { info -> (register: PhysReg, info: StructuredOperandInfo)? in
+                info.operand.register.map { ($0, info) }
+            }
+            if let (base, index, displacement) = detail.operands.lazy.compactMap({ info -> (PhysReg?, PhysReg?, Int64)? in
+                if case .memory(let base, let index, let displacement) = info.operand { return (base, index, displacement) }
+                return nil
+            }).first {
+                return admitsMemory(
+                    mnemonic, registers: registers.map(\.register), base: base, index: index,
+                    displacement: displacement, writeback: detail.writeback, selfRegisters: selfRegisters)
+            }
+            let written = registers.filter { $0.info.isWritten }.map(\.register)
+            let sources = registers.filter { $0.info.isRead && holdsValue($0.register) }.map(\.register)
+            guard let source = sources.first else {
+                written.forEach { clear($0.key) }
+                return true
+            }
+            let isCopy = (mnemonic == "mov" || mnemonic == "fmov" || Self.extensions.contains(mnemonic))
+                && detail.operands.count == 2
+            let isBoolMask = mnemonic == "and" && detail.operands.count == 3
+                && detail.operands[2].operand.immediateValue == 1
+            guard isCopy || isBoolMask, sources.count == 1, written.count == 1, let destination = written.first
+            else { return false }
+            let origin = arguments[source.key], fromIvar = ivarValues.contains(source.key)
+            clear(destination.key)
+            arguments[destination.key] = origin
+            if fromIvar { ivarValues.insert(destination.key) }
+            return true
+        }
+
+        private mutating func admitsMemory(
+            _ mnemonic: String, registers: [PhysReg], base: PhysReg?, index: PhysReg?, displacement: Int64,
+            writeback: Bool, selfRegisters: Set<Int>
+        ) -> Bool {
+            let isLoad = Self.loads.contains(where: mnemonic.hasPrefix)
+            // A word of the struct x2 points at, an argument in its own right.
+            if movesAggregate, isLoad, base?.key == "x2", arguments["x2"] == "x2", index == nil, !writeback {
+                for (word, register) in registers.enumerated() {
+                    clear(register.key)
+                    arguments[register.key] = "[x2+\(displacement)].\(word)"
+                }
+                return true
+            }
+            if movesAggregate, !isLoad, base?.key == "x8", resultBufferLive, index == nil, !writeback {
+                return registers.allSatisfy { ivarValues.contains($0.key) }
+            }
+            if holdsValue(base) || holdsValue(index) { return false }
+            let throughSelf = base.map { $0.kind == .gpr && selfRegisters.contains($0.number) } ?? false
+            let onStack = base.map { $0.kind == .stackPointer || ($0.kind == .gpr && $0.number == 29) } ?? false
+            let slot = base.map { "\($0.key)\(displacement)" } ?? ""
+            if Self.stores.contains(where: mnemonic.hasPrefix) {
+                if throughSelf {
+                    return registers.allSatisfy { register in
+                        guard let origin = arguments[register.key] else { return false }
+                        return storedArguments.insert(origin).inserted
+                    }
+                }
+                guard onStack else { return false }
+                if registers.count == 1, !writeback, let source = registers.first {
+                    argumentSlots[slot] = arguments[source.key]
+                    if ivarValues.contains(source.key) { ivarSlots.insert(slot) } else { ivarSlots.remove(slot) }
+                }
+                return true
+            }
+            guard isLoad else { return !throughSelf }
+            registers.forEach { clear($0.key) }
+            // `[x0]` is the isa: a thunk reads a field offset through it.
+            let isIsa = base?.number == 0 && index == nil && displacement == 0
+            for register in registers {
+                if throughSelf, !isIsa { ivarValues.insert(register.key) }
+                if onStack, registers.count == 1 {
+                    arguments[register.key] = argumentSlots[slot]
+                    if ivarSlots.contains(slot) { ivarValues.insert(register.key) }
+                }
+            }
+            return true
+        }
     }
 
     /// ARC and property-storage helpers a synthesized accessor may call: the

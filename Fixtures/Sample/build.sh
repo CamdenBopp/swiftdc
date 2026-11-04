@@ -420,6 +420,11 @@ for classes in 100 800; do
   rm manyaccessors$classes.m
 done
 
+echo "==> one-block accessors, synthesized and computed (accessorshapes.m, -O0, -O1, -Os, ARC)"
+for level in O0 O1 Os; do
+  xcrun clang -arch arm64 -$level -fobjc-arc -dynamiclib -framework Foundation accessorshapes.m -o libAccessorShapes.$level.dylib
+done
+
 echo "==> a getter that returns a constant (constantgetter.m): custom, not synthesized"
 xcrun clang -arch arm64 -O1 -dynamiclib -framework Foundation constantgetter.m -o libConstantGetter.dylib
 
