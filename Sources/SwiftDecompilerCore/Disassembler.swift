@@ -7857,6 +7857,10 @@ public struct Disassembler: Sendable {
                         return width == bits ? "\(inner).bitPattern" : unknownRenderedValue()
                     }
                     return inner
+                case .floatFromBits(let bits):
+                    // The tracer folds a float's own bits back to it, so what
+                    // is left is an integer's bits reinterpreted.
+                    return "\(bits == 64 ? "Double" : "Float")(bitPattern: \(inner))"
                 case .floatConstant(let bits):
                     guard case .immediate(let pattern) = operand else { return unknownRenderedValue() }
                     switch bits {

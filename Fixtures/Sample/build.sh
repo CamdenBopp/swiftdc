@@ -676,6 +676,9 @@ $CLANG -arch arm64 -dynamiclib markersymbols.s -o libMarkerSymbols.dylib
 echo "==> a float's bit pattern compared as an integer (floatbits.swift, -O and -Onone): fmov x8, d0 reinterprets"
 $SWIFTC -parse-as-library -O -emit-library -module-name FloatBits floatbits.swift -o libFloatBits.opt.dylib
 $SWIFTC -parse-as-library -Onone -emit-library -module-name FloatBits floatbits.swift -o libFloatBits.dylib
+echo "==> bits reinterpreted between register files, with and without fmov (floatreinterpret.swift, -O and -Onone)"
+$SWIFTC -parse-as-library -O -emit-library -module-name FloatReinterpret floatreinterpret.swift -o libFloatReinterpret.opt.dylib
+$SWIFTC -parse-as-library -Onone -emit-library -module-name FloatReinterpret floatreinterpret.swift -o libFloatReinterpret.dylib
 echo "==> a Float's bits read at its own and at a wider width (floatbitswidth.s): fmov w0, s0 and fmov x0, d0"
 $CLANG -arch arm64 -dynamiclib floatbitswidth.s -o libFloatBitsWidth.dylib
 

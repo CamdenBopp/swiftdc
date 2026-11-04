@@ -121,11 +121,20 @@ results do not replace previously recorded release performance measurements.
   spills d0 and reloads it, and `& 0xff == 7` read `((arg0 & 255) !=
   3.5e-323)`, now `!= 7`; `.byteSwapped == 7` read `byteSwap64(arg0) !=
   3.5e-323`. Blast radius: those 2 lines, swift-syntax byte-identical.
-- **OPEN — the reverse move, `fmov dN, xM` of an integer, carries the
+- **FIXED — the reverse move, `fmov dN, xM` of an integer, carried the
   integer bare.** `Double(bitPattern: i) * 2.0` at -O is `fmov d0, x0;
-  fadd d0, d0, d0` and renders `sd((arg0 + arg0))`, an integer add of the
-  UInt64. It needs a `Double(bitPattern:)` operator, the mirror of the
-  `.bitPattern` one.
+  fadd d0, d0, d0` and rendered `sd((arg0 + arg0))`, an integer add of the
+  UInt64. The move now writes `.unary(.floatFromBits(bits:), v)`, the
+  mirror of `.bitPattern`, rendered `Double(bitPattern: v)` or
+  `Float(bitPattern: v)`. An immediate stays the float constant it spells,
+  and each operator folds the other at its own width. Fixture
+  `floatreinterpret.swift`. Blast radius: its 3 lines, plus 2 in
+  libSwiftCompilerPluginMessageHandling, where `decode(Double.Type)` moved
+  a call's word into d0: `return r0` -> `return Double(bitPattern: r0)`.
+- **OPEN — a nested call drops `Double.init(bitPattern:)`'s label.** -Onone
+  calls the initializer, and as an argument it renders
+  `sd((Swift.Double.init(arg0) * 2.0))`, which reads as the numeric
+  conversion. The listing names the callee in full.
 - **OPEN — a float spilled and reloaded into a general register carries
   the float bare.** -Onone `unsafeBitCast(a, to: Int.self)` stores d0 and
   reloads x8 from the slot, with no `fmov`. A bit-level operator on it

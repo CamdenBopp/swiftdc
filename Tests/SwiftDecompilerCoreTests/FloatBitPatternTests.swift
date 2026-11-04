@@ -89,3 +89,52 @@ import Testing
     #expect(try render("word").contains("return arg0.bitPattern\n"))
     #expect(try render("whole").contains("return ?\n"))
 }
+
+/// An integer's bits read as a float are `Double(bitPattern: i)`, not i.
+/// `floatreinterpret.swift` (-O) passes `Double(bitPattern: i) * 2.0` as
+/// `fmov d0, x0; fadd d0, d0, d0`, which rendered `(arg0 + arg0)`, an integer
+/// add of the UInt64.
+@Test func anIntegersBitsMovedToAFloatRegisterReadAsThatFloatIfPresent() async throws {
+    let path = "Fixtures/Sample/libFloatReinterpret.opt.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func render(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("FloatReinterpret.\(name)(") }).renderStructured()
+    }
+    #expect(try render("doubleFromBits").contains("sd((Double(bitPattern: arg0) + Double(bitPattern: arg0)))"))
+    #expect(try render("floatFromBits").contains("sf((Float(bitPattern: arg0) + Float(bitPattern: arg0)))"))
+    #expect(try render("castFromInt").contains("sd((Double(bitPattern: arg0) + 1.0))"))
+}
+
+/// The tracer's half of the reverse move: `fmov d0, x0` is the float whose
+/// bits are x0, a word move drops the zero-extension mask, and moving that
+/// float back to a general register is x0 again.
+@Test func anFmovFromAGeneralRegisterReinterpretsTheBits() throws {
+    let engine = try #require(CapstoneEngine())
+    func trace(_ words: [UInt32]) -> (value: AbstractValue?, float: AbstractValue?) {
+        let bytes = words.flatMap { word in (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) } }
+        let body = engine.disassemble(Data(bytes), address: 0x1000).map {
+            Instruction(address: $0.address, text: $0.text, annotation: nil,
+                        controlFlow: $0.controlFlow, branchTarget: $0.branchTarget, detail: $0.detail)
+        }
+        let function = DisassembledFunction(symbol: "f", demangledName: nil, startAddress: 0x1000,
+                                            instructions: body, source: .symbol)
+        let result = ValueTracer().analyze(function, entry: .swiftFunction(scalarArguments: ["x0": 0]))
+        return (result.exitValues[body.last!.address], result.exitFloatValues[body.last!.address])
+    }
+    // fmov d0, x0; ret
+    #expect(trace([0x9e670000, 0xd65f03c0]).float == .unary(.floatFromBits(bits: 64), .argument(0)))
+    // fmov s0, w0; ret
+    #expect(trace([0x1e270000, 0xd65f03c0]).float == .unary(.floatFromBits(bits: 32), .argument(0)))
+    // fmov d1, x0; fmov x0, d1; ret
+    #expect(trace([0x9e670001, 0x9e660020, 0xd65f03c0]).value == .argument(0))
+}
+
+/// A reinterpreted integer is a float of its width, and a float's bits an
+/// integer of unknown sign, so neither carries the other's type onward.
+@Test func reinterpretedBitsTakeTheTypeTheyAreReadAs() {
+    #expect(TypeInference.typeOf(.unary(.floatFromBits(bits: 64), .argument(0)), arguments: [:]) == .floating(64))
+    #expect(TypeInference.typeOf(.unary(.floatFromBits(bits: 32), .argument(0)), arguments: [:]) == .floating(32))
+    #expect(TypeInference.typeOf(.unary(.bitPattern(bits: 64), .argument(0)), arguments: [:])
+        == ValueType(category: .integer, width: 64, signedness: .unknownSign))
+}

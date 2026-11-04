@@ -148,6 +148,9 @@ public enum AbstractUnaryOperator: Equatable, Sendable {
     /// constant beside it is an integer, and its sign is the reading
     /// instruction's.
     case bitPattern(bits: Int)
+    /// An integer's low `bits` read as the float of that width (`fmov d0,
+    /// x0`): `Double(bitPattern: i)`. The mirror of `bitPattern`.
+    case floatFromBits(bits: Int)
 }
 
 /// A small abstract-value lattice for CFG-aware data-flow. Alongside constants
@@ -3239,17 +3242,15 @@ public struct ValueTracer: Sendable {
             // where the binary traps. An immediate is the same bits either
             // way; the reverse move of a bit pattern is the float again.
             if dest.kind == .gpr, input.kind == .vector, input.widthBits == dest.widthBits {
-                switch value {
-                case .unknown, .immediate: write(dest, value, into: &registers)
-                default:
-                    write(dest, Self.expressionDepth(value) < 8
-                          ? .unary(.bitPattern(bits: dest.widthBits), value) : .unknown, into: &registers)
-                }
+                write(dest, Self.bitPattern(of: value, bits: dest.widthBits), into: &registers)
                 return
             }
-            if dest.kind == .vector, input.kind == .gpr,
-               case .unary(.bitPattern(let bits), let float) = value, bits == dest.widthBits {
-                write(dest, float, into: &registers)
+            // The other way an integer's bits become a float: `fmov d0, x0;
+            // fadd d0, d0, d0` adds `Double(bitPattern: i)` to itself. Carried
+            // bare, it rendered `(arg0 + arg0)`, an integer add.
+            if dest.kind == .vector, input.kind == .gpr, input.widthBits == dest.widthBits,
+               dest.widthBits == 64 || dest.widthBits == 32 {
+                write(dest, Self.float(fromBits: value, bits: dest.widthBits), into: &registers)
                 return
             }
             write(dest, value, into: &registers)
@@ -4037,6 +4038,31 @@ public struct ValueTracer: Sendable {
     private static func floatOperand(_ value: AbstractValue, bits: Int) -> AbstractValue {
         guard case .immediate = value, [16, 32, 64].contains(bits) else { return value }
         return .unary(.floatConstant(bits: bits), value)
+    }
+
+    /// A float register's `bits` read as an integer: `a.bitPattern`. An
+    /// immediate is the same bits either way, and the bits of
+    /// `Double(bitPattern: i)` are i.
+    static func bitPattern(of value: AbstractValue, bits: Int) -> AbstractValue {
+        switch value {
+        case .unknown, .immediate: return value
+        case .unary(.floatFromBits(let width), let integer) where width == bits: return integer
+        default: return expressionDepth(value) < 8 ? .unary(.bitPattern(bits: bits), value) : .unknown
+        }
+    }
+
+    /// An integer register's low `bits` read as a float of that width:
+    /// `Double(bitPattern: i)`. An immediate is the float constant it spells,
+    /// and the float of `a.bitPattern` is a. A word's zero-extension mask is
+    /// dropped, since only its low 32 bits are read.
+    static func float(fromBits value: AbstractValue, bits: Int) -> AbstractValue {
+        switch value {
+        case .unknown, .immediate: return value
+        case .unary(.bitPattern(let width), let float) where width == bits: return float
+        case .binary(.bitAnd, let integer, .immediate(0xffff_ffff)) where bits == 32:
+            return float(fromBits: integer, bits: bits)
+        default: return expressionDepth(value) < 8 ? .unary(.floatFromBits(bits: bits), value) : .unknown
+        }
     }
 
     /// The tracked flags value from the most recent modelled compare, keyed so it
