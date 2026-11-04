@@ -7921,3 +7921,53 @@ per-accessor prefix (`10712d8`) bounds one body, not the sum.
   never return (Error.h:123, :128, Concurrency.h:1124, :1131,
   RuntimeErrorReporting.cpp:459), and `FunctionCFG` ends a block only at a
   trap.
+## 2026-11-03: segments at different VM-to-file slides
+
+A user reported an iOS app whose `__DATA` ends in 0x870000 bytes of zero
+fill, with segments after it stored right behind `__DATA`'s file bytes.
+Each later segment then lies 0x870000 further from `__TEXT` in memory than
+in the file. Swift exports trapped with "Negative value is not
+representable" and `objc` ate memory parsing garbage. On this host 55 of
+29,155 arm64 images have such a slid file-backed segment (`__DATA_DIRTY`
+in GameServices, Geometry, libsystem_pthread and simulator CoreGraphics;
+`__TPRO_CONST` in dyld_sim; `__FONT_DATA` in NanoTimeKit; `__LLVM`
+bitcode; Electron's `PROTECTED_MEMORY`).
+
+- **FIXED (validation) — such an image trapped, was called malformed, or
+  was read from the wrong bytes.** Two dependencies treat a VM offset as a
+  file offset. MachOKit reads a segment's fixup chains at
+  `dyld_chained_starts_in_segment.segment_offset`, which dyld defines as
+  the offset in memory (`MachOFile.DyldChainedFixups.pointers(of:in:)` and
+  `pointer(for:in:)`), and matches the chain's slots against file offsets
+  in `resolveBind`/`resolveRebase`. MachOSwiftSection resolves every
+  relative pointer as `file offset + delta` (`MachOContext.advanceAddress`).
+  MachOKitExtensions' `address(forOffset:)` is `__TEXT` vmaddr + file
+  offset. No swiftdc-side wrapper can fix them: the dependency resolves
+  through its own `MachOContext`, and a wrapping reader must read exactly
+  what the reader under it reads. The preflight now declines an image
+  with a slid segment that holds fixup chains or a section Swift or ObjC
+  metadata reaches by relative pointer, with "Unsupported Mach-O layout:
+  <path> — <segment> (VM offset …, file offset …) lies at a different
+  offset in memory than in the file". A slid segment that holds neither
+  (`__LLVM`, `__FONT_DATA`) is read correctly and does not count.
+  Fixtures `slidsegments` (Swift executable, -O) and `slidsegments_c`
+  (C dylib). Before, on `slidsegments`, all seven entry points exited 1 with
+  "Malformed Mach-O: … `__swift5_fieldmd` descriptor 0's type name is a
+  relative pointer to offset -8840232" (the preflight's own file-offset
+  arithmetic, a valid image dyld loads); a variant without the moved
+  `__swift5_fieldmd` trapped all seven in MachOKit
+  (`MachOFile+DyldChainedFixups.swift:176`, `try!` past the end of the
+  file). On GameServices the old `objc` rendered 3 of its 17 classes with
+  no superclass, where `dyld_info -objc` gives `_TtCs12_SwiftObject`; 9 of
+  its 51 `SwiftObject` binds sit in `__DATA_DIRTY`. Now every entry point
+  exits 1 with the layout as the cause. NanoTimeKit and the bitcode
+  `libswiftCore.dylib` still read.
+- **OPEN — a declined layout could still be read.** The decline is whole
+  image, so `disasm` loses even code no fixup touches (libsystem_pthread,
+  whose four `__DATA_DIRTY` fixups are the only slid ones). Lifting it
+  needs the two dependency fixes (the patches are in the 2026-11-03
+  report): MachOKit reading each chain's pages at its segment's file
+  offset and reporting slots by file offset, and MachOSwiftSection
+  advancing a file offset through VM (`fileOffset → vmaddr + delta →
+  fileOffset`). swiftdc's own `address(forOffset:)` uses (20 sites) need
+  the same mapping before the decline can go.

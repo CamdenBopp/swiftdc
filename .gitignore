@@ -16,6 +16,8 @@ Fixtures/Sample/sample.release
 Fixtures/Sample/sample.stripped
 Fixtures/Sample/goProgram
 Fixtures/Sample/goProgram.stripped
+Fixtures/Sample/slidsegments
+Fixtures/Sample/slidsegments_c
 Fixtures/Sample/*.dylib
 Fixtures/Sample/*.dSYM/
 Fixtures/Sample/*.swiftmodule

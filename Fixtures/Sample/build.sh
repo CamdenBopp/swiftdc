@@ -678,6 +678,16 @@ $SWIFTC -parse-as-library -O -enable-library-evolution -emit-library -emit-modul
 $SWIFTC -parse-as-library -O -emit-library -emit-module -module-name ClassParamTwin classparamtwin.swift -o libClassParamTwin.dylib
 $SWIFTC -parse-as-library -O -emit-library -module-name ClassParamClient classparamclient.swift -I . -L . -lClassParamKit -lClassParamTwin -o libClassParamClient.dylib
 
+echo "==> segments at different VM-to-file slides: zero fill ends __DATA, slid segments follow (slidsegments.swift, -O, executable; slidsegments_c.c)"
+$CLANG -arch arm64 -c slidsegments_zerofill.s -o slidsegments_zerofill.o
+$CLANG -arch arm64 -O1 -dynamiclib slidsegments_c.c slidsegments_zerofill.o -o slidsegments_c \
+    -Wl,-rename_section,__DATA,__data,__DATA_DIRTY,__data -Wl,-sectcreate,__FONT_DATA,__blob,slidsegments_zerofill.s
+$SWIFTC -O -module-name SlidSegments slidsegments.swift slidsegments_zerofill.o -o slidsegments \
+    -Xlinker -rename_section -Xlinker __DATA -Xlinker __data -Xlinker __DATA_DIRTY -Xlinker __data \
+    -Xlinker -rename_section -Xlinker __DATA -Xlinker __objc_selrefs -Xlinker __DATA_DIRTY -Xlinker __objc_selrefs \
+    -Xlinker -rename_section -Xlinker __DATA_CONST -Xlinker __got -Xlinker __DATA_DIRTY -Xlinker __got \
+    -Xlinker -rename_section -Xlinker __TEXT -Xlinker __swift5_fieldmd -Xlinker __SWIFT_FIELDS -Xlinker __swift5_fieldmd
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release

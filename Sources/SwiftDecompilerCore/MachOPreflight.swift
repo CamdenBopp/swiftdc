@@ -198,6 +198,21 @@ public enum MachOPreflight {
             )
         }
 
+        // A layout the Mach-O readers underneath would misread: decline it by
+        // its own cause before any of them reads it (`misreadSegments`).
+        let misread = misreadSegments(prefix: prefix, image: image)
+        if !misread.isEmpty {
+            let described = misread.map {
+                "\($0.name) (VM offset 0x\(String($0.vmOffset, radix: 16)), file offset 0x\(String($0.fileOffset, radix: 16)))"
+            }.joined(separator: ", ")
+            throw BinaryLoadError(
+                "Unsupported Mach-O layout: \(path) — \(described) "
+                + "\(misread.count == 1 ? "lies" : "lie") at a different offset in memory than in the file, "
+                + "and \(misread.count == 1 ? "holds" : "hold") fixups or metadata. The Mach-O readers swiftdc uses "
+                + "resolve those by file offset and would read unrelated bytes, so the image is declined rather than misread."
+            )
+        }
+
         let objc = sectionExtents(named: ["__objc_methlist", "__objc_selrefs"], prefix: prefix)
         if let methlist = objc["__objc_methlist"], let selrefs = objc["__objc_selrefs"],
            methlist.size > 0, methlist.offset <= fileSize, methlist.size <= fileSize - methlist.offset,
@@ -1090,6 +1105,122 @@ public enum MachOPreflight {
             }
         }
         return entries
+    }
+
+    /// One `LC_SEGMENT_64` of a thin little-endian image, with the names of
+    /// its sections, in command order.
+    struct SegmentEntry: Equatable {
+        let name: String
+        let vmaddr: UInt64
+        let vmsize: UInt64
+        let fileoff: UInt64
+        let filesize: UInt64
+        let sections: [String]
+    }
+
+    /// Every segment command, in command order, or nil when a load command
+    /// cannot be read (then no segment can be said to be absent).
+    static func segmentTable(prefix: Data) -> [SegmentEntry]? {
+        guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE,
+              let ncmds = prefix.u32(at: 16), let sizeofcmds = prefix.u32(at: 20)
+        else { return nil }
+        let limit = min(Layout.machHeader64 + Int(sizeofcmds), prefix.count)
+        var cursor = Layout.machHeader64
+        var segments: [SegmentEntry] = []
+        for _ in 0..<Int(ncmds) {
+            guard cursor + Layout.minLoadCommand <= limit,
+                  let cmd = prefix.u32(at: cursor), let cmdsize = prefix.u32(at: cursor + 4),
+                  cmdsize >= UInt32(Layout.minLoadCommand)
+            else { return nil }
+            if cmd == Command.segment64 {
+                guard cursor + 72 <= limit,
+                      let vmaddr = prefix.u64(at: cursor + 24), let vmsize = prefix.u64(at: cursor + 32),
+                      let fileoff = prefix.u64(at: cursor + 40), let filesize = prefix.u64(at: cursor + 48),
+                      let nsects = prefix.u32(at: cursor + 64)
+                else { return nil }
+                var sections: [String] = []
+                for section in 0..<Int(nsects) {
+                    let base = cursor + 72 + section * 80
+                    guard base + 80 <= limit else { return nil }
+                    let raw = prefix[(prefix.startIndex + base)..<(prefix.startIndex + base + 16)]
+                    sections.append(String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self))
+                }
+                segments.append(SegmentEntry(
+                    name: segmentName(at: cursor, prefix: prefix) ?? "", vmaddr: vmaddr, vmsize: vmsize,
+                    fileoff: fileoff, filesize: filesize, sections: sections
+                ))
+            }
+            cursor += Int(cmdsize)
+        }
+        return segments
+    }
+
+    /// The segments whose bytes lie at a different offset from `__TEXT` in
+    /// memory than in the file, and which the Mach-O readers swiftdc depends
+    /// on would read at the file offset of the memory one.
+    ///
+    /// Segments normally keep one slide: each one's file offset from `__TEXT`
+    /// equals its VM offset. Zero fill breaks that for every segment after
+    /// it, because it takes memory and no file bytes: a user reported an iOS
+    /// app whose `__DATA` ends in 0x870000 bytes of it, with segments after
+    /// it. The dependencies conflate the two offsets in two places:
+    ///
+    /// - MachOKit reads a segment's fixup chains at
+    ///   `dyld_chained_starts_in_segment.segment_offset`, which dyld defines
+    ///   as the segment's offset in memory, as if it were a file offset
+    ///   (`MachOFile.DyldChainedFixups.pointers(of:in:)`). Every bind and
+    ///   rebase lookup walks those chains: a `try!` traps when the offset is
+    ///   past the file, and otherwise the chains are decoded out of whatever
+    ///   bytes lie there.
+    /// - MachOSwiftSection resolves a relative pointer as `file offset + delta`
+    ///   (`MachOContext.advanceAddress`), but the delta is a VM displacement,
+    ///   so a pointer into or out of such a segment leads to the wrong bytes.
+    ///
+    /// So a segment counts when it is slid and holds either fixup chains or
+    /// a section Swift or Objective-C metadata reaches by relative pointer.
+    /// A slid segment that holds neither (bitcode in `__LLVM`, font blobs in
+    /// NanoTimeKit's `__FONT_DATA`, measured over 29,155 arm64 images on this
+    /// host: 55 have a slid file-backed segment) is read correctly, because
+    /// code reaches it by address, and does not count.
+    static func misreadSegments(
+        prefix: Data, image: ImageReader
+    ) -> [(name: String, vmOffset: UInt64, fileOffset: UInt64)] {
+        guard let segments = segmentTable(prefix: prefix),
+              let text = segments.first(where: { $0.name == "__TEXT" })
+        else { return [] }
+        // Which segments the chained fixups give chains: a nonzero
+        // `seg_info_offset[i]` in `dyld_chained_starts_in_image`, indexed in
+        // segment-command order.
+        var chained: Set<Int> = []
+        if let fixups = chainedFixups(prefix: prefix),
+           let header = image.read(offset: fixups.dataoff, count: 8),
+           let startsOffset = header.u32(at: 4),
+           let count = image.read(offset: fixups.dataoff + Int(startsOffset), count: 4)?.u32(at: 0),
+           Int(count) <= segments.count,
+           let starts = image.read(offset: fixups.dataoff + Int(startsOffset), count: 4 + 4 * Int(count)) {
+            for index in 0..<Int(count) where (starts.u32(at: 4 + 4 * index) ?? 0) != 0 {
+                chained.insert(index)
+            }
+        }
+        let hasMetadata = segments.contains { segment in
+            segment.sections.contains { $0.hasPrefix("__swift") || $0.hasPrefix("__objc_") }
+        }
+        func reachedByMetadata(_ section: String) -> Bool {
+            section.hasPrefix("__swift") || section.hasPrefix("__objc_")
+                || (hasMetadata && ["__got", "__auth_got", "__data", "__const", "__constg_swiftt"].contains(section))
+        }
+        var found: [(name: String, vmOffset: UInt64, fileOffset: UInt64)] = []
+        for (index, segment) in segments.enumerated() where segment.filesize > 0 {
+            // Wrapping: a segment below `__TEXT` (malformed, or in a file
+            // whose `__TEXT` is not first) still compares by its offsets.
+            let vmOffset = segment.vmaddr &- text.vmaddr
+            let fileOffset = segment.fileoff &- text.fileoff
+            guard vmOffset != fileOffset,
+                  chained.contains(index) || segment.sections.contains(where: reachedByMetadata)
+            else { continue }
+            found.append((segment.name, vmOffset, fileOffset))
+        }
+        return found
     }
 
     /// The `LC_DYLD_CHAINED_FIXUPS` payload of a thin little-endian loadable
