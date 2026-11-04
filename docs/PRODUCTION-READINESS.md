@@ -8540,3 +8540,8 @@ Commit messages on dev stay as they are; these are the true records.
   `mem128[&result] = ((arg0, arg0) + (1, 2))` is now `= q0`. That `add.2d`
   was right by luck of lane width: the same path carried across lanes for
   `.8b`.
+- **FIXED (completeness): an explicit Void parameter hid what follows it.**
+  `afterVoid(_: (), _ tail: Int)` takes `tail` in x0 and rendered `return ?`;
+  it is `return (arg1 + 1)`, with the same for the five functions in
+  `Fixtures/Sample/libVoidArguments.dylib`. `()` and `Swift.Void` now take no
+  register and keep their source slot.

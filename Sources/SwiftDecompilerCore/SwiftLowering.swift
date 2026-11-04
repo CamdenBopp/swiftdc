@@ -173,6 +173,11 @@ extension SwiftLowering {
         of type: String, fieldMaps: [String: FieldMap],
         enumCaseIndex: EnumCaseIndex = EnumCaseIndex(), classTypeIndex: ClassTypeIndex = ClassTypeIndex()
     ) -> (integers: Int, floats: Int)? {
+        // An explicit Void parameter is still a source argument, but the
+        // empty tuple has no payload in either register bank. Keep its opaque
+        // slot while placing later arguments; dropping the slot would change
+        // their source indices. This does not classify tuples containing Void.
+        if type == "()" || type == "Swift.Void" { return (0, 0) }
         // An empty struct is laid out, complete, in zero bytes: no register.
         if !classTypeIndex.isClass(type), let map = fieldMaps[type], map.instanceSize == 0,
            map.trustLimitReason == nil, map.fields.isEmpty {
