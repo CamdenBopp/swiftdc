@@ -1,5 +1,13 @@
 import Demangling
 
+/// A proven substitution, an ordinary unavailable result, or the specific
+/// dropped-index ambiguity that must also block outgoing argument guesses.
+enum SpecializedSignatureProof: Equatable, Sendable {
+    case unavailable
+    case signature(String)
+    case unprovenDroppedTypedError
+}
+
 /// The signature a generic specialization is called with.
 ///
 /// The demangler prints a specialization as the unspecialized declaration,
@@ -24,13 +32,19 @@ import Demangling
 ///   itself (no member type such as `A.Element`, no nested generic type).
 extension DisassembledFunction {
     static func specializedSignature(symbol: String, printedName: String) -> String? {
+        guard case .signature(let signature) = specializedSignatureProof(symbol: symbol, printedName: printedName)
+        else { return nil }
+        return signature
+    }
+
+    static func specializedSignatureProof(symbol: String, printedName: String) -> SpecializedSignatureProof {
         var mangled = Substring(symbol)
         if mangled.hasPrefix("_$s") { mangled = mangled.dropFirst() }
         guard mangled.hasPrefix("$s"), let global = try? demangleAsNode(String(mangled)),
               global.kind == .global, global.print(using: .default) == printedName
-        else { return nil }
+        else { return .unavailable }
         let parts = Array(global.children)
-        guard parts.count == 2, parts[0].kind == .genericSpecialization else { return nil }
+        guard parts.count == 2, parts[0].kind == .genericSpecialization else { return .unavailable }
 
         var substitutions: [Node] = []
         // A `Tt` specialization drops arguments the substitution made
@@ -44,13 +58,13 @@ extension DisassembledFunction {
             case .isSerialized, .specializationPassID:
                 continue
             case .droppedArgument:
-                guard let index = child.index else { return nil }
+                guard let index = child.index else { return .unavailable }
                 dropped.insert(Int(index))
             case .genericSpecializationParam:
-                guard child.children.count == 1, let type = child.children.first, type.kind == .type else { return nil }
+                guard child.children.count == 1, let type = child.children.first, type.kind == .type else { return .unavailable }
                 substitutions.append(type)
             default:
-                return nil
+                return .unavailable
             }
         }
 
@@ -62,26 +76,30 @@ extension DisassembledFunction {
               generic.children.count == 2,
               let signature = generic.children.first, signature.kind == .dependentGenericSignature,
               let functionType = unwrappingType(generic.children[1]), functionType.kind == .functionType
-        else { return nil }
+        else { return .unavailable }
 
         var parameterCount: UInt64?
         for child in signature.children {
             switch child.kind {
             case .dependentGenericParamCount:
-                guard parameterCount == nil, let count = child.index else { return nil }
+                guard parameterCount == nil, let count = child.index else { return .unavailable }
                 parameterCount = count
             case .dependentGenericConformanceRequirement, .dependentGenericLayoutRequirement,
                  .dependentGenericInverseConformanceRequirement:
                 continue
             default:
-                return nil
+                return .unavailable
             }
         }
         guard let parameterCount, parameterCount == UInt64(substitutions.count),
               var substituted = substituting(functionType, with: substitutions)
-        else { return nil }
+        else { return .unavailable }
         if !dropped.isEmpty {
-            guard let pruned = droppingArguments(dropped, from: substituted) else { return nil }
+            // A typed error can add an indirect SIL result before the formal
+            // arguments. Its resilience is not proven by this symbol, so the
+            // dropped SIL index cannot safely be treated as a formal index.
+            guard !functionType.children.contains(where: { $0.kind == .typedThrowsAnnotation }) else { return .unprovenDroppedTypedError }
+            guard let pruned = droppingArguments(dropped, from: substituted) else { return .unavailable }
             substituted = pruned
         }
 
@@ -90,7 +108,7 @@ extension DisassembledFunction {
             children: Array(function.children.dropLast()) + [Node.create(kind: .type, child: substituted)]
         )
         let entity = isStatic ? Node.create(kind: .static, child: specialized) : specialized
-        return Node.create(kind: .global, child: entity).print(using: .default)
+        return .signature(Node.create(kind: .global, child: entity).print(using: .default))
     }
 
     /// A function type without the arguments at `indices`, or nil when its

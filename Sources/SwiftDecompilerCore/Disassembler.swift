@@ -3619,6 +3619,14 @@ public struct Disassembler: Sendable {
             return DisassembledFunction.specializedSignature(symbol: symbol, printedName: printedName)
         }
 
+        /// Preserve this reason separately from an ordinary nil: a fallback
+        /// must not reinterpret a declined SIL index as positional arguments.
+        func specializedSignatureProof(at target: UInt64, printedName: String) -> SpecializedSignatureProof {
+            guard printedName.hasPrefix("generic specialization <"), let symbol = specializationSymbols[target]
+            else { return .unavailable }
+            return DisassembledFunction.specializedSignatureProof(symbol: symbol, printedName: printedName)
+        }
+
         /// The requirement a witness table of the protocol whose descriptor
         /// is at `descriptor` holds in word `word`: its printed signature
         /// (`M.P.scaled(by: Swift.Int) -> Swift.Int`, as its method
@@ -6342,6 +6350,7 @@ public struct Disassembler: Sendable {
             }
         }
         var callTargets: [UInt64: UInt64] = [:]
+        var unprovenTypedErrorSites = Set<UInt64>()
         /// The name a call's arguments are laid out by: for a generic
         /// specialization its substituted signature, which says what the
         /// printed `A` is. `bump<Double>(d)` passes d in d0, and read from its
@@ -6375,7 +6384,14 @@ public struct Disassembler: Sendable {
             }
         }
         for insn in function.instructions where insn.controlFlow == .call || insn.controlFlow == .branch {
-            guard let target = insn.branchTarget, registerSummaries[target] != nil else { continue }
+            guard let target = insn.branchTarget else { continue }
+            // This proof is about the symbol, independent of whether a body
+            // summary or any traced argument values are available.
+            if let callee = DisassembledFunction.calleeName(of: insn),
+               case .unprovenDroppedTypedError = resolver.specializedSignatureProof(at: target, printedName: callee) {
+                unprovenTypedErrorSites.insert(insn.address)
+            }
+            guard registerSummaries[target] != nil else { continue }
             // A tail branch passes its arguments the same way a call does.
             callTargets[insn.address] = target
             if insn.controlFlow == .call, let clobbered = registerSummaries[target]?.clobberedCalleeSaved,
@@ -6571,7 +6587,8 @@ public struct Disassembler: Sendable {
             // So does an in-image callee whose body itself reads an
             // argument register: `readsFirst(?)`, not `readsFirst()`, when
             // its argument was loaded through an unknown pointer.
-            guard DisassembledFunction.knownCArity(of: callee) != nil
+            guard unprovenTypedErrorSites.contains(insn.address)
+                    || DisassembledFunction.knownCArity(of: callee) != nil
                     || Self.isStringInstanceGetter(callee)
                     || Self.swiftCallArgumentLayout(
                         callee: layoutName(at: insn.address, callee: callee),
@@ -6933,6 +6950,15 @@ public struct Disassembler: Sendable {
                     "strategy": .label(strategy), "callee": .name(calleeByAddress[address] ?? "?"),
                     "count": .int(argumentsByAddress[address]?.count ?? 0),
                 ])
+            }
+            // A dropped typed-error layout has no proven argument order or
+            // arity. Do not retry its printed declaration, body reads or raw
+            // register positions; use the existing explicit unknown tail.
+            if unprovenTypedErrorSites.contains(address) {
+                argumentsByAddress[address] = []
+                unprovenVariadicSites.insert(address)
+                strategy = "unproven-arity"
+                continue
             }
             // `swift_willThrow(SWIFT_CONTEXT void *, SWIFT_ERROR_RESULT
             // SwiftError **)` (swift/include/swift/Runtime/Error.h:71) takes

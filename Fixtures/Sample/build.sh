@@ -301,6 +301,12 @@ $SWIFTC -parse-as-library -O -emit-library -module-name FieldAliases field_alias
 echo "==> calls to generic specializations, laid out from their substitutions (specializations.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name Specializations specializations.swift -o libSpecializations.dylib
 
+echo "==> a dropped metatype after a resilient typed-error SIL result (resilienttypederror*.swift, -O/-Osize, macOS 15)"
+resilient_spec_sdk="$(xcrun --sdk macosx --show-sdk-path)"
+$SWIFTC -sdk "$resilient_spec_sdk" -target arm64-apple-macosx15.0 -parse-as-library -O -enable-library-evolution -emit-module -emit-library -module-name RemoteErrors resilienttypederror_errors.swift -emit-module-path RemoteErrors.swiftmodule -Xlinker -install_name -Xlinker @rpath/libRemoteErrors.dylib -o libRemoteErrors.dylib
+$SWIFTC -sdk "$resilient_spec_sdk" -target arm64-apple-macosx15.0 -parse-as-library -O -emit-library -module-name RemoteClient resilienttypederror.swift -I . -L . -lRemoteErrors -Xlinker -rpath -Xlinker @loader_path -o libResilientTypedError.dylib
+$SWIFTC -sdk "$resilient_spec_sdk" -target arm64-apple-macosx15.0 -parse-as-library -Osize -emit-library -module-name RemoteClient resilienttypederror.swift -I . -L . -lRemoteErrors -Xlinker -rpath -Xlinker @loader_path -o libResilientTypedError.Osize.dylib
+
 echo "==> conditions comparing against a literal holding a quote (quoted_conditions.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name QuotedConditions quoted_conditions.swift -o libQuotedConditions.dylib
 
