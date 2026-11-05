@@ -9333,3 +9333,54 @@ Commit messages on dev stay as they are; these are the true records.
   **22 focused tests** pass; rebuilt enforcing **1,353 tests in 21 suites**
   pass. Release uses the optimized toolchain build without DEBUG freshness
   comparisons.
+
+## 2026-11-05: async-only block/run views did not establish a cost win
+
+- **DEAD END — replace async-index instruction arrays with a local CFG
+  block/run/path view.** The prototype traversed one immutable body through
+  included block ids and ordered run-id paths, preserving noncontiguous
+  trap guards, entry counts, successor order, traversal bounds and isolated
+  path state. Three alternating release pairs per app, compared with the
+  published `cbe64a0` release, gave these whole-image structured medians:
+
+  - Clarc: **+0.0131% retired instructions**, **+0.5461% peak footprint**.
+    Instructions: 450,927,016,089–451,015,684,738
+    baseline; 451,010,810,277–451,241,678,947 prototype.
+    Footprint: 116,097,768–117,015,272 bytes
+    baseline; 117,441,256–117,850,832 prototype.
+  - GoodLinks: **+0.0035% retired instructions**, **-0.1936% peak footprint**.
+    Instructions: 1,993,375,570,040–1,993,962,204,309
+    baseline; 1,991,868,975,491–1,993,874,947,739 prototype.
+    Footprint: 296,829,864–320,635,888 bytes
+    baseline; 283,886,504–312,640,424 prototype.
+
+  No CPU improvement is established. Peak footprint is mixed, and GoodLinks'
+  ranges overlap substantially. The first GoodLinks pair looked much better
+  than the complete three-pair result; it is not a supported memory-saving
+  claim. Source removal of instruction copies does not quantify allocated
+  bytes or establish a lower whole-run working set.
+
+  Coverage was checked against independent binary evidence: all table targets
+  validated against `__text`, alignment and `LC_FUNCTION_STARTS`, covering at
+  least **485 Clarc** and **4,512 GoodLinks** distinct candidate funclets.
+  These are not absent-feature measurements. All twelve runs returned
+  nonempty, byte-identical output with positive cost counts and no guard
+  stop. The prototype was **archived and reverted without landing code**.
+  Do not retry this local wrapper as a performance optimization without new
+  evidence; shared frame-memory IR is the next priority.
+
+  Prototype-only validation: 15 independently compiled variants failed their
+  intended single-test assertions; restored 52 tests/5 suites and a full
+  enforcing 1,361 tests/22 suites passed. Fresh 58,515 / 12,644 / 448 semantics
+  exports matched previously proved bytes; 96 current-binary subprocess
+  checks passed. The native authored guard returned 7 with exact assembled
+  bytes; LLVM corroborated the diamond/split-path words. These counts describe
+  the unshipped experiment, not added production tests. All producer source,
+  tests, standalone binaries and raw measurement/proof artifacts were retained
+  in the local validation archive.
+
+  Measurement command: three alternating pairs of
+  `swiftdc disasm <app> --structured --arch arm64`, using standalone releases
+  and no concurrent compiler/test jobs. The production shared-CFG foundation
+  from `43af592` remains intact; internal Structurer views and the common
+  frame-memory model remain open.

@@ -193,6 +193,14 @@ fix, measured and explained like any other.
       Final topology retention does not establish allocation-volume savings
       or complete the shared frame memory model in step 4 below.*
 
+      A local async-only block/run/path view prototype was measured and
+      reverted on 2026-11-05: three alternating pairs on Clarc and GoodLinks
+      establish no CPU improvement and mixed peak footprint despite validated
+      async coverage. See the DEAD END record in PRODUCTION-READINESS.md. Do
+      not repeat that optimization without new evidence; prioritize the shared
+      frame memory model next. A future shared-body IR can revisit views when
+      multiple consumers need the same ownership and value identities.
+
 3. **Typed locations in the tracer.** `[Location: AbstractValue]` instead of
    string keys. Pure refactor; measure the speed. *Done for `ValueTracer`
    (2026-10-15), ahead of steps 1 and 2 because string keys were about half
