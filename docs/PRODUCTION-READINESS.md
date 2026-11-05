@@ -8658,6 +8658,16 @@ Commit messages on dev stay as they are; these are the true records.
   counts show no meaningful speed change. Whole-image `--perf` is a separate
   integration-gate check. The frozen release's entire 93-file source/package
   set was independently compared byte-for-byte with the tested tree.
+- **GATED (`0d4df7b`):** the enforcing suite passed 1,288 tests in 18 suites;
+  all 1,304 render/workload cost pairs were present, +0.17% instructions and
+  +0.89% summed footprint, without an override. The large SDK radius includes
+  15 added `let r0 =` prefixes on existing nonvoid initializer calls in
+  SwiftSyntax (seven FunctionCallExpr overloads and eight other syntax families).
+  Removing only those prefixes restores exact baseline bytes. Independent
+  LLVM listings corroborate each constructor call and its following Q-register
+  result copy; partial Q reload provenance retains the binding while unknown
+  lanes and the return stay unclaimed. No target, argument, value, store or
+  return changed. The other three large SDK outputs are byte-identical.
 - **OPEN (soundness): symbolic integer words still lack FP provenance.**
   An authored `UInt64 -> Double` reduction, `dup v0.2d, x0; ret`, renders
   `return arg0`; native execution reads IEEE bits and returns 1.0, 2.0 and
@@ -8665,3 +8675,78 @@ Commit messages on dev stay as they are; these are the true records.
   0xbff0000000000000. This preexisting ambiguity between raw words and
   semantic FP arguments is not closed by the selected-constant repair.
   The separate d8-d15 callee-summary OPEN item also remains.
+
+## 2026-11-05: reuse Capstone instruction storage
+
+- **FIXED (memory): allocate one C instruction record per engine.** The
+  previous 4,096-record batches repeatedly allocated a 256-byte `cs_insn`
+  and 2,216-byte `cs_detail` per instruction. `CapstoneEngine` now uses
+  `cs_malloc` once and `cs_disasm_iter`, copies every retained field into
+  owned Swift values before reuse, and frees the record before its handle.
+  Failed slots are never published and still advance exactly four bytes.
+  Opening the detail-enabled cache is checked before initialization succeeds.
+  The dependency and architecture configuration are unchanged: the pinned
+  Ccapstone 6.0.101 already enables only AArch64. Its iterator resets alias
+  and illegal-instruction state between attempts.
+- **MEASURED:** process-local Capstone allocation hooks over the same
+  663,809 decoded SwiftSyntax instructions recorded 2,268,814,730 cumulative
+  requested bytes for batches versus 641,130 for iteration (3.418 GB versus
+  0.966 MB per million instructions). Peak counted live bytes fell from
+  10,533,893 to 2,478. These counters exclude input I/O, handle setup and
+  retained Swift IR; requested bytes are not live memory. Small formatter
+  allocations remain: this is not a zero-allocation decoder claim.
+  The corresponding Reconstruction text records 36,692,913 versus 10,129
+  requested bytes across 10,869 instructions. Separate raw C measurements
+  disable hooks and keep the same normalized metadata consumer: retired
+  instructions fall 6.52% and 6.27%, respectively.
+- Three alternating release CLI pairs keep stdout byte-identical:
+  `swiftdc xrefs <toolchain>/libSwiftSyntax.dylib --unreferenced` moves from
+  median 518.848G to 516.910G instructions (-0.37%) and 334.497 MB to
+  305.350 MB peak footprint (-8.71%). Maximum RSS moves from 338.264 MB to
+  347.374 MB (+2.69%); RSS and footprint measure different things.
+  `swiftdc disasm Fixtures/Sample/libReconstruction.resilient.dylib
+  --structured` moves from 6.499G to 6.487G instructions (-0.18%) and
+  19.432 MB to 18.891 MB footprint (-2.78%). These are medians, not a
+  per-run guarantee. Judge CPU by retired instructions; wall time varied
+  with other workloads. The roughly 10 MB former C batch was only one
+  transient owner; whole-image Swift arrays, operands and strings remain.
+- **VERIFIED:** the batch/iterator C comparison covers 337
+  physical text sections, 97,866,908 bytes, 24,464,411 decoded instructions
+  and 2,316 skipped slots with zero normalized field-digest mismatches.
+  It includes intermediate and deliberately unsupported raw inputs, not a
+  claim that every text slot executes. The Swift differential test compares
+  all retained fields and exact floating bits across aliases, invalid words,
+  vectors, shifts/extensions, indexed memory, PAC/SVE/SME, sliced data, tails,
+  address wrap, text settings and later engine reuse. Independent rebuilt
+  mutations fail: stopping at an invalid slot (31 issues in 43 tests), and
+  discarding alias metadata (108 issues in the safe differential test).
+  Fixed source rebuilt and all 43 focused tests passed. The full enforcing
+  suite passed 1,289 tests in 18 suites (429.049 s). All 317 authored
+  Mach-Os plus eight SDK inputs are byte-identical in all four views, with
+  complete counts for all 1,300 pairs: -0.64% instructions, -6.28% summed
+  footprints, within the default budgets. The same five deliberately
+  unsupported inputs retain exit 1 in each view; all other 320 retain exit 0.
+  The four large SDK workloads are byte-identical. Five installed-app pseudo
+  comparisons are still pending before the push gate.
+- **EVALUATED / OPEN: alternative decoder adapters.** Pinned fARM64
+  `3cf05d4d` and disarm64 `50e6f63d` cores recorded no Rust allocator calls
+  across the same 24.47 million raw slots. Their coverage agrees outside
+  two Go text sections; all 16 retained disagreement/illegal rows are inline
+  build-ID data, reserved encodings or undefined operand options. This
+  establishes neither executable-code superiority nor semantic equivalence.
+  fARM64's current C wrapper copies input and boxes instructions, and does
+  not expose A64 analysis through that ABI; a borrowed-input, caller-owned
+  shim is still needed. Partial vector writes also need lane-aware handling.
+  disarm64 returns bits and static definitions; typed runtime operands,
+  register effects, NZCV and alias normalization still need an adapter.
+  Their compact core records are not comparable to retained Swift IR.
+  Capstone DIET is incompatible without replacement metadata: the pinned
+  mapping source omits operand access and update-flags inference in that mode.
+- **PROFILED / OPEN:** separate five-second cooperative sample windows find
+  signature splitting at 28.6% in a late Reconstruction window, Capstone at
+  31.2% early, and callee summaries at 39.9% mid-run. These are phase samples,
+  not additive whole-run CPU shares. Investigate repeated signature parsing
+  and callee-summary scans next, with owner/lifetime evidence before compacting
+  retained IR. Structurer workers reserve 256 MiB stacks; summed virtual stack
+  reservations are not resident RAM. Reusing workers would need to preserve
+  probe context, reentrancy and stack-depth safety.

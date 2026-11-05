@@ -34,26 +34,35 @@ public struct DecodedInstruction: Sendable {
 /// objdump text — yields each instruction's control-flow class and branch
 /// target, the foundation for basic-block / CFG recovery.
 final class CapstoneEngine {
-    private var handle: csh = 0
-    private let opened: Bool
+    private var handle: csh
+    /// One C record, overwritten by the iterator. Every result is copied to
+    /// owned Swift values before the next decode or a later call can reuse it.
+    private let instruction: UnsafeMutablePointer<cs_insn>
 
     init?() {
-        opened = cs_open(CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN, &handle) == CS_ERR_OK
-        guard opened else { return nil }
+        var openedHandle: csh = 0
+        guard cs_open(CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN, &openedHandle) == CS_ERR_OK else { return nil }
         // Detail mode is required for cs_insn_group (control-flow groups).
-        _ = cs_option(handle, CS_OPT_DETAIL, UInt(CS_OPT_ON.rawValue))
+        guard cs_option(openedHandle, CS_OPT_DETAIL, UInt(CS_OPT_ON.rawValue)) == CS_ERR_OK,
+              let cache = cs_malloc(openedHandle) else {
+            cs_close(&openedHandle)
+            return nil
+        }
+        handle = openedHandle
+        instruction = cache
     }
 
     deinit {
-        if opened { cs_close(&handle) }
+        cs_free(instruction, 1)
+        cs_close(&handle)
     }
 
     /// Disassemble `code` as ARM64 starting at virtual address `address`.
     /// Decode `code` in full, resynchronising past bytes Capstone cannot decode.
     ///
-    /// `cs_disasm` stops at the FIRST undecodable instruction and reports how
-    /// many it managed — it does not skip and continue. A single call therefore
-    /// truncates the moment it meets anything that is not a valid instruction,
+    /// Capstone stops at an undecodable instruction — it does not skip and
+    /// continue. Stopping iteration there would truncate the moment it meets
+    /// anything that is not a valid instruction,
     /// and `__text` is full of such things: inline data, alignment padding,
     /// jump tables, and arm64e forms this build of Capstone may not know.
     ///
@@ -71,31 +80,22 @@ final class CapstoneEngine {
     /// that takes its text from elsewhere (the objdump path): two strings per
     /// instruction, most too long for Swift's inline form.
     func disassemble(_ code: Data, address: UInt64, includeText: Bool = true) -> [DecodedInstruction] {
-        guard opened, !code.isEmpty else { return [] }
+        guard !code.isEmpty else { return [] }
         var results: [DecodedInstruction] = []
 
         code.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
             var offset = 0
             while offset < code.count {
-                var insns: UnsafeMutablePointer<cs_insn>?
-                let count = cs_disasm(
-                    handle, base + offset, code.count - offset, address &+ UInt64(offset),
-                    Self.batchSize, &insns
-                )
-                if count > 0, let insns {
-                    append(insns, count: count, includeText: includeText, into: &results)
-                    // Advance by what actually decoded, then step over the byte
-                    // that stalled it.
-                    let consumed = Int((insns + (count - 1)).pointee.address &- (address &+ UInt64(offset)))
-                        + Int((insns + (count - 1)).pointee.size)
-                    cs_free(insns, count)
-                    offset += max(consumed, Self.instructionSize)
+                var next: UnsafePointer<UInt8>? = base + offset
+                var remaining = code.count - offset
+                var pc = address &+ UInt64(offset)
+                if cs_disasm_iter(handle, &next, &remaining, &pc, instruction) {
+                    append(instruction, count: 1, includeText: includeText, into: &results)
+                    offset += max(Int(instruction.pointee.size), Self.instructionSize)
                 } else {
-                    if let insns { cs_free(insns, 0) }
-                }
-                // Undecodable slot (or a stall): skip one instruction and resume.
-                if offset < code.count, count == 0 {
+                    // A failed decode may leave the C cache partially changed.
+                    // Never publish it; resume at the next fixed-width slot.
                     Probe.record(.decodeSkippedSlot, at: address &+ UInt64(offset))
                     offset += Self.instructionSize
                 }
@@ -106,14 +106,6 @@ final class CapstoneEngine {
 
     /// ARM64's fixed instruction width — the resynchronisation stride.
     private static let instructionSize = 4
-
-    /// Instructions per `cs_disasm` call. A count of 0 means "until the first
-    /// stall", and Capstone holds a `cs_insn` plus a ~2.5 KB `cs_detail` for
-    /// each until the call returns: `heap` on Fiery Feeds `xrefs` at 6.4 GB
-    /// found 1,114,404 such 2.5 KB blocks (2.8 GB) mid-decode, and the run
-    /// peaked at an 11.8 GB footprint. A full batch is not a stall; the loop
-    /// resumes right after it.
-    static let batchSize = 4096
 
     private func append(
         _ insns: UnsafeMutablePointer<cs_insn>,
