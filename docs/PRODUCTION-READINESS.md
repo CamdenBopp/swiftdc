@@ -8968,3 +8968,65 @@ Commit messages on dev stay as they are; these are the true records.
   indirect-result address name; its store, both values and other instructions
   remain. The exact machine store and filtered JSON were read independently;
   no private bodies or reports enter the repository.
+
+- **OFFICIAL GATE (`bf8ccc1`):** the enforcing suite independently passed
+  1,313 tests in 18 suites (342.005 s). All 1,316 cost pairs have counts,
+  with no override or budget violation: instructions -5.61% and summed peak
+  footprints +0.20% against `1727aa5`. The actual gate release reproduces
+  every reviewed corpus, large-SDK and five-app output before publication.
+
+
+## 2026-11-05: preserve a declined typed-error specialization layout
+
+- **FIXED (`55b2248`, soundness): a dropped SIL index could be treated as a
+  formal argument index without proof.** In the authored two-module
+  `RemoteClient`/`RemoteErrors` fixture, library evolution makes the typed
+  error an indirect SIL result. The specialized `remote` actually takes
+  `(Double, Int)`, as fresh SIL and LLVM IR confirm. The old signature reader
+  reports a complete layout with the wrong formal indexing. Declining only
+  that reader allows outgoing recovery to guess a one-argument call at -O
+  or consume an outlined-helper result at -Osize. The published baseline
+  renders two unknown values, so this does not claim a previously known
+  wrong outgoing value was corrected.
+- Carry a specific unproven-layout reason through direct calls and tail
+  branches, independent of body-summary availability. When no tracer
+  snapshot survives, create the enrichment site anyway. The reason prevents
+  signature, body-read and positional fallbacks, rendering explicit unknown
+  arity `remote(…)`. Ordinary unavailable signatures and typed errors without
+  dropped arguments retain their behavior. Same-module small/large error
+  controls use direct SIL error results: typed throws alone does not prove
+  the SIL-to-formal offset, and exact argument recovery remains unproved.
+- **VERIFIED:** native probes pass 24 cross-module checks across fresh -O
+  and -Osize products and preserved -Onone products, plus eight fresh
+  same-module controls. Independent LC_FUNCTION_STARTS and native text-address
+  sets agree: the error module has 11 functions, clients have 12 at -O and
+  27 at -Osize; the -Onone comparison retains 14. All four complete views
+  at all three optimization levels retain every other body, binding,
+  entry, target and return fact. -Onone is byte-identical; two -O calls and
+  one -Osize call change from `(?, ?)` to `(…)`.
+- Five focused tests pass, including the existing generic-substitution
+  control. The original baseline fails 11 assertions and the reader-only
+  draft fails 20. Six independently rebuilt mutants fail: reader veto
+  (11), erased reason (20), body-summary gate (4), forced tracer site (4),
+  outgoing-fallback bypass (20), and overbroad no-drop veto (7). Restored
+  source rebuilt and all five pass. The full enforcing suite passes 1,317
+  tests in 18 suites (294.419 s). All 93 production/package hashes match
+  the frozen release. Fresh integer, condition and targeted-W exports
+  (58,515 / 12,644 / 448 records) match their prior verified input/export
+  bytes exactly; the prior solver proofs are reused without a solver rerun.
+- **REVIEWED / MEASURED:** 323 authored Mach-Os plus eight SDK inputs in
+  all four views change only the two new client binaries, at those three
+  calls. JSON changes only the matching annotation, arguments and statement;
+  listing machine text is exact. All four large SDK output hashes and all
+  five app pseudo outputs match. The seven CLI entry points were checked;
+  native metadata justifies empty enum-layout and ObjC results, and a
+  nonempty struct/class control retains 28 layouts. All 1,328 cost pairs
+  have positive counts and meet default budgets without override:
+  4,920.906G to 4,918.405G instructions (-0.05%) and -0.29% summed peak
+  footprints. These measures establish compatibility, not a speed or
+  allocation improvement.
+
+  Reproduce: `Tools/fixtures.sh`; `swiftdc disasm
+  Fixtures/Sample/libResilientTypedError.dylib --structured` and the
+  corresponding `.Osize.dylib`; `Tools/blast-radius.sh <bf8ccc1-release>
+  <candidate-release> <out> --real --perf`.
