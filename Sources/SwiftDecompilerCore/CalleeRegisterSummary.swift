@@ -736,7 +736,7 @@ enum Preservation {
         var registers: [String: Value]
         // Each fact covers exactly eight bytes. A store at a different start
         // address can still overwrite part of that saved register.
-        var slots: [Int64: Value]
+        var slots: FrameFacts<WordFrameFact<Value>>
         // MAY provenance is independent of the must-value facts above: a
         // join can lose an exact address while retaining a feasible alias.
         var stackAliases: Set<String> = ["sp"]
@@ -814,7 +814,7 @@ enum Preservation {
             }
             return State(
                 registers: registers,
-                slots: slots.filter { other.slots[$0.key] == $0.value },
+                slots: slots.intersecting(with: other.slots),
                 stackAliases: aliases,
                 stackAddressEscaped: stackAddressEscaped || other.stackAddressEscaped,
                 escapedRanges: escapedRanges.union(other.escapedRanges),
@@ -847,7 +847,10 @@ enum Preservation {
             // padding word `str x28, [sp, #-0x60]!` leaves at sp + 8). An
             // address inside a saved value, or with no saved value above it,
             // may reach every slot.
-            let entrySlots = slots.filter { if case .entry = $0.value { true } else { false } }.keys.sorted()
+            let entrySlots = slots.compactMap { offset, value -> Int64? in
+                if case .entry = value { return offset }
+                return nil
+            }.sorted()
             func reach(from k: Int64) -> EscapeRange? {
                 guard !entrySlots.contains(where: { k >= $0 && k < $0 &+ 8 }),
                       let next = entrySlots.first(where: { $0 > k })
@@ -895,9 +898,7 @@ enum Preservation {
             // saves, even when no pointer escaped from this function.
             regions.insert(.atOrAbove(0))
             let effect = FrameMemoryEffect(regions, arithmetic: .checked)
-            slots = slots.filter { start, _ in
-                !effect.mayInvalidate(FrameMemoryExtent(start: start, bytes: 8))
-            }
+            slots.forget(effect, removing: .value)
         }
 
         mutating func invalidateSlots(at address: Int64, bytes: Int) {
@@ -909,9 +910,7 @@ enum Preservation {
             }
             if end > 0 { incomingIntact = false }
             let effect = FrameMemoryEffect(.finite(lower: address, upper: end), arithmetic: .checked)
-            slots = slots.filter { start, _ in
-                !effect.mayInvalidate(FrameMemoryExtent(start: start, bytes: 8))
-            }
+            slots.forget(effect, removing: .value)
         }
     }
 
@@ -1231,7 +1230,7 @@ enum Preservation {
                     state.invalidateSlotsForUnknownWrite(throughStackAlias: true)
                 } else {
                     if end > 0 { state.incomingIntact = false }
-                    state.slots = state.slots.filter { start, _ in start >= end }
+                    state.slots.forget(FrameMemoryEffect(.startsBelow(end), arithmetic: .checked), removing: .value)
                 }
                 if let after { state.setRegister(base, to: after) }
                 return

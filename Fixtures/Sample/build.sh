@@ -206,6 +206,9 @@ $CLANG -arch arm64 -dynamiclib loopswitch.s -o libLoopSwitch.dylib
 echo "==> dependent select flow and non-address-order layout (selectflow.s)"
 $CLANG -arch arm64 -dynamiclib selectflow.s -o libSelectFlow.dylib
 
+echo "==> frame fact storage controls: overlapping copies, metadata joins and component budget (frame_fact_store.s)"
+$CLANG -arch arm64 -dynamiclib frame_fact_store.s -o libFrameFactStore.dylib
+
 echo "==> objc_retain_xN stubs (retainregister.swift, -O, arm64 iOS simulator)"
 $SWIFTC -O -emit-library -module-name RetainRegister -target arm64-apple-ios17.0-simulator \
     -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" retainregister.swift -o libRetainRegister.sim.dylib

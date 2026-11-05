@@ -789,9 +789,93 @@ public struct ValueTracer: Sendable {
         }
     }
 
-    /// Register and stack-slot values, keyed by `Location`, so registers and
-    /// slots live in one map and flow through the same meet.
-    private typealias State = [Location: AbstractValue]
+    /// Registers/other spaces and one shared owner of current-frame facts.
+    /// The compatibility projection is lazy; no frame entries live in `other`.
+    struct State: Equatable, Sequence, ExpressibleByDictionaryLiteral {
+        typealias Element = (key: Location, value: AbstractValue)
+        private var other: [Location: AbstractValue] = [:]
+        fileprivate var nonFrameEntries: [Location: AbstractValue] { other }
+        var frame = FrameFacts<TraceFrameFact>()
+        init() {}
+        init(dictionaryLiteral elements: (Location, AbstractValue)...) {
+            for (key, value) in elements { self[key] = value }
+        }
+        private static func component(_ key: Location) -> (Int64, FrameFactField)? {
+            switch key {
+            case .stack(let offset): return (offset, .value)
+            case .stackWidth(let offset): return (offset, .width)
+            case .stackFile(let offset): return (offset, .bank)
+            case .outgoing(let offset): return (offset, .outgoing)
+            default: return nil
+            }
+        }
+        private static func location(_ offset: Int64, _ field: FrameFactField) -> Location {
+            switch field {
+            case .value: return .stack(offset)
+            case .width: return .stackWidth(offset)
+            case .bank: return .stackFile(offset)
+            case .outgoing: return .outgoing(offset)
+            }
+        }
+        subscript(_ key: Location) -> AbstractValue? {
+            get {
+                if let (offset, field) = Self.component(key) { return frame[offset, field] }
+                return other[key]
+            }
+            set {
+                if let (offset, field) = Self.component(key) { frame[offset, field] = newValue }
+                else { other[key] = newValue }
+            }
+        }
+        var count: Int { other.count + frame.componentCount }
+        var isEmpty: Bool { count == 0 }
+        mutating func removeAll() { other.removeAll(); frame.removeAll() }
+        func intersecting(with state: State) -> State {
+            var result = State()
+            result.other = other.filter { state.other[$0.key] == $0.value }
+            result.frame = frame.intersecting(with: state.frame)
+            return result
+        }
+        func filter(_ predicate: (Element) throws -> Bool) rethrows -> State {
+            var result = State()
+            for element in self {
+                if try predicate(element) { result[element.key] = element.value }
+            }
+            return result
+        }
+        struct Iterator: IteratorProtocol {
+            private var other: Dictionary<Location, AbstractValue>.Iterator
+            private var frame: FrameFacts<TraceFrameFact>.ComponentIterator
+            init(_ state: State) {
+                other = state.other.makeIterator()
+                frame = state.frame.components.makeIterator()
+            }
+            mutating func next() -> Element? {
+                if let item = other.next() { return item }
+                if let item = frame.next() { return (State.location(item.offset, item.field), item.value) }
+                return nil
+            }
+        }
+        func makeIterator() -> Iterator { Iterator(self) }
+        struct Keys: Sequence {
+            let state: State
+            struct Iterator: IteratorProtocol {
+                var base: State.Iterator
+                mutating func next() -> Location? { base.next()?.key }
+            }
+            func makeIterator() -> Iterator { Iterator(base: state.makeIterator()) }
+        }
+        struct Values: Sequence {
+            let state: State
+            struct Iterator: IteratorProtocol {
+                var base: State.Iterator
+                mutating func next() -> AbstractValue? { base.next()?.value }
+            }
+            func makeIterator() -> Iterator { Iterator(base: state.makeIterator()) }
+        }
+        var keys: Keys { Keys(state: self) }
+        var values: Values { Values(state: self) }
+    }
 
     /// What a call's callee name proves, whatever the register state. The
     /// tracer revisits each call on every fixpoint lap and in every later
@@ -1592,7 +1676,7 @@ public struct ValueTracer: Sendable {
                 if !call.passesNoStackArguments, case .frame(let base)? = registers[.sp] {
                     for slot in 0..<16 {
                         let offset = base + Int64(slot * 8)
-                        guard !facts.frame.saveSlots.contains(offset), let value = registers[Self.outgoingKey(offset)]
+                        guard !facts.frame.saveSlots.contains(offset), let value = registers.frame[offset, .outgoing]
                         else { break }
                         Self.markEscape(value, into: &registers)
                     }
@@ -1652,8 +1736,7 @@ public struct ValueTracer: Sendable {
                 }
             }
             for index in 16...31 { registers[.v(index)] = nil }
-            let outgoingKeys = registers.keys.filter { if case .outgoing = $0 { true } else { false } }
-            for key in outgoingKeys { registers[key] = nil }
+            registers.frame.removeComponents(.outgoing)
             // Swift error convention: a throwing callee returns its error in x21
             // (swifterror), so the call *redefines* x21 even though AAPCS64 marks
             // it callee-saved. Without invalidating it, a pre-call `mov x21, #0`
@@ -1820,9 +1903,9 @@ public struct ValueTracer: Sendable {
         if case .frame(let stackBase)? = registers[.sp] {
             for slot in 0..<16 {
                 let offset = stackBase + Int64(slot * 8)
-                guard !saveSlots.contains(offset), let value = registers[outgoingKey(offset)] else { break }
+                guard !saveSlots.contains(offset), let value = registers.frame[offset, .outgoing] else { break }
                 stackArguments.append(value)
-                if case .immediate(let bytes)? = registers[stackWidthKey(offset)], bytes <= 8 {
+                if case .immediate(let bytes)? = registers.frame[offset, .width], bytes <= 8 {
                     stackArgumentWidths.append(Int(bytes))
                 } else {
                     stackArgumentWidths.append(0)
@@ -1923,7 +2006,7 @@ public struct ValueTracer: Sendable {
     private static func meet(_ states: [State]) -> State {
         guard var accumulator = states.first else { return [:] }
         for state in states.dropFirst() {
-            accumulator = accumulator.filter { state[$0.key] == $0.value }
+            accumulator = accumulator.intersecting(with: state)
         }
         keepSelfIsa(from: states, into: &accumulator)
         if states.contains(where: { $0[resultPoisonKey] != nil }) {
@@ -1937,20 +2020,24 @@ public struct ValueTracer: Sendable {
         var unsizedSlots: [Int64] = []
         var unsizedFlags = false
         for state in states {
-            for (key, value) in state {
+            for (key, value) in state.nonFrameEntries {
                 if isEscapeMarker(key) {
                     accumulator[key] = value
                 } else if accumulator[key] != value {
-                    if case .stackWidth(let offset) = key {
-                        unsizedSlots.append(offset)
-                    } else if case .stackFile(let offset) = key {
-                        unsizedSlots.append(offset)
-                    } else if key == .flagsWidth {
+                    if key == .flagsWidth {
                         unsizedFlags = true
                     } else if holdsValue(key), containsFrame(value) || containsContext(value) {
                         dropped.append(value)
                     }
                 }
+            }
+            // Compare against the self-isa-repaired, pre-veto accumulator,
+            // exactly as the old component dictionary did.
+            state.frame.forEachMismatch(comparedWith: accumulator.frame, fields: [.width, .bank]) {
+                offset, _, _ in unsizedSlots.append(offset)
+            }
+            state.frame.forEachLostValue(comparedWith: accumulator.frame) { value in
+                if containsFrame(value) || containsContext(value) { dropped.append(value) }
             }
         }
         // A slot is known only at the width stored to it. Where the paths
@@ -2143,12 +2230,9 @@ public struct ValueTracer: Sendable {
             case .indirect(let size?)?:
                 Self.clearStack(from: base, to: base + Int64(size), in: &registers)
                 for offset in stride(from: 0, to: size, by: 8) {
-                    registers[Self.stackKey(base + Int64(offset))] =
-                        .indirectCallResultWord(site: insn.address, offset: offset)
-                    registers[Self.stackWidthKey(base + Int64(offset))] = .immediate(UInt64(min(8, size - offset)))
-                    // No register stored this word. The slot's value may already
-                    // be forgotten, so its old file is cleared here, not there.
-                    registers[Self.stackFileKey(base + Int64(offset))] = nil
+                    registers.frame.patch(at: base + Int64(offset),
+                        value: .assign(.indirectCallResultWord(site: insn.address, offset: offset)),
+                        width: .assign(.immediate(UInt64(min(8, size - offset)))), bank: .erase)
                 }
             case .indirect(nil)?, nil:
                 break // already forgotten by the escaped-local invalidation above
@@ -2161,12 +2245,7 @@ public struct ValueTracer: Sendable {
     /// Drop the stack slots in `[from, to)` (`to == nil`: every slot at or above
     /// `from`), the region a callee may have written through x8.
     private static func clearStack(from: Int64, to: Int64?, in registers: inout State) {
-        for key in registers.keys {
-            guard let offset = stackOffset(from: key), offset >= from else { continue }
-            if let to, offset >= to { continue }
-            registers[key] = nil
-            registers[stackWidthKey(offset)] = nil
-        }
+        registers.frame.clearValueStarts(from: from, to: to, removing: [.value, .width])
     }
 
     /// Model `memcpy`/`memmove`/`memset` (and the compiler's outlined
@@ -3445,12 +3524,12 @@ public struct ValueTracer: Sendable {
                 // `((-arg0 - 5e-324) != 3.5e-323)`.
                 // A `q` load gathers words whatever stored them, so it stays out.
                 if value != .unknown, let offset, dest.widthBits <= 64,
-                   case .immediate(let file)? = registers[Self.stackFileKey(offset)] {
+                   case .immediate(let file)? = registers.frame[offset, .bank] {
                     switch (dest.kind, file) {
                     case (.gpr, 32), (.gpr, 64):
                         value = Self.bitPattern(of: value, bits: Int(file))
                     case (.vector, 0):
-                        let stored = registers[Self.stackWidthKey(offset)]
+                        let stored = registers.frame[offset, .width]
                         value = dest.widthBits >= 32 && stored == .immediate(UInt64(bytes))
                             ? Self.float(fromBits: value, bits: dest.widthBits) : .unknown
                     case (.vector, _) where file != UInt64(dest.widthBits):
@@ -4782,10 +4861,10 @@ public struct ValueTracer: Sendable {
     /// Read one scalar or a SIMD-packed run of eight-byte stack values.
     private static func stackValue(at offset: Int64, bytes: Int, in registers: State) -> AbstractValue {
         guard bytes > 8 else {
-            if let width = registers[stackWidthKey(offset)] {
+            if let width = registers.frame[offset, .width] {
                 guard case .immediate(let knownBytes) = width, knownBytes >= bytes else { return .unknown }
             }
-            return registers[stackKey(offset)] ?? .unknown
+            return registers.frame[offset] ?? .unknown
         }
         let words = stride(from: 0, to: bytes, by: 8).map {
             stackValue(at: offset + Int64($0), bytes: min(8, bytes - $0), in: registers)
@@ -4808,16 +4887,7 @@ public struct ValueTracer: Sendable {
         // A byte/halfword store can overwrite part of an older tracked word.
         // Forget intersecting snapshots rather than retaining their old bits.
         let effect = FrameMemoryEffect.legacyTracerExactWrite(start: offset, bytes: Int64(bytes))
-        for key in registers.keys {
-            guard let previous = stackOffset(from: key) else { continue }
-            let width: Int64 = if case .immediate(let bytes)? = registers[stackWidthKey(previous)] {
-                Int64(clamping: bytes)
-            } else { 8 }
-            guard effect.mayInvalidate(FrameMemoryExtent(start: previous, bytes: width)) else { continue }
-            registers[key] = nil
-            registers[stackWidthKey(previous)] = nil
-            registers[outgoingKey(previous)] = nil
-        }
+        registers.frame.forget(effect, removing: [.value, .width, .outgoing])
         // Which register file wrote the word: a reload into the other one
         // reinterprets its bits. A store with no register (a modelled copy)
         // or a wider one leaves it unknown.
@@ -4837,10 +4907,11 @@ public struct ValueTracer: Sendable {
         }
         for (index, word) in words.enumerated() {
             let wordOffset = offset + Int64(index * 8)
-            registers[stackKey(wordOffset)] = word
-            registers[stackWidthKey(wordOffset)] = .immediate(UInt64(min(8, bytes - index * 8)))
-            registers[stackFileKey(wordOffset)] = file
-            if outgoing { registers[outgoingKey(wordOffset)] = word }
+            let bank: FrameFactChange<AbstractValue> = file.map { .assign($0) } ?? .erase
+            let argument: FrameFactChange<AbstractValue> = outgoing ? .assign(word) : .leave
+            registers.frame.patch(at: wordOffset, value: .assign(word),
+                width: .assign(.immediate(UInt64(min(8, bytes - index * 8)))),
+                bank: bank, outgoing: argument)
         }
     }
 
@@ -5309,17 +5380,7 @@ public struct ValueTracer: Sendable {
     /// address is still in memory: it escapes.
     private static func forgetFrame(in registers: inout State, effect: FrameMemoryEffect) {
         var lost: [AbstractValue] = []
-        for key in Array(registers.keys) {
-            guard let offset = stackOffset(from: key) else { continue }
-            let bytes: Int64 = if case .immediate(let width)? = registers[stackWidthKey(offset)] {
-                Int64(clamping: width)
-            } else { 8 }
-            guard effect.mayInvalidate(FrameMemoryExtent(start: offset, bytes: bytes)) else { continue }
-            if let value = registers[key] { lost.append(value) }
-            registers[key] = nil
-            registers[stackWidthKey(offset)] = nil
-            registers[outgoingKey(offset)] = nil
-        }
+        registers.frame.forget(effect, removing: [.value, .width, .outgoing]) { lost.append($0) }
         for value in lost { markEscape(value, into: &registers) }
     }
 
