@@ -46,8 +46,9 @@ since shipped.
   returns 11. Each analysis that needs frame facts re-derives escape and
   aliasing, and each one gets a different subset right. (The stopgap below
   shipped on 2026-10-15: per-region escape markers in the tracer, unioned at
-  joins. Step 4 now shares unknown-write invalidation; provenance, boundary
-  discovery, exact stores and state/layout duplication remain open.)
+  joins. Step 4 now shares write footprints and current-frame fact storage;
+  boundary/provenance discovery, MAY carriers and complete layout/space
+  unification remain open.)
 - **Facts are strings.** `demangledName(from:)` returns any leading note not on
   its deny-list as a callee name. Adding the `swift-exit=` note on 2026-10-15
   would have made call graphs list it as a callee; the deny-list had to grow
@@ -208,7 +209,7 @@ fix, measured and explained like any other.
    the tracer's samples: every fixture view, Clarc and GoodLinks unchanged;
    Clarc -12% instructions retired. `Location` carries the escape markers as
    well as places; the other analyses still key by string.*
-4. **One frame memory model**, used first by the tracer. This is where the
+4. **One frame memory model**, shared by the analyses. This is where the
    `cacheEscape` class of bug is fixed once instead of per analysis; it must
    also keep the Onone spill/reload recovery that a blanket "forget memory at
    every call" rule loses (measured on 2026-10-13: argument spills, string
@@ -251,11 +252,34 @@ fix, measured and explained like any other.
    Default corpus budgets pass with scope recorded in PRODUCTION-READINESS.md.
    This does not establish allocation-volume savings or a complete shared
    frame value/layout/provenance model.
+
+   *Shared fact ownership follows in `086bd05`: both tracer State and
+   Preservation's slots use `FrameFacts` for lookup, fieldwise must joins,
+   effect-selected removal and installation. Concrete record specialization
+   keeps Preservation value-only; tracer value, width, register-bank and
+   outgoing fields retain independent presence, including explicit unknown,
+   orphan metadata and symbolic selects. Lazy projections bridge the tracer's
+   existing Location API without a shadow frame map or combined arrays.*
+
+   Existing frontend rules still decide self-isa repair, width/bank veto,
+   pointer-loss escape and caller ownership. Their ordering is preserved;
+   start-selected clear, exact overwrite and unknown knowledge loss remain
+   distinct. State budgets count legacy components, not rows. Layout/boundary
+   discovery, MAY carriers, SelfState's MAY slots and result/context spaces
+   remain separate; completing step 4 is still OPEN.
+
+   Eleven new tests, twelve compiled assertion-red variants and restored
+   34 tests across seven focused suites pass; the enforcing suite passes 1,387/28.
+   Fresh semantics, 144 explicit subprocess checks, 336 inputs in four views,
+   four SDK outputs, five apps and nine CLI pairs match. Default corpus
+   budgets pass with their measured scope in PRODUCTION-READINESS.md. No
+   general speed, allocation-volume or retained-heap improvement is claimed.
+
 5. **Value identity and edge refinement.** Recovers declined exits such as the
    -Onone `try` shape and gives conditions and loop variables stable names.
 6. **Renderers read the IR**, then the §9.3 layers above it.
 
-Steps 1–3 and the shared write-footprint extractions in step 4 are refactors.
+Steps 1–3 and the shared write-footprint/fact-store extractions in step 4 are refactors.
 Completing step 4 is the intended memory-model soundness payoff. A stopgap
 that fixes `cacheEscape` inside the current tracer
 (persistent per-region escape, union at joins) is acceptable before step 4 if

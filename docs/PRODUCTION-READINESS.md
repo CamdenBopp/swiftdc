@@ -9442,10 +9442,9 @@ Commit messages on dev stay as they are; these are the true records.
   `Tools/blast-radius.sh <39edfbb-release> <new-release> <out> --real --perf`.
 
 - **OPEN — the complete frame-memory IR model.** Boundary/provenance
-  discovery, state/value carriers, register-file/width metadata, MAY joins and
-  result/context spaces still belong to their existing analyses. Subsequent
-  exact-store footprint sharing below advances the common queries without
-  unifying those transfers. Preserve Onone spill recovery, caller ownership,
+  discovery, MAY carriers and result/context spaces remain with their analyses.
+  Exact-store footprints and shared must-fact ownership follow below; neither
+  alone completes this model. Preserve Onone spill recovery, caller ownership,
   disjoint bounds and escape closure as those pieces move.
 
 ## 2026-11-05: share exact frame-store footprints
@@ -9508,8 +9507,71 @@ Commit messages on dev stay as they are; these are the true records.
   `swift build -c release --scratch-path .build-release -j 2`;
   `Tools/blast-radius.sh <6b6ab7e-release> <new-release> <out> --real --perf`.
 
-- **OPEN — shared frame values, layout and provenance.** Common footprints
-  do not replace the analyses' distinct value maps, layout discovery, MAY
-  aliases, escape carriers or result/context models. A deliberate change to
-  legacy endpoint failure behavior still needs an accepted-input reduction
-  and its own behavior proof.
+- **OPEN — complete frame layout, provenance and spaces.** Shared must-fact
+  storage follows below; layout discovery, MAY aliases, escape carriers and
+  result/context models remain separate. A deliberate change to legacy endpoint
+  failure behavior still needs an accepted-input reduction and its own proof.
+
+## 2026-11-05: share frame-fact ownership and transfers
+
+- **FIXED — duplicate current-frame fact stores (`086bd05`).**
+  `ValueTracer.State` and `Preservation.State.slots` now use the same
+  `FrameFacts` owner for lookup, fieldwise must intersection, selective
+  invalidation and installation. Concrete tracer records hold independently
+  present value/width/register-bank/outgoing fields; Preservation's word-only
+  records carry no tracer metadata. The tracer's remaining map cannot hold
+  those four frame-key families. Key/value projections are lazy iterators.
+
+  Explicit unknown differs from absence. Orphan metadata, symbolic width/bank
+  selects, leave-versus-erase patches and the old component-weighted budget
+  remain intact. Effects inspect present value starts; start-selected x8/helper
+  clearing keeps its distinct field mask. Source chunks are captured before
+  destination mutation. Raw intersection precedes the existing self-isa repair,
+  pointer-loss collection, metadata veto and escape propagation. Exact overwrite
+  still differs from losing knowledge of pointer bytes left in memory.
+
+  All **336 inputs in four views**, four large SDK outputs, five app pseudo
+  outputs and nine CLI pairs match. The **331 supported JSON inputs** retain
+  **43,450 functions / 881,361 instructions**; five existing unsupported inputs
+  retain their exact diagnostics/statuses. All **1,348 cost pairs** have positive
+  counters and pass default budgets without exception: **+2.2697%
+  retired instructions / -1.4546% summed peak footprints**. These
+  single corpus comparisons are budget evidence, not a general speed,
+  allocation-volume or retained-heap result. Record strides are 32 bytes for
+  the tracer and 24 bytes for Preservation; dictionary/allocator overhead is
+  additional.
+
+  Two matched Parser `xrefs --unreferenced` runs each received one five-second
+  CPU sample and produced identical nonempty output. Both captures reached
+  summary/Preservation work. Candidate stacks show record replacement,
+  intersection and dictionary copies through ordinary stores and invalidation.
+  Counter/iterator contributions and the cause of storage sharing remain
+  unisolated; tracer analysis was not captured. These are CPU ancestry samples,
+  not allocation-event/byte counts or a retained-heap measurement.
+
+  Fresh exports match **58,515 integer / 12,644 condition / 448 targeted-word
+  records**, reusing prior solver evidence for identical input/output bytes.
+  Frozen debug/release CLIs pass **144 separate-process checks**, including
+  frame-store and lexical loop-induction cases.
+
+  Verified: **11 new tests**; five behavior controls also ran against previous
+  production. The authored six-function assembly fixture supplies native
+  overlapping-copy and metadata-join controls plus a nonzero budget boundary.
+  Independent CLT assembly/LLVM decoding confirms four additional synthetic
+  bodies / 54 words; those bodies were not executed natively. **Twelve compiled
+  variants** fail intended assertions: eleven behavioral variants and one
+  record-layout variant. The same shared-store omission, overreach and raw-join
+  changes fail tests in both actual analyses. Actual tracer integration guards
+  both missing and overeager lost-pointer handoff. Restored **34 tests / seven
+  suites** and rebuilt enforcing **1,387 tests / 28 suites** pass.
+
+  Reproduce: `Tools/fixtures.sh`; `swift build --build-tests -j 2`;
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`;
+  `swift build -c release --scratch-path .build-release -j 2`;
+  `Tools/blast-radius.sh <9531e4b-release> <new-release> <out> --real --perf`.
+
+- **OPEN — the complete frame-memory IR model.** Fact storage and must
+  transfers are shared. Layout/boundary discovery, MAY alias/escape carriers,
+  ownership policies and result/context spaces remain with their analyses.
+  SelfState's MAY slot set remains separate from the shared must intersection.
+  No accepted-input endpoint-failure repair or unified value identity is claimed.
