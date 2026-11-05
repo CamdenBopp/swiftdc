@@ -8678,7 +8678,7 @@ Commit messages on dev stay as they are; these are the true records.
 
 ## 2026-11-05: reuse Capstone instruction storage
 
-- **FIXED (memory): allocate one C instruction record per engine.** The
+- **FIXED (`431270d`, memory): allocate one C instruction record per engine.** The
   previous 4,096-record batches repeatedly allocated a 256-byte `cs_insn`
   and 2,216-byte `cs_detail` per instruction. `CapstoneEngine` now uses
   `cs_malloc` once and `cs_disasm_iter`, copies every retained field into
@@ -8726,8 +8726,10 @@ Commit messages on dev stay as they are; these are the true records.
   complete counts for all 1,300 pairs: -0.64% instructions, -6.28% summed
   footprints, within the default budgets. The same five deliberately
   unsupported inputs retain exit 1 in each view; all other 320 retain exit 0.
-  The four large SDK workloads are byte-identical. Five installed-app pseudo
-  comparisons are still pending before the push gate.
+  The four large SDK workloads and all five installed-app pseudo outputs are
+  byte-identical. App function counts match independent starts: Terminal
+  3,245, TextEdit 536, Chess 1,699, Clarc 14,246 and GoodLinks 65,107. All
+  guarded job trees are terminal; no normalization or guard kill was needed.
 - **EVALUATED / OPEN: alternative decoder adapters.** Pinned fARM64
   `3cf05d4d` and disarm64 `50e6f63d` cores recorded no Rust allocator calls
   across the same 24.47 million raw slots. Their coverage agrees outside
@@ -8750,3 +8752,22 @@ Commit messages on dev stay as they are; these are the true records.
   retained IR. Structurer workers reserve 256 MiB stacks; summed virtual stack
   reservations are not resident RAM. Reusing workers would need to preserve
   probe context, reentrancy and stack-depth safety.
+
+- **REGENERATED / PROFILED baseline (`e7bb401`, docs `0d4df7b`):** force-rebuilt
+  all 317 authored Mach-O products (401 generated products in total) and four
+  source configurations: Clarc and Enchanted, each Debug and Release. Original
+  working source trees and revisions were preserved; source builds used private
+  snapshots. Installed apps and SDK images were refreshed and hashed as binary
+  snapshots, not claimed as source rebuilds. All 1,440 planned output jobs are
+  terminal: 1,420 validated complete outputs and the 20 expected diagnostics
+  from five unsupported fixture inputs, with all time counts present and no
+  unexpected failure, kill or pending job. Six curated benchmark samples are
+  complete. Enchanted Debug structured/pseudo examples are explicitly filtered
+  to 7,134 Swift entries (1,481,492 code bytes), independently reconciled to
+  native symbols; 11 Objective-C bridge IMP names lack the literal module
+  filter. Whole-image xrefs covers all 130,642 declared functions, including
+  those bridges. The filtered examples do not claim whole-image rendering.
+  Private outputs, source provenance, resource logs and CPU/allocation reports
+  remain outside the public repository. This regeneration belongs to the
+  selected-lane checkpoint; the iterator's independent compatibility and cost
+  checks are the separate record above.
