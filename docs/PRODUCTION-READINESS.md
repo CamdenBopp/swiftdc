@@ -9237,8 +9237,8 @@ Commit messages on dev stay as they are; these are the true records.
   (`a83a2de`).** Build after outlined rewrites and jump-table
   recognition, then share the graph across tracing, enrichment and matching
   leaf consumers. Refresh only when indirect resolution adds an external
-  branch successor. The final async nil-BR→RET rewrite retains no local graph;
-  final-function caching and structurer sharing remain OPEN (IR step 2.3).
+  branch successor. This was phase-local; final-function caching and
+  structurer sharing follow in the 2026-11-05 step 2.3 record below.
 
   `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build` passed **1,346 tests in
   20 suites**. Fourteen independently compiled mutants triggered test failures; restoration
@@ -9277,3 +9277,59 @@ Commit messages on dev stay as they are; these are the true records.
   Verified: SharedFunctionCFGTests and SharedFunctionCFGAdditionalTests;
   fourteen separately rebuilt placement, invalidation and forwarding mutants
   red; restored 15 focused tests green; enforcing 1,346/20 full suite green.
+
+## 2026-11-05: retain final function graphs for IR consumers
+
+- **FIXED — graph recovery repeated after enrichment (`43af592`).**
+  Each enriched function now retains its final immutable `FunctionCFG`;
+  structured/CFG/JSON rendering and remaining default analysis/probe consumers
+  reuse it. The graph holds topology and index ranges only. Views use current
+  instructions, including updated callee/annotation/exit facts and final async
+  returns. External indirect-tail resolution refreshes the graph before
+  attachment. Generic instruction or switch-table replacement invalidates it;
+  payload-only and async metadata changes preserve it. Public manual
+  initialization safely recovers graphs on demand.
+
+  Three alternating release pairs per app preserve exact whole-image
+  `--structured --arch arm64` output in all twelve runs. Median changes:
+
+  - Clarc: **-0.6601% retired instructions**, **+0.9739% peak footprint**.
+    Instruction ranges: 453,706,033,626–453,743,650,371
+    baseline, 450,729,045,653–450,912,274,050 candidate.
+    Footprint ranges: 115,294,928–117,293,776 bytes
+    baseline, 115,376,848–118,588,136 candidate.
+  - GoodLinks: **-0.5953% retired instructions**, **+1.0995% peak footprint**.
+    Instruction ranges: 2,004,189,369,967–2,005,385,644,998
+    baseline, 1,992,199,999,348–1,992,934,219,165 candidate.
+    Footprint ranges: 305,660,792–339,526,640 bytes
+    baseline, 309,265,296–335,348,720 candidate.
+
+  These results concern the measured views and inputs; footprint ranges can
+  overlap. They establish no universal memory or lifetime allocation-volume
+  reduction. Legacy `BasicBlock` instruction copies and noncontiguous
+  trap-guarded views remain open, as does the shared frame memory model.
+
+  All **335 inputs in four views** are byte-identical: **43,444 functions**
+  and **881,284 instructions**, with the same five unsupported diagnostics.
+  Four large SDK outputs, all five app pseudo outputs and nine CLI pairs
+  match, including 28 nonempty layouts and 46 ObjC methods. All **1,344 cost
+  pairs** have positive counters and pass default budgets without override:
+  **-0.1918% retired instructions** and
+  **+0.0680% summed peak footprints**.
+
+  Fresh semantics exports contain **58,515 / 12,644 / 448 records**, exactly
+  matching the previously proved input/output bytes; the solver was not
+  rerun. Frozen debug/release CLIs pass **96 subprocess determinism checks**,
+  four rounds per configuration over seven ordinary, three existing probe
+  and two graph trace cases. Nonempty traces and outputs are compared.
+
+  Reproduce: `Tools/fixtures.sh`; three alternating release pairs of
+  `swiftdc disasm <app> --structured --arch arm64`;
+  `Tools/blast-radius.sh <2e511f5-release> <new-release> <out> --real --perf`.
+
+  Verified: FinalFunctionCFGTests plus shared-CFG suites; twenty independent
+  mutations compiled and failed intended assertions, covering all attachment
+  exits, preservation, invalidation and default consumer paths. Restored
+  **22 focused tests** pass; rebuilt enforcing **1,353 tests in 21 suites**
+  pass. Release uses the optimized toolchain build without DEBUG freshness
+  comparisons.

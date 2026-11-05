@@ -191,6 +191,14 @@ cannot inflate `cfg.graph-built`; neither event changes analysis decisions.
 Release builds emit construction metrics when requested, without running the
 DEBUG freshness comparison.
 
+Enriched functions retain their final graph for later consumers. Consumer
+labels include `final-cfg-attachment`, `instruction-payload-copy`,
+`structured-renderer`, `json-output`, `cfg-renderer` and
+`accessor-classifier`, alongside the analysis/probe labels. Manual public
+construction recovers a graph on demand; generic instruction or switch-table
+replacement invalidates retention. Freshness evidence checks topology,
+while instruction views always read the current function's payload.
+
 ## Extension points
 
 ### Scoring without parsing pseudocode

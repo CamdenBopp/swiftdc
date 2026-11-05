@@ -159,8 +159,8 @@ fix, measured and explained like any other.
       analysis. A resolved external `br` target rebuilds the graph; call
       naming, notes and facts do not. A proven async return rewrites a
       nil-target `br` to `.return` only after the local graph's last use.
-      That graph is not retained with the returned function; later consumers
-      build from its final instructions. Debug recorder checks compare each
+      At that revision the returned function did not retain the graph;
+      final-function retention follows in step 2.3. Debug recorder checks compare each
       supplied graph with a fresh graph, and construction budgets detect
       redundant recovery. Fourteen separately compiled mutations failed;
       restored focused and full tests passed. All 335 inputs in four views,
@@ -170,11 +170,28 @@ fix, measured and explained like any other.
       pairs on Clarc and GoodLinks reduce retired instructions by 0.7391%
       and 0.7832%; footprint is mixed. Allocation-history totals remain
       inconclusive because the bounded text exports are incomplete.*
-   3. *OPEN: keep the final graph with the function for the structurer, JSON,
-      `renderCFG` and remaining later consumers. Make
-      `AsyncFuncletIndex.trapGuardedRuns` a block-id view instead of new
-      `BasicBlock` values. Retain exact output checks and measure release
-      A/B on Clarc and GoodLinks for that separate change.*
+   3. *Final graph ownership done in `43af592`: enriched functions retain
+      their final immutable topology. The structurer, JSON, CFG output and
+      remaining default tracer/probe/x8/escape/accessor consumers reuse it.
+      All three enrichment exits attach a matching graph, after an external
+      indirect-tail target has refreshed it. Final async nil-target BR→RET
+      preserves the graph's partition and empty successor list; instruction
+      views read the final payload. Generic instruction or switch-table
+      replacement invalidates the cache, while payload-only changes and
+      async metadata preserve it. Public manual construction keeps its safe
+      uncached fallback. Twenty separately compiled mutations fail intended
+      assertions; restored 22 focused tests and the enforcing 1,353/21 full
+      suite pass. All 335 inputs in four views, four SDK outputs, five app
+      pseudo outputs and nine CLI pairs are byte-identical; 96 current-binary
+      subprocess checks pass. Release A/B numbers and default budgets are
+      recorded in PRODUCTION-READINESS.md with their measured scope.*
+   4. *OPEN: replace materialized `BasicBlock` instruction copies with views
+      for internal consumers, including `AsyncFuncletIndex.trapGuardedRuns`.
+      Its merged instruction sequences can be noncontiguous; one index range
+      cannot preserve them. Keep public APIs and current trap/switch/order
+      semantics, exact output checks and alternating release measurements.
+      Final topology retention does not establish allocation-volume savings
+      or complete the shared frame memory model in step 4 below.*
 
 3. **Typed locations in the tracer.** `[Location: AbstractValue]` instead of
    string keys. Pure refactor; measure the speed. *Done for `ValueTracer`
