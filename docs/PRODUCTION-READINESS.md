@@ -642,7 +642,7 @@ results do not replace previously recorded release performance measurements.
   Three raw folded-test annotations defer to the existing register-level
   truthiness rendering policy. All four large SDK output hashes, including
   Parser structured, exactly match baseline.
-- **FIXED — form ANDS flags before an overlapping destination write.**
+- **FIXED (6d0260e) — form ANDS flags before an overlapping destination write.**
   `mov w0, #3; ands w0, w0, w0, lsl #1; cset w0, eq` returns 0 natively
   but read 1: the flags path reread the shifted source after writing the
   destination. NZCV now uses the pre-write operands. The authored matrix
