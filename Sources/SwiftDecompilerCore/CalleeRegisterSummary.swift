@@ -248,7 +248,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 if !written.contains("x22"), Self.uses("x22", in: detail) { readsContextRegister = true }
                 let internalBranch = insn.branchTarget.map(addresses.contains) == true
                 let leavesThroughCall = insn.controlFlow == .call
-                    || (insn.controlFlow == .branch && !internalBranch && block.switchCases == nil)
+                    || ((insn.controlFlow == .branch || insn.controlFlow == .conditionalBranch)
+                        && !internalBranch && block.switchCases == nil)
                 if leavesThroughCall {
                     // The callee may read any argument register still holding
                     // this function's incoming value, or only its parameters:
@@ -322,7 +323,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 if base?.kind != .stackPointer { storesOnlyToStack = false }
             }
             if insn.controlFlow == .call
-                || (insn.controlFlow == .branch && insn.branchTarget.map(addresses.contains) != true) {
+                || ((insn.controlFlow == .branch || insn.controlFlow == .conditionalBranch)
+                    && insn.branchTarget.map(addresses.contains) != true) {
                 outgoingCalls.append(OutgoingCall(
                     target: insn.branchTarget, isFunction: insn.branchTarget.map(isFunction) ?? false))
             }
@@ -334,7 +336,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                     }
                 }
             }
-            if insn.controlFlow == .call || insn.controlFlow == .branch,
+            if insn.controlFlow == .call || insn.controlFlow == .branch || insn.controlFlow == .conditionalBranch,
                let target = insn.branchTarget,
                !addresses.contains(target) || (insn.controlFlow == .call && target == entry) {
                 callees.insert(target)
@@ -385,7 +387,10 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             let exits = Preservation.exitValues(
                 blocks: blocks, entry: entry, addresses: addresses,
                 callEffect: callEffect,
-                exitEffect: { insn in insn.controlFlow == .branch ? external(insn).map(calleeEffects) ?? CalleeEffect() : CalleeEffect() },
+                exitEffect: { insn in
+                    insn.controlFlow == .branch || insn.controlFlow == .conditionalBranch
+                        ? external(insn).map(calleeEffects) ?? CalleeEffect() : CalleeEffect()
+                },
                 callInputs: callInputs,
                 // A callee's definite clobber is an unknown value, not a frame
                 // address: read as one, a later store through it unproved
@@ -970,7 +975,8 @@ enum Preservation {
                 guard let detail = insn.detail else { return nil }
                 let internalBranch = insn.branchTarget.map(addresses.contains) == true
                 let isExit = insn.controlFlow == .return
-                    || (insn.controlFlow == .branch && !internalBranch && block.switchCases == nil)
+                    || ((insn.controlFlow == .branch || insn.controlFlow == .conditionalBranch)
+                        && !internalBranch && block.switchCases == nil)
                 if isExit {
                     var exitState = state
                     let effect = exitEffect(insn)
@@ -1370,7 +1376,8 @@ extension Preservation {
             for insn in block.instructions {
                 guard let detail = insn.detail else { return nil }
                 let internalBranch = insn.branchTarget.map(addresses.contains) == true
-                let isTailBranch = insn.controlFlow == .branch && !internalBranch && block.switchCases == nil
+                let isTailBranch = (insn.controlFlow == .branch || insn.controlFlow == .conditionalBranch)
+                    && !internalBranch && block.switchCases == nil
                 if insn.controlFlow == .call || isTailBranch {
                     // An indirect target register is read as a value.
                     if !state.registers.isDisjoint(with: detail.readRegisterKeys) { flow.reads = true }

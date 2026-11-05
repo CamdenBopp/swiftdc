@@ -800,3 +800,6 @@ file sample.release
 
 echo "==> recursive entry call effects and real stack reloads (summary_recursive_effects.s)"
 $CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib summary_recursive_effects.s -o libRecursiveSummaryEffects.dylib
+
+echo "==> conditional external tail effects, both paths and frame aliases (conditional_tail_effects.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib conditional_tail_effects.s -o libConditionalTailEffects.dylib
