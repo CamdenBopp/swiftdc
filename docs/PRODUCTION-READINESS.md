@@ -9384,3 +9384,65 @@ Commit messages on dev stay as they are; these are the true records.
   and no concurrent compiler/test jobs. The production shared-CFG foundation
   from `43af592` remains intact; internal Structurer views and the common
   frame-memory model remain open.
+
+## 2026-11-05: share frame-write effects across IR analyses
+
+- **FIXED — duplicate unknown-write kill decisions (`6a1fa5e`).**
+  `ValueTracer` and `Preservation` now use the same `FrameMemoryEffect`
+  query against a tracked `FrameMemoryExtent`. It preserves unions of
+  disjoint finite regions, whole-frame reach, caller-owned/straddling facts
+  and the tracer's start-only dynamic-write policy. This is a refactor with
+  no intended output change, not a newly reproduced native wrong-value fix.
+
+  Arithmetic policies remain explicit: the tracer wraps fact endpoints,
+  while Preservation rejects checked endpoint overflow. Finite Int64
+  sentinels, unusual legacy extents and unknown-width writes retain their
+  existing predicates. Incoming-state invalidation and reload-before-write
+  ordering are unchanged. Lost-slot pointers still escape and propagate to
+  a fixed point within the same call; escape persists across later calls.
+
+  All **335 inputs in four views** are byte-identical. The **330 supported
+  JSON inputs** retain **43,444 functions / 881,284 instructions**; the same
+  five unsupported inputs retain their diagnostics and exit status. Four
+  large SDK outputs, five app pseudo outputs and nine CLI pairs also match.
+  All **1,344 cost pairs** have positive counts and meet default budgets
+  without an exception: **+0.2192% retired
+  instructions**, **-0.0612% summed peak
+  footprints**. These single corpus comparisons are budget evidence;
+  no universal speed, memory or allocation-volume improvement is claimed.
+
+  Two matched Parser `xrefs --unreferenced` runs each received one
+  five-second CPU sample. Both captured summary/Preservation work and exact
+  output. The candidate capture traverses Set/hash/allocator paths under
+  unknown-write invalidation, making temporary region construction a
+  concrete optimization target. Samples do not count allocation events or
+  bytes; tracer analysis was not captured, and retained-heap change remains
+  unmeasured. The prior truncated allocation histories were not retried.
+
+  Fresh exports exactly match **58,515 integer / 12,644 condition / 448
+  targeted-word records**; prior solver evidence is reused for those exact
+  input/output bytes. Frozen debug/release CLIs pass **112 separate-process
+  checks**, four rounds per configuration over nine output and five probe
+  cases, including the frame-escape and caller-ownership fixtures.
+
+  Verified: seven new compatibility tests also pass with legacy consumers.
+  Independent CLT assembly and LLVM decoding corroborate all **60 authored
+  instruction words** and the helper targets of eight call sites. These
+  synthetic transfer bodies are not executed as native functions; existing
+  frame-escape and ownership native fixtures were rerun. **Sixteen
+  independent mutants** compile and fail intended assertions, including the
+  same boundary/gap changes in both actual cores, arithmetic/sentinel/width
+  compatibility, pure union algebra, consumer omissions, caller ownership,
+  durable whole/finite reach and same-call pointer-loss closure. Restored
+  **56 focused/native tests** and enforcing **1,360 tests in 22 suites** pass.
+
+  Reproduce: `Tools/fixtures.sh`; `swift build --build-tests -j 2`;
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`;
+  `swift build -c release --scratch-path .build-release -j 2`;
+  `Tools/blast-radius.sh <39edfbb-release> <new-release> <out> --real --perf`.
+
+- **OPEN — the complete frame-memory IR model.** Exact-store arithmetic
+  and widths, boundary/provenance discovery, state carriers, MAY joins and
+  result/context spaces still belong to their existing analyses. The shared
+  unknown-write decision does not unify them. Preserve Onone spill recovery,
+  caller ownership, disjoint bounds and escape closure as those pieces move.

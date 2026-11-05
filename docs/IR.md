@@ -46,7 +46,8 @@ since shipped.
   returns 11. Each analysis that needs frame facts re-derives escape and
   aliasing, and each one gets a different subset right. (The stopgap below
   shipped on 2026-10-15: per-region escape markers in the tracer, unioned at
-  joins. The duplication it describes remains.)
+  joins. Step 4 now shares unknown-write invalidation; provenance, boundary
+  discovery, exact stores and state/layout duplication remain open.)
 - **Facts are strings.** `demangledName(from:)` returns any leading note not on
   its deny-list as a callee name. Adding the `swift-exit=` note on 2026-10-15
   would have made call graphs list it as a callee; the deny-list had to grow
@@ -212,12 +213,31 @@ fix, measured and explained like any other.
    also keep the Onone spill/reload recovery that a blanket "forget memory at
    every call" rule loses (measured on 2026-10-13: argument spills, string
    interpolation folding, witness-pair loads).
+
+   *First foundation in `6a1fa5e`: `FrameMemoryExtent` and
+   `FrameMemoryEffect` provide one MAY-write invalidation decision for the
+   tracer and Preservation. Disjoint finite regions, whole-frame reach,
+   caller-owned straddles and start-only dynamic writes retain their current
+   meanings. Wrapping tracer endpoints and checked Preservation endpoints
+   remain explicit compatibility policies; finite Int64 sentinels are not
+   reinterpreted as infinity. Durable markers, joins, boundary discovery,
+   pointer-loss closure, reload ordering and result/context spaces stay with
+   their current analyses. Exact stores and the complete shared memory model
+   remain OPEN. This slice preserves output; it does not complete step 4.*
+
+   The enforcing 1,360/22 suite, sixteen independently compiled mutant reds,
+   restored 56 focused/native controls, exact semantics and 112 subprocess
+   checks pass. All 335 inputs in four views, four SDK outputs, five app
+   pseudo outputs and nine CLI pairs match. Default corpus costs pass;
+   PRODUCTION-READINESS.md records the measured scope and the observed
+   temporary-Set allocation path. No allocation-volume saving is established.
 5. **Value identity and edge refinement.** Recovers declined exits such as the
    -Onone `try` shape and gives conditions and loop variables stable names.
 6. **Renderers read the IR**, then the §9.3 layers above it.
 
-Steps 1–3 are refactors. Step 4 is the first that changes output, and it is the
-soundness payoff. A stopgap that fixes `cacheEscape` inside the current tracer
+Steps 1–3 and the first shared-effect extraction in step 4 are refactors.
+Completing step 4 is the intended memory-model soundness payoff. A stopgap
+that fixes `cacheEscape` inside the current tracer
 (persistent per-region escape, union at joins) is acceptable before step 4 if
 it is written so step 4 can absorb it.
 
