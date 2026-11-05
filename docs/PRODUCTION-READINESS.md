@@ -9030,3 +9030,67 @@ Commit messages on dev stay as they are; these are the true records.
   Fixtures/Sample/libResilientTypedError.dylib --structured` and the
   corresponding `.Osize.dylib`; `Tools/blast-radius.sh <bf8ccc1-release>
   <candidate-release> <out> --real --perf`.
+
+- **OFFICIAL GATE (`f78a12c`):** the enforcing suite independently passed
+  1,317 tests in 18 suites (294.221 s). All 1,328 cost pairs have positive
+  counts and meet default budgets without override: -0.03% instructions and
+  +0.26% summed peak footprints. The gate release matches every reviewed
+  corpus view, all four large SDK outputs and all five app pseudo outputs.
+
+
+## 2026-11-05: strip declarations from closure-specialized calls
+
+- **FIXED (`628f33e`, correctness): a closure specialization's declaration
+  leaked into its call.** The demangler prints an unclosed bracket in the
+  specialization clause, hiding the declaration's top-level return arrow.
+  `ClosProp.apply` therefore kept its function-typed parameters and return
+  clause before the recovered argument list. Strip the shorter suffix after
+  specialization clauses and retain the exact prefix. The production hunk
+  changes only `Pseudo.strippedCallee`.
+- **GUARDED:** valid mangled constant-string and closure payloads can contain
+  `> of `. The original eight-line proposal could select a payload's
+  `M.fake` as the callee. If the stripped suffix still contains a delimiter,
+  retain the raw name. Four actual demangling controls cover constant-only,
+  mixed and closure-only payloads, including a preexisting unit-result
+  truncation. Distinct arguments and call targets remain intact. A printed
+  name with an ambiguous boundary remains raw.
+- **VERIFIED:** the authored ClosProp fixture builds at -O, -Osize and
+  -Onone. Native probes pass 36 checks; independent function-start and native
+  text-address sets agree on 13 / 13 / 15 functions, and filtered sets contain
+  10 / 10 / 12. Array, filtered and streaming paths preserve complete clause
+  prefixes, argument facts and targets. All four complete views plus filtered
+  JSON change only six return-call spellings, three at each optimized level;
+  -Onone is exact. Other function, entry, block, target and return facts match.
+- Eleven focused tests pass, including five new rendering tests, the old
+  closure-tail-return control, all four typed-error controls and generic
+  substitution. The baseline's successful build fails 82 assertions: 80
+  original-format assertions plus two preexisting unit-result assertions.
+  Independently rebuilt mutants fail 82 (branch disabled), 83 (prefix dropped)
+  and eight (ambiguity guard removed). Restored source rebuilt and all eleven
+  pass. The enforcing suite passed 1,322 tests in 18 suites (297.943 s).
+  The frozen release matches all 93 production/package source hashes. Fresh
+  semantic exports, 58,515 integer / 12,644 condition / 448 targeted-W records,
+  match their previously proved input/export bytes; exact prior solver proofs
+  are reused without rerunning a solver.
+- **REVIEWED / MEASURED:** 325 authored Mach-Os plus eight SDK inputs change
+  eight structured/pseudo files (107 line pairs), seven listings (43 pairs)
+  and eight JSON files (157 fields). Four authored inputs and four named SDK
+  libraries change; stripped SDK counterparts are exact. All 43,415 parsed
+  functions and 881,043 instructions retain headers, blocks, addresses, machine
+  text, control flow, targets and argument arity. The changed JSON strings are
+  107 statements, 43 annotations and seven argument expressions, each gaining
+  only the reviewed call-name cleanup. Five unsupported inputs keep identical
+  diagnostics and exit status.
+- Whole SwiftSyntax/Parser structured outputs shorten 154 / 68 body lines;
+  all 39,033 / 2,475 headers match native function starts. Both xrefs outputs
+  and all five app pseudo outputs are byte-identical. Seven CLI entry points
+  were checked; disasm/analyze carry only the expected three -O call-name
+  changes, with dump/layout/interface/objc/xrefs exact. Positive controls
+  retain 28 layouts and 46 Objective-C methods. All 1,336 cost pairs have
+  positive counts and pass default budgets without override: 4,923.653G to
+  4,925.555G instructions (+0.04%) and -0.33% summed peak footprints.
+
+  Reproduce: `Tools/fixtures.sh`; `swiftdc disasm
+  Fixtures/Sample/libClosProp.dylib --structured` and corresponding
+  `.Osize.dylib` / `.Onone.dylib`; `Tools/blast-radius.sh <f78a12c-release>
+  <candidate-release> <out> --real --perf`.
