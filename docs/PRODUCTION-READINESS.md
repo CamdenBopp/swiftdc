@@ -9442,9 +9442,9 @@ Commit messages on dev stay as they are; these are the true records.
   `Tools/blast-radius.sh <39edfbb-release> <new-release> <out> --real --perf`.
 
 - **OPEN — the complete frame-memory IR model.** Boundary/provenance
-  discovery, MAY carriers and result/context spaces remain with their analyses.
-  Exact-store footprints and shared must-fact ownership follow below; neither
-  alone completes this model. Preserve Onone spill recovery, caller ownership,
+  discovery and result/context spaces remain with their analyses. Shared exact
+  footprints, must facts and durable MAY reach follow below; these extractions
+  do not yet complete the model. Preserve Onone spill recovery, caller ownership,
   disjoint bounds and escape closure as those pieces move.
 
 ## 2026-11-05: share exact frame-store footprints
@@ -9508,9 +9508,10 @@ Commit messages on dev stay as they are; these are the true records.
   `Tools/blast-radius.sh <6b6ab7e-release> <new-release> <out> --real --perf`.
 
 - **OPEN — complete frame layout, provenance and spaces.** Shared must-fact
-  storage follows below; layout discovery, MAY aliases, escape carriers and
-  result/context models remain separate. A deliberate change to legacy endpoint
-  failure behavior still needs an accepted-input reduction and its own proof.
+  storage and durable escape ownership follow below; layout discovery, register
+  MAY aliases and result/context models remain separate. A deliberate change
+  to legacy endpoint failure behavior still needs an accepted-input reduction
+  and its own proof.
 
 ## 2026-11-05: share frame-fact ownership and transfers
 
@@ -9571,7 +9572,80 @@ Commit messages on dev stay as they are; these are the true records.
   `Tools/blast-radius.sh <9531e4b-release> <new-release> <out> --real --perf`.
 
 - **OPEN — the complete frame-memory IR model.** Fact storage and must
-  transfers are shared. Layout/boundary discovery, MAY alias/escape carriers,
-  ownership policies and result/context spaces remain with their analyses.
+  transfers are shared; durable escape ownership follows below. Layout/boundary
+  discovery, register MAY aliases, ownership policies and result/context spaces
+  remain with their analyses.
   SelfState's MAY slot set remains separate from the shared must intersection.
   No accepted-input endpoint-failure repair or unified value identity is claimed.
+
+## 2026-11-05: share durable frame escape state
+
+- **FIXED — duplicate durable MAY reach stores (`d2f05ad`).**
+  Both tracer State and Preservation now store their actual reach in
+  `DurableFrameReach`. Concrete specializations keep tracer marker keys and
+  `AbstractValue` payloads in one dictionary, or frozen bounds in one Set plus
+  a whole flag. Common algorithms own presence/count transitions, ordered
+  payload union, raw intersection, reset and effect emission. The old marker
+  entries and stored Preservation ranges/flag have no shadow copies.
+
+  Raw payloads, explicit unknown, dynamic allocation evidence and redundant
+  identities beside whole-frame coverage retain their meanings and counts.
+  Tracer bounds resolve from actual function layout evidence when queried;
+  Preservation freezes the old floor/bound pair against live entry saves at
+  escape. A partly resolved input that becomes unbounded adds whole coverage
+  without adding its partial ranges. Selected defaults remain Any; explicit
+  finite-empty origins remain empty. No new origin tag changes range equality.
+
+  Caller-owned reach is query-only. SelfState's finite read query now uses
+  the common effect with wrapping eight-byte endpoints, preserving its empty
+  and whole fast paths. Its MAY self slots remain separate from must facts;
+  checked invalidation, incoming ownership, reload ordering and alias rules
+  are unchanged. Tracer context/dynamic progress, pointer-loss closure and
+  reset behavior also remain intact. Clearing frame values does not clear
+  durable reach.
+
+  All **336 inputs in four views**, four large SDK outputs, five app pseudo
+  outputs and nine CLI pairs match. The **331 supported JSON inputs** retain
+  **43,450 functions / 881,361 instructions**; five existing unsupported inputs
+  retain exact diagnostics/statuses. All **1,348 cost pairs** have positive
+  counters and pass default budgets without exception: **+0.8993%
+  retired instructions / -0.5789% summed peak footprints**. These
+  are corpus budget observations from the standalone frozen release. They do not
+  establish general speed, allocation-volume or retained-heap gains.
+
+  Two matched Parser `xrefs --unreferenced` runs each received one five-second
+  CPU sample and produced identical nonempty output. The early summary and
+  Preservation windows show shared effect construction and union. The self-slot
+  query includes region Set resizing and allocator ancestry. Counter/iterator
+  costs remain unisolated; tracer analysis was not captured. CPU ancestry
+  samples do not count allocation events or bytes.
+
+  Verified: **11 new tests**, including six behavior controls also green on
+  previous production. Independent CLT assembly/LLVM decoding verifies six
+  synthetic body variants / 72 words; those bodies were not executed natively.
+  Existing native frame-escape, saved-slot and caller-ownership controls across
+  optimization levels pass. **Sixteen compiled variants** produce **74 intended
+  assertion issues**. The same union and finite-effect omissions fail real
+  tracer, Preservation-call and SelfState read consumers; both successor
+  orders guard against an earlier read hiding a lost join. Restored **53
+  tests / seven suites** and enforcing **1,398 tests / 30 suites** pass.
+  Fresh exports match **58,515 integer / 12,644 condition / 448 targeted-word
+  records**, reusing prior solver evidence for identical input/output bytes.
+  Frozen debug/release CLIs pass **152 separate-process checks**, including
+  the saved-register escape fixture.
+
+  Reproduce: `Tools/fixtures.sh`; `swift build --build-tests -j 2`;
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`;
+  `swift build -c release --scratch-path .build-release -j 2`;
+  `Tools/blast-radius.sh <89ea2a0-release> <new-release> <out> --real --perf`.
+
+- **OPEN — complete frame layout, provenance and spaces.** Fact storage,
+  must transfers and durable MAY reach now share owners and operations.
+  Layout/evidence discovery, register alias provenance, ownership policies,
+  SelfState's MAY slot set and result/context spaces remain with their analyses.
+  Unified value identity and an accepted-input endpoint repair are not claimed.
+
+- **OPEN — temporary effect construction costs.** Current CPU samples identify
+  `SelfState.escapeReachesSlot` through `DurableFrameReach.effect` and region
+  Set construction as a concrete follow-up target. Allocation volume, retained
+  heap and precise counter/iterator costs remain unmeasured.

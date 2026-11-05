@@ -46,8 +46,8 @@ since shipped.
   returns 11. Each analysis that needs frame facts re-derives escape and
   aliasing, and each one gets a different subset right. (The stopgap below
   shipped on 2026-10-15: per-region escape markers in the tracer, unioned at
-  joins. Step 4 now shares write footprints and current-frame fact storage;
-  boundary/provenance discovery, MAY carriers and complete layout/space
+  joins. Step 4 now shares write footprints, current-frame facts and durable
+  escape state. Layout discovery, alias provenance and complete space/value
   unification remain open.)
 - **Facts are strings.** `demangledName(from:)` returns any leading note not on
   its deny-list as a callee name. Adding the `swift-exit=` note on 2026-10-15
@@ -264,9 +264,9 @@ fix, measured and explained like any other.
    Existing frontend rules still decide self-isa repair, width/bank veto,
    pointer-loss escape and caller ownership. Their ordering is preserved;
    start-selected clear, exact overwrite and unknown knowledge loss remain
-   distinct. State budgets count legacy components, not rows. Layout/boundary
-   discovery, MAY carriers, SelfState's MAY slots and result/context spaces
-   remain separate; completing step 4 is still OPEN.
+   distinct. State budgets count legacy components, not rows. Durable MAY
+   reach follows below; layout discovery, register alias provenance, SelfState's
+   MAY slots and result/context spaces remain separate. Step 4 remains OPEN.
 
    Eleven new tests, twelve compiled assertion-red variants and restored
    34 tests across seven focused suites pass; the enforcing suite passes 1,387/28.
@@ -275,11 +275,41 @@ fix, measured and explained like any other.
    budgets pass with their measured scope in PRODUCTION-READINESS.md. No
    general speed, allocation-volume or retained-heap improvement is claimed.
 
+   *Durable escape state follows in `d2f05ad`: both states now store
+   their actual MAY frame reach in `DurableFrameReach`. Concrete storage
+   keeps original tracer point/below/all/dynamic keys and payloads, or
+   Preservation's frozen range Set and whole flag. Presence/count updates,
+   ordered payload union, raw intersection, reset and effect emission share
+   one implementation. No shadow marker map or second range/whole store
+   remains. Whole coverage retains finite identities; dynamic allocation
+   evidence alone does not escape memory.*
+
+   Tracer ranges resolve from actual layout evidence at each query;
+   Preservation freezes bounds from live entry saves when a pointer escapes.
+   Each input resolves transactionally, preserving selected-default Any versus
+   finite-empty origins. Caller-owned reach is query-only. SelfState's finite
+   read query uses the shared effect with wrapping endpoints; its MAY self
+   slots remain separate from must facts. Context progress, state reset,
+   pointer-loss closure, alias selection and ownership policies retain their
+   existing meanings. Complete layout/provenance/space unification remains
+   OPEN.
+
+   Eleven new tests include six controls green on previous production.
+   Sixteen compiled variants fail 74 intended assertions; the same union and
+   finite-effect omissions fail actual tracer, Preservation-call and SelfState
+   read consumers. Both successor orders guard the self-read result that stays
+   true once observed. Restored 53 tests/seven suites, enforcing 1,398/30,
+   fresh semantics and 152 separate-process checks pass. All 336 inputs in
+   four views, four SDK outputs, five apps and nine CLI pairs match. Default
+   costs pass; PRODUCTION-READINESS.md records the standalone release scope
+   and sampled temporary-Set path. No general CPU or heap saving is claimed.
+
 5. **Value identity and edge refinement.** Recovers declined exits such as the
    -Onone `try` shape and gives conditions and loop variables stable names.
 6. **Renderers read the IR**, then the §9.3 layers above it.
 
-Steps 1–3 and the shared write-footprint/fact-store extractions in step 4 are refactors.
+Steps 1–3 and the step 4 extractions of write footprints, fact storage and
+durable reach are refactors.
 Completing step 4 is the intended memory-model soundness payoff. A stopgap
 that fixes `cacheEscape` inside the current tracer
 (persistent per-region escape, union at joins) is acceptable before step 4 if
