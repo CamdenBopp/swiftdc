@@ -1542,7 +1542,8 @@ public struct ValueTracer: Sendable {
                 for location in [Location.x(9), .x(16), .x(17), .x(30)] { registers[location] = .unknown }
                 // Its one store saves x10 and x11 in the 16 bytes below sp.
                 if case .frame(let top)? = registers[.sp] {
-                    Self.forgetFrame(in: &registers) { offset, bytes in offset < top && offset &+ bytes > top &- 16 }
+                    Self.forgetFrame(in: &registers, effect: FrameMemoryEffect(
+                        [.finite(lower: top &- 16, upper: top)], arithmetic: .wrapping))
                 }
                 registers[Self.flagsKey] = nil
                 registers[Self.flagsWidthKey] = nil
@@ -5282,38 +5283,37 @@ public struct ValueTracer: Sendable {
             guard markers != seen else { return }
             seen = markers
             guard let reach = escapedReach(registers, addressTaken: addressTaken) else { return }
-            forgetFrame(in: &registers, where: reach)
+            forgetFrame(in: &registers, effect: reach)
         }
     }
 
-    /// Whether an escaped address may reach `bytes` at a frame offset; nil
-    /// when nothing has escaped.
-    private static func escapedReach(_ registers: State, addressTaken: [Int64]) -> ((Int64, Int64) -> Bool)? {
+    /// The write footprint of the durable escape markers; nil when no
+    /// frame address has escaped. Boundary discovery stays with this tracer.
+    private static func escapedReach(_ registers: State, addressTaken: [Int64]) -> FrameMemoryEffect? {
         let everything = registers[frameEscapeAllKey] != nil
-        var regions: [(start: Int64, end: Int64)] = []
+        var regions = Set<FrameMemoryEffect.Region>()
         for key in registers.keys {
             if case .frameEscaped(let start) = key {
-                regions.append((start, start >= 0 ? Int64.max : (addressTaken.first { $0 > start } ?? 0)))
+                let end = start >= 0 ? Int64.max : (addressTaken.first { $0 > start } ?? 0)
+                regions.insert(.finite(lower: start, upper: end))
             } else if case .frameBelow(let end) = key {
-                regions.append((Int64.min, end))
+                regions.insert(.finite(lower: Int64.min, upper: end))
             }
         }
         guard everything || !regions.isEmpty else { return nil }
-        return { offset, bytes in
-            everything || regions.contains { $0.start < offset &+ bytes && offset < $0.end }
-        }
+        return FrameMemoryEffect(regions, arithmetic: .wrapping, everything: everything)
     }
 
-    /// Forget the frame facts for which `reaches(offset, bytes)` holds. A
-    /// forgotten frame address is still in memory: it escapes.
-    private static func forgetFrame(in registers: inout State, where reaches: (Int64, Int64) -> Bool) {
+    /// Forget the frame facts the effect may reach. A forgotten frame
+    /// address is still in memory: it escapes.
+    private static func forgetFrame(in registers: inout State, effect: FrameMemoryEffect) {
         var lost: [AbstractValue] = []
         for key in Array(registers.keys) {
             guard let offset = stackOffset(from: key) else { continue }
             let bytes: Int64 = if case .immediate(let width)? = registers[stackWidthKey(offset)] {
                 Int64(clamping: width)
             } else { 8 }
-            guard reaches(offset, bytes) else { continue }
+            guard effect.mayInvalidate(FrameMemoryExtent(start: offset, bytes: bytes)) else { continue }
             if let value = registers[key] { lost.append(value) }
             registers[key] = nil
             registers[stackWidthKey(offset)] = nil
@@ -5371,7 +5371,8 @@ public struct ValueTracer: Sendable {
         var tracked = false
         if modelledSlot, case .stackSlot(let key)? = target, let start = Self.stackOffset(from: key) {
             let bytes = Int64(Self.accessBytes(detail) ?? 8)
-            tracked = !(Self.escapedReach(registers, addressTaken: frame.boundaries)?(start, bytes) ?? false)
+            tracked = !(Self.escapedReach(registers, addressTaken: frame.boundaries)?.mayInvalidate(
+                FrameMemoryExtent(start: start, bytes: bytes)) ?? false)
         }
         // A context pointer stored into a context slot by a full-width store
         // stays followed (`.contextSlot`, the callee's parent header): that is how
@@ -5391,9 +5392,10 @@ public struct ValueTracer: Sendable {
         case .stackSlot(let key)?:
             guard !modelledSlot, let start = Self.stackOffset(from: key) else { break }
             let bytes = Self.accessBytes(detail).map(Int64.init)
-            Self.forgetFrame(in: &registers) { offset, width in
-                offset &+ width > start && (bytes.map { offset < start &+ $0 } ?? true)
-            }
+            let region: FrameMemoryEffect.Region = bytes.map {
+                .finite(lower: start, upper: start &+ $0)
+            } ?? .atOrAbove(start)
+            Self.forgetFrame(in: &registers, effect: FrameMemoryEffect([region], arithmetic: .wrapping))
         case .absolute?, .selfField?, .vtableMethod?, .arrayElement?, .resultSlot?, .asyncSlot?, .asyncCalleeSlot?:
             break
         // A store through a loaded pointer is the untracked store it was
@@ -5408,9 +5410,9 @@ public struct ValueTracer: Sendable {
                    registers[.frameDynamic(allocation)] != nil,
                    let bytes = Self.accessBytes(detail) {
                     let limit = allocation &+ max(memory.displacement, 0) &+ Int64(bytes)
-                    Self.forgetFrame(in: &registers) { offset, _ in offset < limit }
+                    Self.forgetFrame(in: &registers, effect: FrameMemoryEffect([.startsBelow(limit)], arithmetic: .wrapping))
                 } else {
-                    Self.forgetFrame(in: &registers) { _, _ in true }
+                    Self.forgetFrame(in: &registers, effect: FrameMemoryEffect(arithmetic: .wrapping, everything: true))
                 }
             } else if !(Self.predatesFrame(base) && !indexed) {
                 Self.forgetEscapedFrame(in: &registers, addressTaken: frame.boundaries)

@@ -887,18 +887,16 @@ enum Preservation {
                 slots.removeAll()
                 return
             }
-            if !escapedRanges.isEmpty {
-                slots = slots.filter { start, _ in
-                    let (end, overflow) = start.addingReportingOverflow(8)
-                    return !overflow && !escapedRanges.contains { start < $0.bound && end > $0.floor }
-                }
+            var regions = Set<FrameMemoryEffect.Region>()
+            for range in escapedRanges {
+                regions.insert(.finite(lower: range.floor, upper: range.bound))
             }
-            // Incoming pointers can reach caller-owned memory at entry SP
-            // or above it. A save is private only if all eight bytes lie
-            // below entry SP; testing its start alone misses straddling saves.
+            // Caller-owned and straddling eight-byte facts are not private
+            // saves, even when no pointer escaped from this function.
+            regions.insert(.atOrAbove(0))
+            let effect = FrameMemoryEffect(regions, arithmetic: .checked)
             slots = slots.filter { start, _ in
-                let (end, overflow) = start.addingReportingOverflow(8)
-                return !overflow && end <= 0
+                !effect.mayInvalidate(FrameMemoryExtent(start: start, bytes: 8))
             }
         }
 
