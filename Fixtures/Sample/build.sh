@@ -797,3 +797,6 @@ $SWIFTC -parse-as-library -Osize -emit-library -module-name EntrySeed entryseed.
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release
+
+echo "==> recursive entry call effects and real stack reloads (summary_recursive_effects.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib summary_recursive_effects.s -o libRecursiveSummaryEffects.dylib

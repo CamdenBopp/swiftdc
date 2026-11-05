@@ -335,7 +335,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 }
             }
             if insn.controlFlow == .call || insn.controlFlow == .branch,
-               let target = insn.branchTarget, !addresses.contains(target) {
+               let target = insn.branchTarget,
+               !addresses.contains(target) || (insn.controlFlow == .call && target == entry) {
                 callees.insert(target)
                 let effect = calleeEffects(target)
                 writtenCalleeSaved.formUnion(effect.clobbers)
@@ -343,7 +344,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             }
         }
         func external(_ insn: Instruction) -> UInt64? {
-            guard let target = insn.branchTarget, !addresses.contains(target) else { return nil }
+            // A call to entry recurses; a branch to entry stays a CFG edge.
+            guard let target = insn.branchTarget,
+                  !addresses.contains(target) || (insn.controlFlow == .call && target == entry) else { return nil }
             return target
         }
         let callEffect = { (insn: Instruction) -> CalleeEffect in
