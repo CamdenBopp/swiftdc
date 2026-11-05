@@ -8616,7 +8616,7 @@ Commit messages on dev stay as they are; these are the true records.
 
 ## 2026-11-05: scalar reads of selected packed vector lanes
 
-- **FIXED (soundness): a selected vector became a tuple-valued scalar.**
+- **FIXED (`e7bb401`, soundness): a selected vector became a tuple-valued scalar.**
   `scalarView` handled a direct aggregate but not a select of aggregates.
   `disasm Fixtures/Sample/libSelectedVectorLanes.dylib --structured` printed
   `(arg0 == 0) ? (11, 11) : (7, 7)` for an integer return, and selected tuples
