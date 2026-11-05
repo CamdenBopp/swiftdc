@@ -8523,7 +8523,7 @@ this Mac.
 - **Accepted decline: a high lane that really survives.** `untouched()`
   calls a helper that writes nothing, returns 0 natively and renders
   `return ?`. Low-lane summaries do not prove the high word preserved.
-- **FIXED (soundness): d8-d15 callee summaries.** The low 64 bits of
+- **FIXED (`5ce2882`, soundness): d8-d15 callee summaries.** The low 64 bits of
   v8-v15 are now included in callee preservation and transitive clobbers;
   see the 2026-11-05 vector-summary entry below. Upper lanes stay unproved.
 - **OPEN (soundness): a scalar's whole-register store after a call.**
@@ -8925,7 +8925,7 @@ Commit messages on dev stay as they are; these are the true records.
 
 ## 2026-11-05: summarize callee-saved vector low lanes
 
-- **FIXED (soundness): an outlined callee could leave a stale d8-d15 value.**
+- **FIXED (`5ce2882`, soundness): an outlined callee could leave a stale d8-d15 value.**
   Callee summaries covered x19-x29 only. In the authored
   `libVectorPreservation.dylib`, `VectorSummaries.nested()` sets d8 to 2.0,
   calls a nested helper that changes it to 1.0, and returns d8. Native
