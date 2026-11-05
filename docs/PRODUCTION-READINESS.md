@@ -9232,3 +9232,48 @@ Commit messages on dev stay as they are; these are the true records.
   Fixtures/Sample/libConditionalTailEffects.dylib --structured` and the
   corresponding `--pseudo`, listing and `--json` views;
   `Tools/blast-radius.sh <5ff6d6b-release> <candidate-release> <out> --real --perf`.
+
+- **FIXED — repeated CFG recovery within function analysis
+  (`a83a2de`).** Build after outlined rewrites and jump-table
+  recognition, then share the graph across tracing, enrichment and matching
+  leaf consumers. Refresh only when indirect resolution adds an external
+  branch successor. The final async nil-BR→RET rewrite retains no local graph;
+  final-function caching and structurer sharing remain OPEN (IR step 2.3).
+
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build` passed **1,346 tests in
+  20 suites**. Fourteen independently compiled mutants triggered test failures; restoration
+  passed all **15 focused tests**. Fresh integer, condition and targeted-word
+  exports contain **58,515 / 12,644 / 448 records**. Their input and output
+  bytes match the previously proved pairs; no duplicate solver run was needed.
+
+  Three alternating release pairs per app, using whole-image `--pseudo`,
+  preserved exact output in all 12 runs. Median retired instructions fell
+  **0.7391% on Clarc** and **0.7832% on GoodLinks**. Peak footprint was mixed:
+  **Clarc +2.2147%** (overlapping ranges), **GoodLinks −2.5336%**. These are
+  measurements of those inputs, not a universal memory improvement. Allocation
+  history exports hit their **8 GiB output cap** and are incomplete; they
+  establish no allocation-volume or retained-heap reduction.
+
+  All **335 inputs in four views** are byte-identical: **43,444 functions**
+  and **881,284 instructions**, with the same five unsupported-input
+  diagnostics. All four large SDK outputs and five app pseudo outputs match.
+  Nine CLI command pairs match, including 28 nonempty layouts and 46 ObjC
+  methods. Explicit frozen debug/release binaries pass **96 subprocess runs**
+  covering the seven ordinary, three existing probe and two new CFG trace
+  cases, each repeated four times per configuration. This avoids relying on
+  the legacy optional `.build/debug/swiftdc` test lookup.
+
+  All **1,344 cost pairs** have positive instruction/footprint counts and meet
+  the default per-input and total budgets without override: retired
+  instructions **−0.7387%**, summed peak footprints **−0.1371%**.
+
+  Reproduce the app measurements with three alternating release pairs of
+  `swiftdc disasm <app> --pseudo --arch arm64`; compare all fixture views with
+  `Tools/blast-radius.sh <437e1e0-release> <new-release> <out> --real --perf`.
+  The remaining instruction/block and dictionary copying in sampled analysis
+  windows are hypotheses for further IR work; the samples are not whole-run
+  percentages.
+
+  Verified: SharedFunctionCFGTests and SharedFunctionCFGAdditionalTests;
+  fourteen separately rebuilt placement, invalidation and forwarding mutants
+  red; restored 15 focused tests green; enforcing 1,346/20 full suite green.

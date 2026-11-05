@@ -1,6 +1,6 @@
 # Settling on an intermediate representation
 
-swiftdc has no IR between Capstone's decoded instructions and rendered text.
+swiftdc is building an IR between decoded instructions and rendered text.
 This document says why that now limits soundness more than any single missing
 rule, what the IR should be, and the order to build it in so that every step
 ships on its own, output-identical unless it is a deliberate fix.
@@ -12,7 +12,10 @@ structuring, a thin emitter). That section argued from design debt. This one
 argues from defects found since, and puts the memory model first, because that
 is where the open soundness bugs are.
 
-## What the code does today
+## The starting design
+
+This design motivated the plan; the progress notes below describe what has
+since shipped.
 
 1. **Decode.** `Instruction` carries objdump text, Capstone's `StructuredInsn`,
    a control-flow class and a branch target.
@@ -132,44 +135,47 @@ fix, measured and explained like any other.
    reads a note from the annotation now; it is display text, and a
    rebuild passes `facts: insn.facts`. The callee is still parsed from the
    annotation for an instruction built by hand without one.*
-2. **CFG once.** A `FunctionCFG` built at segmentation and threaded through
-   enrichment, the tracer, the summaries and the structurer. Measure with a
-   release A/B on a large app.
-   *Started 2026-10-22. `FunctionCFG` (FunctionCFG.swift) now owns the
-   block recovery `basicBlocks()` did, with the same algorithm: blocks as
-   index ranges into the instructions, dense ids in instruction order with
-   block 0 the entry, successor addresses in the old order and multiplicity
-   (a conditional branch to the next instruction lists it twice), successor
-   and predecessor ids, the terminator, the switch cases and the block of
-   each instruction. `basicBlocks()` is a view of it. The consumers outside
-   the four large files (`renderCFG`, the JSON blocks, the probe snapshots,
-   the return-path conditions, the x8 classifier, the async context escape
-   check and the accessor test) read the graph instead of copying
-   instructions into blocks. Every fixture view and Clarc are unchanged, and
-   `FunctionCFGTests` compares the view with the old algorithm on every
-   function of every fixture, with and without its jump tables. Each
-   consumer still builds its own graph. The commits left, in order:*
-   1. *Build the register summaries after jump tables are recognised (D1,
-      a fix, measured as one). `CalleeRegisterSummary.of` runs at
-      segmentation, before `JumpTables.recognize`, so a switch's `br` reads
-      as a tail call that takes x0 to x7. It goes first so that the one
-      graph is the one with tables. D2, a `br` resolved into its own
-      function becoming an internal edge, was fixed in 277b543.*
-   2. *Build the graph once per function, after `JumpTables.recognize` in
-      `analyzeFunctionBody`, and pass it to `ValueTracer.analyze`, the
-      three enrichment builders (async throw exits, error-proof blocks,
-      binding blocks), `SwiftErrorExitProof` and the leaf consumers above.
-      Edges change after that point in two places:
-      `annotateIndirectControlFlowTargets` gives a resolved `br` an
-      out-of-function target (a successor address, never an internal edge
-      since 277b543), and a proven async return becomes `.return`, which
-      drops that address. Rebuild at those two points, or show each keeps
-      the internal edges and patch only the addresses; a test compares the
-      passed graph with a fresh build at every consumer.*
-   3. *Keep the final graph with the function so the structurer, JSON,
-      probes and `renderCFG` stop rebuilding it, and make
-      `AsyncFuncletIndex.trapGuardedRuns` a view over block ids instead of
-      new `BasicBlock` values. Release A/B on Clarc and GoodLinks.*
+2. **CFG once.** Share `FunctionCFG` within each analysis phase, then retain
+   the final graph for rendering. The graph owns index ranges, block ids,
+   successor/predecessor ids and switch cases; instruction views come from
+   the current function.
+
+   The initial implementation (2026-10-22) centralized block recovery while
+   preserving instruction-order ids and successor order and multiplicity.
+   `BasicBlock` views still materialize copies of current instructions.
+
+   1. *Done in `0f0b2716fe07ed3b7122ae5dfd422e2bb0f9ea5d`: build register
+      summaries after jump-table recognition (D1). A switch's `br` previously
+      looked like a tail call, hiding case clobbers and inventing arguments.
+      D2, resolving a `br` into its own function without creating an
+      internal edge, was fixed in `277b543`.*
+   2. *Done in `a83a2de`: build a local graph after outlined-fragment
+      rewriting and `JumpTables.recognize` in `analyzeFunctionBody`. Share it
+      with the tracer, setter retrace, async-throw/error-proof/binding block
+      builders, probe snapshots, return-path conditions and x8 classifiers.
+      Funclet tracing and context-escape analysis also share their graph.
+      Internal overloads accept the graph; existing callers keep their
+      fallback. No graph retains instruction arrays or escapes streaming
+      analysis. A resolved external `br` target rebuilds the graph; call
+      naming, notes and facts do not. A proven async return rewrites a
+      nil-target `br` to `.return` only after the local graph's last use.
+      That graph is not retained with the returned function; later consumers
+      build from its final instructions. Debug recorder checks compare each
+      supplied graph with a fresh graph, and construction budgets detect
+      redundant recovery. Fourteen separately compiled mutations failed;
+      restored focused and full tests passed. All 335 inputs in four views,
+      four large SDK outputs and five app pseudo outputs are byte-identical;
+      nine CLI command pairs and 96 explicit current-binary subprocess runs
+      pass. All 1,344 positive cost pairs meet default budgets. Three release
+      pairs on Clarc and GoodLinks reduce retired instructions by 0.7391%
+      and 0.7832%; footprint is mixed. Allocation-history totals remain
+      inconclusive because the bounded text exports are incomplete.*
+   3. *OPEN: keep the final graph with the function for the structurer, JSON,
+      `renderCFG` and remaining later consumers. Make
+      `AsyncFuncletIndex.trapGuardedRuns` a block-id view instead of new
+      `BasicBlock` values. Retain exact output checks and measure release
+      A/B on Clarc and GoodLinks for that separate change.*
+
 3. **Typed locations in the tracer.** `[Location: AbstractValue]` instead of
    string keys. Pure refactor; measure the speed. *Done for `ValueTracer`
    (2026-10-15), ahead of steps 1 and 2 because string keys were about half

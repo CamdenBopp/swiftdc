@@ -171,6 +171,8 @@ To reproduce, run the same command with and without `--probe <file>`
 | `types.field-named` | claim | type, offset, bytes, field, fieldType, coverage | A field name at an offset, checkable against DWARF. |
 | `types.field-unnamed` | decline | type, offset, bytes, reason | Why an access stayed `+0x…`. |
 | `cfg.jump-table` | decision | cases | A `br` proven a jump table. |
+| `cfg.graph-built` | metric | instructions, blocks | A `FunctionCFG` was constructed. Counts include fallback callers and separate analysis phases, not unique functions. |
+| `cfg.graph-used` | metric | consumer, matches-fresh | DEBUG builds with an active recorder compare a consumer's supplied graph with a fresh graph of its current function. |
 | `cfg.unresolved-indirect-branch` | decline | text | A `br` with no successors in the CFG. |
 | `cfg.unresolved-indirect-call` | decline | text | A `blr` absent from the call graph. |
 | `decode.skipped-slot` | decline | — | Capstone could not decode 4 bytes. |
@@ -183,6 +185,11 @@ To reproduce, run the same command with and without `--probe <file>`
 | `perf.analysis`, `perf.render` | metric | (times) | Per-phase cost. |
 
 Renaming an event id is a schema change: bump `ProbeRecorder.schema`.
+
+`cfg.graph-used` is evidence only. Its reference construction is muted so it
+cannot inflate `cfg.graph-built`; neither event changes analysis decisions.
+Release builds emit construction metrics when requested, without running the
+DEBUG freshness comparison.
 
 ## Extension points
 
