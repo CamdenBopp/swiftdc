@@ -119,7 +119,7 @@ private func fragment(_ words: [UInt32]) throws -> DisassembledFunction {
 /// still waiting at the cap, every function that calls one, directly or not,
 /// and a function whose body cannot be summarised again.
 @Test func anUnfinishedClosureClaimsNothingUpTheCallGraph() {
-    let all: Set<String> = Set((19...29).map { "x\($0)" })
+    let all: Set<String> = Set((19...29).map { "x\($0)" } + (8...15).map { "v\($0)" })
     // 0x10 clobbers x19 itself; 0x20 calls it, 0x30 calls 0x20, 0x40 calls 0x30.
     func graph() -> [UInt64: CalleeRegisterSummary] {
         [

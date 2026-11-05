@@ -89,15 +89,17 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// temporary: `Mode.weight(self: r0, r0)` for a by-value enum method.
     /// True when nothing is known.
     var readsSelfRegister = true
-    /// Callee-saved registers (`x19`…`x29`) the body writes and does not
-    /// provably hand back: at some exit (a `ret` or a tail branch out) the
+    /// Callee-saved registers (`x19`…`x29` and the low 64 bits of `v8`…`v15`)
+    /// the body writes and does not provably hand back: at some exit (a `ret`
+    /// or a tail branch out) the
     /// register does not hold its entry value. Anything unproven counts as
     /// clobbered.
     let clobberedCalleeSaved: Set<String>
-    /// The clobbered registers the body never stores to memory: changed and
-    /// not saved anywhere (an outlined fragment writing x19). Only these
-    /// carry through calls. A register the body saves but whose save slot
-    /// the analysis cannot prove intact (a frame address passed to a callee)
+    /// Every unproved vector low-lane clobber carries through calls, even
+    /// when the body stored it without restoring it. For general registers,
+    /// only those never stored carry through (an outlined fragment writing
+    /// x19). A general register the body saves but whose save slot the
+    /// analysis cannot prove intact (a frame address passed to a callee)
     /// is clobbered for its direct callers, as before, and goes no further:
     /// carried up the call graph, that caution cost thousands of correct
     /// lines on real apps. x21 is left out too: it is Swift's error
@@ -155,7 +157,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     private static let framePointerBit: UInt32 = 1 << 29
     private static let contextRegisterBit: UInt32 = 1 << 22
     private static let selfRegisterBit: UInt32 = 1 << 20
-    private static let calleeSavedKeys = Set((19...29).map { "x\($0)" })
+    private static let calleeSavedKeys = Set(Preservation.calleeSavedKeys)
 
     /// Nil when any instruction lacks structured detail: nothing is claimed
     /// about a body that was not fully decoded.
@@ -308,13 +310,13 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         }
 
         var writtenCalleeSaved = Set<String>()
-        var storedCalleeSaved = Set<String>()
+        var storedGeneralCalleeSaved = Set<String>()
         var callees = Set<UInt64>()
         var outgoingCalls: [OutgoingCall] = []
         var storesOnlyToStack = true
         for insn in instructions {
             guard let detail = insn.detail else { return nil }
-            writtenCalleeSaved.formUnion(detail.writtenRegisterKeys.intersection(calleeSavedKeys))
+            writtenCalleeSaved.formUnion(Preservation.writtenRegisterKeys(in: detail).intersection(calleeSavedKeys))
             for info in detail.operands where info.isWritten {
                 guard case .memory(let base, _, _) = info.operand else { continue }
                 if base?.kind != .stackPointer { storesOnlyToStack = false }
@@ -328,7 +330,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 for info in detail.operands where info.isRead {
                     if case .register(let register) = info.operand, register.kind == .gpr,
                        calleeSavedKeys.contains(register.key) {
-                        storedCalleeSaved.insert(register.key)
+                        storedGeneralCalleeSaved.insert(register.key)
                     }
                 }
             }
@@ -402,7 +404,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 clobbered = writtenCalleeSaved
             }
         }
-        let definitelyClobbered = clobbered.subtracting(storedCalleeSaved).subtracting(["x21"])
+        // The save-slot escape exception belongs to GPRs only. A stored but
+        // unrestored vector must still invalidate its callers' low lanes.
+        let definitelyClobbered = clobbered.subtracting(storedGeneralCalleeSaved).subtracting(["x21"])
         return CalleeRegisterSummary(
             argumentReads: reads,
             provenArgumentReads: provenReads,
@@ -656,8 +660,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
 /// Which callee-saved registers a body hands back with their entry values.
 ///
 /// Being stored somewhere is not being preserved: a function can spill x19,
-/// overwrite it and never reload it. Over the CFG, each general register and
-/// each 8-byte stack slot holds an abstract value: some register's entry
+/// overwrite it and never reload it. Over the CFG, each general register,
+/// vector low 64 bits and 8-byte stack slot hold an abstract value: some register's entry
 /// value, an address `entry sp + k`, or unknown. Moves copy values; `add`/`sub`
 /// of an immediate move addresses; stores and loads through a known stack
 /// address (pre- and post-index included) save and reload them; anything else
@@ -668,6 +672,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
 /// is not preserved. Joins keep only what every path agrees on, and an
 /// unfinished fixpoint gives up on every written register.
 enum Preservation {
+    /// A vector key proves only its low 64 bits, never the upper lane.
+    static let calleeSavedKeys = (19...29).map { "x\($0)" } + (8...15).map { "v\($0)" }
+
     /// MachineDetail's shared keys intentionally cover general registers only.
     /// A vector write also ends what this analysis knows of that register.
     /// Missing access flags cannot prove that an operand was left untouched.
@@ -939,7 +946,7 @@ enum Preservation {
         callInputs: (Instruction) -> Set<String>? = { _ in nil },
         clobbersMayAliasStack: Bool = true
     ) -> [UInt64: [String: Value]]? {
-        let calleeSaved = (19...29).map { "x\($0)" }
+        let calleeSaved = calleeSavedKeys
         var initial = State(registers: ["sp": .stack(0)], slots: [:])
         for key in calleeSaved { initial.registers[key] = .entry(key) }
         let blockAt = Dictionary(blocks.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
@@ -1020,7 +1027,7 @@ enum Preservation {
         }
         state.markEscape(inputs)
         state.invalidateSlotsForUnknownWrite(throughStackAlias: false)
-        // The callee keeps the ABI: x19–x29 and sp survive it.
+        // The callee keeps the ABI: x19–x29, sp and the low 64 bits of v8–v15 survive it.
         for index in 0...18 { state.setRegister("x\(index)", to: .unknown) }
         state.setRegister("x30", to: .unknown)
         for index in Array(0...7) + Array(16...31) { state.setRegister("v\(index)", to: .unknown) }
@@ -1200,10 +1207,11 @@ enum Preservation {
                     }
                     let slot = address &+ Int64(offset * bytes)
                     state.invalidateSlots(at: slot, bytes: bytes)
-                    // Only a whole 64-bit GPR is a saved entry value. A SIMD
-                    // store invalidates its complete extent, including both
-                    // adjacent eight-byte saves when it writes a Q register.
-                    if bytes == 8, source.kind == .gpr {
+                    // A GPR word or a vector's low 64 bits can save an entry
+                    // value. A Q store invalidated all 16 bytes first; its
+                    // upper word is not part of the low-lane proof.
+                    if (bytes == 8 && source.kind == .gpr)
+                        || (bytes >= 8 && source.kind == .vector) {
                         state.slots[slot] = state.value(source.key)
                     }
                 }
@@ -1230,8 +1238,9 @@ enum Preservation {
             let count = detail.id == AARCH64_INS_LDP ? 2 : 1
             for offset in 0..<count {
                 guard let destination = register(offset) else { continue }
-                if let address, destination.widthBits == 64 {
-                    state.setRegister(destination.key, to: state.load(at: address &+ Int64(offset * 8)))
+                let bytes = destination.widthBits / 8
+                if let address, bytes == 8 || (destination.kind == .vector && bytes == 16) {
+                    state.setRegister(destination.key, to: state.load(at: address &+ Int64(offset * bytes)))
                 } else {
                     state.setRegister(destination.key, to: .unknown)
                 }

@@ -8522,14 +8522,10 @@ this Mac.
   expected: no compiler reads q8 after a call.
 - **Accepted decline: a high lane that really survives.** `untouched()`
   calls a helper that writes nothing, returns 0 natively and renders
-  `return ?`. Nothing summarises v8, so no callee proves it preserved.
-- **OPEN (soundness): nothing summarises d8-d15.**
-  `CalleeRegisterSummary` tracks x19-x29 only, so `calleeClobbers` never
-  holds a v register outside a test, and the low lane survives on the ABI's
-  promise alone. An in-image helper that writes d8 breaks it:
-  `movi v8.2d, #0; bl changeLow; fmov x0, d8` renders `return 0` and returns
-  19 natively (scratch reduction, not a fixture). The machine outliner can
-  produce such a helper, as it does for x19. Nobody has measured how often.
+  `return ?`. Low-lane summaries do not prove the high word preserved.
+- **FIXED (soundness): d8-d15 callee summaries.** The low 64 bits of
+  v8-v15 are now included in callee preservation and transitive clobbers;
+  see the 2026-11-05 vector-summary entry below. Upper lanes stay unproved.
 - **OPEN (soundness): a scalar's whole-register store after a call.**
   `fmov d8, x9; bl …; str q8, [x19]` renders `mem128[arg0] = 7`, which reads
   as a high lane of 0; the helper set it to 19. Wrapping a scalar as
@@ -8775,7 +8771,8 @@ Commit messages on dev stay as they are; these are the true records.
   -1.0 for 0x3ff0000000000000, 0x4000000000000000 and
   0xbff0000000000000. This preexisting ambiguity between raw words and
   semantic FP arguments is not closed by the selected-constant repair.
-  The separate d8-d15 callee-summary OPEN item also remains.
+  The separate d8-d15 callee-summary issue is fixed in the vector-summary
+  change below; this symbolic-bit-provenance issue remains open.
 
 ## 2026-11-05: reuse Capstone instruction storage
 
@@ -8924,3 +8921,50 @@ Commit messages on dev stay as they are; these are the true records.
   stdout. Parser xrefs pairs show no meaningful CPU change (+0.06%). This does
   not claim lower allocation volume or a general peak-memory reduction. The
   five-app check is part of the subsequent composed vector validation.
+
+
+## 2026-11-05: summarize callee-saved vector low lanes
+
+- **FIXED (soundness): an outlined callee could leave a stale d8-d15 value.**
+  Callee summaries covered x19-x29 only. In the authored
+  `libVectorPreservation.dylib`, `VectorSummaries.nested()` sets d8 to 2.0,
+  calls a nested helper that changes it to 1.0, and returns d8. Native
+  execution returns 1.0; the old binary renders `return 2.0`. The summary
+  now includes the low 64 bits of v8-v15 and the caller renders `return ?`.
+  Direct inlining already recovers the non-nested 1.0 case.
+- The preservation proof seeds the complete 19-register bank, discovers vector
+  writes, models D/Q low-word saves and reloads, and uses the actual width for
+  pair offsets. Upper-lane writes retain proved low words; partial, overlapping
+  or unmodelled writes cannot establish preservation. Stored but unrestored
+  vector clobbers propagate through calls. The existing saved-GPR exception
+  remains limited to GPRs. Capped closures forget the complete bank; upper
+  vector lanes remain unproved. Closed-read reuse (`ce596d3`) keeps the extra
+  rebuilds from repeating their discarded read analyses.
+- **VERIFIED:** eight text exports and eight LC_FUNCTION_STARTS match four
+  callers and four helpers. Native results are 1.0/2.0/2.0/1.0; array, filtered
+  and streaming analysis retain every function and the known-save controls.
+  All 18 focused tests pass. Eight independently rebuilt mutations fail:
+  summary bank (119 assertions), entry bank (29), vector-write discovery (110),
+  vector stores (13), Q loads (7), Q-pair stride (2), stored-clobber propagation
+  (4), and pipeline wiring (3). Restored source rebuilt and all 18 passed.
+  The enforcing suite passed 1,313 tests in 18 suites (284.668 s). Fresh integer,
+  text-condition and targeted-W semantics exports match their checked inputs
+  and exports exactly. All 93 production/package hashes match the frozen CLI.
+- **REVIEWED / MEASURED:** 320 authored Mach-Os plus eight SDK inputs, all four
+  views against the optimized parent: only the new vector fixture changes,
+  replacing one incorrect 2.0 return with `?`; listing machine text is exact,
+  and JSON changes only the matching annotation and typed statement. All four
+  large SDK output hashes match. All 1,316 cost pairs are present, within
+  default budgets without override: +0.63% instructions and +0.53% summed
+  footprints against the parent. Against published `1727aa5`, the composed
+  speed/vector stack is -5.80% instructions and +0.27% summed footprints.
+  Three alternating Parser xrefs rounds give +4.55% instructions and +0.23%
+  footprint against published baseline, versus +12.71% instructions for the
+  unoptimized vector prototype. Go's independent speed improvement is recorded
+  above. These are CPU/footprint measures, not allocation-volume claims.
+- All five app pseudo outputs were rechecked under guards, retaining Terminal
+  3,245, TextEdit 536, Chess 1,699, Clarc 14,246 and GoodLinks 65,107 functions.
+  Four apps are byte-identical. Clarc has one conservative loss of an
+  indirect-result address name; its store, both values and other instructions
+  remain. The exact machine store and filtered JSON were read independently;
+  no private bodies or reports enter the repository.
