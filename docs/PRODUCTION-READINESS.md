@@ -8898,3 +8898,29 @@ Commit messages on dev stay as they are; these are the true records.
   The comparison used frozen release binaries and the same input with no
   compiler running; `swiftdc xrefs <toolchain>/libSwiftParser.dylib
   --unreferenced` was guarded throughout.
+
+
+## 2026-11-05: retain closed reads during preservation rebuilds
+
+- **FIXED (`ce596d3`, speed): do not rerun discarded read analyses.** Initial
+  callee analysis still computes argument, FP-width, frame, context and self
+  reads. After those reads close over calls, array, filtered and streaming
+  clobber rebuilds reuse them for the same immutable body, while recomputing
+  clobbers and caller-frame reloads normally. No visit cap, decoder, dependency
+  pin or preservation rule changed.
+- **VERIFIED:** a decoded caller inherits x2/x7 and frame/context/self reads
+  through its callee. The regression retains those closed facts, FP widths and
+  result-bank facts, and matches full-analysis clobbers/reloads. Disabling
+  reuse compiles and fails five assertions; restored source rebuilt and all
+  five focused tests passed. The enforcing suite passed 1,300 tests in 18
+  suites (297.996 s). All 93 production/package hashes match the frozen release.
+- **MEASURED:** all 319 authored Mach-Os plus eight SDK inputs are byte-identical
+  in structured, pseudo, listing and JSON; the four large SDK outputs also match.
+  All 1,312 default-budget cost pairs are complete: retired instructions fall
+  from 5,195.057G to 4,863.560G (-6.38%); summed peak footprints change -0.95%,
+  without an override. Three alternating release pairs on `disasm
+  Fixtures/Sample/goProgram --structured` measure median 173.139G to 131.971G
+  instructions (-23.78%) and 29.688MB to 29.918MB footprint (+0.77%), with exact
+  stdout. Parser xrefs pairs show no meaningful CPU change (+0.06%). This does
+  not claim lower allocation volume or a general peak-memory reduction. The
+  five-app check is part of the subsequent composed vector validation.
