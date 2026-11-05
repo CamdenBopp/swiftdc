@@ -138,13 +138,13 @@ private func fragment(_ words: [UInt32]) throws -> DisassembledFunction {
 
     var settled = graph()
     let original = settled
-    CalleeRegisterSummary.closeOverCalls(&settled) { rebuild(original, $0, $1) }
+    CalleeRegisterSummary.closeOverCalls(&settled) { start, effects, _ in rebuild(original, start, effects) }
     #expect(settled[0x40]?.clobberedCalleeSaved == ["x19"])
 
     // One rebuild (0x20) fits under the cap; 0x30 waits. 0x40 was summarised
     // before 0x20 was known to clobber x19, so it claims nothing either.
     var capped = graph()
-    CalleeRegisterSummary.closeOverCalls(&capped, cap: 1) { rebuild(original, $0, $1) }
+    CalleeRegisterSummary.closeOverCalls(&capped, cap: 1) { start, effects, _ in rebuild(original, start, effects) }
     #expect(capped[0x20]?.clobberedCalleeSaved == ["x19"])
     #expect(capped[0x30]?.clobberedCalleeSaved == all)
     #expect(capped[0x40]?.clobberedCalleeSaved == all)
@@ -152,7 +152,7 @@ private func fragment(_ words: [UInt32]) throws -> DisassembledFunction {
 
     // 0x20 cannot be rebuilt: it claims nothing, and its callers carry that.
     var failed = graph()
-    CalleeRegisterSummary.closeOverCalls(&failed) { start, effects in
+    CalleeRegisterSummary.closeOverCalls(&failed) { start, effects, _ in
         start == 0x20 ? nil : rebuild(original, start, effects)
     }
     #expect(failed[0x20]?.clobberedCalleeSaved == all)
@@ -169,7 +169,7 @@ private func fragment(_ words: [UInt32]) throws -> DisassembledFunction {
                                     clobberedCalleeSaved: [], callees: [0x10]),
     ]
     let original = summaries
-    CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects in
+    CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects, _ in
         let callees = original[start]?.callees ?? []
         let clobbers = callees.reduce(into: Set<String>()) { $0.formUnion(effects($1).clobbers) }
         return CalleeRegisterSummary(argumentReads: [], clobberedCalleeSaved: clobbers, definitelyClobbered: clobbers, callees: callees)
@@ -177,4 +177,43 @@ private func fragment(_ words: [UInt32]) throws -> DisassembledFunction {
     #expect(summaries[0x20]?.clobberedCalleeSaved == ["x19"])
     #expect(summaries[0x20]?.readsSelfRegister == false)
     #expect(summaries[0x20]?.provenArgumentReads == [0])
+}
+
+/// Closing reads carries the callee's parameter, frame, context and self
+/// facts into this body. Rebuilding its preservation must retain those
+/// facts while using the current callee clobbers and reloads.
+@Test func aPreservationRebuildRetainsClosedReadFacts() throws {
+    // Independently assembled: fadd d0,d1,d2; mov x19,#1; bl 0x2000; ret.
+    let body = try fragment([0x1e622820, 0xd2800033, 0x940003fe, 0xd65f03c0])
+    let target: UInt64 = 0x2000
+    let initial = try #require(CalleeRegisterSummary.of(body, isFunction: { $0 == target }))
+    let callee = CalleeRegisterSummary(argumentReads: [2, 7], readsFramePointer: true,
+        readsContextRegister: true, readsSelfRegister: true,
+        clobberedCalleeSaved: ["x19", "x20"], definitelyClobbered: ["x19", "x20"],
+        restoredFrom: ["x19": 0])
+    var summaries = [body.startAddress: initial, target: callee]
+    CalleeRegisterSummary.closeOverReads(&summaries)
+    let closed = try #require(summaries[body.startAddress])
+    try #require(closed.argumentReads == [2, 7])
+    try #require(closed.provenFloatArgumentReads == [1, 2])
+    try #require(closed.readsFramePointer && closed.readsContextRegister && closed.readsSelfRegister)
+    let effect: (UInt64) -> CalleeEffect = { _ in callee.effect }
+    let rebuilt = try #require(CalleeRegisterSummary.recomputingPreservation(body,
+        retainingReadsFrom: closed, calleeEffects: effect, isFunction: { $0 == target }))
+    #expect(rebuilt.argumentReads == closed.argumentReads)
+    #expect(rebuilt.provenArgumentReads == closed.provenArgumentReads)
+    #expect(rebuilt.provenFloatArgumentReads == closed.provenFloatArgumentReads)
+    #expect(rebuilt.floatArgumentWidths == closed.floatArgumentWidths)
+    #expect(rebuilt.mayWriteFloatResult == closed.mayWriteFloatResult)
+    #expect(rebuilt.pendingReads == closed.pendingReads)
+    #expect(rebuilt.readsFramePointer == closed.readsFramePointer)
+    #expect(rebuilt.readsContextRegister == closed.readsContextRegister)
+    #expect(rebuilt.readsSelfRegister == closed.readsSelfRegister)
+    let reference = try #require(CalleeRegisterSummary.of(body,
+        calleeEffects: effect, isFunction: { $0 == target }))
+    #expect(rebuilt.clobberedCalleeSaved == reference.clobberedCalleeSaved)
+    #expect(rebuilt.definitelyClobbered == reference.definitelyClobbered)
+    #expect(rebuilt.restoredFrom == reference.restoredFrom)
+    #expect(rebuilt.clobberedCalleeSaved == ["x19", "x20"])
+    #expect(rebuilt.restoredFrom == ["x19": 0])
 }

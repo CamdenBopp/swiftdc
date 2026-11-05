@@ -177,28 +177,53 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         isFunction: (UInt64) -> Bool = { _ in false },
         isImportStub: (UInt64) -> Bool = { _ in false }
     ) -> CalleeRegisterSummary? {
+        analyze(function, calleeEffects: calleeEffects, calleeArity: calleeArity,
+                isFunction: isFunction, isImportStub: isImportStub, retainingReads: nil)
+    }
+
+    /// Rebuild preservation for the same immutable body after its reads have
+    /// been closed over calls. Clobber closure retains those reads; redoing
+    /// their argument/self-flow analyses cannot contribute any new fact.
+    static func recomputingPreservation(
+        _ function: DisassembledFunction, retainingReadsFrom summary: CalleeRegisterSummary,
+        calleeEffects: (UInt64) -> CalleeEffect,
+        calleeArity: (UInt64) -> Int? = { _ in nil },
+        isFunction: (UInt64) -> Bool = { _ in false },
+        isImportStub: (UInt64) -> Bool = { _ in false }
+    ) -> CalleeRegisterSummary? {
+        analyze(function, calleeEffects: calleeEffects, calleeArity: calleeArity,
+                isFunction: isFunction, isImportStub: isImportStub, retainingReads: summary)
+    }
+
+    private static func analyze(
+        _ function: DisassembledFunction, calleeEffects: (UInt64) -> CalleeEffect = { _ in CalleeEffect() },
+        calleeArity: (UInt64) -> Int? = { _ in nil },
+        isFunction: (UInt64) -> Bool = { _ in false },
+        isImportStub: (UInt64) -> Bool = { _ in false },
+        retainingReads readFacts: CalleeRegisterSummary?
+    ) -> CalleeRegisterSummary? {
         let instructions = function.instructions
         guard !instructions.isEmpty, instructions.allSatisfy({ $0.detail != nil }) else { return nil }
         let addresses = Set(instructions.map(\.address))
         let blocks = function.basicBlocks()
         guard let entry = blocks.first?.startAddress else { return nil }
-        let blockAt = Dictionary(blocks.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
+        let blockAt = readFacts == nil ? Dictionary(blocks.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a }) : [:]
 
         // Forward must-analysis: the argument registers written on every path
         // into a block (intersection at joins). A read of one not in the set is
         // a possible argument read.
-        var inState: [UInt64: Set<String>] = [entry: []]
-        var reads = Set<Int>()
-        var provenReads = Set<Int>()
-        var provenFloatReads = Set<Int>()
-        var floatWidths: [Int: Int] = [:]
-        var writesFloatResult = false
-        var readsFramePointer = false
-        var readsContextRegister = false
+        var inState: [UInt64: Set<String>] = readFacts == nil ? [entry: []] : [:]
+        var reads = readFacts?.argumentReads ?? Set<Int>()
+        var provenReads = readFacts?.provenArgumentReads ?? Set<Int>()
+        var provenFloatReads = readFacts?.provenFloatArgumentReads ?? Set<Int>()
+        var floatWidths = readFacts?.floatArgumentWidths ?? [:]
+        var writesFloatResult = readFacts?.mayWriteFloatResult ?? false
+        var readsFramePointer = readFacts?.readsFramePointer ?? false
+        var readsContextRegister = readFacts?.readsContextRegister ?? false
         // By call address: a block revisited with fewer registers written
         // widens the mask, as it widens `reads`.
         var pending: [UInt64: PendingRead] = [:]
-        var worklist = [entry]
+        var worklist = readFacts == nil ? [entry] : []
         var visits = 0
         while let start = worklist.popLast() {
             visits += 1
@@ -337,13 +362,18 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         // Where the incoming x20 may be, through moves and spills. A call to
         // an in-image function with it still in x20 reads it if that
         // function does: its pending read carries the bit.
-        let selfFlow = Preservation.selfRegisterFlow(
-            blocks: blocks, entry: entry, addresses: addresses, callEffect: callEffect, callInputs: callInputs,
-            forwards: { insn in insn.branchTarget.map { calleeArity($0) == nil && isFunction($0) } ?? false })
-        for (address, call) in pending where selfFlow?.forwardedAt.contains(address) ?? true {
-            pending[address] = PendingRead(target: call.target, unwritten: call.unwritten | Self.selfRegisterBit)
+        let readsSelfRegister: Bool
+        if let readFacts {
+            readsSelfRegister = readFacts.readsSelfRegister
+        } else {
+            let selfFlow = Preservation.selfRegisterFlow(
+                blocks: blocks, entry: entry, addresses: addresses, callEffect: callEffect, callInputs: callInputs,
+                forwards: { insn in insn.branchTarget.map { calleeArity($0) == nil && isFunction($0) } ?? false })
+            for (address, call) in pending where selfFlow?.forwardedAt.contains(address) ?? true {
+                pending[address] = PendingRead(target: call.target, unwritten: call.unwritten | Self.selfRegisterBit)
+            }
+            readsSelfRegister = selfFlow?.reads ?? true
         }
-        let readsSelfRegister = selfFlow?.reads ?? true
         var clobbered = Set<String>()
         var restoredFrom: [String: Int64] = [:]
         if !writtenCalleeSaved.isEmpty {
@@ -379,7 +409,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             provenFloatArgumentReads: provenFloatReads,
             floatArgumentWidths: floatWidths.filter { [16, 32, 64].contains($0.value) },
             mayWriteFloatResult: writesFloatResult,
-            pendingReads: pending.keys.sorted().compactMap { pending[$0] },
+            pendingReads: readFacts?.pendingReads ?? pending.keys.sorted().compactMap { pending[$0] },
             readsFramePointer: readsFramePointer,
             readsContextRegister: readsContextRegister,
             readsSelfRegister: readsSelfRegister,
@@ -546,10 +576,12 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// A run still changing at the cap claims nothing for the functions
     /// waiting to be rebuilt and for every function that calls one of them,
     /// directly or not: those were built on effects that are now stale.
+    /// The callback also receives this body's existing, closed read facts.
+    /// Its immutable body can reuse them while rebuilding preservation.
     static func closeOverCalls(
         _ summaries: inout [UInt64: CalleeRegisterSummary],
         cap fixedCap: Int? = nil,
-        recompute: (UInt64, (UInt64) -> CalleeEffect) -> CalleeRegisterSummary?
+        recompute: (UInt64, (UInt64) -> CalleeEffect, CalleeRegisterSummary) -> CalleeRegisterSummary?
     ) {
         var callers: [UInt64: [UInt64]] = [:]
         for start in summaries.keys.sorted() {
@@ -589,7 +621,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             guard let old = summaries[start] else { continue }
             // A body that cannot be summarised again claims nothing, rather
             // than keeping a summary built before its callees were known.
-            let rebuilt = recompute(start, { summaries[$0]?.effect ?? CalleeEffect() }) ?? old.claimingNothing()
+            let rebuilt = recompute(start, { summaries[$0]?.effect ?? CalleeEffect() }, old) ?? old.claimingNothing()
             let new = CalleeRegisterSummary(
                 argumentReads: old.argumentReads,
                 provenArgumentReads: old.provenArgumentReads,

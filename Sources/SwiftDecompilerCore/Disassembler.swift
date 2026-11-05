@@ -824,7 +824,7 @@ public struct Disassembler: Sendable {
         // Clobbers and reloads carried through calls; the few functions
         // whose callees change anything are decoded again.
         let spanIndex = Dictionary(boundaries.indices.map { (boundaries[$0], $0) }, uniquingKeysWith: { a, _ in a })
-        CalleeRegisterSummary.closeOverCalls(&registerSummaries) { start, effects in
+        CalleeRegisterSummary.closeOverCalls(&registerSummaries) { start, effects, readFacts in
             guard let index = spanIndex[start] else { return nil }
             let instructions = Probe.muted { decode(span(index)) }
             guard !instructions.isEmpty else { return nil }
@@ -834,9 +834,10 @@ public struct Disassembler: Sendable {
                 metadataNames: metadataNames, objcIndex: objcIndex
             )
             return Probe.muted {
-                CalleeRegisterSummary.of(
+                CalleeRegisterSummary.recomputingPreservation(
                     Self.withJumpTables(function, machO: machO, ranges: fileRanges),
-                    calleeEffects: effects, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub)
+                    retainingReadsFrom: readFacts, calleeEffects: effects, calleeArity: arity,
+                    isFunction: isFunction, isImportStub: isImportStub)
             }
         }
         names = resolveCrossImageNames(targets, into: names, resolver: cacheSymbols)
@@ -1221,11 +1222,11 @@ public struct Disassembler: Sendable {
             level = next.sorted()
         }
         CalleeRegisterSummary.closeOverReads(&summaries)
-        CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects in
+        CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects, readFacts in
             body(at: start).flatMap { function in
                 Probe.muted {
-                    CalleeRegisterSummary.of(
-                        function, calleeEffects: effects, calleeArity: arity, isFunction: isFunction,
+                    CalleeRegisterSummary.recomputingPreservation(
+                        function, retainingReadsFrom: readFacts, calleeEffects: effects, calleeArity: arity, isFunction: isFunction,
                         isImportStub: isImportStub)
                 }
             }
@@ -1453,11 +1454,11 @@ public struct Disassembler: Sendable {
                     level = next.sorted()
                 }
                 CalleeRegisterSummary.closeOverReads(&summaries)
-                CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects in
+                CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects, readFacts in
                     bodies[start].flatMap { function in
                         Probe.muted {
-                            CalleeRegisterSummary.of(
-                                function, calleeEffects: effects, calleeArity: arity, isFunction: isFunction,
+                            CalleeRegisterSummary.recomputingPreservation(
+                                function, retainingReadsFrom: readFacts, calleeEffects: effects, calleeArity: arity, isFunction: isFunction,
                                 isImportStub: isImportStub)
                         }
                     }

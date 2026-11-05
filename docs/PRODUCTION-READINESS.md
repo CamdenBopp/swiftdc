@@ -8883,3 +8883,18 @@ Commit messages on dev stay as they are; these are the true records.
   remain outside the public repository. This regeneration belongs to the
   selected-lane checkpoint; the iterator's independent compatibility and cost
   checks are the separate record above.
+
+
+## 2026-11-05: vector-summary cost experiments
+
+- **DEAD END (speed): omit unknown vector slot records.** In an unshipped
+  vector-summary candidate, newly modeled D/Q stores could retain explicit
+  unknown low words. Omitting those records after invalidation preserved the
+  load/alias invariants and passed all 1,312 enforcing tests, but three
+  alternating SwiftParser xrefs rounds measured 192.530G versus 192.543G
+  retired instructions (+0.007%), with identical output. This did not remove
+  the candidate's roughly 12.7% cost over the published baseline, so the
+  experiment was reverted. No allocation or memory-saving claim follows.
+  The comparison used frozen release binaries and the same input with no
+  compiler running; `swiftdc xrefs <toolchain>/libSwiftParser.dylib
+  --unreferenced` was guarded throughout.
