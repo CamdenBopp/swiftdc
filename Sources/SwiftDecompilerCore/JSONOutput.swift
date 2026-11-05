@@ -97,7 +97,9 @@ private func jsonEncode<T: Encodable>(_ value: T) -> String {
 
 private extension DisassembledFunction {
     var dto: FunctionDTO {
-        FunctionDTO(
+        let cfg = controlFlowGraph
+        cfg.observeUse(of: self, consumer: "json-output")
+        return FunctionDTO(
             name: displayName,
             symbol: symbol,
             address: hex(startAddress),
@@ -132,7 +134,7 @@ private extension DisassembledFunction {
                     statement: DisassembledFunction.pseudoStatement(of: $0, hideRuntime: true)
                 )
             },
-            blocks: FunctionCFG(self).blocks.map {
+            blocks: cfg.blocks.map {
                 BlockDTO(address: hex($0.startAddress), successors: $0.successorAddresses.map(hex))
             }
         )

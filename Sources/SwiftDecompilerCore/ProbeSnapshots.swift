@@ -126,7 +126,7 @@ public extension Probe {
     /// External fixture harnesses can use this with ValueTracer directly.
     static func observe(_ analysis: FunctionAnalysis, of function: DisassembledFunction) {
         guard isActive, recorder != nil else { return }
-        observe(analysis, of: function, cfg: FunctionCFG(function))
+        observe(analysis, of: function, cfg: function.controlFlowGraph)
     }
 
     internal static func observe(_ analysis: FunctionAnalysis, of function: DisassembledFunction, cfg: FunctionCFG) {

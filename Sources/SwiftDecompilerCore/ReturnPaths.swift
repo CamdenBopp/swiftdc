@@ -6,7 +6,7 @@ public extension Probe {
     /// not execute calls, prove side effects or change the value analysis.
     static func returnPathConditions(_ analysis: FunctionAnalysis,
                                      of function: DisassembledFunction) -> [UInt64: AbstractValue] {
-        returnPathConditions(analysis, of: function, cfg: FunctionCFG(function))
+        returnPathConditions(analysis, of: function, cfg: function.controlFlowGraph)
     }
 
     internal static func returnPathConditions(_ analysis: FunctionAnalysis,

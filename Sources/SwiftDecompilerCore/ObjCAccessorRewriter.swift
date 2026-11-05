@@ -197,7 +197,8 @@ extension ObjCDumper {
     /// w8, w2, w8, lt; str w8, [x0, #8]; ret`, is one block that stores
     /// through self, and read as synthesized too.
     static func isSynthesizedAccessor(_ function: DisassembledFunction, prefixBytes: UInt64? = nil) -> Bool? {
-        let cfg = FunctionCFG(function)
+        let cfg = function.controlFlowGraph
+        cfg.observeUse(of: function, consumer: "accessor-classifier")
         guard let entry = cfg.entry else { return nil }
         let block = cfg.blocks[entry]
         let last = function.instructions[block.terminator]

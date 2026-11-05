@@ -399,6 +399,13 @@ public struct DisassembledFunction: Sendable {
     /// Recovered jump tables: `br` address → the target of each case, in case
     /// order (`JumpTables`). Empty when none was proven.
     public let switchTargets: [UInt64: [UInt64]]
+    /// The final analysis graph, when this function came through enrichment.
+    /// It stores only topology; instruction payloads always come from `instructions`.
+    private let retainedCFG: FunctionCFG?
+
+    /// Legacy/manual functions safely recover their graph on demand without
+    /// changing the public initializer or introducing mutable shared storage.
+    var controlFlowGraph: FunctionCFG { retainedCFG ?? FunctionCFG(self) }
 
     public init(
         symbol: String,
@@ -412,6 +419,21 @@ public struct DisassembledFunction: Sendable {
         switchTargets: [UInt64: [UInt64]] = [:],
         semanticName: String? = nil
     ) {
+        self.init(
+            symbol: symbol, demangledName: demangledName, startAddress: startAddress,
+            instructions: instructions, source: source, objcMethod: objcMethod,
+            foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet,
+            switchTargets: switchTargets, semanticName: semanticName, retainedCFG: nil
+        )
+    }
+
+    private init(
+        symbol: String, demangledName: String?, startAddress: UInt64,
+        instructions: [Instruction], source: RecoverySource,
+        objcMethod: ObjCMethodBinding?, foldedCandidates: [String]?,
+        asyncFunclet: AsyncFuncletInfo?, switchTargets: [UInt64: [UInt64]],
+        semanticName: String?, retainedCFG: FunctionCFG?
+    ) {
         self.symbol = symbol
         self.demangledName = demangledName
         self.semanticName = semanticName
@@ -422,16 +444,42 @@ public struct DisassembledFunction: Sendable {
         self.foldedCandidates = foldedCandidates
         self.asyncFunclet = asyncFunclet
         self.switchTargets = switchTargets
+        self.retainedCFG = retainedCFG
     }
 
-    /// The same function with `instructions` replaced; every other field is
-    /// carried over, so an enrichment pass cannot drop one by omission.
+    /// Replacing machine instructions invalidates the retained topology, even
+    /// at the same count. Every other function field is carried over.
     func replacingInstructions(_ instructions: [Instruction]) -> DisassembledFunction {
         DisassembledFunction(
             symbol: symbol, demangledName: demangledName, startAddress: startAddress,
             instructions: instructions, source: source, objcMethod: objcMethod,
             foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet,
             switchTargets: switchTargets, semanticName: semanticName
+        )
+    }
+
+    /// A payload-only rebuild: addresses, order, control flow, branch targets,
+    /// trap classification and switch cases must remain unchanged. The graph
+    /// owns no instruction copies, so its views read the new payloads.
+    func replacingInstructionPayload(_ instructions: [Instruction]) -> DisassembledFunction {
+        let result = DisassembledFunction(
+            symbol: symbol, demangledName: demangledName, startAddress: startAddress,
+            instructions: instructions, source: source, objcMethod: objcMethod,
+            foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet,
+            switchTargets: switchTargets, semanticName: semanticName, retainedCFG: retainedCFG
+        )
+        retainedCFG?.observeUse(of: result, consumer: "instruction-payload-copy")
+        return result
+    }
+
+    /// Attach a graph proven for this exact final instruction topology.
+    func retainingCFG(_ cfg: FunctionCFG) -> DisassembledFunction {
+        cfg.observeUse(of: self, consumer: "final-cfg-attachment")
+        return DisassembledFunction(
+            symbol: symbol, demangledName: demangledName, startAddress: startAddress,
+            instructions: instructions, source: source, objcMethod: objcMethod,
+            foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet,
+            switchTargets: switchTargets, semanticName: semanticName, retainedCFG: cfg
         )
     }
 
@@ -460,7 +508,7 @@ public struct DisassembledFunction: Sendable {
             startAddress: startAddress, instructions: instructions,
             source: title == nil ? source : .asyncFunclet, objcMethod: objcMethod,
             foldedCandidates: foldedCandidates, asyncFunclet: info,
-            switchTargets: switchTargets, semanticName: semanticName
+            switchTargets: switchTargets, semanticName: semanticName, retainedCFG: retainedCFG
         )
     }
 
@@ -3326,7 +3374,7 @@ public struct Disassembler: Sendable {
             }
         }
 
-        return function.replacingInstructions(updated)
+        return function.replacingInstructionPayload(updated)
     }
 
     /// Annotate direct call/branch instructions with their resolved target
@@ -3344,7 +3392,7 @@ public struct Disassembler: Sendable {
         guard function.instructions.contains(where: {
             $0.controlFlow == .branch && $0.branchTarget == function.startAddress && $0.callee != nil
         }) else { return function }
-        return function.replacingInstructions(function.instructions.map { insn in
+        return function.replacingInstructionPayload(function.instructions.map { insn in
             guard insn.controlFlow == .branch, insn.branchTarget == function.startAddress, insn.callee != nil
             else { return insn }
             return Instruction(
@@ -3397,7 +3445,7 @@ public struct Disassembler: Sendable {
                 callee: .kept(parsed == name ? name : parsed)
             )
         }
-        return function.replacingInstructions(instructions)
+        return function.replacingInstructionPayload(instructions)
     }
 
     /// Resolve register-indirect calls only when value tracking proves the
@@ -6630,7 +6678,9 @@ public struct Disassembler: Sendable {
             // Do not run unrelated enrichment when only this contract is known:
             // the exit, and the stores no other fact describes, are all added.
             let stores = Self.leafMemoryWrites(function, analysis: analysis)
-            guard function.hasProvenMachineValueReturn || !stores.isEmpty else { return function }
+            guard function.hasProvenMachineValueReturn || !stores.isEmpty else {
+                return function.retainingCFG(cfg)
+            }
             let type = DisassembledFunction.splitSignature(function.analysisDisplayName)?.result
                 ?? function.objcMethod?.signature ?? "unknown"
             let instructions = function.instructions.map { insn in
@@ -6657,7 +6707,7 @@ public struct Disassembler: Sendable {
                     resultConsumed: insn.resultConsumed, sourceType: insn.sourceType, detail: insn.detail,
                     calleeDisplayName: insn.calleeDisplayName, callee: .kept(insn.callee), facts: facts)
             }
-            return function.replacingInstructions(instructions)
+            return function.replacingInstructions(instructions).retainingCFG(cfg)
         }
 
         // Facts of the function's own signature, read once rather than at
@@ -9968,9 +10018,9 @@ public struct Disassembler: Sendable {
             }
 
             // A proven async return is the function's `ret`; the structurer and
-            // the CFG read it as one. The local analysis graph is no longer
-            // consumed after this conversion; later renderers build from the
-            // returned instructions, so no pre-conversion edges escape.
+            // the CFG read it as one. Its nil-target BR and RET have the
+            // same block boundary and no successors, so the retained graph
+            // remains valid while every view reads these final instructions.
             let flow: ControlFlow? = asyncReturns.contains(insn.address) ? .return : insn.controlFlow
             let untouched = Instruction(
                 address: insn.address, text: insn.text, annotation: insn.annotation,
@@ -10018,7 +10068,7 @@ public struct Disassembler: Sendable {
                 callee: .kept(insn.callee), facts: facts
             )
         }
-        return function.replacingInstructions(instructions)
+        return function.replacingInstructions(instructions).retainingCFG(cfg)
     }
 
     /// The `memN[...] = value` statements of a function the full enrichment

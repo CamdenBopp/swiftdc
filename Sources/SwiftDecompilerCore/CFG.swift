@@ -25,7 +25,11 @@ public extension DisassembledFunction {
     /// otherwise returns a single block. A view of `FunctionCFG`, which owns
     /// the algorithm.
     func basicBlocks() -> [BasicBlock] {
-        FunctionCFG(self).basicBlocks(of: self)
+        basicBlocks(consumer: "basic-blocks")
+    }
+
+    internal func basicBlocks(consumer: String) -> [BasicBlock] {
+        controlFlowGraph.basicBlocks(of: self, consumer: consumer)
     }
 
     /// Render the function as a control-flow graph: basic blocks with `loc_<addr>`
@@ -34,7 +38,9 @@ public extension DisassembledFunction {
         var lines = ["\(displayName):  // \(symbol) @ 0x\(String(startAddress, radix: 16))"]
         if let objcMethod { lines.append("  // \(objcMethod.signature)") }
         if instructions.isEmpty { lines.append("  \(Self.noDecodedInstructionNote)") }
-        for block in FunctionCFG(self).blocks {
+        let cfg = controlFlowGraph
+        cfg.observeUse(of: self, consumer: "cfg-renderer")
+        for block in cfg.blocks {
             lines.append("  loc_\(String(block.startAddress, radix: 16)):")
             for insn in instructions[block.range] {
                 var line = "    \(String(insn.address, radix: 16)):  \(insn.text)"

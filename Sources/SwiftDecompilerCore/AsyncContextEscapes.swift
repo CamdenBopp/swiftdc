@@ -7,7 +7,7 @@ struct AsyncContextEscapes {
     var iterationsPerBlock = 64
 
     func lowestOffset(in function: DisassembledFunction, terminalBranches: Set<UInt64> = []) -> Int? {
-        lowestOffset(in: function, terminalBranches: terminalBranches, cfg: FunctionCFG(function))
+        lowestOffset(in: function, terminalBranches: terminalBranches, cfg: function.controlFlowGraph)
     }
 
     func lowestOffset(in function: DisassembledFunction, terminalBranches: Set<UInt64>, cfg: FunctionCFG) -> Int? {

@@ -1023,7 +1023,7 @@ public struct ValueTracer: Sendable {
         _ function: DisassembledFunction,
         entry: MethodEntryConvention?
     ) -> FunctionAnalysis {
-        analyze(function, entry: entry, cfg: FunctionCFG(function))
+        analyze(function, entry: entry, cfg: function.controlFlowGraph)
     }
 
     /// Analyze using the graph owned by the current per-function pipeline.

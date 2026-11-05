@@ -22,7 +22,7 @@ public extension DisassembledFunction {
     }
 
     private func renderStructuredBody(maxStructuringDepth: Int) -> String {
-        let blocks = basicBlocks()
+        let blocks = basicBlocks(consumer: "structured-renderer")
         guard blocks.count > 1 else { return Probe.muted { renderPseudo() } }
 
         let depth = maxStructuringDepth > 0 ? maxStructuringDepth : ControlFlowStructure.defaultMaxDepth
