@@ -314,3 +314,34 @@ private func checkAgainstNative(path: String, prefix: String, expected: Int,
     if let partial { #expect(containsUnknown(partial)) }
     #expect(tracer.flagCondition(partialFlags, code: AArch64CC_EQ, width: .immediate(64), requireComplete: true) == nil)
 }
+
+/// AL/NV hold over constant and symbolic NZCV. The EQ control still chooses
+/// the second operand for CMP 1,2. All selected values are known constants;
+/// the symbolic cases leave CMP's operands as independent UInt64 arguments.
+@Test func theAlwaysConditionsHoldOverConstantFlags() throws {
+    let engine = try #require(CapstoneEngine())
+    let cases: [(compare: UInt32, select: UInt32, symbolic: Bool, expected: UInt64)] = [
+        (0xeb09011f, 0x9a89e100, false, 1), // cmp x8,x9; csel ... al
+        (0xeb09011f, 0x9a89f100, false, 1), // cmp x8,x9; csel ... nv
+        (0xeb09011f, 0x9a890100, false, 2), // cmp x8,x9; csel ... eq
+        (0xeb01001f, 0x9a89e100, true, 1),  // cmp x0,x1; csel ... al
+        (0xeb01001f, 0x9a89f100, true, 1),  // cmp x0,x1; csel ... nv
+    ]
+    for item in cases {
+        let words: [UInt32] = [0xd2800028, 0xd2800049, item.compare, item.select, 0xd65f03c0]
+        let bytes = words.flatMap { word in (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) } }
+        let decoded = engine.disassemble(Data(bytes), address: 0x1000)
+        try #require(decoded.count == words.count)
+        let body = decoded.map {
+            Instruction(address: $0.address, text: $0.text, controlFlow: $0.controlFlow,
+                        branchTarget: $0.branchTarget, detail: $0.detail)
+        }
+        let function = DisassembledFunction(symbol: "f", demangledName: nil, startAddress: 0x1000,
+                                            instructions: body, source: .symbol)
+        let analysis = item.symbolic
+            ? ValueTracer().analyze(function, entry: .swiftFunction(scalarArguments: ["x0": 0, "x1": 1]))
+            : ValueTracer().analyze(function, entry: nil)
+        #expect(analysis.exitValues[try #require(body.last).address] == .immediate(item.expected),
+                "cmp=0x\(String(item.compare, radix: 16)) csel=0x\(String(item.select, radix: 16))")
+    }
+}

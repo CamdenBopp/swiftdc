@@ -606,7 +606,7 @@ results do not replace previously recorded release performance measurements.
   256 conditions and declines 192, with zero refuted/unparsed/unknown/missing.
   Removing the text number/width rules after separate successful builds
   yields 102/6 refutations; restore/rebuild returns the extension green.
-- **FIXED — keep a test's flag producer and setter width.** `tst` and
+- **FIXED (6b4c803) — keep a test's flag producer and setter width.** `tst` and
   `ands` no longer read as a subtract/add they fold into, or as an unsigned
   comparison with zero. Test queries derive N/Z at the setter width and
   C/V as clear. The producer stays identified even when its result is
@@ -648,6 +648,23 @@ results do not replace previously recorded release performance measurements.
   An independent baseline matrix found 100 wrong cases among 1,792 native
   functions, with nonoverlap/LHS-only controls correct. This preexisting
   write-order defect is separate from the FT matrix and is not repaired here.
+- **OPEN — ordinary symbolic flag conditions still decline.** Outside a
+  complete conditional-compare query, symbolic `cmp`/`subs` decline `vs` and
+  `vc`; constants fold their overflow exactly. Shifted sums can reach the
+  expression bound. The native matrices name those allowed declines; they
+  do not claim unmodeled text overflow expressions are checked.
+- **FIXED — `al` and `nv` read false over constant tracked flags.** `cmp
+  x8, x9; csel x0, x8, x9, al` of 1 and 2 rendered 2; native execution
+  returns 1. Query both always conditions before literal, aggregate and
+  selected flags. Native constant controls and 192 symbolic checks over
+  64 input pairs cover AL/NV and EQ. The tracer regression was red with four
+  assertions on the prior source; independently rebuilt AL-only and NV-only
+  guard removals each failed two. Restored nine focused tests and the full
+  1,298-test/18-suite enforcing run pass. Fresh semantic exports exactly match
+  the proved inputs/records. All 326 corpus inputs are unchanged in all four
+  views, as are all four large SDK outputs and five app pseudo outputs.
+  All 1,308 cost pairs are complete: instructions -0.0093%, summed footprint
+  +0.3897%, within default budgets without an override.
 - **FIXED — a tst's flags read as an unsigned comparison.** `tst w0, #0xff;
   b.hs` (never taken: tst clears C) rendered `(w0 & 0xff) >=ᵁ 0`, always
   true, and `b.mi` printed `(w0 & 0xff) < 0 // 0`. Signed orders compare

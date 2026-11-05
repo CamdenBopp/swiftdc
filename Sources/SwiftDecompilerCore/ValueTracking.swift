@@ -4379,6 +4379,9 @@ public struct ValueTracer: Sendable {
     }
 
     func flagCondition(_ flags: AbstractValue, code: AArch64CC_CondCode, width: AbstractValue?, requireComplete: Bool = false, selectDepth: Int = 0) -> AbstractValue? {
+        // Both always conditions hold independently of the tracked NZCV.
+        // Literal flags previously reached the default-false case first.
+        if code == AArch64CC_AL || code == AArch64CC_NV { return .immediate(1) }
         // CFG merges retain a selected producer, not a selected arithmetic
         // result to compare with zero. Bound this query independently of the
         // existing retained-state graph, whose switch selects may be deeper.
