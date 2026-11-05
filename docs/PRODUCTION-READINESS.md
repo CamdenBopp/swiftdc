@@ -9160,3 +9160,75 @@ Commit messages on dev stay as they are; these are the true records.
   Fixtures/Sample/libRecursiveSummaryEffects.dylib --structured` and the
   corresponding `--pseudo`, listing and `--json` views;
   `Tools/blast-radius.sh <5b8d911-release> <candidate-release> <out> --real --perf`.
+
+- **OFFICIAL GATE (`5ff6d6b`):** the recursive-entry checkpoint passed
+  1,330 tests in 18 suites (324.554 s). All 1,340 cost pairs have positive
+  counts and meet default budgets without override: +0.01% instructions and
+  +0.12% summed peak footprints. The actual gate release matches all 334
+  reviewed inputs in four views, four large SDK outputs and five app outputs.
+
+
+## 2026-11-05: close conditional external-tail effects
+
+- **FIXED (`d4f9d52`, correctness): conditional tails were missing from
+  summaries.** An external CBZ/CBNZ/TBZ/TBNZ/B.cond transfer could change a
+  callee-saved register or use the caller's frame without that fact reaching
+  callers. Classify it consistently in argument/frame/context reads, self
+  forwarding, outgoing field writes, effect dependencies and exit replay.
+  The taken exit applies its target's effect to a copy; fallthrough retains
+  its original state. Argument kills remain CALL-only. No conditional-tail
+  return reconstruction is added.
+- **PRECISE / BOUNDED:** raw exit maps distinguish taken clobbers from
+  preserved fallthrough values, including x21. Incoming-slot reloads are
+  claimed only when both exits agree. Unknown/known input policies, copied
+  self in private x23, frame/context reads and field-purity closure are
+  exercised. Internal branches and resolved switches remain CFG edges.
+  Closed reads survive preservation recomputation. The existing recursive
+  entry handling, nineteen-register bank, slot/alias rules, GPR save
+  exception and closure caps remain unchanged; no float-width proof is added.
+- **NATIVE / VERIFIED:** the authored fixture has 17 function starts,
+  17 native text symbols and 17 LLVM disassembly entries. Independent reads
+  match all 107 instruction words and transfer targets. Nine native calls
+  include taken/untaken GPR and vector tails, safe targets, real local reloads
+  and an ABI-safe x29 scratch slot. Three published `2`/`2.0` claims are
+  wrong: native results are `1`/`1.0`, including the scratch write. The fix
+  declines those three. Two untaken controls also decline because the shared
+  summary is context independent; four safe/reload positives retain their
+  correct constants. Array/filtered/streaming paths agree on these facts.
+- All five complete focused views preserve 17 whole / nine filtered
+  functions and change only those five returns. JSON changes only their
+  annotation and statement. Each mode is compared with its own baseline;
+  23 preexisting LLVM/Capstone text spellings remain distinct and unchanged.
+  Sixteen separately assembled unit sequences match all 41 words, including
+  the five conditional forms, reloads, x21, private self copy and CFG controls.
+- The renewed baseline builds and fails 104 assertions in 59 focused tests:
+  95 unit assertions plus nine native path assertions for three wrong values.
+  All 49 old guards pass. Six isolated hunk reverts and an intentional
+  fallthrough-state contamination independently compile and fail
+  20 / 11 / 38 / 34 / 62 / two / 20 assertions. Restored source rebuilds and
+  all 59 pass. Earlier tests whose hook also affected RET or copied self into
+  a return register were corrected before crediting this final proof state.
+  The full enforcing suite passes 1,340 tests in 18 suites (324.221 s), and
+  release builds successfully. Fresh instruction-semantic exports match the
+  previously proved 58,515 integer / 12,644 condition / 448 targeted-W
+  records; exact solver proofs are reused. Native graph checks are separate.
+- **REVIEWED / MEASURED:** all 327 authored Mach-Os plus eight SDK inputs
+  were reviewed in four views. Only the new fixture changes: five
+  structured/pseudo/listing lines and ten JSON fields. All 43,444 parsed
+  functions and 881,284 instructions retain headers, blocks, addresses,
+  machine text, control flow, targets and argument arity. Five unsupported
+  inputs retain exact diagnostics and exit status. Four large SDK outputs
+  and five app pseudo outputs are byte-identical. Seven CLI entry points
+  pass nine command pairs; native section inventories justify empty fixture
+  type/ObjC metadata, with 28 layouts and 46 ObjC methods as positive controls.
+- All 1,344 cost pairs have positive counts and meet default budgets without
+  override: 4,931.675G to 4,932.349G instructions
+  (+0.01%) and -0.36% summed peak footprints. These compatibility
+  measures establish no speed or allocation improvement. Non-entry internal
+  BL effects, saved-slot tail self reads and conditional-tail return
+  reconstruction remain separate open work.
+
+  Reproduce: `Tools/fixtures.sh`; `swiftdc disasm
+  Fixtures/Sample/libConditionalTailEffects.dylib --structured` and the
+  corresponding `--pseudo`, listing and `--json` views;
+  `Tools/blast-radius.sh <5ff6d6b-release> <candidate-release> <out> --real --perf`.
