@@ -3071,12 +3071,14 @@ public struct ValueTracer: Sendable {
                     result = .selfIsaSnapshot
                 }
             }
-            write(effect.destination, result, into: &registers)
             if detail.id == AARCH64_INS_ANDS {
+                // NZCV reads the same pre-write operands as the result. The
+                // destination can also be a shifted right-hand source.
                 registers[Self.flagsKey] = testFlags(source(detail.operands[1], in: registers),
                                                      source(detail.operands[2], in: registers), value: result)
                 registers[Self.flagsWidthKey] = .immediate(UInt64(effect.destination.widthBits))
             }
+            write(effect.destination, result, into: &registers)
 
         case AARCH64_INS_CLZ, AARCH64_INS_CLS, AARCH64_INS_RBIT:
             // `clz` counts a register's leading zeros, `cls` the bits after

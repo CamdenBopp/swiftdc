@@ -642,18 +642,31 @@ results do not replace previously recorded release performance measurements.
   Three raw folded-test annotations defer to the existing register-level
   truthiness rendering policy. All four large SDK output hashes, including
   Parser structured, exactly match baseline.
-- **OPEN — shifted destination overlap in constant ANDS.** `mov w0, #3;
-  ands w0, w0, w0, lsl #1; cset w0, eq` returns 0 natively but reads 1:
-  the flags path rereads the shifted source after writing the destination.
-  An independent baseline matrix found 100 wrong cases among 1,792 native
-  functions, with nonoverlap/LHS-only controls correct. This preexisting
-  write-order defect is separate from the FT matrix and is not repaired here.
+- **FIXED — form ANDS flags before an overlapping destination write.**
+  `mov w0, #3; ands w0, w0, w0, lsl #1; cset w0, eq` returns 0 natively
+  but read 1: the flags path reread the shifted source after writing the
+  destination. NZCV now uses the pre-write operands. The authored matrix
+  covers both widths, four constant patterns, four destination/source
+  overlaps, four shifts and all 14 ordinary conditions: 1,792 exports equal
+  1,792 independently read function starts. Its 100 wrong baseline returns
+  become correct, with all 896 nonoverlap/LHS-only controls unchanged.
+  Array, filtered and streaming analysis each check all 1,792 native
+  functions (5,376 comparisons). The baseline and separately rebuilt
+  write-order revert are red with 100 wrong traces/renders per path;
+  fixed and restored runs have zero. Restored ten focused tests and the
+  1,299-test/18-suite enforcing run pass. Fresh semantic exports exactly
+  match the proved records; they are separate from this native flags proof.
+  Only this fixture changes in all four views: 100 corrected returns,
+  including matching JSON annotations/statements. All other 326 corpus
+  inputs, all four large SDK outputs and five app pseudo outputs are exact.
+  All 1,312 cost pairs are complete: instructions -0.0011%, summed footprint
+  -0.4254%, within default budgets without an override.
 - **OPEN — ordinary symbolic flag conditions still decline.** Outside a
   complete conditional-compare query, symbolic `cmp`/`subs` decline `vs` and
   `vc`; constants fold their overflow exactly. Shifted sums can reach the
   expression bound. The native matrices name those allowed declines; they
   do not claim unmodeled text overflow expressions are checked.
-- **FIXED — `al` and `nv` read false over constant tracked flags.** `cmp
+- **FIXED (9fa4334) — `al` and `nv` read false over constant tracked flags.** `cmp
   x8, x9; csel x0, x8, x9, al` of 1 and 2 rendered 2; native execution
   returns 1. Query both always conditions before literal, aggregate and
   selected flags. Native constant controls and 192 symbolic checks over
