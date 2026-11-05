@@ -796,6 +796,7 @@ public struct ValueTracer: Sendable {
         private var other: [Location: AbstractValue] = [:]
         fileprivate var nonFrameEntries: [Location: AbstractValue] { other }
         var frame = FrameFacts<TraceFrameFact>()
+        var reach = TraceFrameReach()
         init() {}
         init(dictionaryLiteral elements: (Location, AbstractValue)...) {
             for (key, value) in elements { self[key] = value }
@@ -817,23 +818,43 @@ public struct ValueTracer: Sendable {
             case .outgoing: return .outgoing(offset)
             }
         }
+        private static func reachKey(_ key: Location) -> TraceReachKey? {
+            switch key {
+            case .frameEscaped(let offset): return .point(offset)
+            case .frameBelow(let bound): return .below(bound)
+            case .frameEscapedAll: return .all
+            case .frameDynamic(let bound): return .dynamic(bound)
+            default: return nil
+            }
+        }
+        private static func reachLocation(_ key: TraceReachKey) -> Location {
+            switch key {
+            case .point(let offset): return .frameEscaped(offset)
+            case .below(let bound): return .frameBelow(bound)
+            case .all: return .frameEscapedAll
+            case .dynamic(let bound): return .frameDynamic(bound)
+            }
+        }
         subscript(_ key: Location) -> AbstractValue? {
             get {
                 if let (offset, field) = Self.component(key) { return frame[offset, field] }
+                if let marker = Self.reachKey(key) { return reach[marker] }
                 return other[key]
             }
             set {
                 if let (offset, field) = Self.component(key) { frame[offset, field] = newValue }
+                else if let marker = Self.reachKey(key) { reach[marker] = newValue }
                 else { other[key] = newValue }
             }
         }
-        var count: Int { other.count + frame.componentCount }
+        var count: Int { other.count + frame.componentCount + reach.logicalCount }
         var isEmpty: Bool { count == 0 }
-        mutating func removeAll() { other.removeAll(); frame.removeAll() }
+        mutating func removeAll() { other.removeAll(); frame.removeAll(); reach.reset() }
         func intersecting(with state: State) -> State {
             var result = State()
             result.other = other.filter { state.other[$0.key] == $0.value }
             result.frame = frame.intersecting(with: state.frame)
+            result.reach = reach.equalPayloadIntersection(state.reach)
             return result
         }
         func filter(_ predicate: (Element) throws -> Bool) rethrows -> State {
@@ -846,13 +867,16 @@ public struct ValueTracer: Sendable {
         struct Iterator: IteratorProtocol {
             private var other: Dictionary<Location, AbstractValue>.Iterator
             private var frame: FrameFacts<TraceFrameFact>.ComponentIterator
+            private var reach: TraceReachStorage.Entries.Iterator
             init(_ state: State) {
                 other = state.other.makeIterator()
                 frame = state.frame.components.makeIterator()
+                reach = state.reach.entries.makeIterator()
             }
             mutating func next() -> Element? {
                 if let item = other.next() { return item }
                 if let item = frame.next() { return (State.location(item.offset, item.field), item.value) }
+                if let item = reach.next() { return (State.reachLocation(item.key), item.payload) }
                 return nil
             }
         }
@@ -2020,6 +2044,9 @@ public struct ValueTracer: Sendable {
         var unsizedSlots: [Int64] = []
         var unsizedFlags = false
         for state in states {
+            // Frame identities keep the old ordered MAY payload union here,
+            // not in the earlier raw must intersection/self-isa phase.
+            accumulator.reach.formUnion(state.reach)
             for (key, value) in state.nonFrameEntries {
                 if isEscapeMarker(key) {
                     accumulator[key] = value
@@ -5362,18 +5389,10 @@ public struct ValueTracer: Sendable {
     /// The write footprint of the durable escape markers; nil when no
     /// frame address has escaped. Boundary discovery stays with this tracer.
     private static func escapedReach(_ registers: State, addressTaken: [Int64]) -> FrameMemoryEffect? {
-        let everything = registers[frameEscapeAllKey] != nil
-        var regions = Set<FrameMemoryEffect.Region>()
-        for key in registers.keys {
-            if case .frameEscaped(let start) = key {
-                let end = start >= 0 ? Int64.max : (addressTaken.first { $0 > start } ?? 0)
-                regions.insert(.finite(lower: start, upper: end))
-            } else if case .frameBelow(let end) = key {
-                regions.insert(.finite(lower: Int64.min, upper: end))
-            }
-        }
-        guard everything || !regions.isEmpty else { return nil }
-        return FrameMemoryEffect(regions, arithmetic: .wrapping, everything: everything)
+        let evidence = TraceLayoutEvidence(sortedAddressTaken: addressTaken)
+        let effect = registers.reach.effect(using: evidence, arithmetic: .wrapping)
+        // Dynamic-only/allocation evidence does not escape any frame region.
+        return effect.isEmpty ? nil : effect
     }
 
     /// Forget the frame facts the effect may reach. A forgotten frame

@@ -727,10 +727,7 @@ enum Preservation {
     }
 
     /// Frame offsets `[floor, bound)` an escaped address can reach.
-    struct EscapeRange: Hashable {
-        let floor: Int64
-        let bound: Int64
-    }
+    typealias EscapeRange = FrozenFrameRange
 
     struct State: Equatable {
         var registers: [String: Value]
@@ -740,12 +737,16 @@ enum Preservation {
         // MAY provenance is independent of the must-value facts above: a
         // join can lose an exact address while retaining a feasible alias.
         var stackAliases: Set<String> = ["sp"]
-        var stackAddressEscaped = false
-        // What escaped frame addresses can reach, each `[floor, bound)`: a
-        // callee handed `&local` writes that local, not the saved values
-        // beside it, as the tracer's `escapedReach` assumes of a local's
-        // extent (`markEscape`).
-        var escapedRanges: Set<EscapeRange> = []
+        var reach = FrozenFrameReach()
+        // Compatibility properties forward to the sole durable owner.
+        var stackAddressEscaped: Bool {
+            get { reach.hasWhole }
+            set { reach[.whole] = newValue ? ReachPresence() : nil }
+        }
+        var escapedRanges: Set<EscapeRange> {
+            get { reach.frozenRanges }
+            set { reach.frozenRanges = newValue }
+        }
         // No write since entry can have reached entry sp or above, so a load
         // there with no slot fact still reads the caller's bytes. Any call,
         // any write of unknown extent and any store reaching that far ends it.
@@ -755,6 +756,19 @@ enum Preservation {
         // no frame address on the other, x25 a dynamic allocation on one and
         // no frame address on the other. Absent means any.
         var aliasReach: [String: FrameReach] = [:]
+
+        init(
+            registers: [String: Value], slots: FrameFacts<WordFrameFact<Value>>,
+            stackAliases: Set<String> = ["sp"], stackAddressEscaped: Bool = false,
+            escapedRanges: Set<EscapeRange> = [], incomingIntact: Bool = true,
+            aliasReach: [String: FrameReach] = [:]
+        ) {
+            self.registers = registers; self.slots = slots
+            self.stackAliases = stackAliases; self.incomingIntact = incomingIntact
+            self.aliasReach = aliasReach
+            for range in escapedRanges { reach[.range(range)] = ReachPresence() }
+            if stackAddressEscaped { reach[.whole] = ReachPresence() }
+        }
 
         mutating func setRegister(_ key: String, to value: Value, mayAliasStack: Bool = false) {
             registers[key] = value == .unknown ? nil : value
@@ -812,15 +826,15 @@ enum Preservation {
                     below: [mine.below, theirs.below].compactMap { $0 }.max())
                 if !union.offsets.isEmpty || union.below != nil { offsets[key] = union }
             }
-            return State(
+            var result = State(
                 registers: registers,
                 slots: slots.intersecting(with: other.slots),
                 stackAliases: aliases,
-                stackAddressEscaped: stackAddressEscaped || other.stackAddressEscaped,
-                escapedRanges: escapedRanges.union(other.escapedRanges),
                 incomingIntact: incomingIntact && other.incomingIntact,
                 aliasReach: offsets
             )
+            result.reach = reach.union(other.reach)
+            return result
         }
 
         /// The frame addresses `key` may hold here: a known stack address,
@@ -851,36 +865,21 @@ enum Preservation {
                 if case .entry = value { return offset }
                 return nil
             }.sorted()
-            func reach(from k: Int64) -> EscapeRange? {
-                guard !entrySlots.contains(where: { k >= $0 && k < $0 &+ 8 }),
-                      let next = entrySlots.first(where: { $0 > k })
-                else { return nil }
-                return EscapeRange(floor: k, bound: next)
-            }
+            let evidence = LiveEntrySaveEvidence(sortedEntryStarts: entrySlots)
             for key in keys {
-                var reached: [EscapeRange]? = []
+                let input: PossibleFrameOrigins
                 switch value(key) {
-                case .stack(let k):
-                    reached = reach(from: k).map { [$0] }
-                // An address inside a dynamic allocation that hangs below
-                // k: the callee reaches that allocation, below k.
-                case .below(let k) where entrySlots.contains(where: { $0 >= k }):
-                    reached = [EscapeRange(floor: Int64.min, bound: k)]
-                // A join that lost the exact offset may still bound it.
+                case .stack(let offset): input = .finite(offsets: [offset], below: nil)
+                case .below(let bound): input = .finite(offsets: [], below: bound)
                 case .unknown where aliasReach[key] != nil:
                     let possible = aliasReach[key] ?? FrameReach()
-                    for offset in possible.offsets.sorted() {
-                        guard let range = reach(from: offset) else { reached = nil; break }
-                        reached?.append(range)
-                    }
-                    if let k = possible.below {
-                        if entrySlots.contains(where: { $0 >= k }) { reached?.append(EscapeRange(floor: Int64.min, bound: k)) }
-                        else { reached = nil }
-                    }
+                    input = .finite(offsets: possible.offsets, below: possible.below)
                 default:
-                    reached = nil
+                    // Preserve markEscape's selected-key default: even when
+                    // frameReach(key) would be empty, this case means Any.
+                    input = .any
                 }
-                if let reached { escapedRanges.formUnion(reached) } else { stackAddressEscaped = true }
+                reach.recordEscape(input, against: evidence)
             }
         }
 
@@ -890,14 +889,8 @@ enum Preservation {
                 slots.removeAll()
                 return
             }
-            var regions = Set<FrameMemoryEffect.Region>()
-            for range in escapedRanges {
-                regions.insert(.finite(lower: range.floor, upper: range.bound))
-            }
-            // Caller-owned and straddling eight-byte facts are not private
-            // saves, even when no pointer escaped from this function.
-            regions.insert(.atOrAbove(0))
-            let effect = FrameMemoryEffect(regions, arithmetic: .checked)
+            // Caller-owned reach is an operation policy, not a durable escape.
+            let effect = reach.effect(using: NoFrameQueryEvidence(), arithmetic: .checked, includingCallerOwned: true)
             slots.forget(effect, removing: .value)
         }
 
@@ -1338,8 +1331,9 @@ extension Preservation {
         /// An escaped frame address may reach a slot holding it.
         var escapeReachesSlot: Bool {
             guard !slots.isEmpty else { return false }
-            if frame.stackAddressEscaped { return true }
-            return slots.contains { slot in frame.escapedRanges.contains { slot < $0.bound && slot &+ 8 > $0.floor } }
+            if frame.reach.hasWhole { return true }
+            let effect = frame.reach.effect(using: NoFrameQueryEvidence(), arithmetic: .wrapping)
+            return slots.contains { slot in effect.mayInvalidate(.init(start: slot, bytes: 8)) }
         }
     }
 
