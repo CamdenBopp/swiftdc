@@ -904,8 +904,13 @@ struct ControlFlowStructure {
                     // The second operand can carry a shift or an extend
                     // (`cmp x21, x8, lsr #1`, `cmp x0, #0x1, lsl #12`); read
                     // without it, the compare named another value.
+                    // A w register's shift is word arithmetic, so a shifted
+                    // 32-bit operand reads only over a word: `(0x7000 << 20)`
+                    // or `((x1 & 0xffff) << 20)` keeps bits the compare cuts.
+                    let shiftedWord = ops[rhsIndex].hasPrefix("w") && ops.count > rhsIndex + 1
                     guard let rhs = Self.applyingModifier(
-                        narrowResolve(ops[rhsIndex], before: index, in: block, consumed: &consumed, width: rhsRule),
+                        narrowResolve(ops[rhsIndex], before: index, in: block, consumed: &consumed,
+                                      keepsWordNumber: !shiftedWord, width: shiftedWord ? .exact : rhsRule),
                         operand: ops[rhsIndex], trailing: ops[(rhsIndex + 1)...]),
                           let rawRHS = Self.applyingModifier(
                         Self.cleanImmediate(ops[rhsIndex]), operand: ops[rhsIndex], trailing: ops[(rhsIndex + 1)...])

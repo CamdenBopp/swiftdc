@@ -579,6 +579,33 @@ results do not replace previously recorded release performance measurements.
   0x80000000, `cmn w0, w1; b.ge` disagrees with `w0 >= -w1`. An order
   renders only against an immediate (nonzero when unsigned). z3: refuted
   1,507 → 746; goProgram one line.
+- **FIXED — a 32-bit compare read its shifted or extended operand uncut.**
+  `cmp w0, w1, lsl #4; cset eq` with x0 = 0 and x1 = 0x10000000 is equal,
+  but the 2eba6d2 release printed the uncut 0x100000000 operand. Only signed
+  W orders reached the width-aware path; modeled W comparison operators now
+  cut both operands after their modifier. The text path also keeps a W
+  definition under a modifier: substituting a number or an X expression
+  before LSL20 retains bits the instruction cuts. `flagwidth.s` independently
+  regenerates and assembles to 1,680 `fw_` probes. With an explicit two-scalar
+  tracer entry, 1,454 claims make 414,390 native comparisons on 285 unique
+  boundary/equality pairs: 108 wrong probe functions before, zero after;
+  226 probes explicitly decline in the permitted overflow/depth classes.
+  These claims are distinct from the whole-CLI blast: 326 inputs, four
+  views, and four large SDK workloads make 1,308 complete cost pairs. Only
+  the new fixture changes (84/0/84/84 structured/pseudo/listing/JSON lines):
+  42 branch predicates gain their final word mask. Every existing input,
+  all four large SDK output hashes, and Terminal/TextEdit/Chess/Clarc/
+  GoodLinks pseudo output remain identical. Instructions -0.04%, summed
+  footprint -0.49%, within budgets without an override. The full enforcing
+  suite passed 1,291 tests in 18 suites; the tracer rule and both text rules
+  each have independently rebuilt red mutations followed by restored green.
+  Standard semantic exports are identical before/after (58,514 integer
+  encodings proved, one sampled division; 9,936 text conditions proved,
+  2,708 declined, zero refuted). The standard generator misses RHS
+  definitions; a private 448-sequence RHS-word extension separately proves
+  256 conditions and declines 192, with zero refuted/unparsed/unknown/missing.
+  Removing the text number/width rules after separate successful builds
+  yields 102/6 refutations; restore/rebuild returns the extension green.
 - **FIXED — a tst's flags read as an unsigned comparison.** `tst w0, #0xff;
   b.hs` (never taken: tst clears C) rendered `(w0 & 0xff) >=ᵁ 0`, always
   true, and `b.mi` printed `(w0 & 0xff) < 0 // 0`. Signed orders compare
@@ -588,10 +615,12 @@ results do not replace previously recorded release performance measurements.
   ARM.** `Tools/semantics` (z3, dev host only) traces 58,515 encodings of
   the integer data-processing instructions and asks z3 whether any input
   makes the traced x0 differ from the Arm pseudocode written from the
-  encoding fields. At this commit: 54,946 verified for all inputs, 1
-  sampled (`sdiv w`, beyond the solver), 3,568 declined, 0 refuted. Every
-  decline is an unmodelled instruction: `bic`/`bics`/`eon`, a ROR-shifted
-  operand, `negs`, `mneg`, `movn`, `rbit`, `clz`, `cls`.
+  encoding fields. Independently rerun on the 2eba6d2-based flags
+  integration: 58,514 verified for all inputs, one sampled after the solver
+  limit, zero declined/refuted/unsupported/unallocated/missing. Baseline and
+  fixed integer exports are byte-identical; the single-instruction harness
+  does not exercise subsequent flag consumers. Native flag-condition probes
+  and the text-path checker provide separate coverage.
 - **FIXED — the tracer did not model `bic`, `bics`, `eon`, `negs`, `mneg`,
   `movn` or a ROR-shifted operand.** Each left its destination unknown:
   Swift's `-O` `!flag` (`bic w0, w8, w0`) and `max(n, 0)` (`bic x0, x0, x0,

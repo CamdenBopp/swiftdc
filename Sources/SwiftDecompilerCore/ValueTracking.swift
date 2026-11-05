@@ -4358,13 +4358,16 @@ public struct ValueTracer: Sendable {
             // `pl` is false, though the 64-bit difference is positive.
             var constants = false
             if case .immediate = lhs, case .immediate = rhs { constants = true }
-            // A signed order of 32-bit operands compares their sign-extended
-            // values: a w register reads as its zero-extended bits, and
-            // `cmp w9, w8; b.lt` with w8 = -100000 read `… < 0xfffe7960`,
-            // the branch inverted for every non-negative w9. MI and PL are
-            // the difference's sign, which is not `a < b` when it overflows.
-            let signedOrder = [AArch64CC_LT, AArch64CC_GE, AArch64CC_GT, AArch64CC_LE].contains(code)
-            if requireComplete || constants || (signedOrder && width == .immediate(32))
+            // A 32-bit compare reads words. A signed order compares their
+            // sign-extended values: a w register reads as its zero-extended
+            // bits, and `cmp w9, w8; b.lt` with w8 = -100000 read `… <
+            // 0xfffe7960`, the branch inverted for every non-negative w9.
+            // Every other code compares them cut to the word: `source` leaves
+            // a shifted or extended operand wider, and `cmp w0, w1, lsl #4;
+            // cset eq` of 0 and 0x10000000 read `0 == 0x100000000`. MI and PL
+            // are the difference's sign, which is not `a < b` when it overflows.
+            let wordCompare = width == .immediate(32) && Self.comparisonOperator(code) != nil
+            if requireComplete || constants || wordCompare
                 || code == AArch64CC_MI || code == AArch64CC_PL {
                 return subtractionCondition(lhs, rhs, code: code, width: width == .immediate(32) ? 32 : 64)
             }

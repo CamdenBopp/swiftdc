@@ -330,3 +330,26 @@ private func textPathFunction(_ words: [UInt32], undetailed: Set<Int> = []) thro
     let neg = try text("_s_neg")
     #expect(neg.contains("if (((arg0 << 32) >>ˢ 32) < 0)"), Comment(rawValue: neg))
 }
+
+/// A w register's shift is word arithmetic, so a 32-bit compare's shifted
+/// operand reads truly only over a word. Over a number or a doubleword the
+/// text states bits the compare never sees: `mov w9, #0x7000; cmp w8, w9, lsl
+/// #20; b.eq` compares with the word 0 and rendered `w8 == (0x7000 << 20)`,
+/// which no word equals, and `and x9, x1, #0xffff` kept the high bits of
+/// `(x1 & 0xffff) << 20`. A definition that is itself a word keeps reading.
+@Test func aThirtyTwoBitCompareShiftsOnlyAWord() throws {
+    let tail: [UInt32] = [0x52800020, 0xd65f03c0, 0x52800040, 0xd65f03c0]
+    let eq: UInt32 = 0x54000060, lt: UInt32 = 0x5400006b, lo: UInt32 = 0x54000063
+    let mov: UInt32 = 0x528e0009, cmp: UInt32 = 0x6b09511f
+    for (words, expected) in [
+        ([mov, cmp, eq], "w8 == (w9 << 20)"),
+        ([mov, cmp, lt], "w8 < (w9 << 20)"),
+        ([0x92403c29, cmp, eq], "w8 == (w9 << 20)"),             // and x9, x1, #0xffff
+        ([0x92403c29, cmp, lo], "w8 <\u{1D41} (w9 << 20)"),
+        ([mov, 0x2b09511f, eq], "w8 == -((w9 << 20))"),          // cmn w8, w9, lsl #20
+        ([0x12003c29, cmp, eq], "w8 == ((w1 & 0xffff) << 20)"),  // and w9, w1, #0xffff
+    ] as [([UInt32], String)] {
+        let rendered = try textPathFunction(words + tail).renderStructured()
+        #expect(rendered.contains(expected), Comment(rawValue: rendered))
+    }
+}
