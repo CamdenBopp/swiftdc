@@ -222,8 +222,9 @@ fix, measured and explained like any other.
    remain explicit compatibility policies; finite Int64 sentinels are not
    reinterpreted as infinity. Durable markers, joins, boundary discovery,
    pointer-loss closure, reload ordering and result/context spaces stay with
-   their current analyses. Exact stores and the complete shared memory model
-   remain OPEN. This slice preserves output; it does not complete step 4.*
+   their current analyses. Exact-store footprint sharing follows below;
+   the complete shared memory model remains OPEN. This first slice preserves
+   output and does not complete step 4.*
 
    The enforcing 1,360/22 suite, sixteen independently compiled mutant reds,
    restored 56 focused/native controls, exact semantics and 112 subprocess
@@ -231,11 +232,30 @@ fix, measured and explained like any other.
    pseudo outputs and nine CLI pairs match. Default corpus costs pass;
    PRODUCTION-READINESS.md records the measured scope and the observed
    temporary-Set allocation path. No allocation-volume saving is established.
+
+   *Exact-store footprints follow in `3f72b65`: both real overlap-kill
+   paths use `FrameMemoryEffect`. Canonical empty/single/multiple storage
+   gives an exact store a direct inline region without a singleton Set.
+   The tracer's explicit legacy region defers trapping endpoint additions
+   until a query and preserves write-bound-first short circuiting, including
+   the no-old-fact case. Preservation retains checked overflow handling and
+   its separate incoming-state ownership policy. Exact overwrite and unknown
+   pointer-loss transfers remain distinct; byte/vector widths, pair strides,
+   value installation, register-file and outgoing metadata are unchanged.*
+
+   Sixteen new compatibility controls pass against both legacy and migrated
+   consumers. Twenty independently compiled mutations fail intended
+   assertions; restored 176 focused/native controls and enforcing 1,376/25
+   tests pass. All previous outputs and fresh semantics match; 128 explicit
+   subprocess checks pass, including saved-slot/register-file fixtures.
+   Default corpus budgets pass with scope recorded in PRODUCTION-READINESS.md.
+   This does not establish allocation-volume savings or a complete shared
+   frame value/layout/provenance model.
 5. **Value identity and edge refinement.** Recovers declined exits such as the
    -Onone `try` shape and gives conditions and loop variables stable names.
 6. **Renderers read the IR**, then the §9.3 layers above it.
 
-Steps 1–3 and the first shared-effect extraction in step 4 are refactors.
+Steps 1–3 and the shared write-footprint extractions in step 4 are refactors.
 Completing step 4 is the intended memory-model soundness payoff. A stopgap
 that fixes `cacheEscape` inside the current tracer
 (persistent per-region escape, union at joins) is acceptable before step 4 if

@@ -9441,8 +9441,75 @@ Commit messages on dev stay as they are; these are the true records.
   `swift build -c release --scratch-path .build-release -j 2`;
   `Tools/blast-radius.sh <39edfbb-release> <new-release> <out> --real --perf`.
 
-- **OPEN — the complete frame-memory IR model.** Exact-store arithmetic
-  and widths, boundary/provenance discovery, state carriers, MAY joins and
-  result/context spaces still belong to their existing analyses. The shared
-  unknown-write decision does not unify them. Preserve Onone spill recovery,
-  caller ownership, disjoint bounds and escape closure as those pieces move.
+- **OPEN — the complete frame-memory IR model.** Boundary/provenance
+  discovery, state/value carriers, register-file/width metadata, MAY joins and
+  result/context spaces still belong to their existing analyses. Subsequent
+  exact-store footprint sharing below advances the common queries without
+  unifying those transfers. Preserve Onone spill recovery, caller ownership,
+  disjoint bounds and escape closure as those pieces move.
+
+## 2026-11-05: share exact frame-store footprints
+
+- **FIXED — duplicate exact-store overlap decisions (`3f72b65`).**
+  The real `ValueTracer.storeStack` and `Preservation.invalidateSlots`
+  filters now use `FrameMemoryEffect`, alongside the prior unknown-write
+  consumers. Empty/single/multiple region storage is canonical; exact-store
+  construction carries one region inline and creates no singleton Set.
+  This is an output-preserving IR extraction, not a newly reproduced native
+  wrong-value fix or an allocation-volume claim.
+
+  The explicit legacy tracer exact region stores operands without computing
+  endpoints. A query evaluates the trapping write end first and only then,
+  when needed, the trapping fact end. No old fact means no overlap query.
+  Finite checked queries still invalidate overflowing facts before an upper
+  bound can veto them. Preservation's nonpositive/overflow write guard and
+  incomingIntact/end>0 ownership update remain separate and unchanged.
+
+  Exact overwrites replace bytes; unknown knowledge loss can expose pointer
+  bytes left in memory. They retain their distinct transfers. B/H/W/X/D/Q
+  widths, pair strides, packed/unknown words, narrow reload declines,
+  stackFile/outgoing metadata, source-first helper snapshots, existing
+  unknown-projection loops, joins and result/context spaces are unchanged.
+  No accepted-input overflow repair is claimed; synthetic extreme-entry
+  controls preserve API-boundary behavior and are not valid native frames.
+
+  All **335 inputs in four views** match exactly: **43,444 functions /
+  881,284 instructions** across 330 supported JSON inputs, with the same
+  five unsupported diagnostics/statuses. Four SDK outputs, all five app
+  pseudo outputs and nine CLI pairs match. All **1,344 cost pairs** have
+  positive counters and meet default budgets without exception:
+  **+0.3388% retired instructions** and
+  **+0.1052% summed peak footprints**.
+  These single corpus comparisons are budget evidence, not a general speed,
+  allocation-volume or retained-heap result.
+
+  Fresh exports exactly match **58,515 integer / 12,644 condition / 448
+  targeted-word records**, reusing prior solver evidence for those exact
+  input/output bytes. Frozen debug/release CLIs pass **128 separate-process
+  checks**, four rounds per configuration over eleven output and five probe
+  cases, including exact saved-slot and register-file fixtures.
+
+  Verified: **16 new compatibility tests** pass with legacy exact consumers
+  before migration and with both migrated consumers. Independent CLT
+  assembly/LLVM decoding corroborate **49 authored bodies / 390 instruction
+  words / three helper targets**; synthetic bodies were not executed natively.
+  Existing independent saved-slot, selected-vector, float reinterpretation,
+  partial-write, ownership and Onone recovery native/fixture controls pass.
+  **Twenty independently compiled mutations** fail intended assertions:
+  both strict bounds in both call/escape-free real cores, safe endpoint-order
+  counters, fact/write widths, pair strides, ownership, metadata and overwrite
+  provenance. Three trap-only suggestions remain unrun and uncredited.
+  Restored **176 focused/native tests** and rebuilt enforcing **1,376 tests
+  in 25 suites** pass. The initial width-test API conversion compile failure
+  was corrected before any behavioral test result and has no mutant credit.
+
+  Reproduce: `Tools/fixtures.sh`; `swift build --build-tests -j 2`;
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`;
+  `swift build -c release --scratch-path .build-release -j 2`;
+  `Tools/blast-radius.sh <6b6ab7e-release> <new-release> <out> --real --perf`.
+
+- **OPEN — shared frame values, layout and provenance.** Common footprints
+  do not replace the analyses' distinct value maps, layout discovery, MAY
+  aliases, escape carriers or result/context models. A deliberate change to
+  legacy endpoint failure behavior still needs an accepted-input reduction
+  and its own behavior proof.
