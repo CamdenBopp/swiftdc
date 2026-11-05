@@ -8730,6 +8730,17 @@ Commit messages on dev stay as they are; these are the true records.
   byte-identical. App function counts match independent starts: Terminal
   3,245, TextEdit 536, Chess 1,699, Clarc 14,246 and GoodLinks 65,107. All
   guarded job trees are terminal; no normalization or guard kill was needed.
+- **OFFICIAL GATE (`2eba6d2`):** the enforcing suite passed 1,289 tests
+  in 18 suites (415.095 s), and the push gate completed in 491 s with no
+  override. All 1,304 cost pairs are complete, all four fixture/SDK view
+  diffs are empty, and all four large-SDK output hashes match. Instructions
+  fell from 5,162.7G to 5,135.6G (-0.52%); summed peak footprints fell from
+  18,284 MB to 16,949 MB (-7.30%). SwiftSyntax structured/xrefs footprints
+  changed -7.1%/-9.3%; SwiftParser changed +10.8%/+1.1%, all within budget.
+  The gate's release hash differs from the standalone build, but all 93
+  production/package source hashes match the frozen candidate. These are
+  independent gate results for the shipped memory behavior, separate from
+  later flag-condition validation.
 - **EVALUATED / OPEN: alternative decoder adapters.** Pinned fARM64
   `3cf05d4d` and disarm64 `50e6f63d` cores recorded no Rust allocator calls
   across the same 24.47 million raw slots. Their coverage agrees outside
