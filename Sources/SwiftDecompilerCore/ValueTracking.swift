@@ -1133,7 +1133,7 @@ public struct ValueTracer: Sendable {
         // reconstructing a ternary / nil-coalescing. Enrich the merge blocks'
         // entry states before the snapshot pass replays them.
         resolveAcyclicSelects(
-            blocks: blocks, predecessors: predecessors,
+            blocks: blocks, entryAddress: function.startAddress, predecessors: predecessors,
             blockByStart: blockByStart, inState: &inState, outState: outState,
             entry: entry, facts: facts
         )
@@ -2217,14 +2217,14 @@ public struct ValueTracer: Sendable {
     /// diamond can use it. Cycles retain the original converged analysis;
     /// this pass never assumes a loop has reached a new fixpoint.
     private func resolveAcyclicSelects(
-        blocks: [BasicBlock], predecessors: [UInt64: [UInt64]],
+        blocks: [BasicBlock], entryAddress: UInt64, predecessors: [UInt64: [UInt64]],
         blockByStart: [UInt64: BasicBlock], inState: inout [UInt64: State],
         outState: [UInt64: State], entry: MethodEntryConvention?, facts: FunctionFacts
     ) {
         let rawInState = inState
-        resolveDiamondSelects(blocks: blocks, predecessors: predecessors,
+        resolveDiamondSelects(blocks: blocks, entryAddress: entryAddress, predecessors: predecessors,
                              blockByStart: blockByStart, inState: &inState, outState: outState)
-        resolveSwitchSelects(blocks: blocks, predecessors: predecessors,
+        resolveSwitchSelects(blocks: blocks, entryAddress: entryAddress, predecessors: predecessors,
                             blockByStart: blockByStart, inState: &inState, outState: outState)
         guard blocks.contains(where: { (predecessors[$0.startAddress]?.count ?? 0) >= 2 }) else { return }
         var remaining = Dictionary(uniqueKeysWithValues: blocks.map { block in
@@ -2240,9 +2240,9 @@ public struct ValueTracer: Sendable {
                 if address == blocks.first?.startAddress { inputs.append(Self.initialState(entry: entry, asyncContextSlots: asyncContextSlots)) }
                 let prior = rawInState[address]
                 inState[address] = Self.meet(inputs)
-                resolveDiamondSelects(blocks: [block], predecessors: predecessors,
+                resolveDiamondSelects(blocks: [block], entryAddress: entryAddress, predecessors: predecessors,
                                      blockByStart: blockByStart, inState: &inState, outState: forwarded)
-                resolveSwitchSelects(blocks: [block], predecessors: predecessors,
+                resolveSwitchSelects(blocks: [block], entryAddress: entryAddress, predecessors: predecessors,
                                     blockByStart: blockByStart, inState: &inState, outState: forwarded)
                 let incoming = inState[address] ?? [:]
                 if !Self.sameFacts(prior, incoming) {
@@ -2272,7 +2272,7 @@ public struct ValueTracer: Sendable {
     /// three-way join, or an unrecoverable condition leaves the value dropping to
     /// `.unknown` as before, rather than inventing a merge.
     private func resolveDiamondSelects(
-        blocks: [BasicBlock],
+        blocks: [BasicBlock], entryAddress: UInt64,
         predecessors: [UInt64: [UInt64]],
         blockByStart: [UInt64: BasicBlock],
         inState: inout [UInt64: State],
@@ -2315,12 +2315,27 @@ public struct ValueTracer: Sendable {
             guard let condition = branchTakenCondition(terminator, in: deciderOut) else { continue }
 
             var enriched = inState[block.startAddress] ?? [:]
-            for key in Set(out1.keys).union(out2.keys) where out1[key] != out2[key] {
+            // The function entry has an implicit caller edge in addition to
+            // these backedges. Only its converged meet can prove its flags.
+            let rebuildFlags = block.startAddress != entryAddress
+            for key in Set(out1.keys).union(out2.keys)
+            where out1[key] != out2[key]
+                && (rebuildFlags || (key != Self.flagsKey && key != Self.flagsWidthKey)) {
                 guard let whenTrue = takenOut[key], whenTrue != .unknown,
                       let whenFalse = fallOut[key], whenFalse != .unknown,
                       Self.expressionDepth(whenTrue) < 6, Self.expressionDepth(whenFalse) < 6
                 else { continue }
                 enriched[key] = .select(condition: condition, whenTrue: whenTrue, whenFalse: whenFalse)
+            }
+            // meet drops flags whose setter widths differ, even when their
+            // operand payloads agree. Restore that common payload only beside
+            // the width choice reconstructed from these same two arms.
+            if rebuildFlags, let common = takenOut[Self.flagsKey], common != .unknown,
+               common == fallOut[Self.flagsKey],
+               let takenWidth = takenOut[Self.flagsWidthKey],
+               let fallWidth = fallOut[Self.flagsWidthKey], takenWidth != fallWidth,
+               enriched[Self.flagsWidthKey] == .select(condition: condition, whenTrue: takenWidth, whenFalse: fallWidth) {
+                enriched[Self.flagsKey] = common
             }
             inState[block.startAddress] = enriched
         }
@@ -2341,7 +2356,7 @@ public struct ValueTracer: Sendable {
     /// (`x < 0` then `x == 0`), a shared decider, no clean default — declines,
     /// leaving the value unmerged rather than guessing an ordering.
     private func resolveSwitchSelects(
-        blocks: [BasicBlock],
+        blocks: [BasicBlock], entryAddress: UInt64,
         predecessors: [UInt64: [UInt64]],
         blockByStart: [UInt64: BasicBlock],
         inState: inout [UInt64: State],
@@ -2446,7 +2461,10 @@ public struct ValueTracer: Sendable {
             let ordered = caseArms.sorted { $0.constant < $1.constant }
             var enriched = inState[block.startAddress] ?? [:]
             let allKeys = ordered.reduce(into: Set(defaultOut.keys)) { $0.formUnion($1.out.keys) }
-            for key in allKeys {
+            var rebuiltWidth = false
+            let rebuildFlags = block.startAddress != entryAddress
+            for key in allKeys
+            where rebuildFlags || (key != Self.flagsKey && key != Self.flagsWidthKey) {
                 let values = ordered.map { $0.out[key] ?? .unknown } + [defaultOut[key] ?? .unknown]
                 // Only a key that actually diverges across the arms is a merge.
                 guard values.contains(where: { $0 != values[0] }) else { continue }
@@ -2461,7 +2479,14 @@ public struct ValueTracer: Sendable {
                     else { ok = false; break }
                     merged = .select(condition: arm.condition, whenTrue: value, whenFalse: merged)
                 }
-                if ok { enriched[key] = merged }
+                if ok {
+                    enriched[key] = merged
+                    if key == Self.flagsWidthKey { rebuiltWidth = true }
+                }
+            }
+            if rebuildFlags, rebuiltWidth, let common = defaultOut[Self.flagsKey], common != .unknown,
+               ordered.allSatisfy({ $0.out[Self.flagsKey] == common }) {
+                enriched[Self.flagsKey] = common
             }
             inState[block.startAddress] = enriched
         }
@@ -3048,8 +3073,8 @@ public struct ValueTracer: Sendable {
             }
             write(effect.destination, result, into: &registers)
             if detail.id == AARCH64_INS_ANDS {
-                registers[Self.flagsKey] = constantFlags(.bitAnd, source(detail.operands[1], in: registers),
-                                                         source(detail.operands[2], in: registers)) ?? result
+                registers[Self.flagsKey] = testFlags(source(detail.operands[1], in: registers),
+                                                     source(detail.operands[2], in: registers), value: result)
                 registers[Self.flagsWidthKey] = .immediate(UInt64(effect.destination.widthBits))
             }
 
@@ -3643,7 +3668,7 @@ public struct ValueTracer: Sendable {
                     registers[Self.flagsKey] = .binary(.add, lhs, rhs)
                     registers[Self.flagsWidthKey] = .immediate(UInt64(detail.operands[0].operand.register?.widthBits ?? 64))
                 case AARCH64_INS_ALIAS_TST:
-                    registers[Self.flagsKey] = constantFlags(.bitAnd, lhs, rhs) ?? expression(.bitAnd, lhs, rhs)
+                    registers[Self.flagsKey] = testFlags(lhs, rhs, value: expression(.bitAnd, lhs, rhs))
                     registers[Self.flagsWidthKey] = .immediate(UInt64(detail.operands[0].operand.register?.widthBits ?? 64))
                 case AARCH64_INS_CCMP:
                     guard detail.operands.count >= 3,
@@ -4289,6 +4314,18 @@ public struct ValueTracer: Sendable {
         return .binary(op, lhs, rhs)
     }
 
+    /// The flags of a `tst` or `ands`: constants unfolded, like a compare's,
+    /// and any other value under an all-ones mask, which `expression` never
+    /// leaves in place. A test must not read as what it folded to:
+    /// `sub x8, x0, x1; mov x9, #-1; tst x8, x9` tests the difference, whose
+    /// `.subtract` bare would read as `cmp x0, x1`, with a carry and an
+    /// overflow the test clears.
+    private func testFlags(_ lhs: AbstractValue, _ rhs: AbstractValue, value: AbstractValue) -> AbstractValue {
+        if let constants = constantFlags(.bitAnd, lhs, rhs) { return constants }
+        // Even an unknown result has test identity and known-clear C/V.
+        return .binary(.bitAnd, value, .immediate(.max))
+    }
+
     /// NZCV of `lhs op rhs` at `width` bits, for constant operands of a
     /// compare (`subtract`), a compare-negative or flag-setting add (`add`),
     /// or a test (`bitAnd`). The carry of an add is its unsigned carry-out
@@ -4341,13 +4378,58 @@ public struct ValueTracer: Sendable {
         }
     }
 
-    private func flagCondition(_ flags: AbstractValue, code: AArch64CC_CondCode, width: AbstractValue?, requireComplete: Bool = false) -> AbstractValue? {
+    func flagCondition(_ flags: AbstractValue, code: AArch64CC_CondCode, width: AbstractValue?, requireComplete: Bool = false, selectDepth: Int = 0) -> AbstractValue? {
+        // CFG merges retain a selected producer, not a selected arithmetic
+        // result to compare with zero. Bound this query independently of the
+        // existing retained-state graph, whose switch selects may be deeper.
+        guard selectDepth <= 8 else { return nil }
         if case .aggregate(let conditions) = flags,
            let index = Self.flagCodes.firstIndex(of: code), index < conditions.count {
             return conditions[index]
         }
+        if case .select(let condition, let taken, let fall) = flags {
+            let takenWidth: AbstractValue?, fallWidth: AbstractValue?
+            if case .select(let widthCondition, let first, let second)? = width {
+                guard widthCondition == condition else { return nil }
+                takenWidth = first; fallWidth = second
+            } else {
+                guard width == .immediate(32) || width == .immediate(64) else { return nil }
+                takenWidth = width; fallWidth = width
+            }
+            if case .immediate(let selected) = condition {
+                return flagCondition(selected != 0 ? taken : fall, code: code,
+                                     width: selected != 0 ? takenWidth : fallWidth,
+                                     requireComplete: requireComplete, selectDepth: selectDepth + 1)
+            }
+            guard let yes = flagCondition(taken, code: code, width: takenWidth,
+                                          requireComplete: requireComplete, selectDepth: selectDepth + 1),
+                  let no = flagCondition(fall, code: code, width: fallWidth,
+                                         requireComplete: requireComplete, selectDepth: selectDepth + 1)
+            else { return nil }
+            return selectedFlagCondition(condition, whenTrue: yes, whenFalse: no, requireComplete: requireComplete)
+        }
+        // A common flags payload can survive while only its width is selected.
+        if case .select(let condition, let takenWidth, let fallWidth)? = width {
+            if case .immediate(let selected) = condition {
+                return flagCondition(flags, code: code, width: selected != 0 ? takenWidth : fallWidth,
+                                     requireComplete: requireComplete, selectDepth: selectDepth + 1)
+            }
+            guard let yes = flagCondition(flags, code: code, width: takenWidth,
+                                          requireComplete: requireComplete, selectDepth: selectDepth + 1),
+                  let no = flagCondition(flags, code: code, width: fallWidth,
+                                         requireComplete: requireComplete, selectDepth: selectDepth + 1)
+            else { return nil }
+            return selectedFlagCondition(condition, whenTrue: yes, whenFalse: no, requireComplete: requireComplete)
+        }
+        // An unpaired or missing width must not silently become 64 bits.
+        guard width == .immediate(32) || width == .immediate(64) else { return nil }
         if let nzcv = Self.constantNZCV(flags, width: width == .immediate(32) ? 32 : 64) {
             return .immediate(Self.literalFlagCondition(nzcv, code: code) ? 1 : 0)
+        }
+        if case .binary(.bitAnd, let tested, .immediate(.max)) = flags {
+            let condition = testCondition(tested, code: code, width: width == .immediate(32) ? 32 : 64)
+            if requireComplete && condition == .unknown { return nil }
+            return condition
         }
         if case .binary(.add, let lhs, let rhs) = flags {
             return additionCondition(lhs, rhs, code: code, width: width == .immediate(32) ? 32 : 64)
@@ -4371,20 +4453,44 @@ public struct ValueTracer: Sendable {
                 || code == AArch64CC_MI || code == AArch64CC_PL {
                 return subtractionCondition(lhs, rhs, code: code, width: width == .immediate(32) ? 32 : 64)
             }
+            // Through `expression` so a comparison of two known constants folds to
+            // its 0/1 result (`(0 != 0)` → 0) instead of printing the trivial compare.
             guard let op = Self.comparisonOperator(code) else { return nil }
-            return comparisonValue(flags: flags, op)
+            return expression(op, lhs, rhs)
         }
-        if code == AArch64CC_EQ || code == AArch64CC_NE {
-            let result = requireComplete && width == .immediate(32) ? expression(.bitAnd, flags, .immediate(0xffff_ffff)) : flags
-            return expression(code == AArch64CC_EQ ? .equal : .notEqual, result, .immediate(0))
+        return nil
+    }
+
+    private func selectedFlagCondition(_ condition: AbstractValue, whenTrue: AbstractValue, whenFalse: AbstractValue, requireComplete: Bool) -> AbstractValue? {
+        // An ordinary branch may keep known alternatives under an unknown
+        // Boolean. A conditional compare requires its incoming condition.
+        if requireComplete && (whenTrue == .unknown || whenFalse == .unknown) { return nil }
+        if whenTrue == whenFalse { return whenTrue }
+        guard Self.expressionDepth(condition) < 8,
+              Self.expressionDepth(whenTrue) < 8, Self.expressionDepth(whenFalse) < 8
+        else { return nil }
+        return .select(condition: condition, whenTrue: whenTrue, whenFalse: whenFalse)
+    }
+
+    /// A test's condition. `tst` and `ands` set N and Z from the result and
+    /// clear C and V, so every code is exact: the carry and overflow codes
+    /// are constants, and a signed order compares the result with 0. A
+    /// 32-bit result is a word whose sign is bit 31. Read zero-extended,
+    /// `tst w1, w0; b.ge` was `(w1 & w0) >= 0`, which always holds.
+    /// One operand of a 32-bit test is a W read, so the result fits the word.
+    private func testCondition(_ tested: AbstractValue, code: AArch64CC_CondCode, width: Int) -> AbstractValue? {
+        let signed = width == 32 ? Self.signExtended32(tested) { expression($0, $1, $2) } : tested
+        switch code {
+        case AArch64CC_EQ: return expression(.equal, tested, .immediate(0))
+        case AArch64CC_NE: return expression(.notEqual, tested, .immediate(0))
+        case AArch64CC_HS, AArch64CC_VS, AArch64CC_HI: return .immediate(0)
+        case AArch64CC_LO, AArch64CC_VC, AArch64CC_LS: return .immediate(1)
+        case AArch64CC_MI, AArch64CC_LT: return expression(.less, signed, .immediate(0))
+        case AArch64CC_PL, AArch64CC_GE: return expression(.greaterEqual, signed, .immediate(0))
+        case AArch64CC_GT: return expression(.greater, signed, .immediate(0))
+        case AArch64CC_LE: return expression(.lessEqual, signed, .immediate(0))
+        default: return nil
         }
-        // Conditional compares may build on a flag producer only when the
-        // particular incoming condition is exact. A sum's sign alone does not
-        // prove signed ordering, since its overflow flag also participates.
-        guard !requireComplete else { return nil }
-        // Other flag producers retain their existing conservative model.
-        guard let op = Self.comparisonOperator(code) else { return nil }
-        return comparisonValue(flags: flags, op)
     }
 
     private func additionCondition(_ lhs: AbstractValue, _ rhs: AbstractValue, code: AArch64CC_CondCode, width: Int) -> AbstractValue {
@@ -4484,22 +4590,6 @@ public struct ValueTracer: Sendable {
         AARCH64_INS_CCMP, AARCH64_INS_CCMN, AARCH64_INS_BICS, AARCH64_INS_ADCS,
         AARCH64_INS_SBCS,
     ].map(\.rawValue))
-
-    /// Reconstruct a boolean comparison from a flags value and a comparison
-    /// operator. A `cmp a, b` stores `a - b`, so a `.subtract` node unwraps to a
-    /// direct `a <op> b`; anything else (a `tst`'s `a & b`, or a `cmp a, #0`
-    /// folded to just `a`) compares against zero.
-    private func comparisonValue(flags: AbstractValue, _ op: AbstractBinaryOperator) -> AbstractValue {
-        let lhs: AbstractValue, rhs: AbstractValue
-        if case .binary(.subtract, let a, let b) = flags {
-            lhs = a; rhs = b
-        } else {
-            lhs = flags; rhs = .immediate(0)
-        }
-        // Through `expression` so a comparison of two known constants folds to its
-        // 0/1 result (`(0 != 0)` → 0) instead of printing the trivial compare.
-        return expression(op, lhs, rhs)
-    }
 
     /// The comparison a condition code denotes after a subtract-based compare.
     /// Signed and unsigned variants remain distinct; overflow and always/never

@@ -600,12 +600,54 @@ results do not replace previously recorded release performance measurements.
   suite passed 1,291 tests in 18 suites; the tracer rule and both text rules
   each have independently rebuilt red mutations followed by restored green.
   Standard semantic exports are identical before/after (58,514 integer
-  encodings proved, one sampled division; 9,936 text conditions proved,
+  encodings proved, one solver-limited sampled case; 9,936 text conditions proved,
   2,708 declined, zero refuted). The standard generator misses RHS
   definitions; a private 448-sequence RHS-word extension separately proves
   256 conditions and declines 192, with zero refuted/unparsed/unknown/missing.
   Removing the text number/width rules after separate successful builds
   yields 102/6 refutations; restore/rebuild returns the extension green.
+- **FIXED — keep a test's flag producer and setter width.** `tst` and
+  `ands` no longer read as a subtract/add they fold into, or as an unsigned
+  comparison with zero. Test queries derive N/Z at the setter width and
+  C/V as clear. The producer stays identified even when its result is
+  unknown: ordinary queries can retain known alternatives under an unknown
+  Boolean; complete test/projected queries reject explicit unknown Boolean
+  results.
+  Selected producers are queried with their matching width choices. Common
+  producers dropped by `meet` are restored only beside the width selection
+  rebuilt from the complete diamond/switch arms, including the default.
+  Flag reconstruction at entry keeps its implicit caller edge.
+  Unpaired/missing widths,
+  mismatched predicates and exhausted query/expression bounds still decline.
+  The native FT matrix checks 812 functions over 285 unique input pairs
+  (231,420 claimed results); the merged matrix checks 832 of 841 functions
+  (237,120 results), with nine named conservative declines. Both have zero
+  wrong claims or unexpected declines. The prior FW matrix remains green
+  (414,390 results; 226 named declines). Six depth controls, three entry-loop
+  cases plus a known control, a direct pairing contract and opaque-stack
+  cases cover the new boundaries. The 108 opaque/known/named-call controls
+  include 72 numeric tracer/native comparisons; the other cases require
+  explicit unknown 14/16 alternatives or named-call provenance.
+  All 3,357 native exports exactly match their function-start records.
+  Twenty-five separately rebuilt mutations fail, followed by restored eight
+  focused tests and an enforcing 1,297-test/18-suite pass. Fresh integer,
+  standard text and RHS-word semantic exports exactly match the proved
+  inputs/exports recorded above. The five app outputs retain every argument;
+  only one NE and two GT comparison distributions change, equivalently.
+  All 1,308 cost pairs across 326 inputs and four large SDK views are present;
+  instructions are -0.0046% and summed footprint -0.0681%, with default budgets
+  passed and no override. Every changed corpus line is reviewed: only this
+  fixture moves (724/2/724/596 lines in structured/pseudo/listing/JSON), with
+  362 annotations and the matching entry-store statement changed in JSON.
+  Three raw folded-test annotations defer to the existing register-level
+  truthiness rendering policy. All four large SDK output hashes, including
+  Parser structured, exactly match baseline.
+- **OPEN — shifted destination overlap in constant ANDS.** `mov w0, #3;
+  ands w0, w0, w0, lsl #1; cset w0, eq` returns 0 natively but reads 1:
+  the flags path rereads the shifted source after writing the destination.
+  An independent baseline matrix found 100 wrong cases among 1,792 native
+  functions, with nonoverlap/LHS-only controls correct. This preexisting
+  write-order defect is separate from the FT matrix and is not repaired here.
 - **FIXED — a tst's flags read as an unsigned comparison.** `tst w0, #0xff;
   b.hs` (never taken: tst clears C) rendered `(w0 & 0xff) >=ᵁ 0`, always
   true, and `b.mi` printed `(w0 & 0xff) < 0 // 0`. Signed orders compare

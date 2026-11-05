@@ -1,3 +1,4 @@
+import Ccapstone
 import Darwin
 import Foundation
 import Testing
@@ -47,6 +48,7 @@ private func checkAgainstNative(path: String, prefix: String, expected: Int,
     try #require(functions.count == expected)
     let inputs = boundaryInputs()
     var wrong: [String] = []
+    var wrongBySetter: [String: Int] = [:]
     var declined: [String] = []
     var allowedDeclines = 0
     var claimed = 0
@@ -59,7 +61,7 @@ private func checkAgainstNative(path: String, prefix: String, expected: Int,
         let analysis = ValueTracer().analyze(function, entry: .swiftFunction(scalarArguments: ["x0": 0, "x1": 1]))
         let value: AbstractValue?
         if parts[4] == "b" {
-            let branch = try #require(function.instructions.first { $0.controlFlow == .conditionalBranch })
+            let branch = try #require(function.instructions.last { $0.controlFlow == .conditionalBranch })
             value = analysis.branchConditions[branch.address]
         } else {
             value = analysis.exitValues[try #require(function.instructions.last).address]
@@ -76,12 +78,17 @@ private func checkAgainstNative(path: String, prefix: String, expected: Int,
             let actual = native(a, b)
             comparisons += 1
             if predicted != actual {
+                wrongBySetter[parts[3], default: 0] += 1
                 wrong.append("\(symbol)(\(String(a, radix: 16)), \(String(b, radix: 16))): read \(predicted), native \(actual)")
                 break
             }
         }
     }
     print("flag-width-oracle \(prefix): functions=\(functions.count) inputs=\(inputs.count) claimed=\(claimed) allowed-declines=\(allowedDeclines) unexpected-declines=\(declined.count) comparisons=\(comparisons) wrong=\(wrong.count)")
+    if !wrongBySetter.isEmpty {
+        let groups = wrongBySetter.keys.sorted().map { "\($0)=\(wrongBySetter[$0]!)" }.joined(separator: " ")
+        print("flag-width-wrong-by-setter \(prefix): \(groups)")
+    }
     #expect(wrong.isEmpty, "\(wrong.count) wrong:\n\(wrong.prefix(12).joined(separator: "\n"))")
     #expect(declined.isEmpty, "\(declined.count) declined:\n\(declined.prefix(12).joined(separator: "\n"))")
 }
@@ -99,4 +106,211 @@ private func checkAgainstNative(path: String, prefix: String, expected: Int,
         ["cmp", "subs"].contains(setter) ? ["vs", "vc"].contains(code)
             : ["vs", "vc", "ge", "lt", "gt", "le"].contains(code)
     }
+}
+
+/// `tst` and `ands` set N and Z from the result and clear C and V. Read as a
+/// comparison of a zero-extended word with 0, `tst w1, w0; cinc ge` was a test
+/// that cannot vary, and `tst x0, x1; b.hs`, never taken, read `>=ᵁ 0`, always
+/// true. A difference or a sum tested on its own read as the compare or the
+/// add it folded to, with their carry and overflow.
+@Test func testConditionsAgreeWithNativeAtBothWidthsIfPresent() async throws {
+    try await checkAgainstNative(path: "Fixtures/Sample/libFlagWidthProbes.dylib", prefix: "ft", expected: 812) { _, _ in false }
+}
+
+
+/// A join can select both the NZCV producer and its width. Query each arm's
+/// actual flags; treating the selected arithmetic result as a test invents
+/// C/V, and treating a selected width as 64 misreads bit31 and word carry.
+@Test func selectedFlagConditionsAgreeWithNativeIfPresent() async throws {
+    try await checkAgainstNative(path: "Fixtures/Sample/libFlagWidthProbes.dylib", prefix: "fm", expected: 841) { code, setter in
+        // Ordinary symbolic CMP still declines overflow outside CCMP.
+        (["symcmpw", "symcmpx"].contains(setter) && ["vs", "vc"].contains(code))
+            || setter == "independent"
+    }
+}
+
+/// A bounded flag query must decline instead of retaining an unfinished
+/// projection. Traversal depth, result-arm depth and predicate depth have
+/// independent controls; the retained-state graph can itself be deeper.
+@Test func selectedFlagQueriesRetainTheirBoundsIfPresent() async throws {
+    let path = "Fixtures/Sample/libFlagWidthProbes.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let library = try #require(dlopen(path, RTLD_NOW | RTLD_LOCAL))
+    defer { dlclose(library) }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "fb_")
+    }
+    try #require(functions.count == 6)
+    let controls = Set(["fb_choice8", "fb_result7", "fb_predicate6"])
+    for function in functions {
+        let symbol = String(function.symbol.dropFirst())
+        let native = unsafeBitCast(try #require(dlsym(library, symbol)), to: (@convention(c) (UInt64, UInt64) -> UInt64).self)
+        let analysis = ValueTracer().analyze(function, entry: .swiftFunction(scalarArguments: ["x0": 0, "x1": 1]))
+        let value = analysis.exitValues[try #require(function.instructions.last).address]
+        if controls.contains(symbol) {
+            let recovered = try #require(value)
+            #expect(recovered != .unknown, "\(symbol)")
+            guard recovered != .unknown else { continue }
+            let probe = ProbeValue.abstractValue(recovered)
+            for a in [0, 1, 2, 6, 7, 8, 9, UInt64.max, UInt64.max - 1] as [UInt64] {
+                #expect(try probe.evaluateInteger(arguments: [a, 0]) == native(a, 0), "\(symbol)(\(a))")
+            }
+        } else {
+            #expect(value == nil || value == .unknown, "\(symbol) must decline the exceeded query bound")
+        }
+    }
+}
+
+/// Backedges are not all the incoming edges of a function entry. In
+/// particular the caller's NZCV is unknown even when every backedge sets C.
+@Test func selectedEntryFlagsKeepTheCallerEdgeIfPresent() async throws {
+    let path = "Fixtures/Sample/libFlagWidthProbes.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let library = try #require(dlopen(path, RTLD_NOW | RTLD_LOCAL))
+    defer { dlclose(library) }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "fe_")
+    }
+    try #require(functions.count == 7)
+    for kind in ["common", "different", "switch", "control"] {
+        let symbol = "fe_" + kind
+        let function = try #require(functions.first { $0.symbol == "_" + symbol })
+        let store = try #require(function.instructions.first { $0.detail?.id == AARCH64_INS_STR })
+        let analysis = ValueTracer().analyze(function, entry: .swiftFunction(scalarArguments: ["x0": 0, "x1": 1, "x2": 2]))
+        let write = try #require(analysis.memoryWrites[store.address])
+        if kind == "control" { #expect(write.values == [.immediate(1)]) }
+        else { #expect(write.values == [.unknown], "\(symbol) must retain the unknown caller flags") }
+        let nativeSymbol = symbol + (kind == "control" ? "" : "_caller")
+        let native = unsafeBitCast(try #require(dlsym(library, nativeSymbol)),
+                                  to: (@convention(c) (UInt64, UInt64, UnsafeMutablePointer<UInt64>) -> UInt64).self)
+        for selector: UInt64 in [0, 1, 2] {
+            for count: UInt64 in [1, 2, 3] {
+                var stored: UInt64 = 99
+                let returned = native(selector, count, &stored)
+                let expected: UInt64 = kind == "control" || count > 1 ? 1 : 0
+                #expect(stored == expected && returned == expected, "\(nativeSymbol), selector=\(selector), count=\(count)")
+            }
+        }
+    }
+}
+
+/// A producer selection and its width cannot be paired by arm position when
+/// their predicates differ. Exercise the actual query directly: current CFG
+/// ancestry can decline the independent joins before this boundary is reached.
+@Test func selectedFlagQueriesPairProducerAndWidthPredicatesIfPresent() async throws {
+    let path = "Fixtures/Sample/libFlagWidthProbes.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let library = try #require(dlopen(path, RTLD_NOW | RTLD_LOCAL))
+    defer { dlclose(library) }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "independent")
+    }
+    let function = try #require(functions.count == 1 ? functions.first : nil)
+    let native = unsafeBitCast(try #require(dlsym(library, String(function.symbol.dropFirst()))),
+                              to: (@convention(c) (UInt64, UInt64) -> UInt64).self)
+    let valueChoice = AbstractValue.binary(.equal, .argument(1), .immediate(0))
+    let widthChoice = AbstractValue.binary(.equal, .argument(0), .immediate(0))
+    let flags = AbstractValue.select(condition: valueChoice,
+        whenTrue: .binary(.subtract, .immediate(0x8000_0000), .immediate(0)),
+        whenFalse: .binary(.subtract, .immediate(0x8000_0001), .immediate(0)))
+    func widths(_ condition: AbstractValue) -> AbstractValue {
+        .select(condition: condition, whenTrue: .immediate(32), whenFalse: .immediate(64))
+    }
+    let tracer = ValueTracer()
+    let unpaired = tracer.flagCondition(flags, code: AArch64CC_MI, width: widths(widthChoice))
+    #expect(unpaired == nil, "independent producer/width choices must decline")
+    let paired = try #require(tracer.flagCondition(flags, code: AArch64CC_MI, width: widths(valueChoice)))
+    let pairedProbe = ProbeValue.abstractValue(paired)
+    for a: UInt64 in [0, 1, 2] {
+        for b: UInt64 in [0, 1, 2] {
+            // Tie the native width selector to the value selector for the
+            // positive control, then vary them independently for any claim.
+            #expect(try pairedProbe.evaluateInteger(arguments: [a, b]) == native(b, b))
+            if let unpaired {
+                #expect(try ProbeValue.abstractValue(unpaired).evaluateInteger(arguments: [a, b]) == native(a, b))
+            }
+        }
+    }
+}
+
+/// An opaque result has unknown N/Z, but the test producer still clears C/V.
+/// Unknown Boolean data may retain known alternatives in ordinary queries;
+/// it must not satisfy a conditional compare's complete-input requirement.
+@Test func unknownTestFlagsRetainPartialAlternativesIfPresent() async throws {
+    let path = "Fixtures/Sample/libFlagWidthProbes.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let library = try #require(dlopen(path, RTLD_NOW | RTLD_LOCAL))
+    defer { dlclose(library) }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "fp_")
+    }
+    try #require(functions.count == 11)
+    func containsUnknown(_ value: AbstractValue) -> Bool {
+        switch value {
+        case .unknown: true
+        case .binary(_, let a, let b): containsUnknown(a) || containsUnknown(b)
+        case .unary(_, let a): containsUnknown(a)
+        case .select(let c, let a, let b): containsUnknown(c) || containsUnknown(a) || containsUnknown(b)
+        default: false
+        }
+    }
+    func containsCallResult(_ value: AbstractValue) -> Bool {
+        switch value {
+        case .callResult: true
+        case .binary(_, let a, let b): containsCallResult(a) || containsCallResult(b)
+        case .unary(_, let a): containsCallResult(a)
+        case .select(let c, let a, let b): containsCallResult(c) || containsCallResult(a) || containsCallResult(b)
+        default: false
+        }
+    }
+    for name in ["plain", "known", "symbolic", "cmp", "test", "hs", "lo", "vs", "vc"] {
+        let symbol = "fp_" + name
+        let function = try #require(functions.first { $0.symbol == "_" + symbol })
+        let native = unsafeBitCast(try #require(dlsym(library, symbol)),
+                                  to: (@convention(c) (UInt64, UInt64) -> UInt64).self)
+        let analysis = ValueTracer().analyze(function, entry: .swiftFunction(scalarArguments: ["x0": 0, "x1": 1]))
+        let value = analysis.exitValues[try #require(function.instructions.last).address]
+        let isPartial = ["plain", "cmp", "test"].contains(name)
+        if isPartial {
+            #expect(value != nil && value != .unknown, "\(symbol) must retain 14/16")
+            if let value, value != .unknown {
+                if case .select(_, .immediate(14), .immediate(16)) = value {} else {
+                    #expect(Bool(false), "\(symbol) must retain both known alternatives: \(value)")
+                }
+                #expect(containsUnknown(value), "\(symbol) must stay partial")
+            }
+        } else if name == "known" || name == "symbolic" {
+            #expect(value != nil && value != .unknown)
+            if let value {
+                #expect(!containsUnknown(value))
+                if name == "symbolic" { #expect(containsCallResult(value)) }
+            }
+        } else {
+            #expect(value == .immediate(["lo", "vc"].contains(name) ? 1 : 0), "\(symbol)")
+        }
+        for a: UInt64 in [0, 1] {
+            for b: UInt64 in [0, 1, 255, 256, 0x8000_0000, .max] {
+                let actual = native(a, b)
+                let zero = name == "cmp" ? b == 0 : b & 255 == 0
+                let expected: UInt64 = ["plain", "known", "symbolic", "cmp", "test"].contains(name)
+                    ? (zero ? 14 : 16) : (["lo", "vc"].contains(name) ? 1 : 0)
+                #expect(actual == expected, "\(symbol)(\(a), \(b))")
+                if let value, name != "symbolic" && (!isPartial || (name != "plain" && a == 0)) {
+                    #expect(try ProbeValue.abstractValue(value).evaluateInteger(arguments: [a, b]) == actual)
+                }
+            }
+        }
+    }
+    let tracer = ValueTracer()
+    let unknownTest = AbstractValue.binary(.bitAnd, .unknown, .immediate(.max))
+    #expect(tracer.flagCondition(unknownTest, code: AArch64CC_EQ, width: .immediate(32)) == .unknown)
+    #expect(tracer.flagCondition(unknownTest, code: AArch64CC_EQ, width: .immediate(32), requireComplete: true) == nil)
+    #expect(tracer.flagCondition(unknownTest, code: AArch64CC_HS, width: .immediate(32), requireComplete: true) == .immediate(0))
+    let partialFlags = AbstractValue.select(condition: .argument(0),
+        whenTrue: .binary(.subtract, .argument(1), .immediate(0)),
+        whenFalse: .binary(.subtract, .unknown, .immediate(0)))
+    let partial = tracer.flagCondition(partialFlags, code: AArch64CC_EQ, width: .immediate(64))
+    #expect(partial != nil && partial != .unknown)
+    if let partial { #expect(containsUnknown(partial)) }
+    #expect(tracer.flagCondition(partialFlags, code: AArch64CC_EQ, width: .immediate(64), requireComplete: true) == nil)
 }
