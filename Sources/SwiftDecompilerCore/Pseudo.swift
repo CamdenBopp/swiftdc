@@ -597,6 +597,15 @@ public extension DisassembledFunction {
     /// signature so the recovered `(args)` reads cleanly:
     /// `String.append(_:)` → `String.append`, `Tree.sum()` → `Tree.sum`.
     static func strippedCallee(_ name: String) -> String {
+        // A closure-propagated clause can leave an unclosed `[`, hiding
+        // the signature's arrow. Strip the suffix and preserve its clauses.
+        let core = Disassembler.withoutSpecializationClauses(name)
+        if core.count < name.count, topLevelRange(of: " -> ", in: name) == nil {
+            // A marker inside a literal or closure payload is not the end
+            // of the clause. Keep the raw name if its suffix still has one.
+            guard !core.contains("> of ") else { return name }
+            return String(name.dropLast(core.count)) + strippedCallee(core)
+        }
         var s = mergedCallName(name)
         // The signature's own arrow, not one inside a function-typed
         // parameter: `init(_:transform: (A.Element) async -> B?) -> Iterator`

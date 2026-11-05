@@ -616,8 +616,11 @@ $CLANG -O2 -dynamiclib cnarrowargs.c -o libCNarrowArgs.dylib
 echo "==> C format strings and printf arguments (cformat.c, -O2)"
 $CLANG -O2 -dynamiclib cformat.c -o libCFormat.dylib
 
-echo "==> closure-propagated specializations tail-called for a result (closprop.swift, -O)"
-$SWIFTC -parse-as-library -O -emit-library -module-name ClosProp closprop.swift -o libClosProp.dylib
+echo "==> closure-propagated call names and native controls (closprop.swift, -O/-Osize/-Onone, macOS 15)"
+closure_render_sdk="$(xcrun --sdk macosx --show-sdk-path)"
+$SWIFTC -sdk "$closure_render_sdk" -target arm64-apple-macosx15.0 -parse-as-library -O -emit-library -module-name ClosProp closprop.swift -o libClosProp.dylib
+$SWIFTC -sdk "$closure_render_sdk" -target arm64-apple-macosx15.0 -parse-as-library -Osize -emit-library -module-name ClosProp closprop.swift -o libClosProp.Osize.dylib
+$SWIFTC -sdk "$closure_render_sdk" -target arm64-apple-macosx15.0 -parse-as-library -Onone -emit-library -module-name ClosProp closprop.swift -o libClosProp.Onone.dylib
 
 echo "==> generic and class metatype parameters (metatypeargs.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MetatypeArgs metatypeargs.swift -o libMetatypeArgs.dylib
