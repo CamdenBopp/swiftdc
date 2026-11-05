@@ -9094,3 +9094,69 @@ Commit messages on dev stay as they are; these are the true records.
   Fixtures/Sample/libClosProp.dylib --structured` and corresponding
   `.Osize.dylib` / `.Onone.dylib`; `Tools/blast-radius.sh <f78a12c-release>
   <candidate-release> <out> --real --perf`.
+
+- **OFFICIAL GATE (`5b8d911`):** the closure-call rendering checkpoint passed
+  1,322 tests in 18 suites (352.859 s). All 1,336 cost pairs have positive
+  counts and meet default budgets without override: +0.04% instructions and
+  -0.20% summed peak footprints. The gate release matches all 333 reviewed
+  corpus inputs in four views, all four large SDK outputs and all five app
+  pseudo outputs.
+
+
+## 2026-11-05: close recursive entry-call effects
+
+- **FIXED (`ce1a7da`, correctness): a recursive call could retain a false
+  callee-saved constant.** A direct `bl` to the same entry was inside the
+  function's address set, so effect-edge collection and preservation replay
+  both ignored it. A temporary changed in the base case could then flow back
+  into x19 or the low word of v8 while the caller still returned `2` or `2.0`.
+  Include entry calls in both predicates. The existing fixpoint reschedules
+  self dependencies; `b` and conditional branches to entry remain CFG edges.
+- **PRECISE / BOUNDED:** closed argument and self-read facts remain reused.
+  One-hop and two-hop register transfers close to a stable clobber without
+  losing untouched x23/v11. Real local stack reloads still preserve x19/v8.
+  Explicit zero-cap and failed-recompute controls require the full nineteen
+  callee-saved registers to become unknown. The register bank, GPR save
+  exception, call-closure cap and algorithm are unchanged.
+- **NATIVE / VERIFIED:** the authored assembly fixture has six public callers
+  and six helpers. Independent LC_FUNCTION_STARTS, native text symbols and
+  LLVM disassembly agree on all 12 entries; each helper's instruction words
+  and same-entry BL target match the actual binary. Six native calls return
+  1 / 1 / 2 in each register bank. Array, filtered and streaming analysis
+  decline the four false constants and retain both stack-save positives.
+  Whole and filtered sets contain 12 and six functions. Complete views change
+  only those four returns; JSON changes only their statement and annotation.
+  Each frontend is compared with its own baseline: the 15 existing LLVM /
+  Capstone immediate and branch-target text spellings remain unchanged.
+- The successful baseline build fails 36 assertions in 33 focused tests:
+  12 native path assertions for four wrong constants, plus 24 graph/effect/cap
+  assertions. No old guard fails. Independently rebuilt missing-edge,
+  missing-replay, missing-self-requeue and entry-branch mutants fail
+  32 / 22 / 10 / two assertions. Restored source rebuilds and all 33 pass,
+  including the untouched-register checks that reject all-bank fallback as
+  false convergence. The full enforcing suite passes 1,330 tests in 18 suites
+  (283.100 s); release builds successfully. Three fresh instruction-semantic
+  exports, 58,515 integer / 12,644 condition / 448 targeted-W records, match
+  the previously proved input/export bytes. Exact solver proofs are reused;
+  the recursive graph behavior has the separate native checks above.
+- **REVIEWED / MEASURED:** all 326 authored Mach-Os plus eight SDK inputs
+  were reviewed in four views. Only the new recursion fixture changes: four
+  structured/pseudo/listing lines and eight JSON fields. All 43,427 parsed
+  functions and 881,177 instructions retain headers, blocks, addresses,
+  machine text, control flow, targets and argument arity. Five unsupported
+  inputs retain their exact diagnostics and exit status. All four large SDK
+  outputs and all five app pseudo outputs are byte-identical. Seven CLI entry
+  points pass nine command pairs; the native absence of type/ObjC metadata
+  explains empty fixture declarations, while positive controls retain
+  28 layouts and 46 Objective-C methods.
+- All 1,340 cost pairs have positive counts and meet default budgets without
+  override: 4,928.879G to 4,930.036G instructions
+  (+0.02%) and -0.47% summed peak footprints. These are compatibility
+  measures, with no speed or allocation-improvement claim. Conditional
+  external-tail effects, non-entry internal BL effects and saved-slot tail
+  self reads remain separate open soundness work.
+
+  Reproduce: `Tools/fixtures.sh`; `swiftdc disasm
+  Fixtures/Sample/libRecursiveSummaryEffects.dylib --structured` and the
+  corresponding `--pseudo`, listing and `--json` views;
+  `Tools/blast-radius.sh <5b8d911-release> <candidate-release> <out> --real --perf`.
