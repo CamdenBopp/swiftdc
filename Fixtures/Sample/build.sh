@@ -571,6 +571,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name VoidArguments voidargume
 echo "==> MOVI by arrangement and shift, LSL and MSL (vectorimmediates.s)"
 $CLANG -arch arm64 -dynamiclib vectorimmediates.s -o libVectorImmediates.dylib
 
+echo "==> selected vector lanes through calls and Q spills (selectedvectorlanes.s)"
+$CLANG -arch arm64 -dynamiclib selectedvectorlanes.s -o libSelectedVectorLanes.dylib
+
 echo "==> fmov immediates in vector and half-precision registers (fpimmediates.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name FPImmediates fpimmediates.swift -o libFPImmediates.dylib
 

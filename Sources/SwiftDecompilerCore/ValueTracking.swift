@@ -4020,13 +4020,37 @@ public struct ValueTracer: Sendable {
     /// eight-byte lanes, so `movi v0.2d, #0; str d0, [sp]` stores lane 0 alone;
     /// stored whole, `printf("%f|%d", 0.0, 1)` rendered the double as `(0, 0)`.
     /// A view narrower than a lane keeps a constant lane's low bits and
-    /// declines anything else. Any other value passes through as it was.
+    /// declines anything else. Project through a select of packed values as
+    /// well: a scalar is a select of lanes, never a select of whole tuples.
+    /// Other scalar values pass through as they were.
     static func scalarView(_ value: AbstractValue, bits: Int) -> AbstractValue {
-        guard case .aggregate(let lanes) = value, bits < 128 else { return value }
-        guard let low = lanes.first else { return .unknown }
-        if bits == 64 { return low }
-        guard bits < 64, case .immediate(let word) = low else { return .unknown }
-        return .immediate(word & ((1 << UInt64(bits)) - 1))
+        guard bits < 128 else { return value }
+        return packedLane(of: value, index: 0, bits: bits) ?? value
+    }
+
+    /// Nil means no packed value was found, so the existing scalar meaning
+    /// stays intact. An opaque arm mixed with packed lanes is unknown: its
+    /// value cannot safely stand in for one eight-byte lane.
+    private static func packedLane(of value: AbstractValue, index: Int, bits: Int) -> AbstractValue? {
+        switch value {
+        case .aggregate(let lanes):
+            guard lanes.indices.contains(index) else { return .unknown }
+            let lane = lanes[index]
+            if bits == 64 { return lane }
+            guard (1..<64).contains(bits), case .immediate(let word) = lane else { return .unknown }
+            return .immediate(word & ((1 << UInt64(bits)) - 1))
+        case .select(let condition, let whenTrue, let whenFalse):
+            let yes = packedLane(of: whenTrue, index: index, bits: bits)
+            let no = packedLane(of: whenFalse, index: index, bits: bits)
+            guard yes != nil || no != nil else { return nil }
+            guard let yes, let no else { return .unknown }
+            if case .immediate(let taken) = condition { return taken != 0 ? yes : no }
+            if yes == no { return yes }
+            guard condition != .unknown, yes != .unknown, no != .unknown else { return .unknown }
+            return .select(condition: condition, whenTrue: yes, whenFalse: no)
+        default:
+            return nil
+        }
     }
 
     /// An InstructionSemantics term over this state, folded by the same
@@ -4178,17 +4202,20 @@ public struct ValueTracer: Sendable {
     private func floatBinary(
         _ op: AbstractBinaryOperator, _ lhs: AbstractValue, _ rhs: AbstractValue, bits: Int
     ) -> AbstractValue {
+        let lhs = Self.floatOperand(lhs, bits: bits)
+        let rhs = Self.floatOperand(rhs, bits: bits)
         guard lhs != .unknown, rhs != .unknown,
               Self.expressionDepth(lhs) < 8, Self.expressionDepth(rhs) < 8
         else { return .unknown }
-        return .binary(op, Self.floatOperand(lhs, bits: bits), Self.floatOperand(rhs, bits: bits))
+        return .binary(op, lhs, rhs)
     }
 
     /// `operandBits` is the width of the float register the operand was read
     /// from, nil for an integer register.
     private func floatUnary(_ op: AbstractUnaryOperator, _ value: AbstractValue, operandBits: Int?) -> AbstractValue {
+        let value = operandBits.map { Self.floatOperand(value, bits: $0) } ?? value
         guard value != .unknown, Self.expressionDepth(value) < 8 else { return .unknown }
-        return .unary(op, operandBits.map { Self.floatOperand(value, bits: $0) } ?? value)
+        return .unary(op, value)
     }
 
     /// An immediate read from a float register as a float operation's operand
@@ -4196,9 +4223,19 @@ public struct ValueTracer: Sendable {
     /// #0x4059000000000000; fmov d1, x8; fdiv d0, d0, d1` divides by 100.0).
     /// Marked, it renders as its decimal wherever the expression goes; bare,
     /// it read as an integer unless the expression beside it said float.
-    private static func floatOperand(_ value: AbstractValue, bits: Int) -> AbstractValue {
-        guard case .immediate = value, [16, 32, 64].contains(bits) else { return value }
-        return .unary(.floatConstant(bits: bits), value)
+    static func floatOperand(_ value: AbstractValue, bits: Int) -> AbstractValue {
+        guard [16, 32, 64].contains(bits) else { return .unknown }
+        switch value {
+        case .immediate: return .unary(.floatConstant(bits: bits), value)
+        case .select(let condition, let whenTrue, let whenFalse):
+            // Each arm is a word of IEEE bits; the condition remains integer.
+            guard expressionDepth(value) < 8 else { return .unknown }
+            return .select(condition: condition,
+                           whenTrue: floatOperand(whenTrue, bits: bits),
+                           whenFalse: floatOperand(whenFalse, bits: bits))
+        case .aggregate: return .unknown
+        default: return value
+        }
     }
 
     /// A float register's `bits` read as an integer: `a.bitPattern`. An
@@ -4208,6 +4245,13 @@ public struct ValueTracer: Sendable {
         switch value {
         case .unknown, .immediate: return value
         case .unary(.floatFromBits(let width), let integer) where width == bits: return integer
+        case .select(let condition, let whenTrue, let whenFalse):
+            // A projected vector lane may select raw bit patterns. Convert
+            // each arm so known words stay words through a scalar FP spill.
+            guard expressionDepth(value) < 8 else { return .unknown }
+            return .select(condition: condition,
+                           whenTrue: bitPattern(of: whenTrue, bits: bits),
+                           whenFalse: bitPattern(of: whenFalse, bits: bits))
         default: return expressionDepth(value) < 8 ? .unary(.bitPattern(bits: bits), value) : .unknown
         }
     }
@@ -4617,7 +4661,9 @@ public struct ValueTracer: Sendable {
         let words = stride(from: 0, to: bytes, by: 8).map {
             stackValue(at: offset + Int64($0), bytes: min(8, bytes - $0), in: registers)
         }
-        guard words.allSatisfy({ $0 != .unknown }) else { return .unknown }
+        // A Q-register reload can retain one known lane while the other is
+        // unknown, just like the vector state after an ordinary call.
+        guard words.contains(where: { $0 != .unknown }) else { return .unknown }
         return .aggregate(words)
     }
 
@@ -4652,8 +4698,10 @@ public struct ValueTracer: Sendable {
             file = .immediate(UInt64(register.widthBits))
         }
         let words: [AbstractValue]
-        if case .aggregate(let packed) = value, bytes > 8 {
-            words = Array(packed.prefix(max(1, (bytes + 7) / 8)))
+        if bytes > 8, packedLane(of: value, index: 0, bits: 64) != nil {
+            words = (0..<max(1, (bytes + 7) / 8)).map {
+                packedLane(of: value, index: $0, bits: 64) ?? .unknown
+            }
         } else {
             words = [value]
         }

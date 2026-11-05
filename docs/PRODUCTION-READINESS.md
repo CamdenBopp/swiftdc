@@ -8554,7 +8554,7 @@ Commit messages on dev stay as they are; these are the true records.
 
 ## 2026-11-04: aggregate-result validation without repeated declaration scans
 
-- **FIXED (speed): `37f81ad` rescanned every declaration for every send.**
+- **FIXED (`be259b6`, speed): `37f81ad` rescanned every declaration for every send.**
   `libManyAccessors800.dylib` repeats `count` and `owner` across 800 classes.
   `selectorHasAggregateDeclaration` repeated roughly 1.92 million scalar
   return-encoding checks, reintroducing the repeated-selector cost removed
@@ -8585,8 +8585,13 @@ Commit messages on dev stay as they are; these are the true records.
   pass without a `Perf-cost` override or any widened threshold. An independent
   pseudo rerun retired 39.273G, reproducing the improvement.
   The old per-commit "within budget" figures were on an earlier, slower base;
-  they did not prove the rebased batch's cost. Whole-corpus integration-gate
-  results remain a separate check.
+  they did not prove the rebased batch's cost. The `be259b6` push gate then
+  passed all 1,300 render/workload cost counts against `8e749ed`: 5,034.1G to
+  5,153.2G instructions (+2.37%), summed footprints 18,154MB to 18,049MB
+  (-0.58%). ManyAccessors800 is +2.22% structured, +2.44% pseudo, +1.58%
+  listing and +1.72% JSON in that single gate comparison. No unknown count,
+  per-input breach, override or widened budget remains. Its enforcing suite
+  passed 1,274 tests in 18 suites, and the gate pushed `be259b6` to dev.
 - **VERIFIED:** 17 focused ObjC result/receiver tests pass. Independent
   mutations, each with its own successful build, fail: omit collection
   (48 issues), collect scalar declarations too (83), keep only the first IMP
@@ -8608,3 +8613,55 @@ Commit messages on dev stay as they are; these are the true records.
   source positions; VectorImmediates expands constants; AsyncMemoryEffects
   gains its four MOVI arguments. ObjCStructLanes was already corrected in the
   rebased baseline. No other opcode/address/name/metadata change appeared.
+
+## 2026-11-05: scalar reads of selected packed vector lanes
+
+- **FIXED (soundness): a selected vector became a tuple-valued scalar.**
+  `scalarView` handled a direct aggregate but not a select of aggregates.
+  `disasm Fixtures/Sample/libSelectedVectorLanes.dylib --structured` printed
+  `(arg0 == 0) ? (11, 11) : (7, 7)` for an integer return, and selected tuples
+  of IEEE words for Float16, Float and Double returns. It now projects each
+  arm's requested lane, retaining the condition. Opaque mixed arms and narrow
+  symbolic words decline. Whole-vector spills project each word separately;
+  a Q reload retains a known word when another is unknown, without promoting
+  a four-byte store to a whole known lane. A scalar spill's bit-pattern
+  conversion follows the selected arms too.
+- Proven floating contexts interpret selected constant words at their encoded
+  width: returns, typed and body-proven arguments, optional payloads, setters,
+  exact whole-field stores, and indirect result fields. Field conversion is
+  restricted to selected values, so ordinary unselected stores retain their
+  previous rendering. This belongs with lane projection: projection alone
+  would turn an invalid tuple return into an equally invalid integer-valued
+  floating return. FP arithmetic checks depth after normalization, and ObjC
+  FP returns retain the existing partial-render bookkeeping and probe policy.
+- **VERIFIED:** 66 native checks on the authored assembly (30 integer and 36
+  floating), including zero, nonzero and signed-boundary inputs. The clobbered
+  high-lane return stays unknown. Fourteen focused tests cover real decoder/CFG
+  paths in whole and filtered modes, direct transfers, partial reloads, nested
+  conditions, scalar/whole spills, typed metadata contexts, normalized operand
+  depth and partial versus complete ObjC return claims. Independent rebuilt
+  mutations fail: scalar projection (13 issues), partial reload (13), whole
+  spill projection (20), selected bit patterns (3); ten floating-context hooks
+  (96/36/12/12/4/4/4/4/4/4); post-normalization binary/unary depth guards (1/1),
+  return bookkeeping (2), and the selected-only field guard (8). Each has its
+  own successful build and bounded test run. Restored source rebuilt and all
+  14 passed; the enforcing suite passed 1,288 tests in 18 suites. Native oracle
+  tests validate the fixture independently and are not claimed mutation reds.
+- **REVIEWED / MEASURED:** all 317 authored Mach-Os plus eight real SDK inputs,
+  four views against the indexed parent release: one changed file in every
+  view, `libSelectedVectorLanes.dylib`; 20 structured, 20 pseudo, 24 listing
+  and 48 JSON changed lines. Ten return replacements and the two call sites'
+  argument annotations account for every line. The other 324 inputs are
+  byte-identical in each view. All 1,300 cost pairs exist, with no exit-code
+  regression: 3,671.2G to 3,670.1G instructions (-0.03%), summed footprints
+  17,293MB to 17,480MB (+1.08%), within the default budgets. Those instruction
+  counts show no meaningful speed change. Whole-image `--perf` is a separate
+  integration-gate check. The frozen release's entire 93-file source/package
+  set was independently compared byte-for-byte with the tested tree.
+- **OPEN (soundness): symbolic integer words still lack FP provenance.**
+  An authored `UInt64 -> Double` reduction, `dup v0.2d, x0; ret`, renders
+  `return arg0`; native execution reads IEEE bits and returns 1.0, 2.0 and
+  -1.0 for 0x3ff0000000000000, 0x4000000000000000 and
+  0xbff0000000000000. This preexisting ambiguity between raw words and
+  semantic FP arguments is not closed by the selected-constant repair.
+  The separate d8-d15 callee-summary OPEN item also remains.

@@ -5855,6 +5855,19 @@ public struct Disassembler: Sendable {
         return .binary(.bitAnd, inner, .immediate(mask))
     }
 
+    /// In a proven floating context, an immediate (including each selected
+    /// arm) is IEEE bits. Other scalar types keep their existing meaning.
+    static func floatingPointValue(_ value: AbstractValue, type: String) -> AbstractValue {
+        let bits: Int
+        switch type {
+        case "Swift.Double", "Swift.Float64", "Swift.CGFloat", "CoreGraphics.CGFloat": bits = 64
+        case "Swift.Float", "Swift.Float32": bits = 32
+        case "Swift.Float16": bits = 16
+        default: return value
+        }
+        return ValueTracer.floatOperand(value, bits: bits)
+    }
+
     static func renderTypedConstant(bits: UInt64, type: String) -> String? {
         switch type {
         case "Swift.Bool":
@@ -7406,8 +7419,8 @@ public struct Disassembler: Sendable {
                     func floatArgument(_ index: Int) -> AbstractValue {
                         guard index < site.floatArguments.count else { return .unknown }
                         let value = sanitizeValue(site.floatArguments[index])
-                        if case .immediate = value, let bits = summary.floatArgumentWidths[index] {
-                            return .unary(.floatConstant(bits: bits), value)
+                        if let bits = summary.floatArgumentWidths[index] {
+                            return ValueTracer.floatOperand(value, bits: bits)
                         }
                         return value
                     }
@@ -8274,7 +8287,7 @@ public struct Disassembler: Sendable {
                                   let constant = Self.renderTypedConstant(bits: bits, type: payload.type) {
                             parts.append(constant)
                         } else {
-                            parts.append(renderValue(words[0], depth: depth))
+                            parts.append(renderValue(Self.floatingPointValue(words[0], type: payload.type), depth: depth))
                         }
                         index += 1
                         continue
@@ -8288,7 +8301,7 @@ public struct Disassembler: Sendable {
                        let constant = Self.renderTypedConstant(bits: bits, type: types[index]) {
                         parts.append(constant)
                     } else {
-                        parts.append(renderValue(values[index], depth: depth))
+                        parts.append(renderValue(Self.floatingPointValue(values[index], type: types[index]), depth: depth))
                     }
                     index += 1
                 }
@@ -8358,7 +8371,14 @@ public struct Disassembler: Sendable {
                 let values = stored.map(sanitizeValue)
                 if values.allSatisfy({ $0 != .unknown }) {
                     let paths = field.names.map(fieldPath).joined(separator: ", ")
-                    let rendered = values.map { renderValue($0, depth: 0) }.joined(separator: ", ")
+                    let rendered = values.enumerated().map { index, value in
+                        let width = access.bytes / values.count
+                        if case .success(.whole(_, let type)) =
+                            fieldMap.lookup(offset: access.offset + index * width, bytes: width) {
+                            return renderValue(floatingFieldValue(value, mangledType: type) ?? value, depth: 0)
+                        }
+                        return unknownRenderedValue()
+                    }.joined(separator: ", ")
                     return "(\(paths)) = (\(rendered))"
                 }
             }
@@ -8464,7 +8484,8 @@ public struct Disassembler: Sendable {
             if objcFieldSyntax, field.type == "B", case .immediate(let raw) = value, raw <= 1 {
                 return "\(path) = \(raw == 0 ? "NO" : "YES")"
             }
-            return "\(path) = \(renderValue(value, depth: 0))"
+            let typed = field.type.flatMap { floatingFieldValue(value, mangledType: $0) } ?? value
+            return "\(path) = \(renderValue(typed, depth: 0))"
         }
 
         /// A Swift function returning a struct of integer scalars of 9 to 16
@@ -8643,7 +8664,10 @@ public struct Disassembler: Sendable {
                let name = fieldName(at: matchingStore.offset, bytes: matchingStore.bytes) {
                 return fieldPath(name)
             }
-            if let returnTypeName { return renderValue(Self.narrowedResult(value, type: returnTypeName), depth: 0) }
+            if let returnTypeName {
+                return renderValue(Self.narrowedResult(Self.floatingPointValue(value, type: returnTypeName),
+                                                      type: returnTypeName), depth: 0)
+            }
             return renderValue(value, depth: 0)
         }
 
@@ -8652,6 +8676,19 @@ public struct Disassembler: Sendable {
         // against field by field.
         let returnLayout: FieldMap? = returnTypeName.flatMap {
             Self.completeValueLayout(of: $0, fieldMaps: typeFieldMaps, classTypeIndex: classTypeIndex)
+        }
+
+        func floatingFieldValue(_ value: AbstractValue, mangledType: String) -> AbstractValue? {
+            guard case .select = value else { return nil }
+            let code = objcFieldSyntax ? String(mangledType.drop(while: { "rnNoORVA".contains($0) })) : mangledType
+            let type: String
+            switch code {
+            case "Sd", "d", "D": type = "Swift.Double"
+            case "Sf", "f": type = "Swift.Float"
+            case "s7Float16V": type = "Swift.Float16"
+            default: return nil
+            }
+            return Self.floatingPointValue(value, type: type)
         }
 
         /// A stored field's value, read per the field's own type: a `Bool` or
@@ -8667,7 +8704,7 @@ public struct Disassembler: Sendable {
                let typed = Self.renderTypedConstant(bits: bits, type: typeName) {
                 return typed
             }
-            return renderValue(value, depth: 0)
+            return renderValue(floatingFieldValue(value, mangledType: mangledType) ?? value, depth: 0)
         }
 
         /// The call whose indirect result the stores are, verbatim: every store is
@@ -9556,11 +9593,10 @@ public struct Disassembler: Sendable {
                 noteExit(.normal(field))
             } else if isObjCNonVoid, insn.controlFlow == .return, let exit = objcReturnValue(at: insn) {
                 // A float constant is its value, not its bit pattern.
-                if objcReturnsOneFloat, case .immediate(let bits) = exit,
-                   let constant = Self.renderTypedConstant(
-                    bits: bits, type: function.objcMethod?.typeEncoding.first { !"rnNoORVA".contains($0) } == "f"
-                        ? "Swift.Float" : "Swift.Double") {
-                    noteExit(.normal(constant))
+                if objcReturnsOneFloat {
+                    let type = function.objcMethod?.typeEncoding.first { !"rnNoORVA".contains($0) } == "f"
+                        ? "Swift.Float" : "Swift.Double"
+                    noteExit(.normal(renderReturnValue(Self.floatingPointValue(exit, type: type), before: insn.address)))
                 } else {
                     noteExit(.normal(renderReturnValue(exit, before: insn.address)))
                 }
@@ -9791,8 +9827,7 @@ public struct Disassembler: Sendable {
                     let bits = ["Swift.Float", "Swift.Float32"].contains(type) ? 32 : type == "Swift.Float16" ? 16 : 64
                     rendered = site.floatArguments.first.map { value in
                         let value = sanitizeValue(value)
-                        if case .immediate = value { return renderValue(.unary(.floatConstant(bits: bits), value), depth: 0) }
-                        return renderValue(value, depth: 0)
+                        return renderValue(ValueTracer.floatOperand(value, bits: bits), depth: 0)
                     }
                 default:
                     if Self.twoWordStringTypes.contains(type), site.arguments.count >= 2 {
