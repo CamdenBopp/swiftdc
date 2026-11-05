@@ -124,6 +124,12 @@ extension ProbeEvent {
     static let jumpTable = ProbeEvent(
         "cfg.jump-table", .cfg, .decision,
         "A `br` was proven a jump table with this many cases.")
+    static let cfgGraphBuilt = ProbeEvent(
+        "cfg.graph-built", .cfg, .metric,
+        "A function control-flow graph was constructed; counts expose repeated graph recovery.")
+    static let cfgGraphUsed = ProbeEvent(
+        "cfg.graph-used", .cfg, .metric,
+        "A debug probe compared a consumer's supplied graph with a fresh graph of its current instructions.")
     static let unresolvedIndirectBranch = ProbeEvent(
         "cfg.unresolved-indirect-branch", .cfg, .decline,
         "A `br` with no proven jump table and no proven target: its successors are missing from the CFG.")

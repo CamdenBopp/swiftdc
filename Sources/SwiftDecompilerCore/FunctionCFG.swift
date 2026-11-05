@@ -66,6 +66,7 @@ struct FunctionCFG: Sendable, Equatable {
             blocks = []
             blockOfInstruction = []
             blockAtAddress = [:]
+            Probe.record(.cfgGraphBuilt, at: function.startAddress, ["instructions": .int(0), "blocks": .int(0)])
             return
         }
         let internalAddresses = Set(instructions.map(\.address))
@@ -136,6 +137,8 @@ struct FunctionCFG: Sendable, Equatable {
         self.blocks = blocks
         self.blockOfInstruction = blockOfInstruction
         self.blockAtAddress = blockAtAddress
+        Probe.record(.cfgGraphBuilt, at: function.startAddress,
+                     ["instructions": .int(instructionCount), "blocks": .int(blocks.count)])
     }
 
     private static func successors(of last: Instruction, fallthrough next: UInt64?) -> [UInt64] {
@@ -155,10 +158,24 @@ struct FunctionCFG: Sendable, Equatable {
         }
     }
 
+    /// Validate sharing when a debug probe is requested. The fresh graph is
+    /// evidence only: it never participates in an analysis decision, and its
+    /// construction is muted so build counts measure actual analysis work.
+    @inline(__always)
+    func observeUse(of function: DisassembledFunction, consumer: String) {
+        #if DEBUG
+        guard Probe.isActive, Probe.recorder != nil else { return }
+        let matches = Probe.muted { self == FunctionCFG(function) }
+        Probe.record(.cfgGraphUsed, at: function.startAddress,
+                     ["consumer": .label(consumer), "matches-fresh": .bool(matches)])
+        #endif
+    }
+
     /// The blocks as `BasicBlock` values holding copies of `function`'s
     /// instructions. `function` must be the one the graph was built from, or a
     /// rebuild of it with the same instructions in the same order.
-    func basicBlocks(of function: DisassembledFunction) -> [BasicBlock] {
+    func basicBlocks(of function: DisassembledFunction, consumer: String = "basic-blocks") -> [BasicBlock] {
+        observeUse(of: function, consumer: consumer)
         precondition(function.instructions.count == instructionCount,
                      "FunctionCFG used with a function it was not built from")
         return blocks.map { block in

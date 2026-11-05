@@ -26,7 +26,11 @@ extension Disassembler {
     /// `.reads`; a path can also stop (x8 written, or a call, which clobbers x8)
     /// or make the answer `.unknown` (a tail call out of the function).
     static func indirectResultUse(of function: DisassembledFunction) -> IndirectResultUse {
-        let cfg = FunctionCFG(function)
+        indirectResultUse(of: function, cfg: FunctionCFG(function))
+    }
+
+    static func indirectResultUse(of function: DisassembledFunction, cfg: FunctionCFG) -> IndirectResultUse {
+        cfg.observeUse(of: function, consumer: "indirect-result-use")
         guard let entry = cfg.entry else { return .unknown }
         var visited = [Bool](repeating: false, count: cfg.blocks.count)
         visited[entry] = true

@@ -1023,7 +1023,37 @@ public struct ValueTracer: Sendable {
         _ function: DisassembledFunction,
         entry: MethodEntryConvention?
     ) -> FunctionAnalysis {
-        let blocks = expandingInlinedPrefixes(function.basicBlocks())
+        analyze(function, entry: entry, cfg: FunctionCFG(function))
+    }
+
+    /// Analyze using the graph owned by the current per-function pipeline.
+    /// Materialize current instruction values, including newly attached facts;
+    /// only topology is shared across enrichment rebuilds.
+    func analyze(
+        _ function: DisassembledFunction,
+        entry: MethodEntryConvention?,
+        cfg: FunctionCFG
+    ) -> FunctionAnalysis {
+        let blocks = expandingInlinedPrefixes(cfg.basicBlocks(of: function, consumer: "value-tracer"))
+        return analyze(function, entry: entry, blocks: blocks)
+    }
+
+    /// Repeat semantic dataflow without duplicate claims. Prepare the current
+    /// block view before muting so graph construction and use remain observable.
+    func reanalyze(
+        _ function: DisassembledFunction,
+        entry: MethodEntryConvention?,
+        cfg: FunctionCFG
+    ) -> FunctionAnalysis {
+        let blocks = expandingInlinedPrefixes(cfg.basicBlocks(of: function, consumer: "resolved-setter-retrace"))
+        return Probe.muted { analyze(function, entry: entry, blocks: blocks) }
+    }
+
+    private func analyze(
+        _ function: DisassembledFunction,
+        entry: MethodEntryConvention?,
+        blocks: [BasicBlock]
+    ) -> FunctionAnalysis {
         guard !blocks.isEmpty else { return FunctionAnalysis() }
         let blockByStart = Dictionary(blocks.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
         // The frame layout reads the function's own instructions: an address

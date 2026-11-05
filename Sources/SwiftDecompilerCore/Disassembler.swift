@@ -1710,6 +1710,7 @@ public struct Disassembler: Sendable {
         let tables = JumpTables.recognize(
             in: function, machO: context.resolver.machO, ranges: context.resolver.fileRanges)
         if !tables.isEmpty { function = function.attachingSwitchTargets(tables) }
+        let cfg = FunctionCFG(function)
 
         let objcMethod = function.objcMethod
         // Runtime-added category IMPs (an accessibility bundle is almost all
@@ -1795,7 +1796,7 @@ public struct Disassembler: Sendable {
             [:]
         }
         return enrichCallArguments(
-            in: function, resolver: context.resolver, swiftTargets: context.swiftTargets,
+            in: function, cfg: cfg, resolver: context.resolver, swiftTargets: context.swiftTargets,
             entry: asyncEntry ?? entry,
             fieldMap: fieldMap,
             objcFieldSyntax: objcMethod != nil || symbolEntry != nil,
@@ -1810,7 +1811,7 @@ public struct Disassembler: Sendable {
                     .map { types in Set(types.indices.filter { types[$0] == "B" }) } ?? []),
             classTypeIndex: context.classTypeIndex,
             indirectResultUse: context.indirectResultUses[function.startAddress]
-                ?? Self.indirectResultUse(of: function),
+                ?? Self.indirectResultUse(of: function, cfg: cfg),
             typeFieldMaps: context.fieldMaps,
             calleeConventions: Self.calleeResultConventions(
                 in: function, indirectResultUses: context.indirectResultUses,
@@ -2039,7 +2040,8 @@ public struct Disassembler: Sendable {
                     }
                     tracer.asyncSlotFactBranches = Set(entrySuspensions)
                 }
-                let analysis = tracer.analyze(funclet, entry: convention)
+                let cfg = FunctionCFG(funclet)
+                let analysis = tracer.analyze(funclet, entry: convention, cfg: cfg)
                 if analysis.asyncUnboundedMemoryWrites {
                     escapedFrom = Int.min
                     Probe.inFunction(funclet.startAddress, funclet.displayName) {
@@ -2058,7 +2060,7 @@ public struct Disassembler: Sendable {
                     terminalBranches.insert(insn.address)
                 }
                 if let offset = Probe.inFunction(funclet.startAddress, funclet.displayName, {
-                    AsyncContextEscapes().lowestOffset(in: funclet, terminalBranches: terminalBranches)
+                    AsyncContextEscapes().lowestOffset(in: funclet, terminalBranches: terminalBranches, cfg: cfg)
                 }) {
                     escapedFrom = min(escapedFrom ?? offset, offset)
                 }
@@ -3410,7 +3412,7 @@ public struct Disassembler: Sendable {
         selfTypeName: String? = nil,
         vtableIndex: VTableIndex = VTableIndex(),
         callArguments: [UInt64: [AbstractValue]] = [:]
-    ) -> DisassembledFunction {
+    ) -> (function: DisassembledFunction, changesCFG: Bool) {
         /// Resolve a `blr` target to a (name, address). A class vtable dispatch is
         /// resolved through the class's metadata layout; anything else through the
         /// generic indirect-target resolver.
@@ -3523,6 +3525,7 @@ public struct Disassembler: Sendable {
             return nil
         }
         let ownAddresses = Set(function.instructions.map(\.address))
+        var changesCFG = false
         let instructions = function.instructions.map { insn -> Instruction in
             guard insn.branchTarget == nil,
                   insn.controlFlow == .call || insn.controlFlow == .branch,
@@ -3538,6 +3541,7 @@ public struct Disassembler: Sendable {
             // as a branch target it became an edge, and the call a loop.
             let target = insn.controlFlow == .branch && resolved.address.map(ownAddresses.contains) == true
                 ? nil : resolved.address
+            if insn.controlFlow == .branch, target != insn.branchTarget { changesCFG = true }
             var facts = insn.facts
             facts.isSelfDispatch = resolved.isSelfDispatch
             if let witness = protocolWitnessCall(value), witness.name == resolved.name {
@@ -3551,7 +3555,7 @@ public struct Disassembler: Sendable {
                 detail: insn.detail, callee: .kept(parsed == named ? named : parsed), facts: facts
             )
         }
-        return function.replacingInstructions(instructions)
+        return (function.replacingInstructions(instructions), changesCFG)
     }
 
     /// VM range of a named section, if present.
@@ -4446,7 +4450,7 @@ public struct Disassembler: Sendable {
     /// actually returned there.
     static func swiftReturnRegister(
         of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
-        classTypeIndex: ClassTypeIndex = ClassTypeIndex()
+        classTypeIndex: ClassTypeIndex = ClassTypeIndex(), cfg: FunctionCFG? = nil
     ) -> SwiftReturnRegister? {
         guard let returnType = Self.swiftReturnTypeName(of: function) else { return nil }
         // The printed type is not the ABI. A closure reabstracted to a generic
@@ -4454,7 +4458,7 @@ public struct Disassembler: Sendable {
         // its x0 at `ret` is then whatever the last call left there (measured:
         // a `Dictionary.Values` closure in libswiftObservation rendered
         // `return Dictionary.removeAll(0)`).
-        if Self.readsIncomingIndirectResult(function) { return nil }
+        if Self.readsIncomingIndirectResult(function, cfg: cfg) { return nil }
         // An async function's result is delivered through its context's resume
         // function, never in x0/v0 at a `ret`; the same holds for its resume
         // funclets. Its x0 at a `ret` rendered `return swift_task_dealloc()`.
@@ -4481,7 +4485,8 @@ public struct Disassembler: Sendable {
     /// never that result.
     static func scalarTailReturnSites(
         in function: DisassembledFunction,
-        enumCaseIndex: EnumCaseIndex = EnumCaseIndex(), classTypeIndex: ClassTypeIndex = ClassTypeIndex()
+        enumCaseIndex: EnumCaseIndex = EnumCaseIndex(), classTypeIndex: ClassTypeIndex = ClassTypeIndex(),
+        cfg: FunctionCFG? = nil
     ) -> Set<UInt64> {
         func ordinaryHead(_ head: String) -> Bool {
             guard let args = DisassembledFunction.outermostArgumentListRange(of: head) else { return false }
@@ -4495,7 +4500,7 @@ public struct Disassembler: Sendable {
               let name = function.analysisName,
               let caller = DisassembledFunction.splitSignature(name), !caller.isAsync, !caller.isThrowing,
               ordinaryHead(caller.head),
-              swiftReturnRegister(of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) != nil
+              swiftReturnRegister(of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cfg: cfg) != nil
         else { return [] }
         return Set(function.instructions.compactMap { insn in
             guard insn.controlFlow == .branch,
@@ -4628,8 +4633,9 @@ public struct Disassembler: Sendable {
     /// roles). Under the Swift and AAPCS64 conventions an incoming x8 is only
     /// ever the indirect-result buffer, so a read means the result goes to
     /// memory, not x0/v0.
-    static func readsIncomingIndirectResult(_ function: DisassembledFunction) -> Bool {
-        indirectResultUse(of: function) == .reads
+    static func readsIncomingIndirectResult(_ function: DisassembledFunction, cfg: FunctionCFG? = nil) -> Bool {
+        let use = cfg.map { indirectResultUse(of: function, cfg: $0) } ?? indirectResultUse(of: function)
+        return use == .reads
     }
 
     /// A specialization's name without its leading `function signature
@@ -6116,6 +6122,7 @@ public struct Disassembler: Sendable {
 
     private func enrichCallArguments(
         in function: DisassembledFunction,
+        cfg: FunctionCFG,
         resolver: ReferenceResolver,
         swiftTargets: Set<UInt64>,
         entry: MethodEntryConvention?,
@@ -6410,7 +6417,7 @@ public struct Disassembler: Sendable {
                 tracer.contextRegisterUsers.insert(target)
             }
         }
-        var analysis = tracer.analyze(function, entry: entry)
+        var analysis = tracer.analyze(function, entry: entry, cfg: cfg)
         /// The widths of the loads from each offset of `self`, and of the
         /// stores that leave their source register named as the field
         /// (`.selfFieldValue`), for naming the part of a field such a value
@@ -6462,11 +6469,15 @@ public struct Disassembler: Sendable {
             instruction.controlFlow == .branch && instruction.branchTarget == nil
                 && function.switchTargets[instruction.address] == nil ? instruction.address : nil
         })
-        let function = annotateIndirectControlFlowTargets(
+        let resolvedControlFlow = annotateIndirectControlFlowTargets(
             in: function, targets: analysis.indirectControlFlowTargets,
             resolver: resolver, selfTypeName: selfTypeName, vtableIndex: vtableIndex,
             callArguments: analysis.callSites.mapValues(\.arguments)
         )
+        let function = resolvedControlFlow.function
+        // Resolving an external BR adds its successor address. BLR naming
+        // changes no edge; notes and facts keep the existing graph valid.
+        let cfg = resolvedControlFlow.changesCFG ? FunctionCFG(function) : cfg
         for insn in function.instructions {
             if let requirement = insn.facts.witnessRequirement {
                 witnessLayoutNames[insn.address] = Self.dispatchThunkPrefix + requirement
@@ -6495,9 +6506,9 @@ public struct Disassembler: Sendable {
         })
         if !resolvedVoidCalls.isEmpty {
             tracer.voidCallSites = resolvedVoidCalls
-            analysis = Probe.muted { tracer.analyze(function, entry: entry) }
+            analysis = tracer.reanalyze(function, entry: entry, cfg: cfg)
         }
-        Probe.observe(analysis, of: function)
+        Probe.observe(analysis, of: function, cfg: cfg)
         if Probe.isActive {
             for insn in function.instructions where insn.branchTarget == nil
                 && (insn.controlFlow == .call || insn.controlFlow == .branch)
@@ -6656,7 +6667,7 @@ public struct Disassembler: Sendable {
         let signatureReturnsValue = DisassembledFunction.signatureReturnsValue(
             displayName: function.analysisDisplayName, objcSignature: function.objcMethod?.signature)
         let functionReturnRegister = Self.swiftReturnRegister(
-            of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
+            of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cfg: cfg)
 
         // Callee name per call/tail-call address, for nesting result expressions.
         var calleeByAddress: [UInt64: String] = [:]
@@ -8954,7 +8965,7 @@ public struct Disassembler: Sendable {
         let asyncThrowExits: Set<UInt64> = {
             guard throwsSignature?.isThrowing == true, !asyncReturns.isEmpty else { return [] }
             var exits = Set<UInt64>()
-            let blocks = function.basicBlocks()
+            let blocks = cfg.basicBlocks(of: function, consumer: "async-throw-exits")
             let blockOf = Dictionary(blocks.flatMap { block in block.instructions.map { ($0.address, block) } },
                                      uniquingKeysWith: { a, _ in a })
             var predecessors: [UInt64: [BasicBlock]] = [:]
@@ -9060,7 +9071,7 @@ public struct Disassembler: Sendable {
         // holding self and proves nothing. Paths a merged throw already ends
         // are not asked to be normal.
         let errorProofBlocks = throwsSignature?.isThrowing == true && !opaqueErrorProofTransfer
-            ? function.basicBlocks() : []
+            ? cfg.basicBlocks(of: function, consumer: "error-proof") : []
         let mergedThrowEdges: Set<CFGEdge> = {
             guard !errorProofBlocks.isEmpty else { return [] }
             let blockStart = Dictionary(errorProofBlocks.flatMap { block in
@@ -9345,7 +9356,7 @@ public struct Disassembler: Sendable {
         // Otherwise moving an evaluation to its use changes when (or whether)
         // it runs. Bind it at the original instruction instead.
         var location: [UInt64: (block: Int, index: Int)] = [:]
-        let bindingBlocks = function.basicBlocks()
+        let bindingBlocks = cfg.basicBlocks(of: function, consumer: "result-bindings")
         for (block, body) in bindingBlocks.enumerated() {
             for (index, insn) in body.instructions.enumerated() { location[insn.address] = (block, index) }
         }
@@ -9491,9 +9502,9 @@ public struct Disassembler: Sendable {
         }()
 
         var observedReturnPaths: [UInt64: AbstractValue]?
-        let scalarTailReturns = Self.scalarTailReturnSites(in: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
+        let scalarTailReturns = Self.scalarTailReturnSites(in: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cfg: cfg)
         func returnPath(at address: UInt64) -> ProbeValue {
-            if observedReturnPaths == nil { observedReturnPaths = Probe.returnPathConditions(analysis, of: function) }
+            if observedReturnPaths == nil { observedReturnPaths = Probe.returnPathConditions(analysis, of: function, cfg: cfg) }
             return .abstractValue(observedReturnPaths?[address] ?? .unknown)
         }
         /// `mem64[base + 0x10] = value`, one per stored register, its width the
@@ -9957,7 +9968,9 @@ public struct Disassembler: Sendable {
             }
 
             // A proven async return is the function's `ret`; the structurer and
-            // the CFG read it as one (it had no successors either way).
+            // the CFG read it as one. The local analysis graph is no longer
+            // consumed after this conversion; later renderers build from the
+            // returned instructions, so no pre-conversion edges escape.
             let flow: ControlFlow? = asyncReturns.contains(insn.address) ? .return : insn.controlFlow
             let untouched = Instruction(
                 address: insn.address, text: insn.text, annotation: insn.annotation,

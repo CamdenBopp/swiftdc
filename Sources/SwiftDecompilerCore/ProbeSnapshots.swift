@@ -126,11 +126,17 @@ public extension Probe {
     /// External fixture harnesses can use this with ValueTracer directly.
     static func observe(_ analysis: FunctionAnalysis, of function: DisassembledFunction) {
         guard isActive, recorder != nil else { return }
+        observe(analysis, of: function, cfg: FunctionCFG(function))
+    }
+
+    internal static func observe(_ analysis: FunctionAnalysis, of function: DisassembledFunction, cfg: FunctionCFG) {
+        guard isActive, recorder != nil else { return }
+        cfg.observeUse(of: function, consumer: "probe-snapshot")
         inFunction(function.startAddress, function.displayName) {
-            let blocks = FunctionCFG(function).blocks
+            let blocks = cfg.blocks
             var returnPaths: [UInt64: AbstractValue]?
             func path(at address: UInt64) -> ProbeValue {
-                if returnPaths == nil { returnPaths = returnPathConditions(analysis, of: function) }
+                if returnPaths == nil { returnPaths = returnPathConditions(analysis, of: function, cfg: cfg) }
                 return .abstractValue(returnPaths?[address] ?? .unknown)
             }
             record(.analysisSnapshot, ["symbol": .name(function.symbol), "instructions": .int(function.instructions.count),

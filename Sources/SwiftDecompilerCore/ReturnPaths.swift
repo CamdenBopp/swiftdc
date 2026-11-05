@@ -6,7 +6,13 @@ public extension Probe {
     /// not execute calls, prove side effects or change the value analysis.
     static func returnPathConditions(_ analysis: FunctionAnalysis,
                                      of function: DisassembledFunction) -> [UInt64: AbstractValue] {
-        let cfg = FunctionCFG(function)
+        returnPathConditions(analysis, of: function, cfg: FunctionCFG(function))
+    }
+
+    internal static func returnPathConditions(_ analysis: FunctionAnalysis,
+                                               of function: DisassembledFunction,
+                                               cfg: FunctionCFG) -> [UInt64: AbstractValue] {
+        cfg.observeUse(of: function, consumer: "return-paths")
         let blocks = cfg.blocks, instructions = function.instructions
         guard !blocks.isEmpty, blocks.count <= 256,
               blocks.first?.startAddress == function.startAddress,
