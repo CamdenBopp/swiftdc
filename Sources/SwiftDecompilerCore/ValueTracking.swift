@@ -4807,12 +4807,13 @@ public struct ValueTracer: Sendable {
     ) {
         // A byte/halfword store can overwrite part of an older tracked word.
         // Forget intersecting snapshots rather than retaining their old bits.
+        let effect = FrameMemoryEffect.legacyTracerExactWrite(start: offset, bytes: Int64(bytes))
         for key in registers.keys {
             guard let previous = stackOffset(from: key) else { continue }
             let width: Int64 = if case .immediate(let bytes)? = registers[stackWidthKey(previous)] {
                 Int64(clamping: bytes)
             } else { 8 }
-            guard previous < offset + Int64(bytes), offset < previous + width else { continue }
+            guard effect.mayInvalidate(FrameMemoryExtent(start: previous, bytes: width)) else { continue }
             registers[key] = nil
             registers[stackWidthKey(previous)] = nil
             registers[outgoingKey(previous)] = nil

@@ -908,9 +908,9 @@ enum Preservation {
                 return
             }
             if end > 0 { incomingIntact = false }
+            let effect = FrameMemoryEffect(.finite(lower: address, upper: end), arithmetic: .checked)
             slots = slots.filter { start, _ in
-                let (slotEnd, slotOverflow) = start.addingReportingOverflow(8)
-                return !slotOverflow && (slotEnd <= address || start >= end)
+                !effect.mayInvalidate(FrameMemoryExtent(start: start, bytes: 8))
             }
         }
     }
