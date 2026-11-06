@@ -9831,13 +9831,12 @@ Commit messages on dev stay as they are; these are the true records.
   `swiftdc disasm Fixtures/Sample/libFrameLayoutAlias.dylib --structured`;
   `Tools/blast-radius.sh <144a550-release> <new-release> <out> --real --perf`.
 
-- **OPEN — proven extents and callee memory footprints.** `fpBoundary` and
-  `fpAboveBoundary` still return native 7 but now decline because separate
-  address calculations do not prove independent objects. Recovering these and
-  the reviewed app/SDK losses needs actual object extents or callee write
-  effects. Full structured layout discovery, object/space provenance and
-  value identity remain open.
-  The prologue-save and frontend ownership assumptions are not newly proven.
+- **MITIGATED — proven extents and callee memory footprints.** `81c31d0`
+  recovers native 7 for `fpBoundary` and `fpAboveBoundary` using the helper's
+  complete literal-store body (see the 2026-11-06 entry below). Separate address
+  calculations still do not prove independent objects. Full structured layout,
+  general callee effects, object/space provenance and value identity remain
+  open. The prologue-save and frontend ownership assumptions are not newly proven.
 
 ## 2026-11-05: share MAY self slots with the frame-fact owner
 
@@ -9909,3 +9908,90 @@ Commit messages on dev stay as they are; these are the true records.
   object/space provenance, ownership proofs, callee memory footprints and
   value identity remain open; existing save, alias and arithmetic policies
   have been preserved rather than newly proven.
+
+## 2026-11-06: model body-proven callee memory effects in the IR
+
+- **FIXED (completeness, 81c31d0) — exact frame writes were lost at
+  ordinary calls.** `FrameEscape.fpBoundary` and `fpAboveBoundary` execute
+  natively as 7, but `762fdb7` declined them. `FrameLayoutAlias.forwardAlias`
+  executes as 11 and was also declined after the unsound address-bound
+  inference was removed. Optimized `Indirect.escapedWide` returns five words
+  `[7, 0, 0, 0, 0]`; unknown-call invalidation lost that result too.
+
+  `CalleeMemoryEffect` now distinguishes an unknown body from a complete
+  straight-line body of supported register calculations and literal stores.
+  The proof carries each store's entry-register origin, offset, width, literal
+  and register bank in instruction order. Missing detail, decode gaps, loads,
+  calls, branches, unsupported instructions, an altered return link or an
+  unbalanced stack pointer decline the entire effect. Callers resolve every
+  required entry origin and both write endpoints transactionally. A caller's
+  pre-call x30 cannot stand for the link written by BL.
+
+  All three production pipelines refine caller summaries with immutable body
+  effects before closing reads. The value tracer installs the proven writes
+  through the shared frame owner. Preservation invalidates only overlapping
+  saves and retains its incoming-memory rules. SelfState skips generic escaped
+  memory reads only for a complete proof; a full word replacement ends MAY-self
+  at that slot, while partial writes keep it. Unknown or mixed origins retain
+  the old fallback, and passed pointers stay escaped for later unknown calls.
+  Result/context, partial-width, register-bank and caller-ownership policies
+  remain conservative. This does not infer object bounds from address order.
+
+- **Validation.** Ten new tests cover actual tracer, preservation, self-read and
+  summary-rebuild consumers plus producer/transaction guards. Eighteen
+  independently compiled mutations failed 87 assertions at 31 test locations.
+  The restored enforcing suite passed **1,435 tests in 39 suites**. Independent
+  assembler/LLVM oracles cover 88 words / 352 bytes in 19 synthetic analysis
+  cases; those callers are not native ABI executions. Separate compiled
+  fixtures execute the native 7/7/11 results and both five-word indirect results.
+  The unoptimized indirect helper still declines. A direct tracer without a
+  callee summary still declines the raw-address counterexample, never returning
+  the old incorrect 7.
+
+  Seventy-six permanent cross-process captures and 72 additional current
+  debug/release captures pass. Nine CLI baseline/candidate pairs agree, with
+  positive 478-function / 8,393-instruction, 28-layout and 46-ObjC-method
+  inventories. Fresh semantic exports of 58,515 integer, 12,644 condition and
+  448 targeted-word cases match the prior verified/sampled/declined records;
+  the solver was not rerun and no global accuracy percentage is claimed.
+
+- **Reviewed blast radius.** Three of 338 inputs change in all four views:
+  four fixture functions recover the native results above. Raw indirect-result
+  notes disappear because the reconstructed return covers those same fields;
+  listing and JSON retain every machine instruction. All five app outputs are
+  byte-identical. In the SDK, one SwiftSyntax function gains two zero words,
+  proven by its helper's `stp xzr, xzr, [x8]; ret`. Two SwiftParser functions
+  retain saved `hasProgressed` results across a ret-only helper; subsequent
+  temporary numbers shift consistently. Both SDK xrefs outputs are identical.
+  Every changed line was read and these SDK stores/reloads were checked with
+  LLVM, without executing arbitrary SDK functions.
+
+- **Costs and regenerated fixtures.** **1,356 default-budget pairs pass:** instructions
+  5,033,364,598,681 → 5,067,700,316,542 (**+0.6822%**); summed peak footprints
+  17,922,625,536 → 17,924,413,048 (**+0.0100%**). No override is used. The standalone
+  release is `064c9cf8`, compared with published `4bd6fb04` from `762fdb7`, using
+  `Tools/blast-radius.sh <baseline> <candidate> <out> --real --perf` and the
+  default positive-count budgets. The five apps' instruction increases are
+  0.15–2.22%; peak-footprint changes are -8.36–14.93%. These measurements establish
+  a completeness cost, not a memory or allocator saving.
+
+  The fixture comment now describes the helper's exact write instead of
+  asserting that separately taken addresses prove distinct variables. The
+  original fixture tool regenerated all 346 Mach-O products under key
+  `1de877bd57a352e5c293`. The 338-input corpus key is `43374516a35395d3`.
+  Regeneration shortened FrameFactStore's install-name load command by 16 bytes,
+  translating six functions / 77 instructions uniformly by -16; its 308-byte
+  text section is byte-identical. All JSON fields and listing text match after
+  that exact address translation, and structured/pseudo output is unchanged.
+  Other regenerated candidate outputs match the reviewed outputs byte-for-byte.
+  The enforcing **1,435-test / 39-suite** run and all nine CLI pairs pass again
+  on these regenerated inputs. Fresh baseline/candidate cost comparisons use
+  that final corpus; both binaries agree on the relocated fixture. Publication
+  still requires the original `Tools/integration-gate.sh --push` to rebuild and
+  reproduce the reviewed outputs and default positive counts.
+
+- **OPEN — full shared memory semantics and value identity.** The new producer
+  proves only supported complete literal-store bodies and frame-resolved
+  inputs. General callee reads, captures and call composition, structured object
+  extents, space provenance, ownership proofs and unified value identity remain
+  open. Independent address observations remain insufficient ownership evidence.
