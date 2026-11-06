@@ -9641,11 +9641,112 @@ Commit messages on dev stay as they are; these are the true records.
 
 - **OPEN — complete frame layout, provenance and spaces.** Fact storage,
   must transfers and durable MAY reach now share owners and operations.
-  Layout/evidence discovery, register alias provenance, ownership policies,
-  SelfState's MAY slot set and result/context spaces remain with their analyses.
-  Unified value identity and an accepted-input endpoint repair are not claimed.
+  Register-fact ownership follows below. Layout/evidence discovery, ownership
+  policies, SelfState's MAY slot set and result/context spaces remain with their
+  analyses. Unified value identity and an accepted-input endpoint repair are
+  not claimed.
 
-- **OPEN — temporary effect construction costs.** Current CPU samples identify
+- **OPEN — temporary effect construction costs.** Earlier summary-window CPU
+  samples identify
   `SelfState.escapeReachesSlot` through `DurableFrameReach.effect` and region
   Set construction as a concrete follow-up target. Allocation volume, retained
   heap and precise counter/iterator costs remain unmeasured.
+
+## 2026-11-05: share persisted register facts and frame-coordinate operations
+
+- **FIXED — duplicate register-fact ownership (`4cafe27`).**
+  `FrameRegisterFacts` now owns the tracer's actual machine-register bindings
+  and Preservation's exact values, MAY membership and finite alternatives.
+  Concrete sparse columns preserve independent presence, including finite
+  metadata without a value or alias membership and alias-only initial sp.
+  Common operations perform lookup, field installation, source-first copy,
+  raw must intersection, lost-value traversal, per-key input selection/MAY
+  presence, reset and current-frame point/below coordinate/access planning.
+  Borrowed/lazy compatibility views retain the old keys without a shadow map
+  or hot materialized Dictionary/Set projection.
+
+  Raw imports preserve arbitrary keys and explicit unknown versus absence;
+  only existing semantic setters normalize. Self-copies capture finite metadata
+  before destination clearing. Partial vector writes retain their separate MAY
+  widening rule. Physical NZCV stays distinct from reconstructed flags; state
+  budgets still count the old components. Preservation repairs below/max before
+  deriving finite alternatives and retains its empty-union-to-Any normalization.
+  Tracer joins retain self-isa repair, pre-veto loss collection, metadata veto
+  and then escape marking. Each selected register escapes independently: an
+  Any input does not discard another input's bounded range.
+
+  The planner handles current-frame coordinates, leaving absolute/self/result/
+  context targets and alias policies with their frontends. Tracer query-time
+  layout and Preservation escape-time live-save evidence remain distinct.
+  Wrapping and checked arithmetic, finite sentinels, evaluation order, caller
+  ownership, reload-before-write and transitive pointer-loss closure retain
+  their meanings. This is a refactor, not a newly claimed native soundness fix.
+
+  All **337 inputs in four views**, four large SDK outputs, five app pseudo
+  outputs and nine CLI pairs match. The **332 supported JSON inputs** contain
+  **43,453 functions / 881,394 instructions**; five prior unsupported inputs
+  retain exact diagnostics/statuses. All **1,352 cost pairs** have positive
+  counters and pass default per-input/total budgets without override.
+  Instructions are **5,044,101,849,510 → 5,145,472,811,392 (+2.0097%)**;
+  summed peak footprints are **18,105,185,160 → 17,993,050,064 bytes (-0.6194%)**.
+  These are standalone frozen **`ffb6a8c2` release versus official `1e8304f8`
+  baseline** measurements on the same input bytes. The official gate validates
+  a separately rebuilt binary; its results retain their own binary/result scope.
+  No general speed, allocation-volume or retained-heap improvement is established.
+
+  Exactly two instrumented **Parser structured arm64** runs, baseline and
+  candidate, produced identical nonempty output. Each received one five-second
+  CPU sample after an analysis event trigger. Tracer frames occur in **931/2,026
+  baseline** and **943/2,087 candidate** cooperative-worker samples. Candidate
+  owner ancestry occurs in **27 samples: 22 meet/loss and five Selected
+  value-witness lifetime samples**. Eleven resize/move samples occur beneath
+  the owner; **zero named dictionary copy samples** were sampled beneath it.
+  Preservation and initial-summary families have zero samples in both windows;
+  those phases were outside the captures. These inclusive residency counts can
+  overlap and include blocking. They are not operation/allocation counts,
+  allocated bytes, total CPU shares or causal performance gains; missing or
+  inlined names do not establish zero cost.
+
+  Verified: **17 new tests**, comprising eight baseline behavior controls and
+  nine owner/native integration tests. **Eighteen independently compiled
+  variants** produce **58 assertion issues across 27 required consumer checks**.
+  Shared install, copy, raw-meet, loss-walk, input-presence and coordinate
+  variants fail actual tracer and Preservation assertions. The lost-walk
+  Preservation assertion exercises its real State merge repair; reset's
+  Preservation half exercises the owner API, not a nonexistent interpreter
+  reset path. Missing right-predecessor membership fails the new save-reaching
+  alias control in both successor orders while the older bounded positives
+  survive. Restored **22 tests / six suites** and enforcing **1,415 tests /
+  35 suites** pass.
+
+  The authored register-frame fixture independently has **three NM symbols =
+  three LC_FUNCTION_STARTS**, **132 text bytes / 33 words**, and native return
+  **11** from all three functions. Array, filtered and streaming paths agree.
+  All synthetic decoded words and targets have independent Clang/LLVM checks.
+  Synthetic boundary queries preserve arithmetic compatibility; no accepted-input
+  overflow repair or native overflow execution is claimed.
+
+  Fresh exports exactly match **58,515 integer / 12,644 condition / 448
+  targeted-word records**, reusing prior solver results for byte-identical
+  inputs/exports without rerunning the solver. Frozen debug/release CLIs pass
+  **184 separate-process captures and 40 probe traces**. Debug produces **1,620
+  exact fresh-CFG matches**; release produces **zero** for that intentionally
+  DEBUG-only validation event. Four new permanent ordering cases cover all
+  register-frame fixture views and require successful CLI exit status.
+
+  Reproduce: `Tools/fixtures.sh`; `swift build --build-tests -j 2`;
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`;
+  `swift build -c release --scratch-path .build-release -j 2`;
+  `Tools/blast-radius.sh <04a86c1-release> <new-release> <out> --real --perf`.
+
+- **OPEN — the complete shared frame-memory model.** Persisted frame facts,
+  durable reach and register facts now have common owners and operations.
+  Full structured layout/evidence discovery, space aliasing, frontend ownership
+  and call policies, SelfState's MAY self-slot representation and unified value
+  identity remain open. No new origin tag proves separate spaces disjoint.
+
+- **OPEN — register-owner storage and query costs.** Sparse columns avoid
+  uniform metadata padding, but dictionary headers, COW lifetimes and query/
+  projection overhead still require measurement. The sampled meet result growth
+  and Selected lifetime paths do not establish allocation volume or retained
+  heap, and the standalone budget result does not establish a speed benefit.

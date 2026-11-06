@@ -46,9 +46,9 @@ since shipped.
   returns 11. Each analysis that needs frame facts re-derives escape and
   aliasing, and each one gets a different subset right. (The stopgap below
   shipped on 2026-10-15: per-region escape markers in the tracer, unioned at
-  joins. Step 4 now shares write footprints, current-frame facts and durable
-  escape state. Layout discovery, alias provenance and complete space/value
-  unification remain open.)
+  joins. Step 4 now shares write footprints, current-frame facts, durable
+  escape state and register-fact ownership. Layout discovery and complete
+  space/provenance/value unification remain open.)
 - **Facts are strings.** `demangledName(from:)` returns any leading note not on
   its deny-list as a callee name. Adding the `swift-exit=` note on 2026-10-15
   would have made call graphs list it as a callee; the deny-list had to grow
@@ -304,12 +304,51 @@ fix, measured and explained like any other.
    costs pass; PRODUCTION-READINESS.md records the standalone release scope
    and sampled temporary-Set path. No general CPU or heap saving is claimed.
 
+   *Register-fact ownership follows in `4cafe27`:
+   `FrameRegisterFacts` owns both analyses' actual register bindings, with
+   sparse Preservation columns for independently present exact values, MAY
+   membership and finite alternatives. Common lookup, installation, source-first
+   copies, raw must intersection, lost-value walks, per-key input selection,
+   reset and current-frame coordinate/access planning replace the separate
+   state operations. Borrowed/lazy projections keep raw payloads, orphan finite
+   metadata, explicit unknown versus absence, physical NZCV versus reconstructed
+   flags and component-weighted counts without shadow stores.*
+
+   Frontend policies retain below-max repair before finite-origin derivation,
+   legacy empty-union-to-Any normalization, self-isa repair, pre-veto loss
+   enumeration and subsequent escape marking. Escape inputs remain separate
+   transactions, so a bounded input survives beside another Any input. Partial
+   vector widening, wrapping/checked arithmetic, query-time tracer layout versus
+   escape-time live saves, reload ordering and separate result/context handling
+   retain their meanings. This is a refactor; full layout, space aliasing,
+   SelfState's MAY self slots and value identity remain OPEN.
+
+   Seventeen new tests include eight baseline controls. Eighteen independently
+   compiled variants produce 58 assertion issues across 27 required consumer
+   checks; restored 22 tests/six suites and enforcing 1,415/35 pass. Paired
+   variants fail actual tracer and Preservation consumers; reset's Preservation
+   half tests the owner API. The authored three-function fixture has three NM
+   symbols/LC_FUNCTION_STARTS and 33 words, returns native 11, and passes array,
+   filtered and streaming paths. Synthetic words/targets have independent
+   Clang/LLVM checks; no native overflow repair is claimed.
+
+   Fresh semantics match; 184 separate-process captures and 40 probe traces
+   match, including 1,620 debug fresh-CFG checks and the intentional absence of
+   that DEBUG-only event in release. All 337 inputs in four views, four SDK
+   outputs, five apps and nine CLI pairs match. The standalone `ffb6a8c2` release
+   against official `1e8304f8` passes all 1,352 default cost pairs: +2.0097%
+   retired instructions / -0.6194% summed peak footprints, without override.
+   The official gate validates its rebuilt binary separately. Two event-triggered Parser CPU samples
+   expose owner meet/selection and resize/move paths; they establish no speed,
+   allocation-volume or retained-heap benefit. PRODUCTION-READINESS.md records
+   the exact validation and sampling scope.
+
 5. **Value identity and edge refinement.** Recovers declined exits such as the
    -Onone `try` shape and gives conditions and loop variables stable names.
 6. **Renderers read the IR**, then the §9.3 layers above it.
 
-Steps 1–3 and the step 4 extractions of write footprints, fact storage and
-durable reach are refactors.
+Steps 1–3 and the step 4 extractions of write footprints, fact storage,
+durable reach and register-fact ownership are refactors.
 Completing step 4 is the intended memory-model soundness payoff. A stopgap
 that fixes `cacheEscape` inside the current tracer
 (persistent per-region escape, union at joins) is acceptable before step 4 if
