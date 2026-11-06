@@ -38,6 +38,12 @@ private let cases: [(label: String, arguments: [String])] = [
     // Loops in catch handlers tie for immediate post-dominator; the tie was
     // broken by hash order (five outputs in six runs before the fix).
     ("disasm --structured landing pads", ["disasm", "Fixtures/Sample/libLandingPadLoop.dylib", "--structured"]),
+    // Physical register iteration now comes from the shared fact owner.
+    // Keep its native copy/writeback fixture reproducible in every view.
+    ("disasm --structured register facts", ["disasm", "Fixtures/Sample/libFrameRegisterModel.dylib", "--structured"]),
+    ("disasm --pseudo register facts", ["disasm", "Fixtures/Sample/libFrameRegisterModel.dylib", "--pseudo"]),
+    ("disasm listing register facts", ["disasm", "Fixtures/Sample/libFrameRegisterModel.dylib"]),
+    ("disasm --json register facts", ["disasm", "Fixtures/Sample/libFrameRegisterModel.dylib", "--json"]),
 ]
 
 private func capture(_ arguments: [String]) throws -> Data {
@@ -50,6 +56,7 @@ private func capture(_ arguments: [String]) throws -> Data {
     try process.run()
     let data = output.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
+    try #require(process.terminationStatus == 0, "CLI failed for \(arguments)")
     return data
 }
 

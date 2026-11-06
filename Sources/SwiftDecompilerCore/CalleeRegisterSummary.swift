@@ -721,22 +721,26 @@ enum Preservation {
 
     /// The frame addresses a register may hold: these offsets, or any
     /// address inside a dynamic allocation below `below`.
-    struct FrameReach: Hashable {
-        var offsets: Set<Int64> = []
-        var below: Int64?
-    }
+    typealias FrameReach = FrameRegisterOrigins
 
     /// Frame offsets `[floor, bound)` an escaped address can reach.
     typealias EscapeRange = FrozenFrameRange
 
     struct State: Equatable {
-        var registers: [String: Value]
+        var registerFacts = PreservationFrameRegisterFacts()
+        var registers: [String: Value] {
+            _read { yield registerFacts.exactValues }
+            _modify { yield &registerFacts.exactValues }
+        }
         // Each fact covers exactly eight bytes. A store at a different start
         // address can still overwrite part of that saved register.
         var slots: FrameFacts<WordFrameFact<Value>>
         // MAY provenance is independent of the must-value facts above: a
         // join can lose an exact address while retaining a feasible alias.
-        var stackAliases: Set<String> = ["sp"]
+        var stackAliases: Set<String> {
+            _read { yield registerFacts.aliasKeys }
+            _modify { yield &registerFacts.aliasKeys }
+        }
         var reach = FrozenFrameReach()
         // Compatibility properties forward to the sole durable owner.
         var stackAddressEscaped: Bool {
@@ -755,7 +759,10 @@ enum Preservation {
         // addresses it may hold: x1 is `sub x1, x29, #0x48` on one path and
         // no frame address on the other, x25 a dynamic allocation on one and
         // no frame address on the other. Absent means any.
-        var aliasReach: [String: FrameReach] = [:]
+        var aliasReach: [String: FrameReach] {
+            _read { yield registerFacts.finiteOrigins }
+            _modify { yield &registerFacts.finiteOrigins }
+        }
 
         init(
             registers: [String: Value], slots: FrameFacts<WordFrameFact<Value>>,
@@ -763,7 +770,7 @@ enum Preservation {
             escapedRanges: Set<EscapeRange> = [], incomingIntact: Bool = true,
             aliasReach: [String: FrameReach] = [:]
         ) {
-            self.registers = registers; self.slots = slots
+            self.slots = slots; self.registers = registers
             self.stackAliases = stackAliases; self.incomingIntact = incomingIntact
             self.aliasReach = aliasReach
             for range in escapedRanges { reach[.range(range)] = ReachPresence() }
@@ -771,15 +778,10 @@ enum Preservation {
         }
 
         mutating func setRegister(_ key: String, to value: Value, mayAliasStack: Bool = false) {
-            registers[key] = value == .unknown ? nil : value
-            aliasReach[key] = nil
-            if case .stack = value { stackAliases.insert(key) }
-            else if case .below = value { stackAliases.insert(key) }
-            else if mayAliasStack { stackAliases.insert(key) }
-            else { stackAliases.remove(key) }
+            registerFacts.installPreservation(key, value: value, mayAlias: mayAliasStack)
         }
 
-        func value(_ key: String) -> Value { registers[key] ?? .unknown }
+        func value(_ key: String) -> Value { registerFacts[key] ?? .unknown }
 
         /// The value of the eight bytes at entry sp + `address`.
         func load(at address: Int64) -> Value {
@@ -811,28 +813,13 @@ enum Preservation {
         }
 
         func merged(with other: State) -> State {
-            var registers = registers.filter { other.registers[$0.key] == $0.value }
-            // Two dynamic allocations' addresses are both below the higher
-            // bound: a store through either reaches no further.
-            for (key, mine) in self.registers where registers[key] == nil {
-                if case .below(let a) = mine, case .below(let b)? = other.registers[key] { registers[key] = .below(max(a, b)) }
-            }
-            let aliases = stackAliases.union(other.stackAliases)
-            var offsets: [String: FrameReach] = [:]
-            for key in aliases where registers[key] == nil {
-                guard let mine = frameReach(key), let theirs = other.frameReach(key) else { continue }
-                let union = FrameReach(
-                    offsets: mine.offsets.union(theirs.offsets),
-                    below: [mine.below, theirs.below].compactMap { $0 }.max())
-                if !union.offsets.isEmpty || union.below != nil { offsets[key] = union }
-            }
             var result = State(
-                registers: registers,
+                registers: [:],
                 slots: slots.intersecting(with: other.slots),
-                stackAliases: aliases,
-                incomingIntact: incomingIntact && other.incomingIntact,
-                aliasReach: offsets
+                stackAliases: [],
+                incomingIntact: incomingIntact && other.incomingIntact
             )
+            result.registerFacts = registerFacts.mergedPreservation(with: other.registerFacts)
             result.reach = reach.union(other.reach)
             return result
         }
@@ -841,19 +828,13 @@ enum Preservation {
         /// a dynamic allocation's, nothing for a register that is no frame
         /// alias, and nil when it may be any.
         func frameReach(_ key: String) -> FrameReach? {
-            switch value(key) {
-            case .stack(let k): return FrameReach(offsets: [k])
-            case .below(let k): return FrameReach(below: k)
-            default: break
-            }
-            if let reach = aliasReach[key] { return reach }
-            return stackAliases.contains(key) ? nil : FrameReach()
+            registerFacts.origins(key)
         }
 
         /// The frame addresses in `keys` reach code this body does not see.
         /// One strictly below every save made so far reaches up to the
         /// lowest save; anything else may reach every slot.
-        mutating func markEscape(_ keys: Set<String>) {
+        mutating func markEscape<Keys: Sequence>(_ keys: Keys) where Keys.Element == String {
             // Each saved or spilled entry value is a slot of its own. An
             // escaped address outside every one reaches up to the next one
             // above it, the extent of the object it points at: a local below
@@ -866,19 +847,10 @@ enum Preservation {
                 return nil
             }.sorted()
             let evidence = LiveEntrySaveEvidence(sortedEntryStarts: entrySlots)
-            for key in keys {
-                let input: PossibleFrameOrigins
-                switch value(key) {
-                case .stack(let offset): input = .finite(offsets: [offset], below: nil)
-                case .below(let bound): input = .finite(offsets: [], below: bound)
-                case .unknown where aliasReach[key] != nil:
-                    let possible = aliasReach[key] ?? FrameReach()
-                    input = .finite(offsets: possible.offsets, below: possible.below)
-                default:
-                    // Preserve markEscape's selected-key default: even when
-                    // frameReach(key) would be empty, this case means Any.
-                    input = .any
-                }
+            for (key, _) in registerFacts.selected(keys) {
+                // Keep each selected register's transaction separate: an Any
+                // input must not erase a different input's bounded ranges.
+                let input = registerFacts.escapeOrigins(key)
                 reach.recordEscape(input, against: evidence)
             }
         }
@@ -1019,8 +991,10 @@ enum Preservation {
         // x22`), is no argument to it. An outlined fragment may
         // take any register, so a call to an unknown in-image
         // target escapes every alias.
-        let inputs = callInputs.map { state.stackAliases.intersection($0) }
-            ?? state.stackAliases.subtracting(["sp", "x29"])
+        // Borrowed Set views feed lazy selection; no compatibility Set copy.
+        let inputs = state.registerFacts.aliasKeys.lazy.filter { key in
+            callInputs.map { $0.contains(key) } ?? (key != "sp" && key != "x29")
+        }
         if effect.readsFramePointer && state.stackAliases.contains("x29") {
             state.stackAddressEscaped = true
         }
@@ -1045,11 +1019,12 @@ enum Preservation {
               case .memory(let base?, let index, let displacement) = memory.operand, index == nil,
               case .stack(let k) = state.value(base.key)
         else { return (nil, nil, nil) }
-        if detail.postIndex {
-            let delta = detail.operands.last?.operand.immediateValue ?? 0
-            return (k, base.key, .stack(k &+ delta))
-        }
-        return (k &+ displacement, base.key, detail.writeback ? .stack(k &+ displacement) : nil)
+        guard let plan = FrameCoordinatePlanner.exactAccess(
+            .point(k), displacement: displacement, postIndex: detail.postIndex,
+            writeback: detail.writeback, trailingImmediate: detail.operands.last?.operand.immediateValue)
+        else { return (nil, nil, nil) }
+        let after: Value? = if case .point(let shifted)? = plan.after { .stack(shifted) } else { nil }
+        return (plan.start, base.key, after)
     }
 
     /// An access through an address inside a dynamic allocation below k
@@ -1061,11 +1036,12 @@ enum Preservation {
               case .memory(let base?, let index, let displacement) = memory.operand, index == nil,
               case .below(let k) = state.value(base.key)
         else { return nil }
-        let delta = detail.postIndex ? (detail.operands.last?.operand.immediateValue ?? 0) : displacement
-        let (limit, overflow) = k.addingReportingOverflow(max(detail.postIndex ? 0 : displacement, 0))
-        guard !overflow else { return nil }
-        let after: Value? = detail.writeback || detail.postIndex ? .below(k &+ max(delta, 0)) : nil
-        return (limit, base.key, after)
+        guard let plan = FrameCoordinatePlanner.belowAccess(
+            .below(k), displacement: displacement, postIndex: detail.postIndex,
+            writeback: detail.writeback, trailingImmediate: detail.operands.last?.operand.immediateValue)
+        else { return nil }
+        let after: Value? = if case .below(let shifted)? = plan.after { .below(shifted) } else { nil }
+        return (plan.start, base.key, after)
     }
 
     private static func apply(_ detail: StructuredInsn, to state: inout State) {
@@ -1133,16 +1109,14 @@ enum Preservation {
                (destination.widthBits == 64 && source.widthBits == 64
                 || destination.kind == .vector && source.kind == .vector
                    && destination.widthBits == 128 && source.widthBits == 128) {
-                let offsets = state.aliasReach[source.key]
-                state.setRegister(destination.key, to: state.value(source.key), mayAliasStack: state.stackAliases.contains(source.key))
-                state.aliasReach[destination.key] = offsets
+                state.registerFacts.copyPreservation(from: source.key, to: destination.key)
                 return
             }
         case AARCH64_INS_ADD, AARCH64_INS_SUB:
             if let destination = register(0), let source = register(1), destination.widthBits == 64,
                operands.count == 3, let immediate = operands[2].shiftedImmediate,
                case .stack(let k) = state.value(source.key) {
-                state.setRegister(destination.key, to: .stack(detail.id == AARCH64_INS_ADD ? k &+ immediate : k &- immediate))
+                state.setRegister(destination.key, to: .stack(FrameCoordinatePlanner.shiftedPoint(k, by: immediate, subtracting: detail.id == AARCH64_INS_SUB)))
                 return
             }
             // Within a dynamic allocation: a constant moves the bound by
@@ -1151,7 +1125,7 @@ enum Preservation {
                operands.count == 3, let immediate = operands[2].shiftedImmediate,
                case .below(let k) = state.value(source.key) {
                 let up = detail.id == AARCH64_INS_ADD ? max(immediate, 0) : 0
-                state.setRegister(destination.key, to: .below(k &+ up))
+                state.setRegister(destination.key, to: .below(FrameCoordinatePlanner.shiftedPoint(k, by: up, subtracting: false)))
                 return
             }
             // An address inside a dynamic allocation plus an offset in a
@@ -1257,8 +1231,9 @@ enum Preservation {
         }
         // An unmodelled transform of a frame address loses its exact offset,
         // not its ability to alias the frame. Keep that MAY fact at joins too.
-        let readsStackAlias = !detail.readRegisterKeys.intersection(state.stackAliases).isEmpty
-            || operands.contains { info in
+        let readsStackAlias = state.registerFacts.containsSelected(detail.readRegisterKeys) { key, _ in
+                state.registerFacts.mayAlias(key)
+            } || operands.contains { info in
                 guard let reg = info.operand.register else { return false }
                 return (info.isRead || info.access == 0) && state.stackAliases.contains(reg.key)
             }

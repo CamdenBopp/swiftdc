@@ -780,6 +780,15 @@ public struct ValueTracer: Sendable {
             }
         }
 
+        /// Physical-register identities are distinct from reconstructed flags.
+        /// Preserve all raw associated numbers, including manually seeded keys.
+        var isMachineRegister: Bool {
+            switch self {
+            case .x, .v, .sp, .zero, .nzcv, .otherRegister: true
+            default: false
+            }
+        }
+
         /// A general or vector register named by number (`x3`, `v0`).
         var isNumberedRegister: Bool {
             switch self {
@@ -794,7 +803,8 @@ public struct ValueTracer: Sendable {
     struct State: Equatable, Sequence, ExpressibleByDictionaryLiteral {
         typealias Element = (key: Location, value: AbstractValue)
         private var other: [Location: AbstractValue] = [:]
-        fileprivate var nonFrameEntries: [Location: AbstractValue] { other }
+        fileprivate var nonRegisterEntries: [Location: AbstractValue] { other }
+        var registerFacts = TraceFrameRegisterFacts()
         var frame = FrameFacts<TraceFrameFact>()
         var reach = TraceFrameReach()
         init() {}
@@ -839,20 +849,22 @@ public struct ValueTracer: Sendable {
             get {
                 if let (offset, field) = Self.component(key) { return frame[offset, field] }
                 if let marker = Self.reachKey(key) { return reach[marker] }
-                return other[key]
+                return key.isMachineRegister ? registerFacts[key] : other[key]
             }
             set {
                 if let (offset, field) = Self.component(key) { frame[offset, field] = newValue }
                 else if let marker = Self.reachKey(key) { reach[marker] = newValue }
+                else if key.isMachineRegister { registerFacts[key] = newValue }
                 else { other[key] = newValue }
             }
         }
-        var count: Int { other.count + frame.componentCount + reach.logicalCount }
+        var count: Int { other.count + registerFacts.exactCount + frame.componentCount + reach.logicalCount }
         var isEmpty: Bool { count == 0 }
-        mutating func removeAll() { other.removeAll(); frame.removeAll(); reach.reset() }
+        mutating func removeAll() { other.removeAll(); registerFacts.reset(); frame.removeAll(); reach.reset() }
         func intersecting(with state: State) -> State {
             var result = State()
             result.other = other.filter { state.other[$0.key] == $0.value }
+            result.registerFacts = registerFacts.intersectingExact(with: state.registerFacts)
             result.frame = frame.intersecting(with: state.frame)
             result.reach = reach.equalPayloadIntersection(state.reach)
             return result
@@ -865,15 +877,18 @@ public struct ValueTracer: Sendable {
             return result
         }
         struct Iterator: IteratorProtocol {
+            private var registers: Dictionary<Location, AbstractValue>.Iterator
             private var other: Dictionary<Location, AbstractValue>.Iterator
             private var frame: FrameFacts<TraceFrameFact>.ComponentIterator
             private var reach: TraceReachStorage.Entries.Iterator
             init(_ state: State) {
+                registers = state.registerFacts.exactValues.makeIterator()
                 other = state.other.makeIterator()
                 frame = state.frame.components.makeIterator()
                 reach = state.reach.entries.makeIterator()
             }
             mutating func next() -> Element? {
+                if let item = registers.next() { return item }
                 if let item = other.next() { return item }
                 if let item = frame.next() { return (State.location(item.offset, item.field), item.value) }
                 if let item = reach.next() { return (State.reachLocation(item.key), item.payload) }
@@ -1678,8 +1693,8 @@ public struct ValueTracer: Sendable {
             if !(call.readsOnly || handledAsMemoryHelper) {
                 // A runtime entry point with a fixed C arity receives only its
                 // parameters; anything else may also be an input.
-                for key in call.passedRegisters {
-                    if let value = registers[key] { Self.markEscape(value, into: &registers) }
+                for (_, value) in registers.registerFacts.selected(call.passedRegisters) {
+                    if let value { Self.markEscape(value, into: &registers) }
                 }
                 // x29 is not an argument, but a callee that uses it reaches
                 // the frame through it, below the frame record as well as
@@ -1792,7 +1807,8 @@ public struct ValueTracer: Sendable {
                 // in x0 (libobjc's first instruction is `ands x0, xN, xN`).
                 // Matched as a prefix of `objc_retain`, it returned the stale
                 // x0: an `@objc` thunk passed the wrong receiver and `self`.
-                registers[.x(0)] = beforeCall[.x(source)] ?? .unknown
+                let copied = beforeCall.registerFacts.snapshotForCopy(.x(source))
+                registers.registerFacts.installCopy(copied, at: .x(0), fallback: .unknown)
             } else if call.allocatesArray {
                 // Returns the array in x0 (and its element buffer in x1); the
                 // caller fills it next, so tag it with this site and its count —
@@ -2047,7 +2063,10 @@ public struct ValueTracer: Sendable {
             // Frame identities keep the old ordered MAY payload union here,
             // not in the earlier raw must intersection/self-isa phase.
             accumulator.reach.formUnion(state.reach)
-            for (key, value) in state.nonFrameEntries {
+            state.registerFacts.forEachLostExact(comparedWith: accumulator.registerFacts) { key, value in
+                if holdsValue(key), containsFrame(value) || containsContext(value) { dropped.append(value) }
+            }
+            for (key, value) in state.nonRegisterEntries {
                 if isEscapeMarker(key) {
                     accumulator[key] = value
                 } else if accumulator[key] != value {
@@ -3146,7 +3165,7 @@ public struct ValueTracer: Sendable {
                     write(dest, .address(adding ? address &+ magnitude : address &- magnitude), into: &registers)
                     return
                 case .frame(let offset):
-                    write(dest, .frame(adding ? offset &+ delta : offset &- delta), into: &registers)
+                    write(dest, .frame(FrameCoordinatePlanner.shiftedPoint(offset, by: delta, subtracting: !adding)), into: &registers)
                     return
                 case .selfPointer where adding:
                     recordAccess?(insn.address, SelfFieldAccess(
@@ -4947,7 +4966,7 @@ public struct ValueTracer: Sendable {
         if let shifted = operand.shiftedImmediate { return .immediate(UInt64(bitPattern: shifted)) }
         guard let reg = operand.operand.register else { return .unknown }
         if reg.kind == .zero { return .immediate(0) }
-        var value = registers[Location(reg)] ?? .unknown
+        var value = registers.registerFacts.snapshotForCopy(Location(reg)).value ?? .unknown
         if reg.kind == .vector { value = Self.scalarView(value, bits: reg.widthBits) }
         // A 32-bit register is the low word of its 64-bit key. `cmp w8, w9`
         // with x8 = 0x1_0000_0001 compares 1, not the whole value. A known
@@ -5160,7 +5179,9 @@ public struct ValueTracer: Sendable {
         // Post-index accesses the base itself; the displacement applies after.
         let effective = detail.postIndex ? 0 : displacement
         switch registers[Location(base)] {
-        case .frame(let offset): return .stackSlot(Self.stackKey(offset &+ effective))
+        case .frame(let offset):
+            return .stackSlot(Self.stackKey(FrameCoordinatePlanner.exactStart(
+                offset, displacement: displacement, postIndex: detail.postIndex)))
         case .address(let address): return .absolute(address &+ UInt64(bitPattern: effective))
         case .loaded(let slot): return .throughStaticPointer(slot: slot, offset: Int(effective))
         case .callResult, .loadedFrom(.callResult, _), .genericMetadata, .loadedFrom(.genericMetadata, _), .genericWitnessTable,
@@ -5435,13 +5456,17 @@ public struct ValueTracer: Sendable {
         }
         // Register operands only: a memory operand's base and index are
         // addresses, carried inside it.
-        let valueInputs = detail.operands.compactMap { info -> AbstractValue? in
+        let inputKeys = detail.operands.lazy.compactMap { info -> Location? in
             guard let register = info.operand.register, register.kind != .zero, info.isRead || info.access == 0
             else { return nil }
-            return registers[Location(register)]
+            return Location(register)
         }
-        let reads = (frame: valueInputs.contains(where: Self.containsFrame),
-                     context: valueInputs.contains(where: Self.containsContext))
+        // Snapshot selected register values, not all State components. Retain
+        // each input independently for escape transactions below.
+        let valueInputs = registers.registerFacts.selected(inputKeys).lazy.compactMap { $0.value }
+        let reads = (frame: registers.registerFacts.containsSelected(inputKeys) { _, value in
+                         value.map(Self.containsFrame) ?? false
+                     }, context: valueInputs.contains(where: Self.containsContext))
         guard let memory, !Self.readOnlyMemoryIDs.contains(detail.id.rawValue) else { return reads }
         let target = memoryTarget(detail, in: registers)
         let modelledSlot: Bool = if case .stackSlot? = target {
@@ -5546,7 +5571,8 @@ public struct ValueTracer: Sendable {
             ? (detail.operands.last?.operand.immediateValue ?? 0)
             : displacement
         switch registers[Location(base)] {
-        case .frame(let offset): registers[Location(base)] = .frame(offset &+ delta)
+        case .frame(let offset):
+            registers[Location(base)] = .frame(FrameCoordinatePlanner.exactWriteback(offset, delta: delta))
         case .address(let address): registers[Location(base)] = .address(address &+ UInt64(bitPattern: delta))
         default: registers[Location(base)] = .unknown
         }
