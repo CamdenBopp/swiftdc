@@ -373,15 +373,45 @@ fix, measured and explained like any other.
 
    Two existing controls with native 7 now decline. Recovering them needs a
    proven object extent or callee write footprint. Structured layout discovery,
-   complete object/space provenance, SelfState's MAY self slots and value
-   identity remain OPEN; the existing save and ownership policies are retained.
+   complete object/space provenance and value identity remain OPEN; the
+   existing save and ownership policies are retained.
+
+   *MAY self-slot ownership follows in `464399e`.* `StoredFrameFacts` now owns
+   the tracer's and Preservation's must facts and SelfState's MAY frame slots.
+   Concrete dictionary storage retains values and independent metadata; Set
+   storage retains self presence without a dictionary of empty payloads.
+   Lookup, installation/removal, counts, iteration and effect queries share
+   the owner. Must joins still intersect fields, while MAY joins explicitly
+   union presence. Exact word clears, partial writes and staged pair spills
+   keep their existing rules. The read effect preserves checked query-end
+   overflow and wrapping stored-slot ends; empty slots still read nothing.
+
+   Five new consumer controls pass on prior production. Eight new tests,
+   ten independently compiled variants failing 207 assertions at 83 test
+   locations, restored 24 focused tests and enforcing 1,425/37 pass. Clang and
+   LLVM check 75 words in 11 analysis cases; these are not native-executed ABI
+   functions. Four permanent ordering cases exercise initializer self spills;
+   76 ordering captures and 24 explicit debug/release captures agree.
+
+   All 338 inputs in four views, five apps, four SDK workloads and nine CLI
+   pairs are byte-identical. Fresh semantic exports retain prior solver
+   statuses without rerunning the solver. Standalone `32f9b470` against
+   published `14341da6` passes all 1,356 default cost pairs: -0.0078% retired
+   instructions / -0.1409% summed peak footprints. App footprints vary from
+   -7.46% to +19.81%; no general speed or heap benefit is established. The
+   integration gate validates its own rebuild separately.
+
+   This closes the MAY-slot storage extraction. Complete layout, object and
+   space provenance, ownership proofs, callee memory footprints and value
+   identity remain OPEN. Result/context spaces and register alias policies
+   retain their existing representations.
 
 5. **Value identity and edge refinement.** Recovers declined exits such as the
    -Onone `try` shape and gives conditions and loop variables stable names.
 6. **Renderers read the IR**, then the §9.3 layers above it.
 
 Steps 1–3 and the step 4 extractions of write footprints, fact storage,
-durable reach and register-fact ownership are refactors.
+durable reach, register-fact ownership and MAY self-slot ownership are refactors.
 Completing step 4 is the intended memory-model soundness payoff. A stopgap
 that fixes `cacheEscape` inside the current tracer
 (persistent per-region escape, union at joins) is acceptable before step 4 if

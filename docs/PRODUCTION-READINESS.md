@@ -9835,6 +9835,77 @@ Commit messages on dev stay as they are; these are the true records.
   `fpAboveBoundary` still return native 7 but now decline because separate
   address calculations do not prove independent objects. Recovering these and
   the reviewed app/SDK losses needs actual object extents or callee write
-  effects. Full structured layout discovery, object/space provenance,
-  SelfState's MAY self-slot representation and value identity remain open.
+  effects. Full structured layout discovery, object/space provenance and
+  value identity remain open.
   The prologue-save and frontend ownership assumptions are not newly proven.
+
+## 2026-11-05: share MAY self slots with the frame-fact owner
+
+- **FIXED (IR storage, `464399e`) — SelfState's separate MAY slot owner.**
+  `Reconstruction.Animal.init` can spill incoming x20 and reload it later.
+  SelfState tracked those slots in its own Set while the tracer and
+  Preservation used `FrameFacts`. `StoredFrameFacts` now owns all three:
+  concrete dictionaries preserve values and independent metadata, and a Set
+  preserves self presence. Lookup, installation/removal, counts, iteration and
+  byte-effect queries share the implementation, without a shadow slot map.
+
+  Must joins retain fieldwise intersection; MAY joins explicitly union slots.
+  Exact eight-byte overwrites end presence at their start, partial writes keep
+  it, and pair spills install after both sources are examined. Read queries
+  keep checked query-end overflow and wrapping slot-end arithmetic. Unknown
+  values, metadata-only rows, source snapshots, component-weighted budgets,
+  register alias policies and separate result/context spaces retain their rules.
+
+- **VERIFIED — baseline controls, compiled variants and final suite.** Five
+  new consumer controls pass against unchanged production. Eight new tests
+  cover storage, joins, copy isolation, overwrites, partial/boundary loads and
+  callee reloads. Clang/LLVM agree on **75 words / 300 bytes in 11 analysis
+  cases**; Mach-O nlist and NM agree on their labels. These synthetic cases
+  are not native-executed ABI functions. Existing native frame-copy controls
+  remain active and fail under the broken dictionary variants.
+
+  **Ten independently compiled variants** fail **207 assertions at 83 test
+  locations**, including tracer, Preservation and SelfState consumers. Restored
+  **24 focused tests / six suites** and the final enforcing **1,425 tests /
+  37 suites** pass. Four new permanent ordering cases exercise -Onone self
+  spills in all views: **76 ordering captures** and **24 fresh debug/release
+  captures** agree. Fresh **58,515 integer / 12,644 condition / 448 targeted-word
+  exports** match prior outputs, retaining verified, sampled and declined
+  solver statuses without rerunning the solver. All **346 fixture products**
+  remain unchanged; the fixture cache is reused without regeneration.
+
+- **UNCHANGED OUTPUTS — complete corpus, apps, SDK and CLI paths.** All
+  **338 inputs in four views** are byte-identical, retaining **333 supported
+  JSON inputs / 43,456 functions / 881,414 instructions** and the five previous
+  unsupported diagnostics. Five app pseudo outputs, four large SDK outputs
+  and nine CLI pairs are exact. CLI positive controls retain **478 functions /
+  8,393 instructions**, **28 layouts** and **46 ObjC methods**. Private captures
+  and reports remain outside the public repository.
+
+- **MEASURED — default budgets pass; no performance gain claimed.** Frozen
+  **`32f9b470`** against published **`14341da6`** passes all **1,356 positive
+  cost pairs** without override: **5,033,420,600,033 → 5,033,029,415,696 retired
+  instructions (-0.0078%)** and **17,947,613,272 → 17,922,332,400 summed peak
+  footprint bytes (-0.1409%)**. App instructions range **+0.012% to +0.116%**;
+  app peak footprints range **-7.46% to +19.81%**. These small instruction
+  changes and variable peaks establish no general speed, allocation-volume or
+  retained-heap benefit. The official gate measures its own rebuilt binary.
+
+  A two-second SwiftSyntax xrefs sample contains **154 cooperative-thread
+  observations**: signature parsing appears in **45**, the tracer in **36**,
+  and the shared frame owner in **six** (five component-iterator observations
+  and one getter). Groups overlap and must not be summed. This short window
+  suggests follow-up measurement of signature parsing and component traversal;
+  it neither measures allocation volume nor attributes the app footprint
+  changes. An earlier target ended before sampling and supplies no evidence.
+
+  Reproduce: `Tools/fixtures.sh`; `swift build --build-tests -j 2`;
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`;
+  `swiftdc disasm Fixtures/Sample/libReconstruction.dylib --structured`;
+  `Tools/blast-radius.sh <aa46bb7-release> <new-release> <out> --real --perf`.
+
+- **OPEN — full shared memory semantics and value identity.** MAY self-slot
+  storage now shares the frame owner. Complete structured layout discovery,
+  object/space provenance, ownership proofs, callee memory footprints and
+  value identity remain open; existing save, alias and arithmetic policies
+  have been preserved rather than newly proven.
