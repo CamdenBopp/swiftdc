@@ -97,6 +97,15 @@ struct FrameMemoryEffect: Sendable, Equatable {
         FrameMemoryEffect(.legacyTracerExactWrite(start: start, bytes: bytes), arithmetic: .wrapping)
     }
 
+    /// SelfState checks the queried extent's end, but wraps each stored
+    /// eight-byte slot's end. An overflowing query reaches any present slot;
+    /// it still reads nothing when no slot is present.
+    static func legacySelfRead(start: Int64, bytes: Int64) -> FrameMemoryEffect {
+        let (end, overflow) = start.addingReportingOverflow(bytes)
+        return FrameMemoryEffect(.finite(lower: start, upper: end),
+            arithmetic: .wrapping, everything: overflow)
+    }
+
     var isEmpty: Bool { !everything && regions.isEmpty }
     var isWholeFrame: Bool { everything }
 

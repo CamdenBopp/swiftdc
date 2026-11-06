@@ -88,14 +88,67 @@ struct WordFrameFact<Value: Equatable>: FrameFactRecord {
     var extentBytes: Int64 { 8 }
 }
 
+/// Storage specializes representation, not frame-fact operations. In
+/// particular, MAY presence needs a Set rather than a dictionary of empty
+/// payloads. Neither implementation keeps a second map or an array of rows.
+protocol FrameFactStorage: Equatable, Sequence where Element == (key: Int64, value: Record) {
+    associatedtype Record: FrameFactRecord
+    init()
+    subscript(_ offset: Int64) -> Record? { get set }
+    mutating func removeAll(keepingCapacity: Bool)
+}
+
+struct DictionaryFrameFactStorage<Record: FrameFactRecord>: FrameFactStorage {
+    private var rows: [Int64: Record] = [:]
+    init() {}
+    subscript(_ offset: Int64) -> Record? {
+        get { rows[offset] }
+        set { rows[offset] = newValue }
+    }
+    mutating func removeAll(keepingCapacity: Bool) { rows.removeAll(keepingCapacity: keepingCapacity) }
+    func makeIterator() -> Dictionary<Int64, Record>.Iterator { rows.makeIterator() }
+}
+
+struct MayFrameSlotStorage: FrameFactStorage {
+    typealias Record = WordFrameFact<ReachPresence>
+    private var starts: Set<Int64> = []
+    init() {}
+    subscript(_ offset: Int64) -> Record? {
+        get {
+            guard starts.contains(offset) else { return nil }
+            var record = Record()
+            record.value = ReachPresence()
+            return record
+        }
+        set {
+            if newValue?.value != nil { starts.insert(offset) }
+            else { starts.remove(offset) }
+        }
+    }
+    mutating func removeAll(keepingCapacity: Bool) { starts.removeAll(keepingCapacity: keepingCapacity) }
+    struct Iterator: IteratorProtocol {
+        private var starts: Set<Int64>.Iterator
+        fileprivate init(_ starts: Set<Int64>) { self.starts = starts.makeIterator() }
+        mutating func next() -> (key: Int64, value: Record)? {
+            guard let start = starts.next() else { return nil }
+            var record = Record()
+            record.value = ReachPresence()
+            return (start, record)
+        }
+    }
+    func makeIterator() -> Iterator { Iterator(starts) }
+}
+
 /// The sole owner of current-frame facts, relative to entry sp. Unknown values
-/// remain present payloads, unlike missing values. Separate result/context and
-/// MAY-alias/escape domains are deliberately not stored here.
-struct FrameFacts<Record: FrameFactRecord>: Equatable, Sequence, ExpressibleByDictionaryLiteral {
+/// remain present payloads, unlike missing values. Must facts and MAY presence
+/// share lookup, installation, removal, counts and effect queries; their joins
+/// remain explicitly different. Result/context and escape domains stay separate.
+struct StoredFrameFacts<Storage: FrameFactStorage>: Equatable, Sequence, ExpressibleByDictionaryLiteral {
+    typealias Record = Storage.Record
     typealias Key = Int64
     typealias Value = Record.Payload
     typealias Element = (key: Int64, value: Record.Payload)
-    private var rows: [Int64: Record] = [:]
+    private var rows = Storage()
     private(set) var componentCount = 0
     private(set) var valueCount = 0
     init() {}
@@ -163,6 +216,14 @@ struct FrameFacts<Record: FrameFactRecord>: Equatable, Sequence, ExpressibleByDi
             if fields.contains(.value) { lostValue(value) }
         }
     }
+    /// A read-side query over the same present values and byte extents used
+    /// by forgetting. Metadata-only rows do not represent memory snapshots.
+    func containsValue(affectedBy effect: FrameMemoryEffect) -> Bool {
+        for (offset, row) in rows where row[.value] != nil {
+            if effect.mayInvalidate(.init(start: offset, bytes: row.extentBytes)) { return true }
+        }
+        return false
+    }
     /// Legacy start selection is not byte overlap; other metadata is untouched
     /// unless explicitly named by the caller.
     mutating func clearValueStarts(from: Int64, to: Int64?, removing fields: FrameFactFields) {
@@ -213,14 +274,14 @@ struct FrameFacts<Record: FrameFactRecord>: Equatable, Sequence, ExpressibleByDi
         }
     }
     struct Components: Sequence {
-        fileprivate let rows: [Int64: Record]
+        fileprivate let rows: Storage
         func makeIterator() -> ComponentIterator { ComponentIterator(rows: rows) }
     }
     struct ComponentIterator: IteratorProtocol {
-        private var rows: Dictionary<Int64, Record>.Iterator
+        private var rows: Storage.Iterator
         private var current: (offset: Int64, row: Record)?
         private var fieldIndex = 4
-        fileprivate init(rows: [Int64: Record]) { self.rows = rows.makeIterator() }
+        fileprivate init(rows: Storage) { self.rows = rows.makeIterator() }
         mutating func next() -> (offset: Int64, field: FrameFactField, value: Record.Payload)? {
             while true {
                 if let current {
@@ -237,8 +298,8 @@ struct FrameFacts<Record: FrameFactRecord>: Equatable, Sequence, ExpressibleByDi
     }
     var components: Components { Components(rows: rows) }
     struct Iterator: IteratorProtocol {
-        private var rows: Dictionary<Int64, Record>.Iterator
-        fileprivate init(rows: [Int64: Record]) { self.rows = rows.makeIterator() }
+        private var rows: Storage.Iterator
+        fileprivate init(rows: Storage) { self.rows = rows.makeIterator() }
         mutating func next() -> Element? {
             while let row = rows.next() {
                 if let value = row.value[.value] { return (row.key, value) }
@@ -248,12 +309,31 @@ struct FrameFacts<Record: FrameFactRecord>: Equatable, Sequence, ExpressibleByDi
     }
     func makeIterator() -> Iterator { Iterator(rows: rows) }
     struct Keys: Sequence {
-        let facts: FrameFacts
+        let facts: StoredFrameFacts
         struct Iterator: IteratorProtocol {
-            var values: FrameFacts.Iterator
+            var values: StoredFrameFacts.Iterator
             mutating func next() -> Int64? { values.next()?.key }
         }
         func makeIterator() -> Iterator { Iterator(values: facts.makeIterator()) }
     }
     var keys: Keys { Keys(facts: self) }
+}
+
+typealias FrameFacts<Record: FrameFactRecord> = StoredFrameFacts<DictionaryFrameFactStorage<Record>>
+typealias MayFrameSlots = StoredFrameFacts<MayFrameSlotStorage>
+
+extension StoredFrameFacts where Storage == MayFrameSlotStorage {
+    func contains(_ offset: Int64) -> Bool { self[offset] != nil }
+    mutating func insert(_ offset: Int64) { self[offset] = ReachPresence() }
+    mutating func remove(_ offset: Int64) { self[offset] = nil }
+    mutating func formUnion<Offsets: Sequence>(_ offsets: Offsets) where Offsets.Element == Int64 {
+        for offset in offsets { insert(offset) }
+    }
+    /// MAY presence survives on either predecessor. Never use the must-fact
+    /// intersection for these slots, even when an exact frame value is lost.
+    func mayUnion(with other: Self) -> Self {
+        var result = self
+        result.formUnion(other.keys)
+        return result
+    }
 }

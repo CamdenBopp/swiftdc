@@ -48,6 +48,12 @@ private let cases: [(label: String, arguments: [String])] = [
     ("disasm --pseudo frame layout aliases", ["disasm", "Fixtures/Sample/libFrameLayoutAlias.dylib", "--pseudo"]),
     ("disasm listing frame layout aliases", ["disasm", "Fixtures/Sample/libFrameLayoutAlias.dylib"]),
     ("disasm --json frame layout aliases", ["disasm", "Fixtures/Sample/libFrameLayoutAlias.dylib", "--json"]),
+    // MAY self slots share the frame-fact owner but retain union at joins.
+    // Reconstruction's -Onone initializers spill and reload incoming x20.
+    ("disasm --structured MAY self slots", ["disasm", "Fixtures/Sample/libReconstruction.dylib", "--structured"]),
+    ("disasm --pseudo MAY self slots", ["disasm", "Fixtures/Sample/libReconstruction.dylib", "--pseudo"]),
+    ("disasm listing MAY self slots", ["disasm", "Fixtures/Sample/libReconstruction.dylib"]),
+    ("disasm --json MAY self slots", ["disasm", "Fixtures/Sample/libReconstruction.dylib", "--json"]),
 ]
 
 private func capture(_ arguments: [String]) throws -> Data {

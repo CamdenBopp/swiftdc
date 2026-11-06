@@ -1288,19 +1288,18 @@ extension Preservation {
         /// Registers that may hold the incoming x20.
         var registers: Set<String> = ["x20"]
         /// Eight-byte frame slots (offsets from entry sp) that may hold it.
-        var slots: Set<Int64> = []
+        var slots = MayFrameSlots()
 
         func merged(with other: SelfState) -> SelfState {
             SelfState(
                 frame: frame.merged(with: other.frame),
                 registers: registers.union(other.registers),
-                slots: slots.union(other.slots))
+                slots: slots.mayUnion(with: other.slots))
         }
 
         /// A slot holding it overlaps `[address, address + bytes)`.
         func overlaps(_ address: Int64, bytes: Int64) -> Bool {
-            let (end, overflow) = address.addingReportingOverflow(bytes)
-            return slots.contains { slot in overflow || (slot < end && slot &+ 8 > address) }
+            slots.containsValue(affectedBy: .legacySelfRead(start: address, bytes: bytes))
         }
 
         /// An escaped frame address may reach a slot holding it.
@@ -1308,7 +1307,7 @@ extension Preservation {
             guard !slots.isEmpty else { return false }
             if frame.reach.hasWhole { return true }
             let effect = frame.reach.effect(using: NoFrameQueryEvidence(), arithmetic: .wrapping)
-            return slots.contains { slot in effect.mayInvalidate(.init(start: slot, bytes: 8)) }
+            return slots.containsValue(affectedBy: effect)
         }
     }
 
