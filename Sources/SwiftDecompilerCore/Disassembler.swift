@@ -868,6 +868,17 @@ public struct Disassembler: Sendable {
         }
         // Reads first: whether a callee uses the caller's x29 is part of
         // the effect the clobber closure carries.
+        let memorySpanIndex = Dictionary(boundaries.indices.map { (boundaries[$0], $0) }, uniquingKeysWith: { a, _ in a })
+        CalleeRegisterSummary.refineMemory(&registerSummaries) { start, effects in
+            guard let index = memorySpanIndex[start] else { return nil }
+            return Probe.muted {
+                let function = makeFunction(start: start, instructions: decode(span(index)),
+                    labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
+                    metadataNames: metadataNames, objcIndex: objcIndex)
+                return CalleeRegisterSummary.of(Self.withJumpTables(function, machO: machO, ranges: fileRanges),
+                    calleeEffects: effects, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub)
+            }
+        }
         CalleeRegisterSummary.closeOverReads(&registerSummaries)
         // Clobbers and reloads carried through calls; the few functions
         // whose callees change anything are decoded again.
@@ -1269,6 +1280,14 @@ public struct Disassembler: Sendable {
             }
             level = next.sorted()
         }
+        CalleeRegisterSummary.refineMemory(&summaries) { start, effects in
+            body(at: start).flatMap { function in
+                Probe.muted {
+                    CalleeRegisterSummary.of(function, calleeEffects: effects, calleeArity: arity,
+                        isFunction: isFunction, isImportStub: isImportStub)
+                }
+            }
+        }
         CalleeRegisterSummary.closeOverReads(&summaries)
         CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects, readFacts in
             body(at: start).flatMap { function in
@@ -1500,6 +1519,14 @@ public struct Disassembler: Sendable {
                         next.formUnion(summary.callees.filter { summaries[$0] == nil && boundaries.contains($0) })
                     }
                     level = next.sorted()
+                }
+                CalleeRegisterSummary.refineMemory(&summaries) { start, effects in
+                    bodies[start].flatMap { function in
+                        Probe.muted {
+                            CalleeRegisterSummary.of(function, calleeEffects: effects, calleeArity: arity,
+                                isFunction: isFunction, isImportStub: isImportStub)
+                        }
+                    }
                 }
                 CalleeRegisterSummary.closeOverReads(&summaries)
                 CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects, readFacts in
@@ -6447,6 +6474,9 @@ public struct Disassembler: Sendable {
                 unprovenTypedErrorSites.insert(insn.address)
             }
             guard registerSummaries[target] != nil else { continue }
+            if let memory = registerSummaries[target]?.memoryEffect, case .literalStores = memory {
+                tracer.calleeMemoryEffects[target] = memory
+            }
             // A tail branch passes its arguments the same way a call does.
             callTargets[insn.address] = target
             if insn.controlFlow == .call, let clobbered = registerSummaries[target]?.clobberedCalleeSaved,

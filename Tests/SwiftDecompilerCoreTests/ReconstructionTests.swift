@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import Darwin
 @testable import SwiftDecompilerCore
 
 /// End-to-end assertions on the Swift-body pseudocode reconstruction, driven by
@@ -953,14 +954,28 @@ private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
     }
 }
 
-/// Negative: the address of the local that will become the result escapes into
-/// a callee that writes through it, so the local's zero-initialised slots are
-/// stale after the call. The copy into x8 must not print those zeros (nor the
-/// initializer that produced them) as the result.
+private struct NativeWide5Result {
+    var a, b, c, d, e: Int
+}
+
+/// The optimized helper's complete body proves a=7, leaving b...e at zero.
+/// The unoptimized body remains unsupported and must decline. Neither may
+/// return the stale all-zero initializer. Five Int words use an x8 result.
 @Test func declinesIndirectResultCopiedFromAnEscapedLocalIfPresent() async throws {
     for fixture in [indirectFixture, "Fixtures/Sample/libIndirect.opt.dylib"] {
         guard let escaped = try await reconstructionPseudo("escapedWide", in: fixture) else { continue }
-        #expect(!escaped.contains("return Indirect.Wide5"), "stale local printed as the result in \(fixture)")
+        let library = try #require(dlopen(fixture, RTLD_NOW | RTLD_LOCAL))
+        defer { dlclose(library) }
+        let address = try #require(dlsym(library, "$s8Indirect11escapedWideAA5Wide5VyF"))
+        let native = unsafeBitCast(address, to: (@convention(thin) () -> NativeWide5Result).self)()
+        let fields: [Int] = [native.a, native.b, native.c, native.d, native.e]
+        let expected: [Int] = [7, 0, 0, 0, 0]
+        #expect(fields == expected)
+        if fixture.hasSuffix(".opt.dylib") {
+            #expect(escaped.contains("return Indirect.Wide5(a: 7, b: 0, c: 0, d: 0, e: 0)"))
+        } else {
+            #expect(!escaped.contains("return Indirect.Wide5"), "stale local printed as the result in \(fixture)")
+        }
         #expect(!escaped.contains("return arg0"))
     }
 }

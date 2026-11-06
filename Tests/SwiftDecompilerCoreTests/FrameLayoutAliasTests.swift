@@ -37,11 +37,16 @@ private let frameLayoutAliasFixture = "Fixtures/Sample/libFrameLayoutAlias.dylib
         let kept = try #require(functions.first { $0.displayName.hasPrefix("FrameLayoutAlias.noEscape(") })
         for structured in [false, true] {
             let text = structured ? changed.renderStructured() : changed.renderPseudo()
-            #expect(text.contains("return ?"), Comment(rawValue: text))
+            #expect(text.contains("return 11"), Comment(rawValue: text))
             #expect(!text.contains("return 7"), Comment(rawValue: text))
             let control = structured ? kept.renderStructured() : kept.renderPseudo()
             #expect(control.contains("return 7"), Comment(rawValue: control))
         }
+        // With no callee body available, the raw-address fallback still
+        // declines. A later interior address must never make it return7.
+        let unproven = ValueTracer().analyze(changed)
+        let exit = try #require(changed.instructions.last?.address)
+        #expect((unproven.exitValues[exit] ?? .unknown) == .unknown)
     }
     for structured in [false, true] {
         func views(_ functions: [DisassembledFunction]) -> [String: String] {

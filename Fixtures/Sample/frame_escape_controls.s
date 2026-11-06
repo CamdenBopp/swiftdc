@@ -388,9 +388,9 @@ _$s11FrameEscape17stackPrefixNoArgsSiyF:
 _$s11FrameEscape4sinkyySiF:
   ret
 
-// Control: two locals addressed from x29. The lower one's address goes to
-// a call that writes 11 through it; the upper one's address is taken
-// separately, so it is a different variable and keeps 7. True result: 7.
+// Control: two words addressed from x29. The helper's complete body writes
+// exactly eight bytes through the lower address, leaving the upper word
+// untouched. A separately taken address alone proves no boundary. Result: 7.
 .globl _$s11FrameEscape10fpBoundarySiyF
 _$s11FrameEscape10fpBoundarySiyF:
   sub sp, sp, #48

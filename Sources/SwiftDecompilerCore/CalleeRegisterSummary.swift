@@ -16,6 +16,7 @@ struct CalleeEffect: Sendable, Equatable {
     /// writing it, other than to save it on its own stack. Whatever the
     /// caller's x29 points at, its frame, the callee can then write.
     var readsFramePointer = false
+    var memoryEffect: CalleeMemoryEffect = .unknown
 }
 
 /// What an in-image function's own body proves about the registers a call to
@@ -124,6 +125,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// (`closeOverFieldWrites`): an outlined fragment that tail-calls
     /// `swift_beginAccess`. False until proven.
     var writesNoFields = false
+    /// Complete, immutable-body memory proof; unknown is the default.
+    var memoryEffect: CalleeMemoryEffect = .unknown
 
     struct OutgoingCall: Sendable, Equatable {
         let target: UInt64?
@@ -136,7 +139,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// registers, as far as it carries beyond the direct callers.
     var effect: CalleeEffect {
         CalleeEffect(clobbers: definitelyClobbered.subtracting(restoredFrom.keys), restores: restoredFrom,
-                     readsFramePointer: readsFramePointer)
+                     readsFramePointer: readsFramePointer, memoryEffect: memoryEffect)
     }
 
     /// The integer arguments a call to this function can pass: through the
@@ -430,7 +433,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             restoredFrom: restoredFrom.filter { definitelyClobbered.contains($0.key) },
             callees: callees.sorted(),
             outgoingCalls: outgoingCalls,
-            storesOnlyToStack: storesOnlyToStack)
+            storesOnlyToStack: storesOnlyToStack,
+            memoryEffect: readFacts?.memoryEffect ?? CalleeMemoryEffect.discover(in: function))
     }
 
     /// Marks each body that writes no field of any object: it stores only
@@ -473,7 +477,29 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             mayWriteFloatResult: true, pendingReads: pendingReads,
             readsFramePointer: readsFramePointer,
             readsContextRegister: readsContextRegister, clobberedCalleeSaved: Self.calleeSavedKeys,
-            definitelyClobbered: Self.calleeSavedKeys, callees: callees)
+            definitelyClobbered: Self.calleeSavedKeys, callees: callees, memoryEffect: memoryEffect)
+    }
+
+    /// Initial read/preservation analyses precede the callee summaries. Once
+    /// every immutable body effect is available, repeat only its callers so
+    /// all three memory consumers see the same proof before reads are closed.
+    /// This pass carries memory alone; call-clobber closure remains separate.
+    static func refineMemory(
+        _ summaries: inout [UInt64: CalleeRegisterSummary],
+        recompute: (UInt64, (UInt64) -> CalleeEffect) -> CalleeRegisterSummary?
+    ) {
+        let effects = summaries.compactMapValues { summary -> CalleeEffect? in
+            guard case .literalStores = summary.memoryEffect else { return nil }
+            return CalleeEffect(memoryEffect: summary.memoryEffect)
+        }
+        guard !effects.isEmpty else { return }
+        let callers = summaries.keys.sorted().filter { start in
+            summaries[start]?.callees.contains { effects[$0] != nil } == true
+        }
+        for start in callers {
+            summaries[start] = recompute(start, { effects[$0] ?? CalleeEffect() })
+                ?? summaries[start]?.claimingNothing()
+        }
     }
 
     /// Carries argument reads through calls to in-image functions: each
@@ -547,7 +573,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             readsContextRegister: readsContextRegister, readsSelfRegister: readsSelfRegister,
             clobberedCalleeSaved: clobberedCalleeSaved,
             definitelyClobbered: definitelyClobbered, restoredFrom: restoredFrom, callees: callees,
-            outgoingCalls: outgoingCalls, storesOnlyToStack: storesOnlyToStack)
+            outgoingCalls: outgoingCalls, storesOnlyToStack: storesOnlyToStack, memoryEffect: memoryEffect)
     }
 
     /// Whether an instruction uses a callee-saved register (`key`, x29 or
@@ -653,7 +679,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 restoredFrom: rebuilt.restoredFrom,
                 callees: old.callees,
                 outgoingCalls: old.outgoingCalls,
-                storesOnlyToStack: old.storesOnlyToStack)
+                storesOnlyToStack: old.storesOnlyToStack, memoryEffect: old.memoryEffect)
             guard new != old else { continue }
             summaries[start] = new
             guard new.effect != old.effect else { continue }
@@ -973,11 +999,16 @@ enum Preservation {
     /// What a call does to the state: `effect` is the callee's, and
     /// `callInputs` the registers it can take an input in (nil when it may
     /// take any).
+    @discardableResult
     static func applyCall(
         _ effect: CalleeEffect, inputs callInputs: Set<String>?, to state: inout State, clobbersMayAliasStack: Bool
-    ) {
+    ) -> CalleeMemoryEffect.FramePlan? {
         // The callee reads its reloads before it can write anything.
         let reloaded = state.reloaded(effect)
+        let memory = effect.memoryEffect.framePlan { register in
+            if case .stack(let offset) = state.value(register.key) { return offset }
+            return nil
+        }
         // A callee may mutate any save whose address it can
         // reach. sp/x29 alone are ordinary frame bookkeeping;
         // any other frame alias can be an outgoing argument,
@@ -999,12 +1030,18 @@ enum Preservation {
             state.stackAddressEscaped = true
         }
         state.markEscape(inputs)
-        state.invalidateSlotsForUnknownWrite(throughStackAlias: false)
+        if let memory {
+            state.markEscape(memory.inputs.map(\.key))
+            for store in memory.stores { state.invalidateSlots(at: store.start, bytes: Int(store.bytes)) }
+        } else {
+            state.invalidateSlotsForUnknownWrite(throughStackAlias: false)
+        }
         // The callee keeps the ABI: x19–x29, sp and the low 64 bits of v8–v15 survive it.
         for index in 0...18 { state.setRegister("x\(index)", to: .unknown) }
         state.setRegister("x30", to: .unknown)
         for index in Array(0...7) + Array(16...31) { state.setRegister("v\(index)", to: .unknown) }
         state.apply(effect, reloaded: reloaded, clobbersMayAliasStack: clobbersMayAliasStack)
+        return memory
     }
 
     /// The registers an unknown ABI-conforming callee may consume: general
@@ -1359,8 +1396,12 @@ extension Preservation {
                     if isTailBranch { continue }
                     let effect = callEffect(insn)
                     let spBefore = state.frame.value("sp")
-                    applyCall(effect, inputs: callInputs(insn), to: &state.frame, clobbersMayAliasStack: true)
-                    if state.escapeReachesSlot { flow.reads = true }
+                    let memory = applyCall(effect, inputs: callInputs(insn), to: &state.frame, clobbersMayAliasStack: true)
+                    if let memory {
+                        // Literal stores read no old memory. A whole word
+                        // replaces self there; partial writes retain MAY bits.
+                        for store in memory.stores where store.bytes == 8 { state.slots.remove(store.start) }
+                    } else if state.escapeReachesSlot { flow.reads = true }
                     for index in 0...18 { state.registers.remove("x\(index)") }
                     state.registers.remove("x30")
                     // A register the callee reloads from this frame holds

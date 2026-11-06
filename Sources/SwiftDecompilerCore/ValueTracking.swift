@@ -596,6 +596,7 @@ public struct ValueTracer: Sendable {
     /// saving (`CalleeRegisterSummary`): an outlined fragment reached by `bl`
     /// does not preserve them, so they are forgotten after a call to it.
     var calleeClobbers: [UInt64: Set<String>] = [:]
+    var calleeMemoryEffects: [UInt64: CalleeMemoryEffect] = [:]
     /// Site address → the outlined fragment's instructions that run before
     /// the site's own (`Disassembler.inliningOutlinedFragments`), each at the
     /// site's address. The site is what the fragment does there: its call,
@@ -1642,6 +1643,10 @@ public struct ValueTracer: Sendable {
             // ordinary call: a `memset(&a, 0, 8)` whose body writes nothing
             // rendered the `a` loaded after it as 0.
             let call = facts.call(insn)
+            let memory = insn.branchTarget.flatMap { calleeMemoryEffects[$0] }?.framePlan { register in
+                if case .frame(let offset)? = beforeCall[Location(register)] { return offset }
+                return nil
+            }
             // `___chkstk_darwin` probes the pages of a dynamic allocation of
             // x9 bytes. Its body (libsystem_pthread) saves and restores x10
             // and x11 and writes only x9 and the flags, so the size in x8
@@ -1664,7 +1669,7 @@ public struct ValueTracer: Sendable {
                 registers[Self.flagsWidthKey] = nil
                 return
             }
-            let handledAsMemoryHelper = call.knownArityApplies
+            let handledAsMemoryHelper = memory == nil && call.knownArityApplies
                 && applyMemoryHelper(callee: call.callee, site: site, into: &registers)
             // A local whose address the call receives may be written by it: an
             // NSError out-parameter (`str xzr, [sp]; mov x3, sp; bl …error:`),
@@ -1682,7 +1687,7 @@ public struct ValueTracer: Sendable {
             // words, or the witness-table call through them goes unresolved
             // (guarded by `resolvesConcreteWitnessTableDispatchIfPresent`).
             // Neither it nor an exactly modelled memory helper keeps a pointer.
-            if !(call.readsOnly || handledAsMemoryHelper) {
+            if memory != nil || !(call.readsOnly || handledAsMemoryHelper) {
                 // A runtime entry point with a fixed C arity receives only its
                 // parameters; anything else may also be an input.
                 for (_, value) in registers.registerFacts.selected(call.passedRegisters) {
@@ -1712,7 +1717,21 @@ public struct ValueTracer: Sendable {
                         Self.markEscape(value, into: &registers)
                     }
                 }
-                Self.forgetEscapedFrame(in: &registers, evidence: facts.frame.escapeEvidence)
+                if let memory {
+                    for input in memory.inputs {
+                        if let value = beforeCall[Location(input)] { Self.markEscape(value, into: &registers) }
+                    }
+                    // These stores have no memory inputs; apply their proved
+                    // literals in body order using the ordinary frame owner.
+                    for store in memory.stores {
+                        Self.storeStack(.immediate(store.value), at: store.start, bytes: Int(store.bytes),
+                            outgoing: false, from: store.source,
+                            writeEffect: FrameMemoryEffect(.finite(lower: store.start, upper: store.start + store.bytes),
+                                arithmetic: .wrapping), into: &registers)
+                    }
+                } else {
+                    Self.forgetEscapedFrame(in: &registers, evidence: facts.frame.escapeEvidence)
+                }
                 // An escaped context pointer may be written through by any
                 // call, from its offset up.
                 let contextReach = registers.keys.compactMap { key -> Int64? in
@@ -4920,11 +4939,14 @@ public struct ValueTracer: Sendable {
         bytes: Int,
         outgoing: Bool,
         from register: PhysReg? = nil,
+        writeEffect: FrameMemoryEffect? = nil,
         into registers: inout State
     ) {
         // A byte/halfword store can overwrite part of an older tracked word.
         // Forget intersecting snapshots rather than retaining their old bits.
-        let effect = FrameMemoryEffect.legacyTracerExactWrite(start: offset, bytes: Int64(bytes))
+        // Known callee writes retain call-time wrapping fact endpoints.
+        // Local stores keep their existing deferred, trapping exact policy.
+        let effect = writeEffect ?? FrameMemoryEffect.legacyTracerExactWrite(start: offset, bytes: Int64(bytes))
         registers.frame.forget(effect, removing: [.value, .width, .outgoing])
         // Which register file wrote the word: a reload into the other one
         // reinterprets its bits. A store with no register (a modelled copy)
