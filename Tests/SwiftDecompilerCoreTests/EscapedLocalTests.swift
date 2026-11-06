@@ -12,10 +12,10 @@ import Foundation
 ///   original: `Stack.count.getter(Stack.init())` after pushes,
 ///   `String.append("Optional")` for a string extended to `"Optional {"`.
 ///
-/// The extent the callee may write is unknown, so it runs to the next local
-/// whose address the function takes separately. What it cannot reach must
-/// survive: an unrelated address-taken local, incoming stack arguments, and
-/// an existential container's words past the payload a projection receives.
+/// A second address calculation does not prove a separate object's extent:
+/// the two addresses can name words of one local. Without stronger layout or
+/// callee-write evidence both words may be changed. Proven incoming-stack
+/// ownership and read-only projection effects still retain their facts.
 
 private func traced(_ words: [UInt32]) -> [UInt64: CallSite]? {
     guard let engine = CapstoneEngine() else { return nil }
@@ -29,13 +29,13 @@ private func traced(_ words: [UInt32]) -> [UInt64: CallSite]? {
     return ValueTracer().callSites(in: function)
 }
 
-@Test func anEscapedLocalIsForgottenButASeparateLocalSurvives() throws {
+@Test func anAddressCalculationDoesNotProveTheNextLocalIsSeparate() throws {
     //   sub sp, sp, #0x30
     //   mov x8, #7;  str x8, [sp, #0x20]    B = 7
     //   mov x10, #5; str x10, [sp, #0x10]   A = 5
-    //   add x9, sp, #0x20                   &B: B is its own variable
+    //   add x9, sp, #0x20                   an address, not proof B is separate
     //   add x0, sp, #0x10; bl f             f may write A through &A
-    //   ldr x2, [sp, #0x20]                 B, still 7
+    //   ldr x2, [sp, #0x20]                 B, possibly changed too
     //   ldr x3, [sp, #0x10]                 A, no longer known to be 5
     //   bl g
     let sites = try #require(traced([
@@ -43,13 +43,13 @@ private func traced(_ words: [UInt32]) -> [UInt64: CallSite]? {
         0x94000006, 0xf94013e2, 0xf9400be3, 0x94000003, 0x9100c3ff, 0xd65f03c0, 0xd65f03c0,
     ]))
     let second = try #require(sites[0x28])
-    #expect(second.arguments.count > 2 && second.arguments[2] == .immediate(7), "\(second.arguments)")
+    #expect(second.arguments.count < 3 || second.arguments[2] == .unknown, "\(second.arguments)")
     #expect(second.arguments.count < 4 || second.arguments[3] == .unknown, "\(second.arguments)")
 }
 
 @Test func withoutASeparateAddressTheEscapeRunsToTheFrameTop() throws {
-    // The same, minus `add x9, sp, #0x20`: nothing says B is not part of A,
-    // so f may have written it.
+    // Removing the extra address calculation leaves the same uncertainty
+    // about whether the write reaches B.
     let sites = try #require(traced([
         0xd100c3ff, 0xd28000e8, 0xf90013e8, 0x910043e0, 0x94000006,
         0xf94013e2, 0xf9400be3, 0x94000003, 0x9100c3ff, 0xd65f03c0, 0xd65f03c0,

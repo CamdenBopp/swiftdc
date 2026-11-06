@@ -305,14 +305,6 @@ public indirect enum AbstractValue: Equatable, Sendable {
     case awaitResult(Int)
 }
 
-/// The frame facts a function's own instructions fix: offsets that start a
-/// separately addressed local or a register save (escaped regions end at the
-/// next one), and the save slots themselves.
-struct FrameLayout: Sendable {
-    var boundaries: [Int64] = []
-    var saveSlots: Set<Int64> = []
-}
-
 /// What is known about how a callee delivers its result, keyed by call site.
 /// Decides what a call does to the caller's frame when x8 points into it, and
 /// whether a call that forwards the caller's own x8 fills the caller's result.
@@ -1418,10 +1410,10 @@ public struct ValueTracer: Sendable {
         return result
     }
 
-    /// The frame offsets of every local whose address the function computes
+    /// The frame offsets of addresses the function computes
     /// (`add xN, sp|x29, #k`, `sub xN, x29, #k`, `mov xN, sp`), sorted. Each is
-    /// a distinct variable, so it bounds how far a write through an earlier
-    /// escaped address can reach. A linear scan, tracking sp and x29 through
+    /// an observed coordinate, not necessarily a distinct variable or an
+    /// object boundary. A linear scan, tracking sp and x29 through
     /// the prologue the way the tracer does; a base it misses only widens the
     /// invalidation, the safe direction.
     ///
@@ -1431,10 +1423,10 @@ public struct ValueTracer: Sendable {
     /// context pointer, there; reaching it from an escaped local escaped the
     /// context.
     static func addressTakenFrameOffsets(_ instructions: [Instruction]) -> [Int64] {
-        frameLayout(instructions).boundaries
+        frameLayout(instructions).addressTakenOffsets
     }
 
-    /// Region boundaries (`addressTakenFrameOffsets`) and the prologue's
+    /// Address coordinates (`addressTakenFrameOffsets`) and the prologue's
     /// register save slots, which also cannot be outgoing stack arguments: a
     /// frame's save area is never its outgoing area.
     static func frameLayout(_ instructions: [Instruction]) -> FrameLayout {
@@ -1544,7 +1536,7 @@ public struct ValueTracer: Sendable {
                 if writesFP { fp = nil }
             }
         }
-        return FrameLayout(boundaries: offsets.sorted(), saveSlots: saveSlots)
+        return FrameLayout(addressTakenOffsets: offsets.sorted(), saveSlots: saveSlots)
     }
 
     /// Whether `text` contains `sp` or `x29` anywhere: the cheap filter in
@@ -1720,7 +1712,7 @@ public struct ValueTracer: Sendable {
                         Self.markEscape(value, into: &registers)
                     }
                 }
-                Self.forgetEscapedFrame(in: &registers, addressTaken: facts.frame.boundaries)
+                Self.forgetEscapedFrame(in: &registers, evidence: facts.frame.escapeEvidence)
                 // An escaped context pointer may be written through by any
                 // call, from its offset up.
                 let contextReach = registers.keys.compactMap { key -> Int64? in
@@ -5291,8 +5283,7 @@ public struct ValueTracer: Sendable {
     /// through a pointer of unknown origin, may rewrite what it reaches.
     ///
     /// - `.frameEscaped(k)`: an address at offset k, reaching up to the next
-    ///   local whose address the function takes separately
-    ///   (`addressTakenFrameOffsets`) or the frame top; from an incoming
+    ///   prologue register-save slot or the frame top; from an incoming
     ///   stack argument (k >= 0), upward without bound.
     /// - `.frameBelow(k)`: an address inside a dynamic allocation below k
     ///   (`.frameDynamic(k)`), which reaches nothing at or above k.
@@ -5396,21 +5387,20 @@ public struct ValueTracer: Sendable {
     /// Forget every frame fact an escaped address can reach. A forgotten slot
     /// that held a frame address still holds it in memory, so that address
     /// escapes too, until nothing new escapes.
-    private static func forgetEscapedFrame(in registers: inout State, addressTaken: [Int64]) {
+    private static func forgetEscapedFrame(in registers: inout State, evidence: TraceLayoutEvidence) {
         var seen = -1
         while true {
             let markers = registers.keys.filter(isEscapeMarker).count
             guard markers != seen else { return }
             seen = markers
-            guard let reach = escapedReach(registers, addressTaken: addressTaken) else { return }
+            guard let reach = escapedReach(registers, evidence: evidence) else { return }
             forgetFrame(in: &registers, effect: reach)
         }
     }
 
     /// The write footprint of the durable escape markers; nil when no
-    /// frame address has escaped. Boundary discovery stays with this tracer.
-    private static func escapedReach(_ registers: State, addressTaken: [Int64]) -> FrameMemoryEffect? {
-        let evidence = TraceLayoutEvidence(sortedAddressTaken: addressTaken)
+    /// frame address has escaped. Only register-save evidence bounds it.
+    private static func escapedReach(_ registers: State, evidence: TraceLayoutEvidence) -> FrameMemoryEffect? {
         let effect = registers.reach.effect(using: evidence, arithmetic: .wrapping)
         // Dynamic-only/allocation evidence does not escape any frame region.
         return effect.isEmpty ? nil : effect
@@ -5477,7 +5467,7 @@ public struct ValueTracer: Sendable {
         var tracked = false
         if modelledSlot, case .stackSlot(let key)? = target, let start = Self.stackOffset(from: key) {
             let bytes = Int64(Self.accessBytes(detail) ?? 8)
-            tracked = !(Self.escapedReach(registers, addressTaken: frame.boundaries)?.mayInvalidate(
+            tracked = !(Self.escapedReach(registers, evidence: frame.escapeEvidence)?.mayInvalidate(
                 FrameMemoryExtent(start: start, bytes: bytes)) ?? false)
         }
         // A context pointer stored into a context slot by a full-width store
@@ -5521,7 +5511,7 @@ public struct ValueTracer: Sendable {
                     Self.forgetFrame(in: &registers, effect: FrameMemoryEffect(arithmetic: .wrapping, everything: true))
                 }
             } else if !(Self.predatesFrame(base) && !indexed) {
-                Self.forgetEscapedFrame(in: &registers, addressTaken: frame.boundaries)
+                Self.forgetEscapedFrame(in: &registers, evidence: frame.escapeEvidence)
             }
         }
         return (false, false)

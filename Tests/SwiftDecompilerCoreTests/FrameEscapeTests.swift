@@ -29,8 +29,11 @@ private let frameEscapeCases: [(member: String, rendered: String)] = [
     ("arityBound", "return 7"),
     ("outgoingGap", "return 7"),
     ("stackPrefixNoArgs", "return 7"),
-    ("fpBoundary", "return 7"),
-    ("fpAboveBoundary", "return 7"),
+    // These two locals are independent in the source, but the address
+    // calculations alone do not prove their extents. Native 7 remains the
+    // oracle; recovering it needs a proven callee write extent or layout.
+    ("fpBoundary", "return ?"),
+    ("fpAboveBoundary", "return ?"),
 ]
 
 @Test func frameEscapeReductionsRunAsDocumentedIfPresent() throws {

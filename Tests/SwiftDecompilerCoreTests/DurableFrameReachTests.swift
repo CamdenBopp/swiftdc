@@ -22,7 +22,7 @@ struct DurableFrameReachTests {
     @Test func preparedCarrierQueriesKeepPoliciesAndRawTermsDistinct() {
         var dynamicOnly = TraceFrameReach()
         dynamicOnly[.dynamic(-32)] = .unknown
-        let evidence = TraceLayoutEvidence(sortedAddressTaken: [-24, -8])
+        let evidence = TraceLayoutEvidence(prologueSaveSlots: [-24, -8])
         #expect(dynamicOnly.logicalCount == 1)
         #expect(dynamicOnly.effect(using: evidence, arithmetic: .wrapping).isEmpty)
         var trace = TraceFrameReach()

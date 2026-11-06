@@ -212,6 +212,9 @@ $CLANG -arch arm64 -dynamiclib frame_fact_store.s -o libFrameFactStore.dylib
 echo "==> register-frame facts: copies, pair offsets and pre/post writeback (frame_register_model.s)"
 $CLANG -arch arm64 -dynamiclib frame_register_model.s -o libFrameRegisterModel.dylib
 
+echo "==> frame layout aliases: an interior address does not bound an escaped write (frame_layout_alias.s)"
+$CLANG -arch arm64 -dynamiclib frame_layout_alias.s -o libFrameLayoutAlias.dylib
+
 echo "==> objc_retain_xN stubs (retainregister.swift, -O, arm64 iOS simulator)"
 $SWIFTC -O -emit-library -module-name RetainRegister -target arm64-apple-ios17.0-simulator \
     -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" retainregister.swift -o libRetainRegister.sim.dylib

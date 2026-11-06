@@ -64,12 +64,23 @@ struct SharedFrameMemoryEffectTests {
         }
     }
 
-    private static func trace(factOffset: Int, escapeOffsets: [Int], storeAfterFirst: Bool = false) throws -> AbstractValue {
-        // Every offset is in the fixed64-byte frame. Address-taking after
-        // the calls gives layout boundaries without passing a second alias.
+    private static func trace(
+        factOffset: Int, escapeOffsets: [Int], storeAfterFirst: Bool = false,
+        storeSelf: Bool = false, saveBarriers: [Int] = []
+    ) throws -> AbstractValue {
+        // Every offset is in the fixed64-byte frame. The later address
+        // calculation is an observation, not an object boundary. Separate
+        // register saves can bound the local's extent.
         var words: [UInt32] = [0xd10103ff] // sub sp,sp,#64
+        for offset in saveBarriers {
+            words.append(0xf90003f3 | (UInt32(offset / 8) << 10)) // str x19,[sp,#offset]
+        }
         func storeSeven() {
-            words += [0xd28000e9, 0xf90003e9 | (UInt32(factOffset / 8) << 10)]
+            if storeSelf {
+                words.append(0xf90003f4 | (UInt32(factOffset / 8) << 10)) // save entry x20
+            } else {
+                words += [0xd28000e9, 0xf90003e9 | (UInt32(factOffset / 8) << 10)]
+            }
         }
         if !storeAfterFirst { storeSeven() }
         for (index, offset) in escapeOffsets.enumerated() {
@@ -83,11 +94,17 @@ struct SharedFrameMemoryEffectTests {
             words += [0xaa1f03e0]
             words.append(0x94000000 | UInt32((0x3000 - (0x1000 + 4 * words.count)) / 4))
         }
-        words += [0x910003eb | (UInt32(factOffset) << 10), 0xf9400160, 0x910103ff, 0xd65f03c0]
+        words += [0x910003eb | (UInt32(factOffset) << 10), 0xf9400160]
+        for offset in saveBarriers {
+            words.append(0xf94003f3 | (UInt32(offset / 8) << 10)) // ldr x19,[sp,#offset]
+        }
+        if storeSelf { words.append(0xf94003f4 | (UInt32(factOffset / 8) << 10)) }
+        words += [0x910103ff, 0xd65f03c0]
         let body = try decoded(words)
         let function = DisassembledFunction(symbol: "_frame_effect", demangledName: nil, startAddress: 0x1000,
                                             instructions: body, source: .address)
-        let analysis = ValueTracer().analyze(function, entry: nil)
+        let entry: MethodEntryConvention? = storeSelf ? .swiftInstance(scalarArguments: [:]) : nil
+        let analysis = ValueTracer().analyze(function, entry: entry)
         return analysis.exitValues[try #require(body.last?.address)] ?? .unknown
     }
 
@@ -105,10 +122,12 @@ struct SharedFrameMemoryEffectTests {
     // Each strict-boundary kernel mutation must fail this real tracer test
     // AND preservationUsesSharedHalfOpenEscapeEffects below.
     @Test func tracerUsesSharedHalfOpenEscapeEffects() throws {
-        #expect(try Self.trace(factOffset: 16, escapeOffsets: [8]) == .immediate(7))
+        #expect(try Self.trace(factOffset: 16, escapeOffsets: [8]) == .unknown)
+        #expect(try Self.trace(factOffset: 16, escapeOffsets: [8], storeSelf: true) == .selfPointer)
         #expect(try Self.trace(factOffset: 8, escapeOffsets: [16]) == .immediate(7))
         #expect(try Self.trace(factOffset: 16, escapeOffsets: [16]) == .unknown)
-        #expect(try Self.trace(factOffset: 24, escapeOffsets: [8, 40]) == .immediate(7))
+        #expect(try Self.trace(factOffset: 24, escapeOffsets: [8, 40]) == .unknown)
+        #expect(try Self.trace(factOffset: 24, escapeOffsets: [8, 40], saveBarriers: [16, 48]) == .immediate(7))
         #expect(try Self.trace(factOffset: 16, escapeOffsets: [16], storeAfterFirst: true) == .unknown)
     }
 

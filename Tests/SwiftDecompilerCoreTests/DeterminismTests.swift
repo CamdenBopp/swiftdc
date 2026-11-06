@@ -44,6 +44,10 @@ private let cases: [(label: String, arguments: [String])] = [
     ("disasm --pseudo register facts", ["disasm", "Fixtures/Sample/libFrameRegisterModel.dylib", "--pseudo"]),
     ("disasm listing register facts", ["disasm", "Fixtures/Sample/libFrameRegisterModel.dylib"]),
     ("disasm --json register facts", ["disasm", "Fixtures/Sample/libFrameRegisterModel.dylib", "--json"]),
+    ("disasm --structured frame layout aliases", ["disasm", "Fixtures/Sample/libFrameLayoutAlias.dylib", "--structured"]),
+    ("disasm --pseudo frame layout aliases", ["disasm", "Fixtures/Sample/libFrameLayoutAlias.dylib", "--pseudo"]),
+    ("disasm listing frame layout aliases", ["disasm", "Fixtures/Sample/libFrameLayoutAlias.dylib"]),
+    ("disasm --json frame layout aliases", ["disasm", "Fixtures/Sample/libFrameLayoutAlias.dylib", "--json"]),
 ]
 
 private func capture(_ arguments: [String]) throws -> Data {

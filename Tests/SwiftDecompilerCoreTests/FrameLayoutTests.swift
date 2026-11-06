@@ -28,7 +28,8 @@ private func instructions(_ words: [UInt32]) throws -> [Instruction] {
         0xd65f03c0,  // ret
     ]))
     // The x29/x30 save slots, -16 and -8, bound regions too.
-    #expect(layout.boundaries == [-4128, -48, -16, -8], "\(layout.boundaries)")
+    #expect(layout.addressTakenOffsets == [-4128, -48, -16, -8], "\(layout.addressTakenOffsets)")
+    #expect(layout.escapeEvidence.upperBound(after: -4128) == -16)
 }
 
 /// Once the scan cannot follow sp or x29 it claims nothing more through
@@ -41,7 +42,7 @@ private func instructions(_ words: [UInt32]) throws -> [Instruction] {
     let prologue: [UInt32] = [0xa9bf7bfd, 0x910003fd]  // stp x29, x30, [sp, #-16]!; mov x29, sp
     let ret: UInt32 = 0xd65f03c0
     func boundaries(_ body: [UInt32]) throws -> [Int64] {
-        ValueTracer.frameLayout(try instructions(prologue + body + [ret])).boundaries
+        ValueTracer.frameLayout(try instructions(prologue + body + [ret])).addressTakenOffsets
     }
     // sub sp, sp, #0x20; sub sp, sp, x9; add x0, sp, #0x10; sub x3, x29, #0x8
     #expect(try boundaries([0xd10083ff, 0xcb2963ff, 0x910043e0, 0xd10023a3]) == [-24, -16, -8])

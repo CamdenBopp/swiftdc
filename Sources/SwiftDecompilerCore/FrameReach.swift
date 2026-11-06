@@ -26,10 +26,16 @@ enum FrameReachProjection {
     case whole
 }
 
-/// This is the function's actual immutable address-taken/prologue evidence,
-/// never a guessed saved-slot layout or a layout retained in each state.
-struct TraceLayoutEvidence {
-    let sortedAddressTaken: [Int64]
+/// Only the function's register-save area may bound a tracer escape. A
+/// separately calculated address is not evidence of a separate object.
+struct TraceLayoutEvidence: Sendable {
+    private let sortedSaveStarts: [Int64]
+    init(prologueSaveSlots: Set<Int64>) {
+        sortedSaveStarts = prologueSaveSlots.sorted()
+    }
+    func upperBound(after offset: Int64) -> Int64? {
+        sortedSaveStarts.first { $0 > offset }
+    }
 }
 struct NoFrameQueryEvidence {}
 
@@ -84,7 +90,7 @@ struct TraceReachStorage: FrameReachStorage {
     func project(_ key: Key, using evidence: QueryEvidence) -> FrameReachProjection {
         switch key {
         case .point(let start):
-            let bound = start >= 0 ? Int64.max : (evidence.sortedAddressTaken.first { $0 > start } ?? 0)
+            let bound = start >= 0 ? Int64.max : (evidence.upperBound(after: start) ?? 0)
             return .finite(start, bound)
         case .below(let bound): return .finite(Int64.min, bound)
         case .all: return .whole
