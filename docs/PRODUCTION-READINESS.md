@@ -9750,3 +9750,91 @@ Commit messages on dev stay as they are; these are the true records.
   projection overhead still require measurement. The sampled meet result growth
   and Selected lifetime paths do not establish allocation volume or retained
   heap, and the standalone budget result does not establish a speed benefit.
+
+## 2026-11-05: separate frame address observations from escape bounds
+
+- **FIXED (soundness, `20c530f`) — an interior address hid a call's write.**
+  `FrameLayoutAlias.forwardAlias` stores 7 in the second word of a local,
+  passes its first word's address to a helper that writes 11 to the second,
+  then calculates the second word's address. The global layout scan treated
+  that later calculation as another object's boundary. Both old views printed
+  `return 7`; native execution returns 11. The fixed views print `return ?`.
+
+  Immutable `FrameLayout` separates observed address coordinates, prologue
+  save slots and precomputed escape evidence. Calculated addresses remain
+  observations and no longer bound writes. The tracer's calls, unknown stores
+  and transitive pointer loss query the same register-save evidence. Existing
+  frame-top, caller-ownership, dynamic-allocation and arithmetic policies remain;
+  this does not establish a complete object layout or space-alias proof.
+
+  A linear scan past early epilogues could also produce positive coordinates
+  that extended a private escape above entry sp. Five Go runtime functions
+  recover entry-register spills above that boundary. The fixture and installed
+  source both identify Go 1.27.3; source, machine spills/reloads and six paired
+  diagnostic cases (12 runs) confirm the recovered operands. No value-tracer
+  cap changed.
+
+- **REVIEWED — every changed corpus, app and SDK line.** All **338 inputs**
+  render in four views; the same six inputs change in each: Go's named/stripped
+  twins, `libFrameEscapeControls.dylib`, `libFrameLayoutAlias.dylib`, and the
+  named/stripped IfConfig libraries. These contain **17 changed function
+  instances**. The new reduction loses its incorrect constant; two old frame
+  controls lose valid constants; IfConfig loses vector, pointer and refcount
+  facts; Go gains the five spill recoveries and loses one indirect closure
+  target per twin. All **333 supported JSON inputs** retain **43,456 functions /
+  881,414 instructions**. The five previous unsupported inputs retain their
+  exact diagnostics/statuses. Machine addresses, text and control-flow kinds
+  match; the two Go closure-target facts are conservatively removed.
+
+  Three app pseudo outputs are exact. Clarc changes **four functions / five
+  metadata sites**, GoodLinks **nine functions / 23 sites**: constants, call
+  arguments, witness targets and result-buffer identity become unknown or raw
+  registers. Syntax structured output changes 16 functions: 15 call-result
+  bindings disappear and one assertion loses outgoing line/flag constants.
+  Parser changes five functions: four `tbnz x20, #63` instructions lose stale
+  `0 < 0` annotations and render their bit tests; one visitor loses two receiver
+  identities and a hidden release argument. Both large SDK xrefs outputs are
+  exact. **72 filtered captures** recheck all **36 affected app/SDK/IfConfig
+  functions**, preserving every machine instruction with no value-tracer caps.
+  Private captures and reports stay outside the public repository.
+
+- **MEASURED — default budgets pass without override.** All **1,356 pairs**
+  have positive counters. Standalone frozen **`adc6ae8e`** against published
+  **`4aa810c1`** retires **5,147,661,778,352 → 5,032,522,407,766 instructions
+  (-2.2367%)**; summed peak footprints are **18,112,918,264 → 17,955,525,160
+  bytes (-0.8690%)**. The outputs change, so these numbers do not establish a
+  general speed, allocation-volume or retained-heap improvement. The official
+  gate validates a separately rebuilt binary with its own result scope.
+
+- **VERIFIED — native oracle, mutations and complete CLI paths.** Two new
+  tests execute the reduction/control natively (11/7) and compare array,
+  filtered and streaming views. NM and LC_FUNCTION_STARTS independently agree
+  on **three functions**; LLVM decodes **80 text bytes / 20 words**. Restoring
+  raw-address bounds fails **13 assertions**, including the corrected old
+  separate-local control; dropping save bounds fails **two** actual tracer
+  assertions. Both variants compile. Restored **27 tests / two suites** and
+  enforcing **1,417 tests / 35 suites** pass.
+
+  Nine CLI pairs keep dump, layout, interface, objc and xrefs exact. JSON, CFG,
+  filtered pseudo and analyze change only the reduction's stale return to
+  unknown; the no-escape control keeps 7. Positive controls retain **28 layouts /
+  46 ObjC methods**. Four new permanent ordering cases cover the native fixture;
+  **24 fresh debug/release processes** reproduce its four cached views. Fresh
+  **58,515 integer / 12,644 condition / 448 targeted-word exports** exactly match
+  prior solver-backed outputs, retaining their verified, sampled and declined
+  statuses without rerunning the solver. The qualified fixture cache inherits
+  **345 unchanged Mach-O products** and adds this reduction (**346 total**);
+  this was an incremental qualification, not another full regeneration.
+
+  Reproduce: `Tools/fixtures.sh`; `swift build --build-tests -j 2`;
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`;
+  `swiftdc disasm Fixtures/Sample/libFrameLayoutAlias.dylib --structured`;
+  `Tools/blast-radius.sh <144a550-release> <new-release> <out> --real --perf`.
+
+- **OPEN — proven extents and callee memory footprints.** `fpBoundary` and
+  `fpAboveBoundary` still return native 7 but now decline because separate
+  address calculations do not prove independent objects. Recovering these and
+  the reviewed app/SDK losses needs actual object extents or callee write
+  effects. Full structured layout discovery, object/space provenance,
+  SelfState's MAY self-slot representation and value identity remain open.
+  The prologue-save and frontend ownership assumptions are not newly proven.

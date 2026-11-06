@@ -81,14 +81,15 @@ consumed by every analysis and renderer.
   UInt8) }`. Replaces string keys in `ValueTracer.State` and in every other
   analysis.
 - **One frame memory model.** Extracted from `Preservation` and extended:
-  per-variable regions from address-taking (`addressTakenFrameOffsets`, moved
-  off text onto `StructuredInsn`), MAY escape per region with a whole-frame
-  fallback for frame aliases of unknown offset, escape that persists across
-  later calls, invalidation of escaped regions at calls and at stores through
-  pointers not proven to point elsewhere, caller-owned ranges, and call effects
-  from body-proven callee summaries (which registers an outlined fragment reads
-  as inputs, which it writes). Every analysis that reads or writes frame facts
-  asks this model.
+  object regions from proven layout and structured uses of addresses, rather
+  than reparsed text. Two calculated addresses can name words of one object;
+  address-taking observations alone do not establish its extent. MAY escape
+  persists per region, with a whole-frame fallback for unknown provenance.
+  Calls and stores through pointers not proven to point elsewhere invalidate
+  escaped regions. The model also owns caller-owned ranges and body-proven
+  callee effects: which registers an outlined fragment reads as inputs, which
+  it writes, and which memory ranges it can write. Every analysis that reads
+  or writes frame facts asks this model.
 - **Value identity.** Values are named by definition: entry values, the result
   of instruction *A* in location *L*, a call's result in each result register
   (x0–x3, v0–v3, x21 for swifterror, x20 at an async return), and edge-indexed
@@ -342,6 +343,38 @@ fix, measured and explained like any other.
    expose owner meet/selection and resize/move paths; they establish no speed,
    allocation-volume or retained-heap benefit. PRODUCTION-READINESS.md records
    the exact validation and sampling scope.
+
+   *Layout observations are separated from escape bounds in `20c530f`.*
+   Immutable `FrameLayout` now carries observed address coordinates, prologue
+   save slots and precomputed escape evidence separately. Only the existing
+   register-save policy supplies those bounds; calculating an interior address
+   no longer proves a different object starts there. Calls, unknown stores and
+   transitive loss use the same evidence. The old linear scan could also place
+   observations above entry sp after an earlier epilogue, erasing caller-area
+   spills. Removing those bounds recovers five Go functions' argument facts;
+   matching Go source, machine spills/reloads and paired probes confirm them.
+
+   An authored two-word local exposes the unsafe boundary: native execution
+   returns 11, while both old views claimed 7. The fixed views decline. Its
+   no-escape control retains native/rendered 7; NM and LC_FUNCTION_STARTS agree
+   on three functions and LLVM checks all 20 words. Two compiled variants fail
+   15 assertions; restored 27 focused tests and enforcing 1,417/35 pass.
+   Twenty-four fresh debug/release fixture captures and fresh semantic exports
+   match their references; prior solver statuses are reused without rerunning
+   the solver. Seventy-two filtered captures recheck 36 changed app/SDK/IfConfig
+   functions without changing their machine instructions.
+
+   Six of 338 inputs change in each of four views. The standalone `adc6ae8e`
+   release against published `4aa810c1` passes all 1,356 default cost pairs:
+   -2.2367% retired instructions / -0.8690% summed peak footprints. These
+   measurements include changed outputs and establish no general speed or heap
+   benefit. PRODUCTION-READINESS.md records the reviewed changes and losses;
+   the integration gate validates its rebuilt binary separately.
+
+   Two existing controls with native 7 now decline. Recovering them needs a
+   proven object extent or callee write footprint. Structured layout discovery,
+   complete object/space provenance, SelfState's MAY self slots and value
+   identity remain OPEN; the existing save and ownership policies are retained.
 
 5. **Value identity and edge refinement.** Recovers declined exits such as the
    -Onone `try` shape and gives conditions and loop variables stable names.
