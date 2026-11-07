@@ -17,6 +17,21 @@ done
 echo "==> storage shape is not an operator parameter ABI (resilient_operator.swift, all levels)"
 python3 build-resilient-operator.py
 
+
+
+echo "==> uniqueness results keep their original evaluation (uniqueness_result.swift, all levels)"
+for level in Onone O Osize; do
+    case "$level" in
+        Onone) UNIQUE_RESULT_MODULE=UniquenessResultOnone ;;
+        O) UNIQUE_RESULT_MODULE=UniquenessResult ;;
+        Osize) UNIQUE_RESULT_MODULE=UniquenessResultSize ;;
+    esac
+    $SWIFTC -parse-as-library -$level -emit-library -module-name "$UNIQUE_RESULT_MODULE" uniqueness_result.swift -o libUniquenessResult.$level.dylib
+done
+
+echo "==> uniqueness object producers keep one evaluation (uniqueness_factory.swift, all levels)"
+python3 build-uniqueness-factory.py
+
 echo "==> Objective-C fixture object"
 $CLANG -fobjc-arc -O -c sample_objc.m -o sample_objc.o
 

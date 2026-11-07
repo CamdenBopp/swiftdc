@@ -26,6 +26,14 @@ private let binary = URL(fileURLWithPath: ".build/debug/swiftdc")
 /// Swift metadata, the ObjC index, field layout, and the call graph. Each runs
 /// in well under a tenth of a second, so repeating them is cheap.
 private let cases: [(label: String, arguments: [String])] = [
+    ("disasm --structured query identity", ["disasm", "Fixtures/Sample/libUniquenessResult.O.dylib", "--structured"]),
+    ("disasm --pseudo query identity", ["disasm", "Fixtures/Sample/libUniquenessResult.O.dylib", "--pseudo"]),
+    ("disasm listing query identity", ["disasm", "Fixtures/Sample/libUniquenessResult.O.dylib"]),
+    ("disasm --json query identity", ["disasm", "Fixtures/Sample/libUniquenessResult.O.dylib", "--json"]),
+    ("disasm --structured query object identity", ["disasm", "Fixtures/Sample/libFactorySnapshot.O.dylib", "--structured"]),
+    ("disasm --pseudo query object identity", ["disasm", "Fixtures/Sample/libFactorySnapshot.O.dylib", "--pseudo"]),
+    ("disasm listing query object identity", ["disasm", "Fixtures/Sample/libFactorySnapshot.O.dylib"]),
+    ("disasm --json query object identity", ["disasm", "Fixtures/Sample/libFactorySnapshot.O.dylib", "--json"]),
     ("disasm --structured resilient operator ABI", ["disasm", "Fixtures/Sample/libResilientOperator.O.dylib", "--structured"]),
     ("disasm --pseudo resilient operator ABI", ["disasm", "Fixtures/Sample/libResilientOperator.O.dylib", "--pseudo"]),
     ("disasm listing resilient operator ABI", ["disasm", "Fixtures/Sample/libResilientOperator.O.dylib"]),

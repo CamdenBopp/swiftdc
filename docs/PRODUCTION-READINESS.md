@@ -10042,3 +10042,39 @@ Commit messages on dev stay as they are; these are the true records.
   equality operand pairs, four SourceLength arity restorations and 62 Parser
   functions. Both SDK xrefs outputs match. Publication uses the original
   `Tools/integration-gate.sh --push`.
+
+- **IN PROGRESS (2026-11-07): preserve uniqueness query evaluations.**
+  SwiftParser's array growth paths reused an earlier uniqueness result after
+  calls and stores, but the output repeated the query or moved it to a later
+  consumer. The existing owner of call results now binds a reused or delayed
+  predicate at its original call. Its first object operand participates in
+  use tracking, and a supported scalar call that produces that object also
+  binds at its original instruction. This keeps one producer evaluation even
+  when the predicate is unused or hidden by the expression depth limit. An
+  immediate predicate can still inline through the bound object.
+
+  Independent native controls cover a true snapshot followed by a strong
+  reference change, shared inputs, immediate uses, factory allocation count,
+  ordering around an effect, and hidden or unused queries. All 30 controls
+  pass across `-Onone`, `-O` and `-Osize`. The assembly fixtures are generated
+  only after emitted LLVM proves the runtime, factory, layer and export ABIs;
+  their actual linked instructions were read before native execution.
+
+  Local verification: 1,444 tests in 39 suites, all five analysis APIs, eight
+  determinism cases in separate processes, and three independent mutations that each
+  compile and fail the intended test while both native families remain green.
+  Restoring the source reproduces the original passing binary hash. Reproduce
+  with `Tools/fixtures.sh`, `swift build --build-tests`, and
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+
+  The matched release comparison passes the original default budgets over
+  351 inputs in four views plus four large SDK pairs: 1,408 cost rows, all
+  positive. Instructions are 5,113.7G to 5,115.6G (+0.04%); summed per-render
+  peak footprint is 17,583 to 17,482 MB (-0.57%). Footprint is the sum of
+  per-render physical peaks for this comparison. No override is used.
+  All changed structured and pseudo output is read. Listing/JSON preserve
+  354,581 instructions and 8,566 functions across the 14 changed inputs;
+  all 447 changed annotations map to the same JSON instruction. The separate
+  large Syntax/Parser diffs preserve 36 query snapshots and one dictionary
+  producer, and both SDK cross-reference outputs match. Final publication
+  still requires the original `Tools/integration-gate.sh --push`.

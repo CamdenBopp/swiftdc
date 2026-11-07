@@ -9420,6 +9420,13 @@ public struct Disassembler: Sendable {
         // read as evaluated at the indirect call, after the calls between.
         for (address, values) in argumentsByAddress {
             let callee = calleeByAddress[address]
+            // The runtime predicate renders its object even though the call
+            // is bookkeeping. Its producer must stay before any intervening
+            // effect, just like an argument of an ordinary rendered call.
+            if let callee, DisassembledFunction.isUniquenessCheck(callee) {
+                values.prefix(1).forEach { countDirectUses($0, at: address) }
+                continue
+            }
             if let callee, DisassembledFunction.isRuntimeNoise(callee) { continue }
             (callee.map { normalizedArguments(callee: $0, values: values, at: address) } ?? values)
                 .forEach { countDirectUses($0, at: address) }
@@ -9476,8 +9483,17 @@ public struct Disassembler: Sendable {
             }
         }
         let reusedCalls = directUses.compactMap { site, uses -> UInt64? in
-            guard uses > 1 || crossesEffect(site), let callee = calleeByAddress[site],
-                  !DisassembledFunction.isRuntimeNoise(callee),
+            // A query may itself hit the expression depth limit or have
+            // no rendered use. Keep its effectful object producer at the call
+            // site even then; consuming it inside the hidden query loses it.
+            let feedsUniquenessCheck = (directConsumers[site] ?? []).contains {
+                calleeByAddress[$0].map(DisassembledFunction.isUniquenessCheck) == true
+            }
+            guard uses > 1 || crossesEffect(site) || feedsUniquenessCheck,
+                  let callee = calleeByAddress[site],
+                  // A uniqueness predicate is a value read at this call, not
+                  // a fresh query to repeat after a reference-count change.
+                  (!DisassembledFunction.isRuntimeNoise(callee) || DisassembledFunction.isUniquenessCheck(callee)),
                   !DisassembledFunction.isGenericPlumbingCallee(callee),
                   DisassembledFunction.arrayLiteralPlaceholder(callee: callee) == nil,
                   DisassembledFunction.castPassthroughIndex(of: callee) == nil,
