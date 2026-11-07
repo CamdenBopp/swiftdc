@@ -6,6 +6,17 @@ cd "$(dirname "$0")"
 SWIFTC="xcrun swiftc"
 CLANG="xcrun clang"
 
+
+echo "==> unknown operator operands keep declared arity (operator_arity.swift, all levels)"
+$CLANG -arch arm64 -O2 -c operator_arity.c -o operator_arity.o
+for level in Onone O Osize; do
+    $SWIFTC -parse-as-library -$level -emit-library -module-name OperatorArity operator_arity.swift operator_arity.o -o libOperatorArity.$level.dylib
+done
+
+
+echo "==> storage shape is not an operator parameter ABI (resilient_operator.swift, all levels)"
+python3 build-resilient-operator.py
+
 echo "==> Objective-C fixture object"
 $CLANG -fobjc-arc -O -c sample_objc.m -o sample_objc.o
 

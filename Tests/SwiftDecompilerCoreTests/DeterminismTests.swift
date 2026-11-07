@@ -26,6 +26,14 @@ private let binary = URL(fileURLWithPath: ".build/debug/swiftdc")
 /// Swift metadata, the ObjC index, field layout, and the call graph. Each runs
 /// in well under a tenth of a second, so repeating them is cheap.
 private let cases: [(label: String, arguments: [String])] = [
+    ("disasm --structured resilient operator ABI", ["disasm", "Fixtures/Sample/libResilientOperator.O.dylib", "--structured"]),
+    ("disasm --pseudo resilient operator ABI", ["disasm", "Fixtures/Sample/libResilientOperator.O.dylib", "--pseudo"]),
+    ("disasm listing resilient operator ABI", ["disasm", "Fixtures/Sample/libResilientOperator.O.dylib"]),
+    ("disasm --json resilient operator ABI", ["disasm", "Fixtures/Sample/libResilientOperator.O.dylib", "--json"]),
+    ("disasm --structured operator arity", ["disasm", "Fixtures/Sample/libOperatorArity.O.dylib", "--structured"]),
+    ("disasm --pseudo operator arity", ["disasm", "Fixtures/Sample/libOperatorArity.O.dylib", "--pseudo"]),
+    ("disasm listing operator arity", ["disasm", "Fixtures/Sample/libOperatorArity.O.dylib"]),
+    ("disasm --json operator arity", ["disasm", "Fixtures/Sample/libOperatorArity.O.dylib", "--json"]),
     ("dump", ["dump", "Fixtures/Sample/libSample.dylib"]),
     ("interface", ["interface", "Fixtures/Sample/libSample.dylib"]),
     ("objc --methods", ["objc", "Fixtures/Sample/libSample.dylib", "--methods"]),

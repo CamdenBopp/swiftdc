@@ -5487,19 +5487,40 @@ public struct Disassembler: Sendable {
                 return nil
             }
         }
-        // An ordinary qualified identifier only: no `closure #1 in`,
-        // `specialization <…> of`, `(X in _HASH)` or thunk prose.
-        guard !name.isEmpty,
-              name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }),
-              let dot = name.lastIndex(of: ".")
-        else { return nil }
+        // Operator declarations carry their fixity after the spelling. They
+        // retain their declared operands even when their physical ABI cannot
+        // be placed, so two unknown equality operands render (?, ?), not ().
+        let operatorArity: Int?
+        if let fixity = ["infix", "prefix", "postfix"].first(where: { name.hasSuffix(" " + $0) }) {
+            operatorArity = fixity == "infix" ? 2 : 1
+            name = name.dropLast(fixity.count + 1)
+        } else {
+            operatorArity = nil
+        }
+        guard !name.isEmpty, let dot = name.lastIndex(of: ".") else { return nil }
         let context = String(name[..<dot]), member = name[name.index(after: dot)...]
+        if operatorArity != nil {
+            // This bounded ASCII spelling excludes closure, specialization,
+            // witness and other thunk prose after the existing sanctioned
+            // dispatch-thunk normalization. Unsupported spellings still decline.
+            guard !context.isEmpty, !member.isEmpty,
+                  context.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }),
+                  context.split(separator: ".", omittingEmptySubsequences: false).allSatisfy({ !$0.isEmpty }),
+                  member.allSatisfy({ "/=-+!*%<>&|^?~".contains($0) })
+            else { return nil }
+        } else {
+            // An ordinary qualified identifier only: no `closure #1 in`,
+            // `specialization <…> of`, `(X in _HASH)` or thunk prose.
+            guard name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." })
+            else { return nil }
+        }
         let isFreeFunction = !context.contains(".")
         guard anyContext || isDispatchThunk || isFreeFunction || isStatic || member == "init"
                 || classTypeIndex.isClass(context)
         else { return nil }
 
         let parameters = DisassembledFunction.splitTopLevelArguments(signature.head[range])
+        if let operatorArity, parameters.count != operatorArity { return nil }
         var layout: [(kind: ScalarParameterClass, registers: Int, type: String)] = []
         var integers = 0, floats = 0, spilled = false
         var stack: [(type: String, kind: ScalarParameterClass)] = []
@@ -5518,7 +5539,13 @@ public struct Disassembler: Sendable {
                 (kind, registers) = (.integer, 1)
             } else if signature.thrownType == nil, let words = integerRegisterFootprint(ofParameterType: type) {
                 (kind, registers) = (.integer, words)
-            } else if let banks = SwiftLowering.aggregateRegisters(
+            // A complete storage layout does not prove a newly admitted
+            // operator's aggregate ABI. A resilient two-Int value is passed
+            // by address, so sizing it as two integer registers reads the
+            // following operand from x2 instead of x1. Keep such operands
+            // and everything after them unplaced. Void is a known ABI shape.
+            } else if operatorArity == nil || type == "()" || type == "Swift.Void",
+                      let banks = SwiftLowering.aggregateRegisters(
                 of: type, fieldMaps: fieldMaps, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
                 (kind, registers) = (.aggregate(integers: banks.integers, floats: banks.floats), 1)
             } else {

@@ -9995,3 +9995,50 @@ Commit messages on dev stay as they are; these are the true records.
   inputs. General callee reads, captures and call composition, structured object
   extents, space provenance, ownership proofs and unified value identity remain
   open. Independent address observations remain insufficient ownership evidence.
+
+- **FIXED (2026-11-06): preserve declared operator operands.** An authored
+  Swift/C reduction verifies equality, prefix and postfix calls at `-Onone`,
+  `-O` and `-Osize`. All nine native results are correct, and raw disassembly
+  confirms the original operator calls survive. The baseline renders empty
+  operand lists in the debug build and misattributes an opaque pointer as an
+  operand in optimized builds. Bounded qualified operator spellings now pass
+  through the existing argument-layout owner, retaining unknown placeholders
+  when the operand ABI cannot be reconstructed. Existing angle-bracket operator
+  parsing and extension limitations remain open.
+
+  A second authored reduction checks the public LLVM calling convention before
+  generating an assembly caller: a resilient two-Int value is indirect, with
+  the following Int in x1. The first operator implementation incorrectly used
+  its storage layout to place that Int in x2. Native execution returns 139;
+  that implementation rendered an unrelated 7. The revised implementation
+  leaves unsupported aggregate operands and following positions unknown,
+  preserving scalar, generic-indirect, stable built-in and zero-sized Void
+  layouts. The existing ordinary-function aggregate admission remains a
+  separate open audit.
+
+  The revised source passes **1,440 tests / 39 suites**, including all five
+  analysis routes and cross-process determinism. Twelve native controls pass
+  across the three optimization levels. Five independent compiled mutations
+  fail their focused checks: operator admission, spelling, fixity/formal count,
+  storage-layout ABI guessing and known Void layout. Restoration rebuilds to
+  the identical debug binary. Reproduce with `swift build --build-tests -j 2`
+  followed by `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+
+  Fresh matched release builds pass the original `Tools/blast-radius.sh
+  <baseline> <candidate> <out> --real --perf`: **345 inputs / 1,380 view pairs**
+  plus four large SDK workload pairs. All 1,384 rows have positive instruction
+  and footprint counts. Total instructions fall **0.10%** (5,081.1G to 5,076.1G);
+  summed per-render peak footprints rise **0.62%** (17,155 MB to 17,261 MB).
+  All default per-input and total budgets pass. ManyAccessors800's four views
+  change by +0.08% to +0.22% instructions. This measures the revised source;
+  the rejected first implementation's cost pass is not reused as acceptance.
+
+  Every changed corpus hunk is explained, including the annotation-only
+  changes. All 569 listing annotation pairs match JSON; its 507 typed argument
+  deltas restore unknown formals or consistently rename producer bindings.
+  Raw listing and JSON checks preserve all 328,700 instructions and 8,445
+  functions in the 16 changed corpus inputs, including order, targets and
+  CFGs. The separate large SDK structured review covers 1,795 childName
+  equality operand pairs, four SourceLength arity restorations and 62 Parser
+  functions. Both SDK xrefs outputs match. Publication uses the original
+  `Tools/integration-gate.sh --push`.
