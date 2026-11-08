@@ -39,14 +39,15 @@ full version, and it's worth reading whether or not you use an AI assistant.
 
 ## Setup
 
-You need an Apple Silicon Mac, Xcode 26 (Swift 6.3), Capstone and Go:
+You need an Apple Silicon Mac, Xcode 26 (Swift 6.3) and Go:
 
 ```bash
-brew install capstone go
+brew install go
 ```
 
-swiftdc itself only needs Capstone. Go builds the Go fixtures, which the
-enforcing test run requires. `openssl@3` is only needed for the `devices`
+swiftdc itself needs only Xcode: SwiftPM builds Capstone from source, so
+there's no Homebrew Capstone to install. Go builds the Go fixtures, which the
+enforcing test run requires. `openssl@3` is needed only for the `devices`
 and `apps` commands.
 
 Build the test fixtures once, then build swiftdc:
