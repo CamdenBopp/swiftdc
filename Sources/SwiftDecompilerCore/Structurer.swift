@@ -53,6 +53,9 @@ public extension DisassembledFunction {
         ControlFlowStructure.onLargeStack {
             result.lines = cfg.renderLines(header: header, objcLine: objcLine)
         }
+        if let fallThroughNote, result.lines.last == "}" {
+            result.lines.insert("    \(fallThroughNote)", at: result.lines.count - 1)
+        }
         return result.lines.joined(separator: "\n")
     }
 

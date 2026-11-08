@@ -850,3 +850,6 @@ $CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib dup_bits.s -o libDupBit
 
 echo "==> tail branches to bodies that never write x0: a lone ret, a store, an add (passthrough_tail.s)"
 $CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib passthrough_tail.s -o libPassthroughTail.dylib
+
+echo "==> a non-local label inside a function, listed as a function start (label_split.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib label_split.s -o libLabelSplit.dylib

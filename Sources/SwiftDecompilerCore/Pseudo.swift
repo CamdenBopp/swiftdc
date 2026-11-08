@@ -43,8 +43,28 @@ public extension DisassembledFunction {
         } else {
             for statement in statements { lines.append("    \(statement)") }
         }
+        if let fallThroughNote { lines.append("    \(fallThroughNote)") }
         lines.append("}")
         return lines.joined(separator: "\n")
+    }
+
+    /// A span whose last instruction can go on to the next address ends at a
+    /// boundary, not at an exit: an assembly label the linker listed as a
+    /// function start (`loop_top` inside `_outer`, `_outer+4` in
+    /// LC_FUNCTION_STARTS) cut one function in two, and the first half
+    /// rendered as a complete leaf that returns nothing, though it runs on
+    /// into the loop and returns from there. Said, not hidden. A call last
+    /// is left alone: it may not return (`bl abort` before the next
+    /// function).
+    /// Alignment `nop`s are padding, not the span's last instruction: a
+    /// `bl runtime.throw; nop` ends at the call, and a span of padding alone
+    /// continues into nothing.
+    var fallThroughNote: String? {
+        guard let end = instructions.last,
+              let last = instructions.last(where: { !$0.text.hasPrefix("nop") }), !last.isTrap,
+              last.controlFlow == .sequential || last.controlFlow == .conditionalBranch
+        else { return nil }
+        return "// continues into 0x\(String(end.address + 4, radix: 16)): this span ends at a boundary, not a return"
     }
 
     /// A source-level statement recovered from an instruction. Calls retain
