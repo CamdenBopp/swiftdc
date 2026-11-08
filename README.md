@@ -1,52 +1,64 @@
-# swiftdc — a Swift-aware Mach-O decompiler
+# swiftdc
 
-`swiftdc` reverse-engineers compiled Swift and Objective-C Mach-O binaries
-(executables, frameworks, dylibs, `.ipa`s, and dyld shared-cache images) on
-Apple Silicon.
+swiftdc is a decompiler for Swift and Objective-C Mach-O binaries on Apple
+Silicon. It reads executables, frameworks, dylibs, `.ipa`s and images in the
+dyld shared cache.
 
-It reconstructs **Swift and Objective-C declarations** from runtime metadata,
-**annotated ARM64 disassembly**, and **structured, source-level function bodies**
-— `if`/`else`/`while` with conditions back-substituted to source, message sends
-in bracket syntax, `self.field` reads and writes, and recovered call arguments.
-Most of this survives stripping, because Swift's `__swift5_*` and ObjC's
-`__objc_*` metadata do.
+From runtime metadata it rebuilds Swift and Objective-C declarations. From the
+code it produces annotated ARM64 disassembly and structured function bodies:
+`if`/`else`/`while` with conditions written in terms of the source values,
+message sends in bracket syntax, `self.field` reads and writes, and recovered
+call arguments. Most of this survives stripping, because the `__swift5_*` and
+`__objc_*` metadata it depends on survives too.
 
-**Core design rule: it declines rather than guesses.** A value the analysis
-cannot prove renders as `?`. There is no confidence score to second-guess — if a
-name or argument appears, metadata or data flow justified it. That extends to
-returns: `return ?` means the function returns something the analysis could not
-recover, while a bare `return` means it returns nothing — or that its signature
-was not recoverable enough to tell.
-
----
+The design rule is that swiftdc declines rather than guesses. A value the
+analysis can't prove prints as `?`. There's no confidence score to
+second-guess: if a name or argument appears, metadata or data flow justified
+it. Returns follow the same rule. `return ?` means the function returns
+something swiftdc couldn't recover. A bare `return` means it returns nothing,
+or that its signature wasn't recoverable enough to tell.
 
 ## Quickstart
 
 ```bash
-swift build -c release           # → .build/release/swiftdc
+swift build -c release           # .build/release/swiftdc
 
-# Point it at anything: a binary, a .app, a .framework, or an .ipa.
-swiftdc analyze /path/to/Binary          # declarations + disassembly, grouped
+# Point it at a binary, a .app, a .framework or an .ipa.
+swiftdc analyze /path/to/Binary          # declarations and disassembly, grouped
 swiftdc interface MyApp.app              # .swiftinterface-style Swift source
-swiftdc objc MyApp.app --methods         # ObjC headers + recovered bodies
+swiftdc objc MyApp.app --methods         # ObjC headers and recovered bodies
 ```
 
-`swiftdc <path>` with no subcommand means `analyze`.
+`swiftdc <path>` with no subcommand runs `analyze`.
 
-### What the output actually looks like
+### What the output looks like
 
-Reconstructed Swift declarations, from metadata alone:
+Swift declarations, rebuilt from metadata alone:
 
 ```text
 $ swiftdc dump Fixtures/Sample/sample.release --sections types --demangle simplified
 struct Point {
     var x: Double
     var y: Double
-    /* Function */ Point.distance(to:)
+
+    /* Allocator */
+    Point.init(x:y:)
+
+    /* Variable */
+    Point.x.getter
+    Point.x.setter
+    Point.y.getter
+    Point.y.setter
+
+    /* Function */
+    Point.distance(to:)
+
+    /* Static Function */
+    static Point.__derived_struct_equals(_:_:)
 }
 ```
 
-A recovered Objective-C body — control flow, ivars, and arguments, all named:
+An Objective-C method body, with its control flow, ivars and arguments named:
 
 ```text
 $ swiftdc objc Fixtures/Sample/libSample.dylib --function incrementIfEnabled --structured
@@ -59,8 +71,8 @@ $ swiftdc objc Fixtures/Sample/libSample.dylib --function incrementIfEnabled --s
 }
 ```
 
-Stored-property layout — the reverse index that turns `ldr x8, [x0, #0x10]` into
-`self.name`, and which survives stripping completely:
+Stored-property layout. This is the index that turns `ldr x8, [x0, #0x10]`
+into `self.name`, and stripping doesn't touch it:
 
 ```text
 $ swiftdc layout Fixtures/Sample/sample.release
@@ -72,99 +84,97 @@ Point  // instance size 16 bytes
   +0x8    8B  y: Sd
 ```
 
----
+## Commands
 
-## Command reference
-
-Every subcommand accepts a Mach-O, a fat binary, a `.app`/`.framework` bundle, or
-an `.ipa` (unzipped for you), and defaults to the bundle's main executable.
-Exceptions: `devices`, `apps` and `research` take no positional binary path.
-`score` accepts a binary, or a probe trace with `--trace`, and an independent
-oracle. Native fixture scoring, manifest defaults and the Swift API are in
-[INSTRUMENTATION.md](docs/INSTRUMENTATION.md).
+Every subcommand takes a Mach-O, a fat binary, a `.app` or `.framework`
+bundle, or an `.ipa` (swiftdc unzips it), and reads the bundle's main
+executable unless you name another. `devices`, `apps` and `research` take no
+binary path. `score` takes a binary, or a probe trace with `--trace`, plus an
+independent oracle; [INSTRUMENTATION.md](docs/INSTRUMENTATION.md) covers
+fixture scoring, manifest defaults and the Swift API.
 
 | Subcommand | What it does |
 |---|---|
-| `score` | Score integer return claims against independent expected values; report agreement and coverage separately |
-| `research` | Compile and score an authored native fixture matrix across optimization, display and analysis modes; retain findings and provenance |
-| `analyze` *(default)* | Declarations + disassembly, grouped by owning type |
-| `dump` | Reconstructed Swift declarations from `__swift5_*` metadata |
-| `interface` | A full `.swiftinterface`-style source view — higher fidelity than `dump` |
-| `objc` | Reconstructed Objective-C headers, and optionally method bodies |
-| `disasm` | Annotated ARM64, with `--cfg` / `--pseudo` / `--structured` views |
-| `xrefs` | Callers and callees of a function, over the recovered call graph |
-| `layout` | Byte offset → Swift stored property, per type |
-| `swift-version` | The producing Swift version, where the binary carries evidence |
-| `devices` | Attached iPhones/iPads |
-| `apps` | Installed apps + FairPlay encryption status |
+| `analyze` *(default)* | Declarations and disassembly, grouped by owning type |
+| `dump` | Swift declarations from `__swift5_*` metadata |
+| `interface` | A full `.swiftinterface`-style view, more faithful than `dump` |
+| `objc` | Objective-C headers, and optionally method bodies |
+| `disasm` | Annotated ARM64, with `--cfg`, `--pseudo` and `--structured` views |
+| `xrefs` | Callers and callees of a function, from the recovered call graph |
+| `layout` | Byte offset to Swift stored property, per type |
+| `swift-version` | The Swift version that built the binary, when the binary carries evidence |
+| `devices` | Attached iPhones and iPads |
+| `apps` | Installed apps and their FairPlay encryption status |
+| `score` | Scores integer return claims against independently known values, reporting agreement and coverage separately |
+| `research` | Compiles and scores a matrix of native fixtures across optimization levels, display modes and analysis modes, keeping findings and provenance |
 
 ### Shared options
 
-Available on `analyze`, `dump`, `interface`, `objc`, `disasm` (and partially on
-`xrefs` / `layout` — see the notes below):
+`analyze`, `dump`, `interface`, `objc` and `disasm` take all of these.
+`xrefs` and `layout` take most of them (see below the table).
 
 | Option | Meaning |
 |---|---|
-| `-a, --arch <arch>` | Pick a slice of a fat/universal binary |
-| `--image <name>` | Read this image from the dyld shared cache by name |
-| `--image-path <path>` | Same, but by full path in the cache |
-| `--cache <path>` | Use an extracted cache file (default: the running system's) |
-| `--binary <name>` | For a bundle/`.ipa`: analyze this embedded framework |
-| `--list-binaries` | List the main executable + embedded frameworks and exit |
+| `-a, --arch <arch>` | Pick a slice of a fat binary |
+| `--image <name>` | Read this image from the dyld shared cache, by name |
+| `--image-path <path>` | The same, by its full path in the cache |
+| `--cache <path>` | Use an extracted cache file instead of the running system's |
+| `--binary <name>` | In a bundle or `.ipa`, analyze this embedded framework |
+| `--list-binaries` | List the main executable and embedded frameworks, then exit |
 | `-o, --output <file>` | Write to a file |
-| `--json` | Structured JSON (composable with `jq`, diffable across builds) |
+| `--json` | Structured JSON, for `jq` or for diffing two builds |
 
-`xrefs` supports all of the above except `--list-binaries`. `layout` supports
-all except `--image-path`, `--list-binaries`, and `--demangle`. `devices`
-supports only `--json` (no `-o`).
+`xrefs` takes everything except `--list-binaries`. `layout` takes everything
+except `--image-path`, `--list-binaries` and `--demangle`. `devices` takes
+only `--json`, not `-o`.
 
 ### Per-subcommand options
 
 ```bash
-# dump — reconstructed Swift declarations
-swiftdc dump Binary --sections types protocols     # space-separated, NOT comma
+# dump: Swift declarations
+swiftdc dump Binary --sections types protocols     # space-separated, not commas
 swiftdc dump Binary --demangle simplified          # default | simplified | interface
 swiftdc dump --list-images                         # every image path in the cache
 
-# interface — a full Swift interface, with optional layout annotations
+# interface: a full Swift interface, with optional layout annotations
 swiftdc interface Binary --field-offsets --enum-layout --type-layout
 swiftdc interface Binary --member-addresses --vtable-offsets --sort-by-offset
 swiftdc interface Binary --show-c-imported-types
 swiftdc interface Binary --opaque-return-types     # experimental
 
-# objc — headers, bodies, structured bodies
+# objc: headers, bodies, structured bodies
 swiftdc objc Binary                                # headers only
-swiftdc objc Binary --metadata-only                # headers, no code read (below)
-swiftdc objc Binary --methods                      # + every metadata-backed IMP
+swiftdc objc Binary --metadata-only                # headers without reading code (below)
+swiftdc objc Binary --methods                      # plus every metadata-backed IMP
 swiftdc objc Binary --function incrementBy --pseudo
 swiftdc objc Binary --function incrementIfEnabled --structured
 
-# disasm — four views of the same code
+# disasm: four views of the same code
 swiftdc disasm Binary --function distance          # annotated ARM64
-swiftdc disasm Binary --function sum --cfg         # basic blocks + successor edges
+swiftdc disasm Binary --function sum --cfg         # basic blocks and successor edges
 swiftdc disasm Binary --function speak --pseudo    # recovered calls, ARC noise hidden
 swiftdc disasm Binary --function sum --structured  # if/else/while
 
-# layout — stored-property offsets, and the self-type index behind field naming
+# layout: stored-property offsets, and the self-type index behind field naming
 swiftdc layout Binary                              # every type
 swiftdc layout Binary --type Dog                   # substring filter
 swiftdc layout Binary --at 0x10 --bytes 8          # what lives at this offset?
-swiftdc layout Binary --self-index                 # addr → type of its `self`
+swiftdc layout Binary --self-index                 # address to the type of its `self`
 
-# xrefs — call graph queries (needs the whole image disassembled, so it is
-# slower than `disasm --function`, which decodes only what matched)
+# xrefs: call graph queries. It disassembles the whole image, so it's slower
+# than `disasm --function`, which decodes only what matched.
 swiftdc xrefs Binary --function "Circle.describe"
 swiftdc xrefs App.app --function 'objc_msgSend$standardUserDefaults'
-swiftdc xrefs Binary --unreferenced                # nothing statically calls these
+swiftdc xrefs Binary --unreferenced                # nothing calls these statically
 ```
 
-`-f` is short for `--function`; `-s` for `--sections`; `-t` for `--type`.
+`-f` is short for `--function`, `-s` for `--sections` and `-t` for `--type`.
 
-`objc` decides whether each property accessor is synthesized or custom by
-reading its body: a synthesized one is implied by its `@property` and dropped,
-a custom one stays. `--metadata-only` reads no code, for an image too large to
-analyze or a quick look. It can't tell the two apart, so it keeps every
-accessor and says so:
+`objc` reads each property accessor's body to decide whether it's synthesized
+or custom. A synthesized accessor is implied by its `@property`, so it's
+dropped; a custom one stays. `--metadata-only` reads no code, which suits an
+image too large to analyze or a quick look. Without the bodies it can't tell
+the two kinds apart, so it keeps every accessor and says so:
 
 ```text
 @property(copy, nonatomic) NSString *name; // @synthesize name=_name
@@ -175,11 +185,12 @@ accessor and says so:
 
 ### Swift version
 
-`swift-version` names the Swift toolchain that built a binary, and only where the
-binary proves it. The version comes from the `__objc_imageinfo` stable-ABI bits or
-an `LC_BUILD_VERSION` swift-tool record; with neither, it reports the ABI
-generation (`__swift5_*` metadata) or declines. The SDK is shown as context, never
-mistaken for the compiler.
+`swift-version` names the Swift toolchain that built a binary, but only when
+the binary proves it. The version comes from the stable-ABI bits in
+`__objc_imageinfo` or from a swift-tool record in `LC_BUILD_VERSION`. With
+neither, it reports the ABI generation (from `__swift5_*` metadata) or
+declines. It shows the SDK as context and never passes it off as the compiler
+version.
 
 ```bash
 swiftdc swift-version MyApp.app         # "Swift 6.4", with the evidence
@@ -196,23 +207,23 @@ Swift 6.4
   build environment (not proof of the Swift version): macOS, min OS 27.0.0, SDK 27.0.0
 ```
 
-The evidence survives `strip`: the reflection sections and image-info are not the
-symbol table, so a stripped binary still names its Swift version.
+The reflection sections and image info aren't part of the symbol table, so a
+stripped binary still names its Swift version.
 
 ### Devices
 
-`devices` and `apps` reach a USB-attached device natively. `<udid>` is a
-device identifier as printed by `devices`.
+`devices` and `apps` talk to a USB-attached device directly. `<udid>` is a
+device identifier as `devices` prints it.
 
 ```bash
 swiftdc devices                       # attached devices and their UDIDs
 swiftdc apps                          # user apps (default)
 swiftdc apps --type system            # user | system | internal | any
 swiftdc apps --encrypted-only
-swiftdc apps --udid <udid>            # required only with >1 device attached
+swiftdc apps --udid <udid>            # needed only with more than one device attached
 ```
 
-Example output; the bundle IDs are illustrative:
+Example output, with made-up bundle IDs:
 
 ```text
 iPhone (iPhone15,3, iOS 27.0) — 00008120-001122AABBCCDDEE
@@ -223,87 +234,87 @@ ENC  com.example.PhotoVault  3.2.1  PhotoVault
 2 of 2 apps — 1 FairPlay-encrypted, 1 plaintext
 ```
 
-Speaks usbmux → lockdown → installation_proxy natively: **no root, no
-libimobiledevice, no Python.**
+swiftdc speaks usbmux, lockdown and installation_proxy itself. It needs no
+root, no libimobiledevice and no Python.
 
 ### dyld shared cache
 
-System frameworks have no standalone on-disk binary on modern macOS/iOS.
+On modern macOS and iOS, system frameworks have no standalone binary on disk.
 `swiftdc dump|objc|disasm|analyze|xrefs|layout --image Foundation` reads them
-straight out of the cache. See [docs/dyld-shared-cache.md](docs/dyld-shared-cache.md)
-for how that works and what differs there.
-
----
+straight out of the cache. [docs/dyld-shared-cache.md](docs/dyld-shared-cache.md)
+explains how that works and what behaves differently there.
 
 ## What it recovers
 
-### From metadata (survives stripping)
+### From metadata, which survives stripping
 
-- **Swift declarations** — `struct` / `enum` / `class` / `protocol` with stored
-  properties, methods, enum cases (incl. `indirect`), generics, and inheritance.
-- **Objective-C headers** — `@interface` / `@protocol` / category declarations
-  with properties and method signatures, covering the Swift+ObjC mix in real
-  apps (and Swift classes exposed to the ObjC runtime).
-- **Objective-C IMPs** — class and category method records give real function
-  boundaries and conventional names (`-[Class selector:]`) even after stripping.
-  Type encodings become decoded signatures; runtime ivar offsets turn direct
-  loads/stores into `self->_count` / `self->_count = arg1`.
-- **Function boundaries on stripped binaries** — from `LC_FUNCTION_STARTS` plus
-  ObjC IMPs, so a stripped binary disassembles as discrete functions, not one blob.
-- **Stored-property layout** (`swiftdc layout`) — byte offset → field, computed
-  offline from `__swift5_fieldmd`, so it is runtime-exact.
+- **Swift declarations:** `struct`, `enum`, `class` and `protocol`, with stored
+  properties, methods, enum cases (including `indirect`), generics and
+  inheritance.
+- **Objective-C headers:** `@interface`, `@protocol` and category declarations
+  with properties and method signatures. That covers the Swift and ObjC mix in
+  real apps, including Swift classes exposed to the ObjC runtime.
+- **Objective-C IMPs:** class and category method records give real function
+  boundaries and conventional names (`-[Class selector:]`), even after
+  stripping. Type encodings become signatures, and runtime ivar offsets turn
+  direct loads and stores into `self->_count` and `self->_count = arg1`.
+- **Function boundaries on stripped binaries:** `LC_FUNCTION_STARTS` plus the
+  ObjC IMPs split a stripped binary into separate functions instead of one blob.
+- **Stored-property layout** (`swiftdc layout`): byte offset to field, computed
+  offline from `__swift5_fieldmd`, so it matches the runtime exactly.
 
 ### From code analysis
 
-- **Annotated ARM64** — branch/call targets demangled, string literals surfaced,
-  and `adrp`/`add` operands resolved to their target's name
-  (`→ Rectangle.origin.getter`, `→ type descriptor for Stack`) — context
-  `objdump` leaves bare.
-- **Control-flow graph** — `__text` decoded in-process by Capstone into
-  structured instructions, then split into basic blocks with successor edges.
-- **Call arguments** — an abstract interpreter propagates constants and
-  `adrp`/`add` addresses through registers via a forward data-flow fixpoint
-  *across the CFG*, then snapshots argument registers at each call. Calls read as
-  `swift_allocObject(type descriptor for Dog, 48, 7)`. Return values flow into
-  later arguments, so nested expressions surface. Swift `_SmallString` literals
-  packed into register pairs decode back to text: `Dog("Rex", "Lab")`.
-- **Objective-C message sends** — `[[NSUserDefaults standardUserDefaults]
-  setBool:0 forKey:@"…"]`. Both dispatch shapes are handled: the modern
-  per-selector stub (`__objc_stubs`, Xcode 14+) and the classic materialize-into-x1
-  form. Receivers resolve through GOT binds; `__cfstring` operands render as
-  `@"literal"`. Without this, a real app's pseudocode is *only* ARC bookkeeping.
-- **Structured control flow** — recovered calls, stores, and returns fold into
-  `if`/`else`/`while` using post-dominators over the CFG. Conditions are
-  back-substituted through the block; reducible loops become
-  `while (true) { … break/continue }`; loop induction variables, exit-test
-  rotation, and loop-carried accumulators (`total += i`) are reconstructed.
-  Anything irreducible degrades to a labeled `goto`, so output is never
-  structurally wrong — brace-balanced by construction.
-- **Explicit integer semantics** — right shifts use `>>ˢ` for arithmetic
-  (sign-filling) and `>>ᵁ` for logical (zero-filling) shifts, independent of
-  the source parameter or result type. These are pseudocode operators over
-  register bit patterns; 32-bit normalization remains an explicit mask.
-  High-half multiplication likewise uses `mulhˢ` and `mulhᵁ` for the high
-  64 bits of signed and unsigned 128-bit products.
-- **Cross-references** — a call graph over resolved branch targets, including
-  indirect `blr` calls whose register value provably traces to a concrete
-  witness/vtable/GOT pointer slot.
+- **Annotated ARM64:** branch and call targets demangled, string literals shown,
+  and `adrp`/`add` operands resolved to the name of what they point at
+  (`→ Rectangle.origin.getter`, `→ type descriptor for Stack`). `objdump`
+  leaves all of that bare.
+- **Control-flow graph:** Capstone decodes `__text` in process, and swiftdc
+  splits the instructions into basic blocks with successor edges.
+- **Call arguments:** an abstract interpreter carries constants and
+  `adrp`/`add` addresses through registers, as a forward data-flow fixpoint
+  over the whole CFG, then reads the argument registers at each call. Calls
+  print as `swift_allocObject(type descriptor for Dog, 48, 7)`. Return values
+  flow into later arguments, so nested expressions come out nested. Swift
+  `_SmallString` literals packed into register pairs decode back to text:
+  `Dog("Rex", "Lab")`.
+- **Objective-C message sends:** `[[NSUserDefaults standardUserDefaults]
+  setBool:0 forKey:@"…"]`. swiftdc handles both dispatch shapes, the
+  per-selector stub in `__objc_stubs` (Xcode 14 and later) and the older form
+  that loads the selector into x1. Receivers resolve through GOT binds, and
+  `__cfstring` operands print as `@"literal"`. Without this, a real app's
+  pseudocode would be little more than ARC bookkeeping.
+- **Structured control flow:** recovered calls, stores and returns fold into
+  `if`/`else`/`while`, using post-dominators over the CFG. Conditions are
+  rewritten in terms of the block's inputs. Reducible loops become
+  `while (true) { … break/continue }`, with induction variables, exit-test
+  rotation and loop-carried accumulators (`total += i`) rebuilt. Anything
+  irreducible falls back to a labeled `goto`, so the braces always balance and
+  the structure is never wrong.
+- **Explicit integer semantics:** `>>ˢ` is an arithmetic (sign-filling) right
+  shift and `>>ᵁ` a logical (zero-filling) one, whatever the source parameter
+  or result type was. These operators work on register bit patterns, and
+  32-bit normalization stays an explicit mask. In the same way, `mulhˢ` and
+  `mulhᵁ` are the high 64 bits of signed and unsigned 128-bit products.
+- **Cross-references:** a call graph over resolved branch targets. It includes
+  indirect `blr` calls whose register provably holds a pointer loaded from a
+  specific witness table, vtable or GOT slot.
 
-### Swift field naming — the structural differentiator
+### Swift field names
 
-`ldr x0, [x20, #0x10]` renders as `self.age`, and `add x0, x20, #0x20` as
-`&self.breed`, which then flows into recovered call arguments
+`ldr x0, [x20, #0x10]` prints as `self.age`, and `add x0, x20, #0x20` as
+`&self.breed`, which then shows up in recovered call arguments
 (`swift_beginAccess(&self.age, …)`).
 
-This is the one thing Ghidra structurally cannot do: it needs to know what a
-Swift field descriptor and a class vtable slot *mean*. It takes two
-metadata-sourced halves, both strip-proof — `swiftdc layout` says what lives at
-`+0x10` of a `Dog`, and `SelfTypeIndex` says the pointer in x20 *is* a Dog.
-`self` arrives in x20 under the Swift calling convention, and is seeded **only**
-when the receiver's type is known — never guessed.
+Ghidra can't do this, because it doesn't know what a Swift field descriptor
+or a class vtable slot means. swiftdc needs two facts, both from metadata and
+both safe from stripping. `swiftdc layout` says what lives at `+0x10` of a
+`Dog`, and `SelfTypeIndex` says the pointer in x20 is a `Dog`. Under the Swift
+calling convention `self` arrives in x20, and swiftdc seeds it only when it
+knows the receiver's type.
 
-Measured on the fixture at HEAD — 60 named field sites unstripped, 39 after
-`strip -x -S` (**65% retained**). Reproduce with:
+On the sample fixture at 9f92995, 49 field sites are named unstripped and 33
+after `strip -x`, so 67% survive. To reproduce:
 
 ```bash
 for f in Fixtures/Sample/sample.release Fixtures/Sample/sample.stripped; do
@@ -311,96 +322,101 @@ for f in Fixtures/Sample/sample.release Fixtures/Sample/sample.stripped; do
 done
 ```
 
-The lost third is what only the symbol could name; the remaining two-thirds come
-from class vtable slots, which are metadata.
+The third that's lost needed the symbol to name it. The rest comes from class
+vtable slots, which are metadata.
 
-**Name collisions are handled, not fabricated.** Two distinct types with the same
-simple name (a common case across modules) would otherwise let one type's layout
-name the other's fields. Field maps are indexed by *qualified* name as well as
-simple name: a collided simple name is dropped, and a receiver whose qualified
-name is known still resolves through the qualified key. Colliding types therefore
-lose naming rather than gaining a wrong name.
+Two types can share a simple name, which happens often across modules.
+Left alone, one type's layout would then name the other's fields. So field
+maps are indexed by qualified name as well as simple name. A simple name that
+collides is dropped, and a receiver whose qualified name is known still
+resolves through the qualified key. A colliding type loses its field names
+instead of getting wrong ones.
 
----
+## What it can't recover
 
-## What it cannot recover
+- **Original source.** You don't get local names, macros, comments, exact
+  source types, arbitrary pointer aliasing, or every optimized expression.
+  The annotated assembly stays the authority to fall back on.
+- **Other architectures.** x86_64 slices load, and their metadata,
+  declarations and interfaces work, but disassembly and annotation are tuned
+  for ARM64.
+- **All names on stripped binaries.** Function boundaries always recover.
+  Names come from ObjC method records and from Swift metadata for class
+  vtable methods (`Type.method`) and protocol-conformance witnesses
+  (`Type: Protocol.kind`). Free functions, closures, thunks, and struct or
+  enum methods that aren't protocol requirements print as `sub_<addr>`: they
+  dispatch statically, so no metadata records them. A class vtable name
+  sometimes falls back to `sub_<addr>` even unstripped (a SwiftDump resolution
+  gap); the address is still right and still disassembles.
+- **FairPlay-encrypted `.ipa`s.** App Store `.ipa`s ship their main binary
+  encrypted (`cryptid != 0`). swiftdc refuses such an image instead of
+  decoding ciphertext, so you need a decrypted dump (frida-ios-dump on a
+  jailbroken device, for example) or an unencrypted build. Enterprise and
+  development builds and plain `.app`s are fine.
+- **Binaries from a device.** The device commands list what's installed but
+  don't pull binaries off. A stock iOS device doesn't hand out other apps'
+  bundles over any lockdown service: `house_arrest` reaches an app's data
+  container, not its `.app`.
+- **Proof of dead code.** `--unreferenced` leaves generic witness tables,
+  vtables of unknown receivers and block pointers unresolved, and `xrefs`
+  reports how many.
+- **Every `self`.** swiftdc reads x20 as `self` only for a Swift-mangled
+  callee, and only when x20 was written since the previous call. A Swift
+  method whose `self` isn't a pointer (`Double.write(to:)`, with `self` in d0)
+  shows no `self` at all rather than a stale x20. That's a deliberate choice
+  of a missing answer over a wrong one.
+- **Aliased stack slots.** Stack tracking keys slots by `sp` and `x29` offsets
+  and doesn't model aliasing. A callee handed `&local` can write through it
+  unseen, so a slot's value can go stale across that call.
+- **Field names without both facts.** A field is named only when the
+  receiver's type is known and the offset falls inside the part of that type's
+  layout swiftdc trusts. Swift lays fields out in declaration order, so the
+  first field it can't resolve (a resilient type from another module, an
+  existential, an unsubstituted generic) makes every later offset unknown, not
+  just unnamed. Static methods and allocating initializers hold a metatype in
+  x20 rather than an instance, and the self-index's `isInstance` flag refuses
+  them.
+- **`cryptid` from a device.** `apps` infers encryption from the FairPlay
+  `ApplicationSINF` blob, which is what installation_proxy exposes. Reading
+  `cryptid` would need the binary, which the device won't give up. The two
+  signals agree by construction, and on 573 apps on an iOS 27 device every
+  App Store app had a SINF and every system or development-signed app had
+  none. When swiftdc does have the binary, the preflight reads the real
+  `cryptid`.
 
-- **Not original source.** No original local names, macros, comments, exact
-  source types, arbitrary pointer aliasing, or every optimized expression. Raw
-  annotated assembly remains the authoritative fallback.
-- **ARM64 only.** x86_64 slices load and their metadata/declarations/interface
-  work, but disassembly and annotation are ARM64-tuned.
-- **Names on stripped binaries are partial.** Boundaries always recover; *names*
-  come from ObjC method records and Swift metadata for class vtable methods
-  (`Type.method`) and protocol-conformance witnesses (`Type: Protocol.kind`).
-  Free Swift functions, closures, thunks, and **struct/enum non-protocol methods**
-  render as `sub_<addr>` — statically dispatched, so they have no metadata record.
-  Class vtable names occasionally fall back to `sub_<addr>` even unstripped (a
-  SwiftDump resolution gap); the address is still correct and disassemblable.
-- **FairPlay-encrypted `.ipa`s cannot be decrypted.** App Store `.ipa`s ship
-  their main binary encrypted (`cryptid != 0`); swiftdc refuses such an image
-  rather than decode ciphertext, so you need a decrypted dump (e.g. frida-ios-dump on a jailbroken device) or an
-  un-encrypted build. Enterprise/dev builds and `.app`s are unaffected.
-- **Device commands enumerate only.** They do not pull binaries off the device —
-  a stock iOS device does not vend other apps' bundles over any lockdown service
-  (`house_arrest` reaches an app's *data* container, not its `.app`).
-- **`--unreferenced` is not a dead-code proof.** Generic witness tables, unknown
-  receiver vtables, and block pointers stay unresolved; `xrefs` reports their count.
-- **`self` is reported conservatively.** x20 is read as `self` only for a
-  Swift-mangled callee, and only when written since the previous call. A Swift
-  method whose self isn't pointer-shaped (`Double.write(to:)`, self in d0) shows
-  no `self` rather than a stale x20 — a deliberate false-negative-over-false-positive
-  trade.
-- **Stack tracking is frame-local.** Slots key off `sp`/`x29` offsets and do not
-  model aliasing: a callee handed `&local` can write through it unseen, so a
-  slot's value can go stale across such a call.
-- **Field naming needs both halves.** A field is named only where the receiver's
-  type is known AND the offset is inside that type's trusted prefix. Swift lays
-  out fields in declaration order, and the first unresolvable field (a resilient
-  cross-module type, an existential, an unsubstituted generic) makes every later
-  offset unknown rather than merely unnamed. Static methods and allocating
-  initializers hold a *metatype* in x20, not an instance — the self-index's
-  `isInstance` flag refuses them.
-- **`apps` infers encryption from the FairPlay `ApplicationSINF` blob**, which is
-  what installation_proxy exposes; it does not read `cryptid` off the device
-  (that needs the binary, which the previous point rules out). The two agree by
-  construction and empirically: across 573 apps on an iOS 27 device, every App
-  Store app had a SINF and every system/development-signed app had none.
-  The preflight still reads the real `cryptid` whenever it has a binary in hand.
+[docs/dyld-shared-cache.md](docs/dyld-shared-cache.md) lists the known rough
+edges with cache images.
 
-Known rough edges in cache images are in
-[docs/dyld-shared-cache.md](docs/dyld-shared-cache.md).
+If an unfiltered run recovers far fewer functions than the binary's own
+`LC_FUNCTION_STARTS` declares, swiftdc prints a coverage warning to stderr.
+Treat that listing as a sample, not an inventory, and please report it.
 
-An unfiltered run that recovers well under what the binary's own
-`LC_FUNCTION_STARTS` declares prints a coverage warning to stderr. Treat such a
-listing as a sample, not an inventory — and please report it.
+## Requirements and build
 
----
-
-## Requirements & build
-
-- macOS on **Apple Silicon (arm64)**
-- **Xcode 26 / Swift 6.3** toolchain (`swiftc`, `llvm-objdump`, `swift-demangle`)
-- **Capstone 6** is built from source as a SwiftPM dependency (the
-  `capstone` package MachOSwiftSection also links), so nothing to install.
-  It is the structured decoder behind CFG recovery.
-- **OpenSSL** — `brew install openssl@3`. Only needed for `devices` / `apps`.
+- macOS on Apple Silicon.
+- Xcode 26 with Swift 6.3, which supplies `swiftc`, `llvm-objdump` and
+  `swift-demangle`.
+- Capstone 6, which SwiftPM builds from source. It's the same `capstone`
+  package MachOSwiftSection links, and there's nothing to install. It's the
+  decoder behind CFG recovery.
+- OpenSSL (`brew install openssl@3`), only for `devices` and `apps`.
 
 ```bash
-swift build              # debug   → .build/debug/swiftdc
-swift build -c release --scratch-path .build-release   # release → .build-release/release/swiftdc
-swift test               # 847 tests; fixture-based ones self-skip if unbuilt
+swift build              # debug: .build/debug/swiftdc
+swift build -c release --scratch-path .build-release   # release: .build-release/release/swiftdc
+swift test               # tests that need fixtures skip when they aren't built
 ```
 
-Give a release build its own scratch path when you also build debug: in a
-shared `.build`, switching configurations rebuilds every dependency (about
-5 minutes instead of about 1).
+If you build both debug and release, give release its own scratch path. In a
+shared `.build`, switching configurations rebuilds every dependency, which
+takes about 5 minutes instead of about 1.
 
-`Fixtures/Sample/sample.swift` plus `sample_objc.m` form a metadata-rich program
-(Swift structs/enums/classes/protocols/generics; ObjC methods, properties, ivars,
-categories). Build debug/release/stripped variants with `Fixtures/Sample/build.sh`.
-
----
+`Fixtures/Sample/sample.swift` and `sample_objc.m` make up a program dense with
+metadata: Swift structs, enums, classes, protocols and generics, and ObjC
+methods, properties, ivars and categories. `Tools/fixtures.sh` builds its
+debug, release and stripped variants, along with the other fixtures, and
+caches them. [CONTRIBUTING.md](CONTRIBUTING.md) covers running the tests
+properly.
 
 ## Architecture
 
@@ -433,54 +449,54 @@ MobileDevice (library)       talk to physical iOS devices
   └── InstallationProxy      Browse → installed apps + FairPlay status
 ```
 
-`MobileDevice` is deliberately a separate target: the decompiler proper does not
-depend on OpenSSL, and `swiftdc analyze` works with no device attached.
+`MobileDevice` is its own target so the decompiler doesn't depend on OpenSSL,
+and `swiftdc analyze` works with no device attached.
 
-Parsing leans on [`MachOKit`](https://github.com/p-x9/MachOKit) (Mach-O
-container), [`MachOSwiftSection`](https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection)
-(Swift `__swift5_*` metadata → typed declarations), and
+Parsing builds on [`MachOKit`](https://github.com/p-x9/MachOKit) for the
+Mach-O container,
+[`MachOSwiftSection`](https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection)
+for turning `__swift5_*` metadata into typed declarations, and
 [`MachOObjCSection`](https://github.com/MxIris-Reverse-Engineering/MachOObjCSection)
-+ [`ObjCDump`](https://github.com/p-x9/swift-objc-dump) (ObjC metadata → headers).
-Demangling uses the in-process `Demangling` library. Instruction *text* comes from
-the Xcode-bundled `llvm-objdump`; [`Capstone`](https://github.com/capstone-engine/capstone)
-decodes the same `__text` bytes in-process to add per-instruction control-flow
-class and branch targets.
+with [`ObjCDump`](https://github.com/p-x9/swift-objc-dump) for ObjC headers.
+Demangling uses the in-process `Demangling` library. Instruction text comes
+from the `llvm-objdump` that ships with Xcode, and
+[`Capstone`](https://github.com/capstone-engine/capstone) decodes the same
+`__text` bytes in process to add each instruction's control-flow class and
+branch target.
 
-> **Dependency note:** `MachOSwiftSection` is pinned to a specific `main` commit,
-> not its 0.9.1 release. 0.9.1 does not compile under Swift 6.3 (a missing `await`
-> on `Node.print()` once swift-demangling added an async overload); the fix is on
-> `main`. See the comment in `Package.swift`.
-
----
+MachOKit is pinned to a commit on the
+[CamdenBopp/MachOKit](https://github.com/CamdenBopp/MachOKit) fork. The fork
+adds one change to upstream 0.55.100: it remembers that a standalone binary
+isn't a dyld cache instead of re-checking on every access, which took one
+measured `layout` run from 69.9 s to 4.4 s. `Package.swift` records why each
+dependency is pinned where it is.
 
 ## Design notes and research
 
-**[docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md)** is the honest
-assessment of what stands between this and a decompiler you can trust without
-hand-checking — soundness, completeness, robustness, determinism, usability,
-reconstruction quality, and validation, each with evidence. Start there if you
-want to know what to *believe*, or what to work on next.
-[CLAUDE.md](CLAUDE.md) records the working agreement, including the
-empty-result rule that governs how a "nothing found" answer must be verified.
+[docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md) is the running
+list of what stands between swiftdc and a decompiler you can trust without
+checking by hand. It covers soundness, completeness, robustness, determinism,
+usability, reconstruction quality and validation, each with evidence. Read it
+to learn what to believe, or to find something to work on.
+[CLAUDE.md](CLAUDE.md) is the working agreement, including the empty-result
+rule for verifying a "nothing found" answer.
 
-`docs/research/` holds the engineering record — each file is a probe, a
-hypothesis, and what the evidence actually showed.
+Each file in `docs/research/` records one probe: the hypothesis and what the
+evidence showed.
 
 | Document | Subject |
 |---|---|
-| [decompiler-comparison.md](docs/research/decompiler-comparison.md) | Ghidra / Malimite / LittleSwift comparison; where swiftdc wins and loses; the architectural debt list |
-| [phase1-type-lattice.md](docs/research/phase1-type-lattice.md) | Per-value type lattice (width + signedness); fixed the signed/unsigned comparison defect |
-| [phase2-flowing-types.md](docs/research/phase2-flowing-types.md) | Propagating types through the mid-body type-state |
+| [decompiler-comparison.md](docs/research/decompiler-comparison.md) | Ghidra, Malimite and LittleSwift compared: where swiftdc wins and loses, and the list of architectural debt |
+| [phase1-type-lattice.md](docs/research/phase1-type-lattice.md) | Per-value type lattice (width and signedness), which fixed the signed/unsigned comparison defect |
+| [phase2-flowing-types.md](docs/research/phase2-flowing-types.md) | Propagating types through the type state inside a body |
 | [phase3-edge-indexed-phi.md](docs/research/phase3-edge-indexed-phi.md) | Edge-indexed phi nodes at CFG merges |
 | [phase4-unify-value-and-structure.md](docs/research/phase4-unify-value-and-structure.md) | Unifying the value and structure layers |
 | [phase4b-loop-induction-variables.md](docs/research/phase4b-loop-induction-variables.md) | Induction variables, exit-test rotation, loop-carried accumulators |
-| [computational-bodies.md](docs/research/computational-bodies.md) | Which function bodies are computationally reconstructible, and which are dependency-blocked |
-| [field-map-name-collision.md](docs/research/field-map-name-collision.md) | The one confirmed *fabrication* class, and the qualified-key fix |
-| [value-unknown-causes.md](docs/research/value-unknown-causes.md) | Why the tracer leaves values unknown — the coverage frontier |
-| [goto-structuring.md](docs/research/goto-structuring.md) | The irreducible-CFG `goto` dimension |
+| [computational-bodies.md](docs/research/computational-bodies.md) | Which function bodies can be rebuilt from computation alone, and which are blocked on dependencies |
+| [field-map-name-collision.md](docs/research/field-map-name-collision.md) | The one confirmed class of fabricated names, and the qualified-key fix |
+| [value-unknown-causes.md](docs/research/value-unknown-causes.md) | Why the tracer leaves values unknown |
+| [goto-structuring.md](docs/research/goto-structuring.md) | `goto` in irreducible control flow |
 | [findings-scratch.md](docs/research/findings-scratch.md) | Raw probe evidence (historical; see its status header) |
-
----
 
 ## License
 
