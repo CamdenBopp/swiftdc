@@ -35,7 +35,10 @@ In practice:
 
 When priorities conflict, use this order: soundness, completeness,
 robustness, determinism, then readability. [CLAUDE.md](CLAUDE.md) has the
-full version, and it's worth reading whether or not you use an AI assistant.
+full version. It's written as instructions for the AI agents that work on
+this repository, so parts of it (the host's memory limits, who may push
+where) are about the maintainer's machine, not yours. The rules about
+soundness and verification apply to everyone.
 
 ## Setup
 
@@ -50,6 +53,30 @@ there's no Homebrew Capstone to install. Go builds the Go fixtures, which the
 enforcing test run requires. `openssl@3` is needed only for the `devices`
 and `apps` commands.
 
+Clone this repository, not your fork, and work from `dev`. `master` is a
+snapshot that doesn't share dev's history, so a branch cut from it carries
+snapshot commits that dev doesn't have. `Tools/test.sh affected` also compares your work
+against `origin/dev`, so `origin` should point here:
+
+```bash
+git clone https://github.com/CamdenBopp/swiftdc.git
+```
+
+```bash
+cd swiftdc
+```
+
+```bash
+git switch dev
+```
+
+Then fork on GitHub and add the fork as a second remote, which is where
+you'll push your branch:
+
+```bash
+git remote add fork https://github.com/YOUR-NAME/swiftdc.git
+```
+
 Build the test fixtures once, then build swiftdc:
 
 ```bash
@@ -59,6 +86,9 @@ Tools/fixtures.sh
 ```bash
 swift build
 ```
+
+The first run of each fetches and compiles everything from scratch, so
+expect it to take a while.
 
 `Tools/fixtures.sh` caches fixture builds by content, so it only runs
 `Fixtures/Sample/build.sh` when the fixture sources or toolchain have
@@ -158,8 +188,10 @@ person from retrying it.
 
 ## Pull requests
 
-- Open pull requests against `dev`. That's where development happens;
-  `master` is a periodic snapshot of it.
+- Push your branch to your fork and open the pull request against `dev`.
+  That's where development happens; `master` is a periodic snapshot of it.
+- There's no CI yet, so nothing checks a pull request automatically. Run
+  `Tools/test.sh full` yourself before you open one.
 - Include what you ran: the test tier, and the blast-radius counts if output
   changed.
 - Before merging, the maintainer runs `Tools/integration-gate.sh`: the full

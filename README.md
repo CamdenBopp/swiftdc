@@ -20,16 +20,29 @@ or that its signature wasn't recoverable enough to tell.
 
 ## Quickstart
 
-```bash
-swift build -c release           # .build/release/swiftdc
+You need an Apple Silicon Mac with Xcode 26 ([requirements](#requirements-and-build)).
+Clone and build a release binary, then put it on your `PATH` for this shell:
 
-# Point it at a binary, a .app, a .framework or an .ipa.
+```bash
+git clone https://github.com/CamdenBopp/swiftdc.git && cd swiftdc
+swift build -c release --scratch-path .build-release
+export PATH="$PWD/.build-release/release:$PATH"
+```
+
+The first build fetches and compiles every dependency, so it takes a while.
+Then point it at a binary, a `.app`, a `.framework` or an `.ipa`:
+
+```bash
 swiftdc analyze /path/to/Binary          # declarations and disassembly, grouped
 swiftdc interface MyApp.app              # .swiftinterface-style Swift source
 swiftdc objc MyApp.app --methods         # ObjC headers and recovered bodies
 ```
 
 `swiftdc <path>` with no subcommand runs `analyze`.
+
+The examples below run on the test fixtures in `Fixtures/Sample/`, which
+aren't checked in. Build them with `Tools/fixtures.sh` to run the examples
+yourself.
 
 ### What the output looks like
 
