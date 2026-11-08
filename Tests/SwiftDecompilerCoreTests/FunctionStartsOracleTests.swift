@@ -105,3 +105,19 @@ private func dyldInfoFunctionStarts(_ path: String) -> Int? {
         }
     }
 }
+
+/// An image with no code (`nocode.c`: one global, a 0-byte `__text`) still
+/// carries LC_FUNCTION_STARTS, eight zero bytes. The first
+/// zero ends the list, so it declares no function, as `dyld_info` lists
+/// none; read past it, it declared one at the Mach-O header and a whole
+/// decode threw `parsedNothing`, calling an empty binary a parser defect.
+@Test func anImageWithNoCodeDeclaresNoFunctionIfPresent() async throws {
+    let path = "Fixtures/Sample/libNoCode.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let machO = try BinaryLoader.load(path: path)
+    #expect(try #require(machO.functionStarts).map { $0 }.count > 0, "the raw table is the zero padding this needs")
+    #expect(Disassembler(preset: .default).declaredFunctionCount(in: machO) == 0)
+    #expect(Disassembler.linkerFunctionStarts(of: machO).isEmpty)
+    let functions = try await withStableDependencies { try await Disassembler(preset: .default).disassemble(path: path) }
+    #expect(functions.isEmpty)
+}

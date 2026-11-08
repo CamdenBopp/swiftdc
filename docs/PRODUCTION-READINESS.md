@@ -10085,3 +10085,18 @@ Commit messages on dev stay as they are; these are the true records.
   large Syntax/Parser diffs preserve 36 query snapshots and one dictionary
   producer, and both SDK cross-reference outputs match. Final publication
   still requires the original `Tools/integration-gate.sh --push`.
+
+## 2026-11-08: LC_FUNCTION_STARTS ends at its first zero
+
+- **FIXED (diagnostics, soundness): an image with no code was called a
+  parser defect.** `nocode.c` (one global, no function) has a 0-byte
+  `__text` and an LC_FUNCTION_STARTS of eight zero bytes. dyld reads the
+  first zero as the end of the list; MachOKit's iterator reads every byte
+  as a delta, so the list held one start at `__TEXT`'s base, the Mach-O
+  header. `disasm` then threw `parsedNothing` ("This is a parser defect,
+  not an empty binary") for a binary that is empty, and
+  `MemberAddressAudit` read the image as one that declares starts.
+  `Disassembler.linkerFunctionStarts` stops at the first zero delta; both
+  callers use it. `disasm libNoCode.dylib` now prints "This binary
+  contains no recoverable functions." Test
+  `anImageWithNoCodeDeclaresNoFunctionIfPresent`.

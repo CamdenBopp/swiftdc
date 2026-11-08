@@ -838,3 +838,6 @@ $CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib summary_recursive_effec
 
 echo "==> conditional external tail effects, both paths and frame aliases (conditional_tail_effects.s)"
 $CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib conditional_tail_effects.s -o libConditionalTailEffects.dylib
+
+echo "==> a dylib with data and no code: LC_FUNCTION_STARTS is only zero padding (nocode.c, -O1)"
+xcrun clang -arch arm64 -O1 -dynamiclib nocode.c -o libNoCode.dylib

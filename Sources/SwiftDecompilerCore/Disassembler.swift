@@ -3040,6 +3040,28 @@ public struct Disassembler: Sendable {
         functionStarts(of: machO).count
     }
 
+    /// LC_FUNCTION_STARTS as dyld reads it: deltas from `__TEXT`'s address,
+    /// ending at the first zero. MachOKit's iterator reads past it, through
+    /// the zero padding, each zero another start at the previous address. In
+    /// an image that lists starts that only repeats the last one, but an
+    /// image with none (`nocode.c`: no code, an 8-byte list of zeros)
+    /// came back with one start at `__TEXT`'s base, which is the Mach-O
+    /// header: a whole decode found no instruction where that start promised
+    /// a function and threw `parsedNothing`, "a parser defect, not an empty
+    /// binary", for a binary that is empty.
+    static func linkerFunctionStarts(of machO: MachOFile) -> [UInt64] {
+        guard let starts = machO.functionStarts else { return [] }
+        var previous = machO.segments.first { $0.segmentName == "__TEXT" }.map { UInt64($0.virtualMemoryAddress) }
+        var addresses: [UInt64] = []
+        for entry in starts {
+            let address = UInt64(entry.offset)
+            if address == previous { break }
+            addresses.append(address)
+            previous = address
+        }
+        return addresses
+    }
+
     /// VM addresses of every function start from LC_FUNCTION_STARTS, **deduped**.
     ///
     /// The load command is a ULEB128 list of *deltas*, zero-padded to alignment.
@@ -3060,10 +3082,7 @@ public struct Disassembler: Sendable {
     /// which its internal linker writes in place of LC_FUNCTION_STARTS.
     func functionStarts(of machO: MachOFile) -> [UInt64] {
         var seen: Set<UInt64> = []
-        var starts = (machO.functionStarts.map(Array.init) ?? []).compactMap { entry in
-            let address = UInt64(entry.offset)
-            return seen.insert(address).inserted ? address : nil
-        }
+        var starts = Self.linkerFunctionStarts(of: machO).filter { seen.insert($0).inserted }
         for entry in goFunctions(in: machO)?.entries ?? [] where seen.insert(entry.address).inserted {
             starts.append(entry.address)
         }
