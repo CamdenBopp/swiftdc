@@ -71,7 +71,10 @@ import Testing
     let outcomes = recorder.records.filter { $0.event == .returnOutcome }
     let unnamed = outcomes.filter { $0.function?.name.hasPrefix("sub_") == true }
     #expect(!unnamed.isEmpty)
-    #expect(unnamed.allSatisfy { $0["status"] == .label("no-signature") },
+    // One whose callers prove a result (`callerProvenResults`) reports how
+    // that return went; none says `void`.
+    #expect(!unnamed.contains { $0["status"] == .label("void") },
             "\(unnamed.map { "\($0.function?.name ?? "?") \($0["status"].map(\.description) ?? "?")" })")
+    #expect(unnamed.contains { $0["status"] == .label("no-signature") })
     #expect(outcomes.contains { $0.function?.name.hasSuffix("-> ()") == true && $0["status"] == .label("void") })
 }

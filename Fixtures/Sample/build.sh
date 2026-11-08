@@ -862,3 +862,6 @@ $CLANG -arch arm64 -O2 -dynamiclib indirect_args.c -o libIndirectArgs.dylib
 
 echo "==> a struct's self after a method's formals and as a getter's words (valueself.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name ValueSelf valueself.swift -o libValueSelf.dylib
+
+echo "==> functions with no signature whose callers prove (or do not prove) their result (caller_proven.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib caller_proven.s -o libCallerProven.dylib

@@ -1882,6 +1882,28 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — a function with no signature never showed its return value.**
+  A stripped `sub_…` rendered `return` or nothing, even when every caller
+  used its result: sample.stripped's `Direction.init(rawValue:)`
+  specialization showed no return. Compiled code reads x0 after a call only
+  when the callee leaves a result there, so a callee whose in-image callers
+  read x0 after the call, and none of them x1, v0, v1 or x21, now returns
+  its x0 value. It must also leave x21 as it found it, and a caller that
+  returns straight after the call (forwarding an error it may hold) counts
+  as reading x21, so a throwing thunk proves nothing. The fact is stored on
+  the function, so the structured renderer's tail exits say `return ?`
+  rather than a bare `return`.
+  GoodLinks (`xrefs --unreferenced --probe`, `render.return-outcome`):
+  recovered 1,221 -> 2,504, no-signature 43,463 -> 38,168. Checked against
+  the unstripped twins of four swift-syntax dylibs: of 353 new stripped
+  returns, 100 match the signed render, 239 are accessors whose signed
+  render has only a bare `return`, and the 14 where both show a value were
+  read by hand (two class initializers return `self`, which the signed
+  render leaves `?`). Cost +0.96% instructions in total.
+  OPEN: a float result (v0) needs its width from a type, and a two-word
+  result whose second word no in-image caller reads would show only its
+  first word; none was found among the 353.
+
 - **FIXED — a class parameter declined on a simple name its qualified
   name settles.** `func readShared(_ s: A.Shared)` read `?` because
   `B.Shared` is a struct, and `C1.Dup` because `C2.Dup` collided in the

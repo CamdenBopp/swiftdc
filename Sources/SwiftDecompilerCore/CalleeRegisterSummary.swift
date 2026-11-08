@@ -77,6 +77,21 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// x0 it was called with: a lone `ret` (`gen<T>(_ a: Int, _: T) -> Int {
     /// a }` specialized) returns its argument. True when nothing is known.
     var mayWriteResult = true
+    /// What this body reads of each in-image callee's result: after a `bl`
+    /// to it and before the end of the block, which of x0, x1, v0 and v1 an
+    /// instruction reads before anything writes it. Compiled code reads a
+    /// result register after a call only when the callee returns one there,
+    /// so these are evidence about the callee's result (`callerProvenResults`).
+    var resultReads: [UInt64: ResultRead] = [:]
+
+    struct ResultRead: OptionSet, Sendable, Hashable {
+        let rawValue: UInt8
+        static let x0 = ResultRead(rawValue: 1), x1 = ResultRead(rawValue: 2)
+        static let v0 = ResultRead(rawValue: 4), v1 = ResultRead(rawValue: 8)
+        /// x21, Swift's error register: a caller that reads it after the
+        /// call is testing for a throw.
+        static let x21 = ResultRead(rawValue: 16)
+    }
     /// Calls and tail branches to other in-image functions, with the argument
     /// registers (bit n for xn) the body has not written at them on some
     /// path: the call reads those of them its target reads.
@@ -449,6 +464,10 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             storesOnlyToStack: storesOnlyToStack,
             memoryEffect: readFacts?.memoryEffect ?? CalleeMemoryEffect.discover(in: function))
         summary.mayWriteResult = writesResult
+        summary.resultReads = readFacts?.resultReads ?? Self.resultReads(
+            instructions, blockStarts: Set(blocks.map(\.startAddress)), isFunction: isFunction,
+            provenNonThrowing: DisassembledFunction.splitSignature(function.analysisDisplayName)
+                .map { !$0.isThrowing } ?? false)
         return summary
     }
 
@@ -514,6 +533,65 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         for start in callers {
             summaries[start] = recompute(start, { effects[$0] ?? CalleeEffect() })
                 ?? summaries[start]?.claimingNothing()
+        }
+    }
+
+    /// After each `bl` to an in-image function, the result registers read
+    /// before written, to the end of the call's block.
+    ///
+    /// A caller that returns right after the call with x21 as the callee
+    /// left it may be handing on the callee's error: a throwing witness thunk
+    /// is `bl f; and w0, w0, #1; ret`. Unless its own signature says it does
+    /// not throw, that counts as reading x21.
+    static func resultReads(
+        _ instructions: [Instruction], blockStarts: Set<UInt64>, isFunction: (UInt64) -> Bool,
+        provenNonThrowing: Bool = false
+    ) -> [UInt64: ResultRead] {
+        var reads: [UInt64: ResultRead] = [:]
+        let keys: [(String, ResultRead)] = [("x0", .x0), ("x1", .x1), ("v0", .v0), ("v1", .v1), ("x21", .x21)]
+        for (index, insn) in instructions.enumerated() where insn.controlFlow == .call {
+            guard let target = insn.branchTarget, isFunction(target) else { continue }
+            var read: ResultRead = []
+            var written = Set<String>()
+            var next = index + 1
+            while next < instructions.count, !blockStarts.contains(instructions[next].address),
+                  let detail = instructions[next].detail {
+                let used = detail.readRegisterKeys
+                for (key, bit) in keys where used.contains(key) && !written.contains(key) { read.insert(bit) }
+                written.formUnion(detail.writtenRegisterKeys)
+                let flow = instructions[next].controlFlow
+                if !provenNonThrowing, !written.contains("x21"),
+                   flow == .return || (flow == .branch && instructions[next].branchTarget == nil) {
+                    read.insert(.x21)
+                }
+                if flow != .sequential { break }
+                next += 1
+            }
+            if !read.isEmpty { reads[target, default: []].formUnion(read) }
+        }
+        return reads
+    }
+
+    /// Each in-image function whose callers prove its result is one integer
+    /// or pointer in x0: some caller reads x0 after calling it and none reads
+    /// x1, v0 or v1. A caller reading two registers, or both banks, proves no
+    /// one register.
+    /// A function that may throw proves none either: its exit can be a throw
+    /// (an error in x21), and a stripped one has no `throws` to say so. A
+    /// caller reading x21 after the call, or a body that leaves x21 changed,
+    /// is that sign.
+    static func callerProvenResults(
+        _ summaries: [UInt64: CalleeRegisterSummary]
+    ) -> [UInt64: Disassembler.SwiftReturnRegister] {
+        var seen: [UInt64: ResultRead] = [:]
+        for caller in summaries.keys.sorted() {
+            for (callee, read) in summaries[caller]?.resultReads ?? [:] { seen[callee, default: []].formUnion(read) }
+        }
+        // Only x0: a float's width (Float or Double) is its type's, which a
+        // function with no signature does not have, so v0 proves nothing
+        // printable yet.
+        return seen.filter { summaries[$0.key]?.clobberedCalleeSaved.contains("x21") == false }.compactMapValues { read in
+            read == .x0 ? .integer : nil
         }
     }
 
@@ -590,6 +668,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             definitelyClobbered: definitelyClobbered, restoredFrom: restoredFrom, callees: callees,
             outgoingCalls: outgoingCalls, storesOnlyToStack: storesOnlyToStack, memoryEffect: memoryEffect)
         summary.mayWriteResult = mayWriteResult
+        summary.resultReads = resultReads
         return summary
     }
 
@@ -699,6 +778,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 storesOnlyToStack: old.storesOnlyToStack, memoryEffect: old.memoryEffect)
             guard new != old else { continue }
             new.mayWriteResult = old.mayWriteResult
+            new.resultReads = old.resultReads
             summaries[start] = new
             guard new.effect != old.effect else { continue }
             for caller in callers[start] ?? [] where !queued.contains(caller) {

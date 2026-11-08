@@ -402,6 +402,10 @@ public struct DisassembledFunction: Sendable {
     /// The final analysis graph, when this function came through enrichment.
     /// It stores only topology; instruction payloads always come from `instructions`.
     private let retainedCFG: FunctionCFG?
+    /// Its callers prove it returns one integer word in x0, though no
+    /// signature says so (`CalleeRegisterSummary.callerProvenResults`). Set by
+    /// analysis; every rebuild carries it.
+    var callerProvenResult = false
 
     /// Legacy/manual functions safely recover their graph on demand without
     /// changing the public initializer or introducing mutable shared storage.
@@ -450,24 +454,27 @@ public struct DisassembledFunction: Sendable {
     /// Replacing machine instructions invalidates the retained topology, even
     /// at the same count. Every other function field is carried over.
     func replacingInstructions(_ instructions: [Instruction]) -> DisassembledFunction {
-        DisassembledFunction(
+        var result = DisassembledFunction(
             symbol: symbol, demangledName: demangledName, startAddress: startAddress,
             instructions: instructions, source: source, objcMethod: objcMethod,
             foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet,
             switchTargets: switchTargets, semanticName: semanticName
         )
+        result.callerProvenResult = callerProvenResult
+        return result
     }
 
     /// A payload-only rebuild: addresses, order, control flow, branch targets,
     /// trap classification and switch cases must remain unchanged. The graph
     /// owns no instruction copies, so its views read the new payloads.
     func replacingInstructionPayload(_ instructions: [Instruction]) -> DisassembledFunction {
-        let result = DisassembledFunction(
+        var result = DisassembledFunction(
             symbol: symbol, demangledName: demangledName, startAddress: startAddress,
             instructions: instructions, source: source, objcMethod: objcMethod,
             foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet,
             switchTargets: switchTargets, semanticName: semanticName, retainedCFG: retainedCFG
         )
+        result.callerProvenResult = callerProvenResult
         retainedCFG?.observeUse(of: result, consumer: "instruction-payload-copy")
         return result
     }
@@ -475,22 +482,26 @@ public struct DisassembledFunction: Sendable {
     /// Attach a graph proven for this exact final instruction topology.
     func retainingCFG(_ cfg: FunctionCFG) -> DisassembledFunction {
         cfg.observeUse(of: self, consumer: "final-cfg-attachment")
-        return DisassembledFunction(
+        var result = DisassembledFunction(
             symbol: symbol, demangledName: demangledName, startAddress: startAddress,
             instructions: instructions, source: source, objcMethod: objcMethod,
             foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet,
             switchTargets: switchTargets, semanticName: semanticName, retainedCFG: cfg
         )
+        result.callerProvenResult = callerProvenResult
+        return result
     }
 
     /// The same function with its recovered jump tables attached.
     func attachingSwitchTargets(_ tables: [UInt64: [UInt64]]) -> DisassembledFunction {
-        DisassembledFunction(
+        var result = DisassembledFunction(
             symbol: symbol, demangledName: demangledName, startAddress: startAddress,
             instructions: instructions, source: source, objcMethod: objcMethod,
             foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet,
             switchTargets: tables, semanticName: semanticName
         )
+        result.callerProvenResult = callerProvenResult
+        return result
     }
 
     /// The same function with the async-funclet grouping attached and, for a
@@ -970,6 +981,7 @@ public struct Disassembler: Sendable {
             indirectResultUses: indirectResultUses,
             registerSummaries: registerSummaries,
             outlinedFragments: outlinedFragments,
+            callerProvenResults: CalleeRegisterSummary.callerProvenResults(registerSummaries),
             asyncIndex: asyncIndex, asyncChainSlots: chainSlots
         )
 
@@ -1311,6 +1323,7 @@ public struct Disassembler: Sendable {
                 in: machO, fieldMaps: fieldMaps, classTypeIndex: classTypeIndex, demangle: demangle),
             indirectResultUses: indirectResultUses,
             registerSummaries: summaries,
+            callerProvenResults: CalleeRegisterSummary.callerProvenResults(summaries),
             asyncIndex: asyncIndex, asyncChainSlots: chainSlots
         )
 
@@ -1560,6 +1573,7 @@ public struct Disassembler: Sendable {
             ),
             registerSummaries: registerSummaries,
             outlinedFragments: outlinedFragments,
+            callerProvenResults: CalleeRegisterSummary.callerProvenResults(registerSummaries),
             asyncIndex: asyncIndex, asyncChainSlots: chainSlots
         )
         functions = functions.map { analyzeFunction($0, context: context) }
@@ -1620,6 +1634,10 @@ public struct Disassembler: Sendable {
         /// Function start → its body, when it is short and straight-line
         /// enough to be an outlined fragment a call site can inline.
         var outlinedFragments: [UInt64: OutlinedFragment] = [:]
+        /// Function start → the register its callers prove its result is in
+        /// (`CalleeRegisterSummary.callerProvenResults`), for a function no
+        /// signature describes.
+        var callerProvenResults: [UInt64: SwiftReturnRegister] = [:]
         /// Async funclet chains and their suspension points.
         let asyncIndex: AsyncFuncletIndex
         /// Per resume funclet, the context-slot values definitely initialized
@@ -1873,7 +1891,11 @@ public struct Disassembler: Sendable {
         } else {
             [:]
         }
-        return enrichCallArguments(
+        let callerProvenResult = objcMethod == nil && symbolEntry == nil && asyncEntry == nil
+            && function.asyncFunclet == nil
+            && !DisassembledFunction.signatureKnown(displayName: function.analysisDisplayName, objcSignature: nil)
+            ? context.callerProvenResults[function.startAddress] : nil
+        var enriched = enrichCallArguments(
             in: function, cfg: cfg, resolver: context.resolver, swiftTargets: context.swiftTargets,
             entry: asyncEntry ?? entry,
             fieldMap: fieldMap,
@@ -1902,8 +1924,11 @@ public struct Disassembler: Sendable {
             registerSummaries: context.registerSummaries,
             selfMembers: context.selfMembers,
             callResultBanks: context.callResultBanks,
-            inlinedPrefixes: inlined.prefixes
+            inlinedPrefixes: inlined.prefixes,
+            callerProvenResult: callerProvenResult
         )
+        enriched.callerProvenResult = callerProvenResult != nil
+        return enriched
     }
 
     /// Each `bl` or `b` to an outlined fragment the tracer can model whole,
@@ -6289,7 +6314,8 @@ public struct Disassembler: Sendable {
         registerSummaries: [UInt64: CalleeRegisterSummary] = [:],
         selfMembers: SelfMemberCache = SelfMemberCache(),
         callResultBanks: CallResultBankCache = CallResultBankCache(),
-        inlinedPrefixes: [UInt64: [Instruction]] = [:]
+        inlinedPrefixes: [UInt64: [Instruction]] = [:],
+        callerProvenResult: SwiftReturnRegister? = nil
     ) -> DisassembledFunction {
         // Floating-point signature info: which arguments are float, and whether
         // the function's float type is double-precision — so a literal operand
@@ -6832,11 +6858,16 @@ public struct Disassembler: Sendable {
         // Facts of the function's own signature, read once rather than at
         // every instruction: each parses the demangled name, and the return
         // register walks the CFG.
-        let provenMachineValueReturn = function.hasProvenMachineValueReturn
+        // A function no signature describes returns what its callers prove
+        // it does (`callerProvenResult`): one of them reads x0 after calling
+        // it, and none reads x1, v0, v1 or the error register.
+        let provenMachineValueReturn = function.hasProvenMachineValueReturn || callerProvenResult != nil
         let signatureReturnsValue = DisassembledFunction.signatureReturnsValue(
             displayName: function.analysisDisplayName, objcSignature: function.objcMethod?.signature)
+            || callerProvenResult != nil
         let functionReturnRegister = Self.swiftReturnRegister(
             of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cfg: cfg)
+            ?? callerProvenResult
 
         // Callee name per call/tail-call address, for nesting result expressions.
         var calleeByAddress: [UInt64: String] = [:]
@@ -10215,8 +10246,7 @@ public struct Disassembler: Sendable {
                 let renderedReturn = exits.lazy.compactMap { exit -> String? in
                     if case .normal(let value?) = exit { "return \(value)" } else { nil }
                 }.first
-                let returnsValue = DisassembledFunction.signatureReturnsValue(
-                    displayName: function.analysisDisplayName, objcSignature: function.objcMethod?.signature)
+                let returnsValue = signatureReturnsValue
                 let status = scalarTailReturns.contains(insn.address) ? "tail-call"
                     : throwExits.contains(insn.address) ? "throw"
                     : notedForward ? "forwarded"

@@ -33,7 +33,7 @@ public extension DisassembledFunction {
             // cannot throw, but it still threads x21 under the convention of
             // the throwing function it specializes.
             threadsSwiftError: Self.splitSignature(analysisDisplayName)?.isThrowing ?? false,
-            returnsValue: Self.signatureReturnsValue(
+            returnsValue: callerProvenResult || Self.signatureReturnsValue(
                 displayName: analysisDisplayName, objcSignature: objcMethod?.signature
             ),
             isAsync: asyncFunclet != nil || Self.splitSignature(analysisDisplayName)?.isAsync == true
@@ -111,7 +111,8 @@ public extension DisassembledFunction {
         if let signature = Self.splitSignature(analysisDisplayName) {
             if signature.isAsync || (signature.isThrowing && !specializationBindsThrownTypeToNever) || signature.result == "Swift.Never" || signature.result == "Never" { return false }
         }
-        return Self.signatureReturnsValue(displayName: analysisDisplayName, objcSignature: objcMethod?.signature)
+        return callerProvenResult
+            || Self.signatureReturnsValue(displayName: analysisDisplayName, objcSignature: objcMethod?.signature)
     }
 }
 
