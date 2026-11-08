@@ -7190,9 +7190,15 @@ if a test was observed to fail without the fix.
   only `entryBackEdge` (listing loses `args(arg0)`, pseudo and structured
   lose the call), across 169 fixtures × listing, pseudo, structured,
   xrefs.
-- **OPEN (soundness): `go:buildid` is data at the start of `__text`.** The
+- **FIXED 2026-11-08 (soundness): `go:buildid` is data at the start of `__text`.** The
   table lists it as a function at `runtime.text`; its bytes are the build
-  ID string, decoded as instructions (the data-in-`__text` item above).
+  ID string, decoded as instructions (`umlal2 v31.4s, …`), and the
+  unstripped image called its two symbols an identical-code fold. When the
+  table's name and the bytes agree (`\xff Go build ID: "`), the span is
+  data (`GoFunctionTable.dataSpans`): its bytes are dropped from the
+  decode, it keeps the name `_go:buildid`, and it renders as no code,
+  whole and filtered. Tests `theGoBuildIDIsDataNotCodeIfPresent`,
+  `aBuildIDSpanNeedsItsNameAndItsBytes`.
 
 ## 2026-10-31: boundaries the corpus measures but nothing supplies
 
@@ -8387,9 +8393,15 @@ per-accessor prefix (`10712d8`) bounds one body, not the sum.
   only `entryBackEdge` (listing loses `args(arg0)`, pseudo and structured
   lose the call), across 169 fixtures × listing, pseudo, structured,
   xrefs.
-- **OPEN (soundness): `go:buildid` is data at the start of `__text`.** The
+- **FIXED 2026-11-08 (soundness): `go:buildid` is data at the start of `__text`.** The
   table lists it as a function at `runtime.text`; its bytes are the build
-  ID string, decoded as instructions (the data-in-`__text` item above).
+  ID string, decoded as instructions (`umlal2 v31.4s, …`), and the
+  unstripped image called its two symbols an identical-code fold. When the
+  table's name and the bytes agree (`\xff Go build ID: "`), the span is
+  data (`GoFunctionTable.dataSpans`): its bytes are dropped from the
+  decode, it keeps the name `_go:buildid`, and it renders as no code,
+  whole and filtered. Tests `theGoBuildIDIsDataNotCodeIfPresent`,
+  `aBuildIDSpanNeedsItsNameAndItsBytes`.
 
 ## 2026-10-31: boundaries the corpus measures but nothing supplies
 

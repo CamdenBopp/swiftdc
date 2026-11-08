@@ -1142,11 +1142,13 @@ public struct Disassembler: Sendable {
         }
         // The functions of one span, as `segment` cuts the whole list: a
         // span ends at the next span boundary, so no function crosses two.
+        let goData = goFunctions(in: machO)?.dataSpans ?? [:]
         func functions(of span: (start: UInt64, stop: UInt64)) -> [DisassembledFunction] {
             segment(
                 decode(span), boundaries: boundaries, labelByAddress: labelByAddress,
                 foldedByAddress: foldedByAddress, metadataNames: metadataNames, objcIndex: objcIndex,
-                sortedBoundaries: sortedBoundaries)
+                sortedBoundaries: sortedBoundaries,
+                dataSpans: goData.filter { $0.key >= span.start && $0.key < span.stop })
         }
 
         // Pass 1: name-level stubs for the name index, and every call
@@ -1379,7 +1381,8 @@ public struct Disassembler: Sendable {
             foldedByAddress: foldedByAddress,
             metadataNames: metadataNames,
             objcIndex: objcIndex,
-            emitsUndecodedSpans: decodedWholeImage
+            emitsUndecodedSpans: decodedWholeImage,
+            dataSpans: goFunctions(in: machO)?.dataSpans ?? [:]
         )
 
         // Resolve adrp/add(+ldr) operand references to function, type-descriptor,
@@ -2888,10 +2891,29 @@ public struct Disassembler: Sendable {
         metadataNames: [UInt64: String],
         objcIndex: ObjCMetadataIndex,
         emitsUndecodedSpans: Bool = false,
-        sortedBoundaries: [UInt64]? = nil
+        sortedBoundaries: [UInt64]? = nil,
+        dataSpans: [UInt64: (end: UInt64, name: String)] = [:]
     ) -> [DisassembledFunction] {
         var functions: [DisassembledFunction] = []
         var current: [Instruction] = []
+        // A span a function table lists but whose bytes are data (Go's
+        // build ID) keeps its name and boundary and loses its "instructions";
+        // the two symbols at its address (`go:buildid`, `runtime.text`, a
+        // marker) are no identical-code fold.
+        let instructions = dataSpans.isEmpty ? instructions : instructions.filter { insn in
+            !dataSpans.contains { insn.address >= $0.key && insn.address < $0.value.end }
+        }
+        var labelByAddress = labelByAddress, foldedByAddress = foldedByAddress
+        for (start, span) in dataSpans {
+            foldedByAddress[start] = nil
+            labelByAddress[start] = "_" + span.name
+        }
+        // Decoded one span at a time, a data span is a span with nothing.
+        if instructions.isEmpty, let only = dataSpans.keys.first, dataSpans.count == 1 {
+            return [makeFunction(start: only, instructions: [], labelByAddress: labelByAddress,
+                                 foldedByAddress: foldedByAddress, metadataNames: metadataNames,
+                                 objcIndex: objcIndex)]
+        }
         var start: UInt64 = instructions.first?.address ?? 0
 
         func flush() {
@@ -2931,7 +2953,7 @@ public struct Disassembler: Sendable {
                 // A boundary passed with no instruction of its own before
                 // the next one marks a span that is not code. Only a whole
                 // decode knows that; a filtered one skips other functions.
-                if let passed = crossed, emitsUndecodedSpans {
+                if let passed = crossed, emitsUndecodedSpans || dataSpans[passed] != nil {
                     flush()
                     functions.append(makeFunction(start: passed, instructions: [],
                                                   labelByAddress: labelByAddress,
