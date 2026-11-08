@@ -8413,9 +8413,15 @@ bitcode; Electron's `PROTECTED_MEMORY`).
   accessor helper, so a synthesized one keeps its line (`-wide5` in
   `accessorshapes.m`, as it did before). A kept line is the safe way
   round.
-- **OPEN (soundness): a getter's result is not followed to the `ret`.**
-  An accessor that loads an ivar and then returns a constant passes
-  `AccessorValueFlow`, which does not ask whether the value reached x0.
+- **FIXED (soundness): a getter's result is not followed to the `ret`.**
+  An accessor that loads an ivar and then returns a constant passed
+  `AccessorValueFlow`, which did not ask whether the value reached x0.
+  `accessorshapes.m`'s `- (int)ignored { int seen = _ignored; (void)seen;
+  return 3; }` at -O0 (`ldr w8, [x8, #0x18]; str w8, [sp, #0xc]; mov w0,
+  #3; ret`) was dropped from the header and its property marked
+  `@synthesize`. A non-void getter that ends in `ret` now needs the loaded
+  value in x0 (v0 for a float); a tail call to a storage helper and a
+  struct result are not checked. Test `aComputedAccessorStaysInTheHeaderIfPresent`.
 
 ## 2026-11-04: which register holds a parameter at entry
 

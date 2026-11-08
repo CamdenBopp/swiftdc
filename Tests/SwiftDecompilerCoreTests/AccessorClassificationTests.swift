@@ -248,7 +248,7 @@ private let accessorGrowthCeiling = 4_096
     let expected = [
         "- (void)setClamped:(int)arg0;", "- (void)setBumped:(int)arg0;", "- (void)setFixedValue:(int)arg0;",
         "- (void)setTwice:(int)arg0;", "- (int)next;", "- (int)floorValue;", "- (long long)nodeValue;",
-        "- (void)setPatched:(Wide)arg0;",
+        "- (int)ignored;", "- (void)setPatched:(Wide)arg0;",
     ]
     for level in ["O0", "O1", "Os"] {
         let path = "Fixtures/Sample/libAccessorShapes.\(level).dylib"
@@ -259,6 +259,17 @@ private let accessorGrowthCeiling = 4_096
         let memcpyCopies = level == "O0" ? ["- (Wide)wide5;", "- (void)setWide5:(Wide)arg0;", "- (Wide)patched;"] : []
         #expect(methods.filter { $0 != "- (void).cxx_destruct;" }.sorted() == (expected + memcpyCopies).sorted(), "\(level)")
     }
+}
+
+/// `objc_thunk_return.swift`: the `@objc` getter loads the ivar into x0 and
+/// returns it through `objc_retainAutoreleaseReturnValue`, which hands back
+/// its argument, so the getter is synthesized and its line is implied.
+@Test func aGetterReturningThroughARetainIsSynthesizedIfPresent() throws {
+    let path = "Fixtures/Sample/libObjCThunkReturn.dylib"
+    guard FileManager.default.fileExists(atPath: path), let run = try runCLI(["objc", path]) else { return }
+    let lines = run.stdout.split(separator: "\n").map(String.init)
+    #expect(lines.contains { $0.contains("@property") && $0.contains(" label") }, "\(lines)")
+    #expect(!lines.contains { $0.hasPrefix("- (NSString *)label") }, "\(lines)")
 }
 
 /// With no verdict the default header keeps the accessor and says why, one

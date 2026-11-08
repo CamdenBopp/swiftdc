@@ -237,7 +237,7 @@ extension ObjCDumper {
             }
             if insn.controlFlow == .call {
                 selfRegisters = selfRegisters.filter { (19...28).contains($0) }
-                flow.endCall()
+                flow.endCall(DisassembledFunction.calleeName(of: insn))
             }
             if let detail = insn.detail {
                 let copied: Int? = {
@@ -264,6 +264,16 @@ extension ObjCDumper {
             guard isAccessorRuntimeHelper(callee) else { return false }
             if propertyStorageHelpers.contains(where: { callee.hasPrefix($0) }) { touchesIvar = true }
         }
+        // A getter that returns from its own body hands back the ivar: x0,
+        // or v0 for a float, holds the loaded value at the `ret`. One that
+        // loads it and then returns a constant (`ldr w8, [x8, #8]; str w8,
+        // [sp, #12]; mov w0, #3; ret` at -O0) is custom. A tail call to a
+        // property-storage helper returns what the helper does, and a struct
+        // goes back through x8 or a register pair, so neither is checked.
+        if last.controlFlow == .return, let method = function.objcMethod, !method.returnsVoid,
+           !flow.movesAggregate, !flow.returnsIvarValue(inFloat: method.returnsOneFloat) {
+            return false
+        }
         return touchesIvar
     }
 
@@ -281,8 +291,8 @@ extension ObjCDumper {
     /// through the x2 it was passed by, its getter writes it through the x8
     /// the caller gave, which is what `movesAggregate` allows.
     ///
-    /// Not modelled: whether the value reaches x0 at the `ret`, so a getter
-    /// that loads an ivar and then returns a constant still passes.
+    /// Whether the value reaches x0 at the `ret` is asked by the caller
+    /// (`returnsIvarValue`).
     private struct AccessorValueFlow {
         /// Registers holding an incoming argument unchanged, to the argument
         /// register it came in. x0 is self and x1 `_cmd`; a getter that uses
@@ -296,11 +306,15 @@ extension ObjCDumper {
         private var ivarSlots: Set<String> = []
         /// Arguments already stored through self.
         private var storedArguments: Set<String> = []
-        private let movesAggregate: Bool
+        let movesAggregate: Bool
         /// x8 still holds the caller's result buffer.
         private var resultBufferLive = true
 
         init(movesAggregate: Bool) { self.movesAggregate = movesAggregate }
+
+        /// Whether the result register, x0 or v0 for a float, holds a value
+        /// loaded through self.
+        func returnsIvarValue(inFloat: Bool) -> Bool { ivarValues.contains(inFloat ? "v0" : "x0") }
 
         private static let loads = ["ldr", "ldur", "ldp", "ldar", "ldapr", "ldapur"]
         private static let stores = ["str", "stur", "stp", "stlr", "stlur"]
@@ -317,11 +331,29 @@ extension ObjCDumper {
             if key == "x8" { resultBufferLive = false }
         }
 
-        /// A call leaves only the callee-saved x19 to x28.
-        mutating func endCall() {
+        /// A call leaves only the callee-saved x19 to x28, and its result in
+        /// x0. That result is the ivar's value when the callee hands back its
+        /// own argument and x0 held the value (`ldr x0, [x19, x20]; bl
+        /// objc_retainAutoreleaseReturnValue`, a Swift `@objc` getter), or
+        /// when the callee is the storage helper that reads the property
+        /// (`objc_getProperty`, `objc_loadWeakRetained`).
+        mutating func endCall(_ callee: String?) {
+            let resultIsIvar = callee.map { callee in
+                Self.returnsItsArgument.contains(callee) && ivarValues.contains("x0")
+                    || Self.readsProperty.contains(where: callee.hasPrefix)
+            } ?? false
             arguments = arguments.filter { Self.survivesCall($0.key) }
             ivarValues = ivarValues.filter(Self.survivesCall)
+            if resultIsIvar { ivarValues.insert("x0") }
         }
+
+        /// Runtime calls whose result is the object they were passed.
+        private static let returnsItsArgument: Set<String> = [
+            "objc_retain", "objc_autorelease", "objc_retainAutorelease",
+            "objc_autoreleaseReturnValue", "objc_retainAutoreleaseReturnValue",
+            "swift_retain", "swift_unknownObjectRetain", "swift_bridgeObjectRetain",
+        ]
+        private static let readsProperty = ["objc_getProperty", "objc_loadWeakRetained"]
 
         private static func survivesCall(_ key: String) -> Bool {
             key.first == "x" && Int(key.dropFirst()).map((19...28).contains) == true
