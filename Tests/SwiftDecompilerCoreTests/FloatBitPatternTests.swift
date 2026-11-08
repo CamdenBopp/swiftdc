@@ -184,6 +184,21 @@ import Testing
     #expect(DisassembledFunction.strippedCallee("M.g(x: (a: Swift.Int, b: Swift.Int)) -> ()") == "M.g(x:)")
 }
 
+/// `dup v0.2d, x0; ret` returning a Double is `Double(bitPattern:)` of the
+/// integer (native execution reads IEEE bits); the lanes carried the bare
+/// integer and it rendered `return arg0`. Moved back with `fmov x0, d1` the
+/// bits are the integer again.
+@Test func aDupIntoAVectorRegisterIsTheIntegersBitsIfPresent() async throws {
+    let path = "Fixtures/Sample/libDupBits.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func render(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("DupBits.\(name)(") }).renderStructured()
+    }
+    #expect(try render("bitsToDouble").contains("return Double(bitPattern: arg0)\n"))
+    #expect(try render("bitsToInt").contains("return arg0\n"))
+}
+
 /// The slot's half: which register file stored a word decides what a reload
 /// of it is, and what is not known claims nothing.
 @Test func aStackSlotRemembersTheRegisterFileThatStoredIt() throws {

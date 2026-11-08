@@ -844,3 +844,6 @@ $CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib conditional_tail_effect
 
 echo "==> a dylib with data and no code: LC_FUNCTION_STARTS is only zero padding (nocode.c, -O1)"
 xcrun clang -arch arm64 -O1 -dynamiclib nocode.c -o libNoCode.dylib
+
+echo "==> dup of a general register into a vector register, returned as a Double (dup_bits.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib dup_bits.s -o libDupBits.dylib

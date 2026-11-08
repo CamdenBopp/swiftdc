@@ -3526,8 +3526,15 @@ public struct ValueTracer: Sendable {
                   let lane = detail.operands[1].operand.register, lane.kind == .gpr,
                   lane.widthBits == 64, dest.widthBits == 128
             else { clobber(detail, into: &registers); return }
+            // Each lane is the integer's bits, held as the float they spell:
+            // a vector register is read as floats (`d0` is a Double result),
+            // so its lanes take the same provenance `fmov d0, x0` gives d0.
+            // `dup v0.2d, x0; ret` returning a Double is `Double(bitPattern:
+            // arg0)`; carried bare it rendered `return arg0`. A store or a
+            // move back to a general register reads the bits again.
             let value = source(detail.operands[1], in: registers)
-            write(dest, value == .unknown ? .unknown : .aggregate([value, value]), into: &registers)
+            let bits = Self.float(fromBits: value, bits: 64)
+            write(dest, value == .unknown ? .unknown : .aggregate([bits, bits]), into: &registers)
 
         case AARCH64_INS_MOVI:
             guard let dest = destinationRegister(detail), let value = Self.moviValue(detail) else {
@@ -3655,7 +3662,7 @@ public struct ValueTracer: Sendable {
             noteFieldAccess(insn, detail, in: registers, recordAccess)
             let target = memoryTarget(detail, in: registers)
             if let first = detail.operands.first {
-                let value = source(first, in: registers)
+                let value = storedSource(first, in: registers)
                 if case .stackSlot(let key)? = target {
                     if let offset = Self.stackOffset(from: key) {
                         let bytes = Self.accessBytes(detail) ?? 8
@@ -3716,7 +3723,7 @@ public struct ValueTracer: Sendable {
                let bytes = detail.operands.first?.operand.register.map({ $0.widthBits / 8 }) {
                 for (index, operand) in detail.operands.prefix(2).enumerated() {
                     Self.storeStack(
-                        source(operand, in: registers),
+                        storedSource(operand, in: registers),
                         at: offset + Int64(index * bytes), bytes: bytes,
                         outgoing: true, from: operand.operand.register, into: &registers
                     )
@@ -3730,8 +3737,8 @@ public struct ValueTracer: Sendable {
                     // every field with rendered each later store of it as a
                     // copy of the field before: `self.point = self.other`, a
                     // pair of Doubles from a pair of Ints.
-                    if let register = operand.operand.register, !Self.isConstant(source(operand, in: registers)),
-                       !Self.isArgument(source(operand, in: registers)) {
+                    if let register = operand.operand.register, !Self.isConstant(storedSource(operand, in: registers)),
+                       !Self.isArgument(storedSource(operand, in: registers)) {
                         write(register, .selfFieldValue(offset: offset + index * bytes), into: &registers)
                         recordFieldAlias?(offset + index * bytes, bytes)
                     }
@@ -3740,12 +3747,12 @@ public struct ValueTracer: Sendable {
                       let bytes = detail.operands.first?.operand.register.map({ $0.widthBits / 8 }) {
                 // A wide element (e.g. a 16-byte String) stored as a register pair.
                 for (index, operand) in detail.operands.prefix(2).enumerated() {
-                    recordArrayElement?(site, offset + index * bytes, source(operand, in: registers))
+                    recordArrayElement?(site, offset + index * bytes, storedSource(operand, in: registers))
                 }
             } else if case .resultSlot(let offset)? = target,
                       let bytes = detail.operands.first?.operand.register.map({ $0.widthBits / 8 }) {
                 for (index, operand) in detail.operands.prefix(2).enumerated() {
-                    Self.storeResult(source(operand, in: registers), at: offset + index * bytes,
+                    Self.storeResult(storedSource(operand, in: registers), at: offset + index * bytes,
                                      bytes: bytes, into: &registers)
                 }
             } else if case .asyncSlot(let offset)? = target,
@@ -3755,16 +3762,16 @@ public struct ValueTracer: Sendable {
                 // pointer are written into a fresh callee context; the same shape
                 // spills two locals into the function's own context.
                 for (index, operand) in detail.operands.prefix(2).enumerated() {
-                    let value = source(operand, in: registers)
+                    let value = storedSource(operand, in: registers)
                     registers[Self.contextSlotKey(offset + index * 8)] = value == .unknown ? nil : value
-                    recordSlotStore?(offset + index * 8, source(operand, in: registers))
+                    recordSlotStore?(offset + index * 8, storedSource(operand, in: registers))
                 }
             }
             if case .asyncCalleeSlot(let offset)? = target,
                detail.operands.count >= 3,
                detail.operands.prefix(2).allSatisfy({ Self.isFullWidthGPR($0) }) {
                 for (index, operand) in detail.operands.prefix(2).enumerated() where offset + index * 8 == 0 {
-                    let value = source(operand, in: registers)
+                    let value = storedSource(operand, in: registers)
                     registers[Self.calleeParentKey] = value == .unknown ? nil : value
                 }
             }
@@ -4447,6 +4454,26 @@ public struct ValueTracer: Sendable {
                            whenTrue: bitPattern(of: whenTrue, bits: bits),
                            whenFalse: bitPattern(of: whenFalse, bits: bits))
         default: return expressionDepth(value) < 8 ? .unary(.bitPattern(bits: bits), value) : .unknown
+        }
+    }
+
+    /// A store's data operand as the word it writes. A vector register holds
+    /// a general register's bits as the float they spell (`dup v0.2d, x0`,
+    /// `fmov d0, x0`), which is how a float use reads them; memory has no
+    /// register file, so the stored word is the integer again. Without this
+    /// `dup v0.2d, x0; stp q0, q0, [x8]` filled an Int struct with
+    /// `Double(bitPattern: arg0)`.
+    private func storedSource(_ operand: StructuredOperandInfo, in registers: State) -> AbstractValue {
+        let value = source(operand, in: registers)
+        guard operand.operand.register?.kind == .vector else { return value }
+        return Self.storedWords(value)
+    }
+
+    static func storedWords(_ value: AbstractValue) -> AbstractValue {
+        switch value {
+        case .unary(.floatFromBits, let integer): return integer
+        case .aggregate(let lanes): return .aggregate(lanes.map(storedWords))
+        default: return value
         }
     }
 
@@ -5261,7 +5288,7 @@ public struct ValueTracer: Sendable {
         let isWrite = Self.storeIDs.contains(detail.id.rawValue)
         let storedValues: [AbstractValue]? = if isWrite,
             detail.id == AARCH64_INS_STP || detail.id == AARCH64_INS_STNP {
-            detail.operands.prefix(2).map { source($0, in: registers) }
+            detail.operands.prefix(2).map { storedSource($0, in: registers) }
         } else {
             nil
         }
@@ -5270,7 +5297,7 @@ public struct ValueTracer: Sendable {
             offset: offset,
             bytes: bytes,
             isWrite: isWrite,
-            storedValue: isWrite ? detail.operands.first.map { source($0, in: registers) } : nil,
+            storedValue: isWrite ? detail.operands.first.map { storedSource($0, in: registers) } : nil,
             storedValues: storedValues,
             registerBytes: isPairedLoad ? bytes / 2 : nil
         ))

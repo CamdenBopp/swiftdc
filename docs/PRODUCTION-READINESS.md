@@ -8797,7 +8797,16 @@ Commit messages on dev stay as they are; these are the true records.
   result copy; partial Q reload provenance retains the binding while unknown
   lanes and the return stay unclaimed. No target, argument, value, store or
   return changed. The other three large SDK outputs are byte-identical.
-- **OPEN (soundness): symbolic integer words still lack FP provenance.**
+- **FIXED 2026-11-08 for `dup` (soundness): symbolic integer words still lack FP provenance.**
+  `dup v0.2d, x0` now fills each lane with the integer's bits as the
+  float they spell (`Double(bitPattern:)`), the provenance `fmov d0, x0`
+  already gave d0, and a store from a vector register writes the word
+  back (`ValueTracker.storedWords`), so a buffer filled from the lanes
+  still holds the integer. `dup_bits.s` `bitsToDouble` renders `return
+  Double(bitPattern: arg0)` and `bitsToInt` (`fmov x0, d1` after the
+  dup) `return arg0`; test `aDupIntoAVectorRegisterIsTheIntegersBitsIfPresent`.
+  A load into a vector register is untouched: its lanes are whatever
+  memory held. The entry as first written:
   An authored `UInt64 -> Double` reduction, `dup v0.2d, x0; ret`, renders
   `return arg0`; native execution reads IEEE bits and returns 1.0, 2.0 and
   -1.0 for 0x3ff0000000000000, 0x4000000000000000 and
