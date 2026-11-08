@@ -88,8 +88,8 @@ private struct ExpressionParser {
         // Longest-first so `<=` and `&&` win over `<` and `&`. The unsigned
         // markers carry U+1D41 and must be matched before their bare forms.
         let operators = [
-            "<=\u{1D41}", ">=\u{1D41}", "<\u{1D41}", ">\u{1D41}",
-            "<<", ">>", "<=", ">=", "==", "!=", "&&", "||",
+            "<=\u{1D41}", ">=\u{1D41}", "<\u{1D41}", ">\u{1D41}", "/\u{1D41}", "%\u{1D41}",
+            ">>\u{1D41}", ">>\u{02E2}", "<<", ">>", "<=", ">=", "==", "!=", "&&", "||",
             "+", "-", "*", "/", "%", "&", "|", "^", "<", ">", "!", "~", "?", ":", "(", ")",
         ]
         let characters = Array(text)
@@ -179,6 +179,11 @@ private struct ExpressionParser {
                 try expect(")")
                 return .call(token, argument)
             }
+            // Hex integers may contain `e` and occupy the entire register.
+            // Parse their bit pattern before considering a decimal exponent.
+            if token.hasPrefix("0x"), let bits = UInt(token.dropFirst(2), radix: 16) {
+                return .literal(Int(bitPattern: bits))
+            }
             // A decimal point or exponent means this is a floating-point literal.
             // Swift's Double(String) is correctly rounded, so parsing the rendered
             // text reproduces exactly the double that text denotes — which is what
@@ -188,9 +193,6 @@ private struct ExpressionParser {
                 return .doubleLiteral(value)
             }
             if let value = Int(token) { return .literal(value) }
-            if token.hasPrefix("0x"), let value = Int(token.dropFirst(2), radix: 16) {
-                return .literal(value)
-            }
             throw Unsupported(reason: "token '\(token)'")
         }
     }
@@ -293,11 +295,16 @@ private func integerBinary(_ op: String, _ a: Int, _ b: Int) throws -> EvalValue
         case "*": return .int(a &* b)
         case "/": return b == 0 ? .int(0) : .int(a == Int.min && b == -1 ? Int.min : a / b)
         case "%": return b == 0 ? .int(0) : .int(a == Int.min && b == -1 ? 0 : a % b)
+        case "/\u{1D41}": return b == 0 ? .int(0) : .int(Int(bitPattern: UInt(bitPattern: a) / UInt(bitPattern: b)))
+        case "%\u{1D41}": return b == 0 ? .int(0) : .int(Int(bitPattern: UInt(bitPattern: a) % UInt(bitPattern: b)))
         case "&": return .int(a & b)
         case "|": return .int(a | b)
         case "^": return .int(a ^ b)
         case "<<": return .int(a << b)
-        case ">>": return .int(a >> b)
+        case ">>", ">>\u{02E2}": return .int(a >> b)
+        case ">>\u{1D41}": return .int(Int(bitPattern: UInt(bitPattern: a) >> b))
+        case "mulhˢ": return .int(a.multipliedFullWidth(by: b).high)
+        case "mulhᵁ": return .int(Int(bitPattern: UInt(bitPattern: a).multipliedFullWidth(by: UInt(bitPattern: b)).high))
         case "==": return .bool(a == b)
         case "!=": return .bool(a != b)
         case "<": return .bool(a < b)
@@ -399,6 +406,11 @@ private func divisionPairs() -> [[Int]] {
     }
 }
 
+private let constantDivisionInputs: [[Int]] = [
+    Int.min, Int.min + 1, -15_001, -1_000, -105, -16, -15, -14, -8, -7, -6, -3, -2, -1,
+    0, 1, 2, 3, 6, 7, 8, 14, 15, 16, 105, 999, 1_000, 1_001, 15_001, Int.max - 1, Int.max,
+].map { [$0] }
+
 private let oracleCases: [OracleCase] = [
     // Comparisons: no arithmetic, so the full edge set including Int.min/max is
     // safe — and it is exactly where a signed/unsigned confusion shows up.
@@ -432,6 +444,26 @@ private let oracleCases: [OracleCase] = [
     // compiled side (see `divisionPairs`).
     .init(name: "intDivide", arity: 2, returnsBool: false, inputs: divisionPairs()),
     .init(name: "remainder", arity: 2, returnsBool: false, inputs: divisionPairs()),
+    // Division by a constant. At -O each is a multiply-high by a magic
+    // reciprocal that MagicDivision folds back to `arg0 / D`; a wrong divisor,
+    // a floor-for-truncate slip, or a lost sign correction shows up at the
+    // negative dividends and at the multiples of D and their neighbours.
+    .init(name: "divideBySeven", arity: 1, returnsBool: false, inputs: constantDivisionInputs),
+    .init(name: "divideByThree", arity: 1, returnsBool: false, inputs: constantDivisionInputs),
+    .init(name: "divideByFifteen", arity: 1, returnsBool: false, inputs: constantDivisionInputs),
+    .init(name: "divideByMinusSeven", arity: 1, returnsBool: false, inputs: constantDivisionInputs),
+    .init(name: "remainderBySeven", arity: 1, returnsBool: false, inputs: constantDivisionInputs),
+    // The evaluator's `/` is signed, so the UInt cases take non-negative
+    // inputs only; MagicDivisionTests covers the high half.
+    .init(name: "unsignedDivideBySeven", arity: 1, returnsBool: false,
+          inputs: constantDivisionInputs.filter { $0[0] >= 0 }),
+    .init(name: "unsignedDivideByThousand", arity: 1, returnsBool: false,
+          inputs: constantDivisionInputs.filter { $0[0] >= 0 }),
+    // `udiv` on Int-typed operands. A plain `/` renders a signed claim the
+    // machine does not make; the negative dividends in `divisionPairs` are
+    // exactly where the two disagree.
+    .init(name: "unsignedQuotient", arity: 2, returnsBool: false, inputs: divisionPairs()),
+    .init(name: "unsignedRemainderOf", arity: 2, returnsBool: false, inputs: divisionPairs()),
     // Multi-branch integer switches. At `-Onone` these recover as a chain of
     // `==` ternaries; at `-O` the optimizer collapses `gradeOf`'s dense cases
     // into the **U1 unsigned-range idiom plus arithmetic**
@@ -447,6 +479,16 @@ private let oracleCases: [OracleCase] = [
     // no return expression), so it is required there alone.
     .init(name: "polarity", arity: 1, returnsBool: false,
           inputs: [Int.min, -1, 0, 1, 2, 1_000, Int.max].map { [$0] }),
+    // `tryOrDefault` is a do/catch that returns `try mightFail(x)` or `-1`. This
+    // is the error-path coverage the oracle previously lacked — the gap that let
+    // the `(0 != 0)` x21 fabrication slip past. At `-Onone` the false branch is a
+    // *call* to mightFail (unevaluatable → skipped), so it is validated at `-O`,
+    // where mightFail inlines and the whole thing renders as a pure ternary
+    // `(((arg0 + 1) > 0) ? arg0 : ~0)`. Inputs straddle the branch: negatives take
+    // the catch path (→ -1), non-negatives the success path (→ arg0). `Int.max` is
+    // excluded — the rendered `arg0 + 1` overflows the evaluator there.
+    .init(name: "tryOrDefault", arity: 1, returnsBool: false,
+          inputs: [Int.min, -1_000, -100, -2, -1, 0, 1, 2, 100, 1_000].map { [$0] }),
 ]
 
 // MARK: - The test
@@ -482,13 +524,24 @@ private let fixtures = [
     Fixture(
         path: "Fixtures/Sample/libReconstruction.opt.dylib", label: "-O",
         // `rangeCheck` and `computedRange` are the U1 idiom itself; `threeWay`
-        // is a csel cascade that only survives at -O. If any stops being
-        // compared, the oracle has lost the coverage it exists for.
+        // is a csel cascade that only survives at -O; `tryOrDefault` is the
+        // inlined do/catch — the error-path coverage the x21 fabrication needed.
+        // If any stops being compared, the oracle has lost the coverage it exists for.
         required: ["rangeCheck", "computedRange", "threeWay", "maxOf", "isPositive",
-                   "intDivide", "remainder", "gradeOf"],
+                   "intDivide", "remainder", "gradeOf", "tryOrDefault"],
         minimumComparisons: 200
     ),
 ]
+
+/// Integer-only: the magic-number division shapes, one per lowering. Its own
+/// image, so the float oracle (which walks `fixtures`) does not visit it.
+private let codegenFixture = Fixture(
+    path: "Fixtures/Sample/libCodegen.opt.dylib", label: "-O codegen",
+    required: ["divideBySeven", "divideByThree", "divideByFifteen", "divideByMinusSeven",
+               "remainderBySeven", "unsignedDivideBySeven", "unsignedDivideByThousand",
+               "unsignedQuotient", "unsignedRemainderOf"],
+    minimumComparisons: 150
+)
 
 /// Recover the rendered `return <expr>` and the raw symbol for `name`.
 private func recovered(
@@ -514,7 +567,7 @@ private func recovered(
 }
 
 @Test func recoveredExpressionsAgreeWithTheCompiledCode() async throws {
-    for fixture in fixtures {
+    for fixture in fixtures + [codegenFixture] {
         guard let image = FixtureImage(path: fixture.path) else { continue }  // not built
 
         var compared = 0
@@ -706,6 +759,8 @@ private func evaluateDouble(_ tree: Expr, args: [Double]) throws -> EvalValue {
         switch name {
         case "sqrt": return .double(v.squareRoot())
         case "abs", "fabs": return .double(Swift.abs(v))
+        case "Double": return .double(v)
+        case "Float": return .double(Double(Float(v)))
         default: throw Unsupported(reason: "call \(name)")
         }
     case let .binary(op, lhs, rhs):
@@ -736,6 +791,7 @@ private func evaluateFloat32(_ tree: Expr, args: [Float]) throws -> Float {
         switch name {
         case "sqrt": return v.squareRoot()
         case "abs", "fabs": return Swift.abs(v)
+        case "Float": return v
         default: throw Unsupported(reason: "call \(name)")
         }
     case let .binary(op, lhs, rhs):
@@ -821,4 +877,179 @@ private let requiredFloatCases: Set<String> = [
             "[\(fixture.label)] required float cases not compared: \(missing.sorted()); skipped: \(skipped)"
         )
     }
+}
+
+// MARK: - Numeric conversions
+//
+// `scvtf`, `ucvtf` and `fcvt` are part of the value, and the float constant
+// beside one decodes only once the conversion is known. Carried through as if
+// absent, `Double(n) * 1.5` rendered `(arg0 * 0x3ff8000000000000)`: executed,
+// n times 4.6e18. A fixed-point convert (`ucvtf d0, x0, #2`, the compiler's
+// `* 0.25`) is `Double(n) / 4.0`. Only -O lowers each conversion to one instruction
+// (-Onone calls `Double.init(_:)`), so the -O build is the one executed.
+
+private enum ConversionSignature { case i_d, u_d, f_d, d_f, i_f }
+
+private struct ConversionCase {
+    let name: String
+    let signature: ConversionSignature
+    let inputs: [Double]
+}
+
+private let conversionCases: [ConversionCase] = [
+    // Integers exactly representable as Double, so the oracle's input is the
+    // machine's input.
+    .init(name: "intTimesConstant", signature: .i_d,
+          inputs: [0, 1, -1, 7, -12345, 9_007_199_254_740_992, -9_223_372_036_854_775_808]),
+    .init(name: "unsignedTimesConstant", signature: .u_d,
+          inputs: [0, 1, 3, 12345, 9_007_199_254_740_992, 9_223_372_036_854_775_808]),
+    // Float-representable values, so widening the input is exact.
+    .init(name: "widenedTimesConstant", signature: .f_d,
+          inputs: [0, -0.0, 1, Double(Float(0.1)), Double(Float.greatestFiniteMagnitude),
+                   Double(Float.leastNonzeroMagnitude), .infinity, .nan]),
+    // Float-width fixed point (`scvtf s0, x0, #1`); integers exact in Float.
+    .init(name: "intTimesHalfFloat", signature: .i_f,
+          inputs: [0, 1, -1, 7, -12345, 16_777_216, -9_223_372_036_854_775_808]),
+    // Narrowing rounds, overflows to infinity and flushes tiny values to zero.
+    .init(name: "narrowedTimesConstant", signature: .d_f,
+          inputs: [0, -0.0, 1, 0.1, 1e300, -1e-300, 3.4028235677973366e38, .infinity, .nan]),
+]
+
+/// Each must be recovered and executed; a skip would silently drop the claim.
+private let requiredConversionCases: Set<String> = [
+    "intTimesConstant", "unsignedTimesConstant", "widenedTimesConstant",
+    "narrowedTimesConstant", "intTimesHalfFloat",
+]
+
+private func callConversion(
+    _ pointer: UnsafeMutableRawPointer, _ signature: ConversionSignature, _ x: Double
+) -> EvalValue {
+    switch signature {
+    case .i_d:
+        return .double(unsafeBitCast(pointer, to: (@convention(c) (Int) -> Double).self)(Int(x)))
+    case .u_d:
+        return .double(unsafeBitCast(pointer, to: (@convention(c) (UInt) -> Double).self)(UInt(x)))
+    case .f_d:
+        return .double(unsafeBitCast(pointer, to: (@convention(c) (Float) -> Double).self)(Float(x)))
+    case .d_f:
+        return .double(Double(unsafeBitCast(pointer, to: (@convention(c) (Double) -> Float).self)(x)))
+    case .i_f:
+        return .double(Double(unsafeBitCast(pointer, to: (@convention(c) (Int) -> Float).self)(Int(x))))
+    }
+}
+
+@Test func recoveredConversionsAgreeWithTheCompiledCode() async throws {
+    let path = "Fixtures/Sample/libConversions.opt.dylib"
+    guard let image = FixtureImage(path: path) else { return }
+    var comparedNames: Set<String> = []
+    var skipped: [String] = []
+    for testCase in conversionCases {
+        guard let (expression, symbol) = try await recovered(testCase.name, in: path) else {
+            skipped.append("\(testCase.name): not recovered")
+            continue
+        }
+        var parser = ExpressionParser(expression)
+        guard let tree = try? parser.parseAll(),
+              let pointer = image.function(symbol: symbol)
+        else {
+            skipped.append("\(testCase.name): unparsed or unresolved '\(expression)'")
+            continue
+        }
+        for input in testCase.inputs {
+            guard let predicted = try? evaluateFloat(
+                tree, args: [input], asFloat: testCase.signature == .d_f || testCase.signature == .i_f
+            ) else {
+                skipped.append("\(testCase.name): uneval '\(expression)'")
+                break
+            }
+            let actual = callConversion(pointer, testCase.signature, input)
+            #expect(
+                predicted.matches(actual),
+                """
+                \(testCase.name)(\(input)): swiftdc renders `\(expression)` → \(predicted), \
+                but the compiled function returns \(actual).
+                """
+            )
+            comparedNames.insert(testCase.name)
+        }
+    }
+    let missing = requiredConversionCases.subtracting(comparedNames)
+    #expect(missing.isEmpty, "conversion cases not compared: \(missing.sorted()); skipped: \(skipped)")
+}
+
+/// This oracle reads text, not the exported value AST. Unsupported grammar
+/// fails instead of skipping any of these required scalar return expressions.
+@Test func renderedRightShiftsAgreeWithNativeBitPatternsIfPresent() async throws {
+    let names: Set<String> = ["mixedBits", "signedShift", "wordArithmeticShift",
+                             "signExtendByte", "signExtendHalf", "signExtendWord"]
+    let markers = Dictionary(uniqueKeysWithValues: names.map { ($0, $0 == "mixedBits" ? ">>ᵁ" : ">>ˢ") })
+    try await verifyNativeRenderedReturns(names: names, markers: markers)
+}
+
+@Test func renderedComplementsAndWordSelectionAgreeWithNativeBitPatternsIfPresent() async throws {
+    try await verifyNativeRenderedReturns(names: ["wordNot", "shiftedNot", "orNot", "wordSelect"])
+}
+
+@Test func renderedHighProductsAgreeWithNativeBitPatternsIfPresent() async throws {
+    // Onone's tuple-call projection is separately required to decline.
+    try await verifyNativeRenderedReturns(names: ["unsignedHigh", "signedHigh"],
+        markers: ["unsignedHigh": "mulhᵁ", "signedHigh": "mulhˢ"],
+        modules: ["ResearchOptimized", "ResearchSize"])
+}
+
+@Test func renderedLongWordProductsAgreeWithNativeBitPatternsIfPresent() async throws {
+    try await verifyNativeRenderedReturns(names: ["signedWordProduct", "unsignedWordProduct",
+                                                 "signedWordAccumulate", "unsignedWordSubtract"])
+}
+
+@Test func renderedSignedAdditionBoundsAgreeWithNativeBitPatternsIfPresent() async throws {
+    try await verifyNativeRenderedReturns(names: ["signedLowerBound"])
+}
+
+@Test func renderedChainedSignedRangeAgreesWithNativeBitPatternsIfPresent() async throws {
+    // This text interpreter uses signed values for bare comparisons. The
+    // optimized unsigned-offset expression instead inherits UInt64 typing;
+    // its typed AST is required to verify in the all-level native gate.
+    try await verifyNativeRenderedReturns(names: ["signedRange"], modules: ["ResearchOnone"])
+}
+
+private func verifyNativeRenderedReturns(names: Set<String>, markers: [String: String] = [:],
+                                         modules: [String] = ResearchFixtures.modules) async throws {
+    let inputs = ResearchFixtures.inputs(seed: 7)
+    for module in modules {
+        let path = "Fixtures/Sample/lib\(module).dylib"
+        guard FileManager.default.fileExists(atPath: path) else { continue }
+        let oracle = try ResearchFixtures.oracle(path: path, module: module, inputs: inputs)
+        for preset in DemanglePreset.allCases {
+            let functions = try await withStableDependencies {
+                try await Disassembler(preset: preset).disassemble(path: path)
+            }
+            for name in names.sorted() {
+                let cases = oracle.cases.filter { $0.id?.hasPrefix(name + "/") == true }
+                #expect(cases.count == inputs.count)
+                let expectation = try #require(cases.first)
+                let function = try #require(functions.first { $0.startAddress == expectation.function })
+                for body in [function.renderPseudo(), function.renderStructured()] {
+                    let returns = body.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+                        .filter { $0.hasPrefix("return ") }
+                    #expect(returns.count == 1)
+                    let expression = String(try #require(returns.first).dropFirst(7))
+                    // Both operations must be explicit even if a display preset
+                    // omits the argument type or the source result is unsigned.
+                    if let marker = markers[name] { #expect(expression.contains(marker)) }
+                    var parser = ExpressionParser(expression)
+                    let tree = try parser.parseAll()
+                    for sample in cases {
+                        let predicted = try evaluate(tree, args: sample.arguments.map { Int(bitPattern: UInt($0)) })
+                        #expect(predicted.matches(.int(Int(bitPattern: UInt(sample.expected)))),
+                                "\(module).\(name) [\(preset)]: \(expression), \(sample.arguments)")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Test func renderedImmediateRotatesAgreeWithNativeBitPatternsIfPresent() async throws {
+    try await verifyNativeRenderedReturns(names: ["rotateBits", "rotateWord"])
 }

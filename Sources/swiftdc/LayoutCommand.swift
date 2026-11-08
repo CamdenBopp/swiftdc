@@ -30,8 +30,14 @@ struct LayoutCommand: AsyncParsableCommand {
     @Option(name: .customLong("image"), help: "Read this image from the dyld shared cache by name.")
     var image: String?
 
+    @Option(name: .customLong("image-path"), help: "Read this image from the dyld shared cache by full install path.")
+    var imagePath: String?
+
     @Option(name: .customLong("cache"), help: "Path to a dyld_shared_cache_* file.")
     var cache: String?
+
+    @Flag(name: .customLong("list-images"), help: "List every image install path in the dyld shared cache and exit.")
+    var listImages = false
 
     @Option(name: .customLong("binary"), help: "For an .app/.framework/.ipa: analyze this embedded binary by name.")
     var binary: String?
@@ -55,8 +61,12 @@ struct LayoutCommand: AsyncParsableCommand {
     var json = false
 
     func run() throws {
+        if listImages {
+            try emit(BinaryLoader.dyldCacheImagePaths(cachePath: cache).joined(separator: "\n"), to: output)
+            return
+        }
         let machO = try BinaryLoader.loadMachO(
-            path: path, architecture: architecture, image: image, cachePath: cache, binary: binary
+            path: path, architecture: architecture, image: image, imagePath: imagePath, cachePath: cache, binary: binary
         )
         if selfIndex {
             try emit(renderSelfIndex(SelfTypeIndex.build(in: machO)), to: output)
@@ -66,7 +76,11 @@ struct LayoutCommand: AsyncParsableCommand {
         if let needle = type?.lowercased() {
             maps = maps.filter { $0.key.lowercased().contains(needle) }
         }
-        guard !maps.isEmpty else {
+        var unnamed = UnnamedStorage.comments(in: machO)
+        if let needle = type?.lowercased() {
+            unnamed = unnamed.filter { $0.type.lowercased().contains(needle) }
+        }
+        guard !maps.isEmpty || !unnamed.isEmpty else {
             try emit(json ? "[]" : "// No Swift types with a resolvable field layout.", to: output)
             return
         }
@@ -75,7 +89,7 @@ struct LayoutCommand: AsyncParsableCommand {
             try emit(renderLookup(maps, at: at), to: output)
             return
         }
-        try emit(json ? renderJSON(maps) : renderText(maps), to: output)
+        try emit(json ? renderJSON(maps, unnamed: unnamed) : renderText(maps, unnamed: unnamed), to: output)
     }
 
     private func renderSelfIndex(_ index: SelfTypeIndex) -> String {
@@ -126,34 +140,50 @@ struct LayoutCommand: AsyncParsableCommand {
         return lines.joined(separator: "\n")
     }
 
-    private func renderText(_ maps: [String: FieldMap]) -> String {
+    private func renderText(_ maps: [String: FieldMap], unnamed: [(type: String, comment: String)]) -> String {
         var blocks: [String] = []
         for (name, map) in maps.sorted(by: { $0.key < $1.key }) {
-            var lines = ["\(name)  // instance size \(map.instanceSize) bytes"]
+            // A layout that stopped at a field it could not resolve has an
+            // understated size: `Widget // instance size 0 bytes` for a class
+            // whose ObjC ancestor is unresolved, 97 for a 152-byte struct.
+            let size = map.trustLimitReason == nil
+                ? "instance size \(map.instanceSize) bytes"
+                : map.trustedOffsetLimit > 0
+                    ? "instance size unknown (at least \(map.trustedOffsetLimit) bytes)"
+                    : "instance size unknown"
+            var lines = ["\(name)  // \(size)"]
             for field in map.fields {
                 let offset = "0x" + String(field.offset, radix: 16)
-                lines.append("  +\(offset.padding(toLength: max(6, offset.count), withPad: " ", startingAt: 0)) \(field.bytes)B  \(field.name): \(field.typeMangledName)")
+                lines.append("  +\(offset.padding(toLength: max(6, offset.count), withPad: " ", startingAt: 0)) \(field.bytes)B  \(field.name): \(Self.typeText(of: field, in: map))")
             }
             if let reason = map.trustLimitReason {
                 lines.append("  // offsets past 0x\(String(map.trustedOffsetLimit, radix: 16)) are NOT trusted: \(reason)")
             }
             blocks.append(lines.joined(separator: "\n"))
         }
+        // A layout of nothing is no layout: these types have storage the
+        // binary does not describe.
+        blocks += unnamed.map { "\($0.type)  // \($0.comment)" }
         return blocks.joined(separator: "\n\n")
     }
 
-    private func renderJSON(_ maps: [String: FieldMap]) -> String {
-        let payload = maps.sorted { $0.key < $1.key }.map { name, map in
+    static func typeText(of field: (offset: Int, bytes: Int, name: String, typeMangledName: String), in map: FieldMap) -> String {
+        FieldMap.printableTypeName(mangled: field.typeMangledName, resolved: map.fieldTypeNames[field.name])
+    }
+
+    private func renderJSON(_ maps: [String: FieldMap], unnamed: [(type: String, comment: String)]) -> String {
+        var payload: [[String: Any]] = maps.sorted { $0.key < $1.key }.map { name, map in
             [
                 "type": name,
-                "instanceSize": map.instanceSize,
+                "instanceSize": map.trustLimitReason == nil ? map.instanceSize as Any : NSNull(),
                 "trustedOffsetLimit": map.trustedOffsetLimit,
                 "trustLimitReason": map.trustLimitReason as Any,
                 "fields": map.fields.map {
-                    ["offset": $0.offset, "bytes": $0.bytes, "name": $0.name, "type": $0.typeMangledName] as [String: Any]
+                    ["offset": $0.offset, "bytes": $0.bytes, "name": $0.name, "type": Self.typeText(of: $0, in: map)] as [String: Any]
                 },
             ] as [String: Any]
         }
+        payload += unnamed.map { ["type": $0.type, "unnamedStorage": $0.comment] as [String: Any] }
         guard let data = try? JSONSerialization.data(
             withJSONObject: payload, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         ) else { return "[]" }

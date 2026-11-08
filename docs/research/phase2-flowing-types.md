@@ -80,8 +80,8 @@ not a render-time recomputation.
 | `uxtb/uxth/uxtw` / low-byte mask | `unsigned`, width = mask/dest width — truncation, keeps unsigned |
 | `add/sub/mul` | `meet` of operand types (category/signedness both agree) |
 | `and/or/xor/shift` (non-mask) | `integer, unknownSign` |
-| signed `sdiv`/`asr` | `signed` |
-| unsigned `udiv`/`lsr` | `unsigned` |
+| signed `sdiv`/`asr` | `signed` (design; as built, `sdiv` is `.divide`, which meets its operand types) |
+| unsigned `udiv`/`lsr` | `unsigned` (`udiv` only, as `.unsignedDivide`, since `22df212`; before it both divisions were one operator) |
 | load / call result / cast | `.unknown` (conservative — a load's/call's type is not encoded by the op) |
 | `fmov`/float ops | `floatingPoint` |
 | CFG join | `ValueType.meet` of predecessors' `types` (keep only agreed facts) |

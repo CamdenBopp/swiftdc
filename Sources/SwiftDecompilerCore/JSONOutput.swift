@@ -36,15 +36,36 @@ private struct ObjCMethodDTO: Encodable {
     let signature: String
 }
 
+private struct AsyncFuncletDTO: Encodable {
+    /// Entry funclet address; absent when no parent was recovered.
+    let parent: String?
+    /// 0 for the entry funclet, 1… for resume funclets in chain order.
+    let ordinal: Int
+    /// "await-return", "continuation", or "unknown"; absent for the entry.
+    let kind: String?
+    /// The funclet whose suspension this one continues; absent when several
+    /// suspensions of the chain continue into it.
+    let predecessor: String?
+    /// Every funclet of the chain, entry first.
+    let chain: [String]
+    /// The runtime wait that resumes this continuation, when not a hop.
+    let resumedBy: String?
+    /// Entries of every chain that resumes into this funclet, when more than
+    /// one does (identical code folding) and so none owns it.
+    let sharedBy: [String]?
+}
+
 private struct FunctionDTO: Encodable {
     let name: String
     let symbol: String
     let address: String
     /// How the name/boundary was recovered: "symbol", "metadata",
-    /// "objc-metadata", or "address".
+    /// "objc-metadata", "address", "folded-symbols", or "async-funclet".
     let source: String
     /// Runtime method identity/signature when this function is an ObjC IMP.
     let objectiveC: ObjCMethodDTO?
+    /// Place in an async function's funclet chain, when this is one.
+    let async: AsyncFuncletDTO?
     let instructions: [InstructionDTO]
     /// Basic blocks (control-flow graph) recovered via Capstone.
     let blocks: [BlockDTO]
@@ -54,6 +75,8 @@ private struct ReportDTO: Encodable {
     let declarations: [String]
     let objc: [String]
     let functions: [FunctionDTO]
+    /// Why disassembly failed, when it did: never an empty `functions` alone.
+    let disassemblyError: String?
 }
 
 private struct ObjCReportDTO: Encodable {
@@ -74,7 +97,9 @@ private func jsonEncode<T: Encodable>(_ value: T) -> String {
 
 private extension DisassembledFunction {
     var dto: FunctionDTO {
-        FunctionDTO(
+        let cfg = controlFlowGraph
+        cfg.observeUse(of: self, consumer: "json-output")
+        return FunctionDTO(
             name: displayName,
             symbol: symbol,
             address: hex(startAddress),
@@ -90,6 +115,13 @@ private extension DisassembledFunction {
                     signature: $0.signature
                 )
             },
+            async: asyncFunclet.map {
+                AsyncFuncletDTO(
+                    parent: $0.parent.map(hex), ordinal: $0.ordinal, kind: $0.kind?.rawValue,
+                    predecessor: $0.predecessor.map(hex), chain: $0.chain.map(hex),
+                    resumedBy: $0.resumedBy, sharedBy: $0.sharedBy.isEmpty ? nil : $0.sharedBy.map(hex)
+                )
+            },
             instructions: instructions.map {
                 InstructionDTO(
                     address: hex($0.address),
@@ -102,8 +134,8 @@ private extension DisassembledFunction {
                     statement: DisassembledFunction.pseudoStatement(of: $0, hideRuntime: true)
                 )
             },
-            blocks: basicBlocks().map {
-                BlockDTO(address: hex($0.startAddress), successors: $0.successors.map(hex))
+            blocks: cfg.blocks.map {
+                BlockDTO(address: hex($0.startAddress), successors: $0.successorAddresses.map(hex))
             }
         )
     }
@@ -123,8 +155,10 @@ public func declarationBlocks(_ dump: String) -> [String] {
 }
 
 /// JSON object combining Swift declarations, ObjC headers, and functions.
-public func reportJSON(declarations: String, objc: [String], functions: [DisassembledFunction]) -> String {
-    jsonEncode(ReportDTO(declarations: declarationBlocks(declarations), objc: objc, functions: functions.map(\.dto)))
+public func reportJSON(declarations: String, objc: [String], functions: [DisassembledFunction],
+                       disassemblyError: String? = nil) -> String {
+    jsonEncode(ReportDTO(declarations: declarationBlocks(declarations), objc: objc, functions: functions.map(\.dto),
+                         disassemblyError: disassemblyError))
 }
 
 /// Objective-C headers plus their recovered IMP implementations.

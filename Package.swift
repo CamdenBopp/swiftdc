@@ -12,49 +12,66 @@ let package = Package(
         .executable(name: "swiftdc", targets: ["swiftdc"]),
     ],
     dependencies: [
-        // Pinned to 0.19.0 (was 0.12.0). Seven upstream releases moved this engine
-        // squarely along swiftdc's own priority ladder, so its fixes are our fixes:
+        // Pinned to 0.24.0 (was 0.22.0, 0.19.0, 0.12.0). Each bump followed
+        // swiftdc's own priority ladder, so upstream's fixes are our fixes:
         //   Soundness. 0.16.0 closed four silent wrong-result paths (opaque types
         //   printing illegal Swift, a multi-payload enum cache falling back to a
         //   wrong layout, reference-storage fields sized a word too narrow, first-hit
         //   dyld-cache image matches). 0.19.0 attributes a class vtable slot by its
-        //   own method-descriptor symbol instead of the symbols at its implementation
-        //   address, which identical code folding makes ambiguous — SwiftUICore's
-        //   `Symbol not found` count went 358 to 0 with no line regressing to a
-        //   `sub_` address.
-        //   Completeness. 0.16.0 makes legacy LC_DYLD_INFO binaries (pre-macOS 12,
-        //   no chained fixups) parse at all; SwiftUI on the iOS 15.5 simulator went
-        //   from 139 to 81,157 interface lines. Exactly the near-empty-but-plausible
-        //   result the empty-result rule exists to catch.
+        //   own method-descriptor symbol (SwiftUICore's `Symbol not found` count
+        //   went 358 to 0). 0.21.0 names a type declared in another module's
+        //   extension through the extended type, and builds class vtable members
+        //   from their method descriptors, so a main executable's vtable slots are
+        //   named. 0.22.0 reads an optional-returning accessor at the field's own
+        //   width and lays out Swift 6.4's raw-layout and Builtin.Borrow storage.
+        //   0.24.0 prints a protocol requirement's generic right-hand side as
+        //   itself (0.22 printed `Element == Self.Payload` for `== Event<Payload>`,
+        //   libProtocolRHS), and with MachOObjCSection 0.8.205 reads cache
+        //   images' bare-colon Swift selectors (`enumerateRangesIn::`, printed
+        //   `enumerateRangesIn:` before).
+        //   Completeness. 0.23.0 names a local type by its declaring function when
+        //   the binary records it (Apple's cache images), and the ObjC properties
+        //   and protocols of cache classes, which 0.22 dropped. 0.16.0 makes legacy LC_DYLD_INFO binaries parse at all;
+        //   0.21.0 prints `@objc(Name)` on classes renamed for the ObjC runtime
+        //   and recovers their field offsets; 0.22.0 reads the ObjC classes a
+        //   simulator runtime binds to itself.
         //   Memory/perf. 0.16.0's NodeStore migration cut steady-state memory from
-        //   842 MB to 262 MB across five system images; 0.19.0's task-executor change
-        //   makes dump/interface ~15-20% faster.
+        //   842 MB to 262 MB across five system images; 0.22.0 opens the system
+        //   dyld cache once per process and builds each sub-cache once.
         // Exact-pinned, matching this project's reproducibility intent. Bumping it is
-        // a deliberate change, not a floating one: 0.16.0 is a breaking release, and
-        // it raises the swift-demangling floor to 0.6.3 (see below).
+        // a deliberate change, not a floating one: 0.20.0 brought swift-capstone
+        // (Capstone 6 built from source) into the graph, which is why swiftdc's own
+        // decoder links the same `capstone` package below rather than Homebrew's
+        // libcapstone 5; 0.22.0 raised the swift-demangling floor to 0.7.1 and
+        // MachOKit's to 0.54.101 (see below). 0.24.0 moves to swift-capstone 7.0.0,
+        // a rewrite of the Swift wrapper only: the C library under it is still
+        // Capstone 6 (6.0.101), whose changes are an x86/Alpha fix, CS_OPT_OFF
+        // clearing detail, and cs_disasm_iter flags, none of which swiftdc's
+        // cs_disasm decoder reaches (listing and JSON of 192 fixtures:
+        // byte-identical).
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection",
-            exact: "0.19.0"
+            exact: "0.24.0"
         ),
         // MachOKit is the Mach-O container parser MachOSwiftSection is built on.
         // It is NOT re-exported, so we depend on the same identity directly to name
         // `MachOFile` / `loadFromFile` without a package-identity conflict.
         //
-        // INTERIM FORK, pinned to a fork of the 0.52.102 tag carrying one upstream-PR'd
-        // change: MxIris-Reverse-Engineering/MachOKit#1 memoizes the negative result of
-        // `MachOFile.cache`. Without it a standalone (non-cache) binary re-runs
-        // `DyldCache.init(url:)` on every access, and the Swift symbol sweep touches
-        // `.cache` once per local symbol (~45k times on swiftdc itself), so ~8.5s of a
-        // 12.8s dump was re-opened-and-discarded dyld-cache loads. Memoized: dump
-        // 12.8s -> 4.3s, interface 19s -> 5.1s, output byte-identical on every fixture.
-        // As the root package this revision requirement overrides MachOSwiftSection's
-        // transitive `0.52.101 ..< 0.53.0` range; revert to an upstream version pin once
-        // #1 ships in a release. (Fork base 0.52.102 is the newest 0.52.x; the 0.52.x
-        // line is mostly perf work this tool leans on: chained-fixup caching, dyld
-        // subcache file-handle reuse, cached cache-mapping lookups.)
+        // INTERIM FORK: upstream 0.55.100 plus one change, a memoized negative
+        // result of `MachOFile.cache` (as 4c4738f was on 0.54.101 and 07d7633 on
+        // 0.52.102; upstream MxIris-Reverse-Engineering/MachOKit#1 closed
+        // unmerged). Without it a standalone binary re-opens and maps itself as
+        // a would-be dyld cache on every `cache` access, which the class dumper
+        // makes once per relative pointer. Memoized on 0.54.101: layout 69.9s ->
+        // 4.4s, dump 168s -> 77s, interface 240s -> 74s. The 64-bit fat header
+        // fix the old fork cherry-picked (p-x9 #340) is upstream in 0.55.0,
+        // line for line, and FatArch64Tests passes on it.
+        // Branch swiftdc-interim/0.55.100-memoize-cache.
+        // As the root package this revision overrides the transitive range;
+        // return to an upstream version pin once the memo ships.
         .package(
             url: "https://github.com/CamdenBopp/MachOKit.git",
-            revision: "07d7633c6d143e9ea344f1cdbb56bfa2afffd707"
+            revision: "02d5c675ffe17620bd51e69e83bf67f091885e38"
         ),
         // `Semantic` provides SemanticString, the return type of SwiftDump's
         // `.dump(...)`. Moves in lockstep with MachOSwiftSection: 0.15.0 raised its
@@ -75,19 +92,35 @@ let package = Package(
         // while MachOSwiftSection stayed at 0.12.0; both move together now.
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/swift-demangling",
-            "0.6.3" ..< "0.7.0"
+            "0.7.2" ..< "0.8.0"
         ),
         // Objective-C runtime metadata (classes/protocols/categories) for real
         // Swift+ObjC app binaries. Same fork URLs MachOSwiftSection resolves to,
         // so there's no package-identity conflict. ObjCDump renders the
-        // `@interface … @end` headers (with decoded type encodings).
+        // `@interface … @end` headers (with decoded type encodings). Exact:
+        // 0.8.201 and later require MachOKit 0.55.100, and a `from:` range
+        // resolved to 0.8.200, which lacks the selector, signed-IMP and
+        // relative-method-list fixes.
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/MachOObjCSection.git",
-            from: "0.8.105"
+            exact: "0.8.205"
         ),
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/swift-objc-dump",
             from: "0.8.101"
+        ),
+        // Capstone 6, compiled from source by MxIris's SwiftPM packaging of
+        // capstone. This is the same package MachOSwiftSection 0.20+ links through
+        // swift-capstone (SwiftDump -> SwiftThunkAnalysis -> Capstone), so the
+        // in-process ARM64 decoder uses the one copy the process already carries.
+        // It replaced the Homebrew libcapstone 5 system library: two Capstones in
+        // one module graph fail to compile (both clang modules define `cs_insn`),
+        // and would otherwise link one C symbol table against the other's headers.
+        // Only the AARCH64 backend is enabled, matching MachOSwiftSection's trait.
+        .package(
+            url: "https://github.com/MxIris-Reverse-Engineering/capstone",
+            from: "6.0.101",
+            traits: [.trait(name: "AARCH64")]
         ),
         .package(
             url: "https://github.com/apple/swift-argument-parser",
@@ -104,15 +137,8 @@ let package = Package(
         ),
     ],
     targets: [
-        // Homebrew-installed Capstone (`brew install capstone`), surfaced via its
-        // pkg-config file. Used for structured in-process ARM64 decoding.
-        .systemLibrary(
-            name: "CCapstone",
-            pkgConfig: "capstone",
-            providers: [.brew(["capstone"])]
-        ),
-        // Homebrew-installed OpenSSL (`brew install openssl@3`), same
-        // pkg-config pattern as CCapstone above.
+        // Homebrew-installed OpenSSL (`brew install openssl@3`), surfaced via its
+        // pkg-config file.
         //
         // Needed because lockdown upgrades a live plaintext socket to TLS
         // mid-stream, presenting a client certificate that exists only as a
@@ -136,7 +162,7 @@ let package = Package(
         .target(
             name: "SwiftDecompilerCore",
             dependencies: [
-                "CCapstone",
+                .product(name: "Ccapstone", package: "capstone"),
                 .product(name: "MachOKit", package: "MachOKit"),
                 .product(name: "MachOSwiftSection", package: "MachOSwiftSection"),
                 .product(name: "SwiftDump", package: "MachOSwiftSection"),

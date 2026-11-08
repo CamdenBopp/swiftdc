@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+@testable import SwiftDecompilerCore
 
 /// A regression guard on whole-image decode memory.
 ///
@@ -42,8 +43,7 @@ private func timed(_ args: [String]) -> (footprint: Int, stdout: Data)? {
     process.standardError = err
     guard (try? process.run()) != nil else { return nil }
     // Read both pipes fully before waiting, so a large stdout cannot deadlock.
-    let stdout = out.fileHandleForReading.readDataToEndOfFile()
-    let stderr = err.fileHandleForReading.readDataToEndOfFile()
+    let (stdout, stderr) = Shell.drain(out, err)
     process.waitUntilExit()
     guard process.terminationStatus == 0 else { return nil }
 

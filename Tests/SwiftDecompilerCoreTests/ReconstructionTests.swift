@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import Darwin
 @testable import SwiftDecompilerCore
 
 /// End-to-end assertions on the Swift-body pseudocode reconstruction, driven by
@@ -95,9 +96,11 @@ private func reconstructionStructured(
     guard let hypot = try await reconstructionPseudo("hypotenuse") else { return }
     #expect(hypot.contains("return sqrt(((arg0 * arg0) + (arg1 * arg1)))"))
 
-    // Mixed: an integer parameter in x0, a floating-point one in v0.
+    // Mixed: an integer parameter in x0, a floating-point one in v0. The
+    // `scvtf` is part of the value (`Double(n) * f`); dropped, it read
+    // `(arg0 * arg1)`, an Int times a Double.
     guard let scaled = try await reconstructionPseudo("scaleInt") else { return }
-    #expect(scaled.contains("return (arg0 * arg1)"))
+    #expect(scaled.contains("return (Double(arg0) * arg1)"))
 
     // A floating-point constant in an expression renders as its decimal, not
     // the raw IEEE-754 bit pattern, because the expression reaches a Double arg.
@@ -120,17 +123,19 @@ private func reconstructionStructured(
 
     // A method taking a by-value struct parameter: arg0.x / arg0.y recovered.
     guard let dot = try await reconstructionPseudo("Vec2.dot") else { return }
-    #expect(dot.contains("return ((arg0.x * self.x) + (arg0.y * self.y))"))
+    // `self` follows the formal arguments: d0/d1 = other, d2/d3 = self. The
+    // old pin had them swapped (ABISourceLoweringTests runs the same shape).
+    #expect(dot.contains("return ((self.x * arg0.x) + (self.y * arg0.y))"), "\(dot)")
 }
 
 // MARK: - Class vtable property access
 
 @Test func namesVTablePropertyAccessIfPresent() async throws {
     guard let doubled = try await reconstructionPseudo("doubled") else { return }
-    #expect(doubled.contains("return (self.value + self.value)"))
+    #expect(expandingResultBindingsForAssertions(doubled).contains("return (self.value + self.value)"))
 
     guard let advance = try await reconstructionPseudo("advance") else { return }
-    #expect(advance.contains("self.value = (self.value + self.step)"))
+    #expect(expandingResultBindingsForAssertions(advance).contains("self.value = (self.value + self.step)"))
 
     guard let reset = try await reconstructionPseudo("reset") else { return }
     #expect(reset.contains("self.value = 0"))
@@ -220,6 +225,19 @@ private func reconstructionStructured(
     for fixture in [reconstructionFixture, "Fixtures/Sample/libReconstruction.opt.dylib"] {
         guard let opt = try await reconstructionPseudo("intOrDefault", in: fixture) else { continue }
         #expect(!opt.contains(" ? ")) // no fabricated select over the tag
+    }
+}
+
+/// Adversarial: a tagged optional RETURN keeps its nil outside x0 (a tag in w1
+/// for `Int?`, an extra inhabitant for an enum's optional). Read as the whole
+/// result, x0 printed nil as `0` and `Tier?`'s nil as its raw tag.
+@Test func declinesTaggedOptionalReturnIfPresent() async throws {
+    for fixture in ["Fixtures/Sample/libIndirect.dylib", "Fixtures/Sample/libIndirect.opt.dylib"] {
+        for name in ["nextUnlessZero", "rankUnlessZero"] {
+            guard let text = try await reconstructionPseudo(name, in: fixture) else { continue }
+            #expect(text.contains(name))
+            #expect(!text.contains("return ("), Comment(rawValue: "\(fixture)\n\(text)"))
+        }
     }
 }
 
@@ -556,6 +574,30 @@ private func reconstructionStructured(
     }
 }
 
+/// Soundness regression (tracer / `--pseudo`). A do/catch that returns a value
+/// used to fabricate an always-false `(0 != 0)` select condition: the tracer
+/// back-substituted the Swift error register (x21), cleared to 0 by `mov x21,#0`
+/// before the throwing call, as a live value in the post-call error check. A
+/// wrong render — the project's top severity. A throwing call now invalidates
+/// x21 (it is the swifterror out-register the callee redefines), so the tracer
+/// declines the unrecoverable condition instead of inventing a constant one.
+///
+/// The sibling test above guards the `--structured` view (named by the
+/// structurer); this guards the `--pseudo` view (built by the tracer), where the
+/// fabrication actually lived and no test reached it.
+@Test func declinesDoCatchSelectRatherThanFabricatingIfPresent() async throws {
+    guard let pseudo = try await reconstructionPseudo("tryOrDefault") else { return }
+    // A condition comparing two constants is always invented — a real error
+    // check tests a value. These are the exact forms a stale, cleared x21
+    // produced: `(0 != 0)` from cbnz, `(0 == 0)` from cbz. The wrapping paren
+    // is load-bearing — matching bare `0 == 0` would also hit a legitimate
+    // `arg0 == 0` (the `0` ending `arg0` plus ` == 0`).
+    #expect(!pseudo.contains("(0 != 0)"), "fabricated always-false condition: \(pseudo)")
+    #expect(!pseudo.contains("(0 == 0)"), "fabricated always-true condition: \(pseudo)")
+    // The throwing call itself is still recovered, not dropped.
+    #expect(pseudo.contains("mightFail"))
+}
+
 @Test func decomposesSmallIntegerStructSelfIfPresent() async throws {
     // A small (<= 16 byte) integer struct passes `self` decomposed in x0/x1, so a
     // getter names the fields (`self.a + self.b`) instead of a blank body.
@@ -565,13 +607,16 @@ private func reconstructionStructured(
     // Adversarial: a sub-word field breaks the clean 2-word shape, so `self` is
     // NOT decomposed — declines rather than mis-assigning registers.
     if let mixed = try await reconstructionPseudo("MixedPair.justCount") {
-        #expect(mixed.contains("no non-runtime calls"))
+        #expect(mixed.contains("return ?"))
+        #expect(!mixed.contains("self."))
     }
     // Adversarial: a method with parameters passes `self` AFTER the params in the
     // shared GPR bank, an order we don't decompose — declines rather than
     // mis-reconstruct a non-commutative body.
     if let combine = try await reconstructionPseudo("IntPair.combine") {
-        #expect(combine.contains("no non-runtime calls"))
+        // Its overflow traps render (`trap()`); its arithmetic does not.
+        #expect(!combine.contains("self."), "\(combine)")
+        #expect(!combine.contains("return ("), "\(combine)")
     }
 }
 
@@ -593,9 +638,9 @@ private func reconstructionStructured(
     // Adversarial: mixing an `Int` (GPR) and a `Double` (SIMD) is neither a float
     // HFA nor an all-integer struct. The `x{n} = offset/8` mapping would wrongly
     // pull the Double from the GPR bank, so `self` is NOT decomposed — the getter
-    // declines (blank) rather than fabricate a field.
+    // declines with an unknown return rather than fabricate a field.
     if let readN = try await reconstructionPseudo("IntThenDouble.readN") {
-        #expect(readN.contains("no non-runtime calls"))
+        #expect(readN.contains("return ?"))
         #expect(!readN.contains("self."))
     }
 }
@@ -798,4 +843,596 @@ private func danglingGotoTargets(in structured: String) -> Set<String> {
         }
     }
     return used.subtracting(defined)
+}
+
+// MARK: - Indirect results (the x8 result buffer)
+
+private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
+
+/// Soundness: a function that returns through the caller's x8 buffer leaves a
+/// STALE value in x0 at its `ret` (its first argument, usually). That register
+/// is never its result, so it must not print `return arg0`. The memberwise
+/// initializers of every struct wider than four words are the clearest
+/// specimens: five stores through x8, then `ret` with x0 untouched.
+@Test func declinesStaleRegisterReturnOfIndirectResultIfPresent() async throws {
+    for fixture in [reconstructionFixture, "Fixtures/Sample/libReconstruction.resilient.dylib"] {
+        guard let wide = try await reconstructionPseudo("OuterY.Wide.init", in: fixture) else { continue }
+        #expect(!wide.contains("return arg0"), "stale x0 printed as the result in \(fixture)")
+        #expect(wide.contains("return Reconstruction.OuterY.Wide(v1: arg0, v2: arg1, v3: arg2, v4: arg3, v5: arg4)"))
+    }
+    // A resilient module returns even a two-`Double` struct through x8; the
+    // values are the floating-point arguments, not x0.
+    guard let point = try await reconstructionPseudo("Point.init", in: "Fixtures/Sample/libSample.dylib") else { return }
+    #expect(point.contains("return Sample.Point(x: arg0, y: arg1)"))
+    #expect(!point.contains("return arg0"))
+}
+
+/// Stores through x8 that cover the result type's complete stored-property
+/// layout reconstruct field-wise: register stores at -Onone, pair/vector stores
+/// (with literal-pool and `dup`-replicated constants) at -O.
+@Test func recoversFieldwiseIndirectStructReturnIfPresent() async throws {
+    guard let onone = try await reconstructionPseudo("Wide5.init", in: indirectFixture) else { return }
+    #expect(onone.contains("return Indirect.Wide5(a: arg0, b: arg1, c: arg2, d: arg3, e: arg4)"))
+
+    guard let pair = try await reconstructionPseudo(
+        "IntPair.init", in: "Fixtures/Sample/libReconstruction.resilient.dylib") else { return }
+    #expect(pair.contains("return Reconstruction.IntPair(a: arg0, b: arg1)"))
+
+    guard let constant = try await reconstructionPseudo(
+        "constantWide", in: "Fixtures/Sample/libIndirect.opt.dylib") else { return }
+    #expect(constant.contains("return Indirect.Wide5(a: 1, b: 2, c: 3, d: 4, e: 5)"))
+
+    guard let replicated = try await reconstructionPseudo(
+        "otherWide", in: "Fixtures/Sample/libIndirect.opt.dylib") else { return }
+    #expect(replicated.contains("return Indirect.Wide5(a: 9, b: 9, c: 9, d: 9, e: 9)"))
+}
+
+/// At -Onone the body calls the memberwise initializer into a temporary and
+/// `memcpy`s the temporary into its own x8 buffer: the result IS the callee's
+/// result, so the return is the call, and the copy is folded into it rather
+/// than printed as a statement (or, worse, as `return memcpy(…)`).
+@Test func recoversForwardedIndirectResultIfPresent() async throws {
+    guard let make = try await reconstructionPseudo("makeWide", in: indirectFixture) else { return }
+    #expect(make.contains("return Indirect.Wide5.init(arg0, arg1, arg2, arg3, arg4)"))
+    #expect(!make.contains("memcpy"))
+    #expect(!make.contains("return arg0"))
+
+    guard let constant = try await reconstructionPseudo("constantWide", in: indirectFixture) else { return }
+    #expect(constant.contains("return Indirect.Wide5.init(1, 2, 3, 4, 5)"))
+}
+
+/// Caller side: x8 pointed into the caller's frame when it called an x8-indirect
+/// callee, so the frame slots under it hold that call's result and a later load
+/// from one is a field of the result, not a stale local. The call is bound once
+/// (`let r0 = …`) and each field read is `r0.field`: spelling the call out at
+/// every read would show it executed once per field. At -Onone makeWide passes
+/// a frame buffer to its initializer; the buffer lies below the register save
+/// area, so the saved x29 survives the call (`Preservation.State.markEscape`)
+/// and the sum reads the result's fields. At -O the linker folds `makeWide` and `Wide5.init` onto one body, and a
+/// call to a folded address takes neither name nor either signature: it read
+/// `let r0 = Indirect.Wide5.init(…)` for a call to `makeWide`. With no
+/// signature the result has no type to lay out, so the -O sum declines.
+@Test func readsIndirectCallResultFromFrameSlotIfPresent() async throws {
+    guard let onone = try await reconstructionPseudo("wideSum", in: indirectFixture) else { return }
+    #expect(onone.contains("Indirect.makeWide(arg0, arg1, arg2, arg3, arg4)"))
+    #expect(onone.contains("return (r0.a + r0.e)"), "\(onone)")
+    #expect(onone.components(separatedBy: "makeWide(").count == 2, "the call must render once: \(onone)")
+
+    guard let opt = try await reconstructionPseudo(
+        "wideSum", in: "Fixtures/Sample/libIndirect.opt.dylib") else { return }
+    #expect(opt.contains("sub_") && opt.contains("(arg0, arg1, arg2, arg3, arg4)"), "\(opt)")
+    #expect(!opt.contains("Wide5.init") && !opt.contains("makeWide"), "\(opt)")
+    #expect(opt.contains("return ?"), "\(opt)")
+}
+
+/// Negative: a field stored on only one path does not meet at the shared `ret`,
+/// so that field is unprovable (`?`) while the fields every path stores keep
+/// their values; the stale x0 is never printed.
+@Test func declinesIndirectFieldStoredOnOnePathIfPresent() async throws {
+    guard let opt = try await reconstructionPseudo(
+        "wideMaybeSet", in: "Fixtures/Sample/libIndirect.opt.dylib") else { return }
+    #expect(opt.contains("return Indirect.Wide5(a: ?, b: 0, c: 0, d: 0, e: 0)"))
+    #expect(!opt.contains("return arg0"))
+
+    guard let onone = try await reconstructionPseudo("wideMaybeSet", in: indirectFixture) else { return }
+    #expect(onone.contains("let r0 = Indirect.Wide5.init(0, 0, 0, 0, 0)"))
+    #expect(onone.contains("return Indirect.Wide5(a: ?, b: r0.b, c: r0.c, d: r0.d, e: r0.e)"))
+    #expect(!onone.contains("return arg0"))
+}
+
+/// Negative: a result pointer that escapes into a call argument (a generic
+/// result written by the value witness) or a result with no stored-property
+/// layout (an existential) explicitly declines its result.
+@Test func declinesEscapedOrUnlaidOutIndirectResultIfPresent() async throws {
+    guard let generic = try await reconstructionPseudo("identity<", in: indirectFixture) else { return }
+    #expect(generic.contains("return ?"))
+    #expect(!generic.contains("return arg0"))
+    for fixture in [indirectFixture, "Fixtures/Sample/libIndirect.opt.dylib"] {
+        guard let existential = try await reconstructionPseudo("asAny", in: fixture) else { continue }
+        #expect(existential.contains("return ?"), "existential result should decline in \(fixture)")
+        #expect(!existential.contains("return arg0"))
+    }
+}
+
+private struct NativeWide5Result {
+    var a, b, c, d, e: Int
+}
+
+/// The optimized helper's complete body proves a=7, leaving b...e at zero.
+/// The unoptimized body remains unsupported and must decline. Neither may
+/// return the stale all-zero initializer. Five Int words use an x8 result.
+@Test func declinesIndirectResultCopiedFromAnEscapedLocalIfPresent() async throws {
+    for fixture in [indirectFixture, "Fixtures/Sample/libIndirect.opt.dylib"] {
+        guard let escaped = try await reconstructionPseudo("escapedWide", in: fixture) else { continue }
+        let library = try #require(dlopen(fixture, RTLD_NOW | RTLD_LOCAL))
+        defer { dlclose(library) }
+        let address = try #require(dlsym(library, "$s8Indirect11escapedWideAA5Wide5VyF"))
+        let native = unsafeBitCast(address, to: (@convention(thin) () -> NativeWide5Result).self)()
+        let fields: [Int] = [native.a, native.b, native.c, native.d, native.e]
+        let expected: [Int] = [7, 0, 0, 0, 0]
+        #expect(fields == expected)
+        if fixture.hasSuffix(".opt.dylib") {
+            #expect(escaped.contains("return Indirect.Wide5(a: 7, b: 0, c: 0, d: 0, e: 0)"))
+        } else {
+            #expect(!escaped.contains("return Indirect.Wide5"), "stale local printed as the result in \(fixture)")
+        }
+        #expect(!escaped.contains("return arg0"))
+    }
+}
+
+/// A callee's result partially overwritten afterwards is neither the call nor a
+/// set of plain stores: the overwritten field is the new value and the rest are
+/// read back as fields of the call's result.
+@Test func recoversPartiallyOverwrittenIndirectResultIfPresent() async throws {
+    for fixture in [indirectFixture, "Fixtures/Sample/libIndirect.opt.dylib"] {
+        guard let modified = try await reconstructionPseudo("modifiedWide", in: fixture) else { continue }
+        // otherWide passes its initializer a result buffer below the
+        // register save area, so its x29 restore holds at -Onone too.
+        #expect(modified.contains("let r0 = Indirect.otherWide("), "in \(fixture)")
+        #expect(modified.contains("return Indirect.Wide5(a: arg0, b: r0.b, c: r0.c, d: r0.d, e: r0.e)"), "in \(fixture)")
+        #expect(!modified.contains("return arg0"))
+    }
+}
+
+/// A payload enum wider than four scalars returns through x8: its tag byte
+/// store names the case exactly (the static enum-layout oracle), and a payload
+/// case's words come from its declared tuple type.
+@Test func namesIndirectPayloadEnumCasesIfPresent() async throws {
+    for fixture in [indirectFixture, "Fixtures/Sample/libIndirect.opt.dylib"] {
+        guard let box = try await reconstructionPseudo("makeBox", in: fixture) else { continue }
+        #expect(box.contains("return Indirect.Shape4.box(arg0, arg1, arg2, arg3)"), "in \(fixture)")
+        guard let empty = try await reconstructionPseudo("emptyShape", in: fixture) else { continue }
+        #expect(empty.contains("return Indirect.Shape4.empty"), "in \(fixture)")
+    }
+    // Negative: a `String` payload spans two words, so the tuple's scalar arity
+    // is not what the store count says; the case is not spelled out.
+    guard let tagged = try await reconstructionPseudo("makeTagged", in: indirectFixture) else { return }
+    #expect(tagged.contains("return ?"))
+    #expect(!tagged.contains("return Indirect."))
+}
+
+// MARK: - Copy-on-write
+
+/// `swift_isUniquelyReferenced_nonNull_native` returns a Bool, not its
+/// argument. Read through like a retain, a `-> Bool` CoW method rendered
+/// `return self.storage`, and the uniqueness branch tested a bit of the
+/// storage pointer (`if (bit 0 of self.storage clear)`).
+@Test func rendersTheUniquenessCheckAsABoolIfPresent() async throws {
+    let fixture = "Fixtures/Sample/libCow.dylib"
+    guard let unique = try await reconstructionPseudo("CowBox.isUnique", in: fixture) else { return }
+    #expect(unique.contains("return isKnownUniquelyReferenced(self.storage)"), Comment(rawValue: unique))
+    #expect(!unique.contains("return self.storage"))
+
+    guard let functions = try await withStableDependencies({
+        try await Disassembler(preset: .default).disassemble(path: fixture, functionFilter: "CowBox.append")
+    }) as [DisassembledFunction]? else { return }
+    let append = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(append.contains("if (!isKnownUniquelyReferenced(self.storage)) {"), Comment(rawValue: append))
+    #expect(!append.contains("bit 0 of self.storage"))
+    // A void runtime call (`swift_beginAccess`) has no result to read.
+    #expect(!append.contains("(swift_beginAccess("), Comment(rawValue: append))
+}
+
+// MARK: - Vtable dispatch across same-named classes
+
+/// The vtable index is keyed by simple name. With `Alpha.Node` and `Beta.Node`
+/// in one image, first writer won the shared key, and `Beta.Node.work()`
+/// rendered `return (SameName.Alpha.Node.launchMissiles() + self.count)`: both
+/// calls attributed to the other class. A colliding name now declines.
+@Test func doesNotDispatchThroughAnotherClassesVtableIfPresent() async throws {
+    let fixture = "Fixtures/Sample/libSameName.dylib"
+    guard let work = try await reconstructionPseudo("Beta.Node.work", in: fixture) else { return }
+    #expect(work.contains("SameName.Beta.Node.work"), Comment(rawValue: work))
+    #expect(!work.contains("Alpha"), Comment(rawValue: work))
+    #expect(!work.contains("launchMissiles"), Comment(rawValue: work))
+}
+
+// MARK: - Compare-and-branch read from text
+
+private func structuredText(_ name: String, in fixture: String) async throws -> String? {
+    guard FileManager.default.fileExists(atPath: fixture) else { return nil }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: fixture, functionFilter: name)
+    }
+    return functions.map { $0.renderStructured() }.joined(separator: "\n")
+}
+
+/// `cmn a, b` sets the flags from `a + b`, comparing a with -b. Read like
+/// `cmp`, `if x == -1` (`cmn x0, #1; b.eq`) rendered `if (x0 == 1)`.
+@Test func readsCmnAsAComparisonWithTheNegatedOperandIfPresent() async throws {
+    let fixture = "Fixtures/Sample/libCompares.dylib"
+    guard let minusOne = try await structuredText("Compares.onMinusOne", in: fixture) else { return }
+    #expect(minusOne.contains("if (arg0 == -1) {"), Comment(rawValue: minusOne))
+    guard let minusTen = try await structuredText("Compares.onMinusTen", in: fixture) else { return }
+    #expect(minusTen.contains("if (arg0 != -10) {"), Comment(rawValue: minusTen))
+}
+
+/// `b.mi` after `cmn a, b` tests the sign of `a + b`. The text path rendered
+/// `a < 0 // b`, which reads as a test of `a` alone.
+@Test func readsMinusBranchAsTheSignOfTheSumIfPresent() async throws {
+    let fixture = "Fixtures/Sample/libCompares.dylib"
+    guard let text = try await structuredText("Compares.doubledSink", in: fixture) else { return }
+    #expect(text.contains("+ 0x4000000000000000) < 0)"), Comment(rawValue: text))
+    #expect(!text.contains("< 0 //"), Comment(rawValue: text))
+}
+
+/// One `bl sink` whose result feeds both the overflow check and the return:
+/// spelled out at each use, it read as two calls (`if ((sink(arg0) + …) < 0)
+/// … return (sink(arg0) << 1)`). Bound once, every use names the binding.
+@Test func aReusedCallResultIsEvaluatedOnceIfPresent() async throws {
+    let fixture = "Fixtures/Sample/libCompares.dylib"
+    guard let text = try await structuredText("Compares.doubledSink", in: fixture) else { return }
+    #expect(text.components(separatedBy: "Compares.sink(").count == 2, Comment(rawValue: text))
+    #expect(text.contains("let r0 = Compares.sink(arg0)"), Comment(rawValue: text))
+    #expect(text.contains("return (r0 << 1)"), Comment(rawValue: text))
+}
+
+/// A throw that falls into the normal epilogue shares its `ret` with the
+/// return; per path into that `ret`, x21 tells them apart.
+@Test func aThrowMergedIntoTheEpilogueStillThrowsIfPresent() async throws {
+    guard let text = try await structuredText("untypedCall", in: "Fixtures/Sample/libMergedThrow.opt.dylib")
+    else { return }
+    #expect(text.contains("swift_willThrow(") , Comment(rawValue: text))
+    #expect(text.contains("throw ?"), Comment(rawValue: text))
+    #expect(text.contains("return r0") || text.contains("return MergedThrow.sink(arg0)"), Comment(rawValue: text))
+    // The surviving path is normal only because x19 hands x21's entry value
+    // back (`mov x19, x21` … `mov x21, x19`) once the throw path is set aside.
+    #expect(!text.contains("machine_return()"), Comment(rawValue: text))
+}
+
+/// `swift_dynamicCast` returns whether the cast succeeded, not the value
+/// (which goes to its dest buffer): `isInt<T>(_ a: T) -> Bool { a is Int }`
+/// read `return (? as? Swift.Int)`, a Bool function returning an Optional
+/// (`dynamiccast.swift`, ABI review item 6).
+@Test func aDynamicCastsResultIsItsSuccessIfPresent() async throws {
+    let path = "Fixtures/Sample/libDynamicCast.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let isInt = try #require(functions.first { $0.displayName.hasPrefix("DynamicCast.isInt") }).renderStructured()
+    #expect(isInt.contains("return ((? as? Swift.Int) != nil)"), Comment(rawValue: isInt))
+    let isStr = try #require(functions.first { $0.displayName.hasPrefix("DynamicCast.isStr") }).renderStructured()
+    #expect(isStr.contains("as? Swift.String) != nil)"), Comment(rawValue: isStr))
+}
+
+/// `swift_dynamicCastMetatype` casts a type, and its target metadata names
+/// the instance type: `x as? C.Type` read `(x as? C)`, a cast of an object
+/// (`dynamiccast.swift`).
+@Test func aMetatypeCastIsSpelledAsOneIfPresent() async throws {
+    let path = "Fixtures/Sample/libDynamicCast.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func render(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("DynamicCast.\(name)") }).renderStructured()
+    }
+    let optional = try render("metaOptional")
+    #expect(optional.contains("as? DynamicCast.MetaBase.Type)"), Comment(rawValue: optional))
+    let forced = try render("metaForced")
+    #expect(forced.contains("as! DynamicCast.MetaBase.Type)"), Comment(rawValue: forced))
+    let test = try render("metaIs")
+    #expect(test.contains("as? DynamicCast.MetaBase.Type)"), Comment(rawValue: test))
+    // The object cast beside them is not a metatype's.
+    let instance = try render("instanceOptional")
+    #expect(!instance.contains("MetaBase.Type"), Comment(rawValue: instance))
+}
+
+@Test func onlyTheMetatypeHelpersSpellDotType() {
+    let target = "type metadata accessor for M.C(0)"
+    #expect(DisassembledFunction.swiftCastIdiom(callee: "swift_dynamicCastMetatype", arguments: ["x", target])
+        == "(x as? M.C.Type)")
+    #expect(DisassembledFunction.swiftCastIdiom(
+        callee: "swift_dynamicCastMetatypeUnconditional", arguments: ["x", target, "0", "0", "0"])
+        == "(x as! M.C.Type)")
+    #expect(DisassembledFunction.swiftCastIdiom(callee: "swift_dynamicCastClass", arguments: ["x", target])
+        == "(x as? M.C)")
+    #expect(DisassembledFunction.swiftCastIdiom(
+        callee: "swift_dynamicCastClassUnconditional", arguments: ["x", target, "0", "0", "0"])
+        == "(x as! M.C)")
+    // A target this cannot name stays the raw call.
+    #expect(DisassembledFunction.swiftCastIdiom(callee: "swift_dynamicCastMetatype", arguments: ["x", "?"]) == nil)
+}
+
+/// `_unconditionallyBridgeFromObjectiveC` takes one word. Its name carries
+/// `(extension in Foundation):`, which failed the identifier test and sent it
+/// positional, so a thunk's other registers read as arguments: `-[OB setS:]`
+/// rendered `(arg0, ?, arg0)` (`objcbridge.swift`).
+@Test func aBridgeFromObjectiveCTakesOneWordIfPresent() async throws {
+    let path = "Fixtures/Sample/libObjCBridge.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func render(_ selector: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasSuffix(" \(selector)]") }).renderStructured()
+    }
+    for (selector, bridged) in [("setName:", "String._unconditionallyBridgeFromObjectiveC(arg0)"),
+                                ("setTags:", "Array._unconditionallyBridgeFromObjectiveC(arg0)"),
+                                ("middle:s::", "String._unconditionallyBridgeFromObjectiveC(arg1)"),
+                                ("first:::", "Array._unconditionallyBridgeFromObjectiveC(arg0)"),
+                                ("first:::", "Set._unconditionallyBridgeFromObjectiveC(arg1)"),
+                                ("optional::", "String._unconditionallyBridgeFromObjectiveC(arg0)"),
+                                ("optional::", "Array._unconditionallyBridgeFromObjectiveC(arg1)")] {
+        let text = try render(selector)
+        #expect(text.contains(bridged), Comment(rawValue: text))
+    }
+}
+
+/// An extension's module does not change a static member's layout, and an
+/// instance member of a value type stays out of it: its `self` follows the
+/// formals, and the leading layout would trim it.
+@Test func anExtensionsStaticMemberIsLaidOutFromItsSignature() throws {
+    let index = ClassTypeIndex(qualifiedClassNames: ["__C.NSString"])
+    let bridge = "static (extension in Foundation):Swift.String._unconditionallyBridgeFromObjectiveC("
+        + "Swift.Optional<__C.NSString>) -> Swift.String"
+    let layout: Disassembler.SwiftArgumentLayout = try #require(Disassembler.swiftCallArgumentLayout(
+        callee: bridge, enumCaseIndex: EnumCaseIndex(), classTypeIndex: index, anyContext: false))
+    #expect(layout.slots.map(\.registers) == [1])
+    #expect(layout.unplaced == 0)
+    let instance = "(extension in Foundation):Swift.String._bridgeToObjectiveC() -> __C.NSString"
+    #expect(Disassembler.swiftCallArgumentLayout(
+        callee: instance, enumCaseIndex: EnumCaseIndex(), classTypeIndex: index, anyContext: true) == nil)
+}
+
+/// A setter's name prints no parameter list and its arity came from its body,
+/// which a filtered run did not decode for a callee reached through a vtable:
+/// `self.x.setter()` where the whole image read `self.x.setter(?)`, and at -O
+/// `self.s.setter(?, <setter>)`, the `br x1` target as an argument
+/// (`setterarity.swift`). A filtered and a whole-image run must agree on every
+/// function.
+@Test func filteredAndWholeImageRunsAgreeOnASettersArityIfPresent() async throws {
+    for (level, path) in [("Onone", "Fixtures/Sample/libSetterArity.Onone.dylib"),
+                          ("O", "Fixtures/Sample/libSetterArity.O.dylib")] {
+        guard FileManager.default.fileExists(atPath: path) else { continue }
+        let whole = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+        let dispatching = whole.filter { $0.displayName.hasPrefix("SetterArity.Base.prop.setter")
+            || $0.displayName.hasPrefix("SetterArity.Base.plain.setter")
+            || $0.displayName.hasPrefix("SetterArity.Base.title.setter") }
+        #expect(dispatching.count == 3, "\(level)")
+        for function in dispatching {
+            let text = function.renderStructured()
+            #expect(text.contains(".setter("), Comment(rawValue: text))
+            #expect(!text.contains(".setter()"), Comment(rawValue: text))
+            #expect(!text.contains(", SetterArity."), Comment(rawValue: text))
+        }
+        for function in whole {
+            let address = "0x" + String(function.startAddress, radix: 16)
+            let filtered = try await withStableDependencies {
+                try await Disassembler().disassemble(path: path, functionFilter: address)
+            }
+            let match = try #require(filtered.first { $0.startAddress == function.startAddress })
+            #expect(match.renderStructured() == function.renderStructured(), "\(level) \(address)")
+            #expect(match.renderPseudo() == function.renderPseudo(), "\(level) \(address)")
+        }
+    }
+}
+
+@Test func onlyASetterTakingItsValueFromX0IsLaidOut() {
+    let index = ClassTypeIndex(qualifiedClassNames: ["M.C"])
+    #expect(Disassembler.setterLayoutName("M.C.x.setter : Swift.Int", classTypeIndex: index)
+        == "M.C.setter(Swift.Int) -> ()")
+    #expect(Disassembler.setterLayoutName("static M.S.x.setter : Swift.Int", classTypeIndex: index)
+        == "static M.S.setter(Swift.Int) -> ()")
+    // A value type's: `self` may follow the value.
+    #expect(Disassembler.setterLayoutName("M.S.x.setter : Swift.Int", classTypeIndex: index) == nil)
+    // A subscript's takes its index too.
+    #expect(Disassembler.setterLayoutName("M.C.subscript.setter : (Swift.Int) -> Swift.Int", classTypeIndex: index) == nil)
+    #expect(Disassembler.setterLayoutName("M.C.x.getter : Swift.Int", classTypeIndex: index) == nil)
+    // A stripped accessor names no property or type.
+    #expect(Disassembler.setterLayoutName("M.C.setter", classTypeIndex: index) == nil)
+}
+
+/// A stripped binary's metadata names a vtable accessor by its kind alone
+/// (`StrippedAccessor.Counter.getter`). A self dispatch to it is to some
+/// property of self; read as `Owner.property.getter`, its type became the
+/// property, `self.Counter = (self.Counter + 1)` (strippedaccessor.swift).
+@Test func aStrippedAccessorNamesNoPropertyIfPresent() async throws {
+    let path = "Fixtures/Sample/libStrippedAccessor.stripped.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(!text.contains("self.Counter"), Comment(rawValue: text))
+    #expect(text.contains("self.(unknown).setter("), Comment(rawValue: text))
+    #expect(Disassembler.namingItsProperty("Sample.Widget.setter", ownedBy: "Widget") == "Sample.Widget.(unknown).setter")
+    #expect(Disassembler.namingItsProperty("Sample.Widget.label.setter", ownedBy: "Widget") == "Sample.Widget.label.setter")
+    #expect(Disassembler.namingItsProperty("Sample.Widget.bump() -> Swift.Int", ownedBy: "Widget") == "Sample.Widget.bump() -> Swift.Int")
+}
+
+/// A self dispatch resolved to its class's implementation takes that body's
+/// parameters (an override keeps the signature). In a stripped binary the
+/// accessor has no signature, and positionally the getter dispatch read the
+/// slot's own address, left in x0, as an argument (strippedaccessor.swift).
+@Test func aSelfDispatchTakesItsImplementationsParametersIfPresent() async throws {
+    let path = "Fixtures/Sample/libStrippedAccessor.stripped.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(!text.contains("getter(StrippedAccessor."), Comment(rawValue: text))
+    #expect(text.contains(".getter()"), Comment(rawValue: text))
+}
+
+/// A vtable dispatch to self's own setter folds into an assignment of the
+/// setter's parameter as its type travels: a String's two words, a Double in
+/// d0. Read as x0 alone, `label = ""` rendered `self.label = 0` and `scale =
+/// 0.5` the setter's own address left in x0 (setterfold.swift).
+@Test func aSetterFoldTakesItsValueAsItsTypeTravelsIfPresent() async throws {
+    let path = "Fixtures/Sample/libSetterFold.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("SetterFold.Named.\(name)(") }).renderStructured()
+    }
+    #expect(try text("reset").contains("self.label = \"\""))
+    #expect(try text("half").contains("self.scale = 0.5"))
+    #expect(try text("seven").contains("self.count = 7"))
+}
+
+/// A String return is read from both of its words, x0 and x1: a literal they
+/// spell, a String field of self, or the whole result of a call that itself
+/// returns a String. Each rendered `return ?` before. A String? field read
+/// back as a String (`nickname!`), the two words of a
+/// call returning a struct that holds a String, and an Optional String stay
+/// `return ?`; a pick between two literals is a ternary (stringreturns.swift).
+@Test func aStringReturnIsReadFromBothWordsIfPresent() async throws {
+    let path = "Fixtures/Sample/libStringReturns.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("StringReturns.\(name)(") }).renderStructured()
+    }
+    #expect(try text("small").contains("return \"ok\""))
+    #expect(try text("large").contains("return \"a literal longer than fifteen bytes\""))
+    #expect(try text("Person.current").contains("return self.name"))
+    // Kept across a call, the result is bound where the call runs.
+    let forward = try text("forward")
+    #expect(forward.contains("let r0 = StringReturns.greeting()\n    StringReturns.sink()\n    return r0"),
+            Comment(rawValue: forward))
+    // With nothing between, the call is the return, not also a statement.
+    let fromLocal = try text("fromLocal")
+    #expect(fromLocal.contains("return StringReturns.describe("), Comment(rawValue: fromLocal))
+    #expect(!fromLocal.contains("    StringReturns.describe("), Comment(rawValue: fromLocal))
+    for name in ["Person.forced", "inner", "maybe"] {
+        let body = try text(name)
+        #expect(body.contains("return ?"), Comment(rawValue: body))
+    }
+    // `Box.make()` is no String result, so the return does not use it: it
+    // is not bound for a use that never renders.
+    let either = try text("either")
+    #expect(either.contains(#"return (arg0 ? "yes" : "no")"#), Comment(rawValue: either))
+    let inner = try text("inner")
+    #expect(!inner.contains("let r"), Comment(rawValue: inner))
+}
+
+/// -Onone returns a literal straight from its initializer, which now is
+/// the return: `return "..."`, not `return Swift.String.init("...", 3, 1)`
+/// (sample.swift's `Animal.speak()`).
+@Test func aStringReturnedFromItsLiteralInitializerIsTheLiteralIfPresent() async throws {
+    let path = "Fixtures/Sample/sample.debug"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler().disassemble(path: path, functionFilter: "speak")
+    }
+    let speak = try #require(functions.first { $0.displayName.hasPrefix("sample.Animal.speak(") }).renderStructured()
+    #expect(speak.contains("return \"...\"") && !speak.contains("String.init"), Comment(rawValue: speak))
+}
+
+/// A String picked by a condition is a `csel` per word over one compare,
+/// so each word is a select on the same condition: the pick is the ternary
+/// of the two literals (`flag ? "yes" : "no"`), and a chain of picks nests.
+/// Selects on two flag setters, or on `ne` and `eq` of one, mix two
+/// Strings' words and stay `return ?` (stringselects.swift,
+/// string_selects.s).
+@Test func aStringPickedByAConditionIsATernaryIfPresent() async throws {
+    let path = "Fixtures/Sample/libStringSelects.dylib"
+    let asm = "Fixtures/Sample/libStringSelectsAsm.dylib"
+    guard FileManager.default.fileExists(atPath: path), FileManager.default.fileExists(atPath: asm) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String, in functions: [DisassembledFunction]) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix(name) }).renderStructured()
+    }
+    let either = try text("StringSelects.either(", in: functions)
+    #expect(either.contains(#" ? "yes" : "no")"#), Comment(rawValue: either))
+    let pick = try text("StringSelects.pick(", in: functions)
+    #expect(pick.contains(#"return ((arg0 == 0) ? "zero" : ((arg0 != 1) ? "many" : "one"))"#), Comment(rawValue: pick))
+    let picks = try await withStableDependencies { try await Disassembler().disassemble(path: asm) }
+    for name in ["Picks.mixed(", "Picks.swapped("] {
+        let body = try text(name, in: picks)
+        #expect(body.contains("return ?") && !body.contains("\"yes\""), Comment(rawValue: body))
+    }
+}
+
+/// A throwing function whose `ret` ends a block ending in a throwing call,
+/// x21 proven zero into the call and untouched after it, hands on the
+/// callee's outcome: `return try` the call's result, in x0, d0 or a
+/// String's two words, or an expression of it. Each read an unresolved
+/// exit. An x21 armed before the call or written after it, a result that
+/// is not the call's, a callee that throws nothing, and a typed-throws
+/// callee stay unresolved (throwforward.swift, throw_forward.s).
+@Test func aThrowingForwardReturnsTryTheCallIfPresent() async throws {
+    let path = "Fixtures/Sample/libThrowForward.dylib"
+    let asm = "Fixtures/Sample/libThrowForwardAsm.dylib"
+    guard FileManager.default.fileExists(atPath: path), FileManager.default.fileExists(atPath: asm) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let byHand = try await withStableDependencies { try await Disassembler().disassemble(path: asm) }
+    func text(_ name: String, in functions: [DisassembledFunction]) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix(name) }).renderStructured()
+    }
+    for (requirement, call) in [("count", "Reader.count(?)"), ("ratio", "Reader.ratio(?)"), ("title", "Reader.title()")] {
+        let body = try text("protocol witness for ThrowForward.Source.\(requirement)()", in: functions)
+        // The call is the return's, not also a statement of its own.
+        #expect(body.contains("return try ") && body.components(separatedBy: call).count == 2
+                && !body.contains("unresolved"), Comment(rawValue: body))
+    }
+    let shifted = try text("ThrowForward.Reader.shifted()", in: functions)
+    #expect(shifted.contains("return try (") && shifted.contains("Reader.count(?) + 1)"), Comment(rawValue: shifted))
+    #expect(try text("ThrowAsm.forward(", in: byHand).contains("return try ThrowAsm.risky(arg0)"))
+    // A call before the forwarded one is bound where it runs.
+    let combined = try text("ThrowAsm.combined(", in: byHand)
+    #expect(combined.contains("let r0 = ThrowAsm.base(arg0)") && combined.contains("return try (ThrowAsm.risky(arg0) + r0)"),
+            Comment(rawValue: combined))
+    for name in ["ThrowAsm.armed(", "ThrowAsm.ignored(", "ThrowAsm.restored(", "ThrowAsm.clobbered(", "ThrowAsm.boxes("] {
+        let body = try text(name, in: byHand)
+        #expect(body.contains("unresolved Swift success/error exit") && !body.contains("return try"), Comment(rawValue: body))
+    }
+}
+
+/// Two equal conditions that read memory are one condition only if nothing
+/// wrote it between them. `self.flag != 0` compared on both sides of a store
+/// through an argument, which may be self, spells the same and may not be:
+/// x0 and x1 can come from different arms. A store, a store that may alias
+/// and a call between the loads all stay `return ?`. Nothing between them is
+/// the pick, and so is a condition on an argument, which no store reaches
+/// (selectstore.swift, select_store.s).
+@Test func aPickOnALoadDeclinesAcrossAWriteIfPresent() async throws {
+    let path = "Fixtures/Sample/libSelectStore.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("SelectStore.Box.\(name)(") }).renderStructured()
+    }
+    let steady = try text("steady")
+    #expect(steady.contains(#"return ((self.flag != 0) ? "yes" : "no")"#), Comment(rawValue: steady))
+    let argued = try text("argued")
+    #expect(argued.contains(#"return (arg0 ? "yes" : "no")"#), Comment(rawValue: argued))
+    for name in ["stored", "aliased", "called"] {
+        let body = try text(name)
+        #expect(body.contains("return ?") && !body.contains("\"yes\""), Comment(rawValue: body))
+    }
+}
+
+/// A function signature specialization that rewrites self's parameter is
+/// thin, so x20 at a call to it is no `self:`. `Arg[2] = Dead` of a two-formal
+/// static drops the metatype, and the caller's value parked in x20 read as
+/// its self. `Arg[0] = Dead` drops a formal, and self stays
+/// (tfself.swift, tf_self.s).
+@Test func aSpecializationThatRewritesSelfTakesNoSelfIfPresent() async throws {
+    let path = "Fixtures/Sample/libTfSelf.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix(name) }).renderStructured()
+    }
+    let caller = try text("TfSelf.caller(")
+    #expect(caller.contains("TfSelf.Maker.make(") && !caller.contains("self:"), Comment(rawValue: caller))
+    let outer = try text("TfSelf.Box.outer(")
+    #expect(outer.contains("self: arg0"), Comment(rawValue: outer))
+    #expect(Disassembler.signatureSpecializationRewritesSelf(
+        "merged function signature specialization <Arg[1] = Dead> of M.T.x.getter : Swift.Int"))
+    #expect(!Disassembler.signatureSpecializationRewritesSelf("generic specialization <Swift.Int> of M.T.f(Swift.Int) -> ()"))
 }

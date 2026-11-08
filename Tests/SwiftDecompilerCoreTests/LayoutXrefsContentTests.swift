@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+@testable import SwiftDecompilerCore
 
 /// Content assertions for the `layout` and `xrefs` commands, which were only
 /// exercised for determinism and not-crashing — never for what they render.
@@ -10,11 +11,11 @@ import Foundation
 struct LayoutXrefsContentTests {
     private static let binary = URL(fileURLWithPath: ".build/debug/swiftdc")
 
-    private func run(_ arguments: [String]) throws -> String? {
-        guard FileManager.default.fileExists(atPath: Self.binary.path) else { return nil }
+    private func run(_ arguments: [String], executable: URL = binary) throws -> String? {
+        guard FileManager.default.fileExists(atPath: executable.path) else { return nil }
         let pipe = Pipe()
         let process = Process()
-        process.executableURL = Self.binary
+        process.executableURL = executable
         process.arguments = arguments
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
@@ -40,6 +41,73 @@ struct LayoutXrefsContentTests {
         #expect(output.contains("+0x8"))    // the second field's offset
     }
 
+    /// A field whose type is in the same module records a symbolic reference
+    /// (`\u{01}` and a relative offset), which `layout` printed raw:
+    /// `center: ^A` and the offset's bytes, control characters in the text
+    /// and in JSON, on 61% of SwiftUI's fields. It prints the resolved name.
+    @Test func layoutResolvesASymbolicFieldTypeIfPresent() throws {
+        let fixture = "Fixtures/Sample/sample.release"
+        guard FileManager.default.fileExists(atPath: fixture),
+              let text = try run(["layout", fixture]),
+              let json = try run(["layout", fixture, "--json"]) else { return }
+        #expect(text.contains("center: sample.Point"), Comment(rawValue: text))
+        #expect(text.contains("radius: Sd"), Comment(rawValue: text))
+        let control = text.unicodeScalars.filter { $0.value < 0x20 && $0 != "\n" }
+        #expect(control.isEmpty, "control bytes: \(control.map(\.value))")
+        let types = try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]])
+        let circle = try #require(types.first { $0["type"] as? String == "Circle" })
+        let fields = try #require(circle["fields"] as? [[String: Any]])
+        #expect(fields.first { $0["name"] as? String == "center" }?["type"] as? String == "sample.Point", "\(fields)")
+    }
+
+    /// The symbolic-reference rule itself: a plain mangling prints as is, one
+    /// holding a reference prints its resolution, and an unresolved one `?`,
+    /// never its bytes.
+    @Test func aSymbolicFieldTypePrintsItsResolutionOrDeclines() {
+        #expect(FieldMap.printableTypeName(mangled: "Si", resolved: "Swift.Int") == "Si")
+        #expect(FieldMap.printableTypeName(mangled: "\u{01}\u{10}\u{20}\u{00}\u{00}", resolved: "M.Point") == "M.Point")
+        #expect(FieldMap.printableTypeName(mangled: "\u{02}xXj\u{00}Sg", resolved: nil) == "?")
+        #expect(FieldMap.printableTypeName(mangled: "Say\u{1F}abcdG", resolved: nil) == "?")
+    }
+
+    /// A layout that stopped at a field it could not resolve has an
+    /// understated size. `layout` printed it as fact: `Widget // instance size
+    /// 0 bytes` for a class whose ObjC ancestor is unresolved (an app had a
+    /// 32-byte type at 0 and a 152-byte one at 97). It is unknown, in JSON too.
+    @Test func layoutDoesNotStateAnUntrustedSizeIfPresent() throws {
+        let fixture = "Fixtures/Sample/sample.debug"
+        guard FileManager.default.fileExists(atPath: fixture),
+              let text = try run(["layout", fixture]),
+              let json = try run(["layout", fixture, "--json"]) else { return }
+        #expect(text.contains("sample.Widget  // instance size unknown"), Comment(rawValue: text))
+        #expect(!text.contains("sample.Widget  // instance size 0 bytes"), Comment(rawValue: text))
+        #expect(text.contains("sample.Stack  // instance size 8 bytes"), Comment(rawValue: text))
+        let types = try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]])
+        let widget = try #require(types.first { $0["type"] as? String == "sample.Widget" })
+        #expect(widget["instanceSize"] is NSNull, "\(widget)")
+    }
+
+    /// `disasm --structured` and `--pseudo` on a standalone file stream one
+    /// function at a time (holding the whole image cost about 1 KB per
+    /// instruction; a 7M-instruction app could not render in 4 GB). The
+    /// stream must render every function the array path (`--json`) recovers.
+    @Test func aStreamedListingRendersEveryFunctionIfPresent() throws {
+        for fixture in ["Fixtures/Sample/libSample.dylib", "Fixtures/Sample/sample.release",
+                        "Fixtures/Sample/libReconstruction.opt.dylib"] {
+            guard FileManager.default.fileExists(atPath: fixture),
+                  let json = try run(["disasm", fixture, "--json"]) else { continue }
+            let functions = try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]])
+            for mode in ["--structured", "--pseudo"] {
+                guard let text = try run(["disasm", fixture, mode]) else { continue }
+                let headers = text.split(separator: "\n").filter { line in
+                    guard let first = line.first, !first.isWhitespace, line.hasSuffix(" {") else { return false }
+                    return true
+                }
+                #expect(headers.count == functions.count, "\(fixture) \(mode): \(headers.count) rendered, \(functions.count) recovered")
+            }
+        }
+    }
+
     @Test func xrefsResolvesConcreteCallEdgesIfPresent() throws {
         let fixture = "Fixtures/Sample/sample.release"
         guard FileManager.default.fileExists(atPath: fixture) else { return }
@@ -63,8 +131,38 @@ struct LayoutXrefsContentTests {
             Issue.record("xrefs --unreferenced produced no output"); return
         }
         // The pure leaf predicates have no in-image callers, so they are listed
-        // with their address.
-        #expect(output.contains("Reconstruction.isEqual"))
-        #expect(output.contains("0xb80"))
+        // with their address — checked against the symbol table, not a pinned
+        // literal that moves whenever the fixture source grows.
+        let symbols = try run(["/usr/bin/nm", fixture], executable: URL(fileURLWithPath: "/usr/bin/xcrun")) ?? ""
+        let line = try #require(symbols.split(separator: "\n").first { $0.hasSuffix(" _$s14Reconstruction7isEqualySbSi_SitF") })
+        let address = try #require(UInt64(line.prefix { $0 != " " }, radix: 16))
+        #expect(output.contains("0x\(String(address, radix: 16))  Reconstruction.isEqual"), "\(output)")
+    }
+
+    /// A folded address is `sub_<addr>` in the call graph, so `xrefs
+    /// --function` on one of its symbols printed "No function matched" for a
+    /// symbol the binary exports, while `disasm -f` on the same symbol found
+    /// it. Each folded symbol, raw or demangled, selects the address, with
+    /// its callers.
+    @Test func xrefsSelectsAFoldedFunctionByAnyOfItsSymbolsIfPresent() throws {
+        let cases: [(fixture: String, needle: String, callers: [String])] = [
+            // The `add` body: Box.plus and pairPlus's specialization.
+            ("Fixtures/Sample/libFoldedCalls.dylib", "Box.plus", ["callPair()", "callAdd(", "callBox("]),
+            ("Fixtures/Sample/libFoldedCalls.dylib", "8pairPlusyS2i_Sdt_SitFTf4ndn_n", ["callPair()", "callAdd(", "callBox("]),
+            ("Fixtures/Sample/libMarkerSymbols.dylib", "__init_array_end", ["_callAdd3"]),
+            ("Fixtures/Sample/libMarkerSymbols.dylib", "_add3", ["_callAdd3"]),
+        ]
+        for (fixture, needle, callers) in cases {
+            guard FileManager.default.fileExists(atPath: fixture),
+                  let output = try run(["xrefs", fixture, "--function", needle]) else { continue }
+            #expect(!output.contains("No function matched"), "\(needle): \(output)")
+            guard let heading = output.split(separator: "\n").first(where: { $0.hasPrefix("sub_") }) else {
+                Issue.record("\(needle): no folded function selected: \(output)"); continue
+            }
+            #expect(heading.contains("  0x"), "\(heading)")
+            for caller in callers {
+                #expect(output.contains(caller), "\(needle) should list caller \(caller): \(output)")
+            }
+        }
     }
 }

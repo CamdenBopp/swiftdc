@@ -15,12 +15,11 @@ public enum TypeInference {
     public static func argumentTypes(
         of function: DisassembledFunction, classTypeIndex: ClassTypeIndex = ClassTypeIndex()
     ) -> [Int: ValueType] {
-        guard function.objcMethod == nil, let name = function.demangledName,
+        guard function.objcMethod == nil, let name = function.analysisName,
               Disassembler.isSwiftMangled(function.symbol),
-              let arrow = name.range(of: " -> ", options: .backwards)
+              let signature = DisassembledFunction.splitSignature(name)?.head
         else { return [:] }
-        let signature = name[..<arrow.lowerBound]
-        guard let paramsRange = DisassembledFunction.outermostArgumentListRange(of: String(signature))
+        guard let paramsRange = DisassembledFunction.outermostArgumentListRange(of: signature)
         else { return [:] }
         var types: [Int: ValueType] = [:]
         for (index, parameter) in DisassembledFunction
@@ -122,6 +121,10 @@ public enum TypeInference {
                         : ValueType(category: .integer, width: width, signedness: .unknownSign)
                 }
                 return ValueType(category: .integer, width: nil, signedness: .unknownSign)
+            case .unsignedDivide, .unsignedRemainder:
+                // `udiv` computes an unsigned quotient whatever the operands
+                // were declared as.
+                return .unsignedInteger(nil)
             case .bitOr, .bitXor, .shiftLeft, .shiftRight, .arithmeticShiftRight:
                 return ValueType(category: .integer, width: nil, signedness: .unknownSign)
             default:
@@ -132,10 +135,19 @@ public enum TypeInference {
             case .negate: // `-x` is signed
                 let t = typeOf(operand, arguments: arguments)
                 return .signedInteger(t.width)
-            case .bitwiseNot:
+            case .bitwiseNot, .byteSwap, .leadingZeros, .leadingSignBits, .bitReverse:
                 return ValueType(category: .integer, width: nil, signedness: .unknownSign)
             case .squareRoot, .absoluteValue:
                 return .floating(nil)
+            case .toFloat(let bits), .unsignedToFloat(let bits), .floatConstant(let bits), .floatFromBits(let bits):
+                return .floating(bits)
+            case .toInteger(let signed, let bits):
+                return signed ? .signedInteger(bits) : .unsignedInteger(bits)
+            case .bitPattern(let bits):
+                // A raw word: each instruction that reads it says its sign.
+                // As a proven UInt, a signed `b.gt` on it rendered a plain
+                // `>`, which reads as the unsigned compare.
+                return ValueType(category: .integer, width: bits, signedness: .unknownSign)
             }
         default:
             return .unknown

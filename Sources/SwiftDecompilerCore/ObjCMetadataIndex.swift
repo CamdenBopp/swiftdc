@@ -54,6 +54,26 @@ public struct ObjCMethodBinding: Sendable, Equatable {
         typeEncoding.first { !"rnNoORVA".contains($0) } == "v"
     }
 
+    /// Whether the encoding declares a floating scalar returned whole in v0.
+    /// Darwin arm64's `long double` (`D`) has the same 64-bit ABI as `double`.
+    var returnsOneFloat: Bool {
+        let code = typeEncoding.first { !"rnNoORVA".contains($0) }
+        return code == "d" || code == "f" || code == "D"
+    }
+
+    /// Whether the encoding declares a struct returned in v registers (one
+    /// of one to four floats), of which v0 is only the first field, or a
+    /// struct this cannot classify.
+    var returnsFloatAggregate: Bool {
+        guard let type = ObjCArgumentABI.returnType(encoding: typeEncoding),
+              type.hasPrefix("{") || type.hasPrefix("(")
+        else { return false }
+        switch ObjCArgumentABI.aggregate(type) {
+        case .composite?, .byReference?: return false
+        default: return true
+        }
+    }
+
     /// Objective-C initializer families are defined by selector spelling. This
     /// metadata fact is enough to model `self = [super init…]` without relying
     /// on a symbol-table name that stripping removes.
@@ -109,6 +129,110 @@ struct ObjCMetadataSnapshot {
             || marked(numericCast(ro.layout.baseProtocols))
     }
 
+    /// The offset recorded for an ivar whose offset variable is zero-fill. A
+    /// Swift class's stored property that follows a resilient-size one (a
+    /// Foundation `Date`) gets its offset at load time, so the image holds no
+    /// value for it. Never a field-map entry.
+    public static let runtimeIvarOffset = -1
+
+    /// Chained-fixup rebase targets (runtime offsets) of every class's ivar
+    /// offset slots, from one walk over the chains. MachOKit's
+    /// `resolveRebase(at:)` re-walks a page's chain on each call: per ivar,
+    /// that was 75% of `objc` on Prime Video (`sample`, 1142 of 1515).
+    static func ivarOffsetRebaseTargets(
+        of classes: [ObjCClass64], in machO: MachOFile
+    ) -> [Int: UInt64] {
+        guard let fixups = machO.dyldChainedFixups, let starts = fixups.startsInImage else { return [:] }
+        var slots = Set<Int>()
+        for raw in classes {
+            for ivar in raw.classROData(in: machO)?.ivarList(in: machO)?.ivars(in: machO) ?? [] {
+                slots.insert(ivar.unresolvedValue(of: .offset).fieldOffset)
+            }
+        }
+        guard !slots.isEmpty else { return [:] }
+        var targets: [Int: UInt64] = [:]
+        for segment in fixups.startsInSegments(of: starts) {
+            for pointer in fixups.pointers(of: segment, in: machO)
+            where slots.contains(pointer.offset) && pointer.fixupInfo.rebase != nil {
+                targets[pointer.offset] = pointer.rebaseTargetRuntimeOffset(for: machO)
+            }
+        }
+        return targets
+    }
+
+    /// Indices of the ivars whose offset variable has no bytes in the file.
+    /// ObjCDump reads it anyway, through a `try!`: past the end of the file
+    /// that traps (Prime Video's `AmazonVideo.DownloadPageDataSource` killed
+    /// `objc` and `xrefs`), inside the file it returns whatever bytes are
+    /// there (zero-fill padding read as offset 0).
+    static func runtimeOffsetIvarIndices(
+        _ ivars: [ObjCIvar64], in machO: MachOFile,
+        ranges: FileBackedRanges, rebaseTargets: [Int: UInt64]
+    ) -> Set<Int> {
+        var result = Set<Int>()
+        for (index, ivar) in ivars.enumerated() {
+            let slot = ivar.unresolvedValue(of: .offset)
+            let address: UInt64
+            if let runtimeOffset = rebaseTargets[slot.fieldOffset] {
+                address = ranges.base &+ runtimeOffset
+            } else if machO.dyldChainedFixups == nil, slot.value != 0 {
+                // LC_DYLD_INFO: a rebased slot holds the unslid address itself.
+                address = slot.value
+            } else {
+                // A bind or a null slot: ObjCDump resolves or declines it itself.
+                continue
+            }
+            if !ranges.holdsBytes(at: address, count: 4) { result.insert(index) }
+        }
+        return result
+    }
+
+    /// `ObjCClassProtocol.info(in:)`, except that an ivar whose offset is
+    /// computed at load time is recorded at `runtimeIvarOffset` instead of
+    /// being read. Only outside a shared cache (`ranges` nil inside one).
+    static func classInfo(
+        _ raw: ObjCClass64, in machO: MachOFile,
+        ranges: FileBackedRanges?, rebaseTargets: [Int: UInt64]
+    ) -> ObjCClassInfo? {
+        guard let ranges, let data = raw.classROData(in: machO) else { return raw.info(in: machO) }
+        let ivars = data.ivarList(in: machO)?.ivars(in: machO) ?? []
+        let runtime = runtimeOffsetIvarIndices(
+            ivars, in: machO, ranges: ranges, rebaseTargets: rebaseTargets
+        )
+        guard !runtime.isEmpty else { return raw.info(in: machO) }
+        // The rest mirrors ObjCDump for a file outside a shared cache, which
+        // has no relative method lists (`readsCacheOnlyRelativeLists` filtered
+        // the classes that look as if they do), with protocols expanded
+        // recursively, its default.
+        guard let (targetMachO, meta) = raw.metaClass(in: machO),
+              let metaData = meta.classROData(in: targetMachO),
+              let name = data.name(in: machO)
+        else { return nil }
+        let ivarInfos = ivars.enumerated().compactMap { index, ivar -> ObjCIvarInfo? in
+            guard runtime.contains(index) else { return ivar.info(in: machO) }
+            guard let name = ivar.name(in: machO), let type = ivar.type(in: machO) else { return nil }
+            return ObjCIvarInfo(name: name, typeEncoding: type, offset: runtimeIvarOffset)
+        }
+        return ObjCClassInfo(
+            name: name,
+            version: raw.version(for: data),
+            imageName: machO.imagePath,
+            instanceSize: numericCast(data.instanceSize),
+            superClassName: raw.superClassName(in: machO),
+            protocols: data.protocolList(in: machO)?.protocols(in: machO)?
+                .compactMap { $1.info(in: $0) } ?? [],
+            ivars: ivarInfos,
+            classProperties: metaData.propertyList(in: targetMachO)?.properties(in: targetMachO)
+                .map { $0.info(isClassProperty: true) } ?? [],
+            properties: data.propertyList(in: machO)?.properties(in: machO)
+                .map { $0.info(isClassProperty: false) } ?? [],
+            classMethods: metaData.methodList(in: targetMachO)?.methods(in: targetMachO)?
+                .map { $0.info(isClassMethod: true) } ?? [],
+            methods: data.methodList(in: machO)?.methods(in: machO)?
+                .map { $0.info(isClassMethod: false) } ?? []
+        )
+    }
+
     static func build(
         in machO: MachOFile,
         includeProtocols: Bool = true
@@ -121,9 +245,12 @@ struct ObjCMetadataSnapshot {
             let boundSlots = machO.cache == nil ? externalBindSlots(in: machO) : [:]
             // Keep each raw class paired with its decoded info: the raw struct's
             // file offset is what locates the superclass field for bind recovery.
-            let pairs = (objc.classes64 ?? [])
-                .filter { !readsCacheOnlyRelativeLists(machO, $0) }
-                .compactMap { raw in raw.info(in: machO).map { (raw, $0) } }
+            let candidates = (objc.classes64 ?? []).filter { !readsCacheOnlyRelativeLists(machO, $0) }
+            let ranges = machO.cache == nil ? FileBackedRanges(standalone: machO) : nil
+            let rebaseTargets = ranges == nil ? [:] : ivarOffsetRebaseTargets(of: candidates, in: machO)
+            let pairs = candidates.compactMap { raw in
+                classInfo(raw, in: machO, ranges: ranges, rebaseTargets: rebaseTargets).map { (raw, $0) }
+            }
             snapshot.classes = pairs.map(\.1)
             snapshot.superclassBinds = resolveExternalSuperclasses(
                 classes: pairs, boundSlots: boundSlots, in: machO
@@ -276,10 +403,86 @@ struct ObjCMetadataSnapshot {
 public struct ObjCMetadataIndex: Sendable {
     private let methods: [UInt64: [ObjCMethodBinding]]
     let fieldMaps: [String: FieldMap]
+    /// Every binding of each selector, in implementation-address order. A send
+    /// asks for its selector's implementations; scanning every method of the
+    /// image per send was 2,521 of 8,875 analysis samples on Fiery Feeds
+    /// `xrefs`, and its dictionary order made "the first declaration" vary
+    /// between runs.
+    private let bySelector: [String: [ObjCMethodBinding]]
+    /// One aggregate declaration vetoes a scalar result. Record that union
+    /// once: popular selectors may have hundreds of scalar declarations,
+    /// and proving the absence of an aggregate must not rescan them per send.
+    private let aggregateReturnSelectors: Set<String>
+    /// What every send of a selector asks of all its implementations, worked
+    /// out once. `-owner` implemented by 1,600 classes and sent from 3,200
+    /// methods parsed 1,600 type encodings per send: 3,066 of 4,244 samples.
+    private let sendFacts = SelectorSendFacts()
+
+    /// The facts of one selector's instance or class methods.
+    private struct SendFacts {
+        /// The first declaration of each class, in `bySelector` order.
+        let firstByClass: [String: ObjCMethodBinding]
+        /// The parameter types every declaration has, or nil when they
+        /// disagree or one does not parse.
+        let agreedTypes: [String]?
+        let classesReturningVoid: Set<String>
+        let allReturnVoid: Bool
+    }
+
+    private final class SelectorSendFacts: @unchecked Sendable {
+        private let lock = NSLock()
+        private var facts: [String: [Bool: SendFacts]] = [:]
+        private var prefixes: [String: Int?] = [:]
+
+        func sendFacts(_ selector: String, isClassMethod: Bool, build: () -> SendFacts) -> SendFacts {
+            lock.lock()
+            defer { lock.unlock() }
+            if let known = facts[selector]?[isClassMethod] { return known }
+            let built = build()
+            facts[selector, default: [:]][isClassMethod] = built
+            return built
+        }
+
+        func positionalPrefix(_ selector: String, build: () -> Int?) -> Int? {
+            lock.lock()
+            defer { lock.unlock() }
+            if let known = prefixes[selector] { return known }
+            let built = build()
+            prefixes[selector] = .some(built)
+            return built
+        }
+    }
+
+    private func sendFacts(_ selector: String, isClassMethod: Bool) -> SendFacts {
+        sendFacts.sendFacts(selector, isClassMethod: isClassMethod) {
+            let matching = (bySelector[selector] ?? []).filter { $0.isClassMethod == isClassMethod }
+            let types = matching.map {
+                ObjCArgumentABI.parameterTypes(encoding: $0.typeEncoding, argumentCount: $0.argumentCount)
+            }
+            return SendFacts(
+                firstByClass: Dictionary(matching.map { ($0.className, $0) }, uniquingKeysWith: { first, _ in first }),
+                agreedTypes: types.first.flatMap { first in types.allSatisfy { $0 == first } ? first : nil },
+                classesReturningVoid: Set(matching.filter(\.returnsVoid).map(\.className)),
+                allReturnVoid: matching.allSatisfy(\.returnsVoid))
+        }
+    }
 
     init(methods: [UInt64: [ObjCMethodBinding]], fieldMaps: [String: FieldMap]) {
         self.methods = methods
         self.fieldMaps = fieldMaps
+        var bySelector: [String: [ObjCMethodBinding]] = [:]
+        var aggregateReturnSelectors = Set<String>()
+        for address in methods.keys.sorted() {
+            for binding in methods[address] ?? [] {
+                bySelector[binding.selector, default: []].append(binding)
+                if let code = binding.typeEncoding.first(where: { !"rnNoORVA".contains($0) }),
+                   "{([j".contains(code) {
+                    aggregateReturnSelectors.insert(binding.selector)
+                }
+            }
+        }
+        self.bySelector = bySelector
+        self.aggregateReturnSelectors = aggregateReturnSelectors
     }
 
     /// Primary binding at an implementation address. Multiple selectors may
@@ -303,6 +506,99 @@ public struct ObjCMetadataIndex: Sendable {
     }
 
     var addresses: Set<UInt64> { Set(methods.keys) }
+
+    enum OutgoingSignature: Equatable {
+        case unavailable
+        case declined
+        case known(encoding: String, types: [String])
+    }
+
+    /// The argument types a send of `selector` to an instance (or the class)
+    /// of `className` passes: that class's own declaration, provided every
+    /// indexed implementation of the selector agrees on the argument ABI
+    /// (category aliases and subclass overrides included). An absent
+    /// declaration is not an all-integer signature, and a disagreement
+    /// declines. Recovered from the pre-merge stash (983aa25).
+    func outgoingSignature(selector: String, className: String, isClassMethod: Bool) -> OutgoingSignature {
+        let facts = sendFacts(selector, isClassMethod: isClassMethod)
+        guard let declared = facts.firstByClass[className] else { return .unavailable }
+        guard let types = facts.agreedTypes else { return .declined }
+        return .known(encoding: declared.typeEncoding, types: types)
+    }
+
+    /// Return agreement is independent of argument layout: two declarations
+    /// can pass the same parameters but disagree on whether there is a result.
+    /// Require the receiver's declaration and every indexed implementation to
+    /// say void, including category aliases and dynamic overrides.
+    /// Whether a send of `selector` whose v0 the code reads leaves its whole
+    /// result there. Code reads v0 after a send only when the declaration it
+    /// was compiled against returns in v registers: one float whole, or a
+    /// struct of floats of which v0 is the first field. So v0 is the result
+    /// when some declaration, in the image or a public SDK framework
+    /// (`SDKSelectorReturns`), returns one float and none returns such a
+    /// struct: the image's `- (double)size` beside NSImage's NSSize `size`
+    /// leaves `[x size]`'s v0 ambiguous.
+    /// A send to a receiver of known class takes that class's declaration.
+    func selectorReturnsOneFloat(_ selector: String, className: String, isClassMethod: Bool) -> Bool? {
+        let declared = (bySelector[selector] ?? [])
+            .filter { $0.className == className && $0.isClassMethod == isClassMethod }
+        guard !declared.isEmpty else { return nil }
+        return declared.allSatisfy { $0.returnsOneFloat }
+    }
+
+    func selectorReturnsOneFloat(_ selector: String) -> Bool {
+        let matching = bySelector[selector] ?? []
+        let sdk = SDKSelectorReturns.table[selector]
+        guard sdk != "h", !matching.contains(where: \.returnsFloatAggregate) else { return false }
+        return sdk == "f" || matching.contains(where: \.returnsOneFloat)
+    }
+
+    /// One aggregate declaration is enough to doubt a scalar interpretation
+    /// of this selector's result. Argument agreement proves no return layout,
+    /// and an unknown receiver can select any indexed implementation. Even a
+    /// one-word struct is not its scalar field as a source-level value.
+    func selectorMayReturnAggregate(_ selector: String) -> Bool {
+        SDKSelectorReturns.table[selector] == "h" || selectorHasAggregateDeclaration(selector)
+    }
+
+    /// Indexed aggregate declarations remain a veto even when a receiver's
+    /// own declaration could override an unrelated SDK-wide selector hint.
+    func selectorHasAggregateDeclaration(_ selector: String) -> Bool {
+        aggregateReturnSelectors.contains(selector)
+    }
+
+    func outgoingReturnsVoid(selector: String, className: String, isClassMethod: Bool) -> Bool {
+        let facts = sendFacts(selector, isClassMethod: isClassMethod)
+        return facts.classesReturningVoid.contains(className) && facts.allReturnVoid
+    }
+
+    /// With no receiver identity, the explicit arguments are read one x
+    /// register each from x2. One indexed implementation whose arguments do
+    /// not all travel that way is enough to doubt the layout from its first
+    /// such argument on: a floating-point value arrives in v0 while x2 holds
+    /// something stale, and an NSRange takes x2-x3, so `[u span:r count:5]`
+    /// rendered the range's location and length as `span:3 count:4`. The
+    /// arguments before it are where the layout reads them, because each
+    /// argument's register depends only on the ones before it.
+    ///
+    /// The public frameworks' declarations count too, because a send's
+    /// registers follow the declaration its compiler saw: `[v
+    /// setNeedsDisplayInRect:r]` passes the rect in d0-d3, and with no
+    /// implementation in the image it rendered whatever x2 held as the rect
+    /// (`SDKSelectorPrefixes`).
+    ///
+    /// The number of leading arguments every implementation and public
+    /// declaration passes in one x register each, or nil when they all pass
+    /// every argument so.
+    func positionalArgumentPrefix(_ selector: String) -> Int? {
+        sendFacts.positionalPrefix(selector) {
+            let image = (bySelector[selector] ?? []).compactMap { method in
+                ObjCArgumentABI.parameterTypes(encoding: method.typeEncoding, argumentCount: method.argumentCount)?
+                    .firstIndex { !ObjCArgumentABI.takesOneXRegister($0) }
+            }.min()
+            return [image, SDKSelectorPrefixes.table[selector]].compactMap { $0 }.min()
+        }
+    }
 
     /// The runtime `__text` address of a method IMP as it appears in the ObjC
     /// metadata. MachOObjCSection normalizes file-backed IMPs to offsets, so the
@@ -403,12 +699,13 @@ public struct ObjCMetadataIndex: Sendable {
             var visiting = visiting
             visiting.insert(className)
             var result = cls.superClassName.map { ivars(of: $0, visiting: visiting) } ?? []
-            result.append(contentsOf: cls.ivars)
-            // A corrupt image should not create overlapping ranges. Prefer the
-            // most-derived declaration at a duplicate absolute offset.
-            var byOffset: [Int: ObjCIvarInfo] = [:]
-            for ivar in result { byOffset[ivar.offset] = ivar }
-            let normalized = byOffset.values.sorted { $0.offset < $1.offset }
+            result.append(contentsOf: cls.ivars.filter { $0.offset != ObjCMetadataSnapshot.runtimeIvarOffset })
+            // An offset two ivars claim names neither: bitfields in one byte
+            // all report that byte, and only the bit the code reads tells them
+            // apart. A corrupt image reaches the same answer.
+            let normalized = Dictionary(grouping: result, by: \.offset).values
+                .compactMap { $0.count == 1 ? $0[0] : nil }
+                .sorted { $0.offset < $1.offset }
             ivarCache[className] = normalized
             return normalized
         }
@@ -440,16 +737,32 @@ struct ObjCTypeLayout: Sendable, Equatable {
 }
 
 enum ObjCTypeLayoutDecoder {
+    /// The deepest nesting of pointers, arrays, aggregates and complex types
+    /// decoded before declining. Each level is a recursive call, and a debug
+    /// build overflowed the 512 KB cooperative-thread stack at 236 levels of
+    /// `^` (2.2 KB a frame) on a corrupt ivar type. The deepest of 197,428
+    /// `__objc_methtype` strings in 889 binaries (400 under /Applications,
+    /// 489 in Xcode) nests 11 levels, a wxWidgets C++ `basic_string`.
+    static let maximumNestingDepth = 32
+
     static func layout(of encoding: String, pointerSize: Int = 8) -> ObjCTypeLayout? {
         guard !encoding.isEmpty else { return nil }
         var parser = Parser(encoding, pointerSize: pointerSize)
-        return parser.parseType()
+        let layout = parser.parseType()
+        // A size that overflows or a nesting past the bound stops the parse
+        // mid-string, so nothing it decoded is trusted, not even an enclosing
+        // pointer's size.
+        return parser.declined ? nil : layout
     }
 
     private struct Parser {
         let characters: [Character]
         let pointerSize: Int
         var index = 0
+        var depth = 0
+        /// Set by an overflowing size or count, or by nesting past
+        /// `maximumNestingDepth`. The whole encoding then has no layout.
+        private(set) var declined = false
 
         init(_ text: String, pointerSize: Int) {
             self.characters = Array(text)
@@ -461,6 +774,9 @@ enum ObjCTypeLayoutDecoder {
         mutating func advance() { index += 1 }
 
         mutating func parseType() -> ObjCTypeLayout? {
+            guard depth < ObjCTypeLayoutDecoder.maximumNestingDepth else { return decline() }
+            depth += 1
+            defer { depth -= 1 }
             // const/in/out/bycopy/byref/oneway/atomic qualifiers do not change
             // storage layout.
             while let c = current, "rnNoORVA".contains(c) { advance() }
@@ -470,8 +786,10 @@ enum ObjCTypeLayoutDecoder {
             switch code {
             case "c", "C", "B": return .init(size: 1, alignment: 1)
             case "s", "S": return .init(size: 2, alignment: 2)
-            case "i", "I", "f": return .init(size: 4, alignment: 4)
-            case "l", "L", "q", "Q", "d", "D": return .init(size: 8, alignment: 8)
+            // `l` and `L` are 32 bits on 64-bit platforms, as the runtime's
+            // NSGetSizeAndAlignment measures them; LP64's `long` encodes as `q`.
+            case "i", "I", "f", "l", "L": return .init(size: 4, alignment: 4)
+            case "q", "Q", "d", "D": return .init(size: 8, alignment: 8)
             case "t", "T": return .init(size: 16, alignment: 16)
             case "@":
                 if current == "?" { advance() } // block
@@ -488,22 +806,23 @@ enum ObjCTypeLayoutDecoder {
             case "{": return parseAggregate(end: "}", isUnion: false)
             case "(": return parseAggregate(end: ")", isUnion: true)
             case "b":
-                let width = parseNumber()
-                guard width > 0 else { return nil }
-                return .init(size: (width + 7) / 8, alignment: 1)
+                guard let width = parseNumber(), width > 0,
+                      let rounded = sum(width, 7) else { return nil }
+                return .init(size: rounded / 8, alignment: 1)
             case "j":
-                guard let element = parseType() else { return nil }
-                return .init(size: element.size * 2, alignment: element.alignment)
+                guard let element = parseType(),
+                      let size = product(element.size, 2) else { return nil }
+                return .init(size: size, alignment: element.alignment)
             case "v", "?": return nil
             default: return nil
             }
         }
 
         mutating func parseArray() -> ObjCTypeLayout? {
-            let count = parseNumber()
-            guard count >= 0, let element = parseType(), current == "]" else { return nil }
+            guard let count = parseNumber(), let element = parseType(), current == "]",
+                  let size = product(element.size, count) else { return nil }
             advance()
-            return .init(size: element.size * count, alignment: element.alignment)
+            return .init(size: size, alignment: element.alignment)
         }
 
         mutating func parseAggregate(end: Character, isUnion: Bool) -> ObjCTypeLayout? {
@@ -527,12 +846,18 @@ enum ObjCTypeLayoutDecoder {
                 if isUnion {
                     size = max(size, field.size)
                 } else {
-                    size = align(size, to: field.alignment) + field.size
+                    guard let start = align(size, to: field.alignment),
+                          let next = sum(start, field.size) else { return nil }
+                    size = next
                 }
             }
-            guard current == end, sawField else { return nil }
+            // An empty definition (`{Opaque=}`, a pointee) has no layout, but
+            // its closer is still consumed: left in place, it closed the
+            // enclosing aggregate, and `{S=^{Opaque=}q}` measured 8 bytes.
+            guard current == end else { return nil }
             advance()
-            return .init(size: align(size, to: alignment), alignment: alignment)
+            guard sawField, let padded = align(size, to: alignment) else { return nil }
+            return .init(size: padded, alignment: alignment)
         }
 
         mutating func skipQuotedName() {
@@ -544,24 +869,47 @@ enum ObjCTypeLayoutDecoder {
             }
         }
 
-        mutating func parseNumber() -> Int {
+        /// A decimal count or width; nil when there are no digits, or when
+        /// the digits overflow `Int` (and the parse declines).
+        mutating func parseNumber() -> Int? {
             var value = 0
             var found = false
             while let c = current, let digit = c.wholeNumberValue {
                 found = true
-                value = value * 10 + digit
+                guard let shifted = product(value, 10), let next = sum(shifted, digit) else { return nil }
+                value = next
                 advance()
             }
-            return found ? value : -1
+            return found ? value : nil
         }
 
         func pointer() -> ObjCTypeLayout {
             .init(size: pointerSize, alignment: pointerSize)
         }
 
-        func align(_ value: Int, to alignment: Int) -> Int {
+        mutating func align(_ value: Int, to alignment: Int) -> Int? {
             guard alignment > 1 else { return value }
-            return (value + alignment - 1) & ~(alignment - 1)
+            guard let raised = sum(value, alignment - 1) else { return nil }
+            return raised & ~(alignment - 1)
+        }
+
+        mutating func decline() -> ObjCTypeLayout? {
+            declined = true
+            return nil
+        }
+
+        /// `a + b`, or nil when it overflows, which declines the parse.
+        mutating func sum(_ a: Int, _ b: Int) -> Int? {
+            let (value, overflow) = a.addingReportingOverflow(b)
+            if overflow { declined = true; return nil }
+            return value
+        }
+
+        /// `a * b`, or nil when it overflows, which declines the parse.
+        mutating func product(_ a: Int, _ b: Int) -> Int? {
+            let (value, overflow) = a.multipliedReportingOverflow(by: b)
+            if overflow { declined = true; return nil }
+            return value
         }
     }
 }

@@ -10,7 +10,8 @@ struct SwiftDC: AsyncParsableCommand {
         version: SwiftDecompiler.version,
         subcommands: [
             AnalyzeCommand.self, DumpCommand.self, InterfaceCommand.self, ObjCCommand.self,
-            DisasmCommand.self, XrefsCommand.self, LayoutCommand.self, DevicesCommand.self, AppsCommand.self,
+            DisasmCommand.self, XrefsCommand.self, LayoutCommand.self, SwiftVersionCommand.self,
+            DevicesCommand.self, AppsCommand.self, ScoreCommand.self, ResearchCommand.self,
         ],
         defaultSubcommand: AnalyzeCommand.self
     )
@@ -37,6 +38,9 @@ struct ObjCCommand: AsyncParsableCommand {
     @Option(name: .customLong("cache"), help: "Path to a dyld_shared_cache_* file. Defaults to the running system's cache when --image is used.")
     var cache: String?
 
+    @Flag(name: .customLong("list-images"), help: "List every image install path in the dyld shared cache and exit.")
+    var listImages = false
+
     @Option(name: .customLong("binary"), help: "For an .app/.framework/.ipa: analyze this embedded binary by name (e.g. a framework). Default: the main executable.")
     var binary: String?
 
@@ -61,7 +65,21 @@ struct ObjCCommand: AsyncParsableCommand {
     @Option(name: [.short, .long], help: "Only include Objective-C methods whose owner, selector, or signature contains this string. Implies --methods.")
     var function: String?
 
+    @Flag(name: .customLong("metadata-only"), help: "Export declarations from metadata alone, without analyzing accessor bodies. Whether an accessor is synthesized or custom is then unknown, so each property accessor stays in the header, marked `// unclassified accessor: body not analyzed`. Not with --methods, --pseudo, --structured or --function.")
+    var metadataOnly = false
+
+    func validate() throws {
+        try validateFunctionFilter(function)
+        if metadataOnly, methods || pseudo || structured || function != nil {
+            throw ValidationError("--metadata-only analyzes no bodies, so it cannot be combined with --methods, --pseudo, --structured or --function.")
+        }
+    }
+
     func run() async throws {
+        if listImages {
+            try emit(BinaryLoader.dyldCacheImagePaths(cachePath: cache).joined(separator: "\n"), to: output)
+            return
+        }
         if listBinaries { try emit(binaryListing(for: path), to: output); return }
         let machO = try BinaryLoader.loadMachO(
             path: path,
@@ -71,7 +89,9 @@ struct ObjCCommand: AsyncParsableCommand {
             cachePath: cache,
             binary: binary
         )
-        let blocks = await ObjCDumper().blocks(machO, disassembler: Disassembler(preset: .simplified))
+        let blocks = metadataOnly
+            ? ObjCDumper().metadataOnlyBlocks(machO)
+            : await ObjCDumper().blocks(machO, disassembler: Disassembler(preset: .simplified))
         let includeMethods = methods || pseudo || structured || function != nil
         guard includeMethods else {
             if json {
@@ -149,6 +169,9 @@ struct AnalyzeCommand: AsyncParsableCommand {
     @Option(name: .customLong("cache"), help: "Path to a dyld_shared_cache_* file. Defaults to the running system's cache when --image is used.")
     var cache: String?
 
+    @Flag(name: .customLong("list-images"), help: "List every image install path in the dyld shared cache and exit.")
+    var listImages = false
+
     @Option(name: .long, help: "Demangle preset: default, simplified, interface.")
     var demangle: DemanglePreset = .default
 
@@ -164,8 +187,18 @@ struct AnalyzeCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Emit structured JSON instead of text.")
     var json = false
 
+    @OptionGroup var probe: ProbeOptions
+
     func run() async throws {
+        if listImages {
+            try emit(BinaryLoader.dyldCacheImagePaths(cachePath: cache).joined(separator: "\n"), to: output)
+            return
+        }
         if listBinaries { try emit(binaryListing(for: path), to: output); return }
+        try await probe.run { try await runAnalyze() }
+    }
+
+    private func runAnalyze() async throws {
         let report = AnalysisReport(preset: demangle)
         let text: String
         if image != nil || imagePath != nil || cache != nil {
@@ -176,9 +209,14 @@ struct AnalyzeCommand: AsyncParsableCommand {
         } else if let path {
             // Accept an .app/.framework/.ipa, resolving to a real Mach-O for llvm-objdump.
             let resolved = try BinaryLoader.resolveBinaryInput(path, binary: binary)
-            text = json
-                ? try await report.generateJSON(path: resolved, architecture: architecture)
-                : try await report.generate(path: resolved, architecture: architecture)
+            let result = try await report.report(path: resolved, architecture: architecture, json: json)
+            try emit(result.text, to: output)
+            // The declarations printed; the failure must still fail the run.
+            if let failure = result.disassemblyError {
+                FileHandle.standardError.write(Data("error: disassembly failed: \(failure)\n".utf8))
+                throw ExitCode.failure
+            }
+            return
         } else {
             throw BinaryLoadError("Provide a binary path, or --image <name> to analyze a dyld shared-cache image.")
         }
@@ -244,8 +282,10 @@ struct DumpCommand: AsyncParsableCommand {
             image: image,
             imagePath: imagePath,
             cachePath: cache,
-            binary: binary
+            binary: binary,
+            allowingWideAddresses: true
         )
+        try BinaryLoader.requireReadableSwiftMetadata(machO)
         let dumper = SwiftDeclarationDumper(preset: demangle)
         let selected = sections.isEmpty
             ? Set(SwiftDeclarationDumper.Section.allCases)
@@ -279,6 +319,9 @@ struct InterfaceCommand: AsyncParsableCommand {
 
     @Option(name: .customLong("cache"), help: "Path to a dyld_shared_cache_* file. Defaults to the running system's cache when --image is used.")
     var cache: String?
+
+    @Flag(name: .customLong("list-images"), help: "List every image install path in the dyld shared cache and exit.")
+    var listImages = false
 
     @Flag(name: .long, help: "Include types imported from C.")
     var showCImportedTypes = false
@@ -314,6 +357,10 @@ struct InterfaceCommand: AsyncParsableCommand {
     var output: String?
 
     func run() async throws {
+        if listImages {
+            try emit(BinaryLoader.dyldCacheImagePaths(cachePath: cache).joined(separator: "\n"), to: output)
+            return
+        }
         if listBinaries { try emit(binaryListing(for: path), to: output); return }
         let machO = try BinaryLoader.loadMachO(
             path: path,
@@ -359,8 +406,13 @@ struct DisasmCommand: AsyncParsableCommand {
     @Option(name: .customLong("cache"), help: "Path to a dyld_shared_cache_* file. Defaults to the running system's cache when --image is used.")
     var cache: String?
 
-    @Option(name: [.short, .long], help: "Only show functions whose name (raw or demangled) contains this string.")
+    @Flag(name: .customLong("list-images"), help: "List every image install path in the dyld shared cache and exit.")
+    var listImages = false
+
+    @Option(name: [.short, .long], help: "Only show functions whose name (raw or demangled) contains this string, or, given 0x<hex>, the function that holds that address.")
     var function: String?
+
+    func validate() throws { try validateFunctionFilter(function) }
 
     @Option(name: .long, help: "Demangle preset: default, simplified, interface.")
     var demangle: DemanglePreset = .default
@@ -386,8 +438,14 @@ struct DisasmCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Like --pseudo, but folds the CFG into if/else structure (goto for loops).")
     var structured = false
 
+    @OptionGroup var probe: ProbeOptions
+
     func run() async throws {
-        try await runDisasm()
+        if listImages {
+            try emit(BinaryLoader.dyldCacheImagePaths(cachePath: cache).joined(separator: "\n"), to: output)
+            return
+        }
+        try await probe.run { try await runDisasm() }
     }
 
     /// The "unusually small" half of the empty-result rule (see CLAUDE.md). An
@@ -415,10 +473,18 @@ struct DisasmCommand: AsyncParsableCommand {
         // memory stays bounded to one function rather than the entire image's
         // decoded instructions (see disassembleStreamingRender). JSON, filtered,
         // and standalone-file paths keep the array API unchanged.
-        if (image != nil || imagePath != nil || cache != nil), (function ?? "").isEmpty, !json {
-            let machO = try BinaryLoader.loadMachO(
-                path: path, image: image, imagePath: imagePath, cachePath: cache, binary: binary
-            )
+        let isCacheImage = image != nil || imagePath != nil || cache != nil
+        // A standalone file streams too for the pseudocode views, which print
+        // no instruction text: holding the whole image cost about 1 KB per
+        // instruction, so a 7M-instruction debug app could not render in 4 GB.
+        // The plain listing and --cfg print objdump's instruction text.
+        let streamsStandalone = !isCacheImage && path != nil && (structured || pseudo)
+        if isCacheImage || streamsStandalone, (function ?? "").isEmpty, !json {
+            let machO = isCacheImage
+                ? try BinaryLoader.loadMachO(
+                    path: path, image: image, imagePath: imagePath, cachePath: cache, binary: binary)
+                : try BinaryLoader.load(path: BinaryLoader.resolveBinaryInput(path ?? "", binary: binary),
+                                        architecture: architecture)
             let declared = disassembler.declaredFunctionCount(in: machO)
             let renderOne: (DisassembledFunction) -> String =
                 structured ? { $0.renderStructured() }
@@ -492,5 +558,70 @@ struct DisasmCommand: AsyncParsableCommand {
     }
 }
 
+struct SwiftVersionCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "swift-version",
+        abstract: "Detect the producing Swift version — reported only where the binary carries evidence."
+    )
+
+    @Argument(help: "Path to the Mach-O (or fat) binary. Omit when reading from the dyld shared cache with --image.")
+    var path: String?
+
+    @Option(name: [.short, .customLong("arch")], help: "Architecture slice for fat binaries (arm64, arm64e, x86_64).")
+    var architecture: String?
+
+    @Option(name: .customLong("image"), help: "Read this image from the dyld shared cache by name (e.g. Foundation).")
+    var image: String?
+
+    @Option(name: .customLong("image-path"), help: "Read this image from the dyld shared cache by full install path.")
+    var imagePath: String?
+
+    @Option(name: .customLong("cache"), help: "Path to a dyld_shared_cache_* file. Defaults to the running system's cache when --image is used.")
+    var cache: String?
+
+    @Flag(name: .customLong("list-images"), help: "List every image install path in the dyld shared cache and exit.")
+    var listImages = false
+
+    @Option(name: .customLong("binary"), help: "For an .app/.framework/.ipa: inspect this embedded binary by name. Default: the main executable.")
+    var binary: String?
+
+    @Flag(name: .customLong("list-binaries"), help: "List the Mach-O binaries inside an .app/.framework/.ipa (main + embedded frameworks/extensions) and exit.")
+    var listBinaries = false
+
+    @Option(name: [.short, .long], help: "Write output to a file instead of stdout.")
+    var output: String?
+
+    @Flag(name: .long, help: "Emit structured JSON (confidence, version, evidence).")
+    var json = false
+
+    func run() async throws {
+        if listBinaries { try emit(binaryListing(for: path), to: output); return }
+        if listImages {
+            try emit(BinaryLoader.dyldCacheImagePaths(cachePath: cache).joined(separator: "\n"), to: output)
+            return
+        }
+        let machO = try BinaryLoader.loadMachO(
+            path: path,
+            architecture: architecture,
+            image: image,
+            imagePath: imagePath,
+            cachePath: cache,
+            binary: binary,
+            allowingWideAddresses: true
+        )
+        let report = SwiftVersionDetector.detect(machO)
+        try emit(json ? report.jsonString() : report.text, to: output)
+    }
+}
+
 extension DemanglePreset: ExpressibleByArgument {}
 extension SwiftDeclarationDumper.Section: ExpressibleByArgument {}
+
+/// An empty `--function` matched every function in `disasm` and `objc` and none
+/// in `xrefs`, which then reported "No function matched" as if that were the
+/// answer. Neither reading is what was asked, so it is a usage error.
+func validateFunctionFilter(_ function: String?) throws {
+    if let function, function.allSatisfy(\.isWhitespace) {
+        throw ValidationError("--function needs a name to match.")
+    }
+}

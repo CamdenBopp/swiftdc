@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import MachOKit
 import SwiftDecompilerCore
 
 struct XrefsCommand: AsyncParsableCommand {
@@ -33,6 +34,9 @@ struct XrefsCommand: AsyncParsableCommand {
     @Option(name: .customLong("cache"), help: "Path to a dyld_shared_cache_* file. Defaults to the running system's cache when --image is used.")
     var cache: String?
 
+    @Flag(name: .customLong("list-images"), help: "List every image install path in the dyld shared cache and exit.")
+    var listImages = false
+
     @Option(name: .customLong("binary"), help: "For an .app/.framework/.ipa: analyze this embedded binary by name. Default: the main executable.")
     var binary: String?
 
@@ -51,31 +55,58 @@ struct XrefsCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Emit structured JSON.")
     var json = false
 
+    func validate() throws { try validateFunctionFilter(function) }
+
+    /// The text-mode qualifier on one edge.
+    static func edgeNote(_ edge: CallEdge) -> String {
+        var notes: [String] = []
+        if edge.isTailCall { notes.append("tail call") }
+        if edge.isSelfDispatch { notes.append("dispatch through self: a subclass override may run instead") }
+        return notes.isEmpty ? "" : "  (\(notes.joined(separator: "; ")))"
+    }
+
+    @OptionGroup var probe: ProbeOptions
+
     func run() async throws {
+        try await probe.run { try await runXrefs() }
+    }
+
+    private func runXrefs() async throws {
+        if listImages {
+            try emit(BinaryLoader.dyldCacheImagePaths(cachePath: cache).joined(separator: "\n"), to: output)
+            return
+        }
         guard function != nil || unreferenced else {
             throw ValidationError("Pass --function <name> to cross-reference, or --unreferenced.")
         }
 
         let disassembler = Disassembler(preset: demangle)
-        let functions: [DisassembledFunction]
+        let machO: MachOFile
         if image != nil || imagePath != nil || cache != nil {
-            let machO = try BinaryLoader.loadMachO(
+            machO = try BinaryLoader.loadMachO(
                 path: path, image: image, imagePath: imagePath, cachePath: cache, binary: binary
             )
-            functions = await disassembler.disassemble(machO: machO)
         } else if let path {
             let resolved = try BinaryLoader.resolveBinaryInput(path, binary: binary)
-            functions = try await disassembler.disassemble(path: resolved, architecture: architecture)
+            machO = try BinaryLoader.load(path: resolved, architecture: architecture)
         } else {
             throw BinaryLoadError("Provide a binary path, or --image <name> to read a dyld shared-cache image.")
         }
+        // One function at a time, keeping only its call sites: holding the
+        // whole image's instructions took about 1 KB each.
+        let functions = await disassembler.disassembleStreaming(machO: machO, transform: CallGraph.sites(of:))
 
         let graph = CallGraph(functions: functions)
         if unreferenced {
             try emit(renderUnreferenced(graph), to: output)
             return
         }
-        try emit(renderCrossReferences(graph, needle: function!), to: output)
+        // A folded address is named `sub_<addr>` in the graph, so its own
+        // symbols select it here, as they do for `disasm -f`: `xrefs
+        // --function Box.plus` printed "No function matched" for a symbol
+        // the binary exports.
+        let folded = functions.filter { disassembler.foldedSymbolMatches($0, needle: function!) }.map(\.startAddress)
+        try emit(renderCrossReferences(graph, needle: function!, folded: folded), to: output)
     }
 
     private func renderUnreferenced(_ graph: CallGraph) -> String {
@@ -92,11 +123,17 @@ struct XrefsCommand: AsyncParsableCommand {
         caller in this image — entry points, exported symbols, and anything reached only \
         by unresolved indirect dispatch look the same as dead code here.
         """)
+        if graph.unresolvedCallSites > 0 {
+            lines.append("""
+            \(graph.unresolvedCallSites) call sites dispatch indirectly without a provable target; \
+            any of these functions may be reached through one.
+            """)
+        }
         return lines.joined(separator: "\n")
     }
 
-    private func renderCrossReferences(_ graph: CallGraph, needle: String) -> String {
-        let matches = graph.addresses(matching: needle)
+    private func renderCrossReferences(_ graph: CallGraph, needle: String, folded: [UInt64]) -> String {
+        let matches = Set(graph.addresses(matching: needle) + folded).sorted()
         guard !matches.isEmpty else {
             return json ? "[]" : "// No function matched '\(needle)'."
         }
@@ -107,10 +144,12 @@ struct XrefsCommand: AsyncParsableCommand {
                     "address": hex(address),
                     "name": graph.name(of: address),
                     "callers": graph.callers(of: address).map {
-                        ["site": hex($0.site), "function": graph.name(of: $0.caller)] as [String: Any]
+                        ["site": hex($0.site), "function": graph.name(of: $0.caller), "tailCall": $0.isTailCall,
+                         "selfDispatch": $0.isSelfDispatch] as [String: Any]
                     },
                     "callees": graph.callees(of: address).map {
-                        ["site": hex($0.site), "function": graph.name(of: $0.callee)] as [String: Any]
+                        ["site": hex($0.site), "function": graph.name(of: $0.callee), "tailCall": $0.isTailCall,
+                         "selfDispatch": $0.isSelfDispatch] as [String: Any]
                     },
                 ] as [String: Any]
             })
@@ -127,7 +166,7 @@ struct XrefsCommand: AsyncParsableCommand {
                 lines.append("    <none — an entry point, an export, or called only through unresolved dispatch>")
             }
             for edge in callers {
-                lines.append("    \(hex(edge.site))  \(graph.name(of: edge.caller))")
+                lines.append("    \(hex(edge.site))  \(graph.name(of: edge.caller))\(Self.edgeNote(edge))")
             }
 
             // Deduplicate: a callee hit from several sites is one relationship,
@@ -135,7 +174,7 @@ struct XrefsCommand: AsyncParsableCommand {
             lines.append("  callees (\(Set(callees.map(\.callee)).count)):")
             var seen = Set<UInt64>()
             for edge in callees where seen.insert(edge.callee).inserted {
-                lines.append("    \(hex(edge.site))  \(graph.name(of: edge.callee))")
+                lines.append("    \(hex(edge.site))  \(graph.name(of: edge.callee))\(Self.edgeNote(edge))")
             }
             blocks.append(lines.joined(separator: "\n"))
         }

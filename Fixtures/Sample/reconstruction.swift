@@ -367,6 +367,51 @@ public func tryOrDefault(_ x: Int) -> Int {
     do { return try mightFail(x) } catch { return -1 }
 }
 
+// MARK: - Signature shapes that hide the parameter list
+
+// A typed-throws clause demangles as a paren group after the parameters:
+// `typedScale(Swift.Double, Swift.Int) throws(ReconTypedError) -> Swift.Double`.
+// Read as the parameter list, it made `n` (in x0) `arg0` and named the literal
+// `0` as a `ReconTypedError` case. The Double first parameter is what makes the
+// misattribution visible: the real x0 is the *second* argument.
+public enum ReconTypedError: Error { case negative, tooBig }
+@inline(never)
+public func typedScale(_ d: Double, _ n: Int) throws(ReconTypedError) -> Double {
+    if n < 0 { throw .negative }
+    return d * 2.0 + Double(n)
+}
+
+// Throw exits. A typed error small enough for x0 travels there with `w21 = 1`,
+// so a throw exit's x0 is the error's case, not a result: it rendered as
+// `return 0` / `return 1`. Two cases, so the tag→case mapping is pinned, not
+// just a default 0. The forwarder's error path at -Onone returned the payload.
+@inline(never)
+public func typedPick(_ n: Int) throws(ReconTypedError) -> Int {
+    if n < 0 { throw .negative }
+    if n > 100 { throw .tooBig }
+    return n
+}
+@inline(never)
+public func typedForward(_ n: Int) throws(ReconTypedError) -> Int {
+    try typedPick(n) &+ 1
+}
+
+// `Int(d)` inlines a range check on the Double's bit pattern (`fmov x8, d0`,
+// then `>> 52` and `& 0x7ff`). The function has a float in its signature,
+// which used to make every literal in an expression over the argument render
+// as a float: `>> 52` read `>> 2.57e-322`, `& 0x7ff` read `& 1.0114e-320`.
+@inline(never)
+public func truncated(_ d: Double) -> Int { Int(d) }
+
+// A function returning a closure has two top-level arrows; the last one is the
+// closure's. Split there, the closure's `(Swift.Double)` read as this function's
+// parameters, so the Int literal below rendered as a subnormal double.
+@inline(never)
+public func thresholdGate(_ n: Int) -> (Double) -> Double {
+    if n > 100 { return { $0 * 2 } }
+    return { $0 }
+}
+
 // MARK: - Enum-tag checks in structured branches (not selects)
 
 // A switch with side effects stays as if-branches (not a collapsed ternary), so

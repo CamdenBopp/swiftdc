@@ -1,0 +1,155 @@
+import Demangling
+
+/// A proven substitution, an ordinary unavailable result, or the specific
+/// dropped-index ambiguity that must also block outgoing argument guesses.
+enum SpecializedSignatureProof: Equatable, Sendable {
+    case unavailable
+    case signature(String)
+    case unprovenDroppedTypedError
+}
+
+/// The signature a generic specialization is called with.
+///
+/// The demangler prints a specialization as the unspecialized declaration,
+/// so `generic specialization <Swift.Double> of Spec.bump<A where A:
+/// Swift.Numeric>(A) -> A` reads as taking an `A`, a type whose register
+/// bank the name does not say. The specialization takes a `Swift.Double`,
+/// in d0, and returns one there. Its substitution list names the
+/// replacement of each canonical generic parameter, in depth and index
+/// order (see `specializationBindsThrownTypeToNever`), so the specialized
+/// signature is the declaration's function type with each parameter
+/// replaced, printed as a plain function: `Spec.bump(Swift.Double) ->
+/// Swift.Double`. Declined (nil) unless every link holds:
+///
+/// - the symbol is one generic specialization of a function, static or not,
+///   with no function signature specialization (which drops and explodes
+///   arguments) and no closure;
+/// - the tree prints exactly the name the call was given;
+/// - the function's generic signature has one depth, its parameter count is
+///   the substitution count, and its requirements are conformances or
+///   layouts only, so every parameter is canonical;
+/// - every generic parameter in the function type is a depth-0 parameter by
+///   itself (no member type such as `A.Element`, no nested generic type).
+extension DisassembledFunction {
+    static func specializedSignature(symbol: String, printedName: String) -> String? {
+        guard case .signature(let signature) = specializedSignatureProof(symbol: symbol, printedName: printedName)
+        else { return nil }
+        return signature
+    }
+
+    static func specializedSignatureProof(symbol: String, printedName: String) -> SpecializedSignatureProof {
+        var mangled = Substring(symbol)
+        if mangled.hasPrefix("_$s") { mangled = mangled.dropFirst() }
+        guard mangled.hasPrefix("$s"), let global = try? demangleAsNode(String(mangled)),
+              global.kind == .global, global.print(using: .default) == printedName
+        else { return .unavailable }
+        let parts = Array(global.children)
+        guard parts.count == 2, parts[0].kind == .genericSpecialization else { return .unavailable }
+
+        var substitutions: [Node] = []
+        // A `Tt` specialization drops arguments the substitution made
+        // trivial, a metatype among them, but prints exactly like one that
+        // keeps them (NodePrinter skips `DroppedArgument`):
+        // `generic specialization <Swift.Double> of tt<A>(A.Type, A, Int)`
+        // takes the Double in d0 and the Int in x0.
+        var dropped = Set<Int>()
+        for child in parts[0].children {
+            switch child.kind {
+            case .isSerialized, .specializationPassID:
+                continue
+            case .droppedArgument:
+                guard let index = child.index else { return .unavailable }
+                dropped.insert(Int(index))
+            case .genericSpecializationParam:
+                guard child.children.count == 1, let type = child.children.first, type.kind == .type else { return .unavailable }
+                substitutions.append(type)
+            default:
+                return .unavailable
+            }
+        }
+
+        let isStatic = parts[1].kind == .static
+        guard let function = isStatic ? parts[1].children.first : parts[1], function.kind == .function,
+              !isStatic || parts[1].children.count == 1,
+              let typeNode = function.children.last, typeNode.kind == .type,
+              let generic = unwrappingType(typeNode), generic.kind == .dependentGenericType,
+              generic.children.count == 2,
+              let signature = generic.children.first, signature.kind == .dependentGenericSignature,
+              let functionType = unwrappingType(generic.children[1]), functionType.kind == .functionType
+        else { return .unavailable }
+
+        var parameterCount: UInt64?
+        for child in signature.children {
+            switch child.kind {
+            case .dependentGenericParamCount:
+                guard parameterCount == nil, let count = child.index else { return .unavailable }
+                parameterCount = count
+            case .dependentGenericConformanceRequirement, .dependentGenericLayoutRequirement,
+                 .dependentGenericInverseConformanceRequirement:
+                continue
+            default:
+                return .unavailable
+            }
+        }
+        guard let parameterCount, parameterCount == UInt64(substitutions.count),
+              var substituted = substituting(functionType, with: substitutions)
+        else { return .unavailable }
+        if !dropped.isEmpty {
+            // A typed error can add an indirect SIL result before the formal
+            // arguments. Its resilience is not proven by this symbol, so the
+            // dropped SIL index cannot safely be treated as a formal index.
+            guard !functionType.children.contains(where: { $0.kind == .typedThrowsAnnotation }) else { return .unprovenDroppedTypedError }
+            guard let pruned = droppingArguments(dropped, from: substituted) else { return .unavailable }
+            substituted = pruned
+        }
+
+        let specialized = Node.create(
+            kind: .function,
+            children: Array(function.children.dropLast()) + [Node.create(kind: .type, child: substituted)]
+        )
+        let entity = isStatic ? Node.create(kind: .static, child: specialized) : specialized
+        return .signature(Node.create(kind: .global, child: entity).print(using: .default))
+    }
+
+    /// A function type without the arguments at `indices`, or nil when its
+    /// argument list is not a tuple of that many elements.
+    private static func droppingArguments(_ indices: Set<Int>, from functionType: Node) -> Node? {
+        guard let argumentIndex = functionType.children.firstIndex(where: { $0.kind == .argumentTuple }),
+              let argumentType = functionType.children[argumentIndex].children.first, argumentType.kind == .type,
+              let tuple = argumentType.children.first, tuple.kind == .tuple,
+              indices.allSatisfy({ $0 < tuple.children.count })
+        else { return nil }
+        let kept = tuple.children.enumerated().filter { !indices.contains($0.offset) }.map(\.element)
+        let newTuple = Node.create(kind: .tuple, children: kept)
+        let newArgument = Node.create(kind: .argumentTuple, child: Node.create(kind: .type, child: newTuple))
+        var children = Array(functionType.children)
+        children[argumentIndex] = newArgument
+        return Node.create(kind: functionType.kind, children: children)
+    }
+
+    /// `node` with each depth-0 generic parameter replaced by its
+    /// substitution, or nil when a parameter is anything else.
+    private static func substituting(_ node: Node, with substitutions: [Node]) -> Node? {
+        if node.kind == .type, node.children.count == 1, let only = node.children.first,
+           only.kind == .dependentGenericParamType {
+            guard let parameter = genericParameter(node), parameter.depth == 0,
+                  parameter.index < UInt64(substitutions.count)
+            else { return nil }
+            return substitutions[Int(parameter.index)]
+        }
+        switch node.kind {
+        case .dependentGenericParamType, .dependentMemberType, .dependentGenericType,
+             .dependentGenericSignature:
+            return nil
+        default:
+            break
+        }
+        guard !node.children.isEmpty else { return node }
+        var children: [Node] = []
+        for child in node.children {
+            guard let replaced = substituting(child, with: substitutions) else { return nil }
+            children.append(replaced)
+        }
+        return Node.create(kind: node.kind, children: children)
+    }
+}

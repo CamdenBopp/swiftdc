@@ -1,21 +1,21 @@
 import Testing
 import Foundation
 import Dependencies
-import CCapstone
+import Ccapstone
 @_spi(Internals) import MachOFoundation  // re-exports MachOSymbols → SymbolIndexStore, \.symbolIndexStore
 @testable import SwiftDecompilerCore
 
 private func operand(_ value: StructuredOperand) -> StructuredOperandInfo {
     StructuredOperandInfo(
         operand: value,
-        shift: (ARM64_SFT_INVALID, 0),
-        extender: ARM64_EXT_INVALID
+        shift: (AARCH64_SFT_INVALID, 0),
+        extender: AARCH64_EXT_INVALID
     )
 }
 
-private func detail(_ id: arm64_insn, _ operands: [StructuredOperandInfo]) -> StructuredInsn {
+private func detail(_ id: aarch64_insn, _ operands: [StructuredOperandInfo]) -> StructuredInsn {
     StructuredInsn(
-        id: id, conditionCode: ARM64_CC_INVALID, updatesFlags: false,
+        id: id, conditionCode: AArch64CC_Invalid, updatesFlags: false,
         writeback: false, postIndex: false, operands: operands
     )
 }
@@ -25,11 +25,11 @@ private func detail(_ id: arm64_insn, _ operands: [StructuredOperandInfo]) -> St
     let instructions = [
         Instruction(
             address: 0x1000, text: "adrp x1, 0x2000",
-            detail: detail(ARM64_INS_ADRP, [operand(.register(x1)), operand(.immediate(0x2000))])
+            detail: detail(AARCH64_INS_ADRP, [operand(.register(x1)), operand(.immediate(0x2000))])
         ),
         Instruction(
             address: 0x1004, text: "add x1, x1, #0x118",
-            detail: detail(ARM64_INS_ADD, [
+            detail: detail(AARCH64_INS_ADD, [
                 operand(.register(x1)), operand(.register(x1)), operand(.immediate(0x118)),
             ])
         ),
@@ -215,24 +215,24 @@ private func assembledFunction(
         instructions: [
             Instruction(
                 address: 0x1000, text: "adrp x23, 0x8000",
-                detail: detail(ARM64_INS_ADRP, [operand(.register(x23)), operand(.immediate(0x8000))])
+                detail: detail(AARCH64_INS_ADRP, [operand(.register(x23)), operand(.immediate(0x8000))])
             ),
             Instruction(
                 address: 0x1004, text: "add x23, x23, #0xc0",
-                detail: detail(ARM64_INS_ADD, [
+                detail: detail(AARCH64_INS_ADD, [
                     operand(.register(x23)), operand(.register(x23)), operand(.immediate(0xc0)),
                 ])
             ),
             Instruction(
                 address: 0x1008, text: "ldr x8, [x23, #8]",
-                detail: detail(ARM64_INS_LDR, [
+                detail: detail(AARCH64_INS_LDR, [
                     operand(.register(x8)),
                     operand(.memory(base: x23, index: nil, displacement: 8)),
                 ])
             ),
             Instruction(
                 address: 0x100c, text: "blr x8", controlFlow: .call,
-                detail: detail(ARM64_INS_BLR, [operand(.register(x8))])
+                detail: detail(AARCH64_INS_BLR, [operand(.register(x8))])
             ),
         ],
         source: .symbol
@@ -260,6 +260,32 @@ private func assembledFunction(
     ]))
     let site = try #require(ValueTracer().callSites(in: function)[0x100c])
     #expect(site.stackArguments == [.immediate(42)])
+}
+
+/// The stack arguments end at the prologue's register save area: the frame
+/// record is no argument. Read as two more, it made a call with no stack
+/// arguments look like it had some, and an untyped Objective-C send count
+/// four stores for its two stack arguments.
+@Test func stackArgumentsStopAtTheRegisterSaveArea() throws {
+    //   sub  sp, sp, #0x20
+    //   stp  x29, x30, [sp, #0x10]
+    //   mov  x9, #0x2a
+    //   str  x9, [sp]
+    //   str  x9, [sp, #8]
+    //   bl   L
+    // L: ret
+    let function = try #require(assembledFunction([
+        0xff, 0x83, 0x00, 0xd1,
+        0xfd, 0x7b, 0x01, 0xa9,
+        0x49, 0x05, 0x80, 0xd2,
+        0xe9, 0x03, 0x00, 0xf9,
+        0xe9, 0x07, 0x00, 0xf9,
+        0x01, 0x00, 0x00, 0x94,
+        0xc0, 0x03, 0x5f, 0xd6,
+    ]))
+    let site = try #require(ValueTracer().callSites(in: function)[0x1014])
+    #expect(site.stackArguments == [.immediate(42), .immediate(42)])
+    #expect(site.stackArgumentWidths == [8, 8])
 }
 
 /// Pair operations retain both halves: optimized Objective-C initializers use
@@ -305,11 +331,11 @@ private func assembledFunction(
         instructions: [
             Instruction(
                 address: 0x1000, text: "ldp q0, q1, [sp]",
-                detail: detail(ARM64_INS_LDP, [operand(.register(q0)), operand(.register(q1)), memory])
+                detail: detail(AARCH64_INS_LDP, [operand(.register(q0)), operand(.register(q1)), memory])
             ),
             Instruction(
                 address: 0x1004, text: "stp q0, q1, [sp]",
-                detail: detail(ARM64_INS_STP, [operand(.register(q0)), operand(.register(q1)), memory])
+                detail: detail(AARCH64_INS_STP, [operand(.register(q0)), operand(.register(q1)), memory])
             ),
             Instruction(
                 address: 0x1008, text: "bl 0x2000", controlFlow: .call,
@@ -442,6 +468,30 @@ private func assembledFunction(
     // A bogus name surfaces a clear error rather than crashing.
     #expect(throws: (any Error).self) {
         _ = try BinaryLoader.loadFromDyldCache(cachePath: nil, selector: .name("NoSuchImage_ZZZ"))
+    }
+}
+
+/// A name two cache images share declines rather than taking whichever the
+/// cache lists first: on macOS 27 `libswiftMetalKit` named the Mac Catalyst
+/// overlay under /System/iOSSupport, not /usr/lib/swift's.
+@Test func anAmbiguousCacheImageNameDeclinesIfAvailable() throws {
+    guard let paths = try? BinaryLoader.dyldCacheImagePaths(cachePath: nil) else { return }
+    var byName: [String: [String]] = [:]
+    for path in paths {
+        byName[((path as NSString).lastPathComponent as NSString).deletingPathExtension, default: []].append(path)
+    }
+    guard let (name, shared) = byName.filter({ $0.value.count > 1 }).min(by: { $0.key < $1.key }) else { return }
+    do {
+        _ = try BinaryLoader.loadFromDyldCache(cachePath: nil, selector: .name(name))
+        Issue.record("--image \(name) chose one of \(shared)")
+    } catch {
+        let message = "\(error)"
+        #expect(message.contains("--image-path"))
+        for path in shared { #expect(message.contains(path)) }
+    }
+    // Each of them still opens by install path.
+    for path in shared {
+        #expect(try BinaryLoader.loadFromDyldCache(cachePath: nil, selector: .path(path)).imagePath == path)
     }
 }
 
@@ -610,6 +660,40 @@ private func assembledFunction(
     for call in indirectCalls {
         #expect(graph.edges.contains { $0.site == call.address && $0.callee == call.branchTarget })
     }
+}
+
+/// A `b` to another function's entry is a call that returns to the caller's
+/// caller. libSample's specialized `Direction.init(rawValue:)` is reached only
+/// that way, from 0x1310. Every such branch, in every function, is an edge;
+/// a branch inside its own function is not.
+@Test func countsATailCallAsACallerIfPresent() async throws {
+    let path = "Fixtures/Sample/libSample.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .simplified).disassemble(path: path)
+    }
+    let graph = CallGraph(functions: functions)
+    let specialized: UInt64 = 0x2580
+    #expect(graph.functionAddresses.contains(specialized))
+    let callers = graph.callers(of: specialized)
+    #expect(callers.contains { $0.site == 0x1310 && $0.isTailCall })
+    #expect(!graph.unreferenced().contains(specialized))
+
+    let starts = graph.functionAddresses
+    var tailCalls = 0
+    for function in functions {
+        for insn in function.instructions where insn.controlFlow == .branch {
+            guard let target = insn.branchTarget else { continue }
+            let isEdge = graph.edges.contains { $0.site == insn.address && $0.callee == target }
+            if starts.contains(target), target != function.startAddress {
+                tailCalls += 1
+                #expect(isEdge, "b at 0x\(String(insn.address, radix: 16)) to an entry")
+            } else if function.instructions.contains(where: { $0.address == target }) {
+                #expect(!isEdge, "b at 0x\(String(insn.address, radix: 16)) stays in its function")
+            }
+        }
+    }
+    #expect(tailCalls >= 5)
 }
 
 /// The pseudo view renders recovered call statements and hides ARC noise.

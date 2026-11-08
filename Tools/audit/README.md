@@ -1,0 +1,203 @@
+# Source-grounded app audit
+
+The audit checks swiftdc's claims about real apps against evidence that
+doesn't come from swiftdc: the apps' own source at a known revision, a
+matching build, the machine code, DWARF, and the compiler's IR. It found the
+2026-10-12 entries in
+[PRODUCTION-READINESS.md](../../docs/PRODUCTION-READINESS.md).
+
+## 1. Build with provenance
+
+```bash
+cp Tools/audit/apps.conf.example Tools/audit/apps.conf   # git-ignored; list your apps
+Tools/audit/build-apps.sh Tools/audit/apps.conf /path/to/audit/builds
+```
+
+Each app is built at Debug (-Onone) and Release (-O) for the arm64
+simulator, into the output directory. Nothing is written into the app
+repositories and nothing is signed.
+
+`<App>-<Config>.provenance` records:
+
+- the revision and a hash of any uncommitted diff;
+- a hash of the Swift source tree, for an app that isn't in git;
+- the toolchain;
+- the optimization settings the build actually used;
+- the LC_UUID of each product.
+
+Don't audit a binary whose provenance you can't state. In a Debug build
+with `ENABLE_DEBUG_DYLIB`, the code is in `<App>.debug.dylib`; the
+executable is a stub.
+
+## 2. Run swiftdc under a memory guard
+
+```bash
+Tools/audit/guard.sh out/ 2000 -- swiftdc disasm <bin> -f <function> --structured
+```
+
+The guard logs the footprint and kills the run past the limit. An
+unfiltered `disasm` or `analyze` holds about 1 KB per instruction, so
+filter on a large app. `xrefs` streams.
+
+## 3. Check every claim against an independent oracle
+
+| Claim | Oracle |
+|---|---|
+| A call, its arguments, its order | `xcrun llvm-objdump -d --macho` of the same function: the registers set before the `bl`, the call order |
+| A condition | The flag-setting instruction that actually precedes the branch, and its condition code's signedness |
+| A field name at an offset | DWARF member offsets in the dSYM (`dwarfdump --debug-info`); the `Wvd` field-offset symbols |
+| A string literal | `__cstring` at the address the code computes, and the length word |
+| An async parent or order | The compiler's funclet symbols, and the DWARF line table |
+| Function identity | The symbol table, DWARF `DW_AT_name`, LC_FUNCTION_STARTS |
+| What the compiler lowered | `swiftc -emit-sil` / `-emit-ir` / `-S` on a reduced copy |
+| Behaviour | Run the reduced program |
+
+Textual similarity to the source isn't evidence. Optimized code differs
+from source for legitimate reasons (inlining, specialization, merged
+functions, outlining). The question is always whether swiftdc's claim is
+true of the machine code.
+
+`--probe` makes some claims machine-checkable (`types.field-named`), and
+`ProbeRecorder(validators:)` takes an oracle as a closure. See
+[INSTRUMENTATION.md](../../docs/INSTRUMENTATION.md).
+
+Common integer-return checks use the native Swift `ProbeScore` API or
+`swiftdc score <binary> --oracle oracle.json`. The authored width-flag corpus
+needs only `swiftdc score Fixtures/Sample/libWidthFlagProbes.dylib --width-flags`.
+Saved traces also work with `--trace`; missing, unknown, ambiguous and refuted
+cases stay distinct. There is no scripting-language dependency for scoring.
+
+## 4. Classify each difference
+
+Every difference gets exactly one class:
+
+- **semantic-error**: swiftdc claims something false, and an oracle shows it;
+- **incomplete**: a decline where the evidence exists (completeness, never
+  soundness);
+- **ambiguous**: the binary doesn't decide it;
+- **correct-lowering**: swiftdc is right, and the source just reads
+  differently;
+- **hypothesis**: suspected but not shown, along with what would show it.
+
+## 5. Reduce, then fix
+
+1. Reduce each confirmed error to a minimal program you write yourself.
+   Never commit the app's code.
+2. Prove the reduction reproduces with the swiftdc build that was audited.
+3. Add the reduction as a fixture, with a test that fails before the fix
+   (mutation-checked).
+4. Re-run the app to show the fix generalizes. A probe count, such as
+   `structure.unreadable-flags`, is a cheap way to measure that.
+
+Reports that quote an app's code stay outside this repository.
+
+## 6. Re-run the fixed semantic regression corpus
+
+```bash
+Tools/audit/semantic-regressions.sh work/audit-semantic
+```
+
+This builds the authored reductions and verifies indirect transfers/awaits,
+call ordering, void results, array-loop exits, and long literals with Unicode,
+combining marks, embedded NUL/control characters and pooling. The CCMP oracle
+executes 896 native ARM64 functions over 243 inputs each (217,728 comparisons),
+covering all fallback NZCV patterns and all fourteen condition codes in both
+register widths, including signed-overflow boundaries.
+Two additional native consumers verify CSETM masks and the zero-extension of
+a 32-bit destination over 486 inputs.
+
+The output includes source/toolchain provenance, binary hashes and UUIDs,
+independent objdump listings, structured renders, probe summaries and the test
+log. An assertion failure exits nonzero before writing a passing validation
+record. These measurements cover the stated reductions; representative app
+accuracy still requires the source-grounded app protocol above. Probe counts
+alone do not validate a claim.
+
+## 7. Repeat a native research experiment
+
+```bash
+swift run swiftdc research --iterations 2 --seed 7
+```
+
+This Swift loop snapshots the authored integer fixture, compiles three
+optimization levels and checks all display presets through array and streaming
+analysis. Native expected values and entry identities come from independent
+system tools and verified image-owned function pointers. Each run keeps
+versioned evidence in a fresh `work/research` directory, including refuted,
+unknown and missing cases. A completed experiment is separate from complete
+recovery. Start with refutations, reduce the responsible instruction sequence,
+fix it, mutation-check the test, then replay the same seed and another batch.
+See [INSTRUMENTATION.md](../../docs/INSTRUMENTATION.md) for the evidence contract.
+
+## Whole-binary corpus measurements
+
+`Tools/corpus.swift` runs swiftdc over many real binaries and measures what
+can be checked without reading the output by hand:
+
+- **reliability**: exit status, signal, timeout and memory kill per run,
+  with non-zero exits grouped by message;
+- **consistency**: the SHA-256 of stdout and stderr from separate processes
+  (`--repeat`), and from two builds (`compare`);
+- **completeness**: `xrefs`' function count against `dyld_info
+  -function_starts`, images whose functions average more than 20,000
+  instructions (an image with no boundaries passes the first check), and
+  empty output for a binary whose own sections say it has Swift or
+  Objective-C metadata;
+- **raw bytes**: control bytes in stdout (below 0x20 other than tab and
+  newline, and DEL), which rendered text never holds;
+- **performance**: wall, CPU and peak footprint from `proc_pid_rusage` of the
+  exited child (the numbers `/usr/bin/time -l` prints), per instruction.
+
+```bash
+xcrun swiftc -O Tools/corpus.swift -o corpus
+find /Applications /usr/libexec -type f -perm -u+x | ./corpus manifest > corpus.tsv
+./corpus run .build/release/swiftdc corpus.tsv out --jobs 4 --kill-mb 1800
+./corpus report out
+./corpus compare out-before out-after
+swiftdc dump --list-images | ./corpus cache-manifest > cache.tsv
+```
+
+The manifest reads each header itself (arm64 slice, `__text` size, Swift and
+Objective-C sections) and deduplicates by content hash; its readings agreed
+with `otool -l` on all 6,091 binaries both could read. A run appends to
+`out/results.jsonl` and resumes where it stopped. `--commands` picks from
+`dump,interface,layout,objc,version,xrefs,structured,pseudo,listing,analyze,objc-methods`;
+filter with `--max-text`, `--swift-only` and `--sample N --seed S`.
+
+`cache-manifest` reads install paths of dyld shared cache images and
+describes each with `dyld_info -uuid -segments`, a reader independent of
+swiftdc's. Its rows are `cache:<install path>`, identified by the cache UUID
+and the path, and `run` passes them to swiftdc with `--image-path`.
+
+Time numbers are only comparable at `--jobs 1` with nothing else running.
+The manifest and output directory name private apps: keep them out of the
+repository.
+
+### Type identity
+
+`Tools/audit/typeid.py` checks `dump` against the binary's own symbols.
+Every nominal type descriptor symbol (`$s…Mn`), demangled by
+`swift-demangle`, must be a type `dump` declares, compared by module and
+nesting path.
+
+```bash
+python3 -I Tools/audit/typeid.py .build/release/swiftdc <binary> --show
+python3 -I Tools/audit/typeid.py .build/release/swiftdc cache:/usr/lib/swift/libswiftCore.dylib
+```
+
+### Names in a stripped binary
+
+`Tools/audit/stripnames.py` strips (`strip -x`) a binary that has its
+local symbols, runs `swiftdc disasm` on the copy, and checks every function
+name `swiftdc` recovered from metadata against the original symbol at that
+address, demangled by `swift-demangle`. Each name is classified:
+- exact: equal to the demangled symbol;
+- compatible: every identifier in it occurs in the symbol (`Circle:
+  Shape.method` for a protocol witness);
+- an Objective-C IMP of an `@objc` thunk: `-[SDWidget label]`, counted apart;
+- a conflict: it names something the function is not.
+
+```bash
+python3 -I Tools/audit/stripnames.py .build/release/swiftdc <binary> <scratch dir> --show
+```
+

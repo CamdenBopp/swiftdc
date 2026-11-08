@@ -104,9 +104,9 @@ private func structured(_ filter: String) async throws -> String? {
 }
 
 @Test func aThrowingFunctionsErrorExitKeepsItsBareReturnIfPresent() async throws {
-    // A throwing function's error exit really does yield no value — the result
-    // travels in x21. Whether an exit is the error path is not known per-block,
-    // so these decline rather than assert a missing value on a throw path.
+    // A throwing function's error exit really does yield no value: the error
+    // travels in x21. An exit proven to throw renders `throw ?`, and one not
+    // proven either way `machine_return()`; neither asserts a missing value.
     guard let text = try await structured("mightFail") else { return }
     #expect(text.contains("throws -> Swift.Int"))
     #expect(!text.contains("return ?"))
@@ -127,7 +127,9 @@ private func structured(_ filter: String) async throws -> String? {
         let text = function.renderStructured()
         guard text.contains("return ?") else { continue }
         checked += 1
-        if function.displayName.hasSuffix("-> ()") { offenders.append(function.displayName) }
+        // A closure's own signature precedes its enclosing default-argument context.
+        let ownSignature = function.displayName.components(separatedBy: " in default argument ").first!
+        if ownSignature.hasSuffix("-> ()") { offenders.append(function.displayName) }
     }
 
     #expect(offenders.isEmpty, "`return ?` under a void signature: \(offenders)")

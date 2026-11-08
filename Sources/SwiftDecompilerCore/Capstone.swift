@@ -1,5 +1,5 @@
 import Foundation
-import CCapstone
+import Ccapstone
 
 /// Control-flow classification of an instruction, from Capstone's instruction
 /// groups. This is the structural information `llvm-objdump` text doesn't give.
@@ -34,26 +34,35 @@ public struct DecodedInstruction: Sendable {
 /// objdump text — yields each instruction's control-flow class and branch
 /// target, the foundation for basic-block / CFG recovery.
 final class CapstoneEngine {
-    private var handle: csh = 0
-    private let opened: Bool
+    private var handle: csh
+    /// One C record, overwritten by the iterator. Every result is copied to
+    /// owned Swift values before the next decode or a later call can reuse it.
+    private let instruction: UnsafeMutablePointer<cs_insn>
 
     init?() {
-        opened = cs_open(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, &handle) == CS_ERR_OK
-        guard opened else { return nil }
+        var openedHandle: csh = 0
+        guard cs_open(CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN, &openedHandle) == CS_ERR_OK else { return nil }
         // Detail mode is required for cs_insn_group (control-flow groups).
-        _ = cs_option(handle, CS_OPT_DETAIL, Int(CS_OPT_ON.rawValue))
+        guard cs_option(openedHandle, CS_OPT_DETAIL, UInt(CS_OPT_ON.rawValue)) == CS_ERR_OK,
+              let cache = cs_malloc(openedHandle) else {
+            cs_close(&openedHandle)
+            return nil
+        }
+        handle = openedHandle
+        instruction = cache
     }
 
     deinit {
-        if opened { cs_close(&handle) }
+        cs_free(instruction, 1)
+        cs_close(&handle)
     }
 
     /// Disassemble `code` as ARM64 starting at virtual address `address`.
     /// Decode `code` in full, resynchronising past bytes Capstone cannot decode.
     ///
-    /// `cs_disasm` stops at the FIRST undecodable instruction and reports how
-    /// many it managed — it does not skip and continue. A single call therefore
-    /// truncates the moment it meets anything that is not a valid instruction,
+    /// Capstone stops at an undecodable instruction — it does not skip and
+    /// continue. Stopping iteration there would truncate the moment it meets
+    /// anything that is not a valid instruction,
     /// and `__text` is full of such things: inline data, alignment padding,
     /// jump tables, and arm64e forms this build of Capstone may not know.
     ///
@@ -66,31 +75,28 @@ final class CapstoneEngine {
     /// rather than heuristic: on a stall, skip exactly one instruction slot and
     /// resume. No guessing about where the stream realigns, because it cannot
     /// drift.
-    func disassemble(_ code: Data, address: UInt64) -> [DecodedInstruction] {
-        guard opened, !code.isEmpty else { return [] }
+    ///
+    /// `includeText: false` leaves `mnemonic` and `operands` empty, for a caller
+    /// that takes its text from elsewhere (the objdump path): two strings per
+    /// instruction, most too long for Swift's inline form.
+    func disassemble(_ code: Data, address: UInt64, includeText: Bool = true) -> [DecodedInstruction] {
+        guard !code.isEmpty else { return [] }
         var results: [DecodedInstruction] = []
 
         code.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
             var offset = 0
             while offset < code.count {
-                var insns: UnsafeMutablePointer<cs_insn>?
-                let count = cs_disasm(
-                    handle, base + offset, code.count - offset, address &+ UInt64(offset), 0, &insns
-                )
-                if count > 0, let insns {
-                    append(insns, count: count, into: &results)
-                    // Advance by what actually decoded, then step over the byte
-                    // that stalled it.
-                    let consumed = Int((insns + (count - 1)).pointee.address &- (address &+ UInt64(offset)))
-                        + Int((insns + (count - 1)).pointee.size)
-                    cs_free(insns, count)
-                    offset += max(consumed, Self.instructionSize)
+                var next: UnsafePointer<UInt8>? = base + offset
+                var remaining = code.count - offset
+                var pc = address &+ UInt64(offset)
+                if cs_disasm_iter(handle, &next, &remaining, &pc, instruction) {
+                    append(instruction, count: 1, includeText: includeText, into: &results)
+                    offset += max(Int(instruction.pointee.size), Self.instructionSize)
                 } else {
-                    if let insns { cs_free(insns, 0) }
-                }
-                // Undecodable slot (or a stall): skip one instruction and resume.
-                if offset < code.count, count == 0 {
+                    // A failed decode may leave the C cache partially changed.
+                    // Never publish it; resume at the next fixed-width slot.
+                    Probe.record(.decodeSkippedSlot, at: address &+ UInt64(offset))
                     offset += Self.instructionSize
                 }
             }
@@ -104,9 +110,11 @@ final class CapstoneEngine {
     private func append(
         _ insns: UnsafeMutablePointer<cs_insn>,
         count: Int,
+        includeText: Bool,
         into results: inout [DecodedInstruction]
     ) {
-        results.reserveCapacity(results.count + count)
+        // No reserveCapacity here: it allocates exactly what it is asked for,
+        // so reserving per batch copies the whole result array once per batch.
         for index in 0..<count {
                 let pointer = insns + index
                 let insn = pointer.pointee
@@ -122,8 +130,8 @@ final class CapstoneEngine {
                     DecodedInstruction(
                         address: insn.address,
                         size: Int(insn.size),
-                        mnemonic: Self.string(insn.mnemonic),
-                        operands: Self.string(insn.op_str),
+                        mnemonic: includeText ? Self.string(insn.mnemonic) : "",
+                        operands: includeText ? Self.string(insn.op_str) : "",
                         controlFlow: flow,
                         branchTarget: target,
                         detail: detail
@@ -150,17 +158,21 @@ final class CapstoneEngine {
     /// the default for shipping Apple binaries, so this was wrong nearly
     /// everywhere it mattered.
     private static let compareAndBranch: Set<UInt32> = [
-        ARM64_INS_CBZ, ARM64_INS_CBNZ, ARM64_INS_TBZ, ARM64_INS_TBNZ,
+        AARCH64_INS_CBZ, AARCH64_INS_CBNZ, AARCH64_INS_TBZ, AARCH64_INS_TBNZ,
     ].map(\.rawValue).reduce(into: Set()) { $0.insert($1) }
 
     private func controlFlow(of pointer: UnsafePointer<cs_insn>, detail: StructuredInsn?) -> ControlFlow {
         if inGroup(pointer, CS_GRP_RET) { return .return }
         if inGroup(pointer, CS_GRP_CALL) { return .call }
         guard inGroup(pointer, CS_GRP_JUMP) else { return .sequential }
-        guard let detail else { return .conditionalBranch } // no detail: assume the weaker claim
+        guard let detail else {
+            // No detail: assume the weaker claim.
+            Probe.record(.decodeJumpWithoutDetail, at: pointer.pointee.address)
+            return .conditionalBranch
+        }
         if Self.compareAndBranch.contains(detail.id.rawValue) { return .conditionalBranch }
         let cc = detail.conditionCode
-        let conditional = cc != ARM64_CC_INVALID && cc != ARM64_CC_AL && cc != ARM64_CC_NV
+        let conditional = cc != AArch64CC_Invalid && cc != AArch64CC_AL && cc != AArch64CC_NV
         return conditional ? .conditionalBranch : .branch
     }
 

@@ -1,4 +1,4 @@
-import CCapstone
+import Ccapstone
 import Foundation
 import MachOKit
 
@@ -39,15 +39,20 @@ enum ObjCSelectors {
         let methnameRange = sectionBounds(named: "__objc_methname", in: machO)
             .map { $0.address ..< ($0.address + UInt64($0.size)) }
         let cacheReader = machO.fullCache.map { CacheReader(full: $0) }
+        let fileRanges = FileBackedRanges(standalone: machO)
         let pointerSize = MemoryLayout<UInt64>.size
+        let rebases: ChainedRebases? = cacheReader != nil ? nil : machO.fileOffset(of: selrefs.address).flatMap {
+            ChainedRebases(fileOffsets: Int($0) ..< Int($0) + selrefs.size, in: machO)
+        }
         var table = SelectorTable()
 
         for slot in stride(from: selrefs.address,
                            to: selrefs.address + UInt64(selrefs.size),
                            by: pointerSize) {
-            guard let target = pointerTarget(at: slot, in: machO, cacheReader: cacheReader) else { continue }
+            guard let target = pointerTarget(at: slot, in: machO, cacheReader: cacheReader, rebases: rebases)
+            else { continue }
             if let methnameRange, !methnameRange.contains(target) { continue }
-            guard let name = selectorText(at: target, in: machO, cacheReader: cacheReader),
+            guard let name = selectorText(at: target, in: machO, cacheReader: cacheReader, fileRanges: fileRanges),
                   isSelectorShaped(name)
             else { continue }
             table.bySelref[slot] = name
@@ -66,11 +71,13 @@ enum ObjCSelectors {
     private static func pointerTarget(
         at slot: UInt64,
         in machO: MachOFile,
-        cacheReader: CacheReader?
+        cacheReader: CacheReader?,
+        rebases: ChainedRebases?
     ) -> UInt64? {
         if let cacheReader { return cacheReader.pointer(at: slot) }
         guard let fileOffset = machO.fileOffset(of: slot),
-              let runtimeOffset = machO.resolveRebase(at: UInt64(fileOffset))
+              let runtimeOffset = rebases.map({ $0.targets[Int(fileOffset)] })
+                ?? machO.resolveRebase(at: UInt64(fileOffset))
         else { return nil }
         return machO.address(forOffset: 0) &+ runtimeOffset
     }
@@ -117,7 +124,7 @@ enum ObjCSelectors {
         let tracer = ValueTracer()
         var result: [UInt64: String] = [:]
         for (index, insn) in instructions.enumerated() {
-            guard let detail = insn.detail, detail.id == ARM64_INS_ADRP,
+            guard let detail = insn.detail, detail.id == AARCH64_INS_ADRP,
                   detail.operands.first?.operand.register?.key == "x1"
             else { continue }
             let window = Array(instructions[index ..< min(index + 2, instructions.count)])
@@ -132,13 +139,14 @@ enum ObjCSelectors {
     private static func selectorText(
         at address: UInt64,
         in machO: MachOFile,
-        cacheReader: CacheReader?
+        cacheReader: CacheReader?,
+        fileRanges: FileBackedRanges?
     ) -> String? {
         let text: String?
         if let cacheReader {
             text = cacheReader.cString(at: address)
         } else {
-            text = machO.fileOffset(of: address).flatMap { try? machO.readString(offset: Int($0)) }
+            text = Disassembler.ReferenceResolver.rawCString(at: address, in: machO, ranges: fileRanges)
         }
         guard let text, !text.isEmpty, text.count <= 200 else { return nil }
         return text

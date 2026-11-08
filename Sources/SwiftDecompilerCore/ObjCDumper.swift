@@ -19,10 +19,21 @@ public struct ObjCDumper: Sendable {
         Self.render(ObjCMetadataSnapshot.build(in: machO), isSynthesized: { _ in nil })
     }
 
+    /// Header blocks from metadata alone, on any architecture: no code is
+    /// decoded, so whether a property's accessor is synthesized or custom is
+    /// unknown. Each one stays in the header, typed from its property and
+    /// marked `unclassifiedAccessorNote`.
+    public func metadataOnlyBlocks(_ machO: MachOFile) -> [String] {
+        Self.render(
+            ObjCMetadataSnapshot.build(in: machO), unknown: .marked { _ in Self.unclassifiedAccessorNote },
+            isSynthesized: { _ in nil })
+    }
+
     /// Header blocks with disassembly-backed accessor classification: on arm64,
     /// each property-backed accessor's body is disassembled — synthesized ones
     /// (a trivial ivar load/store the `@property` already implies) are dropped,
-    /// custom ones are kept and typed from the property. Off arm64 (no disasm)
+    /// custom ones are kept and typed from the property, and one with no
+    /// verdict is kept and marked with why. Off arm64 (no disasm)
     /// this is the metadata-only behaviour of `blocks(_:)`.
     public func blocks(_ machO: MachOFile, disassembler: Disassembler) async -> [String] {
         let snapshot = ObjCMetadataSnapshot.build(in: machO)
@@ -30,11 +41,15 @@ public struct ObjCDumper: Sendable {
             return Self.render(snapshot, isSynthesized: { _ in nil })
         }
         let classification = await Self.classifyAccessors(snapshot, in: machO, disassembler: disassembler)
-        return Self.render(snapshot, isSynthesized: { classification[$0] })
+        return Self.render(
+            snapshot,
+            unknown: .marked { classification[$0] == nil ? Self.undecodedAccessorNote : Self.declinedAccessorNote },
+            isSynthesized: { classification[$0] ?? nil })
     }
 
     private static func render(
         _ snapshot: ObjCMetadataSnapshot,
+        unknown: UnknownAccessor = .dropped,
         isSynthesized: (UInt64) -> Bool?
     ) -> [String] {
         let classes = snapshot.classes.map { info -> String in
@@ -42,7 +57,7 @@ public struct ObjCDumper: Sendable {
                 info.headerString, class: info.name,
                 superclass: snapshot.superclassBinds[info.name]
             )
-            return rewritingPropertyAccessors(withSuper, class: info, isSynthesized: isSynthesized)
+            return rewritingPropertyAccessors(withSuper, class: info, unknown: unknown, isSynthesized: isSynthesized)
         }
         return (classes
             + snapshot.protocols.map(\.headerString)

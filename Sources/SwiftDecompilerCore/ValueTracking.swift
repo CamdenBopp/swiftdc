@@ -1,5 +1,6 @@
-import CCapstone
+import Ccapstone
 import Foundation
+import Synchronization
 
 /// Operators retained in source-level symbolic expressions. These are kept
 /// deliberately small and side-effect free: when an instruction falls outside
@@ -8,14 +9,22 @@ public enum AbstractBinaryOperator: Equatable, Sendable {
     case add
     case subtract
     case multiply
+    /// Signed integer division (`sdiv`), or float division.
     case divide
     case remainder
+    /// `udiv` and its remainder. Kept apart from `divide` so an unsigned
+    /// division is never rendered as the signed `/` it disagrees with at every
+    /// negative input; the renderer marks it unless the operand is a proven UInt.
+    case unsignedDivide
+    case unsignedRemainder
     case bitAnd
     case bitOr
     case bitXor
     case shiftLeft
     case shiftRight
     case arithmeticShiftRight
+    case multiplyHigh
+    case unsignedMultiplyHigh
     // Comparisons, produced by a flag-setting compare + `cset`/`b.cond`.
     // `equal`/`notEqual` are sign-agnostic. The signed vs unsigned distinction is
     // preserved (not merged) because collapsing an unsigned machine comparison
@@ -72,13 +81,18 @@ public enum AbstractBinaryOperator: Equatable, Sendable {
         case .add: "+"
         case .subtract: "-"
         case .multiply: "*"
-        case .divide: "/"
-        case .remainder: "%"
+        case .divide, .unsignedDivide: "/"
+        case .remainder, .unsignedRemainder: "%"
         case .bitAnd: "&"
         case .bitOr: "|"
         case .bitXor: "^"
         case .shiftLeft: "<<"
-        case .shiftRight, .arithmeticShiftRight: ">>"
+        // The register bit pattern does not inherit the source operand's
+        // signedness. Preserve the machine operation even in UInt returns.
+        case .shiftRight: ">>\u{1D41}"
+        case .arithmeticShiftRight: ">>\u{02E2}"
+        case .multiplyHigh: "mulh\u{02E2}"
+        case .unsignedMultiplyHigh: "mulh\u{1D41}"
         case .equal: "=="
         case .notEqual: "!="
         case .less: "<"
@@ -98,13 +112,45 @@ public enum AbstractBinaryOperator: Equatable, Sendable {
 
 /// Unary operators retained in symbolic expressions — the floating-point and
 /// bitwise inversions the compiler emits as single instructions (`fneg`,
-/// `fsqrt`, `fabs`, `mvn`). Like the binary set this stays small and pure; an
-/// unmodelled instruction still degrades to `.unknown`.
+/// `fsqrt`, `fabs`, `mvn`), and the numeric conversions (`scvtf`, `fcvtzs`,
+/// `fcvt`). Like the binary set this stays small and pure; an unmodelled
+/// instruction still degrades to `.unknown`.
 public enum AbstractUnaryOperator: Equatable, Sendable {
     case negate
     case squareRoot
     case absoluteValue
     case bitwiseNot
+    /// Reverse bytes independently within each 16/32/64-bit chunk of the
+    /// operand's bit pattern. Register-width normalization stays explicit.
+    case byteSwap(bits: Int)
+    /// Leading zeros of the operand's low `bits` (`clz`).
+    case leadingZeros(bits: Int)
+    /// The bits after the sign bit of the low `bits` that equal it (`cls`).
+    case leadingSignBits(bits: Int)
+    /// The operand's low `bits` in reverse order (`rbit`).
+    case bitReverse(bits: Int)
+    /// An integer or a float converted to a float of `bits` width (`scvtf`,
+    /// `ucvtf`, `fcvt`): `Double(x)` at 64, `Float(x)` at 32.
+    case toFloat(bits: Int)
+    /// `ucvtf`: the operand's bits as an unsigned integer, converted. As
+    /// `Double(x)` it reads as a signed conversion, which differs whenever
+    /// bit 63 is set.
+    case unsignedToFloat(bits: Int)
+    /// A float truncated toward zero to an integer of `bits` width (`fcvtzs`,
+    /// `fcvtzu`): `Int(x)`, `UInt32(x)`.
+    case toInteger(signed: Bool, bits: Int)
+    /// The float of `bits` width whose IEEE bit pattern is the operand, an
+    /// immediate: a float operation's constant operand. Bare, it read as the
+    /// integer it is spelled as (`t / 0x4059000000000000`, for `t / 100.0`).
+    case floatConstant(bits: Int)
+    /// A float's IEEE bits of `bits` width read as an integer (`fmov x8,
+    /// d0`): `a.bitPattern`. Everything done to it is integer arithmetic, a
+    /// constant beside it is an integer, and its sign is the reading
+    /// instruction's.
+    case bitPattern(bits: Int)
+    /// An integer's low `bits` read as the float of that width (`fmov d0,
+    /// x0`): `Double(bitPattern: i)`. The mirror of `bitPattern`.
+    case floatFromBits(bits: Int)
 }
 
 /// A small abstract-value lattice for CFG-aware data-flow. Alongside constants
@@ -118,6 +164,10 @@ public indirect enum AbstractValue: Equatable, Sendable {
     /// The return value (x0) of the call at this instruction address — lets a
     /// result flow into a later call's argument as a nested expression.
     case callResult(UInt64)
+    /// The second word (x1) of the two-word result of the call at this
+    /// address, for a callee whose signature returns a `Swift.String`: with
+    /// `.callResult` of the same call in x0, the whole String.
+    case callResultHigh(UInt64)
     /// A named source-level method argument. Objective-C's explicit arguments
     /// begin in x2 (after `self` and `_cmd`), so metadata can seed these without
     /// guessing and keep `arg0` alive through register moves and stack spills.
@@ -127,6 +177,28 @@ public indirect enum AbstractValue: Equatable, Sendable {
     /// `__objc_selrefs` slot, say); callers that can't resolve it should treat
     /// it as `.unknown`.
     case loaded(UInt64)
+    /// The word at `offset` in the object the pointer stored at `slot`
+    /// points to: the second load of `ldur x8, [meta, #-0x8]; ldr x8, [x8,
+    /// #0x28]`, a value-witness slot. Whether the image's bytes fix it
+    /// (both pointers fixups in read-only memory) is the resolver's to
+    /// decide; as a value it is unknown.
+    case loadedThrough(slot: UInt64, offset: Int)
+    /// The word at `offset` in what `base` points to, for a call's result
+    /// and one load through it: `bl type metadata accessor for X; ldur x8,
+    /// [x0, #-0x8]; ldr x8, [x8, #0x10]` reads X's value-witness table and
+    /// its initializeWithCopy. Unknown as a value; the enrichment names a
+    /// call through it.
+    case loadedFrom(AbstractValue, offset: Int)
+    /// A generic function's type parameter's metadata, as its entry receives
+    /// it after the formals (`pick<T>(_:_:_:)`: T's in x3).
+    case genericMetadata(String)
+    /// The witness table a generic function receives for the protocol
+    /// requirement at this index of its generic signature (the requirements
+    /// that are protocol conformances, in signature order), after its
+    /// metadata arguments. Unknown as a value; a call through one of its
+    /// slots is named by the enrichment, which proves which protocol each
+    /// table is for.
+    case genericWitnessTable(Int)
     /// The `self` pointer as it arrives at a Swift instance method — x20 under
     /// the Swift calling convention.
     ///
@@ -149,9 +221,18 @@ public indirect enum AbstractValue: Equatable, Sendable {
     /// the target of a `ldr x8,[x20]; ldr x8,[x8,#off]; blr x8` dispatch. Named
     /// against `self`'s type via `VTableIndex` at enrichment time.
     case selfVTableMethod(offset: Int)
+    /// The word a register loaded from `self + 0` before a call: no longer
+    /// `self`'s field 0 (the call may have written it), but still the
+    /// pointer that was there. For a class instance that is its isa, and
+    /// metadata does not change, so a load through it still reaches the
+    /// vtable and the generic arguments. Unknown as a value.
+    case selfIsaSnapshot
     /// A field, at a byte offset, of a struct argument passed by value in
     /// registers (an HFA). Renders as `arg<n>.field`; seeded for a nonmutating
-    /// method whose parameter is a small floating-point aggregate.
+    /// method whose parameter is a small floating-point aggregate. Also the
+    /// value a load read from a field of a class argument
+    /// (`ValueTracer.argumentObjectFields`): there it is mutable memory, and
+    /// a store or a call forgets it.
     case argumentField(argument: Int, offset: Int)
     /// A value merged from the two arms of a control-flow diamond — the phi at a
     /// join. Renders as `condition ? whenTrue : whenFalse`, reconstructing a
@@ -188,6 +269,72 @@ public indirect enum AbstractValue: Equatable, Sendable {
     /// header condition reconstruct with a name (`i < n`) instead of raw
     /// registers.
     case local(Int)
+    /// The incoming x8: the address of the caller-owned buffer an indirectly
+    /// returned value (a struct wider than four words, a large payload enum, a
+    /// generic or existential result) is written into. Seeded at every entry,
+    /// because x8 means exactly this in every ARM64 convention; it carries
+    /// information only once the body reads it, and a body that writes x8 first
+    /// simply overwrites the seed.
+    case indirectResultPointer
+    /// `x8 + constant`: the address of a byte offset inside the result buffer.
+    case indirectResultField(offset: Int)
+    /// The eight bytes at `offset` of the value the call at `site` returned
+    /// indirectly into the caller's frame. Produced only when the callee is
+    /// proven to read its incoming x8 and its result size is known, so a later
+    /// load from that frame slot renders as a field of the call's result rather
+    /// than as a stale local.
+    case indirectCallResultWord(site: UInt64, offset: Int)
+    /// The async context pointer of the function being analysed (x22 at an
+    /// async entry or continuation funclet; the first word of x22 at an
+    /// await-return funclet). Seeded only for a function the async funclet
+    /// index placed in a chain with a known kind.
+    case asyncContext
+    /// At an await-return funclet, x22 holds the *callee's* context, whose
+    /// first word is the caller's own (`asyncContext`).
+    case asyncCalleeContext
+    /// The continuation loaded from `asyncContext + 8` (ResumeParent): the
+    /// address an async function returns to. A `br` through it is the
+    /// function's return.
+    case asyncResumeParent
+    /// A pointer-width value loaded from a slot of the function's own async
+    /// context whose stored value was not proven. Renders `?`.
+    case asyncContextSlot(Int)
+    /// The direct result of the await that the resume funclet numbered
+    /// `ordinal` continues: x0 (or v0) at that funclet's entry, seeded only when
+    /// the awaited callee's signature proves a single-register result.
+    case awaitResult(Int)
+}
+
+/// What is known about how a callee delivers its result, keyed by call site.
+/// Decides what a call does to the caller's frame when x8 points into it, and
+/// whether a call that forwards the caller's own x8 fills the caller's result.
+public enum CalleeResultConvention: Equatable, Sendable {
+    /// The callee provably never reads its incoming x8 (its whole body was
+    /// inspected, or it is a fixed-ABI runtime/libc entry point), so x8 at the
+    /// call is a scratch value and nothing under it is written.
+    case direct
+    /// The callee provably reads its incoming x8 and writes its result through
+    /// it; `sizeBytes` is the result's size when metadata gives it.
+    case indirect(sizeBytes: Int?)
+}
+
+/// The result-buffer state reaching one `ret` of an x8-indirect function.
+public struct IndirectResultExit: Equatable, Sendable {
+    /// One store through the incoming x8 that reaches the exit on every path.
+    public struct Store: Equatable, Sendable {
+        public var bytes: Int
+        public var value: AbstractValue
+    }
+    /// Set when the whole buffer was filled by the call at this site (the caller
+    /// forwarded its own x8 to a callee proven to write through it).
+    public var whole: UInt64? = nil
+    /// Byte offset → the store reaching the exit. Partial on purpose: a field
+    /// stored on only one path is absent, and the consumer must decline.
+    public var stores: [Int: Store] = [:]
+    /// The result pointer escaped (into a call argument, into memory, into
+    /// untracked arithmetic), or a whole-buffer fill was partially overwritten,
+    /// so nothing about the buffer's contents is provable at this exit.
+    public var poisoned: Bool = false
 }
 
 /// Register state that metadata proves at a method's entry point.
@@ -200,17 +347,22 @@ public enum MethodEntryConvention: Sendable, Equatable {
     case swiftInstance(scalarArguments: [String: Int])
     /// Objective-C class or instance method: `self` is x0, `_cmd` is x1, and
     /// explicit selector arguments begin in x2.
-    case objectiveC(argumentCount: Int)
+    case objectiveC(argumentCount: Int, scalarArguments: [String: Int]? = nil)
     /// An Objective-C initializer has the same register convention, but a
     /// metadata-proven `init…` entry lets a super-initializer result become the
     /// method's new `self` for subsequent ivar accesses.
-    case objectiveCInitializer(argumentCount: Int)
+    case objectiveCInitializer(argumentCount: Int, scalarArguments: [String: Int]? = nil)
     /// A Swift free function or static method whose parameters are all
     /// single-register scalars, mapped by `scalarArguments` (register key →
     /// source argument index — integers in x0…, floats in v0…). Seeded only under
     /// that proof (see `swiftScalarArgumentRegisters`) so a multi-register
     /// parameter never shifts the mapping and mislabels a register.
-    case swiftFunction(scalarArguments: [String: Int])
+    /// `genericMetadata` names the registers holding a generic function's
+    /// type parameters' metadata (register key -> parameter name), and
+    /// `genericWitnessTables` the registers holding its witness tables
+    /// (register key -> index among its protocol requirements).
+    case swiftFunction(scalarArguments: [String: Int], genericMetadata: [String: String] = [:],
+                       genericWitnessTables: [String: Int] = [:])
     /// A nonmutating instance method of a small homogeneous floating-point
     /// aggregate struct: `self` (and any HFA parameters) are passed by value in
     /// consecutive SIMD registers, so `seededRegisters` maps each register key to
@@ -219,6 +371,11 @@ public enum MethodEntryConvention: Sendable, Equatable {
     /// pointer form (mutating/indirect), so a register never gets a fabricated
     /// field.
     case swiftValueInstance(seededRegisters: [String: AbstractValue])
+    /// An async funclet: `base` is the ordinary convention of the entry funclet
+    /// (its parameters really are in registers there; nil for a resume
+    /// funclet), and `seededRegisters` adds what the async ABI fixes: x22 as
+    /// the context, and the awaited result at an await-return funclet.
+    indirect case asyncFunclet(base: MethodEntryConvention?, seededRegisters: [String: AbstractValue])
 
     var isObjectiveCInitializer: Bool {
         if case .objectiveCInitializer = self { return true }
@@ -230,11 +387,20 @@ public enum MethodEntryConvention: Sendable, Equatable {
 public struct CallSite: Equatable, Sendable {
     /// x0–x7, trailing unknowns trimmed.
     public var arguments: [AbstractValue] = []
+    /// v0–v7, untrimmed. Read only where the callee's signature lays a
+    /// floating-point parameter out (see `swiftCallArgumentSlots`).
+    public var floatArguments: [AbstractValue] = []
     /// Fresh contiguous scalar values written at the current stack pointer
     /// before the call. These are possible AAPCS64 stack arguments; consumers
     /// add them only when a resolved variadic call shape proves they belong to
     /// the source call.
     public var stackArguments: [AbstractValue] = []
+    /// The bytes the store into each `stackArguments` slot wrote, 0 where
+    /// unknown. Apple arm64 packs stack arguments to their own alignment, so
+    /// one eight-byte slot can hold two four-byte arguments, and clang
+    /// merges their stores into one: a slot is one argument only where its
+    /// store matches it.
+    public var stackArgumentWidths: [Int] = []
     /// x20 — `self` under the Swift calling convention. Meaningless for a
     /// non-Swift callee, where x20 is just another callee-saved register, so
     /// only render it once the callee is known to be Swift.
@@ -246,17 +412,46 @@ public struct CallSite: Equatable, Sendable {
 
     /// Whether nothing at all was inferred (so there's nothing worth showing).
     public var isEmpty: Bool {
-        arguments.isEmpty && stackArguments.isEmpty && selfValue == .unknown
+        arguments.isEmpty && floatArguments.allSatisfy { $0 == .unknown }
+            && stackArguments.isEmpty && selfValue == .unknown
             && errorValue == .unknown && indirectResult == .unknown
     }
 }
 
 /// A memory access into `self`, for field naming.
+/// A store the tracer does not otherwise model: memory outside the frame, the
+/// async context, an array literal and the indirect result. `base` is the
+/// base register's value before the store (unknown when not proven), and
+/// each stored value is the source register's, `bytes` wide, at
+/// `displacement + index * bytes`. A register index makes the address
+/// unknown, recorded as `indexed`. The register names are the instruction's,
+/// for a value the tracer did not prove.
+public struct MemoryWrite: Sendable, Equatable {
+    /// What the tracer proved the address is: `frame` (sp, or a register it
+    /// followed from sp), `context` (an async context), `array` (an array
+    /// literal), `result` (the indirect-result buffer), or `address` when
+    /// nothing models it.
+    public let kind: String
+    public let base: AbstractValue
+    public let baseRegister: String
+    public let valueRegisters: [String?]
+    public let displacement: Int64
+    /// An index register added to the base, shifted left by `indexShift`
+    /// (`[x20, x8, lsl #3]`). An extended index sets `indexed` instead.
+    public let indexRegister: String?
+    /// The index register's value, when proven.
+    public let index: AbstractValue
+    public let indexShift: Int
+    public let indexed: Bool
+    public let bytes: Int
+    public let values: [AbstractValue]
+}
+
 public struct SelfFieldAccess: Sendable, Equatable {
     /// Byte offset from the start of the instance.
     public var offset: Int
     /// Access width. Comes from the instruction id and register width —
-    /// `arm64_op_mem` carries no width at all.
+    /// `aarch64_op_mem` carries no width at all.
     public var bytes: Int
     public var isWrite: Bool
     /// The value stored by a write, when the data-flow lattice can prove it.
@@ -267,6 +462,20 @@ public struct SelfFieldAccess: Sendable, Equatable {
     /// True when the instruction forms the field's ADDRESS rather than loading
     /// it (`add x0, x20, #0x20` -> `&self.breed`).
     public var isAddressOf: Bool = false
+    /// A paired load's register width: its first register reads the first
+    /// `registerBytes` of the access and its second the rest. Nil for any
+    /// other access.
+    public var registerBytes: Int? = nil
+}
+
+/// A named loop-carried variable's proven constant value on entry.
+public struct LoopInitialization: Sendable, Equatable {
+    public var name: String
+    public var value: UInt64
+    public var stackOffset: Int64?
+    public init(name: String, value: UInt64, stackOffset: Int64? = nil) {
+        self.name = name; self.value = value; self.stackOffset = stackOffset
+    }
 }
 
 /// Everything one pass over a function recovers.
@@ -282,20 +491,37 @@ public struct FunctionAnalysis: Sendable {
     public var branchSites: [UInt64: CallSite] = [:]
     /// The branch-taken comparison at a flags-based conditional branch (`b.eq`,
     /// `b.lt`, …), reconstructed from the tracked NZCV flags and the branch's
-    /// condition code. Lets the structurer render a source-named condition
-    /// (`arg0 >= arg1`) in place of raw registers. Compare-and-branch forms
-    /// (`cbz`/`tbz`) carry no condition code and are absent here.
+    /// condition code. Compare-and-branch forms (`cbz`/`tbz`) instead recover
+    /// their tested register directly. Lets the structurer render source-named
+    /// conditions in place of raw registers.
     public var branchConditions: [UInt64: AbstractValue] = [:]
     /// Proven loop induction body updates, keyed by the loop header's branch
-    /// instruction — the statements (`total += i`, `i += 1`) the structurer
-    /// appends, in order (accumulate then advance), inside a rotated
-    /// `while (i < n) { … }`. Only set for proven linear/accumulator recurrences
+    /// instruction — statements (`total += i`, `i += 1`) emitted in order
+    /// (accumulate then advance) on the loop-back transfer. Only set for proven
+    /// linear/accumulator recurrences
     /// (see `resolveLoopInductions`).
     public var loopUpdates: [UInt64: [String]] = [:]
+    /// Entry bindings keyed by the header branch. Render immediately before
+    /// entering its structured loop, including each nested-loop invocation.
+    public var loopInitializations: [UInt64: [LoopInitialization]] = [:]
     /// x0 immediately before a return or unconditional branch. The enrichment
     /// pass uses Objective-C return types and resolved tail helpers to decide
     /// which of these are honest source-level returns.
     public var exitValues: [UInt64: AbstractValue] = [:]
+    /// x21 at each `ret`: in a throwing Swift function, the error it returns.
+    public var exitErrorValues: [UInt64: AbstractValue] = [:]
+    /// For a `ret` whose block several paths reach: x21 at the `ret` along each
+    /// path, keyed by the last instruction of the predecessor block it comes
+    /// from. A throw that falls into the normal epilogue merges with the
+    /// return there, and only the per-path value tells them apart.
+    public var exitErrorValuesByPredecessor: [UInt64: [UInt64: AbstractValue]] = [:]
+    /// x0 and v0 at the same `ret` along each path, keyed the same way: a
+    /// throwing path's x0 is no result, so the normal paths alone give it.
+    public var exitValuesByPredecessor: [UInt64: [UInt64: AbstractValue]] = [:]
+    public var exitFloatValuesByPredecessor: [UInt64: [UInt64: AbstractValue]] = [:]
+    /// x20 at each proven async return (a `br` through ResumeParent): an
+    /// async throwing function hands its error back in x20, zero for none.
+    public var exitAsyncErrorValues: [UInt64: AbstractValue] = [:]
     /// v0 (the d0/s0 floating-point return register) immediately before a
     /// return. A `Double`/`Float`-returning function delivers its result here,
     /// not in x0, so the enrichment pass reads this one for those return types.
@@ -309,41 +535,549 @@ public struct FunctionAnalysis: Sendable {
     public var exitYieldValues: [UInt64: AbstractValue] = [:]
     /// Instruction address → the access it makes into `self`.
     public var selfFieldAccesses: [UInt64: SelfFieldAccess] = [:]
+    /// Offset of `self` → the widths of the stores that left their source
+    /// register named as the field there (`.selfFieldValue`): such a value
+    /// is that many bytes, whatever the field's size.
+    public var selfFieldAliasWidths: [Int: Set<Int>] = [:]
     /// Array-literal construction site → the values stored into it, by byte
     /// offset. Reconstructs `[e0, e1, …]` from the `_allocateUninitializedArray` +
     /// element-store + `_finalizeUninitializedArray` lowering.
     public var arrayElements: [UInt64: [Int: AbstractValue]] = [:]
+    /// Store address → the write, for stores no other fact describes.
+    public var memoryWrites: [UInt64: MemoryWrite] = [:]
+    /// `ret` address → the stores through the incoming x8 that reach it. Only
+    /// meaningful for a function that reads its incoming x8 (the enrichment pass
+    /// checks that separately); for any other function the map is empty.
+    public var exitIndirectResults: [UInt64: IndirectResultExit] = [:]
+    /// Every pointer-width store into a slot of the function's own async
+    /// context: slot byte offset → the values stored there, one per store site.
+    /// The chain pass keeps a slot only when exactly one store reaches it.
+    public var asyncSlotStores: [Int: [AbstractValue]] = [:]
+    /// Definite own-context values immediately before each entry branch.
+    /// Used to prove initialized slots at suspension, never to seed entry.
+    public var asyncSlotFactsAtBranches: [UInt64: [Int: AbstractValue]] = [:]
+    /// An incomplete analysis cannot establish absence of context mutations.
+    /// Completed snapshots set this false, then flag unbounded memory writes.
+    public var asyncUnboundedMemoryWrites = true
 }
 
 /// An abstract interpreter over a function's basic blocks. Propagates constants,
 /// addresses, frame-relative stack slots, and `self` through registers, and
 /// snapshots the argument registers at each call.
 public struct ValueTracer: Sendable {
-    public init() {}
+    /// Per-call-site callee result conventions (see `CalleeResultConvention`).
+    /// A site absent from the map has an unknown callee, which is treated
+    /// pessimistically: a forwarded x8 poisons the result, and a frame slot
+    /// under x8 is clobbered from that offset up.
+    public var calleeConventions: [UInt64: CalleeResultConvention]
 
-    /// Register and stack-slot values. Register keys are canonical names
-    /// (`x3`, `sp`); stack slots are keyed by frame offset (see `stackKey`), so
-    /// both live in one map and flow through the same meet.
-    private typealias State = [String: AbstractValue]
+    /// Values proven to sit in slots of the function's own async context when
+    /// a funclet is entered: slot byte offset → value. Built by a pass over the
+    /// whole funclet chain (see `Disassembler.asyncChainSlots`) and consulted
+    /// by a pointer-width load from `asyncContext + offset`.
+    let asyncContextSlots: [Int: AbstractValue]
+    /// Only the chain pass requests entry transfer facts; ordinary analysis
+    /// avoids scanning/copying slot state at every async branch.
+    var asyncSlotFactBranches: Set<UInt64> = []
+    /// The fixpoint's worklist bound, per block. Past it the analysis claims
+    /// nothing (`values.fixpoint-cap`). Injectable so a test can force it.
+    var iterationsPerBlock = 64
+    /// The loop-induction pass's own bound: `(body blocks + 1) ×` this many
+    /// block visits.
+    var loopBodyIterationsPerBlock = 8
+    /// The facts the fixpoint's block states may hold together, about 65
+    /// bytes each. Past it the analysis claims nothing (`values.state-budget`).
+    /// The largest real functions measured hold 3.9M (CoreML, 431k
+    /// instructions) and 1.4M (MetalPerformanceShadersGraph). Injectable so
+    /// a test can force it.
+    var stateFactBudget = 8_000_000
+
+    /// Callee address → the callee-saved registers its body writes without
+    /// saving (`CalleeRegisterSummary`): an outlined fragment reached by `bl`
+    /// does not preserve them, so they are forgotten after a call to it.
+    var calleeClobbers: [UInt64: Set<String>] = [:]
+    var calleeMemoryEffects: [UInt64: CalleeMemoryEffect] = [:]
+    /// Site address → the outlined fragment's instructions that run before
+    /// the site's own (`Disassembler.inliningOutlinedFragments`), each at the
+    /// site's address. The site is what the fragment does there: its call,
+    /// tail call, last instruction or return.
+    var inlinedPrefixes: [UInt64: [Instruction]] = [:]
+
+    /// The registers a call may leave changed that AAPCS64 says it keeps:
+    /// its callee's own clobbers, and what an inlined fragment wrote before
+    /// it. A pass that reads the instructions rather than the tracer's
+    /// states asks this, since a fragment's prefix is in no instruction list.
+    func clobbers(atCall insn: Instruction) -> Set<String> {
+        var keys = insn.branchTarget.flatMap { calleeClobbers[$0] } ?? []
+        for prefix in inlinedPrefixes[insn.address] ?? [] { keys.formUnion(prefix.detail?.writtenRegisterKeys ?? []) }
+        return keys
+    }
+
+    /// The function's blocks with each inlined site's prefix before it.
+    private func expandingInlinedPrefixes(_ blocks: [BasicBlock]) -> [BasicBlock] {
+        guard !inlinedPrefixes.isEmpty else { return blocks }
+        return blocks.map { block in
+            guard block.instructions.contains(where: { inlinedPrefixes[$0.address] != nil }) else { return block }
+            return BasicBlock(
+                startAddress: block.startAddress,
+                instructions: block.instructions.flatMap { (inlinedPrefixes[$0.address] ?? []) + [$0] },
+                successors: block.successors, switchCases: block.switchCases)
+        }
+    }
+
+    /// In-image call targets whose bodies write no field of any object
+    /// (`CalleeRegisterSummary.writesNoFields`).
+    var fieldPreservingCallees: Set<UInt64> = []
+    /// Argument index → offset → width of the fields a load through that
+    /// class argument may name (`Disassembler.wholeWordFieldWidths`). Only a
+    /// load of exactly a field's width reads that field.
+    var argumentObjectFields: [Int: [Int: Int]] = [:]
+    /// Loader-owned slots bound to `___chkstk_darwin`: a `blr` through one
+    /// is the stack probe, which preserves everything but x9 and the flags.
+    var stackProbeSlots: Set<UInt64> = []
+    /// Loader-owned slots holding `swift_isaMask`'s address: `ldr x9,
+    /// [slot]; ldr x9, [x9]; and x8, x9, isa` is the class metadata of an
+    /// object whose class inherits from Objective-C.
+    var isaMaskSlots: Set<UInt64> = []
+
+    /// Callees that use the caller's x29 as a pointer
+    /// (`CalleeRegisterSummary.readsFramePointer`): a call to one may write
+    /// anywhere in this frame, above or below the frame record x29 holds.
+    var framePointerUsers: Set<UInt64> = []
+
+    /// Call targets that are functions of this image. The known C arity a
+    /// callee's name gives is evidence only for the library function of
+    /// that name, not for an in-image function that shares it.
+    var inImageCallTargets: Set<UInt64> = []
+
+    /// Callees that use the caller's x22 as a pointer
+    /// (`CalleeRegisterSummary.readsContextRegister`): a call to one may write
+    /// the async context x22 holds, though no argument hands it over.
+    var contextRegisterUsers: Set<UInt64> = []
+
+    /// Additional results proven void by a resolved indirect target or an
+    /// Objective-C receiver's declared signature. A selector name alone is
+    /// never proof of its return convention.
+    var voidCallSites = Set<UInt64>()
+    var callReturnsVoid: (@Sendable (_ callee: String, CallSite) -> Bool)?
+
+    /// Where a Swift callee's printed result type puts the whole result.
+    enum CallResultBank: Sendable { case integer, floating, notOneRegister, unknown }
+    /// For a callee whose Swift signature names its result: x0 alone, v0
+    /// alone, or neither one register (a struct's words, a payload enum, a
+    /// generic value). `.unknown` claims nothing.
+    var callResultBank: (@Sendable (_ callee: String) -> CallResultBank)?
+
+    public init(calleeConventions: [UInt64: CalleeResultConvention] = [:], asyncContextSlots: [Int: AbstractValue] = [:]) {
+        self.calleeConventions = calleeConventions
+        self.asyncContextSlots = asyncContextSlots
+    }
+
+    /// A place the tracer keeps a fact: a register, a frame, context or
+    /// result-buffer word, the flags, or a marker. These were string keys
+    /// (`"x3"`, `"stack@-16"`); hashing, building and re-parsing them was
+    /// about half the tracer's time (docs/IR.md, step 3). `description` is
+    /// the former spelling.
+    enum Location: Hashable, Sendable, CustomStringConvertible {
+        case x(Int)
+        case v(Int)
+        case sp
+        case zero
+        case nzcv
+        case otherRegister(Int)
+        /// A frame word by offset, its stored width, and the copy of a store
+        /// at or above sp kept as a possible outgoing stack argument.
+        case stack(Int64)
+        case stackWidth(Int64)
+        /// The register file that stored a frame word: `.immediate(0)` a
+        /// general register, `.immediate(bits)` a float register of that
+        /// width. Absent, the store is not known (an entry argument, a copy).
+        case stackFile(Int64)
+        case outgoing(Int64)
+        /// A word of the function's own async context, by byte offset.
+        case contextSlot(Int)
+        /// The awaited callee's context's first word: its parent.
+        case calleeParent
+        /// A store through the incoming x8 (`resultKey`), and the
+        /// whole-buffer and poison markers. `bytes` is an access width, and
+        /// `Int32` keeps the key at 16 bytes, the size of the string keys.
+        case result(offset: Int, bytes: Int32)
+        case resultWhole
+        case resultPoison
+        case flags
+        case flagsWidth
+        /// x20 was written since the last call (see `selfFreshKey`).
+        case selfFresh
+        /// The escape markers (see "Escaped frame memory").
+        case frameEscaped(Int64)
+        case frameBelow(Int64)
+        case frameEscapedAll
+        /// sp was moved below offset k by a non-constant amount: `frame(k) - n`
+        /// there is a dynamic allocation, not a pointer back into the frame.
+        case frameDynamic(Int64)
+        case contextEscaped(Int64)
+        case calleeContextEscaped
+
+        init(_ register: PhysReg) {
+            switch register.kind {
+            case .gpr: self = .x(register.number)
+            case .vector: self = .v(register.number)
+            case .stackPointer: self = .sp
+            case .zero: self = .zero
+            case .nzcv: self = .nzcv
+            case .other: self = .otherRegister(register.number)
+            }
+        }
+
+        /// A register or frame word spelled as the entry-convention seeds
+        /// spell it (`x2`, `v0`, `sp`, `stack@16`).
+        init?(key: String) {
+            if key == "sp" { self = .sp; return }
+            if key.hasPrefix("stack@") {
+                guard let offset = Int64(key.dropFirst("stack@".count)) else { return nil }
+                self = .stack(offset)
+                return
+            }
+            guard let first = key.first, first == "x" || first == "v", key.count > 1,
+                  key.dropFirst().allSatisfy(\.isNumber), let number = Int(key.dropFirst())
+            else { return nil }
+            self = first == "x" ? .x(number) : .v(number)
+        }
+
+        var description: String {
+            switch self {
+            case .x(let n): "x\(n)"
+            case .v(let n): "v\(n)"
+            case .sp: "sp"
+            case .zero: "xzr"
+            case .nzcv: "nzcv"
+            case .otherRegister(let n): "reg\(n)"
+            case .stack(let k): "stack@\(k)"
+            case .stackWidth(let k): "stack-width@\(k)"
+            case .stackFile(let k): "stack-file@\(k)"
+            case .outgoing(let k): "outgoing@\(k)"
+            case .contextSlot(let k): "ownctx@\(k)"
+            case .calleeParent: "callee-context.parent"
+            case .result(let offset, let bytes): "result@\(offset)/\(bytes)"
+            case .resultWhole: "result.whole"
+            case .resultPoison: "result.poison"
+            case .flags: "nzcv.flags"
+            case .flagsWidth: "nzcv.width"
+            case .selfFresh: "swiftself.fresh"
+            case .frameEscaped(let k): "frame.escaped@\(k)"
+            case .frameBelow(let k): "frame.below@\(k)"
+            case .frameEscapedAll: "frame.escaped"
+            case .frameDynamic(let k): "frame.dynamic@\(k)"
+            case .contextEscaped(let k): "context.escaped@\(k)"
+            case .calleeContextEscaped: "callee-context.escaped"
+            }
+        }
+
+        /// Physical-register identities are distinct from reconstructed flags.
+        /// Preserve all raw associated numbers, including manually seeded keys.
+        var isMachineRegister: Bool {
+            switch self {
+            case .x, .v, .sp, .zero, .nzcv, .otherRegister: true
+            default: false
+            }
+        }
+
+        /// A general or vector register named by number (`x3`, `v0`).
+        var isNumberedRegister: Bool {
+            switch self {
+            case .x, .v: true
+            default: false
+            }
+        }
+    }
+
+    /// Registers/other spaces and one shared owner of current-frame facts.
+    /// The compatibility projection is lazy; no frame entries live in `other`.
+    struct State: Equatable, Sequence, ExpressibleByDictionaryLiteral {
+        typealias Element = (key: Location, value: AbstractValue)
+        private var other: [Location: AbstractValue] = [:]
+        fileprivate var nonRegisterEntries: [Location: AbstractValue] { other }
+        var registerFacts = TraceFrameRegisterFacts()
+        var frame = FrameFacts<TraceFrameFact>()
+        var reach = TraceFrameReach()
+        init() {}
+        init(dictionaryLiteral elements: (Location, AbstractValue)...) {
+            for (key, value) in elements { self[key] = value }
+        }
+        private static func component(_ key: Location) -> (Int64, FrameFactField)? {
+            switch key {
+            case .stack(let offset): return (offset, .value)
+            case .stackWidth(let offset): return (offset, .width)
+            case .stackFile(let offset): return (offset, .bank)
+            case .outgoing(let offset): return (offset, .outgoing)
+            default: return nil
+            }
+        }
+        private static func location(_ offset: Int64, _ field: FrameFactField) -> Location {
+            switch field {
+            case .value: return .stack(offset)
+            case .width: return .stackWidth(offset)
+            case .bank: return .stackFile(offset)
+            case .outgoing: return .outgoing(offset)
+            }
+        }
+        private static func reachKey(_ key: Location) -> TraceReachKey? {
+            switch key {
+            case .frameEscaped(let offset): return .point(offset)
+            case .frameBelow(let bound): return .below(bound)
+            case .frameEscapedAll: return .all
+            case .frameDynamic(let bound): return .dynamic(bound)
+            default: return nil
+            }
+        }
+        private static func reachLocation(_ key: TraceReachKey) -> Location {
+            switch key {
+            case .point(let offset): return .frameEscaped(offset)
+            case .below(let bound): return .frameBelow(bound)
+            case .all: return .frameEscapedAll
+            case .dynamic(let bound): return .frameDynamic(bound)
+            }
+        }
+        subscript(_ key: Location) -> AbstractValue? {
+            get {
+                if let (offset, field) = Self.component(key) { return frame[offset, field] }
+                if let marker = Self.reachKey(key) { return reach[marker] }
+                return key.isMachineRegister ? registerFacts[key] : other[key]
+            }
+            set {
+                if let (offset, field) = Self.component(key) { frame[offset, field] = newValue }
+                else if let marker = Self.reachKey(key) { reach[marker] = newValue }
+                else if key.isMachineRegister { registerFacts[key] = newValue }
+                else { other[key] = newValue }
+            }
+        }
+        var count: Int { other.count + registerFacts.exactCount + frame.componentCount + reach.logicalCount }
+        var isEmpty: Bool { count == 0 }
+        mutating func removeAll() { other.removeAll(); registerFacts.reset(); frame.removeAll(); reach.reset() }
+        func intersecting(with state: State) -> State {
+            var result = State()
+            result.other = other.filter { state.other[$0.key] == $0.value }
+            result.registerFacts = registerFacts.intersectingExact(with: state.registerFacts)
+            result.frame = frame.intersecting(with: state.frame)
+            result.reach = reach.equalPayloadIntersection(state.reach)
+            return result
+        }
+        func filter(_ predicate: (Element) throws -> Bool) rethrows -> State {
+            var result = State()
+            for element in self {
+                if try predicate(element) { result[element.key] = element.value }
+            }
+            return result
+        }
+        struct Iterator: IteratorProtocol {
+            private var registers: Dictionary<Location, AbstractValue>.Iterator
+            private var other: Dictionary<Location, AbstractValue>.Iterator
+            private var frame: FrameFacts<TraceFrameFact>.ComponentIterator
+            private var reach: TraceReachStorage.Entries.Iterator
+            init(_ state: State) {
+                registers = state.registerFacts.exactValues.makeIterator()
+                other = state.other.makeIterator()
+                frame = state.frame.components.makeIterator()
+                reach = state.reach.entries.makeIterator()
+            }
+            mutating func next() -> Element? {
+                if let item = registers.next() { return item }
+                if let item = other.next() { return item }
+                if let item = frame.next() { return (State.location(item.offset, item.field), item.value) }
+                if let item = reach.next() { return (State.reachLocation(item.key), item.payload) }
+                return nil
+            }
+        }
+        func makeIterator() -> Iterator { Iterator(self) }
+        struct Keys: Sequence {
+            let state: State
+            struct Iterator: IteratorProtocol {
+                var base: State.Iterator
+                mutating func next() -> Location? { base.next()?.key }
+            }
+            func makeIterator() -> Iterator { Iterator(base: state.makeIterator()) }
+        }
+        struct Values: Sequence {
+            let state: State
+            struct Iterator: IteratorProtocol {
+                var base: State.Iterator
+                mutating func next() -> AbstractValue? { base.next()?.value }
+            }
+            func makeIterator() -> Iterator { Iterator(base: state.makeIterator()) }
+        }
+        var keys: Keys { Keys(state: self) }
+        var values: Values { Values(state: self) }
+    }
+
+    /// What a call's callee name proves, whatever the register state. The
+    /// tracer revisits each call on every fixpoint lap and in every later
+    /// pass; parsing the name out of the annotation each time was a quarter
+    /// of call transfer on Clarc, so `analyze` builds these once per call.
+    struct CallFacts: Sendable {
+        let callee: String
+        /// False for a call to an in-image function whose name may be a
+        /// library function's: the tables kept by name are no evidence for it.
+        let knownArityApplies: Bool
+        /// Reads through the frame addresses it receives and never writes them.
+        let readsOnly: Bool
+        /// Writes no field of any object: a retain, or an exclusivity
+        /// access marker. A release is not one, since the deinit it can run
+        /// may write anything.
+        let writesNoFields: Bool
+        /// The registers that may hand the callee a pointer: the parameters of
+        /// a runtime entry point with a fixed C arity, anything else's x0–x8
+        /// and x20.
+        let passedRegisters: [Location]
+        let passesNoStackArguments: Bool
+        /// The demangled name carries ` throws`.
+        let throwsByName: Bool
+        let provablyDoesNotThrow: Bool
+        /// A runtime call that returns its x0 argument (`objc_retain`).
+        let returnsArgument: Bool
+        /// `objc_retain_xN`: the register it retains and returns.
+        let retainedRegister: Int?
+        let allocatesArray: Bool
+        /// A Swift signature returning `()`, or a setter.
+        let returnsVoidByName: Bool
+        let isSuperSend: Bool
+        let hasTupleResult: Bool
+        /// A Swift signature returning a String (or `String?`), whose second
+        /// word comes back in x1.
+        let returnsString: Bool
+        /// What the SDK declares a C function returns (`SDKCPrototypes`):
+        /// `v`, `i`, `f`, `d`, or `s` for a value no one register holds.
+        /// Nil for a type the table could not classify.
+        let cResult: Character?
+
+        init(_ insn: Instruction) {
+            self.init(callee: DisassembledFunction.calleeName(of: insn) ?? "")
+        }
+
+        /// `knownArityApplies` is false for a call to an in-image function,
+        /// whose name may be a library function's without its arity.
+        init(callee: String, knownArityApplies: Bool = true) {
+            self.callee = callee
+            self.knownArityApplies = knownArityApplies
+            readsOnly = knownArityApplies && ValueTracer.readOnlyPointerCallees.contains { callee.hasPrefix($0) }
+            let knownArity = knownArityApplies ? DisassembledFunction.knownCArity(of: callee) : nil
+            passedRegisters = knownArity.map { arity in
+                (0..<arity).map { Location.x($0) }
+            } ?? [.x(0), .x(1), .x(2), .x(3), .x(4), .x(5), .x(6), .x(7), .x(8), .x(20)]
+            passesNoStackArguments = knownArityApplies && ValueTracer.passesNoStackArguments(callee)
+            throwsByName = callee.contains(" throws")
+            provablyDoesNotThrow = ValueTracer.provablyDoesNotThrow(callee)
+            let runtimeName = callee.hasPrefix("_") ? String(callee.dropFirst()) : callee
+            returnsArgument = ValueTracer.identityRuntimeCalls.contains(runtimeName)
+            retainedRegister = ValueTracer.retainedRegister(runtimeName)
+            writesNoFields = knownArityApplies && (readsOnly || retainedRegister != nil
+                || ValueTracer.fieldPreservingRuntimeCalls.contains(runtimeName))
+            allocatesArray = callee.contains("_allocateUninitializedArray")
+            returnsVoidByName = DisassembledFunction.splitSignature(callee)?.result == "()"
+                || DisassembledFunction.swiftAccessorProperty(callee)?.isGetter == false
+                || ValueTracer.voidRuntimeCalls.contains(runtimeName)
+            isSuperSend = callee.hasPrefix("objc_msgSendSuper")
+            hasTupleResult = DisassembledFunction.hasTupleResult(callee)
+            // A getter prints its type after ` : `, with no arrow:
+            // `CustomStringConvertible.description.getter : Swift.String`.
+            let getterType = DisassembledFunction.swiftAccessorProperty(callee)?.isGetter == true
+                ? callee.range(of: ".getter : ").map { String(callee[$0.upperBound...]) } : nil
+            returnsString = (DisassembledFunction.splitSignature(callee)?.result ?? getterType)
+                .map { Disassembler.twoWordStringTypes.contains($0) } ?? false
+            cResult = knownArityApplies ? Self.result(of: DisassembledFunction.cPrototype(of: callee)) : nil
+        }
+
+        /// A declaration's result, or nil for one the table could not
+        /// classify (`x`), which claims nothing about x0 or v0.
+        static func result(of prototype: DisassembledFunction.CPrototype?) -> Character? {
+            guard let result = prototype?.result, result != "x" else { return nil }
+            return result
+        }
+    }
+
+    /// Runtime entry points that return nothing, so x0 after a call to one is
+    /// whatever the callee left: swift/include/swift/Runtime/Error.h:71
+    /// `swift_willThrow` and :116 `swift_willThrowTypedImpl`, and
+    /// Concurrency.h:1137 `swift_job_run`, all `void`. As a value,
+    /// `swift_willThrow`'s x0 joined the normal return: `return ((arg0 < 0) ?
+    /// r1 : …)` with `r1 = swift_willThrow(r0)` (`throwselect.swift`).
+    static let voidRuntimeCalls: Set<String> = ["swift_willThrow", "swift_willThrowTypedImpl", "swift_job_run"]
+
+    /// `CallFacts` per callee name for one run. They are a pure function of
+    /// the name, and a few thousand names serve a hundred thousand calls
+    /// (Clarc: 5,636 for 103,776).
+    final class CallFactsCache: Sendable {
+        private let store = Mutex<[String: CallFacts]>([:])
+
+        func facts(for callee: String) -> CallFacts {
+            if let hit = store.withLock({ $0[callee] }) { return hit }
+            let facts = CallFacts(callee: callee)
+            store.withLock { $0[callee] = facts }
+            return facts
+        }
+    }
+
+    /// Shared by the tracers of one run; without it each `analyze` derives
+    /// its calls' facts itself.
+    var callFactsCache: CallFactsCache?
+
+    /// What the analysed function's own instructions fix, independent of any
+    /// register state: computed once per `analyze` and handed to every
+    /// transfer.
+    struct FunctionFacts: Sendable {
+        var frame = FrameLayout()
+        var calls: [UInt64: CallFacts] = [:]
+
+        init() {}
+
+        init(_ function: DisassembledFunction, cache: CallFactsCache?, inImageTargets: Set<UInt64> = []) {
+            frame = ValueTracer.frameLayout(function.instructions)
+            for insn in function.instructions where insn.controlFlow == .call {
+                let callee = DisassembledFunction.calleeName(of: insn) ?? ""
+                if let target = insn.branchTarget, inImageTargets.contains(target) {
+                    calls[insn.address] = CallFacts(callee: callee, knownArityApplies: false)
+                } else {
+                    calls[insn.address] = cache?.facts(for: callee) ?? CallFacts(callee: callee)
+                }
+            }
+        }
+
+        func call(_ insn: Instruction) -> CallFacts { calls[insn.address] ?? CallFacts(insn) }
+    }
 
     /// Entry state: `sp` anchors the frame at offset 0. Receiver/argument
     /// registers are seeded only when runtime or Swift metadata establishes the
     /// method convention for this exact implementation address.
-    private static func initialState(entry: MethodEntryConvention?) -> State {
-        var state: State = ["sp": .frame(0)]
+    private static func initialState(entry: MethodEntryConvention?, asyncContextSlots: [Int: AbstractValue] = [:]) -> State {
+        // x8 is the indirect-result address in every ARM64 convention, so the
+        // seed is a fact about the ABI, not about this function; see
+        // `AbstractValue.indirectResultPointer`.
+        var state: State = [.sp: .frame(0), .x(8): .indirectResultPointer]
         switch entry {
         case .swiftInstance(let scalarArguments):
-            state["x20"] = .selfPointer
+            state[.x(20)] = .selfPointer
             // Parameters occupy x0…/v0… independently of the `self` register
             // (x20), so an instance method's scalar arguments are seeded the same
             // way a free function's are.
-            for (register, argument) in scalarArguments { state[register] = .argument(argument) }
-        case .objectiveC(let argumentCount), .objectiveCInitializer(let argumentCount):
-            state["x0"] = .selfPointer
+            for (register, argument) in scalarArguments { if let location = Location(key: register) { state[location] = .argument(argument) } }
+        case .objectiveC(let argumentCount, let typed), .objectiveCInitializer(let argumentCount, let typed):
+            state[.x(0)] = .selfPointer
+            // Metadata-typed locations: integer arguments in x2…, floating-point
+            // ones in v0… on an independent counter, the rest on the entry stack
+            // (only full 8-byte slots are supplied). A Double argument made every
+            // later integer argument read one register early in the positional
+            // layout below. An empty map seeds nothing: the layout is unproven.
+            if let typed {
+                for (location, argument) in typed {
+                    if let location = Location(key: location) { state[location] = .argument(argument) }
+                }
+                break
+            }
+            // Untyped (an entry recovered from a symbol name): the all-integer
+            // layout.
             // AAPCS64 has six argument registers left after self/_cmd. Further
             // ObjC arguments are stack-passed and intentionally remain unknown.
             for argument in 0 ..< min(max(argumentCount, 0), 6) {
-                state["x\(argument + 2)"] = .argument(argument)
+                state[.x(argument + 2)] = .argument(argument)
             }
             // For ordinary integer/pointer Objective-C parameters, AAPCS64
             // spills explicit arguments after x7 into consecutive 8-byte slots
@@ -353,16 +1087,32 @@ public struct ValueTracer: Sendable {
             for argument in 6 ..< max(6, min(max(argumentCount, 0), 32)) {
                 state[Self.stackKey(Int64(argument - 6) * 8)] = .argument(argument)
             }
-        case .swiftFunction(let scalarArguments):
+        case .swiftFunction(let scalarArguments, let genericMetadata, let genericWitnessTables):
             // No `self`/`_cmd` prefix: a Swift function's integer arguments occupy
             // x0…, its floating-point ones v0…. A proven all-scalar signature
             // never spills, so there is nothing past the eighth of each to recover.
-            for (register, argument) in scalarArguments { state[register] = .argument(argument) }
+            for (register, argument) in scalarArguments { if let location = Location(key: register) { state[location] = .argument(argument) } }
+            for (register, name) in genericMetadata { if let location = Location(key: register) { state[location] = .genericMetadata(name) } }
+            for (register, index) in genericWitnessTables {
+                if let location = Location(key: register) { state[location] = .genericWitnessTable(index) }
+            }
         case .swiftValueInstance(let seededRegisters):
             // `self` (and HFA parameters) arrive decomposed across SIMD registers;
             // each holds a field's value directly, so they read as `self.field` /
             // `arg<n>.field` with no x20 pointer.
-            for (register, value) in seededRegisters { state[register] = value }
+            for (register, value) in seededRegisters { if let location = Location(key: register) { state[location] = value } }
+        case .asyncFunclet(let base, let seededRegisters):
+            state = initialState(entry: base, asyncContextSlots: asyncContextSlots)
+            for (register, value) in seededRegisters { if let location = Location(key: register) { state[location] = value } }
+            // ABI facts and entry seeds are mutable memory facts. They must
+            // participate in the same invalidation and intersection as stores.
+            state[contextSlotKey(8)] = .asyncResumeParent
+            if seededRegisters.values.contains(.asyncCalleeContext) {
+                state[calleeParentKey] = .asyncContext
+            }
+            for (offset, value) in asyncContextSlots {
+                state[contextSlotKey(offset)] = value == .unknown ? nil : value
+            }
         case nil:
             break
         }
@@ -389,9 +1139,43 @@ public struct ValueTracer: Sendable {
         _ function: DisassembledFunction,
         entry: MethodEntryConvention?
     ) -> FunctionAnalysis {
-        let blocks = function.basicBlocks()
+        analyze(function, entry: entry, cfg: function.controlFlowGraph)
+    }
+
+    /// Analyze using the graph owned by the current per-function pipeline.
+    /// Materialize current instruction values, including newly attached facts;
+    /// only topology is shared across enrichment rebuilds.
+    func analyze(
+        _ function: DisassembledFunction,
+        entry: MethodEntryConvention?,
+        cfg: FunctionCFG
+    ) -> FunctionAnalysis {
+        let blocks = expandingInlinedPrefixes(cfg.basicBlocks(of: function, consumer: "value-tracer"))
+        return analyze(function, entry: entry, blocks: blocks)
+    }
+
+    /// Repeat semantic dataflow without duplicate claims. Prepare the current
+    /// block view before muting so graph construction and use remain observable.
+    func reanalyze(
+        _ function: DisassembledFunction,
+        entry: MethodEntryConvention?,
+        cfg: FunctionCFG
+    ) -> FunctionAnalysis {
+        let blocks = expandingInlinedPrefixes(cfg.basicBlocks(of: function, consumer: "resolved-setter-retrace"))
+        return Probe.muted { analyze(function, entry: entry, blocks: blocks) }
+    }
+
+    private func analyze(
+        _ function: DisassembledFunction,
+        entry: MethodEntryConvention?,
+        blocks: [BasicBlock]
+    ) -> FunctionAnalysis {
         guard !blocks.isEmpty else { return FunctionAnalysis() }
         let blockByStart = Dictionary(blocks.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
+        // The frame layout reads the function's own instructions: an address
+        // a fragment takes is a boundary it misses, which only widens what an
+        // escape forgets.
+        let facts = FunctionFacts(function, cache: callFactsCache, inImageTargets: inImageCallTargets)
 
         var predecessors: [UInt64: [UInt64]] = [:]
         for block in blocks {
@@ -400,34 +1184,87 @@ public struct ValueTracer: Sendable {
             }
         }
 
+        // Blocks the entry or a block without predecessors (a landing pad)
+        // reaches over modelled edges. Anything else runs only through an
+        // edge the CFG does not model, so, like a landing pad, it starts
+        // from nothing every time.
+        var reached: Set<UInt64> = [function.startAddress]
+        var reachWork = [function.startAddress] + blocks.map(\.startAddress).filter { predecessors[$0] == nil }
+        reached.formUnion(reachWork)
+        while let next = reachWork.popLast() {
+            for successor in blockByStart[next]?.successors ?? [] where blockByStart[successor] != nil {
+                if reached.insert(successor).inserted { reachWork.append(successor) }
+            }
+        }
+
         // Forward fixpoint: block entry state = meet of predecessors' exit states.
         var inState: [UInt64: State] = [:]
+        var escapeMarkers: [UInt64: State] = [:]
         var outState: [UInt64: State] = [:]
         var worklist = blocks.map(\.startAddress)
         var queued = Set(worklist)
         var iterations = 0
-        let cap = blocks.count * 64 + 16 // safety bound; the analysis is monotone
+        let cap = blocks.count * iterationsPerBlock + 16 // safety bound
+        // Facts held across the stored block states. A function with
+        // thousands of blocks and thousands of live frame words holds their
+        // product: `WebKit::WebPreferences::features()` reached 50M facts
+        // and 3.5 GB.
+        var heldFacts = 0
         while let addr = worklist.first {
             worklist.removeFirst()
             queued.remove(addr)
             iterations += 1
-            if iterations > cap { break }
+            if iterations > cap {
+                // The states are not a fixpoint: a block whose predecessors
+                // were not all revisited holds an optimistic meet, and the
+                // snapshot pass would replay it as proof. Claim nothing.
+                Probe.record(.tracerFixpointCap, ["blocks": .int(blocks.count), "cap": .int(cap)])
+                return FunctionAnalysis()
+            }
             guard let block = blockByStart[addr] else { continue }
             let preds = predecessors[addr] ?? []
-            // No predecessors: the entry block (or unreachable code) — start from
-            // the frame anchor rather than an empty state.
-            let blockEntry = preds.isEmpty
-                ? Self.initialState(entry: entry)
-                : Self.meet(preds.compactMap { outState[$0] })
+            // Only the function's entry receives the caller's ABI state. A block
+            // with no predecessor may be an exception landing pad: its x0 is the
+            // exception and its frame is the prologue's, not the entry's, so it
+            // starts with nothing proven. And the entry keeps the caller as an
+            // incoming edge when a loop branches back to it; met only with its
+            // back edges, it lost its arguments and self.
+            var incoming: [State] = []
+            if reached.contains(addr) {
+                incoming = preds.compactMap { outState[$0] }
+                if addr == function.startAddress { incoming.append(Self.initialState(entry: entry, asyncContextSlots: asyncContextSlots)) }
+                // None of its predecessors has run: not reached yet, so its
+                // entry is unconstrained, not empty. Run from nothing, it
+                // gained facts once a predecessor ran, entry states grew
+                // after shrinking, and a loop that rotates values between
+                // registers never settled (`values.fixpoint-cap`).
+                if incoming.isEmpty, !preds.isEmpty { continue }
+            }
+            var blockEntry = Self.meet(incoming)
+            // An escape the meet derives from a dropped address can stop being
+            // derived on a later lap once the incoming values agree, and the
+            // loop never settles. Escapes are MAY facts: once one reaches a
+            // block it stays.
+            for (key, value) in escapeMarkers[addr] ?? [:] where blockEntry[key] == nil { blockEntry[key] = value }
+            escapeMarkers[addr] = blockEntry.filter { Self.isEscapeMarker($0.key) }
+            heldFacts += blockEntry.count - (inState[addr]?.count ?? 0)
             inState[addr] = blockEntry
             var registers = blockEntry
             for insn in block.instructions {
                 transfer(
                     insn, into: &registers, record: nil, recordAccess: nil,
-                    initializerEntry: entry?.isObjectiveCInitializer == true
+                    initializerEntry: entry?.isObjectiveCInitializer == true,
+                    facts: facts
                 )
             }
-            if outState[addr] != registers {
+            if !Self.sameFacts(outState[addr], registers) {
+                heldFacts += registers.count - (outState[addr]?.count ?? 0)
+                if heldFacts > stateFactBudget {
+                    // An unfinished fixpoint proves nothing, as at the
+                    // iteration cap.
+                    Probe.record(.tracerStateBudget, ["blocks": .int(blocks.count), "budget": .int(stateFactBudget)])
+                    return FunctionAnalysis()
+                }
                 outState[addr] = registers
                 for successor in block.successors
                 where blockByStart[successor] != nil && !queued.contains(successor) {
@@ -441,30 +1278,28 @@ public struct ValueTracer: Sendable {
         // conditional-branch diamond is that branch's select (`cond ? a : b`),
         // reconstructing a ternary / nil-coalescing. Enrich the merge blocks'
         // entry states before the snapshot pass replays them.
-        resolveDiamondSelects(
-            blocks: blocks, predecessors: predecessors,
-            blockByStart: blockByStart, inState: &inState, outState: outState
-        )
-        // The N-way generalization: a switch over a tag, whose merge has more
-        // than the two predecessors a diamond does.
-        resolveSwitchSelects(
-            blocks: blocks, predecessors: predecessors,
-            blockByStart: blockByStart, inState: &inState, outState: outState
+        resolveAcyclicSelects(
+            blocks: blocks, entryAddress: function.startAddress, predecessors: predecessors,
+            blockByStart: blockByStart, inState: &inState, outState: outState,
+            entry: entry, facts: facts
         )
         // Loop-carried induction variables: a header slot with a proven constant
         // initial value and a proven `i ± c` recurrence across the back-edge is
         // named `.local(i)`, so the loop's exit comparison reconstructs with a
         // name (`i < n`) instead of raw registers, and its body update `i += c` is
         // recorded. Declines anything unproven.
-        let loopUpdates = resolveLoopInductions(
+        let loopBindings = resolveLoopInductions(
             blocks: blocks, predecessors: predecessors,
-            blockByStart: blockByStart, inState: &inState, outState: outState
+            blockByStart: blockByStart, inState: &inState, outState: outState,
+            facts: facts
         )
 
         // Snapshot pass: replay from each block's fixed entry state, recording
         // call arguments and self-field accesses.
         var result = FunctionAnalysis()
-        result.loopUpdates = loopUpdates
+        result.asyncUnboundedMemoryWrites = false
+        result.loopUpdates = loopBindings.updates
+        result.loopInitializations = loopBindings.initializations
         for block in blocks {
             var registers = inState[block.startAddress] ?? [:]
             for insn in block.instructions {
@@ -475,22 +1310,51 @@ public struct ValueTracer: Sendable {
                     result.indirectControlFlowTargets[insn.address] = target
                 }
                 if insn.controlFlow == .return || insn.controlFlow == .branch,
-                   let value = registers["x0"], value != .unknown {
+                   let value = registers[.x(0)], value != .unknown {
                     result.exitValues[insn.address] = value
                 }
                 if insn.controlFlow == .return,
-                   let value = registers["v0"], value != .unknown {
+                   let value = registers[.x(21)], value != .unknown {
+                    result.exitErrorValues[insn.address] = value
+                }
+                // Also at a proven async return (a `br` through the context's
+                // ResumeParent): a Double-returning async function delivers in
+                // v0 there. Not at other branches: a recorded v0 would make the
+                // enrichment pass run on a function it otherwise skips, and v0
+                // before an ordinary tail call is the callee's argument.
+                let isAsyncReturn = insn.controlFlow == .branch
+                    && Self.indirectTarget(of: insn, in: registers) == .asyncResumeParent
+                if isAsyncReturn, let value = registers[.x(20)], value != .unknown {
+                    result.exitAsyncErrorValues[insn.address] = value
+                }
+                // A floating return is a scalar in d0 or s0: the d view, not
+                // the whole register (`movi v0.2d, #0; ret` is `return 0`).
+                if insn.controlFlow == .return || isAsyncReturn,
+                   let value = registers[.v(0)].map({ Self.scalarView($0, bits: 64) }), value != .unknown {
                     result.exitFloatValues[insn.address] = value
                 }
                 // x1 at a return is the first yielded value of a `yield_once`
                 // coroutine (`_modify`/`_read`); meaningless for an ordinary
                 // return, so the enrichment reads it only for those accessors.
                 if insn.controlFlow == .return,
-                   let value = registers["x1"], value != .unknown {
+                   let value = registers[.x(1)], value != .unknown {
                     result.exitYieldValues[insn.address] = value
                 }
+                if insn.controlFlow == .return {
+                    let exit = Self.indirectResultExit(registers)
+                    if exit.poisoned || exit.whole != nil || !exit.stores.isEmpty {
+                        result.exitIndirectResults[insn.address] = exit
+                    }
+                }
                 if insn.controlFlow == .branch {
-                    let site = Self.snapshot(registers)
+                    if asyncSlotFactBranches.contains(insn.address) {
+                        result.asyncSlotFactsAtBranches[insn.address] = Dictionary(uniqueKeysWithValues:
+                            registers.compactMap { key, value -> (Int, AbstractValue)? in
+                                guard case .contextSlot(let offset) = key, value != .unknown else { return nil }
+                                return (offset, value)
+                            })
+                    }
+                    let site = Self.snapshot(registers, saveSlots: facts.frame.saveSlots)
                     if !site.isEmpty { result.branchSites[insn.address] = site }
                 }
                 // A flags-based conditional branch: reconstruct its branch-taken
@@ -505,16 +1369,219 @@ public struct ValueTracer: Sendable {
                     // reconstructs like the flag branches, not just as raw `x8`.
                     result.branchConditions[insn.address] = condition
                 }
-                transfer(
+                if let detail = insn.detail, let write = memoryWrite(detail, in: registers) {
+                    result.memoryWrites[insn.address] = write
+                }
+                let before = Probe.isActive ? registers : nil
+                let writes = before == nil ? nil : TracerWriteLog()
+                TracerWriteLog.$current.withValue(writes) { transfer(
                     insn, into: &registers,
                     record: { result.callSites[$0] = $1 },
                     recordAccess: { result.selfFieldAccesses[$0] = $1 },
                     recordArrayElement: { result.arrayElements[$0, default: [:]][$1] = $2 },
-                    initializerEntry: entry?.isObjectiveCInitializer == true
-                )
+                    recordSlotStore: { result.asyncSlotStores[$0, default: []].append($1) },
+                    recordUnboundedMemoryWrite: { result.asyncUnboundedMemoryWrites = true },
+                    recordFieldAlias: { result.selfFieldAliasWidths[$0, default: []].insert($1) },
+                    initializerEntry: entry?.isObjectiveCInitializer == true,
+                    facts: facts
+                ) }
+                if let before, let writes { Self.checkWritesModelled(insn, before: before, written: writes.keys) }
+            }
+        }
+        for block in blocks where block.instructions.contains(where: { $0.controlFlow == .return }) {
+            let preds = predecessors[block.startAddress] ?? []
+            guard preds.count > 1 else { continue }
+            for predecessor in preds {
+                guard var registers = outState[predecessor],
+                      let end = blockByStart[predecessor]?.instructions.last?.address else { continue }
+                for insn in block.instructions {
+                    if insn.controlFlow == .return {
+                        // Every path is recorded, unknown included, so a
+                        // consumer can tell "all paths throw" from "some do".
+                        result.exitErrorValuesByPredecessor[insn.address, default: [:]][end] = registers[.x(21)] ?? .unknown
+                        result.exitValuesByPredecessor[insn.address, default: [:]][end] = registers[.x(0)] ?? .unknown
+                        result.exitFloatValuesByPredecessor[insn.address, default: [:]][end] = registers[.v(0)] ?? .unknown
+                        break
+                    }
+                    transfer(insn, into: &registers, record: nil, recordAccess: nil,
+                             initializerEntry: entry?.isObjectiveCInitializer == true, facts: facts)
+                }
             }
         }
         return result
+    }
+
+    /// The frame offsets of addresses the function computes
+    /// (`add xN, sp|x29, #k`, `sub xN, x29, #k`, `mov xN, sp`), sorted. Each is
+    /// an observed coordinate, not necessarily a distinct variable or an
+    /// object boundary. A linear scan, tracking sp and x29 through
+    /// the prologue the way the tracer does; a base it misses only widens the
+    /// invalidation, the safe direction.
+    ///
+    /// The prologue's callee-saved register saves (x19–x30 stored with their
+    /// entry values before the first branch or call) bound regions too: the
+    /// register save area belongs to no local. An async funclet saves x22, its
+    /// context pointer, there; reaching it from an escaped local escaped the
+    /// context.
+    static func addressTakenFrameOffsets(_ instructions: [Instruction]) -> [Int64] {
+        frameLayout(instructions).addressTakenOffsets
+    }
+
+    /// Address coordinates (`addressTakenFrameOffsets`) and the prologue's
+    /// register save slots, which also cannot be outgoing stack arguments: a
+    /// frame's save area is never its outgoing area.
+    static func frameLayout(_ instructions: [Instruction]) -> FrameLayout {
+        func immediate(_ text: Substring) -> Int64? {
+            var t = text.trimmingCharacters(in: CharacterSet(charactersIn: " #]!"))
+            let negative = t.hasPrefix("-")
+            if negative { t.removeFirst() }
+            let value = t.hasPrefix("0x") ? Int64(t.dropFirst(2), radix: 16) : Int64(t)
+            return value.map { negative ? -$0 : $0 }
+        }
+        // nil once the scan loses track of the register: a register delta
+        // (`sub sp, sp, x9`, a dynamic allocation) or a write it does not
+        // model. A base it cannot place claims no offset, which only widens
+        // the invalidation; a stale one placed every later local wrongly.
+        var sp: Int64? = 0
+        var fp: Int64?
+        var offsets = Set<Int64>()
+        var prologue = true
+        var written = Set<String>()
+        var saveSlots = Set<Int64>()
+        for instruction in instructions {
+            defer {
+                if let flow = instruction.controlFlow, flow != .sequential { prologue = false }
+                written.formUnion(instruction.detail?.writtenRegisterKeys ?? [])
+            }
+            if prologue, let detail = instruction.detail,
+               detail.id == AARCH64_INS_STR || detail.id == AARCH64_INS_STUR || detail.id == AARCH64_INS_STP {
+                let count = detail.id == AARCH64_INS_STP ? 2 : 1
+                let sources = detail.operands.prefix(count).compactMap(\.operand.register)
+                if sources.count == count, sources.allSatisfy({ register in
+                       register.kind == .gpr && register.widthBits == 64 && (19...30).contains(register.number)
+                           && !written.contains(register.key)
+                   }),
+                   let memory = detail.operands.first(where: { $0.operand.isMemory }),
+                   case .memory(let base?, nil, let displacement) = memory.operand {
+                    let effective = detail.postIndex ? 0 : displacement
+                    let slot: Int64? = base.kind == .stackPointer ? sp.map { $0 + effective }
+                        : base.key == "x29" ? fp.map { $0 + effective } : nil
+                    if let slot {
+                        for index in 0..<count {
+                            offsets.insert(slot + Int64(index * 8))
+                            saveSlots.insert(slot + Int64(index * 8))
+                        }
+                    }
+                }
+            } else if instruction.controlFlow == .call {
+                prologue = false
+            }
+            // Every rule below needs an operand that is sp or x29 or starts
+            // with `[sp`; most instructions name neither register.
+            guard namesFrameRegister(instruction.text) else { continue }
+            let parts = instruction.text.split(maxSplits: 1, whereSeparator: { $0 == " " || $0 == "\t" })
+            guard parts.count == 2 else { continue }
+            let mnemonic = parts[0].lowercased()
+            let operandText = parts[1].split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)[0]
+            let ops = operandText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            // Whether it writes x29: Capstone says; without detail, any
+            // instruction but a store that names x29 first may.
+            let writesFP = instruction.detail.map { $0.writtenRegisterKeys.contains("x29") }
+                ?? (!mnemonic.hasPrefix("st") && (ops.first == "x29" || ops.first == "w29" || ops.dropFirst().first == "x29"))
+            let writesSP = instruction.detail.map { $0.writtenRegisterKeys.contains("sp") }
+                ?? (!["cmp", "cmn", "tst"].contains(mnemonic) && ops.first == "sp")
+            // sp writeback: `[sp, #-0x20]!` and `[sp], #0x20`.
+            if let bracket = ops.firstIndex(where: { $0.hasPrefix("[sp") }) {
+                let preIndexed = ops[bracket].hasSuffix("]!") == false && ops.count > bracket + 1 && operandText.contains("!")
+                let postIndexed = ops[bracket] == "[sp]" && ops.count > bracket + 1
+                if preIndexed || postIndexed {
+                    let delta = immediate(Substring(ops[bracket + 1]))
+                    sp = delta.flatMap { delta in sp.map { $0 + delta } }
+                }
+                if writesFP { fp = nil }
+                continue
+            }
+            guard ops.count >= 2 else { continue }
+            let (dest, source) = (ops[0], ops[1])
+            // `#0x1, lsl #12`: a frame of 4 KiB or more is allocated with a
+            // shifted immediate, which read as its unshifted value put every
+            // later sp-relative local 4,095 bytes off.
+            var delta = ops.count >= 3 ? immediate(Substring(ops[2])) : nil
+            if ops.count == 4, let unshifted = delta {
+                let modifier = ops[3].split(separator: " ")
+                if modifier.count == 2, modifier[0] == "lsl", let amount = immediate(modifier[1]), (0...12).contains(amount) {
+                    delta = unshifted << amount
+                } else {
+                    delta = nil
+                }
+            } else if ops.count > 4 {
+                delta = nil
+            }
+            // A register or unparsed delta is unknown, never zero: `add x0,
+            // sp, x1` claimed a local at sp itself.
+            switch (mnemonic, dest, source) {
+            case ("sub", "sp", "sp"): sp = delta.flatMap { delta in sp.map { $0 - delta } }
+            case ("add", "sp", "sp"): sp = delta.flatMap { delta in sp.map { $0 + delta } }
+            case ("mov", "sp", "x29"): sp = fp
+            case ("sub", "sp", "x29"): sp = delta.flatMap { delta in fp.map { $0 - delta } }
+            case ("add", "x29", "sp"): fp = delta.flatMap { delta in sp.map { $0 + delta } }
+            case ("mov", "x29", "sp"): fp = sp
+            case ("mov", _, "sp") where dest != "sp": if let sp { offsets.insert(sp) }
+            case ("add", _, "sp") where dest != "sp": if let sp, let delta { offsets.insert(sp + delta) }
+            case ("add", _, "x29") where dest != "sp" && dest != "x29":
+                if let fp, let delta { offsets.insert(fp + delta) }
+            case ("sub", _, "x29") where dest != "sp" && dest != "x29":
+                if let fp, let delta { offsets.insert(fp - delta) }
+            default:
+                if writesSP { sp = nil }
+                if writesFP { fp = nil }
+            }
+        }
+        return FrameLayout(addressTakenOffsets: offsets.sorted(), saveSlots: saveSlots)
+    }
+
+    /// Whether `text` contains `sp` or `x29` anywhere: the cheap filter in
+    /// front of `frameLayout`'s operand parse.
+    private static func namesFrameRegister(_ text: String) -> Bool {
+        var previous: UInt8 = 0
+        var beforePrevious: UInt8 = 0
+        for byte in text.utf8 {
+            if previous == UInt8(ascii: "s"), byte == UInt8(ascii: "p") { return true }
+            if beforePrevious == UInt8(ascii: "x"), previous == UInt8(ascii: "2"), byte == UInt8(ascii: "9") { return true }
+            beforePrevious = previous
+            previous = byte
+        }
+        return false
+    }
+
+    /// Whether a call cannot return a Swift error in x21: a C-level symbol (no
+    /// `.` in its name: libc, the ObjC and Swift runtimes), or a demangled
+    /// Swift function signature without `throws`. Everything else may throw:
+    /// an unnamed callee (`sub_`, an indirect `blr`), a metadata-derived label
+    /// with no signature (`Module.Type.method`), and an accessor, whose
+    /// demangling never shows `throws` (`T.p.getter : Swift.Int` is printed
+    /// the same for `get throws(E)`). Compiler-emitted value-witness helpers
+    /// (`outlined copy of`, `outlined destroy of`, …) and metadata accessors
+    /// cannot throw.
+    /// Callees that read through the frame addresses they receive and never
+    /// write them, by name prefix: the projection serves every witness-table
+    /// count (`…_existential_0`, `_1`, `_1Tm`), and recognised by its body in
+    /// a stripped binary it is `__swift_project_boxed_opaque_existential`.
+    private static let readOnlyPointerCallees: [String] = [
+        "__swift_project_boxed_opaque_existential",
+    ]
+
+    private static let nonThrowingHelperPrefixes = [
+        "outlined ", "merged outlined ", "type metadata accessor for ",
+        "lazy protocol witness table accessor for ",
+    ]
+
+    static func provablyDoesNotThrow(_ callee: String) -> Bool {
+        guard !callee.isEmpty, !callee.hasPrefix("sub_") else { return false }
+        guard callee.contains(".") else { return true }
+        if nonThrowingHelperPrefixes.contains(where: callee.hasPrefix) { return true }
+        guard let signature = DisassembledFunction.splitSignature(callee) else { return false }
+        return !signature.isThrowing
     }
 
     /// The abstract value in the register an indirect `blr`/`br`/pointer-auth
@@ -524,7 +1591,7 @@ public struct ValueTracer: Sendable {
         guard let register = insn.detail?.operands.first?.operand.register,
               register.kind != .zero
         else { return nil }
-        return registers[register.key] ?? .unknown
+        return registers[Location(register)] ?? .unknown
     }
 
     /// Call sites only — the common case.
@@ -543,7 +1610,7 @@ public struct ValueTracer: Sendable {
                 initializerEntry: false
             )
         }
-        return registers
+        return Dictionary(uniqueKeysWithValues: registers.map { ($0.key.description, $0.value) })
     }
 
 
@@ -555,54 +1622,288 @@ public struct ValueTracer: Sendable {
         record: ((UInt64, CallSite) -> Void)?,
         recordAccess: ((UInt64, SelfFieldAccess) -> Void)?,
         recordArrayElement: ((UInt64, Int, AbstractValue) -> Void)? = nil,
-        initializerEntry: Bool = false
+        recordSlotStore: ((Int, AbstractValue) -> Void)? = nil,
+        recordUnboundedMemoryWrite: (() -> Void)? = nil,
+        recordFieldAlias: ((Int, Int) -> Void)? = nil,
+        initializerEntry: Bool = false,
+        facts: FunctionFacts = FunctionFacts()
     ) {
         if insn.controlFlow == .call {
-            let site = Self.snapshot(registers)
+            let site = Self.snapshot(registers, saveSlots: facts.frame.saveSlots)
             if let record {
                 if !site.isEmpty { record(insn.address, site) }
             }
-            let incomingX0 = registers["x0"] ?? .unknown
+            let incomingX0 = registers[.x(0)] ?? .unknown
+            let beforeCall = registers
+            // `memcpy`/`memset` and the outlined value-witness copies are modelled
+            // as the stores they perform (see `applyMemoryHelper`): their source
+            // must be read before the invalidation below forgets it, and their
+            // destination is written exactly, so the generic invalidation does
+            // not apply to them. An in-image function named `memset` is an
+            // ordinary call: a `memset(&a, 0, 8)` whose body writes nothing
+            // rendered the `a` loaded after it as 0.
+            let call = facts.call(insn)
+            let memory = insn.branchTarget.flatMap { calleeMemoryEffects[$0] }?.framePlan { register in
+                if case .frame(let offset)? = beforeCall[Location(register)] { return offset }
+                return nil
+            }
+            // `___chkstk_darwin` probes the pages of a dynamic allocation of
+            // x9 bytes. Its body (libsystem_pthread) saves and restores x10
+            // and x11 and writes only x9 and the flags, so the size in x8
+            // and every other register live across it: `mov x9, x8; blr
+            // x16; mov x9, sp; sub x8, x9, x8` allocates x8 bytes. As an
+            // ordinary call it forgot x8, and the allocation's address
+            // became an unknown offset of the frame, escaping all of it.
+            let probeSlot: Bool = if insn.branchTarget == nil,
+                case .loaded(let slot)? = Self.indirectTarget(of: insn, in: registers) {
+                stackProbeSlots.contains(slot)
+            } else { false }
+            if probeSlot || (call.knownArityApplies && call.callee == "__chkstk_darwin") {
+                for location in [Location.x(9), .x(16), .x(17), .x(30)] { registers[location] = .unknown }
+                // Its one store saves x10 and x11 in the 16 bytes below sp.
+                if case .frame(let top)? = registers[.sp] {
+                    Self.forgetFrame(in: &registers, effect: FrameMemoryEffect(
+                        [.finite(lower: top &- 16, upper: top)], arithmetic: .wrapping))
+                }
+                registers[Self.flagsKey] = nil
+                registers[Self.flagsWidthKey] = nil
+                return
+            }
+            let handledAsMemoryHelper = memory == nil && call.knownArityApplies
+                && applyMemoryHelper(callee: call.callee, site: site, into: &registers)
+            // A local whose address the call receives may be written by it: an
+            // NSError out-parameter (`str xzr, [sp]; mov x3, sp; bl …error:`),
+            // an `inout` struct, an x8 result buffer, a `mutating` self in x20.
+            // Keeping the pre-call value rendered the error a failed call
+            // reported as the `nil` stored before it
+            // (`_convertNSErrorToError(0)`, SwiftData). The callee may also
+            // keep the address, so it stays escaped for every later call
+            // (`forgetEscapedFrame`), and so does one that escaped earlier: a
+            // frame address stored to a global before a call that writes
+            // through the global rendered the pre-call value (`cacheEscape`).
+            // A helper that only reads through its pointer leaves the local
+            // intact: projecting an existential container yields a pointer to
+            // its payload and must not erase the container's type and witness
+            // words, or the witness-table call through them goes unresolved
+            // (guarded by `resolvesConcreteWitnessTableDispatchIfPresent`).
+            // Neither it nor an exactly modelled memory helper keeps a pointer.
+            if memory != nil || !(call.readsOnly || handledAsMemoryHelper) {
+                // A runtime entry point with a fixed C arity receives only its
+                // parameters; anything else may also be an input.
+                for (_, value) in registers.registerFacts.selected(call.passedRegisters) {
+                    if let value { Self.markEscape(value, into: &registers) }
+                }
+                // x29 is not an argument, but a callee that uses it reaches
+                // the frame through it, below the frame record as well as
+                // above it (`[x29, #-8]`), so the whole frame escapes.
+                if let target = insn.branchTarget, framePointerUsers.contains(target),
+                   case .frame? = registers[.x(29)] {
+                    registers[Self.frameEscapeAllKey] = .immediate(1)
+                }
+                // The same for x22: preserving the register does not preserve
+                // the context it points at.
+                if let target = insn.branchTarget, contextRegisterUsers.contains(target),
+                   let context = registers[.x(22)] {
+                    Self.markEscape(context, into: &registers)
+                }
+                // Stack arguments are the words stored upward from sp at the
+                // call (`snapshot`); only a callee that can take any reads them,
+                // and never from the prologue's register save area.
+                if !call.passesNoStackArguments, case .frame(let base)? = registers[.sp] {
+                    for slot in 0..<16 {
+                        let offset = base + Int64(slot * 8)
+                        guard !facts.frame.saveSlots.contains(offset), let value = registers.frame[offset, .outgoing]
+                        else { break }
+                        Self.markEscape(value, into: &registers)
+                    }
+                }
+                if let memory {
+                    for input in memory.inputs {
+                        if let value = beforeCall[Location(input)] { Self.markEscape(value, into: &registers) }
+                    }
+                    // These stores have no memory inputs; apply their proved
+                    // literals in body order using the ordinary frame owner.
+                    for store in memory.stores {
+                        Self.storeStack(.immediate(store.value), at: store.start, bytes: Int(store.bytes),
+                            outgoing: false, from: store.source,
+                            writeEffect: FrameMemoryEffect(.finite(lower: store.start, upper: store.start + store.bytes),
+                                arithmetic: .wrapping), into: &registers)
+                    }
+                } else {
+                    Self.forgetEscapedFrame(in: &registers, evidence: facts.frame.escapeEvidence)
+                }
+                // An escaped context pointer may be written through by any
+                // call, from its offset up.
+                let contextReach = registers.keys.compactMap { key -> Int64? in
+                    if case .contextEscaped(let offset) = key { offset } else { nil }
+                }.min()
+                if let contextReach {
+                    for key in registers.keys {
+                        if case .contextSlot(let offset) = key, Int64(offset) &+ 8 > contextReach {
+                            registers[key] = nil
+                        }
+                    }
+                    recordUnboundedMemoryWrite?()
+                }
+                if registers[Self.calleeContextEscapeKey] != nil {
+                    registers[Self.calleeParentKey] = nil
+                }
+            }
+            // A register that held a field of self held its value before the
+            // call, and the call may write the field: `let old = a; bumpA();
+            // b = old` rendered `bumpA(); self.b = self.a`, the new a, and
+            // `a = x; bumpA(); b = x` the same. A store to a field already
+            // forgets these; so does any call but a retain or an access
+            // marker, a memory helper included, since its destination may be
+            // a field.
+            if !call.writesNoFields, !(insn.branchTarget.map(fieldPreservingCallees.contains) ?? false) {
+                Self.invalidateSelfFieldAliases(in: &registers)
+                if !argumentObjectFields.isEmpty { Self.invalidateArgumentFieldAliases(in: &registers) }
+            }
+            if !handledAsMemoryHelper { applyCallToResultBuffers(insn, site: site, into: &registers) }
             // AAPCS64: x0–x17 are caller-saved, so a call clobbers them. x18 is
             // reserved, x19–x28 are callee-saved — and preserving those is what
             // carries `self` and locals across a call.
-            for index in 1...17 { registers["x\(index)"] = .unknown }
-            registers["x30"] = .unknown
+            for index in 1...17 { registers[.x(index)] = .unknown }
+            registers[.x(30)] = .unknown
+            // A callee handed the context (in an argument register; a call
+            // reached with `bl` gets x22 only as callee-saved state) may write
+            // it. `site` is the argument snapshot taken above.
+            if site.arguments.contains(.asyncContext) || site.selfValue == .asyncContext {
+                for key in registers.keys where Self.isContextSlot(key) { registers[key] = nil }
+            }
+            if let target = insn.branchTarget, let clobbered = calleeClobbers[target] {
+                for key in clobbered { if let location = Location(key: key) { registers[location] = .unknown } }
+            }
             // The vector/floating-point bank: v0–v7 and v16–v31 are caller-saved
             // (only the low 64 bits of v8–v15 survive a call). Clobbering them is
             // what stops a stale `d0` from before the call being read as the
             // call's floating-point result after it.
-            for index in 0...7 { registers["v\(index)"] = nil }
-            for index in 16...31 { registers["v\(index)"] = nil }
-            let outgoingKeys = registers.keys.filter { $0.hasPrefix(Self.outgoingPrefix) }
-            for key in outgoingKeys { registers[key] = nil }
-            let callee = DisassembledFunction.calleeName(of: insn) ?? ""
-            if Self.identityRuntimeCalls.contains(where: callee.hasPrefix) {
-                registers["x0"] = incomingX0
-            } else if callee.contains("_allocateUninitializedArray") {
+            for index in 0...7 { registers[.v(index)] = nil }
+            for index in 8...15 {
+                if let value = registers[.v(index)] {
+                    registers[.v(index)] = Self.callPreservedVectorValue(value)
+                }
+            }
+            for index in 16...31 { registers[.v(index)] = nil }
+            registers.frame.removeComponents(.outgoing)
+            // Swift error convention: a throwing callee returns its error in x21
+            // (swifterror), so the call *redefines* x21 even though AAPCS64 marks
+            // it callee-saved. Without invalidating it, a pre-call `mov x21, #0`
+            // is read as a live value in the post-call error check and fabricates
+            // an always-false `(0 != 0)` — a wrong render, the top severity. Gated
+            // to a throwing callee (the demangled name carries ` throws`), so a C
+            // or Objective-C call, where x21 is an ordinary callee-saved register
+            // carrying a live value across the call, is untouched.
+            if call.throwsByName {
+                registers[.x(21)] = .unknown
+            }
+            // The same convention when the name cannot say. Zeroing x21 right
+            // before a call is how a caller arms swifterror, so unless the
+            // callee provably does not throw, the post-call x21 is its error,
+            // not that 0. Measured in SwiftData: an `@objc` thunk calling a
+            // stripped throwing method rendered its error check `if (0 != 0)`
+            // and its result `return 1`.
+            if registers[.x(21)] == .immediate(0), !call.provablyDoesNotThrow {
+                registers[.x(21)] = .unknown
+            }
+            if call.returnsArgument, incomingX0 != .unknown {
+                // An unknown object handed through stays the call's result:
+                // something is there, which an argument list keeps as `?`.
+                // Taken as unknown, `objc_enumerationMutation` of an
+                // autoreleased object read `objc_enumerationMutation()`.
+                registers[.x(0)] = incomingX0
+            } else if let source = call.retainedRegister {
+                // `objc_retain_xN` retains the object in xN and returns it
+                // in x0 (libobjc's first instruction is `ands x0, xN, xN`).
+                // Matched as a prefix of `objc_retain`, it returned the stale
+                // x0: an `@objc` thunk passed the wrong receiver and `self`.
+                let copied = beforeCall.registerFacts.snapshotForCopy(.x(source))
+                registers.registerFacts.installCopy(copied, at: .x(0), fallback: .unknown)
+            } else if call.allocatesArray {
                 // Returns the array in x0 (and its element buffer in x1); the
                 // caller fills it next, so tag it with this site and its count —
                 // the first argument — so those element stores can be gathered.
                 let count: Int = { if case .immediate(let n) = incomingX0 { return Int(n) } else { return -1 } }()
-                registers["x0"] = .arrayLiteral(site: insn.address, count: count)
-            } else if initializerEntry, callee.hasPrefix("objc_msgSendSuper") {
+                registers[.x(0)] = .arrayLiteral(site: insn.address, count: count)
+            } else if call.returnsVoidByName
+                        || voidCallSites.contains(insn.address)
+                        || callReturnsVoid?(call.callee, site) == true {
+                // A Swift callee returning Void leaves x0 holding whatever it
+                // last computed. As a result, it rendered a value flowing on:
+                // `OUTLINED_FUNCTION_35(Swift.Hasher._combine(0))` for a fragment
+                // that takes nothing after `_combine(Swift.UInt) -> ()`.
+                registers[.x(0)] = .unknown
+                registers[.v(0)] = nil
+            } else if initializerEntry, call.isSuperSend {
                 // `self = [super init…]`: after the assignment, the returned
                 // object is the initializer's current self even if the runtime
                 // chose a different allocation.
-                registers["x0"] = .selfPointer
+                registers[.x(0)] = .selfPointer
+            } else if call.hasTupleResult {
+                // A register can be a tuple component, not the complete call
+                // expression. Project it only when its ABI layout is proven.
+                registers[.x(0)] = .unknown
+                registers[.v(0)] = nil
+            } else if let result = call.cResult {
+                // A C function's declaration says where its result is: x0 for
+                // an integer or pointer, v0 for a float or double, and
+                // neither for void or a struct. Taken as x0, a run of
+                // void `glVertex3f` calls nested, each the previous one's
+                // argument; `NSInsetRect` returns an NSRect in d0-d3, and its
+                // d0 passed on read as the whole rect. The register the
+                // result is not in holds whatever the callee left there.
+                registers[.x(0)] = result == "i" ? .callResult(insn.address) : .unknown
+                registers[.v(0)] = result == "f" || result == "d" ? .callResult(insn.address) : nil
+            } else if !call.returnsString, let bank = callResultBank?(call.callee), bank != .unknown {
+                // A Swift signature says which register is the whole result.
+                // Any other register holds one part of it or whatever the
+                // callee left: `mkPair(x).a + 2` (a two-word struct in x0 and
+                // x1) read `(mkPair(x) + 2)`, and a `{Int, Double}` result's d0
+                // read as the whole call.
+                // A result that is not one register keeps x0 and x1 as this
+                // call's words, as a String's are: passed on together they
+                // are the value; x0 alone is one part, which renders `?`.
+                registers[.x(0)] = bank == .floating ? .unknown : .callResult(insn.address)
+                registers[.v(0)] = bank == .floating ? .callResult(insn.address) : nil
+                if bank == .notOneRegister { registers[.x(1)] = .callResultHigh(insn.address) }
             } else {
                 // The result register — x0 for integer/pointer/reference returns,
                 // v0 for a floating-point one. The callee delivers into one; only
                 // the register the caller actually reads next carries it forward,
                 // so modelling the result in both is faithful.
-                registers["x0"] = .callResult(insn.address)
-                registers["v0"] = .callResult(insn.address)
+                registers[.x(0)] = .callResult(insn.address)
+                registers[.v(0)] = .callResult(insn.address)
+                if call.returnsString { registers[.x(1)] = .callResultHigh(insn.address) }
             }
             registers[Self.selfFreshKey] = nil
+            // AAPCS64 does not preserve NZCV across a call.
+            registers[Self.flagsKey] = nil
+            registers[Self.flagsWidthKey] = nil
             return
         }
         let hadSelf = registers[Self.selfFreshKey]
-        apply(insn, into: &registers, recordAccess: recordAccess, recordArrayElement: recordArrayElement)
+        let inputs = noteFrameMemoryWrite(insn, into: &registers, frame: facts.frame)
+        if !argumentObjectFields.isEmpty, let detail = insn.detail { noteArgumentObjectWrite(detail, into: &registers) }
+        apply(insn, into: &registers, recordAccess: recordAccess,
+              recordArrayElement: recordArrayElement, recordSlotStore: recordSlotStore,
+              recordUnboundedMemoryWrite: recordUnboundedMemoryWrite, recordFieldAlias: recordFieldAlias)
+        // A frame address or context pointer transformed beyond the tracer's
+        // arithmetic still points where it did, at an offset nothing tracks.
+        if inputs.frame || inputs.context, let detail = insn.detail {
+            let written = detail.writtenRegisterKeys.map { Location(key: $0).flatMap { registers[$0] } }
+            if inputs.frame, written.contains(where: { $0.map { !Self.containsFrame($0) } ?? true }) {
+                registers[Self.frameEscapeAllKey] = .immediate(1)
+            }
+            if inputs.context, written.contains(where: { $0.map { !Self.containsContext($0) } ?? true }) {
+                registers[.contextEscaped(0)] = .immediate(1)
+                registers[Self.calleeContextEscapeKey] = .immediate(1)
+            }
+        }
+        // sp moved below k by a non-constant amount allocates below k.
+        if let sp = registers[.sp], let base = Self.allocationBase(sp) {
+            registers[.frameDynamic(base)] = .immediate(1)
+        }
         if Self.writesSwiftSelf(insn) {
             registers[Self.selfFreshKey] = .immediate(1)
         } else {
@@ -610,34 +1911,72 @@ public struct ValueTracer: Sendable {
         }
     }
 
-    private static var identityRuntimeCalls: [String] {
-        [
-            "objc_retain", "objc_claimAutoreleasedReturnValue",
-            "objc_retainAutoreleasedReturnValue", "objc_autoreleaseReturnValue",
-        ]
+    /// Runtime entry points that write no field of any object.
+    private static let fieldPreservingRuntimeCalls: Set<String> = [
+        "swift_retain", "swift_retain_n", "swift_nonatomic_retain", "swift_nonatomic_retain_n",
+        "swift_bridgeObjectRetain", "swift_bridgeObjectRetain_n", "swift_nonatomic_bridgeObjectRetain",
+        "swift_unknownObjectRetain", "swift_unknownObjectRetain_n", "swift_nonatomic_unknownObjectRetain",
+        "objc_retain", "objc_retainAutorelease", "objc_retainAutoreleasedReturnValue",
+        "objc_claimAutoreleasedReturnValue", "objc_unsafeClaimAutoreleasedReturnValue",
+        "objc_retainAutoreleaseReturnValue", "objc_autorelease", "objc_autoreleaseReturnValue",
+        "objc_retainBlock", "swift_beginAccess", "swift_endAccess",
+    ]
+
+    /// Each returns the object it was handed (objc4's `objc_autorelease`,
+    /// `objc_retainAutorelease`, …): the result is that value. Without
+    /// `objc_autorelease` here, `[[[X alloc] init] autorelease]` used twice
+    /// rendered three allocations, the autorelease's result printed as the
+    /// allocation it returned at every use.
+    private static let identityRuntimeCalls: Set<String> = [
+        "objc_retain", "objc_claimAutoreleasedReturnValue",
+        "objc_retainAutoreleasedReturnValue", "objc_autoreleaseReturnValue",
+        "objc_autorelease", "objc_retainAutorelease", "objc_retainAutoreleaseReturnValue",
+        "objc_unsafeClaimAutoreleasedReturnValue",
+    ]
+
+    /// N for `objc_retain_xN`, the register-specific retain stub.
+    static func retainedRegister(_ name: String) -> Int? {
+        let prefix = "objc_retain_x"
+        guard name.hasPrefix(prefix), let n = Int(name.dropFirst(prefix.count)), (0...28).contains(n) else { return nil }
+        return n
     }
 
     /// AAPCS64 register snapshot shared by normal calls and possible tail-call
     /// branches. Keeping the construction identical prevents the two output
     /// paths from disagreeing about the same register state.
-    private static func snapshot(_ registers: State) -> CallSite {
-        let args = (0...7).map { registers["x\($0)"] ?? .unknown }
+    /// `saveSlots` ends the stack arguments: the words stored upward from sp
+    /// stop at the prologue's register save area, as the escape at a call
+    /// does, and the frame record is no argument.
+    private static func snapshot(_ registers: State, saveSlots: Set<Int64>) -> CallSite {
+        let args = (0...7).map { registers[.x($0)] ?? .unknown }
         var stackArguments: [AbstractValue] = []
-        if case .frame(let stackBase)? = registers["sp"] {
+        var stackArgumentWidths: [Int] = []
+        if case .frame(let stackBase)? = registers[.sp] {
             for slot in 0..<16 {
                 let offset = stackBase + Int64(slot * 8)
-                guard let value = registers[outgoingKey(offset)] else { break }
+                guard !saveSlots.contains(offset), let value = registers.frame[offset, .outgoing] else { break }
                 stackArguments.append(value)
+                if case .immediate(let bytes)? = registers.frame[offset, .width], bytes <= 8 {
+                    stackArgumentWidths.append(Int(bytes))
+                } else {
+                    stackArgumentWidths.append(0)
+                }
             }
         }
         return CallSite(
             arguments: trimTrailingUnknown(args) ?? [],
+            // Every reader lays out a scalar `float`/`double` here (an ObjC `f`
+            // or `d`, a Swift Double/Float/CGFloat), so each is the d view.
+            floatArguments: (0...7).map { scalarView(registers[.v($0)] ?? .unknown, bits: 64) },
             stackArguments: stackArguments,
+            stackArgumentWidths: stackArgumentWidths,
             // Only when freshly set for *this* Swift call — see selfFreshKey.
-            selfValue: registers[selfFreshKey] != nil
-                ? (registers["x20"] ?? .unknown) : .unknown,
-            errorValue: registers["x21"] ?? .unknown,
-            indirectResult: registers["x8"] ?? .unknown
+            // The result pointer parked in callee-saved x20 (`mov x20, x8`) is
+            // never a receiver, however fresh the write.
+            selfValue: registers[selfFreshKey] != nil && !isResultPointer(registers[.x(20)])
+                ? (registers[.x(20)] ?? .unknown) : .unknown,
+            errorValue: registers[.x(21)] ?? .unknown,
+            indirectResult: registers[.x(8)] ?? .unknown
         )
     }
 
@@ -650,32 +1989,443 @@ public struct ValueTracer: Sendable {
     /// previous call's x20 and report it as its own `self`. Requiring a fresh
     /// write trades a missed `self` (when the compiler doesn't re-materialise an
     /// unchanged x20) for never inventing one.
-    private static let selfFreshKey = "swiftself.fresh"
+    private static let selfFreshKey = Location.selfFresh
 
     private static func writesSwiftSelf(_ insn: Instruction) -> Bool {
         guard let detail = insn.detail else { return false }
+        func isX20(_ register: PhysReg) -> Bool { register.kind == .gpr && register.number == 20 }
         // Branches write no general register.
         if let flow = insn.controlFlow, flow != .sequential { return false }
         switch detail.id {
-        case ARM64_INS_STR, ARM64_INS_STUR, ARM64_INS_STP, ARM64_INS_STNP,
-             ARM64_INS_CMP, ARM64_INS_CMN, ARM64_INS_TST, ARM64_INS_CCMP, ARM64_INS_CCMN:
+        case AARCH64_INS_STR, AARCH64_INS_STUR, AARCH64_INS_STP, AARCH64_INS_STNP,
+             AARCH64_INS_ALIAS_CMP, AARCH64_INS_ALIAS_CMN, AARCH64_INS_ALIAS_TST, AARCH64_INS_CCMP, AARCH64_INS_CCMN:
             // These name a register first but read it.
             return false
-        case ARM64_INS_LDP, ARM64_INS_LDNP:
-            return detail.operands.prefix(2).contains { $0.operand.register?.key == "x20" }
+        case AARCH64_INS_LDP, AARCH64_INS_LDNP:
+            return detail.operands.prefix(2).contains { $0.operand.register.map(isX20) ?? false }
         default:
-            return detail.operands.first?.operand.register?.key == "x20"
+            return detail.operands.first?.operand.register.map(isX20) ?? false
         }
     }
 
     /// Meet (∧) of predecessor states: a register keeps its value only when all
     /// predecessors agree; otherwise it becomes unknown (absent).
+    ///
+    /// The one exception is the result-buffer poison marker, which is a union:
+    /// a result pointer that escaped on ANY incoming path leaves the buffer
+    /// unprovable at the join, even where the other paths agree on its contents.
+    /// Whether two block states prove the same facts. A plain register that
+    /// is `.unknown` and one that is absent claim the same nothing, but the
+    /// meet drops a key where a write stores `.unknown`, so comparing the
+    /// dictionaries literally saw a loop's x9 flip between the two forever:
+    /// WeatherRadio's grid sampler (20 blocks) never converged and replayed an
+    /// unconverged state. Marker keys (`result.whole`, `result.poison`, the
+    /// fresh-self flag) and slots mean something by presence and compare
+    /// literally.
+    private static func sameFacts(_ a: State?, _ b: State) -> Bool {
+        guard let a else { return false }
+        if a == b { return true }
+        for key in Set(a.keys).union(b.keys) where a[key] != b[key] {
+            guard key.isNumberedRegister, (a[key] ?? .unknown) == .unknown, (b[key] ?? .unknown) == .unknown
+            else { return false }
+        }
+        return true
+    }
+
+    /// Self's isa where the paths disagree only on how they hold it: one
+    /// read it from field 0 (`.selfFieldValue(0)`), another kept it across
+    /// a call (`.selfIsaSnapshot`). Both are the word at self + 0, a class's
+    /// metadata, which no call changes, so the join keeps the snapshot.
+    /// Only while self itself is the same on every path: some register or
+    /// frame slot holds `.selfPointer` in each state. A loop that loads the
+    /// isa before it and calls in its body (CompilerPluginMessageListener.main:
+    /// `ldr x22, [x20]; loop: bl …; tbnz …`) joined the two and lost it.
+    private static func keepSelfIsa(from states: [State], into accumulator: inout State) {
+        func isIsa(_ value: AbstractValue?) -> Bool {
+            value == .selfFieldValue(offset: 0) || value == .selfIsaSnapshot
+        }
+        guard states.count > 1, let first = states.first,
+              accumulator.contains(where: { key, value in
+                  value == .selfPointer && { if case .x = key { true } else if case .stack = key { true } else { false } }()
+              })
+        else { return }
+        for (key, value) in first where accumulator[key] == nil && holdsValue(key) && isIsa(value) {
+            if states.allSatisfy({ isIsa($0[key]) }) { accumulator[key] = .selfIsaSnapshot }
+        }
+    }
+
     private static func meet(_ states: [State]) -> State {
         guard var accumulator = states.first else { return [:] }
         for state in states.dropFirst() {
-            accumulator = accumulator.filter { state[$0.key] == $0.value }
+            accumulator = accumulator.intersecting(with: state)
         }
+        keepSelfIsa(from: states, into: &accumulator)
+        if states.contains(where: { $0[resultPoisonKey] != nil }) {
+            accumulator[resultPoisonKey] = .immediate(1)
+        }
+        // An address that escaped on any incoming path is reachable here, and
+        // one the join drops from a register or slot is no longer followed:
+        // it escapes. Copies (`.outgoing`), widths and the awaited callee's
+        // parent header are not places this function keeps its pointers.
+        var dropped: [AbstractValue] = []
+        var unsizedSlots: [Int64] = []
+        var unsizedFlags = false
+        for state in states {
+            // Frame identities keep the old ordered MAY payload union here,
+            // not in the earlier raw must intersection/self-isa phase.
+            accumulator.reach.formUnion(state.reach)
+            state.registerFacts.forEachLostExact(comparedWith: accumulator.registerFacts) { key, value in
+                if holdsValue(key), containsFrame(value) || containsContext(value) { dropped.append(value) }
+            }
+            for (key, value) in state.nonRegisterEntries {
+                if isEscapeMarker(key) {
+                    accumulator[key] = value
+                } else if accumulator[key] != value {
+                    if key == .flagsWidth {
+                        unsizedFlags = true
+                    } else if holdsValue(key), containsFrame(value) || containsContext(value) {
+                        dropped.append(value)
+                    }
+                }
+            }
+            // Compare against the self-isa-repaired, pre-veto accumulator,
+            // exactly as the old component dictionary did.
+            state.frame.forEachMismatch(comparedWith: accumulator.frame, fields: [.width, .bank]) {
+                offset, _, _ in unsizedSlots.append(offset)
+            }
+            state.frame.forEachLostValue(comparedWith: accumulator.frame) { value in
+                if containsFrame(value) || containsContext(value) { dropped.append(value) }
+            }
+        }
+        // A slot is known only at the width stored to it. Where the paths
+        // stored different widths, the bytes beyond the narrower store are
+        // whatever was there before: a value the paths agree on, read at the
+        // wider width, claimed bytes one path never wrote. (A value equal at
+        // two widths is unchanged by narrowing, which no address is, so no
+        // pointer is lost here.) Flags are known only at the width of their
+        // compare: the same constants overflow at 32 bits and not at 64.
+        for offset in unsizedSlots { accumulator[.stack(offset)] = nil }
+        if unsizedFlags { accumulator[.flags] = nil }
+        for value in dropped { markEscape(value, into: &accumulator) }
         return accumulator
+    }
+
+    // MARK: - Indirect result buffers
+
+    /// The buffer-contents keys: `.result(offset:bytes:)` for a store through the
+    /// incoming x8, plus the whole-buffer and poison markers. They live in the
+    /// register map so the block meet treats them like any other slot.
+    private static let resultWholeKey = Location.resultWhole
+    private static let resultPoisonKey = Location.resultPoison
+    private static func resultKey(_ offset: Int, bytes: Int) -> Location { .result(offset: offset, bytes: Int32(clamping: bytes)) }
+    private static func resultOffset(from key: Location) -> (offset: Int, bytes: Int)? {
+        if case .result(let offset, let bytes) = key { return (offset, Int(bytes)) }
+        return nil
+    }
+
+    /// Whether a value is (an alias of) the incoming result pointer.
+    private static func isResultPointer(_ value: AbstractValue?) -> Bool {
+        switch value {
+        case .indirectResultPointer?, .indirectResultField?: return true
+        default: return false
+        }
+    }
+
+    private static func poisonResult(_ registers: inout State) {
+        registers[resultPoisonKey] = .immediate(1)
+    }
+
+    /// Record a store of `bytes` bytes at `offset` of the result buffer. A store
+    /// wider than a word (a `q` register) is split into words; one whose value is
+    /// not word-decomposable fills its words with `.unknown`, which still counts
+    /// as covering the field (its VALUE is unknown, the write is not). A store
+    /// over a whole-buffer call fill is a partial overwrite: the buffer is then
+    /// neither the call's result nor a complete set of stores, so it poisons.
+    private static func storeResult(_ value: AbstractValue, at offset: Int, bytes: Int, into registers: inout State) {
+        if registers[resultWholeKey] != nil {
+            registers[resultWholeKey] = nil
+            poisonResult(&registers)
+        }
+        // An overlapping earlier store is superseded (a word store over a byte
+        // store, or the reverse).
+        let range = offset ..< (offset + bytes)
+        for key in registers.keys {
+            guard let existing = resultOffset(from: key),
+                  (existing.offset ..< (existing.offset + existing.bytes)).overlaps(range)
+            else { continue }
+            registers[key] = nil
+        }
+        if bytes > 8 {
+            let words: [AbstractValue]
+            if case .aggregate(let packed) = value { words = packed } else { words = [] }
+            for index in 0 ..< (bytes / 8) {
+                registers[resultKey(offset + index * 8, bytes: 8)] = index < words.count ? words[index] : .unknown
+            }
+        } else {
+            registers[resultKey(offset, bytes: bytes)] = value
+        }
+    }
+
+    /// The buffer state at a `ret`.
+    private static func indirectResultExit(_ registers: State) -> IndirectResultExit {
+        var exit = IndirectResultExit()
+        exit.poisoned = registers[resultPoisonKey] != nil
+        if case .callResult(let site)? = registers[resultWholeKey] { exit.whole = site }
+        for (key, value) in registers {
+            guard let location = resultOffset(from: key) else { continue }
+            exit.stores[location.offset] = IndirectResultExit.Store(bytes: location.bytes, value: value)
+        }
+        return exit
+    }
+
+    /// Whether this instruction uses a result-pointer register in a role the
+    /// tracker does not model: anything other than a copy (`mov`), a constant
+    /// offset (`add`/`sub` immediate), a memory base with a constant
+    /// displacement, or a spill of the pointer itself to the stack. Any other
+    /// use (`csel`, a register-indexed address, arithmetic with a register, a
+    /// shifted operand, …) derives an alias the tracker then cannot see stores
+    /// through, so the buffer must be treated as unprovable from here on.
+    private func derivesUntrackedResultAlias(_ detail: StructuredInsn, in registers: State) -> Bool {
+        let holdsPointer: (StructuredOperandInfo) -> Bool = { operand in
+            guard let register = operand.operand.register else { return false }
+            return Self.isResultPointer(registers[Location(register)])
+        }
+        let operands = detail.operands
+        // Memory operands: a result-pointer base is modelled only with no index
+        // register; a result pointer as the INDEX is never modelled.
+        for operand in operands {
+            if case .memory(let base, let index, _) = operand.operand {
+                if let index, Self.isResultPointer(registers[Location(index)]) { return true }
+                if let base, Self.isResultPointer(registers[Location(base)]) {
+                    if index != nil { return true }
+                    if detail.writeback { return true } // pre/post-index rewrites the pointer
+                }
+            }
+        }
+        let registerSources = operands.enumerated().filter { $0.element.operand.register != nil }
+        guard registerSources.contains(where: { holdsPointer($0.element) }) else { return false }
+        switch detail.id {
+        case AARCH64_INS_MOV:
+            return false
+        case AARCH64_INS_ADD, AARCH64_INS_SUB:
+            // `add xd, xptr, #imm` is a field address (modelled); the destination
+            // merely having held the pointer is an overwrite. A register addend
+            // or a pointer on the right-hand side derives an untracked alias.
+            guard operands.count >= 3 else { return true }
+            if operands[2].shiftedImmediate != nil { return false }
+            return holdsPointer(operands[1]) || holdsPointer(operands[2])
+        case AARCH64_INS_STR, AARCH64_INS_STUR, AARCH64_INS_STP, AARCH64_INS_STNP,
+             AARCH64_INS_STRB, AARCH64_INS_STURB, AARCH64_INS_STRH, AARCH64_INS_STURH:
+            // Storing the pointer itself is fine only into a stack slot (a spill
+            // the tracker reloads by key); into any other memory it escapes.
+            // A pointer used only as the base is the modelled case.
+            let storesPointerValue = operands.prefix(detail.id == AARCH64_INS_STP || detail.id == AARCH64_INS_STNP ? 2 : 1)
+                .contains(where: holdsPointer)
+            guard storesPointerValue else { return false }
+            if case .stackSlot? = memoryTarget(detail, in: registers) { return false }
+            return true
+        case AARCH64_INS_LDR, AARCH64_INS_LDUR, AARCH64_INS_LDP, AARCH64_INS_LDNP,
+             AARCH64_INS_LDRB, AARCH64_INS_LDURB, AARCH64_INS_LDRH, AARCH64_INS_LDURH,
+             AARCH64_INS_LDRSB, AARCH64_INS_LDURSB, AARCH64_INS_LDRSH, AARCH64_INS_LDURSH,
+             AARCH64_INS_LDRSW, AARCH64_INS_LDURSW:
+            // A load through the pointer is modelled; the destination register
+            // merely having held the pointer is an overwrite.
+            return false
+        case AARCH64_INS_ALIAS_CMP, AARCH64_INS_ALIAS_CMN, AARCH64_INS_ALIAS_TST, AARCH64_INS_CCMP, AARCH64_INS_CCMN:
+            // Comparing the pointer derives nothing stored through.
+            return false
+        default:
+            // Any other instruction reading the pointer (a `csel`, `orr`, `lsl`,
+            // `madd`, …) derives an alias; one that only WRITES a register that
+            // held it is an overwrite and harmless.
+            let reads = registerSources.dropFirst()
+            if detail.id == AARCH64_INS_LDP || detail.id == AARCH64_INS_LDNP { return false }
+            return reads.contains(where: { holdsPointer($0.element) })
+        }
+    }
+
+    /// What a call does to the result buffers in play:
+    ///
+    /// - The caller's OWN result pointer in an argument register escapes (the
+    ///   callee may write anything through it), except for the fixed-ABI memory
+    ///   helpers, which are modelled as the copies they are.
+    /// - The caller's own result pointer forwarded in x8 means the callee writes
+    ///   the caller's result: the whole buffer becomes that call's result, but
+    ///   only for a callee proven to write through x8. A callee proven direct
+    ///   ignores x8; an unknown callee poisons, since x8 may be a scratch value
+    ///   or a real forward and the two cannot be told apart.
+    /// - x8 pointing into the caller's frame means a proven indirect callee
+    ///   writes its result there: those slots become words of the call's result
+    ///   when the size is known. (The escaped-local invalidation in `transfer`
+    ///   has already forgotten the slots any callee could have written.)
+    private func applyCallToResultBuffers(_ insn: Instruction, site: CallSite, into registers: inout State) {
+        // Only the argument registers can hand the pointer to a callee: Swift
+        // never passes an indirect-result address on the stack, so a spill of
+        // it at `[sp]` (which the snapshot speculatively lists as a possible
+        // stack argument) is a frame slot, not an escape.
+        if site.arguments.contains(where: { Self.isResultPointer($0) }) { Self.poisonResult(&registers) }
+
+        let convention = calleeConventions[insn.address]
+        switch registers[.x(8)] {
+        case .indirectResultPointer?:
+            switch convention {
+            case .indirect?:
+                for key in registers.keys where Self.resultOffset(from: key) != nil { registers[key] = nil }
+                registers[Self.resultWholeKey] = .callResult(insn.address)
+            case .direct?:
+                break
+            case nil:
+                Self.poisonResult(&registers)
+            }
+        case .indirectResultField?:
+            // A callee filling only part of the buffer is not reconstructed.
+            if convention != .direct { Self.poisonResult(&registers) }
+        case .frame(let base)?:
+            switch convention {
+            case .direct?:
+                break
+            case .indirect(let size?)?:
+                Self.clearStack(from: base, to: base + Int64(size), in: &registers)
+                for offset in stride(from: 0, to: size, by: 8) {
+                    registers.frame.patch(at: base + Int64(offset),
+                        value: .assign(.indirectCallResultWord(site: insn.address, offset: offset)),
+                        width: .assign(.immediate(UInt64(min(8, size - offset)))), bank: .erase)
+                }
+            case .indirect(nil)?, nil:
+                break // already forgotten by the escaped-local invalidation above
+            }
+        default:
+            break
+        }
+    }
+
+    /// Drop the stack slots in `[from, to)` (`to == nil`: every slot at or above
+    /// `from`), the region a callee may have written through x8.
+    private static func clearStack(from: Int64, to: Int64?, in registers: inout State) {
+        registers.frame.clearValueStarts(from: from, to: to, removing: [.value, .width])
+    }
+
+    /// Model `memcpy`/`memmove`/`memset` (and the compiler's outlined
+    /// `__swift_memcpyN_M` value-witness copies) as the stores they perform, so a
+    /// result assembled in a local and then copied into the x8 buffer, or a
+    /// buffer zeroed with `memset`, is tracked rather than lost. Only a constant
+    /// length is modelled; anything else falls through to the generic call
+    /// handling, where a result pointer in an argument poisons the buffer.
+    private func applyMemoryHelper(callee: String, site: CallSite, into registers: inout State) -> Bool {
+        let name = callee.hasPrefix("_") ? String(callee.drop(while: { $0 == "_" })) : callee
+        guard site.arguments.count >= 2 else { return false }
+        let destination = site.arguments[0]
+        let length: Int?
+        let isCopy: Bool
+        if name == "memcpy" || name == "memmove" {
+            guard site.arguments.count >= 3, case .immediate(let n) = site.arguments[2] else { return false }
+            length = Int(exactly: n); isCopy = true
+        } else if name == "memset" {
+            guard site.arguments.count >= 3, case .immediate(let n) = site.arguments[2] else { return false }
+            length = Int(exactly: n); isCopy = false
+        } else if name.hasPrefix("swift_memcpy"),
+                  let n = Int(name.dropFirst("swift_memcpy".count).split(separator: "_").first ?? "") {
+            length = n; isCopy = true
+        } else {
+            return false
+        }
+        guard let length, length >= 0, length <= 4096 else { return false }
+
+        // The bytes being written, as (offsetInRegion, bytes, value).
+        var chunks: [(offset: Int, bytes: Int, value: AbstractValue)] = []
+        var offset = 0
+        while offset < length {
+            let bytes = min(8, length - offset)
+            let value: AbstractValue
+            if isCopy {
+                switch site.arguments[1] {
+                case .frame(let source):
+                    value = Self.stackValue(at: source + Int64(offset), bytes: bytes, in: registers)
+                case .indirectResultPointer:
+                    value = registers[Self.resultKey(offset, bytes: bytes)] ?? .unknown
+                case .indirectResultField(let base):
+                    value = registers[Self.resultKey(base + offset, bytes: bytes)] ?? .unknown
+                default:
+                    value = .unknown
+                }
+            } else if case .immediate(let byte) = site.arguments[1] {
+                let pattern = (byte & 0xFF) &* 0x0101_0101_0101_0101
+                value = .immediate(bytes == 8 ? pattern : pattern & ((1 << (UInt64(bytes) * 8)) - 1))
+            } else {
+                value = .unknown
+            }
+            chunks.append((offset, bytes, value))
+            offset += bytes
+        }
+
+        switch destination {
+        case .indirectResultPointer:
+            for chunk in chunks { Self.storeResult(chunk.value, at: chunk.offset, bytes: chunk.bytes, into: &registers) }
+        case .indirectResultField(let base):
+            for chunk in chunks { Self.storeResult(chunk.value, at: base + chunk.offset, bytes: chunk.bytes, into: &registers) }
+        case .frame(let base):
+            Self.clearStack(from: base, to: base + Int64(length), in: &registers)
+            for chunk in chunks {
+                Self.storeStack(chunk.value, at: base + Int64(chunk.offset), bytes: chunk.bytes,
+                                outgoing: false, into: &registers)
+            }
+        default:
+            // An untracked destination: if the SOURCE is the result buffer the
+            // contents merely leak out (harmless to provability); a result
+            // pointer anywhere else in the arguments already escaped.
+            if Self.isResultPointer(destination) { Self.poisonResult(&registers) }
+            return false
+        }
+        return true
+    }
+
+    /// Forward select facts through acyclic dependencies in graph order. A
+    /// diamond's new entry state must reach its outgoing branch before another
+    /// diamond can use it. Cycles retain the original converged analysis;
+    /// this pass never assumes a loop has reached a new fixpoint.
+    private func resolveAcyclicSelects(
+        blocks: [BasicBlock], entryAddress: UInt64, predecessors: [UInt64: [UInt64]],
+        blockByStart: [UInt64: BasicBlock], inState: inout [UInt64: State],
+        outState: [UInt64: State], entry: MethodEntryConvention?, facts: FunctionFacts
+    ) {
+        let rawInState = inState
+        resolveDiamondSelects(blocks: blocks, entryAddress: entryAddress, predecessors: predecessors,
+                             blockByStart: blockByStart, inState: &inState, outState: outState)
+        resolveSwitchSelects(blocks: blocks, entryAddress: entryAddress, predecessors: predecessors,
+                            blockByStart: blockByStart, inState: &inState, outState: outState)
+        guard blocks.contains(where: { (predecessors[$0.startAddress]?.count ?? 0) >= 2 }) else { return }
+        var remaining = Dictionary(uniqueKeysWithValues: blocks.map { block in
+            (block.startAddress, (predecessors[block.startAddress] ?? []).filter { blockByStart[$0] != nil }.count)
+        })
+        var queue = remaining.keys.filter { remaining[$0] == 0 }.sorted(), cursor = 0
+        var forwarded = outState
+        Probe.muted {
+            while cursor < queue.count {
+                let address = queue[cursor]; cursor += 1
+                guard let block = blockByStart[address] else { continue }
+                var inputs = (predecessors[address] ?? []).compactMap { forwarded[$0] }
+                if address == blocks.first?.startAddress { inputs.append(Self.initialState(entry: entry, asyncContextSlots: asyncContextSlots)) }
+                let prior = rawInState[address]
+                inState[address] = Self.meet(inputs)
+                resolveDiamondSelects(blocks: [block], entryAddress: entryAddress, predecessors: predecessors,
+                                     blockByStart: blockByStart, inState: &inState, outState: forwarded)
+                resolveSwitchSelects(blocks: [block], entryAddress: entryAddress, predecessors: predecessors,
+                                    blockByStart: blockByStart, inState: &inState, outState: forwarded)
+                let incoming = inState[address] ?? [:]
+                if !Self.sameFacts(prior, incoming) {
+                    var registers = incoming
+                    for insn in block.instructions {
+                        transfer(insn, into: &registers, record: nil, recordAccess: nil,
+                                 initializerEntry: entry?.isObjectiveCInitializer == true, facts: facts)
+                    }
+                    forwarded[address] = registers
+                }
+                for successor in block.successors.sorted() where remaining[successor] != nil {
+                    remaining[successor, default: 0] -= 1
+                    if remaining[successor] == 0 { queue.append(successor) }
+                }
+            }
+        }
     }
 
     /// Reconstruct the select at each control-flow diamond: a join with two
@@ -689,7 +2439,7 @@ public struct ValueTracer: Sendable {
     /// three-way join, or an unrecoverable condition leaves the value dropping to
     /// `.unknown` as before, rather than inventing a merge.
     private func resolveDiamondSelects(
-        blocks: [BasicBlock],
+        blocks: [BasicBlock], entryAddress: UInt64,
         predecessors: [UInt64: [UInt64]],
         blockByStart: [UInt64: BasicBlock],
         inState: inout [UInt64: State],
@@ -732,12 +2482,27 @@ public struct ValueTracer: Sendable {
             guard let condition = branchTakenCondition(terminator, in: deciderOut) else { continue }
 
             var enriched = inState[block.startAddress] ?? [:]
-            for key in Set(out1.keys).union(out2.keys) where out1[key] != out2[key] {
+            // The function entry has an implicit caller edge in addition to
+            // these backedges. Only its converged meet can prove its flags.
+            let rebuildFlags = block.startAddress != entryAddress
+            for key in Set(out1.keys).union(out2.keys)
+            where out1[key] != out2[key]
+                && (rebuildFlags || (key != Self.flagsKey && key != Self.flagsWidthKey)) {
                 guard let whenTrue = takenOut[key], whenTrue != .unknown,
                       let whenFalse = fallOut[key], whenFalse != .unknown,
                       Self.expressionDepth(whenTrue) < 6, Self.expressionDepth(whenFalse) < 6
                 else { continue }
                 enriched[key] = .select(condition: condition, whenTrue: whenTrue, whenFalse: whenFalse)
+            }
+            // meet drops flags whose setter widths differ, even when their
+            // operand payloads agree. Restore that common payload only beside
+            // the width choice reconstructed from these same two arms.
+            if rebuildFlags, let common = takenOut[Self.flagsKey], common != .unknown,
+               common == fallOut[Self.flagsKey],
+               let takenWidth = takenOut[Self.flagsWidthKey],
+               let fallWidth = fallOut[Self.flagsWidthKey], takenWidth != fallWidth,
+               enriched[Self.flagsWidthKey] == .select(condition: condition, whenTrue: takenWidth, whenFalse: fallWidth) {
+                enriched[Self.flagsKey] = common
             }
             inState[block.startAddress] = enriched
         }
@@ -758,7 +2523,7 @@ public struct ValueTracer: Sendable {
     /// (`x < 0` then `x == 0`), a shared decider, no clean default — declines,
     /// leaving the value unmerged rather than guessing an ordering.
     private func resolveSwitchSelects(
-        blocks: [BasicBlock],
+        blocks: [BasicBlock], entryAddress: UInt64,
         predecessors: [UInt64: [UInt64]],
         blockByStart: [UInt64: BasicBlock],
         inState: inout [UInt64: State],
@@ -863,7 +2628,10 @@ public struct ValueTracer: Sendable {
             let ordered = caseArms.sorted { $0.constant < $1.constant }
             var enriched = inState[block.startAddress] ?? [:]
             let allKeys = ordered.reduce(into: Set(defaultOut.keys)) { $0.formUnion($1.out.keys) }
-            for key in allKeys {
+            var rebuiltWidth = false
+            let rebuildFlags = block.startAddress != entryAddress
+            for key in allKeys
+            where rebuildFlags || (key != Self.flagsKey && key != Self.flagsWidthKey) {
                 let values = ordered.map { $0.out[key] ?? .unknown } + [defaultOut[key] ?? .unknown]
                 // Only a key that actually diverges across the arms is a merge.
                 guard values.contains(where: { $0 != values[0] }) else { continue }
@@ -878,7 +2646,14 @@ public struct ValueTracer: Sendable {
                     else { ok = false; break }
                     merged = .select(condition: arm.condition, whenTrue: value, whenFalse: merged)
                 }
-                if ok { enriched[key] = merged }
+                if ok {
+                    enriched[key] = merged
+                    if key == Self.flagsWidthKey { rebuiltWidth = true }
+                }
+            }
+            if rebuildFlags, rebuiltWidth, let common = defaultOut[Self.flagsKey], common != .unknown,
+               ordered.allSatisfy({ $0.out[Self.flagsKey] == common }) {
+                enriched[Self.flagsKey] = common
             }
             inState[block.startAddress] = enriched
         }
@@ -898,14 +2673,20 @@ public struct ValueTracer: Sendable {
         predecessors: [UInt64: [UInt64]],
         blockByStart: [UInt64: BasicBlock],
         inState: inout [UInt64: State],
-        outState: [UInt64: State]
-    ) -> [UInt64: [String]] {
+        outState: [UInt64: State],
+        facts: FunctionFacts
+    ) -> (updates: [UInt64: [String]], initializations: [UInt64: [LoopInitialization]]) {
         var updates: [UInt64: [String]] = [:]
+        var initializations: [UInt64: [LoopInitialization]] = [:]
         var sourcesByHeader: [UInt64: [UInt64]] = [:]
         for (from, header) in Self.backEdges(blocks: blocks, blockByStart: blockByStart) {
             sourcesByHeader[header, default: []].append(from)
         }
         var displayId = 0
+        var accumulatorId = 0
+        // The converged states, before any loop's names are written back:
+        // the facts that hold on every lap, back-edge arrivals included.
+        let converged = inState
         for header in sourcesByHeader.keys.sorted() {
             guard let sources = sourcesByHeader[header], sources.count == 1,
                   let backFrom = sources.first else { continue }  // simple reducible loop only
@@ -920,24 +2701,32 @@ public struct ValueTracer: Sendable {
             let headerIn = inState[header] ?? [:]
             // Candidate slots (deterministic by key): a constant value on loop
             // entry that `meet` dropped at the header (loop-carried / divergent).
+            // Ordered by the slots' former string keys (`stack@-16` before
+            // `stack@-8`): the order numbers the placeholders, and so the names.
             let candidateKeys = preLoopEntry.keys.filter { key in
-                guard key.hasPrefix("stack@"), case .immediate = preLoopEntry[key] else { return false }
+                guard case .stack = key, case .immediate = preLoopEntry[key] else { return false }
                 return (headerIn[key] ?? .unknown) == .unknown
-            }.sorted()
+            }.sorted { $0.description < $1.description }
             guard !candidateKeys.isEmpty else { continue }
             // Seed each candidate with a fresh placeholder and re-transfer the loop
             // body so the back-edge value is expressed in terms of the placeholder.
-            var seed = preLoopEntry
-            var placeholderId: [Int: String] = [:]
+            // Every other fact is the converged header's, which holds on every
+            // lap: seeded from the loop's entry alone, the lap missed what only
+            // the back edge brings (an address escaped at the end of the body,
+            // a pointer slot that changes after the first lap), so `i += 1`
+            // and `j += 100` were claimed where a later lap writes `i` too.
+            var seed = converged[header] ?? [:]
+            var placeholderId: [Int: Location] = [:]
             for (offset, key) in candidateKeys.enumerated() {
                 seed[key] = .local(offset)
                 placeholderId[offset] = key
             }
-            let bodyOut = retransferBody(
+            // A capped body pass holds unconverged states: claim nothing.
+            guard let bodyOut = retransferBody(
                 body: body, header: header, headerSeed: seed,
-                blockByStart: blockByStart, predecessors: predecessors
-            )
-            guard let backOut = bodyOut[backFrom] else { continue }
+                blockByStart: blockByStart, predecessors: predecessors,
+                facts: facts
+            ), let backOut = bodyOut[backFrom] else { continue }
             // The compared slot is the one the header's loop test references — the
             // `.local` placeholder in the re-transferred compare flags. It is the
             // primary induction variable `i`; naming from it (not the `-Onone`
@@ -955,12 +2744,23 @@ public struct ValueTracer: Sendable {
             // header and only contribute a baked body-update statement.
             var names: [Int: String] = [comparedPid: Disassembler.inductionVariableName(displayId)]
             inState[header, default: [:]][comparedKey] = .local(displayId)
+            // Body snapshots must use the same proven counter identity as the
+            // header. Other temporary placeholders must never become names.
+            for address in body.sorted() where address != header {
+                let preds = predecessors[address] ?? []
+                guard !preds.isEmpty, preds.allSatisfy({ body.contains($0) && bodyOut[$0] != nil }) else { continue }
+                let entry = Self.meet(preds.compactMap { bodyOut[$0] })
+                for (key, value) in entry {
+                    if let named = Self.renameInductionFact(value, from: comparedPid, to: displayId) {
+                        inState[address, default: [:]][key] = named
+                    }
+                }
+            }
             displayId += 1
             // Loop-carried accumulators / secondary counters: other self-recurrence
             // slots whose per-iteration addend renders in terms of already-named
             // variables (`total += i`, `seen += 1`). Rendered BEFORE the primary
             // increment (accumulate, then advance).
-            var accumulatorId = 0
             var bodyUpdates: [String] = []
             for pid in placeholderId.keys.sorted() where pid != comparedPid {
                 guard let key = placeholderId[pid], let rec = backOut[key],
@@ -977,9 +2777,39 @@ public struct ValueTracer: Sendable {
             }
             if let branchAddr = blockByStart[header]?.instructions.last?.address, !bodyUpdates.isEmpty {
                 updates[branchAddr] = bodyUpdates
+                initializations[branchAddr] = names.keys.sorted().compactMap { pid in
+                    guard let key = placeholderId[pid], let name = names[pid],
+                          case .immediate(let value)? = preLoopEntry[key] else { return nil }
+                    return LoopInitialization(name: name, value: value, stackOffset: Self.stackOffset(from: key))
+                }
             }
         }
-        return updates
+        return (updates, initializations)
+    }
+
+    private static func renameInductionFact(_ value: AbstractValue, from: Int, to: Int) -> AbstractValue? {
+        var found = false
+        func rename(_ value: AbstractValue) -> AbstractValue {
+            switch value {
+            case .local(let id):
+                guard id == from else { return .unknown }
+                found = true
+                return .local(to)
+            case .binary(let op, let lhs, let rhs):
+                let l = rename(lhs), r = rename(rhs)
+                return l == .unknown || r == .unknown ? .unknown : .binary(op, l, r)
+            case .unary(let op, let operand):
+                let inner = rename(operand)
+                return inner == .unknown ? .unknown : .unary(op, inner)
+            case .select(let condition, let yes, let no):
+                let c = rename(condition), y = rename(yes), n = rename(no)
+                return c == .unknown || y == .unknown || n == .unknown ? .unknown
+                    : .select(condition: c, whenTrue: y, whenFalse: n)
+            default: return value
+            }
+        }
+        let named = rename(value)
+        return found && named != .unknown ? named : nil
     }
 
     /// The placeholder id of the induction operand in a header's compare flags
@@ -1092,31 +2922,40 @@ public struct ValueTracer: Sendable {
     /// Re-run the transfer over just the loop body, with the header's entry state
     /// FIXED to `headerSeed` (so the seeded induction placeholders are not merged
     /// away by the back-edge). Bounded mini-fixpoint; internal joins meet over
-    /// body predecessors. Returns each body block's exit state.
+    /// body predecessors. Returns each body block's exit state, or nil when the
+    /// bound is hit before the states settle.
     private func retransferBody(
         body: Set<UInt64>, header: UInt64, headerSeed: State,
-        blockByStart: [UInt64: BasicBlock], predecessors: [UInt64: [UInt64]]
-    ) -> [UInt64: State] {
+        blockByStart: [UInt64: BasicBlock], predecessors: [UInt64: [UInt64]],
+        facts: FunctionFacts
+    ) -> [UInt64: State]? {
         var outS: [UInt64: State] = [:]
+        var escapeMarkers: [UInt64: State] = [:]
         var worklist = [header]
         var queued: Set<UInt64> = [header]
         var iterations = 0
-        let cap = body.count * 8 + 8
+        let cap = (body.count + 1) * loopBodyIterationsPerBlock
         while let addr = worklist.first {
             worklist.removeFirst(); queued.remove(addr)
             iterations += 1
-            if iterations > cap { break }
+            if iterations > cap {
+                Probe.record(.tracerLoopBodyCap, at: header, ["blocks": .int(body.count), "cap": .int(cap)])
+                return nil
+            }
             guard let block = blockByStart[addr] else { continue }
-            let entry: State
+            var entry: State
             if addr == header {
                 entry = headerSeed
             } else {
                 let bodyPreds = (predecessors[addr] ?? []).filter { body.contains($0) }
                 entry = Self.meet(bodyPreds.compactMap { outS[$0] })
             }
+            // Escapes stay once they reach a block (see `analyze`).
+            for (key, value) in escapeMarkers[addr] ?? [:] where entry[key] == nil { entry[key] = value }
+            escapeMarkers[addr] = entry.filter { Self.isEscapeMarker($0.key) }
             var registers = entry
             for insn in block.instructions {
-                transfer(insn, into: &registers, record: nil, recordAccess: nil)
+                transfer(insn, into: &registers, record: nil, recordAccess: nil, facts: facts)
             }
             if outS[addr] != registers {
                 outS[addr] = registers
@@ -1153,15 +2992,15 @@ public struct ValueTracer: Sendable {
             guard index < detail.operands.count,
                   let register = detail.operands[index].operand.register
             else { return nil }
-            let value = registers[register.key] ?? .unknown
+            let value = registers[Location(register)] ?? .unknown
             return value == .unknown ? nil : value
         }
         switch detail.id {
-        case ARM64_INS_CBZ:
+        case AARCH64_INS_CBZ:
             return operandValue(0).map { .binary(.equal, $0, .immediate(0)) }
-        case ARM64_INS_CBNZ:
+        case AARCH64_INS_CBNZ:
             return operandValue(0).map { .binary(.notEqual, $0, .immediate(0)) }
-        case ARM64_INS_TBZ, ARM64_INS_TBNZ:
+        case AARCH64_INS_TBZ, AARCH64_INS_TBNZ:
             guard let value = operandValue(0), detail.operands.count >= 2,
                   let bit = detail.operands[1].operand.immediateValue,
                   (0..<64).contains(bit)
@@ -1169,20 +3008,50 @@ public struct ValueTracer: Sendable {
             let width = detail.operands[0].operand.register.map({ $0.widthBits }) ?? 64
             if bit == width - 1 {
                 // Sign bit: tbz taken = non-negative, tbnz taken = negative.
-                return .binary(detail.id == ARM64_INS_TBZ ? .greaterEqual : .less,
-                               value, .immediate(0))
+                // A w register's sign is bit 31, so the value compared is its
+                // low half sign-extended: `tbnz w0, #31` read `arg0 < 0`,
+                // the sign of a high half the ABI leaves undefined.
+                let signed: AbstractValue = width == 32 ? Self.signExtended32(value) { .binary($0, $1, $2) } : value
+                return .binary(detail.id == AARCH64_INS_TBZ ? .greaterEqual : .less,
+                               signed, .immediate(0))
             }
             // Any other bit is an honest mask test — `(v & (1<<bit)) == 0` for
             // tbz (bit clear taken), `!= 0` for tbnz. This is how a `Bool` (bit 0)
             // condition arrives.
             let masked = AbstractValue.binary(.bitAnd, value, .immediate(1 << bit))
-            return .binary(detail.id == ARM64_INS_TBZ ? .equal : .notEqual, masked, .immediate(0))
+            return .binary(detail.id == AARCH64_INS_TBZ ? .equal : .notEqual, masked, .immediate(0))
         default:
-            guard let op = Self.comparisonOperator(detail.conditionCode),
-                  let flags = registers[Self.flagsKey]
+            guard let flags = registers[Self.flagsKey]
             else { return nil }
-            return comparisonValue(flags: flags, op)
+            return flagCondition(flags, code: detail.conditionCode, width: registers[Self.flagsWidthKey])
         }
+    }
+
+    /// The text of any Swift small string, for two words already known to be
+    /// one String (a String parameter or field): the empty string, control
+    /// characters and non-ASCII text too, which `decodeSmallString` refuses
+    /// because a pair of integers could look like them. The high nibble is
+    /// 0xE for ASCII and 0xA for other UTF-8 (the ASCII bit, 62, clear), and
+    /// the bytes must agree with it, be valid UTF-8, and leave every byte past
+    /// the count zero.
+    public static func decodeStringSmallString(lo: UInt64, hi: UInt64) -> String? {
+        let discriminator = UInt8(truncatingIfNeeded: hi >> 56)
+        let isASCII: Bool
+        switch discriminator & 0xF0 {
+        case 0xE0: isASCII = true
+        case 0xA0: isASCII = false
+        default: return nil
+        }
+        let count = Int(discriminator & 0x0F)
+        var bytes: [UInt8] = []
+        for shift in stride(from: 0, to: 64, by: 8) { bytes.append(UInt8(truncatingIfNeeded: lo >> shift)) }
+        for shift in stride(from: 0, to: 56, by: 8) { bytes.append(UInt8(truncatingIfNeeded: hi >> shift)) }
+        let content = Array(bytes.prefix(count))
+        guard bytes.dropFirst(count).allSatisfy({ $0 == 0 }),
+              content.allSatisfy({ $0 < 0x80 }) == isASCII,
+              let text = String(validating: content, as: UTF8.self)
+        else { return nil }
+        return text
     }
 
     /// Decode a Swift `_SmallString` passed in two registers (x0 = low 8 bytes,
@@ -1220,14 +3089,24 @@ public struct ValueTracer: Sendable {
         _ insn: Instruction,
         into registers: inout State,
         recordAccess: ((UInt64, SelfFieldAccess) -> Void)? = nil,
-        recordArrayElement: ((UInt64, Int, AbstractValue) -> Void)? = nil
+        recordArrayElement: ((UInt64, Int, AbstractValue) -> Void)? = nil,
+        recordSlotStore: ((Int, AbstractValue) -> Void)? = nil,
+        recordUnboundedMemoryWrite: (() -> Void)? = nil,
+        recordFieldAlias: ((Int, Int) -> Void)? = nil
     ) {
         guard let detail = insn.detail else {
             // Capstone couldn't decode what objdump printed — data in __text, or
             // an unknown encoding. We cannot know what it writes, and keeping
             // stale values would be a lie, so drop everything nameable.
             registers.removeAll()
+            recordUnboundedMemoryWrite?()
             return
+        }
+        if detail.operands.contains(where: { $0.operand.isMemory }),
+           !Self.readOnlyMemoryIDs.contains(detail.id.rawValue) {
+            if invalidateAsyncMemoryForWrite(detail, into: &registers) {
+                recordUnboundedMemoryWrite?()
+            }
         }
 
         // Branches and returns write no general register. (Calls never reach
@@ -1235,29 +3114,57 @@ public struct ValueTracer: Sendable {
         // which would otherwise clobber `x0` on `cbz x0, …`.
         if let flow = insn.controlFlow, flow != .sequential { return }
 
-        // An instruction that writes NZCV but that we don't model into a
-        // comparison (float/conditional compares, the S-variant arithmetic) must
-        // invalidate the tracked flags, so a later `cset` never reads a stale
-        // comparison and fabricates the wrong condition.
-        if Self.unmodeledFlagWriters.contains(detail.id.rawValue) {
+        // Every instruction that writes NZCV invalidates the tracked flags
+        // first; the few modelled ones (`cmp`/`cmn`/`tst`, `adds`/`subs`/`ands`)
+        // set them again below. A listed set of unmodelled writers missed
+        // `ngcs` and `negs`, and a path that returned early out of `adds`
+        // left the previous comparison standing, so a later branch read a
+        // stale comparison and rendered the wrong condition.
+        let incomingFlags = registers[Self.flagsKey]
+        let incomingFlagsWidth = registers[Self.flagsWidthKey]
+        if detail.updatesFlags || Self.unmodeledFlagWriters.contains(detail.id.rawValue) {
             registers[Self.flagsKey] = nil
+            registers[Self.flagsWidthKey] = nil
+        }
+
+        // A result pointer flowing into anything but a modelled copy, offset,
+        // access, or spill derives an alias whose stores would be invisible, so
+        // the buffer is unprovable from here on (see `derivesUntrackedResultAlias`).
+        if derivesUntrackedResultAlias(detail, in: registers) {
+            Self.poisonResult(&registers)
+        }
+
+        // A destination the tracer does not model (an SVE `z` or `p`
+        // register, an SME tile) is no scalar: `lsr z9.s, z9.s, #25` shifts
+        // each lane, and its 0-bit width trapped the shift model in
+        // libcrypto's ChaCha20. Nothing is computed into it.
+        if let dest = destinationRegister(detail), dest.kind == .other,
+           !Self.storesWithoutRegisterWrite.contains(detail.id.rawValue) {
+            clobber(detail, into: &registers)
+            return
         }
 
         switch detail.id {
-        case ARM64_INS_ADRP, ARM64_INS_ADR:
+        case AARCH64_INS_ADRP, AARCH64_INS_ADR:
             // Capstone resolves the page/PC-relative target into the immediate.
             guard let dest = destinationRegister(detail),
                   let target = detail.operands.count >= 2 ? detail.operands[1].operand.immediateValue : nil
             else { clobber(detail, into: &registers); return }
             write(dest, .address(UInt64(bitPattern: target)), into: &registers)
 
-        case ARM64_INS_ADD, ARM64_INS_ADDS, ARM64_INS_SUB, ARM64_INS_SUBS:
-            guard let dest = destinationRegister(detail), detail.operands.count >= 3 else {
+        case AARCH64_INS_ADD, AARCH64_INS_ADDS, AARCH64_INS_SUB, AARCH64_INS_SUBS:
+            // Packed SIMD lanes do not carry or borrow into one another.
+            // Until their lane-wise operation is modelled, no scalar result
+            // may be inferred from a known word held in a vector register.
+            guard let dest = destinationRegister(detail),
+                  dest.kind != .vector || (dest.widthBits == 64
+                    && detail.operands[0].vectorArrangement == AARCH64LAYOUT_INVALID),
+                  detail.operands.count >= 3 else {
                 clobber(detail, into: &registers); return
             }
             let lhs = source(detail.operands[1], in: registers)
             let rhs = source(detail.operands[2], in: registers)
-            let op: AbstractBinaryOperator = (detail.id == ARM64_INS_ADD || detail.id == ARM64_INS_ADDS)
+            let op: AbstractBinaryOperator = (detail.id == AARCH64_INS_ADD || detail.id == AARCH64_INS_ADDS)
                 ? .add : .subtract
             // `shiftedImmediate` is the fix for `sub sp, sp, #0x2, lsl #12`:
             // reading the immediate alone yields 2 where the real value is 8192.
@@ -1269,7 +3176,7 @@ public struct ValueTracer: Sendable {
                     write(dest, .address(adding ? address &+ magnitude : address &- magnitude), into: &registers)
                     return
                 case .frame(let offset):
-                    write(dest, .frame(adding ? offset &+ delta : offset &- delta), into: &registers)
+                    write(dest, .frame(FrameCoordinatePlanner.shiftedPoint(offset, by: delta, subtracting: !adding)), into: &registers)
                     return
                 case .selfPointer where adding:
                     recordAccess?(insn.address, SelfFieldAccess(
@@ -1283,6 +3190,13 @@ public struct ValueTracer: Sendable {
                     ))
                     write(dest, .selfField(offset: base + Int(delta)), into: &registers)
                     return
+                // `add x9, x8, #0x10` forms the address of result byte 0x10.
+                case .indirectResultPointer where adding:
+                    write(dest, .indirectResultField(offset: Int(delta)), into: &registers)
+                    return
+                case .indirectResultField(let base) where adding:
+                    write(dest, .indirectResultField(offset: base + Int(delta)), into: &registers)
+                    return
                 default:
                     break
                 }
@@ -1291,35 +3205,165 @@ public struct ValueTracer: Sendable {
             write(dest, result, into: &registers)
             // The S-variants (`adds`/`subs`) also set NZCV — the compiler emits
             // `subs x8, x8, x0; cset …` for a comparison as readily as `cmp`.
-            if detail.id == ARM64_INS_ADDS || detail.id == ARM64_INS_SUBS {
-                registers[Self.flagsKey] = result
+            if detail.id == AARCH64_INS_ADDS || detail.id == AARCH64_INS_SUBS {
+                // A subtraction keeps its operands for a conditional compare
+                // to read; a sum folds like any other value.
+                registers[Self.flagsKey] = detail.id == AARCH64_INS_SUBS ? .binary(op, lhs, rhs)
+                    : .binary(op, lhs, rhs)
+                registers[Self.flagsWidthKey] = .immediate(UInt64(dest.widthBits))
             }
 
-        case ARM64_INS_AND, ARM64_INS_ANDS, ARM64_INS_ORR, ARM64_INS_EOR,
-             ARM64_INS_MUL, ARM64_INS_LSL, ARM64_INS_LSR, ARM64_INS_ASR,
-             ARM64_INS_SDIV, ARM64_INS_UDIV:
-            guard let dest = destinationRegister(detail), detail.operands.count >= 3 else {
+        case let id where InstructionSemantics.covers(id):
+            // Logic, shifts, multiplies and divides, `mvn`/`orn`, extends and
+            // register moves: their meaning is InstructionSemantics', shared
+            // with the structurer's text path.
+            guard let effect = InstructionSemantics.effect(of: detail) else {
                 clobber(detail, into: &registers); return
             }
-            let op: AbstractBinaryOperator = switch detail.id {
-            case ARM64_INS_AND, ARM64_INS_ANDS: .bitAnd
-            case ARM64_INS_ORR: .bitOr
-            case ARM64_INS_EOR: .bitXor
-            case ARM64_INS_MUL: .multiply
-            case ARM64_INS_SDIV, ARM64_INS_UDIV: .divide
-            case ARM64_INS_LSL: .shiftLeft
-            case ARM64_INS_LSR: .shiftRight
-            case ARM64_INS_ASR: .arithmeticShiftRight
-            default: .add // unreachable: the outer case is exhaustive
+            var result = evaluate(effect.value, detail, in: registers)
+            // `self`'s isa masked with swift_isaMask is `self`'s class
+            // metadata, the base of its vtable and generic arguments, as
+            // the unmasked isa of a native Swift class is.
+            if detail.id == AARCH64_INS_AND, detail.operands.count == 3,
+               let lhs = detail.operands[1].operand.register, let rhs = detail.operands[2].operand.register,
+               detail.operands[2].shift.1 == 0 {
+                let values = [registers[Location(lhs)] ?? .unknown, registers[Location(rhs)] ?? .unknown]
+                func isIsa(_ value: AbstractValue) -> Bool {
+                    value == .selfFieldValue(offset: 0) || value == .selfIsaSnapshot
+                }
+                func isMask(_ value: AbstractValue) -> Bool {
+                    if case .loadedThrough(let slot, 0) = value { isaMaskSlots.contains(slot) } else { false }
+                }
+                if (isIsa(values[0]) && isMask(values[1])) || (isMask(values[0]) && isIsa(values[1])) {
+                    result = .selfIsaSnapshot
+                }
             }
-            let result = expression(
-                op, source(detail.operands[1], in: registers),
-                source(detail.operands[2], in: registers)
-            )
-            write(dest, result, into: &registers)
-            if detail.id == ARM64_INS_ANDS { registers[Self.flagsKey] = result }
+            if detail.id == AARCH64_INS_ANDS {
+                // NZCV reads the same pre-write operands as the result. The
+                // destination can also be a shifted right-hand source.
+                registers[Self.flagsKey] = testFlags(source(detail.operands[1], in: registers),
+                                                     source(detail.operands[2], in: registers), value: result)
+                registers[Self.flagsWidthKey] = .immediate(UInt64(effect.destination.widthBits))
+            }
+            write(effect.destination, result, into: &registers)
 
-        case ARM64_INS_MADD, ARM64_INS_MSUB:
+        case AARCH64_INS_CLZ, AARCH64_INS_CLS, AARCH64_INS_RBIT:
+            // `clz` counts a register's leading zeros, `cls` the bits after
+            // its sign bit that equal it, and `rbit` reverses its bits.
+            guard let dest = destinationRegister(detail), [32, 64].contains(dest.widthBits), dest.kind == .gpr,
+                  detail.operands.count == 2, let input = detail.operands[1].operand.register,
+                  input.kind == .gpr || input.kind == .zero, input.widthBits == dest.widthBits
+            else { clobber(detail, into: &registers); return }
+            let op: AbstractUnaryOperator = detail.id == AARCH64_INS_CLZ ? .leadingZeros(bits: dest.widthBits)
+                : detail.id == AARCH64_INS_CLS ? .leadingSignBits(bits: dest.widthBits) : .bitReverse(bits: dest.widthBits)
+            let value = source(detail.operands[1], in: registers)
+            let result: AbstractValue
+            if case .immediate(let constant) = value, let folded = BitCounting.apply(op, constant) {
+                result = .immediate(folded)
+            } else if value == .unknown || Self.expressionDepth(value) >= 8 {
+                result = .unknown
+            } else { result = .unary(op, value) }
+            write(dest, result, into: &registers)
+
+        case AARCH64_INS_REV, AARCH64_INS_REV16, AARCH64_INS_REV32, AARCH64_INS_REV64:
+            guard let dest = destinationRegister(detail), [32, 64].contains(dest.widthBits),
+                  dest.kind == .gpr || dest.kind == .zero, detail.operands.count == 2,
+                  let input = detail.operands[1].operand.register,
+                  input.kind == .gpr || input.kind == .zero, input.widthBits == dest.widthBits,
+                  (detail.id != AARCH64_INS_REV32 && detail.id != AARCH64_INS_REV64) || dest.widthBits == 64
+            else { clobber(detail, into: &registers); return }
+            let bits = detail.id == AARCH64_INS_REV16 ? 16 : detail.id == AARCH64_INS_REV32 ? 32 : dest.widthBits
+            let value = source(detail.operands[1], in: registers)
+            let reversed: AbstractValue
+            if case .immediate(let value) = value, let result = ByteReversal.apply(value, bits: bits) {
+                reversed = .immediate(result)
+            } else if value == .unknown || Self.expressionDepth(value) >= 8 {
+                reversed = .unknown
+            } else { reversed = .unary(.byteSwap(bits: bits), value) }
+            write(dest, reversed, into: &registers)
+
+        case AARCH64_INS_EXTR, AARCH64_INS_ROR, AARCH64_INS_ALIAS_ROR:
+            // `ror d, n, m` (RORV) rotates by m mod W: `(n >> k) | (n << ((W -
+            // k) mod W))`, both halves n itself at k = 0.
+            if detail.id == AARCH64_INS_ROR, detail.operands.count == 3,
+               let dest = destinationRegister(detail), dest.kind == .gpr, [32, 64].contains(dest.widthBits),
+               let input = detail.operands[1].operand.register, input.kind == .gpr || input.kind == .zero,
+               let amount = detail.operands[2].operand.register, amount.kind == .gpr || amount.kind == .zero,
+               input.widthBits == dest.widthBits, amount.widthBits == dest.widthBits {
+                let width = UInt64(dest.widthBits)
+                let value = source(detail.operands[1], in: registers)
+                let k = expression(.bitAnd, source(detail.operands[2], in: registers), .immediate(width - 1))
+                let back = expression(.bitAnd, expression(.subtract, .immediate(width), k), .immediate(width - 1))
+                write(dest, expression(.bitOr, expression(.shiftRight, value, k), expression(.shiftLeft, value, back)),
+                      into: &registers)
+                return
+            }
+            // Extract a width-sized window from high:low. The immediate ROR
+            // alias supplies the same register for both halves.
+            let rotating = detail.id != AARCH64_INS_EXTR
+            let shift: Int64? = rotating
+                ? (detail.operands.count == 2 && detail.operands[1].shift.type == AARCH64_SFT_ROR
+                    ? Int64(detail.operands[1].shift.amount) : nil)
+                : (detail.operands.count == 4 ? detail.operands[3].operand.immediateValue : nil)
+            guard let dest = destinationRegister(detail), [32, 64].contains(dest.widthBits),
+                  dest.kind == .gpr || dest.kind == .zero,
+                  detail.operands.count == (rotating ? 2 : 4),
+                  let high = detail.operands[1].operand.register,
+                  let low = detail.operands[rotating ? 1 : 2].operand.register,
+                  high.widthBits == dest.widthBits, low.widthBits == dest.widthBits,
+                  high.kind == .gpr || high.kind == .zero,
+                  low.kind == .gpr || low.kind == .zero,
+                  let shift,
+                  shift >= 0, shift < dest.widthBits
+            else { clobber(detail, into: &registers); return }
+            // Capstone attaches the alias's rotation to its source operand.
+            // Strip that metadata and implement the instruction exactly once.
+            let lowValue = source(StructuredOperandInfo(operand: .register(low),
+                shift: (AARCH64_SFT_INVALID, 0), extender: AARCH64_EXT_INVALID), in: registers)
+            // At zero, the high register contributes no bits. Do not shift by
+            // the full width, or let an unknown high half poison the low half.
+            if shift == 0 { write(dest, lowValue, into: &registers); return }
+            let highValue = source(StructuredOperandInfo(operand: .register(high),
+                shift: (AARCH64_SFT_INVALID, 0), extender: AARCH64_EXT_INVALID), in: registers)
+            let result = expression(.bitOr,
+                expression(.shiftRight, lowValue, .immediate(UInt64(shift))),
+                expression(.shiftLeft, highValue, .immediate(UInt64(dest.widthBits) - UInt64(shift))))
+            write(dest, result, into: &registers)
+
+        case AARCH64_INS_SMULL, AARCH64_INS_UMULL,
+             AARCH64_INS_SMADDL, AARCH64_INS_UMADDL,
+             AARCH64_INS_SMSUBL, AARCH64_INS_UMSUBL,
+             AARCH64_INS_ALIAS_SMNEGL, AARCH64_INS_ALIAS_UMNEGL:
+            let fused = detail.id == AARCH64_INS_SMADDL || detail.id == AARCH64_INS_UMADDL
+                || detail.id == AARCH64_INS_SMSUBL || detail.id == AARCH64_INS_UMSUBL
+            guard let dest = destinationRegister(detail), dest.widthBits == 64,
+                  dest.kind == .gpr || dest.kind == .zero,
+                  detail.operands.count == (fused ? 4 : 3),
+                  let left = detail.operands[1].operand.register, left.widthBits == 32,
+                  let right = detail.operands[2].operand.register, right.widthBits == 32,
+                  (left.kind == .gpr || left.kind == .zero), (right.kind == .gpr || right.kind == .zero)
+            else { clobber(detail, into: &registers); return }
+            let signed = detail.id == AARCH64_INS_SMULL || detail.id == AARCH64_INS_SMADDL
+                || detail.id == AARCH64_INS_SMSUBL || detail.id == AARCH64_INS_ALIAS_SMNEGL
+            func widened(_ reg: PhysReg) -> AbstractValue {
+                let value = source(StructuredOperandInfo(operand: .register(reg),
+                    shift: (AARCH64_SFT_INVALID, 0), extender: AARCH64_EXT_INVALID), in: registers)
+                return signed ? signExtended(value, bits: 32) : value
+            }
+            let product = expression(.multiply, widened(left), widened(right))
+            let subtracting = detail.id == AARCH64_INS_SMSUBL || detail.id == AARCH64_INS_UMSUBL
+                || detail.id == AARCH64_INS_ALIAS_SMNEGL || detail.id == AARCH64_INS_ALIAS_UMNEGL
+            let addend: AbstractValue
+            if fused {
+                guard let reg = detail.operands[3].operand.register, reg.widthBits == 64,
+                      reg.kind == .gpr || reg.kind == .zero
+                else { clobber(detail, into: &registers); return }
+                addend = source(detail.operands[3], in: registers)
+            } else { addend = .immediate(0) }
+            write(dest, fused || subtracting ? expression(subtracting ? .subtract : .add, addend, product)
+                : product, into: &registers)
+
+        case AARCH64_INS_MADD, AARCH64_INS_MSUB:
             // Fused multiply-add/subtract: `madd d, n, m, a` = a + n*m,
             // `msub d, n, m, a` = a - n*m — the common shape of `a + b*c` and of
             // the `sdiv`/`msub` pair the compiler emits for `a % b`.
@@ -1331,103 +3375,283 @@ public struct ValueTracer: Sendable {
                 source(detail.operands[2], in: registers)
             )
             let addend = source(detail.operands[3], in: registers)
-            write(dest, expression(detail.id == ARM64_INS_MADD ? .add : .subtract, addend, product),
+            write(dest, expression(detail.id == AARCH64_INS_MADD ? .add : .subtract, addend, product),
                   into: &registers)
 
-        case ARM64_INS_FADD, ARM64_INS_FSUB, ARM64_INS_FMUL, ARM64_INS_FDIV, ARM64_INS_FNMUL:
-            guard let dest = destinationRegister(detail), detail.operands.count >= 3 else {
+        case AARCH64_INS_FADD, AARCH64_INS_FSUB, AARCH64_INS_FMUL, AARCH64_INS_FDIV, AARCH64_INS_FNMUL:
+            // The same opcode also has packed vector forms. Their register's
+            // bits are several floats, not one scalar floating expression.
+            guard let dest = destinationRegister(detail), dest.kind == .vector,
+                  [16, 32, 64].contains(dest.widthBits),
+                  detail.operands[0].vectorArrangement == AARCH64LAYOUT_INVALID,
+                  detail.operands.count >= 3 else {
                 clobber(detail, into: &registers); return
             }
             let op: AbstractBinaryOperator = switch detail.id {
-            case ARM64_INS_FADD: .add
-            case ARM64_INS_FSUB: .subtract
-            case ARM64_INS_FDIV: .divide
+            case AARCH64_INS_FADD: .add
+            case AARCH64_INS_FSUB: .subtract
+            case AARCH64_INS_FDIV: .divide
             default: .multiply // FMUL, FNMUL
             }
             let product = floatBinary(op, source(detail.operands[1], in: registers),
-                                      source(detail.operands[2], in: registers))
+                                      source(detail.operands[2], in: registers), bits: dest.widthBits)
             // FNMUL negates the product: `-(a * b)`.
-            write(dest, detail.id == ARM64_INS_FNMUL ? floatUnary(.negate, product) : product,
+            write(dest, detail.id == AARCH64_INS_FNMUL ? floatUnary(.negate, product, operandBits: nil) : product,
                   into: &registers)
 
-        case ARM64_INS_FNEG, ARM64_INS_FSQRT, ARM64_INS_FABS:
-            guard let dest = destinationRegister(detail), detail.operands.count >= 2 else {
+        case AARCH64_INS_FNEG, AARCH64_INS_FSQRT, AARCH64_INS_FABS:
+            guard let dest = destinationRegister(detail), dest.kind == .vector,
+                  [16, 32, 64].contains(dest.widthBits),
+                  detail.operands[0].vectorArrangement == AARCH64LAYOUT_INVALID,
+                  detail.operands.count >= 2 else {
                 clobber(detail, into: &registers); return
             }
             let op: AbstractUnaryOperator = switch detail.id {
-            case ARM64_INS_FSQRT: .squareRoot
-            case ARM64_INS_FABS: .absoluteValue
+            case AARCH64_INS_FSQRT: .squareRoot
+            case AARCH64_INS_FABS: .absoluteValue
             default: .negate // FNEG
             }
-            write(dest, floatUnary(op, source(detail.operands[1], in: registers)), into: &registers)
+            write(dest, floatUnary(op, source(detail.operands[1], in: registers), operandBits: dest.widthBits),
+                  into: &registers)
 
-        case ARM64_INS_FMOV, ARM64_INS_FCVT, ARM64_INS_SCVTF, ARM64_INS_UCVTF,
-             ARM64_INS_FCVTZS, ARM64_INS_FCVTZU:
-            // A register-to-register FP move or width/int conversion carries the
-            // value through unchanged for display.
+        case AARCH64_INS_FCVT, AARCH64_INS_SCVTF, AARCH64_INS_UCVTF,
+             AARCH64_INS_FCVTZS, AARCH64_INS_FCVTZU:
+            // A numeric conversion is part of the value: carried through bare,
+            // `Double(n) * 1.5` rendered `(arg0 * 0x3ff8000000000000)`, an Int
+            // times a 4.6e18 integer. Scalar forms only; a vector form is not
+            // modelled.
+            guard let dest = destinationRegister(detail),
+                  detail.operands.count == 2 || detail.operands.count == 3,
+                  detail.operands[1].operand.register != nil,
+                  [16, 32, 64].contains(dest.widthBits),
+                  detail.operands.allSatisfy({ $0.vectorArrangement == AARCH64LAYOUT_INVALID })
+            else { clobber(detail, into: &registers); return }
+            // Integer-to-float SIMD forms read integer bits from an FP-bank
+            // register, not a floating value. Until bit reinterpretation is
+            // modelled for symbolic inputs, preserve only GPR-input forms.
+            if (detail.id == AARCH64_INS_SCVTF || detail.id == AARCH64_INS_UCVTF),
+               detail.operands[1].operand.register?.kind == .vector {
+                clobber(detail, into: &registers); return
+            }
+            let op: AbstractUnaryOperator = switch detail.id {
+            case AARCH64_INS_FCVTZS: .toInteger(signed: true, bits: dest.widthBits)
+            case AARCH64_INS_FCVTZU: .toInteger(signed: false, bits: dest.widthBits)
+            case AARCH64_INS_UCVTF: .unsignedToFloat(bits: dest.widthBits)
+            default: .toFloat(bits: dest.widthBits)
+            }
+            // `scvtf`/`ucvtf` convert an integer register, whose immediate is
+            // the integer it says; `fcvt`/`fcvtz*` a float register.
+            let input = detail.operands[1].operand.register
+            var operand = source(detail.operands[1], in: registers)
+            if input?.kind == .gpr, input?.widthBits == 32, detail.id == AARCH64_INS_SCVTF {
+                // A signed word converts its sign-extended value: read as its
+                // zero-extended bits, Int32 -1 converted to 4294967295.0.
+                operand = Self.signExtended32(operand) { .binary($0, $1, $2) }
+            }
+            let converted = floatUnary(op, operand,
+                                       operandBits: input?.kind == .vector ? input?.widthBits : nil)
+            guard detail.operands.count == 3 else { write(dest, converted, into: &registers); return }
+            // Fixed point: `ucvtf d0, x0, #2` is `Double(x0) / 4`, the compiler's
+            // folding of `* 0.25`. Only the int-to-float direction is modelled.
+            switch op { case .toFloat, .unsignedToFloat: break; default: clobber(detail, into: &registers); return }
+            guard dest.widthBits == 64 || dest.widthBits == 32,
+                  let fractionBits = detail.operands[2].operand.immediateValue,
+                  (1...64).contains(fractionBits)
+            else { clobber(detail, into: &registers); return }
+            let scale = Double(sign: .plus, exponent: Int(fractionBits), significand: 1)
+            let scaleBits = dest.widthBits == 64 ? scale.bitPattern : UInt64(Float(scale).bitPattern)
+            write(dest, floatBinary(.divide, converted, .immediate(scaleBits), bits: dest.widthBits),
+                  into: &registers)
+
+        case AARCH64_INS_FMOV:
+            // A register-to-register FP move carries the bits through unchanged;
+            // between a float and a general register it changes what they mean.
             guard let dest = destinationRegister(detail), detail.operands.count >= 2 else {
                 clobber(detail, into: &registers); return
             }
             // `fmov d0, #<imm>` — decode the encoded float and carry its bit
             // pattern (single- or double-precision per the destination width), so
             // a float context renders it as `0.5`/`2.5` rather than dropping it.
+            // A vector immediate (`fmov.2d v0, #3.0`, `fmov.4s`) fills every
+            // lane, and a lane move (`fmov v0.d[1], x1`) one; neither is the
+            // scalar the register would read as: `fmov.2d v0, #3.0; str q0`
+            // stored one Double, lane 1 reading 0, and a Float vector a
+            // Double pattern.
+            if dest.widthBits == 128 || detail.operands.contains(where: { $0.vectorIndex != nil }) {
+                clobber(detail, into: &registers); return
+            }
             if let fp = detail.operands[1].operand.floatingPointValue {
-                let bits = dest.widthBits == 32 ? UInt64(Float(fp).bitPattern) : fp.bitPattern
+                // Each precision's own bit pattern: an `h` register holds a
+                // Float16, which as a Double's pattern read `0.0` (its low 16
+                // bits) for `fmov h1, #3.0`.
+                let bits: UInt64 = switch dest.widthBits {
+                case 16: UInt64(Float16(fp).bitPattern)
+                case 32: UInt64(Float(fp).bitPattern)
+                default: fp.bitPattern
+                }
                 write(dest, .immediate(bits), into: &registers)
                 return
             }
-            guard detail.operands[1].operand.register != nil else {
+            guard let input = detail.operands[1].operand.register else {
                 clobber(detail, into: &registers); return
             }
-            write(dest, source(detail.operands[1], in: registers), into: &registers)
+            let value = source(detail.operands[1], in: registers)
+            // A float register read into a general one is its bit pattern, an
+            // integer: `fmov x8, d0; cmp x8, #0x65` compares `a.bitPattern`,
+            // not `a`, and its constants are integers. Carried bare, the
+            // Double rendered `(arg0 & 0x7fffffffffffffff) > 1.7976931348623157e+308`
+            // for `Int(a)`'s finiteness guard, a float compare false on NaN
+            // where the binary traps. An immediate is the same bits either
+            // way; the reverse move of a bit pattern is the float again.
+            if dest.kind == .gpr, input.kind == .vector, input.widthBits == dest.widthBits {
+                write(dest, Self.bitPattern(of: value, bits: dest.widthBits), into: &registers)
+                return
+            }
+            // The other way an integer's bits become a float: `fmov d0, x0;
+            // fadd d0, d0, d0` adds `Double(bitPattern: i)` to itself. Carried
+            // bare, it rendered `(arg0 + arg0)`, an integer add.
+            if dest.kind == .vector, input.kind == .gpr, input.widthBits == dest.widthBits,
+               dest.widthBits == 64 || dest.widthBits == 32 {
+                write(dest, Self.float(fromBits: value, bits: dest.widthBits), into: &registers)
+                return
+            }
+            write(dest, value, into: &registers)
 
-        case ARM64_INS_MOV, ARM64_INS_MOVZ:
-            // Capstone pre-folds MOVZ's shift into the immediate.
-            guard let dest = destinationRegister(detail), detail.operands.count >= 2 else {
+        case AARCH64_INS_DUP:
+            // `dup v0.2d, x9` replicates a general register into both vector
+            // lanes: the two words the compiler then stores as a pair to fill a
+            // buffer with one repeated value. A narrower lane (`dup v0.4s, w0`)
+            // repeats inside each word, which is then `w0 | w0 << 32`, not w0.
+            guard let dest = destinationRegister(detail), detail.operands.count >= 2,
+                  let lane = detail.operands[1].operand.register, lane.kind == .gpr,
+                  lane.widthBits == 64, dest.widthBits == 128
+            else { clobber(detail, into: &registers); return }
+            let value = source(detail.operands[1], in: registers)
+            write(dest, value == .unknown ? .unknown : .aggregate([value, value]), into: &registers)
+
+        case AARCH64_INS_MOVI:
+            guard let dest = destinationRegister(detail), let value = Self.moviValue(detail) else {
                 clobber(detail, into: &registers); return
             }
-            write(dest, source(detail.operands[1], in: registers), into: &registers)
+            write(dest, value, into: &registers)
 
-        case ARM64_INS_MOVK:
+        case AARCH64_INS_MOVK:
             // MOVK's shift is NOT pre-folded, and it merges into the existing value.
             guard let dest = destinationRegister(detail), detail.operands.count >= 2,
                   let imm = detail.operands[1].operand.immediateValue
             else { clobber(detail, into: &registers); return }
-            let shift = detail.operands[1].shift.type == ARM64_SFT_LSL ? UInt64(detail.operands[1].shift.amount) : 0
-            let base: UInt64 = { if case .immediate(let v) = registers[dest.key] { return v } else { return 0 } }()
-            let mask = ~(UInt64(0xffff) << shift)
-            write(dest, .immediate((base & mask) | (UInt64(bitPattern: imm) << shift)), into: &registers)
+            let shift = detail.operands[1].shift.type == AARCH64_SFT_LSL ? UInt64(detail.operands[1].shift.amount) : 0
+            // The other 48 bits are the register's own. Reading an untracked
+            // register as zero claimed a constant the machine never makes
+            // (`movk x0, #1` on an argument rendered `return 1`).
+            let kept = expression(.bitAnd, registers[Location(dest)] ?? .unknown, .immediate(~(UInt64(0xffff) << shift)))
+            write(dest, expression(.bitOr, kept, .immediate(UInt64(bitPattern: imm) << shift)), into: &registers)
 
-        case ARM64_INS_LDR, ARM64_INS_LDUR, ARM64_INS_LDRB, ARM64_INS_LDURB,
-             ARM64_INS_LDRH, ARM64_INS_LDURH, ARM64_INS_LDRSB, ARM64_INS_LDURSB,
-             ARM64_INS_LDRSH, ARM64_INS_LDURSH, ARM64_INS_LDRSW, ARM64_INS_LDURSW:
+        case AARCH64_INS_LDR, AARCH64_INS_LDUR, AARCH64_INS_LDRB, AARCH64_INS_LDURB,
+             AARCH64_INS_LDRH, AARCH64_INS_LDURH, AARCH64_INS_LDRSB, AARCH64_INS_LDURSB,
+             AARCH64_INS_LDRSH, AARCH64_INS_LDURSH, AARCH64_INS_LDRSW, AARCH64_INS_LDURSW:
             guard let dest = destinationRegister(detail) else { clobber(detail, into: &registers); return }
             noteFieldAccess(insn, detail, in: registers, recordAccess)
             let target = memoryTarget(detail, in: registers)
+            let objectField = argumentObjectAccess(detail, in: registers).flatMap { access in
+                Self.accessBytes(detail).flatMap { argumentObjectField(access, bytes: $0) }
+            }
             applyWriteback(detail, into: &registers)
+            if let objectField {
+                switch detail.id {
+                case AARCH64_INS_LDRSB, AARCH64_INS_LDURSB, AARCH64_INS_LDRSH, AARCH64_INS_LDURSH,
+                     AARCH64_INS_LDRSW, AARCH64_INS_LDURSW:
+                    write(dest, signExtended(objectField, bits: (Self.accessBytes(detail) ?? 8) * 8), into: &registers)
+                default:
+                    write(dest, objectField, into: &registers)
+                    // A load is already the field's width: nothing to mask.
+                    registers[Location(dest)] = objectField
+                }
+                return
+            }
             switch target {
             case .stackSlot(let key):
                 let offset = Self.stackOffset(from: key)
                 let bytes = Self.accessBytes(detail) ?? max(dest.widthBits / 8, 1)
-                write(dest, offset.map { Self.stackValue(at: $0, bytes: bytes, in: registers) } ?? .unknown,
-                      into: &registers)
+                var value = offset.map { Self.stackValue(at: $0, bytes: bytes, in: registers) } ?? .unknown
+                // A word stored from one register file and reloaded into the
+                // other is its bits reinterpreted, as an `fmov` would be: -Onone
+                // `unsafeBitCast(a, to: Int.self)` is `str d0, [sp]; ldr x9,
+                // [sp]`. Carried bare, `~bits == 7` rendered
+                // `((-arg0 - 5e-324) != 3.5e-323)`.
+                // A `q` load gathers words whatever stored them, so it stays out.
+                if value != .unknown, let offset, dest.widthBits <= 64,
+                   case .immediate(let file)? = registers.frame[offset, .bank] {
+                    switch (dest.kind, file) {
+                    case (.gpr, 32), (.gpr, 64):
+                        value = Self.bitPattern(of: value, bits: Int(file))
+                    case (.vector, 0):
+                        let stored = registers.frame[offset, .width]
+                        value = dest.widthBits >= 32 && stored == .immediate(UInt64(bytes))
+                            ? Self.float(fromBits: value, bits: dest.widthBits) : .unknown
+                    case (.vector, _) where file != UInt64(dest.widthBits):
+                        value = .unknown // a Double's word read as a Float, or the reverse
+                    default: break
+                    }
+                }
+                if dest.kind == .gpr {
+                    switch detail.id {
+                    case AARCH64_INS_LDRSB, AARCH64_INS_LDURSB,
+                         AARCH64_INS_LDRSH, AARCH64_INS_LDURSH,
+                         AARCH64_INS_LDRSW, AARCH64_INS_LDURSW:
+                        value = signExtended(value, bits: bytes * 8)
+                    default: value = narrowed(value, bits: min(bytes * 8, 64))
+                    }
+                }
+                write(dest, value, into: &registers)
             case .absolute(let address):
                 // Only pointer-width loads can safely denote a selref/GOT slot.
-                let isPointerLoad = detail.id == ARM64_INS_LDR || detail.id == ARM64_INS_LDUR
-                write(dest, isPointerLoad ? .loaded(address) : .unknown, into: &registers)
+                // A 16-byte vector load from a fixed address is two such words
+                // (a literal-pool constant the enrichment pass may read).
+                let isPointerLoad = detail.id == AARCH64_INS_LDR || detail.id == AARCH64_INS_LDUR
+                if isPointerLoad, dest.kind == .vector, dest.widthBits == 128 {
+                    write(dest, .aggregate([.loaded(address), .loaded(address &+ 8)]), into: &registers)
+                } else {
+                    write(dest, isPointerLoad ? .loaded(address) : .unknown, into: &registers)
+                }
             case .selfField(let offset): write(dest, .selfFieldValue(offset: offset), into: &registers)
+            case .throughStaticPointer(let slot, let offset):
+                let isPointerLoad = (detail.id == AARCH64_INS_LDR || detail.id == AARCH64_INS_LDUR)
+                    && dest.kind == .gpr && dest.widthBits == 64
+                write(dest, isPointerLoad ? .loadedThrough(slot: slot, offset: offset) : .unknown, into: &registers)
+            case .throughValue(let base, let offset):
+                let isPointerLoad = (detail.id == AARCH64_INS_LDR || detail.id == AARCH64_INS_LDUR)
+                    && dest.kind == .gpr && dest.widthBits == 64
+                write(dest, isPointerLoad ? .loadedFrom(base, offset: offset) : .unknown, into: &registers)
             case .vtableMethod(let offset):
                 // The dispatch loads the vtable slot only through a pointer-width
                 // read; a narrower load isn't a method pointer.
-                let isPointerLoad = detail.id == ARM64_INS_LDR || detail.id == ARM64_INS_LDUR
+                let isPointerLoad = detail.id == AARCH64_INS_LDR || detail.id == AARCH64_INS_LDUR
                 write(dest, isPointerLoad ? .selfVTableMethod(offset: offset) : .unknown, into: &registers)
+            case .resultSlot(let offset):
+                // Reading the buffer back: only an exact-width match of a tracked
+                // store is known.
+                let bytes = Self.accessBytes(detail) ?? max(dest.widthBits / 8, 1)
+                write(dest, registers[Self.resultKey(offset, bytes: bytes)] ?? .unknown, into: &registers)
+            case .asyncSlot(let offset):
+                // Only a full-width integer load carries a pointer: `ldr w9`
+                // drops its upper bits and `ldr d0` is a floating value. A value
+                // this funclet itself stored there earlier comes back first.
+                let isPointerLoad = dest.kind == .gpr && dest.widthBits == 64
+                let stored = registers[Self.contextSlotKey(offset)] ?? .unknown
+                write(dest, isPointerLoad ? stored : .unknown, into: &registers)
+            case .asyncCalleeSlot(let offset):
+                // The callee context's first word is the caller's own context;
+                // nothing else in it is known here.
+                let isPointerLoad = dest.kind == .gpr && dest.widthBits == 64
+                write(dest, isPointerLoad && offset == 0 ? (registers[Self.calleeParentKey] ?? .unknown) : .unknown, into: &registers)
             case .arrayElement, .none: write(dest, .unknown, into: &registers)
             }
 
         // A store writes memory, not a register — but it populates a stack slot,
         // which is how a value materialised before a branch reaches a call after it.
-        case ARM64_INS_STR, ARM64_INS_STUR, ARM64_INS_STRB, ARM64_INS_STURB,
-             ARM64_INS_STRH, ARM64_INS_STURH:
+        case AARCH64_INS_STR, AARCH64_INS_STUR, AARCH64_INS_STRB, AARCH64_INS_STURB,
+             AARCH64_INS_STRH, AARCH64_INS_STURH:
             noteFieldAccess(insn, detail, in: registers, recordAccess)
             let target = memoryTarget(detail, in: registers)
             if let first = detail.operands.first {
@@ -1435,11 +3659,39 @@ public struct ValueTracer: Sendable {
                 if case .stackSlot(let key)? = target {
                     if let offset = Self.stackOffset(from: key) {
                         let bytes = Self.accessBytes(detail) ?? 8
-                        Self.storeStack(value, at: offset, bytes: bytes, outgoing: true, into: &registers)
+                        let stored = first.operand.register?.kind == .gpr
+                            ? narrowed(value, bits: min(bytes * 8, 64)) : value
+                        Self.storeStack(stored, at: offset, bytes: bytes, outgoing: true,
+                                        from: first.operand.register, into: &registers)
                     }
                 }
                 if case .arrayElement(let site, let offset)? = target {
                     recordArrayElement?(site, offset, value)
+                }
+                if case .selfField = target {
+                    // A register holding a prior field load is a snapshot.
+                    // Keeping `.selfFieldValue` through the write would render
+                    // that old register as the field's new value.
+                    Self.invalidateSelfFieldAliases(in: &registers)
+                }
+                if case .resultSlot(let offset)? = target {
+                    let bytes = Self.accessBytes(detail) ?? 8
+                    Self.storeResult(value, at: offset, bytes: bytes, into: &registers)
+                }
+                if case .asyncSlot(let offset)? = target {
+                    // -Onone stores x22 into its own context (`str x9, [x22,
+                    // #0x10]`) and reaches ResumeParent through it at each exit;
+                    // forwarding the store is what proves those exits returns.
+                    if (detail.id == AARCH64_INS_STR || detail.id == AARCH64_INS_STUR),
+                       Self.isFullWidthGPR(first) {
+                        recordSlotStore?(offset, value)
+                        if value != .unknown { registers[Self.contextSlotKey(offset)] = value }
+                    }
+                }
+                if case .asyncCalleeSlot(0)? = target,
+                   (detail.id == AARCH64_INS_STR || detail.id == AARCH64_INS_STUR),
+                   Self.isFullWidthGPR(first) {
+                    registers[Self.calleeParentKey] = value == .unknown ? nil : value
                 }
                 // A full-width store establishes a useful equality: its source
                 // register now also holds the current ivar value. Canonicalizing
@@ -1447,15 +3699,16 @@ public struct ValueTracer: Sendable {
                 // lets paths such as
                 // `if (enabled) _count += delta; return _count` meet back at the
                 // return even though one path performed arithmetic.
-                if (detail.id == ARM64_INS_STR || detail.id == ARM64_INS_STUR),
-                   value != .unknown, case .selfField(let offset)? = target,
+                if (detail.id == AARCH64_INS_STR || detail.id == AARCH64_INS_STUR),
+                   value != .unknown, !Self.isArgument(value), case .selfField(let offset)? = target,
                    let sourceRegister = first.operand.register {
                     write(sourceRegister, .selfFieldValue(offset: offset), into: &registers)
+                    recordFieldAlias?(offset, sourceRegister.widthBits / 8)
                 }
             }
             applyWriteback(detail, into: &registers)
 
-        case ARM64_INS_STP, ARM64_INS_STNP:
+        case AARCH64_INS_STP, AARCH64_INS_STNP:
             noteFieldAccess(insn, detail, in: registers, recordAccess)
             let target = memoryTarget(detail, in: registers)
             if case .stackSlot(let key)? = target,
@@ -1465,14 +3718,22 @@ public struct ValueTracer: Sendable {
                     Self.storeStack(
                         source(operand, in: registers),
                         at: offset + Int64(index * bytes), bytes: bytes,
-                        outgoing: true, into: &registers
+                        outgoing: true, from: operand.operand.register, into: &registers
                     )
                 }
             } else if case .selfField(let offset)? = target,
                       let bytes = detail.operands.first?.operand.register.map({ $0.widthBits / 8 }) {
+                Self.invalidateSelfFieldAliases(in: &registers)
                 for (index, operand) in detail.operands.prefix(2).enumerated() {
-                    if let register = operand.operand.register {
+                    // A constant stays a constant. Renamed to the field it was
+                    // stored to, the `movi v0.2d, #0` an initializer zeroes
+                    // every field with rendered each later store of it as a
+                    // copy of the field before: `self.point = self.other`, a
+                    // pair of Doubles from a pair of Ints.
+                    if let register = operand.operand.register, !Self.isConstant(source(operand, in: registers)),
+                       !Self.isArgument(source(operand, in: registers)) {
                         write(register, .selfFieldValue(offset: offset + index * bytes), into: &registers)
+                        recordFieldAlias?(offset + index * bytes, bytes)
                     }
                 }
             } else if case .arrayElement(let site, let offset)? = target,
@@ -1481,21 +3742,56 @@ public struct ValueTracer: Sendable {
                 for (index, operand) in detail.operands.prefix(2).enumerated() {
                     recordArrayElement?(site, offset + index * bytes, source(operand, in: registers))
                 }
+            } else if case .resultSlot(let offset)? = target,
+                      let bytes = detail.operands.first?.operand.register.map({ $0.widthBits / 8 }) {
+                for (index, operand) in detail.operands.prefix(2).enumerated() {
+                    Self.storeResult(source(operand, in: registers), at: offset + index * bytes,
+                                     bytes: bytes, into: &registers)
+                }
+            } else if case .asyncSlot(let offset)? = target,
+                      detail.operands.count >= 3,
+                      detail.operands.prefix(2).allSatisfy({ Self.isFullWidthGPR($0) }) {
+                // `stp x22, x8, [x0]` is how the caller's context and the resume
+                // pointer are written into a fresh callee context; the same shape
+                // spills two locals into the function's own context.
+                for (index, operand) in detail.operands.prefix(2).enumerated() {
+                    let value = source(operand, in: registers)
+                    registers[Self.contextSlotKey(offset + index * 8)] = value == .unknown ? nil : value
+                    recordSlotStore?(offset + index * 8, source(operand, in: registers))
+                }
+            }
+            if case .asyncCalleeSlot(let offset)? = target,
+               detail.operands.count >= 3,
+               detail.operands.prefix(2).allSatisfy({ Self.isFullWidthGPR($0) }) {
+                for (index, operand) in detail.operands.prefix(2).enumerated() where offset + index * 8 == 0 {
+                    let value = source(operand, in: registers)
+                    registers[Self.calleeParentKey] = value == .unknown ? nil : value
+                }
             }
             // Stores two registers; writes none. Writeback still applies —
             // `stp x29, x30, [sp, #-0x70]!` is the standard prologue, and missing
             // it desynchronises the frame for every stack slot that follows.
             applyWriteback(detail, into: &registers)
 
-        case ARM64_INS_LDP, ARM64_INS_LDNP:
+        case AARCH64_INS_LDP, AARCH64_INS_LDNP:
             // A 16-byte Swift.String field arrives exactly here. Pair loads are
             // also how optimized Objective-C methods pull arguments 6+ back out
             // of their entry stack area.
             noteFieldAccess(insn, detail, in: registers, recordAccess)
             let target = memoryTarget(detail, in: registers)
             let registerBytes = detail.operands.first?.operand.register.map { $0.widthBits / 8 } ?? 8
+            let objectAccess = argumentObjectAccess(detail, in: registers)
             for (index, operand) in detail.operands.prefix(2).enumerated() {
                 guard let register = operand.operand.register else { continue }
+                // Each register is its own load: a pair that covers one wide
+                // field (a String) reads no field in either half.
+                if let objectAccess {
+                    let word = (argument: objectAccess.argument, offset: objectAccess.offset + index * registerBytes)
+                    let field = argumentObjectField(word, bytes: registerBytes)
+                    write(register, field ?? .unknown, into: &registers)
+                    if let field { registers[Location(register)] = field }
+                    continue
+                }
                 let value: AbstractValue = switch target {
                 case .stackSlot(let key):
                     Self.stackOffset(from: key).flatMap {
@@ -1506,14 +3802,22 @@ public struct ValueTracer: Sendable {
                     } ?? .unknown
                 case .selfField(let offset):
                     .selfFieldValue(offset: offset + index * registerBytes)
-                case .absolute, .vtableMethod, .arrayElement, .none:
+                case .resultSlot(let offset):
+                    registers[Self.resultKey(offset + index * registerBytes, bytes: registerBytes)] ?? .unknown
+                case .asyncSlot(let offset) where register.kind == .gpr && registerBytes == 8:
+                    registers[Self.contextSlotKey(offset + index * 8)] ?? .unknown
+                case .asyncCalleeSlot(let offset) where register.kind == .gpr && registerBytes == 8
+                    && offset + index * 8 == 0:
+                    registers[Self.calleeParentKey] ?? .unknown
+                case .absolute, .vtableMethod, .arrayElement, .asyncSlot, .asyncCalleeSlot, .throughStaticPointer,
+                     .throughValue, .none:
                     .unknown
                 }
                 write(register, value, into: &registers)
             }
             applyWriteback(detail, into: &registers)
 
-        case ARM64_INS_CMP, ARM64_INS_CMN, ARM64_INS_TST, ARM64_INS_CCMP, ARM64_INS_CCMN:
+        case AARCH64_INS_ALIAS_CMP, AARCH64_INS_ALIAS_CMN, AARCH64_INS_ALIAS_TST, AARCH64_INS_CCMP, AARCH64_INS_CCMN:
             // These write only NZCV, never a general register — critically they
             // must NOT reach the default, since Capstone renders `cmp x1, #1` with
             // x1 as its first operand (it aliases `subs xzr, x1, #1`) and a
@@ -1524,45 +3828,126 @@ public struct ValueTracer: Sendable {
                 let lhs = source(detail.operands[0], in: registers)
                 let rhs = source(detail.operands[1], in: registers)
                 switch detail.id {
-                case ARM64_INS_CMP: registers[Self.flagsKey] = expression(.subtract, lhs, rhs)
-                case ARM64_INS_CMN: registers[Self.flagsKey] = expression(.add, lhs, rhs)
-                case ARM64_INS_TST: registers[Self.flagsKey] = expression(.bitAnd, lhs, rhs)
-                default: registers[Self.flagsKey] = nil // CCMP/CCMN: conditional
+                case AARCH64_INS_ALIAS_CMP:
+                    // Keep the operands: folding the difference loses overflow
+                    // and register width before a conditional compare reads it.
+                    registers[Self.flagsKey] = .binary(.subtract, lhs, rhs)
+                    registers[Self.flagsWidthKey] = .immediate(UInt64(detail.operands[0].operand.register?.widthBits ?? 64))
+                case AARCH64_INS_ALIAS_CMN:
+                    registers[Self.flagsKey] = .binary(.add, lhs, rhs)
+                    registers[Self.flagsWidthKey] = .immediate(UInt64(detail.operands[0].operand.register?.widthBits ?? 64))
+                case AARCH64_INS_ALIAS_TST:
+                    registers[Self.flagsKey] = testFlags(lhs, rhs, value: expression(.bitAnd, lhs, rhs))
+                    registers[Self.flagsWidthKey] = .immediate(UInt64(detail.operands[0].operand.register?.widthBits ?? 64))
+                case AARCH64_INS_CCMP:
+                    guard detail.operands.count >= 3,
+                          let fallback = detail.operands[2].operand.immediateValue, (0..<16).contains(fallback),
+                          let incomingFlags,
+                          let condition = flagCondition(incomingFlags, code: detail.conditionCode, width: incomingFlagsWidth, requireComplete: true),
+                          condition != .unknown, lhs != .unknown, rhs != .unknown
+                    else { return }
+                    let width = detail.operands[0].operand.register?.widthBits ?? 64
+                    let conditions = Self.flagCodes.map { code -> AbstractValue in
+                        let compared = subtractionCondition(lhs, rhs, code: code, width: width)
+                        let alternate = AbstractValue.immediate(Self.literalFlagCondition(UInt64(fallback), code: code) ? 1 : 0)
+                        if case .immediate(let taken) = condition { return taken != 0 ? compared : alternate }
+                        guard compared != .unknown, Self.expressionDepth(condition) < 8,
+                              Self.expressionDepth(compared) < 8 else { return .unknown }
+                        if compared == alternate { return alternate }
+                        return .select(condition: condition, whenTrue: compared, whenFalse: alternate)
+                    }
+                    registers[Self.flagsKey] = .aggregate(conditions)
+                default: registers[Self.flagsKey] = nil // CCMN remains declined.
                 }
             } else {
                 registers[Self.flagsKey] = nil
             }
 
-        case ARM64_INS_CSET, ARM64_INS_CSETM:
+        case AARCH64_INS_ALIAS_CSET, AARCH64_INS_ALIAS_CSETM:
             // `cset wd, <cc>` materialises the flags as a boolean. Reconstruct the
             // comparison from the recorded flags value and the condition code.
             guard let dest = destinationRegister(detail),
-                  let op = Self.comparisonOperator(detail.conditionCode),
-                  let flags = registers[Self.flagsKey]
+                  let flags = registers[Self.flagsKey],
+                  let condition = flagCondition(flags, code: detail.conditionCode, width: registers[Self.flagsWidthKey]),
+                  condition != .unknown
             else { clobber(detail, into: &registers); return }
-            write(dest, comparisonValue(flags: flags, op), into: &registers)
+            var result = condition
+            if detail.id == AARCH64_INS_ALIAS_CSETM {
+                // All ones when the condition holds: `0 - c`, masked to a
+                // 32-bit destination. A constant condition folds.
+                result = expression(.subtract, .immediate(0), condition)
+                if dest.widthBits == 32 { result = expression(.bitAnd, result, .immediate(0xffff_ffff)) }
+            }
+            write(dest, result, into: &registers)
 
-        case ARM64_INS_CSEL, ARM64_INS_CSINC, ARM64_INS_CSINV, ARM64_INS_CSNEG:
+        case AARCH64_INS_ALIAS_CINC, AARCH64_INS_ALIAS_CNEG, AARCH64_INS_ALIAS_CINV:
+            // `cinc d, n, cc` is `cc ? n + 1 : n`; `cneg` negates and `cinv`
+            // complements under the condition (CSINC/CSNEG/CSINV with both
+            // sources n and the condition inverted).
+            guard let dest = destinationRegister(detail), detail.operands.count == 2,
+                  let flags = registers[Self.flagsKey],
+                  let condition = flagCondition(flags, code: detail.conditionCode, width: registers[Self.flagsWidthKey]),
+                  condition != .unknown
+            else { clobber(detail, into: &registers); return }
+            let input = source(detail.operands[1], in: registers)
+            guard input != .unknown else { clobber(detail, into: &registers); return }
+            var changed: AbstractValue = switch detail.id {
+            case AARCH64_INS_ALIAS_CINC: expression(.add, input, .immediate(1))
+            case AARCH64_INS_ALIAS_CNEG:
+                if case .immediate(let bits) = input { .immediate(0 &- bits) } else { .unary(.negate, input) }
+            default:
+                if case .immediate(let bits) = input { .immediate(~bits) } else { .unary(.bitwiseNot, input) }
+            }
+            var unchanged = input
+            if dest.widthBits == 32 {
+                if case .immediate(let bits) = changed { changed = .immediate(bits & 0xffff_ffff) }
+                if case .immediate(let bits) = unchanged { unchanged = .immediate(bits & 0xffff_ffff) }
+            }
+            let result: AbstractValue = if case .immediate(let taken) = condition {
+                taken != 0 ? changed : unchanged
+            } else {
+                changed == .unknown ? .unknown : .select(condition: condition, whenTrue: changed, whenFalse: unchanged)
+            }
+            write(dest, result, into: &registers)
+
+        case AARCH64_INS_CSEL, AARCH64_INS_CSINC, AARCH64_INS_CSINV, AARCH64_INS_CSNEG:
             // The branchless ternary: `csel d, n, m, cc` = cc ? n : m. The
             // `inc`/`inv`/`neg` variants apply +1 / bitwise-not / negate to the
             // false operand. This is how `-O` lowers a ternary, so it produces the
             // same `.select` a `-Onone` diamond does.
             guard let dest = destinationRegister(detail), detail.operands.count >= 3,
-                  let op = Self.comparisonOperator(detail.conditionCode),
-                  let flags = registers[Self.flagsKey]
+                  let flags = registers[Self.flagsKey],
+                  let condition = flagCondition(flags, code: detail.conditionCode, width: registers[Self.flagsWidthKey]),
+                  condition != .unknown
             else { clobber(detail, into: &registers); return }
-            let condition = comparisonValue(flags: flags, op)
             let whenTrue = source(detail.operands[1], in: registers)
             let falseOperand = source(detail.operands[2], in: registers)
-            let whenFalse: AbstractValue = switch detail.id {
-            case ARM64_INS_CSINC: expression(.add, falseOperand, .immediate(1))
-            case ARM64_INS_CSINV: falseOperand == .unknown ? .unknown : .unary(.bitwiseNot, falseOperand)
-            case ARM64_INS_CSNEG: falseOperand == .unknown ? .unknown : .unary(.negate, falseOperand)
+            var whenFalse: AbstractValue = switch detail.id {
+            case AARCH64_INS_CSINC: expression(.add, falseOperand, .immediate(1))
+            case AARCH64_INS_CSINV:
+                if case .immediate(let bits) = falseOperand { .immediate(~bits) }
+                else if falseOperand == .unknown { .unknown } else { .unary(.bitwiseNot, falseOperand) }
+            case AARCH64_INS_CSNEG:
+                if case .immediate(let bits) = falseOperand { .immediate(0 &- bits) }
+                else if falseOperand == .unknown { .unknown } else { .unary(.negate, falseOperand) }
             default: falseOperand
             }
-            let result: AbstractValue = (condition == .unknown || whenTrue == .unknown || whenFalse == .unknown)
-                ? .unknown
-                : .select(condition: condition, whenTrue: whenTrue, whenFalse: whenFalse)
+            // The arms are what the 32-bit destination holds: `csinc w0, …` of
+            // 0xffffffff is 0, not 0x1_0000_0000.
+            var whenTrueValue = whenTrue
+            if dest.widthBits == 32 {
+                if case .immediate(let bits) = whenTrueValue { whenTrueValue = .immediate(bits & 0xffff_ffff) }
+                if case .immediate(let bits) = whenFalse { whenFalse = .immediate(bits & 0xffff_ffff) }
+            }
+            let result: AbstractValue
+            if case .immediate(let taken) = condition {
+                // A constant condition selects one arm: `(1 ? 11 : 22)` is 11.
+                result = taken != 0 ? whenTrueValue : whenFalse
+            } else {
+                result = (condition == .unknown || whenTrueValue == .unknown || whenFalse == .unknown)
+                    ? .unknown
+                    : .select(condition: condition, whenTrue: whenTrueValue, whenFalse: whenFalse)
+            }
             write(dest, result, into: &registers)
 
         default:
@@ -1579,6 +3964,25 @@ public struct ValueTracer: Sendable {
     /// which is callee-saved and routinely holds a receiver across a call —
     /// silently drops arguments that were previously recovered.
     ///
+    /// Validation: a register the instruction writes (by Capstone's access
+    /// flags) that held a proven value and that the transfer never wrote was
+    /// not modelled, and its stale value can render as a confident argument.
+    /// Calls are exempt (the ABI, not the instruction, says what survives).
+    private static func checkWritesModelled(_ insn: Instruction, before: State, written modelled: Set<String>) {
+        guard insn.controlFlow != .call, let detail = insn.detail else { return }
+        var written = Set<String>()
+        for info in detail.operands {
+            if case .register(let register) = info.operand, info.isWritten, register.kind == .gpr {
+                written.insert(register.key)
+            }
+        }
+        for key in written.subtracting(modelled).sorted() {
+            guard let location = Location(key: key), let old = before[location], old != .unknown else { continue }
+            Probe.record(.tracerUnmodelledWrite, at: insn.address,
+                         ["register": .label(key), "instruction": .label(insn.text), "kept": .label("\(old)")])
+        }
+    }
+
     /// Being wrong here is asymmetric, and the tables reflect that. Over-
     /// clobbering costs precision (a `?` where a value was known). Under-
     /// clobbering leaves a stale value that renders as a confident, fabricated
@@ -1609,29 +4013,29 @@ public struct ValueTracer: Sendable {
     /// The old text path matched `hasPrefix("st")` and clobbered nothing for
     /// them, leaving a stale value to render as a later call argument.
     private static let storesWithoutRegisterWrite: Set<UInt32> = Set([
-        ARM64_INS_ST1, ARM64_INS_ST1B, ARM64_INS_ST1D, ARM64_INS_ST1H, ARM64_INS_ST1Q,
-        ARM64_INS_ST1W, ARM64_INS_ST2, ARM64_INS_ST2B, ARM64_INS_ST2D, ARM64_INS_ST2G,
-        ARM64_INS_ST2H, ARM64_INS_ST2W, ARM64_INS_ST3, ARM64_INS_ST3B, ARM64_INS_ST3D,
-        ARM64_INS_ST3H, ARM64_INS_ST3W, ARM64_INS_ST4, ARM64_INS_ST4B, ARM64_INS_ST4D,
-        ARM64_INS_ST4H, ARM64_INS_ST4W, ARM64_INS_ST64B, ARM64_INS_ST64BV, ARM64_INS_ST64BV0,
-        ARM64_INS_STADD, ARM64_INS_STADDB, ARM64_INS_STADDH, ARM64_INS_STADDL,
-        ARM64_INS_STADDLB, ARM64_INS_STADDLH, ARM64_INS_STCLR, ARM64_INS_STCLRB,
-        ARM64_INS_STCLRH, ARM64_INS_STCLRL, ARM64_INS_STCLRLB, ARM64_INS_STCLRLH,
-        ARM64_INS_STEOR, ARM64_INS_STEORB, ARM64_INS_STEORH, ARM64_INS_STEORL,
-        ARM64_INS_STEORLB, ARM64_INS_STEORLH, ARM64_INS_STG, ARM64_INS_STGM, ARM64_INS_STGP,
-        ARM64_INS_STLLR, ARM64_INS_STLLRB, ARM64_INS_STLLRH, ARM64_INS_STLR, ARM64_INS_STLRB,
-        ARM64_INS_STLRH, ARM64_INS_STLUR, ARM64_INS_STLURB, ARM64_INS_STLURH, ARM64_INS_STNP,
-        ARM64_INS_STNT1B, ARM64_INS_STNT1D, ARM64_INS_STNT1H, ARM64_INS_STNT1W, ARM64_INS_STP,
-        ARM64_INS_STR, ARM64_INS_STRB, ARM64_INS_STRH, ARM64_INS_STSET, ARM64_INS_STSETB,
-        ARM64_INS_STSETH, ARM64_INS_STSETL, ARM64_INS_STSETLB, ARM64_INS_STSETLH,
-        ARM64_INS_STSMAX, ARM64_INS_STSMAXB, ARM64_INS_STSMAXH, ARM64_INS_STSMAXL,
-        ARM64_INS_STSMAXLB, ARM64_INS_STSMAXLH, ARM64_INS_STSMIN, ARM64_INS_STSMINB,
-        ARM64_INS_STSMINH, ARM64_INS_STSMINL, ARM64_INS_STSMINLB, ARM64_INS_STSMINLH,
-        ARM64_INS_STTR, ARM64_INS_STTRB, ARM64_INS_STTRH, ARM64_INS_STUMAX, ARM64_INS_STUMAXB,
-        ARM64_INS_STUMAXH, ARM64_INS_STUMAXL, ARM64_INS_STUMAXLB, ARM64_INS_STUMAXLH,
-        ARM64_INS_STUMIN, ARM64_INS_STUMINB, ARM64_INS_STUMINH, ARM64_INS_STUMINL,
-        ARM64_INS_STUMINLB, ARM64_INS_STUMINLH, ARM64_INS_STUR, ARM64_INS_STURB,
-        ARM64_INS_STURH, ARM64_INS_STZ2G, ARM64_INS_STZG, ARM64_INS_STZGM
+        AARCH64_INS_ST1, AARCH64_INS_ST1B, AARCH64_INS_ST1D, AARCH64_INS_ST1H, AARCH64_INS_ST1Q,
+        AARCH64_INS_ST1W, AARCH64_INS_ST2, AARCH64_INS_ST2B, AARCH64_INS_ST2D, AARCH64_INS_ST2G,
+        AARCH64_INS_ST2H, AARCH64_INS_ST2W, AARCH64_INS_ST3, AARCH64_INS_ST3B, AARCH64_INS_ST3D,
+        AARCH64_INS_ST3H, AARCH64_INS_ST3W, AARCH64_INS_ST4, AARCH64_INS_ST4B, AARCH64_INS_ST4D,
+        AARCH64_INS_ST4H, AARCH64_INS_ST4W, AARCH64_INS_ST64B, AARCH64_INS_ST64BV, AARCH64_INS_ST64BV0,
+        AARCH64_INS_ALIAS_STADD, AARCH64_INS_ALIAS_STADDB, AARCH64_INS_ALIAS_STADDH, AARCH64_INS_ALIAS_STADDL,
+        AARCH64_INS_ALIAS_STADDLB, AARCH64_INS_ALIAS_STADDLH, AARCH64_INS_ALIAS_STCLR, AARCH64_INS_ALIAS_STCLRB,
+        AARCH64_INS_ALIAS_STCLRH, AARCH64_INS_ALIAS_STCLRL, AARCH64_INS_ALIAS_STCLRLB, AARCH64_INS_ALIAS_STCLRLH,
+        AARCH64_INS_ALIAS_STEOR, AARCH64_INS_ALIAS_STEORB, AARCH64_INS_ALIAS_STEORH, AARCH64_INS_ALIAS_STEORL,
+        AARCH64_INS_ALIAS_STEORLB, AARCH64_INS_ALIAS_STEORLH, AARCH64_INS_STG, AARCH64_INS_STGM, AARCH64_INS_STGP,
+        AARCH64_INS_STLLR, AARCH64_INS_STLLRB, AARCH64_INS_STLLRH, AARCH64_INS_STLR, AARCH64_INS_STLRB,
+        AARCH64_INS_STLRH, AARCH64_INS_STLUR, AARCH64_INS_STLURB, AARCH64_INS_STLURH, AARCH64_INS_STNP,
+        AARCH64_INS_STNT1B, AARCH64_INS_STNT1D, AARCH64_INS_STNT1H, AARCH64_INS_STNT1W, AARCH64_INS_STP,
+        AARCH64_INS_STR, AARCH64_INS_STRB, AARCH64_INS_STRH, AARCH64_INS_ALIAS_STSET, AARCH64_INS_ALIAS_STSETB,
+        AARCH64_INS_ALIAS_STSETH, AARCH64_INS_ALIAS_STSETL, AARCH64_INS_ALIAS_STSETLB, AARCH64_INS_ALIAS_STSETLH,
+        AARCH64_INS_ALIAS_STSMAX, AARCH64_INS_ALIAS_STSMAXB, AARCH64_INS_ALIAS_STSMAXH, AARCH64_INS_ALIAS_STSMAXL,
+        AARCH64_INS_ALIAS_STSMAXLB, AARCH64_INS_ALIAS_STSMAXLH, AARCH64_INS_ALIAS_STSMIN, AARCH64_INS_ALIAS_STSMINB,
+        AARCH64_INS_ALIAS_STSMINH, AARCH64_INS_ALIAS_STSMINL, AARCH64_INS_ALIAS_STSMINLB, AARCH64_INS_ALIAS_STSMINLH,
+        AARCH64_INS_STTR, AARCH64_INS_STTRB, AARCH64_INS_STTRH, AARCH64_INS_ALIAS_STUMAX, AARCH64_INS_ALIAS_STUMAXB,
+        AARCH64_INS_ALIAS_STUMAXH, AARCH64_INS_ALIAS_STUMAXL, AARCH64_INS_ALIAS_STUMAXLB, AARCH64_INS_ALIAS_STUMAXLH,
+        AARCH64_INS_ALIAS_STUMIN, AARCH64_INS_ALIAS_STUMINB, AARCH64_INS_ALIAS_STUMINH, AARCH64_INS_ALIAS_STUMINL,
+        AARCH64_INS_ALIAS_STUMINLB, AARCH64_INS_ALIAS_STUMINLH, AARCH64_INS_STUR, AARCH64_INS_STURB,
+        AARCH64_INS_STURH, AARCH64_INS_STZ2G, AARCH64_INS_STZG, AARCH64_INS_STZGM
     ].map(\.rawValue))
 
     /// Atomic read-modify-write. The destination is operand **1**, not 0, and
@@ -1640,48 +4044,236 @@ public struct ValueTracer: Sendable {
     /// every register operand: imprecise, since operand 0 is only read, but
     /// never a lie. 583 sites in CoreLocation's __text.
     private static let atomicReadModifyWrite: Set<UInt32> = Set([
-        ARM64_INS_CAS, ARM64_INS_CASA, ARM64_INS_CASAB, ARM64_INS_CASAH, ARM64_INS_CASAL,
-        ARM64_INS_CASALB, ARM64_INS_CASALH, ARM64_INS_CASB, ARM64_INS_CASH, ARM64_INS_CASL,
-        ARM64_INS_CASLB, ARM64_INS_CASLH, ARM64_INS_CASP, ARM64_INS_CASPA, ARM64_INS_CASPAL,
-        ARM64_INS_CASPL, ARM64_INS_LDADD, ARM64_INS_LDADDA, ARM64_INS_LDADDAB,
-        ARM64_INS_LDADDAH, ARM64_INS_LDADDAL, ARM64_INS_LDADDALB, ARM64_INS_LDADDALH,
-        ARM64_INS_LDADDB, ARM64_INS_LDADDH, ARM64_INS_LDADDL, ARM64_INS_LDADDLB,
-        ARM64_INS_LDADDLH, ARM64_INS_LDCLR, ARM64_INS_LDCLRA, ARM64_INS_LDCLRAB,
-        ARM64_INS_LDCLRAH, ARM64_INS_LDCLRAL, ARM64_INS_LDCLRALB, ARM64_INS_LDCLRALH,
-        ARM64_INS_LDCLRB, ARM64_INS_LDCLRH, ARM64_INS_LDCLRL, ARM64_INS_LDCLRLB,
-        ARM64_INS_LDCLRLH, ARM64_INS_LDEOR, ARM64_INS_LDEORA, ARM64_INS_LDEORAB,
-        ARM64_INS_LDEORAH, ARM64_INS_LDEORAL, ARM64_INS_LDEORALB, ARM64_INS_LDEORALH,
-        ARM64_INS_LDEORB, ARM64_INS_LDEORH, ARM64_INS_LDEORL, ARM64_INS_LDEORLB,
-        ARM64_INS_LDEORLH, ARM64_INS_LDSET, ARM64_INS_LDSETA, ARM64_INS_LDSETAB,
-        ARM64_INS_LDSETAH, ARM64_INS_LDSETAL, ARM64_INS_LDSETALB, ARM64_INS_LDSETALH,
-        ARM64_INS_LDSETB, ARM64_INS_LDSETH, ARM64_INS_LDSETL, ARM64_INS_LDSETLB,
-        ARM64_INS_LDSETLH, ARM64_INS_LDSMAX, ARM64_INS_LDSMAXA, ARM64_INS_LDSMAXAB,
-        ARM64_INS_LDSMAXAH, ARM64_INS_LDSMAXAL, ARM64_INS_LDSMAXALB, ARM64_INS_LDSMAXALH,
-        ARM64_INS_LDSMAXB, ARM64_INS_LDSMAXH, ARM64_INS_LDSMAXL, ARM64_INS_LDSMAXLB,
-        ARM64_INS_LDSMAXLH, ARM64_INS_LDSMIN, ARM64_INS_LDSMINA, ARM64_INS_LDSMINAB,
-        ARM64_INS_LDSMINAH, ARM64_INS_LDSMINAL, ARM64_INS_LDSMINALB, ARM64_INS_LDSMINALH,
-        ARM64_INS_LDSMINB, ARM64_INS_LDSMINH, ARM64_INS_LDSMINL, ARM64_INS_LDSMINLB,
-        ARM64_INS_LDSMINLH, ARM64_INS_LDUMAX, ARM64_INS_LDUMAXA, ARM64_INS_LDUMAXAB,
-        ARM64_INS_LDUMAXAH, ARM64_INS_LDUMAXAL, ARM64_INS_LDUMAXALB, ARM64_INS_LDUMAXALH,
-        ARM64_INS_LDUMAXB, ARM64_INS_LDUMAXH, ARM64_INS_LDUMAXL, ARM64_INS_LDUMAXLB,
-        ARM64_INS_LDUMAXLH, ARM64_INS_LDUMIN, ARM64_INS_LDUMINA, ARM64_INS_LDUMINAB,
-        ARM64_INS_LDUMINAH, ARM64_INS_LDUMINAL, ARM64_INS_LDUMINALB, ARM64_INS_LDUMINALH,
-        ARM64_INS_LDUMINB, ARM64_INS_LDUMINH, ARM64_INS_LDUMINL, ARM64_INS_LDUMINLB,
-        ARM64_INS_LDUMINLH, ARM64_INS_SWP, ARM64_INS_SWPA, ARM64_INS_SWPAB, ARM64_INS_SWPAH,
-        ARM64_INS_SWPAL, ARM64_INS_SWPALB, ARM64_INS_SWPALH, ARM64_INS_SWPB, ARM64_INS_SWPH,
-        ARM64_INS_SWPL, ARM64_INS_SWPLB, ARM64_INS_SWPLH
+        AARCH64_INS_CAS, AARCH64_INS_CASA, AARCH64_INS_CASAB, AARCH64_INS_CASAH, AARCH64_INS_CASAL,
+        AARCH64_INS_CASALB, AARCH64_INS_CASALH, AARCH64_INS_CASB, AARCH64_INS_CASH, AARCH64_INS_CASL,
+        AARCH64_INS_CASLB, AARCH64_INS_CASLH, AARCH64_INS_CASP, AARCH64_INS_CASPA, AARCH64_INS_CASPAL,
+        AARCH64_INS_CASPL, AARCH64_INS_LDADD, AARCH64_INS_LDADDA, AARCH64_INS_LDADDAB,
+        AARCH64_INS_LDADDAH, AARCH64_INS_LDADDAL, AARCH64_INS_LDADDALB, AARCH64_INS_LDADDALH,
+        AARCH64_INS_LDADDB, AARCH64_INS_LDADDH, AARCH64_INS_LDADDL, AARCH64_INS_LDADDLB,
+        AARCH64_INS_LDADDLH, AARCH64_INS_LDCLR, AARCH64_INS_LDCLRA, AARCH64_INS_LDCLRAB,
+        AARCH64_INS_LDCLRAH, AARCH64_INS_LDCLRAL, AARCH64_INS_LDCLRALB, AARCH64_INS_LDCLRALH,
+        AARCH64_INS_LDCLRB, AARCH64_INS_LDCLRH, AARCH64_INS_LDCLRL, AARCH64_INS_LDCLRLB,
+        AARCH64_INS_LDCLRLH, AARCH64_INS_LDEOR, AARCH64_INS_LDEORA, AARCH64_INS_LDEORAB,
+        AARCH64_INS_LDEORAH, AARCH64_INS_LDEORAL, AARCH64_INS_LDEORALB, AARCH64_INS_LDEORALH,
+        AARCH64_INS_LDEORB, AARCH64_INS_LDEORH, AARCH64_INS_LDEORL, AARCH64_INS_LDEORLB,
+        AARCH64_INS_LDEORLH, AARCH64_INS_LDSET, AARCH64_INS_LDSETA, AARCH64_INS_LDSETAB,
+        AARCH64_INS_LDSETAH, AARCH64_INS_LDSETAL, AARCH64_INS_LDSETALB, AARCH64_INS_LDSETALH,
+        AARCH64_INS_LDSETB, AARCH64_INS_LDSETH, AARCH64_INS_LDSETL, AARCH64_INS_LDSETLB,
+        AARCH64_INS_LDSETLH, AARCH64_INS_LDSMAX, AARCH64_INS_LDSMAXA, AARCH64_INS_LDSMAXAB,
+        AARCH64_INS_LDSMAXAH, AARCH64_INS_LDSMAXAL, AARCH64_INS_LDSMAXALB, AARCH64_INS_LDSMAXALH,
+        AARCH64_INS_LDSMAXB, AARCH64_INS_LDSMAXH, AARCH64_INS_LDSMAXL, AARCH64_INS_LDSMAXLB,
+        AARCH64_INS_LDSMAXLH, AARCH64_INS_LDSMIN, AARCH64_INS_LDSMINA, AARCH64_INS_LDSMINAB,
+        AARCH64_INS_LDSMINAH, AARCH64_INS_LDSMINAL, AARCH64_INS_LDSMINALB, AARCH64_INS_LDSMINALH,
+        AARCH64_INS_LDSMINB, AARCH64_INS_LDSMINH, AARCH64_INS_LDSMINL, AARCH64_INS_LDSMINLB,
+        AARCH64_INS_LDSMINLH, AARCH64_INS_LDUMAX, AARCH64_INS_LDUMAXA, AARCH64_INS_LDUMAXAB,
+        AARCH64_INS_LDUMAXAH, AARCH64_INS_LDUMAXAL, AARCH64_INS_LDUMAXALB, AARCH64_INS_LDUMAXALH,
+        AARCH64_INS_LDUMAXB, AARCH64_INS_LDUMAXH, AARCH64_INS_LDUMAXL, AARCH64_INS_LDUMAXLB,
+        AARCH64_INS_LDUMAXLH, AARCH64_INS_LDUMIN, AARCH64_INS_LDUMINA, AARCH64_INS_LDUMINAB,
+        AARCH64_INS_LDUMINAH, AARCH64_INS_LDUMINAL, AARCH64_INS_LDUMINALB, AARCH64_INS_LDUMINALH,
+        AARCH64_INS_LDUMINB, AARCH64_INS_LDUMINH, AARCH64_INS_LDUMINL, AARCH64_INS_LDUMINLB,
+        AARCH64_INS_LDUMINLH, AARCH64_INS_SWP, AARCH64_INS_SWPA, AARCH64_INS_SWPAB, AARCH64_INS_SWPAH,
+        AARCH64_INS_SWPAL, AARCH64_INS_SWPALB, AARCH64_INS_SWPALH, AARCH64_INS_SWPB, AARCH64_INS_SWPH,
+        AARCH64_INS_SWPL, AARCH64_INS_SWPLB, AARCH64_INS_SWPLH
     ].map(\.rawValue))
 
     /// Two destinations: operands 0 and 1.
     private static let pairLoads: Set<UInt32> = Set([
-        ARM64_INS_LDAXP, ARM64_INS_LDNP, ARM64_INS_LDP, ARM64_INS_LDPSW, ARM64_INS_LDXP
+        AARCH64_INS_LDAXP, AARCH64_INS_LDNP, AARCH64_INS_LDP, AARCH64_INS_LDPSW, AARCH64_INS_LDXP
     ].map(\.rawValue))
 
 
 
     private func write(_ reg: PhysReg, _ value: AbstractValue, into registers: inout State) {
         guard reg.kind != .zero else { return }   // writes to xzr are discarded
-        registers[reg.key] = value
+        // A `z` register's low 128 bits are the `v` register of its number,
+        // and SVE and SME tuples and tiles overlap several: no vector value
+        // survives a write to a register the tracer does not model.
+        if reg.kind == .other {
+            for number in 0..<32 {
+                registers[Location(PhysReg(kind: .vector, number: number, widthBits: 128))] = .unknown
+            }
+        }
+        if Probe.isActive, let log = TracerWriteLog.current { log.keys.insert(reg.key) }
+        // A truncated copy (`mov w9, w22`) or a floating register cannot hold
+        // an async context or continuation pointer, though its key aliases xN.
+        switch value {
+        case .asyncContext, .asyncCalleeContext, .asyncResumeParent:
+            guard reg.kind == .gpr, reg.widthBits == 64 else {
+                registers[Location(reg)] = .unknown
+                return
+            }
+        default:
+            break
+        }
+        // Every 32-bit write zero-extends, including symbolic arithmetic whose
+        // result can overflow the word. Constants alone missed `mov w0, w0`
+        // and `add w0, w0, #1` with an incoming UInt64 argument.
+        if reg.kind == .gpr, reg.widthBits == 32 {
+            registers[Location(reg)] = narrowed(value, bits: 32)
+            return
+        }
+        registers[Location(reg)] = value
+    }
+
+    private func bitwiseComplement(_ value: AbstractValue) -> AbstractValue {
+        if case .immediate(let bits) = value { return .immediate(~bits) }
+        if case .unary(.bitwiseNot, let inner) = value { return inner }
+        guard value != .unknown, Self.expressionDepth(value) < 8 else { return .unknown }
+        return .unary(.bitwiseNot, value)
+    }
+
+    private func narrowed(_ value: AbstractValue, bits: Int) -> AbstractValue {
+        if bits == 64 { return value }
+        let mask: UInt64 = bits == 64 ? .max : (1 << bits) - 1
+        if case .binary(let op, _, _) = value, op.isComparison { return value }
+        if case .binary(.bitAnd, _, .immediate(let existing)) = value, existing & mask == existing { return value }
+        // `fmov w0, s1` writes a Float's 32 bits, which already fit the word.
+        if case .unary(.bitPattern(let width), _) = value, width <= bits { return value }
+        return expression(.bitAnd, value, .immediate(mask))
+    }
+
+    /// An ordinary call preserves only the low 64 bits of v8-v15. A whole
+    /// vector is tracked as two lanes, so keeping it unchanged invents the
+    /// upper lane after a call (`movi v8.2d, #0; bl ...; str q8, [sp]`).
+    /// Keep the low lane, including scalar values already tracked on their
+    /// own, and forget the high lane. A CFG join may select whole vectors.
+    static func callPreservedVectorValue(_ value: AbstractValue) -> AbstractValue {
+        switch value {
+        case .aggregate(let lanes):
+            guard let low = lanes.first else { return .unknown }
+            return .aggregate([low, .unknown])
+        case .select(let condition, let whenTrue, let whenFalse):
+            return .select(condition: condition,
+                           whenTrue: callPreservedVectorValue(whenTrue),
+                           whenFalse: callPreservedVectorValue(whenFalse))
+        default:
+            return value
+        }
+    }
+
+    /// Expand a decoded Advanced SIMD MOVI into its eight-byte words. An
+    /// immediate of zero is not always zero: `movi v0.4s, #0, msl #8`
+    /// puts 0xff in every 32-bit element. The arrangement is therefore part
+    /// of the operation, alongside the immediate and its LSL/MSL modifier.
+    static func moviValue(_ detail: StructuredInsn) -> AbstractValue? {
+        guard detail.id == AARCH64_INS_MOVI, detail.operands.count == 2,
+              let dest = detail.operands[0].operand.register, dest.kind == .vector,
+              dest.widthBits == 64 || dest.widthBits == 128,
+              detail.operands.allSatisfy({ $0.vectorIndex == nil && $0.extender == AARCH64_EXT_INVALID }),
+              let immediate = detail.operands[1].operand.immediateValue else { return nil }
+        let shift = detail.operands[1].shift
+        let elementBits: Int, totalBits: Int
+        switch detail.operands[0].vectorArrangement {
+        case AARCH64LAYOUT_VL_8B: (elementBits, totalBits) = (8, 64)
+        case AARCH64LAYOUT_VL_16B: (elementBits, totalBits) = (8, 128)
+        case AARCH64LAYOUT_VL_4H: (elementBits, totalBits) = (16, 64)
+        case AARCH64LAYOUT_VL_8H: (elementBits, totalBits) = (16, 128)
+        case AARCH64LAYOUT_VL_2S: (elementBits, totalBits) = (32, 64)
+        case AARCH64LAYOUT_VL_4S: (elementBits, totalBits) = (32, 128)
+        case AARCH64LAYOUT_VL_D, AARCH64LAYOUT_VL_1D: (elementBits, totalBits) = (64, 64)
+        case AARCH64LAYOUT_VL_2D: (elementBits, totalBits) = (64, 128)
+        default:
+            // Existing synthetic zero instructions lack layout metadata.
+            // Only an unmodified zero has the same bits for every layout.
+            guard detail.operands[0].vectorArrangement == AARCH64LAYOUT_INVALID,
+                  immediate == 0, shift.type == AARCH64_SFT_INVALID, shift.amount == 0 else { return nil }
+            return dest.widthBits == 128 ? .aggregate([.immediate(0), .immediate(0)]) : .immediate(0)
+        }
+        guard totalBits <= dest.widthBits else { return nil }
+        let element: UInt64
+        if elementBits == 64 {
+            // Capstone already expands the encoded eight-bit byte mask.
+            guard shift.type == AARCH64_SFT_INVALID, shift.amount == 0 else { return nil }
+            element = UInt64(bitPattern: immediate)
+            guard (0..<8).allSatisfy({
+                let byte = (element >> UInt64($0 * 8)) & 0xff
+                return byte == 0 || byte == 0xff
+            }) else { return nil }
+        } else {
+            guard (0...255).contains(immediate) else { return nil }
+            switch shift.type {
+            case AARCH64_SFT_INVALID:
+                guard shift.amount == 0 else { return nil }
+                element = UInt64(immediate)
+            case AARCH64_SFT_LSL:
+                guard shift.amount % 8 == 0, shift.amount < UInt32(elementBits) else { return nil }
+                element = UInt64(immediate) << UInt64(shift.amount)
+            case AARCH64_SFT_MSL:
+                guard elementBits == 32, shift.amount == 8 || shift.amount == 16 else { return nil }
+                element = (UInt64(immediate) << UInt64(shift.amount)) | ((1 << UInt64(shift.amount)) - 1)
+            default: return nil
+            }
+        }
+        var word: UInt64 = 0
+        for offset in stride(from: 0, to: 64, by: elementBits) { word |= element << UInt64(offset) }
+        return totalBits == 128 ? .aggregate([.immediate(word), .immediate(word)]) : .immediate(word)
+    }
+
+    /// What a scalar view of a vector register holds: `d0` is the low 64 bits
+    /// of v0, `s0` the low 32. An `.aggregate` is the whole register as its
+    /// eight-byte lanes, so `movi v0.2d, #0; str d0, [sp]` stores lane 0 alone;
+    /// stored whole, `printf("%f|%d", 0.0, 1)` rendered the double as `(0, 0)`.
+    /// A view narrower than a lane keeps a constant lane's low bits and
+    /// declines anything else. Project through a select of packed values as
+    /// well: a scalar is a select of lanes, never a select of whole tuples.
+    /// Other scalar values pass through as they were.
+    static func scalarView(_ value: AbstractValue, bits: Int) -> AbstractValue {
+        guard bits < 128 else { return value }
+        return packedLane(of: value, index: 0, bits: bits) ?? value
+    }
+
+    /// Nil means no packed value was found, so the existing scalar meaning
+    /// stays intact. An opaque arm mixed with packed lanes is unknown: its
+    /// value cannot safely stand in for one eight-byte lane.
+    private static func packedLane(of value: AbstractValue, index: Int, bits: Int) -> AbstractValue? {
+        switch value {
+        case .aggregate(let lanes):
+            guard lanes.indices.contains(index) else { return .unknown }
+            let lane = lanes[index]
+            if bits == 64 { return lane }
+            guard (1..<64).contains(bits), case .immediate(let word) = lane else { return .unknown }
+            return .immediate(word & ((1 << UInt64(bits)) - 1))
+        case .select(let condition, let whenTrue, let whenFalse):
+            let yes = packedLane(of: whenTrue, index: index, bits: bits)
+            let no = packedLane(of: whenFalse, index: index, bits: bits)
+            guard yes != nil || no != nil else { return nil }
+            guard let yes, let no else { return .unknown }
+            if case .immediate(let taken) = condition { return taken != 0 ? yes : no }
+            if yes == no { return yes }
+            guard condition != .unknown, yes != .unknown, no != .unknown else { return .unknown }
+            return .select(condition: condition, whenTrue: yes, whenFalse: no)
+        default:
+            return nil
+        }
+    }
+
+    /// An InstructionSemantics term over this state, folded by the same
+    /// helpers the transfer cases use.
+    private func evaluate(_ term: SemanticTerm, _ detail: StructuredInsn, in registers: State) -> AbstractValue {
+        switch term {
+        case .operand(let index):
+            return index < detail.operands.count ? source(detail.operands[index], in: registers) : .unknown
+        case .register(let index):
+            guard index < detail.operands.count, let register = detail.operands[index].operand.register else { return .unknown }
+            return source(StructuredOperandInfo(operand: .register(register),
+                shift: (AARCH64_SFT_INVALID, 0), extender: AARCH64_EXT_INVALID), in: registers)
+        case .constant(let value):
+            return .immediate(value)
+        case .binary(let op, let lhs, let rhs):
+            return expression(op, evaluate(lhs, detail, in: registers), evaluate(rhs, detail, in: registers))
+        case .complement(let inner):
+            return bitwiseComplement(evaluate(inner, detail, in: registers))
+        case .signExtend(let inner, let bits):
+            return signExtended(evaluate(inner, detail, in: registers), bits: bits)
+        case .zeroExtend(let inner, let bits):
+            return narrowed(evaluate(inner, detail, in: registers), bits: bits)
+        }
+    }
+
+    private func signExtended(_ value: AbstractValue, bits: Int) -> AbstractValue {
+        let shift = UInt64(64 - bits)
+        return expression(.arithmeticShiftRight,
+                          expression(.shiftLeft, value, .immediate(shift)), .immediate(shift))
     }
 
     /// Build or fold a symbolic expression. A small depth cap prevents long
@@ -1693,14 +4285,37 @@ public struct ValueTracer: Sendable {
         _ lhs: AbstractValue,
         _ rhs: AbstractValue
     ) -> AbstractValue {
+        // A frame address less an unknown size stays a frame address below
+        // it: `sub x9, sp, x12; mov sp, x9` allocates x12 bytes whatever x12
+        // is, and the allocation (`allocationBase`, `.frameDynamic`) bounds
+        // what the buffer reaches. Folded to unknown, it escaped the whole
+        // frame, and every spilled value with it.
+        if op == .subtract, rhs == .unknown, Self.containsFrame(lhs) { return .binary(.subtract, lhs, .unknown) }
         guard lhs != .unknown, rhs != .unknown else { return .unknown }
+        if op == .bitAnd, case .immediate(let mask) = rhs {
+            if mask == .max { return lhs }
+            if case .binary(.bitAnd, let inner, .immediate(let previous)) = lhs {
+                return expression(.bitAnd, inner, .immediate(previous & mask))
+            }
+            if Self.fitsLowMask(lhs, mask: mask) { return lhs }
+        }
         if case .immediate(let left) = lhs, case .immediate(let right) = rhs {
             let folded: UInt64? = switch op {
             case .add: left &+ right
             case .subtract: left &- right
             case .multiply: left &* right
-            case .divide: right != 0 ? left / right : nil
-            case .remainder: right != 0 ? left % right : nil
+            // sdiv semantics on the bit patterns: Int.min / -1 wraps to Int.min
+            // (and its remainder is 0), as the instruction does.
+            case .divide:
+                right != 0
+                    ? UInt64(bitPattern: Int64(bitPattern: left).dividedReportingOverflow(by: Int64(bitPattern: right)).partialValue)
+                    : nil
+            case .remainder:
+                right != 0
+                    ? UInt64(bitPattern: Int64(bitPattern: left).remainderReportingOverflow(dividingBy: Int64(bitPattern: right)).partialValue)
+                    : nil
+            case .unsignedDivide: right != 0 ? left / right : nil
+            case .unsignedRemainder: right != 0 ? left % right : nil
             case .bitAnd: left & right
             case .bitOr: left | right
             case .bitXor: left ^ right
@@ -1710,6 +4325,10 @@ public struct ValueTracer: Sendable {
                 right < 64
                     ? UInt64(bitPattern: Int64(bitPattern: left) >> Int64(right))
                     : nil
+            case .multiplyHigh:
+                UInt64(bitPattern: Int64(bitPattern: left).multipliedFullWidth(by: Int64(bitPattern: right)).high)
+            case .unsignedMultiplyHigh:
+                left.multipliedFullWidth(by: right).high
             case .equal: left == right ? 1 : 0
             case .notEqual: left != right ? 1 : 0
             case .less: Int64(bitPattern: left) < Int64(bitPattern: right) ? 1 : 0
@@ -1731,8 +4350,9 @@ public struct ValueTracer: Sendable {
             case .add, .subtract, .bitOr, .bitXor, .shiftLeft, .shiftRight,
                  .arithmeticShiftRight:
                 return lhs
-            case .multiply, .bitAnd: return .immediate(0)
-            case .divide, .remainder: return .unknown // by zero — don't simplify
+            case .multiply, .bitAnd, .multiplyHigh, .unsignedMultiplyHigh: return .immediate(0)
+            case .divide, .remainder, .unsignedDivide, .unsignedRemainder:
+                return .unknown // by zero — don't simplify
             case .equal, .notEqual, .less, .lessEqual, .greater, .greaterEqual,
                  .unsignedLess, .unsignedLessEqual, .unsignedGreater, .unsignedGreaterEqual:
                 break // a comparison against 0 is meaningful; keep it symbolic
@@ -1742,12 +4362,31 @@ public struct ValueTracer: Sendable {
         // to (sdiv, then mul + sub or msub). Fold it back to the modulo.
         if op == .subtract,
            case .binary(.multiply, let quotient, let divisor) = rhs,
-           case .binary(.divide, let numerator, let denominator) = quotient,
+           case .binary(let division, let numerator, let denominator) = quotient,
+           division == .divide || division == .unsignedDivide,
            numerator == lhs, denominator == divisor {
-            return .binary(.remainder, lhs, divisor)
+            return .binary(division == .divide ? .remainder : .unsignedRemainder, lhs, divisor)
+        }
+        if let folded = MagicDivision.fold(op, lhs, rhs) {
+            return folded
         }
         guard Self.expressionDepth(lhs) < 8, Self.expressionDepth(rhs) < 8 else { return .unknown }
         return .binary(op, lhs, rhs)
+    }
+
+    /// A local range proof keeps width normalization idempotent without
+    /// discarding masks on unconstrained arguments or arithmetic results.
+    private static func fitsLowMask(_ value: AbstractValue, mask: UInt64) -> Bool {
+        switch value {
+        case .immediate(let bits): return bits & mask == bits
+        case .binary(let op, _, _) where op.isComparison: return mask & 1 == 1
+        case .binary(.bitAnd, _, .immediate(let inner)): return inner & mask == inner
+        case .binary(let op, let lhs, let rhs) where op == .bitOr || op == .bitXor:
+            return fitsLowMask(lhs, mask: mask) && fitsLowMask(rhs, mask: mask)
+        case .select(_, let whenTrue, let whenFalse):
+            return fitsLowMask(whenTrue, mask: mask) && fitsLowMask(whenFalse, mask: mask)
+        default: return false
+        }
     }
 
     /// Build a floating-point binary node. Unlike `expression`, it never folds
@@ -1755,71 +4394,402 @@ public struct ValueTracer: Sendable {
     /// for two's-complement integers but not for IEEE floats (`-0.0`, `NaN`,
     /// `Inf`), and an FP register never carries an `.immediate` anyway.
     private func floatBinary(
-        _ op: AbstractBinaryOperator, _ lhs: AbstractValue, _ rhs: AbstractValue
+        _ op: AbstractBinaryOperator, _ lhs: AbstractValue, _ rhs: AbstractValue, bits: Int
     ) -> AbstractValue {
+        let lhs = Self.floatOperand(lhs, bits: bits)
+        let rhs = Self.floatOperand(rhs, bits: bits)
         guard lhs != .unknown, rhs != .unknown,
               Self.expressionDepth(lhs) < 8, Self.expressionDepth(rhs) < 8
         else { return .unknown }
         return .binary(op, lhs, rhs)
     }
 
-    private func floatUnary(_ op: AbstractUnaryOperator, _ value: AbstractValue) -> AbstractValue {
+    /// `operandBits` is the width of the float register the operand was read
+    /// from, nil for an integer register.
+    private func floatUnary(_ op: AbstractUnaryOperator, _ value: AbstractValue, operandBits: Int?) -> AbstractValue {
+        let value = operandBits.map { Self.floatOperand(value, bits: $0) } ?? value
         guard value != .unknown, Self.expressionDepth(value) < 8 else { return .unknown }
         return .unary(op, value)
     }
 
-    /// The tracked flags value from the most recent modelled compare, keyed so it
-    /// flows through the register map and the block meet like any other state.
-    private static let flagsKey = "nzcv.flags"
-
-    /// Instruction ids that write NZCV but that we do NOT reconstruct into a
-    /// comparison — float and conditional compares, and the flag-setting
-    /// arithmetic (`adds`/`subs`/`ands` and friends). A `cset` after one of these
-    /// must not read a stale integer comparison, so they invalidate the flags.
-    private static let unmodeledFlagWriters: Set<UInt32> = Set([
-        ARM64_INS_FCMP, ARM64_INS_FCMPE, ARM64_INS_FCCMP, ARM64_INS_FCCMPE,
-        ARM64_INS_CCMP, ARM64_INS_CCMN, ARM64_INS_BICS, ARM64_INS_ADCS,
-        ARM64_INS_SBCS,
-    ].map(\.rawValue))
-
-    /// Reconstruct a boolean comparison from a flags value and a comparison
-    /// operator. A `cmp a, b` stores `a - b`, so a `.subtract` node unwraps to a
-    /// direct `a <op> b`; anything else (a `tst`'s `a & b`, or a `cmp a, #0`
-    /// folded to just `a`) compares against zero.
-    private func comparisonValue(flags: AbstractValue, _ op: AbstractBinaryOperator) -> AbstractValue {
-        let lhs: AbstractValue, rhs: AbstractValue
-        if case .binary(.subtract, let a, let b) = flags {
-            lhs = a; rhs = b
-        } else {
-            lhs = flags; rhs = .immediate(0)
+    /// An immediate read from a float register as a float operation's operand
+    /// is an IEEE bit pattern of the operation's width (`mov x8,
+    /// #0x4059000000000000; fmov d1, x8; fdiv d0, d0, d1` divides by 100.0).
+    /// Marked, it renders as its decimal wherever the expression goes; bare,
+    /// it read as an integer unless the expression beside it said float.
+    static func floatOperand(_ value: AbstractValue, bits: Int) -> AbstractValue {
+        guard [16, 32, 64].contains(bits) else { return .unknown }
+        switch value {
+        case .immediate: return .unary(.floatConstant(bits: bits), value)
+        case .select(let condition, let whenTrue, let whenFalse):
+            // Each arm is a word of IEEE bits; the condition remains integer.
+            guard expressionDepth(value) < 8 else { return .unknown }
+            return .select(condition: condition,
+                           whenTrue: floatOperand(whenTrue, bits: bits),
+                           whenFalse: floatOperand(whenFalse, bits: bits))
+        case .aggregate: return .unknown
+        default: return value
         }
-        // Through `expression` so a comparison of two known constants folds to its
-        // 0/1 result (`(0 != 0)` → 0) instead of printing the trivial compare.
-        return expression(op, lhs, rhs)
     }
 
+    /// A float register's `bits` read as an integer: `a.bitPattern`. An
+    /// immediate is the same bits either way, and the bits of
+    /// `Double(bitPattern: i)` are i.
+    static func bitPattern(of value: AbstractValue, bits: Int) -> AbstractValue {
+        switch value {
+        case .unknown, .immediate: return value
+        case .unary(.floatFromBits(let width), let integer) where width == bits: return integer
+        case .select(let condition, let whenTrue, let whenFalse):
+            // A projected vector lane may select raw bit patterns. Convert
+            // each arm so known words stay words through a scalar FP spill.
+            guard expressionDepth(value) < 8 else { return .unknown }
+            return .select(condition: condition,
+                           whenTrue: bitPattern(of: whenTrue, bits: bits),
+                           whenFalse: bitPattern(of: whenFalse, bits: bits))
+        default: return expressionDepth(value) < 8 ? .unary(.bitPattern(bits: bits), value) : .unknown
+        }
+    }
+
+    /// An integer register's low `bits` read as a float of that width:
+    /// `Double(bitPattern: i)`. An immediate is the float constant it spells,
+    /// and the float of `a.bitPattern` is a. A word's zero-extension mask is
+    /// dropped, since only its low 32 bits are read.
+    static func float(fromBits value: AbstractValue, bits: Int) -> AbstractValue {
+        switch value {
+        case .unknown, .immediate: return value
+        case .unary(.bitPattern(let width), let float) where width == bits: return float
+        case .binary(.bitAnd, let integer, .immediate(0xffff_ffff)) where bits == 32:
+            return float(fromBits: integer, bits: bits)
+        default: return expressionDepth(value) < 8 ? .unary(.floatFromBits(bits: bits), value) : .unknown
+        }
+    }
+
+    /// The tracked flags value from the most recent modelled compare, keyed so it
+    /// flows through the register map and the block meet like any other state.
+    private static let flagsKey = Location.flags
+    private static let flagsWidthKey = Location.flagsWidth
+
+    private static let flagCodes: [AArch64CC_CondCode] = [
+        AArch64CC_EQ, AArch64CC_NE, AArch64CC_HS, AArch64CC_LO,
+        AArch64CC_MI, AArch64CC_PL, AArch64CC_VS, AArch64CC_VC,
+        AArch64CC_HI, AArch64CC_LS, AArch64CC_GE, AArch64CC_LT,
+        AArch64CC_GT, AArch64CC_LE,
+    ]
+
+    /// Flags from two constant operands, kept unfolded so their NZCV can be
+    /// computed exactly; nil when either operand is not a constant.
+    private func constantFlags(_ op: AbstractBinaryOperator, _ lhs: AbstractValue, _ rhs: AbstractValue) -> AbstractValue? {
+        guard case .immediate = lhs, case .immediate = rhs else { return nil }
+        return .binary(op, lhs, rhs)
+    }
+
+    /// The flags of a `tst` or `ands`: constants unfolded, like a compare's,
+    /// and any other value under an all-ones mask, which `expression` never
+    /// leaves in place. A test must not read as what it folded to:
+    /// `sub x8, x0, x1; mov x9, #-1; tst x8, x9` tests the difference, whose
+    /// `.subtract` bare would read as `cmp x0, x1`, with a carry and an
+    /// overflow the test clears.
+    private func testFlags(_ lhs: AbstractValue, _ rhs: AbstractValue, value: AbstractValue) -> AbstractValue {
+        if let constants = constantFlags(.bitAnd, lhs, rhs) { return constants }
+        // Even an unknown result has test identity and known-clear C/V.
+        return .binary(.bitAnd, value, .immediate(.max))
+    }
+
+    /// NZCV of `lhs op rhs` at `width` bits, for constant operands of a
+    /// compare (`subtract`), a compare-negative or flag-setting add (`add`),
+    /// or a test (`bitAnd`). The carry of an add is its unsigned carry-out
+    /// and of a subtract its absence of borrow; a test clears C and V. A
+    /// comparison read off the folded value got these wrong: `cmn w8, w9` of
+    /// 0 and 0 leaves C clear, so `hs` is false.
+    static func constantNZCV(_ flags: AbstractValue, width: Int) -> UInt64? {
+        guard case .binary(let op, .immediate(let rawA), .immediate(let rawB)) = flags else { return nil }
+        let mask: UInt64 = width == 32 ? 0xffff_ffff : .max
+        let sign: UInt64 = width == 32 ? 0x8000_0000 : 0x8000_0000_0000_0000
+        let a = rawA & mask, b = rawB & mask
+        let result: UInt64, carry: Bool, overflow: Bool
+        switch op {
+        case .subtract:
+            result = (a &- b) & mask
+            carry = a >= b
+            overflow = (a & sign) != (b & sign) && (result & sign) != (a & sign)
+        case .add:
+            result = (a &+ b) & mask
+            carry = width == 32 ? (a + b) > mask : a.addingReportingOverflow(b).overflow
+            overflow = (a & sign) == (b & sign) && (result & sign) != (a & sign)
+        case .bitAnd:
+            result = a & b
+            carry = false
+            overflow = false
+        default:
+            return nil
+        }
+        return (result & sign != 0 ? 8 : 0) | (result == 0 ? 4 : 0) | (carry ? 2 : 0) | (overflow ? 1 : 0)
+    }
+
+    private static func literalFlagCondition(_ flags: UInt64, code: AArch64CC_CondCode) -> Bool {
+        let n = flags & 8 != 0, z = flags & 4 != 0, c = flags & 2 != 0, v = flags & 1 != 0
+        switch code {
+        case AArch64CC_EQ: return z
+        case AArch64CC_NE: return !z
+        case AArch64CC_HS: return c
+        case AArch64CC_LO: return !c
+        case AArch64CC_MI: return n
+        case AArch64CC_PL: return !n
+        case AArch64CC_VS: return v
+        case AArch64CC_VC: return !v
+        case AArch64CC_HI: return c && !z
+        case AArch64CC_LS: return !c || z
+        case AArch64CC_GE: return n == v
+        case AArch64CC_LT: return n != v
+        case AArch64CC_GT: return !z && n == v
+        case AArch64CC_LE: return z || n != v
+        default: return false
+        }
+    }
+
+    func flagCondition(_ flags: AbstractValue, code: AArch64CC_CondCode, width: AbstractValue?, requireComplete: Bool = false, selectDepth: Int = 0) -> AbstractValue? {
+        // Both always conditions hold independently of the tracked NZCV.
+        // Literal flags previously reached the default-false case first.
+        if code == AArch64CC_AL || code == AArch64CC_NV { return .immediate(1) }
+        // CFG merges retain a selected producer, not a selected arithmetic
+        // result to compare with zero. Bound this query independently of the
+        // existing retained-state graph, whose switch selects may be deeper.
+        guard selectDepth <= 8 else { return nil }
+        if case .aggregate(let conditions) = flags,
+           let index = Self.flagCodes.firstIndex(of: code), index < conditions.count {
+            return conditions[index]
+        }
+        if case .select(let condition, let taken, let fall) = flags {
+            let takenWidth: AbstractValue?, fallWidth: AbstractValue?
+            if case .select(let widthCondition, let first, let second)? = width {
+                guard widthCondition == condition else { return nil }
+                takenWidth = first; fallWidth = second
+            } else {
+                guard width == .immediate(32) || width == .immediate(64) else { return nil }
+                takenWidth = width; fallWidth = width
+            }
+            if case .immediate(let selected) = condition {
+                return flagCondition(selected != 0 ? taken : fall, code: code,
+                                     width: selected != 0 ? takenWidth : fallWidth,
+                                     requireComplete: requireComplete, selectDepth: selectDepth + 1)
+            }
+            guard let yes = flagCondition(taken, code: code, width: takenWidth,
+                                          requireComplete: requireComplete, selectDepth: selectDepth + 1),
+                  let no = flagCondition(fall, code: code, width: fallWidth,
+                                         requireComplete: requireComplete, selectDepth: selectDepth + 1)
+            else { return nil }
+            return selectedFlagCondition(condition, whenTrue: yes, whenFalse: no, requireComplete: requireComplete)
+        }
+        // A common flags payload can survive while only its width is selected.
+        if case .select(let condition, let takenWidth, let fallWidth)? = width {
+            if case .immediate(let selected) = condition {
+                return flagCondition(flags, code: code, width: selected != 0 ? takenWidth : fallWidth,
+                                     requireComplete: requireComplete, selectDepth: selectDepth + 1)
+            }
+            guard let yes = flagCondition(flags, code: code, width: takenWidth,
+                                          requireComplete: requireComplete, selectDepth: selectDepth + 1),
+                  let no = flagCondition(flags, code: code, width: fallWidth,
+                                         requireComplete: requireComplete, selectDepth: selectDepth + 1)
+            else { return nil }
+            return selectedFlagCondition(condition, whenTrue: yes, whenFalse: no, requireComplete: requireComplete)
+        }
+        // An unpaired or missing width must not silently become 64 bits.
+        guard width == .immediate(32) || width == .immediate(64) else { return nil }
+        if let nzcv = Self.constantNZCV(flags, width: width == .immediate(32) ? 32 : 64) {
+            return .immediate(Self.literalFlagCondition(nzcv, code: code) ? 1 : 0)
+        }
+        if case .binary(.bitAnd, let tested, .immediate(.max)) = flags {
+            let condition = testCondition(tested, code: code, width: width == .immediate(32) ? 32 : 64)
+            if requireComplete && condition == .unknown { return nil }
+            return condition
+        }
+        if case .binary(.add, let lhs, let rhs) = flags {
+            return additionCondition(lhs, rhs, code: code, width: width == .immediate(32) ? 32 : 64)
+        }
+        if case .binary(.subtract, let lhs, let rhs) = flags {
+            // Constants fold exactly, at the compare's width and with its
+            // overflow: `cmp w8, w9` of 0xffffffff and 1 is negative, so
+            // `pl` is false, though the 64-bit difference is positive.
+            var constants = false
+            if case .immediate = lhs, case .immediate = rhs { constants = true }
+            // A 32-bit compare reads words. A signed order compares their
+            // sign-extended values: a w register reads as its zero-extended
+            // bits, and `cmp w9, w8; b.lt` with w8 = -100000 read `… <
+            // 0xfffe7960`, the branch inverted for every non-negative w9.
+            // Every other code compares them cut to the word: `source` leaves
+            // a shifted or extended operand wider, and `cmp w0, w1, lsl #4;
+            // cset eq` of 0 and 0x10000000 read `0 == 0x100000000`. MI and PL
+            // are the difference's sign, which is not `a < b` when it overflows.
+            let wordCompare = width == .immediate(32) && Self.comparisonOperator(code) != nil
+            if requireComplete || constants || wordCompare
+                || code == AArch64CC_MI || code == AArch64CC_PL {
+                return subtractionCondition(lhs, rhs, code: code, width: width == .immediate(32) ? 32 : 64)
+            }
+            // Through `expression` so a comparison of two known constants folds to
+            // its 0/1 result (`(0 != 0)` → 0) instead of printing the trivial compare.
+            guard let op = Self.comparisonOperator(code) else { return nil }
+            return expression(op, lhs, rhs)
+        }
+        return nil
+    }
+
+    private func selectedFlagCondition(_ condition: AbstractValue, whenTrue: AbstractValue, whenFalse: AbstractValue, requireComplete: Bool) -> AbstractValue? {
+        // An ordinary branch may keep known alternatives under an unknown
+        // Boolean. A conditional compare requires its incoming condition.
+        if requireComplete && (whenTrue == .unknown || whenFalse == .unknown) { return nil }
+        if whenTrue == whenFalse { return whenTrue }
+        guard Self.expressionDepth(condition) < 8,
+              Self.expressionDepth(whenTrue) < 8, Self.expressionDepth(whenFalse) < 8
+        else { return nil }
+        return .select(condition: condition, whenTrue: whenTrue, whenFalse: whenFalse)
+    }
+
+    /// A test's condition. `tst` and `ands` set N and Z from the result and
+    /// clear C and V, so every code is exact: the carry and overflow codes
+    /// are constants, and a signed order compares the result with 0. A
+    /// 32-bit result is a word whose sign is bit 31. Read zero-extended,
+    /// `tst w1, w0; b.ge` was `(w1 & w0) >= 0`, which always holds.
+    /// One operand of a 32-bit test is a W read, so the result fits the word.
+    private func testCondition(_ tested: AbstractValue, code: AArch64CC_CondCode, width: Int) -> AbstractValue? {
+        let signed = width == 32 ? Self.signExtended32(tested) { expression($0, $1, $2) } : tested
+        switch code {
+        case AArch64CC_EQ: return expression(.equal, tested, .immediate(0))
+        case AArch64CC_NE: return expression(.notEqual, tested, .immediate(0))
+        case AArch64CC_HS, AArch64CC_VS, AArch64CC_HI: return .immediate(0)
+        case AArch64CC_LO, AArch64CC_VC, AArch64CC_LS: return .immediate(1)
+        case AArch64CC_MI, AArch64CC_LT: return expression(.less, signed, .immediate(0))
+        case AArch64CC_PL, AArch64CC_GE: return expression(.greaterEqual, signed, .immediate(0))
+        case AArch64CC_GT: return expression(.greater, signed, .immediate(0))
+        case AArch64CC_LE: return expression(.lessEqual, signed, .immediate(0))
+        default: return nil
+        }
+    }
+
+    private func additionCondition(_ lhs: AbstractValue, _ rhs: AbstractValue, code: AArch64CC_CondCode, width: Int) -> AbstractValue {
+        // N xor V is the sign of the mathematical sum, not its wrapped result.
+        // A constant RHS permits the simpler equivalent signed threshold.
+        if [AArch64CC_EQ, AArch64CC_NE, AArch64CC_LT, AArch64CC_GE, AArch64CC_GT, AArch64CC_LE].contains(code),
+           case .immediate(let bits) = rhs {
+            let c = width == 32 ? Int64(Int32(truncatingIfNeeded: bits)) : Int64(bitPattern: bits)
+            let minimum = width == 32 ? Int64(Int32.min) : Int64.min
+            if c == minimum, code != AArch64CC_EQ, code != AArch64CC_NE {
+                return .immediate(code == AArch64CC_LT || code == AArch64CC_LE ? 1 : 0)
+            }
+            if let op = Self.comparisonOperator(code) {
+                let negated = UInt64(0) &- UInt64(bitPattern: c)
+                let threshold = width == 32 ? UInt64(bitPattern: Int64(Int32(truncatingIfNeeded: negated))) : negated
+                return expression(op, width == 32 ? signExtended(lhs, bits: 32) : lhs,
+                                  .immediate(threshold))
+            }
+        }
+        let a = narrowed(lhs, bits: width), b = narrowed(rhs, bits: width)
+        let result = narrowed(expression(.add, a, b), bits: width)
+        let signMask = UInt64(1) << (width - 1)
+        func sign(_ value: AbstractValue) -> AbstractValue {
+            expression(.notEqual, expression(.bitAnd, value, .immediate(signMask)), .immediate(0))
+        }
+        func not(_ value: AbstractValue) -> AbstractValue { expression(.bitXor, value, .immediate(1)) }
+        let n = sign(result), z = expression(.equal, result, .immediate(0))
+        let carry = expression(.unsignedLess, result, a)
+        let overflow = expression(.bitAnd, expression(.equal, sign(a), sign(b)), expression(.notEqual, n, sign(a)))
+        let lt = expression(.bitXor, n, overflow)
+        switch code {
+        case AArch64CC_EQ: return z
+        case AArch64CC_NE: return not(z)
+        case AArch64CC_HS: return carry
+        case AArch64CC_LO: return not(carry)
+        case AArch64CC_MI: return n
+        case AArch64CC_PL: return not(n)
+        case AArch64CC_VS: return overflow
+        case AArch64CC_VC: return not(overflow)
+        case AArch64CC_HI: return expression(.bitAnd, carry, not(z))
+        case AArch64CC_LS: return expression(.bitOr, not(carry), z)
+        case AArch64CC_GE: return not(lt)
+        case AArch64CC_LT: return lt
+        case AArch64CC_GT: return expression(.bitAnd, not(z), not(lt))
+        case AArch64CC_LE: return expression(.bitOr, z, lt)
+        default: return .unknown
+        }
+    }
+
+    /// A 32-bit value's low half sign-extended, `(v << 32) >>ˢ 32`, through
+    /// `build`. A value masked below bit 31 (`v & 0xff`), a small constant,
+    /// or a choice between such values has a clear sign bit and is its own
+    /// extension.
+    static func signExtended32(
+        _ value: AbstractValue, _ build: (AbstractBinaryOperator, AbstractValue, AbstractValue) -> AbstractValue
+    ) -> AbstractValue {
+        func signBitClear(_ value: AbstractValue) -> Bool {
+            switch value {
+            case .binary(.bitAnd, _, .immediate(let mask)), .immediate(let mask): mask <= 0x7fff_ffff
+            case .select(_, let whenTrue, let whenFalse): signBitClear(whenTrue) && signBitClear(whenFalse)
+            default: false
+            }
+        }
+        if signBitClear(value) { return value }
+        return build(.arithmeticShiftRight, build(.shiftLeft, value, .immediate(32)), .immediate(32))
+    }
+
+    private func subtractionCondition(_ lhs: AbstractValue, _ rhs: AbstractValue, code: AArch64CC_CondCode, width: Int) -> AbstractValue {
+        func unsigned(_ value: AbstractValue) -> AbstractValue {
+            width == 32 ? expression(.bitAnd, value, .immediate(0xffff_ffff)) : value
+        }
+        func signed(_ value: AbstractValue) -> AbstractValue {
+            width == 32 ? Self.signExtended32(value) { expression($0, $1, $2) } : value
+        }
+        let a = unsigned(lhs), b = unsigned(rhs)
+        if code == AArch64CC_MI || code == AArch64CC_PL {
+            let n = expression(.less, signed(expression(.subtract, lhs, rhs)), .immediate(0))
+            return code == AArch64CC_MI ? n : expression(.bitXor, n, .immediate(1))
+        }
+        if code == AArch64CC_VS || code == AArch64CC_VC {
+            let leftSign = expression(.less, signed(lhs), .immediate(0))
+            let rightSign = expression(.less, signed(rhs), .immediate(0))
+            let resultSign = expression(.less, signed(expression(.subtract, lhs, rhs)), .immediate(0))
+            let v = expression(.bitAnd, expression(.notEqual, leftSign, rightSign), expression(.notEqual, resultSign, leftSign))
+            return code == AArch64CC_VS ? v : expression(.bitXor, v, .immediate(1))
+        }
+        guard let op = Self.comparisonOperator(code) else { return .unknown }
+        return expression(op, op.isUnsignedComparison || op == .equal || op == .notEqual ? a : signed(lhs),
+                          op.isUnsignedComparison || op == .equal || op == .notEqual ? b : signed(rhs))
+    }
+
+    /// Explicit NZCV writers, including decoder versions that omit the flags
+    /// bit. A modelled writer (CCMP) reinstates its new state below; the others
+    /// must not leave a stale integer comparison available to a consumer.
+    private static let unmodeledFlagWriters: Set<UInt32> = Set([
+        AARCH64_INS_FCMP, AARCH64_INS_FCMPE, AARCH64_INS_FCCMP, AARCH64_INS_FCCMPE,
+        AARCH64_INS_CCMP, AARCH64_INS_CCMN, AARCH64_INS_BICS, AARCH64_INS_ADCS,
+        AARCH64_INS_SBCS,
+    ].map(\.rawValue))
+
     /// The comparison a condition code denotes after a subtract-based compare.
-    /// Signed and unsigned variants collapse to one symbol set; the unordered,
-    /// overflow, and always/never codes are left unmodelled.
-    private static func comparisonOperator(_ cc: arm64_cc) -> AbstractBinaryOperator? {
-        if cc == ARM64_CC_EQ { return .equal }
-        if cc == ARM64_CC_NE { return .notEqual }
+    /// Signed and unsigned variants remain distinct; overflow and always/never
+    /// codes are handled only where an exact flag model is available.
+    private static func comparisonOperator(_ cc: AArch64CC_CondCode) -> AbstractBinaryOperator? {
+        if cc == AArch64CC_EQ { return .equal }
+        if cc == AArch64CC_NE { return .notEqual }
         // Signed ordered (LT/GE/GT/LE) and the sign-flag codes (MI/PL) map to the
         // signed operators; the unsigned ordered codes (LO/HS/HI/LS) map to the
         // unsigned operators — preserving, not merging, the machine's signedness.
-        if cc == ARM64_CC_GE || cc == ARM64_CC_PL { return .greaterEqual }
-        if cc == ARM64_CC_LT || cc == ARM64_CC_MI { return .less }
-        if cc == ARM64_CC_GT { return .greater }
-        if cc == ARM64_CC_LE { return .lessEqual }
-        if cc == ARM64_CC_HS { return .unsignedGreaterEqual }
-        if cc == ARM64_CC_LO { return .unsignedLess }
-        if cc == ARM64_CC_HI { return .unsignedGreater }
-        if cc == ARM64_CC_LS { return .unsignedLessEqual }
+        if cc == AArch64CC_GE || cc == AArch64CC_PL { return .greaterEqual }
+        if cc == AArch64CC_LT || cc == AArch64CC_MI { return .less }
+        if cc == AArch64CC_GT { return .greater }
+        if cc == AArch64CC_LE { return .lessEqual }
+        if cc == AArch64CC_HS { return .unsignedGreaterEqual }
+        if cc == AArch64CC_LO { return .unsignedLess }
+        if cc == AArch64CC_HI { return .unsignedGreater }
+        if cc == AArch64CC_LS { return .unsignedLessEqual }
         return nil
     }
 
     private static func expressionDepth(_ value: AbstractValue) -> Int {
         switch value {
+        case .binary(.bitAnd, let value, .immediate(0xffff_ffff)):
+            // Word normalization adds no computation dependency. Charging it
+            // again made bounded 32-bit CCMP overflow predicates exceed the
+            // pre-existing arithmetic-depth limit after symbolic W reads.
+            return expressionDepth(value)
         case .binary(_, let lhs, let rhs): return 1 + max(expressionDepth(lhs), expressionDepth(rhs))
         case .unary(_, let operand): return 1 + expressionDepth(operand)
         case .select(let condition, let whenTrue, let whenFalse):
@@ -1828,13 +4798,137 @@ public struct ValueTracer: Sendable {
         }
     }
 
+    /// Forget every register or slot whose value was read from a self field:
+    /// after a store through self it is a snapshot, not the field. Recovered
+    /// from the pre-merge stash (983aa25), with its native-execution oracle.
+    /// One of the function's own arguments, which no call can change.
+    private static func isArgument(_ value: AbstractValue) -> Bool {
+        if case .argument = value { return true }
+        return false
+    }
+
+    /// An immediate, or a vector register's words all immediates.
+    private static func isConstant(_ value: AbstractValue) -> Bool {
+        switch value {
+        case .immediate: return true
+        case .aggregate(let words): return !words.isEmpty && words.allSatisfy(isConstant)
+        default: return false
+        }
+    }
+
+    private static func invalidateSelfFieldAliases(in registers: inout State) {
+        let keys = registers.compactMap { key, value in containsSelfFieldValue(value) ? key : nil }
+        // A register keeps its word across the call; only the name `self[0]`
+        // goes stale. `ldr x27, [x20]; bl …; ldr x23, [x27, #0x58]` still
+        // reads the class's second generic argument.
+        for key in keys { registers[key] = registers[key] == .selfFieldValue(offset: 0) ? .selfIsaSnapshot : nil }
+    }
+
+    /// Forget every value read from a field of a class argument. Unlike
+    /// `self`'s, these fields can be reached through other names: two
+    /// parameters may be one object, and a pointer of unknown origin may be
+    /// any of them, so every write outside the frame reaches this, not only
+    /// one through the argument.
+    private static func invalidateArgumentFieldAliases(in registers: inout State) {
+        for key in registers.compactMap({ key, value in containsArgumentField(value) ? key : nil }) {
+            registers[key] = nil
+        }
+    }
+
+    private static func containsArgumentField(_ value: AbstractValue) -> Bool {
+        switch value {
+        case .argumentField: return true
+        case .unary(_, let operand): return containsArgumentField(operand)
+        case .binary(_, let lhs, let rhs): return containsArgumentField(lhs) || containsArgumentField(rhs)
+        case .select(let condition, let yes, let no):
+            return containsArgumentField(condition) || containsArgumentField(yes) || containsArgumentField(no)
+        case .aggregate(let values): return values.contains(where: containsArgumentField)
+        default: return false
+        }
+    }
+
+    /// The class argument and byte offset an instruction's memory operand
+    /// names: through the argument itself, or through `arg + constant`. A
+    /// register index is not a constant offset (`Wvd` access reads
+    /// `[x19, x20]`), and a post-index access reads the base itself, the
+    /// object's header, so neither names a field.
+    private func argumentObjectAccess(_ detail: StructuredInsn, in registers: State) -> (argument: Int, offset: Int)? {
+        guard !argumentObjectFields.isEmpty,
+              let operand = detail.operands.first(where: { $0.operand.isMemory }),
+              case .memory(let base, let index, let displacement) = operand.operand,
+              let base, index == nil, !detail.postIndex
+        else { return nil }
+        let effective = Int(displacement)
+        switch registers[Location(base)] {
+        case .argument(let argument)? where argumentObjectFields[argument] != nil:
+            return (argument, effective)
+        case .binary(.add, .argument(let argument), .immediate(let delta))?
+            where argumentObjectFields[argument] != nil && delta < 1 << 32:
+            return (argument, Int(delta) + effective)
+        default:
+            return nil
+        }
+    }
+
+    /// The value an access of `bytes` at `access` reads, when that is exactly
+    /// one field. Part of a field, or a wider read that runs past it, is not.
+    private func argumentObjectField(_ access: (argument: Int, offset: Int), bytes: Int) -> AbstractValue? {
+        guard argumentObjectFields[access.argument]?[access.offset] == bytes else { return nil }
+        return .argumentField(argument: access.argument, offset: access.offset)
+    }
+
+    /// A write outside the frame forgets what was read from class arguments.
+    /// The register a full-width store stored from then holds the field's new
+    /// value, so `h.v += 1; return h.v` needs no reload. Runs before the store
+    /// is applied, which reads no field value from the state.
+    private func noteArgumentObjectWrite(_ detail: StructuredInsn, into registers: inout State) {
+        guard detail.operands.contains(where: { $0.operand.isMemory }),
+              !Self.readOnlyMemoryIDs.contains(detail.id.rawValue)
+        else { return }
+        if case .stackSlot? = memoryTarget(detail, in: registers) { return }
+        var stored: (register: PhysReg, field: AbstractValue)?
+        if detail.id == AARCH64_INS_STR || detail.id == AARCH64_INS_STUR,
+           let source = detail.operands.first, let register = source.operand.register,
+           let bytes = Self.accessBytes(detail),
+           let field = argumentObjectAccess(detail, in: registers).flatMap({ argumentObjectField($0, bytes: bytes) }) {
+            let value = self.source(source, in: registers)
+            if value != .unknown, !Self.isConstant(value), !Self.isArgument(value) { stored = (register, field) }
+        }
+        Self.invalidateArgumentFieldAliases(in: &registers)
+        if let stored {
+            write(stored.register, stored.field, into: &registers)
+            registers[Location(stored.register)] = stored.field
+        }
+    }
+
+    private static func containsSelfFieldValue(_ value: AbstractValue) -> Bool {
+        switch value {
+        case .selfFieldValue: return true
+        case .unary(_, let operand): return containsSelfFieldValue(operand)
+        case .binary(_, let lhs, let rhs):
+            return containsSelfFieldValue(lhs) || containsSelfFieldValue(rhs)
+        case .select(let condition, let yes, let no):
+            return containsSelfFieldValue(condition) || containsSelfFieldValue(yes)
+                || containsSelfFieldValue(no)
+        case .aggregate(let values): return values.contains(where: containsSelfFieldValue)
+        default: return false
+        }
+    }
+
     /// Read one scalar or a SIMD-packed run of eight-byte stack values.
     private static func stackValue(at offset: Int64, bytes: Int, in registers: State) -> AbstractValue {
-        guard bytes > 8 else { return registers[stackKey(offset)] ?? .unknown }
-        let words = stride(from: 0, to: bytes, by: 8).map {
-            registers[stackKey(offset + Int64($0))] ?? .unknown
+        guard bytes > 8 else {
+            if let width = registers.frame[offset, .width] {
+                guard case .immediate(let knownBytes) = width, knownBytes >= bytes else { return .unknown }
+            }
+            return registers.frame[offset] ?? .unknown
         }
-        guard words.allSatisfy({ $0 != .unknown }) else { return .unknown }
+        let words = stride(from: 0, to: bytes, by: 8).map {
+            stackValue(at: offset + Int64($0), bytes: min(8, bytes - $0), in: registers)
+        }
+        // A Q-register reload can retain one known lane while the other is
+        // unknown, just like the vector state after an ordinary call.
+        guard words.contains(where: { $0 != .unknown }) else { return .unknown }
         return .aggregate(words)
     }
 
@@ -1844,18 +4938,40 @@ public struct ValueTracer: Sendable {
         at offset: Int64,
         bytes: Int,
         outgoing: Bool,
+        from register: PhysReg? = nil,
+        writeEffect: FrameMemoryEffect? = nil,
         into registers: inout State
     ) {
+        // A byte/halfword store can overwrite part of an older tracked word.
+        // Forget intersecting snapshots rather than retaining their old bits.
+        // Known callee writes retain call-time wrapping fact endpoints.
+        // Local stores keep their existing deferred, trapping exact policy.
+        let effect = writeEffect ?? FrameMemoryEffect.legacyTracerExactWrite(start: offset, bytes: Int64(bytes))
+        registers.frame.forget(effect, removing: [.value, .width, .outgoing])
+        // Which register file wrote the word: a reload into the other one
+        // reinterprets its bits. A store with no register (a modelled copy)
+        // or a wider one leaves it unknown.
+        var file: AbstractValue?
+        if let register, register.kind == .gpr {
+            file = .immediate(0)
+        } else if let register, register.kind == .vector, register.widthBits == 64 || register.widthBits == 32 {
+            file = .immediate(UInt64(register.widthBits))
+        }
         let words: [AbstractValue]
-        if case .aggregate(let packed) = value, bytes > 8 {
-            words = Array(packed.prefix(max(1, (bytes + 7) / 8)))
+        if bytes > 8, packedLane(of: value, index: 0, bits: 64) != nil {
+            words = (0..<max(1, (bytes + 7) / 8)).map {
+                packedLane(of: value, index: $0, bits: 64) ?? .unknown
+            }
         } else {
             words = [value]
         }
         for (index, word) in words.enumerated() {
             let wordOffset = offset + Int64(index * 8)
-            registers[stackKey(wordOffset)] = word
-            if outgoing { registers[outgoingKey(wordOffset)] = word }
+            let bank: FrameFactChange<AbstractValue> = file.map { .assign($0) } ?? .erase
+            let argument: FrameFactChange<AbstractValue> = outgoing ? .assign(word) : .leave
+            registers.frame.patch(at: wordOffset, value: .assign(word),
+                width: .assign(.immediate(UInt64(min(8, bytes - index * 8)))),
+                bank: bank, outgoing: argument)
         }
     }
 
@@ -1864,15 +4980,47 @@ public struct ValueTracer: Sendable {
         if let shifted = operand.shiftedImmediate { return .immediate(UInt64(bitPattern: shifted)) }
         guard let reg = operand.operand.register else { return .unknown }
         if reg.kind == .zero { return .immediate(0) }
-        let value = registers[reg.key] ?? .unknown
+        var value = registers.registerFacts.snapshotForCopy(Location(reg)).value ?? .unknown
+        if reg.kind == .vector { value = Self.scalarView(value, bits: reg.widthBits) }
+        // A 32-bit register is the low word of its 64-bit key. `cmp w8, w9`
+        // with x8 = 0x1_0000_0001 compares 1, not the whole value. A known
+        // constant is cut exactly, and sign- or zero-extended when the
+        // operand says so (`add x0, x1, w2, sxtw`).
+        if reg.kind == .gpr, reg.widthBits == 32 {
+            switch value {
+            case .asyncContext, .asyncCalleeContext, .asyncResumeParent, .indirectResultPointer:
+                return .unknown // a truncated opaque pointer is not that pointer
+            default: break
+            }
+            value = narrowed(value, bits: 32)
+            switch operand.extender {
+            case AARCH64_EXT_SXTW: value = signExtended(value, bits: 32)
+            case AARCH64_EXT_SXTH: value = signExtended(value, bits: 16)
+            case AARCH64_EXT_SXTB: value = signExtended(value, bits: 8)
+            case AARCH64_EXT_UXTH: value = narrowed(value, bits: 16)
+            case AARCH64_EXT_UXTB: value = narrowed(value, bits: 8)
+            default: break
+            }
+        }
         switch operand.shift.type {
-        case ARM64_SFT_INVALID: return value
-        case ARM64_SFT_LSL:
+        case AARCH64_SFT_INVALID: return value
+        case AARCH64_SFT_LSL:
             return expression(.shiftLeft, value, .immediate(UInt64(operand.shift.amount)))
-        case ARM64_SFT_LSR, ARM64_SFT_ASR:
-            let op: AbstractBinaryOperator = operand.shift.type == ARM64_SFT_ASR
+        case AARCH64_SFT_LSR, AARCH64_SFT_ASR:
+            let op: AbstractBinaryOperator = operand.shift.type == AARCH64_SFT_ASR
                 ? .arithmeticShiftRight : .shiftRight
+            if op == .arithmeticShiftRight, reg.kind == .gpr, reg.widthBits == 32 {
+                value = signExtended(value, bits: 32)
+            }
             return expression(op, value, .immediate(UInt64(operand.shift.amount)))
+        case AARCH64_SFT_ROR where reg.kind == .gpr:
+            // A rotate within the register's width, which only the logical
+            // instructions apply: `(v >> n) | (v << (W - n))`. A W rotate's
+            // bits past 32 fall to the instruction's W write.
+            let width = UInt64(reg.widthBits), amount = UInt64(operand.shift.amount) % width
+            guard amount != 0 else { return value }
+            return expression(.bitOr, expression(.shiftRight, value, .immediate(amount)),
+                              expression(.shiftLeft, value, .immediate(width - amount)))
         default:
             return .unknown
         }
@@ -1883,8 +5031,13 @@ public struct ValueTracer: Sendable {
     }
 
     private enum MemoryTarget {
-        case stackSlot(String)
+        case stackSlot(Location)
         case absolute(UInt64)
+        /// A byte offset into the object an image slot points to.
+        case throughStaticPointer(slot: UInt64, offset: Int)
+        /// A byte offset into what a call's result, or a load through it,
+        /// points to.
+        case throughValue(AbstractValue, offset: Int)
         /// A byte offset into `self`.
         case selfField(Int)
         /// A byte offset into `self`'s class metadata vtable — a load through the
@@ -1893,6 +5046,140 @@ public struct ValueTracer: Sendable {
         /// A store of an element into the array-literal built at `site`, at the
         /// given byte offset within the array object.
         case arrayElement(site: UInt64, offset: Int)
+        /// A byte offset into the incoming x8 result buffer.
+        case resultSlot(Int)
+        /// A byte offset into the function's own async context.
+        case asyncSlot(Int)
+        /// A byte offset into the awaited callee's context (x22 at an
+        /// await-return funclet).
+        case asyncCalleeSlot(Int)
+    }
+
+    private static let calleeParentKey = Location.calleeParent
+
+    private static func isFullWidthGPR(_ operand: StructuredOperandInfo) -> Bool {
+        guard let register = operand.operand.register else { return false }
+        return register.widthBits == 64 && (register.kind == .gpr || register.kind == .zero)
+    }
+
+    /// Only explicit read-only opcodes prove no memory write; operand access
+    /// flags omit effects for atomics and other instructions on this decoder.
+    private static let readOnlyMemoryIDs: Set<UInt32> = Set([
+        AARCH64_INS_LDR, AARCH64_INS_LDUR, AARCH64_INS_LDP, AARCH64_INS_LDNP,
+        AARCH64_INS_LDPSW, AARCH64_INS_LDRB, AARCH64_INS_LDURB,
+        AARCH64_INS_LDRH, AARCH64_INS_LDURH, AARCH64_INS_LDRSB, AARCH64_INS_LDURSB,
+        AARCH64_INS_LDRSH, AARCH64_INS_LDURSH, AARCH64_INS_LDRSW, AARCH64_INS_LDURSW,
+    ].map(\.rawValue))
+
+    /// Return true when a write may affect any context byte. Only a complete
+    /// negative private-frame extent is disjoint under the ordinary frame ABI.
+    private func invalidateAsyncMemoryForWrite(_ detail: StructuredInsn, into registers: inout State) -> Bool {
+        let target = memoryTarget(detail, in: registers)
+        let bytes = Self.accessBytes(detail)
+        if case .stackSlot(let key)? = target, let start = Self.stackOffset(from: key),
+           let bytes, bytes > 0 {
+            let (end, overflow) = start.addingReportingOverflow(Int64(bytes))
+            if !overflow, start < 0, end <= 0 { return false }
+        }
+        if case .asyncSlot(let offset)? = target, let bytes, bytes > 0 {
+            // Relative offsets do not establish disjoint allocations. A write
+            // through the parent can also reach the child's cached parent word.
+            let mayReachCallee = registers[Self.calleeParentKey] != nil
+                || registers.values.contains(.asyncCalleeContext)
+            registers[Self.calleeParentKey] = nil
+            for key in registers.keys {
+                guard case .contextSlot(let start) = key else { continue }
+                if Self.byteRangesOverlap(start, 8, offset, bytes) { registers[key] = nil }
+            }
+            return mayReachCallee
+        }
+        if case .asyncCalleeSlot(let offset)? = target, let bytes, bytes > 0 {
+            // The child's extent is unknown: child+32 may be parent+16.
+            // Forget the other identity's facts and decline chain-wide claims.
+            let mayReachOwn = registers.keys.contains(where: Self.isContextSlot)
+            for key in registers.keys where Self.isContextSlot(key) { registers[key] = nil }
+            if Self.byteRangesOverlap(0, 8, offset, bytes) { registers[Self.calleeParentKey] = nil }
+            return mayReachOwn
+        }
+        for key in registers.keys where Self.isContextSlot(key) { registers[key] = nil }
+        registers[Self.calleeParentKey] = nil
+        return true
+    }
+
+    private static func byteRangesOverlap(_ a: Int, _ aBytes: Int, _ b: Int, _ bBytes: Int) -> Bool {
+        let (aEnd, aOverflow) = a.addingReportingOverflow(aBytes)
+        let (bEnd, bOverflow) = b.addingReportingOverflow(bBytes)
+        return aOverflow || bOverflow || (a < bEnd && b < aEnd)
+    }
+
+    static let plainStoreIDs: Set<UInt32> = Set([
+        AARCH64_INS_STR, AARCH64_INS_STUR, AARCH64_INS_STRB, AARCH64_INS_STURB,
+        AARCH64_INS_STRH, AARCH64_INS_STURH, AARCH64_INS_STP, AARCH64_INS_STNP,
+        // Release stores write like plain ones (`stlr x0, [x8]`, a lazy
+        // witness-table cache); the ordering is not shown.
+        AARCH64_INS_STLR, AARCH64_INS_STLRB, AARCH64_INS_STLRH,
+    ].map(\.rawValue))
+
+    /// The write a plain store makes, and which proven target it lands in:
+    /// the frame, the async contexts, an array literal and the indirect
+    /// result are each modelled by their own pass.
+    private func memoryWrite(_ detail: StructuredInsn, in registers: State) -> MemoryWrite? {
+        guard Self.plainStoreIDs.contains(detail.id.rawValue),
+              let operand = detail.operands.first(where: { $0.operand.isMemory }),
+              case .memory(let base, let index, let displacement) = operand.operand, let base
+        else { return nil }
+        let target = switch memoryTarget(detail, in: registers) {
+        case .stackSlot?: "frame"
+        case .asyncSlot?, .asyncCalleeSlot?: "context"
+        case .arrayElement?: "array"
+        case .resultSlot?: "result"
+        default: base.kind == .stackPointer ? "frame" : "address"
+        }
+        // A store of the function's own async context links a callee's
+        // context to it (`stp x22, resume, [x0]`): async-call bookkeeping,
+        // proven by the stored value, not by the base register's name.
+        let linksContext = detail.operands.contains { info in
+            !info.operand.isMemory && source(info, in: registers) == .asyncContext
+        }
+        let kind = linksContext && target == "address" ? "context" : target
+        let pair = detail.id == AARCH64_INS_STP || detail.id == AARCH64_INS_STNP
+        let sources = detail.operands.prefix(pair ? 2 : 1).filter { !$0.operand.isMemory }
+        // A release store's width is its own: stlrb writes one byte from a w
+        // register. Computed here so accessBytes, which other passes read,
+        // keeps its answers.
+        let releaseBytes: Int? = switch detail.id {
+        case AARCH64_INS_STLRB: 1
+        case AARCH64_INS_STLRH: 2
+        case AARCH64_INS_STLR: sources.first?.operand.register.map { $0.widthBits / 8 }
+        default: nil
+        }
+        guard !sources.isEmpty, let bytes = releaseBytes ?? Self.accessBytes(detail) else { return nil }
+        let each = pair ? bytes / 2 : bytes
+        func name(_ register: PhysReg?) -> String? {
+            guard let register else { return nil }
+            switch register.kind {
+            case .gpr: return (register.widthBits == 32 ? "w" : "x") + String(register.number)
+            case .zero: return "0"
+            case .vector: return (register.widthBits == 128 ? "q" : register.widthBits == 64 ? "d" : "s") + String(register.number)
+            default: return nil
+            }
+        }
+        return MemoryWrite(
+            kind: kind,
+            base: registers[Location(base)] ?? .unknown,
+            baseRegister: name(base) ?? "?",
+            valueRegisters: sources.map { name($0.operand.register) },
+            displacement: detail.postIndex ? 0 : displacement,
+            indexRegister: operand.extender == AARCH64_EXT_INVALID ? name(index) : nil,
+            index: index.flatMap { registers[Location($0)] } ?? .unknown,
+            indexShift: operand.shift.type == AARCH64_SFT_LSL ? Int(operand.shift.amount) : 0,
+            indexed: index != nil && (operand.extender != AARCH64_EXT_INVALID
+                || (operand.shift.type != AARCH64_SFT_INVALID && operand.shift.type != AARCH64_SFT_LSL)),
+            bytes: each,
+            values: sources.map { info in
+                let value = source(info, in: registers)
+                return info.operand.register?.kind == .gpr ? narrowed(value, bits: min(each * 8, 64)) : value
+            })
     }
 
     /// Where a memory operand points, when its base is a known frame offset or a
@@ -1905,40 +5192,50 @@ public struct ValueTracer: Sendable {
         else { return nil }
         // Post-index accesses the base itself; the displacement applies after.
         let effective = detail.postIndex ? 0 : displacement
-        switch registers[base.key] {
-        case .frame(let offset): return .stackSlot(Self.stackKey(offset &+ effective))
+        switch registers[Location(base)] {
+        case .frame(let offset):
+            return .stackSlot(Self.stackKey(FrameCoordinatePlanner.exactStart(
+                offset, displacement: displacement, postIndex: detail.postIndex)))
         case .address(let address): return .absolute(address &+ UInt64(bitPattern: effective))
+        case .loaded(let slot): return .throughStaticPointer(slot: slot, offset: Int(effective))
+        case .callResult, .loadedFrom(.callResult, _), .genericMetadata, .loadedFrom(.genericMetadata, _), .genericWitnessTable,
+             .loadedThrough(_, -8), .selfVTableMethod, .loadedFrom(.selfVTableMethod, _):
+            return .throughValue(registers[Location(base)] ?? .unknown, offset: Int(effective))
         case .selfPointer: return .selfField(Int(effective))
         case .selfField(let field): return .selfField(field + Int(effective))
         // A load through the metadata pointer at `self + 0` (a class instance's
         // isa) reaches the vtable — the second `ldr` of a virtual dispatch.
-        case .selfFieldValue(0): return .vtableMethod(Int(effective))
+        case .selfFieldValue(0), .selfIsaSnapshot: return .vtableMethod(Int(effective))
         // A store into a freshly-allocated array literal, keyed by its site.
         case .arrayLiteral(let site, _): return .arrayElement(site: site, offset: Int(effective))
+        case .indirectResultPointer: return .resultSlot(Int(effective))
+        case .indirectResultField(let base): return .resultSlot(base + Int(effective))
+        case .asyncContext: return .asyncSlot(Int(effective))
+        case .asyncCalleeContext: return .asyncCalleeSlot(Int(effective))
         default: return nil
         }
     }
 
     /// Access width in bytes.
     ///
-    /// `arm64_op_mem` carries no width, so it comes from the instruction id plus
+    /// `aarch64_op_mem` carries no width, so it comes from the instruction id plus
     /// the destination register's width: `ldr w0` reads 4 bytes, `ldr x0` reads
     /// 8, and `ldp x19, x20` reads 16 — which is exactly how a 16-byte
     /// `Swift.String` field is loaded.
     private static func accessBytes(_ detail: StructuredInsn) -> Int? {
         let registerBytes = detail.operands.first?.operand.register.map { $0.widthBits / 8 }
         switch detail.id {
-        case ARM64_INS_LDRB, ARM64_INS_LDURB, ARM64_INS_STRB, ARM64_INS_STURB,
-             ARM64_INS_LDRSB, ARM64_INS_LDURSB:
+        case AARCH64_INS_LDRB, AARCH64_INS_LDURB, AARCH64_INS_STRB, AARCH64_INS_STURB,
+             AARCH64_INS_LDRSB, AARCH64_INS_LDURSB:
             return 1
-        case ARM64_INS_LDRH, ARM64_INS_LDURH, ARM64_INS_STRH, ARM64_INS_STURH,
-             ARM64_INS_LDRSH, ARM64_INS_LDURSH:
+        case AARCH64_INS_LDRH, AARCH64_INS_LDURH, AARCH64_INS_STRH, AARCH64_INS_STURH,
+             AARCH64_INS_LDRSH, AARCH64_INS_LDURSH:
             return 2
-        case ARM64_INS_LDRSW, ARM64_INS_LDURSW:
+        case AARCH64_INS_LDRSW, AARCH64_INS_LDURSW:
             return 4
-        case ARM64_INS_LDR, ARM64_INS_LDUR, ARM64_INS_STR, ARM64_INS_STUR:
+        case AARCH64_INS_LDR, AARCH64_INS_LDUR, AARCH64_INS_STR, AARCH64_INS_STUR:
             return registerBytes
-        case ARM64_INS_LDP, ARM64_INS_LDNP, ARM64_INS_STP, ARM64_INS_STNP:
+        case AARCH64_INS_LDP, AARCH64_INS_LDNP, AARCH64_INS_STP, AARCH64_INS_STNP:
             return registerBytes.map { $0 * 2 }
         default:
             return nil
@@ -1946,8 +5243,8 @@ public struct ValueTracer: Sendable {
     }
 
     private static let storeIDs: Set<UInt32> = Set([
-        ARM64_INS_STR, ARM64_INS_STUR, ARM64_INS_STRB, ARM64_INS_STURB,
-        ARM64_INS_STRH, ARM64_INS_STURH, ARM64_INS_STP, ARM64_INS_STNP,
+        AARCH64_INS_STR, AARCH64_INS_STUR, AARCH64_INS_STRB, AARCH64_INS_STURB,
+        AARCH64_INS_STRH, AARCH64_INS_STURH, AARCH64_INS_STP, AARCH64_INS_STNP,
     ].map(\.rawValue))
 
     /// Record a `self` field access, when this instruction makes one.
@@ -1963,28 +5260,313 @@ public struct ValueTracer: Sendable {
         else { return }
         let isWrite = Self.storeIDs.contains(detail.id.rawValue)
         let storedValues: [AbstractValue]? = if isWrite,
-            detail.id == ARM64_INS_STP || detail.id == ARM64_INS_STNP {
+            detail.id == AARCH64_INS_STP || detail.id == AARCH64_INS_STNP {
             detail.operands.prefix(2).map { source($0, in: registers) }
         } else {
             nil
         }
+        let isPairedLoad = detail.id == AARCH64_INS_LDP || detail.id == AARCH64_INS_LDNP
         recordAccess(insn.address, SelfFieldAccess(
             offset: offset,
             bytes: bytes,
             isWrite: isWrite,
             storedValue: isWrite ? detail.operands.first.map { source($0, in: registers) } : nil,
-            storedValues: storedValues
+            storedValues: storedValues,
+            registerBytes: isPairedLoad ? bytes / 2 : nil
         ))
     }
 
     /// Stack slots share the register map, under a key no register can collide with.
-    private static func stackKey(_ frameOffset: Int64) -> String { "stack@\(frameOffset)" }
-    private static let outgoingPrefix = "outgoing@"
-    private static func outgoingKey(_ frameOffset: Int64) -> String { "\(outgoingPrefix)\(frameOffset)" }
-    private static func stackOffset(from key: String) -> Int64? {
-        guard key.hasPrefix("stack@") else { return nil }
-        return Int64(key.dropFirst("stack@".count))
+    private static func stackKey(_ frameOffset: Int64) -> Location { .stack(frameOffset) }
+    private static func stackWidthKey(_ frameOffset: Int64) -> Location { .stackWidth(frameOffset) }
+    private static func stackFileKey(_ frameOffset: Int64) -> Location { .stackFile(frameOffset) }
+
+    /// The register-state key for a word of the function's own async context
+    /// this funclet stored, by byte offset.
+    static func contextSlotKey(_ offset: Int) -> Location { .contextSlot(offset) }
+    private static func isContextSlot(_ key: Location) -> Bool {
+        if case .contextSlot = key { return true }
+        return false
     }
+
+    private static func outgoingKey(_ frameOffset: Int64) -> Location { .outgoing(frameOffset) }
+    private static func stackOffset(from key: Location) -> Int64? {
+        if case .stack(let offset) = key { return offset }
+        return nil
+    }
+
+    // MARK: - Escaped frame memory
+
+    /// Frame memory reachable through an escaped address. A frame address
+    /// escapes once it leaves what the tracer follows: passed to a call,
+    /// stored anywhere but an exactly tracked frame slot, transformed beyond
+    /// the tracer's arithmetic, or dropped from a slot or a join while it is
+    /// still in memory or a register. From then on any call, and any store
+    /// through a pointer of unknown origin, may rewrite what it reaches.
+    ///
+    /// - `.frameEscaped(k)`: an address at offset k, reaching up to the next
+    ///   prologue register-save slot or the frame top; from an incoming
+    ///   stack argument (k >= 0), upward without bound.
+    /// - `.frameBelow(k)`: an address inside a dynamic allocation below k
+    ///   (`.frameDynamic(k)`), which reaches nothing at or above k.
+    /// - `.frameEscapedAll`: an address of unknown offset; it reaches everything.
+    ///
+    /// They are MAY facts: `meet` unions them, and they never clear.
+    private static let frameEscapeAllKey = Location.frameEscapedAll
+
+    /// The function's own async context reached a place the tracer does not
+    /// follow: stored outside a context slot, handed to a call, transformed,
+    /// or dropped. From then on any call may rewrite it. The awaited callee's
+    /// context has its own marker: a call handed it (`swift_task_dealloc`)
+    /// may rewrite that context, whose parent header is all that is known of
+    /// it. MAY facts, like the frame markers.
+    /// `.contextEscaped(k)`: a pointer to offset k of the own context, which
+    /// reaches k and above (an `inout` slot handed to a call); k = 0 is the
+    /// whole context.
+    private static let calleeContextEscapeKey = Location.calleeContextEscaped
+
+    /// A state key that is the only record of a value in a register, a frame
+    /// slot, a context slot or a result-buffer word.
+    private static func holdsValue(_ key: Location) -> Bool {
+        switch key {
+        case .x, .v, .sp, .stack, .contextSlot, .result: true
+        default: false
+        }
+    }
+
+    private static func isEscapeMarker(_ key: Location) -> Bool {
+        switch key {
+        case .frameEscaped, .frameBelow, .frameEscapedAll, .frameDynamic, .contextEscaped, .calleeContextEscaped: true
+        default: false
+        }
+    }
+
+    private static func contains(_ target: AbstractValue, in value: AbstractValue) -> Bool {
+        if value == target { return true }
+        switch value {
+        case .binary(_, let lhs, let rhs): return contains(target, in: lhs) || contains(target, in: rhs)
+        case .unary(_, let operand): return contains(target, in: operand)
+        case .select(let condition, let whenTrue, let whenFalse):
+            return contains(target, in: condition) || contains(target, in: whenTrue) || contains(target, in: whenFalse)
+        case .aggregate(let values): return values.contains { contains(target, in: $0) }
+        default: return false
+        }
+    }
+
+    private static func containsContext(_ value: AbstractValue) -> Bool {
+        contains(.asyncContext, in: value) || contains(.asyncCalleeContext, in: value)
+    }
+
+    /// A value leaves what the tracer follows: any frame address or async
+    /// context pointer in it escapes.
+    private static func markEscape(_ value: AbstractValue, into registers: inout State) {
+        if contains(.asyncContext, in: value) {
+            let offset: Int64 = if case .binary(.add, .asyncContext, .immediate(let k)) = value,
+                                   k < UInt64(Int64.max) { Int64(k) } else { 0 }
+            registers[.contextEscaped(offset)] = .immediate(1)
+        }
+        if contains(.asyncCalleeContext, in: value) { registers[calleeContextEscapeKey] = .immediate(1) }
+        markFrameEscape(value, into: &registers)
+    }
+
+    static func containsFrame(_ value: AbstractValue) -> Bool {
+        switch value {
+        case .frame: return true
+        case .binary(_, let lhs, let rhs): return containsFrame(lhs) || containsFrame(rhs)
+        case .unary(_, let operand): return containsFrame(operand)
+        case .select(let condition, let whenTrue, let whenFalse):
+            return containsFrame(condition) || containsFrame(whenTrue) || containsFrame(whenFalse)
+        case .aggregate(let values): return values.contains(where: containsFrame)
+        default: return false
+        }
+    }
+
+    /// The frame offset a dynamic allocation hangs below: `frame(k) - n` for
+    /// a non-constant n, then any offsets within the block.
+    private static func allocationBase(_ value: AbstractValue) -> Int64? {
+        switch value {
+        case .binary(.subtract, .frame(let base), let size):
+            if case .immediate = size { return nil }
+            return containsFrame(size) ? nil : base
+        case .binary(.add, let lhs, let rhs), .binary(.subtract, let lhs, let rhs):
+            return containsFrame(rhs) ? nil : allocationBase(lhs)
+        default:
+            return nil
+        }
+    }
+
+    private static func markFrameEscape(_ value: AbstractValue, into registers: inout State) {
+        guard containsFrame(value) else { return }
+        if case .frame(let offset) = value {
+            registers[.frameEscaped(offset)] = .immediate(1)
+        } else if let base = allocationBase(value), registers[.frameDynamic(base)] != nil {
+            registers[.frameBelow(base)] = .immediate(1)
+        } else {
+            registers[frameEscapeAllKey] = .immediate(1)
+        }
+    }
+
+    /// Forget every frame fact an escaped address can reach. A forgotten slot
+    /// that held a frame address still holds it in memory, so that address
+    /// escapes too, until nothing new escapes.
+    private static func forgetEscapedFrame(in registers: inout State, evidence: TraceLayoutEvidence) {
+        var seen = -1
+        while true {
+            let markers = registers.keys.filter(isEscapeMarker).count
+            guard markers != seen else { return }
+            seen = markers
+            guard let reach = escapedReach(registers, evidence: evidence) else { return }
+            forgetFrame(in: &registers, effect: reach)
+        }
+    }
+
+    /// The write footprint of the durable escape markers; nil when no
+    /// frame address has escaped. Only register-save evidence bounds it.
+    private static func escapedReach(_ registers: State, evidence: TraceLayoutEvidence) -> FrameMemoryEffect? {
+        let effect = registers.reach.effect(using: evidence, arithmetic: .wrapping)
+        // Dynamic-only/allocation evidence does not escape any frame region.
+        return effect.isEmpty ? nil : effect
+    }
+
+    /// Forget the frame facts the effect may reach. A forgotten frame
+    /// address is still in memory: it escapes.
+    private static func forgetFrame(in registers: inout State, effect: FrameMemoryEffect) {
+        var lost: [AbstractValue] = []
+        registers.frame.forget(effect, removing: [.value, .width, .outgoing]) { lost.append($0) }
+        for value in lost { markEscape(value, into: &registers) }
+    }
+
+    /// Entry-provenance pointers: computed before this frame existed, so no
+    /// store through one reaches it.
+    private static func predatesFrame(_ value: AbstractValue?) -> Bool {
+        switch value {
+        case .argument?, .argumentField?, .selfPointer?, .selfField?, .indirectResultPointer?,
+             .indirectResultField?, .asyncContext?, .asyncCalleeContext?:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// A memory write's effect on frame facts, before the write is applied.
+    /// A frame address stored anywhere but an exactly tracked frame slot
+    /// escapes. A write whose frame extent the tracer cannot bound forgets
+    /// what it may reach; a write through a pointer of unknown origin forgets
+    /// every escaped region. Exact `str`/`stp`-family stores to a frame slot
+    /// are left to `apply`, which models them.
+    /// Returns whether a register operand read as a value held a frame
+    /// address or a context pointer (the caller checks the result kept it).
+    private func noteFrameMemoryWrite(
+        _ insn: Instruction, into registers: inout State, frame: FrameLayout
+    ) -> (frame: Bool, context: Bool) {
+        guard let detail = insn.detail else { return (false, false) }
+        var memory: (base: PhysReg?, index: PhysReg?, displacement: Int64)?
+        for info in detail.operands {
+            if case .memory(let base, let index, let displacement) = info.operand {
+                memory = (base, index, detail.postIndex ? 0 : displacement)
+            }
+        }
+        // Register operands only: a memory operand's base and index are
+        // addresses, carried inside it.
+        let inputKeys = detail.operands.lazy.compactMap { info -> Location? in
+            guard let register = info.operand.register, register.kind != .zero, info.isRead || info.access == 0
+            else { return nil }
+            return Location(register)
+        }
+        // Snapshot selected register values, not all State components. Retain
+        // each input independently for escape transactions below.
+        let valueInputs = registers.registerFacts.selected(inputKeys).lazy.compactMap { $0.value }
+        let reads = (frame: registers.registerFacts.containsSelected(inputKeys) { _, value in
+                         value.map(Self.containsFrame) ?? false
+                     }, context: valueInputs.contains(where: Self.containsContext))
+        guard let memory, !Self.readOnlyMemoryIDs.contains(detail.id.rawValue) else { return reads }
+        let target = memoryTarget(detail, in: registers)
+        let modelledSlot: Bool = if case .stackSlot? = target {
+            Self.modelledStackStoreIDs.contains(detail.id.rawValue)
+        } else { false }
+        // A tracked slot keeps a stored frame address in view, unless the
+        // slot itself is reachable through an escaped address.
+        var tracked = false
+        if modelledSlot, case .stackSlot(let key)? = target, let start = Self.stackOffset(from: key) {
+            let bytes = Int64(Self.accessBytes(detail) ?? 8)
+            tracked = !(Self.escapedReach(registers, evidence: frame.escapeEvidence)?.mayInvalidate(
+                FrameMemoryExtent(start: start, bytes: bytes)) ?? false)
+        }
+        // A context pointer stored into a context slot by a full-width store
+        // stays followed (`.contextSlot`, the callee's parent header): that is how
+        // -Onone spills it and how an await links the callee to its parent.
+        let contextSlotStore: Bool = switch target {
+        case .asyncSlot?, .asyncCalleeSlot?:
+            [AARCH64_INS_STR, AARCH64_INS_STUR, AARCH64_INS_STP].contains(detail.id)
+                && detail.operands.filter({ $0.operand.register != nil }).allSatisfy(Self.isFullWidthGPR)
+        default: false
+        }
+        if !tracked {
+            for value in valueInputs {
+                if contextSlotStore { Self.markFrameEscape(value, into: &registers) } else { Self.markEscape(value, into: &registers) }
+            }
+        }
+        switch target {
+        case .stackSlot(let key)?:
+            guard !modelledSlot, let start = Self.stackOffset(from: key) else { break }
+            let bytes = Self.accessBytes(detail).map(Int64.init)
+            let region: FrameMemoryEffect.Region = bytes.map {
+                .finite(lower: start, upper: start &+ $0)
+            } ?? .atOrAbove(start)
+            Self.forgetFrame(in: &registers, effect: FrameMemoryEffect([region], arithmetic: .wrapping))
+        case .absolute?, .selfField?, .vtableMethod?, .arrayElement?, .resultSlot?, .asyncSlot?, .asyncCalleeSlot?:
+            break
+        // A store through a loaded pointer is the untracked store it was
+        // before loads through one were named.
+        case nil, .throughStaticPointer?, .throughValue?:
+            let base = memory.base.flatMap { registers[Location($0)] }
+            let indexed = memory.index != nil
+            if let base, Self.containsFrame(base) {
+                // Inside a dynamic allocation below k, a write at a constant
+                // displacement stays below k plus its extent.
+                if !indexed, let allocation = Self.allocationBase(base),
+                   registers[.frameDynamic(allocation)] != nil,
+                   let bytes = Self.accessBytes(detail) {
+                    let limit = allocation &+ max(memory.displacement, 0) &+ Int64(bytes)
+                    Self.forgetFrame(in: &registers, effect: FrameMemoryEffect([.startsBelow(limit)], arithmetic: .wrapping))
+                } else {
+                    Self.forgetFrame(in: &registers, effect: FrameMemoryEffect(arithmetic: .wrapping, everything: true))
+                }
+            } else if !(Self.predatesFrame(base) && !indexed) {
+                Self.forgetEscapedFrame(in: &registers, evidence: frame.escapeEvidence)
+            }
+        }
+        return (false, false)
+    }
+
+    /// Whether a call reads nothing from the outgoing stack area: a runtime
+    /// entry point of known C arity up to eight, or a non-generic Swift
+    /// function whose parameters fit in eight registers. A scalar takes one,
+    /// a `String` two, anything else at most four (a larger loadable value
+    /// travels by reference).
+    private static func passesNoStackArguments(_ callee: String) -> Bool {
+        if let arity = DisassembledFunction.knownCArity(of: callee) { return arity <= 8 }
+        guard let signature = DisassembledFunction.splitSignature(callee), !signature.isAsync,
+              let range = DisassembledFunction.outermostArgumentListRange(of: signature.head),
+              !signature.head[..<range.lowerBound].contains("<")
+        else { return false }
+        let scalars: Set<String> = ["Swift.Int", "Swift.UInt", "Swift.Int64", "Swift.UInt64", "Swift.Int32",
+            "Swift.UInt32", "Swift.Int16", "Swift.UInt16", "Swift.Int8", "Swift.UInt8", "Swift.Bool",
+            "Swift.Double", "Swift.Float", "Builtin.Word", "Builtin.Int1", "Builtin.Int64", "Builtin.RawPointer"]
+        let registers = DisassembledFunction.splitTopLevelArguments(signature.head[range]).reduce(0) { total, parameter in
+            var type = parameter.trimmingCharacters(in: .whitespaces)
+            if let colon = type.range(of: ": ") { type = String(type[colon.upperBound...]) }
+            if type.hasPrefix("inout ") { return total + 1 }
+            return total + (scalars.contains(type) ? 1 : type == "Swift.String" ? 2 : 4)
+        }
+        return registers <= 8
+    }
+
+    /// The stores `apply` writes into a frame slot exactly.
+    private static let modelledStackStoreIDs: Set<UInt32> = Set([
+        AARCH64_INS_STR, AARCH64_INS_STUR, AARCH64_INS_STRB, AARCH64_INS_STURB,
+        AARCH64_INS_STRH, AARCH64_INS_STURH, AARCH64_INS_STP, AARCH64_INS_STNP,
+    ].map(\.rawValue))
 
     /// Apply a writeback/post-index memory operand's effect on its base register.
     /// `writeback`/`postIndex` are flags from the decoder — the old path sniffed
@@ -2000,10 +5582,11 @@ public struct ValueTracer: Sendable {
         let delta = detail.postIndex
             ? (detail.operands.last?.operand.immediateValue ?? 0)
             : displacement
-        switch registers[base.key] {
-        case .frame(let offset): registers[base.key] = .frame(offset &+ delta)
-        case .address(let address): registers[base.key] = .address(address &+ UInt64(bitPattern: delta))
-        default: registers[base.key] = .unknown
+        switch registers[Location(base)] {
+        case .frame(let offset):
+            registers[Location(base)] = .frame(FrameCoordinatePlanner.exactWriteback(offset, delta: delta))
+        case .address(let address): registers[Location(base)] = .address(address &+ UInt64(bitPattern: delta))
+        default: registers[Location(base)] = .unknown
         }
     }
 
@@ -2013,4 +5596,17 @@ public struct ValueTracer: Sendable {
         guard let last = values.lastIndex(where: { $0 != .unknown }) else { return nil }
         return Array(values[0...last])
     }
+
+    func testExpression(
+        _ op: AbstractBinaryOperator, _ lhs: AbstractValue, _ rhs: AbstractValue
+    ) -> AbstractValue {
+        expression(op, lhs, rhs)
+    }
+}
+
+/// The registers `ValueTracer.write` touched during one instruction's
+/// transfer, kept only while a probe checks that every write was modelled.
+final class TracerWriteLog: @unchecked Sendable {
+    @TaskLocal static var current: TracerWriteLog?
+    var keys = Set<String>()
 }

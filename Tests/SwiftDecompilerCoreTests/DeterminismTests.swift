@@ -26,6 +26,22 @@ private let binary = URL(fileURLWithPath: ".build/debug/swiftdc")
 /// Swift metadata, the ObjC index, field layout, and the call graph. Each runs
 /// in well under a tenth of a second, so repeating them is cheap.
 private let cases: [(label: String, arguments: [String])] = [
+    ("disasm --structured query identity", ["disasm", "Fixtures/Sample/libUniquenessResult.O.dylib", "--structured"]),
+    ("disasm --pseudo query identity", ["disasm", "Fixtures/Sample/libUniquenessResult.O.dylib", "--pseudo"]),
+    ("disasm listing query identity", ["disasm", "Fixtures/Sample/libUniquenessResult.O.dylib"]),
+    ("disasm --json query identity", ["disasm", "Fixtures/Sample/libUniquenessResult.O.dylib", "--json"]),
+    ("disasm --structured query object identity", ["disasm", "Fixtures/Sample/libFactorySnapshot.O.dylib", "--structured"]),
+    ("disasm --pseudo query object identity", ["disasm", "Fixtures/Sample/libFactorySnapshot.O.dylib", "--pseudo"]),
+    ("disasm listing query object identity", ["disasm", "Fixtures/Sample/libFactorySnapshot.O.dylib"]),
+    ("disasm --json query object identity", ["disasm", "Fixtures/Sample/libFactorySnapshot.O.dylib", "--json"]),
+    ("disasm --structured resilient operator ABI", ["disasm", "Fixtures/Sample/libResilientOperator.O.dylib", "--structured"]),
+    ("disasm --pseudo resilient operator ABI", ["disasm", "Fixtures/Sample/libResilientOperator.O.dylib", "--pseudo"]),
+    ("disasm listing resilient operator ABI", ["disasm", "Fixtures/Sample/libResilientOperator.O.dylib"]),
+    ("disasm --json resilient operator ABI", ["disasm", "Fixtures/Sample/libResilientOperator.O.dylib", "--json"]),
+    ("disasm --structured operator arity", ["disasm", "Fixtures/Sample/libOperatorArity.O.dylib", "--structured"]),
+    ("disasm --pseudo operator arity", ["disasm", "Fixtures/Sample/libOperatorArity.O.dylib", "--pseudo"]),
+    ("disasm listing operator arity", ["disasm", "Fixtures/Sample/libOperatorArity.O.dylib"]),
+    ("disasm --json operator arity", ["disasm", "Fixtures/Sample/libOperatorArity.O.dylib", "--json"]),
     ("dump", ["dump", "Fixtures/Sample/libSample.dylib"]),
     ("interface", ["interface", "Fixtures/Sample/libSample.dylib"]),
     ("objc --methods", ["objc", "Fixtures/Sample/libSample.dylib", "--methods"]),
@@ -35,6 +51,25 @@ private let cases: [(label: String, arguments: [String])] = [
     // difference.
     ("xrefs --unreferenced", ["xrefs", "Fixtures/Sample/libReconstruction.dylib", "--unreferenced"]),
     ("disasm --structured", ["disasm", "Fixtures/Sample/libSample.dylib", "--structured"]),
+    // Loops in catch handlers tie for immediate post-dominator; the tie was
+    // broken by hash order (five outputs in six runs before the fix).
+    ("disasm --structured landing pads", ["disasm", "Fixtures/Sample/libLandingPadLoop.dylib", "--structured"]),
+    // Physical register iteration now comes from the shared fact owner.
+    // Keep its native copy/writeback fixture reproducible in every view.
+    ("disasm --structured register facts", ["disasm", "Fixtures/Sample/libFrameRegisterModel.dylib", "--structured"]),
+    ("disasm --pseudo register facts", ["disasm", "Fixtures/Sample/libFrameRegisterModel.dylib", "--pseudo"]),
+    ("disasm listing register facts", ["disasm", "Fixtures/Sample/libFrameRegisterModel.dylib"]),
+    ("disasm --json register facts", ["disasm", "Fixtures/Sample/libFrameRegisterModel.dylib", "--json"]),
+    ("disasm --structured frame layout aliases", ["disasm", "Fixtures/Sample/libFrameLayoutAlias.dylib", "--structured"]),
+    ("disasm --pseudo frame layout aliases", ["disasm", "Fixtures/Sample/libFrameLayoutAlias.dylib", "--pseudo"]),
+    ("disasm listing frame layout aliases", ["disasm", "Fixtures/Sample/libFrameLayoutAlias.dylib"]),
+    ("disasm --json frame layout aliases", ["disasm", "Fixtures/Sample/libFrameLayoutAlias.dylib", "--json"]),
+    // MAY self slots share the frame-fact owner but retain union at joins.
+    // Reconstruction's -Onone initializers spill and reload incoming x20.
+    ("disasm --structured MAY self slots", ["disasm", "Fixtures/Sample/libReconstruction.dylib", "--structured"]),
+    ("disasm --pseudo MAY self slots", ["disasm", "Fixtures/Sample/libReconstruction.dylib", "--pseudo"]),
+    ("disasm listing MAY self slots", ["disasm", "Fixtures/Sample/libReconstruction.dylib"]),
+    ("disasm --json MAY self slots", ["disasm", "Fixtures/Sample/libReconstruction.dylib", "--json"]),
 ]
 
 private func capture(_ arguments: [String]) throws -> Data {
@@ -47,6 +82,7 @@ private func capture(_ arguments: [String]) throws -> Data {
     try process.run()
     let data = output.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
+    try #require(process.terminationStatus == 0, "CLI failed for \(arguments)")
     return data
 }
 
@@ -127,4 +163,68 @@ private func capture(_ arguments: [String]) throws -> Data {
         unordered iteration reaching output.
         """
     )
+}
+
+@Test func returnPathProbeTreesAreIdenticalAcrossProcessesIfPresent() throws {
+    let path = "Fixtures/Sample/libResearchOnone.dylib"
+    guard FileManager.default.fileExists(atPath: binary.path), FileManager.default.fileExists(atPath: path) else { return }
+    var first: [Data]?
+    for _ in 0..<4 {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("swiftdc-paths-\(UUID()).jsonl")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let output = try capture(["disasm", path, "-f", "signedRange", "--probe", file.path,
+                                  "--probe-filter", "event=render.return-value"])
+        #expect(!output.isEmpty)
+        let trace = try String(contentsOf: file, encoding: .utf8)
+        let paths = try trace.split(separator: "\n").compactMap { line -> Data? in
+            let record = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any]
+            guard let fields = record?["fields"] as? [String: Any], let path = fields["path"] else { return nil }
+            return try JSONSerialization.data(withJSONObject: path, options: [.sortedKeys])
+        }
+        #expect(!paths.isEmpty)
+        if let first { #expect(paths == first) } else { first = paths }
+    }
+}
+
+/// The probe trace is a deterministic stream too (`seq` numbers the events
+/// in the order analysis records them). The argument-layout loop walked a
+/// Dictionary of call sites, so `abi.argument-layout` events came out in
+/// hash order: the rendered output matched across processes and the trace
+/// did not. The summary line carries wall-clock times and is left out.
+@Test func argumentLayoutProbeTracesAreIdenticalAcrossProcessesIfPresent() throws {
+    let path = "Fixtures/Sample/libSample.dylib"
+    guard FileManager.default.fileExists(atPath: binary.path), FileManager.default.fileExists(atPath: path) else { return }
+    var first: [Substring]?
+    for _ in 0..<4 {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("swiftdc-layout-\(UUID()).jsonl")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let output = try capture(["disasm", path, "--pseudo", "--probe", file.path,
+                                  "--probe-filter", "event=abi.argument-layout"])
+        #expect(!output.isEmpty)
+        let trace = try String(contentsOf: file, encoding: .utf8)
+        let events = trace.split(separator: "\n").filter { $0.contains("\"event\":\"abi.argument-layout\"") }
+        #expect(events.count > 10, "expected argument-layout events to compare, got \(events.count)")
+        if let first { #expect(events == first) } else { first = events }
+    }
+}
+
+/// The async chain pass walked a Dictionary of chains, so its
+/// `async.context-escape` events came out in hash order: Chess's first 148
+/// trace lines differed between two runs of one binary. `asyncfns.swift`
+/// has 15 functions that record them.
+@Test func asyncChainProbeTracesAreIdenticalAcrossProcessesIfPresent() throws {
+    let path = "Fixtures/Sample/libAsyncFns.dylib"
+    guard FileManager.default.fileExists(atPath: binary.path), FileManager.default.fileExists(atPath: path) else { return }
+    var first: [Substring]?
+    for _ in 0..<4 {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("swiftdc-async-\(UUID()).jsonl")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let output = try capture(["disasm", path, "--pseudo", "--probe", file.path,
+                                  "--probe-filter", "event=async.context-escape|async.context-escape-unknown"])
+        #expect(!output.isEmpty)
+        let trace = try String(contentsOf: file, encoding: .utf8)
+        let events = trace.split(separator: "\n").filter { $0.contains("\"event\":\"async.context-escape") }
+        #expect(events.count > 10, "expected async context-escape events to compare, got \(events.count)")
+        if let first { #expect(events == first) } else { first = events }
+    }
 }

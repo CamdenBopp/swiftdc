@@ -8,11 +8,19 @@ public struct CallEdge: Sendable, Hashable {
     public let caller: UInt64
     /// Resolved call target.
     public let callee: UInt64
+    /// The site is a `b` out of the caller rather than a `bl`: the callee
+    /// returns to the caller's caller.
+    public let isTailCall: Bool
+    /// The site dispatches through `self`'s own vtable slot. The callee is the
+    /// implementation that runs when self is exactly its class; a subclass
+    /// override runs instead otherwise, so the edge is possible, not proven.
+    public var isSelfDispatch: Bool = false
 }
 
 /// Caller/callee relationships across a set of disassembled functions.
 ///
-/// Built from resolved branch targets. This includes direct calls and indirect
+/// Built from resolved branch targets. This includes direct calls, tail calls
+/// (a `b` to another function's entry or to a stub), and indirect
 /// calls whose function pointer was proven from a concrete Mach-O slot (for
 /// example a known witness table). Truly dynamic vtable, generic witness-table,
 /// and block dispatch remains absent; `unresolvedCallSites` counts those sites
@@ -27,6 +35,10 @@ public struct CallGraph: Sendable {
     public let edges: [CallEdge]
     /// Call instructions whose target isn't statically known (indirect dispatch).
     public let unresolvedCallSites: Int
+    /// Calls with no address in this image but a proven callee: an import
+    /// called through its GOT slot. Not unresolved, and not edges either,
+    /// since the callee has no address here.
+    public let externalCallSites: Int
 
     private let calleesByCaller: [UInt64: [CallEdge]]
     private let callersByCallee: [UInt64: [CallEdge]]
@@ -35,30 +47,100 @@ public struct CallGraph: Sendable {
         var names: [UInt64: String] = externalNames
         for function in functions { names[function.startAddress] = function.displayName }
 
+        let starts = Set(functions.map(\.startAddress))
+        let spans = functions.map { ($0.startAddress, $0.instructions.last?.address ?? $0.startAddress) }
+            .sorted { $0.0 < $1.0 }
+        func insideAFunction(_ address: UInt64) -> Bool {
+            var low = 0, high = spans.count
+            while low < high {
+                let mid = (low + high) / 2
+                if spans[mid].0 <= address { low = mid + 1 } else { high = mid }
+            }
+            return low > 0 && address <= spans[low - 1].1
+        }
+
         var edges: [CallEdge] = []
         var unresolved = 0
+        var external = 0
         for function in functions {
-            for insn in function.instructions where insn.controlFlow == .call {
-                guard let target = insn.branchTarget else {
-                    unresolved += 1
+            let first = function.startAddress
+            let last = function.instructions.last?.address ?? first
+            for analysed in function.instructions {
+                // A site rewritten to what its outlined fragment does is,
+                // in the binary, a `bl` or `b` to the fragment.
+                let insn = analysed.inlinedFragment.map { origin in
+                    Instruction(address: analysed.address, text: analysed.text,
+                                controlFlow: origin.reachedByCall ? .call : .branch,
+                                branchTarget: origin.address, callee: .kept(nil))
+                } ?? analysed
+                let isTailCall: Bool
+                switch insn.controlFlow {
+                case .call:
+                    guard insn.branchTarget != nil else {
+                        // A `blr` through a bound GOT slot names its import;
+                        // counted as unresolved it inflated the count (69% of
+                        // one app's "unresolved" sites had a proven target).
+                        if DisassembledFunction.calleeName(of: insn) != nil { external += 1 } else { unresolved += 1 }
+                        continue
+                    }
+                    isTailCall = false
+                case .branch:
+                    // A `b` that leaves the function is a tail call. Without
+                    // this edge a function reached only that way (14,401 of
+                    // Fiery Feeds' 180,015) reads as having no caller at all.
+                    // A branch inside the span, or back to the entry, is the
+                    // function's own control flow; one into the middle of
+                    // another function is a shared tail, not a call to it.
+                    guard let target = insn.branchTarget, target < first || target > last,
+                          starts.contains(target)
+                            || (!insideAFunction(target) && DisassembledFunction.calleeName(of: insn) != nil)
+                    else { continue }
+                    isTailCall = true
+                default:
                     continue
                 }
+                guard let target = insn.branchTarget else { continue }
                 // Calls into a stub (an import, or an ObjC selector stub) target
                 // an address that is not itself a recovered function, so it has
                 // no entry above — but the call site knows the name.
                 if names[target] == nil, let name = DisassembledFunction.calleeName(of: insn) {
                     names[target] = name
                 }
-                edges.append(CallEdge(site: insn.address, caller: function.startAddress, callee: target))
+                edges.append(CallEdge(
+                    site: insn.address, caller: function.startAddress, callee: target, isTailCall: isTailCall,
+                    isSelfDispatch: insn.isSelfDispatch
+                ))
             }
         }
 
         self.names = names
-        self.functionAddresses = Set(functions.map(\.startAddress))
+        self.functionAddresses = starts
         self.edges = edges
         self.unresolvedCallSites = unresolved
+        self.externalCallSites = external
         self.calleesByCaller = Dictionary(grouping: edges, by: \.caller)
         self.callersByCallee = Dictionary(grouping: edges, by: \.callee)
+    }
+
+    /// What the graph reads of `function`: its names, its call and branch
+    /// sites (text and annotation, for callee names) and its last
+    /// instruction (its span). Everything else, the structured detail and
+    /// the recovered arguments, is dropped, so a whole-image graph built while
+    /// streaming holds sites, not instructions: about 1 KB per instruction
+    /// held at once put Swiftcord's 12.4M past 8 GB.
+    public static func sites(of function: DisassembledFunction) -> DisassembledFunction {
+        let instructions = function.instructions
+        var kept: [Instruction] = []
+        for (index, insn) in instructions.enumerated()
+        where insn.controlFlow == .call || insn.controlFlow == .branch || insn.inlinedFragment != nil
+            || index == instructions.count - 1 {
+            kept.append(Instruction(
+                address: insn.address, text: insn.text, annotation: insn.annotation,
+                controlFlow: insn.controlFlow, branchTarget: insn.branchTarget, callee: .kept(insn.callee),
+                facts: insn.facts
+            ))
+        }
+        return function.replacingInstructions(kept)
     }
 
     /// Display name for an address, or a synthesized `sub_<addr>`.

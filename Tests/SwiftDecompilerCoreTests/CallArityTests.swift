@@ -1,0 +1,85 @@
+import Testing
+import Foundation
+@testable import SwiftDecompilerCore
+
+/// A call site snapshotted x0–x7 positionally, so a register the callee never
+/// reads rendered as an argument, and an integer passed after a Double read in
+/// the Double's position. Arguments of a Swift callee whose every parameter is
+/// a proven one-register scalar are now laid out from its signature. Each
+/// caller in `callarity.swift` leaves a non-argument register live.
+///
+/// A parameter count alone is not a layout: a String is two registers, so a
+/// count cap on `sink(_: String, _: Int)` drops the Int. That was tried and
+/// reverted on 2026-10-12; the layout sizes each parameter (a String's two
+/// registers since 2026-10-23) and declines any it cannot size.
+private let fixtures = ["Fixtures/Sample/libCallArity.dylib", "Fixtures/Sample/libCallArity.opt.dylib"]
+
+private func pseudo(_ filter: String, in fixture: String) async throws -> String {
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: fixture, functionFilter: filter)
+    }
+    return functions.map { $0.renderPseudo() }.joined(separator: "\n")
+}
+
+@Test func swiftCalleeArgumentsFollowTheSignatureIfPresent() async throws {
+    var checked = 0
+    for fixture in fixtures where FileManager.default.fileExists(atPath: fixture) {
+        let callOne = try await pseudo("CallArity.callOne", in: fixture)
+        #expect(callOne.contains("CallArity.one(arg0)"), "\(fixture): \(callOne)")
+        #expect(!callOne.contains("CallArity.one(arg0, "), "\(fixture): \(callOne)")
+
+        let callMixed = try await pseudo("CallArity.callMixed", in: fixture)
+        // The Double is in d0, the second Int in x1; the constant renders as the
+        // Double the signature says it is.
+        #expect(callMixed.contains("CallArity.mixed(arg0, 2.5, arg1)"), "\(fixture): \(callMixed)")
+        checked += 1
+    }
+    // At -Onone `callNone` keeps both calls; `none` takes nothing, so `one`'s
+    // result left in x0 is not its argument.
+    if FileManager.default.fileExists(atPath: fixtures[0]) {
+        let callNone = try await pseudo("CallArity.callNone", in: fixtures[0])
+        #expect(callNone.contains("CallArity.none()"), "\(callNone)")
+        #expect(!callNone.contains("none(CallArity.one"), "\(callNone)")
+        #expect(checked == 2, "the -O fixture is missing; build Fixtures/Sample/build.sh")
+    }
+}
+
+/// Unit view of what the layout accepts and declines.
+@Test func theLayoutDeclinesWhatItCannotSize() {
+    func layout(_ name: String) -> [Disassembler.ScalarParameterClass]? {
+        Disassembler.swiftCallArgumentLayout(
+            callee: name, enumCaseIndex: EnumCaseIndex(), classTypeIndex: ClassTypeIndex())
+    }
+    #expect(layout("M.one(Swift.Int) -> Swift.Int") == [.integer])
+    #expect(layout("M.none() -> Swift.Int") == [])
+    #expect(layout("M.mixed(Swift.Int, Swift.Double, Swift.Int) -> Swift.Double") == [.integer, .floating, .integer])
+    #expect(layout("static M.S.make(Swift.Int) -> M.S") == [.integer])
+    #expect(layout("M.S.init(x: Swift.Int) -> M.S") != nil)
+    // A generic value is passed by address and the metadata follows the
+    // formals, unshown; a tuple result with a generic element takes its
+    // buffer first, from x0, and is not laid out. An async callee's context is its
+    // `swiftasync` parameter (x22) and its formals take the ordinary
+    // registers (`define swifttailcc void @dbl(ptr swiftasync %0, double
+    // %1)`), unless an indirect result's buffer comes first (`@bigRes(ptr
+    // %0, ptr swiftasync %1, i64 %2)`), which is not laid out. A String's two
+    // registers and an inout address are sized in StringArityTests.
+    #expect(layout("M.gen<A>(Swift.Int, A) -> Swift.Int") == [.integer, .integer])
+    #expect(layout("M.split<A>(A, Swift.Int) -> (A, Swift.Int)") == nil)
+    #expect(layout("M.wait(Swift.Int) async -> Swift.Int") == [.integer])
+    #expect(layout("M.wait(Swift.Int) async -> M.Big") == nil)
+    // An instance method of a type not known to be a class: its self may be a
+    // value passed after the formals.
+    #expect(layout("M.S.scaled(Swift.Int) -> M.S") == nil)
+    #expect(layout("closure #1 (Swift.Int) -> () in M.f() -> ()") == nil)
+    #expect(layout("M.Holder.value.getter : Swift.Int") == nil)
+}
+
+/// The readiness doc's float-argument entry: -Onone `Double(f) * 1.5` passes
+/// the Float in s0, which call sites did not read, so the conversion rendered
+/// `Swift.Double.init(?)` (and before that `Swift.Double.init()`).
+@Test func aFloatArgumentReachesItsCalleeIfPresent() async throws {
+    let fixture = "Fixtures/Sample/libConversions.dylib"
+    guard FileManager.default.fileExists(atPath: fixture) else { return }
+    let text = try await pseudo("widenedTimesConstant", in: fixture)
+    #expect(text.contains("Swift.Double.init(arg0)"), "\(text)")
+}

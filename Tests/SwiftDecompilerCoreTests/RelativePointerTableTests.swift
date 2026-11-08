@@ -24,11 +24,13 @@ private func table(_ deltas: [Int32]) -> Data {
     return data
 }
 
-private func rejects(_ deltas: [Int32], sectionOffset: Int, fileSize: Int) -> Bool {
+private func rejects(
+    _ deltas: [Int32], sectionOffset: Int, fileSize: Int, name: String = "__swift5_types"
+) -> Bool {
     do {
         try MachOPreflight.validateRelativePointerTable(
             bytes: table(deltas), sectionOffset: sectionOffset, fileSize: fileSize,
-            name: "__swift5_types"
+            name: name
         )
         return false
     } catch {
@@ -67,14 +69,29 @@ private func rejects(_ deltas: [Int32], sectionOffset: Int, fileSize: Int) -> Bo
     // NOT a corner case — every entry in every real fixture is negative, because
     // the tables sit after the descriptors they point at. A validator that
     // rejected negative deltas would refuse every Swift binary in existence.
-    #expect(!rejects([-100, -500, -999], sectionOffset: 1_000, fileSize: 5_000))
+    #expect(!rejects([-100, -500, -1_000], sectionOffset: 1_000, fileSize: 5_000))
 }
 
-@Test func acceptsAPointerToTheFirstAndLastValidByte() {
-    // Boundaries: 0 is in-file, fileSize - 1 is in-file, fileSize is not.
+@Test func acceptsAPointerToTheFirstAndLastValidDescriptor() {
+    // Boundaries: 0 is in-file, the last aligned word is in-file, fileSize is not.
     #expect(!rejects([-1_000], sectionOffset: 1_000, fileSize: 5_000))   // → 0
-    #expect(!rejects([3_999], sectionOffset: 1_000, fileSize: 5_000))    // → 4999
+    #expect(!rejects([3_996], sectionOffset: 1_000, fileSize: 5_000))    // → 4996
     #expect(rejects([4_000], sectionOffset: 1_000, fileSize: 5_000))     // → 5000
+}
+
+@Test func rejectsAConformancePointerIntoTheMiddleOfADescriptor() {
+    // Descriptors are 4-byte-aligned records; a conformance record has no tag
+    // bits, so a target 1 past one is a byte of it.
+    #expect(rejects([-999], sectionOffset: 1_000, fileSize: 5_000, name: "__swift5_proto"))  // → 1
+}
+
+@Test func acceptsTheTagBitsOfTypeAndProtocolRecords() {
+    // TypeReferenceKind (types) and the indirect/reserved bits (protocols) sit
+    // in the low two bits; Music.app's `__swift5_types[4]` sets them.
+    for kind: Int32 in 1...3 {
+        #expect(!rejects([-1_000 + kind], sectionOffset: 1_000, fileSize: 5_000, name: "__swift5_types"))
+        #expect(!rejects([-1_000 + kind], sectionOffset: 1_000, fileSize: 5_000, name: "__swift5_protos"))
+    }
 }
 
 @Test func acceptsAnEmptyTable() {

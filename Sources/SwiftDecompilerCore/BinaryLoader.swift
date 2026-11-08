@@ -1,5 +1,7 @@
 import Foundation
 import MachOKit
+@_spi(Internals) import MachOSymbols
+@_spi(Internals) import SwiftInspection
 
 /// A human-readable error surfaced to the CLI.
 public struct BinaryLoadError: Error, CustomStringConvertible {
@@ -17,7 +19,12 @@ public enum BinaryLoader {
     ///   - path: Filesystem path to a Mach-O or fat binary.
     ///   - architecture: For fat binaries, the slice to select ("arm64",
     ///     "arm64e", "x86_64"). Ignored for thin binaries.
-    public static func load(path: String, architecture: String? = nil) throws -> MachOFile {
+    ///   - allowingWideAddresses: Accept a segment whose address or size is at
+    ///     or above 2^63 (`requireSignedAddresses`), for a reader that never
+    ///     does address arithmetic on it.
+    public static func load(
+        path: String, architecture: String? = nil, allowingWideAddresses: Bool = false
+    ) throws -> MachOFile {
         let url = URL(fileURLWithPath: path)
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw BinaryLoadError("File not found: \(path)")
@@ -28,6 +35,7 @@ public enum BinaryLoader {
         // structure has to be checked before it is handed over. See
         // MachOPreflight.
         try MachOPreflight.validate(url: url)
+        try requireRoomForCacheProbe(path: path)
 
         let file: File
         do {
@@ -37,8 +45,10 @@ public enum BinaryLoader {
         }
 
         switch file {
-        case .machO(let machO):
-            warnIfEncrypted(machO, path: path)
+        case .machO(let loaded):
+            let machO = try withOwnIdentity(loaded, url: url)
+            if !allowingWideAddresses { try requireSignedAddresses(machO) }
+            forgetCachedImage(machO)
             return machO
 
         case .fat(let fat):
@@ -57,22 +67,105 @@ public enum BinaryLoader {
                     "Architecture '\(architecture)' not found. Available: \(available)"
                 )
             }
-            warnIfEncrypted(match, path: path)
+            if !allowingWideAddresses { try requireSignedAddresses(match) }
+            forgetCachedImage(match)
             return match
         }
     }
 
-    /// FairPlay-encrypted App Store binaries (`cryptid != 0`) read as garbage —
-    /// warn loudly so the user isn't puzzled by nonsense output.
-    private static func warnIfEncrypted(_ machO: MachOFile, path: String) {
-        guard machO.isEncrypted else { return }
-        let name = (path as NSString).lastPathComponent
-        FileHandle.standardError.write(Data("""
-        warning: '\(name)' is FairPlay-encrypted (cryptid != 0) — its __text and Swift metadata \
-        will read as garbage. Analyze a decrypted dump (e.g. from a jailbroken device via \
-        frida-ios-dump) or an un-encrypted build instead.
+    /// The same file, named by its own path instead of its install name.
+    /// MachOSwiftSection keys its per-image caches by `imagePath` and
+    /// `LC_UUID`, and a stripped copy keeps both, so in one process the copy
+    /// read whatever the original last put there: after a disassembly of
+    /// libLocalTypesPair.dylib, a dump of the stripped copy loaded before it
+    /// printed `struct Local #1 in LocalTypes.Outer.make()`, a name only the
+    /// original's symbols record. Keyed by path, two files never share an
+    /// entry, whatever order they are used in. A fat slice keeps its install
+    /// name: MachOKit has no public way to name one.
+    static func withOwnIdentity(_ machO: MachOFile, url: URL) throws -> MachOFile {
+        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+        guard machO.imagePath != path else { return machO }
+        return try MachOFile(url: url, imagePath: path, headerStartOffsetInCache: 0)
+    }
 
-        """.utf8))
+    /// MachOSwiftSection keys its per-image caches by a file's install name
+    /// and `LC_UUID` (MachOKitExtensions `MachOTargetIdentifier.uuidFile`),
+    /// which a stripped copy keeps. Since 0.23 it names a local type from the
+    /// `_symbolic` symbols in the symbol index, so in one process the copy
+    /// loaded second read its original's symbols: libLocalTypes.stripped
+    /// printed `Local #1 in LocalTypes.Outer.make()`, a name nothing in it
+    /// records. A file starts from an empty symbol index and demangle memo.
+    /// Two such files alive at once still share them. Only a file with
+    /// Swift metadata has any: the key reads `MachOFile.cache`, whose
+    /// `DyldCache.init` traps (`try!`, MachOKit DyldCache.swift:87) on a file
+    /// shorter than a cache header, such as a bare object header.
+    static func forgetCachedImage(_ machO: MachOFile) {
+        guard machO.sections.contains(where: { $0.sectionName.hasPrefix("__swift5_") }) else { return }
+        SymbolIndexStore.shared.remove(for: machO)
+        SymbolicDemangler.removeCache(for: machO)
+    }
+
+    /// Fails on a file shorter than a dyld shared cache header (568 bytes).
+    /// MachOKit's `MachOFile.fileOffset(of:)` asks `cache` whether a
+    /// standalone file is a cache, and `DyldCache.init` reads that header with
+    /// `try!` (DyldCache.swift:87), so the first address a command resolved
+    /// in such a file trapped: `disasm`, `interface`, `objc` and `analyze` on
+    /// `abi_source_aliased.o` (424 bytes, one `__text`). `dump` and `layout`
+    /// got through only because that file has no Swift section to read; one
+    /// that had would trap them too, so every command refuses it.
+    static func requireRoomForCacheProbe(path: String) throws {
+        let header = MemoryLayout<DyldCacheHeader.Layout>.size
+        guard let size = try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int else { throw BinaryLoadError("Cannot read the size of \(path)") }
+        if size < header {
+            throw BinaryLoadError(
+                "\(path) is \(size) bytes, shorter than a dyld shared cache header (\(header) bytes). "
+                + "MachOKit reads one, and traps, the first time it resolves an address in a standalone file, "
+                + "so swiftdc does not open it."
+            )
+        }
+    }
+
+    /// Fails when a segment's address or size is at or above 2^63. MachOKit
+    /// converts both to `Int` with a trapping `numericCast` wherever it
+    /// computes a file offset or a section range, so `disasm`, `objc`,
+    /// `layout`, `interface`, `xrefs` and `analyze` died with SIGTRAP on a
+    /// segment `vmsize` set to 2^63 and on a real arm64e kernel, whose
+    /// `__TEXT` is at 0xfffffe0007004000. The preflight lets them through:
+    /// its containment check adds address and size with wrapping, and
+    /// `__LINKEDIT` has no sections to check. `dump` and `swift-version`
+    /// read such an image without that arithmetic, so they opt out.
+    public static func requireSignedAddresses(_ machO: MachOFile) throws {
+        if let wide = wideSegment(of: machO) {
+            throw BinaryLoadError(
+                "Segment \(wide.name) has a virtual \(wide.field) of 0x\(String(wide.value, radix: 16)), "
+                + "at or above 2^63: past the signed 64-bit addresses swiftdc computes with. "
+                + "`dump` and `swift-version` can still read this image."
+            )
+        }
+    }
+
+    /// `dump` reads such an image's load commands, but not its Swift metadata:
+    /// that resolves through chained fixups and the symbol table, which live
+    /// in `__LINKEDIT`, and MachOKit narrows the segment address to reach them
+    /// with a trapping `numericCast`.
+    public static func requireReadableSwiftMetadata(_ machO: MachOFile) throws {
+        guard machO.sections.contains(where: { $0.sectionName.hasPrefix("__swift5_") }),
+              let wide = wideSegment(of: machO)
+        else { return }
+        throw BinaryLoadError(
+            "Segment \(wide.name) has a virtual \(wide.field) of 0x\(String(wide.value, radix: 16)), "
+            + "at or above 2^63, and the image holds Swift metadata, which cannot be read past that address."
+        )
+    }
+
+    private static func wideSegment(of machO: MachOFile) -> (name: String, field: String, value: UInt64)? {
+        for segment in machO.loadCommands.infos(of: LoadCommand.segment64) {
+            for (field, value) in [("address", segment.layout.vmaddr), ("size", segment.layout.vmsize)]
+            where value >= 1 << 63 {
+                return (segment.segmentName, field, value)
+            }
+        }
+        return nil
     }
 
     /// Best-effort architecture name for a thin Mach-O slice.
@@ -81,8 +174,18 @@ public enum BinaryLoader {
         guard let type = cpu.type else { return "unknown" }
         switch type {
         case .arm64:
-            if case .arm64(.arm64e)? = cpu.subtype { return "arm64e" }
-            return "arm64"
+            // By the raw subtype, capability bits masked, with lipo's and
+            // llvm-objdump's names: MachOKit does not know ARM64E_X1 (12),
+            // which then read as "arm64", so `--arch arm64` chose Terminal's
+            // arm64e.x1 slice and llvm-objdump, which has no arm64 slice to
+            // give, listed nothing.
+            switch UInt32(bitPattern: cpu.subtypeRawValue) & 0x00ff_ffff {
+            case 0: return "arm64"
+            case 1: return "arm64v8"
+            case 2: return "arm64e"
+            case 12: return "arm64e.x1"
+            case let subtype: return "arm64 (subtype \(subtype))"
+            }
         case .x86_64:
             return "x86_64"
         default:
@@ -115,7 +218,8 @@ extension BinaryLoader {
         image: String? = nil,
         imagePath: String? = nil,
         cachePath: String? = nil,
-        binary: String? = nil
+        binary: String? = nil,
+        allowingWideAddresses: Bool = false
     ) throws -> MachOFile {
         if image != nil, imagePath != nil {
             throw BinaryLoadError("Pass only one of --image or --image-path.")
@@ -133,7 +237,9 @@ extension BinaryLoader {
             throw BinaryLoadError("Provide a binary path, or --image <name> to read from the dyld shared cache.")
         }
         // Accept a Mach-O, or an .app/.framework/.ipa to dig the binary out of.
-        return try load(path: resolveBinaryInput(path, binary: binary), architecture: architecture)
+        return try load(
+            path: resolveBinaryInput(path, binary: binary), architecture: architecture,
+            allowingWideAddresses: allowingWideAddresses)
     }
 
     /// Extract a single image from a dyld shared cache as a cache-aware
@@ -154,6 +260,16 @@ extension BinaryLoader {
         case .name(let name): matches = { imageName(of: $0) == name }
         case .path(let path): matches = { $0.imagePath == path }
         }
+        // A name can belong to several images: the macOS library and its Mac
+        // Catalyst copy under /System/iOSSupport, or a framework and its
+        // accessibility bundle. Cache order is no reason to prefer one, so an
+        // ambiguous name declines and lists the install paths to choose from.
+        if case .name(let name) = selector {
+            let named = cache.machOFiles().filter(matches)
+            if named.count > 1 {
+                throw BinaryLoadError(ambiguousImageNameMessage(name, paths: named.map(\.imagePath)))
+            }
+        }
         guard let image = cache.machOFiles().first(where: matches) else {
             switch selector {
             case .name(let name):
@@ -166,6 +282,11 @@ extension BinaryLoader {
             }
         }
         return image
+    }
+
+    static func ambiguousImageNameMessage(_ name: String, paths: [String]) -> String {
+        "Image '\(name)' names \(paths.count) images in the dyld shared cache; "
+            + "choose one with --image-path:\n" + paths.sorted().map { "  " + $0 }.joined(separator: "\n")
     }
 
     /// Install paths of every image in the cache, sorted. Backs `--list-images`.

@@ -23,7 +23,6 @@ was not recoverable enough to tell.
 ## Quickstart
 
 ```bash
-brew install capstone            # required
 swift build -c release           # → .build/release/swiftdc
 
 # Point it at anything: a binary, a .app, a .framework, or an .ipa.
@@ -79,10 +78,15 @@ Point  // instance size 16 bytes
 
 Every subcommand accepts a Mach-O, a fat binary, a `.app`/`.framework` bundle, or
 an `.ipa` (unzipped for you), and defaults to the bundle's main executable.
-Exceptions: `devices` and `apps` take no path at all.
+Exceptions: `devices`, `apps` and `research` take no positional binary path.
+`score` accepts a binary, or a probe trace with `--trace`, and an independent
+oracle. Native fixture scoring, manifest defaults and the Swift API are in
+[INSTRUMENTATION.md](docs/INSTRUMENTATION.md).
 
 | Subcommand | What it does |
 |---|---|
+| `score` | Score integer return claims against independent expected values; report agreement and coverage separately |
+| `research` | Compile and score an authored native fixture matrix across optimization, display and analysis modes; retain findings and provenance |
 | `analyze` *(default)* | Declarations + disassembly, grouped by owning type |
 | `dump` | Reconstructed Swift declarations from `__swift5_*` metadata |
 | `interface` | A full `.swiftinterface`-style source view — higher fidelity than `dump` |
@@ -90,6 +94,7 @@ Exceptions: `devices` and `apps` take no path at all.
 | `disasm` | Annotated ARM64, with `--cfg` / `--pseudo` / `--structured` views |
 | `xrefs` | Callers and callees of a function, over the recovered call graph |
 | `layout` | Byte offset → Swift stored property, per type |
+| `swift-version` | The producing Swift version, where the binary carries evidence |
 | `devices` | Attached iPhones/iPads |
 | `apps` | Installed apps + FairPlay encryption status |
 
@@ -129,6 +134,7 @@ swiftdc interface Binary --opaque-return-types     # experimental
 
 # objc — headers, bodies, structured bodies
 swiftdc objc Binary                                # headers only
+swiftdc objc Binary --metadata-only                # headers, no code read (below)
 swiftdc objc Binary --methods                      # + every metadata-backed IMP
 swiftdc objc Binary --function incrementBy --pseudo
 swiftdc objc Binary --function incrementIfEnabled --structured
@@ -153,6 +159,45 @@ swiftdc xrefs Binary --unreferenced                # nothing statically calls th
 ```
 
 `-f` is short for `--function`; `-s` for `--sections`; `-t` for `--type`.
+
+`objc` decides whether each property accessor is synthesized or custom by
+reading its body: a synthesized one is implied by its `@property` and dropped,
+a custom one stays. `--metadata-only` reads no code, for an image too large to
+analyze or a quick look. It can't tell the two apart, so it keeps every
+accessor and says so:
+
+```text
+@property(copy, nonatomic) NSString *name; // @synthesize name=_name
+
+- (NSString *)name; // unclassified accessor: body not analyzed
+- (void)setName:(NSString *)arg0; // unclassified accessor: body not analyzed
+```
+
+### Swift version
+
+`swift-version` names the Swift toolchain that built a binary, and only where the
+binary proves it. The version comes from the `__objc_imageinfo` stable-ABI bits or
+an `LC_BUILD_VERSION` swift-tool record; with neither, it reports the ABI
+generation (`__swift5_*` metadata) or declines. The SDK is shown as context, never
+mistaken for the compiler.
+
+```bash
+swiftdc swift-version MyApp.app         # "Swift 6.4", with the evidence
+swiftdc swift-version Binary --json     # confidence, version, evidence[]
+swiftdc swift-version --image Foundation
+```
+
+```text
+Swift 6.4
+  confidence: exact
+  evidence:
+    - objc image-info stable-ABI version bits → 6.4
+    - __swift5 reflection metadata present (11 sections): __swift5_assocty, …
+  build environment (not proof of the Swift version): macOS, min OS 27.0.0, SDK 27.0.0
+```
+
+The evidence survives `strip`: the reflection sections and image-info are not the
+symbol table, so a stripped binary still names its Swift version.
 
 ### Devices
 
@@ -234,6 +279,12 @@ for how that works and what differs there.
   rotation, and loop-carried accumulators (`total += i`) are reconstructed.
   Anything irreducible degrades to a labeled `goto`, so output is never
   structurally wrong — brace-balanced by construction.
+- **Explicit integer semantics** — right shifts use `>>ˢ` for arithmetic
+  (sign-filling) and `>>ᵁ` for logical (zero-filling) shifts, independent of
+  the source parameter or result type. These are pseudocode operators over
+  register bit patterns; 32-bit normalization remains an explicit mask.
+  High-half multiplication likewise uses `mulhˢ` and `mulhᵁ` for the high
+  64 bits of signed and unsigned 128-bit products.
 - **Cross-references** — a call graph over resolved branch targets, including
   indirect `blr` calls whose register value provably traces to a concrete
   witness/vtable/GOT pointer slot.
@@ -287,8 +338,8 @@ lose naming rather than gaining a wrong name.
   Class vtable names occasionally fall back to `sub_<addr>` even unstripped (a
   SwiftDump resolution gap); the address is still correct and disassemblable.
 - **FairPlay-encrypted `.ipa`s cannot be decrypted.** App Store `.ipa`s ship
-  their main binary encrypted (`cryptid != 0`); swiftdc detects and warns, but
-  you need a decrypted dump (e.g. frida-ios-dump on a jailbroken device) or an
+  their main binary encrypted (`cryptid != 0`); swiftdc refuses such an image
+  rather than decode ciphertext, so you need a decrypted dump (e.g. frida-ios-dump on a jailbroken device) or an
   un-encrypted build. Enterprise/dev builds and `.app`s are unaffected.
 - **Device commands enumerate only.** They do not pull binaries off the device —
   a stock iOS device does not vend other apps' bundles over any lockdown service
@@ -315,7 +366,7 @@ lose naming rather than gaining a wrong name.
   (that needs the binary, which the previous point rules out). The two agree by
   construction and empirically: across 573 apps on an iOS 27 device, every App
   Store app had a SINF and every system/development-signed app had none.
-  `BinaryLoader` still reads the real `cryptid` whenever it has a binary in hand.
+  The preflight still reads the real `cryptid` whenever it has a binary in hand.
 
 Known rough edges in cache images are in
 [docs/dyld-shared-cache.md](docs/dyld-shared-cache.md).
@@ -330,15 +381,20 @@ listing as a sample, not an inventory — and please report it.
 
 - macOS on **Apple Silicon (arm64)**
 - **Xcode 26 / Swift 6.3** toolchain (`swiftc`, `llvm-objdump`, `swift-demangle`)
-- **Capstone** — `brew install capstone` (linked via pkg-config). Required for
-  structured decoding and CFG recovery.
+- **Capstone 6** is built from source as a SwiftPM dependency (the
+  `capstone` package MachOSwiftSection also links), so nothing to install.
+  It is the structured decoder behind CFG recovery.
 - **OpenSSL** — `brew install openssl@3`. Only needed for `devices` / `apps`.
 
 ```bash
 swift build              # debug   → .build/debug/swiftdc
-swift build -c release   # release → .build/release/swiftdc
-swift test               # 110 tests; fixture-based ones self-skip if unbuilt
+swift build -c release --scratch-path .build-release   # release → .build-release/release/swiftdc
+swift test               # 847 tests; fixture-based ones self-skip if unbuilt
 ```
+
+Give a release build its own scratch path when you also build debug: in a
+shared `.build`, switching configurations rebuilds every dependency (about
+5 minutes instead of about 1).
 
 `Fixtures/Sample/sample.swift` plus `sample_objc.m` form a metadata-rich program
 (Swift structs/enums/classes/protocols/generics; ObjC methods, properties, ivars,

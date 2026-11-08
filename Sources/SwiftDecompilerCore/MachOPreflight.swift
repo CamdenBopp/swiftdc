@@ -31,17 +31,64 @@ public enum MachOPreflight {
     /// The load commands whose payloads declare file ranges. Anything not listed
     /// is walked for size consistency but its payload is left alone — an unknown
     /// command is not evidence of a bad file.
+    /// `MH_EXECUTE`, `MH_DYLIB`, `MH_BUNDLE`: the images dyld loads.
+    private enum FileType {
+        static let loadable: Set<UInt32> = [0x2, 0x6, 0x8]
+    }
+
+    private enum SectionAttribute {
+        static let debug: UInt32 = 0x0200_0000   // S_ATTR_DEBUG
+    }
+
     private enum Command {
         static let segment32: UInt32 = 0x1
         static let segment64: UInt32 = 0x19
         static let symtab: UInt32 = 0x2
+        static let buildVersion: UInt32 = 0x32
+        /// `sizeof(struct build_version_command)`: `cmd`, `cmdsize`, platform,
+        /// minos, sdk, ntools. The tools follow it.
+        static let buildVersionHeader = 24
+        /// `sizeof(struct build_tool_version)`: tool, version.
+        static let buildToolVersion = 8
+        static let chainedFixups: UInt32 = 0x8000_0034   // LC_DYLD_CHAINED_FIXUPS
+        static let exportsTrie: UInt32 = 0x8000_0033     // LC_DYLD_EXPORTS_TRIE
+        static let dyldInfo: Set<UInt32> = [0x22, 0x8000_0022]   // LC_DYLD_INFO(_ONLY)
+        /// Every `linkedit_data_command`: `dataoff` and `datasize` after
+        /// `cmd` and `cmdsize`.
+        static let linkeditData: Set<UInt32> = [
+            0x1d,           // LC_CODE_SIGNATURE
+            0x1e,           // LC_SEGMENT_SPLIT_INFO
+            0x26,           // LC_FUNCTION_STARTS
+            0x29,           // LC_DATA_IN_CODE
+            0x2b,           // LC_DYLIB_CODE_SIGN_DRS
+            0x2e,           // LC_LINKER_OPTIMIZATION_HINT
+            exportsTrie,
+            chainedFixups,
+        ]
+        static let encryptionInfo: Set<UInt32> = [0x21, 0x2c]   // LC_ENCRYPTION_INFO(_64)
+        /// Every command whose payload is a `struct dylib` (a name as an
+        /// `lc_str` offset into the command, then three version words).
+        static let dylibCommands: Set<UInt32> = [
+            0xc,            // LC_LOAD_DYLIB
+            0xd,            // LC_ID_DYLIB
+            0x20,           // LC_LAZY_LOAD_DYLIB
+            0x8000_0018,    // LC_LOAD_WEAK_DYLIB
+            0x8000_001f,    // LC_REEXPORT_DYLIB
+            0x8000_0023,    // LC_LOAD_UPWARD_DYLIB
+        ]
+        /// `sizeof(struct dylib_command)`: `cmd`, `cmdsize`, then `struct dylib`
+        /// (name offset, timestamp, current_version, compatibility_version).
+        /// The name string starts at or after this.
+        static let dylibCommandHeader = 24
     }
 
     /// Section types that occupy no bytes in the file: their `size` describes
     /// memory to be zeroed, so it must NOT be bounds-checked against the file.
     /// `__bss` is routinely larger than the binary that declares it.
+    /// S_ZEROFILL, S_GB_ZEROFILL, S_THREAD_LOCAL_ZEROFILL; not 0x13
+    /// (S_THREAD_LOCAL_VARIABLES, the file-backed TLV descriptors).
     private enum SectionType {
-        static let zerofill: Set<UInt32> = [0x1, 0xc, 0x13]
+        static let zerofill: Set<UInt32> = [0x1, 0xc, 0x12]
     }
 
     private enum Magic {
@@ -61,14 +108,17 @@ public enum MachOPreflight {
     /// Only a prefix is read — enough for the header and, where it fits, the
     /// load commands. Nothing here needs the whole file.
     public static func validate(url: URL) throws {
-        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil
-        guard let fileSize = size else {
-            throw BinaryLoadError("Cannot determine size of \(url.path)")
-        }
         guard let handle = try? FileHandle(forReadingFrom: url) else {
             throw BinaryLoadError("Cannot open \(url.path)")
         }
         defer { try? handle.close() }
+        // The size of what the handle reads. `attributesOfItem` describes a
+        // symlink itself, so `/usr/bin/ex` (a link to `vim`) measured 3 bytes.
+        guard let end = try? handle.seekToEnd(), let fileSize = Int(exactly: end),
+              (try? handle.seek(toOffset: 0)) != nil
+        else {
+            throw BinaryLoadError("Cannot determine size of \(url.path)")
+        }
         // 1 MiB covers the header plus load commands of any binary in practice;
         // where it does not, the arithmetic checks still apply and the
         // load-command walk simply stops at the end of what was read.
@@ -97,23 +147,275 @@ public enum MachOPreflight {
             try validateSliceThinHeader(
                 header: header, sliceSize: extent.size, index: index, path: url.path
             )
+            // And its contents, exactly as a thin file's: MachOKit parses the
+            // chosen slice's metadata just as it would a thin image, so without
+            // this every universal binary reached it unchecked (the
+            // `sample.release 150 99` selref mutant, wrapped by `lipo -create`,
+            // still trapped in `objc --arch arm64`).
+            let image = ImageReader(handle: handle, base: extent.offset, size: extent.size)
+            if let slicePrefix = image.read(offset: 0, count: min(extent.size, 1 << 20)) {
+                let slicePath = "\(url.path) (slice \(index))"
+                // The load-command payload checks too: the header check above
+                // stops at the header, so a corrupted `LC_BUILD_VERSION` that
+                // is declined in a thin file trapped `swift-version --arch`
+                // once wrapped in a fat header.
+                try validate(prefix: slicePrefix, fileSize: extent.size, path: slicePath)
+                try validateImageContents(prefix: slicePrefix, image: image, path: slicePath)
+            }
         }
 
-        // Section CONTENTS, which the checks above say nothing about. Only the
-        // flat relative-pointer tables (see `relativePointerTables`), and only
-        // for a thin little-endian image — a fat file's slices are handled above.
+        try validateImageContents(
+            prefix: prefix, image: ImageReader(handle: handle, base: 0, size: fileSize), path: url.path
+        )
+    }
+
+    /// One image's bytes: the whole file for a thin image, or one fat slice.
+    /// Offsets are relative to the image, as its load commands give them, and
+    /// a read that would leave the image returns nil.
+    struct ImageReader {
+        let handle: FileHandle
+        let base: Int
+        let size: Int
+
+        func read(offset: Int, count: Int) -> Data? {
+            guard offset >= 0, count >= 0, offset <= size, count <= size - offset,
+                  (try? handle.seek(toOffset: UInt64(base + offset))) != nil,
+                  let data = try? handle.read(upToCount: count), data.count == count
+            else { return nil }
+            return data
+        }
+    }
+
+    /// Section contents of one thin image, whose header and load commands
+    /// start `prefix`.
+    static func validateImageContents(prefix: Data, image: ImageReader, path: String) throws {
+        let fileSize = image.size
+        // FairPlay ciphertext is not a malformed image, and no reading of it
+        // is true: decoded, it renders fabricated code (the corpus sweep
+        // found 11 App Store binaries that exited 0 with only a warning), and
+        // its metadata fails the checks below as "malformed" (3 more). Decline
+        // the image, by its own cause, before anything reads it.
+        if let crypt = encryptedRange(prefix: prefix) {
+            throw BinaryLoadError(
+                "FairPlay-encrypted: \(path) — \(crypt.size) bytes at file offset \(crypt.offset) are ciphertext "
+                + "(cryptid \(crypt.cryptid)), so its code and metadata cannot be read. Analyze a decrypted copy."
+            )
+        }
+        try validateSymbolStrings(prefix: prefix, image: image, path: path)
+        try validateChainedFixupsHeader(prefix: prefix, image: image, path: path)
+        try validateExportTries(prefix: prefix, image: image, path: path)
+
+        // Section CONTENTS, for a thin little-endian image. A fat file's
+        // slices come through here one at a time from `validate(url:)`.
         //
         // Read per section rather than from `prefix`: metadata sits after the
         // code, so in any real app it is far beyond the 1 MiB header window.
         // Validating only what the prefix happened to cover would leave exactly
         // the large binaries unprotected.
-        for table in relativePointerTables(prefix: prefix, fileSize: fileSize) {
-            guard table.size > 0, let _ = try? handle.seek(toOffset: UInt64(table.offset)),
-                  let bytes = try? handle.read(upToCount: table.size), bytes.count == table.size
-            else { continue }
-            try validateRelativePointerTable(
-                bytes: bytes, sectionOffset: table.offset, fileSize: fileSize,
-                name: table.name, path: url.path
+        // dyld: "chained fixups, seg_count exceeds number of segments". The
+        // fixups record how many segments the image has; when a segment's
+        // load command no longer reads as one (a flipped `cmd` byte), its
+        // memory is gone and metadata pointers into it read unmapped pages
+        // (SIGSEGV in `dump`/`interface`, measured by `container-fuzz.py`).
+        if let fixups = chainedFixups(prefix: prefix),
+           let header = image.read(offset: fixups.dataoff, count: 8),
+           let startsOffset = header.u32(at: 4),
+           UInt64(startsOffset) + 4 <= UInt64(fixups.datasize),
+           let starts = image.read(offset: fixups.dataoff + Int(startsOffset), count: 4), let segCount = starts.u32(at: 0),
+           Int(segCount) > fixups.segments {
+            throw BinaryLoadError(
+                "Malformed Mach-O: \(path) — chained fixups describe \(segCount) segment(s) but the image has \(fixups.segments); dyld refuses to load such an image"
+            )
+        }
+
+        // A layout the Mach-O readers underneath would misread: decline it by
+        // its own cause before any of them reads it (`misreadSegments`).
+        let misread = misreadSegments(prefix: prefix, image: image)
+        if !misread.isEmpty {
+            let described = misread.map {
+                "\($0.name) (VM offset 0x\(String($0.vmOffset, radix: 16)), file offset 0x\(String($0.fileOffset, radix: 16)))"
+            }.joined(separator: ", ")
+            throw BinaryLoadError(
+                "Unsupported Mach-O layout: \(path) — \(described) "
+                + "\(misread.count == 1 ? "lies" : "lie") at a different offset in memory than in the file, "
+                + "and \(misread.count == 1 ? "holds" : "hold") fixups or metadata. The Mach-O readers swiftdc uses "
+                + "resolve those by file offset and would read unrelated bytes, so the image is declined rather than misread."
+            )
+        }
+
+        // Relative pointers are VM displacements: every check below maps them
+        // through the image's own segments.
+        let map = segmentTable(prefix: prefix).map(FileBackedRanges.init(segments:))
+            ?? FileBackedRanges(identityOver: fileSize)
+
+        let objc = sectionExtents(named: ["__objc_methlist", "__objc_selrefs"], prefix: prefix)
+        if let methlist = objc["__objc_methlist"], let selrefs = objc["__objc_selrefs"],
+           methlist.size > 0, methlist.offset <= fileSize, methlist.size <= fileSize - methlist.offset,
+           let bytes = image.read(offset: methlist.offset, count: methlist.size) {
+            try validateObjCMethodLists(
+                bytes: bytes, sectionAddress: methlist.addr,
+                selrefs: (selrefs.addr, selrefs.size), path: path,
+                sectionOffset: methlist.offset, fileSize: fileSize, map: map
+            )
+        }
+
+        // Every fixup chain stays inside its page, and the slots the chains
+        // reach are what the pointer checks below decode.
+        var chainEntries: ChainEntries?
+        if let fixups = chainedFixups(prefix: prefix),
+           let blob = image.read(offset: fixups.dataoff, count: fixups.datasize),
+           let startsOffset = blob.u32(at: 4), let segmentCount = blob.u32(at: Int(startsOffset)) {
+            let segments = segmentRanges(prefix: prefix)
+            chainEntries = try validateFixupChains(
+                blob: blob, startsOffset: Int(startsOffset), segmentCount: Int(segmentCount),
+                readSegment: { index in
+                    guard index < segments.count else { return nil }
+                    let segment = segments[index]
+                    guard segment.size > 0, segment.size <= 512 << 20,
+                          let data = image.read(offset: segment.offset, count: segment.size)
+                    else { return nil }
+                    return (segment.vmaddr, data)
+                },
+                path: path
+            )
+        }
+
+        // The Objective-C pointer arrays, decoded per their segment's
+        // chained-fixup pointer format (or as plain addresses without one).
+        if let table = sectionTable(prefix: prefix) {
+            var formats: [Int: UInt16] = [:]
+            var imports: UInt32 = 0
+            var chained = false
+            if let fixups = chainedFixups(prefix: prefix),
+               let blob = image.read(offset: fixups.dataoff, count: fixups.datasize),
+               let startsOffset = blob.u32(at: 4), let importCount = blob.u32(at: 16),
+               let segCount = blob.u32(at: Int(startsOffset)) {
+                chained = true
+                imports = importCount
+                let starts = Int(startsOffset)
+                for index in 0..<Int(segCount) {
+                    let entry: Int = starts + 4 + 4 * index
+                    guard let start = blob.u32(at: entry), start != 0 else { continue }
+                    let formatOffset: Int = starts + Int(start) + 6
+                    if let format = blob.u16(at: formatOffset) { formats[index] = format }
+                }
+            }
+            let targets: [String: [String]] = [
+                "__objc_selrefs": ["__objc_methname"],
+                "__objc_classlist": ["__objc_data", "__data"],
+                "__objc_nlclslist": ["__objc_data", "__data"],
+                "__objc_catlist": ["__objc_const"],
+                "__objc_nlcatlist": ["__objc_const"],
+                "__objc_protolist": ["__data", "__objc_const"],
+                "__objc_protorefs": ["__data", "__objc_const"],
+                "__objc_classrefs": ["__objc_data"],
+                "__objc_superrefs": ["__objc_data", "__data"],
+            ]
+            for section in table.sections {
+                guard let names = targets[section.name], section.size > 0,
+                      section.offset <= fileSize, section.size <= fileSize - section.offset
+                else { continue }
+                let encoding: PointerEncoding
+                if chained {
+                    // A segment with no fixups has no pointers to decode.
+                    guard let format = formats[section.segment] else { continue }
+                    encoding = .chained(format: format, imageBase: table.textBase, imports: imports)
+                } else {
+                    encoding = .plain
+                }
+                let allowed = table.sections.filter { names.contains($0.name) }
+                    .map { (name: $0.name, addr: $0.addr, size: $0.size) }
+                guard !allowed.isEmpty,
+                      let bytes = image.read(offset: section.offset, count: section.size)
+                else { continue }
+                try validateObjCPointerArray(
+                    bytes: bytes, name: section.name, encoding: encoding, allowed: allowed, path: path,
+                    nullable: section.name == "__objc_classrefs" || section.name == "__objc_superrefs",
+                    address: section.addr, chainEntries: chainEntries
+                )
+            }
+
+            // The classes those lists name, through their pointer fields.
+            var encodings: [Int: PointerEncoding] = [:]
+            let segments = Set(table.sections.map(\.segment))
+            for segment in segments {
+                if !chained { encodings[segment] = .plain }
+                else if let format = formats[segment] {
+                    encodings[segment] = .chained(format: format, imageBase: table.textBase, imports: imports)
+                }
+            }
+            let loaded: Set<String> = [
+                "__objc_data", "__data", "__objc_const", "__objc_classlist", "__objc_nlclslist", "__objc_protolist",
+                // Where a conformance's indirect protocol slot lives.
+                "__const", "__got", "__auth_got",
+            ]
+            // (Other sections are named, not read: a field's target only has to
+            // land in them.)
+            var reader = PointerReader(sections: [], encodings: encodings, chainEntries: chainEntries)
+            for section in table.sections {
+                var bytes: Data?
+                if loaded.contains(section.name), section.size > 0, section.size <= 64 << 20,
+                   section.offset <= fileSize, section.size <= fileSize - section.offset,
+                   let read = image.read(offset: section.offset, count: section.size) {
+                    bytes = read
+                }
+                reader.sections.append((section.name, section.addr, section.size, section.segment, bytes))
+            }
+            var classes: [UInt64] = []
+            for list in reader.sections where list.name == "__objc_classlist" || list.name == "__objc_nlclslist" {
+                for slot in stride(from: list.addr, to: list.addr &+ UInt64(list.size), by: 8) {
+                    if case .address(let cls)?? = reader.field(at: slot) { classes.append(cls) }
+                }
+            }
+            var protocols: [UInt64] = []
+            for list in reader.sections where list.name == "__objc_protolist" {
+                for slot in stride(from: list.addr, to: list.addr &+ UInt64(list.size), by: 8) {
+                    if case .address(let proto)?? = reader.field(at: slot) { protocols.append(proto) }
+                }
+            }
+            try validateObjCClasses(classes, protocols: protocols, reader: reader, path: path)
+
+            if let proto = table.sections.first(where: { $0.name == "__swift5_proto" }), proto.size > 0,
+               proto.offset <= fileSize, proto.size <= fileSize - proto.offset,
+               let records = image.read(offset: proto.offset, count: proto.size) {
+                let fileSegments = segmentRanges(prefix: prefix)
+                try validateConformanceDescriptors(
+                    records: records, address: proto.addr, reader: reader,
+                    segments: mappedSegments(prefix: prefix), path: path,
+                    read: { address, count in
+                        for segment in fileSegments
+                        where address >= segment.vmaddr && address - segment.vmaddr < UInt64(segment.size) {
+                            let within = address - segment.vmaddr
+                            guard UInt64(count) <= UInt64(segment.size) - within else { return nil }
+                            return image.read(offset: segment.offset + Int(within), count: count)
+                        }
+                        return nil
+                    }
+                )
+            }
+        }
+
+        let mangledNames = try validateRelativeTables(
+            prefix: prefix, image: image, map: map, path: path
+        )
+
+        // The mangled type names those records point at, parsed from there.
+        if !mangledNames.isEmpty,
+           let typeref = sectionTable(prefix: prefix)?.sections.first(where: { $0.name == "__swift5_typeref" }),
+           typeref.size > 0, typeref.offset <= fileSize, typeref.size <= fileSize - typeref.offset,
+           let bytes = image.read(offset: typeref.offset, count: typeref.size) {
+            let fileSegments = segmentRanges(prefix: prefix)
+            try validateMangledNames(
+                at: mangledNames, in: bytes, sectionOffset: typeref.offset, sectionAddress: typeref.addr,
+                segments: mappedSegments(prefix: prefix), name: "__swift5_typeref", path: path,
+                read: { address, count in
+                    for segment in fileSegments where address >= segment.vmaddr && address - segment.vmaddr < UInt64(segment.size) {
+                        let within = address - segment.vmaddr
+                        guard UInt64(count) <= UInt64(segment.size) - within else { return nil }
+                        return image.read(offset: segment.offset + Int(within), count: count)
+                    }
+                    return nil
+                }
             )
         }
     }
@@ -209,6 +511,1013 @@ public enum MachOPreflight {
     /// rejecting valid binaries, which this project treats as worse than the
     /// crash. The ones covered here are the severe ones anyway: corrupting any
     /// of them kills **every** subcommand.
+    /// How a pointer slot in one of the Objective-C pointer arrays is stored.
+    enum PointerEncoding: Equatable {
+        /// No chained fixups: the slot holds the unslid target address.
+        case plain
+        /// `DYLD_CHAINED_PTR_64` (2) or `DYLD_CHAINED_PTR_64_OFFSET` (6).
+        case chained(format: UInt16, imageBase: UInt64, imports: UInt32)
+    }
+
+    /// Where an Objective-C pointer-array slot points: the unslid address of
+    /// a rebase, `bind` for a bind within the import table, or nil when the
+    /// encoding is one this check does not decode (it then declines).
+    enum PointerTarget: Equatable { case address(UInt64), bind, badBind(UInt32), undecoded, unchained(UInt64) }
+
+    static func decodePointer(_ raw: UInt64, _ encoding: PointerEncoding) -> PointerTarget {
+        switch encoding {
+        case .plain:
+            return .address(raw)
+        case .chained(let format, let imageBase, let imports):
+            switch format {
+            case 2, 6:
+                if raw >> 63 != 0 {
+                    let ordinal = UInt32(raw & 0xff_ffff)
+                    return ordinal < imports ? .bind : .badBind(ordinal)
+                }
+                let target = raw & 0xf_ffff_ffff
+                return .address(format == 2 ? target | ((raw >> 36) & 0xff) << 56 : imageBase &+ target)
+            case 1, 9, 12:
+                // arm64e (`fixup-chains.h`): bit 63 auth, bit 62 bind. A bind's
+                // ordinal is 16 bits, 24 in USERLAND24. An authenticated rebase
+                // holds a 32-bit offset from the image base; a plain one a
+                // 43-bit target (a vmaddr in DYLD_CHAINED_PTR_ARM64E, an offset
+                // in the USERLAND formats) with the top byte at bits 43-50.
+                let auth = raw >> 63 != 0
+                if (raw >> 62) & 1 != 0 {
+                    let ordinal = UInt32(raw & (format == 12 ? 0xff_ffff : 0xffff))
+                    return ordinal < imports ? .bind : .badBind(ordinal)
+                }
+                if auth { return .address(imageBase &+ (raw & 0xffff_ffff)) }
+                let target = raw & 0x7ff_ffff_ffff
+                let high8 = ((raw >> 43) & 0xff) << 56
+                return .address((format == 1 ? target : imageBase &+ target) | high8)
+            default:
+                return .undecoded
+            }
+        }
+    }
+
+    /// The Objective-C pointer arrays: `__objc_selrefs`, `__objc_classlist`,
+    /// `__objc_nlclslist` and `__objc_catlist`. Every slot is a pointer, so
+    /// unlike `__objc_const`/`__objc_data` (which interleave flags, sizes and
+    /// offsets) each can be checked without a struct walk. A rebase must land
+    /// in the section that kind of slot always names, and a bind's ordinal
+    /// must be inside the import table. Measured on 571 real thin binaries:
+    /// every selref lands in `__objc_methname` (453k slots), every class-list
+    /// entry in `__objc_data` or `__data`, every category in `__objc_const`.
+    /// A corrupt slot sent MachOObjCSection to parse a class or category out of
+    /// arbitrary memory (SIGSEGV/SIGTRAP in `objc`, `layout`, `disasm`,
+    /// `analyze`; `metadata-fuzz.py sample.release 150 4242`).
+    /// The protocol, class-reference and non-lazy category arrays follow the
+    /// same rule, measured over 4,101 binaries including fat slices (objcsweep,
+    /// the 1,609 universal binaries under /Applications, the 1,434 arm64e
+    /// system binaries): protocols in `__data` or `__objc_const`, class and
+    /// superclass references in `__objc_data` (superclass refs also `__data`),
+    /// each 8-aligned. Only the two reference arrays hold nulls (`nullable`).
+    /// A corrupt `__objc_protolist` slot trapped MachOObjCSection's file
+    /// reader (`metadata-fuzz.py` on the arm64e slice of Stickies, 60 11).
+    static func validateObjCPointerArray(
+        bytes: Data, name: String, encoding: PointerEncoding,
+        allowed: [(name: String, addr: UInt64, size: Int)], path: String = "<data>",
+        nullable: Bool = false, address: UInt64 = 0, chainEntries: ChainEntries? = nil
+    ) throws {
+        for index in stride(from: 0, to: bytes.count - bytes.count % 8, by: 8) {
+            guard let raw = bytes.u64(at: index) else { break }
+            if raw == 0, nullable { continue }
+            // In a chained image a pointer slot holds a fixup only if a chain
+            // reaches it; otherwise MachOKit reads its bits as a plain address.
+            if raw != 0, let chainEntries, !chainEntries.contains(address &+ UInt64(index)) {
+                throw BinaryLoadError(
+                    "Malformed Mach-O: \(path) — \(name)[\(index / 8)] holds 0x\(String(raw, radix: 16)) outside every fixup chain"
+                )
+            }
+            switch decodePointer(raw, encoding) {
+            case .undecoded, .bind, .unchained:
+                continue
+            case .badBind(let ordinal):
+                throw BinaryLoadError(
+                    "Malformed Mach-O: \(path) — \(name)[\(index / 8)] binds import \(ordinal), past the import table"
+                )
+            case .address(let target):
+                // Classes and categories are pointer-aligned objects; a
+                // misaligned target is the middle of one (fuzz mutants 19, 47).
+                // Selector strings carry no alignment.
+                if name != "__objc_selrefs", target % 8 != 0 {
+                    throw BinaryLoadError(
+                        "Malformed Mach-O: \(path) — \(name)[\(index / 8)] points at 0x\(String(target, radix: 16)), not pointer-aligned"
+                    )
+                }
+                guard allowed.contains(where: { target >= $0.addr && target < $0.addr &+ UInt64($0.size) }) else {
+                    let names = allowed.map(\.name).joined(separator: " or ")
+                    throw BinaryLoadError(
+                        "Malformed Mach-O: \(path) — \(name)[\(index / 8)] points at 0x\(String(target, radix: 16)), outside \(names)"
+                    )
+                }
+            }
+        }
+    }
+
+    /// Reads 8-byte pointer fields out of loaded sections by unslid address,
+    /// decoding them with the encoding of the segment each one sits in.
+    struct PointerReader {
+        var sections: [(name: String, addr: UInt64, size: Int, segment: Int, bytes: Data?)]
+        var encodings: [Int: PointerEncoding]
+        var chainEntries: ChainEntries? = nil
+
+        func section(containing address: UInt64) -> Int? {
+            sections.firstIndex { address >= $0.addr && address < $0.addr &+ UInt64($0.size) }
+        }
+
+        /// The decoded field at `address`, nil when it is not in a loaded
+        /// section or its segment's encoding is unknown. A raw zero is null: a
+        /// field outside every fixup chain.
+        func field(at address: UInt64) -> PointerTarget?? {
+            guard let index = section(containing: address), let bytes = sections[index].bytes,
+                  let encoding = encodings[sections[index].segment],
+                  let raw = bytes.u64(at: Int(address - sections[index].addr))
+            else { return nil }
+            if raw == 0 { return .some(nil) }
+            if let chainEntries, !chainEntries.contains(address) { return .some(.unchained(raw)) }
+            return .some(MachOPreflight.decodePointer(raw, encoding))
+        }
+
+        /// A raw 32-bit word at `address` with the section it lies in, nil when
+        /// outside the loaded sections.
+        func word(at address: UInt64) -> (value: UInt32, section: Int)? {
+            guard let index = section(containing: address), let bytes = sections[index].bytes,
+                  let value = bytes.u32(at: Int(address - sections[index].addr))
+            else { return nil }
+            return (value, index)
+        }
+    }
+
+    /// The Objective-C classes the class lists name, with their metaclasses
+    /// and read-only data, walked through the fields that are always pointers.
+    /// `__objc_const` and `__objc_data` interleave those with flags, sizes and
+    /// offsets, so only these fields are checked, each against the sections it
+    /// lands in across 44,323 classes in 1,058 real thin binaries (see the
+    /// table in docs/PRODUCTION-READINESS.md). A corrupt one sent
+    /// MachOObjCSection to parse a class, its data, or a name out of
+    /// arbitrary memory (`metadata-fuzz.py sample.release 150 4242`).
+    static func validateObjCClasses(
+        _ classes: [UInt64], protocols: [UInt64] = [], reader: PointerReader, path: String = "<data>"
+    ) throws {
+        func fail(_ why: String) -> BinaryLoadError {
+            BinaryLoadError("Malformed Mach-O: \(path) — Objective-C \(why)")
+        }
+        /// Checks the pointer field at `address`; returns its (masked) target
+        /// when it is a rebase, nil for null, a bind, or an undecoded field.
+        @discardableResult
+        func check(
+            _ address: UInt64, _ what: String, in names: Set<String>,
+            null: Bool = true, bind: Bool = true, mask: UInt64 = 0, alignment: UInt64 = 8
+        ) throws -> UInt64? {
+            guard let decoded = reader.field(at: address) else { return nil }
+            guard let target = decoded else {
+                if null { return nil }
+                throw fail("\(what) at 0x\(String(address, radix: 16)) is null")
+            }
+            switch target {
+            case .undecoded: return nil
+            case .unchained(let raw):
+                throw fail("\(what) at 0x\(String(address, radix: 16)) holds 0x\(String(raw, radix: 16)) outside every fixup chain")
+            case .bind: if bind { return nil }; throw fail("\(what) at 0x\(String(address, radix: 16)) is a bind")
+            case .badBind(let ordinal): throw fail("\(what) at 0x\(String(address, radix: 16)) binds import \(ordinal), past the import table")
+            case .address(let raw):
+                let value = raw & ~mask
+                guard let index = reader.section(containing: value), names.contains(reader.sections[index].name),
+                      value % alignment == 0
+                else {
+                    throw fail("\(what) at 0x\(String(address, radix: 16)) points at 0x\(String(value, radix: 16)), not into \(names.sorted().joined(separator: " or "))")
+                }
+                return value
+            }
+        }
+        /// A list's header (`entsizeAndFlags`, `count`): the entry size this
+        /// kind of list always has, and every entry inside the list's section.
+        func listEntries(_ list: UInt64, _ what: String, entsize expected: Int) throws -> [UInt64] {
+            guard let header = reader.word(at: list), let count = reader.word(at: list + 4) else { return [] }
+            let entsize = Int(header.value & 0xfffc)
+            guard entsize == expected else {
+                throw fail("\(what) at 0x\(String(list, radix: 16)) declares \(entsize)-byte entries, not \(expected)")
+            }
+            let section = reader.sections[header.section]
+            let end = section.addr &+ UInt64(section.size)
+            let (span, overflow) = UInt64(count.value).multipliedReportingOverflow(by: UInt64(entsize))
+            guard !overflow, list + 8 <= end, span <= end - list - 8 else {
+                throw fail("\(what) at 0x\(String(list, radix: 16)) declares \(count.value) entries, past its section's end")
+            }
+            return (0..<UInt64(count.value)).map { list + 8 + $0 * UInt64(entsize) }
+        }
+        let classSections: Set<String> = ["__objc_data", "__data"]
+        let strings: Set<String> = ["__objc_classname", "__cstring", "__const"]
+        // x86_64 slices also keep ivar and property names in `__TEXT,__const`
+        // (7 in the 1,609 universal binaries under /Applications).
+        let names: Set<String> = ["__objc_methname", "__cstring", "__const"]
+        /// A `class_ro_t`, of a class or a metaclass. No field of one, and no
+        /// list entry it reaches, is ever a bind in the measured binaries.
+        func walkReadOnlyData(_ ro: UInt64) throws {
+            try check(ro + 16, "ivar layout", in: ["__cstring", "__objc_classname"], bind: false, alignment: 1)
+            try check(ro + 24, "class name", in: strings, null: false, bind: false, alignment: 1)
+            // x86_64 slices keep pointer-based method lists in `__objc_data`
+            // (all 86 such lists in the arm64e sweep's fat system binaries).
+            // `baseMethods` is objc4's `PointerUnion`: bit 0 tags a list of
+            // lists, and a relative method list (12-byte entries) is only
+            // 4-aligned. Masking three bits sent Brave's and Grok's Chromium
+            // helpers' lists at 0x…d64 to 0x…d60, outside their section, and
+            // the whole image was refused as malformed.
+            try check(ro + 32, "method list", in: ["__objc_methlist", "__objc_const", "__objc_methname", "__objc_data"],
+                      bind: false, mask: 1, alignment: 4)
+            let protocols = try check(ro + 40, "protocol list", in: ["__objc_const"], bind: false)
+            let ivars = try check(ro + 48, "ivar list", in: ["__objc_const"], bind: false)
+            try check(ro + 56, "weak ivar layout", in: ["__cstring", "__objc_classname"], bind: false, alignment: 1)
+            let properties = try check(ro + 64, "property list", in: ["__objc_const"], bind: false)
+            // `protocol_list_t`: a 64-bit count, then that many protocol
+            // pointers (into `__data` or `__objc_const` in all 8,684 measured
+            // lists). A corrupt count had MachOObjCSection read 7e16 entries
+            // (`try!` in its file reader; fuzz libReconstruction.opt 777, mutant 44).
+            if let protocols, let low = reader.word(at: protocols), let high = reader.word(at: protocols + 4) {
+                let count = UInt64(high.value) << 32 | UInt64(low.value)
+                let section = reader.sections[low.section]
+                let end = section.addr &+ UInt64(section.size)
+                let (span, overflow) = count.multipliedReportingOverflow(by: 8)
+                guard !overflow, protocols + 8 <= end, span <= end - protocols - 8 else {
+                    throw fail("protocol list at 0x\(String(protocols, radix: 16)) declares \(count) protocols, past its section's end")
+                }
+                for entry in 0..<count {
+                    try check(protocols + 8 + 8 * entry, "protocol", in: ["__data", "__objc_const"], bind: false)
+                }
+            }
+            // `ivar_t`: the offset variable, name, type (then alignment, size).
+            if let ivars {
+                for ivar in try listEntries(ivars, "ivar list", entsize: 32) {
+                    try check(ivar, "ivar offset", in: ["__objc_ivar", "__const", "__data", "__common", "__bss"],
+                              bind: false, alignment: 1)
+                    try check(ivar + 8, "ivar name", in: names, null: false, bind: false, alignment: 1)
+                    try check(ivar + 16, "ivar type", in: ["__objc_methtype", "__cstring"], bind: false, alignment: 1)
+                }
+            }
+            // `property_t`: name, attributes.
+            if let properties {
+                for property in try listEntries(properties, "property list", entsize: 16) {
+                    try check(property, "property name", in: names, null: false, bind: false, alignment: 1)
+                    try check(property + 8, "property attributes", in: names, bind: false, alignment: 1)
+                }
+            }
+        }
+        for cls in classes {
+            let isa = try check(cls, "class isa", in: classSections, null: false, bind: false)
+            try check(cls + 8, "superclass", in: classSections)
+            // `cache` is always bound to `_objc_empty_cache` or null, `vtable`
+            // always null, in every measured class and metaclass.
+            try check(cls + 16, "class cache", in: [])
+            try check(cls + 24, "class vtable", in: [], bind: false)
+            let data = try check(cls + 32, "class data", in: ["__objc_const", "__objc_data"], null: false,
+                                 bind: false, mask: 7)
+            if let isa {
+                try check(isa, "metaclass isa", in: ["__objc_data"])
+                try check(isa + 8, "metaclass superclass", in: classSections)
+                try check(isa + 16, "metaclass cache", in: [])
+                try check(isa + 24, "metaclass vtable", in: [], bind: false)
+                if let metaRO = try check(isa + 32, "metaclass data", in: ["__objc_const"], null: false,
+                                          bind: false, mask: 7) {
+                    try walkReadOnlyData(metaRO)
+                }
+            }
+            if let ro = data { try walkReadOnlyData(ro) }
+        }
+        // `protocol_t`: isa, name, protocols, four method lists, instance
+        // properties, then `size` and `flags`, then (when `size` reaches them)
+        // extended method types, demangled name, class properties. Measured
+        // over every protocol the 4,101 binaries' protocol lists name: isa
+        // always null, no field ever a bind, `size` 80, 88 or 96. A list slot
+        // aimed into the middle of a protocol had MachOObjCSection read its
+        // fields out of whatever lay there (`try!` in its file reader;
+        // `metadata-fuzz.py` on the arm64e slice of Stickies, 60 11, mutant 38).
+        let methodLists: Set<String> = ["__objc_methlist", "__objc_const", "__objc_data"]
+        for proto in protocols {
+            guard let size = reader.word(at: proto + 64) else { continue }
+            let section = reader.sections[size.section]
+            let end = section.addr &+ UInt64(section.size)
+            guard size.value >= 72, size.value <= 4096, proto + UInt64(size.value) <= end else {
+                throw fail("protocol at 0x\(String(proto, radix: 16)) declares \(size.value) bytes, not a protocol in its section")
+            }
+            try check(proto, "protocol isa", in: [])
+            try check(proto + 8, "protocol name", in: strings, null: false, bind: false, alignment: 1)
+            try check(proto + 16, "protocol's protocol list", in: ["__objc_const"], bind: false)
+            for (offset, what) in [(24, "instance"), (32, "class"), (40, "optional instance"), (48, "optional class")] {
+                try check(proto + UInt64(offset), "protocol \(what) method list", in: methodLists, bind: false)
+            }
+            try check(proto + 56, "protocol instance properties", in: ["__objc_const"], bind: false)
+            if size.value >= 80 {
+                try check(proto + 72, "protocol extended method types", in: ["__objc_const"], bind: false)
+            }
+            if size.value >= 88 {
+                try check(proto + 80, "protocol demangled name", in: strings, bind: false, alignment: 1)
+            }
+            if size.value >= 96 {
+                try check(proto + 88, "protocol class properties", in: ["__objc_const"], bind: false)
+            }
+        }
+    }
+
+    /// The VM ranges of every mapped segment (`vmsize > 0`) of a thin
+    /// little-endian image.
+    static func mappedSegments(prefix: Data) -> [Range<UInt64>] {
+        guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE,
+              let ncmds = prefix.u32(at: 16), let sizeofcmds = prefix.u32(at: 20)
+        else { return [] }
+        let limit = min(Layout.machHeader64 + Int(sizeofcmds), prefix.count)
+        var cursor = Layout.machHeader64
+        var ranges: [Range<UInt64>] = []
+        for _ in 0..<Int(ncmds) {
+            guard cursor + Layout.minLoadCommand <= limit,
+                  let cmd = prefix.u32(at: cursor), let cmdsize = prefix.u32(at: cursor + 4),
+                  cmdsize >= UInt32(Layout.minLoadCommand)
+            else { break }
+            if cmd == Command.segment64, let vmaddr = prefix.u64(at: cursor + 24),
+               let vmsize = prefix.u64(at: cursor + 32), vmsize > 0 {
+                let (end, overflow) = vmaddr.addingReportingOverflow(vmsize)
+                if !overflow { ranges.append(vmaddr..<end) }
+            }
+            cursor += Int(cmdsize)
+        }
+        return ranges
+    }
+
+    /// `(vmaddr, file offset, size)` of the named sections of a thin
+    /// little-endian image.
+    static func sectionExtents(
+        named names: Set<String>, prefix: Data
+    ) -> [String: (addr: UInt64, offset: Int, size: Int)] {
+        guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE,
+              let ncmds = prefix.u32(at: 16), let sizeofcmds = prefix.u32(at: 20)
+        else { return [:] }
+        let limit = min(Layout.machHeader64 + Int(sizeofcmds), prefix.count)
+        var cursor = Layout.machHeader64
+        var found: [String: (addr: UInt64, offset: Int, size: Int)] = [:]
+        for _ in 0..<Int(ncmds) {
+            guard cursor + Layout.minLoadCommand <= limit,
+                  let cmd = prefix.u32(at: cursor), let cmdsize = prefix.u32(at: cursor + 4),
+                  cmdsize >= UInt32(Layout.minLoadCommand)
+            else { break }
+            if cmd == Command.segment64, let nsects = prefix.u32(at: cursor + 64) {
+                for section in 0..<Int(nsects) {
+                    let base = cursor + 72 + section * 80
+                    guard base + 80 <= limit,
+                          let addr = prefix.u64(at: base + 32), let size = prefix.u64(at: base + 40),
+                          let offset = prefix.u32(at: base + 48)
+                    else { break }
+                    let raw = prefix[(prefix.startIndex + base)..<(prefix.startIndex + base + 16)]
+                    let name = String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+                    if names.contains(name) { found[name] = (addr, Int(offset), Int(clamping: size)) }
+                }
+            }
+            cursor += Int(cmdsize)
+        }
+        return found
+    }
+
+    /// `__objc_methlist`, walked list by list. In a *relative* method list
+    /// (`entsizeAndFlags & 0x80000000`, entsize 12) each method's name is a
+    /// relative offset to a selector reference in `__objc_selrefs`; the
+    /// runtime reads the pointer stored there. Redirected anywhere else, the
+    /// bytes it lands on are read as a pointer and `strlen` walks off the
+    /// mapping (SIGSEGV in `objc`, `disasm`, `xrefs`, `analyze`; fuzz mutant
+    /// 13). Offsets are in VM space: the list is in `__TEXT`, the selrefs in
+    /// `__DATA`.
+    ///
+    /// Strict only where the layout is unambiguous: a relative list must fit
+    /// the section and name only selref slots. A zero word between lists is
+    /// padding (no list has entsize 0); a pointer-based list (entsize 24, its
+    /// names rebased pointers) is stepped over unchecked; anything else ends
+    /// the walk without a verdict.
+    static func validateObjCMethodLists(
+        bytes: Data, sectionAddress: UInt64,
+        selrefs: (addr: UInt64, size: Int), path: String = "<data>",
+        sectionOffset: Int? = nil, fileSize: Int? = nil, map known: FileBackedRanges? = nil
+    ) throws {
+        func fail(_ why: String) -> BinaryLoadError {
+            BinaryLoadError("Malformed Mach-O: \(path) — __objc_methlist \(why)")
+        }
+        let map = known ?? fileSize.map(FileBackedRanges.init(identityOver:))
+        let selrefEnd = selrefs.addr &+ UInt64(selrefs.size)
+        var cursor = 0
+        while cursor + 8 <= bytes.count, let header = bytes.u32(at: cursor), let count = bytes.u32(at: cursor + 4) {
+            if header == 0 { cursor += 4; continue }        // padding
+            let entsize = Int(header & 0x0000_fffc)
+            let relative = header & 0x8000_0000 != 0
+            guard (relative && entsize == 12) || (!relative && entsize == 24) else { return }
+            let (span, overflow) = Int(count).multipliedReportingOverflow(by: entsize)
+            guard !overflow, span <= bytes.count - cursor - 8 else {
+                throw fail("list at +\(cursor) declares \(count) method(s), past the section's end")
+            }
+            if relative {
+                for method in 0..<Int(count) {
+                    let field = cursor + 8 + method * 12
+                    guard let raw = bytes.u32(at: field) else { break }
+                    let target = (sectionAddress &+ UInt64(field)) &+ UInt64(bitPattern: Int64(Int32(bitPattern: raw)))
+                    guard target >= selrefs.addr, target < selrefEnd, (target - selrefs.addr) % 8 == 0 else {
+                        throw fail(
+                            "list at +\(cursor) method \(method) names 0x\(String(target, radix: 16)), not a selector reference in __objc_selrefs"
+                        )
+                    }
+                    // The type encoding (a string in `__objc_methtype`) and the
+                    // IMP must lead to file bytes. A types offset flipped out
+                    // of the file sent `strlen` off the mapping
+                    // (`metadata-fuzz.py sample.release 150 4242`, mutant 105).
+                    if let sectionOffset, let map {
+                        for (slot, what) in [(4, "type encoding"), (8, "implementation")] {
+                            guard let delta = bytes.u32(at: field + slot) else { break }
+                            let (resolved, reason) = relativeFileOffset(delta, at: sectionOffset + field + slot, in: map)
+                            guard resolved != nil else {
+                                throw fail("list at +\(cursor) method \(method)'s \(what) \(reason)")
+                            }
+                        }
+                    }
+                }
+            }
+            cursor += 8 + span
+        }
+    }
+
+    /// File ranges of every section that holds instructions
+    /// (`S_ATTR_PURE_INSTRUCTIONS` or `S_ATTR_SOME_INSTRUCTIONS`) in a thin
+    /// little-endian image.
+    static func codeRanges(prefix: Data) -> [Range<Int>] {
+        guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE,
+              let ncmds = prefix.u32(at: 16), let sizeofcmds = prefix.u32(at: 20)
+        else { return [] }
+        let limit = min(Layout.machHeader64 + Int(sizeofcmds), prefix.count)
+        var cursor = Layout.machHeader64
+        var ranges: [Range<Int>] = []
+        for _ in 0..<Int(ncmds) {
+            guard cursor + Layout.minLoadCommand <= limit,
+                  let cmd = prefix.u32(at: cursor), let cmdsize = prefix.u32(at: cursor + 4),
+                  cmdsize >= UInt32(Layout.minLoadCommand)
+            else { break }
+            if cmd == Command.segment64, let nsects = prefix.u32(at: cursor + 64) {
+                for section in 0..<Int(nsects) {
+                    let base = cursor + 72 + section * 80
+                    guard base + 80 <= limit, let size = prefix.u64(at: base + 40),
+                          let offset = prefix.u32(at: base + 48), let flags = prefix.u32(at: base + 64)
+                    else { break }
+                    if flags & 0x8000_0400 != 0, size > 0, size < UInt64(Int.max) - UInt64(offset) {
+                        ranges.append(Int(offset)..<(Int(offset) + Int(size)))
+                    }
+                }
+            }
+            cursor += Int(cmdsize)
+        }
+        return ranges
+    }
+
+    /// Every section's `(segment index, name, vmaddr, file offset, size)`,
+    /// and the `__TEXT` vmaddr, of a thin little-endian image.
+    static func sectionTable(prefix: Data) -> (sections: [(segment: Int, name: String, addr: UInt64, offset: Int, size: Int)], textBase: UInt64)? {
+        guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE,
+              let ncmds = prefix.u32(at: 16), let sizeofcmds = prefix.u32(at: 20)
+        else { return nil }
+        let limit = min(Layout.machHeader64 + Int(sizeofcmds), prefix.count)
+        var cursor = Layout.machHeader64
+        var sections: [(segment: Int, name: String, addr: UInt64, offset: Int, size: Int)] = []
+        var segment = 0
+        var textBase: UInt64 = 0
+        for _ in 0..<Int(ncmds) {
+            guard cursor + Layout.minLoadCommand <= limit,
+                  let cmd = prefix.u32(at: cursor), let cmdsize = prefix.u32(at: cursor + 4),
+                  cmdsize >= UInt32(Layout.minLoadCommand)
+            else { return nil }
+            if cmd == Command.segment64, let nsects = prefix.u32(at: cursor + 64) {
+                if segmentName(at: cursor, prefix: prefix) == "__TEXT", let vmaddr = prefix.u64(at: cursor + 24) {
+                    textBase = vmaddr
+                }
+                for section in 0..<Int(nsects) {
+                    let base = cursor + 72 + section * 80
+                    guard base + 80 <= limit,
+                          let addr = prefix.u64(at: base + 32), let size = prefix.u64(at: base + 40),
+                          let offset = prefix.u32(at: base + 48)
+                    else { return nil }
+                    let raw = prefix[(prefix.startIndex + base)..<(prefix.startIndex + base + 16)]
+                    let name = String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+                    sections.append((segment, name, addr, Int(offset), Int(clamping: size)))
+                }
+                segment += 1
+            }
+            cursor += Int(cmdsize)
+        }
+        return (sections, textBase)
+    }
+
+    /// Each segment command's `(vmaddr, fileoff, filesize)`, in command
+    /// order: the order chained fixups index segments by.
+    static func segmentRanges(prefix: Data) -> [(vmaddr: UInt64, offset: Int, size: Int)] {
+        guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE,
+              let ncmds = prefix.u32(at: 16), let sizeofcmds = prefix.u32(at: 20)
+        else { return [] }
+        let limit = min(Layout.machHeader64 + Int(sizeofcmds), prefix.count)
+        var cursor = Layout.machHeader64
+        var ranges: [(vmaddr: UInt64, offset: Int, size: Int)] = []
+        for _ in 0..<Int(ncmds) {
+            guard cursor + Layout.minLoadCommand <= limit,
+                  let cmd = prefix.u32(at: cursor), let cmdsize = prefix.u32(at: cursor + 4),
+                  cmdsize >= UInt32(Layout.minLoadCommand)
+            else { break }
+            if cmd == Command.segment64, let vmaddr = prefix.u64(at: cursor + 24),
+               let offset = prefix.u64(at: cursor + 40), let size = prefix.u64(at: cursor + 48) {
+                ranges.append((vmaddr, Int(clamping: offset), Int(clamping: size)))
+            }
+            cursor += Int(cmdsize)
+        }
+        return ranges
+    }
+
+    /// The slots fixup chains reach, by unslid address: a bit per 4-byte
+    /// word of each segment that has chains.
+    struct ChainEntries {
+        var segments: [(vmaddr: UInt64, size: Int, bits: [UInt64])] = []
+
+        func contains(_ address: UInt64) -> Bool {
+            for segment in segments where address >= segment.vmaddr && address - segment.vmaddr < UInt64(segment.size) {
+                let word = Int((address - segment.vmaddr) / 4)
+                return segment.bits[word / 64] & (1 << UInt64(word % 64)) != 0
+            }
+            return false
+        }
+
+        mutating func insert(segment: Int, offset: Int) {
+            let word = offset / 4
+            segments[segment].bits[word / 64] |= 1 << UInt64(word % 64)
+        }
+    }
+
+    /// Every fixup chain, walked the way dyld walks it: from each page's
+    /// `page_start`, following `next` (12 bits, 4-byte stride, for
+    /// `DYLD_CHAINED_PTR_64`/`_64_OFFSET`; 11 bits, 8-byte stride, for the
+    /// arm64e formats) until it is zero. A chain must end inside its page,
+    /// reach only 4-byte-aligned slots, and bind only imports the table has.
+    /// Returns the slots it reached, which are the only ones dyld rewrites:
+    /// a nonzero pointer slot outside them is read by MachOKit as a plain
+    /// address. That is what the `metadata-fuzz.py sample.release 150 99`
+    /// mutants (3 and 131) do: a flipped `next` bit skips slots, and a
+    /// MachOObjCSection `try!` traps on the raw chained value in one.
+    static func validateFixupChains(
+        blob: Data, startsOffset: Int, segmentCount: Int,
+        readSegment: (Int) -> (vmaddr: UInt64, data: Data)?, path: String = "<data>"
+    ) throws -> ChainEntries {
+        let imports = blob.u32(at: 16) ?? 0
+        var entries = ChainEntries()
+        for segment in 0..<segmentCount {
+            guard let start = blob.u32(at: startsOffset + 4 + 4 * segment), start != 0 else { continue }
+            let base = startsOffset + Int(start)
+            guard let pageSize = blob.u16(at: base + 4), let format = blob.u16(at: base + 6),
+                  let pageCount = blob.u16(at: base + 20), pageSize >= 8
+            else { continue }
+            let stride: Int
+            let nextMask: UInt64
+            switch format {
+            case 2, 6: (stride, nextMask) = (4, 0xfff)
+            case 1, 9, 12: (stride, nextMask) = (8, 0x7ff)
+            default: continue                       // a format this check does not walk
+            }
+            guard let (vmaddr, data) = readSegment(segment) else { continue }
+            entries.segments.append((vmaddr, data.count, Array(repeating: 0, count: data.count / 256 + 1)))
+            let index = entries.segments.count - 1
+            for page in 0..<Int(pageCount) {
+                guard let first = blob.u16(at: base + 22 + 2 * page) else { break }
+                if first == 0xffff || first & 0x8000 != 0 { continue }   // none, or 32-bit multi-starts
+                var offset = Int(first)
+                while true {
+                    let slot = page * Int(pageSize) + offset
+                    guard offset % 4 == 0 else {
+                        throw BinaryLoadError(
+                            "Malformed Mach-O: \(path) — fixup chain in segment \(segment), page \(page) lands on misaligned +\(offset)"
+                        )
+                    }
+                    guard offset + 8 <= Int(pageSize), let raw = data.u64(at: slot) else {
+                        throw BinaryLoadError(
+                            "Malformed Mach-O: \(path) — fixup chain in segment \(segment), page \(page) runs past its page at +\(offset)"
+                        )
+                    }
+                    entries.insert(segment: index, offset: slot)
+                    if case .badBind(let ordinal) = decodePointer(raw, .chained(format: format, imageBase: 0, imports: imports)) {
+                        throw BinaryLoadError(
+                            "Malformed Mach-O: \(path) — fixup in segment \(segment), page \(page) at +\(offset) binds import \(ordinal), past the import table"
+                        )
+                    }
+                    let next = Int((raw >> 51) & nextMask)
+                    if next == 0 { break }
+                    offset += next * stride
+                }
+            }
+        }
+        return entries
+    }
+
+    /// One `LC_SEGMENT_64` of a thin little-endian image, with the names of
+    /// its sections, in command order.
+    struct SegmentEntry: Equatable {
+        let name: String
+        let vmaddr: UInt64
+        let vmsize: UInt64
+        let fileoff: UInt64
+        let filesize: UInt64
+        let sections: [String]
+        /// The VM ranges of its sections of a zero-fill type.
+        var zeroFill: [Range<UInt64>] = []
+    }
+
+    /// Every segment command, in command order, or nil when a load command
+    /// cannot be read (then no segment can be said to be absent).
+    static func segmentTable(prefix: Data) -> [SegmentEntry]? {
+        guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE,
+              let ncmds = prefix.u32(at: 16), let sizeofcmds = prefix.u32(at: 20)
+        else { return nil }
+        let limit = min(Layout.machHeader64 + Int(sizeofcmds), prefix.count)
+        var cursor = Layout.machHeader64
+        var segments: [SegmentEntry] = []
+        for _ in 0..<Int(ncmds) {
+            guard cursor + Layout.minLoadCommand <= limit,
+                  let cmd = prefix.u32(at: cursor), let cmdsize = prefix.u32(at: cursor + 4),
+                  cmdsize >= UInt32(Layout.minLoadCommand)
+            else { return nil }
+            if cmd == Command.segment64 {
+                guard cursor + 72 <= limit,
+                      let vmaddr = prefix.u64(at: cursor + 24), let vmsize = prefix.u64(at: cursor + 32),
+                      let fileoff = prefix.u64(at: cursor + 40), let filesize = prefix.u64(at: cursor + 48),
+                      let nsects = prefix.u32(at: cursor + 64)
+                else { return nil }
+                var sections: [String] = []
+                var zeroFill: [Range<UInt64>] = []
+                for section in 0..<Int(nsects) {
+                    let base = cursor + 72 + section * 80
+                    guard base + 80 <= limit,
+                          let addr = prefix.u64(at: base + 32), let size = prefix.u64(at: base + 40),
+                          let flags = prefix.u32(at: base + 64)
+                    else { return nil }
+                    let raw = prefix[(prefix.startIndex + base)..<(prefix.startIndex + base + 16)]
+                    sections.append(String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self))
+                    let (end, overflow) = addr.addingReportingOverflow(size)
+                    if SectionType.zerofill.contains(flags & 0xff), !overflow { zeroFill.append(addr ..< end) }
+                }
+                segments.append(SegmentEntry(
+                    name: segmentName(at: cursor, prefix: prefix) ?? "", vmaddr: vmaddr, vmsize: vmsize,
+                    fileoff: fileoff, filesize: filesize, sections: sections, zeroFill: zeroFill
+                ))
+            }
+            cursor += Int(cmdsize)
+        }
+        return segments
+    }
+
+    /// Where the relative pointer `raw`, stored at header-relative file
+    /// offset `place`, leads: the file offset of its target, or nil and why
+    /// the target has no file bytes. The displacement is in VM space, so it
+    /// is applied to the pointer's address and the result is mapped back
+    /// through the target's own segment (`FileBackedRanges.relativeTarget`).
+    static func relativeFileOffset(
+        _ raw: UInt32, at place: Int, in map: FileBackedRanges
+    ) -> (offset: Int?, reason: String) {
+        let displacement = Int64(Int32(bitPattern: raw))
+        guard let pointer = map.address(ofFileOffset: place) else {
+            return (nil, "sits at file offset \(place), which no segment's file bytes hold")
+        }
+        let (address, overflow) = displacement >= 0
+            ? pointer.addingReportingOverflow(displacement.magnitude)
+            : pointer.subtractingReportingOverflow(displacement.magnitude)
+        guard !overflow else {
+            return (nil, "is a relative pointer \(displacement) from 0x\(String(pointer, radix: 16)), past the address space")
+        }
+        switch map.relativeTarget(fromFileOffset: place, displacement: displacement) {
+        case .file(let offset, _):
+            return (offset, "")
+        case .zeroFill:
+            return (nil, "is a relative pointer to 0x\(String(address, radix: 16)), zero fill with no file bytes")
+        case .unmapped:
+            return (nil, "is a relative pointer to 0x\(String(address, radix: 16)), which no segment maps")
+        }
+    }
+
+    /// The segments whose bytes lie at a different offset from `__TEXT` in
+    /// memory than in the file, and which the Mach-O readers swiftdc depends
+    /// on would read at the file offset of the memory one.
+    ///
+    /// Segments normally keep one slide: each one's file offset from `__TEXT`
+    /// equals its VM offset. Zero fill breaks that for every segment after
+    /// it, because it takes memory and no file bytes: a user reported an iOS
+    /// app whose `__DATA` ends in 0x870000 bytes of it, with segments after
+    /// it. The dependencies conflate the two offsets in two places:
+    ///
+    /// - MachOKit reads a segment's fixup chains at
+    ///   `dyld_chained_starts_in_segment.segment_offset`, which dyld defines
+    ///   as the segment's offset in memory, as if it were a file offset
+    ///   (`MachOFile.DyldChainedFixups.pointers(of:in:)`). Every bind and
+    ///   rebase lookup walks those chains: a `try!` traps when the offset is
+    ///   past the file, and otherwise the chains are decoded out of whatever
+    ///   bytes lie there.
+    /// - MachOSwiftSection resolves a relative pointer as `file offset + delta`
+    ///   (`MachOContext.advanceAddress`), but the delta is a VM displacement,
+    ///   so a pointer into or out of such a segment leads to the wrong bytes.
+    ///
+    /// So a segment counts when it is slid and holds either fixup chains or
+    /// a section Swift or Objective-C metadata reaches by relative pointer.
+    /// A slid segment that holds neither (bitcode in `__LLVM`, font blobs in
+    /// NanoTimeKit's `__FONT_DATA`, measured over 29,155 arm64 images on this
+    /// host: 55 have a slid file-backed segment) is read correctly, because
+    /// code reaches it by address, and does not count.
+    static func misreadSegments(
+        prefix: Data, image: ImageReader
+    ) -> [(name: String, vmOffset: UInt64, fileOffset: UInt64)] {
+        guard let segments = segmentTable(prefix: prefix),
+              let text = segments.first(where: { $0.name == "__TEXT" })
+        else { return [] }
+        // Which segments the chained fixups give chains: a nonzero
+        // `seg_info_offset[i]` in `dyld_chained_starts_in_image`, indexed in
+        // segment-command order.
+        var chained: Set<Int> = []
+        if let fixups = chainedFixups(prefix: prefix),
+           let header = image.read(offset: fixups.dataoff, count: 8),
+           let startsOffset = header.u32(at: 4),
+           let count = image.read(offset: fixups.dataoff + Int(startsOffset), count: 4)?.u32(at: 0),
+           Int(count) <= segments.count,
+           let starts = image.read(offset: fixups.dataoff + Int(startsOffset), count: 4 + 4 * Int(count)) {
+            for index in 0..<Int(count) where (starts.u32(at: 4 + 4 * index) ?? 0) != 0 {
+                chained.insert(index)
+            }
+        }
+        let hasMetadata = segments.contains { segment in
+            segment.sections.contains { $0.hasPrefix("__swift") || $0.hasPrefix("__objc_") }
+        }
+        func reachedByMetadata(_ section: String) -> Bool {
+            section.hasPrefix("__swift") || section.hasPrefix("__objc_")
+                || (hasMetadata && ["__got", "__auth_got", "__data", "__const", "__constg_swiftt"].contains(section))
+        }
+        var found: [(name: String, vmOffset: UInt64, fileOffset: UInt64)] = []
+        for (index, segment) in segments.enumerated() where segment.filesize > 0 {
+            // Wrapping: a segment below `__TEXT` (malformed, or in a file
+            // whose `__TEXT` is not first) still compares by its offsets.
+            let vmOffset = segment.vmaddr &- text.vmaddr
+            let fileOffset = segment.fileoff &- text.fileoff
+            guard vmOffset != fileOffset,
+                  chained.contains(index) || segment.sections.contains(where: reachedByMetadata)
+            else { continue }
+            found.append((segment.name, vmOffset, fileOffset))
+        }
+        return found
+    }
+
+    /// The `LC_DYLD_CHAINED_FIXUPS` payload of a thin little-endian loadable
+    /// image, in bounds, with the number of segment commands beside it.
+    /// The range an `LC_ENCRYPTION_INFO(_64)` command with a non-zero
+    /// `cryptid` declares encrypted, from `struct encryption_info_command`:
+    /// `cryptoff`, `cryptsize`, `cryptid` after `cmd` and `cmdsize`. A
+    /// `cryptid` of 0 (`ld -encryptable`, before the App Store encrypts it)
+    /// is plaintext.
+    static func encryptedRange(prefix: Data) -> (offset: Int, size: Int, cryptid: UInt32)? {
+        guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE || magic == Magic.machO32LE,
+              let ncmds = prefix.u32(at: 16), let sizeofcmds = prefix.u32(at: 20)
+        else { return nil }
+        let header = magic == Magic.machO64LE ? Layout.machHeader64 : Layout.machHeader32
+        let limit = min(header + Int(sizeofcmds), prefix.count)
+        var cursor = header
+        for _ in 0..<Int(ncmds) {
+            guard cursor + Layout.minLoadCommand <= limit,
+                  let cmd = prefix.u32(at: cursor), let cmdsize = prefix.u32(at: cursor + 4),
+                  cmdsize >= UInt32(Layout.minLoadCommand)
+            else { return nil }
+            if Command.encryptionInfo.contains(cmd), let offset = prefix.u32(at: cursor + 8),
+               let size = prefix.u32(at: cursor + 12), let cryptid = prefix.u32(at: cursor + 16),
+               cryptid != 0, size > 0 {
+                return (Int(offset), Int(size), cryptid)
+            }
+            cursor += Int(cmdsize)
+        }
+        return nil
+    }
+
+    /// The command and its offset for each load command of a thin
+    /// little-endian image that the prefix holds, in order.
+    static func loadCommands(prefix: Data) -> [(cmd: UInt32, offset: Int)] {
+        guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE || magic == Magic.machO32LE,
+              let ncmds = prefix.u32(at: 16), let sizeofcmds = prefix.u32(at: 20)
+        else { return [] }
+        let header = magic == Magic.machO64LE ? Layout.machHeader64 : Layout.machHeader32
+        let limit = min(header + Int(sizeofcmds), prefix.count)
+        var commands: [(cmd: UInt32, offset: Int)] = []
+        var cursor = header
+        for _ in 0..<Int(ncmds) {
+            guard cursor + Layout.minLoadCommand <= limit,
+                  let cmd = prefix.u32(at: cursor), let cmdsize = prefix.u32(at: cursor + 4),
+                  cmdsize >= UInt32(Layout.minLoadCommand)
+            else { break }
+            commands.append((cmd, cursor))
+            cursor += Int(cmdsize)
+        }
+        return commands
+    }
+
+    /// Every symbol's name must start, and end, inside the string table.
+    ///
+    /// MachOKit's symbol iterator builds each name with `String(cString:)` at
+    /// `n_strx`, unchecked. The table's own range can be in bounds with its
+    /// entries wrong: one flipped `symoff` byte reads other bytes as `nlist`s,
+    /// and `interface` died by SIGSEGV in `strlen`.
+    static func validateSymbolStrings(prefix: Data, image: ImageReader, path: String) throws {
+        guard let magic = prefix.u32(at: 0),
+              let command = loadCommands(prefix: prefix).first(where: { $0.cmd == Command.symtab }),
+              let symoff = prefix.u32(at: command.offset + 8), let nsyms = prefix.u32(at: command.offset + 12),
+              let stroff = prefix.u32(at: command.offset + 16), let strsize = prefix.u32(at: command.offset + 20),
+              nsyms > 0
+        else { return }
+        let entrySize = magic == Magic.machO64LE ? 16 : 12   // nlist_64 / nlist
+        guard let entries = image.read(offset: Int(symoff), count: Int(nsyms) * entrySize),
+              let strings = image.read(offset: Int(stroff), count: Int(strsize))
+        else { return }
+        let furthest = entries.withUnsafeBytes { bytes -> UInt32 in
+            var furthest: UInt32 = 0
+            for index in 0..<Int(nsyms) {
+                furthest = max(furthest, bytes.loadUnaligned(fromByteOffset: index * entrySize, as: UInt32.self))
+            }
+            return furthest
+        }
+        guard furthest < strsize else {
+            throw BinaryLoadError(
+                "Malformed Mach-O: \(path) — a symbol names its string at offset \(furthest) of a \(strsize)-byte string table"
+            )
+        }
+        guard let terminator = strings.lastIndex(of: 0), Int(furthest) <= terminator - strings.startIndex else {
+            throw BinaryLoadError(
+                "Malformed Mach-O: \(path) — the string at offset \(furthest) has no terminator in its \(strsize)-byte string table"
+            )
+        }
+    }
+
+    /// `sizeof(struct dyld_chained_fixups_header)`.
+    private static let chainedFixupsHeader = 28
+
+    /// The header's offsets must lie inside its own payload, the checks dyld
+    /// makes before it reads one.
+    ///
+    /// MachOKit's `startsInImage` reads at `starts_offset` unchecked, and the
+    /// checks in this file skipped a header they could not follow: one flipped
+    /// `dataoff` byte reads other bytes as the header, and `objc` died by
+    /// SIGSEGV.
+    static func validateChainedFixupsHeader(prefix: Data, image: ImageReader, path: String) throws {
+        guard let fixups = chainedFixups(prefix: prefix) else { return }
+        func fail(_ why: String) -> BinaryLoadError {
+            BinaryLoadError("Malformed Mach-O: \(path) — chained fixups \(why)")
+        }
+        guard fixups.datasize >= chainedFixupsHeader else {
+            throw fail("are \(fixups.datasize) bytes, too short for their header")
+        }
+        guard let header = image.read(offset: fixups.dataoff, count: chainedFixupsHeader),
+              let starts = header.u32(at: 4), let imports = header.u32(at: 8), let symbols = header.u32(at: 12),
+              let format = header.u32(at: 20)
+        else { throw fail("lie outside the file") }
+        let size = UInt64(fixups.datasize)
+        guard UInt64(starts) + 4 <= size else { throw fail("put their starts at \(starts) of \(size) bytes") }
+        guard UInt64(imports) <= size else { throw fail("put their imports at \(imports) of \(size) bytes") }
+        guard UInt64(symbols) <= size else { throw fail("put their symbols at \(symbols) of \(size) bytes") }
+        guard (1...3).contains(format) else { throw fail("use unknown import format \(format)") }
+        guard let table = image.read(offset: fixups.dataoff + Int(starts), count: 4), let count = table.u32(at: 0) else {
+            throw fail("lie outside the file")
+        }
+        guard UInt64(starts) + 4 + 4 * UInt64(count) <= size else {
+            throw fail("list \(count) segment(s) past their \(size) bytes")
+        }
+    }
+
+    /// Every export trie's nodes must lie inside it, and each be reached once.
+    static func validateExportTries(prefix: Data, image: ImageReader, path: String) throws {
+        guard let filetype = prefix.u32(at: 12), FileType.loadable.contains(filetype) else { return }
+        for command in loadCommands(prefix: prefix) {
+            let range: (offset: UInt32, size: UInt32)?
+            if command.cmd == Command.exportsTrie,
+               let offset = prefix.u32(at: command.offset + 8), let size = prefix.u32(at: command.offset + 12) {
+                range = (offset, size)
+            } else if Command.dyldInfo.contains(command.cmd),
+                      let offset = prefix.u32(at: command.offset + 40), let size = prefix.u32(at: command.offset + 44) {
+                range = (offset, size)
+            } else {
+                range = nil
+            }
+            guard let range, range.size > 0,
+                  let trie = image.read(offset: Int(range.offset), count: Int(range.size))
+            else { continue }
+            if let why = exportTrieDefect(trie) {
+                throw BinaryLoadError("Malformed Mach-O: \(path) — export trie \(why)")
+            }
+        }
+    }
+
+    /// What is wrong with an export trie, or nil. An iterative walk with a
+    /// visited set, the check dyld makes: MachOKit recurses through the
+    /// children and keeps every node, so a cycle read from bytes that are not
+    /// a trie overflowed the stack (`interface`, SIGBUS).
+    static func exportTrieDefect(_ trie: Data) -> String? {
+        let bytes = [UInt8](trie)
+        func uleb(_ cursor: inout Int) -> UInt64? {
+            var value: UInt64 = 0
+            var shift: UInt64 = 0
+            while cursor < bytes.count, shift < 64 {
+                let byte = bytes[cursor]
+                cursor += 1
+                value |= UInt64(byte & 0x7f) << shift
+                if byte & 0x80 == 0 { return value }
+                shift += 7
+            }
+            return nil
+        }
+        var seen: Set<Int> = [0]
+        var pending = [0]
+        while let node = pending.popLast() {
+            var cursor = node
+            guard let terminal = uleb(&cursor), terminal <= UInt64(bytes.count - cursor) else {
+                return "node at \(node) overruns its \(bytes.count) bytes"
+            }
+            cursor += Int(terminal)
+            guard cursor < bytes.count else { return "node at \(node) has no child count" }
+            let children = bytes[cursor]
+            cursor += 1
+            for _ in 0..<children {
+                guard let end = bytes[cursor...].firstIndex(of: 0) else {
+                    return "node at \(node) has an unterminated edge"
+                }
+                cursor = end + 1
+                guard let child = uleb(&cursor), child > 0, child < UInt64(bytes.count) else {
+                    return "node at \(node) points outside its \(bytes.count) bytes"
+                }
+                guard seen.insert(Int(child)).inserted else {
+                    return "reaches the node at \(child) twice"
+                }
+                pending.append(Int(child))
+            }
+        }
+        return nil
+    }
+
+    static func chainedFixups(prefix: Data) -> (dataoff: Int, datasize: Int, segments: Int)? {
+        guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE,
+              let filetype = prefix.u32(at: 12), FileType.loadable.contains(filetype),
+              let ncmds = prefix.u32(at: 16), let sizeofcmds = prefix.u32(at: 20)
+        else { return nil }
+        let limit = min(Layout.machHeader64 + Int(sizeofcmds), prefix.count)
+        var cursor = Layout.machHeader64
+        var segments = 0
+        var payload: (Int, Int)?
+        for _ in 0..<Int(ncmds) {
+            guard cursor + Layout.minLoadCommand <= limit,
+                  let cmd = prefix.u32(at: cursor), let cmdsize = prefix.u32(at: cursor + 4),
+                  cmdsize >= UInt32(Layout.minLoadCommand)
+            else { return nil }   // an unread command could be a segment: no count
+            if cmd == Command.segment64 { segments += 1 }
+            if cmd == Command.chainedFixups,
+               let dataoff = prefix.u32(at: cursor + 8), let datasize = prefix.u32(at: cursor + 12) {
+                payload = (Int(dataoff), Int(datasize))
+            }
+            cursor += Int(cmdsize)
+        }
+        guard let (dataoff, datasize) = payload, datasize >= 8 else { return nil }
+        return (dataoff, datasize, segments)
+    }
+
+    /// The Swift record tables walked for their relative pointers, through
+    /// `map`, with the mangled names they point at, by file offset.
+    static func validateRelativeTables(
+        prefix: Data, image: ImageReader, map: FileBackedRanges, path: String
+    ) throws -> [Int] {
+        let fileSize = image.size
+        var mangledNames: [Int] = []
+        for table in relativePointerTables(prefix: prefix, fileSize: fileSize) {
+            guard table.size > 0, let bytes = image.read(offset: table.offset, count: table.size)
+            else { continue }
+            if table.name == "__swift5_assocty" {
+                mangledNames += try validateAssociatedTypeTable(
+                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: path, map: map
+                )
+            } else if table.name == "__swift5_builtin" {
+                mangledNames += try validateBuiltinTypeTable(
+                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: path, map: map
+                )
+            } else if table.name == "__swift5_fieldmd" {
+                mangledNames += try validateFieldDescriptorTable(
+                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: path, map: map
+                )
+            } else if table.name == "__swift5_mpenum" {
+                mangledNames += try validateMultiPayloadEnumTable(
+                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize, path: path, map: map
+                )
+            } else {
+                try validateRelativePointerTable(
+                    bytes: bytes, sectionOffset: table.offset, fileSize: fileSize,
+                    name: table.name, path: path, code: codeRanges(prefix: prefix), map: map
+                )
+            }
+        }
+        return mangledNames
+    }
+
     private static func relativePointerTables(
         prefix: Data, fileSize: Int
     ) -> [(name: String, offset: Int, size: Int)] {
@@ -227,6 +1536,10 @@ public enum MachOPreflight {
         // documented rather than guessed at.
         let wanted: Set<String> = [
             "__swift5_protos", "__swift5_proto", "__swift5_types", "__swift5_types2",
+            // Not flat, but walked by their own record layouts; see
+            // `validateAssociatedTypeTable` and `validateMultiPayloadEnumTable`.
+            "__swift5_assocty", "__swift5_mpenum", "__swift5_fieldmd",
+            "__swift5_builtin",
         ]
         guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE else { return [] }
         guard let ncmds = prefix.u32(at: 16), let sizeofcmds = prefix.u32(at: 20) else { return [] }
@@ -261,6 +1574,463 @@ public enum MachOPreflight {
         return found
     }
 
+    /// `__swift5_assocty`, walked by its record layout rather than as a flat
+    /// table, so its counts are never mistaken for pointers (the reason it
+    /// was left out before). Each `AssociatedTypeDescriptor`
+    /// (swift/include/swift/RemoteInspection/Records.h:359) is two relative
+    /// pointers, `NumAssociatedTypes`, `AssociatedTypeRecordSize`, then that
+    /// many `AssociatedTypeRecord`s of two relative pointers each.
+    ///
+    /// One corrupted name pointer here killed every subcommand: SIGSEGV in
+    /// `strlen` past the end of the file, or `Negative value is not
+    /// representable` (6 of the 8 crashing mutants in `metadata-fuzz.py
+    /// libSample.dylib 100 1234`).
+    @discardableResult
+    static func validateAssociatedTypeTable(
+        bytes: Data, sectionOffset: Int, fileSize: Int, path: String = "<data>", map known: FileBackedRanges? = nil
+    ) throws -> [Int] {
+        let map = known ?? FileBackedRanges(identityOver: fileSize)
+        var names: [Int] = []
+        func fail(_ why: String) -> BinaryLoadError {
+            BinaryLoadError("Malformed Mach-O: \(path) — __swift5_assocty \(why)")
+        }
+        @discardableResult
+        func checkPointer(at offset: Int, _ what: String) throws -> Int {
+            guard let raw = bytes.u32(at: offset) else { throw fail("\(what) is truncated") }
+            let (resolved, reason) = relativeFileOffset(raw, at: sectionOffset + offset, in: map)
+            guard let target = resolved else { throw fail("\(what) \(reason)") }
+            return target
+        }
+        var cursor = 0
+        var descriptor = 0
+        while cursor < bytes.count {
+            guard cursor + 16 <= bytes.count,
+                  let count = bytes.u32(at: cursor + 8), let recordSize = bytes.u32(at: cursor + 12)
+            else { throw fail("descriptor \(descriptor) is truncated") }
+            // The compiler emits `sizeof(AssociatedTypeRecord)`, two Int32s.
+            guard recordSize == 8 else {
+                throw fail("descriptor \(descriptor) declares \(recordSize)-byte records, not 8")
+            }
+            let (body, overflow) = Int(count).multipliedReportingOverflow(by: 8)
+            guard !overflow, body <= bytes.count - cursor - 16 else {
+                throw fail("descriptor \(descriptor) declares \(count) record(s), past the section's end")
+            }
+            names.append(try checkPointer(at: cursor, "descriptor \(descriptor)'s conforming type name"))
+            names.append(try checkPointer(at: cursor + 4, "descriptor \(descriptor)'s protocol name"))
+            for record in 0..<Int(count) {
+                let base = cursor + 16 + record * 8
+                try checkPointer(at: base, "descriptor \(descriptor) record \(record)'s name")
+                names.append(try checkPointer(at: base + 4, "descriptor \(descriptor) record \(record)'s type"))
+            }
+            cursor += 16 + body
+            descriptor += 1
+        }
+        return names
+    }
+
+    /// `__swift5_builtin`: 20-byte `BuiltinTypeDescriptor`s (swift/include/
+    /// swift/RemoteInspection/Records.h:396), a relative `TypeName` then four
+    /// 32-bit layout numbers. A `TypeName` resolving outside the file trapped
+    /// `dump`, `interface`, `objc` and `layout` (`metadata-fuzz.py
+    /// libReconstruction.opt.dylib 150 777`).
+    @discardableResult
+    static func validateBuiltinTypeTable(
+        bytes: Data, sectionOffset: Int, fileSize: Int, path: String = "<data>", map known: FileBackedRanges? = nil
+    ) throws -> [Int] {
+        let map = known ?? FileBackedRanges(identityOver: fileSize)
+        var names: [Int] = []
+        guard bytes.count % 20 == 0 else {
+            throw BinaryLoadError(
+                "Malformed Mach-O: \(path) — __swift5_builtin is \(bytes.count) bytes, not a whole number of 20-byte descriptors"
+            )
+        }
+        for record in stride(from: 0, to: bytes.count, by: 20) {
+            guard let raw = bytes.u32(at: record) else { break }
+            let (resolved, reason) = relativeFileOffset(raw, at: sectionOffset + record, in: map)
+            guard let target = resolved else {
+                throw BinaryLoadError(
+                    "Malformed Mach-O: \(path) — __swift5_builtin descriptor \(record / 20)'s type name \(reason)"
+                )
+            }
+            names.append(target)
+        }
+        return names
+    }
+
+    /// Mangled names, each parsed from a start the metadata records point
+    /// at, by the symbolic-reference grammar (swift/docs/ABI/Mangling.rst:76):
+    /// `\x01`-`\x17` is followed by a 4-byte relative offset (which may
+    /// contain NULs), `\x18`-`\x1F` by an 8-byte absolute pointer, `\xFF` is
+    /// padding, and a NUL ends the name. A corrupt relative reference trapped
+    /// `dump` and `interface` with `Negative value is not representable`
+    /// (`metadata-fuzz.py libReconstruction.opt.dylib 150 777`).
+    ///
+    /// Only from those starts: `__swift5_typeref` is not a plain string table
+    /// (current toolchains place 16-byte-aligned binary records between the
+    /// names), and walking it front to back misread record bytes as
+    /// references, falsely rejecting 130 of 832 real binaries.
+    ///
+    /// References resolve in VM space: an indirect one (`\x02`) names a GOT
+    /// slot in `__DATA_CONST`, whose VM address need not track its file
+    /// offset. Each must land in a mapped segment.
+    ///
+    /// A direct context reference (`\x01`) must also land on a context
+    /// descriptor, which MachOSwiftSection reads without checking: a mutated
+    /// offset still inside the image sent it through a "module" whose name
+    /// pointer resolved to offset -121290283 (`swift Tools/fuzz.swift
+    /// metadata Fixtures/Sample/sample.release 100 4242`, mutant 4, SIGTRAP
+    /// in seven commands). `read` gives an address's file bytes, nil where it
+    /// has none.
+    static func validateMangledNames(
+        at starts: [Int], in bytes: Data, sectionOffset: Int, sectionAddress: UInt64,
+        segments: [Range<UInt64>], name: String, path: String = "<data>",
+        read: ((UInt64, Int) -> Data?)? = nil
+    ) throws {
+        for start in Set(starts) {
+            var cursor = start - sectionOffset
+            guard cursor >= 0, cursor < bytes.count else { continue }   // not a name in this section
+            while cursor < bytes.count {
+                let byte = bytes[bytes.startIndex + cursor]
+                if byte == 0 { break }
+                switch byte {
+                case 0x01...0x17:
+                    guard let raw = bytes.u32(at: cursor + 1) else {
+                        throw BinaryLoadError(
+                            "Malformed Mach-O: \(path) — \(name) symbolic reference at +\(cursor) is cut off by the section's end"
+                        )
+                    }
+                    let target = (sectionAddress &+ UInt64(cursor + 1)) &+ UInt64(bitPattern: Int64(Int32(bitPattern: raw)))
+                    guard segments.contains(where: { $0.contains(target) }) else {
+                        throw BinaryLoadError(
+                            "Malformed Mach-O: \(path) — \(name) symbolic reference at +\(cursor) points to 0x\(String(target, radix: 16)), outside every mapped segment"
+                        )
+                    }
+                    if byte == 0x01, let read {
+                        try validateContextDescriptor(at: target, read: read, segments: segments, path: path,
+                                                      what: "\(name) symbolic reference at +\(cursor)")
+                    }
+                    cursor += 5
+                case 0x18...0x1F:
+                    cursor += 9
+                default:
+                    cursor += 1
+                }
+            }
+        }
+    }
+
+    /// Each protocol conformance descriptor `__swift5_proto` names
+    /// (swift/include/swift/ABI/Metadata.h, `TargetProtocolConformanceDescriptor`:
+    /// a relative protocol pointer, bit 0 marking an indirect slot, then the
+    /// type reference, the witness table pattern and the flags). The flags'
+    /// type reference kind must be one of the four the ABI defines, and the
+    /// protocol must be a context descriptor, directly or through a slot
+    /// that binds or rebases to one. MachOSwiftSection force-unwraps the
+    /// kind (`ProtocolConformanceFlags.swift:42`) and reads the protocol's
+    /// name unchecked: fuzzed, a kind of 4 and a protocol slot rebased to
+    /// junk trapped every subcommand (`Tools/fuzz.swift metadata
+    /// libReconstruction.opt.stripped.dylib 100 31337`, mutants 54 and 55).
+    static func validateConformanceDescriptors(
+        records: Data, address: UInt64, reader: PointerReader, segments: [Range<UInt64>], path: String,
+        read: (UInt64, Int) -> Data?
+    ) throws {
+        func fail(_ index: Int, _ why: String) -> BinaryLoadError {
+            BinaryLoadError("Malformed Mach-O: \(path) — __swift5_proto[\(index)] \(why)")
+        }
+        for index in 0 ..< records.count / 4 {
+            guard let raw = records.u32(at: index * 4) else { break }
+            let descriptor = (address &+ UInt64(index * 4)) &+ UInt64(bitPattern: Int64(Int32(bitPattern: raw)))
+            guard let header = read(descriptor, 16), let protocolField = header.u32(at: 0),
+                  let typeField = header.u32(at: 4), let flags = header.u32(at: 12)
+            else { throw fail(index, "names 0x\(String(descriptor, radix: 16)), which holds no conformance descriptor") }
+            let kind = (flags >> 3) & 0x7
+            guard kind <= 3 else {
+                throw fail(index, "is a conformance whose type reference kind \(kind) is none the ABI defines")
+            }
+            // The type reference, by its kind: a type descriptor directly or
+            // through a slot, an Objective-C class name, or a slot holding
+            // the class (mutant 88 of the same run moved a direct one).
+            let typeTarget = (descriptor &+ 4) &+ UInt64(bitPattern: Int64(Int32(bitPattern: typeField)))
+            let typeWhat = "__swift5_proto[\(index)]'s type"
+            switch kind {
+            case 0:
+                try validateContextDescriptor(at: typeTarget, read: read, segments: segments, path: path, what: typeWhat)
+            case 2:
+                guard read(typeTarget, 1) != nil else {
+                    throw fail(index, "names its Objective-C class at 0x\(String(typeTarget, radix: 16)), outside the file")
+                }
+            default:
+                guard segments.contains(where: { $0.contains(typeTarget) }) else {
+                    throw fail(index, "has its type slot at 0x\(String(typeTarget, radix: 16)), outside every mapped segment")
+                }
+                if kind == 1, case .some(.some(.address(let type))) = reader.field(at: typeTarget) {
+                    try validateContextDescriptor(at: type, read: read, segments: segments, path: path, what: typeWhat)
+                }
+            }
+            // The witness table pattern, a direct relative pointer the reader
+            // resolves at whatever file offset it makes: a fuzzed top byte
+            // made it negative and trapped (seed 9001: libSample.stripped
+            // mutant 122, libGaugeKit mutant 75).
+            if let patternField = header.u32(at: 8), patternField != 0 {
+                let pattern = (descriptor &+ 8) &+ UInt64(bitPattern: Int64(Int32(bitPattern: patternField)))
+                guard segments.contains(where: { $0.contains(pattern) }) else {
+                    throw fail(index, "has its witness table pattern at 0x\(String(pattern, radix: 16)), outside every mapped segment")
+                }
+            }
+            try validateConformanceExtent(descriptor: descriptor, flags: flags, index: index, reader: reader, read: read, fail: fail)
+            try validateResilientWitnesses(
+                descriptor: descriptor, flags: flags, index: index, reader: reader, segments: segments, read: read, fail: fail)
+            let relative = UInt64(bitPattern: Int64(Int32(bitPattern: protocolField & ~1)))
+            let target = descriptor &+ relative
+            let what = "__swift5_proto[\(index)]'s protocol"
+            if protocolField & 1 == 0 {
+                try validateContextDescriptor(at: target, read: read, segments: segments, path: path, what: what)
+                continue
+            }
+            guard segments.contains(where: { $0.contains(target) }) else {
+                throw fail(index, "has its protocol slot at 0x\(String(target, radix: 16)), outside every mapped segment")
+            }
+            switch reader.field(at: target) {
+            case .some(.some(.address(let proto))):
+                try validateContextDescriptor(at: proto, read: read, segments: segments, path: path, what: what)
+            case .some(.some(.badBind(let ordinal))):
+                throw fail(index, "binds its protocol to import \(ordinal), past the import table")
+            default:
+                // A bind names another image's protocol. A zero slot is one
+                // dyld's bind opcodes fill (no chained fixups: 127 of 6,127
+                // host binaries, the swift-5.0 back-deployment libraries
+                // among them), and an undecoded or unloaded one is not
+                // judged.
+                break
+            }
+        }
+    }
+
+    /// A conformance and the trailing records its flags declare, in the order
+    /// MachOSwiftSection reads them (`ProtocolConformance.swift`): a 4-byte
+    /// retroactive context pointer if bit 6, 12-byte conditional requirements
+    /// counted in bits 8–15, 8-byte pack shapes counted in bits 24–31, a
+    /// witness count and 8-byte witnesses if bit 16, a 12-byte generic
+    /// witness table if bit 17, and an 8-byte global actor reference if bit
+    /// 19. The compiler emits them as one record, so it ends inside the
+    /// section that holds it. A fuzzed pack shape count of 218 moved the
+    /// witnesses 1,744 bytes on, still in the file and a segment, and a
+    /// requirement read there trapped `dump` (seed 9001,
+    /// libReconstruction.opt.stripped mutant 53). A descriptor in no listed
+    /// section is not judged here.
+    static func validateConformanceExtent(
+        descriptor: UInt64, flags: UInt32, index: Int, reader: PointerReader,
+        read: (UInt64, Int) -> Data?, fail: (Int, String) -> BinaryLoadError
+    ) throws {
+        guard let section = reader.sections.first(where: {
+            descriptor >= $0.addr && descriptor - $0.addr < UInt64($0.size)
+        }) else { return }
+        let limit = section.addr &+ UInt64(section.size)
+        var end = descriptor &+ 16
+        if flags & (1 << 6) != 0 { end &+= 4 }
+        end &+= 12 * UInt64((flags >> 8) & 0xff) + 8 * UInt64(flags >> 24)
+        func check(_ what: String) throws {
+            guard end <= limit else {
+                throw fail(index, "has \(what) running to 0x\(String(end, radix: 16)), past the end of \(section.name) at 0x\(String(limit, radix: 16))")
+            }
+        }
+        try check("conditional requirements and pack shapes")
+        if flags & (1 << 16) != 0 {
+            end &+= 4
+            try check("a resilient witness count")
+            guard let header = read(end &- 4, 4), let count = header.u32(at: 0) else { return }
+            end &+= 8 * UInt64(count)
+            try check("\(count) resilient witnesses")
+        }
+        if flags & (1 << 17) != 0 { end &+= 12; try check("a generic witness table") }
+        if flags & (1 << 19) != 0 { end &+= 8; try check("a global actor reference") }
+    }
+
+    /// The resilient witnesses a conformance carries after its header, at the
+    /// trailing offset MachOSwiftSection reads them from
+    /// (`ProtocolConformance.swift`: a retroactive context pointer if bit 6,
+    /// 12-byte conditional requirements counted in bits 8–15, 8-byte pack
+    /// shapes counted in bits 24–31, then, if bit 16, a witness count and
+    /// `{requirement, implementation}` pairs). Each requirement points to a
+    /// protocol requirement directly or, bit 0 set, through a slot, and both
+    /// must lie in a mapped segment: the reader resolves the slot's bind at
+    /// whatever file offset the pointer makes, and a fuzzed top byte made it
+    /// negative and trapped (`Tools/fuzz.swift metadata
+    /// libMangledTypes.stripped.dylib 100 2024`, mutant 39).
+    static func validateResilientWitnesses(
+        descriptor: UInt64, flags: UInt32, index: Int, reader: PointerReader, segments: [Range<UInt64>],
+        read: (UInt64, Int) -> Data?, fail: (Int, String) -> BinaryLoadError
+    ) throws {
+        guard flags & (1 << 16) != 0 else { return }
+        var offset = descriptor &+ 16
+        if flags & (1 << 6) != 0 { offset &+= 4 }
+        offset &+= 12 * UInt64((flags >> 8) & 0xff) + 8 * UInt64(flags >> 24)
+        guard let header = read(offset, 4), let count = header.u32(at: 0),
+              let witnesses = read(offset &+ 4, 8 * Int(count))
+        else { throw fail(index, "has resilient witnesses at 0x\(String(offset, radix: 16)) that run past the file") }
+        for witness in 0 ..< Int(count) {
+            guard let field = witnesses.u32(at: witness * 8) else { break }
+            let place = offset &+ 4 &+ UInt64(witness * 8)
+            let target = place &+ UInt64(bitPattern: Int64(Int32(bitPattern: field & ~1)))
+            guard segments.contains(where: { $0.contains(target) }) else {
+                throw fail(index, "has resilient witness \(witness) whose requirement points to 0x\(String(target, radix: 16)), outside every mapped segment")
+            }
+            guard field & 1 != 0 else { continue }
+            switch reader.field(at: target) {
+            case .some(.some(.address(let requirement))):
+                guard segments.contains(where: { $0.contains(requirement) }) else {
+                    throw fail(index, "has resilient witness \(witness) whose requirement slot holds 0x\(String(requirement, radix: 16)), outside every mapped segment")
+                }
+            case .some(.some(.badBind(let ordinal))):
+                throw fail(index, "binds resilient witness \(witness)'s requirement to import \(ordinal), past the import table")
+            default:
+                break
+            }
+        }
+    }
+
+    /// A context descriptor and its parents (swift/include/swift/ABI/Metadata.h
+    /// `TargetContextDescriptor`): flags whose kind is one the ABI defines
+    /// (module, extension, anonymous, protocol, opaque type, class, struct,
+    /// enum), a relative parent pointer (bit 0 marks a GOT slot, which is not
+    /// followed), and for the named kinds and extensions a relative pointer
+    /// at +8 to a name the file holds.
+    static func validateContextDescriptor(
+        at address: UInt64, read: (UInt64, Int) -> Data?, segments: [Range<UInt64>], path: String, what: String
+    ) throws {
+        func fail(_ why: String) -> BinaryLoadError {
+            BinaryLoadError("Malformed Mach-O: \(path) — \(what) \(why)")
+        }
+        var current = address, seen: Set<UInt64> = []
+        while true {
+            guard seen.insert(current).inserted else { throw fail("names a context whose parents loop at 0x\(String(current, radix: 16))") }
+            guard seen.count <= 64 else { throw fail("reaches a context more than 64 parents deep") }
+            guard let header = read(current, 12), let flags = header.u32(at: 0),
+                  let parent = header.u32(at: 4), let nameField = header.u32(at: 8)
+            else { throw fail("names 0x\(String(current, radix: 16)), which holds no context descriptor") }
+            let kind = flags & 0x1f
+            guard [0, 1, 2, 3, 4, 16, 17, 18].contains(kind) else {
+                throw fail("names 0x\(String(current, radix: 16)), whose kind \(kind) is no context kind")
+            }
+            if [0, 1, 3, 16, 17, 18].contains(kind) {
+                let target = (current &+ 8) &+ UInt64(bitPattern: Int64(Int32(bitPattern: nameField)))
+                guard read(target, 1) != nil else {
+                    throw fail("names a context at 0x\(String(current, radix: 16)) whose name points to 0x\(String(target, radix: 16)), outside the file")
+                }
+            }
+            guard parent != 0 else { return }
+            let target = (current &+ 4) &+ UInt64(bitPattern: Int64(Int32(bitPattern: parent & ~1)))
+            guard segments.contains(where: { $0.contains(target) }) else {
+                throw fail("names a context at 0x\(String(current, radix: 16)) whose parent points to 0x\(String(target, radix: 16)), outside every mapped segment")
+            }
+            if parent & 1 != 0 { return }
+            current = target
+        }
+    }
+
+    /// `__swift5_fieldmd`, walked by its record layout. Each `FieldDescriptor`
+    /// (swift/include/swift/RemoteInspection/Records.h:206) is relative
+    /// `MangledTypeName` and `Superclass` pointers, `Kind` (u16),
+    /// `FieldRecordSize` (u16, emitted as 12), `NumFields` (u32), then that
+    /// many `FieldRecord`s: `Flags`, relative `MangledTypeName` and
+    /// `FieldName`. A pointer resolving outside the file trapped `objc`,
+    /// `layout`, `disasm`, `xrefs` and `analyze` with `Negative value is not
+    /// representable` (`metadata-fuzz.py sample.release 150 4242`, mutant 5).
+    @discardableResult
+    static func validateFieldDescriptorTable(
+        bytes: Data, sectionOffset: Int, fileSize: Int, path: String = "<data>", map known: FileBackedRanges? = nil
+    ) throws -> [Int] {
+        let map = known ?? FileBackedRanges(identityOver: fileSize)
+        var names: [Int] = []
+        func fail(_ why: String) -> BinaryLoadError {
+            BinaryLoadError("Malformed Mach-O: \(path) — __swift5_fieldmd \(why)")
+        }
+        @discardableResult
+        func checkPointer(at offset: Int, _ what: String) throws -> Int {
+            guard let raw = bytes.u32(at: offset) else { throw fail("\(what) is truncated") }
+            let (resolved, reason) = relativeFileOffset(raw, at: sectionOffset + offset, in: map)
+            guard let target = resolved else { throw fail("\(what) \(reason)") }
+            return target
+        }
+        var cursor = 0
+        var descriptor = 0
+        while cursor < bytes.count {
+            guard cursor + 16 <= bytes.count, let sizes = bytes.u32(at: cursor + 8),
+                  let count = bytes.u32(at: cursor + 12)
+            else { throw fail("descriptor \(descriptor) is truncated") }
+            let recordSize = Int(sizes >> 16)
+            guard recordSize == 12 else {
+                throw fail("descriptor \(descriptor) declares \(recordSize)-byte records, not 12")
+            }
+            let (body, overflow) = Int(count).multipliedReportingOverflow(by: 12)
+            guard !overflow, body <= bytes.count - cursor - 16 else {
+                throw fail("descriptor \(descriptor) declares \(count) field(s), past the section's end")
+            }
+            names.append(try checkPointer(at: cursor, "descriptor \(descriptor)'s type name"))
+            names.append(try checkPointer(at: cursor + 4, "descriptor \(descriptor)'s superclass"))
+            for field in 0..<Int(count) {
+                let base = cursor + 16 + field * 12
+                names.append(try checkPointer(at: base + 4, "descriptor \(descriptor) field \(field)'s type"))
+                try checkPointer(at: base + 8, "descriptor \(descriptor) field \(field)'s name")
+            }
+            cursor += 16 + body
+            descriptor += 1
+        }
+        return names
+    }
+
+    /// `__swift5_mpenum`, walked by its record layout. Each
+    /// `MultiPayloadEnumDescriptor` (swift/include/swift/RemoteInspection/
+    /// Records.h:427) is a relative `TypeName` pointer, then
+    /// `contents[0] >> 16` 32-bit words (the runtime asserts that is
+    /// non-zero), so a descriptor is `4 + 4 * words` bytes. A `TypeName`
+    /// resolving outside the file trapped `objc`, `disasm` and `analyze` with
+    /// `Negative value is not representable` in `MangledName.resolve`
+    /// (fuzz mutant 19).
+    @discardableResult
+    static func validateMultiPayloadEnumTable(
+        bytes: Data, sectionOffset: Int, fileSize: Int, path: String = "<data>", map known: FileBackedRanges? = nil
+    ) throws -> [Int] {
+        let map = known ?? FileBackedRanges(identityOver: fileSize)
+        var names: [Int] = []
+        func fail(_ why: String) -> BinaryLoadError {
+            BinaryLoadError("Malformed Mach-O: \(path) — __swift5_mpenum \(why)")
+        }
+        var cursor = 0
+        var descriptor = 0
+        while cursor < bytes.count {
+            guard cursor + 8 <= bytes.count, let typeName = bytes.u32(at: cursor),
+                  let sizeFlags = bytes.u32(at: cursor + 4)
+            else { throw fail("descriptor \(descriptor) is truncated") }
+            let words = Int(sizeFlags >> 16)
+            guard words > 0, 4 + 4 * words <= bytes.count - cursor else {
+                throw fail("descriptor \(descriptor) declares \(words) content word(s), not fitting the section")
+            }
+            let (resolved, reason) = relativeFileOffset(typeName, at: sectionOffset + cursor, in: map)
+            guard let target = resolved else {
+                throw fail("descriptor \(descriptor)'s type name \(reason)")
+            }
+            // With the spare-bits flag set, the mask's byte count is the next
+            // word and the mask must fit the record; the runtime asserts
+            // `byteCount <= (words - 2) * 4` (Records.h, getPayloadSpareBitMaskByteCount).
+            // MachOSwiftSection indexes it unchecked: "Index out of range" in
+            // `analyze` (metadata-fuzz libReconstruction.opt.dylib 150 777, mutant 88).
+            if sizeFlags & 1 != 0 {
+                guard words >= 2, let maskWord = bytes.u32(at: cursor + 8) else {
+                    throw fail("descriptor \(descriptor) uses payload spare bits but has no mask-size word")
+                }
+                let maskBytes = Int(maskWord & 0xffff)
+                guard maskBytes <= (words - 2) * 4 else {
+                    throw fail("descriptor \(descriptor)'s \(maskBytes)-byte spare-bit mask does not fit its \(words - 2) remaining word(s)")
+                }
+            }
+            names.append(target)
+            cursor += 4 + 4 * words
+            descriptor += 1
+        }
+        return names
+    }
+
     /// Every entry of a relative-pointer table must resolve inside the file.
     ///
     /// A Swift relative pointer is a **signed** 32-bit delta from the pointer's
@@ -273,18 +2043,43 @@ public enum MachOPreflight {
     /// (`Negative value is not representable`) or walks off the mapping with
     /// `strlen` (SIGSEGV) — neither catchable from here.
     static func validateRelativePointerTable(
-        bytes: Data, sectionOffset: Int, fileSize: Int, name: String, path: String = "<data>"
+        bytes: Data, sectionOffset: Int, fileSize: Int, name: String, path: String = "<data>",
+        code: [Range<Int>] = [], map known: FileBackedRanges? = nil
     ) throws {
+        let map = known ?? FileBackedRanges(identityOver: fileSize)
         for index in stride(from: 0, to: bytes.count - (bytes.count % 4), by: 4) {
             guard let raw = bytes.u32(at: index) else { break }
-            let delta = Int(Int32(bitPattern: raw))
-            let pointer = sectionOffset + index
-            let target = pointer + delta
-            guard target >= 0, target < fileSize else {
+            let (resolved, reason) = relativeFileOffset(raw, at: sectionOffset + index, in: map)
+            guard let target = resolved else {
+                throw BinaryLoadError("Malformed Mach-O: \(path) — \(name)[\(index / 4)] \(reason)")
+            }
+            // Descriptors are 4-byte-aligned records. A conformance record is
+            // a plain relative pointer, so a misaligned one is the middle of a
+            // descriptor (`metadata-fuzz.py libReconstruction.resilient.dylib
+            // 150 31`, mutants 64 and 124). Type and protocol records carry
+            // tag bits in the low two (`TargetTypeMetadataRecord`'s
+            // TypeReferenceKind; `TargetProtocolRecord`'s indirect and
+            // reserved bits, ABI/Metadata.h), set in system binaries such as
+            // Music.app, so only the bits above them are checked there.
+            let tagBits = name == "__swift5_proto" ? 0 : 3
+            let descriptor = target & ~tagBits
+            guard descriptor % 4 == 0 else {
                 throw BinaryLoadError(
                     """
-                    Malformed Mach-O: \(path) — \(name)[\(index / 4)] is a relative pointer to \
-                    offset \(target), outside the \(fileSize)-byte file
+                    Malformed Mach-O: \(path) — \(name)[\(index / 4)] points at offset \(target), \
+                    not a 4-byte-aligned descriptor
+                    """
+                )
+            }
+            // Each entry names a descriptor, which is data. One aimed into an
+            // instruction section is parsed out of machine code, and the
+            // pointers read from it trap (`resolveBind(fileOffset:)` on a
+            // negative offset; `metadata-fuzz.py sample.release 150 4242`).
+            if let range = code.first(where: { $0.contains(descriptor) }) {
+                throw BinaryLoadError(
+                    """
+                    Malformed Mach-O: \(path) — \(name)[\(index / 4)] points at offset \(target), \
+                    inside instructions (\(range.lowerBound)..<\(range.upperBound)), not a descriptor
                     """
                 )
             }
@@ -362,9 +2157,13 @@ public enum MachOPreflight {
             )
         }
 
+        // An executable, dylib, or bundle is held to what dyld requires before
+        // it will load one; an object file is not (see `walkLoadCommands`).
+        let filetype = prefix.u32(at: 12, bigEndian: bigEndian) ?? 0
         try walkLoadCommands(
             prefix: prefix, start: headerSize, ncmds: Int(ncmds), sizeofcmds: Int(sizeofcmds),
-            fileSize: fileSize, is64: is64, bigEndian: bigEndian, fail: fail
+            fileSize: fileSize, is64: is64, bigEndian: bigEndian,
+            loadable: FileType.loadable.contains(filetype), fail: fail
         )
     }
 
@@ -372,12 +2171,23 @@ public enum MachOPreflight {
     /// one's self-declared size for consistency. Stops early — without
     /// complaint — when the prefix runs out, since a short prefix is our own
     /// limitation, not evidence of a bad file.
+    ///
+    /// A loadable image must also have the segments dyld requires, and each
+    /// section must name the segment that contains it. A structurally valid
+    /// file can break these (rename `__TEXT` to `__TEXTX`, or let an unknown
+    /// `cmd` hide `__LINKEDIT`), and MachOKit then aborts the process. Each
+    /// check is dyld's own, verified by `dlopen` on the mutated fixture:
+    /// "section '__text' segment name '__TEXT' does not match containing
+    /// segment's name '__TEXTX'", "missing __TEXT segment", "malformed mach-o
+    /// has no LINKEDIT". An object file is exempt: it puts every section, of
+    /// any segment name, in one unnamed segment, and swiftdc reads those today.
     private static func walkLoadCommands(
         prefix: Data, start: Int, ncmds: Int, sizeofcmds: Int, fileSize: Int,
-        is64: Bool, bigEndian: Bool, fail: (String) -> BinaryLoadError
+        is64: Bool, bigEndian: Bool, loadable: Bool, fail: (String) -> BinaryLoadError
     ) throws {
         var offset = start
         var consumed = 0
+        var segments = Set<String>()
         for index in 0..<ncmds {
             guard offset + Layout.minLoadCommand <= prefix.count else { return }
             guard let cmd = prefix.u32(at: offset, bigEndian: bigEndian),
@@ -400,9 +2210,19 @@ public enum MachOPreflight {
             }
             try validatePayload(
                 cmd: cmd, at: offset, prefix: prefix, fileSize: fileSize,
-                is64: is64, bigEndian: bigEndian, index: index, fail: fail
+                is64: is64, bigEndian: bigEndian, index: index, loadable: loadable, fail: fail
             )
+            if cmd == Command.segment64 || cmd == Command.segment32 {
+                guard offset + 24 <= prefix.count else { return }
+                segments.insert(segmentName(at: offset, prefix: prefix) ?? "")
+            }
             offset += Int(cmdsize)
+        }
+        // Reached only when every command was read, so an absence is proven.
+        if loadable {
+            for required in ["__TEXT", "__LINKEDIT"] where !segments.contains(required) {
+                throw fail("has no \(required) segment; dyld refuses to load such an image")
+            }
         }
     }
 
@@ -423,43 +2243,117 @@ public enum MachOPreflight {
     /// command is left alone rather than treated as suspect.
     private static func validatePayload(
         cmd: UInt32, at offset: Int, prefix: Data, fileSize: Int, is64: Bool,
-        bigEndian: Bool, index: Int, fail: (String) -> BinaryLoadError
+        bigEndian: Bool, index: Int, loadable: Bool, fail: (String) -> BinaryLoadError
     ) throws {
         switch cmd {
         case Command.segment64:
             try validateSegment(
                 at: offset, prefix: prefix, fileSize: fileSize, is64: true,
-                bigEndian: bigEndian, index: index, fail: fail
+                bigEndian: bigEndian, index: index, loadable: loadable, fail: fail
             )
         case Command.segment32:
             try validateSegment(
                 at: offset, prefix: prefix, fileSize: fileSize, is64: false,
-                bigEndian: bigEndian, index: index, fail: fail
+                bigEndian: bigEndian, index: index, loadable: loadable, fail: fail
             )
         case Command.symtab:
             try validateSymtab(
                 at: offset, prefix: prefix, fileSize: fileSize, is64: is64,
                 bigEndian: bigEndian, fail: fail
             )
+        case let cmd where Command.dylibCommands.contains(cmd):
+            try validateDylib(at: offset, prefix: prefix, bigEndian: bigEndian, index: index, fail: fail)
+        case Command.buildVersion:
+            try validateBuildVersion(at: offset, prefix: prefix, bigEndian: bigEndian, index: index, fail: fail)
+        case let cmd where Command.linkeditData.contains(cmd) && loadable:
+            // Only a loadable image: a dSYM keeps these commands with offsets
+            // into the binary it was split from.
+            guard let dataoff = prefix.u32(at: offset + 8, bigEndian: bigEndian),
+                  let datasize = prefix.u32(at: offset + 12, bigEndian: bigEndian)
+            else { return }   // beyond the prefix: our limit, not a bad file
+            guard Int(dataoff) <= fileSize, Int(datasize) <= fileSize - Int(dataoff) else {
+                throw fail("load command \(index) claims \(datasize) byte(s) at offset \(dataoff) of a \(fileSize)-byte file")
+            }
         default:
             break
+        }
+    }
+
+    /// A dylib command's name must lie inside the command itself.
+    ///
+    /// `struct dylib.name` is an `lc_str`: an offset from the start of the
+    /// command to a NUL-terminated path that the command's own `cmdsize`
+    /// covers. MachOKit's `DylibCommand.dylib(in:)` reads that string with
+    /// `try! readString(offset: commandOffset + name.offset, size: cmdsize -
+    /// name.offset)`, so an offset past `cmdsize` is an uncatchable trap
+    /// (`FileIOBinary/_FileIOProtocol+.swift:242`, `offsetOutOfBounds`).
+    /// Confirmed live at the MachOSwiftSection 0.22.0 pin: its class dumper
+    /// walks the ObjC ancestor chain, which reads `MachOFile.dependencies`,
+    /// which decodes every dylib command. `container-fuzz.py libSample.dylib
+    /// 150 7` mutant 63 (LC_LOAD_WEAK_DYLIB name offset's top byte) and
+    /// `sample.release 150 7` mutant 104 (LC_LOAD_DYLIB name offset's third
+    /// byte) each killed `dump` and `interface` by SIGTRAP; 0.19.0 never read
+    /// dependencies on that path, so the same mutants only failed cleanly there.
+    private static func validateDylib(
+        at offset: Int, prefix: Data, bigEndian: Bool, index: Int, fail: (String) -> BinaryLoadError
+    ) throws {
+        guard let cmdsize = prefix.u32(at: offset + 4, bigEndian: bigEndian),
+              let nameOffset = prefix.u32(at: offset + 8, bigEndian: bigEndian)
+        else { return }   // beyond the prefix: our limit, not a bad file
+        guard nameOffset >= UInt32(Command.dylibCommandHeader), nameOffset < cmdsize else {
+            throw fail(
+                "load command \(index) puts its dylib name at offset \(nameOffset) of a \(cmdsize)-byte command"
+            )
+        }
+    }
+
+    /// An `LC_BUILD_VERSION`'s tools must be the ones its `cmdsize` holds.
+    ///
+    /// MachOKit's `BuildVersionCommand.tools(in:)` reads `ntools` entries with
+    /// a trapping `readDataSequence`, and `BuildToolVersion.tool` narrows each
+    /// to `Int32` with a trapping conversion. `MachOFile.exportTrie` reads the
+    /// tools, so `dump`, `interface` and `swift-version` all died by SIGTRAP on
+    /// one flipped byte (20 of 31 crashes in a 2026-11-04 load-command fuzz).
+    /// dyld holds `cmdsize` to the same sum.
+    private static func validateBuildVersion(
+        at offset: Int, prefix: Data, bigEndian: Bool, index: Int, fail: (String) -> BinaryLoadError
+    ) throws {
+        guard let cmdsize = prefix.u32(at: offset + 4, bigEndian: bigEndian),
+              let ntools = prefix.u32(at: offset + 20, bigEndian: bigEndian)
+        else { return }   // beyond the prefix: our limit, not a bad file
+        let expected = UInt64(Command.buildVersionHeader) + UInt64(ntools) * UInt64(Command.buildToolVersion)
+        guard UInt64(cmdsize) == expected else {
+            throw fail("load command \(index) lists \(ntools) build tool(s) in a \(cmdsize)-byte LC_BUILD_VERSION")
+        }
+        for tool in 0..<Int(ntools) {
+            let entry = offset + Command.buildVersionHeader + tool * Command.buildToolVersion
+            guard let value = prefix.u32(at: entry, bigEndian: bigEndian) else { return }
+            guard Int32(exactly: value) != nil else {
+                throw fail("load command \(index) names build tool \(value), which no tool enumeration can hold")
+            }
         }
     }
 
     /// A segment's file range, and the file range of each of its sections.
     private static func validateSegment(
         at offset: Int, prefix: Data, fileSize: Int, is64: Bool, bigEndian: Bool,
-        index: Int, fail: (String) -> BinaryLoadError
+        index: Int, loadable: Bool, fail: (String) -> BinaryLoadError
     ) throws {
         let name = segmentName(at: offset, prefix: prefix) ?? "\(index)"
         let fileoff: Int
         let filesize: Int
         let nsects: UInt32
+        // The segment's memory range, which every section must lie inside.
+        let vmStart: UInt64
+        let vmEnd: UInt64
         if is64 {
             guard let off = prefix.u64(at: offset + 40, bigEndian: bigEndian),
                   let size = prefix.u64(at: offset + 48, bigEndian: bigEndian),
-                  let count = prefix.u32(at: offset + 64, bigEndian: bigEndian)
+                  let count = prefix.u32(at: offset + 64, bigEndian: bigEndian),
+                  let vmaddr = prefix.u64(at: offset + 24, bigEndian: bigEndian),
+                  let vmsize = prefix.u64(at: offset + 32, bigEndian: bigEndian)
             else { return }   // beyond the prefix — our limit, not a bad file
+            (vmStart, vmEnd) = (vmaddr, vmaddr.addingReportingOverflow(vmsize).partialValue)
             // Clamp rather than convert: `Int(_:)` traps above `Int.max`, which is
             // exactly the input this validator exists to survive. A clamped value
             // still fails the bounds check below.
@@ -467,9 +2361,12 @@ public enum MachOPreflight {
         } else {
             guard let off = prefix.u32(at: offset + 32, bigEndian: bigEndian),
                   let size = prefix.u32(at: offset + 36, bigEndian: bigEndian),
-                  let count = prefix.u32(at: offset + 48, bigEndian: bigEndian)
+                  let count = prefix.u32(at: offset + 48, bigEndian: bigEndian),
+                  let vmaddr = prefix.u32(at: offset + 24, bigEndian: bigEndian),
+                  let vmsize = prefix.u32(at: offset + 28, bigEndian: bigEndian)
             else { return }
             (fileoff, filesize, nsects) = (Int(off), Int(size), count)
+            (vmStart, vmEnd) = (UInt64(vmaddr), UInt64(vmaddr) + UInt64(vmsize))
         }
 
         guard fileoff <= fileSize, filesize <= fileSize - fileoff else {
@@ -484,6 +2381,43 @@ public enum MachOPreflight {
             let base = sectionStart + section * sectionSize
             guard let flags = prefix.u32(at: base + (is64 ? 64 : 56), bigEndian: bigEndian)
             else { return }
+            // `section.segname` (bytes 16..<32 of both layouts) must name the
+            // segment it sits in; `segmentName(at: base - 8)` reads that field.
+            if loadable {
+                let owner = segmentName(at: offset, prefix: prefix) ?? ""
+                let declared = segmentName(at: base + 8, prefix: prefix) ?? ""
+                guard declared == owner else {
+                    throw fail(
+                        "section \(section) of segment '\(owner)' names segment '\(declared)'; dyld refuses to load such an image"
+                    )
+                }
+                // dyld: "section '…' end address … is beyond containing
+                // segment's end address …". A section addressed outside its
+                // segment points every metadata read through it at unmapped
+                // memory (SIGSEGV in `dump`, SIGTRAP in `objc`, measured).
+                let addr: UInt64?
+                let size: UInt64?
+                if is64 {
+                    (addr, size) = (prefix.u64(at: base + 32, bigEndian: bigEndian),
+                                    prefix.u64(at: base + 40, bigEndian: bigEndian))
+                } else {
+                    (addr, size) = (prefix.u32(at: base + 32, bigEndian: bigEndian).map(UInt64.init),
+                                    prefix.u32(at: base + 36, bigEndian: bigEndian).map(UInt64.init))
+                }
+                // An unmapped segment (`vmsize` 0) and a debug section
+                // (`S_ATTR_DEBUG`) are never read through memory. A Go binary's
+                // `__DWARF` is both, with sections sized past its empty range,
+                // and dyld loads it (`com.docker.build`, measured).
+                let mapped = vmEnd > vmStart && flags & SectionAttribute.debug == 0
+                if mapped, let addr, let size {
+                    let (end, overflow) = addr.addingReportingOverflow(size)
+                    guard addr >= vmStart, !overflow, end <= vmEnd else {
+                        throw fail(
+                            "section \(section) of segment '\(owner)' spans 0x\(String(addr, radix: 16))..<0x\(String(end, radix: 16)), outside the segment's 0x\(String(vmStart, radix: 16))..<0x\(String(vmEnd, radix: 16)); dyld refuses to load such an image"
+                        )
+                    }
+                }
+            }
             // A zero-fill section occupies no file bytes; its `size` is a memory
             // extent and is routinely larger than the whole binary.
             guard !SectionType.zerofill.contains(flags & 0xff) else { continue }
@@ -604,10 +2538,15 @@ public enum MachOPreflight {
 
 // MARK: - Bounds-checked scalar reads
 
-private extension Data {
+extension Data {
     /// Read a `UInt32`, returning nil rather than trapping when out of bounds.
     /// `Data`'s own subscripting is exactly what traps in the dependency this
     /// file exists to protect against, so every read here is checked.
+    func u16(at offset: Int) -> UInt16? {
+        guard offset >= 0, offset + 2 <= count else { return nil }
+        return UInt16(self[startIndex + offset]) | UInt16(self[startIndex + offset + 1]) << 8
+    }
+
     func u32(at offset: Int, bigEndian: Bool = false) -> UInt32? {
         guard offset >= 0, offset + 4 <= count else { return nil }
         var value: UInt32 = 0

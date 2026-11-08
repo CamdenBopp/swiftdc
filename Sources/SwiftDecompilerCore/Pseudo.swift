@@ -5,16 +5,40 @@ import Foundation
 /// bookkeeping hidden. Not a structured decompiler — it surfaces the useful
 /// statements that the CFG + value-tracking already recover.
 public extension DisassembledFunction {
+    /// A throwing function's exit not proven to be a return or a throw.
+    static let unresolvedSwiftExitNote = "swift-exit=unknown"
+    static let unresolvedSwiftExitStatement = "machine_return() /* unresolved Swift success/error exit */"
+    /// A throwing function's exit proven normal that has no value to print.
+    static let normalSwiftExitNote = "swift-exit=normal"
+
     func renderPseudo(hideRuntime: Bool = true) -> String {
+        Probe.inFunction(startAddress, displayName) {
+            Probe.timed(.renderTime) {
+                let output = renderPseudoBody(hideRuntime: hideRuntime)
+                Probe.rendered(output, of: self, view: "pseudo")
+                return output
+            }
+        }
+    }
+
+    private func renderPseudoBody(hideRuntime: Bool) -> String {
         var lines = ["\(displayName) {"]
         if let objcMethod { lines.append("    // \(objcMethod.signature)") }
+        if let asyncLine = asyncHeaderLine() { lines.append("    \(asyncLine)") }
         var statements: [String] = []
         for insn in instructions {
-            guard let statement = Self.pseudoStatement(of: insn, hideRuntime: hideRuntime) else { continue }
-            statements.append(statement)
+            let recovered = Self.pseudoStatement(of: insn, hideRuntime: hideRuntime)
+            let fallback: String? = if insn.controlFlow != .return { nil }
+                else if signatureThrows { Self.unresolvedSwiftExitStatement }
+                else if hasProvenMachineValueReturn { "return ?" }
+                else { nil }
+            guard let statement = recovered ?? fallback else { continue }
+            statements += statement.components(separatedBy: "\n")
         }
         if hideRuntime { statements = Self.foldSwiftIdioms(statements) }
-        if statements.isEmpty {
+        if instructions.isEmpty {
+            lines.append("    \(Self.noDecodedInstructionNote)")
+        } else if statements.isEmpty {
             lines.append("    // no non-runtime calls (leaf / pure computation)")
         } else {
             for statement in statements { lines.append("    \(statement)") }
@@ -27,21 +51,34 @@ public extension DisassembledFunction {
     /// their richer message-send rendering; direct stores to a known Swift
     /// field or Objective-C ivar reuse the field annotation from disassembly.
     static func pseudoStatement(of insn: Instruction, hideRuntime: Bool) -> String? {
-        if let annotation = insn.annotation {
-            let semantic = annotation.components(separatedBy: "  ")
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-                .first { note in
-                    if note.hasPrefix("return ") { return true }
-                    if note.hasPrefix("yield ") { return true }
-                    if note.hasPrefix("self = ") { return true }
-                    if note.hasPrefix("("), note.contains("self->"), note.contains(" = ") {
-                        return true
-                    }
-                    guard note.hasPrefix("self.") || note.hasPrefix("self->") else { return false }
-                    return [" = ", " += ", " -= "].contains(where: note.contains)
-                }
-            if let semantic { return semantic }
+        // A path that throws after this instruction (a throw merged into the
+        // shared epilogue): its own statement, then the throw.
+        if insn.thenThrows {
+            let rest = insn.annotation.map {
+                $0.replacingOccurrences(of: "  " + Self.thenThrowNote, with: "")
+                    .replacingOccurrences(of: Self.thenThrowNote, with: "")
+            }
+            var facts = insn.facts
+            facts.thenThrows = false
+            let base = Instruction(
+                address: insn.address, text: insn.text, annotation: rest?.isEmpty == false ? rest : nil,
+                controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
+                callArguments: insn.callArguments, callSelf: insn.callSelf,
+                resultConsumed: insn.resultConsumed, sourceType: insn.sourceType, detail: insn.detail,
+                calleeDisplayName: insn.calleeDisplayName, callee: .kept(insn.callee), facts: facts)
+            return pseudoStatement(of: base, hideRuntime: hideRuntime).map { "\($0)\nthrow ?" } ?? "throw ?"
         }
+        if insn.isTrap { return "trap()" }
+        // An exit's statement comes ahead of every note. The only note that
+        // reads as a statement and is noted ahead of an exit is a field
+        // write, which is a store, never an exit.
+        if let exit = insn.exit { return exit.statement }
+        // The statement (a field write, a yield, an executor hop, `self =
+        // …`) is noted ahead of the binding, so it wins.
+        if let statement = insn.statement { return statement.text }
+        // `let r0 = call(...)`: a call whose result is read more than once,
+        // bound once so the call is not spelled out (executed) at every use.
+        if let binding = insn.binding { return binding.statement }
         return callStatement(of: insn, hideRuntime: hideRuntime)
     }
 
@@ -49,10 +86,27 @@ public extension DisassembledFunction {
     /// (`callee(args)`, or `[receiver doThing:]` for a message send), or nil if
     /// `insn` is not a call boundary or is hidden runtime bookkeeping.
     static func callStatement(of insn: Instruction, hideRuntime: Bool) -> String? {
-        guard !insn.resultConsumed,
-              insn.controlFlow == .call || insn.controlFlow == .branch,
-              let callee = calleeName(of: insn)
-        else { return nil }
+        guard insn.controlFlow == .call || insn.controlFlow == .branch else { return nil }
+        guard let callee = calleeName(of: insn) else {
+            // An unknown target does not make the call pure: it is an effect,
+            // and its arguments may be the only rendering of earlier calls'
+            // results. The observed register values are not a claimed
+            // signature, so they are listed as recovered values, not arguments.
+            if insn.controlFlow == .branch, let target = insn.indirectJumpTarget {
+                // A suspension is a call; any other indirect `br` may be a
+                // tail call or an unrecovered jump table, so it is a jump.
+                if let binding = insn.awaitBinding {
+                    let call = "indirect_call(\(target))"
+                    return binding.isEmpty ? "await \(call)" : "let \(binding) = await \(call)"
+                }
+                let comment = target == "?" ? "/* unresolved indirect branch @ 0x\(String(insn.address, radix: 16)) */ " : ""
+                return "\(comment)indirect_jump(\(target))"
+            }
+            guard insn.controlFlow == .call else { return nil }
+            let arguments = (insn.callArguments ?? []).joined(separator: ", ")
+            return "/* unresolved call @ 0x\(String(insn.address, radix: 16)) */ indirect_call(?, recovered_args: [\(arguments)])"
+        }
+        guard !insn.resultConsumed else { return nil }
         let rawArguments = insn.callArguments ?? []
         // A dynamic cast reads its target type from the metadata argument that the
         // plumbing strip below would remove, so recognize it on the raw arguments
@@ -65,9 +119,26 @@ public extension DisassembledFunction {
         if let idiom = objcRuntimeIdiom(callee: callee, arguments: arguments) { return idiom }
         // A Swift method's receiver arrives in x20, not x0, so show it as an
         // explicit `self:` rather than letting it vanish from the call.
+        if insn.isSelfDispatch {
+            let call = "\(selfDispatchCall(insn.calleeDisplayName ?? callee))(\(arguments.joined(separator: ", ")))"
+            guard let binding = insn.awaitBinding else { return call }
+            return binding.isEmpty ? "await \(call)" : "let \(binding) = await \(call)"
+        }
         let parts = insn.callSelf.map { ["self: \($0)"] + arguments } ?? arguments
-        return "\(strippedCallee(callee))(\(parts.joined(separator: ", ")))"
+        let call = "\(strippedCallee(insn.calleeDisplayName ?? callee))(\(parts.joined(separator: ", ")))"
+        // A suspension point: the tail call is an `await`, and its result is
+        // bound to the name the resume funclet reads it under, when proven.
+        guard let binding = insn.awaitBinding else { return call }
+        return binding.isEmpty ? "await \(call)" : "let \(binding) = await \(call)"
     }
+
+    /// The note on a `br` through a register to no known function, followed
+    /// by the rendered register value or `?` (`Instruction.indirectJumpTarget`).
+    static let indirectJumpNote = "jump="
+
+    /// The note on the last instruction of a path that throws into a shared
+    /// epilogue.
+    static let thenThrowNote = "then throw ?"
 
     /// ARC runtime helpers that are exact lowerings of a source message send,
     /// rendered back as that send.
@@ -122,26 +193,45 @@ public extension DisassembledFunction {
     /// of its flags operand. Returns nil — leaving the raw call — when the target
     /// type is an unrecoverable mangled-name instantiation or the flags are
     /// unknown, so the cast is never rendered with a guessed type or direction.
+    ///
+    /// The metatype helpers take two metadata pointers and return the first:
+    /// the value cast is a type, and the target metadata names the instance
+    /// type (`swift_dynamicCastMetatype(sourceType, targetType)`,
+    /// include/swift/Runtime/Casting.h). `x as? C.Type` is a question about
+    /// subclassing, not about an object, and printed without `.Type` it read
+    /// `(x as? C)`.
     static func swiftCastIdiom(callee: String, arguments: [String]) -> String? {
-        func cast(object: String, targetArgument: String, forced: Bool) -> String? {
+        func cast(object: String, targetArgument: String, forced: Bool, metatype: Bool = false) -> String? {
             guard let type = swiftTypeName(fromMetadata: targetArgument) else { return nil }
-            return "(\(object) \(forced ? "as!" : "as?") \(type))"
+            return "(\(object) \(forced ? "as!" : "as?") \(type)\(metatype ? ".Type" : ""))"
         }
         switch callee {
-        case "swift_dynamicCastClass", "swift_dynamicCastObjCClass",
-             "swift_dynamicCastUnknownClass", "swift_dynamicCastMetatype":
+        case "swift_dynamicCastClass", "swift_dynamicCastObjCClass", "swift_dynamicCastUnknownClass":
             guard arguments.count >= 2 else { return nil }
             return cast(object: arguments[0], targetArgument: arguments[1], forced: false)
         case "swift_dynamicCastClassUnconditional", "swift_dynamicCastObjCClassUnconditional",
-             "swift_dynamicCastUnknownClassUnconditional", "swift_dynamicCastMetatypeUnconditional":
+             "swift_dynamicCastUnknownClassUnconditional":
             guard arguments.count >= 2 else { return nil }
             return cast(object: arguments[0], targetArgument: arguments[1], forced: true)
+        case "swift_dynamicCastMetatype":
+            guard arguments.count >= 2 else { return nil }
+            return cast(object: arguments[0], targetArgument: arguments[1], forced: false, metatype: true)
+        case "swift_dynamicCastMetatypeUnconditional":
+            guard arguments.count >= 2 else { return nil }
+            return cast(object: arguments[0], targetArgument: arguments[1], forced: true, metatype: true)
         case "swift_dynamicCast":
             // (dest, src, srcType, targetType, flags): the value is `src`, the
             // type is `targetType`, and `dest` is the out-parameter it's written
             // through — not a source expression, so it isn't shown.
-            guard arguments.count >= 5, let forced = castFlagsUnconditional(arguments[4]) else { return nil }
-            return cast(object: arguments[1], targetArgument: arguments[3], forced: forced)
+            // Its result is a Bool, whether the cast succeeded
+            // (RuntimeFunctions.def: `Int1Ty`); the cast value goes to `dest`.
+            // As `(src as? T)` a `-> Bool` function read as returning the
+            // Optional: `isInt<T>(_ a: T) -> Bool { a is Int }` rendered
+            // `return (? as? Swift.Int)`.
+            guard arguments.count >= 5, let forced = castFlagsUnconditional(arguments[4]),
+                  let rendered = cast(object: arguments[1], targetArgument: arguments[3], forced: forced)
+            else { return nil }
+            return forced ? rendered : "(\(rendered) != nil)"
         default:
             return nil
         }
@@ -222,7 +312,7 @@ public extension DisassembledFunction {
         /// `(self, _cmd, args…)` ABI as a message send, so x0 is the receiver and
         /// the selector's arguments still begin at x2 — rendering identically as
         /// `[receiver selector]` rather than the raw `-[Class sel](self, …)`.
-        private static func directMethodSelector(_ callee: String) -> String? {
+        static func directMethodSelector(_ callee: String) -> String? {
             guard callee.hasPrefix("-[") || callee.hasPrefix("+["), callee.hasSuffix("]") else { return nil }
             let inner = callee.dropFirst(2).dropLast()
             guard let space = inner.firstIndex(of: " ") else { return nil }
@@ -233,6 +323,107 @@ public extension DisassembledFunction {
 
         /// Foundation selector families whose final source arguments continue
         /// after the colon-delimited fixed parameters.
+        /// How many variadic arguments a printf-style format consumes, from its
+        /// rendered literal (`@"%ld %@"`), or nil when that is not provable: a
+        /// truncated literal, a `*` width or precision (an extra argument), a
+        /// positional `%1$d`, or any specifier this parser does not know. On
+        /// Apple arm64 each variadic argument is one 8-byte stack slot.
+        static func formatArgumentCount(_ literal: String) -> Int? {
+            formatArgumentKinds(literal)?.count
+        }
+
+        /// What one printf-style conversion passes. On Apple arm64 `long
+        /// double` is `double`, so a floating conversion bare or with `l` or
+        /// `L` is a double's eight bytes; with any other length modifier it
+        /// is `unsized` and renders as its bits.
+        enum FormatArgumentKind: Equatable, Sendable {
+            case integer, floating, pointer, unsized
+        }
+
+        /// Each variadic argument a printf-style format consumes, in order,
+        /// or nil when that is not provable (see `formatArgumentCount`).
+        static func formatArgumentKinds(_ literal: String) -> [FormatArgumentKind]? {
+            var text = Substring(literal)
+            if text.hasPrefix("@") { text = text.dropFirst() }
+            guard text.hasPrefix("\""), text.hasSuffix("\""), !text.hasSuffix("…\""), text.count >= 2
+            else { return nil }
+            let characters = Array(text.dropFirst().dropLast())
+            var kinds: [FormatArgumentKind] = [], index = 0
+            while index < characters.count {
+                guard characters[index] == "%" else { index += 1; continue }
+                index += 1
+                guard index < characters.count else { return nil }
+                if characters[index] == "%" { index += 1; continue }
+                while index < characters.count, "-+ #0'".contains(characters[index]) { index += 1 }
+                while index < characters.count, characters[index].isNumber { index += 1 }
+                if index < characters.count, characters[index] == "." {
+                    index += 1
+                    while index < characters.count, characters[index].isNumber { index += 1 }
+                }
+                // `*` takes an argument; `$` reorders them. Neither is counted soundly.
+                guard index < characters.count, characters[index] != "*", characters[index] != "$"
+                else { return nil }
+                let lengthStart = index
+                while index < characters.count, "hlqLjzt".contains(characters[index]) { index += 1 }
+                let length = String(characters[lengthStart ..< index])
+                guard index < characters.count, "diouxXfFeEgGaAcsSpn@C".contains(characters[index])
+                else { return nil }
+                let conversion = characters[index]
+                if "fFeEgGaA".contains(conversion) {
+                    kinds.append(["", "l", "L"].contains(length) ? .floating : .unsized)
+                } else if "diouxXcC".contains(conversion) {
+                    kinds.append(.integer)
+                } else {
+                    kinds.append(.pointer)
+                }
+                index += 1
+            }
+            return kinds
+        }
+
+        /// For each variadic argument a printf-style format consumes, the
+        /// integer type its conversion reads it at, "" for any other
+        /// argument; nil where `formatArgumentKinds` is. A caller passes a
+        /// narrow value in a whole slot (`printf("%d", -1)` stores
+        /// 0xffffffff), and the conversion says how much of it counts:
+        /// `%d` an Int32, `%hd` an Int16, `%hhd` an Int8, `%ld` an Int, and
+        /// the unsigned conversions (`o u x X`) the UInt of that width.
+        static func formatIntegerTypes(_ literal: String) -> [String]? {
+            guard formatArgumentKinds(literal) != nil else { return nil }
+            var text = Substring(literal)
+            if text.hasPrefix("@") { text = text.dropFirst() }
+            let characters = Array(text.dropFirst().dropLast())
+            var types: [String] = [], index = 0
+            while index < characters.count {
+                guard characters[index] == "%" else { index += 1; continue }
+                index += 1
+                if characters[index] == "%" { index += 1; continue }
+                while index < characters.count, "-+ #0'".contains(characters[index]) { index += 1 }
+                while index < characters.count, characters[index].isNumber { index += 1 }
+                if index < characters.count, characters[index] == "." {
+                    index += 1
+                    while index < characters.count, characters[index].isNumber { index += 1 }
+                }
+                let lengthStart = index
+                while index < characters.count, "hlqLjzt".contains(characters[index]) { index += 1 }
+                let length = String(characters[lengthStart ..< index])
+                let conversion = characters[index]
+                index += 1
+                let signed = "di".contains(conversion)
+                guard signed || "ouxX".contains(conversion) else { types.append(""); continue }
+                let bits: Int? = switch length {
+                case "": 32
+                case "h": 16
+                case "hh": 8
+                case "l", "ll", "q", "j", "z", "t": 64
+                default: nil
+                }
+                guard let bits else { types.append(""); continue }
+                types.append(bits == 64 ? (signed ? "Swift.Int" : "Swift.UInt") : "Swift.\(signed ? "" : "U")Int\(bits)")
+            }
+            return types
+        }
+
         static func isVariadicSelector(_ selector: String) -> Bool {
             guard !selector.contains("arguments:") else { return false }
             return selector.hasSuffix("WithFormat:")
@@ -260,25 +451,33 @@ public extension DisassembledFunction {
         }
     }
 
-    /// Best-effort callee name for a call instruction, from the demangled
-    /// annotation or objdump's stub/operand text.
+    /// The callee of a call or branch: the name fixed when its target was
+    /// named (`Instruction.callee`). Anything else is parsed from its text and
+    /// annotation as the instruction stands.
     static func calleeName(of insn: Instruction) -> String? {
+        if insn.controlFlow == .call || insn.controlFlow == .branch { return insn.callee }
+        return parsedCalleeName(text: insn.text, annotation: insn.annotation)
+    }
+
+    /// Best-effort callee name from the demangled annotation or objdump's
+    /// stub/operand text.
+    static func parsedCalleeName(text: String, annotation: String?) -> String? {
         // objdump tells us the real callee behind a stub.
-        if insn.text.contains("symbol stub for: ") {
-            if let demangled = demangledName(from: insn.annotation) { return demangled }
-            if let range = insn.text.range(of: "symbol stub for: ") {
-                let raw = insn.text[range.upperBound...].prefix { !$0.isWhitespace && $0 != ";" }
+        if text.contains("symbol stub for: ") {
+            if let demangled = demangledName(from: annotation) { return demangled }
+            if let range = text.range(of: "symbol stub for: ") {
+                let raw = text[range.upperBound...].prefix { !$0.isWhitespace && $0 != ";" }
                 return stripUnderscores(String(raw))
             }
         }
         // Direct call: prefer the demangled annotation, else a resolved
         // `→ name` target (the in-process path), else the symbol operand.
-        if let demangled = demangledName(from: insn.annotation) { return demangled }
-        if let annotation = insn.annotation, let arrow = annotation.range(of: "→ ") {
+        if let demangled = demangledName(from: annotation) { return demangled }
+        if let annotation, let arrow = annotation.range(of: "→ ") {
             let name = stripNotes(String(annotation[arrow.upperBound...]))
             if !name.isEmpty { return name }
         }
-        let fields = insn.text.split(whereSeparator: { $0 == " " || $0 == "\t" })
+        let fields = text.split(whereSeparator: { $0 == " " || $0 == "\t" })
         if fields.count >= 2 {
             let operand = String(fields[1])
             if operand.hasPrefix("_") { return stripUnderscores(operand) }
@@ -291,34 +490,146 @@ public extension DisassembledFunction {
     private static func demangledName(from annotation: String?) -> String? {
         guard let annotation else { return nil }
         let base = stripNotes(annotation)
-        if base.isEmpty || base.hasPrefix("args(") || base.hasPrefix("self=") || base.hasPrefix("→") {
+        if base.isEmpty || base.hasPrefix("args(") || base.hasPrefix("self=") || base.hasPrefix("→")
+            || base.hasPrefix("await=") || base.hasPrefix(indirectJumpNote) || base.hasPrefix("swift-exit=")
+            || base.hasPrefix(thenThrowNote) {
             return nil
         }
         return base
     }
 
+    /// Whether `callee` is a compiler-generated helper whose convention has no
+    /// `self`: metadata and witness-table accessors take their arguments in
+    /// x0 and up, and an outlined copy or destroy takes addresses. x20 at a
+    /// call to one is the caller's. (A `merged` method is still a method, so
+    /// only merged helpers count.)
+    static func takesNoSelf(_ callee: String) -> Bool {
+        let name = callee.hasPrefix("merged ") ? callee.dropFirst("merged ".count) : callee[...]
+        return selflessHelperPrefixes.contains(where: name.hasPrefix)
+    }
+
+    private static let selflessHelperPrefixes = [
+        "outlined ", "type metadata accessor for ", "lazy protocol witness table accessor for ",
+        "base witness table accessor for ", "associated type witness table accessor for ",
+        "associated type metadata accessor for ",
+    ]
+
+    /// Whether `callee` receives its type as a thin metatype: a static member
+    /// or an initializer of a struct or enum the index proves one. A thin
+    /// metatype occupies no register, so x20 at the call is the caller's, not
+    /// `self`. (An instance method of a large or `mutating` value does take
+    /// `self` in x20, so it is not one.) The owner is the member's own
+    /// context: the name without the member (and an accessor keyword), so a
+    /// class nested in a struct is the class (`BoxA.Holder.init` is
+    /// `BoxA.Holder`'s, not `BoxA`'s).
+    static func receivesThinMetatype(_ callee: String, classTypeIndex: ClassTypeIndex) -> Bool {
+        let isStatic = callee.hasPrefix("static ")
+        var name = isStatic ? callee.dropFirst("static ".count) : callee[...]
+        // A type declared in an extension prints with its context,
+        // `(extension in Foundation):Swift.String.Encoding`; so does the
+        // evidence for it.
+        var context = ""
+        if name.hasPrefix("(extension in "), let colon = name.firstIndex(of: ":") {
+            context = String(name[...colon])
+            name = name[name.index(after: colon)...]
+        }
+        if let end = name.firstIndex(where: { $0 == "(" || $0 == "<" || $0 == " " }) { name = name[..<end] }
+        guard isStatic || name.hasSuffix(".init") else { return false }
+        guard var dot = name.lastIndex(of: ".") else { return false }
+        if accessorKeywords.contains(String(name[name.index(after: dot)...])) {
+            guard let property = name[..<dot].lastIndex(of: ".") else { return false }
+            dot = property
+        }
+        let owner = String(name[..<dot])
+        return classTypeIndex.isValueType(context + owner) || classTypeIndex.isValueType(owner)
+    }
+
+    /// Marks a call reached through `self`'s own vtable slot. The named
+    /// implementation is self's class's; an override in a subclass runs
+    /// instead when self is one, so the call is `self.member(…)`, not a static
+    /// call to that implementation, and its call-graph edge is not proven.
+    /// The note spells `Instruction.isSelfDispatch` for display.
+    static let selfDispatchMarker = "  dispatch=self"
+
+    /// `self.member` for a self dispatch to `callee`.
+    static func selfDispatchCall(_ callee: String) -> String {
+        let stripped = strippedCallee(callee)
+        let parts = stripped.split(separator: ".").map(String.init)
+        // An accessor keeps its property: `self.value.getter`, never the
+        // accessor keyword alone.
+        if parts.count >= 2, accessorKeywords.contains(parts[parts.count - 1]) {
+            return "self.\(parts[parts.count - 2]).\(parts[parts.count - 1])"
+        }
+        return "self.\(parts.last ?? stripped)"
+    }
+
+    private static let accessorKeywords: Set<String> = [
+        "getter", "setter", "modify", "read", "unsafeAddressor", "unsafeMutableAddressor", "willset", "didset",
+    ]
+
     /// Drop the notes value-tracking appends to an annotation (`self=…`,
-    /// `args(…)`), leaving just the resolved name.
+    /// `args(…)`, `await=…`, `let r0 = …`, `return …`), leaving just the
+    /// resolved name. Every note follows two spaces, which no name contains;
+    /// cutting at four known markers let the semantic ones through, and the
+    /// call graph named `swift_dynamicCastClass` as
+    /// `swift_dynamicCastClass  let r0 = (? as? Reconstruction.Dog)`.
     private static func stripNotes(_ text: String) -> String {
-        var cut = text.endIndex
-        for marker in ["  args(", "  self="] {
-            if let range = text.range(of: marker), range.lowerBound < cut { cut = range.lowerBound }
+        guard let cut = text.range(of: "  ")?.lowerBound else {
+            // Nothing to strip: the text itself, which keeps sharing its
+            // storage (a callee fact then costs no copy of the name).
+            if let first = text.unicodeScalars.first, let last = text.unicodeScalars.last,
+               !CharacterSet.whitespaces.contains(first), !CharacterSet.whitespaces.contains(last) {
+                return text
+            }
+            return text.trimmingCharacters(in: .whitespaces)
         }
         return String(text[..<cut]).trimmingCharacters(in: .whitespaces)
     }
 
+    /// The C name of a Mach-O symbol: one leading underscore is the linker's
+    /// prefix; any more belong to the name (`___stack_chk_fail` is
+    /// `__stack_chk_fail`, as the in-process paths spell it).
     private static func stripUnderscores(_ symbol: String) -> String {
-        var s = Substring(symbol)
-        while s.hasPrefix("_") { s = s.dropFirst() }
-        return String(s)
+        symbol.hasPrefix("_") ? String(symbol.dropFirst()) : symbol
     }
 
     /// Drop a demangled name's trailing return clause and argument-label
     /// signature so the recovered `(args)` reads cleanly:
     /// `String.append(_:)` → `String.append`, `Tree.sum()` → `Tree.sum`.
     static func strippedCallee(_ name: String) -> String {
-        var s = name
-        if let arrow = s.range(of: " -> ") { s = String(s[..<arrow.lowerBound]) }
+        // A closure-propagated clause can leave an unclosed `[`, hiding
+        // the signature's arrow. Strip the suffix and preserve its clauses.
+        let core = Disassembler.withoutSpecializationClauses(name)
+        if core.count < name.count, topLevelRange(of: " -> ", in: name) == nil {
+            // A marker inside a literal or closure payload is not the end
+            // of the clause. Keep the raw name if its suffix still has one.
+            guard !core.contains("> of ") else { return name }
+            return String(name.dropLast(core.count)) + strippedCallee(core)
+        }
+        var s = mergedCallName(name)
+        // The signature's own arrow, not one inside a function-typed
+        // parameter: `init(_:transform: (A.Element) async -> B?) -> Iterator`
+        // cut at the first arrow rendered `init(_: A.AsyncIterator, transform: ()`.
+        if let arrow = topLevelRange(of: " -> ", in: s) { s = String(s[..<arrow.lowerBound]) }
+        // A property accessor's ` : Type` is the property's type, not part of
+        // the call: `Foo.value.getter : Swift.Int()` read as a call through a
+        // type, and a self dispatch to it was named `self.Int`. A protocol
+        // witness keeps its `in conformance … : P` clause.
+        if !s.contains(" in conformance "), let colon = topLevelRange(of: " : ", in: s),
+           let keyword = s[..<colon.lowerBound].split(separator: ".").last,
+           accessorKeywords.contains(String(keyword)) {
+            // Keep a suffix that names a different function: the `.resume.0`
+            // half of a `modify` coroutine is not its ramp.
+            let suffix = s[colon.upperBound...].range(of: " with unmangled suffix ").map { String(s[$0.lowerBound...]) } ?? ""
+            s = String(s[..<colon.lowerBound]) + suffix
+        }
+        // Effect specifiers follow the parameter list (`f(Swift.Int) async
+        // throws`); they are not part of the callee's name, and left in place
+        // they kept the parameter list from being recognised and stripped, so
+        // such a call rendered `f(Swift.Int) async(arg0)`.
+        while let effect = s.range(of: #" (async|throws|rethrows)(\([^()]*\))?$"#, options: .regularExpression) {
+            s = String(s[..<effect.lowerBound])
+        }
         guard s.hasSuffix(")") else { return s }
         var depth = 0
         for index in s.indices.reversed() {
@@ -331,20 +642,151 @@ public extension DisassembledFunction {
         return s
     }
 
+    /// A call to a merged (`Tm`) function, without the type its symbol happens
+    /// to name.
+    ///
+    /// LLVM's function merging keeps one body for functions that differ only
+    /// in constants, which it now takes as arguments, and names it after
+    /// whichever it kept: `storeEnumTagSinglePayload value witness for
+    /// Reconstruction.OuterX.Wide` tail-called `merged
+    /// storeEnumTagSinglePayload value witness for Reconstruction.IntQuad`, a
+    /// type it has nothing to do with. The kind of function is shared by every
+    /// caller; the type is not, so it reads `…`:
+    ///
+    ///     merged storeEnumTagSinglePayload value witness for …
+    ///     merged protocol witness for Swift.Hashable.hashValue.getter : Swift.Int in conformance … : Swift.Hashable in M
+    ///     merged ….hashValue.getter : Swift.Int
+    ///
+    /// The merged function's own header keeps its real symbol.
+    static func mergedCallName(_ name: String) -> String {
+        let prefix = "merged "
+        guard name.hasPrefix(prefix) else { return name }
+        var body = String(name.dropFirst(prefix.count))
+        if let conformance = body.range(of: " in conformance "),
+           let colon = body.range(of: " : ", range: conformance.upperBound..<body.endIndex) {
+            body.replaceSubrange(conformance.upperBound..<colon.lowerBound, with: "…")
+            return prefix + body
+        }
+        // `… value witness for T`, `outlined copy of T`: the type ends the name.
+        if let subject = body.range(of: " for ", options: .backwards) ?? body.range(of: " of ", options: .backwards),
+           !body[subject.upperBound...].contains("(") {
+            body.replaceSubrange(subject.upperBound..., with: "…")
+            return prefix + body
+        }
+        // `Context.member[.accessor][(parameters)][ : Type]`.
+        let headEnd = [body.firstIndex(of: "("), body.range(of: " : ")?.lowerBound]
+            .compactMap { $0 }.min() ?? body.endIndex
+        let head = body[..<headEnd]
+        guard var dot = head.lastIndex(of: ".") else { return name }
+        let accessors: Set<Substring> = [
+            "getter", "setter", "modify", "read", "willset", "didset", "unsafeAddressor", "unsafeMutableAddressor",
+        ]
+        if accessors.contains(head[head.index(after: dot)...]) {
+            guard let memberDot = head[..<dot].lastIndex(of: ".") else { return name }
+            dot = memberDot
+        }
+        let member = head[head.index(after: dot)...]
+        guard !member.isEmpty, member.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." })
+        else { return name }
+        body.replaceSubrange(body.startIndex..<dot, with: "…")
+        return prefix + body
+    }
+
     /// Fixed-ABI runtime/libc entry points whose argument count is publicly
     /// stable, so a stale live register past the real parameter list is trimmed
     /// rather than printed as a fabricated argument (`abort([? x])` → `abort()`).
     ///
-    /// Membership is deliberately conservative and asymmetric, matching the
-    /// tracer's "never invent" rule: clamping only ever DROPS trailing values, so
-    /// a wrong entry costs at most a missed argument — never a fabricated one. An
-    /// unknown callee returns nil and keeps every recovered value. Message sends
-    /// are intentionally absent: their arity comes from the selector's colons, and
+    /// Every entry must be the header's exact count, because an error in either
+    /// direction is a wrong render. The "c-arity" layout pads to the count, so
+    /// one too many prints a phantom `?` (`objc_loadWeakRetained(&slot, ?)`),
+    /// and one too few drops a real argument (`exit()`). The count is also the
+    /// tracer's `passedRegisters`: a frame address in a register past it is
+    /// not treated as escaping into the call. An unknown callee returns nil
+    /// and keeps every recovered value. Message sends are intentionally
+    /// absent: their arity comes from the selector's colons, and
     /// `MessageSend` already pairs those.
+    /// Whether a name in the table is a C library function's, which an
+    /// in-image function may also be called (a vendored `qsort`, an
+    /// `arc4random(long *, long)`): the table is then evidence only for calls
+    /// that leave the image. Runtime entry points (`swift_`, `objc_`), the
+    /// compiler's own per-module helpers (`__swift_project_boxed_…`) and
+    /// demangled Swift entities (`lazy protocol witness table accessor for …`)
+    /// name one function wherever it is.
+    static func knownArityNameMayHaveTwin(_ callee: String) -> Bool {
+        !(callee.hasPrefix("swift_") || callee.hasPrefix("__swift_") || callee.hasPrefix("objc_")
+            || callee.hasPrefix("_os_log") || callee.contains(" ") || callee.contains("."))
+    }
+
+    /// Whether a callee's declared result fits in a word, so a test of w0
+    /// (or a copy's low word) tests the whole result.
+    static func resultFitsInWord(_ callee: String) -> Bool {
+        switch callee {
+        // swift/include/swift/Runtime/Enum.h:99 and :155, `unsigned`;
+        // HeapObject.h:226-260 and :273, and Concurrency.h:1191, `bool`.
+        case "swift_getEnumTagSinglePayloadGeneric", "swift_getEnumCaseMultiPayload",
+             "swift_isUniquelyReferenced", "swift_isUniquelyReferenced_nonNull",
+             "swift_isUniquelyReferenced_nonNull_bridgeObject", "swift_isUniquelyReferencedNonObjC",
+             "swift_isUniquelyReferencedNonObjC_nonNull_bridgeObject", "swift_isUniquelyReferenced_native",
+             "swift_isUniquelyReferenced_nonNull_native", "swift_isEscapingClosureAtFileLocation",
+             "swift_task_isCurrentExecutor",
+             // RuntimeFunctions.def: `swift_dynamicCast` returns Int1Ty.
+             "swift_dynamicCast":
+            return true
+        default:
+            // swift/include/swift/ABI/ValueWitness.def:167 and :263: both
+            // tag witnesses return UINT_TYPE, `unsigned int`.
+            if callee.hasPrefix("getEnumTag value witness for ")
+                || callee.hasPrefix("getEnumTagSinglePayload value witness for ") {
+                return true
+            }
+            guard let result = splitSignature(callee)?.result else { return false }
+            return ["Swift.Bool", "Swift.Int8", "Swift.UInt8", "Swift.Int16", "Swift.UInt16",
+                    "Swift.Int32", "Swift.UInt32"].contains(result)
+        }
+    }
+
+    /// Each value witness function's parameter count
+    /// (swift/include/swift/ABI/ValueWitness.def), by the slot name a
+    /// call through it is named with.
+    static let valueWitnessArity: [String: Int] = [
+        "initializeBufferWithCopyOfBuffer": 3, "destroy": 2, "initializeWithCopy": 3,
+        "assignWithCopy": 3, "initializeWithTake": 3, "assignWithTake": 3,
+        "getEnumTagSinglePayload": 3, "storeEnumTagSinglePayload": 4,
+        "getEnumTag": 2, "destructiveProjectEnumData": 2, "destructiveInjectEnumTag": 3,
+    ]
+
+    /// `Module.name.unsafeMutableAddressor : Type`: the addressor of a global
+    /// variable, which takes no parameters and no self, so x0 and x20 at the
+    /// call are only what the caller left there. Exactly two components: a
+    /// member's addressor (`Module.Type.name…`) can take self.
+    static func isGlobalVariableAddressor(_ callee: String) -> Bool {
+        // By bytes: this runs on every call, and `range(of:)` bridges to Foundation.
+        let bytes = Array(callee.utf8)
+        guard let colon = bytes.indices.dropLast(2).first(where: {
+            bytes[$0] == 0x20 && bytes[$0 + 1] == 0x3a && bytes[$0 + 2] == 0x20
+        }) else { return false }
+        let parts = String(decoding: bytes[..<colon], as: UTF8.self).split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count == 3 && parts[2] == "unsafeMutableAddressor"
+            && parts[..<2].allSatisfy { part in
+                !part.isEmpty && part.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" }
+            }
+    }
+
     static func knownCArity(of callee: String) -> Int? {
         switch callee {
-        case "abort", "__stack_chk_fail", "objc_autoreleasePoolPush",
-             "swift_unexpectedError", "objc_exception_rethrow", "exit":
+        case "abort", "__stack_chk_fail", "objc_autoreleasePoolPush", "objc_exception_rethrow",
+             // sys/errno.h:80, pthread/pthread.h:539, _stdlib.h:287,
+             // dispatch/group.h:60, objc/objc-exception.h:56 and :60: all
+             // `(void)`. Each printed a stale x0 as its argument.
+             "__error", "pthread_main_np", "arc4random", "dispatch_group_create",
+             "objc_end_catch", "objc_terminate",
+             // swift/include/swift/Runtime/Concurrency.h:1165,
+             // `SerialExecutorRef (void)`.
+             "swift_task_getMainExecutor",
+             // The stack probe takes the size in x9 (a dynamic allocation)
+             // or x15 (a fixed frame), never in an argument register:
+             // `mov x9, x8; blr x16` read `__chkstk_darwin(r0)`.
+             "__chkstk_darwin":
             return 0
         case "objc_opt_class", "objc_opt_self", "objc_alloc", "objc_allocWithZone",
              "objc_alloc_init", "objc_opt_new", "objc_retain", "objc_release",
@@ -352,22 +794,224 @@ public extension DisassembledFunction {
              "objc_retainAutoreleasedReturnValue", "objc_claimAutoreleasedReturnValue",
              "objc_autoreleaseReturnValue", "objc_autoreleasePoolPop",
              "objc_sync_enter", "objc_sync_exit", "objc_begin_catch",
-             "objc_retainBlock", "_Block_copy", "free":
+             "objc_retainBlock", "_Block_copy", "free",
+             // _stdlib.h:165, `void exit(int)`.
+             "exit",
+             // swift/include/swift/Runtime/ObjCBridge.h:50, `id (id *)`.
+             "objc_loadWeakRetained",
+             // swift/include/swift/Runtime/Concurrency.h: `void *(size_t)`
+             // and `void (void *)`.
+             "swift_task_alloc", "swift_task_dealloc",
+             // swift/include/swift/Runtime/HeapObject.h: one object each.
+             "swift_retain", "swift_release", "swift_bridgeObjectRetain", "swift_bridgeObjectRelease",
+             "swift_unknownObjectRetain", "swift_unknownObjectRelease", "swift_errorRetain", "swift_errorRelease",
+             "swift_unknownObjectWeakLoadStrong",
+             // swift/include/swift/Runtime/Casting.h:231 and Metadata.h:562:
+             // the object, or the class, alone.
+             "swift_getObjectType", "swift_getObjCClassMetadata",
+             // swift/include/swift/Runtime/HeapObject.h:211, 505, 627, 641 and
+             // 883: one reference or object each.
+             "swift_setDeallocating", "swift_unownedRetainStrong", "swift_weakLoadStrong", "swift_weakDestroy",
+             "swift_unknownObjectWeakDestroy",
+             // malloc/_malloc.h:56, `void *(size_t)`; objc/runtime.h:1526,
+             // `void (id)`; CFBase.h:781, `void (CFTypeRef)`. With nothing
+             // tracked each read `malloc()`, a call that takes nothing.
+             "malloc", "objc_enumerationMutation", "CFRelease",
+             // malloc/malloc.h:461, Block.h:34, ObjCBridge.h:49 and
+             // os/lock.h:158: one pointer each.
+             "malloc_size", "_Block_release", "objc_destroyWeak", "os_unfair_lock_unlock",
+             // swift/include/swift/Runtime/HeapObject.h:249 and :260, one
+             // object or its bits; Exclusivity.h:46, `void (ValueBuffer *)`;
+             // unwind_itanium.h:61, `void (_Unwind_Exception *)`. With
+             // nothing tracked each read as a call that takes nothing
+             // (GoodLinks: 3,729 `isUniquelyReferenced_nonNull_native()`).
+             // swift/include/swift/Runtime/HeapObject.h:108, 472 and 476, and
+             // Metadata.h:839: one type, object or instance type each.
+             "swift_allocBox", "swift_unownedRetain", "swift_unownedRelease", "swift_getMetatypeMetadata",
+             "swift_isUniquelyReferenced_nonNull_native", "swift_isUniquelyReferencedNonObjC_nonNull_bridgeObject",
+             "swift_endAccess", "_Unwind_Resume":
             return 1
         case "objc_opt_isKindOfClass", "objc_opt_respondsToSelector",
              "objc_storeStrong", "objc_storeWeak", "objc_initWeak",
-             "objc_loadWeakRetained", "os_log_type_enabled", "objc_sync_wait":
+             "os_log_type_enabled", "objc_sync_wait",
+             // swift/include/swift/Runtime/ObjCBridge.h:46-47, `void (id *, id *)`.
+             "objc_moveWeak", "objc_copyWeak",
+             // swift/include/swift/Runtime/Metadata.h:350, `(MetadataRequest,
+             // const Metadata *)`, and Concurrency.h:1116, `void (AsyncTask *,
+             // SwiftError *)`.
+             "swift_checkMetadataState", "swift_continuation_throwingResumeWithError",
+             // swift/include/swift/Runtime/HeapObject.h:75, 86, 610, 618, 811
+             // and 830, `(metadata, object)` or `(ref, value)`, and Enum.h:155,
+             // `(value, enumType)`.
+             "swift_initStackObject", "swift_initStaticObject", "swift_weakInit", "swift_weakAssign",
+             "swift_unknownObjectWeakInit", "swift_unknownObjectWeakAssign", "swift_getEnumCaseMultiPayload",
+             // _strings.h:75, `void (void *, size_t)`; dispatch/queue.h:248
+             // and :323, `void (dispatch_queue_t, dispatch_block_t)`;
+             // swift/include/swift/Runtime/Metadata.h:1044, `(pattern,
+             // arguments)`, and Heap.h:34, `void *(size_t bytes, size_t
+             // alignMask)`.
+             "bzero", "dispatch_async", "dispatch_sync", "swift_getKeyPath", "swift_slowAlloc",
+             // swift/include/swift/Runtime/Casting.h:56 and :244, `(object or
+             // type, class or protocol)`; Concurrency.h:1191, one
+             // SerialExecutorRef, which is two words (ABI/Executor.h:59-60);
+             // sqlite3.h:5668 and :5674, `(sqlite3_stmt *, int)`;
+             // objc/runtime.h:1669, `(id, const void *)`; dispatch/once.h:74,
+             // `(dispatch_once_t *, dispatch_block_t)`.
+             "swift_dynamicCastClass", "swift_conformsToProtocol", "swift_task_isCurrentExecutor",
+             "sqlite3_column_type", "sqlite3_column_int64", "objc_getAssociatedObject", "dispatch_once",
+             // swift/include/swift/Runtime/HeapObject.h:152, 205, 684 and
+             // 748, `(object, n)`; Casting.h:86, `(object, class)`;
+             // Metadata.h:229, `(request, descriptor)`; Heap.h:44,
+             // `(bytes, typeId)`.
+             "swift_retain_n", "swift_release_n", "swift_bridgeObjectRetain_n", "swift_bridgeObjectRelease_n",
+             "swift_dynamicCastObjCClass", "swift_getSingletonMetadata", "swift_coroFrameAlloc":
             return 2
-        case "objc_copyWeak", "objc_moveWeak":
+        case "memcpy", "memmove", "memset",
+             // swift/include/swift/Runtime/RuntimeFunctions.def
+             "swift_arrayDestroy",
+             // swift/include/swift/Runtime/Metadata.h:369, `(conformance,
+             // type, instantiationArgs)`, and stdlib/public/runtime/
+             // MetadataLookup.cpp:3237, `(arguments, descriptor, index)`.
+             "swift_getWitnessTable", "swift_getOpaqueTypeConformance2",
+             // swift/include/swift/Runtime/HeapObject.h:65, 296 and 331,
+             // `(metadata or object, size, alignment mask)`; Enum.h:161,
+             // `(value, enumType, whichCase)`; Error.h:63, `(errorObject,
+             // scratch, out)`.
+             "swift_allocObject", "swift_deallocObject", "swift_deallocClassInstance",
+             "swift_storeEnumTagMultiPayload", "swift_getErrorValue",
+             // swift/include/swift/Runtime/Once.h:33, `(predicate, fn,
+             // context)`, and Heap.h:49, `void (void *ptr, size_t bytes,
+             // size_t alignMask)`.
+             "swift_once", "swift_slowDealloc",
+             // _string.h:74, `(const void *, int, size_t)`.
+             "memchr",
+             // swift/include/swift/Runtime/Metadata.h:280, `(request,
+             // arguments, descriptor)`.
+             // swift/include/swift/Runtime/Metadata.h:307, `(description,
+             // arguments, pattern)`, and :832, `(metadata, method,
+             // description)`.
+             "swift_allocateGenericClassMetadata", "swift_lookUpClassMethod",
+             "swift_getGenericMetadata":
             return 3
+        case "swift_arrayInitWithCopy", "swift_arrayInitWithTakeFrontToBack", "swift_arrayInitWithTakeBackToFront",
+             // swift/include/swift/Runtime/Exclusivity.h:40, `(pointer,
+             // buffer, flags, pc)`; Error.h:40, `(type, conformance, value,
+             // isTake)`; Enum.h:99, `(value, emptyCases, payloadType,
+             // getTag)`.
+             // swift/include/swift/Runtime/Metadata.h:329, `(description,
+             // arguments, pattern, extraDataSize)`, and stdlib/public/runtime/
+             // MetadataLookup.cpp:2735, `(typeNameStart, typeNameLength,
+             // context, genericArgs)`.
+             "swift_allocateGenericValueMetadata", "swift_getTypeByMangledNameInContext2",
+             "swift_beginAccess", "swift_allocError", "swift_getEnumTagSinglePayloadGeneric":
+            return 4
+        // swift/include/swift/Runtime/Metadata.h:690: `(self, flags,
+        // numFields, fieldTypes, fieldOffsets)`; Metadata.h:388, `(request,
+        // wtable, conformingType, reqBase, assocType)`; Concurrency.h:54,
+        // `(flags, options, futureResultType, closureEntry, closureContext)`.
+        case "swift_initStructMetadata", "swift_getAssociatedTypeWitness", "swift_task_create",
+             // stdlib/public/runtime/MetadataLookup.cpp:2804, `(metadataState,
+             // typeNameStart, typeNameLength, context, genericArgs)`.
+             "swift_getTypeByMangledNameInContextInMetadataState2",
+             // swift/include/swift/Runtime/Casting.h:42 and :72,
+             // Metadata.h:412, 636 and 789, Enum.h:122, and
+             // stdlib/public/stubs/Assert.cpp:103: five parameters each.
+             "swift_dynamicCast", "swift_dynamicCastClassUnconditional", "swift_getAssociatedConformanceWitness",
+             "swift_getTupleTypeMetadata2", "swift_initClassMetadata2", "swift_storeEnumTagSinglePayloadGeneric",
+             "_swift_stdlib_reportUnimplementedInitializer":
+            return 5
+        // swift/include/swift/Runtime/Concurrency.h:1238: `(file,
+        // fileLength, fileIsASCII, line, executor)`, the executor two words.
+        case "swift_task_reportUnexpectedExecutor",
+             // swift/include/swift/Runtime/HeapObject.h:273, `(object,
+             // filename, filenameLength, line, column, type)`.
+             "swift_isEscapingClosureAtFileLocation":
+            return 6
+        // swift/include/swift/Runtime/Error.h:128: the error, the file name's
+        // start and length, whether it is ASCII, and the line of the `try!`.
+        case "swift_unexpectedError":
+            return 5
         default:
             // The formatted-emit os_log helpers: (dso, log, type, format, buf, size).
             if callee.hasPrefix("_os_log"), callee.hasSuffix("_impl") { return 6 }
+            // `() -> WitnessTable` (swift/lib/IRGen/GenDecl.cpp:6384,
+            // `FunctionType::get(WitnessTablePtrTy, false)`). A stale x0 used
+            // to print as its argument, often a whole unrelated call.
+            if callee.hasPrefix("lazy protocol witness table accessor for ") { return 0 }
+            // `MetadataResponse (MetadataRequest, …)`: the request, then the
+            // type's key generic arguments, up to three directly and past
+            // three one pointer to them all (swift/lib/IRGen/MetadataRequest.cpp,
+            // `NumDirectGenericTypeMetadataAccessFunctionArgs`). A system
+            // library's accessor took whatever x1-x7 held:
+            // `type metadata accessor for Swift.MainActor(0, arg1, arg2)`,
+            // `type metadata accessor for Swift.Optional(0, ?, arg2, arg3, arg4)`.
+            let accessorPrefix = "type metadata accessor for "
+            if callee.hasPrefix(accessorPrefix),
+               let keyArguments = SDKMetadataAccessors.keyArguments[String(callee.dropFirst(accessorPrefix.count))] {
+                return 1 + (keyArguments <= 3 ? keyArguments : 1)
+            }
+            // A value witness has its ABI signature whatever the type
+            // (swift/include/swift/ABI/ValueWitness.def): `destroy(T *,
+            // Self)`, `initializeWithCopy(T *dest, T *src, Self)`. Laid out
+            // positionally, `destroy value witness for X` read three
+            // registers, or one where the metadata had gone unnamed.
+            if let range = callee.range(of: " value witness for "),
+               let arity = valueWitnessArity[String(callee[..<range.lowerBound])] {
+                return arity
+            }
+            if isGlobalVariableAddressor(callee) { return 0 }
             // Historical prefix match: some selectors resolve as
             // `objc_opt_isKindOfClass` with a trailing disambiguator.
             if callee.hasPrefix("objc_opt_isKindOfClass") { return 2 }
+            // A C function the SDK declares with only integer and pointer
+            // parameters (`SDKCPrototypes`, generated from the headers).
+            if let prototype = cPrototype(of: callee), !prototype.isVariadic,
+               prototype.parameters.allSatisfy({ cIntegerParameterTypes[$0] != nil }) {
+                return prototype.parameters.count
+            }
             return nil
         }
+    }
+
+    /// The SDK's declaration of a C function (`SDKCPrototypes`): what it
+    /// returns (`v`, `i`, `f`, `d`, `s` for a value no one register holds,
+    /// `x` unclassified) and each parameter's register bank (`i`, `f`, `d`,
+    /// `D<n>`/`F<n>` for an HFA of `n` doubles or floats, or `s` for any
+    /// other struct or an unclassified type).
+    struct CPrototype: Equatable {
+        let result: Character
+        let parameters: [String]
+        let isVariadic: Bool
+    }
+
+    /// The integer parameter codes of `SDKCPrototypes` and the type each is
+    /// read at: `i` a register (a long, a pointer or an enum), and the
+    /// narrow C integers, which a caller may leave junk above: `close(-1)`
+    /// read `close(0xffffffff)`.
+    static let cIntegerParameterTypes: [String: String] = [
+        "i": "Swift.Int", "w": "Swift.Int32", "u": "Swift.UInt32", "h": "Swift.Int16", "H": "Swift.UInt16",
+        "b": "Swift.Int8", "B": "Swift.UInt8", "z": "Swift.Bool",
+    ]
+
+    static func cPrototype(of callee: String) -> CPrototype? {
+        guard let entry = SDKCPrototypes.table[callee] ?? SwiftRuntimeSignatures.table[callee],
+              let result = entry.first else { return nil }
+        var body = Substring(entry.dropFirst(2))
+        let isVariadic = body.hasSuffix("...")
+        if isVariadic { body = body.dropLast(3) }
+        var parameters: [String] = []
+        var index = body.startIndex
+        while index < body.endIndex {
+            var token = String(body[index])
+            index = body.index(after: index)
+            // An HFA's bank is followed by its member count.
+            if token == "D" || token == "F", index < body.endIndex, body[index].isNumber {
+                token.append(body[index])
+                index = body.index(after: index)
+            }
+            parameters.append(token)
+        }
+        return CPrototype(result: result, parameters: parameters, isVariadic: isVariadic)
     }
 
     /// Checked-cast / safe-category helpers whose result IS one of their
@@ -398,8 +1042,41 @@ public extension DisassembledFunction {
             // returns an object; left in, it drowns out the actual sends.
             "objc_autorelease", "objc_claimAutoreleasedReturnValue",
             "objc_retainAutorelease", "objc_retainAutoreleasedReturnValue",
+            "objc_unsafeClaimAutoreleasedReturnValue",
+            // Async context bookkeeping: every await allocates the callee's
+            // context before the call and frees it in the resume funclet. It is
+            // the lowering of the call, not a statement of the source.
+            "swift_task_alloc", "swift_task_dealloc",
         ]
         return prefixes.contains { callee.hasPrefix($0) }
+    }
+
+    /// Runtime calls that return their (first) argument unchanged: the retain
+    /// and autorelease family. Only these may be read through as their
+    /// argument. The rest of `isRuntimeNoise` returns nothing (`swift_release`,
+    /// `swift_beginAccess`) or something else entirely: `swift_task_alloc`
+    /// returns fresh memory, and `swift_isUniquelyReferenced*` a Bool (the
+    /// object's strong refcount is exactly one). Read through, the uniqueness
+    /// check rendered `return self.storage` for a `-> Bool` CoW method.
+    static func returnsItsArgument(_ callee: String) -> Bool {
+        let name = callee.hasPrefix("_") ? String(callee.dropFirst()) : callee
+        let identities: Set<String> = [
+            "swift_retain", "swift_retain_n", "swift_nonatomic_retain",
+            "swift_bridgeObjectRetain", "swift_bridgeObjectRetain_n",
+            "swift_unknownObjectRetain", "swift_unknownObjectRetain_n",
+            "objc_retain", "objc_autorelease", "objc_retainAutorelease",
+            "objc_retainAutoreleasedReturnValue", "objc_claimAutoreleasedReturnValue",
+            "objc_unsafeClaimAutoreleasedReturnValue", "objc_retainAutoreleaseReturnValue",
+            "objc_autoreleaseReturnValue",
+        ]
+        return identities.contains(name)
+    }
+
+    /// `swift_isUniquelyReferenced*`: the lowering of `isKnownUniquelyReferenced`
+    /// (`Builtin.isUnique`), a Bool over its object argument.
+    static func isUniquenessCheck(_ callee: String) -> Bool {
+        let name = callee.hasPrefix("_") ? String(callee.dropFirst()) : callee
+        return name.hasPrefix("swift_isUniquelyReferenced")
     }
 
     // MARK: - Implicit generic plumbing

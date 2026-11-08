@@ -17,11 +17,11 @@ Swift tool to sit next to.
 swift build -c release              # time the release build, not debug
 Fixtures/Sample/build.sh            # build the fixture binaries (once)
 brew install ipsw                   # the baseline
-python3 Benchmarks/benchmark.py     # writes RESULTS.md, results.json, outputs/
+swift Benchmarks/benchmark.swift     # writes RESULTS.md, results.json, outputs/
 ```
 
 `--quick` skips the large self binary; `--runs N` sets the timed-run count.
-The harness is stdlib-only Python.
+The harness uses Swift, Foundation and CryptoKit. It checks output and exit status on every repeat. Use `--out-dir /tmp/benchmark` to keep a smoke run separate from recorded results.
 
 Results land in [RESULTS.md](RESULTS.md) (timing and size tables) and
 `results.json` (the same data, machine-readable, with median times). The harness

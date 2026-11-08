@@ -14,6 +14,10 @@ import Foundation
     #expect(Disassembler.selfTypeFromDemangledName("lay.Dog.breed.modify : Swift.String") == "Dog")
     // Nested type.
     #expect(Disassembler.selfTypeFromDemangledName("m.Outer.Inner.go() -> ()") == "Inner")
+    // A function-typed parameter's arrow is not the signature's: cut there,
+    // the qualified parameter before it split into `apply(_: M` and `Other`.
+    #expect(Disassembler.selfTypeFromDemangledName(
+        "m.Holder.apply(_: m.Other, _: (Swift.Int) -> ()) -> ()") == "Holder")
 }
 
 /// x20 is not an instance in any of these. Naming `self.field` in them would
@@ -83,5 +87,12 @@ import Foundation
     let cfgMaps: [String: FieldMap] = [
         "Cfg": FieldMap(typeName: "Cfg", layout: .init(fields: [], size: 16, stride: 16, alignment: 8, extraInhabitantCount: 0)),
     ]
-    #expect(Disassembler.selfType(of: structFunction, selfIndex: SelfTypeIndex(bindings: [:]), fieldMaps: cfgMaps) == "Cfg")
+    // A qualified symbol cannot borrow a simple-only map from a different
+    // module's Cfg. An exact descriptor key restores the known receiver.
+    // (From the pre-merge stash 983aa25.)
+    #expect(Disassembler.selfType(of: structFunction, selfIndex: SelfTypeIndex(bindings: [:]), fieldMaps: cfgMaps) == nil)
+    #expect(Disassembler.selfType(
+        of: structFunction, selfIndex: SelfTypeIndex(bindings: [:]),
+        fieldMaps: cfgMaps.merging(["st.Cfg": cfgMaps["Cfg"]!]) { _, exact in exact }
+    ) == "Cfg")
 }

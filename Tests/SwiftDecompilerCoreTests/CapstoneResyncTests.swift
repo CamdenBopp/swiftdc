@@ -93,3 +93,18 @@ private func code(_ words: [UInt32]) -> Data {
     #expect(decoded.count == words.count)
     #expect(decoded.map(\.address) == (0..<words.count).map { base + UInt64($0 * 4) })
 }
+
+/// Stress the former batch boundary and iterator reuse: garbage at that
+/// boundary must not lose, duplicate or relocate any following instruction.
+@Test func decodesAcrossBatchBoundariesExactly() throws {
+    let engine = try #require(CapstoneEngine())
+    let base: UInt64 = 0x10000
+    let batch = 4096 // Exercise the former C batch boundary as well as iterator reuse.
+    var words = Array(repeating: nop, count: 2 * batch + 5)
+    words[batch] = undecodable[0]          // the first word of the second batch
+    let decoded = engine.disassemble(code(words), address: base)
+
+    let expected = words.indices.filter { $0 != batch }.map { base + UInt64($0 * 4) }
+    #expect(decoded.count == expected.count)
+    #expect(decoded.map(\.address) == expected)
+}

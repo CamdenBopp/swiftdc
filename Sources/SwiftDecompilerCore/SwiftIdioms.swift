@@ -22,6 +22,13 @@ extension DisassembledFunction {
                 index += 1
                 continue
             }
+            // A String returned straight from its literal initializer.
+            if statements[index].hasPrefix("return "),
+               let literal = standaloneStringLiteral(String(statements[index].dropFirst("return ".count))) {
+                out.append("return \(literal)")
+                index += 1
+                continue
+            }
             out.append(statements[index])
             index += 1
         }
@@ -39,13 +46,30 @@ extension DisassembledFunction {
         var components = ""
         var index = start
         var sawInterpolation = false
+        // The builder's own `DefaultStringInterpolation.init(capacity, count)`.
+        // The appends mutate it in place (`self` in x20 is its address), so the
+        // tracer rightly does not carry the init's value to the final
+        // `String(stringInterpolation:)`; seeing the init here is what ties the
+        // closing `String.init(…)` to this run instead.
+        var sawBuilderInit = false
+        if isBuilderInit(statements[index]) {
+            sawBuilderInit = true
+            index += 1
+        } else if start > 0, isInterpolationStep(statements[start - 1]) {
+            // A run folds only from its start. Retried from a later append
+            // after a piece that did not parse, the tail folded alone and took
+            // the closing `String(stringInterpolation:)` with it: -Onone
+            // `"\u{7}ring \(x) done"`, whose first piece is no printable C
+            // string, rendered `"\(local_40) done"` as the whole string.
+            return nil
+        }
         while index < statements.count {
             let statement = statements[index]
             if statement.contains("DefaultStringInterpolation.appendLiteral") {
                 guard let inner = firstArgument(of: statement),
                       let literal = stringLiteralValue(ofInit: inner)
                 else { return nil }
-                components += escapeForInterpolation(literal)
+                components += literal
                 index += 1
             } else if statement.contains("DefaultStringInterpolation.appendInterpolation") {
                 let value = firstArgument(of: statement) ?? "?"
@@ -56,17 +80,38 @@ extension DisassembledFunction {
                 break
             }
         }
+        // A String return of that closing `String(stringInterpolation:)` is
+        // the interpolation returned: `return "q\(x)"`, not the literal and
+        // then `return Swift.String.init(?)`.
+        if sawInterpolation, sawBuilderInit, index < statements.count,
+           statements[index] == "return Swift.String.init(?)" {
+            return ("return \"\(components)\"", index + 1 - start)
+        }
         // The `let s = "…"` that consumes the builder into a String — part of the
         // same lowering, so fold it away if it trails the run.
         if index < statements.count,
            statements[index].contains("String.init"),
-           statements[index].contains("DefaultStringInterpolation.init") {
+           statements[index].contains("DefaultStringInterpolation.init")
+            || (sawBuilderInit && ["Swift.String.init()", "Swift.String.init(?)"].contains(statements[index])) {
             index += 1
         }
         // A run with no interpolation is just a literal; leave that to the
         // standalone folder so this only claims genuine interpolations.
         guard sawInterpolation, index > start else { return nil }
         return ("\"\(components)\"", index - start)
+    }
+
+    /// The builder's own `DefaultStringInterpolation.init(capacity, count)`,
+    /// which starts a run.
+    private static func isBuilderInit(_ statement: String) -> Bool {
+        statement.contains("DefaultStringInterpolation.init(") && !statement.contains("String.init(")
+    }
+
+    /// A statement of an interpolation run: its builder's init or an append.
+    private static func isInterpolationStep(_ statement: String) -> Bool {
+        isBuilderInit(statement)
+            || statement.contains("DefaultStringInterpolation.appendLiteral")
+            || statement.contains("DefaultStringInterpolation.appendInterpolation")
     }
 
     /// A bare Swift string-literal construction — `String.init("hi", 2, 1)`,
@@ -76,11 +121,11 @@ extension DisassembledFunction {
         guard statement.hasPrefix("Swift.String.init(") || statement.hasPrefix("String.init("),
               let literal = stringLiteralValue(ofInit: statement)
         else { return nil }
-        return "\"\(escapeForInterpolation(literal))\""
+        return "\"\(literal)\""
     }
 
-    /// The literal text of a `String.init(contents, count, isASCII)` expression:
-    /// the quoted contents when present, or `""` when the count operand is `0`
+    /// The literal text of a `String.init(contents, count, isASCII)` expression,
+    /// escaped as the contents rendered it: the quoted contents when present, or `""` when the count operand is `0`
     /// (an empty segment, common as an interpolation's trailing piece). Nil when
     /// the contents are only a pointer we could not decode, so a fold that needs
     /// this can bail rather than print a wrong literal.
@@ -117,15 +162,13 @@ extension DisassembledFunction {
     /// the outermost `(` and `)`), so callers can rebuild `prefix(newArgs)suffix`.
     static func outermostArgumentListRange(of expression: String) -> Range<String.Index>? {
         var depth = 0
-        var inQuote = false
+        var literal = LiteralScan()
         var groupStart: String.Index?
         var lastGroup: Range<String.Index>?
         var index = expression.startIndex
         while index < expression.endIndex {
             let character = expression[index]
-            if character == "\"" {
-                inQuote.toggle()
-            } else if !inQuote {
+            if !literal.step(character) {
                 if character == "(" {
                     if depth == 0 { groupStart = expression.index(after: index) }
                     depth += 1
@@ -137,6 +180,117 @@ extension DisassembledFunction {
             index = expression.index(after: index)
         }
         return lastGroup
+    }
+
+    /// A logical tuple is not the whole value of one machine result register.
+    /// Require an enclosing tuple, so a function returning a closure whose
+    /// signature contains commas is not mistaken for a tuple return.
+    static func hasTupleResult(_ callee: String) -> Bool {
+        guard callee.contains(" -> (") || callee.contains(".getter : (") else { return false }
+        var result: String
+        if let getter = callee.range(of: ".getter : ") {
+            result = String(callee[getter.upperBound...])
+            if let context = topLevelRange(of: " in ", in: result) { result = String(result[..<context.lowerBound]) }
+        } else if let signature = splitSignature(callee) {
+            result = signature.result
+        } else { return false }
+        result = result.trimmingCharacters(in: .whitespaces)
+        while result.first == "(", result.last == ")",
+              let range = outermostArgumentListRange(of: result),
+              range.lowerBound == result.index(after: result.startIndex),
+              range.upperBound == result.index(before: result.endIndex) {
+            if splitTopLevelArguments(result[range]).count > 1 { return true }
+            result = String(result[range]).trimmingCharacters(in: .whitespaces)
+        }
+        return false
+    }
+
+    /// A demangled function name split into its declaration head and its result
+    /// type, or nil when the name carries no ` -> ` signature.
+    ///
+    /// Two shapes used to fool the naive split (last ` -> `, then last `(...)`):
+    ///
+    /// - A **typed-throws clause** prints as a paren group after the parameter
+    ///   list: `f(Swift.Double, Swift.Int) throws(M.E) -> Swift.Double`. The
+    ///   last group is `(M.E)`, so the function read as taking one `M.E`, which
+    ///   seeded `x0` as `arg0` (the real `x0` is the second parameter) and named
+    ///   an integer literal as an `M.E` case. The `head` here has its trailing
+    ///   effects (`async`, `throws`, `throws(E)`) removed, so its last group is
+    ///   the parameter list.
+    /// - A **function returning a closure** has two arrows:
+    ///   `f(Swift.Int) -> (Swift.Double) -> Swift.Int`. The *first* depth-0
+    ///   arrow ends the declaration. A closure's own name continues after its
+    ///   result with ` in <context>`; that tail is not part of the result type.
+    static func splitSignature(
+        _ name: String
+    ) -> (head: String, result: String, isAsync: Bool, isThrowing: Bool, thrownType: String?)? {
+        guard let arrow = topLevelRange(of: " -> ", in: name) else {
+            // The demangler prints a closure-propagated specialization with
+            // an unclosed `[` (`<Arg[0] = [Closure Propagated : …, Argument
+            // Types : [Swift.Int]> of M.apply(…) -> Swift.Int`), which hides
+            // every arrow after it. The clause comes first and ends at `> of
+            // `; the signature is the function's after it.
+            let core = Disassembler.withoutSpecializationClauses(name)
+            guard core.count < name.count, let inner = splitSignature(core) else { return nil }
+            return (String(name.dropLast(core.count)) + inner.head, inner.result, inner.isAsync,
+                    inner.isThrowing, inner.thrownType)
+        }
+        var result = String(name[arrow.upperBound...])
+        if let context = topLevelRange(of: " in ", in: result) {
+            result = String(result[..<context.lowerBound])
+        }
+        let declared = String(name[..<arrow.lowerBound]).trimmingCharacters(in: .whitespaces)
+        let head = strippingEffects(declared)
+        let effects = String(declared.dropFirst(head.count))
+        var thrownType: String?
+        if let open = effects.range(of: "throws("), effects.hasSuffix(")") {
+            thrownType = String(effects[open.upperBound..<effects.index(before: effects.endIndex)])
+        }
+        return (head, result.trimmingCharacters(in: .whitespaces),
+                effects.contains("async"), effects.contains("throws"), thrownType)
+    }
+
+    /// A signature head without its trailing effects specifiers. The demangler
+    /// prints `async`, `throws`, and a concrete typed error as `throws(E)`
+    /// (`rethrows` and `throws(any Error)` both print as plain `throws`).
+    static func strippingEffects(_ head: String) -> String {
+        var head = head.trimmingCharacters(in: .whitespaces)
+        while true {
+            if head.hasSuffix(" async") {
+                head.removeLast(" async".count)
+            } else if head.hasSuffix(" throws") {
+                head.removeLast(" throws".count)
+            } else if head.hasSuffix(")"), let group = outermostArgumentListRange(of: head),
+                      head[..<head.index(before: group.lowerBound)].hasSuffix(" throws") {
+                head = String(head[..<head.index(before: group.lowerBound)].dropLast(" throws".count))
+            } else {
+                return head
+            }
+        }
+    }
+
+    /// The first occurrence of `needle` outside any `()`/`[]`/`<>` nesting. The
+    /// `>` of an arrow is not a closing angle (see `splitTopLevelArguments`).
+    static func topLevelRange(of needle: String, in text: String) -> Range<String.Index>? {
+        var depth = 0
+        var previous: Character = " "
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            if depth == 0, text[index...].hasPrefix(needle) {
+                return index..<text.index(index, offsetBy: needle.count)
+            }
+            if character == "(" || character == "[" || character == "<" {
+                depth += 1
+            } else if character == ">" && previous == "-" {
+                // an arrow inside a nested function type
+            } else if character == ")" || character == "]" || character == ">" {
+                depth -= 1
+            }
+            previous = character
+            index = text.index(after: index)
+        }
+        return nil
     }
 
     /// Recursively drop trailing generic-plumbing arguments from every call group
@@ -165,13 +319,10 @@ extension DisassembledFunction {
         var parts: [String] = []
         var current = ""
         var depth = 0
-        var inQuote = false
+        var literal = LiteralScan()
         var previous: Character = " "
         for character in arguments {
-            if character == "\"" {
-                inQuote.toggle()
-                current.append(character)
-            } else if inQuote {
+            if literal.step(character) {
                 current.append(character)
             } else if character == "(" || character == "[" || character == "<" {
                 depth += 1
@@ -194,12 +345,4 @@ extension DisassembledFunction {
         return parts
     }
 
-    /// Escape a recovered literal for embedding in a rendered `"…"` so the output
-    /// stays a single well-formed string.
-    private static func escapeForInterpolation(_ literal: String) -> String {
-        literal
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\n", with: "\\n")
-    }
 }

@@ -2,6 +2,10 @@ import Foundation
 import MachOKit
 import MachOSwiftSection
 import SwiftLayout
+// `SymbolicDemangler` is SPI, as in MetadataSymbolizer: safe while
+// MachOSwiftSection is exact-pinned; re-check it at each bump.
+@_spi(Internals) import SwiftInspection
+import Demangling
 
 /// What a memory access at a given offset into a Swift value resolves to.
 public enum FieldHit: Sendable, Equatable {
@@ -77,6 +81,28 @@ public struct FieldMap: Sendable {
     /// Sorted, non-overlapping `[start, end)` ranges of the trusted fields.
     private let ranges: [(range: Range<Int>, name: String, typeMangledName: String)]
 
+    /// Each Swift field's type, printed from its field record with symbolic
+    /// references resolved (`FieldWrites.FieldPair`), by field name. A field
+    /// whose type does not demangle has none. Empty for Objective-C maps.
+    public private(set) var fieldTypeNames: [String: String] = [:]
+
+    /// A field's type for display: its mangled name (`Si`), unless the
+    /// mangling holds a symbolic reference, a byte from 0x01 to 0x1F and a
+    /// relative offset into the binary. Printed raw that was control bytes
+    /// (61% of SwiftUI's fields, `center: ^A…` on the fixtures). Such a type
+    /// shows the name the reference resolves to, or `?` when it does not.
+    public static func printableTypeName(mangled: String, resolved: String?) -> String {
+        guard mangled.unicodeScalars.contains(where: { (0x01...0x1F).contains($0.value) }) else { return mangled }
+        return resolved ?? "?"
+    }
+
+    /// This map with the field types `FieldMapBuilder` resolved.
+    func withFieldTypeNames(_ names: [String: String]) -> FieldMap {
+        var map = self
+        map.fieldTypeNames = names
+        return map
+    }
+
     /// Build from a resolved aggregate layout.
     ///
     /// Only `.computed` fields are indexed, and only the leading run of them:
@@ -125,9 +151,11 @@ public struct FieldMap: Sendable {
         self.trustedOffsetLimit = instanceSize
         self.trustLimitReason = nil
         self.ranges = fields.compactMap { field in
+            // `bytes` comes from an encoding in the file and can be near
+            // `Int.max`; comparing it to the room left cannot overflow.
             guard field.offset >= 0, field.bytes > 0,
                   field.offset < instanceSize,
-                  field.offset + field.bytes <= instanceSize
+                  field.bytes <= instanceSize - field.offset
             else { return nil }
             return (
                 field.offset ..< (field.offset + field.bytes),
@@ -144,24 +172,43 @@ public struct FieldMap: Sendable {
     /// byte out of the middle of an `Int`.
     public func lookup(offset: Int, bytes: Int) -> Result<FieldHit, FieldLookupFailure> {
         guard offset >= 0, bytes > 0 else { return .failure(.padding) }
+        let (end, overflow) = offset.addingReportingOverflow(bytes)
+        guard !overflow else { return .failure(.pastInstanceSize(instanceSize: instanceSize)) }
         // Trusted-prefix first, and deliberately so. When the layout gave up
         // early, `instanceSize` is itself understated (a Widget whose second
         // field is a resilient `Foundation.Date` reports size 16, not 48), so
         // blaming the instance size would name a number that is also wrong. The
         // actionable reason is the field that could not be laid out.
-        if let reason = trustLimitReason, offset >= trustedOffsetLimit {
+        if let reason = trustLimitReason, end > trustedOffsetLimit {
             return .failure(.pastTrustedPrefix(limit: trustedOffsetLimit, reason: reason))
         }
-        guard offset < instanceSize else { return .failure(.pastInstanceSize(instanceSize: instanceSize)) }
-        guard offset < trustedOffsetLimit else {
+        guard end <= instanceSize else { return .failure(.pastInstanceSize(instanceSize: instanceSize)) }
+        guard end <= trustedOffsetLimit else {
             return .failure(.pastTrustedPrefix(limit: trustedOffsetLimit, reason: trustLimitReason ?? "unresolved"))
         }
         guard !ranges.isEmpty else { return .failure(.noLayout(reason: trustLimitReason ?? "no fields")) }
 
-        let access = offset ..< (offset + bytes)
+        let access = offset ..< end
         let touched = ranges.filter { $0.range.overlaps(access) }
         guard let first = touched.first else { return .failure(.padding) }
-        if touched.count > 1 { return .success(.spans(names: touched.map(\.name))) }
+        if touched.count > 1 {
+            // A spanning name is meaningful only when the access covers whole,
+            // adjacent fields. Otherwise it includes padding or only fragments
+            // of fields, and joining their names would conceal those bytes.
+            guard access.lowerBound == first.range.lowerBound,
+                  access.upperBound == touched.last!.range.upperBound,
+                  zip(touched, touched.dropFirst()).allSatisfy({ pair in
+                      pair.0.range.upperBound == pair.1.range.lowerBound
+                  })
+            else { return .failure(.padding) }
+            return .success(.spans(names: touched.map(\.name)))
+        }
+
+        // An access that starts inside a field but runs past its end reads
+        // padding or the next field's bytes: it is not part of this one.
+        guard first.range.lowerBound <= access.lowerBound,
+              access.upperBound <= first.range.upperBound
+        else { return .failure(.padding) }
 
         if access.lowerBound == first.range.lowerBound && access.upperBound == first.range.upperBound {
             return .success(.whole(name: first.name, typeMangledName: first.typeMangledName))
@@ -252,7 +299,7 @@ public enum FieldMapBuilder {
         let calculator = try StaticLayoutCalculator(machO: machO)
 
         var built: [(name: String, qualified: String?, map: FieldMap)] = []
-        for type in (try? machO.swift.types) ?? [] {
+        for type in UnrecordedTypes.all(in: machO) {
             guard let descriptor = Self.contextDescriptor(of: type),
                   let name = Self.name(of: type, in: machO)
             else { continue }
@@ -260,7 +307,9 @@ public enum FieldMapBuilder {
             // the whole image with it.
             guard let layout = try? calculator.fieldLayout(of: descriptor), !layout.fields.isEmpty
             else { continue }
-            built.append((name, Self.qualifiedName(of: type, in: machO), FieldMap(typeName: name, layout: layout)))
+            let map = FieldMap(typeName: name, layout: layout)
+                .withFieldTypeNames(Self.fieldTypeNames(of: type, in: machO))
+            built.append((name, Self.qualifiedName(of: type, in: machO), map))
         }
         var maps = resolvingSimpleNameCollisions(built.map { ($0.name, $0.map) })
         // Also index each type by its FULLY-QUALIFIED name (`Module.Outer.Type`).
@@ -279,8 +328,8 @@ public enum FieldMapBuilder {
     /// Index the built maps by simple name, DROPPING any name that two distinct
     /// nominal types claim with different layouts.
     ///
-    /// Maps are keyed by the descriptor's SIMPLE name, and `namedFieldMap`
-    /// resolves a demangled self-type through a last-component fallback — so two
+    /// Maps are keyed by the descriptor's SIMPLE name, and an unqualified
+    /// receiver resolves through that key — so two
     /// distinct types sharing a simple name (`FatArch.Layout` vs `MachHeader.Layout`,
     /// a plain-struct `Options` vs a dependency's OptionSet `Options`) collide on one
     /// key. Whichever is built last would otherwise win, and a getter for any of the
@@ -314,6 +363,29 @@ public enum FieldMapBuilder {
         }
         for name in ambiguous { maps.removeValue(forKey: name) }
         return maps
+    }
+
+    /// Each stored field's type as its record names it, symbolic references
+    /// resolved: a field of a type in the same module records `\u{01}` and an
+    /// offset, which is no name until resolved.
+    private static func fieldTypeNames(of type: TypeContextWrapper, in machO: MachOFile) -> [String: String] {
+        let records: [FieldRecord]
+        switch type {
+        case .struct(let model): records = (try? model.descriptor.fieldDescriptor(in: machO).records(in: machO)) ?? []
+        case .class(let model): records = (try? model.descriptor.fieldDescriptor(in: machO).records(in: machO)) ?? []
+        case .enum: return [:]
+        }
+        var names: [String: String] = [:]
+        for record in records {
+            guard let field = try? record.fieldName(in: machO),
+                  let mangled = try? record.mangledTypeName(in: machO),
+                  let demangled = try? SymbolicDemangler.demangleType(for: mangled, in: machO.context),
+                  let node = try? ExtendedExistentials.resolve(demangled)
+            else { continue }
+            let printed = node.print(using: .default)
+            if !printed.isEmpty { names[field] = printed }
+        }
+        return names
     }
 
     private static func contextDescriptor(of type: TypeContextWrapper) -> TypeContextDescriptorWrapper? {

@@ -8,79 +8,28 @@ public struct BasicBlock: Sendable {
     /// Start addresses this block can transfer control to (branch target and/or
     /// fall-through). External (out-of-function) targets are included as-is.
     public let successors: [UInt64]
+    /// For a block ending in a recovered jump table: the target of each case,
+    /// in case order (`successors` holds them deduplicated). Nil otherwise.
+    public var switchCases: [UInt64]? = nil
+}
+
+/// A CFG edge: from the last instruction of a block to a block start.
+struct CFGEdge: Hashable, Sendable {
+    let from: UInt64
+    let to: UInt64
 }
 
 public extension DisassembledFunction {
     /// Recover the function's basic blocks from Capstone control-flow info.
     /// Requires instructions to carry `controlFlow` (the Capstone-enriched path);
-    /// otherwise returns a single block.
+    /// otherwise returns a single block. A view of `FunctionCFG`, which owns
+    /// the algorithm.
     func basicBlocks() -> [BasicBlock] {
-        guard !instructions.isEmpty else { return [] }
-        let internalAddresses = Set(instructions.map(\.address))
-
-        // 1. Leaders: entry, branch targets (internal), and the instruction
-        //    following any block-terminating control flow.
-        var leaders: Set<UInt64> = [instructions[0].address]
-        for (index, insn) in instructions.enumerated() {
-            switch insn.controlFlow {
-            case .branch, .conditionalBranch, .return:
-                if index + 1 < instructions.count {
-                    leaders.insert(instructions[index + 1].address)
-                }
-                if let target = insn.branchTarget, internalAddresses.contains(target) {
-                    leaders.insert(target)
-                }
-            case .call, .sequential, .none:
-                break
-            }
-        }
-
-        // 2. Cut the instruction stream at the leaders.
-        var blocks: [BasicBlock] = []
-        var current: [Instruction] = []
-
-        func flush(fallthrough next: UInt64?) {
-            guard let first = current.first, let last = current.last else { return }
-            blocks.append(
-                BasicBlock(
-                    startAddress: first.address,
-                    instructions: current,
-                    successors: Self.successors(of: last, fallthrough: next)
-                )
-            )
-            current = []
-        }
-
-        for insn in instructions {
-            if !current.isEmpty, leaders.contains(insn.address) {
-                flush(fallthrough: insn.address)
-            }
-            current.append(insn)
-        }
-        flush(fallthrough: nil)
-        return blocks
+        basicBlocks(consumer: "basic-blocks")
     }
 
-    private static func successors(of last: Instruction, fallthrough next: UInt64?) -> [UInt64] {
-        switch last.controlFlow {
-        case .return:
-            return []
-        case .branch:
-            return last.branchTarget.map { [$0] } ?? []
-        case .conditionalBranch:
-            return [last.branchTarget, next].compactMap { $0 }
-        case .call, .sequential, .none:
-            // A trap (`brk`/`udf`) never returns or falls through; Capstone
-            // classifies it as sequential, so drop the spurious fall-through edge
-            // that would otherwise make the trap sink look like ordinary code.
-            if isTrapInstruction(last) { return [] }
-            return next.map { [$0] } ?? []
-        }
-    }
-
-    private static func isTrapInstruction(_ insn: Instruction) -> Bool {
-        let mnemonic = insn.text.prefix { $0 != " " && $0 != "\t" }
-        return mnemonic == "brk" || mnemonic == "udf" || mnemonic == "trap"
+    internal func basicBlocks(consumer: String) -> [BasicBlock] {
+        controlFlowGraph.basicBlocks(of: self, consumer: consumer)
     }
 
     /// Render the function as a control-flow graph: basic blocks with `loc_<addr>`
@@ -88,20 +37,31 @@ public extension DisassembledFunction {
     func renderCFG() -> String {
         var lines = ["\(displayName):  // \(symbol) @ 0x\(String(startAddress, radix: 16))"]
         if let objcMethod { lines.append("  // \(objcMethod.signature)") }
-        for block in basicBlocks() {
+        if instructions.isEmpty { lines.append("  \(Self.noDecodedInstructionNote)") }
+        let cfg = controlFlowGraph
+        cfg.observeUse(of: self, consumer: "cfg-renderer")
+        for block in cfg.blocks {
             lines.append("  loc_\(String(block.startAddress, radix: 16)):")
-            for insn in block.instructions {
+            for insn in instructions[block.range] {
                 var line = "    \(String(insn.address, radix: 16)):  \(insn.text)"
                 if let annotation = insn.annotation, !insn.text.contains(annotation) {
                     line += "  ; \(annotation)"
                 }
                 lines.append(line)
             }
-            if !block.successors.isEmpty {
-                let edges = block.successors.map { "loc_\(String($0, radix: 16))" }.joined(separator: ", ")
+            if !block.successorAddresses.isEmpty {
+                let edges = block.successorAddresses.map { "loc_\(String($0, radix: 16))" }.joined(separator: ", ")
                 lines.append("    → \(edges)")
             }
         }
         return lines.joined(separator: "\n")
+    }
+}
+
+extension Instruction {
+    /// Trap termination, shared by the CFG and both pseudocode renderers.
+    var isTrap: Bool {
+        let mnemonic = text.prefix { $0 != " " && $0 != "\t" }
+        return mnemonic == "brk" || mnemonic == "udf" || mnemonic == "trap"
     }
 }
