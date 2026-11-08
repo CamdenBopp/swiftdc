@@ -5097,8 +5097,13 @@ if a test was observed to fail without the fix.
   than `self.Node = /* unresolved call @ … */ ?`, the assignment form
   being kept for a known value. `memmove()`, `memcpy()` and `free()` go
   from 175 to 0 on Clarc and from 902 to 0 on GoodLinks.
-- **OPEN (soundness): other calls with nothing tracked still render
-  `()`.** A runtime function missing from `knownCArity`
+- **FIXED 2026-11-08 for calls through a register (soundness): other calls with nothing tracked still render
+  `()`.** `indirect_call(?, recovered_args: [...])` lists what was
+  tracked, and a register untouched since the entry is trimmed as
+  possibly stale though it may be an argument: `callGlobal(a, b)` read
+  `recovered_args: []`. The list always ends in `…` (`indirect_args.c`,
+  test `aCallThroughARegisterNeverListsItsWholeArgumentsIfPresent`).
+  The entry as first written: A runtime function missing from `knownCArity`
   (`swift_weakLoadStrong()`: 55 on Clarc, 1,821 on GoodLinks; that one and
   17 more are in the table since 2026-10-23, below), a Swift
   callee whose signature has a non-scalar parameter, which

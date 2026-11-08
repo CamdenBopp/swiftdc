@@ -21,7 +21,7 @@ private func renderOrderFunction(_ member: String) async throws -> DisassembledF
         let helper = try #require(text.range(of: "let r0 = render_helper()"), "\(text)")
         let effect = try #require(text.range(of: "render_effect()"), "\(text)")
         #expect(helper.lowerBound < effect.lowerBound, "\(text)")
-        #expect(text.contains("recovered_args: [r0]"), "\(text)")
+        #expect(text.contains("recovered_args: [r0, …]"), "\(text)")
         #expect(!text.contains("[render_helper()]"), "\(text)")
     }
 }

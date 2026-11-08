@@ -123,8 +123,12 @@ public extension DisassembledFunction {
                 return "\(comment)indirect_jump(\(target))"
             }
             guard insn.controlFlow == .call else { return nil }
-            let arguments = (insn.callArguments ?? []).joined(separator: ", ")
-            return "/* unresolved call @ 0x\(String(insn.address, radix: 16)) */ indirect_call(?, recovered_args: [\(arguments)])"
+            // The list is what was tracked, never the whole call: a register
+            // left untouched since the entry is trimmed as possibly stale, yet
+            // may be an argument (`gp(a, b)` with a and b still in x0 and x1
+            // read `recovered_args: []`). It always ends in `…`.
+            let arguments = (insn.callArguments ?? []) + ["…"]
+            return "/* unresolved call @ 0x\(String(insn.address, radix: 16)) */ indirect_call(?, recovered_args: [\(arguments.joined(separator: ", "))])"
         }
         guard !insn.resultConsumed else { return nil }
         let rawArguments = insn.callArguments ?? []
