@@ -1,5 +1,5 @@
 {
-  "originHash" : "c560466a185914daf237ca290b7c5637e009f92c8f95635ffd5869a40905d7e4",
+  "originHash" : "9d880dfe6158652048d1fb0b9a67b778f220e2f8f43f20ccfec4dbd12e9bfabb",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -66,10 +66,9 @@
     {
       "identity" : "machoswiftsection",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection",
+      "location" : "https://github.com/CamdenBopp/MachOSwiftSection",
       "state" : {
-        "revision" : "5290a903f3c40d0f556221abb053ab4e52eed743",
-        "version" : "0.24.0"
+        "revision" : "393d3aea2ba9af2482983ee367b5e98ec4016cbd"
       }
     },
     {
@@ -77,8 +76,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/SwiftyLab/MetaCodable",
       "state" : {
-        "revision" : "3d4bfeb949c0f31ef80fdc3af8f77c5b35ecaea4",
-        "version" : "1.6.1"
+        "revision" : "1ae475b0c1ee78035fd0ad157770935476a76eca",
+        "version" : "1.6.2"
       }
     },
     {
@@ -140,8 +139,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-async-algorithms",
       "state" : {
-        "revision" : "d0b4a06d0f173a2f3be27d3ea21b3c3aa18db440",
-        "version" : "1.1.4"
+        "revision" : "13713a4ffdee8abd929f92568ee9462a46ae26e0",
+        "version" : "1.1.7"
       }
     },
     {
@@ -176,8 +175,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-collections",
       "state" : {
-        "revision" : "a0cb0954ecb21e4e31b0070e6ed5674e8556685a",
-        "version" : "1.6.0"
+        "revision" : "f96b909e1a9e469620bc5037c1e24e00153f376f",
+        "version" : "1.7.5"
       }
     },
     {

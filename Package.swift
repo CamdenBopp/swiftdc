@@ -49,9 +49,17 @@ let package = Package(
         // clearing detail, and cs_disasm_iter flags, none of which swiftdc's
         // cs_disasm decoder reaches (listing and JSON of 192 fixtures:
         // byte-identical).
+        // INTERIM FORK: 0.24.0 plus six `interface` soundness commits
+        // (constrained existentials printed as themselves, inferred
+        // attributes marked, a hand-written `_a` not hidden, an `@objc`
+        // thunk marking only its own member, a case count where no record
+        // names cases, `let`/`var` read off a global's section, a vtable
+        // offset under a resilient superclass called relative). Branch
+        // swiftdc-interim/0.24.0-interface-only; return to an upstream
+        // version pin once these ship there.
         .package(
-            url: "https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection",
-            exact: "0.24.0"
+            url: "https://github.com/CamdenBopp/MachOSwiftSection",
+            revision: "393d3aea2ba9af2482983ee367b5e98ec4016cbd"
         ),
         // MachOKit is the Mach-O container parser MachOSwiftSection is built on.
         // It is NOT re-exported, so we depend on the same identity directly to name

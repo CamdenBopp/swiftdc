@@ -156,8 +156,19 @@ results do not replace previously recorded release performance measurements.
   cases: the binary has no field records, so no names`. A type with records,
   or with nothing to name, is left alone. Fixture `interfacefacts.swift`,
   built -O, -Onone and without reflection metadata.
-- **OPEN — `interface` prints wrong declarations, and the fixes are in
-  MachOSwiftSection.** The declaration model is read-only outside that package
+- **FIXED 2026-11-08 — `interface` prints wrong declarations, and the fixes are in
+  MachOSwiftSection.** MachOSwiftSection is pinned to the CamdenBopp
+  fork's `swiftdc-interim/0.24.0-interface-only` (393d3ae): 0.24.0 plus
+  the six interface commits of `swiftdc-interim/0.24.0-interface`,
+  without the vm-relative commit under them, which needs forks dev does
+  not pin. On `interfacefacts.swift`: a constrained existential prints
+  as itself (`var one: any InterfaceFacts.One<Swift.Int>`, `any
+  ~Swift.Copyable`); `@resultBuilder` and its kin say they were inferred
+  from a member's name; a hand-written `_a` shows beside `a`; an `@objc`
+  thunk marks only its own member (`init(t:)` is no longer `@objc`);
+  `enum ObjCEnum` says it has 2 cases and no names; a global is `var`
+  where its section proves it and `/* let or var */` where it does not.
+  Test `interfacePrintsWhatTheBinaryProvesIfPresent`. The entry as first written: The declaration model is read-only outside that package
   (`package(set)`) and the printer has no hook for these, so each needs a
   change there. Measured against 0.24.0 with `interfacefacts.swift`:
   constrained existentials print their arguments (`var b: Swift.Int` for
