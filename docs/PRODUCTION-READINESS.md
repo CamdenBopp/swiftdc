@@ -3178,6 +3178,15 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 5. Performance and memory on large frameworks
 
+- **FIXED (memory) — a decoded operand took 96 bytes.** `PhysReg` stored
+  its number and width as two `Int`s (24 bytes), and a memory operand holds
+  two of them beside the register case, so `StructuredOperandInfo` was 96
+  bytes; a GoodLinks `xrefs` heap held 51k operand arrays (11.4 MB). The
+  register now stores a `UInt16` number and a `UInt8` width (6 bytes) and
+  a lane index an `Int8`, behind the same `Int` accessors: an operand is
+  48 bytes. `disasm libSwiftParser --json` peak footprint, median of three
+  alternating runs: 503 MB -> 475 MB. Every fixture render byte-identical.
+
 - **FIXED — one C++ function in WebKit took the value tracer past 3 GB.**
   The full structured/pseudo sweep of the 1,913 Swift cache images (3,826
   runs, `Tools/corpus.swift run … --commands structured,pseudo --swift-only
