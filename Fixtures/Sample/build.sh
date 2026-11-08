@@ -853,3 +853,6 @@ $CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib passthrough_tail.s -o l
 
 echo "==> a non-local label inside a function, listed as a function start (label_split.s)"
 $CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib label_split.s -o libLabelSplit.dylib
+
+echo "==> a scalar in a callee-saved vector register across a call, stored whole (vector_preserve.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib vector_preserve.s -o libVectorPreserve.dylib

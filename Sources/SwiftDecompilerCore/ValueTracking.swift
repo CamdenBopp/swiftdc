@@ -4144,17 +4144,28 @@ public struct ValueTracer: Sendable {
     /// upper lane after a call (`movi v8.2d, #0; bl ...; str q8, [sp]`).
     /// Keep the low lane, including scalar values already tracked on their
     /// own, and forget the high lane. A CFG join may select whole vectors.
+    /// A scalar in a vector register is the whole register with its high
+    /// lane zero (`fmov d8, x9` clears it), so it keeps only its low lane
+    /// too, as a one-lane aggregate: read narrower it is still the scalar,
+    /// read whole the high lane is unknown. Kept bare, `fmov d8, x9; bl
+    /// helper; str q8, [x19]` rendered `mem128[arg0] = 7`, a zero high lane
+    /// the helper had set to 19.
     static func callPreservedVectorValue(_ value: AbstractValue) -> AbstractValue {
         switch value {
+        case .unknown:
+            return .unknown
         case .aggregate(let lanes):
             guard let low = lanes.first else { return .unknown }
-            return .aggregate([low, .unknown])
+            // A scalar a call already cut to its low lane stays one: a
+            // second call (`fmov s8, s0; bl a; bl b; str s8, …`) has nothing
+            // more to forget.
+            return lanes.count == 1 ? value : .aggregate([low, .unknown])
         case .select(let condition, let whenTrue, let whenFalse):
             return .select(condition: condition,
                            whenTrue: callPreservedVectorValue(whenTrue),
                            whenFalse: callPreservedVectorValue(whenFalse))
         default:
-            return value
+            return .aggregate([value])
         }
     }
 
@@ -4238,6 +4249,9 @@ public struct ValueTracer: Sendable {
             guard lanes.indices.contains(index) else { return .unknown }
             let lane = lanes[index]
             if bits == 64 { return lane }
+            // A scalar kept across a call (`callPreservedVectorValue`): its
+            // narrower view is the scalar, as it was before the call.
+            if lanes.count == 1 { return lane }
             guard (1..<64).contains(bits), case .immediate(let word) = lane else { return .unknown }
             return .immediate(word & ((1 << UInt64(bits)) - 1))
         case .select(let condition, let whenTrue, let whenFalse):
@@ -5204,8 +5218,8 @@ public struct ValueTracer: Sendable {
                 || (operand.shift.type != AARCH64_SFT_INVALID && operand.shift.type != AARCH64_SFT_LSL)),
             bytes: each,
             values: sources.map { info in
-                let value = source(info, in: registers)
-                return info.operand.register?.kind == .gpr ? narrowed(value, bits: min(each * 8, 64)) : value
+                guard info.operand.register?.kind == .gpr else { return storedSource(info, in: registers) }
+                return narrowed(source(info, in: registers), bits: min(each * 8, 64))
             })
     }
 

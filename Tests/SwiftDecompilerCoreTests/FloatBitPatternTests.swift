@@ -199,6 +199,38 @@ import Testing
     #expect(try render("bitsToInt").contains("return arg0\n"))
 }
 
+/// AAPCS64 keeps only the low 64 bits of v8-v15 across a call.
+/// `vector_preserve.s` `scalarStore` sets d8 to 7, calls a helper that sets
+/// v8's high lane to 19, and stores q8 (native: lo=7 hi=19); it rendered
+/// `mem128[arg0] = 7`, a zero high lane. Without the call the high lane is
+/// zero (`fmov` clears it), and a Float held in s8 across the call is
+/// still the Float.
+@Test func aScalarKeptAcrossACallLosesItsHighLaneIfPresent() async throws {
+    let path = "Fixtures/Sample/libVectorPreserve.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func render(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName == name || $0.displayName.hasPrefix(name + "(") })
+            .renderStructured()
+    }
+    #expect(try render("_scalarStore").contains("mem128[arg0] = (7, ?)\n"))
+    #expect(try render("_scalarStoreNoCall").contains("mem128[arg0] = 7\n"))
+    #expect(try render("VectorPreserve.keep").contains("return arg0\n"))
+    // A Float kept in s8 across two calls and stored at 32 bits is the
+    // Float: libFloatReinterpret.opt `sf` read `mem32[x0 + 0x20] = s8`.
+    let opt = "Fixtures/Sample/libFloatReinterpret.opt.dylib"
+    guard FileManager.default.fileExists(atPath: opt) else { return }
+    let optimized = try await withStableDependencies { try await Disassembler().disassemble(path: opt) }
+    let sf = try #require(optimized.first { $0.displayName.hasPrefix("FloatReinterpret.sf(") }).renderStructured()
+    #expect(sf.contains("mem32[x0 + 0x20] = arg0\n"), "\(sf)")
+    // A dup's lanes stored through a pointer are the integer's words.
+    let dup = "Fixtures/Sample/libDupBits.dylib"
+    guard FileManager.default.fileExists(atPath: dup) else { return }
+    let dups = try await withStableDependencies { try await Disassembler().disassemble(path: dup) }
+    let fill = try #require(dups.first { $0.displayName == "_fillPair" }).renderStructured()
+    #expect(fill.contains("mem128[arg1] = (arg0, arg0)\n"), "\(fill)")
+}
+
 /// The slot's half: which register file stored a word decides what a reload
 /// of it is, and what is not known claims nothing.
 @Test func aStackSlotRemembersTheRegisterFileThatStoredIt() throws {

@@ -9771,7 +9771,17 @@ this Mac.
 - **FIXED (`5ce2882`, soundness): d8-d15 callee summaries.** The low 64 bits of
   v8-v15 are now included in callee preservation and transitive clobbers;
   see the 2026-11-05 vector-summary entry below. Upper lanes stay unproved.
-- **OPEN (soundness): a scalar's whole-register store after a call.**
+- **FIXED 2026-11-08 (soundness): a scalar's whole-register store after a call.**
+  A scalar in a vector register is the register with a zero high lane;
+  after a call only its low lane is known, so `callPreservedVectorValue`
+  keeps it as a one-lane aggregate. A narrower view is still the scalar
+  (a Float held in s8 across a call returns as itself), and a 128-bit
+  store renders the high lane `?`: `vector_preserve.s` `scalarStore`
+  reads `mem128[arg0] = (7, ?)` (native: lo=7 hi=19), and without the
+  call `mem128[arg0] = 7` (`fmov` clears the high lane). Test
+  `aScalarKeptAcrossACallLosesItsHighLaneIfPresent`. A CFG join of a
+  path with the call and one without no longer matches and declines.
+  The entry as first written:
   `fmov d8, x9; bl …; str q8, [x19]` renders `mem128[arg0] = 7`, which reads
   as a high lane of 0; the helper set it to 19. Wrapping a scalar as
   `.aggregate([value, .unknown])` at the call would decline it, and is not

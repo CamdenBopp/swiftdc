@@ -8304,7 +8304,10 @@ public struct Disassembler: Sendable {
                     defer { wholeResultSite = saved }
                     return renderValue(values[0], depth: depth)
                 }
-                return "(" + values.map { renderValue($0, depth: depth + 1) }.joined(separator: ", ") + ")"
+                // One lane is a scalar a call preserved the low half of
+                // (`callPreservedVectorValue`); its high lane is unknown.
+                let lanes = values.count == 1 ? values + [.unknown] : values
+                return "(" + lanes.map { renderValue($0, depth: depth + 1) }.joined(separator: ", ") + ")"
             case .callResult(let addr):
                 // x0 after a call whose result spans registers is one part of
                 // it: `mkPair(x).a + 2` read `(mkPair(x) + 2)`.

@@ -18,3 +18,12 @@ _$s7DupBits9bitsToIntys6UInt64VADF:
   dup v1.2d, x0
   fmov x0, d1
   ret
+
+// `fillPair(x, p)` stores the dup'd lanes through a pointer: memory gets the
+// integer's word twice, `(x, x)`.
+.globl _fillPair
+.p2align 2
+_fillPair:
+  dup v0.2d, x0
+  str q0, [x1]
+  ret
