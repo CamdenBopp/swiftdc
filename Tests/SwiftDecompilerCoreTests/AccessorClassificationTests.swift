@@ -282,3 +282,16 @@ private let accessorGrowthCeiling = 4_096
     #expect(lines.contains("- (int)width; // unclassified accessor: no body decoded"), "\(lines)")
     #expect(!lines.contains { $0.hasPrefix("- (int)count") || $0.hasPrefix("- (void)setCount:") }, "\(lines)")
 }
+
+/// `objcivartypes.m`: a bitfield's type is not in its encoding, so it
+/// renders `?` with its width; a `c` ivar is a `char` and a `C` an
+/// `unsigned char`, since arm64's BOOL encodes `B`. Only `_flag` is BOOL.
+@Test func ivarsAreTypedFromTheirOwnEncodingIfPresent() throws {
+    let path = "Fixtures/Sample/libObjCIvarTypes.dylib"
+    guard FileManager.default.fileExists(atPath: path), let run = try runCLI(["objc", path]) else { return }
+    let lines = run.stdout.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+    for expected in ["? _bits : 1;", "? _sbits : 3;", "char _letter;", "unsigned char _byte;", "BOOL _flag;"] {
+        #expect(lines.contains(expected), "\(expected) in \(lines)")
+    }
+    #expect(!lines.contains { $0.hasPrefix("int _bits") || $0 == "BOOL _letter" || $0 == "BOOL _byte" }, "\(lines)")
+}

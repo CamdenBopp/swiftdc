@@ -490,6 +490,9 @@ for level in O0 O1 Os; do
   xcrun clang -arch arm64 -$level -fobjc-arc -dynamiclib -framework Foundation accessorshapes.m -o libAccessorShapes.$level.dylib
 done
 
+echo "==> ivars the encoding types only in part: bitfields, char against BOOL (objcivartypes.m, -O1)"
+xcrun clang -arch arm64 -O1 -dynamiclib -framework Foundation objcivartypes.m -o libObjCIvarTypes.dylib
+
 echo "==> accessors with no verdict: past the decode prefix, outside __text (accessordeclined.m, -O1, ARC)"
 xcrun clang -arch arm64 -O1 -fobjc-arc -dynamiclib -framework Foundation accessordeclined.m -o libAccessorDeclined.dylib
 

@@ -8471,8 +8471,17 @@ chained headers). After them all 31 crashers exit 1 with a stated cause, and
 - **OPEN (completeness): a bitfield read could name its field from the
   bit.** `ubfx #5` of a byte of one-bit ivars identifies `_alignmentSatisfied`,
   and it stays `self[0x88]`.
-- **OPEN (soundness): headers print a bitfield as `int`.** An encoding like
-  `b1` has no sign.
+- **FIXED (soundness): headers print a bitfield as `int`.** An encoding like
+  `b1` has no sign, or any type: ObjCDump writes every bitfield ivar as
+  `int _bits : 1;`, and an `unsigned _bits : 1` read as signed. It also
+  wrote a `c` or `C` ivar as `BOOL _letter`, with no semicolon, though
+  arm64's `BOOL` encodes `B`: a `char` and an `unsigned char` both read
+  as BOOL. `ObjCDumper.correctingIvarTypes` retypes each such line from
+  the ivar's own encoding: `? _bits : 1;`, `char _letter;`, `unsigned char
+  _byte;` (`objcivartypes.m`, test `ivarsAreTypedFromTheirOwnEncodingIfPresent`).
+  Still open: a bitfield or `char` field inside an ivar's struct, and a
+  `c` in a method signature, which the printer also writes as `BOOL`;
+  their text does not say which encoding they came from.
 - **OPEN (usability): `-f "-[Class sel]"` reads as an option.** Argument
   parsing rejects the leading `-`. `-f "[Class sel]"` works.
 - **DEAD END: a preflight rule on a segment address past 2^63.** It took
