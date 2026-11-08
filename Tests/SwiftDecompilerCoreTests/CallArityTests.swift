@@ -83,3 +83,27 @@ private func pseudo(_ filter: String, in fixture: String) async throws -> String
     let text = try await pseudo("widenedTimesConstant", in: fixture)
     #expect(text.contains("Swift.Double.init(arg0)"), "\(text)")
 }
+
+/// A tail branch to a body that never writes x0 or v0, makes no call and
+/// stores only to its own stack returns the x0 it was given. -O `callGen`
+/// is `b sub_3e0`, and sub_3e0 is a lone `ret` (`gen(a, t) { a }`), so it
+/// returns a; it rendered `sub_3e0()` and no return. `passthrough_tail.s`
+/// pins the three guards: `keep` (a lone `ret`) returns n, `store` writes a
+/// global and keeps its call, and `bump` writes x0 and is no passthrough.
+@Test func aTailBranchToABodyThatKeepsX0ReturnsItIfPresent() async throws {
+    let fixture = "Fixtures/Sample/libCallArity.opt.dylib"
+    guard FileManager.default.fileExists(atPath: fixture) else { return }
+    let callGen = try await pseudo("callGen", in: fixture)
+    #expect(callGen.contains("return arg0"), "\(callGen)")
+    let tails = "Fixtures/Sample/libPassthroughTail.dylib"
+    guard FileManager.default.fileExists(atPath: tails) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: tails) }
+    func render(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("Passthrough.\(name)(") }).renderStructured()
+    }
+    #expect(try render("callKeep").contains("return arg0\n"))
+    #expect(try render("callStore").contains("store(arg0)"))
+    #expect(!(try render("callStore")).contains("return arg0"))
+    #expect(!(try render("callWrite")).contains("return arg0"))
+}
+

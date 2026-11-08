@@ -1147,7 +1147,15 @@ because it cannot be distinguished from a right one by reading the output.
   Both candidates return `Wide5` indirectly, so a result type all
   candidates share could be laid out without naming one. Same for
   argument layouts that agree.
-- **OPEN — a body that returns an argument unchanged reads no argument.**
+- **FIXED 2026-11-08 — a body that returns an argument unchanged reads no argument.**
+  The summary now records whether a body may write x0
+  (`mayWriteResult`, like `mayWriteFloatResult`). A tail branch to a body
+  that writes neither x0 nor v0, makes no call and stores only to its own
+  stack is the caller's return of its own x0: `callGen` renders `return
+  arg0`. A body that stores elsewhere keeps its call, and one that writes
+  x0 is an ordinary tail call (`passthrough_tail.s`, test
+  `aTailBranchToABodyThatKeepsX0ReturnsItIfPresent`). A direct `bl` to such
+  a body still drops its argument. The entry as first written:
   libCallArity -O `callGen` calls a folded `ret` and renders `sub_3e0()`:
   the body summary does not count x0 passed through to the return as a
   read, so its argument is dropped. True of any signatureless identity

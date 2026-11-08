@@ -6664,8 +6664,29 @@ public struct Disassembler: Sendable {
             else { return nil }
             return insn.address
         })
+        // A tail branch to an in-image body that writes neither x0 nor v0
+        // and leaves only through `ret` hands back the registers it was
+        // given: it is this function's return of what x0 and v0 hold at the
+        // branch. It makes no call and stores only to its own stack, so the
+        // return is all it does. `callGen` is `b sub_3e0`, and sub_3e0 is a lone `ret`
+        // (`gen(a, t) { a }` specialized), so it returns its arg0; read as an
+        // ordinary tail call it rendered `sub_3e0()` and no return at all.
+        let ownAddresses = Set(function.instructions.map(\.address))
+        let passthroughTailBranches = Set(function.instructions.compactMap { insn -> UInt64? in
+            guard insn.controlFlow == .branch, let target = insn.branchTarget,
+                  !ownAddresses.contains(target),
+                  let summary = registerSummaries[target], !summary.mayWriteResult, !summary.mayWriteFloatResult,
+                  summary.storesOnlyToStack,
+                  // x21 is Swift's error register: a body that may leave
+                  // another value there changes a throwing caller's outcome
+                  // after the branch, where its exit was read.
+                  !summary.clobberedCalleeSaved.contains("x21")
+            else { return nil }
+            return insn.address
+        })
         func isReturn(_ insn: Instruction) -> Bool {
             insn.controlFlow == .return || asyncReturns.contains(insn.address)
+                || passthroughTailBranches.contains(insn.address)
         }
         // `swiftReturnRegister(of:)` declines every async function, because x0 at
         // its `ret` is stale. At a proven async return the result is in x0/v0,

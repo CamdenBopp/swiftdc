@@ -847,3 +847,6 @@ xcrun clang -arch arm64 -O1 -dynamiclib nocode.c -o libNoCode.dylib
 
 echo "==> dup of a general register into a vector register, returned as a Double (dup_bits.s)"
 $CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib dup_bits.s -o libDupBits.dylib
+
+echo "==> tail branches to bodies that never write x0: a lone ret, a store, an add (passthrough_tail.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib passthrough_tail.s -o libPassthroughTail.dylib
