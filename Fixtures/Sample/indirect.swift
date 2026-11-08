@@ -16,7 +16,7 @@
 // 32 KB over-read past the file mapping faults whenever the next page is
 // unmapped (3 of 4 test runs). A fourth segment moves the aliased bytes so the
 // garbage count is 0x18 and the over-read stays inside the file. The bug is
-// MachOKit's, not this fixture's; see handoff.md.
+// MachOKit's, not this fixture's; see docs/PRODUCTION-READINESS.md.
 public var indirectCallCount = 0
 
 // MARK: - Indirect results (the x8 result buffer)

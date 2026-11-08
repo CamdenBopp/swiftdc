@@ -16,8 +16,8 @@ When sources disagree, believe them in this order:
    commit messages carry the reasoning and the numbers.
 3. Reproducible measurements: a command anyone can re-run.
 4. `docs/research/`: true when written, often stale.
-5. Conversation memory and [handoff.md](handoff.md): the weakest. A compacted
-   conversation can carry a "next task" that already shipped.
+5. Conversation memory: the weakest. A compacted conversation can carry a
+   "next task" that already shipped.
 
 When a doc turns out stale, fix it in the same change.
 
@@ -311,8 +311,7 @@ the one right after:
 - **OPEN** with the evidence;
 - **DEAD END** with the numbers.
 
-Also update `docs/INSTRUMENTATION.md` when the event catalogue changes, and
-prune `handoff.md` as items ship.
+Also update `docs/INSTRUMENTATION.md` when the event catalogue changes.
 
 ## Privacy: this repository is public
 

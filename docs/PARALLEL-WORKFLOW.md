@@ -324,7 +324,7 @@ own.
      `Fixtures/Sample/…` literals in the test sources, plus eight paths
      tests build by interpolation. That is 209 paths against the 190
      hand-listed, and every old entry is kept.
-   - `docs/PRODUCTION-READINESS.md` and `handoff.md` merge with `union`.
+   - `docs/PRODUCTION-READINESS.md` merges with `union`.
    - Measured: two branches that each add a readiness entry at the same spot
      and a fixture test. The rebase conflicts without the attribute and is
      clean with it, keeping both entries.

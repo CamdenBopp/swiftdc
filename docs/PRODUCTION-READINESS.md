@@ -1234,7 +1234,8 @@ because it cannot be distinguished from a right one by reading the output.
   Double in FPRs on an independent counter, `Int?` 2 GPRs, closures 2), then
   generic metadata and witness tables, with self in x20 only for class or thick
   metatype self, and declined for any parameter whose footprint is unproven.
-  The plan is in `handoff.md` section 8.
+  The plan was in `handoff.md` section 8, since deleted:
+  `git show e37cd64:handoff.md`.
 - **FIXED at -O — an async function's throw rendered as a bare `return`.** It
   returns through ResumeParent with its error in x20, zero for none. An exit
   where x20 is `swift_allocError`'s result or a non-zero constant (typed throws
