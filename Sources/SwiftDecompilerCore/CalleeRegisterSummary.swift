@@ -71,6 +71,12 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// instructions writes v0, or it calls or tail-branches out (whatever it
     /// calls may return there). True when nothing is known.
     var mayWriteFloatResult = true
+    /// The same for x0: one of the body's own instructions writes x0 (or
+    /// w0), or it calls or tail-branches out. False proves that at every
+    /// exit x0 still holds the caller's value, so a call's x0 result is the
+    /// x0 it was called with: a lone `ret` (`gen<T>(_ a: Int, _: T) -> Int {
+    /// a }` specialized) returns its argument. True when nothing is known.
+    var mayWriteResult = true
     /// Calls and tail branches to other in-image functions, with the argument
     /// registers (bit n for xn) the body has not written at them on some
     /// path: the call reads those of them its target reads.
@@ -318,8 +324,15 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         var callees = Set<UInt64>()
         var outgoingCalls: [OutgoingCall] = []
         var storesOnlyToStack = true
+        var writesResult = false
         for insn in instructions {
             guard let detail = insn.detail else { return nil }
+            if detail.writtenRegisterKeys.contains("x0")
+                || insn.controlFlow == .call
+                || ((insn.controlFlow == .branch || insn.controlFlow == .conditionalBranch)
+                    && insn.branchTarget.map(addresses.contains) != true) {
+                writesResult = true
+            }
             writtenCalleeSaved.formUnion(Preservation.writtenRegisterKeys(in: detail).intersection(calleeSavedKeys))
             for info in detail.operands where info.isWritten {
                 guard case .memory(let base, _, _) = info.operand else { continue }
@@ -418,7 +431,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         // The save-slot escape exception belongs to GPRs only. A stored but
         // unrestored vector must still invalidate its callers' low lanes.
         let definitelyClobbered = clobbered.subtracting(storedGeneralCalleeSaved).subtracting(["x21"])
-        return CalleeRegisterSummary(
+        var summary = CalleeRegisterSummary(
             argumentReads: reads,
             provenArgumentReads: provenReads,
             provenFloatArgumentReads: provenFloatReads,
@@ -435,6 +448,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             outgoingCalls: outgoingCalls,
             storesOnlyToStack: storesOnlyToStack,
             memoryEffect: readFacts?.memoryEffect ?? CalleeMemoryEffect.discover(in: function))
+        summary.mayWriteResult = writesResult
+        return summary
     }
 
     /// Marks each body that writes no field of any object: it stores only
@@ -565,7 +580,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     private func replacingReads(
         _ reads: Set<Int>, readsFramePointer: Bool, readsContextRegister: Bool, readsSelfRegister: Bool
     ) -> CalleeRegisterSummary {
-        CalleeRegisterSummary(
+        var summary = CalleeRegisterSummary(
             argumentReads: reads, provenArgumentReads: provenArgumentReads,
             provenFloatArgumentReads: provenFloatArgumentReads, floatArgumentWidths: floatArgumentWidths,
             mayWriteFloatResult: mayWriteFloatResult, pendingReads: pendingReads,
@@ -574,6 +589,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             clobberedCalleeSaved: clobberedCalleeSaved,
             definitelyClobbered: definitelyClobbered, restoredFrom: restoredFrom, callees: callees,
             outgoingCalls: outgoingCalls, storesOnlyToStack: storesOnlyToStack, memoryEffect: memoryEffect)
+        summary.mayWriteResult = mayWriteResult
+        return summary
     }
 
     /// Whether an instruction uses a callee-saved register (`key`, x29 or
@@ -660,7 +677,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             // A body that cannot be summarised again claims nothing, rather
             // than keeping a summary built before its callees were known.
             let rebuilt = recompute(start, { summaries[$0]?.effect ?? CalleeEffect() }, old) ?? old.claimingNothing()
-            let new = CalleeRegisterSummary(
+            var new = CalleeRegisterSummary(
                 argumentReads: old.argumentReads,
                 provenArgumentReads: old.provenArgumentReads,
                 provenFloatArgumentReads: old.provenFloatArgumentReads,
@@ -681,6 +698,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 outgoingCalls: old.outgoingCalls,
                 storesOnlyToStack: old.storesOnlyToStack, memoryEffect: old.memoryEffect)
             guard new != old else { continue }
+            new.mayWriteResult = old.mayWriteResult
             summaries[start] = new
             guard new.effect != old.effect else { continue }
             for caller in callers[start] ?? [] where !queued.contains(caller) {

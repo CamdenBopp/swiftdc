@@ -120,7 +120,7 @@ private let fixture = "Fixtures/Sample/libStringArity.dylib"
     guard FileManager.default.fileExists(atPath: path) else { return }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let text = functions.map { $0.renderPseudo() }.joined(separator: "\n")
-    #expect(text.contains("Swift._typeName(?, false))") && !text.contains("Swift._typeName(?, false), ?)"),
+    #expect(text.contains("Swift._typeName(_:qualified:)(?, false))") && !text.contains("Swift._typeName(_:qualified:)(?, false), ?)"),
             Comment(rawValue: text.components(separatedBy: "\n").filter { $0.contains("_typeName") }.joined(separator: "\n")))
 }
 

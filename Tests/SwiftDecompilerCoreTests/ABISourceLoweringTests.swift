@@ -277,7 +277,7 @@ struct ABISourceLoweringTests {
     guard FileManager.default.fileExists(atPath: footprints), FileManager.default.fileExists(atPath: strings) else { return }
     let k = try await withStableDependencies { try await Disassembler().disassemble(path: footprints) }
     let callK = try #require(k.first { $0.displayName.hasPrefix("EntryFootprints.callK(") }).renderStructured()
-    #expect(callK.contains("return (EntryFootprints.W.k(arg1, arg0) + arg2)"), Comment(rawValue: callK))
+    #expect(callK.contains("return (EntryFootprints.W.k(self: arg0, arg1) + arg2)"), Comment(rawValue: callK))
     let s = try await withStableDependencies { try await Disassembler().disassemble(path: strings) }
     let takeTwo = try #require(s.first { $0.displayName.hasPrefix("StringArity.takeTwo(") }).renderStructured()
     // A String's getter takes its two words and nothing after them.
@@ -465,8 +465,8 @@ struct ABISourceLoweringTests {
     // which follow it, are not shown either.
     #expect(try text("callScaled").contains("return StructArgs.Pt.scaled(?)"))
     // The Mix ends at x1, and W is one integer word: `self`'s 9 in x2
-    // follows the formal, as a value method's `self` does.
-    #expect(try text("callTake").contains("return StructArgs.W.take(?, 9)\n"))
+    // follows the formal, as a value method's `self` does, and is its self.
+    #expect(try text("callTake").contains("return StructArgs.W.take(self: 9, ?)\n"))
     // MD's self is an Int in x1 and a Double in d0: no part of it shows.
     #expect(try text("callMD").contains("return StructArgs.MD.f(3)\n"))
     // An Array, a Dictionary and a variadic parameter are one word each,
@@ -484,8 +484,8 @@ struct ABISourceLoweringTests {
     guard FileManager.default.fileExists(atPath: path) else { return }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
-    #expect(text.contains(#"Swift._stringCompareWithSmolCheck(?, "A literal laid out 32 bytes later", 0)"#))
-    #expect(!text.contains("_stringCompareWithSmolCheck(?, ?, "))
+    #expect(text.contains(#"Swift._stringCompareWithSmolCheck(_:_:expecting:)(?, "A literal laid out 32 bytes later", 0)"#))
+    #expect(!text.contains("_stringCompareWithSmolCheck(_:_:expecting:)(?, ?, "))
 }
 
 /// A frozen standard-library struct's method takes `self` in x20 only as an

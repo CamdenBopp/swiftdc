@@ -1142,11 +1142,13 @@ public struct Disassembler: Sendable {
         }
         // The functions of one span, as `segment` cuts the whole list: a
         // span ends at the next span boundary, so no function crosses two.
+        let goData = goFunctions(in: machO)?.dataSpans ?? [:]
         func functions(of span: (start: UInt64, stop: UInt64)) -> [DisassembledFunction] {
             segment(
                 decode(span), boundaries: boundaries, labelByAddress: labelByAddress,
                 foldedByAddress: foldedByAddress, metadataNames: metadataNames, objcIndex: objcIndex,
-                sortedBoundaries: sortedBoundaries)
+                sortedBoundaries: sortedBoundaries,
+                dataSpans: goData.filter { $0.key >= span.start && $0.key < span.stop })
         }
 
         // Pass 1: name-level stubs for the name index, and every call
@@ -1379,7 +1381,8 @@ public struct Disassembler: Sendable {
             foldedByAddress: foldedByAddress,
             metadataNames: metadataNames,
             objcIndex: objcIndex,
-            emitsUndecodedSpans: decodedWholeImage
+            emitsUndecodedSpans: decodedWholeImage,
+            dataSpans: goFunctions(in: machO)?.dataSpans ?? [:]
         )
 
         // Resolve adrp/add(+ldr) operand references to function, type-descriptor,
@@ -2888,10 +2891,29 @@ public struct Disassembler: Sendable {
         metadataNames: [UInt64: String],
         objcIndex: ObjCMetadataIndex,
         emitsUndecodedSpans: Bool = false,
-        sortedBoundaries: [UInt64]? = nil
+        sortedBoundaries: [UInt64]? = nil,
+        dataSpans: [UInt64: (end: UInt64, name: String)] = [:]
     ) -> [DisassembledFunction] {
         var functions: [DisassembledFunction] = []
         var current: [Instruction] = []
+        // A span a function table lists but whose bytes are data (Go's
+        // build ID) keeps its name and boundary and loses its "instructions";
+        // the two symbols at its address (`go:buildid`, `runtime.text`, a
+        // marker) are no identical-code fold.
+        let instructions = dataSpans.isEmpty ? instructions : instructions.filter { insn in
+            !dataSpans.contains { insn.address >= $0.key && insn.address < $0.value.end }
+        }
+        var labelByAddress = labelByAddress, foldedByAddress = foldedByAddress
+        for (start, span) in dataSpans {
+            foldedByAddress[start] = nil
+            labelByAddress[start] = "_" + span.name
+        }
+        // Decoded one span at a time, a data span is a span with nothing.
+        if instructions.isEmpty, let only = dataSpans.keys.first, dataSpans.count == 1 {
+            return [makeFunction(start: only, instructions: [], labelByAddress: labelByAddress,
+                                 foldedByAddress: foldedByAddress, metadataNames: metadataNames,
+                                 objcIndex: objcIndex)]
+        }
         var start: UInt64 = instructions.first?.address ?? 0
 
         func flush() {
@@ -2931,7 +2953,7 @@ public struct Disassembler: Sendable {
                 // A boundary passed with no instruction of its own before
                 // the next one marks a span that is not code. Only a whole
                 // decode knows that; a filtered one skips other functions.
-                if let passed = crossed, emitsUndecodedSpans {
+                if let passed = crossed, emitsUndecodedSpans || dataSpans[passed] != nil {
                     flush()
                     functions.append(makeFunction(start: passed, instructions: [],
                                                   labelByAddress: labelByAddress,
@@ -3040,6 +3062,28 @@ public struct Disassembler: Sendable {
         functionStarts(of: machO).count
     }
 
+    /// LC_FUNCTION_STARTS as dyld reads it: deltas from `__TEXT`'s address,
+    /// ending at the first zero. MachOKit's iterator reads past it, through
+    /// the zero padding, each zero another start at the previous address. In
+    /// an image that lists starts that only repeats the last one, but an
+    /// image with none (`nocode.c`: no code, an 8-byte list of zeros)
+    /// came back with one start at `__TEXT`'s base, which is the Mach-O
+    /// header: a whole decode found no instruction where that start promised
+    /// a function and threw `parsedNothing`, "a parser defect, not an empty
+    /// binary", for a binary that is empty.
+    static func linkerFunctionStarts(of machO: MachOFile) -> [UInt64] {
+        guard let starts = machO.functionStarts else { return [] }
+        var previous = machO.segments.first { $0.segmentName == "__TEXT" }.map { UInt64($0.virtualMemoryAddress) }
+        var addresses: [UInt64] = []
+        for entry in starts {
+            let address = UInt64(entry.offset)
+            if address == previous { break }
+            addresses.append(address)
+            previous = address
+        }
+        return addresses
+    }
+
     /// VM addresses of every function start from LC_FUNCTION_STARTS, **deduped**.
     ///
     /// The load command is a ULEB128 list of *deltas*, zero-padded to alignment.
@@ -3060,10 +3104,7 @@ public struct Disassembler: Sendable {
     /// which its internal linker writes in place of LC_FUNCTION_STARTS.
     func functionStarts(of machO: MachOFile) -> [UInt64] {
         var seen: Set<UInt64> = []
-        var starts = (machO.functionStarts.map(Array.init) ?? []).compactMap { entry in
-            let address = UInt64(entry.offset)
-            return seen.insert(address).inserted ? address : nil
-        }
+        var starts = Self.linkerFunctionStarts(of: machO).filter { seen.insert($0).inserted }
         for entry in goFunctions(in: machO)?.entries ?? [] where seen.insert(entry.address).inserted {
             starts.append(entry.address)
         }
@@ -6645,8 +6686,29 @@ public struct Disassembler: Sendable {
             else { return nil }
             return insn.address
         })
+        // A tail branch to an in-image body that writes neither x0 nor v0
+        // and leaves only through `ret` hands back the registers it was
+        // given: it is this function's return of what x0 and v0 hold at the
+        // branch. It makes no call and stores only to its own stack, so the
+        // return is all it does. `callGen` is `b sub_3e0`, and sub_3e0 is a lone `ret`
+        // (`gen(a, t) { a }` specialized), so it returns its arg0; read as an
+        // ordinary tail call it rendered `sub_3e0()` and no return at all.
+        let ownAddresses = Set(function.instructions.map(\.address))
+        let passthroughTailBranches = Set(function.instructions.compactMap { insn -> UInt64? in
+            guard insn.controlFlow == .branch, let target = insn.branchTarget,
+                  !ownAddresses.contains(target),
+                  let summary = registerSummaries[target], !summary.mayWriteResult, !summary.mayWriteFloatResult,
+                  summary.storesOnlyToStack,
+                  // x21 is Swift's error register: a body that may leave
+                  // another value there changes a throwing caller's outcome
+                  // after the branch, where its exit was read.
+                  !summary.clobberedCalleeSaved.contains("x21")
+            else { return nil }
+            return insn.address
+        })
         func isReturn(_ insn: Instruction) -> Bool {
             insn.controlFlow == .return || asyncReturns.contains(insn.address)
+                || passthroughTailBranches.contains(insn.address)
         }
         // `swiftReturnRegister(of:)` declines every async function, because x0 at
         // its `ret` is stale. At a proven async return the result is in x0/v0,
@@ -6827,6 +6889,9 @@ public struct Disassembler: Sendable {
             }
         }
         var selfValueBySite: [UInt64: AbstractValue] = [:]
+        /// The `self` words a value method or getter takes after (or as) its
+        /// formals, by site: the ones every path that renders the call shows.
+        var valueSelfBySite: [UInt64: AbstractValue] = [:]
         for insn in function.instructions {
             guard let site = sites[insn.address], Self.isSwiftCall(insn, swiftTargets: swiftTargets),
                   site.selfValue != .unknown
@@ -6934,13 +6999,27 @@ public struct Disassembler: Sendable {
         /// value left for it too: at -O2 `-[Relay relay:to:]` sends
         /// `[o put:x at:7]` with x still in d0, nothing writes it, and the
         /// integer layout rendered `put:7 at:?`. A method's encoding says
-        /// which v registers hold an argument. Any other function, a C
-        /// function or a block, shows none, so its sends keep the integer
-        /// layout.
+        /// which v registers hold an argument, and a Swift signature laid out
+        /// in registers says the same. A function that shows neither, a C
+        /// function or a block, may have been passed a float in any of them:
+        /// `putPassed(o, x)` (C, -O2) sends `put:x at:7` with x still in d0,
+        /// and the integer layout rendered `put:7 at:?`.
         let ownFloatArgumentRegisters: Int = {
-            guard let method = function.objcMethod else { return 0 }
-            let colons = method.selector.filter { $0 == ":" }.count
-            return ObjCArgumentABI.floatRegisterCount(encoding: method.typeEncoding, argumentCount: colons) ?? 0
+            if let method = function.objcMethod {
+                let colons = method.selector.filter { $0 == ":" }.count
+                return ObjCArgumentABI.floatRegisterCount(encoding: method.typeEncoding, argumentCount: colons) ?? 0
+            }
+            if let slots = Self.swiftCallArgumentSlots(
+                callee: function.analysisDisplayName, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
+                return slots.reduce(0) { total, slot in
+                    switch slot.kind {
+                    case .floating: total + slot.registers
+                    case .aggregate(_, let floats): total + floats
+                    case .integer: total
+                    }
+                }
+            }
+            return 8
         }()
         /// Whether a call may leave its result in v0: unless its name's
         /// signature or C prototype returns an integer, a pointer or
@@ -6963,7 +7042,7 @@ public struct Disassembler: Sendable {
             // pointer or nothing.
             return DisassembledFunction.knownCArity(of: callee) == nil
         }
-        func setsFloatingPointArgument(before address: UInt64) -> Bool {
+        func setsFloatingPointArgument(before address: UInt64, integerGap: Bool = true) -> Bool {
             guard let callIndex = instructionIndex[address] else { return false }
             var settled = Set<Int>()
             var stored = Set<Int>()
@@ -7007,7 +7086,14 @@ public struct Disassembler: Sendable {
                 if settled.count == 8 { break }
             }
             if callIndex == 0 { reachedEntry = true }
-            return reachedEntry && (0 ..< min(ownFloatArgumentRegisters, 8)).contains { !settled.contains($0) }
+            // A float passed through from the entry takes one of the send's
+            // argument positions, so the integer layout then leaves an
+            // argument register unwritten (`putPassed`: `mov w2, #7` and
+            // nothing in x3, `put:x at:7`). When every integer one is set
+            // up for the send, a float in v0 would make one of those writes
+            // dead.
+            return reachedEntry && integerGap
+                && (0 ..< min(ownFloatArgumentRegisters, 8)).contains { !settled.contains($0) }
         }
 
         /// The quoted literal a String's two words spell, when both are known:
@@ -7104,6 +7190,31 @@ public struct Disassembler: Sendable {
             if let callee = calleeByAddress[address], Self.isStringInstanceGetter(callee) {
                 argumentsByAddress[address] = (0 ..< 2).map { $0 < values.count ? sanitizeValue(values[$0]) : .unknown }
                 strategy = "string-getter"
+                continue
+            }
+            // A value type's instance getter takes no formal parameter: its
+            // registers from x0 are `self`'s words, as many as the type
+            // lowers to, and nothing after them. Positional, `Pair(a: x,
+            // b: 4).total` read `Pair.total.getter(arg0, 4)`, a getter with
+            // two arguments. It renders `total.getter(self: (arg0, 4))`.
+            // Only when the site has no `self` in x20: a witness through an
+            // existential, or a struct passed by address (`VersionTuple.
+            // normalized.getter(self: local_80)`), takes it there.
+            if selfValueBySite[address] == nil, let callee = calleeByAddress[address],
+               let property = DisassembledFunction.swiftAccessorProperty(callee), property.isGetter,
+               !callee.hasPrefix("static "), !callee.contains(".subscript"),
+               let accessor = callee.range(of: ".\(property.property).getter"),
+               case let receiver = String(callee[..<accessor.lowerBound]), classTypeIndex.isValueType(receiver),
+               typeFieldMaps[receiver]?.isGeneric == false,
+               let words = SwiftLowering.aggregateRegisters(of: receiver, fieldMaps: typeFieldMaps,
+                                                            enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex),
+               words.floats == 0, (1...4).contains(words.integers) {
+                let own = (0 ..< words.integers).map { $0 < values.count ? sanitizeValue(values[$0]) : .unknown }
+                let value: AbstractValue = own.count == 1 ? own[0] : .aggregate(own)
+                selfValueBySite[address] = value
+                valueSelfBySite[address] = value
+                argumentsByAddress[address] = []
+                strategy = "value-getter-self"
                 continue
             }
             // A Swift callee with a proven layout gets exactly its parameters:
@@ -7289,6 +7400,27 @@ public struct Disassembler: Sendable {
                         while following.last == .unknown { following.removeLast() }
                     }
                 }
+                // Those words are the receiver, not more arguments: listed
+                // after the formals, `Pair(a: 3, b: 4).scaled(k)` read
+                // `Pair.scaled(arg0, 3, 4)`, a one-parameter method with
+                // three. They render as its `self`, `scaled(self: (3, 4),
+                // arg0)`, as a class method's `self` in x20 does.
+                // They are `self` only when the receiver's type lowers to
+                // exactly that many integer words: a method of a generic type
+                // (`Array._endMutation()`) takes the type's metadata there,
+                // which is no `self`.
+                let selfWords = calleeByAddress[address].flatMap(Self.valueMethodReceiver).flatMap { receiver in
+                    typeFieldMaps[receiver]?.isGeneric == false
+                        ? SwiftLowering.aggregateRegisters(of: receiver, fieldMaps: typeFieldMaps,
+                                                           enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
+                        : nil
+                }.flatMap { $0.floats == 0 ? $0.integers : nil }
+                if !following.isEmpty, let selfWords, following.count <= selfWords {
+                    let value: AbstractValue = following.count == 1 ? following[0] : .aggregate(following)
+                    selfValueBySite[address] = value
+                    valueSelfBySite[address] = value
+                    following = []
+                }
                 if !(laidOut + unplaced + following).isEmpty {
                     argumentsByAddress[address] = (laidOut + unplaced).map(sanitizeValue) + following
                     laidOutTypes[address] = slots.map(\.type) + (unplaced + following).map { _ in "" }
@@ -7471,7 +7603,13 @@ public struct Disassembler: Sendable {
                     // travels in v0 and on, so a value left in one of them
                     // for the send disproves that layout: `put:1.5 at:7`
                     // rendered `put:7 at:?`.
-                    if colons > 0, setsFloatingPointArgument(before: address) {
+                    let integerGap = (0 ..< min(colons, 6)).contains { argument in
+                        let index = 2 + argument
+                        guard index < values.count else { return true }
+                        let value = sanitizeValue(values[index])
+                        return value == .unknown || value == .argument(index)
+                    }
+                    if colons > 0, setsFloatingPointArgument(before: address, integerGap: integerGap) {
                         argumentsByAddress[address] = ([receiver, selectorValue]
                             + Array(repeating: AbstractValue.unknown, count: colons)).map(sanitizeValue)
                         strategy = "objc-untyped-float"
@@ -8264,7 +8402,10 @@ public struct Disassembler: Sendable {
                     defer { wholeResultSite = saved }
                     return renderValue(values[0], depth: depth)
                 }
-                return "(" + values.map { renderValue($0, depth: depth + 1) }.joined(separator: ", ") + ")"
+                // One lane is a scalar a call preserved the low half of
+                // (`callPreservedVectorValue`); its high lane is unknown.
+                let lanes = values.count == 1 ? values + [.unknown] : values
+                return "(" + lanes.map { renderValue($0, depth: depth + 1) }.joined(separator: ", ") + ")"
             case .callResult(let addr):
                 // x0 after a call whose result spans registers is one part of
                 // it: `mkPair(x).a + 2` read `(mkPair(x) + 2)`.
@@ -8491,6 +8632,11 @@ public struct Disassembler: Sendable {
             if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {
                 return send.rendered
             }
+            // A value method's `self` words show on every path that renders
+            // the call: the exits passed none, and the 9 in x2 vanished from
+            // `return W.take(?)`. Only those words: an x20 `self` the tracer
+            // records for a site stays on the paths that already showed it.
+            let selfText = selfText ?? site.flatMap { valueSelfBySite[$0] }.map { renderValue($0, depth: depth + 1) }
             let parts = (selfText.map { ["self: \($0)"] } ?? []) + arguments
             return "\(site.map { displayCallee(callee, at: $0) } ?? DisassembledFunction.strippedCallee(callee))(\(parts.joined(separator: ", ")))"
         }
@@ -9430,6 +9576,7 @@ public struct Disassembler: Sendable {
             if let callee, DisassembledFunction.isRuntimeNoise(callee) { continue }
             (callee.map { normalizedArguments(callee: $0, values: values, at: address) } ?? values)
                 .forEach { countDirectUses($0, at: address) }
+            if let value = valueSelfBySite[address] { countDirectUses(value, at: address) }
         }
         for (address, value) in analysis.branchConditions { countDirectUses(value, at: address) }
         for insn in function.instructions where insn.controlFlow == .branch && insn.branchTarget == nil
@@ -9552,6 +9699,13 @@ public struct Disassembler: Sendable {
                     rendered = Array(rendered.prefix(2 + selector.filter { $0 == ":" }.count))
                 }
                 for value in rendered {
+                    collectCallResults(in: value, into: &consumedCallResults)
+                }
+                // A value method's `self` words render with the call, so a
+                // call result among them is consumed there: left out,
+                // `memcpy(local_48, ?, 40)` printed once as a statement and
+                // again as `Circle.area.getter(self: memcpy(…))`.
+                if let value = valueSelfBySite[insn.address] {
                     collectCallResults(in: value, into: &consumedCallResults)
                 }
             }

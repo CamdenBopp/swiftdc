@@ -160,6 +160,77 @@ import Testing
     #expect(lowByte.renderStructured().contains("if ((arg0.bitPattern & 255) != 7) {"))
 }
 
+/// -Onone `Double(bitPattern: i)` calls the initializer, and the call named
+/// it `Swift.Double.init(arg0)`: the numeric conversion `Double(i)`, a
+/// different function. A callee with argument labels keeps them.
+@Test func aLabelledInitializerKeepsItsLabelsIfPresent() async throws {
+    let path = "Fixtures/Sample/libFloatReinterpret.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func render(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("FloatReinterpret.\(name)(") }).renderStructured()
+    }
+    #expect(try render("doubleFromBits").contains("sd((Swift.Double.init(bitPattern:)(arg0) * 2.0))"))
+    #expect(try render("floatFromBits").contains("sf((Swift.Float.init(bitPattern:)(arg0) * 2.0))"))
+    #expect(!(try render("doubleFromBits")).contains("Swift.Double.init(arg0)"))
+}
+
+/// The name half: labels are kept exactly when one is not `_`.
+@Test func strippedCalleeKeepsArgumentLabels() {
+    #expect(DisassembledFunction.strippedCallee("Swift.Double.init(bitPattern: Swift.UInt64) -> Swift.Double")
+        == "Swift.Double.init(bitPattern:)")
+    #expect(DisassembledFunction.strippedCallee("Swift.Int.init(Swift.Double) -> Swift.Int") == "Swift.Int.init")
+    #expect(DisassembledFunction.strippedCallee("M.f(Swift.Int, by: Swift.Int)") == "M.f(_:by:)")
+    #expect(DisassembledFunction.strippedCallee("M.g(x: (a: Swift.Int, b: Swift.Int)) -> ()") == "M.g(x:)")
+}
+
+/// `dup v0.2d, x0; ret` returning a Double is `Double(bitPattern:)` of the
+/// integer (native execution reads IEEE bits); the lanes carried the bare
+/// integer and it rendered `return arg0`. Moved back with `fmov x0, d1` the
+/// bits are the integer again.
+@Test func aDupIntoAVectorRegisterIsTheIntegersBitsIfPresent() async throws {
+    let path = "Fixtures/Sample/libDupBits.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func render(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("DupBits.\(name)(") }).renderStructured()
+    }
+    #expect(try render("bitsToDouble").contains("return Double(bitPattern: arg0)\n"))
+    #expect(try render("bitsToInt").contains("return arg0\n"))
+}
+
+/// AAPCS64 keeps only the low 64 bits of v8-v15 across a call.
+/// `vector_preserve.s` `scalarStore` sets d8 to 7, calls a helper that sets
+/// v8's high lane to 19, and stores q8 (native: lo=7 hi=19); it rendered
+/// `mem128[arg0] = 7`, a zero high lane. Without the call the high lane is
+/// zero (`fmov` clears it), and a Float held in s8 across the call is
+/// still the Float.
+@Test func aScalarKeptAcrossACallLosesItsHighLaneIfPresent() async throws {
+    let path = "Fixtures/Sample/libVectorPreserve.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func render(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName == name || $0.displayName.hasPrefix(name + "(") })
+            .renderStructured()
+    }
+    #expect(try render("_scalarStore").contains("mem128[arg0] = (7, ?)\n"))
+    #expect(try render("_scalarStoreNoCall").contains("mem128[arg0] = 7\n"))
+    #expect(try render("VectorPreserve.keep").contains("return arg0\n"))
+    // A Float kept in s8 across two calls and stored at 32 bits is the
+    // Float: libFloatReinterpret.opt `sf` read `mem32[x0 + 0x20] = s8`.
+    let opt = "Fixtures/Sample/libFloatReinterpret.opt.dylib"
+    guard FileManager.default.fileExists(atPath: opt) else { return }
+    let optimized = try await withStableDependencies { try await Disassembler().disassemble(path: opt) }
+    let sf = try #require(optimized.first { $0.displayName.hasPrefix("FloatReinterpret.sf(") }).renderStructured()
+    #expect(sf.contains("mem32[x0 + 0x20] = arg0\n"), "\(sf)")
+    // A dup's lanes stored through a pointer are the integer's words.
+    let dup = "Fixtures/Sample/libDupBits.dylib"
+    guard FileManager.default.fileExists(atPath: dup) else { return }
+    let dups = try await withStableDependencies { try await Disassembler().disassemble(path: dup) }
+    let fill = try #require(dups.first { $0.displayName == "_fillPair" }).renderStructured()
+    #expect(fill.contains("mem128[arg1] = (arg0, arg0)\n"), "\(fill)")
+}
+
 /// The slot's half: which register file stored a word decides what a reload
 /// of it is, and what is not known claims nothing.
 @Test func aStackSlotRemembersTheRegisterFileThatStoredIt() throws {

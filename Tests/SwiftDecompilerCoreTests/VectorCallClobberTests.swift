@@ -15,8 +15,16 @@ import Darwin
     #expect(ValueTracer.callPreservedVectorValue(after) == after)
     #expect(ValueTracer.scalarView(after, bits: 64) == .immediate(7))
     #expect(ValueTracer.callPreservedVectorValue(.aggregate([])) == .unknown)
-    for scalar: AbstractValue in [.unknown, .immediate(7), .argument(0), .loaded(0x4000)] {
-        #expect(ValueTracer.callPreservedVectorValue(scalar) == scalar)
+    // A scalar is the register with a zero high lane; after a call only its
+    // low lane is known, and a narrower view of it is still the scalar.
+    #expect(ValueTracer.callPreservedVectorValue(.unknown) == .unknown)
+    for scalar: AbstractValue in [.immediate(7), .argument(0), .loaded(0x4000)] {
+        let kept = ValueTracer.callPreservedVectorValue(scalar)
+        #expect(kept == .aggregate([scalar]))
+        #expect(ValueTracer.scalarView(kept, bits: 64) == scalar)
+        #expect(ValueTracer.scalarView(kept, bits: 32) == scalar)
+        // A second call leaves it as the first did.
+        #expect(ValueTracer.callPreservedVectorValue(kept) == kept)
     }
     let joined = AbstractValue.select(condition: .argument(0), whenTrue: before,
                                      whenFalse: .aggregate([.immediate(11), .immediate(23)]))

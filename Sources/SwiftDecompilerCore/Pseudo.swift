@@ -43,8 +43,28 @@ public extension DisassembledFunction {
         } else {
             for statement in statements { lines.append("    \(statement)") }
         }
+        if let fallThroughNote { lines.append("    \(fallThroughNote)") }
         lines.append("}")
         return lines.joined(separator: "\n")
+    }
+
+    /// A span whose last instruction can go on to the next address ends at a
+    /// boundary, not at an exit: an assembly label the linker listed as a
+    /// function start (`loop_top` inside `_outer`, `_outer+4` in
+    /// LC_FUNCTION_STARTS) cut one function in two, and the first half
+    /// rendered as a complete leaf that returns nothing, though it runs on
+    /// into the loop and returns from there. Said, not hidden. A call last
+    /// is left alone: it may not return (`bl abort` before the next
+    /// function).
+    /// Alignment `nop`s are padding, not the span's last instruction: a
+    /// `bl runtime.throw; nop` ends at the call, and a span of padding alone
+    /// continues into nothing.
+    var fallThroughNote: String? {
+        guard let end = instructions.last,
+              let last = instructions.last(where: { !$0.text.hasPrefix("nop") }), !last.isTrap,
+              last.controlFlow == .sequential || last.controlFlow == .conditionalBranch
+        else { return nil }
+        return "// continues into 0x\(String(end.address + 4, radix: 16)): this span ends at a boundary, not a return"
     }
 
     /// A source-level statement recovered from an instruction. Calls retain
@@ -103,8 +123,12 @@ public extension DisassembledFunction {
                 return "\(comment)indirect_jump(\(target))"
             }
             guard insn.controlFlow == .call else { return nil }
-            let arguments = (insn.callArguments ?? []).joined(separator: ", ")
-            return "/* unresolved call @ 0x\(String(insn.address, radix: 16)) */ indirect_call(?, recovered_args: [\(arguments)])"
+            // The list is what was tracked, never the whole call: a register
+            // left untouched since the entry is trimmed as possibly stale, yet
+            // may be an argument (`gp(a, b)` with a and b still in x0 and x1
+            // read `recovered_args: []`). It always ends in `…`.
+            let arguments = (insn.callArguments ?? []) + ["…"]
+            return "/* unresolved call @ 0x\(String(insn.address, radix: 16)) */ indirect_call(?, recovered_args: [\(arguments.joined(separator: ", "))])"
         }
         guard !insn.resultConsumed else { return nil }
         let rawArguments = insn.callArguments ?? []
@@ -636,10 +660,48 @@ public extension DisassembledFunction {
             if s[index] == ")" { depth += 1 }
             else if s[index] == "(" {
                 depth -= 1
-                if depth == 0 { return String(s[..<index]) }
+                if depth == 0 {
+                    let parameters = s[s.index(after: index)..<s.index(before: s.endIndex)]
+                    return String(s[..<index]) + argumentLabelSuffix(parameters)
+                }
             }
         }
         return s
+    }
+
+    /// A Swift function's name includes its argument labels, and two that
+    /// differ only in them are different functions: `Double(bitPattern: i)`
+    /// reinterprets the bits and `Double(i)` converts the value, so
+    /// `Swift.Double.init(arg0)` named the wrong one. When any parameter has a
+    /// label the callee keeps them, `Swift.Double.init(bitPattern:)(arg0)`;
+    /// a function whose every parameter is unlabelled (`_`) keeps the bare
+    /// name. A parameter is labelled when its demangled text opens with
+    /// `label:` (`bitPattern: Swift.UInt64`, or `bitPattern:` alone).
+    static func argumentLabelSuffix(_ parameters: Substring) -> String {
+        // A plain scan, not a Regex: this runs for every call rendered, and
+        // a Regex match per parameter cost 11% of `--structured` on
+        // sample.debug.
+        guard parameters.contains(":") else { return "" }
+        let labels = DisassembledFunction.splitTopLevelArguments(parameters).map { parameter -> String in
+            let utf8 = parameter.utf8
+            guard let first = utf8.first, first == UInt8(ascii: "_") || (first | 0x20) >= UInt8(ascii: "a")
+                    && (first | 0x20) <= UInt8(ascii: "z")
+            else { return "_" }
+            var end = utf8.startIndex
+            while end < utf8.endIndex {
+                let byte = utf8[end]
+                let letter = (byte | 0x20) >= UInt8(ascii: "a") && (byte | 0x20) <= UInt8(ascii: "z")
+                guard letter || byte == UInt8(ascii: "_") || (byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9"))
+                else { break }
+                end = utf8.index(after: end)
+            }
+            guard end < utf8.endIndex, utf8[end] == UInt8(ascii: ":") else { return "_" }
+            let next = utf8.index(after: end)
+            guard next == utf8.endIndex || utf8[next] == UInt8(ascii: " ") else { return "_" }
+            return String(parameter[..<end])
+        }
+        guard labels.contains(where: { $0 != "_" }) else { return "" }
+        return "(" + labels.map { "\($0):" }.joined() + ")"
     }
 
     /// A call to a merged (`Tm`) function, without the type its symbol happens

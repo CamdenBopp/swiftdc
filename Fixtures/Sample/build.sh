@@ -490,6 +490,9 @@ for level in O0 O1 Os; do
   xcrun clang -arch arm64 -$level -fobjc-arc -dynamiclib -framework Foundation accessorshapes.m -o libAccessorShapes.$level.dylib
 done
 
+echo "==> ivars the encoding types only in part: bitfields, char against BOOL (objcivartypes.m, -O1)"
+xcrun clang -arch arm64 -O1 -dynamiclib -framework Foundation objcivartypes.m -o libObjCIvarTypes.dylib
+
 echo "==> accessors with no verdict: past the decode prefix, outside __text (accessordeclined.m, -O1, ARC)"
 xcrun clang -arch arm64 -O1 -fobjc-arc -dynamiclib -framework Foundation accessordeclined.m -o libAccessorDeclined.dylib
 
@@ -838,3 +841,24 @@ $CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib summary_recursive_effec
 
 echo "==> conditional external tail effects, both paths and frame aliases (conditional_tail_effects.s)"
 $CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib conditional_tail_effects.s -o libConditionalTailEffects.dylib
+
+echo "==> a dylib with data and no code: LC_FUNCTION_STARTS is only zero padding (nocode.c, -O1)"
+xcrun clang -arch arm64 -O1 -dynamiclib nocode.c -o libNoCode.dylib
+
+echo "==> dup of a general register into a vector register, returned as a Double (dup_bits.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib dup_bits.s -o libDupBits.dylib
+
+echo "==> tail branches to bodies that never write x0: a lone ret, a store, an add (passthrough_tail.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib passthrough_tail.s -o libPassthroughTail.dylib
+
+echo "==> a non-local label inside a function, listed as a function start (label_split.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib label_split.s -o libLabelSplit.dylib
+
+echo "==> a scalar in a callee-saved vector register across a call, stored whole (vector_preserve.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib vector_preserve.s -o libVectorPreserve.dylib
+
+echo "==> calls through a register with arguments still in their entry registers (indirect_args.c, -O2)"
+$CLANG -arch arm64 -O2 -dynamiclib indirect_args.c -o libIndirectArgs.dylib
+
+echo "==> a struct's self after a method's formals and as a getter's words (valueself.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name ValueSelf valueself.swift -o libValueSelf.dylib

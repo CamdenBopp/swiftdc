@@ -86,6 +86,12 @@ public struct FieldMap: Sendable {
     /// whose type does not demangle has none. Empty for Objective-C maps.
     public private(set) var fieldTypeNames: [String: String] = [:]
 
+    /// Whether the type's descriptor is generic (its context flags say
+    /// so). A method of a generic type takes the type's metadata after its
+    /// formals, where a concrete value type's `self` words go. Nil for a map
+    /// built without a descriptor.
+    public internal(set) var isGeneric: Bool?
+
     /// A field's type for display: its mangled name (`Si`), unless the
     /// mangling holds a symbolic reference, a byte from 0x01 to 0x1F and a
     /// relative offset into the binary. Printed raw that was control bytes
@@ -307,8 +313,13 @@ public enum FieldMapBuilder {
             // the whole image with it.
             guard let layout = try? calculator.fieldLayout(of: descriptor), !layout.fields.isEmpty
             else { continue }
-            let map = FieldMap(typeName: name, layout: layout)
+            var map = FieldMap(typeName: name, layout: layout)
                 .withFieldTypeNames(Self.fieldTypeNames(of: type, in: machO))
+            map.isGeneric = switch type {
+            case .enum(let model): model.descriptor.layout.flags.isGeneric
+            case .struct(let model): model.descriptor.layout.flags.isGeneric
+            case .class(let model): model.descriptor.layout.flags.isGeneric
+            }
             built.append((name, Self.qualifiedName(of: type, in: machO), map))
         }
         var maps = resolvingSimpleNameCollisions(built.map { ($0.name, $0.map) })
