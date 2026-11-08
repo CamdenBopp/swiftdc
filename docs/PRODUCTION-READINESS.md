@@ -231,8 +231,10 @@ results do not replace previously recorded release performance measurements.
   second word or a value type's self words), so `f(a: x, b: y)` could pair
   the wrong ones. Tests `aLabelledInitializerKeepsItsLabelsIfPresent`,
   `strippedCalleeKeepsArgumentLabels`.
-- **OPEN — a float spilled and reloaded into a general register carries
-  the float bare.** -Onone `unsafeBitCast(a, to: Int.self)` stores d0 and
+- **FIXED (`4266f7c`) — a float spilled and reloaded into a general register carries
+  the float bare.** Rechecked 2026-11-08: `complement` renders `if
+  ((-arg0.bitPattern - 1) != 7)` and `bitCastLowByte` `(arg0.bitPattern &
+  255) != 7`. The entry as first written: -Onone `unsafeBitCast(a, to: Int.self)` stores d0 and
   reloads x8 from the slot, with no `fmov`. A bit-level operator on it
   now types its constants as integers (`(arg0 & 255) != 7`, still without
   `.bitPattern`), but arithmetic does not: `~bits == 7`, lowered to `0 -
@@ -4994,7 +4996,7 @@ if a test was observed to fail without the fix.
   67.5 MB against 67.8 MB; GoodLinks `--pseudo` 1266.3 G against
   1237.2 G (-2.3%, measured before the facts were boxed). The facts share
   one optional box, so an instruction without any pays one pointer.
-- **OPEN (soundness): the statement notes still read from text.** The same
+- **FIXED 2026-10-22 (soundness): the statement notes still read from text.** The same
   split still finds field writes (`self.x = …`), `self = …`, `yield …`,
   the executor hop and `await=` in a literal: a call `emit("a  self.x = 1")`
   renders `self.x = 1")`, and `emit("a  await=r9")` renders
@@ -8257,8 +8259,10 @@ per-accessor prefix (`10712d8`) bounds one body, not the sum.
   `-description` send looks up a signature across every class that
   implements the selector. Wall time grows faster than the accessor
   count (5,600 to 22,400 accessors: 3.9 s to 17 to 29 s).
-- **OPEN (soundness): a branchless custom setter reads as
-  synthesized.** `- (void)setLimit:(int)limit { _limit = limit > 10 ? 10
+- **FIXED (`19e5be5`, rechecked 2026-11-08) (soundness): a branchless custom setter reads as
+  synthesized.** A store through self must now store an unchanged
+  argument; `accessorshapes.m`'s `setClamped:` is this shape and keeps its
+  line. The entry as first written: `- (void)setLimit:(int)limit { _limit = limit > 10 ? 10
   : limit; }` at -O1 is `mov w8, #0xa; cmp w2, #0xa; csel w8, w2, w8, lt;
   str w8, [x0, #8]; ret`: one block, a store through self, no call, so
   `isSynthesizedAccessor` calls it synthesized and the header drops
@@ -8621,8 +8625,11 @@ Commit messages on dev stay as they are; these are the true records.
   140, json 471, instructions +0.26%, footprint +0.45%. Its Terminal and
   TextEdit numbers come from an earlier base and were not rerun.
 - `9f46c76` names three causes without weighing them; see `a927cca` above.
-- **OPEN (soundness): `56766c0` is an older version of the inlining commit.**
-  It lacks the `float-argument` decline, so a prefix that sets v0-v7 before a
+- **NOT A DEFECT (rechecked 2026-11-08): `56766c0` is an older version of the inlining commit.**
+  `git show 56766c0` adds `writesFloatArgument`, the `float-argument`
+  decline and a test that expects it, and it is in origin/dev's history;
+  the decline is in `OutlinedFragment.swift` today. The claim was that
+  it lacks the `float-argument` decline, so a prefix that sets v0-v7 before a
   call can render a wrong argument (4 corpus sites), and its author declared
   its mutation proofs void because they did not check for `Build complete`.
 - **OPEN (memory): `4266f7c` raised whole-image footprint.** `xrefs
