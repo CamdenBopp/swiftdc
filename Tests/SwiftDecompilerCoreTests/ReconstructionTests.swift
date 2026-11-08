@@ -893,12 +893,12 @@ private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
 /// than printed as a statement (or, worse, as `return memcpy(…)`).
 @Test func recoversForwardedIndirectResultIfPresent() async throws {
     guard let make = try await reconstructionPseudo("makeWide", in: indirectFixture) else { return }
-    #expect(make.contains("return Indirect.Wide5.init(arg0, arg1, arg2, arg3, arg4)"))
+    #expect(make.contains("return Indirect.Wide5.init(a:b:c:d:e:)(arg0, arg1, arg2, arg3, arg4)"))
     #expect(!make.contains("memcpy"))
     #expect(!make.contains("return arg0"))
 
     guard let constant = try await reconstructionPseudo("constantWide", in: indirectFixture) else { return }
-    #expect(constant.contains("return Indirect.Wide5.init(1, 2, 3, 4, 5)"))
+    #expect(constant.contains("return Indirect.Wide5.init(a:b:c:d:e:)(1, 2, 3, 4, 5)"))
 }
 
 /// Caller side: x8 pointed into the caller's frame when it called an x8-indirect
@@ -935,7 +935,7 @@ private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
     #expect(!opt.contains("return arg0"))
 
     guard let onone = try await reconstructionPseudo("wideMaybeSet", in: indirectFixture) else { return }
-    #expect(onone.contains("let r0 = Indirect.Wide5.init(0, 0, 0, 0, 0)"))
+    #expect(onone.contains("let r0 = Indirect.Wide5.init(a:b:c:d:e:)(0, 0, 0, 0, 0)"))
     #expect(onone.contains("return Indirect.Wide5(a: ?, b: r0.b, c: r0.c, d: r0.d, e: r0.e)"))
     #expect(!onone.contains("return arg0"))
 }

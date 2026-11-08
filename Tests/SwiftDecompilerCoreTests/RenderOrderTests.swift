@@ -68,7 +68,7 @@ private func renderOrderFunction(_ member: String) async throws -> DisassembledF
     for text in [function.renderPseudo(), function.renderStructured()] {
         #expect(text.contains("let r0 = static RenderOrder.Point.origin.getter()"), "\(text)")
         #expect(text.contains("static RenderOrder.Widget.shared.getter(self: r0)"), "\(text)")
-        #expect(text.contains("RenderOrder.Point.init(7)"), "\(text)")
+        #expect(text.contains("RenderOrder.Point.init(x:)(7)"), "\(text)")
     }
 }
 

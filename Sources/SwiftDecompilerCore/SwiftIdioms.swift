@@ -84,7 +84,7 @@ extension DisassembledFunction {
         // the interpolation returned: `return "q\(x)"`, not the literal and
         // then `return Swift.String.init(?)`.
         if sawInterpolation, sawBuilderInit, index < statements.count,
-           statements[index] == "return Swift.String.init(?)" {
+           ["return Swift.String.init(?)", "return Swift.String.init(stringInterpolation:)(?)"].contains(statements[index]) {
             return ("return \"\(components)\"", index + 1 - start)
         }
         // The `let s = "…"` that consumes the builder into a String — part of the
@@ -92,7 +92,8 @@ extension DisassembledFunction {
         if index < statements.count,
            statements[index].contains("String.init"),
            statements[index].contains("DefaultStringInterpolation.init")
-            || (sawBuilderInit && ["Swift.String.init()", "Swift.String.init(?)"].contains(statements[index])) {
+            || (sawBuilderInit && ["Swift.String.init()", "Swift.String.init(?)",
+                                   "Swift.String.init(stringInterpolation:)(?)"].contains(statements[index])) {
             index += 1
         }
         // A run with no interpolation is just a literal; leave that to the

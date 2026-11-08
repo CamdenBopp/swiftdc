@@ -115,7 +115,7 @@ private func inlinedPlan(_ outcome: OutlinedFragment.Outcome) -> OutlinedFragmen
         }
         let getter = try #require(functions.first { $0.displayName.hasPrefix("Reconstruction.ReconError.hashValue.getter") })
         let rendered = getter.renderStructured()
-        #expect(rendered.contains("Swift.Hasher.init(0)\n"), "\(path)\n\(rendered)")
+        #expect(rendered.contains("Swift.Hasher.init(_seed:)(0)\n"), "\(path)\n\(rendered)")
         #expect(rendered.contains("Swift.Hasher._combine(self: local_68, 0)\n"), "\(path)\n\(rendered)")
         #expect(rendered.contains("return Swift.Hasher._finalize(self: local_68)\n"), "\(path)\n\(rendered)")
         #expect(!rendered.contains("OUTLINED_FUNCTION") && !rendered.contains("sub_"), "\(path)\n\(rendered)")

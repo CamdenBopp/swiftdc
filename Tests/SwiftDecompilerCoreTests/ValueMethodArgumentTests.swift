@@ -77,12 +77,12 @@ struct ValueMethodArgumentTests {
         guard FileManager.default.fileExists(atPath: path), FileManager.default.fileExists(atPath: debug) else { return }
         let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
         let die = try #require(functions.first { $0.displayName.hasPrefix("StaticText.die(") }).renderPseudo()
-        #expect(die.contains("Swift._assertionFailure(\"Fatal error\", ?, \"StaticText/statictext.swift\", 14, 0)"),
+        #expect(die.contains("Swift._assertionFailure(_:_:file:line:flags:)(\"Fatal error\", ?, \"StaticText/statictext.swift\", 14, 0)"),
                 Comment(rawValue: die))
         let sample = try await withStableDependencies { try await Disassembler().disassemble(path: debug) }
             .map { $0.renderPseudo() }.joined(separator: "\n")
-        #expect(sample.contains("Swift._assertionFailure(\"Fatal error\", \"Not enough bits to represent the passed value\", \"Swift/"))
-        #expect(!sample.contains("Swift._assertionFailure(\"Fatal error\", 11, 2"))
+        #expect(sample.contains("Swift._assertionFailure(_:_:file:line:flags:)(\"Fatal error\", \"Not enough bits to represent the passed value\", \"Swift/"))
+        #expect(!sample.contains("Swift._assertionFailure(_:_:file:line:flags:)(\"Fatal error\", 11, 2"))
         #expect(!sample.contains("swiftinterface\", ?, ?)"))
     }
 

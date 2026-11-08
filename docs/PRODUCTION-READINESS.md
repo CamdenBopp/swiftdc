@@ -218,10 +218,19 @@ results do not replace previously recorded release performance measurements.
   `floatreinterpret.swift`. Blast radius: its 3 lines, plus 2 in
   libSwiftCompilerPluginMessageHandling, where `decode(Double.Type)` moved
   a call's word into d0: `return r0` -> `return Double(bitPattern: r0)`.
-- **OPEN — a nested call drops `Double.init(bitPattern:)`'s label.** -Onone
-  calls the initializer, and as an argument it renders
+- **FIXED — a nested call drops `Double.init(bitPattern:)`'s label.** -Onone
+  calls the initializer, and as an argument it rendered
   `sd((Swift.Double.init(arg0) * 2.0))`, which reads as the numeric
-  conversion. The listing names the callee in full.
+  conversion. Every call dropped its callee's labels, so any two
+  functions that differ only in them read the same
+  (`Int(truncatingIfNeeded:)` and `Int(_:)` too). A callee with a
+  labelled parameter now keeps its full name, `Swift.Double.init(bitPattern:)(arg0)`;
+  one whose parameters are all `_` keeps the bare name. Labels go on the
+  name, not the arguments: the renderer does not yet know which formal
+  each rendered argument is (a positional layout can carry a String's
+  second word or a value type's self words), so `f(a: x, b: y)` could pair
+  the wrong ones. Tests `aLabelledInitializerKeepsItsLabelsIfPresent`,
+  `strippedCalleeKeepsArgumentLabels`.
 - **OPEN — a float spilled and reloaded into a general register carries
   the float bare.** -Onone `unsafeBitCast(a, to: Int.self)` stores d0 and
   reloads x8 from the slot, with no `fmov`. A bit-level operator on it

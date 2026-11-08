@@ -484,8 +484,8 @@ struct ABISourceLoweringTests {
     guard FileManager.default.fileExists(atPath: path) else { return }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
-    #expect(text.contains(#"Swift._stringCompareWithSmolCheck(?, "A literal laid out 32 bytes later", 0)"#))
-    #expect(!text.contains("_stringCompareWithSmolCheck(?, ?, "))
+    #expect(text.contains(#"Swift._stringCompareWithSmolCheck(_:_:expecting:)(?, "A literal laid out 32 bytes later", 0)"#))
+    #expect(!text.contains("_stringCompareWithSmolCheck(_:_:expecting:)(?, ?, "))
 }
 
 /// A frozen standard-library struct's method takes `self` in x20 only as an

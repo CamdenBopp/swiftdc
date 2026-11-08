@@ -160,6 +160,30 @@ import Testing
     #expect(lowByte.renderStructured().contains("if ((arg0.bitPattern & 255) != 7) {"))
 }
 
+/// -Onone `Double(bitPattern: i)` calls the initializer, and the call named
+/// it `Swift.Double.init(arg0)`: the numeric conversion `Double(i)`, a
+/// different function. A callee with argument labels keeps them.
+@Test func aLabelledInitializerKeepsItsLabelsIfPresent() async throws {
+    let path = "Fixtures/Sample/libFloatReinterpret.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func render(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("FloatReinterpret.\(name)(") }).renderStructured()
+    }
+    #expect(try render("doubleFromBits").contains("sd((Swift.Double.init(bitPattern:)(arg0) * 2.0))"))
+    #expect(try render("floatFromBits").contains("sf((Swift.Float.init(bitPattern:)(arg0) * 2.0))"))
+    #expect(!(try render("doubleFromBits")).contains("Swift.Double.init(arg0)"))
+}
+
+/// The name half: labels are kept exactly when one is not `_`.
+@Test func strippedCalleeKeepsArgumentLabels() {
+    #expect(DisassembledFunction.strippedCallee("Swift.Double.init(bitPattern: Swift.UInt64) -> Swift.Double")
+        == "Swift.Double.init(bitPattern:)")
+    #expect(DisassembledFunction.strippedCallee("Swift.Int.init(Swift.Double) -> Swift.Int") == "Swift.Int.init")
+    #expect(DisassembledFunction.strippedCallee("M.f(Swift.Int, by: Swift.Int)") == "M.f(_:by:)")
+    #expect(DisassembledFunction.strippedCallee("M.g(x: (a: Swift.Int, b: Swift.Int)) -> ()") == "M.g(x:)")
+}
+
 /// The slot's half: which register file stored a word decides what a reload
 /// of it is, and what is not known claims nothing.
 @Test func aStackSlotRemembersTheRegisterFileThatStoredIt() throws {
