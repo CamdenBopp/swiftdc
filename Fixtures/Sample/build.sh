@@ -859,3 +859,6 @@ $CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib vector_preserve.s -o li
 
 echo "==> calls through a register with arguments still in their entry registers (indirect_args.c, -O2)"
 $CLANG -arch arm64 -O2 -dynamiclib indirect_args.c -o libIndirectArgs.dylib
+
+echo "==> a struct's self after a method's formals and as a getter's words (valueself.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name ValueSelf valueself.swift -o libValueSelf.dylib

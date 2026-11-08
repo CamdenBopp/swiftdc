@@ -47,10 +47,11 @@ struct ValueMethodArgumentTests {
     }
 
     /// A non-mutating method's `self` follows its formal parameters and is
-    /// kept: `scaled(k)` on a one-word Meter passes k in x0 and v in x1.
+    /// kept, as its `self`: `scaled(k)` on a one-word Meter passes k in x0
+    /// and v in x1.
     @Test func aValueSelfAfterTheParametersIsKeptIfPresent() async throws {
         guard let text = try await pseudo("use") else { return }
-        #expect(text.contains("ValueMethod.Meter.scaled(arg1, arg0)"), Comment(rawValue: text))
+        #expect(text.contains("ValueMethod.Meter.scaled(self: arg0, arg1)"), Comment(rawValue: text))
     }
 
     /// A StaticString is three words and one argument: `note("ready", 3)`
@@ -110,3 +111,43 @@ struct ValueMethodArgumentTests {
         #expect(split.map { $0 ?? [] } == [[line], [flags]])
     }
 }
+
+/// A struct's `self` words are its receiver, not more arguments.
+/// `valueself.swift` -O: `Pair(a: 3, b: 4).scaled(k)` read
+/// `Pair.scaled(arg0, 3, 4)`, a one-parameter method with three, and
+/// `Pair(a: x, b: 4).total` read `Pair.total.getter(arg0, 4)`.
+@Test func aStructsSelfWordsRenderAsItsSelfIfPresent() async throws {
+    let path = "Fixtures/Sample/libValueSelf.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func render(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("ValueSelf.\(name)(") }).renderStructured()
+    }
+    #expect(try render("useConst").contains("ValueSelf.Pair.scaled(self: (3, 4), arg0)"))
+    #expect(try render("useConstTotal").contains("ValueSelf.Pair.total.getter(self: (arg0, 4))"))
+    // A getter whose `self` the site has in x20 keeps it: a witness through
+    // an existential (`sample.stripped`, `Circle.area` on an `any Shape`)
+    // read `area.getter(self: 0x1000081f8)`, the metadata in x0.
+    let stripped = "Fixtures/Sample/sample.stripped"
+    guard FileManager.default.fileExists(atPath: stripped) else { return }
+    let text = try await withStableDependencies { try await Disassembler().disassemble(path: stripped) }
+        .map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(text.contains("sample.Circle.area.getter(self: __swift_project_boxed_opaque_existential("), "\(text.count)")
+    // A call result that is a getter's `self` is used there, once: the
+    // -Onone witness for `Circle.area` printed `memcpy(local_48, ?, 40)`
+    // as a statement and again as the getter's `self`.
+    let debug = "Fixtures/Sample/sample.debug"
+    guard FileManager.default.fileExists(atPath: debug) else { return }
+    let debugFunctions = try await withStableDependencies { try await Disassembler().disassemble(path: debug) }
+    let witness = try #require(debugFunctions
+        .first { $0.displayName.hasPrefix("protocol witness for sample.Shape.area.getter") }).renderStructured()
+    // A method of a generic type takes the type's metadata after its
+    // formals, not `self`: `Stack<Int>.pop()` read `pop(self: type metadata
+    // for sample.Stack<Swift.Int>)`.
+    let all = debugFunctions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(all.contains("sample.Stack.pop()") && !all.contains("sample.Stack.pop(self:"))
+    #expect(!all.contains("sample.Stack.count.getter(self:"))
+    #expect(witness.contains("return sample.Circle.area.getter(self: memcpy(local_48, ?, 40))"), "\(witness)")
+    #expect(witness.components(separatedBy: "memcpy(").count == 2, "\(witness)")
+}
+

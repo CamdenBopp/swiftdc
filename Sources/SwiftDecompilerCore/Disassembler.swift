@@ -6867,6 +6867,9 @@ public struct Disassembler: Sendable {
             }
         }
         var selfValueBySite: [UInt64: AbstractValue] = [:]
+        /// The `self` words a value method or getter takes after (or as) its
+        /// formals, by site: the ones every path that renders the call shows.
+        var valueSelfBySite: [UInt64: AbstractValue] = [:]
         for insn in function.instructions {
             guard let site = sites[insn.address], Self.isSwiftCall(insn, swiftTargets: swiftTargets),
                   site.selfValue != .unknown
@@ -7167,6 +7170,31 @@ public struct Disassembler: Sendable {
                 strategy = "string-getter"
                 continue
             }
+            // A value type's instance getter takes no formal parameter: its
+            // registers from x0 are `self`'s words, as many as the type
+            // lowers to, and nothing after them. Positional, `Pair(a: x,
+            // b: 4).total` read `Pair.total.getter(arg0, 4)`, a getter with
+            // two arguments. It renders `total.getter(self: (arg0, 4))`.
+            // Only when the site has no `self` in x20: a witness through an
+            // existential, or a struct passed by address (`VersionTuple.
+            // normalized.getter(self: local_80)`), takes it there.
+            if selfValueBySite[address] == nil, let callee = calleeByAddress[address],
+               let property = DisassembledFunction.swiftAccessorProperty(callee), property.isGetter,
+               !callee.hasPrefix("static "), !callee.contains(".subscript"),
+               let accessor = callee.range(of: ".\(property.property).getter"),
+               case let receiver = String(callee[..<accessor.lowerBound]), classTypeIndex.isValueType(receiver),
+               typeFieldMaps[receiver]?.isGeneric == false,
+               let words = SwiftLowering.aggregateRegisters(of: receiver, fieldMaps: typeFieldMaps,
+                                                            enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex),
+               words.floats == 0, (1...4).contains(words.integers) {
+                let own = (0 ..< words.integers).map { $0 < values.count ? sanitizeValue(values[$0]) : .unknown }
+                let value: AbstractValue = own.count == 1 ? own[0] : .aggregate(own)
+                selfValueBySite[address] = value
+                valueSelfBySite[address] = value
+                argumentsByAddress[address] = []
+                strategy = "value-getter-self"
+                continue
+            }
             // A Swift callee with a proven layout gets exactly its parameters:
             // integer slots from x0… and float slots from v0…, each in order on
             // its own counter, with no trailing trim, so its arity shows.
@@ -7349,6 +7377,27 @@ public struct Disassembler: Sendable {
                         following = withoutTrailingEntryValues(following, from: integer)
                         while following.last == .unknown { following.removeLast() }
                     }
+                }
+                // Those words are the receiver, not more arguments: listed
+                // after the formals, `Pair(a: 3, b: 4).scaled(k)` read
+                // `Pair.scaled(arg0, 3, 4)`, a one-parameter method with
+                // three. They render as its `self`, `scaled(self: (3, 4),
+                // arg0)`, as a class method's `self` in x20 does.
+                // They are `self` only when the receiver's type lowers to
+                // exactly that many integer words: a method of a generic type
+                // (`Array._endMutation()`) takes the type's metadata there,
+                // which is no `self`.
+                let selfWords = calleeByAddress[address].flatMap(Self.valueMethodReceiver).flatMap { receiver in
+                    typeFieldMaps[receiver]?.isGeneric == false
+                        ? SwiftLowering.aggregateRegisters(of: receiver, fieldMaps: typeFieldMaps,
+                                                           enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
+                        : nil
+                }.flatMap { $0.floats == 0 ? $0.integers : nil }
+                if !following.isEmpty, let selfWords, following.count <= selfWords {
+                    let value: AbstractValue = following.count == 1 ? following[0] : .aggregate(following)
+                    selfValueBySite[address] = value
+                    valueSelfBySite[address] = value
+                    following = []
                 }
                 if !(laidOut + unplaced + following).isEmpty {
                     argumentsByAddress[address] = (laidOut + unplaced).map(sanitizeValue) + following
@@ -8561,6 +8610,11 @@ public struct Disassembler: Sendable {
             if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {
                 return send.rendered
             }
+            // A value method's `self` words show on every path that renders
+            // the call: the exits passed none, and the 9 in x2 vanished from
+            // `return W.take(?)`. Only those words: an x20 `self` the tracer
+            // records for a site stays on the paths that already showed it.
+            let selfText = selfText ?? site.flatMap { valueSelfBySite[$0] }.map { renderValue($0, depth: depth + 1) }
             let parts = (selfText.map { ["self: \($0)"] } ?? []) + arguments
             return "\(site.map { displayCallee(callee, at: $0) } ?? DisassembledFunction.strippedCallee(callee))(\(parts.joined(separator: ", ")))"
         }
@@ -9500,6 +9554,7 @@ public struct Disassembler: Sendable {
             if let callee, DisassembledFunction.isRuntimeNoise(callee) { continue }
             (callee.map { normalizedArguments(callee: $0, values: values, at: address) } ?? values)
                 .forEach { countDirectUses($0, at: address) }
+            if let value = valueSelfBySite[address] { countDirectUses(value, at: address) }
         }
         for (address, value) in analysis.branchConditions { countDirectUses(value, at: address) }
         for insn in function.instructions where insn.controlFlow == .branch && insn.branchTarget == nil
@@ -9622,6 +9677,13 @@ public struct Disassembler: Sendable {
                     rendered = Array(rendered.prefix(2 + selector.filter { $0 == ":" }.count))
                 }
                 for value in rendered {
+                    collectCallResults(in: value, into: &consumedCallResults)
+                }
+                // A value method's `self` words render with the call, so a
+                // call result among them is consumed there: left out,
+                // `memcpy(local_48, ?, 40)` printed once as a statement and
+                // again as `Circle.area.getter(self: memcpy(…))`.
+                if let value = valueSelfBySite[insn.address] {
                     collectCallResults(in: value, into: &consumedCallResults)
                 }
             }

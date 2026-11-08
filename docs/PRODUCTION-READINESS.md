@@ -905,10 +905,17 @@ because it cannot be distinguished from a right one by reading the output.
   are now laid out from its signature and the registers after them kept
   as found (`swift-leading`): GoodLinks `String.append()` 308 → 2,
   `Hasher._combine()` 192 → 0, `String.hash()` 312 → 0, and
-  `append(10, 0xe100000000000000)` reads `append("\n")`. Still open: a
-  non-mutating method's `self` words print unlabelled after the
-  parameters, and a value-type getter, which has no formal parameters,
-  stays positional.
+  `append(10, 0xe100000000000000)` reads `append("\n")`. Fixed
+  2026-11-08: a non-mutating method's `self` words print as its `self`
+  when its type's descriptor proves it non-generic and the type lowers to
+  that many integer words (a generic type's metadata goes there instead;
+  an enum payload or a String keeps the positional words), not after the
+  parameters (`Pair(a: 3, b: 4).scaled(k)` read
+  `Pair.scaled(arg0, 3, 4)`, now `Pair.scaled(self: (3, 4), arg0)`), and
+  a value type's instance getter takes its type's words as `self` and
+  nothing else (`Pair.total.getter(self: (arg0, 4))`, was `(arg0, 4)`).
+  Every path that renders a call shows a site's `self` (the exits passed
+  none). Test `aStructsSelfWordsRenderAsItsSelfIfPresent` (`valueself.swift`).
 - **FIXED (soundness) — a member of an extension in another module took
   every register a call found.** `(extension in Foundation):` failed the
   layout's identifier test, so `static (extension in
