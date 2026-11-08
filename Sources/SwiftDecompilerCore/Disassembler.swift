@@ -6974,13 +6974,27 @@ public struct Disassembler: Sendable {
         /// value left for it too: at -O2 `-[Relay relay:to:]` sends
         /// `[o put:x at:7]` with x still in d0, nothing writes it, and the
         /// integer layout rendered `put:7 at:?`. A method's encoding says
-        /// which v registers hold an argument. Any other function, a C
-        /// function or a block, shows none, so its sends keep the integer
-        /// layout.
+        /// which v registers hold an argument, and a Swift signature laid out
+        /// in registers says the same. A function that shows neither, a C
+        /// function or a block, may have been passed a float in any of them:
+        /// `putPassed(o, x)` (C, -O2) sends `put:x at:7` with x still in d0,
+        /// and the integer layout rendered `put:7 at:?`.
         let ownFloatArgumentRegisters: Int = {
-            guard let method = function.objcMethod else { return 0 }
-            let colons = method.selector.filter { $0 == ":" }.count
-            return ObjCArgumentABI.floatRegisterCount(encoding: method.typeEncoding, argumentCount: colons) ?? 0
+            if let method = function.objcMethod {
+                let colons = method.selector.filter { $0 == ":" }.count
+                return ObjCArgumentABI.floatRegisterCount(encoding: method.typeEncoding, argumentCount: colons) ?? 0
+            }
+            if let slots = Self.swiftCallArgumentSlots(
+                callee: function.analysisDisplayName, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
+                return slots.reduce(0) { total, slot in
+                    switch slot.kind {
+                    case .floating: total + slot.registers
+                    case .aggregate(_, let floats): total + floats
+                    case .integer: total
+                    }
+                }
+            }
+            return 8
         }()
         /// Whether a call may leave its result in v0: unless its name's
         /// signature or C prototype returns an integer, a pointer or
@@ -7003,7 +7017,7 @@ public struct Disassembler: Sendable {
             // pointer or nothing.
             return DisassembledFunction.knownCArity(of: callee) == nil
         }
-        func setsFloatingPointArgument(before address: UInt64) -> Bool {
+        func setsFloatingPointArgument(before address: UInt64, integerGap: Bool = true) -> Bool {
             guard let callIndex = instructionIndex[address] else { return false }
             var settled = Set<Int>()
             var stored = Set<Int>()
@@ -7047,7 +7061,14 @@ public struct Disassembler: Sendable {
                 if settled.count == 8 { break }
             }
             if callIndex == 0 { reachedEntry = true }
-            return reachedEntry && (0 ..< min(ownFloatArgumentRegisters, 8)).contains { !settled.contains($0) }
+            // A float passed through from the entry takes one of the send's
+            // argument positions, so the integer layout then leaves an
+            // argument register unwritten (`putPassed`: `mov w2, #7` and
+            // nothing in x3, `put:x at:7`). When every integer one is set
+            // up for the send, a float in v0 would make one of those writes
+            // dead.
+            return reachedEntry && integerGap
+                && (0 ..< min(ownFloatArgumentRegisters, 8)).contains { !settled.contains($0) }
         }
 
         /// The quoted literal a String's two words spell, when both are known:
@@ -7511,7 +7532,13 @@ public struct Disassembler: Sendable {
                     // travels in v0 and on, so a value left in one of them
                     // for the send disproves that layout: `put:1.5 at:7`
                     // rendered `put:7 at:?`.
-                    if colons > 0, setsFloatingPointArgument(before: address) {
+                    let integerGap = (0 ..< min(colons, 6)).contains { argument in
+                        let index = 2 + argument
+                        guard index < values.count else { return true }
+                        let value = sanitizeValue(values[index])
+                        return value == .unknown || value == .argument(index)
+                    }
+                    if colons > 0, setsFloatingPointArgument(before: address, integerGap: integerGap) {
                         argumentsByAddress[address] = ([receiver, selectorValue]
                             + Array(repeating: AbstractValue.unknown, count: colons)).map(sanitizeValue)
                         strategy = "objc-untyped-float"

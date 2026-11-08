@@ -5052,8 +5052,15 @@ if a test was observed to fail without the fix.
   (`valueForKey:`, `objectAtIndex:`, `setFont:`), sound but lost, from a v
   register left set for something else; the rest pass a float, point,
   size or rect the integer layout misread. No other fixture view changes.
-- **OPEN (soundness): a floating-point argument passed through untouched
-  still misreads.** `putPassed(o, x)` at -O2 sends `put:x at:7` with x
+- **FIXED 2026-11-08 (soundness): a floating-point argument passed through untouched
+  still misreads.** A function with no signature to show its float
+  arguments (a C function, a block) may have been passed one in any of
+  v0-v7. An untyped send whose integer layout leaves an argument
+  register unwritten, the gap a float takes, declines when one of v0-v7
+  is untouched from the entry: `putPassed` reads `[? put:? at:?]`. A
+  send that sets up every integer register keeps its layout
+  (`takeInts`, `[? take:3 and:4]`): a float in d0 would make one of
+  those writes dead. The entry as first written: `putPassed(o, x)` at -O2 sends `put:x at:7` with x
   still in d0 from its own entry, so nothing before the send writes a v
   register and the integer layout renders `put:7 at:?`. A signature
   source for SDK selectors (the system frameworks' method type encodings

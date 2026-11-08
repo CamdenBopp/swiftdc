@@ -43,9 +43,14 @@ func anUntypedSendPassingAFloatDeclinesItsArgumentsIfPresent(path: String) async
     // The call to `useDouble` since the entry clobbered the double, and
     // leaves d0 written, so the send declines as `takeAfterCall`'s does.
     expected["-[Relay relayAfterCall:to:]"] = optimized ? "[arg1 take:? and:?]" : "[? take:? and:?]"
-    // -O0 reloads the double parameter into d0; -O2 passes it untouched,
-    // and a C function has no signature to say d0 holds an argument (OPEN).
-    if !path.hasSuffix(".opt.dylib") { expected["_putPassed"] = "[? put:? at:?]" }
+    // -O0 reloads the double parameter into d0; -O2 passes it untouched.
+    // A C function has no signature to say how many floats it was passed,
+    // so v0-v7 untouched from its entry may hold one, and `putPassed` sets
+    // up x2 but not x3, the gap a float argument leaves: the integer layout
+    // declines. It read `put:7 at:?` at -O2. `takeInts` sets up both of its
+    // registers, so a float in d0 would make one of those writes dead, and
+    // it keeps `take:3 and:4`.
+    expected["_putPassed"] = "[? put:? at:?]"
     // At -O2 the C functions keep `o` from their entry, and a signatureless
     // body that reads it proves it is their first parameter.
     if optimized {
