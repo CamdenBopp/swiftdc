@@ -826,17 +826,26 @@ public struct Disassembler: Sendable {
 
         // Cross-function name index. `referenceIndex` and `swiftTargets` read only
         // name-level fields, so name-only stubs (no instructions) suffice.
-        let stubs = boundaries.map {
-            makeFunction(start: $0, instructions: [], labelByAddress: labelByAddress,
-                         foldedByAddress: foldedByAddress,
-                         metadataNames: metadataNames, objcIndex: objcIndex)
-        }
+        // Scoped: a function record per boundary (312 bytes each, 20 MB on
+        // GoodLinks) is not held through pass 1, where the footprint peaks;
+        // `swiftTargets` needs only which of them are Swift.
+        let (indexedNames, swiftStubStarts): ([UInt64: String], [UInt64]) = {
+            let stubs = boundaries.map {
+                makeFunction(start: $0, instructions: [], labelByAddress: labelByAddress,
+                             foldedByAddress: foldedByAddress,
+                             metadataNames: metadataNames, objcIndex: objcIndex)
+            }
+            let names = referenceIndex(
+                functions: stubs, labelByAddress: labelByAddress,
+                metadataNames: metadataNames, objcIndex: objcIndex,
+                foldedByAddress: foldedByAddress, in: machO
+            )
+            return (names, stubs.filter {
+                $0.objcMethod == nil && (Self.isSwiftMangled($0.symbol) || $0.source == .metadata)
+            }.map(\.startAddress))
+        }()
         let cacheSymbols = CacheSymbolResolver(machO: machO)
-        var names = referenceIndex(
-            functions: stubs, labelByAddress: labelByAddress,
-            metadataNames: metadataNames, objcIndex: objcIndex,
-            foldedByAddress: foldedByAddress, in: machO
-        )
+        var names = indexedNames
         // Pass 1: gather cross-image call targets, one function's instructions at
         // a time, then resolve once — reproduces `crossImageNames` without holding
         // the whole image.
@@ -942,9 +951,7 @@ public struct Disassembler: Sendable {
         swiftTargets.formUnion(metadataNames.keys)
         // A recognised IRGen helper is a C function: its x20 is no `self`.
         swiftTargets.subtract(metadataNames.filter { Self.helperShapeNames.contains($0.value) }.keys)
-        swiftTargets.formUnion(stubs.filter {
-            $0.objcMethod == nil && (Self.isSwiftMangled($0.symbol) || $0.source == .metadata)
-        }.map(\.startAddress))
+        swiftTargets.formUnion(swiftStubStarts)
         swiftTargets.formUnion(swiftStubAddresses(in: machO))
         swiftTargets.subtract(objcIndex.addresses)
 

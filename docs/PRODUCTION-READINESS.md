@@ -3178,6 +3178,14 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 5. Performance and memory on large frameworks
 
+- **FIXED (memory) — the name-only function records lived through pass 1.**
+  The streaming path built a `DisassembledFunction` per boundary for the
+  name index and held them until after pass 1 for one `swiftTargets` line
+  (20 MB on GoodLinks). They are now scoped to the index. libSwiftSyntax
+  `xrefs --unreferenced`, three alternating rounds: 188, 186, 186 MB ->
+  177, 176, 175 MB. GoodLinks does not move (174, 174 -> 170, 180 MB):
+  its peak is now the end of pass 2.
+
 - **FIXED (memory) — every short function's body was held as a possible
   outlined fragment.** Pass 1 stored an `OutlinedFragment` for each body
   of at most 12 instructions, though a call inlines only one named
