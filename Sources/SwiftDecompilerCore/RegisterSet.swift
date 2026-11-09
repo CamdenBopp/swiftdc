@@ -1,12 +1,12 @@
-/// A set of register numbers below 64 in one word.
+/// A set of register numbers below 16 in two bytes.
 ///
 /// A register summary is kept for every function of an image, and each held
 /// its argument reads as `Set<Int>`: a heap object per non-empty set, 77,765
 /// of them (8.4 MB) through a GoodLinks `xrefs`. The members are x0–x7 and
-/// v0–v7 numbers, so a bit each holds them. Iteration is in ascending order,
+/// v0–v7 numbers, so a bit each holds them, and two bytes leave room. Iteration is in ascending order,
 /// so nothing that walks one depends on hash order.
 struct RegisterSet: SetAlgebra, Sequence, Hashable, Sendable, ExpressibleByArrayLiteral {
-    private var bits: UInt64 = 0
+    private var bits: UInt16 = 0
 
     init() {}
 
@@ -14,14 +14,15 @@ struct RegisterSet: SetAlgebra, Sequence, Hashable, Sendable, ExpressibleByArray
         for element in elements { insert(element) }
     }
 
-    /// A member is a register number: 64 or more is a programmer error.
-    private static func bit(_ number: Int) -> UInt64 {
-        precondition((0 ..< 64).contains(number), "register number \(number) out of range")
-        return 1 << UInt64(number)
+    /// A member is an argument register number: 16 or more is a programmer
+    /// error.
+    private static func bit(_ number: Int) -> UInt16 {
+        precondition((0 ..< 16).contains(number), "register number \(number) out of range")
+        return 1 << UInt16(number)
     }
 
     func contains(_ number: Int) -> Bool {
-        (0 ..< 64).contains(number) && bits & (1 << UInt64(number)) != 0
+        (0 ..< 16).contains(number) && bits & (1 << UInt16(number)) != 0
     }
 
     var isEmpty: Bool { bits == 0 }
@@ -70,7 +71,7 @@ struct RegisterSet: SetAlgebra, Sequence, Hashable, Sendable, ExpressibleByArray
     mutating func formSymmetricDifference(_ other: RegisterSet) { bits ^= other.bits }
 
     struct Iterator: IteratorProtocol {
-        fileprivate var remaining: UInt64
+        fileprivate var remaining: UInt16
         mutating func next() -> Int? {
             guard remaining != 0 else { return nil }
             let number = remaining.trailingZeroBitCount

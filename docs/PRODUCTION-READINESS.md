@@ -3178,6 +3178,13 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 5. Performance and memory on large frameworks
 
+- **FIXED (memory) — a register summary was 128 bytes, a third of it
+  padding.** Bools between references padded `CalleeRegisterSummary`; one
+  is held per function in a table of 131,072 slots on GoodLinks. The
+  references now come first, and `RegisterSet` is two bytes: 96 bytes. The
+  table at the GoodLinks `xrefs` peak: 17.86 MB -> 13.66 MB. Footprint
+  pairs (148, 156 -> 161, 157 MB) are within the run-to-run spread.
+
 - **FIXED (memory) — the code sections were copied into the heap for the
   whole run.** `textSection(in:)` read each code section with
   `readElements` into an array and then into `Data`: 20 MB on GoodLinks,

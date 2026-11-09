@@ -15,6 +15,8 @@ import Ccapstone
     #expect(MemoryLayout<GraphSite>.stride <= 40)
     // And one of these per function: the whole function was 312 bytes.
     #expect(MemoryLayout<FunctionCallSites>.stride <= 48)
+    // One per function for the whole run; field order padded it to 128.
+    #expect(MemoryLayout<CalleeRegisterSummary>.stride <= 96)
 }
 
 /// Packing keeps every value: a Capstone id past a bank (`.other`), the
@@ -35,17 +37,17 @@ import Ccapstone
 @Test func aRegisterSetIsASetOfRegisterNumbers() {
     var set: RegisterSet = [7, 0, 3]
     #expect(Array(set) == [0, 3, 7])
-    #expect(set.max() == 7 && set.contains(3) && !set.contains(4) && !set.contains(64) && !set.contains(-1))
+    #expect(set.max() == 7 && set.contains(3) && !set.contains(4) && !set.contains(16) && !set.contains(-1))
     #expect(set.insert(3).inserted == false && set.insert(4).inserted == true)
     #expect(set.remove(0) == 0 && set.remove(0) == nil)
     #expect(set == [3, 4, 7])
     #expect(set.union([1]) == [1, 3, 4, 7] && set.intersection([4, 5]) == [4] && set.symmetricDifference([4, 5]) == [3, 5, 7])
     #expect(RegisterSet(0 ..< 8) == [0, 1, 2, 3, 4, 5, 6, 7] && RegisterSet().isEmpty)
-    #expect(Set(RegisterSet([2, 63])) == Set([2, 63]))
-    #expect(MemoryLayout<RegisterSet>.size == 8)
+    #expect(Set(RegisterSet([2, 15])) == Set([2, 15]))
+    #expect(MemoryLayout<RegisterSet>.size == 2)
     // Every number in range, present and absent.
-    let all = RegisterSet(0 ..< 64)
-    #expect((0 ..< 64).allSatisfy { all.contains($0) && !RegisterSet().contains($0) })
-    #expect((0 ..< 64).allSatisfy { RegisterSet([$0]).contains($0) && Array(RegisterSet([$0])) == [$0] })
-    #expect(Array(all) == Array(0 ..< 64))
+    let all = RegisterSet(0 ..< 16)
+    #expect((0 ..< 16).allSatisfy { all.contains($0) && !RegisterSet().contains($0) })
+    #expect((0 ..< 16).allSatisfy { RegisterSet([$0]).contains($0) && Array(RegisterSet([$0])) == [$0] })
+    #expect(Array(all) == Array(0 ..< 16))
 }

@@ -43,40 +43,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         let unwritten: UInt32
     }
 
-    /// Argument registers x0…x7 (by number) the body may read before writing
-    /// them on some path from its entry. A call or tail call inside counts as
-    /// reading every one not yet written, since it may pass them on, unless
-    /// its target's own reads are known: a callee of known arity reads its
-    /// parameters, and a call to another in-image function waits in
-    /// `pendingReads` until `closeOverReads` gives it that function's reads.
-    let argumentReads: RegisterSet
-    /// Of those, the registers the body's own instructions read. A call
-    /// proves no parameter: one of unknown arity may pass any unwritten
-    /// register on (`swift_willThrowTyped`'s body reaches x6 and x7 only by
-    /// calling `_stdlib_isOSVersionAtLeast…`, and it takes three), and even
-    /// a known one's parameter may be whatever the register held (a lazy
-    /// witness table accessor hands its untouched x2 to
-    /// `swift_getWitnessTable`).
-    var provenArgumentReads: RegisterSet = []
-    /// The floating-point argument registers v0…v7 (by number) the body's own
-    /// instructions read before writing them. A call proves none, as for
-    /// the integer registers. C passes floats on their own counter, so a
-    /// body that reads one has parameters the integer reads do not count:
-    /// `takef3(double, double, double)` rendered `takef3()`.
-    var provenFloatArgumentReads: RegisterSet = []
     /// The width each of those is read at (16 h, 32 s, 64 d), when every read
     /// of it agrees: a constant passed there is a float of that width.
     var floatArgumentWidths: [Int: Int] = [:]
-    /// The body may leave a value in v0 for its caller: one of its own
-    /// instructions writes v0, or it calls or tail-branches out (whatever it
-    /// calls may return there). True when nothing is known.
-    var mayWriteFloatResult = true
-    /// The same for x0: one of the body's own instructions writes x0 (or
-    /// w0), or it calls or tail-branches out. False proves that at every
-    /// exit x0 still holds the caller's value, so a call's x0 result is the
-    /// x0 it was called with: a lone `ret` (`gen<T>(_ a: Int, _: T) -> Int {
-    /// a }` specialized) returns its argument. True when nothing is known.
-    var mayWriteResult = true
     /// What this body reads of each in-image callee's result: after a `bl`
     /// to it and before the end of the block, which of x0, x1, v0 and v1 an
     /// instruction reads before anything writes it. Compiled code reads a
@@ -96,21 +65,6 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// registers (bit n for xn) the body has not written at them on some
     /// path: the call reads those of them its target reads.
     var pendingReads: [PendingRead] = []
-    /// The body may use the caller's x29 as a pointer (`CalleeEffect`): it
-    /// reads x29 before writing it, other than as the value a store to its
-    /// own stack saves, directly or through a call to an in-image function
-    /// that does (`closeOverReads`).
-    var readsFramePointer = false
-    /// The same for x22, the async context register: the body may write the
-    /// context the caller holds there.
-    var readsContextRegister = false
-    /// Whether the body may read the x20 it was called with: as a value, or
-    /// by a call that may (an in-image one that does, or one with no C
-    /// arity, which may take it as `self`). A body that does not is no
-    /// method of a `self` in x20, and a caller's x20 at a call to it is a
-    /// temporary: `Mode.weight(self: r0, r0)` for a by-value enum method.
-    /// True when nothing is known.
-    var readsSelfRegister = true
     /// Callee-saved registers (`x19`…`x29` and the low 64 bits of `v8`…`v15`)
     /// the body writes and does not provably hand back: at some exit (a `ret`
     /// or a tail branch out) the
@@ -146,13 +100,91 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// only, each call once, in order (`distinctOutgoingCalls`): one entry
     /// per call site for every function was 12.7 MB of a GoodLinks `xrefs`.
     var outgoingCalls: [OutgoingCall] = []
+    /// Complete, immutable-body memory proof; unknown is the default.
+    var memoryEffect: CalleeMemoryEffect = .unknown
+    // Stored after the references so the bytes pack: a summary is held per
+    // function for the whole run, in a table of 131,072 slots on GoodLinks.
+    /// Argument registers x0…x7 (by number) the body may read before writing
+    /// them on some path from its entry. A call or tail call inside counts as
+    /// reading every one not yet written, since it may pass them on, unless
+    /// its target's own reads are known: a callee of known arity reads its
+    /// parameters, and a call to another in-image function waits in
+    /// `pendingReads` until `closeOverReads` gives it that function's reads.
+    let argumentReads: RegisterSet
+    /// Of those, the registers the body's own instructions read. A call
+    /// proves no parameter: one of unknown arity may pass any unwritten
+    /// register on (`swift_willThrowTyped`'s body reaches x6 and x7 only by
+    /// calling `_stdlib_isOSVersionAtLeast…`, and it takes three), and even
+    /// a known one's parameter may be whatever the register held (a lazy
+    /// witness table accessor hands its untouched x2 to
+    /// `swift_getWitnessTable`).
+    var provenArgumentReads: RegisterSet = []
+    /// The floating-point argument registers v0…v7 (by number) the body's own
+    /// instructions read before writing them. A call proves none, as for
+    /// the integer registers. C passes floats on their own counter, so a
+    /// body that reads one has parameters the integer reads do not count:
+    /// `takef3(double, double, double)` rendered `takef3()`.
+    var provenFloatArgumentReads: RegisterSet = []
+    /// The body may leave a value in v0 for its caller: one of its own
+    /// instructions writes v0, or it calls or tail-branches out (whatever it
+    /// calls may return there). True when nothing is known.
+    var mayWriteFloatResult = true
+    /// The same for x0: one of the body's own instructions writes x0 (or
+    /// w0), or it calls or tail-branches out. False proves that at every
+    /// exit x0 still holds the caller's value, so a call's x0 result is the
+    /// x0 it was called with: a lone `ret` (`gen<T>(_ a: Int, _: T) -> Int {
+    /// a }` specialized) returns its argument. True when nothing is known.
+    var mayWriteResult = true
+    /// The body may use the caller's x29 as a pointer (`CalleeEffect`): it
+    /// reads x29 before writing it, other than as the value a store to its
+    /// own stack saves, directly or through a call to an in-image function
+    /// that does (`closeOverReads`).
+    var readsFramePointer = false
+    /// The same for x22, the async context register: the body may write the
+    /// context the caller holds there.
+    var readsContextRegister = false
+    /// Whether the body may read the x20 it was called with: as a value, or
+    /// by a call that may (an in-image one that does, or one with no C
+    /// arity, which may take it as `self`). A body that does not is no
+    /// method of a `self` in x20, and a caller's x20 at a call to it is a
+    /// temporary: `Mode.weight(self: r0, r0)` for a by-value enum method.
+    /// True when nothing is known.
+    var readsSelfRegister = true
     var storesOnlyToStack = false
     /// The body writes no field of any object, nor does anything it calls
     /// (`closeOverFieldWrites`): an outlined fragment that tail-calls
     /// `swift_beginAccess`. False until proven.
     var writesNoFields = false
-    /// Complete, immutable-body memory proof; unknown is the default.
-    var memoryEffect: CalleeMemoryEffect = .unknown
+
+    init(
+        argumentReads: RegisterSet, provenArgumentReads: RegisterSet = [], provenFloatArgumentReads: RegisterSet = [],
+        floatArgumentWidths: [Int: Int] = [:], mayWriteFloatResult: Bool = true, mayWriteResult: Bool = true,
+        resultReads: [UInt64: ResultRead] = [:], pendingReads: [PendingRead] = [], readsFramePointer: Bool = false,
+        readsContextRegister: Bool = false, readsSelfRegister: Bool = true, clobberedCalleeSaved: Set<String>,
+        definitelyClobbered: Set<String> = [], restoredFrom: [String: Int64] = [:], callees: [UInt64] = [],
+        outgoingCalls: [OutgoingCall] = [], storesOnlyToStack: Bool = false, writesNoFields: Bool = false,
+        memoryEffect: CalleeMemoryEffect = .unknown
+    ) {
+        self.floatArgumentWidths = floatArgumentWidths
+        self.resultReads = resultReads
+        self.pendingReads = pendingReads
+        self.clobberedCalleeSaved = clobberedCalleeSaved
+        self.definitelyClobbered = definitelyClobbered
+        self.restoredFrom = restoredFrom
+        self.callees = callees
+        self.outgoingCalls = outgoingCalls
+        self.memoryEffect = memoryEffect
+        self.argumentReads = argumentReads
+        self.provenArgumentReads = provenArgumentReads
+        self.provenFloatArgumentReads = provenFloatArgumentReads
+        self.mayWriteFloatResult = mayWriteFloatResult
+        self.mayWriteResult = mayWriteResult
+        self.readsFramePointer = readsFramePointer
+        self.readsContextRegister = readsContextRegister
+        self.readsSelfRegister = readsSelfRegister
+        self.storesOnlyToStack = storesOnlyToStack
+        self.writesNoFields = writesNoFields
+    }
 
     /// Each call once, indirect calls first, then by target.
     static func distinctOutgoingCalls(_ calls: [OutgoingCall]) -> [OutgoingCall] {
