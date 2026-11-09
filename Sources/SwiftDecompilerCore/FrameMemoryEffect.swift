@@ -24,7 +24,7 @@ struct FrameMemoryEffect: Sendable, Equatable {
         /// No upper comparison: legacy unknown-width writes and caller-owned
         /// reach ask whether the fact's end is above this bound.
         case atOrAbove(Int64)
-        /// Legacy dynamic-allocation writes compare only the fact's start.
+        /// Dynamic writes and callee-owned stack reuse select fact starts.
         case startsBelow(Int64)
         /// Exact storeStack compatibility: endpoint additions trap, are deferred
         /// until a query, and the write end is tested before the fact end.
@@ -83,6 +83,15 @@ struct FrameMemoryEffect: Sendable, Equatable {
     /// No temporary singleton Set is needed by an exact-store consumer.
     init(_ region: Region, arithmetic: FactEndArithmetic, everything: Bool = false) {
         self.init(regions: .single(region), arithmetic: arithmetic, everything: everything)
+    }
+
+    /// A callee may allocate or reuse any byte below the call-time sp. An
+    /// unknown sp supplies no preserved boundary for entry-relative facts.
+    static func calleeStack(below boundary: Int64?) -> FrameMemoryEffect {
+        if let boundary {
+            return FrameMemoryEffect(.startsBelow(boundary), arithmetic: .checked)
+        }
+        return FrameMemoryEffect(arithmetic: .checked, everything: true)
     }
 
     private init(regions: Regions, arithmetic: FactEndArithmetic, everything: Bool) {

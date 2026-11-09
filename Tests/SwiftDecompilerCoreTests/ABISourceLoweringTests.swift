@@ -778,29 +778,30 @@ struct ABISourceLoweringTests {
     #expect(!setU.contains("value witness for B"), Comment(rawValue: setU))
 }
 
-/// A register that loaded self's isa still holds it after a call, and
-/// metadata does not change, so a generic argument read through it after
-/// the call names its witnesses (spillwitness.swift).
+/// A callee-saved isa register retains its proven B metadata. The separate
+/// A witness spills through an unbounded dynamic stack position; naming it
+/// again requires a stack-bound proof that this IR does not yet supply.
 @Test func anIsaKeptAcrossACallNamesItsGenericArgumentsWitnessesIfPresent() async throws {
     let path = "Fixtures/Sample/libSpillWitness.dylib"
     guard FileManager.default.fileExists(atPath: path) else { return }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let put = try #require(functions.first { $0.displayName.hasPrefix("SpillWitness.Store.put(") }).renderStructured()
     #expect(put.contains("getEnumTagSinglePayload value witness for B("), Comment(rawValue: put))
-    // `table[k] = v` copies k, of type A.
-    #expect(put.contains("initializeWithCopy value witness for A("), Comment(rawValue: put))
+    // Native Swift still copies k as A; the erased frame fact cannot prove
+    // that call target. Preserve the proven B witness and decline this one.
+    #expect(!put.contains("initializeWithCopy value witness for A("), Comment(rawValue: put))
+    #expect(put.contains("indirect_call("), Comment(rawValue: put))
 }
 
-/// `___chkstk_darwin` writes only x9 and the flags, so the size in x8 and
-/// the frame survive it: a dynamic allocation stays bounded, and a value
-/// spilled to the frame before it is still there after later calls
-/// (chkstkwitness.swift).
-@Test func theStackProbeKeepsTheFrameAcrossADynamicAllocationIfPresent() async throws {
+/// The probe preserves its declared registers, but an unknown later sp
+/// supplies no frame-lifetime proof for calls made after allocation. A
+/// spilled table cannot be named from its earlier value (chkstkwitness.swift).
+@Test func aStackProbeDoesNotProveALaterDynamicStackBoundaryIfPresent() async throws {
     let path = "Fixtures/Sample/libChkstkWitness.dylib"
     guard FileManager.default.fileExists(atPath: path) else { return }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let decode = try #require(functions.first { $0.displayName.contains("of ChkstkWitness.Message.init(from:") }).renderStructured()
-    #expect(decode.contains("destroy value witness for Swift.KeyedDecodingContainer<ChkstkWitness.Message.(PingCodingKeys"),
+    #expect(!decode.contains("destroy value witness for Swift.KeyedDecodingContainer<ChkstkWitness.Message.(PingCodingKeys"),
             Comment(rawValue: decode))
     // The allocation's address is no source value.
     #expect(!decode.contains("& -16"), Comment(rawValue: decode))

@@ -1664,11 +1664,18 @@ public struct ValueTracer: Sendable {
                 if case .frame(let top)? = registers[.sp] {
                     Self.forgetFrame(in: &registers, effect: FrameMemoryEffect(
                         [.finite(lower: top &- 16, upper: top)], arithmetic: .wrapping))
+                } else {
+                    Self.forgetCalleeStack(in: &registers)
                 }
                 registers[Self.flagsKey] = nil
                 registers[Self.flagsWidthKey] = nil
                 return
             }
+            // The next callee can reuse the stack below the call-time sp.
+            // Escape reach starts at addresses passed to it, so it does not
+            // cover a previous callee's red-zone stores below that boundary.
+            // A complete frame plan already bounds every write in the body.
+            if memory == nil { Self.forgetCalleeStack(in: &registers) }
             // Losing proof that x29 is preserved does not prove that the old
             // frame address disappeared. The callee can reload that address
             // from memory, keep it, or write through it at a negative offset.
@@ -5497,6 +5504,19 @@ public struct ValueTracer: Sendable {
         var lost: [AbstractValue] = []
         registers.frame.forget(effect, removing: [.value, .width, .outgoing]) { lost.append($0) }
         for value in lost { markEscape(value, into: &registers) }
+    }
+
+    /// Forget facts in storage the next unproved callee can allocate or reuse.
+    /// Without an exact call-time sp, no tracked frame extent is proved above
+    /// that boundary. The shared owner preserves MAY reach of forgotten values.
+    private static func forgetCalleeStack(in registers: inout State) {
+        let boundary: Int64?
+        if case .frame(let top)? = registers[.sp] {
+            boundary = top
+        } else {
+            boundary = nil
+        }
+        forgetFrame(in: &registers, effect: .calleeStack(below: boundary))
     }
 
     /// Entry-provenance pointers: computed before this frame existed, so no

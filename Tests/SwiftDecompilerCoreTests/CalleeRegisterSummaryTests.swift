@@ -310,20 +310,21 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     #expect(record.clobberedCalleeSaved.contains("x29"), "\(record.clobberedCalleeSaved)")
 }
 
-/// An address inside a dynamic allocation, handed to a call, reaches that
-/// allocation, below the frame's locals, and no save:
+/// The dynamic address retains its legacy MAY escape policy, but its size
+/// has no proven sign or bound. It supplies no positive call-time stack
+/// boundary protecting the saved entry values:
 ///
 ///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
 ///     sub sp, sp, #0x10; mov x19, x0; ldr x8, [x0]
 ///     mov x9, sp; sub x9, x9, x8; mov sp, x9; mov x0, x9; bl 0x2000
 ///     mov sp, x29; ldp x20, x19, [sp, #0x10]; ldp x29, x30, [sp], #0x20; ret
-@Test func anEscapedDynamicAllocationReachesNoSave() throws {
+@Test func anUnboundedCallTimeStackCannotProtectSaves() throws {
     let words: [UInt32] = [
         0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xaa0003f3, 0xf9400008, 0x910003e9,
         0xcb080129, 0x9100013f, 0xaa0903e0, 0x940003f6, 0x910003bf, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
     ]
     let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "belowEscape")))
-    #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
+    #expect(summary.clobberedCalleeSaved == ["x19", "x20", "x29"], "\(summary.clobberedCalleeSaved)")
 }
 
 /// The save area is the run of entry values at the top of the frame. An
@@ -412,41 +413,40 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
 }
 
-/// A join that leaves a register a dynamic allocation's address on one path
-/// and no frame address on the other keeps that bound for an escape:
+/// A join retains the legacy dynamic MAY origin, but that origin does not
+/// prove where the unbounded call-time stack pointer lies:
 ///
 ///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
 ///     sub sp, sp, #0x10; mov x19, x0; ldr x8, [x0]
 ///     mov x9, sp; sub x9, x9, x8; mov sp, x9; cbz x0, 1f; mov x1, x9
 ///     1: bl 0x2000; mov sp, x29; ldp …; ldp …; ret
-@Test func aJoinKeepsAnAllocationsBoundForAnEscape() throws {
+@Test func aDynamicJoinDoesNotProveTheCallTimeStackBoundary() throws {
     let words: [UInt32] = [
         0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xaa0003f3, 0xf9400008, 0x910003e9,
         0xcb080129, 0x9100013f, 0xb4000040, 0xaa0903e1, 0x940003f5, 0x910003bf, 0xa9414ff4,
         0xa8c27bfd, 0xd65f03c0,
     ]
     let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "allocOrNot")))
-    #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
+    #expect(summary.clobberedCalleeSaved == ["x19", "x20", "x29"], "\(summary.clobberedCalleeSaved)")
 }
 
-/// An address inside a dynamic allocation plus an offset in a register
-/// stays inside it: Swift projects a field of the value a buffer holds with
-/// `add x1, x9, x10`, x10 a field offset read from metadata. Handed to a
-/// call, it reaches that allocation, below the frame's locals, and no save:
+/// A projected field retains a dynamic MAY origin. The untyped size and
+/// field offset cannot prove that a later callee's own stack allocation
+/// misses the saved registers:
 ///
 ///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
 ///     sub sp, sp, #0x10; mov x19, x0; ldr x8, [x0]
 ///     mov x9, sp; sub x9, x9, x8; mov sp, x9
 ///     ldrsw x10, [x0, #48]; add x1, x9, x10; blr x2
 ///     mov sp, x29; ldp …; ldp …; ret
-@Test func aFieldOfADynamicAllocationStaysInIt() throws {
+@Test func anUnprovedDynamicFieldCallCannotProtectSaves() throws {
     let words: [UInt32] = [
         0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xaa0003f3, 0xf9400008, 0x910003e9,
         0xcb080129, 0x9100013f, 0xb980300a, 0x8b0a0121, 0xd63f0040, 0x910003bf, 0xa9414ff4,
         0xa8c27bfd, 0xd65f03c0,
     ]
     let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "field")))
-    #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
+    #expect(summary.clobberedCalleeSaved == ["x19", "x20", "x29"], "\(summary.clobberedCalleeSaved)")
 }
 
 /// Where the incoming x20 lives decides whether a body reads it, not

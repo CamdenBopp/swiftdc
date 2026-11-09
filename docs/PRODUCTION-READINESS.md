@@ -50,6 +50,19 @@ results do not replace previously recorded release performance measurements.
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
 
+- **FIXED — a callee could reuse the stack below the caller's sp.** A
+  frame fact below the call-time sp, or any frame fact once sp is unknown
+  after a dynamically sized stack adjustment, survived an unproved call,
+  though the callee may allocate or reuse that storage: stack_lifetime.s
+  returns 99 natively where swiftdc read the earlier callee's 7, and
+  `sub sp, sp, x20` with an unproven size may move sp up over a live slot.
+  Such facts are now forgotten at an unproved call (the tracer and the
+  preservation summary share `FrameMemoryEffect.calleeStack`). Ported from
+  the compiler-ir-integration-20261106 worktree. Cost: GoodLinks
+  unresolved indirect calls 12,577 -> 15,531, nearly all in functions
+  whose sp is unknown (generic code sizing a buffer from a type's runtime
+  size); the exact-sp rule alone costs none.
+
 - **FIXED — a callee that may clobber x29 left the caller's frame
   intact.** A call to a body summarised as not preserving x29, made while
   x29 held a frame address, forgot only the register. The callee can

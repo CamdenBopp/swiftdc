@@ -1036,6 +1036,24 @@ enum Preservation {
             slots.forget(effect, removing: .value)
         }
 
+        /// A saved entry value below sp occupies storage the next callee can
+        /// reuse. A pointer there can also expose other slots before it is
+        /// overwritten; retain that possible reach after losing the value.
+        mutating func forgetCalleeStack() {
+            let boundary: Int64?
+            if case .stack(let top) = value("sp") { boundary = top }
+            else { boundary = nil }
+            var exposedFramePointer = false
+            slots.forget(.calleeStack(below: boundary), removing: .value) { value in
+                switch value {
+                case .stack, .below: exposedFramePointer = true
+                default: break
+                }
+            }
+            if boundary.map({ $0 > 0 }) ?? true { incomingIntact = false }
+            if exposedFramePointer { stackAddressEscaped = true }
+        }
+
         mutating func invalidateSlots(at address: Int64, bytes: Int) {
             let (end, overflow) = address.addingReportingOverflow(Int64(bytes))
             guard bytes > 0, !overflow else {
@@ -1178,6 +1196,7 @@ enum Preservation {
             state.markEscape(memory.inputs.map(\.key))
             for store in memory.stores { state.invalidateSlots(at: store.start, bytes: Int(store.bytes)) }
         } else {
+            state.forgetCalleeStack()
             state.invalidateSlotsForUnknownWrite(throughStackAlias: false)
         }
         // The callee keeps the ABI: x19–x29, sp and the low 64 bits of v8–v15 survive it.
