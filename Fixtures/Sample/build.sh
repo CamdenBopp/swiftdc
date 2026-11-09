@@ -890,3 +890,6 @@ $SWIFTC -parse-as-library -O -enable-library-evolution -emit-library -module-nam
 
 echo "==> protocol witness calls through a hand-built descriptor, with and without (T, table) passed last (protocol_witness_args.s)"
 $CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib protocol_witness_args.s -L"$(xcrun --show-sdk-path)/usr/lib/swift" -lswiftCore -o libProtocolWitnessArgs.dylib
+
+echo "==> possible frame reach after lost frame-pointer preservation (frame_may.s)"
+$CLANG -arch arm64 -dynamiclib frame_may.s -o libFrameMay.dylib

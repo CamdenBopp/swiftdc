@@ -1669,6 +1669,16 @@ public struct ValueTracer: Sendable {
                 registers[Self.flagsWidthKey] = nil
                 return
             }
+            // Losing proof that x29 is preserved does not prove that the old
+            // frame address disappeared. The callee can reload that address
+            // from memory, keep it, or write through it at a negative offset.
+            // Retain whole-frame MAY reach before this call's invalidation;
+            // merely forgetting the exact register would hide both this
+            // callee's writes and a later callee's use of the possible FP.
+            if let target = insn.branchTarget, calleeClobbers[target]?.contains("x29") == true,
+               let fp = registers[.x(29)], Self.containsFrame(fp) {
+                registers[Self.frameEscapeAllKey] = .immediate(1)
+            }
             let handledAsMemoryHelper = memory == nil && call.knownArityApplies
                 && applyMemoryHelper(callee: call.callee, site: site, into: &registers)
             // A local whose address the call receives may be written by it: an

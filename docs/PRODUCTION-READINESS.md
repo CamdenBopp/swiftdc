@@ -50,6 +50,17 @@ results do not replace previously recorded release performance measurements.
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
 
+- **FIXED — a callee that may clobber x29 left the caller's frame
+  intact.** A call to a body summarised as not preserving x29, made while
+  x29 held a frame address, forgot only the register. The callee can
+  keep that address, reload it, or hand it to a later callee that writes
+  through it: frame_may.s returns 99 and 7 natively where swiftdc kept the
+  stale slot. Such a call now escapes the whole frame. Ported from the
+  compiler-ir-frame-may-20261107 worktree. Cost: the summary's
+  conservative x29 claims now reach callers' frames, so spills across
+  those calls render as registers (`mem128[x0 + 0x10] = q0` where it read
+  `(1, 2)`); GoodLinks unresolved indirect calls 12,518 -> 12,577.
+
 - **FIXED — a void value witness's x0 flowed on as its result.** A call
   named through a value-witness table (`destroy value witness for
   Swift.Int`) was resolved after the first trace, and nothing marked

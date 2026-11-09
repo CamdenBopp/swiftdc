@@ -26,6 +26,10 @@ private let binary = URL(fileURLWithPath: ".build/debug/swiftdc")
 /// Swift metadata, the ObjC index, field layout, and the call graph. Each runs
 /// in well under a tenth of a second, so repeating them is cheap.
 private let cases: [(label: String, arguments: [String])] = [
+    ("disasm --structured possible FP reach", ["disasm", "Fixtures/Sample/libFrameMay.dylib", "--structured"]),
+    ("disasm --pseudo possible FP reach", ["disasm", "Fixtures/Sample/libFrameMay.dylib", "--pseudo"]),
+    ("disasm listing possible FP reach", ["disasm", "Fixtures/Sample/libFrameMay.dylib"]),
+    ("disasm --json possible FP reach", ["disasm", "Fixtures/Sample/libFrameMay.dylib", "--json"]),
     ("disasm --structured query identity", ["disasm", "Fixtures/Sample/libUniquenessResult.O.dylib", "--structured"]),
     ("disasm --pseudo query identity", ["disasm", "Fixtures/Sample/libUniquenessResult.O.dylib", "--pseudo"]),
     ("disasm listing query identity", ["disasm", "Fixtures/Sample/libUniquenessResult.O.dylib"]),
