@@ -16,7 +16,9 @@ import Ccapstone
     // And one of these per function: the whole function was 312 bytes.
     #expect(MemoryLayout<FunctionCallSites>.stride <= 48)
     // One per function for the whole run; field order padded it to 128.
-    #expect(MemoryLayout<CalleeRegisterSummary>.stride <= 96)
+    // The pure-alias input proof adds 16: the decoded entry and the
+    // branch's 32-bit offset.
+    #expect(MemoryLayout<CalleeRegisterSummary>.stride <= 112)
 }
 
 /// Packing keeps every value: a Capstone id past a bank (`.other`), the

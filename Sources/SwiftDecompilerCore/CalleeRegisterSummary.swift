@@ -111,7 +111,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// parameters, and a call to another in-image function waits in
     /// `pendingReads` until `closeOverReads` gives it that function's reads.
     let argumentReads: RegisterSet
-    /// Of those, the registers the body's own instructions read. A call
+    /// Of those, the registers the body's own instructions read, or an exact
+    /// direct branch alias forwards to a body that proves them. An ordinary call
     /// proves no parameter: one of unknown arity may pass any unwritten
     /// register on (`swift_willThrowTyped`'s body reaches x6 and x7 only by
     /// calling `_stdlib_isOSVersionAtLeast…`, and it takes three), and even
@@ -120,7 +121,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// `swift_getWitnessTable`).
     var provenArgumentReads: RegisterSet = []
     /// The floating-point argument registers v0…v7 (by number) the body's own
-    /// instructions read before writing them. A call proves none, as for
+    /// instructions read before writing them, including an exact direct branch
+    /// alias's proven inputs. An ordinary call proves none, as for
     /// the integer registers. C passes floats on their own counter, so a
     /// body that reads one has parameters the integer reads do not count:
     /// `takef3(double, double, double)` rendered `takef3()`.
@@ -155,6 +157,35 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// (`closeOverFieldWrites`): an outlined fragment that tail-calls
     /// `swift_beginAccess`. False until proven.
     var writesNoFields = false
+    /// Where the decoded read analysis begins. Pure-alias closure checks this
+    /// against the summary dictionary's actual entry key: Capstone can skip an
+    /// undecodable prefix, and a function's displayed start alone is not proof.
+    var inputProofEntry: UInt64? {
+        get { hasInputProofEntry ? inputProofEntryAddress : nil }
+        set { inputProofEntryAddress = newValue ?? 0; hasInputProofEntry = newValue != nil }
+    }
+    /// An immutable body consisting of exactly one direct unconditional B to
+    /// another declared in-image function. No prologue, moves, calls, indirect
+    /// branch or conditional branch can inherit its target's input proof.
+    /// Stored as the branch's offset from the entry, which a `b` keeps
+    /// within ±128 MB.
+    var pureTailTarget: UInt64? {
+        get {
+            guard hasPureTailTarget, let entry = inputProofEntry else { return nil }
+            return entry &+ UInt64(bitPattern: Int64(pureTailOffset))
+        }
+        set {
+            guard let target = newValue, let entry = inputProofEntry,
+                  let offset = Int32(exactly: Int64(bitPattern: target &- entry))
+            else { pureTailOffset = 0; hasPureTailTarget = false; return }
+            pureTailOffset = offset
+            hasPureTailTarget = true
+        }
+    }
+    private var inputProofEntryAddress: UInt64 = 0
+    private var pureTailOffset: Int32 = 0
+    private var hasInputProofEntry = false
+    private var hasPureTailTarget = false
 
     init(
         argumentReads: RegisterSet, provenArgumentReads: RegisterSet = [], provenFloatArgumentReads: RegisterSet = [],
@@ -163,7 +194,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         readsContextRegister: Bool = false, readsSelfRegister: Bool = true, clobberedCalleeSaved: Set<String>,
         definitelyClobbered: Set<String> = [], restoredFrom: [String: Int64] = [:], callees: [UInt64] = [],
         outgoingCalls: [OutgoingCall] = [], storesOnlyToStack: Bool = false, writesNoFields: Bool = false,
-        memoryEffect: CalleeMemoryEffect = .unknown
+        memoryEffect: CalleeMemoryEffect = .unknown, inputProofEntry: UInt64? = nil, pureTailTarget: UInt64? = nil
     ) {
         self.floatArgumentWidths = floatArgumentWidths
         self.resultReads = resultReads
@@ -184,6 +215,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         self.readsSelfRegister = readsSelfRegister
         self.storesOnlyToStack = storesOnlyToStack
         self.writesNoFields = writesNoFields
+        // The target is stored relative to the entry, so the entry first.
+        self.inputProofEntry = inputProofEntry
+        self.pureTailTarget = pureTailTarget
     }
 
     /// Each call once, indirect calls first, then by target.
@@ -215,11 +249,12 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     var argumentCount: Int { (argumentReads.max() ?? -1) + 1 }
 
     /// The parameters a call to this function has, as its own body proves
-    /// them: through the highest register it reads itself.
+    /// them: through the highest register it reads itself or forwards through
+    /// an exact direct branch alias to a body that proves it.
     var provenArgumentCount: Int { (provenArgumentReads.max() ?? -1) + 1 }
 
     /// The floating-point parameters the body proves: through the highest v
-    /// register it reads itself.
+    /// register it reads itself or forwards through an exact direct branch alias.
     var provenFloatArgumentCount: Int { (provenFloatArgumentReads.max() ?? -1) + 1 }
 
     private static let argumentKeys = (0...7).map { "x\($0)" }
@@ -508,13 +543,26 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             callees: callees.sorted(),
             outgoingCalls: storesOnlyToStack ? Self.distinctOutgoingCalls(outgoingCalls) : [],
             storesOnlyToStack: storesOnlyToStack,
-            memoryEffect: readFacts?.memoryEffect ?? CalleeMemoryEffect.discover(in: function))
+            memoryEffect: readFacts?.memoryEffect ?? CalleeMemoryEffect.discover(in: function),
+            inputProofEntry: readFacts?.inputProofEntry ?? instructions.first?.address,
+            pureTailTarget: readFacts?.pureTailTarget ?? pureTailTarget(of: function, isFunction: isFunction))
         summary.mayWriteResult = writesResult
         summary.resultReads = readFacts?.resultReads ?? Self.resultReads(
             instructions, blockStarts: Set(blocks.map(\.startAddress)), isFunction: isFunction,
             provenNonThrowing: DisassembledFunction.splitSignature(function.analysisDisplayName)
                 .map { !$0.isThrowing } ?? false)
         return summary
+    }
+
+    private static func pureTailTarget(
+        of function: DisassembledFunction, isFunction: (UInt64) -> Bool
+    ) -> UInt64? {
+        guard function.instructions.count == 1, let branch = function.instructions.first,
+              branch.address == function.startAddress,
+              branch.controlFlow == .branch, branch.detail?.id == AARCH64_INS_B,
+              let target = branch.branchTarget, target != branch.address, isFunction(target)
+        else { return nil }
+        return target
     }
 
     /// Marks each body that writes no field of any object: it stores only
@@ -557,7 +605,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             mayWriteFloatResult: true, pendingReads: pendingReads,
             readsFramePointer: readsFramePointer,
             readsContextRegister: readsContextRegister, clobberedCalleeSaved: Self.calleeSavedKeys,
-            definitelyClobbered: Self.calleeSavedKeys, callees: callees, memoryEffect: memoryEffect)
+            definitelyClobbered: Self.calleeSavedKeys, callees: callees, memoryEffect: memoryEffect,
+            inputProofEntry: inputProofEntry, pureTailTarget: pureTailTarget)
     }
 
     /// Initial read/preservation analyses precede the callee summaries. Once
@@ -699,6 +748,54 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             }
         }
         for start in starts { summaries[start]?.pendingReads = [] }
+        closeOverPureTailInputs(&summaries, starts: starts)
+    }
+
+    /// A single unconditional direct branch is an ABI alias: it changes no
+    /// argument register and performs no work before entering its target.
+    /// Carry only proved inputs, with their floating-point widths, backwards
+    /// from a decoded non-alias entry. Ordinary calls keep their existing
+    /// conservative policy, even when their possible reads close transitively.
+    ///
+    /// Seed no alias. A cycle, an unknown/interior target, a missing summary
+    /// (including a bounded decode), or an undecoded entry cannot gain proof.
+    /// Each resolved alias enters the queue once, so this needs neither
+    /// recursion nor a depth cap and is bounded by the summary graph's size.
+    private static func closeOverPureTailInputs(
+        _ summaries: inout [UInt64: CalleeRegisterSummary], starts: [UInt64]
+    ) {
+        var aliases: [UInt64: [UInt64]] = [:]
+        for start in starts {
+            guard let summary = summaries[start] else { continue }
+            if let target = summary.pureTailTarget {
+                // Reclosing the same immutable summaries remains fail-closed:
+                // a stale inherited proof cannot seed an alias cycle.
+                summaries[start]?.provenArgumentReads = []
+                summaries[start]?.provenFloatArgumentReads = []
+                summaries[start]?.floatArgumentWidths = [:]
+                guard summary.inputProofEntry == start,
+                      summaries[target]?.inputProofEntry == target else { continue }
+                aliases[target, default: []].append(start)
+            }
+        }
+        // Only providers an alias actually reaches need queue space. Reuse the
+        // caller's sorted entry list instead of sorting every summary again.
+        var worklist = aliases.keys.sorted().filter { target in
+            summaries[target]?.pureTailTarget == nil
+        }
+        var resolved = Set(worklist)
+        var next = 0
+        while next < worklist.count {
+            let target = worklist[next]
+            next += 1
+            guard let proof = summaries[target] else { continue }
+            for start in aliases[target] ?? [] where resolved.insert(start).inserted {
+                summaries[start]?.provenArgumentReads = proof.provenArgumentReads
+                summaries[start]?.provenFloatArgumentReads = proof.provenFloatArgumentReads
+                summaries[start]?.floatArgumentWidths = proof.floatArgumentWidths
+                worklist.append(start)
+            }
+        }
     }
 
     private func replacingReads(
@@ -712,7 +809,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             readsContextRegister: readsContextRegister, readsSelfRegister: readsSelfRegister,
             clobberedCalleeSaved: clobberedCalleeSaved,
             definitelyClobbered: definitelyClobbered, restoredFrom: restoredFrom, callees: callees,
-            outgoingCalls: outgoingCalls, storesOnlyToStack: storesOnlyToStack, memoryEffect: memoryEffect)
+            outgoingCalls: outgoingCalls, storesOnlyToStack: storesOnlyToStack, memoryEffect: memoryEffect,
+            inputProofEntry: inputProofEntry, pureTailTarget: pureTailTarget)
         summary.mayWriteResult = mayWriteResult
         summary.resultReads = resultReads
         return summary
@@ -821,7 +919,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 restoredFrom: rebuilt.restoredFrom,
                 callees: old.callees,
                 outgoingCalls: old.outgoingCalls,
-                storesOnlyToStack: old.storesOnlyToStack, memoryEffect: old.memoryEffect)
+                storesOnlyToStack: old.storesOnlyToStack, memoryEffect: old.memoryEffect,
+                inputProofEntry: old.inputProofEntry, pureTailTarget: old.pureTailTarget)
             guard new != old else { continue }
             new.mayWriteResult = old.mayWriteResult
             new.resultReads = old.resultReads

@@ -7003,7 +7003,9 @@ public struct Disassembler: Sendable {
                     ).map { !$0.slots.isEmpty || $0.unplaced > 0 } == true
                     || (!(callTargets[insn.address] != nil && DisassembledFunction.knownArityNameMayHaveTwin(callee))
                         && Self.cPrototypeLayout(callee: callee) != nil)
-                    || (insn.branchTarget.flatMap { registerSummaries[$0] }?.provenArgumentCount ?? 0) > 0
+                    || insn.branchTarget.flatMap({ registerSummaries[$0] }).map({
+                        $0.provenArgumentCount > 0 || $0.provenFloatArgumentCount > 0
+                    }) == true
                     // An undeclared C callee's arity is unknown, which is
                     // not zero: `P()` read as a call with no arguments.
                     || undeclaredCImportCalls.contains(insn.address)

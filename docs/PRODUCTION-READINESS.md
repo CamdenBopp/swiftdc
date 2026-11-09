@@ -77,6 +77,17 @@ results do not replace previously recorded release performance measurements.
   --unreferenced --probe - --probe-filter
   event=cfg.unresolved-indirect-call`); countAll's associated-type
   witness names are back.
+- **FIXED — a call through a pure branch thunk lost its inputs.** A body
+  that is one direct `b` to another declared function (a merged witness, an
+  outlined relay) proved no input of its own, so its callers rendered
+  `sub_ad0()` or `witness(?, ?, ?)` where the target reads x0. Register
+  summaries now carry the target's proved integer and floating-point inputs,
+  with their widths, backwards through such an alias. Both the alias's and
+  the target's decoded entry must match their summary keys; a body with a
+  prologue, a move, a call, an indirect or conditional branch, a cycle or a
+  missing target gains nothing. PureTailInputTests covers every summary
+  route. Ported from the compiler-ir-arc-origin-20261107 worktree.
+
 - **OPEN — the remaining 2,276 of those sites.** Stripped countAll is one:
   its third buffer's size is read through an argument the stripped tracer
   cannot name, so the probed size and sp's adjustment are not shown
