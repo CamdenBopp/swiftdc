@@ -3679,20 +3679,38 @@ public struct Disassembler: Sendable {
         /// Only the eight function slots every table has; past them come
         /// the size, stride and flags.
         func valueWitnessCall(_ value: AbstractValue, site: UInt64) -> String? {
+            let callSite = site
+            /// The witness at `offset` in a value-witness table: one of the
+            /// eight every table has, or an enum's three after its size,
+            /// stride, flags and extra inhabitant count (`+0x58`, ValueWitness.def).
+            /// An enum slot exists only in an enum's table, so it is named
+            /// only when the call passes the metadata it was loaded through
+            /// where the witness takes its metadata, its last parameter.
+            func slotName(_ offset: Int, metadata: AbstractValue) -> String? {
+                guard offset >= 0, offset % 8 == 0 else { return nil }
+                if offset / 8 < MetadataSymbolizer.valueWitnessNames.count {
+                    return MetadataSymbolizer.valueWitnessNames[offset / 8]
+                }
+                guard offset >= 0x58, (offset - 0x58) / 8 < MetadataSymbolizer.enumValueWitnessNames.count else { return nil }
+                let name = MetadataSymbolizer.enumValueWitnessNames[(offset - 0x58) / 8]
+                guard let arity = DisassembledFunction.valueWitnessArity[name],
+                      let arguments = callArguments[callSite], arguments.count >= arity, arguments[arity - 1] == metadata
+                else { return nil }
+                return name
+            }
             // Metadata loaded from a slot the loader fixes (a GOT or literal
             // pool entry bound to `type metadata for X`): `ldr x2, [x2,
             // #0x60]; ldur x8, [x2, #-0x8]; ldr x8, [x8, #k]; blr x8`.
             if case .loadedFrom(.loadedThrough(let slot, offset: -8), let offset) = value,
-               offset >= 0, offset % 8 == 0, offset / 8 < MetadataSymbolizer.valueWitnessNames.count,
+               let witness = slotName(offset, metadata: .loaded(slot)),
                // `loadedName` names only a slot the loader owns.
                let name = resolver.loadedName(at: slot), name.hasPrefix("type metadata for "),
                name.count > "type metadata for ".count {
-                return "\(MetadataSymbolizer.valueWitnessNames[offset / 8]) value witness for \(name.dropFirst("type metadata for ".count))"
+                return "\(witness) value witness for \(name.dropFirst("type metadata for ".count))"
             }
             guard case .loadedFrom(.loadedFrom(let metadata, offset: -8), let offset) = value,
-                  offset >= 0, offset % 8 == 0, offset / 8 < MetadataSymbolizer.valueWitnessNames.count
+                  let slot = slotName(offset, metadata: metadata)
             else { return nil }
-            let slot = MetadataSymbolizer.valueWitnessNames[offset / 8]
             // A generic parameter's metadata, as the function received it.
             if case .genericMetadata(let name) = metadata { return "\(slot) value witness for \(name)" }
             // An argument no signature types: a stripped generic function's

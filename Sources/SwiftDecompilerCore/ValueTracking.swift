@@ -5245,12 +5245,14 @@ public struct ValueTracer: Sendable {
              // through it: a value-witness table, when the argument is
              // metadata (`ldur x22, [x2, #-0x8]; ldr x8, [x22, #0x10]`). Only
              // a call that passes the same argument as its metadata names it
-             // (`valueWitnessCall`); as a value it is unknown. Only the eight
-             // function slots: the size at `+0x40` sizes a dynamic stack
+             // (`valueWitnessCall`); as a value it is unknown. Only the
+             // function slots, the eight every table has and an enum's three
+             // after its size, stride and flags: the size at `+0x40` sizes a dynamic stack
              // allocation (`add x8, x8, #0xf; …; mov sp, x19`), and as a
              // tracked value it took the frame's slots with it.
              .argument where effective == -8,
-             .loadedFrom(.argument, -8) where (0 ..< 0x40).contains(effective) && effective % 8 == 0:
+             .loadedFrom(.argument, -8) where effective % 8 == 0
+                 && ((0 ..< 0x40).contains(effective) || (0x58 ... 0x68).contains(effective)):
             return .throughValue(registers[Location(base)] ?? .unknown, offset: Int(effective))
         case .selfPointer: return .selfField(Int(effective))
         case .selfField(let field): return .selfField(field + Int(effective))

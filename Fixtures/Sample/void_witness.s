@@ -38,3 +38,20 @@ _vwCopyThenUse:
   bl _vwSink
   ldp x29, x30, [sp], #16
   ret
+
+// _vwEnumSlotOther: `[[Swift.Int metadata - 8] + 0x58]` is an enum
+// witness slot, which only an enum's table has, and the call passes x2,
+// not that metadata, where getEnumTag takes T: nothing proves it a witness
+// call. Unresolved, never `getEnumTag value witness for Swift.Int`.
+.globl _vwEnumSlotOther
+.p2align 2
+_vwEnumSlotOther:
+  stp x29, x30, [sp, #-16]!
+  adrp x1, _$sSiN@GOTPAGE
+  ldr x1, [x1, _$sSiN@GOTPAGEOFF]
+  ldur x8, [x1, #-8]
+  ldr x8, [x8, #0x58]
+  mov x1, x2
+  blr x8
+  ldp x29, x30, [sp], #16
+  ret

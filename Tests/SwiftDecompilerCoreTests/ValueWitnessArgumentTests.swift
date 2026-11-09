@@ -37,3 +37,28 @@ private func structured(_ path: String) async throws -> [String: String] {
     #expect(all.contains("initializeWithCopy value witness for arg2(?, arg0, arg2)"))
     #expect(all.contains("initializeWithTake value witness for arg2(arg1, ?, arg2)"))
 }
+
+/// An enum's three witnesses follow its size, stride, flags and extra
+/// inhabitant count (`+0x58`). Only an enum's table has them, so a call
+/// through one is named only when it passes the metadata back as its last
+/// argument.
+@Test func anEnumValueWitnessIsNamedOnlyWithItsMetadataIfPresent() async throws {
+    let path = "Fixtures/Sample/libValueWitnessArgs.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let text = try await structured(path)
+    #expect(text["_vwEnumTag"]?.contains("getEnumTag value witness for arg1(arg0, arg1)") == true)
+    #expect(text["_vwInjectTag"]?.contains("destructiveInjectEnumTag value witness for arg2(arg0, arg1, arg2)") == true)
+    #expect(text["_vwEnumTagOther"]?.contains("unresolved call") == true)
+    #expect(text["_vwEnumTagOther"]?.contains("value witness") == false)
+}
+
+/// The same rule for metadata the loader binds: an enum slot read through
+/// `Swift.Int`'s table, called with another register as T, is no witness
+/// call anything proves.
+@Test func anEnumSlotWithoutItsMetadataStaysUnresolvedIfPresent() async throws {
+    let path = "Fixtures/Sample/libVoidWitness.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let text = try await structured(path)
+    #expect(text["_vwEnumSlotOther"]?.contains("unresolved call") == true, "\(text["_vwEnumSlotOther"] ?? "")")
+    #expect(text["_vwEnumSlotOther"]?.contains("value witness") == false)
+}

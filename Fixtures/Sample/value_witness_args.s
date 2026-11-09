@@ -39,3 +39,39 @@ _vwNotTheTable:
   blr x8
   ldp x29, x30, [sp], #16
   ret
+
+// Enum witnesses sit after the size, stride, flags and extra inhabitant
+// count: getEnumTag at +0x58 (value, T), destructiveInjectEnumTag at +0x68
+// (value, tag, T). Only an enum's table has them, so the call must pass the
+// metadata back. _vwEnumTag and _vwInjectTag do; _vwEnumTagOther passes x2
+// where getEnumTag takes T: unresolved.
+.globl _vwEnumTag
+.p2align 2
+_vwEnumTag:
+  stp x29, x30, [sp, #-16]!
+  ldur x8, [x1, #-8]
+  ldr x8, [x8, #0x58]
+  blr x8
+  ldp x29, x30, [sp], #16
+  ret
+
+.globl _vwInjectTag
+.p2align 2
+_vwInjectTag:
+  stp x29, x30, [sp, #-16]!
+  ldur x8, [x2, #-8]
+  ldr x8, [x8, #0x68]
+  blr x8
+  ldp x29, x30, [sp], #16
+  ret
+
+.globl _vwEnumTagOther
+.p2align 2
+_vwEnumTagOther:
+  stp x29, x30, [sp, #-16]!
+  ldur x8, [x1, #-8]
+  ldr x8, [x8, #0x58]
+  mov x1, x2
+  blr x8
+  ldp x29, x30, [sp], #16
+  ret

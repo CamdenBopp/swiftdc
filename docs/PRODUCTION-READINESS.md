@@ -2554,6 +2554,15 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   parameter (ValueWitness.def, checked against ~/swift GenOpaque.cpp).
   GoodLinks `cfg.unresolved-indirect-call`: 13,508 -> 12,518; `xrefs`
   unchanged (still counted as unresolved dispatch).
+- **FIXED — an enum's value witnesses were never named.** getEnumTag,
+  destructiveProjectEnumData and destructiveInjectEnumTag follow an enum
+  table's size, stride, flags and extra inhabitant count (`+0x58`); only
+  the first eight slots were named. Only an enum's table has them, so one
+  is named only when the call passes the metadata it was loaded through
+  as its last argument, for every metadata source. Fixture swift-syntax
+  and resilient-error libraries gain `destructiveInjectEnumTag value
+  witness for Swift.DecodingError`; GoodLinks has none through argument
+  metadata (12,518 unchanged).
 - **FIXED — a witness call counted as an import.** A call named for a
   value or protocol witness of a type the binary does not fix (`destroy
   value witness for A`) has no address, and the call graph counted every
