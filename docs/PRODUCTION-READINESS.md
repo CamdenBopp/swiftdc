@@ -2543,6 +2543,17 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   (protocol witness tables, closure contexts), and the rest spills or
   definitions outside the slice. Their targets are chosen at run time;
   only the operation can be named.
+- **FIXED — a value witness through argument metadata stayed an
+  unresolved call.** A stripped generic function, or an outlined copy
+  helper, receives its type's metadata as a plain argument, so `[[arg - 8]
+  + k]; blr` rendered `indirect_call(?, …)`. The tracer now keeps the
+  word before an argument and one load through its eight function slots
+  (not the size at `+0x40`, which sizes a dynamic stack allocation), and
+  the call is named `<slot> value witness for argN` only when it passes
+  the same argument where the witness takes its metadata, its last
+  parameter (ValueWitness.def, checked against ~/swift GenOpaque.cpp).
+  GoodLinks `cfg.unresolved-indirect-call`: 13,508 -> 12,518; `xrefs`
+  unchanged (still counted as unresolved dispatch).
 - **FIXED — a witness call counted as an import.** A call named for a
   value or protocol witness of a type the binary does not fix (`destroy
   value witness for A`) has no address, and the call graph counted every

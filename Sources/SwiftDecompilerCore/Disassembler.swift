@@ -3620,14 +3620,14 @@ public struct Disassembler: Sendable {
         let genericRequirements = targets.values.contains(where: {
             if case .loadedFrom(.genericWitnessTable, _) = $0 { true } else { false }
         }) ? Self.genericProtocolRequirements(of: function) : nil
-        func resolve(_ value: AbstractValue) -> (address: UInt64?, name: String, isSelfDispatch: Bool)? {
+        func resolve(_ value: AbstractValue, site: UInt64) -> (address: UInt64?, name: String, isSelfDispatch: Bool)? {
             if case .selfVTableMethod(let offset) = value,
                let selfTypeName,
                let address = vtableIndex.methodAddress(type: selfTypeName, offset: offset),
                let name = resolver.name(at: address, ownedBy: selfTypeName) {
                 return (address, Self.namingItsProperty(name, ownedBy: selfTypeName), true)
             }
-            if let witness = valueWitnessCall(value) { return (nil, witness, false) }
+            if let witness = valueWitnessCall(value, site: site) { return (nil, witness, false) }
             if let witness = protocolWitnessCall(value) { return (nil, witness.name, false) }
             return resolver.indirectCallTarget(for: value).map { ($0.address, $0.name, false) }
         }
@@ -3678,7 +3678,7 @@ public struct Disassembler: Sendable {
         /// just before the metadata; ValueWitness.def orders the slots).
         /// Only the eight function slots every table has; past them come
         /// the size, stride and flags.
-        func valueWitnessCall(_ value: AbstractValue) -> String? {
+        func valueWitnessCall(_ value: AbstractValue, site: UInt64) -> String? {
             // Metadata loaded from a slot the loader fixes (a GOT or literal
             // pool entry bound to `type metadata for X`): `ldr x2, [x2,
             // #0x60]; ldur x8, [x2, #-0x8]; ldr x8, [x8, #k]; blr x8`.
@@ -3695,6 +3695,20 @@ public struct Disassembler: Sendable {
             let slot = MetadataSymbolizer.valueWitnessNames[offset / 8]
             // A generic parameter's metadata, as the function received it.
             if case .genericMetadata(let name) = metadata { return "\(slot) value witness for \(name)" }
+            // An argument no signature types: a stripped generic function's
+            // metadata is only an incoming register. `[[arg - 8] + k]` is a
+            // value witness when the call passes that same argument where
+            // the witness takes its metadata, its last parameter
+            // (swift/include/swift/ABI/ValueWitness.def): `destroy(x, T)`,
+            // `initializeWithCopy(dest, src, T)`. Named for the argument, as
+            // it renders: no type is known.
+            if case .argument(let index) = metadata {
+                guard let arity = DisassembledFunction.valueWitnessArity[slot],
+                      let arguments = callArguments[site], arguments.count >= arity,
+                      arguments[arity - 1] == metadata
+                else { return nil }
+                return "\(slot) value witness for arg\(index)"
+            }
             // A generic argument of `self`'s class, read from its isa:
             // `ldr x12, [x20]; ldr x23, [x12, #0x50]` in a method of
             // `LRUCache<A, B>`.
@@ -3729,7 +3743,7 @@ public struct Disassembler: Sendable {
             guard insn.branchTarget == nil,
                   insn.controlFlow == .call || insn.controlFlow == .branch,
                   let value = targets[insn.address],
-                  let resolved = resolve(value)
+                  let resolved = resolve(value, site: insn.address)
             else { return insn }
             let named = resolved.name + (resolved.isSelfDispatch ? DisassembledFunction.selfDispatchMarker : "")
             let annotation = insn.annotation.map { "\($0)  → \(named)" } ?? "→ \(named)"
@@ -3748,7 +3762,7 @@ public struct Disassembler: Sendable {
                 facts.witnessRequirement = witness.signature
             }
             facts.isWitnessDispatch = resolved.address == nil
-                && (protocolWitness?.name == resolved.name || valueWitnessCall(value) == resolved.name)
+                && (protocolWitness?.name == resolved.name || valueWitnessCall(value, site: insn.address) == resolved.name)
             return Instruction(
                 address: insn.address, text: insn.text, annotation: annotation,
                 controlFlow: insn.controlFlow, branchTarget: target,

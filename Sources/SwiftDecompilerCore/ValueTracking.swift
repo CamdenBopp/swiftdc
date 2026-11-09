@@ -5240,7 +5240,17 @@ public struct ValueTracer: Sendable {
         case .address(let address): return .absolute(address &+ UInt64(bitPattern: effective))
         case .loaded(let slot): return .throughStaticPointer(slot: slot, offset: Int(effective))
         case .callResult, .loadedFrom(.callResult, _), .genericMetadata, .loadedFrom(.genericMetadata, _), .genericWitnessTable,
-             .loadedThrough(_, -8), .selfVTableMethod, .loadedFrom(.selfVTableMethod, _):
+             .loadedThrough(_, -8), .selfVTableMethod, .loadedFrom(.selfVTableMethod, _),
+             // The word before what an argument points to, and one load
+             // through it: a value-witness table, when the argument is
+             // metadata (`ldur x22, [x2, #-0x8]; ldr x8, [x22, #0x10]`). Only
+             // a call that passes the same argument as its metadata names it
+             // (`valueWitnessCall`); as a value it is unknown. Only the eight
+             // function slots: the size at `+0x40` sizes a dynamic stack
+             // allocation (`add x8, x8, #0xf; …; mov sp, x19`), and as a
+             // tracked value it took the frame's slots with it.
+             .argument where effective == -8,
+             .loadedFrom(.argument, -8) where (0 ..< 0x40).contains(effective) && effective % 8 == 0:
             return .throughValue(registers[Location(base)] ?? .unknown, offset: Int(effective))
         case .selfPointer: return .selfField(Int(effective))
         case .selfField(let field): return .selfField(field + Int(effective))

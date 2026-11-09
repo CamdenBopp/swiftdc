@@ -873,3 +873,6 @@ strip -x libArgumentWitness.stripped.dylib
 
 echo "==> a void value witness followed by a call that reads x0 (void_witness.s; links libswiftCore for the metadata bind)"
 $CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib void_witness.s -L"$(xcrun --show-sdk-path)/usr/lib/swift" -lswiftCore -o libVoidWitness.dylib
+
+echo "==> value-witness loads whose call does or does not pass the metadata back (value_witness_args.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib value_witness_args.s -o libValueWitnessArgs.dylib
