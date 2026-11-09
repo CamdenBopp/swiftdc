@@ -78,7 +78,9 @@ public struct CallGraph: Sendable {
                         // A `blr` through a bound GOT slot names its import;
                         // counted as unresolved it inflated the count (69% of
                         // one app's "unresolved" sites had a proven target).
-                        if site.callee != nil { external += 1 } else { unresolved += 1 }
+                        // A witness call is named for an operation, not
+                        // an import: its target is unknown.
+                        if site.callee != nil, !site.isWitnessDispatch { external += 1 } else { unresolved += 1 }
                         continue
                     }
                     isTailCall = false
@@ -129,10 +131,11 @@ public struct CallGraph: Sendable {
         for insn in function.instructions {
             if let origin = insn.inlinedFragment {
                 sites.append(GraphSite(address: insn.address, callee: nil, target: origin.address,
-                                      isCall: origin.reachedByCall, isSelfDispatch: false))
+                                      isCall: origin.reachedByCall, isSelfDispatch: false, isWitnessDispatch: false))
             } else if insn.controlFlow == .call || insn.controlFlow == .branch {
                 sites.append(GraphSite(address: insn.address, callee: insn.callee, target: insn.branchTarget,
-                                      isCall: insn.controlFlow == .call, isSelfDispatch: insn.isSelfDispatch))
+                                      isCall: insn.controlFlow == .call, isSelfDispatch: insn.isSelfDispatch,
+                                      isWitnessDispatch: insn.facts.isWitnessDispatch))
             }
         }
         return FunctionCallSites(
@@ -160,6 +163,7 @@ public struct CallGraph: Sendable {
             var facts = Instruction.Facts()
             facts.isSelfDispatch = insn.isSelfDispatch
             facts.inlinedFragment = insn.inlinedFragment
+            facts.isWitnessDispatch = insn.facts.isWitnessDispatch
             kept.append(Instruction(
                 address: insn.address, text: insn.text, annotation: nil,
                 controlFlow: insn.controlFlow, branchTarget: insn.branchTarget, callee: .kept(insn.callee),
@@ -215,6 +219,8 @@ public struct GraphSite: Sendable, Equatable {
     public let isCall: Bool
     /// `Instruction.isSelfDispatch`.
     public let isSelfDispatch: Bool
+    /// `Instruction.Facts.isWitnessDispatch`.
+    public let isWitnessDispatch: Bool
 }
 
 /// A function as a call graph reads it (`CallGraph.callSites(of:)`).

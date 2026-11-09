@@ -168,6 +168,12 @@ public struct Instruction: Sendable {
         /// what the fragment does there (`inlined …`). The call graph reads
         /// the site as the call or branch to the fragment it is in the binary.
         public var inlinedFragment: InlinedFragment? = nil
+        /// A call named for the value or protocol witness it calls through
+        /// a table of a type the binary does not fix (`destroy value witness
+        /// for A`): an operation, not an address. Its target may be any
+        /// conforming type's witness, in this image or another, so the call
+        /// graph counts it unresolved, not as an import.
+        public var isWitnessDispatch: Bool = false
 
         public init(
             exit: Exit? = nil,
@@ -3737,9 +3743,12 @@ public struct Disassembler: Sendable {
             if insn.controlFlow == .branch, target != insn.branchTarget { changesCFG = true }
             var facts = insn.facts
             facts.isSelfDispatch = resolved.isSelfDispatch
-            if let witness = protocolWitnessCall(value), witness.name == resolved.name {
+            let protocolWitness = protocolWitnessCall(value)
+            if let witness = protocolWitness, witness.name == resolved.name {
                 facts.witnessRequirement = witness.signature
             }
+            facts.isWitnessDispatch = resolved.address == nil
+                && (protocolWitness?.name == resolved.name || valueWitnessCall(value) == resolved.name)
             return Instruction(
                 address: insn.address, text: insn.text, annotation: annotation,
                 controlFlow: insn.controlFlow, branchTarget: target,

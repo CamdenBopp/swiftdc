@@ -865,3 +865,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name ValueSelf valueself.swif
 
 echo "==> functions with no signature whose callers prove (or do not prove) their result (caller_proven.s)"
 $CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib caller_proven.s -o libCallerProven.dylib
+
+echo "==> value-witness calls through metadata a stripped generic function receives as an argument (argument_witness.swift, -O; strip -x)"
+$SWIFTC -parse-as-library -O -emit-library -module-name ArgumentWitness argument_witness.swift -o libArgumentWitness.dylib
+cp libArgumentWitness.dylib libArgumentWitness.stripped.dylib
+strip -x libArgumentWitness.stripped.dylib
+

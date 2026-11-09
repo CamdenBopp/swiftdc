@@ -2526,7 +2526,21 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 - **OPEN — unresolved indirect call edges.** Generic witness tables, unknown
   receiver vtables, and block pointers stay unresolved. `xrefs` reports the
   count, so this is *disclosed* rather than silent — but `--unreferenced` is
-  therefore not a dead-code proof.
+  therefore not a dead-code proof. A survey of GoodLinks' 13,509
+  `cfg.unresolved-indirect-call` sites (2026-11-09, slice from each `blr`
+  to the loads that formed its target): 1,709 value-witness calls through
+  metadata an unsigned function receives, 1,369 class vtable dispatches on
+  a receiver of unknown class, about 3,000 loads through a loaded table
+  (protocol witness tables, closure contexts), and the rest spills or
+  definitions outside the slice. Their targets are chosen at run time;
+  only the operation can be named.
+- **FIXED — a witness call counted as an import.** A call named for a
+  value or protocol witness of a type the binary does not fix (`destroy
+  value witness for A`) has no address, and the call graph counted every
+  named call without one as an import through its GOT slot, so `xrefs
+  --unreferenced` left it out of the indirect-dispatch disclosure. Such a
+  call now carries `isWitnessDispatch` and counts unresolved. GoodLinks:
+  17,622 -> 29,215 disclosed sites.
 - **FIXED — the completeness oracle itself over-counted.**
   `declaredFunctionCount` is what the empty-result rule compares against: an
   empty parse throws when it disagrees, and an unfiltered run warns below 50% of
