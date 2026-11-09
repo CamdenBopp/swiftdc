@@ -882,3 +882,11 @@ $SWIFTC -parse-as-library -O -emit-library -module-name AssociatedWitness associ
 cp libAssociatedWitness.dylib libAssociatedWitness.stripped.dylib
 strip -x libAssociatedWitness.stripped.dylib
 
+echo "==> protocol witness calls through a table swift_conformsToProtocol returned (protocol_witness.swift, -O; stripped; library evolution for method descriptors)"
+$SWIFTC -parse-as-library -O -emit-library -module-name ProtocolWitness protocol_witness.swift -o libProtocolWitness.dylib
+cp libProtocolWitness.dylib libProtocolWitness.stripped.dylib
+strip -x libProtocolWitness.stripped.dylib
+$SWIFTC -parse-as-library -O -enable-library-evolution -emit-library -module-name ProtocolWitness protocol_witness.swift -o libProtocolWitness.resilient.dylib
+
+echo "==> protocol witness calls through a hand-built descriptor, with and without (T, table) passed last (protocol_witness_args.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib protocol_witness_args.s -L"$(xcrun --show-sdk-path)/usr/lib/swift" -lswiftCore -o libProtocolWitnessArgs.dylib

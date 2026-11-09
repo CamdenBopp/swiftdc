@@ -3628,7 +3628,7 @@ public struct Disassembler: Sendable {
                 return (address, Self.namingItsProperty(name, ownedBy: selfTypeName), true)
             }
             if let witness = valueWitnessCall(value, site: site) { return (nil, witness, false) }
-            if let witness = protocolWitnessCall(value) { return (nil, witness.name, false) }
+            if let witness = protocolWitnessCall(value, site: site) { return (nil, witness.name, false) }
             return resolver.indirectCallTarget(for: value).map { ($0.address, $0.name, false) }
         }
         /// A call through word `k` of a witness table that is one of the key
@@ -3638,9 +3638,34 @@ public struct Disassembler: Sendable {
         /// witness for <parameter>`, with the requirement's signature for
         /// laying out the call, only when the table's protocol and the
         /// slot's requirement are both proven.
-        func protocolWitnessCall(_ value: AbstractValue) -> (name: String, signature: String)? {
+        func protocolWitnessCall(_ value: AbstractValue, site: UInt64) -> (name: String, signature: String?)? {
             if case .loadedFrom(.genericWitnessTable(let index), let offset) = value {
-                return genericWitnessCall(table: index, offset: offset)
+                return genericWitnessCall(table: index, offset: offset).map { ($0.name, $0.signature) }
+            }
+            // A table `swift_conformsToProtocol(T, protocol descriptor)`
+            // returned (include/swift/Runtime/Metadata.h): word k is the
+            // protocol's requirement k - 1. A witness takes Self's metadata
+            // and Self's table as its last two arguments
+            // (lib/IRGen/GenProto.cpp, expandTrailingWitnessSignature), so
+            // the call is one only when it passes this table last and T
+            // just before it. Named by the requirement's method descriptor
+            // where the image keeps it, else by the protocol and the
+            // requirement's index and kind, which the descriptor holds.
+            if case .loadedFrom(.callResult(let tableSite), let offset) = value, offset >= 8, offset % 8 == 0,
+               let tableCall = function.instructions.first(where: { $0.address == tableSite }),
+               DisassembledFunction.calleeName(of: tableCall)?.hasPrefix("swift_conformsToProtocol") == true,
+               let lookup = callArguments[tableSite], lookup.count >= 2, case .address(let descriptor) = lookup[1],
+               lookup[0] != .unknown,
+               let arguments = callArguments[site], arguments.count >= 2,
+               arguments[arguments.count - 1] == .callResult(tableSite), arguments[arguments.count - 2] == lookup[0] {
+                let subject = conformingTypeSpelling(lookup[0])
+                if let requirement = resolver.protocolRequirement(descriptor: descriptor, word: offset / 8) {
+                    return ("\(requirement.name) witness for \(subject)", requirement.signature)
+                }
+                if let shape = resolver.protocolRequirementShape(descriptor: descriptor, word: offset / 8) {
+                    return ("\(shape.protocolName) requirement \(shape.index) (\(shape.kind)) witness for \(subject)", nil)
+                }
+                return nil
             }
             guard case .loadedFrom(.selfVTableMethod(let tableOffset), let offset) = value,
                   offset >= 8, offset % 8 == 0, let selfTypeName,
@@ -3817,9 +3842,9 @@ public struct Disassembler: Sendable {
             if insn.controlFlow == .branch, target != insn.branchTarget { changesCFG = true }
             var facts = insn.facts
             facts.isSelfDispatch = resolved.isSelfDispatch
-            let protocolWitness = protocolWitnessCall(value)
-            if let witness = protocolWitness, witness.name == resolved.name {
-                facts.witnessRequirement = witness.signature
+            let protocolWitness = protocolWitnessCall(value, site: insn.address)
+            if let witness = protocolWitness, witness.name == resolved.name, let signature = witness.signature {
+                facts.witnessRequirement = signature
             }
             facts.isWitnessDispatch = resolved.address == nil
                 && (protocolWitness?.name == resolved.name || valueWitnessCall(value, site: insn.address) == resolved.name)
@@ -3936,6 +3961,42 @@ public struct Disassembler: Sendable {
             let addresses = protocolDescriptorSymbols.filter { $0.value.contains(symbol) }
             guard addresses.count == 1, let match = addresses.first, match.value.count == 1 else { return nil }
             return match.key
+        }
+
+        /// The protocol a descriptor in this image describes, and the index
+        /// and kind of the requirement at witness-table `word`, read from
+        /// the descriptor itself: a stripped image keeps no method
+        /// descriptor to name the requirement, but the descriptor names its
+        /// protocol and module (relative pointers at +8 and +4,
+        /// TargetProtocolDescriptor) and each requirement's kind. The same
+        /// declines as `protocolRequirement`, and a protocol nested in
+        /// anything but a module.
+        func protocolRequirementShape(descriptor: UInt64, word: Int) -> (protocolName: String, index: Int, kind: String)? {
+            guard machO.cache == nil, word >= 1,
+                  let base = machO.fileOffset(of: descriptor).map(Int.init),
+                  let flags = UnrecordedTypes.read(base, as: UInt32.self, in: machO),
+                  let signatureCount = UnrecordedTypes.read(base + 12, as: UInt32.self, in: machO),
+                  let requirementCount = UnrecordedTypes.read(base + 16, as: UInt32.self, in: machO),
+                  flags & 0x1F == 3, (flags >> 18) & 0x3F == 0,
+                  word - 1 < Int(requirementCount), signatureCount < 0x10000,
+                  let requirementFlags = UnrecordedTypes.read(base + 24 + 12 * Int(signatureCount) + 8 * (word - 1), as: UInt32.self, in: machO),
+                  requirementFlags & 0x20 == 0
+            else { return nil }
+            let kinds = [1: "method", 2: "init", 3: "getter", 4: "setter"]
+            guard let kind = kinds[Int(requirementFlags & 0x0F)] else { return nil }
+            func relative(_ fieldOffset: Int, from address: UInt64, fileBase: Int) -> UInt64? {
+                guard let raw = UnrecordedTypes.read(fileBase + fieldOffset, as: Int32.self, in: machO), raw & 1 == 0 else { return nil }
+                return UInt64(bitPattern: Int64(bitPattern: address &+ UInt64(fieldOffset)) &+ Int64(raw))
+            }
+            guard let nameAddress = relative(8, from: descriptor, fileBase: base),
+                  let name = Self.cString(at: nameAddress, in: machO, ranges: fileRanges), !name.isEmpty,
+                  let parent = relative(4, from: descriptor, fileBase: base),
+                  let parentBase = machO.fileOffset(of: parent).map(Int.init),
+                  let parentFlags = UnrecordedTypes.read(parentBase, as: UInt32.self, in: machO), parentFlags & 0x1F == 0,
+                  let moduleNameAddress = relative(8, from: parent, fileBase: parentBase),
+                  let module = Self.cString(at: moduleNameAddress, in: machO, ranges: fileRanges), !module.isEmpty
+            else { return nil }
+            return ("\(module).\(name)", word - 1, kind + (requirementFlags & 0x10 == 0 ? ", static" : ""))
         }
 
         func protocolRequirement(descriptor: UInt64, word: Int) -> (signature: String, name: String)? {

@@ -2554,6 +2554,17 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   parameter (ValueWitness.def, checked against ~/swift GenOpaque.cpp).
   GoodLinks `cfg.unresolved-indirect-call`: 13,508 -> 12,518; `xrefs`
   unchanged (still counted as unresolved dispatch).
+- **FIXED — a protocol witness through a looked-up table stayed
+  unresolved.** A cast of an object to a class-bound protocol asks
+  `swift_conformsToProtocol(T, protocol descriptor)` for the table and
+  calls word k, its requirement k - 1. Named now when the call passes T
+  and the table last (a witness's trailing Self metadata and table):
+  `<Protocol>.<requirement> witness for T` where the image keeps the
+  requirement's method descriptor (library evolution only), else
+  `<Module.Protocol> requirement N (<kind>) witness for T` from the
+  descriptor, whose name and requirement kinds survive stripping.
+  GoodLinks: 48 named, the app's own protocols; its associated-conformance
+  tables (16 sites) stay unresolved.
 - **FIXED — an associated type's value witnesses were never named.**
   Generic code over a `Collection` copies and destroys `C.Element` and
   `C.Iterator` through metadata from `swift_getAssociatedTypeWitness(…, T,
