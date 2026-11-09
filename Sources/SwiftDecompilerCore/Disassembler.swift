@@ -2318,10 +2318,27 @@ public struct Disassembler: Sendable {
     func textSection(in machO: MachOFile) -> TextSection? {
         let sections = codeSections(in: machO)
         guard !sections.isEmpty else { return nil }
+        // One mapping of the file serves every section of a standalone image.
+        let mapped = machO.isLoadedFromDyldCache ? nil : try? Data(contentsOf: machO.url, options: .alwaysMapped)
         return TextSection(pieces: sections.map { section in
             let size = Int(section.range.upperBound - section.range.lowerBound)
-            return (section.range.lowerBound, sectionBytes(address: section.range.lowerBound, size: size, in: machO), size)
+            let address = section.range.lowerBound
+            return (address, mapped.flatMap { Self.mappedSlice(of: $0, address: address, size: size, in: machO) }
+                ?? sectionBytes(address: address, size: size, in: machO), size)
         })
+    }
+
+    /// A section's bytes as a slice of the mapped file, copying nothing: a
+    /// whole-image run holds them throughout, and the copy (`readElements`
+    /// into an array, then into `Data`) was the largest block at a GoodLinks
+    /// `xrefs` peak, 20 MB, with a second 20 MB while it was made. Mapped
+    /// file pages are clean, so they are not footprint. The slice keeps the
+    /// file's indices. Nil when the range is not in the file.
+    static func mappedSlice(of file: Data, address: UInt64, size: Int, in machO: MachOFile) -> Data? {
+        guard let offset = machO.fileOffset(of: address) else { return nil }
+        let start = machO.headerStartOffset + Int(offset)
+        guard start >= 0, size >= 0, start <= file.count, size <= file.count - start else { return nil }
+        return file[start ..< start + size]
     }
 
     /// Raw bytes of an arbitrary section span (`__text`, `__objc_stubs`, …).
@@ -2331,7 +2348,7 @@ public struct Disassembler: Sendable {
     /// header, and MachOKit's image reader only reaches the header's subcache —
     /// so locate the subcache that maps the section's VM address and read that
     /// subcache file directly.
-    private func sectionBytes(address: UInt64, size: Int, in machO: MachOFile) -> Data? {
+    func sectionBytes(address: UInt64, size: Int, in machO: MachOFile) -> Data? {
         // MachOKit keeps a full cache it finds but not the failure to find
         // one, so for a plain file every `fullCache` read re-opened the
         // file as a dyld cache: 7.4% of a GoodLinks `--pseudo` run.

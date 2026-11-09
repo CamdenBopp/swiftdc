@@ -3178,6 +3178,16 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 5. Performance and memory on large frameworks
 
+- **FIXED (memory) — the code sections were copied into the heap for the
+  whole run.** `textSection(in:)` read each code section with
+  `readElements` into an array and then into `Data`: 20 MB on GoodLinks,
+  the largest block at its `xrefs` peak, with a second 20 MB while it was
+  made. A standalone file's sections are now slices of the file mapped
+  once (`mappedSlice`); a dyld-cache image reads as before. GoodLinks
+  `xrefs` peak, two alternating rounds: 175, 170 MB -> 148, 142 MB;
+  instructions 2,152G -> 2,134G. libSwiftParser `disasm --structured` and
+  `xrefs`, three quiet rounds: unchanged. Output identical.
+
 - **FIXED (memory) — the name-only function records lived through pass 1.**
   The streaming path built a `DisassembledFunction` per boundary for the
   name index and held them until after pass 1 for one `swiftTargets` line
