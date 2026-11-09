@@ -72,17 +72,22 @@ private func structured(_ path: String) async throws -> [String: String] {
     let named = "Fixtures/Sample/libAssociatedWitness.dylib", stripped = "Fixtures/Sample/libAssociatedWitness.stripped.dylib"
     let asm = "Fixtures/Sample/libVoidWitness.dylib"
     guard [named, stripped, asm].allSatisfy(FileManager.default.fileExists(atPath:)) else { return }
-    // countAll sizes stack buffers from a type's runtime size, so its
-    // stack pointer is unknown at its calls, and an unproved callee may
-    // reuse any frame slot below it (callee stack lifetime): the witness
-    // tables it spills are not kept across those calls, and its witness
+    // countAll sizes four stack buffers from types' runtime sizes. Each
+    // `___chkstk_darwin` probe proves its allocation moved sp down, so the
+    // witness tables it spills in the fixed frame survive its calls.
+    let withSymbols = try await structured(named).values.joined(separator: "\n")
+    for witness in ["destroy value witness for A.Iterator(", "destroy value witness for A.Element(",
+                    "initializeWithTake value witness for A.Element("] {
+        #expect(withSymbols.contains(witness), "\(witness)")
+    }
+    // Stripped, the third buffer's size is read through an argument the
+    // tracer cannot name, so the probed size and sp's adjustment are not
+    // shown equal: an unproved callee may reuse any slot, and the witness
     // calls stay unresolved rather than named from a stale slot. Each
     // associated type's metadata still reaches the call that needs it.
-    for path in [named, stripped] {
-        let text = try await structured(path).values.joined(separator: "\n")
-        #expect(text.contains("associated type descriptor for Swift.Sequence.Element"), "\(path)")
-        #expect(!text.contains(" value witness for ?."), "\(path)")
-    }
+    let bare = try await structured(stripped).values.joined(separator: "\n")
+    #expect(bare.contains("associated type descriptor for Swift.Sequence.Element"))
+    #expect(!bare.contains(" value witness for ?."))
     let text = try await structured(asm)
     #expect(text["_vwAssocDestroy"]?.contains("destroy value witness for arg6.Element(") == true, "\(text["_vwAssocDestroy"] ?? "")")
     #expect(text["_vwAssocOther"]?.contains("unresolved call") == true)

@@ -63,6 +63,26 @@ results do not replace previously recorded release performance measurements.
   whose sp is unknown (generic code sizing a buffer from a type's runtime
   size); the exact-sp rule alone costs none.
 
+- **FIXED — a `___chkstk_darwin`-proven allocation forgot the whole
+  frame.** Swift sizes a stack buffer from a type's runtime size and
+  probes it first; the probe faults unless `sp - x9` is a valid downward
+  allocation. sp moving from an exact frame offset k (or from a proven
+  allocation below it) by the probed x9, or its 16-byte rounding, now
+  keeps facts at and above k across an unproved call. A memory write or
+  another call between probe and allocation ends the proof, since a
+  reload of the size can then read a different value; an unprobed
+  adjustment anywhere in the chain still forgets everything.
+  stack_lifetime.s carries native counterexamples for each. GoodLinks
+  unresolved indirect calls 15,531 -> 14,853 (`swiftdc xrefs GoodLinks
+  --unreferenced --probe - --probe-filter
+  event=cfg.unresolved-indirect-call`); countAll's associated-type
+  witness names are back.
+- **OPEN — the remaining 2,276 of those sites.** Stripped countAll is one:
+  its third buffer's size is read through an argument the stripped tracer
+  cannot name, so the probed size and sp's adjustment are not shown
+  equal. The preservation summary still forgets every saved value when sp
+  is not exact.
+
 - **FIXED — a callee that may clobber x29 left the caller's frame
   intact.** A call to a body summarised as not preserving x29, made while
   x29 held a frame address, forgot only the register. The callee can

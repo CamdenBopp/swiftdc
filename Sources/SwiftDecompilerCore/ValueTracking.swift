@@ -715,6 +715,12 @@ public struct ValueTracer: Sendable {
         /// sp was moved below offset k by a non-constant amount: `frame(k) - n`
         /// there is a dynamic allocation, not a pointer back into the frame.
         case frameDynamic(Int64)
+        /// The size x9 held at a `___chkstk_darwin` call, while no call or
+        /// memory write since can have changed what a load of it reads.
+        case probedSize
+        /// sp's value right after a probed allocation moved it from the
+        /// exact frame offset k: `frame(k) - size`, kept while sp holds it.
+        case probedAllocation
         case contextEscaped(Int64)
         case calleeContextEscaped
 
@@ -768,6 +774,8 @@ public struct ValueTracer: Sendable {
             case .frameBelow(let k): "frame.below@\(k)"
             case .frameEscapedAll: "frame.escaped"
             case .frameDynamic(let k): "frame.dynamic@\(k)"
+            case .probedSize: "stack.probed-size"
+            case .probedAllocation: "stack.probed-allocation"
             case .contextEscaped(let k): "context.escaped@\(k)"
             case .calleeContextEscaped: "callee-context.escaped"
             }
@@ -1659,6 +1667,7 @@ public struct ValueTracer: Sendable {
                 stackProbeSlots.contains(slot)
             } else { false }
             if probeSlot || (call.knownArityApplies && call.callee == "__chkstk_darwin") {
+                let probed = registers[.x(9)]
                 for location in [Location.x(9), .x(16), .x(17), .x(30)] { registers[location] = .unknown }
                 // Its one store saves x10 and x11 in the 16 bytes below sp.
                 if case .frame(let top)? = registers[.sp] {
@@ -1669,8 +1678,13 @@ public struct ValueTracer: Sendable {
                 }
                 registers[Self.flagsKey] = nil
                 registers[Self.flagsWidthKey] = nil
+                if let probed, probed != .unknown, !Self.containsFrame(probed) {
+                    registers[.probedSize] = probed
+                }
                 return
             }
+            // Any other call can change what a load of the probed size reads.
+            registers[.probedSize] = nil
             // The next callee can reuse the stack below the call-time sp.
             // Escape reach starts at addresses passed to it, so it does not
             // cover a previous callee's red-zone stores below that boundary.
@@ -1900,6 +1914,7 @@ public struct ValueTracer: Sendable {
             return
         }
         let hadSelf = registers[Self.selfFreshKey]
+        let spBefore = registers[.sp]
         let inputs = noteFrameMemoryWrite(insn, into: &registers, frame: facts.frame)
         if !argumentObjectFields.isEmpty, let detail = insn.detail { noteArgumentObjectWrite(detail, into: &registers) }
         apply(insn, into: &registers, recordAccess: recordAccess,
@@ -1921,6 +1936,7 @@ public struct ValueTracer: Sendable {
         if let sp = registers[.sp], let base = Self.allocationBase(sp) {
             registers[.frameDynamic(base)] = .immediate(1)
         }
+        Self.noteProbedAllocation(insn, spBefore: spBefore, into: &registers)
         if Self.writesSwiftSelf(insn) {
             registers[Self.selfFreshKey] = .immediate(1)
         } else {
@@ -5514,9 +5530,54 @@ public struct ValueTracer: Sendable {
         if case .frame(let top)? = registers[.sp] {
             boundary = top
         } else {
-            boundary = nil
+            boundary = probedAllocationBase(registers)
         }
         forgetFrame(in: &registers, effect: .calleeStack(below: boundary))
+    }
+
+    /// The frame offset k a probed allocation hangs below. The marker lives
+    /// only while sp holds the value it moved to (any other write to sp
+    /// drops it), and each allocation in its chain moved sp down from the
+    /// last, so the callee stack starts below k.
+    private static func probedAllocationBase(_ registers: State) -> Int64? {
+        guard var value = registers[.probedAllocation] else { return nil }
+        while case .binary(.subtract, let inner, _) = value { value = inner }
+        guard case .frame(let base) = value else { return nil }
+        return base
+    }
+
+    /// Track `___chkstk_darwin`'s proof. Its return proves `sp - x9` is a
+    /// valid downward allocation, so sp moving from exact `frame(k)`, or
+    /// from a proven allocation below it, to that less the probed x9 or its
+    /// 16-byte rounding allocates below k. A memory write can change what a
+    /// reload of the size reads, so it ends the proof; any other write to
+    /// sp ends the allocation's.
+    private static func noteProbedAllocation(_ insn: Instruction, spBefore: AbstractValue?,
+                                             into registers: inout State) {
+        if registers[.probedSize] != nil, mayWriteMemory(insn) { registers[.probedSize] = nil }
+        let sp = registers[.sp]
+        guard sp != spBefore else { return }
+        let previous = registers[.probedAllocation]
+        if previous != nil { registers[.probedAllocation] = nil }
+        guard let spBefore, let probed = registers[.probedSize],
+              case .binary(.subtract, spBefore, let size)? = sp,
+              size == probed || size == roundedTo16(probed) else { return }
+        if case .frame = spBefore {} else if spBefore != previous { return }
+        registers[.probedAllocation] = sp
+    }
+
+    /// `(n + 15) & ~15` as the tracer spells it.
+    private static func roundedTo16(_ value: AbstractValue) -> AbstractValue {
+        .binary(.bitAnd, .binary(.add, value, .immediate(15)), .immediate(~UInt64(15)))
+    }
+
+    /// A store, an atomic, or an instruction without detail.
+    private static func mayWriteMemory(_ insn: Instruction) -> Bool {
+        guard insn.detail != nil else { return true }
+        let mnemonic = insn.text.prefix { !$0.isWhitespace }
+        return mnemonic.hasPrefix("st") || mnemonic.hasPrefix("swp") || mnemonic.hasPrefix("cas")
+            || ["ldadd", "ldclr", "ldeor", "ldset", "ldsmax", "ldsmin", "ldumax", "ldumin"]
+                .contains { mnemonic.hasPrefix($0) }
     }
 
     /// Entry-provenance pointers: computed before this frame existed, so no

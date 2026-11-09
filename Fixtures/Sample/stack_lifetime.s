@@ -206,3 +206,255 @@ _stack_lifetime_read_pointer:
   str x10, [x9]
   ret
 .subsections_via_symbols
+
+// Swift's dynamic allocation: `___chkstk_darwin` probes x9 bytes below sp
+// and faults on wrap or overflow, so its return proves `sp - x9` is a
+// valid downward allocation. The 16-byte rounding of that size moves sp
+// below the frame top k, and the next callee's stack starts below k: the
+// word at k + 8 survives. Native: 7 for any small n.
+.globl _$s13StackLifetime11reuseProbedyS2iF
+_$s13StackLifetime11reuseProbedyS2iF:
+  sub sp, sp, #48
+  stp x19, x20, [sp, #16]
+  stp x29, x30, [sp, #32]
+  add x29, sp, #32
+  mov x19, sp
+  mov x9, #7
+  str x9, [sp, #8]
+  mov x9, x0
+  add x8, x9, #15
+  and x8, x8, #0xfffffffffffffff0
+  bl ___chkstk_darwin
+  mov x9, sp
+  sub x8, x9, x8
+  mov sp, x8
+  bl _stack_lifetime_unproved
+  mov sp, x19
+  ldr x0, [sp, #8]
+  ldp x29, x30, [sp, #32]
+  ldp x19, x20, [sp, #16]
+  add sp, sp, #48
+  ret
+
+// The probed size itself, unrounded, is also a proven downward move.
+// Native: 7 for any multiple of 16 (sp stays aligned for the callee).
+.globl _$s13StackLifetime14reuseProbedRawyS2iF
+_$s13StackLifetime14reuseProbedRawyS2iF:
+  sub sp, sp, #48
+  stp x19, x20, [sp, #16]
+  stp x29, x30, [sp, #32]
+  add x29, sp, #32
+  mov x19, sp
+  mov x9, #7
+  str x9, [sp, #8]
+  mov x8, x0
+  mov x9, x8
+  bl ___chkstk_darwin
+  mov x9, sp
+  sub x8, x9, x8
+  mov sp, x8
+  bl _stack_lifetime_unproved
+  mov sp, x19
+  ldr x0, [sp, #8]
+  ldp x29, x30, [sp, #32]
+  ldp x19, x20, [sp, #16]
+  add sp, sp, #48
+  ret
+
+// Two probed allocations stacked: each moves sp down from the last, so
+// the callee stack still starts below k. Native: 7 for any small n.
+.globl _$s13StackLifetime16reuseProbedTwiceyS2iF
+_$s13StackLifetime16reuseProbedTwiceyS2iF:
+  sub sp, sp, #48
+  stp x19, x20, [sp, #16]
+  stp x29, x30, [sp, #32]
+  add x29, sp, #32
+  mov x19, sp
+  mov x20, x0
+  mov x9, #7
+  str x9, [sp, #8]
+  mov x9, x20
+  add x8, x9, #15
+  and x8, x8, #0xfffffffffffffff0
+  bl ___chkstk_darwin
+  mov x9, sp
+  sub x8, x9, x8
+  mov sp, x8
+  mov x9, x20
+  add x8, x9, #15
+  and x8, x8, #0xfffffffffffffff0
+  bl ___chkstk_darwin
+  mov x9, sp
+  sub x8, x9, x8
+  mov sp, x8
+  bl _stack_lifetime_unproved
+  mov sp, x19
+  ldr x0, [sp, #8]
+  ldp x29, x30, [sp, #32]
+  ldp x19, x20, [sp, #16]
+  add sp, sp, #48
+  ret
+
+// A probed allocation on top of an unprobed `sub sp, sp, x20`: the first
+// move is unproved. The word at k + 8 is stored after both, through x19.
+// With m = -16 and n = 0, sp ends 16 above k and the next callee writes 99
+// over it.
+.globl _$s13StackLifetime12probeStackedyS2i_SitF
+_$s13StackLifetime12probeStackedyS2i_SitF:
+  sub sp, sp, #48
+  stp x19, x20, [sp, #16]
+  stp x29, x30, [sp, #32]
+  add x29, sp, #32
+  mov x19, sp
+  mov x20, x1
+  sub sp, sp, x20
+  mov x9, x0
+  add x8, x9, #15
+  and x8, x8, #0xfffffffffffffff0
+  bl ___chkstk_darwin
+  mov x9, sp
+  sub x8, x9, x8
+  mov sp, x8
+  mov x9, #7
+  str x9, [x19, #8]
+  bl _stack_lifetime_unproved
+  mov sp, x19
+  ldr x0, [sp, #8]
+  ldp x29, x30, [sp, #32]
+  ldp x19, x20, [sp, #16]
+  add sp, sp, #48
+  ret
+
+// The probe proves n bytes, but sp moves by m. With m = -16 sp moves up
+// and the next callee writes 99 over the word at k + 8.
+.globl _$s13StackLifetime13probeMismatchyS2i_SitF
+_$s13StackLifetime13probeMismatchyS2i_SitF:
+  sub sp, sp, #48
+  stp x19, x20, [sp, #16]
+  stp x29, x30, [sp, #32]
+  add x29, sp, #32
+  mov x19, sp
+  mov x20, x1
+  mov x9, #7
+  str x9, [sp, #8]
+  mov x9, x0
+  bl ___chkstk_darwin
+  mov x9, sp
+  sub x8, x9, x20
+  mov sp, x8
+  bl _stack_lifetime_unproved
+  mov sp, x19
+  ldr x0, [sp, #8]
+  ldp x29, x30, [sp, #32]
+  ldp x19, x20, [sp, #16]
+  add sp, sp, #48
+  ret
+
+// The probed size is read from the global, then *q = m (q == &global) and
+// the size is read again: the same load, a different value. With m = -16 sp moves up
+// and the next callee writes 99 over the word at k + 8.
+.globl _$s13StackLifetime11probeReloadySiSpySiG_SitF
+_$s13StackLifetime11probeReloadySiSpySiG_SitF:
+  sub sp, sp, #48
+  stp x19, x20, [sp, #16]
+  stp x29, x30, [sp, #32]
+  add x29, sp, #32
+  mov x19, sp
+  mov x20, x0
+  mov x9, #7
+  str x9, [sp, #8]
+  adrp x10, _stack_lifetime_size@PAGE
+  ldr x9, [x10, _stack_lifetime_size@PAGEOFF]
+  bl ___chkstk_darwin
+  str x1, [x2]
+  adrp x10, _stack_lifetime_size@PAGE
+  ldr x8, [x10, _stack_lifetime_size@PAGEOFF]
+  mov x9, sp
+  sub x8, x9, x8
+  mov sp, x8
+  bl _stack_lifetime_unproved
+  mov sp, x19
+  ldr x0, [sp, #8]
+  ldp x29, x30, [sp, #32]
+  ldp x19, x20, [sp, #16]
+  add sp, sp, #48
+  ret
+
+// As probeReload, but a call stores m through q: a call between the probe
+// and the allocation can change what the reload reads.
+.globl _$s13StackLifetime9probeCallySiSpySiG_SitF
+_$s13StackLifetime9probeCallySiSpySiG_SitF:
+  sub sp, sp, #48
+  stp x19, x20, [sp, #16]
+  stp x29, x30, [sp, #32]
+  add x29, sp, #32
+  mov x19, sp
+  mov x20, x0
+  mov x9, #7
+  str x9, [sp, #8]
+  adrp x10, _stack_lifetime_size@PAGE
+  ldr x9, [x10, _stack_lifetime_size@PAGEOFF]
+  bl ___chkstk_darwin
+  mov x0, x2
+  bl _stack_lifetime_store
+  adrp x10, _stack_lifetime_size@PAGE
+  ldr x8, [x10, _stack_lifetime_size@PAGEOFF]
+  mov x9, sp
+  sub x8, x9, x8
+  mov sp, x8
+  bl _stack_lifetime_unproved
+  mov sp, x19
+  ldr x0, [sp, #8]
+  ldp x29, x30, [sp, #32]
+  ldp x19, x20, [sp, #16]
+  add sp, sp, #48
+  ret
+
+// The load makes the body unsupported; it stores x1 through x0.
+.globl _stack_lifetime_store
+_stack_lifetime_store:
+  ldr x9, [sp]
+  str x1, [x0]
+  ret
+
+// A probed allocation of the global's size, sp restored, *q = m, then the same reload
+// allocates again with no probe: the second sp spells the first. With
+// m = -16 sp moves up and the next callee writes 99 over the word at k + 8.
+.globl _$s13StackLifetime10probeTwiceySiSpySiG_SitF
+_$s13StackLifetime10probeTwiceySiSpySiG_SitF:
+  sub sp, sp, #48
+  stp x19, x20, [sp, #16]
+  stp x29, x30, [sp, #32]
+  add x29, sp, #32
+  mov x19, sp
+  mov x20, x0
+  mov x9, #7
+  str x9, [sp, #8]
+  adrp x10, _stack_lifetime_size@PAGE
+  ldr x9, [x10, _stack_lifetime_size@PAGEOFF]
+  bl ___chkstk_darwin
+  adrp x10, _stack_lifetime_size@PAGE
+  ldr x8, [x10, _stack_lifetime_size@PAGEOFF]
+  mov x9, sp
+  sub x8, x9, x8
+  mov sp, x8
+  mov sp, x19
+  str x1, [x2]
+  adrp x10, _stack_lifetime_size@PAGE
+  ldr x8, [x10, _stack_lifetime_size@PAGEOFF]
+  mov x9, sp
+  sub x8, x9, x8
+  mov sp, x8
+  bl _stack_lifetime_unproved
+  mov sp, x19
+  ldr x0, [sp, #8]
+  ldp x29, x30, [sp, #32]
+  ldp x19, x20, [sp, #16]
+  add sp, sp, #48
+  ret
+
+.data
+.p2align 3
+.globl _stack_lifetime_size
+_stack_lifetime_size:
+  .quad 16

@@ -26,6 +26,30 @@ private let stackLifetimeFixture = "Fixtures/Sample/libStackLifetime.dylib"
     #expect(dynamicAbove(-16) == 99)
     #expect(dynamicAbove(0) == 7)
     #expect(dynamicAbove(16) == 7)
+    let probed = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime11reuseProbedyS2iF")), to: Dynamic.self)
+    for bytes: Int64 in [0, 1, 16, 100] { #expect(probed(bytes) == 7) }
+    let probedRaw = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime14reuseProbedRawyS2iF")), to: Dynamic.self)
+    for bytes: Int64 in [0, 16, 96] { #expect(probedRaw(bytes) == 7) }
+    typealias Pair = @convention(c) (Int64, Int64) -> Int64
+    let mismatch = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime13probeMismatchyS2i_SitF")), to: Pair.self)
+    #expect(mismatch(16, 16) == 7)
+    #expect(mismatch(16, -16) == 99)
+    let probedTwice = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime16reuseProbedTwiceyS2iF")), to: Dynamic.self)
+    for bytes: Int64 in [0, 1, 16, 100] { #expect(probedTwice(bytes) == 7) }
+    let stacked = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime12probeStackedyS2i_SitF")), to: Pair.self)
+    #expect(stacked(16, 16) == 7)
+    #expect(stacked(0, -16) == 99)
+    // Each reads its size from a global and takes p (unused), m, and q, the
+    // global's address (the Swift mangling names only the first two).
+    typealias Reload = @convention(c) (UnsafeMutablePointer<Int64>, Int64, UnsafeMutablePointer<Int64>) -> Int64
+    let size = try #require(dlsym(library, "stack_lifetime_size")).assumingMemoryBound(to: Int64.self)
+    for symbol in ["11probeReload", "9probeCall", "10probeTwice"] {
+        let reload = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime\(symbol)ySiSpySiG_SitF")), to: Reload.self)
+        size.pointee = 16
+        #expect(reload(size, 16, size) == 7, Comment(rawValue: symbol))
+        size.pointee = 16
+        #expect(reload(size, -16, size) == 99, Comment(rawValue: symbol))
+    }
 }
 
 @Test func anUnprovedCallCannotKeepAnEarlierCalleesStackWordInAnyPipelineIfPresent() async throws {
@@ -43,14 +67,17 @@ private let stackLifetimeFixture = "Fixtures/Sample/libStackLifetime.dylib"
         await Disassembler().analyzeEachFunction(at: Set(array.map(\.startAddress)), in: image, transform: { $0 })
     }
     for group in [listing, array, filtered, streamed, Array(each.values)] {
-        for name in ["reuseUnknown", "reuseDynamic", "reuseDynamicAbove", "reusePreservation", "reusePointer"] {
+        for name in ["reuseUnknown", "reuseDynamic", "reuseDynamicAbove", "reusePreservation", "reusePointer",
+                     "probeMismatch", "probeReload", "probeCall", "probeTwice", "probeStacked"] {
             let function = try #require(group.first { $0.displayName.hasPrefix("StackLifetime.\(name)(") })
             for text in [function.renderPseudo(), function.renderStructured()] {
                 #expect(text.contains("return ?"), Comment(rawValue: text))
                 #expect(!text.contains("return 7"), Comment(rawValue: text))
             }
         }
-        for (name, expected) in [("reuseProven", 7), ("reuseExact", 99), ("reuseAbove", 7), ("keepPreservation", 7)] {
+        for (name, expected) in [("reuseProven", 7), ("reuseExact", 99), ("reuseAbove", 7), ("keepPreservation", 7),
+                                 ("reuseProbed", 7), ("reuseProbedRaw", 7),
+                                 ("reuseProbedTwice", 7)] {
             let function = try #require(group.first { $0.displayName.hasPrefix("StackLifetime.\(name)(") })
             for text in [function.renderPseudo(), function.renderStructured()] {
                 #expect(text.contains("return \(expected)"), Comment(rawValue: text))
