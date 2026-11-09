@@ -123,21 +123,27 @@ public struct CallGraph: Sendable {
     }
 
     /// What the graph reads of `function`: its names, its call and branch
-    /// sites (text and annotation, for callee names) and its last
-    /// instruction (its span). Everything else, the structured detail and
-    /// the recovered arguments, is dropped, so a whole-image graph built while
-    /// streaming holds sites, not instructions: about 1 KB per instruction
-    /// held at once put Swiftcord's 12.4M past 8 GB.
+    /// sites (their typed callee, target and the two facts `init` reads) and
+    /// its last instruction (its span). Everything else, the structured
+    /// detail, the recovered arguments, the annotation and every other fact,
+    /// is dropped, so a whole-image graph built while streaming holds sites,
+    /// not instructions: about 1 KB per instruction held at once put
+    /// Swiftcord's 12.4M past 8 GB. A site's annotation and facts alone held
+    /// most of GoodLinks' `xrefs` peak, since `init` names a callee by its
+    /// typed `callee`, never its notes.
     public static func sites(of function: DisassembledFunction) -> DisassembledFunction {
         let instructions = function.instructions
         var kept: [Instruction] = []
         for (index, insn) in instructions.enumerated()
         where insn.controlFlow == .call || insn.controlFlow == .branch || insn.inlinedFragment != nil
             || index == instructions.count - 1 {
+            var facts = Instruction.Facts()
+            facts.isSelfDispatch = insn.isSelfDispatch
+            facts.inlinedFragment = insn.inlinedFragment
             kept.append(Instruction(
-                address: insn.address, text: insn.text, annotation: insn.annotation,
+                address: insn.address, text: insn.text, annotation: nil,
                 controlFlow: insn.controlFlow, branchTarget: insn.branchTarget, callee: .kept(insn.callee),
-                facts: insn.facts
+                facts: facts
             ))
         }
         return function.replacingInstructions(kept)

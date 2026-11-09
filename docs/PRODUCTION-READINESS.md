@@ -3178,6 +3178,15 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 5. Performance and memory on large frameworks
 
+- **FIXED (memory) — a streamed call graph kept every site's notes.**
+  `xrefs` keeps each function's call and branch sites for the whole image
+  (`CallGraph.sites(of:)`), and each kept its annotation and fact box. The
+  graph reads only the typed callee, the target, `isSelfDispatch` and
+  `inlinedFragment`; the footprint climbed from 52 MB to 471 MB over a
+  GoodLinks run. A site now keeps no annotation and only those two facts.
+  GoodLinks `xrefs --arch arm64 --unreferenced` peak footprint, two
+  alternating rounds: 431, 407 MB -> 361, 358 MB, output identical (`cmp`).
+
 - **FIXED (memory) — a decoded operand took 96 bytes.** `PhysReg` stored
   its number and width as two `Int`s (24 bytes), and a memory operand holds
   two of them beside the register case, so `StructuredOperandInfo` was 96

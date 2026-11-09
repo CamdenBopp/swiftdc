@@ -266,8 +266,8 @@ private func textStatement(of insn: Instruction) -> String? {
 }
 
 /// The rebuilds that keep notes keep their facts: the split of a statement
-/// from the throw after it, and the slimmed sites a streaming call graph
-/// holds.
+/// from the throw after it. The slimmed sites a streaming call graph holds
+/// keep no notes, so they keep only the two facts the graph reads.
 @Test func noteKeepingRebuildsKeepTheFacts() {
     let binding = Instruction.Binding(name: "r0", expression: "make()")
     let call = Instruction(
@@ -284,8 +284,8 @@ private func textStatement(of insn: Instruction) -> String? {
                                          facts: .init(exit: .normal("?")))],
         source: .address)
     let sites = CallGraph.sites(of: function).instructions
-    #expect(sites.first?.binding == binding && sites.first?.thenThrows == true)
-    #expect(sites.last?.exit == .normal("?"))
+    #expect(sites.first?.annotation == nil && sites.first?.binding == nil && sites.first?.thenThrows == false)
+    #expect(sites.last?.annotation == nil && sites.last?.exit == nil)
 
     // Every other fact, through both.
     let every = Instruction.Facts(
@@ -302,7 +302,8 @@ private func textStatement(of insn: Instruction) -> String? {
     #expect(DisassembledFunction.pseudoStatement(of: awaited, hideRuntime: true) == "let r1 = await self.make()\nthrow ?")
     let streamed = CallGraph.sites(of: DisassembledFunction(
         symbol: "fixture", demangledName: nil, startAddress: 0x1000, instructions: [marked], source: .address))
-    #expect(streamed.instructions.first?.facts == every)
+    #expect(streamed.instructions.first?.facts == Instruction.Facts(isSelfDispatch: true))
+    #expect(streamed.instructions.first?.callee == "make")
 }
 
 /// Several exits noted on one instruction: the first is carried, unless a
