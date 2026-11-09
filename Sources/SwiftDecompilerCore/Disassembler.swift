@@ -3678,6 +3678,32 @@ public struct Disassembler: Sendable {
         /// just before the metadata; ValueWitness.def orders the slots).
         /// Only the eight function slots every table has; past them come
         /// the size, stride and flags.
+        /// The name a descriptor argument has: a GOT slot the loader binds
+        /// (`associated type descriptor for Swift.Sequence.Element`) or a
+        /// symbol in this image. Nil when nothing names it.
+        func descriptorName(_ value: AbstractValue) -> String? {
+            switch value {
+            case .loaded(let slot): return resolver.loadedName(at: slot)
+            case .address(let address): return resolver.callTargetName(at: address)
+            default: return nil
+            }
+        }
+        /// A conforming type's metadata as a witness name spells it: a
+        /// generic parameter, an argument, an accessor's type, else `?`.
+        func conformingTypeSpelling(_ value: AbstractValue) -> String {
+            switch value {
+            case .genericMetadata(let name): return name
+            case .argument(let index): return "arg\(index)"
+            case .callResult(let site):
+                let prefix = "type metadata accessor for "
+                if let call = function.instructions.first(where: { $0.address == site }),
+                   let callee = DisassembledFunction.calleeName(of: call), callee.hasPrefix(prefix), callee.count > prefix.count {
+                    return String(callee.dropFirst(prefix.count))
+                }
+                return "?"
+            default: return "?"
+            }
+        }
         func valueWitnessCall(_ value: AbstractValue, site: UInt64) -> String? {
             let callSite = site
             /// The witness at `offset` in a value-witness table: one of the
@@ -3741,6 +3767,22 @@ public struct Disassembler: Sendable {
             let prefix = "type metadata accessor for "
             if callee.hasPrefix(prefix), callee.count > prefix.count {
                 return "\(slot) value witness for \(callee.dropFirst(prefix.count))"
+            }
+            // An associated type's metadata: `swift_getAssociatedTypeWitness(
+            // request, table, T, requirements base, associated type
+            // descriptor)` returns T's witness for the associated type the
+            // descriptor names (include/swift/Runtime/Metadata.h). Named
+            // `<slot> value witness for T.Element` when the descriptor is
+            // named and the call passes this metadata back as its last
+            // argument; T is spelled as it renders, `?` when unknown.
+            if callee == "swift_getAssociatedTypeWitness", let arguments = callArguments[site], arguments.count >= 5,
+               let descriptor = descriptorName(arguments[4]),
+               descriptor.hasPrefix("associated type descriptor for "),
+               let associated = descriptor.split(separator: ".").last, !associated.contains(" "),
+               let arity = DisassembledFunction.valueWitnessArity[slot],
+               let witnessArguments = callArguments[callSite], witnessArguments.count >= arity,
+               witnessArguments[arity - 1] == metadata {
+                return "\(slot) value witness for \(conformingTypeSpelling(arguments[2])).\(associated)"
             }
             // The mangled-name metadata helpers fetch the type their cache
             // variable (V1) or name pair (V2) spells.

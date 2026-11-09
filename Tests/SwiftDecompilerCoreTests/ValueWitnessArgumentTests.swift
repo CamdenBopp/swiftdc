@@ -62,3 +62,27 @@ private func structured(_ path: String) async throws -> [String: String] {
     #expect(text["_vwEnumSlotOther"]?.contains("unresolved call") == true, "\(text["_vwEnumSlotOther"] ?? "")")
     #expect(text["_vwEnumSlotOther"]?.contains("value witness") == false)
 }
+
+/// An associated type's metadata comes from swift_getAssociatedTypeWitness
+/// with the associated type's descriptor, and its value witnesses are named
+/// for that associated type of the conforming type: `A.Element` where a
+/// signature names A, `arg1.Element` stripped. A call that does not pass
+/// the metadata back stays unresolved.
+@Test func anAssociatedTypesValueWitnessIsNamedIfPresent() async throws {
+    let named = "Fixtures/Sample/libAssociatedWitness.dylib", stripped = "Fixtures/Sample/libAssociatedWitness.stripped.dylib"
+    let asm = "Fixtures/Sample/libVoidWitness.dylib"
+    guard [named, stripped, asm].allSatisfy(FileManager.default.fileExists(atPath:)) else { return }
+    let withSymbols = try await structured(named).values.joined(separator: "\n")
+    for witness in ["destroy value witness for A.Iterator(", "destroy value witness for A.Element(",
+                    "initializeWithTake value witness for A.Element("] {
+        #expect(withSymbols.contains(witness), "\(witness)")
+    }
+    let bare = try await structured(stripped).values.joined(separator: "\n")
+    for witness in ["destroy value witness for arg1.Iterator(", "destroy value witness for arg1.Element("] {
+        #expect(bare.contains(witness), "\(witness)")
+    }
+    let text = try await structured(asm)
+    #expect(text["_vwAssocDestroy"]?.contains("destroy value witness for arg6.Element(") == true, "\(text["_vwAssocDestroy"] ?? "")")
+    #expect(text["_vwAssocOther"]?.contains("unresolved call") == true)
+    #expect(text["_vwAssocOther"]?.contains("value witness") == false)
+}

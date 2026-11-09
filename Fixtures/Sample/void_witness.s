@@ -55,3 +55,56 @@ _vwEnumSlotOther:
   blr x8
   ldp x29, x30, [sp], #16
   ret
+
+// An associated type's metadata: swift_getAssociatedTypeWitness(request,
+// table, T, requirements base, associated type descriptor for
+// Swift.Sequence.Element) returns T.Element's metadata in x0.
+// _vwAssocDestroy calls its destroy witness passing that metadata back:
+// `destroy value witness for arg6.Element`. _vwAssocOther passes arg5 (kept
+// in x20 across the call) where destroy takes its metadata: unresolved.
+.globl _vwAssocDestroy
+.p2align 2
+_vwAssocDestroy:
+  stp x20, x19, [sp, #-32]!
+  stp x29, x30, [sp, #16]
+  mov x0, #0
+  mov x1, x5
+  mov x2, x6
+  adrp x3, _$sSTTL@GOTPAGE
+  ldr x3, [x3, _$sSTTL@GOTPAGEOFF]
+  adrp x4, _$s7ElementSTTl@GOTPAGE
+  ldr x4, [x4, _$s7ElementSTTl@GOTPAGEOFF]
+  bl _swift_getAssociatedTypeWitness
+  mov x19, x0
+  ldur x8, [x0, #-8]
+  ldr x8, [x8, #0x8]
+  mov x0, x7
+  mov x1, x19
+  blr x8
+  ldp x29, x30, [sp, #16]
+  ldp x20, x19, [sp], #32
+  ret
+
+.globl _vwAssocOther
+.p2align 2
+_vwAssocOther:
+  stp x20, x19, [sp, #-32]!
+  stp x29, x30, [sp, #16]
+  mov x20, x5
+  mov x0, #0
+  mov x1, x5
+  mov x2, x6
+  adrp x3, _$sSTTL@GOTPAGE
+  ldr x3, [x3, _$sSTTL@GOTPAGEOFF]
+  adrp x4, _$s7ElementSTTl@GOTPAGE
+  ldr x4, [x4, _$s7ElementSTTl@GOTPAGEOFF]
+  bl _swift_getAssociatedTypeWitness
+  mov x19, x0
+  ldur x8, [x0, #-8]
+  ldr x8, [x8, #0x8]
+  mov x0, x19
+  mov x1, x20
+  blr x8
+  ldp x29, x30, [sp, #16]
+  ldp x20, x19, [sp], #32
+  ret

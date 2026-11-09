@@ -2554,6 +2554,15 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   parameter (ValueWitness.def, checked against ~/swift GenOpaque.cpp).
   GoodLinks `cfg.unresolved-indirect-call`: 13,508 -> 12,518; `xrefs`
   unchanged (still counted as unresolved dispatch).
+- **FIXED — an associated type's value witnesses were never named.**
+  Generic code over a `Collection` copies and destroys `C.Element` and
+  `C.Iterator` through metadata from `swift_getAssociatedTypeWitness(…, T,
+  base, associated type descriptor)`, and those calls stayed unresolved.
+  One is now named `<slot> value witness for T.Element` when the
+  descriptor is named and the call passes the metadata back as its last
+  argument (`A.Element` with a signature, `arg1.Element` stripped).
+  GoodLinks: 421 named, unresolved-call lines 17,763 -> 17,342; a site
+  whose descriptor is the app's own (stripped, unnamed) stays unresolved.
 - **FIXED — an enum's value witnesses were never named.** getEnumTag,
   destructiveProjectEnumData and destructiveInjectEnumTag follow an enum
   table's size, stride, flags and extra inhabitant count (`+0x58`); only

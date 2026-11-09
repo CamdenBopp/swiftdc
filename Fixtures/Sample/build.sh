@@ -876,3 +876,9 @@ $CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib void_witness.s -L"$(xcr
 
 echo "==> value-witness loads whose call does or does not pass the metadata back (value_witness_args.s)"
 $CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib value_witness_args.s -o libValueWitnessArgs.dylib
+
+echo "==> value witnesses of an associated type's metadata in an unspecialized generic (associated_witness.swift, -O; strip -x)"
+$SWIFTC -parse-as-library -O -emit-library -module-name AssociatedWitness associated_witness.swift -o libAssociatedWitness.dylib
+cp libAssociatedWitness.dylib libAssociatedWitness.stripped.dylib
+strip -x libAssociatedWitness.stripped.dylib
+
