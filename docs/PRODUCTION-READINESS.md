@@ -3178,6 +3178,14 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 5. Performance and memory on large frameworks
 
+- **FIXED (memory) — every summary kept a call list only stack-only
+  bodies need.** `outgoingCalls`, one entry per call site, is read only by
+  `closeOverFieldWrites` and only for a body that stores only to its stack,
+  per distinct call. It is now kept for such bodies alone, each call once.
+  GoodLinks `xrefs` heap at the peak: 58,276 arrays (12.7 MB) -> 34,090
+  (2.5 MB). Footprint pairs ran under load (237, 241 -> 192, 224 MB), so
+  the heap figure is the measure. Output identical.
+
 - **FIXED (memory) — a register summary's register sets were heap
   objects.** Each summary held its argument reads as `Set<Int>`: 77,765
   heap sets (8.4 MB) through a GoodLinks `xrefs`, for numbers 0-7. They

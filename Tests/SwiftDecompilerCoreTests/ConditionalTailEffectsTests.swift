@@ -165,3 +165,17 @@ private func tailExits(_ body: DisassembledFunction, effect: CalleeEffect) throw
     #expect(Set(exits.keys) == [0x1004])
     #expect(exits[0x1004]?["x19"] == .entry("x19"))
 }
+
+/// `closeOverFieldWrites` reads a body's calls only when it stores only to
+/// its stack, and each distinct call alone: a summary keeps them for such a
+/// body only, each once.
+@Test func outgoingCallsAreKeptOnlyWhereFieldWritesReadThem() throws {
+    // bl 0x2000; bl 0x2000; ret: stack-only, one distinct call.
+    let twice = try #require(CalleeRegisterSummary.of(try tailBody([0x94000400, 0x940003ff, 0xd65f03c0])))
+    #expect(twice.storesOnlyToStack)
+    #expect(twice.outgoingCalls.map(\.target) == [0x2000])
+    // str x0, [x1]; bl 0x2000; ret: a store through x1, so no call is read.
+    let storing = try #require(CalleeRegisterSummary.of(try tailBody([0xf9000020, 0x940003ff, 0xd65f03c0])))
+    #expect(!storing.storesOnlyToStack)
+    #expect(storing.outgoingCalls.isEmpty)
+}

@@ -140,6 +140,11 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// indirect), and whether every store the body makes is through
     /// sp, into its own stack. `closeOverFieldWrites` decides from these
     /// whether a call to the body can write a field of any object.
+    ///
+    /// It reads the calls only of a body that stores only to its stack, and
+    /// asks of each distinct call alone, so the list is kept for such a body
+    /// only, each call once, in order (`distinctOutgoingCalls`): one entry
+    /// per call site for every function was 12.7 MB of a GoodLinks `xrefs`.
     var outgoingCalls: [OutgoingCall] = []
     var storesOnlyToStack = false
     /// The body writes no field of any object, nor does anything it calls
@@ -149,7 +154,16 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// Complete, immutable-body memory proof; unknown is the default.
     var memoryEffect: CalleeMemoryEffect = .unknown
 
-    struct OutgoingCall: Sendable, Equatable {
+    /// Each call once, indirect calls first, then by target.
+    static func distinctOutgoingCalls(_ calls: [OutgoingCall]) -> [OutgoingCall] {
+        var seen = Set<OutgoingCall>()
+        return calls.filter { seen.insert($0).inserted }.sorted {
+            ($0.target ?? 0, $0.target == nil ? 0 : 1, $0.isFunction ? 1 : 0)
+                < ($1.target ?? 0, $1.target == nil ? 0 : 1, $1.isFunction ? 1 : 0)
+        }
+    }
+
+    struct OutgoingCall: Sendable, Hashable {
         let target: UInt64?
         /// The target is an in-image function, judged by its body; anything
         /// else (a stub) is judged by its name.
@@ -460,7 +474,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             definitelyClobbered: definitelyClobbered,
             restoredFrom: restoredFrom.filter { definitelyClobbered.contains($0.key) },
             callees: callees.sorted(),
-            outgoingCalls: outgoingCalls,
+            outgoingCalls: storesOnlyToStack ? Self.distinctOutgoingCalls(outgoingCalls) : [],
             storesOnlyToStack: storesOnlyToStack,
             memoryEffect: readFacts?.memoryEffect ?? CalleeMemoryEffect.discover(in: function))
         summary.mayWriteResult = writesResult
