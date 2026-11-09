@@ -30,7 +30,7 @@ final class CacheReader {
             handle = opened
         }
         guard (try? handle.seek(toOffset: localOffset)) != nil else { return nil }
-        return try? handle.read(upToCount: count)
+        return try? handle.readDrained(upToCount: count)
     }
 
     /// A NUL-terminated string at a VM address.

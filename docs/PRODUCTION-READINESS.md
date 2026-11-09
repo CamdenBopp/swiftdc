@@ -3178,6 +3178,17 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 5. Performance and memory on large frameworks
 
+- **FIXED (memory) — every file read stayed alive for the whole run.**
+  `FileHandle.read(upToCount:)` returns its bytes autoreleased, and a Swift
+  Concurrency thread drains no autorelease pool until its task ends. A
+  GoodLinks `xrefs` heap held 148,225 `NSConcreteData` from preflight's
+  conformance-descriptor reads (22 MB) and 295 pool pages; dyld-cache byte
+  reads and the probe scorer's 64 KB chunks had the same shape. Every such
+  read now goes through `FileHandle.readDrained(upToCount:)`, and a test
+  fails on a raw `read(upToCount:)` in the sources. GoodLinks `xrefs` peak,
+  two alternating rounds: 359, 373 MB -> 335, 327 MB; swift-syntax perf
+  runs -6% to -11%. Output identical.
+
 - **FIXED (memory) — a streamed call graph kept every site's notes.**
   `xrefs` keeps each function's call and branch sites for the whole image
   (`CallGraph.sites(of:)`), and each kept its annotation and fact box. The

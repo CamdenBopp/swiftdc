@@ -2309,7 +2309,7 @@ public struct Disassembler: Sendable {
             defer { try? handle.close() }
             do {
                 try handle.seek(toOffset: localOffset)
-                return try handle.read(upToCount: size)
+                return try handle.readDrained(upToCount: size)
             } catch {
                 return nil
             }

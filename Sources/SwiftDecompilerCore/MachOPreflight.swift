@@ -122,7 +122,7 @@ public enum MachOPreflight {
         // 1 MiB covers the header plus load commands of any binary in practice;
         // where it does not, the arithmetic checks still apply and the
         // load-command walk simply stops at the end of what was read.
-        let prefix = (try? handle.read(upToCount: min(fileSize, 1 << 20))) ?? Data()
+        let prefix = (try? handle.readDrained(upToCount: min(fileSize, 1 << 20))) ?? Data()
         try validate(prefix: prefix, fileSize: fileSize, path: url.path)
 
         // A fat file's slices: the core `validateFat` above checks each slice's
@@ -141,7 +141,7 @@ public enum MachOPreflight {
             let (index, extent) = slice
             guard extent.size >= Layout.machHeader32,
                   (try? handle.seek(toOffset: UInt64(extent.offset))) != nil,
-                  let header = try? handle.read(upToCount: min(extent.size, 4096)),
+                  let header = try? handle.readDrained(upToCount: min(extent.size, 4096)),
                   header.count >= Layout.machHeader32
             else { continue }
             try validateSliceThinHeader(
@@ -180,7 +180,7 @@ public enum MachOPreflight {
         func read(offset: Int, count: Int) -> Data? {
             guard offset >= 0, count >= 0, offset <= size, count <= size - offset,
                   (try? handle.seek(toOffset: UInt64(base + offset))) != nil,
-                  let data = try? handle.read(upToCount: count), data.count == count
+                  let data = try? handle.readDrained(upToCount: count), data.count == count
             else { return nil }
             return data
         }
