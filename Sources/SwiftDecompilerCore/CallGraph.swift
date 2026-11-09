@@ -51,10 +51,10 @@ public struct CallGraph: Sendable {
     /// which is all `init(functions:)` reads.
     public init(sites functions: [FunctionCallSites], externalNames: [UInt64: String] = [:]) {
         var names: [UInt64: String] = externalNames
-        for function in functions { names[function.function.startAddress] = function.function.displayName }
+        for function in functions { names[function.startAddress] = function.name }
 
-        let starts = Set(functions.map(\.function.startAddress))
-        let spans = functions.map { ($0.function.startAddress, $0.lastAddress) }
+        let starts = Set(functions.map(\.startAddress))
+        let spans = functions.map { ($0.startAddress, $0.lastAddress) }
             .sorted { $0.0 < $1.0 }
         func insideAFunction(_ address: UInt64) -> Bool {
             var low = 0, high = spans.count
@@ -69,7 +69,7 @@ public struct CallGraph: Sendable {
         var unresolved = 0
         var external = 0
         for function in functions {
-            let first = function.function.startAddress
+            let first = function.startAddress
             let last = function.lastAddress
             for site in function.sites {
                 let isTailCall: Bool
@@ -117,8 +117,8 @@ public struct CallGraph: Sendable {
         self.callersByCallee = Dictionary(grouping: edges, by: \.callee)
     }
 
-    /// Everything the graph reads of `function`, in the least memory: the
-    /// function without its instructions (its names), its last address
+    /// Everything the graph reads of `function`, in the least memory: its
+    /// start, display name and folded symbols, its last address
     /// (its span) and one `GraphSite` per call or branch. `xrefs` streams
     /// the image and holds these for every function at once; holding each
     /// site as an `Instruction` (176 bytes) was 139 MB of a GoodLinks run.
@@ -136,7 +136,8 @@ public struct CallGraph: Sendable {
             }
         }
         return FunctionCallSites(
-            function: function.replacingInstructions([]),
+            startAddress: function.startAddress, name: function.displayName,
+            foldedCandidates: function.foldedCandidates,
             lastAddress: function.instructions.last?.address ?? function.startAddress,
             sites: sites)
     }
@@ -218,8 +219,14 @@ public struct GraphSite: Sendable, Equatable {
 
 /// A function as a call graph reads it (`CallGraph.callSites(of:)`).
 public struct FunctionCallSites: Sendable {
-    /// The function's names and identity, without its instructions.
-    public let function: DisassembledFunction
+    public let startAddress: UInt64
+    /// `DisassembledFunction.displayName`, the graph's name for it.
+    public let name: String
+    /// `DisassembledFunction.foldedCandidates`: the symbols a folded
+    /// address answers to (`Disassembler.foldedSymbolMatches`). Keeping the
+    /// whole function instead, 312 bytes each, was 21 MB of a GoodLinks
+    /// `xrefs`.
+    public let foldedCandidates: [String]?
     /// Its last instruction's address: the end of its span.
     public let lastAddress: UInt64
     public let sites: [GraphSite]

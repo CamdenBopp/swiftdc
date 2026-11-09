@@ -1603,8 +1603,13 @@ public struct Disassembler: Sendable {
     /// `-f` on any folded symbol printed "No function matched" for a symbol
     /// the binary exports.
     public func foldedSymbolMatches(_ function: DisassembledFunction, needle: String) -> Bool {
+        foldedSymbolMatches(candidates: function.foldedCandidates, needle: needle)
+    }
+
+    /// `foldedSymbolMatches(_:needle:)` over a function's folded symbols alone.
+    public func foldedSymbolMatches(candidates: [String]?, needle: String) -> Bool {
         let needle = needle.lowercased()
-        return (function.foldedCandidates ?? []).contains { candidate in
+        return (candidates ?? []).contains { candidate in
             candidate.lowercased().contains(needle)
                 || (demangle(candidate).map { matchesName($0, needle: needle) } ?? false)
         }

@@ -105,7 +105,7 @@ struct XrefsCommand: AsyncParsableCommand {
         // symbols select it here, as they do for `disasm -f`: `xrefs
         // --function Box.plus` printed "No function matched" for a symbol
         // the binary exports.
-        let folded = sites.map(\.function).filter { disassembler.foldedSymbolMatches($0, needle: function!) }.map(\.startAddress)
+        let folded = sites.filter { disassembler.foldedSymbolMatches(candidates: $0.foldedCandidates, needle: function!) }.map(\.startAddress)
         try emit(renderCrossReferences(graph, needle: function!, folded: folded), to: output)
     }
 

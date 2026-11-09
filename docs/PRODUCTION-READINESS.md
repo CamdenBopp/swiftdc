@@ -3178,6 +3178,13 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 5. Performance and memory on large frameworks
 
+- **FIXED (memory) — a streamed call graph kept a whole function per
+  function.** `FunctionCallSites` held the `DisassembledFunction` (312
+  bytes; 21 MB of a GoodLinks `xrefs` heap) for its name and folded
+  symbols alone. It now keeps the start, the display name and the folded
+  candidates. GoodLinks `xrefs` peak, two rounds: 249, 228 MB -> 239, 208
+  MB (a concurrent build ran during the second pair), output identical.
+
 - **FIXED (memory) — a streamed call graph held each site as an
   instruction.** With its notes gone, a GoodLinks `xrefs` heap still held
   68,641 `Instruction` arrays (139 MB): one per function, an `Instruction`

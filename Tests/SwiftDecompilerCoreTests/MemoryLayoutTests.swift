@@ -13,6 +13,8 @@ import Ccapstone
     // `xrefs` holds one per call site of the whole image; an `Instruction`
     // per site was 176 bytes.
     #expect(MemoryLayout<GraphSite>.stride <= 40)
+    // And one of these per function: the whole function was 312 bytes.
+    #expect(MemoryLayout<FunctionCallSites>.stride <= 48)
 }
 
 /// Packing keeps every value: a Capstone id past a bank (`.other`), the
