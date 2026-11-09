@@ -3178,6 +3178,16 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 5. Performance and memory on large frameworks
 
+- **FIXED (memory) — a streamed call graph held each site as an
+  instruction.** With its notes gone, a GoodLinks `xrefs` heap still held
+  68,641 `Instruction` arrays (139 MB): one per function, an `Instruction`
+  (176 bytes) per call site. `xrefs` now streams `CallGraph.callSites(of:)`:
+  the function without its instructions, its last address, and a 40-byte
+  `GraphSite` per site; `CallGraph(functions:)` builds through the same
+  path. GoodLinks `xrefs --arch arm64 --unreferenced` peak, two alternating
+  rounds: 317, 322 MB -> 213, 221 MB, output identical; `xrefs --function`
+  text and JSON identical on libSwiftParser.
+
 - **FIXED (memory) — every file read stayed alive for the whole run.**
   `FileHandle.read(upToCount:)` returns its bytes autoreleased, and a Swift
   Concurrency thread drains no autorelease pool until its task ends. A

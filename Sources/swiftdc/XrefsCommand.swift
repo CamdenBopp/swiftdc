@@ -94,9 +94,9 @@ struct XrefsCommand: AsyncParsableCommand {
         }
         // One function at a time, keeping only its call sites: holding the
         // whole image's instructions took about 1 KB each.
-        let functions = await disassembler.disassembleStreaming(machO: machO, transform: CallGraph.sites(of:))
+        let sites = await disassembler.disassembleStreaming(machO: machO, transform: CallGraph.callSites(of:))
 
-        let graph = CallGraph(functions: functions)
+        let graph = CallGraph(sites: sites)
         if unreferenced {
             try emit(renderUnreferenced(graph), to: output)
             return
@@ -105,7 +105,7 @@ struct XrefsCommand: AsyncParsableCommand {
         // symbols select it here, as they do for `disasm -f`: `xrefs
         // --function Box.plus` printed "No function matched" for a symbol
         // the binary exports.
-        let folded = functions.filter { disassembler.foldedSymbolMatches($0, needle: function!) }.map(\.startAddress)
+        let folded = sites.map(\.function).filter { disassembler.foldedSymbolMatches($0, needle: function!) }.map(\.startAddress)
         try emit(renderCrossReferences(graph, needle: function!, folded: folded), to: output)
     }
 

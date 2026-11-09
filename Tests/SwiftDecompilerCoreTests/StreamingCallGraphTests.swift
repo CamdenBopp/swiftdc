@@ -18,14 +18,18 @@ private let graphFixtures = [
 @Test func aStreamedCallGraphMatchesTheWholeImageGraphIfPresent() async throws {
     for path in graphFixtures where FileManager.default.fileExists(atPath: path) {
         let machO = try BinaryLoader.load(path: path)
-        let (whole, streamed) = await withStableDependencies {
+        let (whole, slimmed, streamed) = await withStableDependencies {
             let disassembler = Disassembler(preset: .default)
             return (
                 CallGraph(functions: await disassembler.disassemble(machO: machO)),
-                CallGraph(functions: await disassembler.disassembleStreaming(machO: machO, transform: CallGraph.sites(of:)))
+                CallGraph(functions: await disassembler.disassembleStreaming(machO: machO, transform: CallGraph.sites(of:))),
+                CallGraph(sites: await disassembler.disassembleStreaming(machO: machO, transform: CallGraph.callSites(of:)))
             )
         }
         #expect(!whole.edges.isEmpty, "\(path): no edges")
+        #expect(Set(slimmed.edges) == Set(whole.edges), "\(path)")
+        #expect(slimmed.unresolvedCallSites == whole.unresolvedCallSites, "\(path)")
+        #expect(streamed.externalCallSites == whole.externalCallSites, "\(path)")
         #expect(Set(streamed.edges) == Set(whole.edges), "\(path)")
         #expect(streamed.names == whole.names, "\(path)")
         #expect(streamed.functionAddresses == whole.functionAddresses, "\(path)")

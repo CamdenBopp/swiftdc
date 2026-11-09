@@ -44,11 +44,17 @@ public struct CallGraph: Sendable {
     private let callersByCallee: [UInt64: [CallEdge]]
 
     public init(functions: [DisassembledFunction], externalNames: [UInt64: String] = [:]) {
-        var names: [UInt64: String] = externalNames
-        for function in functions { names[function.startAddress] = function.displayName }
+        self.init(sites: functions.map(Self.callSites(of:)), externalNames: externalNames)
+    }
 
-        let starts = Set(functions.map(\.startAddress))
-        let spans = functions.map { ($0.startAddress, $0.instructions.last?.address ?? $0.startAddress) }
+    /// The graph over each function's call sites alone (`callSites(of:)`),
+    /// which is all `init(functions:)` reads.
+    public init(sites functions: [FunctionCallSites], externalNames: [UInt64: String] = [:]) {
+        var names: [UInt64: String] = externalNames
+        for function in functions { names[function.function.startAddress] = function.function.displayName }
+
+        let starts = Set(functions.map(\.function.startAddress))
+        let spans = functions.map { ($0.function.startAddress, $0.lastAddress) }
             .sorted { $0.0 < $1.0 }
         func insideAFunction(_ address: UInt64) -> Bool {
             var low = 0, high = spans.count
@@ -63,52 +69,41 @@ public struct CallGraph: Sendable {
         var unresolved = 0
         var external = 0
         for function in functions {
-            let first = function.startAddress
-            let last = function.instructions.last?.address ?? first
-            for analysed in function.instructions {
-                // A site rewritten to what its outlined fragment does is,
-                // in the binary, a `bl` or `b` to the fragment.
-                let insn = analysed.inlinedFragment.map { origin in
-                    Instruction(address: analysed.address, text: analysed.text,
-                                controlFlow: origin.reachedByCall ? .call : .branch,
-                                branchTarget: origin.address, callee: .kept(nil))
-                } ?? analysed
+            let first = function.function.startAddress
+            let last = function.lastAddress
+            for site in function.sites {
                 let isTailCall: Bool
-                switch insn.controlFlow {
-                case .call:
-                    guard insn.branchTarget != nil else {
+                if site.isCall {
+                    guard site.target != nil else {
                         // A `blr` through a bound GOT slot names its import;
                         // counted as unresolved it inflated the count (69% of
                         // one app's "unresolved" sites had a proven target).
-                        if DisassembledFunction.calleeName(of: insn) != nil { external += 1 } else { unresolved += 1 }
+                        if site.callee != nil { external += 1 } else { unresolved += 1 }
                         continue
                     }
                     isTailCall = false
-                case .branch:
+                } else {
                     // A `b` that leaves the function is a tail call. Without
                     // this edge a function reached only that way (14,401 of
                     // Fiery Feeds' 180,015) reads as having no caller at all.
                     // A branch inside the span, or back to the entry, is the
                     // function's own control flow; one into the middle of
                     // another function is a shared tail, not a call to it.
-                    guard let target = insn.branchTarget, target < first || target > last,
-                          starts.contains(target)
-                            || (!insideAFunction(target) && DisassembledFunction.calleeName(of: insn) != nil)
+                    guard let target = site.target, target < first || target > last,
+                          starts.contains(target) || (!insideAFunction(target) && site.callee != nil)
                     else { continue }
                     isTailCall = true
-                default:
-                    continue
                 }
-                guard let target = insn.branchTarget else { continue }
+                guard let target = site.target else { continue }
                 // Calls into a stub (an import, or an ObjC selector stub) target
                 // an address that is not itself a recovered function, so it has
                 // no entry above — but the call site knows the name.
-                if names[target] == nil, let name = DisassembledFunction.calleeName(of: insn) {
+                if names[target] == nil, let name = site.callee {
                     names[target] = name
                 }
                 edges.append(CallEdge(
-                    site: insn.address, caller: function.startAddress, callee: target, isTailCall: isTailCall,
-                    isSelfDispatch: insn.isSelfDispatch
+                    site: site.address, caller: first, callee: target, isTailCall: isTailCall,
+                    isSelfDispatch: site.isSelfDispatch
                 ))
             }
         }
@@ -120,6 +115,30 @@ public struct CallGraph: Sendable {
         self.externalCallSites = external
         self.calleesByCaller = Dictionary(grouping: edges, by: \.caller)
         self.callersByCallee = Dictionary(grouping: edges, by: \.callee)
+    }
+
+    /// Everything the graph reads of `function`, in the least memory: the
+    /// function without its instructions (its names), its last address
+    /// (its span) and one `GraphSite` per call or branch. `xrefs` streams
+    /// the image and holds these for every function at once; holding each
+    /// site as an `Instruction` (176 bytes) was 139 MB of a GoodLinks run.
+    /// A site rewritten to what its outlined fragment does is, in the
+    /// binary, a `bl` or `b` to the fragment, and is kept as that.
+    public static func callSites(of function: DisassembledFunction) -> FunctionCallSites {
+        var sites: [GraphSite] = []
+        for insn in function.instructions {
+            if let origin = insn.inlinedFragment {
+                sites.append(GraphSite(address: insn.address, callee: nil, target: origin.address,
+                                      isCall: origin.reachedByCall, isSelfDispatch: false))
+            } else if insn.controlFlow == .call || insn.controlFlow == .branch {
+                sites.append(GraphSite(address: insn.address, callee: insn.callee, target: insn.branchTarget,
+                                      isCall: insn.controlFlow == .call, isSelfDispatch: insn.isSelfDispatch))
+            }
+        }
+        return FunctionCallSites(
+            function: function.replacingInstructions([]),
+            lastAddress: function.instructions.last?.address ?? function.startAddress,
+            sites: sites)
     }
 
     /// What the graph reads of `function`: its names, its call and branch
@@ -181,4 +200,27 @@ public struct CallGraph: Sendable {
     public func unreferenced() -> [UInt64] {
         functionAddresses.filter { callersByCallee[$0] == nil }.sorted()
     }
+}
+
+/// One call or branch site, as a call graph reads it.
+public struct GraphSite: Sendable, Equatable {
+    /// Address of the `bl`, `blr`, `b` or `br`.
+    public let address: UInt64
+    /// The typed callee name of the instruction (`Instruction.callee`).
+    public let callee: String?
+    /// The proven target, when there is one.
+    public let target: UInt64?
+    /// A call (`bl`, `blr`) rather than a branch.
+    public let isCall: Bool
+    /// `Instruction.isSelfDispatch`.
+    public let isSelfDispatch: Bool
+}
+
+/// A function as a call graph reads it (`CallGraph.callSites(of:)`).
+public struct FunctionCallSites: Sendable {
+    /// The function's names and identity, without its instructions.
+    public let function: DisassembledFunction
+    /// Its last instruction's address: the end of its span.
+    public let lastAddress: UInt64
+    public let sites: [GraphSite]
 }

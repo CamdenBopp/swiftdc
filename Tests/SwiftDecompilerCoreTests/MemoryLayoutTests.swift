@@ -10,6 +10,9 @@ import Ccapstone
     // three times in a memory operand, and 96 an operand.
     #expect(MemoryLayout<PhysReg>.stride <= 6)
     #expect(MemoryLayout<StructuredOperandInfo>.stride <= 48)
+    // `xrefs` holds one per call site of the whole image; an `Instruction`
+    // per site was 176 bytes.
+    #expect(MemoryLayout<GraphSite>.stride <= 40)
 }
 
 /// Packing keeps every value: a Capstone id past a bank (`.other`), the
