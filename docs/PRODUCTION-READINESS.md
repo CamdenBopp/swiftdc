@@ -3241,6 +3241,15 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 5. Performance and memory on large frameworks
 
+- **FIXED (memory) — every summary's construction state lived through
+  pass 2.** Analysis reads a dozen facts of a callee's summary, but each
+  kept its call edges, pending reads, preservation work and result reads
+  for the whole run. Once every closure is done, `CalleeRegisterFacts.finish`
+  takes the caller-proven results (which need the result reads) and then
+  projects the summaries to the facts analysis reads, emptying the table.
+  Ported from Codex's 502be0e. GoodLinks `xrefs` peak, one quiet run each:
+  123 MB -> 95 MB, heap at the peak 118.5 MB -> 45.5 MB; output identical.
+
 - **FIXED (memory) — a register summary was 128 bytes, a third of it
   padding.** Bools between references padded `CalleeRegisterSummary`; one
   is held per function in a table of 131,072 slots on GoodLinks. The

@@ -988,6 +988,8 @@ public struct Disassembler: Sendable {
             enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex
         )
         let fieldMaps = (try? FieldMapBuilder.build(in: machO)) ?? [:]
+        // Every closure is done: analysis reads only the facts.
+        let finished = CalleeRegisterFacts.finish(&registerSummaries)
         let context = PerFunctionContext(
             resolver: resolver, swiftTargets: swiftTargets, objcIndex: objcIndex,
             fieldMaps: fieldMaps,
@@ -999,9 +1001,9 @@ public struct Disassembler: Sendable {
             classParameterFields: ClassParameterFieldIndex.build(
                 in: machO, fieldMaps: fieldMaps, classTypeIndex: classTypeIndex, demangle: demangle),
             indirectResultUses: indirectResultUses,
-            registerSummaries: registerSummaries,
+            registerSummaries: finished.facts,
             outlinedFragments: outlinedFragments,
-            callerProvenResults: CalleeRegisterSummary.callerProvenResults(registerSummaries),
+            callerProvenResults: finished.callerProvenResults,
             asyncIndex: asyncIndex, asyncChainSlots: chainSlots
         )
 
@@ -1334,6 +1336,8 @@ public struct Disassembler: Sendable {
         }
         CalleeRegisterSummary.closeOverFieldWrites(&summaries) { resolvedNames[$0] }
 
+        // Every closure is done: analysis reads only the facts.
+        let finished = CalleeRegisterFacts.finish(&summaries)
         let context = PerFunctionContext(
             resolver: resolver, swiftTargets: swiftTargets, objcIndex: objcIndex,
             fieldMaps: fieldMaps, selfIndex: selfIndex, vtableIndex: vtableIndex,
@@ -1342,8 +1346,8 @@ public struct Disassembler: Sendable {
             classParameterFields: ClassParameterFieldIndex.build(
                 in: machO, fieldMaps: fieldMaps, classTypeIndex: classTypeIndex, demangle: demangle),
             indirectResultUses: indirectResultUses,
-            registerSummaries: summaries,
-            callerProvenResults: CalleeRegisterSummary.callerProvenResults(summaries),
+            registerSummaries: finished.facts,
+            callerProvenResults: finished.callerProvenResults,
             asyncIndex: asyncIndex, asyncChainSlots: chainSlots
         )
 
@@ -1505,7 +1509,7 @@ public struct Disassembler: Sendable {
         // The bodies the summaries decode, the filtered run's callees
         // included, are where a call site finds its outlined fragment.
         var outlinedFragments: [UInt64: OutlinedFragment] = [:]
-        let registerSummaries: [UInt64: CalleeRegisterSummary] = {
+        let finished: (facts: [UInt64: CalleeRegisterFacts], callerProvenResults: [UInt64: SwiftReturnRegister]) = {
                 let isFunction = { (target: UInt64) in boundaries.contains(target) }
                 let importStubs = CodeSection.importStubRanges(of: machO)
                 let isImportStub = { (target: UInt64) in importStubs.contains { $0.contains(target) } }
@@ -1579,7 +1583,7 @@ public struct Disassembler: Sendable {
                     outlinedFragments[start] = OutlinedFragment(start: start, instructions: body.instructions)
                 }
                 outlinedFragments = Self.inlinableFragments(outlinedFragments, names: resolvedNames)
-                return summaries
+                return CalleeRegisterFacts.finish(&summaries)
             }()
         let context = PerFunctionContext(
             resolver: resolver, swiftTargets: swiftTargets, objcIndex: objcIndex,
@@ -1592,9 +1596,9 @@ public struct Disassembler: Sendable {
                 functions.map { ($0.startAddress, Self.indirectResultUse(of: $0)) },
                 uniquingKeysWith: { a, _ in a }
             ),
-            registerSummaries: registerSummaries,
+            registerSummaries: finished.facts,
             outlinedFragments: outlinedFragments,
-            callerProvenResults: CalleeRegisterSummary.callerProvenResults(registerSummaries),
+            callerProvenResults: finished.callerProvenResults,
             asyncIndex: asyncIndex, asyncChainSlots: chainSlots
         )
         functions = functions.map { analyzeFunction($0, context: context) }
@@ -1656,7 +1660,7 @@ public struct Disassembler: Sendable {
         var indirectResultUses: [UInt64: IndirectResultUse] = [:]
         /// Function start → what its body proves about the registers a call to
         /// it reads and clobbers, for callees no signature describes.
-        var registerSummaries: [UInt64: CalleeRegisterSummary] = [:]
+        var registerSummaries: [UInt64: CalleeRegisterFacts] = [:]
         /// Function start → its body, when it is short and straight-line
         /// enough to be an outlined fragment a call site can inline.
         var outlinedFragments: [UInt64: OutlinedFragment] = [:]
@@ -6507,7 +6511,7 @@ public struct Disassembler: Sendable {
         asyncContextSlots: [Int: AbstractValue] = [:],
         asyncSuspensions: [UInt64: AsyncSuspensionNote] = [:],
         objcIndex: ObjCMetadataIndex? = nil,
-        registerSummaries: [UInt64: CalleeRegisterSummary] = [:],
+        registerSummaries: [UInt64: CalleeRegisterFacts] = [:],
         selfMembers: SelfMemberCache = SelfMemberCache(),
         callResultBanks: CallResultBankCache = CallResultBankCache(),
         inlinedPrefixes: [UInt64: [Instruction]] = [:],
