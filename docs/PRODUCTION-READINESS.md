@@ -50,6 +50,15 @@ results do not replace previously recorded release performance measurements.
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
 
+- **FIXED — a void value witness's x0 flowed on as its result.** A call
+  named through a value-witness table (`destroy value witness for
+  Swift.Int`) was resolved after the first trace, and nothing marked
+  destroy, storeEnumTagSinglePayload or the enum projections as returning
+  nothing, so the next call that read x0 took the witness:
+  `vwSink(destroy value witness for Swift.Int(?))`. They now join the void
+  calls the trace is rerun with: `vwSink(?)`. Cost +0.71% instructions in
+  total (the rerun).
+
 - **FIXED — a generic function's metadata was counted past an argument
   IRGen does not pass.** Metadata was seeded one register per type
   parameter after the formals, and two kinds of signature pass fewer. A

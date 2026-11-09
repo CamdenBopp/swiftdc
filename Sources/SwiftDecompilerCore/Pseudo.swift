@@ -817,6 +817,20 @@ public extension DisassembledFunction {
         "getEnumTag": 2, "destructiveProjectEnumData": 2, "destructiveInjectEnumTag": 3,
     ]
 
+    /// The value witnesses that return nothing
+    /// (swift/include/swift/ABI/ValueWitness.def): every other function
+    /// slot returns the destination or a tag in x0.
+    static let voidValueWitnesses: Set<String> = [
+        "destroy", "storeEnumTagSinglePayload", "destructiveProjectEnumData", "destructiveInjectEnumTag",
+    ]
+
+    /// A call named `<slot> value witness for <type>` whose witness returns
+    /// nothing: x0 after it is whatever the witness last computed.
+    static func isVoidValueWitness(_ callee: String) -> Bool {
+        guard let range = callee.range(of: " value witness for ") else { return false }
+        return voidValueWitnesses.contains(String(callee[..<range.lowerBound]))
+    }
+
     /// `Module.name.unsafeMutableAddressor : Type`: the addressor of a global
     /// variable, which takes no parameters and no self, so x0 and x20 at the
     /// call are only what the caller left there. Exactly two components: a

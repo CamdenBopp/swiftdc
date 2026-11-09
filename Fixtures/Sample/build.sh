@@ -871,3 +871,5 @@ $SWIFTC -parse-as-library -O -emit-library -module-name ArgumentWitness argument
 cp libArgumentWitness.dylib libArgumentWitness.stripped.dylib
 strip -x libArgumentWitness.stripped.dylib
 
+echo "==> a void value witness followed by a call that reads x0 (void_witness.s; links libswiftCore for the metadata bind)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib void_witness.s -L"$(xcrun --show-sdk-path)/usr/lib/swift" -lswiftCore -o libVoidWitness.dylib

@@ -6730,10 +6730,13 @@ public struct Disassembler: Sendable {
         // resolved setter must invalidate its result before downstream values
         // are recovered; rendering-time suppression leaves fabricated values
         // inside later expressions.
+        // A value witness named through its table is resolved here too, and
+        // `destroy` returns nothing: its x0 flowed into the next call.
         let resolvedVoidCalls = Set(function.instructions.compactMap { insn -> UInt64? in
             guard insn.controlFlow == .call,
                   let callee = DisassembledFunction.calleeName(of: insn),
                   DisassembledFunction.swiftAccessorProperty(callee)?.isGetter == false
+                    || DisassembledFunction.isVoidValueWitness(callee)
             else { return nil }
             return insn.address
         })
