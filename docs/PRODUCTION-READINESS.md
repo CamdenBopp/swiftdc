@@ -3178,6 +3178,13 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 5. Performance and memory on large frameworks
 
+- **FIXED (memory) — a register summary's register sets were heap
+  objects.** Each summary held its argument reads as `Set<Int>`: 77,765
+  heap sets (8.4 MB) through a GoodLinks `xrefs`, for numbers 0-7. They
+  are now a one-word `RegisterSet` that walks in ascending order. GoodLinks
+  `xrefs` peak, two alternating rounds: 208, 215 MB -> 191, 205 MB, output
+  identical.
+
 - **FIXED (memory) — a streamed call graph kept a whole function per
   function.** `FunctionCallSites` held the `DisassembledFunction` (312
   bytes; 21 MB of a GoodLinks `xrefs` heap) for its name and folded

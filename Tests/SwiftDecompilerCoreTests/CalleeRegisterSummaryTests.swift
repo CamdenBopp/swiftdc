@@ -58,7 +58,7 @@ private func shapes() throws -> [String: DisassembledFunction] {
     // x1 is written before its read on one path only: still an argument.
     #expect(try summary("branchy").argumentReads == [0, 1])
     // A tail call may forward any argument register.
-    #expect(try summary("tailcall").argumentReads == Set(0...7))
+    #expect(try summary("tailcall").argumentReads == RegisterSet(0...7))
     // A fragment that rewrites x20 without saving it clobbers it; a function
     // that spills x19 first does not.
     #expect(try summary("fragment").clobberedCalleeSaved == ["x20"])

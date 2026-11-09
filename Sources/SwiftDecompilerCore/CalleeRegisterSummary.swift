@@ -49,7 +49,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// its target's own reads are known: a callee of known arity reads its
     /// parameters, and a call to another in-image function waits in
     /// `pendingReads` until `closeOverReads` gives it that function's reads.
-    let argumentReads: Set<Int>
+    let argumentReads: RegisterSet
     /// Of those, the registers the body's own instructions read. A call
     /// proves no parameter: one of unknown arity may pass any unwritten
     /// register on (`swift_willThrowTyped`'s body reaches x6 and x7 only by
@@ -57,13 +57,13 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// a known one's parameter may be whatever the register held (a lazy
     /// witness table accessor hands its untouched x2 to
     /// `swift_getWitnessTable`).
-    var provenArgumentReads: Set<Int> = []
+    var provenArgumentReads: RegisterSet = []
     /// The floating-point argument registers v0…v7 (by number) the body's own
     /// instructions read before writing them. A call proves none, as for
     /// the integer registers. C passes floats on their own counter, so a
     /// body that reads one has parameters the integer reads do not count:
     /// `takef3(double, double, double)` rendered `takef3()`.
-    var provenFloatArgumentReads: Set<Int> = []
+    var provenFloatArgumentReads: RegisterSet = []
     /// The width each of those is read at (16 h, 32 s, 64 d), when every read
     /// of it agrees: a constant passed there is a float of that width.
     var floatArgumentWidths: [Int: Int] = [:]
@@ -239,9 +239,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         // into a block (intersection at joins). A read of one not in the set is
         // a possible argument read.
         var inState: [UInt64: Set<String>] = readFacts == nil ? [entry: []] : [:]
-        var reads = readFacts?.argumentReads ?? Set<Int>()
-        var provenReads = readFacts?.provenArgumentReads ?? Set<Int>()
-        var provenFloatReads = readFacts?.provenFloatArgumentReads ?? Set<Int>()
+        var reads = readFacts?.argumentReads ?? RegisterSet()
+        var provenReads = readFacts?.provenArgumentReads ?? RegisterSet()
+        var provenFloatReads = readFacts?.provenFloatArgumentReads ?? RegisterSet()
         var floatWidths = readFacts?.floatArgumentWidths ?? [:]
         var writesFloatResult = readFacts?.mayWriteFloatResult ?? false
         var readsFramePointer = readFacts?.readsFramePointer ?? false
@@ -629,7 +629,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             var readsContextRegister = summary.readsContextRegister
             var readsSelfRegister = summary.readsSelfRegister
             for call in summary.pendingReads {
-                let targetReads = summaries[call.target]?.argumentReads ?? Set(0 ..< argumentKeys.count)
+                let targetReads = summaries[call.target]?.argumentReads ?? RegisterSet(0 ..< argumentKeys.count)
                 for index in targetReads where call.unwritten & (1 << index) != 0 { reads.insert(index) }
                 if call.unwritten & framePointerBit != 0, summaries[call.target]?.readsFramePointer ?? true {
                     readsFramePointer = true
@@ -656,7 +656,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     }
 
     private func replacingReads(
-        _ reads: Set<Int>, readsFramePointer: Bool, readsContextRegister: Bool, readsSelfRegister: Bool
+        _ reads: RegisterSet, readsFramePointer: Bool, readsContextRegister: Bool, readsSelfRegister: Bool
     ) -> CalleeRegisterSummary {
         var summary = CalleeRegisterSummary(
             argumentReads: reads, provenArgumentReads: provenArgumentReads,

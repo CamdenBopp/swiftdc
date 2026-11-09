@@ -62,7 +62,7 @@ private func pseudo(_ path: String) async throws -> (array: String, streamed: St
     // Not an in-image function: the call may read every unwritten register,
     // x20 as a Swift method's `self` among them.
     let unknown = try #require(CalleeRegisterSummary.of(function))
-    #expect(unknown.argumentReads == Set(1...7))
+    #expect(unknown.argumentReads == RegisterSet(1...7))
     #expect(unknown.readsSelfRegister)
 }
 
@@ -70,7 +70,7 @@ private func pseudo(_ path: String) async throws -> (array: String, streamed: St
 /// target's reads among the registers unwritten at it, through any depth and
 /// around a cycle, and every register of a target with no summary.
 @Test func pendingReadsCloseToTheLeastFixpoint() {
-    func summary(_ reads: Set<Int>, _ pending: [(UInt64, UInt32)] = []) -> CalleeRegisterSummary {
+    func summary(_ reads: RegisterSet, _ pending: [(UInt64, UInt32)] = []) -> CalleeRegisterSummary {
         CalleeRegisterSummary(argumentReads: reads, pendingReads: pending.map { .init(target: $0.0, unwritten: $0.1) },
                               clobberedCalleeSaved: [])
     }

@@ -115,7 +115,7 @@ private func tailExits(_ body: DisassembledFunction, effect: CalleeEffect) throw
     #expect(known.pendingReads.isEmpty)
     #expect(known.provenFloatArgumentReads.isEmpty)
     let unknown = try #require(CalleeRegisterSummary.of(body))
-    #expect(unknown.argumentReads == Set(0...7))
+    #expect(unknown.argumentReads == RegisterSet(0...7))
     #expect(unknown.provenFloatArgumentReads.isEmpty)
 }
 
