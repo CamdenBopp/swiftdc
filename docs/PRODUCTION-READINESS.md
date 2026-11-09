@@ -3178,6 +3178,16 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 5. Performance and memory on large frameworks
 
+- **FIXED (memory) — every short function's body was held as a possible
+  outlined fragment.** Pass 1 stored an `OutlinedFragment` for each body
+  of at most 12 instructions, though a call inlines only one named
+  `OUTLINED_FUNCTION_n` or an unnamed one that breaks the calling
+  convention. Only those are now kept: at insertion when no dyld cache can
+  rename anything, else once names are final (`inlinableFragments`).
+  GoodLinks `xrefs` heap at the peak: the fragment table 6.57 MB -> 28 KB,
+  its instruction arrays about 9 MB -> 0.18 MB; peak footprint on a quiet
+  host 197, 191 MB -> 170, 172 MB. Output identical.
+
 - **FIXED (memory) — every summary kept a call list only stack-only
   bodies need.** `outgoingCalls`, one entry per call site, is read only by
   `closeOverFieldWrites` and only for a body that stores only to its stack,

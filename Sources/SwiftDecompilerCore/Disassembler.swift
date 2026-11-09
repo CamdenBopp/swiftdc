@@ -870,8 +870,14 @@ public struct Disassembler: Sendable {
                     metadataNames: metadataNames, objcIndex: objcIndex
                 )
                 indirectResultUses[boundaries[index]] = Self.indirectResultUse(of: function)
-                outlinedFragments[boundaries[index]] = OutlinedFragment(
-                    start: boundaries[index], instructions: function.instructions)
+                // Without a dyld cache no later pass renames anything, so a
+                // fragment no call may inline is not held through pass 1,
+                // where this run's footprint peaks; with one, the names it
+                // adds decide (`inlinableFragments`, after the resolve).
+                if let fragment = OutlinedFragment(start: boundaries[index], instructions: function.instructions),
+                   cacheSymbols != nil || Self.mayInline(fragment, named: names[boundaries[index]]) {
+                    outlinedFragments[boundaries[index]] = fragment
+                }
                 registerSummaries[boundaries[index]] = CalleeRegisterSummary.of(
                     Self.withJumpTables(function, machO: machO, ranges: fileRanges),
                     calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub)
@@ -911,6 +917,7 @@ public struct Disassembler: Sendable {
             }
         }
         names = resolveCrossImageNames(targets, into: names, resolver: cacheSymbols)
+        outlinedFragments = Self.inlinableFragments(outlinedFragments, names: names)
         CalleeRegisterSummary.closeOverFieldWrites(&registerSummaries) { names[$0] }
         let resolver = ReferenceResolver(
             names: names,
@@ -1558,6 +1565,7 @@ public struct Disassembler: Sendable {
                 for (start, body) in bodies {
                     outlinedFragments[start] = OutlinedFragment(start: start, instructions: body.instructions)
                 }
+                outlinedFragments = Self.inlinableFragments(outlinedFragments, names: resolvedNames)
                 return summaries
             }()
         let context = PerFunctionContext(
@@ -1953,9 +1961,7 @@ public struct Disassembler: Sendable {
         let resolver = context.resolver
         func isFragment(_ target: UInt64) -> Bool {
             guard let fragment = context.outlinedFragments[target] else { return false }
-            let name = resolver.callTargetName(at: target)
-            if name?.hasPrefix(Self.outlinedFragmentPrefix) == true { return true }
-            return (name == nil || name?.hasPrefix("sub_") == true) && fragment.breaksCallingConvention
+            return Self.mayInline(fragment, named: resolver.callTargetName(at: target))
         }
         var annotated: [UInt64: OutlinedFragment] = [:]
         var prefixes: [UInt64: [Instruction]] = [:]
@@ -2002,6 +2008,23 @@ public struct Disassembler: Sendable {
 
     /// LLVM's machine outliner names its fragments `OUTLINED_FUNCTION_<n>`.
     static let outlinedFragmentPrefix = "OUTLINED_FUNCTION_"
+
+    /// Whether a call to the function `fragment` was cut from, named `name`
+    /// (the resolver's name, nil when it has none), may be inlined.
+    static func mayInline(_ fragment: OutlinedFragment, named name: String?) -> Bool {
+        if name?.hasPrefix(outlinedFragmentPrefix) == true { return true }
+        return (name == nil || name?.hasPrefix("sub_") == true) && fragment.breaksCallingConvention
+    }
+
+    /// The fragments a call may inline, once names are final: every short
+    /// body is a candidate when it is decoded, but only these are ever read,
+    /// and the rest held 22 MB (bodies, operands and table) through a
+    /// GoodLinks `xrefs`.
+    static func inlinableFragments(
+        _ fragments: [UInt64: OutlinedFragment], names: [UInt64: String]
+    ) -> [UInt64: OutlinedFragment] {
+        fragments.filter { mayInline($0.value, named: names[$0.key]) }
+    }
 
     // MARK: - Async funclets
 
