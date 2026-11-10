@@ -16,3 +16,52 @@ _$s18ExistentialWitness8unpassedySiAA5Shape_pF:
   blr x8
   ldp x29, x30, [sp], #16
   ret
+
+// ExistentialWitness.unpassedNamed(any Named) -> Int, by hand: a class-bound
+// existential's table (x1) is read and a word of it called, but the call
+// passes neither swift_getObjectType(object) nor the table.
+.globl _$s18ExistentialWitness13unpassedNamedySiAA0D0_pF
+_$s18ExistentialWitness13unpassedNamedySiAA0D0_pF:
+  stp x29, x30, [sp, #-16]!
+  mov x29, sp
+  ldr x8, [x1, #8]
+  mov x0, #0
+  mov x1, #0
+  blr x8
+  ldp x29, x30, [sp], #16
+  ret
+
+// unpassedTable(any Named): the metadata is swift_getObjectType(object),
+// but the table is not passed (x1 = 0).
+.globl _$s18ExistentialWitness13unpassedTableySiAA5Named_pF
+_$s18ExistentialWitness13unpassedTableySiAA5Named_pF:
+  stp x29, x30, [sp, #-32]!
+  mov x29, sp
+  stp x19, x20, [sp, #16]
+  mov x19, x1
+  mov x20, x0
+  bl _swift_getObjectType
+  ldr x8, [x19, #8]
+  mov x1, #0
+  blr x8
+  ldp x19, x20, [sp, #16]
+  ldp x29, x30, [sp], #32
+  ret
+
+// retainedType(any Named): the table is passed, but the metadata is
+// swift_getObjectType of another value (the table), not of the object.
+.globl _$s18ExistentialWitness12retainedTypeySiAA5Named_pF
+_$s18ExistentialWitness12retainedTypeySiAA5Named_pF:
+  stp x29, x30, [sp, #-32]!
+  mov x29, sp
+  stp x19, x20, [sp, #16]
+  mov x19, x1
+  mov x20, x0
+  mov x0, x19
+  bl _swift_getObjectType
+  ldr x8, [x19, #8]
+  mov x1, x19
+  blr x8
+  ldp x19, x20, [sp, #16]
+  ldp x29, x30, [sp], #32
+  ret

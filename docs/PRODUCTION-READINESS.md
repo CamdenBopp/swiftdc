@@ -2734,8 +2734,8 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   `makeEngine(turbo).start()` reads `FieldVTable.Engine.start(self: r0)`.
   GoodLinks is unchanged again: it is stripped, and a `sub_` callee has no
   signature to type its result. Methods' and specializations' parameters,
-  results of unnamed callees, class-bound existentials and objects loaded
-  from other memory are not typed yet (opaque existentials: the next entry).
+  results of unnamed callees, a method's existential parameters and objects
+  loaded from other memory are not typed yet (existentials: the next entry).
 - **FIXED (2026-11-10, completeness): a requirement called on an opaque
   existential argument stayed unresolved.** `measure(_ shape: any Shape)` is
   `ldp x19, x21, [x0, #0x18]` (metadata, table), the projected value in x20,
@@ -2748,9 +2748,14 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   descriptor when it hands on that metadata and table: `ExistentialWitness.Shape.area()
   witness for arg0()` under library evolution, `ExistentialWitness.Shape
   requirement 0 (method) witness for arg0()` otherwise, at -O and -Onone.
-  A class-bound existential (two registers) and Error's box are not this
-  layout and stay as they were. GoodLinks cfg.unresolved-indirect-call
-  15,160 -> 14,810.
+  Error's box is not this layout and stays as it was. GoodLinks
+  cfg.unresolved-indirect-call 15,160 -> 14,810. A free function's
+  class-bound existential (`any Named`, `Named: AnyObject`) is two registers,
+  the object and its table (`existentialWitnessTable`), and a call through
+  that table is named when it passes `swift_getObjectType(object)` and the
+  table: `ExistentialWitness.Named.name() witness for arg0(…)` (GoodLinks
+  unchanged: its class-bound existentials are method parameters, which the
+  instance convention does not seed).
 - **FIXED (2026-11-10, correctness): a protocol whose name sits at an odd
   address had no requirement shapes.** `protocolRequirementShape` read every
   relative field of the descriptor as indirectable and declined an odd

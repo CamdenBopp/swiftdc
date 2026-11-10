@@ -2093,6 +2093,7 @@ public struct Disassembler: Sendable {
         let selfTypeName = classSelfTypeName ?? valueSelf?.typeName
         let resolver = context.resolver
         let isOpaqueExistential: (String) -> Bool = { resolver.opaqueExistentialDescriptor(named: $0) != nil }
+        let isClassBoundExistential: (String) -> Bool = { resolver.classBoundExistentialDescriptor(named: $0) != nil }
         let entry: MethodEntryConvention? = if isResumeFunclet {
             nil
         } else if let objcMethod {
@@ -2108,13 +2109,14 @@ public struct Disassembler: Sendable {
         } else if classSelfTypeName != nil || (!isResumeFunclet && symbolEntry == nil
                     && Self.swiftEnumSelfType(of: function, enumCaseIndex: context.enumCaseIndex) != nil) {
             .swiftInstance(scalarArguments: Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps, isOpaqueExistential: isOpaqueExistential) ?? [:])
-        } else if let scalarArgs = Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps, isOpaqueExistential: isOpaqueExistential) {
+        } else if let arguments = Self.swiftArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps, isOpaqueExistential: isOpaqueExistential, isClassBoundExistential: isClassBoundExistential) {
             {
                 let metadata = Self.genericMetadataRegisters(
                     of: function, enumCaseIndex: context.enumCaseIndex,
                     classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps)
-                return .swiftFunction(scalarArguments: scalarArgs, genericMetadata: metadata,
-                                      genericWitnessTables: Self.genericWitnessTableRegisters(of: function, metadata: metadata))
+                return .swiftFunction(scalarArguments: arguments.scalars, genericMetadata: metadata,
+                                      genericWitnessTables: Self.genericWitnessTableRegisters(of: function, metadata: metadata),
+                                      existentialTables: arguments.existentialTables)
             }()
         } else if !DisassembledFunction.signatureKnown(displayName: function.analysisDisplayName, objcSignature: nil),
                   let summary = context.registerSummaries[function.startAddress], summary.provenArgumentCount > 0 {
@@ -2146,7 +2148,7 @@ public struct Disassembler: Sendable {
         // chain pass proved.
         let asyncEntry = Self.asyncConvention(for: function, base: entry, index: context.asyncIndex)
         let chainSlots = context.asyncChainSlots[function.startAddress] ?? [:]
-        let classArguments: [Int: (type: String, map: FieldMap)] = if case .swiftFunction(let scalarArguments, _, _)? = entry {
+        let classArguments: [Int: (type: String, map: FieldMap)] = if case .swiftFunction(let scalarArguments, _, _, _)? = entry {
             Self.classArguments(of: function, scalarArguments: scalarArguments, index: context.classParameterFields)
         } else {
             [:]
@@ -4174,6 +4176,7 @@ public struct Disassembler: Sendable {
         /// takes them. Named `<requirement> witness for argN` from the
         /// protocol's descriptor.
         func existentialWitnessCall(_ value: AbstractValue, site: UInt64) -> String? {
+            if let name = classBoundExistentialWitnessCall(value, site: site) { return name }
             guard case .loadedFrom(.loadedFrom(.argument(let argument), offset: 0x20), let offset) = value,
                   offset >= 8, offset % 8 == 0,
                   let type = argumentType(argument),
@@ -4181,6 +4184,30 @@ public struct Disassembler: Sendable {
                   let arguments = callArguments[site], arguments.count >= 2,
                   arguments[arguments.count - 1] == .loadedFrom(.argument(argument), offset: 0x20),
                   arguments[arguments.count - 2] == .loadedFrom(.argument(argument), offset: 0x18)
+            else { return nil }
+            if let requirement = resolver.protocolRequirement(descriptor: descriptor, word: offset / 8) {
+                return "\(requirement.name) witness for arg\(argument)"
+            }
+            if let shape = resolver.protocolRequirementShape(descriptor: descriptor, word: offset / 8) {
+                return "\(shape.protocolName) requirement \(shape.index) (\(shape.kind)) witness for arg\(argument)"
+            }
+            return nil
+        }
+        /// A call through word `k` of a class-bound existential argument's
+        /// witness table (`any Named`, the object in xN and the table in
+        /// xN+1): the call must pass `swift_getObjectType(object)` and that
+        /// table last, as a witness on a class-bound existential takes them.
+        func classBoundExistentialWitnessCall(_ value: AbstractValue, site: UInt64) -> String? {
+            guard case .loadedFrom(.existentialWitnessTable(let argument), let offset) = value,
+                  offset >= 8, offset % 8 == 0,
+                  let type = argumentType(argument),
+                  let descriptor = resolver.classBoundExistentialDescriptor(named: type),
+                  let arguments = callArguments[site], arguments.count >= 2,
+                  arguments[arguments.count - 1] == .existentialWitnessTable(argument: argument),
+                  case .callResult(let typeSite) = arguments[arguments.count - 2],
+                  let typeCall = function.instructions.first(where: { $0.address == typeSite }),
+                  DisassembledFunction.calleeName(of: typeCall) == "swift_getObjectType",
+                  callArguments[typeSite]?.first == .argument(argument)
             else { return nil }
             if let requirement = resolver.protocolRequirement(descriptor: descriptor, word: offset / 8) {
                 return "\(requirement.name) witness for arg\(argument)"
@@ -4618,6 +4645,20 @@ public struct Disassembler: Sendable {
         /// flags bit 16 set: `ProtocolClassConstraint::Any`) and no special
         /// protocol (`Error`'s existential is a box). A value of such an
         /// `any P` is a five-word container, passed and held by address.
+        /// The descriptor of an in-image Swift protocol named exactly `name`
+        /// whose existential is class-bound (bit 16 clear:
+        /// `ProtocolClassConstraint::Class`, no special protocol): the object
+        /// and one witness table. An `@objc` protocol has no Swift descriptor,
+        /// and its existential takes no table.
+        func classBoundExistentialDescriptor(named name: String) -> UInt64? {
+            guard machO.cache == nil, let descriptor = protocolDescriptor(named: name),
+                  let base = machO.fileOffset(of: descriptor).map(Int.init),
+                  let flags = UnrecordedTypes.read(base, as: UInt32.self, in: machO),
+                  flags & 0x1F == 3, (flags >> 16) & 1 == 0, (flags >> 18) & 0x3F == 0
+            else { return nil }
+            return descriptor
+        }
+
         func opaqueExistentialDescriptor(named name: String) -> UInt64? {
             guard machO.cache == nil, let descriptor = protocolDescriptor(named: name),
                   let base = machO.fileOffset(of: descriptor).map(Int.init),
@@ -6263,8 +6304,24 @@ public struct Disassembler: Sendable {
     static func swiftScalarArgumentRegisters(
         of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
         classTypeIndex: ClassTypeIndex = ClassTypeIndex(), fieldMaps: [String: FieldMap] = [:],
-        isOpaqueExistential: (String) -> Bool = { _ in false }
+        isOpaqueExistential: (String) -> Bool = { _ in false },
+        isClassBoundExistential: (String) -> Bool = { _ in false }
     ) -> [String: Int]? {
+        swiftArgumentRegisters(of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex,
+                               fieldMaps: fieldMaps, isOpaqueExistential: isOpaqueExistential,
+                               isClassBoundExistential: isClassBoundExistential)?.scalars
+    }
+
+    /// `swiftScalarArgumentRegisters`, with the register that holds each
+    /// class-bound existential parameter's witness table (register key ->
+    /// parameter index); the parameter itself is the object, in the register
+    /// before it.
+    static func swiftArgumentRegisters(
+        of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
+        classTypeIndex: ClassTypeIndex = ClassTypeIndex(), fieldMaps: [String: FieldMap] = [:],
+        isOpaqueExistential: (String) -> Bool = { _ in false },
+        isClassBoundExistential: (String) -> Bool = { _ in false }
+    ) -> (scalars: [String: Int], existentialTables: [String: Int])? {
         guard function.objcMethod == nil, let name = function.layoutName,
               Self.isSwiftMangled(function.symbol),
               Self.signatureSpecializationKeepsLayout(name),
@@ -6288,7 +6345,7 @@ public struct Disassembler: Sendable {
         let parameters = DisassembledFunction.splitTopLevelArguments(signature[paramsRange])
         guard !parameters.isEmpty else { return nil }
 
-        var registers: [String: Int] = [:]
+        var registers: [String: Int] = [:], tables: [String: Int] = [:]
         var integerIndex = 0, floatIndex = 0
         for (index, parameter) in parameters.enumerated() {
             switch Self.scalarParameterClass(parameter, enumCaseIndex: enumCaseIndex,
@@ -6333,6 +6390,16 @@ public struct Disassembler: Sendable {
                     integerIndex += 1
                     continue
                 }
+                // A class-bound existential (`_ n: any Named`, `Named:
+                // AnyObject`) is the object and then its one witness table,
+                // two integer registers.
+                if isClassBoundExistential(type) {
+                    guard integerIndex + 2 <= 8 else { return nil }
+                    registers["x\(integerIndex)"] = index
+                    tables["x\(integerIndex + 1)"] = index
+                    integerIndex += 2
+                    continue
+                }
                 // A struct this image lays out takes its fields' registers
                 // (`SwiftLowering.aggregateRegisters`): no one of them is the
                 // parameter, but those after it are placed. Declined,
@@ -6355,7 +6422,7 @@ public struct Disassembler: Sendable {
                 integerIndex += words
             }
         }
-        return registers
+        return (registers, tables)
     }
 
     /// The register class of each source parameter of a Swift callee, in order,
@@ -7085,7 +7152,8 @@ public struct Disassembler: Sendable {
     static func sizeIsUnknown(_ value: AbstractValue) -> Bool {
         func unknownPart(_ value: AbstractValue) -> Bool {
             switch value {
-            case .unknown, .callResultHigh, .loadedThrough, .loadedFrom, .selfIsaSnapshot, .genericWitnessTable: return true
+            case .unknown, .callResultHigh, .loadedThrough, .loadedFrom, .selfIsaSnapshot, .genericWitnessTable,
+                 .existentialWitnessTable: return true
             case .binary(_, let lhs, let rhs): return unknownPart(lhs) || unknownPart(rhs)
             case .unary(_, let operand): return unknownPart(operand)
             default: return false
@@ -7582,7 +7650,7 @@ public struct Disassembler: Sendable {
                 // Async plumbing: the context pointer, the continuation, and an
                 // unproven context slot are not source values.
                 return .unknown
-            case .loadedThrough, .loadedFrom, .selfIsaSnapshot, .genericWitnessTable:
+            case .loadedThrough, .loadedFrom, .selfIsaSnapshot, .genericWitnessTable, .existentialWitnessTable:
                 // A word read through a loaded pointer: named only as a call
                 // target (`indirectCallTarget`), unknown as a value. So is an
                 // isa kept across a call.
@@ -8133,7 +8201,7 @@ public struct Disassembler: Sendable {
         // inside another expression all name the same `self`.
         // The register each seeded parameter arrived in.
         let entryArgumentRegisters: [String: Int] = switch entry {
-        case .swiftFunction(let map, _, _)?, .swiftInstance(let map)?: map
+        case .swiftFunction(let map, _, _, _)?, .swiftInstance(let map)?: map
         default: [:]
         }
         /// `values`, the registers from x`first` on, without its trailing run
@@ -9533,7 +9601,8 @@ public struct Disassembler: Sendable {
             switch value {
             case .genericMetadata(let name):
                 return "type metadata for \(name)"
-            case .unknown, .callResultHigh, .loadedThrough, .loadedFrom, .selfIsaSnapshot, .genericWitnessTable:
+            case .unknown, .callResultHigh, .loadedThrough, .loadedFrom, .selfIsaSnapshot, .genericWitnessTable,
+                 .existentialWitnessTable:
                 // A String result's second word alone is no source value, nor
                 // is a word read through a loaded pointer (a call through one
                 // is named by its target, `annotateIndirectControlFlowTargets`).

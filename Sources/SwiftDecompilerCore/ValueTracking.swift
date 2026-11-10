@@ -199,6 +199,11 @@ public indirect enum AbstractValue: Equatable, Sendable {
     /// slots is named by the enrichment, which proves which protocol each
     /// table is for.
     case genericWitnessTable(Int)
+    /// The witness table of a class-bound existential argument, which
+    /// arrives in the register after the object (`any P` where `P:
+    /// AnyObject`): argument `n` is the object. Unknown as a value; a call
+    /// through one of its words is named by the enrichment.
+    case existentialWitnessTable(argument: Int)
     /// The `self` pointer as it arrives at a Swift instance method — x20 under
     /// the Swift calling convention.
     ///
@@ -363,7 +368,7 @@ public enum MethodEntryConvention: Sendable, Equatable {
     /// `genericWitnessTables` the registers holding its witness tables
     /// (register key -> index among its protocol requirements).
     case swiftFunction(scalarArguments: [String: Int], genericMetadata: [String: String] = [:],
-                       genericWitnessTables: [String: Int] = [:])
+                       genericWitnessTables: [String: Int] = [:], existentialTables: [String: Int] = [:])
     /// A nonmutating instance method of a small homogeneous floating-point
     /// aggregate struct: `self` (and any HFA parameters) are passed by value in
     /// consecutive SIMD registers, so `seededRegisters` maps each register key to
@@ -1116,7 +1121,7 @@ public struct ValueTracer: Sendable {
             for argument in 6 ..< max(6, min(max(argumentCount, 0), 32)) {
                 state[Self.stackKey(Int64(argument - 6) * 8)] = .argument(argument)
             }
-        case .swiftFunction(let scalarArguments, let genericMetadata, let genericWitnessTables):
+        case .swiftFunction(let scalarArguments, let genericMetadata, let genericWitnessTables, let existentialTables):
             // No `self`/`_cmd` prefix: a Swift function's integer arguments occupy
             // x0…, its floating-point ones v0…. A proven all-scalar signature
             // never spills, so there is nothing past the eighth of each to recover.
@@ -1124,6 +1129,9 @@ public struct ValueTracer: Sendable {
             for (register, name) in genericMetadata { if let location = Location(key: register) { state[location] = .genericMetadata(name) } }
             for (register, index) in genericWitnessTables {
                 if let location = Location(key: register) { state[location] = .genericWitnessTable(index) }
+            }
+            for (register, argument) in existentialTables {
+                if let location = Location(key: register) { state[location] = .existentialWitnessTable(argument: argument) }
             }
         case .swiftValueInstance(let seededRegisters):
             // `self` (and HFA parameters) arrive decomposed across SIMD registers;
@@ -5574,6 +5582,7 @@ public struct ValueTracer: Sendable {
         case .address(let address): return .absolute(address &+ UInt64(bitPattern: effective))
         case .loaded(let slot): return .throughStaticPointer(slot: slot, offset: Int(effective))
         case .callResult, .loadedFrom(.callResult, _), .genericMetadata, .loadedFrom(.genericMetadata, _), .genericWitnessTable,
+             .existentialWitnessTable,
              .loadedThrough(_, -8), .selfVTableMethod, .loadedFrom(.selfVTableMethod, _),
              // The word before what an argument points to, and one load
              // through it: a value-witness table, when the argument is
