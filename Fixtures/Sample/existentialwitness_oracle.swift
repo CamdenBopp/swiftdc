@@ -16,3 +16,6 @@ public func existentialWitnessNameThen() -> Int { ExistentialWitness.callNameThe
 
 @_cdecl("existential_witness_lookup")
 public func existentialWitnessLookup() -> Int { Registry(10).lookup(Tag()) }
+
+@_cdecl("existential_witness_copy_out")
+public func existentialWitnessCopyOut() -> Int { ExistentialWitness.copyOut(Square(4)).area() }

@@ -2756,6 +2756,15 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   table: `ExistentialWitness.Named.name() witness for arg0(…)`. A method's
   parameters are laid out the same way, self in x20 (`Registry.lookup(_:)`).
   GoodLinks is unchanged at 14,810 for both.
+- **FIXED (2026-11-10, completeness): a value witness on an existential's
+  dynamic type stayed unresolved.** An outlined copy, take, assign or destroy
+  helper reads the container's metadata (word 3, `ldr x2, [x0, #0x18]`), its
+  value-witness table before it, and calls a slot with that metadata last.
+  It is now named under the proof the argument-metadata case uses (the call
+  passes that metadata where the witness takes it), for where the metadata
+  was read, since the helper has no signature: `initializeBufferWithCopyOfBuffer
+  value witness for the metadata at arg0 + 0x18(arg1, arg0, ?)`. 30 fixtures,
+  252 lines; GoodLinks cfg.unresolved-indirect-call 14,810 -> 14,693.
 - **FIXED (2026-11-10, correctness): a protocol whose name sits at an odd
   address had no requirement shapes.** `protocolRequirementShape` read every
   relative field of the descriptor as indirectable and declined an odd

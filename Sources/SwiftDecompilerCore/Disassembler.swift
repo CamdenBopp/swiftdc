@@ -4410,6 +4410,18 @@ public struct Disassembler: Sendable {
                 else { return nil }
                 return "\(slot) value witness for arg\(index)"
             }
+            // The metadata in word 3 of the existential container an
+            // argument points to (`ldr x2, [x0, #0x18]; ldur x8, [x2, #-8];
+            // ldr x8, [x8]` in `outlined init with copy of M.Shape`), under
+            // the same proof: the call passes it where the witness takes its
+            // metadata. Named for where it was read, as no type is known.
+            if case .loadedFrom(.argument(let index), offset: 0x18) = metadata {
+                guard let arity = DisassembledFunction.valueWitnessArity[slot],
+                      let arguments = callArguments[site], arguments.count >= arity,
+                      arguments[arity - 1] == metadata
+                else { return nil }
+                return "\(slot) value witness for the metadata at arg\(index) + 0x18"
+            }
             // A generic argument of `self`'s class, read from its isa:
             // `ldr x12, [x20]; ldr x23, [x12, #0x50]` in a method of
             // `LRUCache<A, B>`.

@@ -22,7 +22,7 @@ private let existentialFixtures = [
         typealias Entry = @convention(c) () -> Int
         for (name, expected) in [("existential_witness_measure", 9), ("existential_witness_grow", 12),
                                  ("existential_witness_name", 5), ("existential_witness_name_then", 7),
-                                 ("existential_witness_lookup", 15)] {
+                                 ("existential_witness_lookup", 15), ("existential_witness_copy_out", 16)] {
             let entry = try #require(dlsym(handle, name))
             #expect(unsafeBitCast(entry, to: Entry.self)() == expected, "\(path): \(name)")
         }
@@ -89,4 +89,25 @@ private let existentialFixtures = [
     #expect(resolver.classBoundExistentialDescriptor(named: "ExistentialWitness.Shape") == nil)
     #expect(resolver.classBoundExistentialDescriptor(named: "ExistentialWitness.Named") != nil)
     #expect(resolver.opaqueExistentialDescriptor(named: "ExistentialWitness.Named") == nil)
+}
+
+/// Copying an existential runs its dynamic type's value witness, read
+/// through the container's metadata (word 3) and passed that metadata last.
+/// No type is known in the outlined helper, so the witness is named for
+/// where its metadata was read. A slot called without that metadata
+/// (`existential_vw_unpassed`) is not named.
+@Test func aValueWitnessOnAnExistentialsMetadataIsNamedIfPresent() async throws {
+    for path in existentialFixtures where FileManager.default.fileExists(atPath: path) {
+        let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+        let copy = try #require(functions.first { $0.displayName == "outlined init with copy of ExistentialWitness.Shape" },
+                                "\(path)")
+        for text in [copy.renderPseudo(), copy.renderStructured()] {
+            #expect(text.contains("initializeBufferWithCopyOfBuffer value witness for the metadata at arg0 + 0x18("),
+                    "\(path): \(text)")
+        }
+        let unpassed = try #require(functions.first { $0.symbol == "_existential_vw_unpassed" }, "\(path)")
+        for text in [unpassed.renderPseudo(), unpassed.renderStructured()] {
+            #expect(text.contains("unresolved call") && !text.contains("value witness"), "\(path): \(text)")
+        }
+    }
 }

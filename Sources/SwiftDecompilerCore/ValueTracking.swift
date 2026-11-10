@@ -5612,6 +5612,13 @@ public struct ValueTracer: Sendable {
              .argument where (effective == 0x18 || effective == 0x20) && !detail.postIndex && !detail.writeback,
              .loadedFrom(.argument, 0x20) where effective >= 8 && effective % 8 == 0
                  && !detail.postIndex && !detail.writeback,
+             // Its metadata's value-witness table (the word before the
+             // metadata) and that table's function slots, as for metadata
+             // passed as an argument.
+             .loadedFrom(.argument, 0x18) where effective == -8 && !detail.postIndex && !detail.writeback,
+             .loadedFrom(.loadedFrom(.argument, 0x18), -8) where effective % 8 == 0
+                 && ((0 ..< 0x40).contains(effective) || (0x58 ... 0x68).contains(effective))
+                 && !detail.postIndex && !detail.writeback,
              .loadedFrom(.argument, 0) where effective >= 0 && effective % 8 == 0
                  && !detail.postIndex && !detail.writeback,
              // And through an object held in a class argument's field.

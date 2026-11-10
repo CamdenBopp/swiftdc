@@ -42,3 +42,9 @@ public final class Registry {
     public init(_ base: Int) { self.base = base }
     @inline(never) public func lookup(_ named: any Named) -> Int { named.name() &+ base }
 }
+
+// Copying an existential calls its dynamic type's value witness through the
+// container's metadata, in `outlined init with copy of ExistentialWitness.Shape`:
+// `ldr x2, [x0, #0x18]; ldur x8, [x2, #-8]; ldr x8, [x8]; blr x8`, with
+// that metadata passed last. `copyOut(Square(4)).area()` is 16.
+@inline(never) public func copyOut(_ shape: any Shape) -> any Shape { shape }

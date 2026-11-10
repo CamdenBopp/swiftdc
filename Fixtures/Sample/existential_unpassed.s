@@ -65,3 +65,18 @@ _$s18ExistentialWitness12retainedTypeySiAA5Named_pF:
   ldp x19, x20, [sp, #16]
   ldp x29, x30, [sp], #32
   ret
+
+// existential_vw_unpassed(container): slot 0 of the container's metadata's
+// value-witness table, called with no metadata where the witness takes it.
+.globl _existential_vw_unpassed
+_existential_vw_unpassed:
+  stp x29, x30, [sp, #-16]!
+  mov x29, sp
+  ldr x2, [x0, #0x18]
+  ldur x8, [x2, #-8]
+  ldr x8, [x8]
+  mov x1, x0
+  mov x2, #0
+  blr x8
+  ldp x29, x30, [sp], #16
+  ret
