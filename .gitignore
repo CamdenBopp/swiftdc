@@ -26,6 +26,7 @@ Fixtures/Sample/*.swiftsourceinfo
 Fixtures/Sample/*.abi.json
 Fixtures/Sample/*.o
 Fixtures/Sample/*.a2s
+Fixtures/Sample/*.shape
 Fixtures/Sample/abi-source-oracle
 Fixtures/Sample/abi-source-resilient-oracle
 Fixtures/Sample/exception-cleanup-oracle

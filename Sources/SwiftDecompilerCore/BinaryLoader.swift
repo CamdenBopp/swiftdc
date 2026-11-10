@@ -25,6 +25,7 @@ public enum BinaryLoader {
     public static func load(
         path: String, architecture: String? = nil, allowingWideAddresses: Bool = false
     ) throws -> MachOFile {
+        let path = try followingSymlinks(path)
         let url = URL(fileURLWithPath: path)
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw BinaryLoadError("File not found: \(path)")
@@ -71,6 +72,39 @@ public enum BinaryLoader {
             forgetCachedImage(match)
             return match
         }
+    }
+
+    /// The file `path` names, past any symbolic link in its last component.
+    /// The boundary for every input: `attributesOfItem` measures a link rather
+    /// than its target, and a bundle is recognized by its name, so a link to
+    /// a dylib read as a 7-byte file and a link to an app as a plain directory.
+    /// A link in an earlier component needs nothing, the system follows it, so
+    /// a path with no link at the end keeps the spelling the user gave it.
+    /// `realpath` is the loop guard: it fails with ELOOP past the kernel's
+    /// limit on links. A trailing slash goes first, because `lstat` follows a
+    /// link through one and a bundle's name has none.
+    static func followingSymlinks(_ path: String) throws -> String {
+        var trimmed = path
+        while trimmed.count > 1, trimmed.hasSuffix("/") { trimmed.removeLast() }
+        var info = stat()
+        guard lstat(trimmed, &info) == 0 else {
+            if errno == ELOOP { throw BinaryLoadError("\(path) is a symbolic link loop.") }
+            return trimmed
+        }
+        guard info.st_mode & S_IFMT == S_IFLNK else { return trimmed }
+        guard let resolved = realpath(trimmed, nil) else {
+            switch errno {
+            case ELOOP:
+                throw BinaryLoadError("\(path) is a symbolic link loop.")
+            case ENOENT:
+                let target = (try? FileManager.default.destinationOfSymbolicLink(atPath: trimmed)) ?? "?"
+                throw BinaryLoadError("\(path) is a dangling symbolic link to \(target).")
+            case let code:
+                throw BinaryLoadError("Cannot follow the symbolic link \(path): \(String(cString: strerror(code)))")
+            }
+        }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 
     /// The same file, named by its own path instead of its install name.
@@ -296,6 +330,8 @@ extension BinaryLoader {
 
     private static func openDyldCache(cachePath: String?) throws -> FullDyldCache {
         if let cachePath {
+            // A cache's subcaches sit beside the file itself, not beside a link to it.
+            let cachePath = try followingSymlinks(cachePath)
             let url = URL(fileURLWithPath: cachePath)
             guard FileManager.default.fileExists(atPath: url.path) else {
                 throw BinaryLoadError("Dyld shared cache not found: \(cachePath)")

@@ -11772,3 +11772,18 @@ Commit messages on dev stay as they are; these are the true records.
   native runs; the Codex worktree's own qualification recorded 46
   independent ARC mutations red. Ported from the
   compiler-ir-arc-origin-20261107 worktree.
+
+## 2026-11-04: input shapes
+- **FIXED (robustness) — any symlinked input failed.** `swiftdc dump
+  link.dylib` printed `link.dylib is 7 bytes, shorter than a dyld shared cache
+  header`: `attributesOfItem` reports the link. So did `--cache` through a
+  link, a versioned macOS framework (`No Mach-O executable found`; its
+  top-level binary is always a link), `--list-binaries` on one (empty),
+  `disasm --binary M1 T.app`, and Homebrew's `bin/` entries.
+  `BinaryLoader.followingSymlinks` now resolves the last component at each
+  boundary (`load`, the bundle resolver, `--cache`), with `realpath` as the
+  loop guard. A dangling link and a loop each say what they are. A framework
+  finds its `Info.plist` under `Resources/`, or failing one its binary by the
+  bundle's name. Measured on `disasm`, `dump`, `layout`, `interface`, `objc`,
+  `analyze`, `xrefs` and `swift-version`: all read a link to a link and give
+  the target's output byte for byte. Test: `InputShapeTests`.

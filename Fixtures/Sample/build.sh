@@ -845,6 +845,18 @@ $SWIFTC -parse-as-library -O -emit-library -module-name StrippedFold strippedfol
 cp libStrippedFold.dylib libStrippedFold.stripped.dylib
 strip -x libStrippedFold.stripped.dylib 2>/dev/null || strip libStrippedFold.stripped.dylib
 
+echo "==> input shapes: x86_64, universal, relocatable objects, no LC_FUNCTION_STARTS, no code (inputshape*, -O and -O1)"
+# Not .dylib: the suites that decode every fixture read .dylib files, and these are refused.
+$SWIFTC -O -emit-library -target x86_64-apple-macos13 -module-name InputShape inputshape.swift -o inputshape_x86_64.shape
+$SWIFTC -O -emit-library -target arm64-apple-macos13 -module-name InputShape inputshape.swift -o libInputShape.arm64.dylib
+lipo -create libInputShape.arm64.dylib inputshape_x86_64.shape -output inputshape_universal.shape
+$SWIFTC -O -c -parse-as-library -module-name InputShape inputshape.swift -o inputshape_swift.o
+$CLANG -arch arm64 -O1 -c inputshape_c.c -o inputshape_c.o
+$CLANG -arch arm64 -O1 -dynamiclib inputshape_c.c -o libInputShapeNoStarts.dylib -Wl,-no_function_starts
+cp libInputShapeNoStarts.dylib libInputShapeNoStarts.stripped.dylib
+strip -x libInputShapeNoStarts.stripped.dylib
+$CLANG -arch arm64 -dynamiclib inputshape_empty.c -o inputshape_empty.shape
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release
