@@ -212,6 +212,11 @@ specialization ::= type '_' type* 'Ts' SPEC-INFO                    // generic r
 specialization ::= type '_' type* 'Ti' SPEC-INFO                    // inlined function with generic substitutions
 specialization ::= spec-arg* 'Tf' SPEC-INFO ARG-SPEC-KIND* '_' ARG-SPEC-KIND  // function-signature specialization
 ```
+
+A `dropped-arg` index and a `Tf` entry both count SIL arguments, not formals:
+indirect results come first, a tuple formal counts once per element, and
+`self` comes last (`ReabstractionInfo::createSubstitutedAndSpecializedTypes`,
+`FunctionSignatureSpecializationMangler`).
 — `Mangling.rst:1349-1371`. Parser dispatch for all of these lives in
 `demangleThunkOrSpecialization`'s `'g'`/`'G'`/`'B'`/`'t'`/`'s'`/`'i'`/`'p'`/`'P'`/`'f'`
 cases (`Demangler.cpp:3105-3136`). Every one of them ends up printed via

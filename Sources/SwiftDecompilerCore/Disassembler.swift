@@ -4271,8 +4271,7 @@ public struct Disassembler: Sendable {
         /// The substituted signature of the specialization a call to `target`
         /// names, when its symbol proves one.
         func specializedSignature(at target: UInt64, printedName: String) -> String? {
-            guard printedName.hasPrefix("generic specialization <"), let symbol = specializationSymbols[target]
-            else { return nil }
+            guard let symbol = specializationSymbols[target] else { return nil }
             return DisassembledFunction.specializedSignature(symbol: symbol, printedName: printedName)
         }
 
@@ -4282,6 +4281,13 @@ public struct Disassembler: Sendable {
             guard printedName.hasPrefix("generic specialization <"), let symbol = specializationSymbols[target]
             else { return .unavailable }
             return DisassembledFunction.specializedSignatureProof(symbol: symbol, printedName: printedName)
+        }
+
+        /// What the symbol at `target` proves about the printed name. A
+        /// folded target has no symbol, so nothing beyond the name.
+        func specializationClause(at target: UInt64, printedName: String) -> SpecializationClause {
+            guard let symbol = specializationSymbols[target] else { return .absent }
+            return DisassembledFunction.specializationClause(symbol: symbol, printedName: printedName)
         }
 
         /// The requirement a witness table of the protocol whose descriptor
@@ -4416,7 +4422,7 @@ public struct Disassembler: Sendable {
             labels: [UInt64: String], names: [UInt64: String], folded: [UInt64: [String]]
         ) -> [UInt64: String] {
             var symbols: [UInt64: String] = [:]
-            for (address, name) in names where name.hasPrefix("generic specialization <") {
+            for (address, name) in names where DisassembledFunction.isSpecializationName(name) {
                 guard (folded[address]?.count ?? 0) <= 1, let symbol = labels[address] else { continue }
                 symbols[address] = symbol
             }
@@ -7297,6 +7303,15 @@ public struct Disassembler: Sendable {
             }
         }
         var callTargets: [UInt64: UInt64] = [:]
+        /// Whether a call's arguments follow a signature: the one its
+        /// target's symbol proves whole, or the printed one where that stands.
+        func followsASignature(target: UInt64, callee: String) -> Bool {
+            switch resolver.specializationClause(at: target, printedName: callee) {
+            case .proven: true
+            case .declined: false
+            case .absent: Self.signatureSpecializationKeepsLayout(callee)
+            }
+        }
         var unprovenTypedErrorSites = Set<UInt64>()
         // Symbol substitution is independent of whether the body admits a
         // register summary. Keep its proved layout even for an undecoded body.
@@ -8561,7 +8576,7 @@ public struct Disassembler: Sendable {
             // alone, and positionally read `helperI(arg1, arg1)`.
             if let target = callTargets[address], let summary = registerSummaries[target],
                calleeByAddress[address].flatMap({ DisassembledFunction.splitSignature($0) }) == nil
-                || calleeByAddress[address].map({ !Self.signatureSpecializationKeepsLayout($0) }) == true,
+                || calleeByAddress[address].map({ !followsASignature(target: target, callee: $0) }) == true,
                calleeByAddress[address].flatMap({ selectorName(callee: $0, arguments: values) }) == nil,
                calleeByAddress[address].flatMap(DisassembledFunction.knownCArity(of:)) == nil || isNameTwin(address) {
                 // A register below the highest one read that the body never

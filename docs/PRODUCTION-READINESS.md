@@ -11854,3 +11854,13 @@ ABI review item 11. Truth for every shape is `swiftc -O -emit-ir` on
   `… P.apply<A>(A.Type, Swift.Int, (Swift.Int) -> Swift.Int) -> Swift.Int(arg0, arg0)`.
   It now reads `… P.apply<A>(arg0, arg0)`. Fixed on dev by 628f33e; this fixture and
   `aClosurePropagatedCallHasNoSignatureInItIfPresent` guard it.
+  It now reads `… P.apply<A>(arg0, arg0)`.
+- **FIXED: a `Tt` index read as a formal's position.** Indices count SIL
+  arguments: an indirect result comes first and a tuple formal counts once
+  per element. `genericResult<Double>(A.Type, Int, A) -> A` is `Tt0`, index
+  1, the metatype, and read as a position it removed the Int. A clause
+  that cannot be followed is `.declined`, and a call to it is bounded by
+  the body, since its printed list holds a parameter that is not there.
+  Past the formals is `self` or a capture: `Tt1` is most often a static's or
+  an allocator's own thin metatype, and the printed formals stand. A tuple
+  result with a generic element declines too, since a buffer stays in x0.
