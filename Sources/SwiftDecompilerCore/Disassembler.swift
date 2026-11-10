@@ -463,6 +463,10 @@ public struct DisassembledFunction: Sendable {
     /// Replacing machine instructions invalidates the retained topology, even
     /// at the same count. Every other function field is carried over.
     func replacingInstructions(_ instructions: [Instruction]) -> DisassembledFunction {
+        replacingInstructions(instructions, foldedCandidates: foldedCandidates)
+    }
+
+    func replacingInstructions(_ instructions: [Instruction], foldedCandidates: [String]?) -> DisassembledFunction {
         var result = DisassembledFunction(
             symbol: symbol, demangledName: demangledName, startAddress: startAddress,
             instructions: instructions, source: source, objcMethod: objcMethod,
@@ -606,6 +610,9 @@ public struct DisassembledFunction: Sendable {
             for candidate in foldedCandidates { lines.append("  //   \(candidate)") }
         } else if source == .address {
             lines.append("  // unnamed function  @ 0x\(String(startAddress, radix: 16))  [boundary from LC_FUNCTION_STARTS]")
+        }
+        if source != .foldedSymbols, foldedCandidates != nil {
+            lines.append("  // a body this short can be shared after strip: references to 0x\(String(startAddress, radix: 16)) decline this name")
         }
         if let asyncLine = asyncHeaderLine() { lines.append("  \(asyncLine)") }
         if instructions.isEmpty { lines.append("  \(Self.noDecodedInstructionNote)") }
@@ -827,6 +834,9 @@ public struct Disassembler: Sendable {
             Self.mergeMetadataFolds(metadata.folded, into: &foldedByAddress, labels: labelByAddress)
         }
         metadataNames.merge(recognizedHelperNames(in: machO, boundaries: boundaries, labels: labelByAddress)) { a, _ in a }
+        let foldSuspects = self.foldSuspects(in: machO, labels: labelByAddress, metadataNames: metadataNames,
+                                             folded: foldedByAddress, objcIndex: objcIndex)
+        let referenceFolds = foldedByAddress.merging(foldSuspects) { a, _ in a }
 
         func span(_ index: Int) -> (start: UInt64, stop: UInt64) {
             let end = CodeSection.containing(boundaries[index], in: sections)!.range.upperBound
@@ -847,7 +857,7 @@ public struct Disassembler: Sendable {
             let names = referenceIndex(
                 functions: stubs, labelByAddress: labelByAddress,
                 metadataNames: metadataNames, objcIndex: objcIndex,
-                foldedByAddress: foldedByAddress, in: machO
+                foldedByAddress: foldedByAddress, foldSuspects: foldSuspects, in: machO
             )
             return (names, stubs.filter {
                 $0.objcMethod == nil && (Self.isSwiftMangled($0.symbol) || $0.source == .metadata)
@@ -949,11 +959,11 @@ public struct Disassembler: Sendable {
             cacheReader: machO.fullCache.map { CacheReader(full: $0) },
             arcFunctions: arcFunctionReferences(in: machO),
             fileRanges: fileRanges,
-            foldedCandidates: foldedByAddress,
+            foldedCandidates: referenceFolds,
             witnessTables: foldedByAddress.isEmpty ? [] : witnessTables(in: machO),
             protocolDescriptorSymbols: protocolDescriptorSymbols(in: machO),
             specializationSymbols: ReferenceResolver.specializationSymbols(
-                labels: labelByAddress, names: names, folded: foldedByAddress)
+                labels: labelByAddress, names: names, folded: referenceFolds)
         )
         CalleeRegisterSummary.closeOverFieldWrites(&registerSummaries, arcIdentityContract: { target, callee in
             resolver.arcIdentityContract(at: target, named: callee)
@@ -1167,6 +1177,9 @@ public struct Disassembler: Sendable {
         metadataNames.merge(recognizedHelperNames(in: machO, boundaries: sortedBoundaries, labels: labelByAddress)) { a, _ in a }
         var foldedByAddress = foldedSymbolAddresses(in: machO)
         Self.mergeMetadataFolds(metadataFolds, into: &foldedByAddress, labels: labelByAddress)
+        let foldSuspects = self.foldSuspects(in: machO, labels: labelByAddress, metadataNames: metadataNames,
+                                             folded: foldedByAddress, objcIndex: objcIndex)
+        let referenceFolds = foldedByAddress.merging(foldSuspects) { a, _ in a }
 
         // One Capstone engine for every span; each span's bytes are read on
         // their own, so no section is held.
@@ -1212,7 +1225,7 @@ public struct Disassembler: Sendable {
         let names = referenceIndex(
             functions: stubs, labelByAddress: labelByAddress,
             metadataNames: metadataNames, objcIndex: objcIndex,
-            foldedByAddress: foldedByAddress, in: machO
+            foldedByAddress: foldedByAddress, foldSuspects: foldSuspects, in: machO
         )
         let targets = callTargets.filter { names[$0] == nil }
         let resolvedNames = cacheSymbols != nil
@@ -1229,11 +1242,11 @@ public struct Disassembler: Sendable {
             cacheReader: machO.fullCache.map { CacheReader(full: $0) },
             arcFunctions: arcFunctionReferences(in: machO),
             fileRanges: FileBackedRanges(standalone: machO),
-            foldedCandidates: foldedByAddress,
+            foldedCandidates: referenceFolds,
             witnessTables: foldedByAddress.isEmpty ? [] : witnessTables(in: machO),
             protocolDescriptorSymbols: protocolDescriptorSymbols(in: machO),
             specializationSymbols: ReferenceResolver.specializationSymbols(
-                labels: labelByAddress, names: resolvedNames, folded: foldedByAddress)
+                labels: labelByAddress, names: resolvedNames, folded: referenceFolds)
         )
         var swiftTargets = Set(labelByAddress.compactMap { address, symbol in
             Self.isSwiftMangled(symbol) ? address : nil
@@ -1422,6 +1435,9 @@ public struct Disassembler: Sendable {
         // same on both front-ends regardless of what labels either produced.
         var foldedByAddress = foldedSymbolAddresses(in: machO)
         Self.mergeMetadataFolds(metadataFolds, into: &foldedByAddress, labels: labelByAddress)
+        let foldSuspects = self.foldSuspects(in: machO, labels: labelByAddress, metadataNames: metadataNames,
+                                             folded: foldedByAddress, objcIndex: objcIndex)
+        let referenceFolds = foldedByAddress.merging(foldSuspects) { a, _ in a }
 
         var functions = segment(
             instructions,
@@ -1442,7 +1458,7 @@ public struct Disassembler: Sendable {
             names: referenceIndex(
                 functions: functions, labelByAddress: labelByAddress,
                 metadataNames: metadataNames, objcIndex: objcIndex,
-                foldedByAddress: foldedByAddress, in: machO
+                foldedByAddress: foldedByAddress, foldSuspects: foldSuspects, in: machO
             ),
             resolver: cacheSymbols
         )
@@ -1457,11 +1473,11 @@ public struct Disassembler: Sendable {
             cacheReader: machO.fullCache.map { CacheReader(full: $0) },
             arcFunctions: arcFunctionReferences(in: machO),
             fileRanges: FileBackedRanges(standalone: machO),
-            foldedCandidates: foldedByAddress,
+            foldedCandidates: referenceFolds,
             witnessTables: foldedByAddress.isEmpty ? [] : witnessTables(in: machO),
             protocolDescriptorSymbols: protocolDescriptorSymbols(in: machO),
             specializationSymbols: ReferenceResolver.specializationSymbols(
-                labels: labelByAddress, names: resolvedNames, folded: foldedByAddress)
+                labels: labelByAddress, names: resolvedNames, folded: referenceFolds)
         )
         // Addresses whose callee uses the Swift calling convention, so `self` in
         // x20 is meaningful there.
@@ -3046,6 +3062,67 @@ public struct Disassembler: Sendable {
             .mapValues { $0.sorted() }
     }
 
+    /// Named addresses a stripped image can no longer show are not folded.
+    ///
+    /// `foldedSymbolAddresses` sees a fold only while two symbols survive,
+    /// and `MetadataSymbolizer` only while two owners have records. Strip
+    /// takes the rest: `sf_O.s.exe` called `sf.K.method()` at a body that is
+    /// also a closure-propagated specialization of `closureUser`, because
+    /// `K.other()` was the one name left there. Strip shows as a function
+    /// start with no symbol and no local symbol in code. Either alone says
+    /// nothing: an unstripped image can hold an unlabeled start, and a
+    /// dylib of exports never had a local. An image that keeps its locals
+    /// keeps every partner, so nothing is suspected there.
+    ///
+    /// The result maps an address to the name it would have been credited
+    /// with. Headings keep that name, true of the body, and a reference
+    /// declines as it does at a proven fold. A consumer that knows the owner
+    /// it came through (a vtable slot) still picks it from the candidates.
+    private func foldSuspects(
+        in machO: MachOFile, labels: [UInt64: String], metadataNames: [UInt64: String],
+        folded: [UInt64: [String]], objcIndex: ObjCMetadataIndex
+    ) -> [UInt64: [String]] {
+        let sections = codeSections(in: machO)
+        guard functionStarts(of: machO).contains(where: { labels[$0] == nil }),
+              !machO.symbols.contains(where: { symbol in
+                  symbol.nlist.flags?.contains(.ext) == false && !symbol.name.isEmpty
+                      && Self.sectionAddress(of: symbol).map { CodeSection.containing($0, in: sections) != nil } == true
+              })
+        else { return [:] }
+        var claims = labels
+        for (address, name) in metadataNames where labels[address] == nil && !Self.helperShapeNames.contains(name) {
+            claims[address] = name
+        }
+        var suspects: [UInt64: [String]] = [:]
+        // Reads code words only, by address, through `sectionBytes`: no
+        // metadata and no relative pointer. Additive to the reads being
+        // rerouted in `FileBackedRanges` and the metadata indexes.
+        var window: (start: UInt64, bytes: Data) = (0, Data())
+        for address in claims.keys.sorted() where folded[address] == nil && objcIndex.binding(for: address) == nil {
+            if address < window.start || address + 4 > window.start + UInt64(window.bytes.count)
+                || (address + UInt64(TrivialBody.wordCount * 4) > window.start + UInt64(window.bytes.count)
+                    && window.bytes.count == Self.codeWindowSize) {
+                // A read past the end of the file fails whole, so stop at the section's end.
+                guard let end = CodeSection.containing(address, in: sections)?.range.upperBound else { continue }
+                let length = min(UInt64(Self.codeWindowSize), end - address)
+                window = (address, sectionBytes(address: address, size: Int(length), in: machO) ?? Data())
+            }
+            let offset = Int(address - window.start)
+            let available = min(TrivialBody.wordCount, (window.bytes.count - offset) / 4)
+            let words = window.bytes.withUnsafeBytes { bytes in
+                (0 ..< max(available, 0)).map {
+                    UInt32(littleEndian: bytes.loadUnaligned(fromByteOffset: offset + $0 * 4, as: UInt32.self))
+                }
+            }
+            if TrivialBody.matches(words), let name = claims[address] { suspects[address] = [name] }
+        }
+        return suspects
+    }
+
+    /// `foldSuspects` reads code in windows of this size: a few reads for a
+    /// whole image, without holding its `__text`.
+    private static let codeWindowSize = 1 << 20
+
     // MARK: - Segmentation
 
     private func segment(
@@ -3504,6 +3581,7 @@ public struct Disassembler: Sendable {
         metadataNames: [UInt64: String],
         objcIndex: ObjCMetadataIndex,
         foldedByAddress: [UInt64: [String]],
+        foldSuspects: [UInt64: [String]],
         in machO: MachOFile
     ) -> [UInt64: String] {
         var names: [UInt64: String] = [:]
@@ -3536,6 +3614,11 @@ public struct Disassembler: Sendable {
             if let name = Self.foldedTargetName(at: address, candidates: candidates, demangle: { self.demangle($0) }) {
                 names[address] = name
             }
+        }
+        // A body short enough to be shared keeps its heading, which is true
+        // of the body, but a reference does not know which function it meant.
+        for address in foldSuspects.keys {
+            names[address] = "sub_\(String(address, radix: 16))"
         }
         for address in objcIndex.addresses where names[address] == nil {
             names[address] = objcIndex.binding(for: address)?.displayName
@@ -3693,6 +3776,11 @@ public struct Disassembler: Sendable {
                                detail: insn.detail, calleeDisplayName: insn.calleeDisplayName,
                                callee: .kept(insn.callee), facts: facts)
         }
+        // A span with no instruction (a Go data span) is no body to share.
+        let suspect = function.source == .foldedSymbols || function.instructions.isEmpty
+            || resolver.declinedFoldName(at: function.startAddress) == nil
+            ? nil : resolver.foldedCandidates[function.startAddress]
+        if let suspect { return function.replacingInstructions(qualified, foldedCandidates: suspect) }
         return function.replacingInstructionPayload(qualified)
     }
 

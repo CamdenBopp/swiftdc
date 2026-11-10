@@ -1242,12 +1242,60 @@ because it cannot be distinguished from a right one by reading the output.
   the body summary does not count x0 passed through to the return as a
   read, so its argument is dropped. True of any signatureless identity
   function, folded or not.
+- **FIXED — a name landed on a folded body after strip.** Strip removes the
+  evidence of a fold: `MetadataSymbolizer` counts owners with records, and
+  `foldedSymbolAddresses` needs a second symbol. A closure-propagated
+  specialization folded with `K.other()` read `sf.K.method()` at its call site;
+  a coroutine's resume half, a bare `ret`, read as the one export left on it
+  (`return cc_co.Ov2.w.setter`). In an image that strip touched, a reference to
+  a body that is `ret`, or at most two constants or arguments moved into result
+  registers and returned, now declines as at a proven fold. The heading keeps
+  its name, which is true of the body, with a listing note. A dispatch through
+  a slot still names its owner. Strip reads as a function start with no symbol
+  and no local symbol in code; an image with its locals keeps every partner.
+
+  Measured over 425 inputs (fixtures, swift-syntax, a -O/-Osize/-Onone matrix),
+  `strip -x` twins and full-strip executables against each unstripped twin's
+  `nm`, sites being calls, tail branches and address references, in images
+  strip touched: 81 names on a body with a distinct partner, 6,643 right. The
+  rule removes 59 of the 81 and costs 23 right names.
+
+  | Rule at a reference | wrong removed of 81 | right lost of 6,643 |
+  |---|---|---|
+  | **`ret`, moves, return (shipped)** | **59** | **23** |
+  | length <= 1 | 35 | 304 |
+  | length <= 2 (the sweep's suggestion) | 58 | 525 |
+  | length <= 3 | 63 | 1,203 |
+  | length <= 8 | 66 | 2,817 |
+  | a second identical body in the image | 18 | 211 |
+  | metadata name, caller set no x20 | 17 | 521 |
+  | one `b` (forwarder) | 0 | 284 |
+  | value witness name | 14 | 390 |
+  | every metadata name | 27 | 785 |
+
+  **DEAD END — identical bodies as the signal.** The linker removes the
+  evidence itself: bodies it folded are gone, so a twin in the image mostly
+  marks bodies it did not fold. **DEAD END — a forwarding `b`.** The 12 sites
+  that looked wrong in libReconstruction are vtable dispatches on self whose
+  owner is proven; the unstripped build names them too.
+- **OPEN — what strip still hides.** 22 of the 81 remain. 14 are value witness
+  names whose partner is a `merged` alias or `outlined` copy of the same
+  operation on the same type: true of the body, and declining all of them costs
+  390 right names. 8 have bodies of two or more real instructions (`str x0,
+  [x20]; ret` with an outlined fragment, a closure with its enclosing
+  function). Separately, 6 sites sit in images with no unlabeled start
+  (libFoldedCalls, libCallArity `strip -x`): every function is exported, so the
+  gate cannot see strip, and a fully exported C dylib looks the same. An image
+  with no LC_FUNCTION_STARTS has no gate evidence either. The toolchain's
+  swift-syntax dylibs keep some locals, so they are not gated, and their own
+  `nm` is not a complete twin: their numbers above come from `strip -x` copies.
 - **OPEN — a metadata name cannot see a fold partner that has no metadata
-  record.** libReconstruction -O: `Counter.value.getter` shares its body with the
-  accessors of the `final` classes `BoxA.Holder` / `BoxB.Holder`, which have no
-  vtable entries, so a stripped binary keeps no trace of them and the address is
-  named `Counter.getter`. True of the body (the bytes are identical), but a call
-  from `Holder` code reads as a `Counter` call. No metadata-only fix exists.
+  record, in a body with work of its own.** libReconstruction -O:
+  `Counter.value.getter` shares its body with the accessors of the `final`
+  classes `BoxA.Holder` / `BoxB.Holder`, which have no vtable entries, so a
+  stripped binary keeps no trace of them and the heading reads
+  `Counter.getter`. True of the body (the bytes are identical). No metadata-only
+  fix exists.
 - **FIXED (`6018c78`) — other first-writer-wins maps at folded
   addresses.** Reproduced: `FoldRight.twiceTotal()` rendered `self.count`. `SelfTypeIndex` (`bindings[address] == nil`) and the vtable
   dispatch naming in `resolveVTableMethod` keep whichever owner reaches an

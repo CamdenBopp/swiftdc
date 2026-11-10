@@ -840,6 +840,11 @@ $SWIFTC -parse-as-library -Onone -emit-library -module-name EntrySeed entryseed.
 $SWIFTC -parse-as-library -O -emit-library -module-name EntrySeed entryseed.swift -I . -L . -lEntrySeedKit -o libEntrySeed.opt.dylib
 $SWIFTC -parse-as-library -Osize -emit-library -module-name EntrySeed entryseed.swift -I . -L . -lEntrySeedKit -o libEntrySeed.size.dylib
 
+echo "==> folds strip hides (strippedfold.swift, -O, and a strip -x copy): one surviving name over a body others share"
+$SWIFTC -parse-as-library -O -emit-library -module-name StrippedFold strippedfold.swift -o libStrippedFold.dylib
+cp libStrippedFold.dylib libStrippedFold.stripped.dylib
+strip -x libStrippedFold.stripped.dylib 2>/dev/null || strip libStrippedFold.stripped.dylib
+
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
 file sample.release
