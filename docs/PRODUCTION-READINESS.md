@@ -88,6 +88,31 @@ results do not replace previously recorded release performance measurements.
   missing target gains nothing. PureTailInputTests covers every summary
   route. Ported from the compiler-ir-arc-origin-20261107 worktree.
 
+- **OPEN — the frame-ownership work and the x29-clobber escape are not
+  yet compatible (2026-11-10).** The compiler-ir-frame-ownership worktree
+  (Codex, an in-progress checkpoint) stops treating an entry-register spill
+  as an escaped local's object bound, a soundness fix with a native
+  counterexample (`frame_preserve_alias.s`: an x19 spill that is a word of the
+  local passed to a call). Preservation then gives an escaped local MAY reach
+  over its whole frame, so a body that passes a local's address to a callee
+  with no complete store plan (`otherWide` passing `&local` to
+  `Wide5.init` at -Onone) may clobber its saved x29. Dev's 47ceb26 then
+  escapes the whole caller frame at every call to such a body. Each rule is
+  sound; together, merged onto 7d57779, they change 12,787 structured lines
+  in 96 fixtures, raise GoodLinks cfg.unresolved-indirect-call 14,853 ->
+  15,504, fail the cost budget and seven precision tests (`modifiedWide` at
+  -Onone loses every spill after the call). Exempting the ABI frame record
+  (the entry x29/x30 at the frame pointer) from an escaped local's reach
+  recovers part (15,336; 9,496 lines) but contradicts dev's own
+  CalleeRegisterSummaryTests, which treat the record as reachable through an
+  escaped frame alias. Landing it needs that policy decided (whether
+  memory-safe code may be assumed not to write a frame record through a
+  local's address) and bounded callee writes through passed pointers. The
+  merged state is kept outside the repository; the worktree's other parts
+  (entry-register roles, indirect-result and context-result order, callee
+  body transfer, caller-owned frame aliases, imported receivers) were
+  ported into it and pass their tests there.
+
 - **OPEN — the remaining 2,276 of those sites.** Stripped countAll is one:
   its third buffer's size is read through an argument the stripped tracer
   cannot name, so the probed size and sp's adjustment are not shown
