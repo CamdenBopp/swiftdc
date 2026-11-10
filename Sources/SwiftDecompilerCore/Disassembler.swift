@@ -966,6 +966,7 @@ public struct Disassembler: Sendable {
         let fileRanges = FileBackedRanges(standalone: machO)
         let importStubs = CodeSection.importStubRanges(of: machO)
         let isImportStub = { (target: UInt64) in importStubs.contains { $0.contains(target) } }
+        let isStackProbe = stackProbeRecognizer(in: machO, importStubs: importStubs)
         var swiftTargets = Set(labelByAddress.compactMap { address, symbol in
             Self.isSwiftMangled(symbol) ? address : nil
         })
@@ -1006,7 +1007,7 @@ public struct Disassembler: Sendable {
                 }
                 registerSummaries[boundaries[index]] = CalleeRegisterSummary.of(
                     Self.withJumpTables(function, machO: machO, ranges: fileRanges),
-                    calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub)
+                    calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub, isStackProbe: isStackProbe)
             }
         }
         // Reads first: whether a callee uses the caller's x29 is part of
@@ -1019,7 +1020,7 @@ public struct Disassembler: Sendable {
                     labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
                     metadataNames: metadataNames, objcIndex: objcIndex, in: machO)
                 return CalleeRegisterSummary.of(Self.withJumpTables(function, machO: machO, ranges: fileRanges),
-                    calleeEffects: effects, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub)
+                    calleeEffects: effects, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub, isStackProbe: isStackProbe)
             }
         }
         CalleeRegisterSummary.closeOverReads(&registerSummaries)
@@ -1046,7 +1047,7 @@ public struct Disassembler: Sendable {
                     Self.withJumpTables(function, machO: machO, ranges: fileRanges),
                     retainingReadsFrom: readFacts, reusingPreservation: reusePreservation,
                     rebuildingEntryRoles: rebuildingEntryRoles, calleeEffects: effects, calleeArity: arity,
-                    isFunction: isFunction, isImportStub: isImportStub)
+                    isFunction: isFunction, isImportStub: isImportStub, isStackProbe: isStackProbe)
             }
         }
         names = resolveCrossImageNames(targets, into: names, resolver: cacheSymbols)
@@ -1184,6 +1185,30 @@ public struct Disassembler: Sendable {
             }
         }
         return rendered
+    }
+
+    /// Whether an address a call reaches is `___chkstk_darwin`: a GOT slot
+    /// the loader binds to it, or an import stub whose `adrp; ldr; br`
+    /// loads such a slot. For the preservation summary, which runs before
+    /// any name is resolved. Results are cached; lookups only.
+    func stackProbeRecognizer(in machO: MachOFile, importStubs: [Range<UInt64>]) -> (UInt64) -> Bool {
+        let resolver = ReferenceResolver(names: [:], stringRanges: [], machO: machO, demangleSymbol: { _ in nil })
+        let cache = Mutex<[UInt64: Bool]>([:])
+        return { address in
+            if let known = cache.withLock({ $0[address] }) { return known }
+            var result = resolver.loadedName(at: address) == "__chkstk_darwin"
+            if !result, importStubs.contains(where: { $0.contains(address) }) {
+                let stub = self.capstoneInstructions(in: machO, span: (address, address + 12))
+                if stub.count == 3, let slot = CalleeRegisterSummary.stackProbeAddress(
+                    of: Instruction(address: stub[2].address, text: stub[2].text, controlFlow: .call,
+                                    branchTarget: nil, detail: stub[2].detail),
+                    in: stub, index: [stub[2].address: 2]) {
+                    result = resolver.loadedName(at: slot) == "__chkstk_darwin"
+                }
+            }
+            cache.withLock { $0[address] = result }
+            return result
+        }
     }
 
     /// Functions per batch of pass 2: what is analysed and held at once
@@ -1445,6 +1470,7 @@ public struct Disassembler: Sendable {
         let isFunction = { (target: UInt64) in boundaries.contains(target) }
         let importStubs = CodeSection.importStubRanges(of: machO)
         let isImportStub = { (target: UInt64) in importStubs.contains { $0.contains(target) } }
+        let isStackProbe = stackProbeRecognizer(in: machO, importStubs: importStubs)
         var summaryArities: [UInt64: Int?] = [:]
         let arity = { target in
             if let cached = summaryArities[target] { return cached }
@@ -1488,7 +1514,7 @@ public struct Disassembler: Sendable {
                 indirectResultUses[function.startAddress] = Self.indirectResultUse(of: function)
                 if let summary = CalleeRegisterSummary.of(
                     Self.withJumpTables(function, machO: machO, ranges: resolver.fileRanges),
-                    calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub) {
+                    calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub, isStackProbe: isStackProbe) {
                     summaries[function.startAddress] = summary
                 }
             }
@@ -1508,7 +1534,7 @@ public struct Disassembler: Sendable {
                 decodedCallees += 1
                 calleeBodies.insert(target)
                 guard let callee = calleeBody(at: target, instructions: instructions), let summary = Probe.muted({
-                    CalleeRegisterSummary.of(callee, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub)
+                    CalleeRegisterSummary.of(callee, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub, isStackProbe: isStackProbe)
                 }) else { continue }
                 summaries[target] = summary
                 next.formUnion(summary.callees.filter { summaries[$0] == nil && boundaries.contains($0) })
@@ -1519,7 +1545,7 @@ public struct Disassembler: Sendable {
             body(at: start).flatMap { function in
                 Probe.muted {
                     CalleeRegisterSummary.of(function, calleeEffects: effects, calleeArity: arity,
-                        isFunction: isFunction, isImportStub: isImportStub)
+                        isFunction: isFunction, isImportStub: isImportStub, isStackProbe: isStackProbe)
                 }
             }
         }
@@ -1532,7 +1558,7 @@ public struct Disassembler: Sendable {
                     CalleeRegisterSummary.recomputingPreservation(
                         function, retainingReadsFrom: readFacts, reusingPreservation: reusePreservation,
                         rebuildingEntryRoles: rebuildingEntryRoles, calleeEffects: effects, calleeArity: arity, isFunction: isFunction,
-                        isImportStub: isImportStub)
+                        isImportStub: isImportStub, isStackProbe: isStackProbe)
                 }
             }
         }
@@ -1725,6 +1751,7 @@ public struct Disassembler: Sendable {
                 let isFunction = { (target: UInt64) in boundaries.contains(target) }
                 let importStubs = CodeSection.importStubRanges(of: machO)
                 let isImportStub = { (target: UInt64) in importStubs.contains { $0.contains(target) } }
+                let isStackProbe = stackProbeRecognizer(in: machO, importStubs: importStubs)
                 var summaryArities: [UInt64: Int?] = [:]
                 let arity = { target in
                     if let cached = summaryArities[target] { return cached }
@@ -1742,7 +1769,7 @@ public struct Disassembler: Sendable {
                 )
                 var summaries = Dictionary(
                     bodies.keys.sorted().compactMap { start in
-                        bodies[start].flatMap { CalleeRegisterSummary.of($0, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub) }
+                        bodies[start].flatMap { CalleeRegisterSummary.of($0, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub, isStackProbe: isStackProbe) }
                             .map { (start, $0) }
                     },
                     uniquingKeysWith: { a, _ in a }
@@ -1774,7 +1801,7 @@ public struct Disassembler: Sendable {
                             machO: machO, ranges: resolver.fileRanges)
                         bodies[target] = body
                         guard let summary = Probe.muted({
-                            CalleeRegisterSummary.of(body, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub)
+                            CalleeRegisterSummary.of(body, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub, isStackProbe: isStackProbe)
                         }) else { continue }
                         summaries[target] = summary
                         next.formUnion(summary.callees.filter { summaries[$0] == nil && boundaries.contains($0) })
@@ -1785,7 +1812,7 @@ public struct Disassembler: Sendable {
                     bodies[start].flatMap { function in
                         Probe.muted {
                             CalleeRegisterSummary.of(function, calleeEffects: effects, calleeArity: arity,
-                                isFunction: isFunction, isImportStub: isImportStub)
+                                isFunction: isFunction, isImportStub: isImportStub, isStackProbe: isStackProbe)
                         }
                     }
                 }
@@ -1798,7 +1825,7 @@ public struct Disassembler: Sendable {
                             CalleeRegisterSummary.recomputingPreservation(
                                 function, retainingReadsFrom: readFacts, reusingPreservation: reusePreservation,
                                 rebuildingEntryRoles: rebuildingEntryRoles, calleeEffects: effects, calleeArity: arity, isFunction: isFunction,
-                                isImportStub: isImportStub)
+                                isImportStub: isImportStub, isStackProbe: isStackProbe)
                         }
                     }
                 }

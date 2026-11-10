@@ -629,3 +629,35 @@ private func callTarget(_ function: DisassembledFunction) throws -> UInt64 {
     let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "callerArea")))
     #expect(summary.clobberedCalleeSaved.contains("x19"), "\(summary.clobberedCalleeSaved)")
 }
+
+/// Swift's dynamically sized local: `___chkstk_darwin` probes x9 bytes, then
+/// sp moves by that size rounded to 16. While sp holds that allocation, the
+/// next callee's stack starts below the frame, so the saves above survive an
+/// unknown call (the tracer's proof, d9bbf74, in the summary):
+///
+///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
+///     sub sp, sp, #0x10; ldr x9, [x0]; add x8, x9, #15; and x8, x8, #~15; bl ___chkstk_darwin
+///     mov x9, sp; sub x8, x9, x8; mov sp, x8; bl 0x3000
+///     mov sp, x29; ldp x20, x19, [sp, #0x10]; ldp x29, x30, [sp], #0x20; ret
+@Test func aProbedAllocationKeepsTheSavesAboveItAcrossACall() throws {
+    let probe: UInt64 = 0x2000
+    let words: [UInt32] = [
+        0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xf9400009, 0x91003d28, 0x927ced08, 0x940003f9,
+        0x910003e9, 0xcb080128, 0x9100011f, 0x940007f5, 0x910003bf, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
+    ]
+    let proven = try #require(CalleeRegisterSummary.of(try body(words, name: "probed"), isStackProbe: { $0 == probe }))
+    #expect(proven.clobberedCalleeSaved.isEmpty, "\(proven.clobberedCalleeSaved)")
+    // The control: with the probe unrecognised, sp is unknown at the call.
+    let unproven = try #require(CalleeRegisterSummary.of(try body(words, name: "unprobed")))
+    #expect(unproven.clobberedCalleeSaved.isSuperset(of: ["x19", "x20", "x29"]), "\(unproven.clobberedCalleeSaved)")
+    // The control: sp moves by a reload of the size, not the probed value
+    // (`ldr x10, [x0]; add x11, x10, #15; and x11, x11, #~15; mov x9, sp;
+    // sub x8, x9, x11`): another load, so no proof.
+    let reload: [UInt32] = [
+        0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xf9400009, 0x91003d28, 0x927ced08, 0x940003f9,
+        0xf940000a, 0x91003d4b, 0x927ced6b, 0x910003e9, 0xcb0b0128, 0x9100011f, 0x940007f2,
+        0x910003bf, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
+    ]
+    let reloaded = try #require(CalleeRegisterSummary.of(try body(reload, name: "reloaded"), isStackProbe: { $0 == probe }))
+    #expect(reloaded.clobberedCalleeSaved.isSuperset(of: ["x19", "x20", "x29"]), "\(reloaded.clobberedCalleeSaved)")
+}

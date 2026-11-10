@@ -16,6 +16,9 @@ struct CalleeEffect: Sendable, Equatable {
     /// writing it, other than to save it on its own stack. Whatever the
     /// caller's x29 points at, its frame, the callee can then write.
     var readsFramePointer = false
+    /// `___chkstk_darwin`: it probes x9 bytes below sp, writes only the 16
+    /// bytes below sp, and changes only x9, x16, x17 and x30.
+    var isStackProbe = false
     var memoryEffect: CalleeMemoryEffect = .unknown
     /// Direct MUST-preservation failures for positive entry-value evidence.
     /// The carried clobbers above deliberately omit uncertain save escapes;
@@ -338,10 +341,29 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         _ function: DisassembledFunction, calleeEffects: (UInt64) -> CalleeEffect = { _ in CalleeEffect() },
         calleeArity: (UInt64) -> Int? = { _ in nil },
         isFunction: (UInt64) -> Bool = { _ in false },
-        isImportStub: (UInt64) -> Bool = { _ in false }
+        isImportStub: (UInt64) -> Bool = { _ in false },
+        isStackProbe: (UInt64) -> Bool = { _ in false }
     ) -> CalleeRegisterSummary? {
         analyze(function, calleeEffects: calleeEffects, calleeArity: calleeArity,
-                isFunction: isFunction, isImportStub: isImportStub, retainingReads: nil)
+                isFunction: isFunction, isImportStub: isImportStub, isStackProbe: isStackProbe, retainingReads: nil)
+    }
+
+    /// The address a call reaches the stack probe through: a direct `bl`'s
+    /// target, or the GOT slot of `adrp xN, page; ldr xN, [xN, #off]; blr xN`
+    /// (the three instructions in a row). Nil for any other call.
+    static func stackProbeAddress(of insn: Instruction, in instructions: [Instruction], index: [UInt64: Int]) -> UInt64? {
+        if let target = insn.branchTarget { return target }
+        guard let detail = insn.detail, let target = detail.operands.first?.operand.register,
+              let position = index[insn.address], position >= 2,
+              let load = instructions[position - 1].detail, load.id == AARCH64_INS_LDR,
+              load.operands.count == 2, load.operands[0].operand.register == target,
+              case .memory(let base?, nil, let displacement) = load.operands[1].operand, base == target,
+              !load.writeback, !load.postIndex,
+              let page = instructions[position - 2].detail, page.id == AARCH64_INS_ADRP,
+              page.operands.count == 2, page.operands[0].operand.register == target,
+              let address = page.operands[1].operand.immediateValue
+        else { return nil }
+        return UInt64(bitPattern: address &+ displacement)
     }
 
     /// Rebuild preservation for the same immutable body after its reads have
@@ -354,10 +376,11 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         calleeEffects: (UInt64) -> CalleeEffect,
         calleeArity: (UInt64) -> Int? = { _ in nil },
         isFunction: (UInt64) -> Bool = { _ in false },
-        isImportStub: (UInt64) -> Bool = { _ in false }
+        isImportStub: (UInt64) -> Bool = { _ in false },
+        isStackProbe: (UInt64) -> Bool = { _ in false }
     ) -> CalleeRegisterSummary? {
         analyze(function, calleeEffects: calleeEffects, calleeArity: calleeArity,
-                isFunction: isFunction, isImportStub: isImportStub, retainingReads: summary,
+                isFunction: isFunction, isImportStub: isImportStub, isStackProbe: isStackProbe, retainingReads: summary,
                 reusingPreservation: reusingPreservation, rebuildingEntryRoles: rebuildingEntryRoles)
     }
 
@@ -366,6 +389,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         calleeArity: (UInt64) -> Int? = { _ in nil },
         isFunction: (UInt64) -> Bool = { _ in false },
         isImportStub: (UInt64) -> Bool = { _ in false },
+        isStackProbe: (UInt64) -> Bool = { _ in false },
         retainingReads readFacts: CalleeRegisterSummary?, reusingPreservation: Bool = false,
         rebuildingEntryRoles: Bool = true
     ) -> CalleeRegisterSummary? {
@@ -527,8 +551,15 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                   !addresses.contains(target) || (insn.controlFlow == .call && target == entry) else { return nil }
             return target
         }
+        let instructionIndex = Dictionary(instructions.enumerated().map { ($1.address, $0) }, uniquingKeysWith: { a, _ in a })
         let callEffect = { (insn: Instruction) -> CalleeEffect in
-            insn.controlFlow == .call ? external(insn).map(calleeEffects) ?? CalleeEffect() : CalleeEffect()
+            guard insn.controlFlow == .call else { return CalleeEffect() }
+            if let probe = Self.stackProbeAddress(of: insn, in: instructions, index: instructionIndex), isStackProbe(probe) {
+                var effect = CalleeEffect()
+                effect.isStackProbe = true
+                return effect
+            }
+            return external(insn).map(calleeEffects) ?? CalleeEffect()
         }
         let callInputs = { (insn: Instruction) -> Set<String>? in
             guard let target = insn.branchTarget else {
@@ -1134,6 +1165,14 @@ enum Preservation {
         /// displacement and extent, the same bound the tracer's
         /// `.frameDynamic` uses.
         case below(Int64)
+        /// A word loaded from memory outside the frame, named by its load
+        /// instruction, and the steps of rounding it to 16 (`add #0xf`,
+        /// `and #~0xf`): enough to match the size `___chkstk_darwin` probed
+        /// with the size an allocation moves sp by. Two loads never share a
+        /// name, so a reload is never the probed value.
+        case size(UInt64)
+        case sizePlus15(UInt64)
+        case sizeRounded(UInt64)
         case unknown
     }
 
@@ -1187,6 +1226,15 @@ enum Preservation {
         // and is not here.
         var prologueSaves: Set<Int64> = []
         var prologueOpen = true
+        // `___chkstk_darwin`'s proof, as the tracer keeps it (d9bbf74): the
+        // size it probed (x9, a `.size` value), the registers a proven
+        // allocation `stack - size` (or its 16-rounding) was computed into,
+        // and the frame offset k the current sp hangs below once sp moved to
+        // one. While sp holds that allocation, the next callee's stack starts
+        // below k, so the frame above k survives a call.
+        var probedSize: Value?
+        var provenAllocations: [String: Int64] = [:]
+        var probedBase: Int64?
         // For a frame alias whose exact value a join lost, the frame
         // addresses it may hold: x1 is `sub x1, x29, #0x48` on one path and
         // no frame address on the other, x25 a dynamic allocation on one and
@@ -1210,6 +1258,7 @@ enum Preservation {
         }
 
         mutating func setRegister(_ key: String, to value: Value, mayAliasStack: Bool = false) {
+            provenAllocations[key] = nil
             registerFacts.installPreservation(key, value: value, mayAlias: mayAliasStack)
         }
 
@@ -1266,6 +1315,9 @@ enum Preservation {
             result.recordReachable = recordReachable || other.recordReachable
             result.prologueSaves = prologueSaves.intersection(other.prologueSaves)
             result.prologueOpen = prologueOpen && other.prologueOpen
+            // A probe and its allocation are one straight-line sequence.
+            result.provenAllocations = provenAllocations.filter { other.provenAllocations[$0.key] == $0.value }
+            result.probedBase = probedBase == other.probedBase ? probedBase : nil
             result.registerFacts = registerFacts.mergedPreservation(with: other.registerFacts)
             result.reach = reach.union(other.reach)
             return result
@@ -1374,6 +1426,7 @@ enum Preservation {
         mutating func forgetCalleeStack() {
             let boundary: Int64?
             if case .stack(let top) = value("sp") { boundary = top }
+            else if let base = probedBase, case .below(base) = value("sp") { boundary = base }
             else { boundary = nil }
             var exposedFramePointer = false
             slots.forget(.calleeStack(below: boundary), removing: .value) { value in
@@ -1475,7 +1528,7 @@ enum Preservation {
                         clobbersMayAliasStack: clobbersMayAliasStack)
                     continue
                 }
-                apply(detail, to: &state)
+                apply(detail, site: insn.address, to: &state)
             }
             for successor in block.successors where addresses.contains(successor) {
                 if let end = block.instructions.last?.address,
@@ -1497,6 +1550,24 @@ enum Preservation {
     static func applyCall(
         _ effect: CalleeEffect, inputs callInputs: Set<String>?, to state: inout State, clobbersMayAliasStack: Bool
     ) -> CalleeMemoryEffect.FramePlan? {
+        if effect.isStackProbe {
+            // It reads x9 and writes the 16 bytes below sp, nothing else.
+            if case .size? = Optional(state.value("x9")) { state.probedSize = state.value("x9") }
+            else if case .sizeRounded = state.value("x9") { state.probedSize = state.value("x9") }
+            else { state.probedSize = nil }
+            if case .stack(let top) = state.value("sp") {
+                state.invalidateSlots(at: top &- 16, bytes: 16)
+            } else if let base = state.probedBase, case .below(base) = state.value("sp") {
+                state.slots.forget(.calleeStack(below: base), removing: .value)
+            } else {
+                state.forgetCalleeStack()
+            }
+            let probed = state.probedSize
+            for key in ["x9", "x16", "x17", "x30"] { state.setRegister(key, to: .unknown) }
+            state.probedSize = probed
+            return nil
+        }
+        state.probedSize = nil
         // The callee reads its reloads before it can write anything.
         let reloaded = state.reloaded(effect)
         let memory = effect.memoryEffect.framePlan { register in
@@ -1577,7 +1648,67 @@ enum Preservation {
         return (plan.start, base.key, after)
     }
 
-    private static func apply(_ detail: StructuredInsn, to state: inout State) {
+    /// The transfer, then the stack-probe bookkeeping around it: size
+    /// values named by their load (`site`), the proven allocation a
+    /// `sub xD, xS, size` computes, and the base sp hangs below once it moves
+    /// to one.
+    private static func apply(_ detail: StructuredInsn, site: UInt64, to state: inout State) {
+        let operands = detail.operands
+        func register(_ index: Int) -> PhysReg? {
+            operands.indices.contains(index) ? operands[index].operand.register : nil
+        }
+        let spBefore = state.value("sp")
+        // A proven allocation: `sub xD, xS, xN` with xS sp's exact frame
+        // offset k (or the allocation sp already hangs below k at) and xN the
+        // probed size or its 16-rounding.
+        var provenBase: Int64?
+        if detail.id == AARCH64_INS_SUB, operands.count == 3, let source = register(1), let size = register(2),
+           source.widthBits == 64, operands[2].shift.1 == 0, let probed = state.probedSize {
+            let sizeValue = state.value(size.key)
+            let matches: Bool = switch (probed, sizeValue) {
+            case (.size(let a), .size(let b)), (.size(let a), .sizeRounded(let b)), (.sizeRounded(let a), .sizeRounded(let b)): a == b
+            default: false
+            }
+            if matches {
+                switch state.value(source.key) {
+                case .stack(let k): provenBase = k
+                case .below(let k) where k == state.probedBase && state.value(source.key) == state.value("sp"): provenBase = k
+                default: break
+                }
+            }
+        }
+        // `mov sp, xN` (an `add sp, xN, #0`) from a proven allocation.
+        var spSource: String?
+        if let destination = register(0), destination.kind == .stackPointer, let source = register(1),
+           source.kind == .gpr, operands.count == 2 || (operands.count == 3 && operands[2].shiftedImmediate == 0) {
+            spSource = source.key
+        }
+        let sourceBase = spSource.flatMap { state.provenAllocations[$0] }
+        // A word loaded from outside the frame, before the transfer reads it.
+        let loadsOutsideFrame = detail.id == AARCH64_INS_LDR || detail.id == AARCH64_INS_LDUR
+            ? (register(0).map { $0.kind == .gpr && $0.widthBits == 64 } ?? false)
+                && access(detail, in: state).address == nil && !detail.writeback && !detail.postIndex
+            : false
+        let addSource = detail.id == AARCH64_INS_ADD ? register(1).map { state.value($0.key) } : nil
+        let andSource = detail.id == AARCH64_INS_AND ? register(1).map { state.value($0.key) } : nil
+        applyTransfer(detail, to: &state)
+        if let destination = register(0), state.value(destination.key) == .unknown {
+            if loadsOutsideFrame {
+                state.setRegister(destination.key, to: .size(site))
+            } else if case .size(let s)? = addSource, operands.count == 3, operands[2].shiftedImmediate == 15 {
+                state.setRegister(destination.key, to: .sizePlus15(s))
+            } else if case .sizePlus15(let s)? = andSource, operands.count == 3,
+                      operands[2].operand.immediateValue.map({ UInt64(bitPattern: $0) == ~UInt64(15) }) == true {
+                state.setRegister(destination.key, to: .sizeRounded(s))
+            }
+        }
+        if let base = provenBase, let destination = register(0) { state.provenAllocations[destination.key] = base }
+        if state.value("sp") != spBefore {
+            state.probedBase = sourceBase ?? (register(0)?.kind == .stackPointer ? provenBase : nil)
+        }
+    }
+
+    private static func applyTransfer(_ detail: StructuredInsn, to state: inout State) {
         // SVE z registers overlap v registers, and other unmodeled register
         // groups may overlap several. Invalidate before modeled load/copy
         // paths can return, retaining possible aliases already in the bank.
@@ -1969,7 +2100,7 @@ extension Preservation {
                 }
                 provenReads |= explicitEntryReads(detail, in: state.frame)
                 if transfer(detail, to: &state) { flow.reads = true }
-                apply(detail, to: &state.frame)
+                apply(detail, site: insn.address, to: &state.frame)
                 for info in detail.operands {
                     guard let register = info.operand.register, register.kind == .gpr else { continue }
                     if (info.isWritten || info.access == 0), register.number < 8 {
