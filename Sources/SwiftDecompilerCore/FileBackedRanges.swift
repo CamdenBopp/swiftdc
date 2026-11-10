@@ -1,5 +1,6 @@
 import Foundation
 import MachOKit
+import MachOKitExtensions
 
 /// Which VM addresses of a standalone Mach-O hold bytes in the file.
 ///
@@ -87,6 +88,46 @@ extension MachOFile {
             window = min(window * 2, limit)
         }
         return nil
+    }
+}
+
+// MARK: - Offsets and addresses
+
+extension MachOFile {
+    /// The address of the byte at `offset`, an offset from the Mach-O header
+    /// (or, in a dyld cache image, from the cache's start). Nil when no
+    /// segment's file bytes hold it: each segment lies its own distance from
+    /// `__TEXT`, so without one there is no address to give.
+    func imageAddress(ofOffset offset: Int) -> UInt64? {
+        guard offset >= 0 else { return nil }
+        return isLoadedFromDyldCache ? address(forOffset: offset) : segmentMap.address(ofFileOffset: offset)
+    }
+
+    /// The offset of the file bytes at `address`, in the accounting
+    /// `imageAddress(ofOffset:)` takes, or nil when it has none.
+    func imageOffset(ofAddress address: UInt64) -> Int? {
+        if isLoadedFromDyldCache { return Int(exactly: address &- self.address(forOffset: 0)) }
+        guard case .file(let offset, _) = segmentMap.location(ofAddress: address) else { return nil }
+        return offset
+    }
+
+    /// Where a relative pointer stored at `offset` leads, as an address. The
+    /// displacement counts in memory. The target need not hold file bytes:
+    /// this says where it is, not that it can be read.
+    func relativeAddress(fromOffset offset: Int, displacement: Int) -> UInt64? {
+        guard let place = imageAddress(ofOffset: offset) else { return nil }
+        let (target, overflow) = displacement >= 0
+            ? place.addingReportingOverflow(UInt64(displacement.magnitude))
+            : place.subtractingReportingOverflow(UInt64(displacement.magnitude))
+        return overflow ? nil : target
+    }
+
+    /// Where a relative pointer stored at `offset` leads, as an offset to read
+    /// at, or nil when no file bytes lie there. `offset + displacement` would
+    /// name unrelated bytes when the two lie in segments at different slides.
+    func relativeOffset(fromOffset offset: Int, displacement: Int) -> Int? {
+        let target = advancedOffset(offset, by: displacement)
+        return Self.isReadableOffset(target) ? target : nil
     }
 }
 

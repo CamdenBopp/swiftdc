@@ -24,7 +24,6 @@ import MachOKit
 /// function's name on data and left the real entry `sub_`.
 struct MethodImplementation {
     private let machO: MachOFile
-    private let base: UInt64
     /// The `__TEXT` sections the linker marks as instructions, other than
     /// stubs (`CodeSection.of` without its function-starts test, which
     /// metadata readers do not have). Read once: `sections` parses the load
@@ -33,7 +32,6 @@ struct MethodImplementation {
 
     init(_ machO: MachOFile) {
         self.machO = machO
-        base = machO.address(forOffset: 0)
         var ranges: [Range<UInt64>] = []
         for section in machO.sections where section.segmentName == "__TEXT" && section.size > 0 {
             let start = UInt64(section.address)
@@ -53,9 +51,9 @@ struct MethodImplementation {
     /// `isData` says the runtime reads it as a function pointer record.
     func code(at address: UInt64, isData: Bool) -> UInt64? {
         guard isData else { return isCode(address) ? address : nil }
-        // Wrapping arithmetic: an address below the image wraps past
-        // `Int.max` and is not read, and a target that wraps is not code.
-        guard let recordOffset = Int(exactly: address &- base),
+        // An address with no file bytes is not read, and a target that wraps
+        // is not code.
+        guard let recordOffset = machO.imageOffset(ofAddress: address),
               let relative = UnrecordedTypes.read(recordOffset, as: Int32.self, in: machO)
         else { return nil }
         let function = address &+ UInt64(bitPattern: Int64(relative))

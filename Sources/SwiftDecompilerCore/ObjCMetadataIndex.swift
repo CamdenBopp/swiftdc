@@ -293,8 +293,8 @@ struct ObjCMetadataSnapshot {
         var result: [String: String] = [:]
         for (raw, info) in classes where info.superClassName == nil {
             // objc_class layout: isa @ 0, superclass @ 8 (pointer-sized).
-            let slot = machO.address(forOffset: raw.offset + 8)
-            guard let symbol = boundSlots[slot] else { continue }
+            guard let slot = machO.imageAddress(ofOffset: raw.offset + 8),
+                  let symbol = boundSlots[slot] else { continue }
             result[info.name] = objcClassName(fromBindSymbol: symbol)
         }
         return result
@@ -310,8 +310,8 @@ struct ObjCMetadataSnapshot {
         in machO: MachOFile
     ) -> ObjCCategoryInfo? {
         guard let name = raw.name(in: machO) else { return nil }
-        let slot = machO.address(forOffset: raw.offset + 8)
-        guard let symbol = boundSlots[slot] else { return nil }
+        guard let slot = machO.imageAddress(ofOffset: raw.offset + 8),
+              let symbol = boundSlots[slot] else { return nil }
         let className = objcClassName(fromBindSymbol: symbol)
 
         let protocols = raw.protocolList(in: machO)?.protocols(in: machO)?
@@ -612,8 +612,8 @@ public struct ObjCMetadataIndex: Sendable {
         else { return nil }
         let textRange = UInt64(text.address) ..< UInt64(text.address + text.size)
         var candidates = [imp]
-        if let offset = Int(exactly: imp) {
-            candidates.insert(machO.address(forOffset: offset), at: 0)
+        if let offset = Int(exactly: imp), let address = machO.imageAddress(ofOffset: offset) {
+            candidates.insert(address, at: 0)
         }
         return candidates.first(where: textRange.contains)
     }
@@ -641,8 +641,8 @@ public struct ObjCMetadataIndex: Sendable {
             // Keep the raw-address candidate as a backstop for formats where an
             // already-slid pointer is surfaced instead.
             var candidates = [imp]
-            if let offset = Int(exactly: imp) {
-                candidates.insert(machO.address(forOffset: offset), at: 0)
+            if let offset = Int(exactly: imp), let address = machO.imageAddress(ofOffset: offset) {
+                candidates.insert(address, at: 0)
             }
             return candidates.first(where: textRange.contains)
         }

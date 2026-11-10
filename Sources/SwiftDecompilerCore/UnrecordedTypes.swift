@@ -88,7 +88,7 @@ enum UnrecordedTypes {
             // A descriptor with no records may say its records are 0 bytes.
             guard recordSize == 12 || count == 0, next <= end else { break }
             defer { offset = next }
-            let name = offset + Int(nameRelative)
+            guard let name = machO.relativeOffset(fromOffset: offset, displacement: Int(nameRelative)) else { continue }
             // Exactly a context reference and its terminator: direct (0x01),
             // or indirect through a pointer cell (0x02; Testing's
             // `FileHandle` names itself so).

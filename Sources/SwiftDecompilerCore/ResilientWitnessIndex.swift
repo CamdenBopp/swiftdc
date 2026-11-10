@@ -69,12 +69,14 @@ struct ResilientWitnessIndex {
         for conformance in all where !conformance.resilientWitnesses.isEmpty {
             var witnesses: [Witness] = []
             for witness in conformance.resilientWitnesses {
-                guard case .symbol(let symbol)? = try? witness.requirement(in: machO.context) else { continue }
-                let implementation = witness.implementationOffset
-                    .map { machO.address(forOffset: $0) }
+                guard case .symbol(let symbol)? = try? witness.requirement(in: machO.context),
+                      let requirementSlot = machO.imageAddress(ofOffset: symbol.offset)
+                else { continue }
+                let implementation = witness.implementationOffset(in: machO.context)
+                    .flatMap { machO.imageAddress(ofOffset: $0) }
                     .flatMap { implementations.code(at: $0, isData: false) }
                 witnesses.append(Witness(
-                    requirementSlot: machO.address(forOffset: symbol.offset),
+                    requirementSlot: requirementSlot,
                     requirementName: Self.demangled(symbol.name, dropping: "method descriptor for "),
                     implementation: implementation
                 ))

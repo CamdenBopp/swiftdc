@@ -3807,8 +3807,8 @@ public struct Disassembler: Sendable {
             case .struct(let model): offset = model.descriptor.offset; name = try? model.descriptor.name(in: machO)
             case .class(let model): offset = model.descriptor.offset; name = try? model.descriptor.name(in: machO)
             }
-            if let name {
-                names[machO.address(forOffset: offset)] = "type descriptor for \(name)"
+            if let name, let address = machO.imageAddress(ofOffset: offset) {
+                names[address] = "type descriptor for \(name)"
             }
         }
         return names

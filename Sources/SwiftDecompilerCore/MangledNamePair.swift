@@ -50,11 +50,12 @@ enum MangledNamePair {
         guard let relative = UnrecordedTypes.read(offset, as: Int32.self, in: machO),
               let length = knownLength.map({ Int32(clamping: $0) }) ?? UnrecordedTypes.read(offset + 4, as: Int32.self, in: machO),
               length > 0,
-              byteLength(at: offset + Int(relative), in: machO) == Int(length),
+              let nameOffset = machO.relativeOffset(fromOffset: offset, displacement: Int(relative)),
+              byteLength(at: nameOffset, in: machO) == Int(length),
               machO.cache == nil,
               referencesAreSound(
                   nameAddress: UInt64(Int64(address) + Int64(relative)), length: Int(length), in: machO, fixups: fixups),
-              let name = try? MangledName.resolve(at: offset + Int(relative), in: machO.context),
+              let name = try? MangledName.resolve(at: nameOffset, in: machO.context),
               let node = try? SymbolicDemangler.demangleType(for: name, in: machO.context)
         else { return nil }
         let printed = node.print(using: .default)
