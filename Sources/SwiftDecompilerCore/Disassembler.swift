@@ -4043,7 +4043,8 @@ public struct Disassembler: Sendable {
         resolver: ReferenceResolver,
         selfTypeName: String? = nil,
         vtableIndex: VTableIndex = VTableIndex(),
-        callArguments: [UInt64: [AbstractValue]] = [:]
+        callArguments: [UInt64: [AbstractValue]] = [:],
+        selfFieldClass: (Int) -> String? = { _ in nil }
     ) -> (function: DisassembledFunction, changesCFG: Bool) {
         /// Resolve a `blr` target to a (name, address). A class vtable dispatch is
         /// resolved through the class's metadata layout; anything else through the
@@ -4060,9 +4061,30 @@ public struct Disassembler: Sendable {
                let name = resolver.name(at: address, ownedBy: selfTypeName) {
                 return (address, Self.namingItsProperty(name, ownedBy: selfTypeName), true)
             }
+            if let dispatch = fieldVTableMethod(value) { return (dispatch.address, dispatch.name, false) }
             if let witness = valueWitnessCall(value, site: site) { return (nil, witness, false) }
             if let witness = protocolWitnessCall(value, site: site) { return (nil, witness.name, false) }
             return resolver.indirectCallTarget(for: value).map { ($0.address, $0.name, false) }
+        }
+        /// A class method called on an object held in a stored field of
+        /// `self`: `ldr x20, [x20, #k]; ldr x8, [x20]; ldr x8, [x8, #slot];
+        /// blr x8`. The object is an instance of the field's declared class
+        /// or a subclass, and a subclass keeps the slot for the method it
+        /// overrides, so the slot names the declared class's method there.
+        /// Only a slot the class's own vtable lists, and only when that
+        /// implementation's demangled owner is the field's declared type:
+        /// `VTableIndex` is keyed by simple name, and another module's class
+        /// of the same name must not match.
+        func fieldVTableMethod(_ value: AbstractValue) -> (address: UInt64, name: String)? {
+            guard case .loadedFrom(.loadedFrom(.selfFieldValue(let field), offset: 0), offset: let slot) = value,
+                  slot >= 0, slot % 8 == 0,
+                  let owner = selfFieldClass(field),
+                  let simple = owner.split(separator: ".").last.map(String.init),
+                  let address = vtableIndex.methodAddress(type: simple, offset: slot),
+                  let name = resolver.name(at: address, ownedBy: simple),
+                  name.hasPrefix(owner + ".")
+            else { return nil }
+            return (address, name)
         }
         /// A call through word `k` of a witness table that is one of the key
         /// arguments in `self`'s class metadata: `ldr x22, [x20]; ldr x1,
@@ -7210,6 +7232,24 @@ public struct Disassembler: Sendable {
             .contains { callee.hasPrefix($0) }
     }
 
+    /// The declared type of the stored field that is exactly the eight
+    /// bytes at `offset` of a type laid out by `map`, when it is a plain
+    /// nominal name (`Module.Engine`, or an Optional of one, whose payload a
+    /// call only reaches once it is non-nil). Nil for a generic, function,
+    /// existential or composed type, and for any offset no single field
+    /// covers exactly.
+    static func declaredClassOfField(at offset: Int, in map: FieldMap?) -> String? {
+        guard let map, case .success(.whole(let name, _)) = map.lookup(offset: offset, bytes: 8),
+              var type = map.fieldTypeNames[name]
+        else { return nil }
+        let optional = "Swift.Optional<"
+        if type.hasPrefix(optional), type.hasSuffix(">") { type = String(type.dropFirst(optional.count).dropLast()) }
+        guard !type.isEmpty, type.contains("."),
+              !type.contains(where: { "<>()[]&:, ?!".contains($0) })
+        else { return nil }
+        return type
+    }
+
     private func enrichCallArguments(
         in function: DisassembledFunction,
         cfg: FunctionCFG,
@@ -7583,7 +7623,8 @@ public struct Disassembler: Sendable {
         let resolvedControlFlow = annotateIndirectControlFlowTargets(
             in: function, targets: analysis.indirectControlFlowTargets,
             resolver: resolver, selfTypeName: selfTypeName, vtableIndex: vtableIndex,
-            callArguments: analysis.callSites.mapValues(\.arguments)
+            callArguments: analysis.callSites.mapValues(\.arguments),
+            selfFieldClass: { offset in Self.declaredClassOfField(at: offset, in: fieldMap) }
         )
         let function = resolvedControlFlow.function
         // Resolving an external BR adds its successor address. BLR naming

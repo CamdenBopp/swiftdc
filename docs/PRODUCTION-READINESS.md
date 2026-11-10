@@ -2709,6 +2709,31 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   (`f() -> (Int) -> Int`) no longer reads as the Int its last arrow names.
   Tests: `AsyncAmbiguityTests`, `AsyncPointerWidthTests` (ported), and
   `AsyncHandoffShapeTests`, one assembled arm64e shape per rule.
+- **FIXED (2026-11-10, completeness): a vtable call on an object held in a
+  field of self stayed unresolved.** `ldr x20, [x20, #0x10]; ldr x8, [x20];
+  ldr x8, [x8, #0x78]; blr x8` (`engine.start()` in a method of Car) read
+  `indirect_call(?, …)`. The tracer now follows the two loads of a dispatch
+  through a field's object and its isa, and the call is named for the
+  field's declared class (an Optional's payload included) from that class's
+  own vtable, only when the implementation's demangled owner is the field's
+  full type: `VTableIndex` is keyed by simple name, and a field of another
+  module's same-named class read `FieldVTable.Engine.rpm.modify(self:
+  self.other)` without that check. The slot names the declaration; the
+  object may be a subclass, as for self (`Car(Turbo()).go()` runs Turbo's
+  override, native 3). Fixture fieldvtable.swift with fieldvtable_other.swift
+  (-O, -Onone). GoodLinks cfg.unresolved-indirect-call 15,350 -> 15,273;
+  `xrefs` resolves 64 more dispatch sites. Receivers that are arguments,
+  call results or loaded from other objects are not typed yet.
+- **MEASURED (2026-11-10): what the remaining unresolved calls are.** A
+  backward slice over the 24 instructions before each of GoodLinks' 15,350
+  sites (`llvm-objdump`, classified by how the target register was formed):
+  vtable-shaped `[[obj] + slot]` 1,559 (receivers: 587 in a callee-saved
+  register set earlier, 478 loaded from other memory, 92 self fields, 57 frame
+  slots); value witnesses through metadata the tracer has not placed 1,341;
+  tables loaded from the frame 2,636 or from other memory 2,444; tables and
+  slots of the async context 1,476; a table base set before the window 2,727.
+  Typed provenance, a static type for each receiver and table, is what the
+  first four groups need.
 - **OPEN (audited 2026-11-10): unresolved indirect call edges are disclosed,
   not silent;** `--unreferenced` is no dead-code proof. GoodLinks has 15,504
   at 9369b0e. The category survey (value witnesses 1,709, vtables 1,369, table

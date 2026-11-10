@@ -760,6 +760,18 @@ for level in Onone O Osize; do
 done
 rm -f resilient_self.o
 
+echo "==> a vtable call on self's class-typed field, and a same-named class from another module (fieldvtable.swift, fieldvtable_other.swift, -O, -Onone)"
+for level in O Onone; do
+    suffix=$([ $level = O ] && echo "" || echo ".Onone")
+    rm -rf fvo_module && mkdir fvo_module
+    $SWIFTC -parse-as-library -$level -emit-library -emit-module -module-name FieldVTableOther fieldvtable_other.swift \
+        -emit-module-path fvo_module/FieldVTableOther.swiftmodule \
+        -Xlinker -install_name -Xlinker @rpath/libFieldVTableOther$suffix.dylib -o libFieldVTableOther$suffix.dylib
+    $SWIFTC -parse-as-library -$level -emit-library -module-name FieldVTable fieldvtable.swift -I fvo_module \
+        -L . -lFieldVTableOther$suffix -Xlinker -rpath -Xlinker @loader_path -o libFieldVTable$suffix.dylib
+done
+rm -rf fvo_module
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib

@@ -5580,6 +5580,12 @@ public struct ValueTracer: Sendable {
              // after its size, stride and flags: the size at `+0x40` sizes a dynamic stack
              // allocation (`add x8, x8, #0xf; …; mov sp, x19`), and as a
              // tracked value it took the frame's slots with it.
+             // A class object held in a field of self, and its isa: the
+             // two loads of a vtable dispatch on it (`ldr x8, [x20]; ldr x8,
+             // [x8, #slot]`). Unknown as values; only a call through the
+             // slot is named, from the field's declared class.
+             .selfFieldValue where effective == 0,
+             .loadedFrom(.selfFieldValue, 0) where effective >= 0 && effective % 8 == 0,
              .argument where effective == -8,
              .loadedFrom(.argument, -8) where effective % 8 == 0
                  && ((0 ..< 0x40).contains(effective) || (0x58 ... 0x68).contains(effective)):
