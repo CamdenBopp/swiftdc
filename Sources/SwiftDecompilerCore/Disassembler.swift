@@ -367,7 +367,8 @@ public enum RecoverySource: String, Sendable {
     /// Named from an Objective-C class/category method record (survives
     /// stripping and carries selector, type encoding, and IMP).
     case objcMetadata = "objc-metadata"
-    /// Boundary known (LC_FUNCTION_STARTS) but no name — synthesized `sub_<addr>`.
+    /// Boundary known (`BoundaryEvidence` says from what) but no name —
+    /// synthesized `sub_<addr>`.
     case address
     /// Boundary known, but the symbol table lists two or more *distinct* symbols
     /// at this address. The release linker's identical-code-folding pass merged
@@ -375,11 +376,27 @@ public enum RecoverySource: String, Sendable {
     /// their mangled names records the merge — so no single symbol can be
     /// attributed. Rendered `sub_<addr>` with the candidates listed, never guessed.
     case foldedSymbols = "folded-symbols"
-    /// Boundary known (LC_FUNCTION_STARTS) and no symbol, but the address is a
+    /// Boundary known and no symbol, but the address is a
     /// resume funclet of an async function: it is stored as a resume pointer by
     /// that function's chain, so it is titled after its parent
     /// (`resume #N of <parent>`). See `AsyncFuncletIndex`.
     case asyncFunclet = "async-funclet"
+}
+
+/// What marks a nameless function's first address.
+public enum BoundaryEvidence: Sendable {
+    case functionStarts
+    /// Nothing does: decoding began here, at the start of a code section or
+    /// of a span. A stripped image with no LC_FUNCTION_STARTS can have one
+    /// such function hold every body up to the next symbol.
+    case decodeStart
+
+    var note: String {
+        switch self {
+        case .functionStarts: "boundary from LC_FUNCTION_STARTS"
+        case .decodeStart: "no recorded boundary: decoding began here"
+        }
+    }
 }
 
 /// A contiguous function body recovered from `__text`.
@@ -408,6 +425,8 @@ public struct DisassembledFunction: Sendable {
     /// Recovered jump tables: `br` address → the target of each case, in case
     /// order (`JumpTables`). Empty when none was proven.
     public let switchTargets: [UInt64: [UInt64]]
+    /// What marks the start of a function no name marks.
+    public let boundary: BoundaryEvidence
     /// The final analysis graph, when this function came through enrichment.
     /// It stores only topology; instruction payloads always come from `instructions`.
     private let retainedCFG: FunctionCFG?
@@ -430,13 +449,14 @@ public struct DisassembledFunction: Sendable {
         foldedCandidates: [String]? = nil,
         asyncFunclet: AsyncFuncletInfo? = nil,
         switchTargets: [UInt64: [UInt64]] = [:],
-        semanticName: String? = nil
+        semanticName: String? = nil,
+        boundary: BoundaryEvidence = .functionStarts
     ) {
         self.init(
             symbol: symbol, demangledName: demangledName, startAddress: startAddress,
             instructions: instructions, source: source, objcMethod: objcMethod,
             foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet,
-            switchTargets: switchTargets, semanticName: semanticName, retainedCFG: nil
+            switchTargets: switchTargets, semanticName: semanticName, boundary: boundary, retainedCFG: nil
         )
     }
 
@@ -445,8 +465,9 @@ public struct DisassembledFunction: Sendable {
         instructions: [Instruction], source: RecoverySource,
         objcMethod: ObjCMethodBinding?, foldedCandidates: [String]?,
         asyncFunclet: AsyncFuncletInfo?, switchTargets: [UInt64: [UInt64]],
-        semanticName: String?, retainedCFG: FunctionCFG?
+        semanticName: String?, boundary: BoundaryEvidence, retainedCFG: FunctionCFG?
     ) {
+        self.boundary = boundary
         self.symbol = symbol
         self.demangledName = demangledName
         self.semanticName = semanticName
@@ -471,7 +492,7 @@ public struct DisassembledFunction: Sendable {
             symbol: symbol, demangledName: demangledName, startAddress: startAddress,
             instructions: instructions, source: source, objcMethod: objcMethod,
             foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet,
-            switchTargets: switchTargets, semanticName: semanticName
+            switchTargets: switchTargets, semanticName: semanticName, boundary: boundary
         )
         result.callerProvenResult = callerProvenResult
         return result
@@ -485,7 +506,7 @@ public struct DisassembledFunction: Sendable {
             symbol: symbol, demangledName: demangledName, startAddress: startAddress,
             instructions: instructions, source: source, objcMethod: objcMethod,
             foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet,
-            switchTargets: switchTargets, semanticName: semanticName, retainedCFG: retainedCFG
+            switchTargets: switchTargets, semanticName: semanticName, boundary: boundary, retainedCFG: retainedCFG
         )
         result.callerProvenResult = callerProvenResult
         retainedCFG?.observeUse(of: result, consumer: "instruction-payload-copy")
@@ -499,7 +520,7 @@ public struct DisassembledFunction: Sendable {
             symbol: symbol, demangledName: demangledName, startAddress: startAddress,
             instructions: instructions, source: source, objcMethod: objcMethod,
             foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet,
-            switchTargets: switchTargets, semanticName: semanticName, retainedCFG: cfg
+            switchTargets: switchTargets, semanticName: semanticName, boundary: boundary, retainedCFG: cfg
         )
         result.callerProvenResult = callerProvenResult
         return result
@@ -511,7 +532,7 @@ public struct DisassembledFunction: Sendable {
             symbol: symbol, demangledName: demangledName, startAddress: startAddress,
             instructions: instructions, source: source, objcMethod: objcMethod,
             foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet,
-            switchTargets: tables, semanticName: semanticName
+            switchTargets: tables, semanticName: semanticName, boundary: boundary
         )
         result.callerProvenResult = callerProvenResult
         return result
@@ -532,7 +553,7 @@ public struct DisassembledFunction: Sendable {
             startAddress: startAddress, instructions: instructions,
             source: title == nil ? source : .asyncFunclet, objcMethod: objcMethod,
             foldedCandidates: foldedCandidates, asyncFunclet: info,
-            switchTargets: switchTargets, semanticName: semanticName, retainedCFG: retainedCFG
+            switchTargets: switchTargets, semanticName: semanticName, boundary: boundary, retainedCFG: retainedCFG
         )
     }
 
@@ -597,7 +618,7 @@ public struct DisassembledFunction: Sendable {
         case .metadata: "  [recovered from Swift metadata]"
         case .helperShape: "  [recognized by its body: a helper IRGen emits]"
         case .objcMetadata: "  [recovered from Objective-C metadata]"
-        case .asyncFunclet: "  [titled from its async parent; boundary from LC_FUNCTION_STARTS]"
+        case .asyncFunclet: "  [titled from its async parent; \(boundary.note)]"
         case .symbol, .address, .foldedSymbols: ""
         }
         if let objcMethod {
@@ -609,7 +630,7 @@ public struct DisassembledFunction: Sendable {
             lines.append("  // \(foldedCandidates.count) symbols folded onto 0x\(String(startAddress, radix: 16)) by identical code folding; none can be attributed")
             for candidate in foldedCandidates { lines.append("  //   \(candidate)") }
         } else if source == .address {
-            lines.append("  // unnamed function  @ 0x\(String(startAddress, radix: 16))  [boundary from LC_FUNCTION_STARTS]")
+            lines.append("  // unnamed function  @ 0x\(String(startAddress, radix: 16))  [\(boundary.note)]")
         }
         if source != .foldedSymbols, foldedCandidates != nil {
             lines.append("  // a body this short can be shared after strip: references to 0x\(String(startAddress, radix: 16)) decline this name")
@@ -649,6 +670,8 @@ public struct Disassembler: Sendable {
     let codeSectionCache = CodeSection.Cache()
     /// Memoizes each image's Go function table, for one run.
     let goFunctionCache = GoFunctionTable.Cache()
+    /// Memoizes each image's LC_FUNCTION_STARTS as a set, for one run.
+    let boundaryCache = BoundaryCache()
 
     public init(preset: DemanglePreset = .default) {
         self.preset = preset
@@ -803,7 +826,7 @@ public struct Disassembler: Sendable {
         let labels = symbolLabels(in: machO)
         let undecoded = undecodedStarts.map {
             makeFunction(start: $0, instructions: [], labelByAddress: labels, foldedByAddress: [:],
-                         metadataNames: [:], objcIndex: objcIndex)
+                         metadataNames: [:], objcIndex: objcIndex, in: machO)
         }
         guard !instructions.isEmpty else { return undecoded }
         let functions = await assemble(
@@ -850,6 +873,7 @@ public struct Disassembler: Sendable {
         progress: ((_ done: Int, _ total: Int) -> Void)? = nil
     ) async -> [T] {
         Probe.image(machO)
+        warnOfUnreliableBoundaries(in: machO)
         let objcIndex = ObjCMetadataIndex.build(in: machO)
         let labelByAddress = symbolLabels(in: machO)
         var foldedByAddress = foldedSymbolAddresses(in: machO)
@@ -892,7 +916,7 @@ public struct Disassembler: Sendable {
             let stubs = boundaries.map {
                 makeFunction(start: $0, instructions: [], labelByAddress: labelByAddress,
                              foldedByAddress: foldedByAddress,
-                             metadataNames: metadataNames, objcIndex: objcIndex)
+                             metadataNames: metadataNames, objcIndex: objcIndex, in: machO)
             }
             let names = referenceIndex(
                 functions: stubs, labelByAddress: labelByAddress,
@@ -937,7 +961,7 @@ public struct Disassembler: Sendable {
                 let function = makeFunction(
                     start: boundaries[index], instructions: instructions,
                     labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
-                    metadataNames: metadataNames, objcIndex: objcIndex
+                    metadataNames: metadataNames, objcIndex: objcIndex, in: machO
                 )
                 indirectResultUses[boundaries[index]] = Self.indirectResultUse(of: function)
                 // Without a dyld cache no later pass renames anything, so a
@@ -961,7 +985,7 @@ public struct Disassembler: Sendable {
             return Probe.muted {
                 let function = makeFunction(start: start, instructions: decode(span(index)),
                     labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
-                    metadataNames: metadataNames, objcIndex: objcIndex)
+                    metadataNames: metadataNames, objcIndex: objcIndex, in: machO)
                 return CalleeRegisterSummary.of(Self.withJumpTables(function, machO: machO, ranges: fileRanges),
                     calleeEffects: effects, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub)
             }
@@ -977,7 +1001,7 @@ public struct Disassembler: Sendable {
             let function = makeFunction(
                 start: start, instructions: instructions,
                 labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
-                metadataNames: metadataNames, objcIndex: objcIndex
+                metadataNames: metadataNames, objcIndex: objcIndex, in: machO
             )
             return Probe.muted {
                 CalleeRegisterSummary.recomputingPreservation(
@@ -1038,7 +1062,7 @@ public struct Disassembler: Sendable {
                 let function = makeFunction(
                     start: address, instructions: instructions,
                     labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
-                    metadataNames: metadataNames, objcIndex: objcIndex
+                    metadataNames: metadataNames, objcIndex: objcIndex, in: machO
                 )
                 return asyncIndex.info(for: address, parentName: { names[$0] })
                     .map(function.attachingAsyncFunclet) ?? function
@@ -1078,13 +1102,13 @@ public struct Disassembler: Sendable {
                 rendered.append(transform(makeFunction(
                     start: boundaries[index], instructions: [],
                     labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
-                    metadataNames: metadataNames, objcIndex: objcIndex
+                    metadataNames: metadataNames, objcIndex: objcIndex, in: machO
                 )))
             } else {
                 let function = makeFunction(
                     start: boundaries[index], instructions: instructions,
                     labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
-                    metadataNames: metadataNames, objcIndex: objcIndex
+                    metadataNames: metadataNames, objcIndex: objcIndex, in: machO
                 )
                 let grouped = asyncIndex.info(for: function.startAddress, parentName: { names[$0] })
                     .map(function.attachingAsyncFunclet) ?? function
@@ -1242,6 +1266,7 @@ public struct Disassembler: Sendable {
             segment(
                 decode(span), boundaries: boundaries, labelByAddress: labelByAddress,
                 foldedByAddress: foldedByAddress, metadataNames: metadataNames, objcIndex: objcIndex,
+                in: machO,
                 sortedBoundaries: sortedBoundaries,
                 dataSpans: goData.filter { $0.key >= span.start && $0.key < span.stop })
         }
@@ -1444,6 +1469,7 @@ public struct Disassembler: Sendable {
         decodedWholeImage: Bool = false
     ) async -> [DisassembledFunction] {
         Probe.image(machO)
+        warnOfUnreliableBoundaries(in: machO)
         var labelByAddress = objdumpLabels
         goLabels(in: machO, adding: &labelByAddress)
         // Function boundaries: LC_FUNCTION_STARTS ∪ label addresses. Function-
@@ -1486,6 +1512,7 @@ public struct Disassembler: Sendable {
             foldedByAddress: foldedByAddress,
             metadataNames: metadataNames,
             objcIndex: objcIndex,
+            in: machO,
             emitsUndecodedSpans: decodedWholeImage,
             dataSpans: goFunctions(in: machO)?.dataSpans ?? [:]
         )
@@ -3218,6 +3245,7 @@ public struct Disassembler: Sendable {
         foldedByAddress: [UInt64: [String]],
         metadataNames: [UInt64: String],
         objcIndex: ObjCMetadataIndex,
+        in machO: MachOFile,
         emitsUndecodedSpans: Bool = false,
         sortedBoundaries: [UInt64]? = nil,
         dataSpans: [UInt64: (end: UInt64, name: String)] = [:]
@@ -3240,7 +3268,7 @@ public struct Disassembler: Sendable {
         if instructions.isEmpty, let only = dataSpans.keys.first, dataSpans.count == 1 {
             return [makeFunction(start: only, instructions: [], labelByAddress: labelByAddress,
                                  foldedByAddress: foldedByAddress, metadataNames: metadataNames,
-                                 objcIndex: objcIndex)]
+                                 objcIndex: objcIndex, in: machO)]
         }
         var start: UInt64 = instructions.first?.address ?? 0
 
@@ -3250,7 +3278,7 @@ public struct Disassembler: Sendable {
                                            labelByAddress: labelByAddress,
                                            foldedByAddress: foldedByAddress,
                                            metadataNames: metadataNames,
-                                           objcIndex: objcIndex))
+                                           objcIndex: objcIndex, in: machO))
             current = []
         }
 
@@ -3287,7 +3315,7 @@ public struct Disassembler: Sendable {
                                                   labelByAddress: labelByAddress,
                                                   foldedByAddress: foldedByAddress,
                                                   metadataNames: metadataNames,
-                                                  objcIndex: objcIndex))
+                                                  objcIndex: objcIndex, in: machO))
                 }
                 crossed = sorted[next]
                 next += 1
@@ -3310,7 +3338,8 @@ public struct Disassembler: Sendable {
         labelByAddress: [UInt64: String],
         foldedByAddress: [UInt64: [String]],
         metadataNames: [UInt64: String],
-        objcIndex: ObjCMetadataIndex
+        objcIndex: ObjCMetadataIndex,
+        in machO: MachOFile
     ) -> DisassembledFunction {
         let subName = "sub_\(String(start, radix: 16))"
         let objcMethod = objcIndex.binding(for: start)
@@ -3368,8 +3397,57 @@ public struct Disassembler: Sendable {
             demangledName: nil,
             startAddress: start,
             instructions: instructions,
-            source: .address
+            source: .address,
+            boundary: recordedStarts(of: machO).contains(start) ? .functionStarts : .decodeStart
         )
+    }
+
+    /// The addresses LC_FUNCTION_STARTS lists. A Go image's table is not
+    /// among them: its entries all have names, so none reaches this question.
+    private func recordedStarts(of machO: MachOFile) -> Set<UInt64> {
+        let key = "\(machO.url.path)#\(machO.headerStartOffset)#\(machO.headerStartOffsetInCache)"
+        return boundaryCache.value(for: key) {
+            Set((machO.functionStarts.map(Array.init) ?? []).map { UInt64($0.offset) })
+        }
+    }
+
+    /// Says so on stderr when nothing can be trusted to
+    /// separate this image's functions: no LC_FUNCTION_STARTS, no Go table,
+    /// and code its symbols leave unmarked. `clang -Wl,-no_function_starts`
+    /// then `strip` gave one function where the source has three, silently.
+    func warnOfUnreliableBoundaries(in machO: MachOFile) {
+        guard functionStarts(of: machO).isEmpty, let unmarked = unmarkedEntry(in: machO) else { return }
+        FileHandle.standardError.write(Data("""
+            warning: no LC_FUNCTION_STARTS, and symbols do not mark every function: code at \
+            0x\(String(unmarked, radix: 16)) is a call target or follows a return, with no boundary. \
+            Functions may be merged, so read each body as possibly several.
+
+            """.utf8))
+    }
+
+    /// The first address with evidence of a function no boundary marks, or
+    /// nil. Evidence, not a boundary: a direct call's target, or code after a
+    /// return that nothing branches to, which a jump table can also reach.
+    /// Decoded in pieces, and a call target ends the scan, so a stripped
+    /// image costs little and Electron's 140 MB of `__text` is never held.
+    func unmarkedEntry(in machO: MachOFile) -> UInt64? {
+        guard let engine = CapstoneEngine() else { return nil }
+        let sections = codeSections(in: machO)
+        var boundaries = Set(symbolLabels(in: machO).keys)
+        boundaries.formUnion(ObjCMetadataIndex.build(in: machO).addresses)
+        boundaries.formUnion(sections.map(\.range.lowerBound))
+        var scan = UnmarkedEntryScan(boundaries: boundaries, sections: sections)
+        let piece: UInt64 = 1 << 20
+        for section in sections {
+            var low = section.range.lowerBound
+            while low < section.range.upperBound {
+                let high = min(low + piece, section.range.upperBound)
+                defer { low = high }
+                guard let bytes = sectionBytes(address: low, size: Int(high - low), in: machO) else { continue }
+                if let target = scan.read(engine.disassemble(bytes, address: low)) { return target }
+            }
+        }
+        return scan.finish()
     }
 
     // MARK: - Data sources

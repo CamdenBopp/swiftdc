@@ -370,4 +370,111 @@ struct InputShapeTests {
         #expect(MachOPreflight.mayHoldRelocations(prefix: object(nreloc: [0], truncate: 24)))
         #expect(MachOPreflight.mayHoldRelocations(prefix: object(nreloc: [], ncmds: 2)))
     }
+
+    // MARK: - No LC_FUNCTION_STARTS
+
+    private static let noStarts = "Fixtures/Sample/libInputShapeNoStarts.dylib"
+    private static let noStartsStripped = "Fixtures/Sample/libInputShapeNoStarts.stripped.dylib"
+
+    /// Stripped with no function starts, `triple` and `shout` run together
+    /// under one heading, which claimed `[boundary from LC_FUNCTION_STARTS]`,
+    /// a load command the image does not have.
+    @Test func aBoundaryNothingRecordsSaysSoIfPresent() throws {
+        guard FileManager.default.fileExists(atPath: Self.noStartsStripped) else { return }
+        guard let listing = try run(["disasm", Self.noStartsStripped]) else { return }
+        #expect(listing.status == 0, "\(listing.stderr)")
+        #expect(!listing.stdout.contains("LC_FUNCTION_STARTS"), "\(listing.stdout)")
+        #expect(listing.stdout.contains("[no recorded boundary: decoding began here]"), "\(listing.stdout)")
+    }
+
+    /// Function starts still read as function starts, in both decoders.
+    @Test func aRecordedBoundaryNamesItsSourceIfPresent() async throws {
+        let path = "Fixtures/Sample/sample.stripped"
+        guard FileManager.default.fileExists(atPath: path) else { return }
+        let machO = try BinaryLoader.load(path: path)
+        let functions = await withStableDependencies { await Disassembler().disassemble(machO: machO) }
+        let unnamed = functions.filter { $0.source == .address }
+        #expect(!unnamed.isEmpty)
+        #expect(unnamed.allSatisfy { $0.render().contains("[boundary from LC_FUNCTION_STARTS]") })
+    }
+
+    /// Every command that segments the image warns, once, on stderr; stdout
+    /// is unchanged and the run still succeeds.
+    @Test func unreliableBoundariesWarnOnEveryPathIfPresent() throws {
+        guard FileManager.default.fileExists(atPath: Self.noStartsStripped) else { return }
+        for reader in [["disasm"], ["disasm", "--pseudo"], ["disasm", "--json"], ["disasm", "-f", "entry"], ["analyze"],
+                       ["xrefs", "--unreferenced"], ["objc", "--methods"]] {
+            guard let result = try run(command(reader, Self.noStartsStripped)) else { return }
+            #expect(result.status == 0, "\(reader): \(result.stderr)")
+            let warnings = result.stderr.components(separatedBy: "warning: no LC_FUNCTION_STARTS").count - 1
+            #expect(warnings == 1, "\(reader): \(result.stderr)")
+            #expect(!result.stdout.contains("warning:"), "\(reader)")
+        }
+    }
+
+    /// Symbols that mark every function need no warning; nor does an image
+    /// with function starts.
+    @Test func sufficientBoundariesDoNotWarnIfPresent() throws {
+        for path in [Self.noStarts, "Fixtures/Sample/libNoFunctionStarts.dylib", "Fixtures/Sample/sample.stripped"] {
+            guard FileManager.default.fileExists(atPath: path), let result = try run(["disasm", path]) else { return }
+            #expect(!result.stderr.contains("warning: no LC_FUNCTION_STARTS"), "\(path): \(result.stderr)")
+        }
+    }
+
+    /// Each kind of evidence, on a hand-built body.
+    private func unmarked(_ words: [UInt32], boundaries: Set<UInt64> = [0x1000]) throws -> UInt64? {
+        let code = words.reduce(into: Data()) { data, word in
+            withUnsafeBytes(of: word.littleEndian) { data.append(contentsOf: $0) }
+        }
+        let engine = try #require(CapstoneEngine())
+        let section = CodeSection(segment: "__TEXT", name: "__text", range: 0x1000 ..< 0x1000 + UInt64(code.count))
+        var scan = UnmarkedEntryScan(boundaries: boundaries, sections: [section])
+        return scan.read(engine.disassemble(code, address: 0x1000)) ?? scan.finish()
+    }
+
+    /// Every copy of a function keeps what marks it.
+    @Test func aRebuiltFunctionKeepsItsBoundaryEvidence() {
+        let function = DisassembledFunction(symbol: "sub_0", demangledName: nil, startAddress: 0, instructions: [],
+                                            source: .address, boundary: .decodeStart)
+        let resume = AsyncFuncletInfo(parent: 0x50, parentName: "parent", ordinal: 1, kind: .awaitReturn,
+                                      predecessor: 0x50, chain: [0x50, 0])
+        #expect(function.replacingInstructions([]).boundary == .decodeStart)
+        #expect(function.attachingSwitchTargets([:]).boundary == .decodeStart)
+        let titled = function.attachingAsyncFunclet(resume)
+        #expect(titled.boundary == .decodeStart)
+        #expect(titled.render().contains("[titled from its async parent; no recorded boundary: decoding began here]"))
+    }
+
+    /// A call out of the code sections is a stub, not an unmarked function.
+    @Test func aCallOutOfTheCodeSectionsIsNoEvidence() throws {
+        let blFar: UInt32 = 0x9400_0100, ret: UInt32 = 0xd65f_03c0
+        #expect(try unmarked([blFar, ret]) == nil)
+    }
+
+    @Test func aCallIntoABodyIsAnUnmarkedEntry() throws {
+        let bl8: UInt32 = 0x9400_0002, ret: UInt32 = 0xd65f_03c0, nop: UInt32 = 0xd503_201f
+        #expect(try unmarked([bl8, ret, nop]) == 0x1008)
+        #expect(try unmarked([bl8, ret, nop], boundaries: [0x1000, 0x1008]) == nil)
+    }
+
+    @Test func codeAfterAReturnIsAnUnmarkedEntryUnlessABranchReachesIt() throws {
+        let ret: UInt32 = 0xd65f_03c0, mov: UInt32 = 0xd280_0020, nop: UInt32 = 0xd503_201f
+        let cbzPlus8: UInt32 = 0xb400_0040
+        #expect(try unmarked([ret, mov, ret]) == 0x1004)
+        #expect(try unmarked([ret, mov, ret], boundaries: [0x1000, 0x1004]) == nil)
+        #expect(try unmarked([cbzPlus8, ret, mov, ret]) == nil)
+        #expect(try unmarked([ret, nop, nop]) == nil)
+    }
+
+    @Test func theScanFindsTheFixturesAnswerIfPresent() async throws {
+        guard FileManager.default.fileExists(atPath: Self.noStartsStripped),
+              FileManager.default.fileExists(atPath: Self.noStarts) else { return }
+        let disassembler = Disassembler()
+        let stripped = try BinaryLoader.load(path: Self.noStartsStripped)
+        let named = try BinaryLoader.load(path: Self.noStarts)
+        await withStableDependencies {
+            #expect(disassembler.unmarkedEntry(in: stripped) != nil)
+            #expect(disassembler.unmarkedEntry(in: named) == nil)
+        }
+    }
 }

@@ -11818,3 +11818,18 @@ Commit messages on dev stay as they are; these are the true records.
   An object whose sections list no relocation has nothing unresolved and is
   read as it stands (`MachOPreflight.mayHoldRelocations`); the tests'
   hand-built images are such objects.
+- **FIXED (soundness, diagnostics) — a false boundary claim, and silent
+  merging.** With no LC_FUNCTION_STARTS the comment on a nameless function
+  still read `[boundary from LC_FUNCTION_STARTS]`. `clang -O1
+  -Wl,-no_function_starts`, then `strip`: one function where the source has
+  three, exit 0, no warning. The comment now states what marks the address:
+  LC_FUNCTION_STARTS, or `no recorded boundary: decoding began here`. A run
+  on an image with neither function starts nor a Go table warns once on
+  stderr when it finds a direct call to an unmarked address, or code after a
+  return that no branch reaches, and an image whose symbols mark every
+  function stays quiet.
+- **OPEN (completeness) — recovering boundaries from code.** A `ret` then an
+  unreferenced prologue is evidence, not proof: a switch case reached through
+  an unresolved jump table can start with a shrink-wrapped prologue after a
+  `ret`, and a cut there splits one function in two. It feeds the warning and
+  no boundary.

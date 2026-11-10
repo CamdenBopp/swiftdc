@@ -354,8 +354,10 @@ instead of getting wrong ones.
   `layout`, `objc` headers and `swift-version` work from metadata. Plain
   `disasm` prints llvm-objdump's text with no analysis, `analyze` prints the
   declarations and fails, and every other view of the code refuses.
-- **All names on stripped binaries.** Function boundaries always recover.
-  Names come from ObjC method records and from Swift metadata for class
+- **All names on stripped binaries.** Function boundaries come from
+  LC_FUNCTION_STARTS, which survives stripping. An image linked without it has
+  only its symbols, and `disasm` warns when functions may be merged. Names
+  come from ObjC method records and from Swift metadata for class
   vtable methods (`Type.method`) and protocol-conformance witnesses
   (`Type: Protocol.kind`). Free functions, closures, thunks, and struct or
   enum methods that aren't protocol requirements print as `sub_<addr>`: they
