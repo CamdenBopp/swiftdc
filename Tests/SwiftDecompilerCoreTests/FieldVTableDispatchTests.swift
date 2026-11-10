@@ -18,7 +18,7 @@ private let fieldVTableFixtures = [
         typealias Entry = @convention(c) () -> Int
         for (name, expected) in [("field_vtable_go_turbo", 3), ("field_vtable_park", 9), ("field_vtable_garage", 7),
                                  ("field_vtable_run_turbo", 3), ("field_vtable_run_other", 7), ("field_vtable_borrow", 4),
-                                 ("field_vtable_drive_held", 3)] {
+                                 ("field_vtable_drive_held", 3), ("field_vtable_start_made", 3)] {
             let entry = try #require(dlsym(library, name))
             #expect(unsafeBitCast(entry, to: Entry.self)() == expected, "\(path): \(name)")
         }
@@ -92,6 +92,20 @@ private let fieldVTableFixtures = [
         if path == fieldVTableFixtures[0] {
             let held = try #require(functions.first { $0.displayName.hasPrefix("FieldVTable.driveHeld(") })
             #expect(held.renderPseudo().contains("return FieldVTable.Engine.start(self: arg0.engine)"))
+        }
+    }
+}
+
+/// A call's result is typed by its callee's declared result: `makeEngine(_:)
+/// -> Engine` hands back an Engine (here a Turbo, native 3), and `.start()`
+/// on it dispatches through Engine's slot.
+@Test func aVTableCallOnACallResultIsNamedForTheCalleesResultTypeIfPresent() async throws {
+    for path in fieldVTableFixtures where FileManager.default.fileExists(atPath: path) {
+        let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+        let made = try #require(functions.first { $0.displayName.hasPrefix("FieldVTable.startMade(") })
+        for text in [made.renderPseudo(), made.renderStructured()] {
+            #expect(text.contains("FieldVTable.Engine.start(self: r0)"), "\(path): \(text)")
+            #expect(!text.contains("unresolved call"), "\(path): \(text)")
         }
     }
 }

@@ -68,3 +68,11 @@ public func fieldVTableBorrow() -> Int { Car(Engine()).borrow(Turbo(), for: 4) }
 
 @_cdecl("field_vtable_drive_held")
 public func fieldVTableDriveHeld() -> Int { driveHeld(Car(Turbo())) }
+
+// The receiver is a call's result, typed by the callee's return type:
+// `bl makeEngine; ldr x8, [x0]; ldr x8, [x8, #slot]; mov x20, x0; blr x8`.
+@inline(never) public func makeEngine(_ turbo: Bool) -> Engine { turbo ? Turbo() : Engine() }
+@inline(never) public func startMade(_ turbo: Bool) -> Int { makeEngine(turbo).start() }
+
+@_cdecl("field_vtable_start_made")
+public func fieldVTableStartMade() -> Int { startMade(true) }

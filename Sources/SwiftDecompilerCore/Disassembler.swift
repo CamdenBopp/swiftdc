@@ -4161,6 +4161,20 @@ public struct Disassembler: Sendable {
         /// implementation's demangled owner is the field's declared type:
         /// `VTableIndex` is keyed by simple name, and another module's class
         /// of the same name must not match.
+        /// A call's result has its callee's declared result type: x0 of a
+        /// call whose demangled signature returns a plain class (or an
+        /// Optional of one, which the dispatch only reaches non-nil). Not a
+        /// specialization, whose printed signature can be its original's, and
+        /// not an async callee, whose result is not x0 at the call.
+        func callResultClass(_ site: UInt64) -> String? {
+            guard let call = function.instructions.first(where: { $0.address == site }),
+                  call.controlFlow == .call,
+                  let name = DisassembledFunction.calleeName(of: call),
+                  !name.contains("specialization"),
+                  let signature = DisassembledFunction.splitSignature(name), !signature.isAsync
+            else { return nil }
+            return Self.plainNominalName(signature.result)
+        }
         /// A class parameter of a free function is the same: its declared
         /// type, exactly as the signature prints it (`classArguments`).
         func fieldVTableMethod(_ value: AbstractValue) -> (address: UInt64, name: String)? {
@@ -4172,6 +4186,8 @@ public struct Disassembler: Sendable {
                 receiverClass = argumentClass(argument); slot = offset
             case .loadedFrom(.loadedFrom(.argumentField(let argument, let field), offset: 0), offset: let offset):
                 receiverClass = argumentFieldClass(argument, field); slot = offset
+            case .loadedFrom(.loadedFrom(.callResult(let site), offset: 0), offset: let offset):
+                receiverClass = callResultClass(site); slot = offset
             default:
                 return nil
             }
@@ -7338,8 +7354,16 @@ public struct Disassembler: Sendable {
     /// covers exactly.
     static func declaredClassOfField(at offset: Int, in map: FieldMap?) -> String? {
         guard let map, case .success(.whole(let name, _)) = map.lookup(offset: offset, bytes: 8),
-              var type = map.fieldTypeNames[name]
+              let type = map.fieldTypeNames[name]
         else { return nil }
+        return plainNominalName(type)
+    }
+
+    /// `type` when it is a plain qualified nominal name, or an Optional of
+    /// one (unwrapped); nil for anything generic, functional, existential,
+    /// composed or unqualified.
+    static func plainNominalName(_ type: String) -> String? {
+        var type = type
         let optional = "Swift.Optional<"
         if type.hasPrefix(optional), type.hasSuffix(">") { type = String(type.dropFirst(optional.count).dropLast()) }
         guard !type.isEmpty, type.contains("."),

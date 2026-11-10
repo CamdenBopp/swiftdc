@@ -2729,8 +2729,12 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   names `Base.w.modify`. GoodLinks 15,273 -> 15,160. An object in a field of
   such an argument is typed by the argument class's field record:
   `driveHeld(_ car: Car)` reads `return FieldVTable.Engine.start(self:
-  arg0.engine)` (GoodLinks unchanged at 15,160). Methods' and
-  specializations' parameters, call results, existentials (an `any P`
+  arg0.engine)` (GoodLinks unchanged at 15,160). A call's result is typed
+  by its callee's printed result (not a specialization or an async callee):
+  `makeEngine(turbo).start()` reads `FieldVTable.Engine.start(self: r0)`.
+  GoodLinks is unchanged again: it is stripped, and a `sub_` callee has no
+  signature to type its result. Methods' and specializations' parameters,
+  results of unnamed callees, existentials (an `any P`
   parameter is not seeded as an argument at all, since the entry
   convention proves only one-register scalars) and objects loaded from other
   memory are not typed yet.
