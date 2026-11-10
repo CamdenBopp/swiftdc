@@ -2738,6 +2738,14 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   parameter is not seeded as an argument at all, since the entry
   convention proves only one-register scalars) and objects loaded from other
   memory are not typed yet.
+- **FIXED (2026-11-10, correctness): a protocol whose name sits at an odd
+  address had no requirement shapes.** `protocolRequirementShape` read every
+  relative field of the descriptor as indirectable and declined an odd
+  offset, but the name fields are direct pointers to C strings, which can
+  start anywhere; only the parent is indirectable.
+  ExistentialWitness.Shape's name offset is odd, and its requirements read
+  as nothing. No existing fixture or GoodLinks site changed: every
+  conformance site measured so far had an even one.
 - **MEASURED (2026-11-10): what the remaining unresolved calls are.** A
   backward slice over the 24 instructions before each of GoodLinks' 15,350
   sites (`llvm-objdump`, classified by how the target register was formed):

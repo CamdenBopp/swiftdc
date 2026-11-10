@@ -1152,3 +1152,24 @@ private func namesARequirementWitness(_ text: String) -> Bool {
         #expect(try Disassembler.passesEveryGenericMetadata(symbol: function(name).symbol), Comment(rawValue: name))
     }
 }
+
+/// A protocol descriptor's name is a direct relative pointer to a C string,
+/// which may start at an odd address; only its parent field is indirectable.
+/// ExistentialWitness.Shape's name offset is odd, and reading every field as
+/// indirectable gave its requirements no shape at all.
+@Test func aRequirementShapeReadsAnOddNameOffsetIfPresent() throws {
+    let path = "Fixtures/Sample/libExistentialWitness.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let machO = try BinaryLoader.load(path: path)
+    let symbol = try #require(machO.symbols.first { $0.name == "_$s18ExistentialWitness5ShapeMp" })
+    let shape = UInt64(symbol.offset)
+    let base = try #require(machO.fileOffset(of: shape).map(Int.init))
+    let nameOffset = try #require(UnrecordedTypes.read(base + 8, as: Int32.self, in: machO))
+    #expect(nameOffset & 1 == 1, "the fixture no longer exercises an odd name offset")
+    var resolver = Disassembler.ReferenceResolver(names: [:], stringRanges: [], machO: machO, demangleSymbol: { _ in nil })
+    resolver.protocolDescriptorSymbols = [shape: ["protocol descriptor for ExistentialWitness.Shape"]]
+    let area = try #require(resolver.protocolRequirementShape(descriptor: shape, word: 1))
+    #expect(area.protocolName == "ExistentialWitness.Shape" && area.index == 0 && area.kind == "method")
+    let scale = try #require(resolver.protocolRequirementShape(descriptor: shape, word: 2))
+    #expect(scale.index == 1 && scale.kind == "method")
+}

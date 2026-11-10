@@ -4564,13 +4564,18 @@ public struct Disassembler: Sendable {
             else { return nil }
             let kinds = [1: "method", 2: "init", 3: "getter", 4: "setter"]
             guard let kind = kinds[Int(requirementFlags & 0x0F)] else { return nil }
-            func relative(_ fieldOffset: Int, from address: UInt64, fileBase: Int) -> UInt64? {
-                guard let raw = UnrecordedTypes.read(fileBase + fieldOffset, as: Int32.self, in: machO), raw & 1 == 0 else { return nil }
+            // A name is a direct relative pointer to a C string, which can
+            // start at an odd address. Only the parent field is indirectable:
+            // its low bit means "through a GOT slot", which is declined.
+            func relative(_ fieldOffset: Int, from address: UInt64, fileBase: Int, indirectable: Bool = false) -> UInt64? {
+                guard let raw = UnrecordedTypes.read(fileBase + fieldOffset, as: Int32.self, in: machO),
+                      !indirectable || raw & 1 == 0
+                else { return nil }
                 return UInt64(bitPattern: Int64(bitPattern: address &+ UInt64(fieldOffset)) &+ Int64(raw))
             }
             guard let nameAddress = relative(8, from: descriptor, fileBase: base),
                   let name = Self.cString(at: nameAddress, in: machO, ranges: fileRanges), !name.isEmpty,
-                  let parent = relative(4, from: descriptor, fileBase: base),
+                  let parent = relative(4, from: descriptor, fileBase: base, indirectable: true),
                   let parentBase = machO.fileOffset(of: parent).map(Int.init),
                   let parentFlags = UnrecordedTypes.read(parentBase, as: UInt32.self, in: machO), parentFlags & 0x1F == 0,
                   let moduleNameAddress = relative(8, from: parent, fileBase: parentBase),
