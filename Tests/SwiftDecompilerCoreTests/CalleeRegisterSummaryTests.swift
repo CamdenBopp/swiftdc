@@ -300,7 +300,8 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
         0x910043ff, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
     ]
     let local = try #require(CalleeRegisterSummary.of(try body(words, name: "local")))
-    #expect(local.clobberedCalleeSaved == ["x19", "x20", "x29"])
+    // The frame record is no local's: the local's pointer cannot reach it.
+    #expect(local.clobberedCalleeSaved == ["x19", "x20"], "\(local.clobberedCalleeSaved)")
     // The control: x29's own address, the frame record among the saves, may
     // reach every one of them (`mov x0, x29`).
     words[5] = 0x910003a0
@@ -326,7 +327,8 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
 }
 
 /// An entry value spilled among locals (`str x21, [sp]`) supplies no
-/// allocation boundary for a pointer above it (`add x0, sp, #8`):
+/// allocation boundary for a pointer above it (`add x0, sp, #8`). The frame
+/// record above them is no local's, so that pointer cannot reach it:
 ///
 ///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
 ///     sub sp, sp, #0x20; mov x19, x0; str x21, [sp]; add x0, sp, #8
@@ -337,7 +339,7 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
         0x940003f9, 0x910083ff, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
     ]
     let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "spilled")))
-    #expect(summary.clobberedCalleeSaved == ["x19", "x20", "x29"])
+    #expect(summary.clobberedCalleeSaved == ["x19", "x20"], "\(summary.clobberedCalleeSaved)")
 }
 
 /// A join that loses a frame alias's exact offset keeps the offsets it may
@@ -353,13 +355,13 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
         0x940003f9, 0x910043ff, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
     ]
     let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "joined")))
-    #expect(summary.clobberedCalleeSaved == ["x19", "x20", "x29"])
+    #expect(summary.clobberedCalleeSaved == ["x19", "x20"], "\(summary.clobberedCalleeSaved)")
     // A copy of the alias keeps the offsets: `mov x2, x1` before the call.
     var copied = words
     copied.insert(0xaa0103e2, at: 7)
     copied[8] = 0x940003f8 // bl 0x2000 from its new address
     let copy = try #require(CalleeRegisterSummary.of(try body(copied, name: "copied")))
-    #expect(copy.clobberedCalleeSaved == ["x19", "x20", "x29"])
+    #expect(copy.clobberedCalleeSaved == ["x19", "x20"], "\(copy.clobberedCalleeSaved)")
     // The control: the same join where the other path holds x29's own
     // address, the frame record, may reach every save.
     var record = words
@@ -370,7 +372,8 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
 
 /// Neither a pointer below the saved registers nor a pointer in their
 /// padding proves an object extent. Two such coordinates must not protect
-/// the saves between them against an unknown writer.
+/// the saves between them against an unknown writer. Neither reaches the
+/// frame record, which is no object of this frame.
 ///
 ///     str x28, [sp, #-0x60]!; stp x27, x26, [sp, #0x10]
 ///     stp x29, x30, [sp, #0x50]; add x29, sp, #0x50; sub sp, sp, #0x10
@@ -383,11 +386,15 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
         0x940003f9, 0x91007fe0, 0x940003f7, 0x910043ff, 0xa9457bfd, 0xa9416bfb, 0xf84607fc, 0xd65f03c0,
     ]
     let gaps = try #require(CalleeRegisterSummary.of(try body(words, name: "gaps")))
-    #expect(gaps.clobberedCalleeSaved == ["x26", "x27", "x28", "x29"])
-    // The control: `add x0, sp, #0x20` is x27's own save slot.
+    #expect(gaps.clobberedCalleeSaved == ["x26", "x27", "x28"], "\(gaps.clobberedCalleeSaved)")
+    // `add x0, sp, #0x20` is x27's own save slot: still below the record.
     words[8] = 0x910083e0
     let saved = try #require(CalleeRegisterSummary.of(try body(words, name: "saved")))
-    #expect(saved.clobberedCalleeSaved.contains("x29"), "\(saved.clobberedCalleeSaved)")
+    #expect(saved.clobberedCalleeSaved == ["x26", "x27", "x28"], "\(saved.clobberedCalleeSaved)")
+    // The control: `add x0, sp, #0x60` is the frame record's own address.
+    words[8] = 0x910183e0
+    let record = try #require(CalleeRegisterSummary.of(try body(words, name: "record")))
+    #expect(record.clobberedCalleeSaved.contains("x29"), "\(record.clobberedCalleeSaved)")
 }
 
 /// A join of two dynamic allocations keeps sp below the higher bound, so a
@@ -552,4 +559,50 @@ private func callTarget(_ function: DisassembledFunction) throws -> UInt64 {
     guard let text = try await structured("Sample.run", in: "Fixtures/Sample/libSample.dylib") else { return }
     #expect(text.contains("Sample.Tree.sum()"), Comment(rawValue: text))
     #expect(!text.contains("Sample.Tree.sum(self:"), Comment(rawValue: text))
+}
+
+/// An address that escapes before the frame record exists is no proven
+/// local below it. Here it is the record's future slot itself, stored out
+/// before the prologue saves x29 there, so a later unknown callee may
+/// overwrite the saved x29:
+///
+///     sub sp, sp, #0x20; add x9, sp, #0x10; str x9, [x0]; mov x9, #0
+///     stp x29, x30, [sp, #0x10]; add x29, sp, #0x10; bl 0x2000
+///     ldp x29, x30, [sp, #0x10]; add sp, sp, #0x20; ret
+///
+/// No register holds the address at the call, so only the escape at the
+/// store can account for the reach.
+@Test func anAddressEscapedBeforeTheFrameRecordMayReachIt() throws {
+    let words: [UInt32] = [
+        0xd10083ff, 0x910043e9, 0xf9000009, 0xd2800009, 0xa9017bfd, 0x910043fd, 0x940003fa,
+        0xa9417bfd, 0x910083ff, 0xd65f03c0,
+    ]
+    let early = try #require(CalleeRegisterSummary.of(try body(words, name: "early")))
+    #expect(early.clobberedCalleeSaved.contains("x29"), "\(early.clobberedCalleeSaved)")
+}
+
+/// Every way the frame record's own address can reach code this body does
+/// not see keeps the record reachable, so the saved x29 is not claimed:
+/// a callee that reads x29, an unmodelled store of x29, and one path of a
+/// join that stores x29 out.
+@Test func everyEscapeOfTheRecordAddressKeepsItReachable() throws {
+    // stp x29, x30, [sp, #-0x10]!; mov x29, sp; bl 0x2000; ldp …; ret,
+    // where 0x2000 reads the frame pointer.
+    let reader = CalleeRegisterSummary(argumentReads: [], readsFramePointer: true, clobberedCalleeSaved: [])
+    let readsFP = try #require(CalleeRegisterSummary.of(
+        try body([0xa9bf7bfd, 0x910003fd, 0x940003fe, 0xa8c17bfd, 0xd65f03c0], name: "readsFP"),
+        calleeEffects: { _ in reader.effect }, isFunction: { $0 == 0x2000 }))
+    #expect(readsFP.clobberedCalleeSaved.contains("x29"), "\(readsFP.clobberedCalleeSaved)")
+    // stlr x29, [x0] (no modelled store) before an unknown call.
+    let released = try #require(CalleeRegisterSummary.of(try body(
+        [0xa9bf7bfd, 0x910003fd, 0xc89ffc1d, 0x940003fd, 0xa8c17bfd, 0xd65f03c0], name: "released")))
+    #expect(released.clobberedCalleeSaved.contains("x29"), "\(released.clobberedCalleeSaved)")
+    // sub sp, sp, #0x20; stp x29, x30, [sp, #0x10]; add x29, sp, #0x10
+    // cbz x1, 1f; str x29, [sp]; 1: bl 0x2000; ldp …; add sp, sp, #0x20; ret.
+    // One path stores the record's address out; the record slot itself is
+    // intact on both, so only the join's escape fact keeps it reachable.
+    let joined = try #require(CalleeRegisterSummary.of(try body(
+        [0xd10083ff, 0xa9017bfd, 0x910043fd, 0xb4000041, 0xf90003fd, 0x940003fb,
+         0xa9417bfd, 0x910083ff, 0xd65f03c0], name: "joined")))
+    #expect(joined.clobberedCalleeSaved.contains("x29"), "\(joined.clobberedCalleeSaved)")
 }

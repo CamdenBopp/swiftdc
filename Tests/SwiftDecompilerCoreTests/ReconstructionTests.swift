@@ -910,8 +910,8 @@ private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
 /// from one is a field of the result, not a stale local. The call is bound once
 /// (`let r0 = …`) and each proven field read is `r0.field`: spelling the call
 /// out at every read would show it executed once per field. At -Onone,
-/// makeWide passes a frame buffer to its initializer. Its extent is unknown,
-/// so the saved x29 cannot be proven intact and the sum declines. At -O the
+/// makeWide passes a frame buffer to its initializer; that local's reach
+/// excludes makeWide's frame record, so its saved x29 survives. At -O the
 /// linker folds `makeWide` and `Wide5.init` onto one body, and a
 /// call to a folded address takes neither name nor either signature: it read
 /// `let r0 = Indirect.Wide5.init(…)` for a call to `makeWide`. With no
@@ -919,7 +919,7 @@ private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
 @Test func readsIndirectCallResultFromFrameSlotIfPresent() async throws {
     guard let onone = try await reconstructionPseudo("wideSum", in: indirectFixture) else { return }
     #expect(onone.contains("Indirect.makeWide(arg0, arg1, arg2, arg3, arg4)"))
-    #expect(onone.contains("return ?"), "\(onone)")
+    #expect(onone.contains("return (r0.a + r0.e)"), "\(onone)")
     #expect(!onone.contains("return arg0"), "\(onone)")
     #expect(onone.components(separatedBy: "makeWide(").count == 2, "the call must render once: \(onone)")
 
@@ -995,7 +995,8 @@ private struct NativeWide5Result {
 /// A callee's result partially overwritten afterwards is neither the call nor a
 /// set of plain stores. The optimized callee preserves its frame, so untouched
 /// fields are read back from its result. At -Onone, an initializer receives a
-/// frame pointer with no proven extent; the untouched fields must decline.
+/// local with no proven extent, which still cannot reach otherWide's frame
+/// record, so otherWide keeps x29 and the fields are read back too.
 @Test func recoversPartiallyOverwrittenIndirectResultIfPresent() async throws {
     for fixture in [indirectFixture, "Fixtures/Sample/libIndirect.opt.dylib"] {
         guard let modified = try await reconstructionPseudo("modifiedWide", in: fixture) else { continue }
@@ -1007,17 +1008,8 @@ private struct NativeWide5Result {
         let expected: [Int] = [41, 9, 9, 9, 9]
         #expect(fields == expected)
         #expect(modified.components(separatedBy: "Indirect.otherWide(").count == 2)
-        if fixture.hasSuffix(".opt.dylib") {
-            #expect(modified.contains("let r0 = Indirect.otherWide("), "in \(fixture)")
-            #expect(modified.contains("return Indirect.Wide5(a: arg0, b: r0.b, c: r0.c, d: r0.d, e: r0.e)"), "in \(fixture)")
-        } else {
-            // -Onone: otherWide passes a local to Wide5.init, whose writes
-            // are unbounded, so its saved x29 may be overwritten and a call to
-            // it escapes this whole frame (47ceb26): every spill after it
-            // declines, and nothing claims the copied fields.
-            #expect(modified.contains("return ?"), "in \(fixture)")
-            #expect(!modified.contains("r0.b"), "in \(fixture)")
-        }
+        #expect(modified.contains("let r0 = Indirect.otherWide("), "in \(fixture)")
+        #expect(modified.contains("return Indirect.Wide5(a: arg0, b: r0.b, c: r0.c, d: r0.d, e: r0.e)"), "in \(fixture)")
         #expect(!modified.contains("return arg0"))
     }
 }

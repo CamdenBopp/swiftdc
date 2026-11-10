@@ -1173,6 +1173,12 @@ enum Preservation {
         // there with no slot fact still reads the caller's bytes. Any call,
         // any write of unknown extent and any store reaching that far ends it.
         var incomingIntact = true
+        // Whether anything that escaped could address the frame record (the
+        // entry x29 and x30 the prologue stores at the frame pointer). An
+        // address of a local below the record names that local's object,
+        // and no object of this frame overlaps the record; an escape of the
+        // frame pointer itself, or of an address not proven below it, does.
+        var recordReachable = false
         // For a frame alias whose exact value a join lost, the frame
         // addresses it may hold: x1 is `sub x1, x29, #0x48` on one path and
         // no frame address on the other, x25 a dynamic allocation on one and
@@ -1237,6 +1243,7 @@ enum Preservation {
                 stackAliases: [],
                 incomingIntact: incomingIntact && other.incomingIntact
             )
+            result.recordReachable = recordReachable || other.recordReachable
             result.registerFacts = registerFacts.mergedPreservation(with: other.registerFacts)
             result.reach = reach.union(other.reach)
             return result
@@ -1261,23 +1268,63 @@ enum Preservation {
                 return nil
             }.sorted()
             let evidence = DynamicEscapeSaveEvidence(sortedEntryStarts: entrySlots)
+            let record = frameRecordBase()
             for (key, _) in registerFacts.selected(keys) {
                 // Keep each selected register's transaction separate: an Any
                 // input must not erase a different input's bounded ranges.
                 let input = registerFacts.escapeOrigins(key)
+                switch input {
+                case .none: break
+                case .any: recordReachable = true
+                case .finite(let offsets, let below):
+                    // A dynamic allocation lies below sp, so below the record.
+                    if let record {
+                        if offsets.contains(where: { $0 >= record }) || below.map({ $0 > record }) == true {
+                            recordReachable = true
+                        }
+                    } else if !offsets.isEmpty || below != nil {
+                        recordReachable = true
+                    }
+                }
                 reach.recordEscape(input, against: evidence)
             }
         }
 
         mutating func invalidateSlotsForUnknownWrite(throughStackAlias: Bool) {
             incomingIntact = false
-            if throughStackAlias || stackAddressEscaped {
+            if throughStackAlias {
+                slots.removeAll()
+                return
+            }
+            // A callee writes only through what escaped to it. When that is
+            // only addresses of locals below the frame record, the record
+            // keeps its entry values: writing it through a local's address
+            // would also break the return the analysis already assumes.
+            let record = recordReachable ? [] : frameRecord()
+            defer { for (offset, value) in record { slots[offset] = value } }
+            if stackAddressEscaped {
                 slots.removeAll()
                 return
             }
             // Caller-owned reach is an operation policy, not a durable escape.
             let effect = reach.effect(using: NoFrameQueryEvidence(), arithmetic: .checked, includingCallerOwned: true)
             slots.forget(effect, removing: .value)
+        }
+
+        /// The frame pointer's offset while x29 holds a frame address whose
+        /// slot still holds the entry x29: the frame record's base.
+        func frameRecordBase() -> Int64? {
+            guard case .stack(let fp) = value("x29"), case .entry("x29")? = slots[fp] else { return nil }
+            return fp
+        }
+
+        /// The frame record's two words with their values, or none.
+        private func frameRecord() -> [(Int64, Value)] {
+            guard let fp = frameRecordBase() else { return [] }
+            var record: [(Int64, Value)] = [(fp, .entry("x29"))]
+            let (lr, overflow) = fp.addingReportingOverflow(8)
+            if !overflow, let saved = slots[lr] { record.append((lr, saved)) }
+            return record
         }
 
         /// A saved entry value below sp occupies storage the next callee can
@@ -1295,7 +1342,7 @@ enum Preservation {
                 }
             }
             if boundary.map({ $0 > 0 }) ?? true { incomingIntact = false }
-            if exposedFramePointer { stackAddressEscaped = true }
+            if exposedFramePointer { stackAddressEscaped = true; recordReachable = true }
         }
 
         mutating func invalidateSlots(at address: Int64, bytes: Int) {
@@ -1434,6 +1481,7 @@ enum Preservation {
         }
         if effect.readsFramePointer && state.stackAliases.contains("x29") {
             state.stackAddressEscaped = true
+            state.recordReachable = true
         }
         state.markEscape(inputs)
         if let memory {
@@ -1683,6 +1731,7 @@ enum Preservation {
             }
         if operands.contains(where: { $0.operand.isMemory && ($0.isWritten || $0.access == 0) }), readsStackAlias {
             state.stackAddressEscaped = true
+            state.recordReachable = true
         }
         for key in writtenRegisterKeys(in: detail) {
             // The unmodeled overlapping bank was already invalidated above,

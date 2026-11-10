@@ -109,21 +109,27 @@ results do not replace previously recorded release performance measurements.
   compiler-ir-frame-ownership worktree (Codex) together with its entry-register
   roles, indirect-result and context-result producer order, complete-body
   register transfer, caller-owned frame aliases and imported-receiver proofs.
-- **OPEN — what that soundness costs with the x29-clobber escape.** A body
-  that passes a local's address to a callee with no complete store plan
-  (`otherWide` passing `&local` to `Wide5.init` at -Onone) may now overwrite
-  its own saved x29 and x19, so its summary reports them as possibly
-  clobbered, and 47ceb26 escapes the whole caller frame at every call to it.
-  Each rule is sound; together, against 7d57779, 12,787 structured lines in
-  96 fixtures move to declines (spills after such a call, witness calls
-  through slots, uniqueness snapshots across calls), and GoodLinks
-  cfg.unresolved-indirect-call rises 14,853 -> 15,504. Exempting the ABI frame
-  record (the entry x29/x30 at the frame pointer) from an escaped local's reach
-  recovers part (15,336, 9,496 lines): sound if memory-safe code never writes a
-  frame record through a local's address, which dev's CalleeRegisterSummaryTests
-  currently treat as possible. That policy is the owner's call. Bounded writes
-  through passed pointers (a callee's own store extents) are the precise fix.
-
+- **DECIDED and FIXED (2026-11-10, completeness): an escaped local's
+  address no longer reaches its frame's record.** The cost above came from
+  `otherWide`-like bodies: a local passed to a callee with no store plan
+  could reach the whole frame, the saved x29 included, so the body was
+  summarised as clobbering x29 and 47ceb26 escaped every caller's frame.
+  The policy: the frame record (the entry x29 and x30 the prologue stores at
+  the frame pointer) is no object of the frame, so a pointer to a local below
+  it grants no write there. The analysis already assumes the saved x30 comes
+  back intact at every call; the x29 beside it is the same assumption. The
+  exemption holds only while nothing that could address the record has
+  escaped: the frame pointer itself, an address at or above it, an address
+  that escaped before the record was written, a frame address spilled below
+  sp, a callee that reads x29, or an unmodelled store of a frame alias each
+  keep the record reachable (`recordReachable`, joined by OR). The register
+  saves between the locals and the record get no exemption. Against
+  9369b0e: 33 fixtures, 4,779 structured lines, `?`-bearing lines 768 ->
+  263 (whole results bound and returned, call arguments named, spills read
+  back); GoodLinks cfg.unresolved-indirect-call 15,504 -> 15,350.
+  `frame_preserve_alias.s`, the soundness counterexample, still renders
+  `return ?`. Bounded writes through passed pointers (a callee's own store
+  extents) remain the precise fix for the saves below the record.
 - **OPEN — unknown-sp sites remain (audited 2026-11-10).** The 2,276 figure
   (14,853 − 12,577) is stale: GoodLinks has 15,504 unresolved indirect calls
   at 9369b0e, and the unknown-sp share is not separated from the
