@@ -137,7 +137,7 @@ public extension DisassembledFunction {
         // first.
         if hideRuntime, let cast = swiftCastIdiom(callee: callee, arguments: rawArguments) { return cast }
         if hideRuntime, let literal = arrayLiteralPlaceholder(callee: callee) { return literal }
-        if hideRuntime, isRuntimeNoise(callee) || isGenericPlumbingCallee(callee) { return nil }
+        if hideRuntime, isRuntimeNoise(insn) || isGenericPlumbingCallee(callee) { return nil }
         let arguments = hideRuntime ? strippingGenericPlumbing(rawArguments) : rawArguments
         if let send = MessageSend(callee: callee, arguments: arguments) { return send.rendered }
         if let idiom = objcRuntimeIdiom(callee: callee, arguments: arguments) { return idiom }
@@ -1108,6 +1108,11 @@ public extension DisassembledFunction {
 
     /// Low-level retain/release/exclusivity bookkeeping — hidden by default so
     /// the program logic stands out.
+    static func isRuntimeNoise(_ insn: Instruction) -> Bool {
+        guard let callee = calleeName(of: insn) else { return false }
+        return (!isARCReferenceHelper(callee) || insn.facts.arcIdentityContract) && isRuntimeNoise(callee)
+    }
+
     static func isRuntimeNoise(_ callee: String) -> Bool {
         let prefixes = [
             "swift_retain", "swift_release", "swift_bridgeObjectRetain",
@@ -1135,17 +1140,33 @@ public extension DisassembledFunction {
     /// object's strong refcount is exactly one). Read through, the uniqueness
     /// check rendered `return self.storage` for a `-> Bool` CoW method.
     static func returnsItsArgument(_ callee: String) -> Bool {
-        let name = callee.hasPrefix("_") ? String(callee.dropFirst()) : callee
-        let identities: Set<String> = [
-            "swift_retain", "swift_retain_n", "swift_nonatomic_retain",
-            "swift_bridgeObjectRetain", "swift_bridgeObjectRetain_n",
-            "swift_unknownObjectRetain", "swift_unknownObjectRetain_n",
-            "objc_retain", "objc_autorelease", "objc_retainAutorelease",
-            "objc_retainAutoreleasedReturnValue", "objc_claimAutoreleasedReturnValue",
-            "objc_unsafeClaimAutoreleasedReturnValue", "objc_retainAutoreleaseReturnValue",
-            "objc_autoreleaseReturnValue",
-        ]
-        return identities.contains(name)
+        guard let name = arcRuntimeName(callee) else { return false }
+        return argumentIdentityRuntimeNames.contains(name)
+    }
+
+    // Shared immutable storage: the per-call contract checks do not rebuild a
+    // Set, or hash a long unrelated Swift signature, on each tracer visit.
+    private static let argumentIdentityRuntimeNames: Set<String> = [
+        "swift_retain", "swift_retain_n", "swift_nonatomic_retain",
+        "swift_bridgeObjectRetain", "swift_bridgeObjectRetain_n",
+        "swift_unknownObjectRetain", "swift_unknownObjectRetain_n",
+        "objc_retain", "objc_autorelease", "objc_retainAutorelease",
+        "objc_retainAutoreleasedReturnValue", "objc_claimAutoreleasedReturnValue",
+        "objc_unsafeClaimAutoreleasedReturnValue", "objc_retainAutoreleaseReturnValue",
+        "objc_autoreleaseReturnValue",
+    ]
+
+    private static func arcRuntimeName(_ callee: String) -> String? {
+        guard callee.hasPrefix("swift_") || callee.hasPrefix("objc_")
+                || callee.hasPrefix("_swift_") || callee.hasPrefix("_objc_") else { return nil }
+        return callee.hasPrefix("_") ? String(callee.dropFirst()) : callee
+    }
+
+    /// Names whose retain/autorelease ABI needs proof of the runtime provider.
+    /// A local definition or a different library may use the same spelling.
+    static func isARCReferenceHelper(_ callee: String) -> Bool {
+        guard let name = arcRuntimeName(callee) else { return false }
+        return argumentIdentityRuntimeNames.contains(name) || ValueTracer.retainedRegister(name) != nil
     }
 
     /// `swift_isUniquelyReferenced*`: the lowering of `isKnownUniquelyReferenced`

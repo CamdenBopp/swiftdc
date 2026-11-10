@@ -48,15 +48,20 @@ import Testing
     let engine = try #require(CapstoneEngine())
     let words: [UInt32] = [0xaa0103f4, 0x94000002, 0xd65f03c0]
     let bytes = words.flatMap { word in (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) } }
-    let body = engine.disassemble(Data(bytes), address: 0x1000).map {
-        Instruction(address: $0.address, text: $0.text,
-                    annotation: $0.controlFlow == .call ? "→ objc_retain_x20" : nil,
-                    controlFlow: $0.controlFlow, branchTarget: $0.branchTarget, detail: $0.detail)
+    for trusted in [false, true] {
+        let body = engine.disassemble(Data(bytes), address: 0x1000).map { item in
+            var facts = Instruction.Facts()
+            facts.arcIdentityContract = trusted && item.controlFlow == .call
+            return Instruction(address: item.address, text: item.text,
+                        annotation: item.controlFlow == .call ? "→ objc_retain_x20" : nil,
+                        controlFlow: item.controlFlow, branchTarget: item.branchTarget, detail: item.detail,
+                        facts: facts)
+        }
+        let function = DisassembledFunction(symbol: "f", demangledName: nil, startAddress: 0x1000,
+                                            instructions: body, source: .symbol)
+        let result = ValueTracer().analyze(function, entry: .swiftFunction(scalarArguments: ["x0": 0, "x1": 1]))
+        #expect(result.exitValues[0x1008] == (trusted ? .argument(1) : .callResult(0x1004)))
     }
-    let function = DisassembledFunction(symbol: "f", demangledName: nil, startAddress: 0x1000,
-                                        instructions: body, source: .symbol)
-    let result = ValueTracer().analyze(function, entry: .swiftFunction(scalarArguments: ["x0": 0, "x1": 1]))
-    #expect(result.exitValues[0x1008] == .argument(1))
     #expect(ValueTracer.retainedRegister("objc_retain_x20") == 20)
     #expect(ValueTracer.retainedRegister("objc_retain") == nil)
 }

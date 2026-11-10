@@ -11597,7 +11597,7 @@ Commit messages on dev stay as they are; these are the true records.
   functions. Both SDK xrefs outputs match. Publication uses the original
   `Tools/integration-gate.sh --push`.
 
-- **IN PROGRESS (2026-11-07): preserve uniqueness query evaluations.**
+- **FIXED (2026-11-07, `cc525d7`): preserve uniqueness query evaluations.**
   SwiftParser's array growth paths reused an earlier uniqueness result after
   calls and stores, but the output repeated the query or moved it to a later
   consumer. The existing owner of call results now binds a reused or delayed
@@ -11647,3 +11647,39 @@ Commit messages on dev stay as they are; these are the true records.
   callers use it. `disasm libNoCode.dylib` now prints "This binary
   contains no recoverable functions." Test
   `anImageWithNoCodeDeclaresNoFunctionIfPresent`.
+  producer, and both SDK cross-reference outputs match. The original
+  `Tools/integration-gate.sh --push` subsequently passed all 1,444 tests and
+  measured its own fresh release binary over 1,408 cost rows: instructions
+  5,113.6G to 5,114.1G (+0.01%), summed per-render peak footprint 17,598 to
+  17,579 MB (-0.11%). Default budgets pass, the final output diffs match the
+  reviewed outputs, and `origin/dev` advanced to `cc525d7`.
+
+- **FIXED (2026-11-09): prove ARC identity from the actual target.** A
+  retain-like call was read as returning its argument, with no field writes
+  and hidden as runtime noise, by its spelling alone. A local or foreign
+  function with the same name keeps its ordinary effects now: identity needs
+  the exact resolved symbol in its owning runtime, carried as the typed
+  `arcIdentityContract` fact through the call-fact cache key, the tracer,
+  field summaries (all three production callers) and the renderers.
+
+  Ordinary imports need a strong two-level binding to the expected runtime,
+  the exact raw symbol, a zero addend and agreement with the loader slot;
+  weak, flat-namespace, ambiguous and mismatched bindings decline. Legacy
+  binds stop at DONE, and lazy binds need the selected lazy entry and the
+  ordinary dyld binder (`LegacyImportBindings`). Cache calls need an ordinary
+  export of the owning runtime through a fixed read-only slot, and an import
+  island must start at its aligned entry with the complete scratch-register
+  sequence and final branch (`RuntimeFunctionReference`). Late indirect-call
+  resolution reruns the affected analysis.
+
+  Two repairs ride with it, each for a regression the stricter proof
+  exposed. A declined branch condition keeps the call results it reads as
+  typed dependencies (`unresolvedBranchCallResults`), so an allocation is
+  not moved across later calls and stores (49 SwiftSyntax functions held at
+  their call PCs). A raw C symbol displayed like a Swift setter needs Swift
+  calling-convention evidence before its value is placed. Fixtures
+  `arc_identity_origin` (local and imported twins at -Onone/-O/-Osize) and
+  `result_identity` (standard, legacy-bind and indirect-call variants), with
+  native runs; the Codex worktree's own qualification recorded 46
+  independent ARC mutations red. Ported from the
+  compiler-ir-arc-origin-20261107 worktree.

@@ -49,6 +49,12 @@ final class CacheReader {
         guard let fileOffset = full.fileOffset(of: slot) else { return nil }
         return full.resolveRebase(at: fileOffset)
     }
+
+    func fixedPointer(at slot: UInt64) -> UInt64? {
+        guard let mapping = full.mappingAndSlideInfo(for: slot),
+              !mapping.flags.isDisjoint(with: [.constData, .readOnlyData, .constTproData]) else { return nil }
+        return pointer(at: slot)
+    }
 }
 
 /// Names call targets that leave a dyld-cache image.
@@ -73,6 +79,7 @@ final class CacheSymbolResolver {
     /// Sorted by text range, for a binary search on the call target.
     private var images: [(range: Range<UInt64>, base: UInt64, image: MachOFile)] = []
     private var exportsByImage: [Int: [UInt64: String]] = [:]
+    private var arcExportsByImage: [Int: [UInt64: Set<String>]] = [:]
     private var resolved: [UInt64: String?] = [:]
 
     /// Nil unless `machO` is a shared-cache image (there is nothing to resolve
@@ -115,6 +122,55 @@ final class CacheSymbolResolver {
         let name = resolve(address)
         resolved[address] = name
         return name
+    }
+
+    /// An exact export in the owning runtime image, following the same island
+    /// as display-name resolution. Selector stubs are not ARC identity calls.
+    func arcIdentityContract(forCallTarget address: UInt64, named callee: String) -> Bool {
+        guard DisassembledFunction.isARCReferenceHelper(callee) else { return false }
+        let target: UInt64
+        if symbol(at: address) != nil { target = address }
+        else if let resolved = arcStubTarget(at: address) { target = resolved }
+        else { return false }
+        guard let index = imageIndex(containing: target) else { return false }
+        if arcExportsByImage[index] == nil {
+            let image = images[index]
+            arcExportsByImage[index] = Self.arcExports(image.image.exportedSymbols,
+                                                       imagePath: image.image.imagePath,
+                                                       base: image.base, text: image.range)
+        }
+        let name = callee.hasPrefix("_") ? String(callee.dropFirst()) : callee
+        return arcExportsByImage[index]?[target]?.contains(name) == true
+    }
+
+    /// The exact owning-image export proof, also exercised with conflicting
+    /// export flags. It never treats an interior or wrapped address as an entry.
+    static func arcExports(_ exports: [ExportedSymbol], imagePath: String, base: UInt64,
+                           text: Range<UInt64>) -> [UInt64: Set<String>] {
+        guard RuntimeFunctionReference.isARCRuntimeImage(imagePath) else { return [:] }
+        var table: [UInt64: Set<String>] = [:]
+        for symbol in exports {
+            guard RuntimeFunctionReference.isDirectFunctionExport(symbol),
+                  let offset = symbol.offset, offset >= 0 else { continue }
+            let reference = RuntimeFunctionReference(rawSymbol: symbol.name, libraryName: imagePath)
+            let name = symbol.name.hasPrefix("_") ? String(symbol.name.dropFirst()) : symbol.name
+            let (location, overflow) = base.addingReportingOverflow(UInt64(offset))
+            guard !overflow, text.contains(location), reference.permitsARCIdentity(named: name) else { continue }
+            table[location, default: []].insert(name)
+        }
+        return table
+    }
+
+    private func arcStubTarget(at address: UInt64) -> UInt64? {
+        guard let bytes = reader.bytes(at: address, count: 16) else { return nil }
+        let decoded = engine.disassemble(bytes, address: address)
+        guard let end = decoded.firstIndex(where: { $0.controlFlow == .branch }) else { return nil }
+        let instructions = decoded[...end].map {
+            Instruction(address: $0.address, text: $0.text, controlFlow: $0.controlFlow,
+                        branchTarget: $0.branchTarget, detail: $0.detail)
+        }
+        guard let slot = RuntimeFunctionReference.pointerSlot(in: instructions, startingAt: address) else { return nil }
+        return reader.fixedPointer(at: slot)
     }
 
     private func resolve(_ address: UInt64) -> String? {

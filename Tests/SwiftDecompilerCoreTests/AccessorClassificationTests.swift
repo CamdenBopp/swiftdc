@@ -179,15 +179,18 @@ private let accessorGrowthCeiling = 4_096
 /// an accessor synthesized is that the value moves unchanged.
 @Test func aSynthesizedAccessorMovesItsValueUnchanged() throws {
     let engine = try #require(CapstoneEngine())
-    func verdict(_ words: [UInt32], callee: Int? = nil, encoding: String? = nil) -> Bool? {
+    func verdict(_ words: [UInt32], callee: Int? = nil, encoding: String? = nil,
+                 arcIdentityContract: Bool = false) -> Bool? {
         var data = Data()
         for word in words + [0xd65f_03c0] { withUnsafeBytes(of: word.littleEndian) { data.append(contentsOf: $0) } }
         let instructions = engine.disassemble(data, address: 0x1000).enumerated().map { index, decoded in
             let insn = Disassembler.instruction(decoded: decoded)
             guard index == callee else { return insn }
+            var facts = insn.facts
+            facts.arcIdentityContract = arcIdentityContract
             return Instruction(address: insn.address, text: insn.text, annotation: "→ objc_retain",
                                controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
-                               detail: insn.detail, callee: .kept("objc_retain"))
+                               detail: insn.detail, callee: .kept("objc_retain"), facts: facts)
         }
         let binding = encoding.map {
             ObjCMethodBinding(className: "C", selector: "s", typeEncoding: $0, isClassMethod: false, signature: "")
@@ -227,8 +230,9 @@ private let accessorGrowthCeiling = 4_096
     #expect(verdict([storeW2, 0xf900_0422]) == false)               // str x2, [x1, #8]
     // A call ends an argument in x2, not one kept in x19.
     let call: UInt32 = 0x9400_0400
-    #expect(verdict([0xaa00_03f3, call, 0xb900_0e62], callee: 1) == false) // mov x19, x0; bl; str w2, [x19, #12]
-    #expect(verdict([0xaa00_03f4, 0xaa02_03f3, call, 0xf900_0693], callee: 2) == true) // mov x20, x0; mov x19, x2; bl; str x19, [x20, #8]
+    #expect(verdict([0xaa00_03f3, call, 0xb900_0e62], callee: 1, arcIdentityContract: true) == false) // mov x19, x0; bl; str w2, [x19, #12]
+    #expect(verdict([0xaa00_03f4, 0xaa02_03f3, call, 0xf900_0693], callee: 2, arcIdentityContract: true) == true)
+    #expect(verdict([0xaa00_03f4, 0xaa02_03f3, call, 0xf900_0693], callee: 2) == false) // mov x20, x0; mov x19, x2; bl; str x19, [x20, #8]
     // A struct moves through x2 and x8 only when the method's type has one.
     let wide = "{Wide=qqqqq}16@0:8"
     let copyIn: [UInt32] = [0xad40_0440, 0xad02_8400]   // ldp q0, q1, [x2]; stp q0, q1, [x0, #80]

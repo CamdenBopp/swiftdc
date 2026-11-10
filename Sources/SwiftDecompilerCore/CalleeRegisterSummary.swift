@@ -569,14 +569,17 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// into its own stack, makes no indirect call, and calls only runtime
     /// functions that write none (`CallFacts.writesNoFields`) or bodies
     /// already marked. A least fixpoint, so a cycle is never marked; a call
-    /// to anything but an in-image function (a stub) is judged by its name. -Osize outlines
+    /// to a runtime stub needs its name and actual provider contract. -Osize outlines
     /// `swift_beginAccess` into `OUTLINED_FUNCTION_3` (`mov x2, #0;
     /// mov x3, #0; b swift_beginAccess`), and a call to it forgot every field
     /// of self the caller held.
     /// `name` gives a stub's name: the summaries are built before any call
-    /// is named.
+    /// is named. ARC calls also need the resolver's exact provider proof;
+    /// the default keeps an unproved retain opaque.
     static func closeOverFieldWrites(
-        _ summaries: inout [UInt64: CalleeRegisterSummary], name: (UInt64) -> String?
+        _ summaries: inout [UInt64: CalleeRegisterSummary],
+        arcIdentityContract: (UInt64, String) -> Bool = { _, _ in false },
+        name: (UInt64) -> String?
     ) {
         let starts = summaries.keys.sorted()
         var changed = true
@@ -587,7 +590,10 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 let preserving = summary.outgoingCalls.allSatisfy { call in
                     guard let target = call.target else { return false }
                     if call.isFunction { return summaries[target]?.writesNoFields ?? false }
-                    return name(target).map { ValueTracer.CallFacts(callee: $0).writesNoFields } ?? false
+                    return name(target).map { callee in
+                        ValueTracer.CallFacts(callee: callee,
+                            arcIdentityContract: arcIdentityContract(target, callee)).writesNoFields
+                    } ?? false
                 }
                 if preserving {
                     summaries[start]?.writesNoFields = true

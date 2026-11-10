@@ -495,6 +495,11 @@ public struct FunctionAnalysis: Sendable {
     /// their tested register directly. Lets the structurer render source-named
     /// conditions in place of raw registers.
     public var branchConditions: [UInt64: AbstractValue] = [:]
+    /// Known call-result producers read by a conditional branch whose complete
+    /// comparison declined. This is dependency evidence, not a condition claim:
+    /// a saved call result still has its original evaluation point when the
+    /// other comparison operand is unknown and the structurer uses text.
+    public var unresolvedBranchCallResults: [UInt64: Set<UInt64>] = [:]
     /// Proven loop induction body updates, keyed by the loop header's branch
     /// instruction — statements (`total += i`, `i += 1`) emitted in order
     /// (accumulate then advance) on the loop-back transfer. Only set for proven
@@ -958,26 +963,30 @@ public struct ValueTracer: Sendable {
         let cResult: Character?
 
         init(_ insn: Instruction) {
-            self.init(callee: DisassembledFunction.calleeName(of: insn) ?? "")
+            self.init(callee: DisassembledFunction.calleeName(of: insn) ?? "",
+                      arcIdentityContract: insn.facts.arcIdentityContract)
         }
 
         /// `knownArityApplies` is false for a call to an in-image function,
         /// whose name may be a library function's without its arity.
-        init(callee: String, knownArityApplies: Bool = true) {
+        init(callee: String, knownArityApplies: Bool = true, arcIdentityContract: Bool = false) {
             self.callee = callee
-            self.knownArityApplies = knownArityApplies
-            readsOnly = knownArityApplies && ValueTracer.readOnlyPointerCallees.contains { callee.hasPrefix($0) }
-            let knownArity = knownArityApplies ? DisassembledFunction.knownCArity(of: callee) : nil
+            let applies = knownArityApplies
+                && (!DisassembledFunction.isARCReferenceHelper(callee) || arcIdentityContract)
+            self.knownArityApplies = applies
+            readsOnly = applies && ValueTracer.readOnlyPointerCallees.contains { callee.hasPrefix($0) }
+            let knownArity = applies ? DisassembledFunction.knownCArity(of: callee) : nil
             passedRegisters = knownArity.map { arity in
                 (0..<arity).map { Location.x($0) }
             } ?? [.x(0), .x(1), .x(2), .x(3), .x(4), .x(5), .x(6), .x(7), .x(8), .x(20)]
-            passesNoStackArguments = knownArityApplies && ValueTracer.passesNoStackArguments(callee)
+            passesNoStackArguments = applies && ValueTracer.passesNoStackArguments(callee)
             throwsByName = callee.contains(" throws")
-            provablyDoesNotThrow = ValueTracer.provablyDoesNotThrow(callee)
+            provablyDoesNotThrow = (!DisassembledFunction.isARCReferenceHelper(callee) || arcIdentityContract)
+                && ValueTracer.provablyDoesNotThrow(callee)
             let runtimeName = callee.hasPrefix("_") ? String(callee.dropFirst()) : callee
-            returnsArgument = ValueTracer.identityRuntimeCalls.contains(runtimeName)
-            retainedRegister = ValueTracer.retainedRegister(runtimeName)
-            writesNoFields = knownArityApplies && (readsOnly || retainedRegister != nil
+            returnsArgument = applies && arcIdentityContract && DisassembledFunction.returnsItsArgument(callee)
+            retainedRegister = applies && arcIdentityContract ? ValueTracer.retainedRegister(runtimeName) : nil
+            writesNoFields = applies && (readsOnly || retainedRegister != nil
                 || ValueTracer.fieldPreservingRuntimeCalls.contains(runtimeName))
             allocatesArray = callee.contains("_allocateUninitializedArray")
             returnsVoidByName = DisassembledFunction.splitSignature(callee)?.result == "()"
@@ -991,7 +1000,7 @@ public struct ValueTracer: Sendable {
                 ? callee.range(of: ".getter : ").map { String(callee[$0.upperBound...]) } : nil
             returnsString = (DisassembledFunction.splitSignature(callee)?.result ?? getterType)
                 .map { Disassembler.twoWordStringTypes.contains($0) } ?? false
-            cResult = knownArityApplies ? Self.result(of: DisassembledFunction.cPrototype(of: callee)) : nil
+            cResult = applies ? Self.result(of: DisassembledFunction.cPrototype(of: callee)) : nil
         }
 
         /// A declaration's result, or nil for one the table could not
@@ -1010,16 +1019,22 @@ public struct ValueTracer: Sendable {
     /// r1 : …)` with `r1 = swift_willThrow(r0)` (`throwselect.swift`).
     static let voidRuntimeCalls: Set<String> = ["swift_willThrow", "swift_willThrowTypedImpl", "swift_job_run"]
 
-    /// `CallFacts` per callee name for one run. They are a pure function of
-    /// the name, and a few thousand names serve a hundred thousand calls
+    /// `CallFacts` per callee name and ARC contract for one run. A trusted
+    /// runtime call must never donate its facts to a same-named foreign call.
+    /// A few thousand names serve a hundred thousand calls
     /// (Clarc: 5,636 for 103,776).
     final class CallFactsCache: Sendable {
-        private let store = Mutex<[String: CallFacts]>([:])
+        private struct Key: Hashable {
+            let callee: String
+            let arcIdentityContract: Bool
+        }
+        private let store = Mutex<[Key: CallFacts]>([:])
 
-        func facts(for callee: String) -> CallFacts {
-            if let hit = store.withLock({ $0[callee] }) { return hit }
-            let facts = CallFacts(callee: callee)
-            store.withLock { $0[callee] = facts }
+        func facts(for callee: String, arcIdentityContract: Bool = false) -> CallFacts {
+            let key = Key(callee: callee, arcIdentityContract: arcIdentityContract)
+            if let hit = store.withLock({ $0[key] }) { return hit }
+            let facts = CallFacts(callee: callee, arcIdentityContract: arcIdentityContract)
+            store.withLock { $0[key] = facts }
             return facts
         }
     }
@@ -1042,9 +1057,11 @@ public struct ValueTracer: Sendable {
             for insn in function.instructions where insn.controlFlow == .call {
                 let callee = DisassembledFunction.calleeName(of: insn) ?? ""
                 if let target = insn.branchTarget, inImageTargets.contains(target) {
-                    calls[insn.address] = CallFacts(callee: callee, knownArityApplies: false)
+                    calls[insn.address] = CallFacts(callee: callee, knownArityApplies: false,
+                                                  arcIdentityContract: insn.facts.arcIdentityContract)
                 } else {
-                    calls[insn.address] = cache?.facts(for: callee) ?? CallFacts(callee: callee)
+                    calls[insn.address] = cache?.facts(for: callee, arcIdentityContract: insn.facts.arcIdentityContract)
+                        ?? CallFacts(insn)
                 }
             }
         }
@@ -1367,15 +1384,18 @@ public struct ValueTracer: Sendable {
                 }
                 // A flags-based conditional branch: reconstruct its branch-taken
                 // comparison from the tracked NZCV flags and the condition code.
-                if insn.controlFlow == .conditionalBranch,
-                   let condition = branchTakenCondition(insn, in: registers),
-                   condition != .unknown {
-                    // `branchTakenCondition` reconstructs cbz/cbnz/tbz (which carry
-                    // no condition code) from the tested register's tracked value,
-                    // as well as the flag-based `b.cond` forms — so a compare-and-
-                    // branch on a named value (`cbnz x8` where x8 is `self.next`)
-                    // reconstructs like the flag branches, not just as raw `x8`.
-                    result.branchConditions[insn.address] = condition
+                if insn.controlFlow == .conditionalBranch {
+                    if let condition = branchTakenCondition(insn, in: registers), condition != .unknown {
+                        // `branchTakenCondition` reconstructs cbz/cbnz/tbz (which carry
+                        // no condition code) from the tested register's tracked value,
+                        // as well as the flag-based `b.cond` forms — so a compare-and-
+                        // branch on a named value (`cbnz x8` where x8 is `self.next`)
+                        // reconstructs like the flag branches, not just as raw `x8`.
+                        result.branchConditions[insn.address] = condition
+                    } else {
+                        let producers = unresolvedBranchCallResults(insn, in: registers)
+                        if !producers.isEmpty { result.unresolvedBranchCallResults[insn.address] = producers }
+                    }
                 }
                 if let detail = insn.detail, let write = memoryWrite(detail, in: registers) {
                     result.memoryWrites[insn.address] = write
@@ -1583,6 +1603,12 @@ public struct ValueTracer: Sendable {
         "outlined ", "merged outlined ", "type metadata accessor for ",
         "lazy protocol witness table accessor for ",
     ]
+
+    static func provablyDoesNotThrow(_ insn: Instruction) -> Bool {
+        guard let callee = DisassembledFunction.calleeName(of: insn) else { return false }
+        return (!DisassembledFunction.isARCReferenceHelper(callee) || insn.facts.arcIdentityContract)
+            && provablyDoesNotThrow(callee)
+    }
 
     static func provablyDoesNotThrow(_ callee: String) -> Bool {
         guard !callee.isEmpty, !callee.hasPrefix("sub_") else { return false }
@@ -1953,18 +1979,6 @@ public struct ValueTracer: Sendable {
         "objc_claimAutoreleasedReturnValue", "objc_unsafeClaimAutoreleasedReturnValue",
         "objc_retainAutoreleaseReturnValue", "objc_autorelease", "objc_autoreleaseReturnValue",
         "objc_retainBlock", "swift_beginAccess", "swift_endAccess",
-    ]
-
-    /// Each returns the object it was handed (objc4's `objc_autorelease`,
-    /// `objc_retainAutorelease`, …): the result is that value. Without
-    /// `objc_autorelease` here, `[[[X alloc] init] autorelease]` used twice
-    /// rendered three allocations, the autorelease's result printed as the
-    /// allocation it returned at every use.
-    private static let identityRuntimeCalls: Set<String> = [
-        "objc_retain", "objc_claimAutoreleasedReturnValue",
-        "objc_retainAutoreleasedReturnValue", "objc_autoreleaseReturnValue",
-        "objc_autorelease", "objc_retainAutorelease", "objc_retainAutoreleaseReturnValue",
-        "objc_unsafeClaimAutoreleasedReturnValue",
     ]
 
     /// N for `objc_retain_xN`, the register-specific retain stub.
@@ -3013,6 +3027,34 @@ public struct ValueTracer: Sendable {
         case .subtract: return isLocal(a) && nonZeroConst(b)
         default: return false
         }
+    }
+
+    /// Keep producer identities from the tested register or current flags when
+    /// the complete comparison cannot be reconstructed. Unknown parts add no
+    /// producer, and these dependencies do not publish a condition.
+    private func unresolvedBranchCallResults(_ insn: Instruction, in registers: State) -> Set<UInt64> {
+        guard let detail = insn.detail else { return [] }
+        let input: AbstractValue?
+        switch detail.id {
+        case AARCH64_INS_CBZ, AARCH64_INS_CBNZ, AARCH64_INS_TBZ, AARCH64_INS_TBNZ:
+            input = detail.operands.first?.operand.register.flatMap { registers[Location($0)] }
+        default:
+            input = registers[Self.flagsKey]
+        }
+        var producers: Set<UInt64> = []
+        func collect(_ value: AbstractValue) {
+            switch value {
+            case .callResult(let site): producers.insert(site)
+            case .binary(_, let lhs, let rhs): collect(lhs); collect(rhs)
+            case .unary(_, let operand): collect(operand)
+            case .select(let condition, let whenTrue, let whenFalse):
+                collect(condition); collect(whenTrue); collect(whenFalse)
+            case .aggregate(let values): values.forEach(collect)
+            default: break
+            }
+        }
+        if let input { collect(input) }
+        return producers
     }
 
     /// The condition under which a conditional branch is TAKEN, as a comparison

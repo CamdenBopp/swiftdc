@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import Demangling
 @testable import SwiftDecompilerCore
 
 /// A register loaded from or stored to a field of self was known to equal
@@ -35,7 +36,13 @@ import Foundation
 @Test func onlyRetainsAndAccessMarkersWriteNoFields() {
     for callee in ["swift_retain", "_swift_bridgeObjectRetain", "objc_retain", "objc_retain_x19", "swift_beginAccess",
                    "swift_endAccess"] {
-        #expect(ValueTracer.CallFacts(callee: callee).writesNoFields, "\(callee)")
+        let arc = DisassembledFunction.isARCReferenceHelper(callee)
+        #expect(ValueTracer.CallFacts(callee: callee, arcIdentityContract: arc).writesNoFields, "\(callee)")
+        if arc {
+            #expect(!ValueTracer.CallFacts(callee: callee).writesNoFields, "unproved \(callee)")
+            #expect(!ValueTracer.CallFacts(callee: callee, knownArityApplies: false,
+                                          arcIdentityContract: true).writesNoFields, "local \(callee)")
+        }
     }
     for callee in ["swift_release", "objc_release", "swift_bridgeObjectRelease", "Box.bumpA()", "memcpy"] {
         #expect(!ValueTracer.CallFacts(callee: callee).writesNoFields, "\(callee)")
@@ -91,4 +98,150 @@ import Foundation
     for start: UInt64 in [0x3000, 0x5000, 0x6000, 0x7000] {
         #expect(summaries[start]?.writesNoFields == false, "\(String(start, radix: 16))")
     }
+}
+
+/// The toolchain's TriviaPiece copy only branches or tail-calls a proven
+/// libswiftCore retain. Trivia.appending keeps its pieces pointer in x23
+/// across that copy before querying uniqueness. The early body-summary pass
+/// must carry the same provider proof as the later instruction analysis.
+private enum ARCFieldAliasPipeline: String {
+    case filtered, wholeFile, array, streaming, selectedFunctions
+}
+
+private func checkProvenOutlinedARCFieldAlias(_ pipeline: ARCFieldAliasPipeline) async throws {
+    let locate = Process()
+    locate.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+    locate.arguments = ["--find", "swiftc"]
+    let output = Pipe()
+    locate.standardOutput = output
+    try locate.run()
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    locate.waitUntilExit()
+    try #require(locate.terminationStatus == 0)
+    let compiler = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    let path = URL(fileURLWithPath: compiler).deletingLastPathComponent()
+        .appendingPathComponent("../lib/swift/host/libSwiftSyntax.dylib").standardizedFileURL.path
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    try await withStableDependencies {
+        let image = try BinaryLoader.load(path: path)
+        // Locate the ordinary function through symbol metadata. No analysis
+        // route is used as setup for another route's proof.
+        func targetAddress() throws -> UInt64 {
+            var addresses = Set<UInt64>()
+            for symbol in image.symbols where symbol.name.contains("6TriviaV9appending") {
+                guard let address = UInt64(exactly: symbol.offset), address > 0 else { continue }
+                var name = symbol.name
+                if name.hasPrefix("_$") { name.removeFirst() }
+                guard let node = try? demangleAsNode(name) else { continue }
+                let printed = node.print(using: .default)
+                let parts = printed.components(separatedBy: ".Trivia.appending(")
+                guard parts.count == 2, !parts[0].contains(" "),
+                      printed.contains(".TriviaPiece)") else { continue }
+                addresses.insert(address)
+            }
+            try #require(addresses.count == 1, "Expected one ordinary TriviaPiece overload, found \(addresses.count)")
+            return try #require(addresses.first)
+        }
+        let address = try targetAddress()
+        func target(in functions: [DisassembledFunction]) throws -> DisassembledFunction {
+            try #require(functions.first {
+                $0.startAddress == address && $0.displayName.contains(".Trivia.appending(")
+                    && $0.displayName.contains(".TriviaPiece)")
+            })
+        }
+        let function: DisassembledFunction
+        switch pipeline {
+        case .filtered:
+            function = try target(in: await Disassembler().disassemble(path: path, functionFilter: "Trivia.appending"))
+        case .wholeFile:
+            function = try target(in: await Disassembler().disassemble(path: path))
+        case .array:
+            function = try target(in: await Disassembler().disassemble(machO: image))
+        case .streaming:
+            let functions: [DisassembledFunction?] = await Disassembler().disassembleStreaming(machO: image) {
+                $0.startAddress == address ? $0 : nil
+            }
+            function = try target(in: functions.compactMap { $0 })
+        case .selectedFunctions:
+            let functions = await Disassembler().analyzeEachFunction(at: [address], in: image, transform: { $0 })
+            function = try target(in: Array(functions.values))
+        }
+        let retain = try #require(function.instructions.first {
+            DisassembledFunction.calleeName(of: $0) == "swift_bridgeObjectRetain"
+        })
+        #expect(retain.facts.arcIdentityContract, "\(pipeline.rawValue): actual runtime import must be proved")
+        let text = function.renderStructured()
+        #expect(text.contains("isKnownUniquelyReferenced(self.pieces)"),
+                Comment(rawValue: "\(pipeline.rawValue):\n\(text)"))
+    }
+}
+
+@Test func provenOutlinedARCCopiesKeepFieldAliasesInFilteredPipelineIfHostSyntaxAvailable() async throws {
+    try await checkProvenOutlinedARCFieldAlias(.filtered)
+}
+@Test func provenOutlinedARCCopiesKeepFieldAliasesInWholeFilePipelineIfHostSyntaxAvailable() async throws {
+    try await checkProvenOutlinedARCFieldAlias(.wholeFile)
+}
+@Test func provenOutlinedARCCopiesKeepFieldAliasesInArrayPipelineIfHostSyntaxAvailable() async throws {
+    try await checkProvenOutlinedARCFieldAlias(.array)
+}
+@Test func provenOutlinedARCCopiesKeepFieldAliasesInStreamingPipelineIfHostSyntaxAvailable() async throws {
+    try await checkProvenOutlinedARCFieldAlias(.streaming)
+}
+@Test func provenOutlinedARCCopiesKeepFieldAliasesInSelectedFunctionsPipelineIfHostSyntaxAvailable() async throws {
+    try await checkProvenOutlinedARCFieldAlias(.selectedFunctions)
+}
+
+/// The early closure must receive proof for the exact external target. A
+/// local field-writing body and an unresolved name keep their own effects.
+@Test func outlinedARCRetainsOnlyPreserveFieldsWithAnExactProvider() throws {
+    let engine = try #require(CapstoneEngine())
+    let helper: UInt64 = 0x1000, stub: UInt64 = 0x2000
+    func summaries(localStub: Bool = false) throws -> [UInt64: CalleeRegisterSummary] {
+        var bodies: [UInt64: [UInt32]] = [
+            helper: [0xA9BF_7BFD, 0x9400_03FF, 0xA8C1_7BFD, 0xD65F_03C0],
+        ]
+        if localStub { bodies[stub] = [0xF900_0280, 0xD65F_03C0] }
+        var result: [UInt64: CalleeRegisterSummary] = [:]
+        for (start, words) in bodies {
+            let bytes = words.flatMap { word in (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) } }
+            let decoded = engine.disassemble(Data(bytes), address: start)
+            try #require(decoded.count == words.count)
+            let function = DisassembledFunction(symbol: "_field_helper", demangledName: nil, startAddress: start,
+                instructions: decoded.map {
+                    Instruction(address: $0.address, text: $0.text, controlFlow: $0.controlFlow,
+                                branchTarget: $0.branchTarget, detail: $0.detail)
+                }, source: .symbol)
+            result[start] = try #require(CalleeRegisterSummary.of(function, isFunction: { bodies[$0] != nil }))
+        }
+        return result
+    }
+    let cases: [(String, String, Bool)] = [
+        ("swift_retain", "/usr/lib/swift/libswiftCore.dylib", true),
+        ("objc_retain", "/usr/lib/libobjc.A.dylib", true),
+        ("swift_retain", "@rpath/libForeign.dylib", false),
+        ("objc_retain", "@rpath/libForeign.dylib", false),
+        ("swift_retain", "/usr/lib/libobjc.A.dylib", false),
+        ("objc_retain", "/usr/lib/swift/libswiftCore.dylib", false),
+    ]
+    for (name, library, expected) in cases {
+        var result = try summaries()
+        let reference = RuntimeFunctionReference(rawSymbol: "_" + name, libraryName: library)
+        CalleeRegisterSummary.closeOverFieldWrites(&result, arcIdentityContract: { target, callee in
+            target == stub && reference.permitsARCIdentity(named: callee)
+        }) { $0 == stub ? name : nil }
+        #expect(result[helper]?.writesNoFields == expected, "\(name) from \(library)")
+    }
+    var unproved = try summaries()
+    CalleeRegisterSummary.closeOverFieldWrites(&unproved) { $0 == stub ? "swift_retain" : nil }
+    #expect(unproved[helper]?.writesNoFields == false)
+    var unnamed = try summaries()
+    CalleeRegisterSummary.closeOverFieldWrites(&unnamed, arcIdentityContract: { _, _ in true }, name: { _ in nil })
+    #expect(unnamed[helper]?.writesNoFields == false)
+    var local = try summaries(localStub: true)
+    CalleeRegisterSummary.closeOverFieldWrites(&local, arcIdentityContract: { _, _ in true }) {
+        $0 == stub ? "swift_retain" : nil
+    }
+    #expect(local[helper]?.writesNoFields == false)
+    #expect(local[stub]?.writesNoFields == false)
 }

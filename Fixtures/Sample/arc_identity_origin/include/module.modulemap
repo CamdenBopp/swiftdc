@@ -1,0 +1,4 @@
+module ArcOriginForeignC {
+    header "ArcOrigin.h"
+    export *
+}

@@ -103,7 +103,10 @@ import Foundation
 @Test func theAutoreleaseFamilyReturnsItsArgument() {
     for callee in ["objc_autorelease", "_objc_retainAutorelease", "objc_retainAutoreleaseReturnValue",
                    "objc_unsafeClaimAutoreleasedReturnValue", "objc_retain"] {
-        #expect(ValueTracer.CallFacts(callee: callee).returnsArgument, "\(callee)")
+        #expect(ValueTracer.CallFacts(callee: callee, arcIdentityContract: true).returnsArgument, "\(callee)")
+        #expect(!ValueTracer.CallFacts(callee: callee).returnsArgument, "unproved \(callee)")
+        #expect(!ValueTracer.CallFacts(callee: callee, knownArityApplies: false,
+                                      arcIdentityContract: true).returnsArgument, "local \(callee)")
     }
     #expect(!ValueTracer.CallFacts(callee: "objc_retainBlock").returnsArgument)
     #expect(!ValueTracer.CallFacts(callee: "objc_release").returnsArgument)

@@ -72,9 +72,11 @@ the analysis is in a few large files:
 
 The pipeline:
 
-1. **Decode.** An unfiltered file decodes with llvm-objdump for its listing
-   text, with Capstone attached for detail. A filtered run, a dyld-cache
-   image and `xrefs` decode with Capstone in process.
+1. **Decode.** Unfiltered standalone CLI `--pseudo` and `--structured` views
+   stream through Capstone when JSON is not requested. Plain listing, JSON and
+   the whole-file array API use llvm-objdump for listing text, with Capstone
+   attached for detail. Filtered runs, dyld-cache images and `xrefs` decode with
+   Capstone in process.
 2. **Segment** at `LC_FUNCTION_STARTS`, symbols and ObjC IMPs.
 3. **Analyse** with `analyzeFunction`: tracer, then enrichment.
 4. **Render** from `render`, `renderPseudo`, `renderStructured`,
@@ -282,9 +284,11 @@ See [docs/INSTRUMENTATION.md](docs/INSTRUMENTATION.md). In brief:
   on **footprint**, not RSS (compressed pages leave RSS):
   `Tools/audit/guard.sh <outdir> <kill-MB> -- swiftdc …`. Kill well below
   8 GB, because the guard samples once a second and a spike can be shorter.
-- Unfiltered `disasm`/`analyze` on a large app holds the whole image (Enchanted
-  debug, 7M instructions, would need 7 GB+); filter with `-f`, or use `xrefs`,
-  which streams.
+- Whole-image array paths, including standalone plain listing, JSON and
+  `analyze`, retain decoded instructions (Enchanted debug, 7M instructions,
+  would need 7 GB+). The standalone CLI pseudocode views already stream decoded
+  functions and retain rendered strings. Measure their actual peak; filter with
+  `-f` or use streaming APIs when decoded arrays exceed the guard.
 - Measure with a **release** build in its own scratch path (`swift build
   -c release --scratch-path .build-release`, binary
   `.build-release/release/swiftdc`), copied to the scratchpad so later

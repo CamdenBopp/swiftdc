@@ -1137,7 +1137,7 @@ struct ControlFlowStructure {
                     // return x0 unchanged, so the real producer is one call back —
                     // keep walking rather than giving up on the retained result.
                     if let callee = DisassembledFunction.calleeName(of: instruction),
-                       DisassembledFunction.returnsItsArgument(callee) {
+                       instruction.facts.arcIdentityContract, DisassembledFunction.returnsItsArgument(callee) {
                         continue
                     }
                 }
@@ -1154,7 +1154,7 @@ struct ControlFlowStructure {
             // result kept in x21 means the call between is not a swifterror
             // call (`bl f; mov w21, w0; bl g; tbz w21` still reads `!f()`).
             if instruction.controlFlow == .call, register == "x21",
-               !ValueTracer.provablyDoesNotThrow(DisassembledFunction.calleeName(of: instruction) ?? ""),
+               !ValueTracer.provablyDoesNotThrow(instruction),
                !Self.holdsCallResult(x21Before: index, in: block) {
                 return token
             }
@@ -1275,7 +1275,7 @@ struct ControlFlowStructure {
         if DisassembledFunction.isUniquenessCheck(callee) {
             return "isKnownUniquelyReferenced(\(rawArguments.first ?? "?"))"
         }
-        if DisassembledFunction.isRuntimeNoise(callee)
+        if DisassembledFunction.isRuntimeNoise(insn)
             || DisassembledFunction.isGenericPlumbingCallee(callee) { return nil }
         let arguments = DisassembledFunction.strippingGenericPlumbing(rawArguments)
         if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {

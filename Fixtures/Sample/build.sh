@@ -896,3 +896,12 @@ $CLANG -arch arm64 -dynamiclib frame_may.s -o libFrameMay.dylib
 
 echo "==> callee stack reuse invalidates facts below call-time sp (stack_lifetime.s)"
 $CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib stack_lifetime.s -o libStackLifetime.dylib
+
+echo "==> ARC identity requires its real provider (arc_identity_origin, -Onone/-O/-Osize)"
+python3 build-arc-origin.py
+
+echo "==> retain the original call result once with real objects (result_identity, -Onone/-O/-Osize)"
+python3 build-result-identity.py
+python3 build-result-identity.py --legacy-bindings
+python3 build-result-identity.py --indirect-calls
+python3 build-result-identity.py --legacy-bindings --indirect-calls
