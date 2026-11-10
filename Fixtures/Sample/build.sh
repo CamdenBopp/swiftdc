@@ -603,6 +603,11 @@ $SWIFTC -parse-as-library -O -emit-library -module-name GenericCalls genericcall
 echo "==> a generic specialization that drops its metatype argument, Tt (droppedmeta.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name DroppedMeta droppedmeta.swift -o libDroppedMeta.dylib
 
+echo "==> specializations that drop arguments or propagate closures (droppedargs.swift, -O, -Osize, -Onone)"
+$SWIFTC -parse-as-library -O -emit-library -module-name DroppedArgs droppedargs.swift -o libDroppedArgs.dylib
+$SWIFTC -parse-as-library -Osize -emit-library -module-name DroppedArgs droppedargs.swift -o libDroppedArgs.Osize.dylib
+$SWIFTC -parse-as-library -Onone -emit-library -module-name DroppedArgs droppedargs.swift -o libDroppedArgs.Onone.dylib
+
 echo "==> vector lane moves, ins and umov (vectorlanes.s)"
 $CLANG -arch arm64 -dynamiclib vectorlanes.s -o libVectorLanes.dylib
 

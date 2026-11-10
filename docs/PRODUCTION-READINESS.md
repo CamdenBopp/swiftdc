@@ -11842,3 +11842,15 @@ Commit messages on dev stay as they are; these are the true records.
   mismatch now reads `Architecture 'ppc' not found. Available: arm64`, as a
   fat file's miss does, and so does a cache image's, whose commands dropped
   the option.
+  The separate d8-d15 callee-summary OPEN item also remains.
+
+## 2026-11-04: specializations laid out from their mangled clauses
+
+ABI review item 11. Truth for every shape is `swiftc -O -emit-ir` on
+`droppedargs.swift`, and the fixture's comments carry each IR signature.
+
+- **FIXED: a closure-propagated call kept its signature.** The clause's
+  unclosed `[` hid the arrow from `strippedCallee`, so the call read
+  `… P.apply<A>(A.Type, Swift.Int, (Swift.Int) -> Swift.Int) -> Swift.Int(arg0, arg0)`.
+  It now reads `… P.apply<A>(arg0, arg0)`. Fixed on dev by 628f33e; this fixture and
+  `aClosurePropagatedCallHasNoSignatureInItIfPresent` guard it.
