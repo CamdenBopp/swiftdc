@@ -161,7 +161,8 @@ shape it excludes.
   frame-ownership cost. Stripped countAll (libAssociatedWitness.stripped
   `sub_590`) still has 7 unresolved witness calls: its third buffer's size is
   read through an argument the stripped tracer cannot name. The preservation
-  summary still forgets every saved value when sp is not exact.
+  summary forgot every saved value when sp was not exact; since 774a43e it
+  keeps a `___chkstk_darwin`-probed allocation's bound, as the tracer does.
 
 - **FIXED — a callee that may clobber x29 left the caller's frame
   intact.** A call to a body summarised as not preserving x29, made while
@@ -2760,6 +2761,17 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   table: `ExistentialWitness.Named.name() witness for arg0(…)`. A method's
   parameters are laid out the same way, self in x20 (`Registry.lookup(_:)`).
   GoodLinks is unchanged at 14,810 for both.
+- **FIXED (774a43e, completeness): the preservation summary forgot every
+  save after a probed allocation.** A Swift function with a dynamically
+  sized local (`bl ___chkstk_darwin; mov x9, sp; sub x8, x9, x8; mov sp,
+  x8`) was summarised as not preserving x19–x29: the summary saw the probe
+  as an unknown call and sp as inexact at every later call, and 47ceb26 then
+  escaped each caller's whole frame. The summary now recognises the probe
+  (`stackProbeRecognizer`: a slot or stub bound to `___chkstk_darwin`) as a
+  call that writes only the 16 bytes below sp, names a word loaded from
+  outside the frame by its load so a reload never matches the probed size,
+  and keeps the frame above a proven allocation's base while sp holds it.
+  GoodLinks cfg.unresolved-indirect-call 13,595 -> 12,741.
 - **FIXED (2026-11-10, completeness): a probed allocation lost its proof at
   the spill of its new sp.** Swift stores the new sp to a frame slot between
   `___chkstk_darwin` and the move (`stur x9, [x29, #-0xb0]; mov sp, x9`),
