@@ -477,4 +477,36 @@ struct InputShapeTests {
             #expect(disassembler.unmarkedEntry(in: named) == nil)
         }
     }
+
+
+    // MARK: - --arch
+
+    /// `--arch` on a thin file was never read: `--arch x86_64` and `--arch
+    /// ppc` both printed the arm64 image, exit 0.
+    @Test func aThinFileRefusesAnotherArchitectureIfPresent() throws {
+        guard FileManager.default.fileExists(atPath: Self.image) else { return }
+        for reader in Self.readers + [["disasm", "-f", "sum4"]] {
+            for architecture in ["x86_64", "ppc", "arm64e"] {
+                guard let result = try run(command(reader, Self.image) + ["--arch", architecture]) else { return }
+                #expect(result.status == 1, "\(reader) \(architecture)")
+                #expect(result.stderr.contains("Architecture '\(architecture)' not found. Available: arm64"),
+                        "\(reader): \(result.stderr)")
+                #expect(result.stdout.isEmpty, "\(reader)")
+            }
+            guard let same = try run(command(reader, Self.image) + ["--arch", "arm64"]) else { return }
+            #expect(same.status == 0, "\(reader): \(same.stderr)")
+        }
+    }
+
+    /// The same on a dyld shared-cache image, whose commands dropped `--arch`.
+    @Test func aCacheImageRefusesAnotherArchitectureIfPresent() throws {
+        guard let list = try run(["dump", "--list-images"]), list.status == 0, list.stdout.contains("libswiftCore") else { return }
+        for reader in [["dump"], ["disasm"], ["disasm", "--json"], ["analyze"], ["xrefs", "--unreferenced"], ["layout"],
+                       ["interface"], ["objc"], ["swift-version"]] {
+            let arguments = [reader[0], "--image", "libswiftCore", "--arch", "ppc"] + reader.dropFirst()
+            guard let result = try run(arguments) else { return }
+            #expect(result.status == 1, "\(reader)")
+            #expect(result.stderr.contains("Architecture 'ppc' not found."), "\(reader): \(result.stderr)")
+        }
+    }
 }

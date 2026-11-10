@@ -17,8 +17,8 @@ public enum BinaryLoader {
     ///
     /// - Parameters:
     ///   - path: Filesystem path to a Mach-O or fat binary.
-    ///   - architecture: For fat binaries, the slice to select ("arm64",
-    ///     "arm64e", "x86_64"). Ignored for thin binaries.
+    ///   - architecture: The slice to select ("arm64", "arm64e", "x86_64"). A
+    ///     thin binary must be that architecture.
     ///   - allowingWideAddresses: Accept a segment whose address or size is at
     ///     or above 2^63 (`requireSignedAddresses`), for a reader that never
     ///     does address arithmetic on it.
@@ -47,6 +47,7 @@ public enum BinaryLoader {
 
         switch file {
         case .machO(let loaded):
+            try requireArchitecture(architecture, of: loaded)
             let machO = try withOwnIdentity(loaded, url: url)
             if !allowingWideAddresses { try requireSignedAddresses(machO) }
             forgetCachedImage(machO)
@@ -105,6 +106,14 @@ public enum BinaryLoader {
         }
         defer { free(resolved) }
         return String(cString: resolved)
+    }
+
+    /// Fails when `--arch` names anything but the one architecture a thin
+    /// file or a cache image has, in the words a fat file's miss uses. It was
+    /// ignored: `--arch ppc` on an arm64 dylib printed arm64 output, exit 0.
+    static func requireArchitecture(_ architecture: String?, of machO: MachOFile) throws {
+        guard let architecture, architecture != archName(machO) else { return }
+        throw BinaryLoadError("Architecture '\(architecture)' not found. Available: \(archName(machO))")
     }
 
     /// The same file, named by its own path instead of its install name.
@@ -258,11 +267,11 @@ extension BinaryLoader {
         if image != nil, imagePath != nil {
             throw BinaryLoadError("Pass only one of --image or --image-path.")
         }
-        if let image {
-            return try loadFromDyldCache(cachePath: cachePath, selector: .name(image))
-        }
-        if let imagePath {
-            return try loadFromDyldCache(cachePath: cachePath, selector: .path(imagePath))
+        if image != nil || imagePath != nil {
+            let selector: ImageSelector = image.map(ImageSelector.name) ?? .path(imagePath ?? "")
+            let machO = try loadFromDyldCache(cachePath: cachePath, selector: selector)
+            try requireArchitecture(architecture, of: machO)
+            return machO
         }
         if cachePath != nil {
             throw BinaryLoadError("--cache needs --image or --image-path to choose an image from the cache.")

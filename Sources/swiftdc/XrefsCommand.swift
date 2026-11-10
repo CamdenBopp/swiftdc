@@ -84,7 +84,7 @@ struct XrefsCommand: AsyncParsableCommand {
         let machO: MachOFile
         if image != nil || imagePath != nil || cache != nil {
             machO = try BinaryLoader.loadMachO(
-                path: path, image: image, imagePath: imagePath, cachePath: cache, binary: binary
+                path: path, architecture: architecture, image: image, imagePath: imagePath, cachePath: cache, binary: binary
             )
         } else if let path {
             let resolved = try BinaryLoader.resolveBinaryInput(path, binary: binary)

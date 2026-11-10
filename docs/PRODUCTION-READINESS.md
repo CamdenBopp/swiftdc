@@ -11833,3 +11833,10 @@ Commit messages on dev stay as they are; these are the true records.
   an unresolved jump table can start with a shrink-wrapped prologue after a
   `ret`, and a cut there splits one function in two. It feeds the warning and
   no boundary.
+
+## 2026-11-04: input shapes
+- **FIXED (diagnostics) — `--arch` on a thin file was ignored.** `--arch
+  x86_64` or `--arch ppc` on an arm64 file printed the arm64 image, exit 0. A
+  mismatch now reads `Architecture 'ppc' not found. Available: arm64`, as a
+  fat file's miss does, and so does a cache image's, whose commands dropped
+  the option.

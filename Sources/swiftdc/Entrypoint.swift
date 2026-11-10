@@ -206,7 +206,7 @@ struct AnalyzeCommand: AsyncParsableCommand {
         let result: (text: String, disassemblyError: String?)
         if image != nil || imagePath != nil || cache != nil {
             let machO = try BinaryLoader.loadMachO(
-                path: path, image: image, imagePath: imagePath, cachePath: cache, binary: binary
+                path: path, architecture: architecture, image: image, imagePath: imagePath, cachePath: cache, binary: binary
             )
             result = await report.report(machO: machO, json: json)
         } else if let path {
@@ -483,7 +483,7 @@ struct DisasmCommand: AsyncParsableCommand {
         func loadDecodableImage() throws -> MachOFile {
             let machO = isCacheImage
                 ? try BinaryLoader.loadMachO(
-                    path: path, image: image, imagePath: imagePath, cachePath: cache, binary: binary)
+                    path: path, architecture: architecture, image: image, imagePath: imagePath, cachePath: cache, binary: binary)
                 : try BinaryLoader.load(path: BinaryLoader.resolveBinaryInput(path ?? "", binary: binary),
                                         architecture: architecture)
             try Disassembler.requireDecodableCode(machO)
