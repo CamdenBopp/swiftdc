@@ -134,9 +134,9 @@ private func tailExits(_ body: DisassembledFunction, effect: CalleeEffect) throw
                          UInt64(0x2000): try #require(CalleeRegisterSummary.of(leaf))]
         CalleeRegisterSummary.closeOverReads(&summaries)
         let reads = try #require(summaries[0x1000])
-        CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects, readFacts in
+        CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects, readFacts, reusePreservation in
             CalleeRegisterSummary.recomputingPreservation(start == 0x1000 ? middle : leaf,
-                retainingReadsFrom: readFacts, calleeEffects: effects, isFunction: { $0 == 0x2000 })
+                retainingReadsFrom: readFacts, reusingPreservation: reusePreservation, calleeEffects: effects, isFunction: { $0 == 0x2000 })
         }
         let result = try #require(summaries[0x1000])
         #expect(result.effect.clobbers.contains(key))

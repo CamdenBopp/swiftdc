@@ -102,6 +102,28 @@ private let cases: [(label: String, arguments: [String])] = [
     ("disasm --pseudo MAY self slots", ["disasm", "Fixtures/Sample/libReconstruction.dylib", "--pseudo"]),
     ("disasm listing MAY self slots", ["disasm", "Fixtures/Sample/libReconstruction.dylib"]),
     ("disasm --json MAY self slots", ["disasm", "Fixtures/Sample/libReconstruction.dylib", "--json"]),
+    // Result bindings are assigned from producer PCs, including x20 uses and
+    // indirect returns whose consumers are separated by an effect.
+    ("disasm --structured context results", ["disasm", "Fixtures/Sample/libContextResultUse.opt.dylib", "--structured"]),
+    ("disasm --pseudo context results", ["disasm", "Fixtures/Sample/libContextResultUse.opt.dylib", "--pseudo"]),
+    ("disasm listing context results", ["disasm", "Fixtures/Sample/libContextResultUse.opt.dylib"]),
+    ("disasm --json context results", ["disasm", "Fixtures/Sample/libContextResultUse.opt.dylib", "--json"]),
+    ("disasm --structured indirect result order", ["disasm", "Fixtures/Sample/libIndirectResultOrder.opt.dylib", "--structured"]),
+    ("disasm --pseudo indirect result order", ["disasm", "Fixtures/Sample/libIndirectResultOrder.opt.dylib", "--pseudo"]),
+    ("disasm listing indirect result order", ["disasm", "Fixtures/Sample/libIndirectResultOrder.opt.dylib"]),
+    ("disasm --json indirect result order", ["disasm", "Fixtures/Sample/libIndirectResultOrder.opt.dylib", "--json"]),
+    ("disasm --structured complete body", ["disasm", "Fixtures/Sample/libCalleeBodyTransfer.opt.dylib", "--structured"]),
+    ("disasm --pseudo complete body", ["disasm", "Fixtures/Sample/libCalleeBodyTransfer.opt.dylib", "--pseudo"]),
+    ("disasm listing complete body", ["disasm", "Fixtures/Sample/libCalleeBodyTransfer.opt.dylib"]),
+    ("disasm --json complete body", ["disasm", "Fixtures/Sample/libCalleeBodyTransfer.opt.dylib", "--json"]),
+    ("disasm --structured caller frame aliases", ["disasm", "Fixtures/Sample/libCallerFrameAlias.opt.dylib", "--structured"]),
+    ("disasm --pseudo caller frame aliases", ["disasm", "Fixtures/Sample/libCallerFrameAlias.opt.dylib", "--pseudo"]),
+    ("disasm listing caller frame aliases", ["disasm", "Fixtures/Sample/libCallerFrameAlias.opt.dylib"]),
+    ("disasm --json caller frame aliases", ["disasm", "Fixtures/Sample/libCallerFrameAlias.opt.dylib", "--json"]),
+    ("disasm --structured imported receivers", ["disasm", "Fixtures/Sample/libImportedReceiver.opt.dylib", "--structured"]),
+    ("disasm --pseudo imported receivers", ["disasm", "Fixtures/Sample/libImportedReceiver.opt.dylib", "--pseudo"]),
+    ("disasm listing imported receivers", ["disasm", "Fixtures/Sample/libImportedReceiver.opt.dylib"]),
+    ("disasm --json imported receivers", ["disasm", "Fixtures/Sample/libImportedReceiver.opt.dylib", "--json"]),
 ]
 
 private func capture(_ arguments: [String]) throws -> Data {

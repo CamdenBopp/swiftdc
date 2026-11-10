@@ -893,29 +893,34 @@ private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
 /// than printed as a statement (or, worse, as `return memcpy(…)`).
 @Test func recoversForwardedIndirectResultIfPresent() async throws {
     guard let make = try await reconstructionPseudo("makeWide", in: indirectFixture) else { return }
-    #expect(make.contains("return Indirect.Wide5.init(a:b:c:d:e:)(arg0, arg1, arg2, arg3, arg4)"))
+    #expect(make.contains("let r0 = Indirect.Wide5.init(a:b:c:d:e:)(arg0, arg1, arg2, arg3, arg4)"))
+    #expect(make.contains("return r0"))
+    #expect(make.components(separatedBy: "Indirect.Wide5.init(").count == 2)
     #expect(!make.contains("memcpy"))
     #expect(!make.contains("return arg0"))
 
     guard let constant = try await reconstructionPseudo("constantWide", in: indirectFixture) else { return }
-    #expect(constant.contains("return Indirect.Wide5.init(a:b:c:d:e:)(1, 2, 3, 4, 5)"))
+    #expect(constant.contains("let r0 = Indirect.Wide5.init(a:b:c:d:e:)(1, 2, 3, 4, 5)"))
+    #expect(constant.contains("return r0"))
+    #expect(constant.components(separatedBy: "Indirect.Wide5.init(").count == 2)
 }
 
 /// Caller side: x8 pointed into the caller's frame when it called an x8-indirect
 /// callee, so the frame slots under it hold that call's result and a later load
 /// from one is a field of the result, not a stale local. The call is bound once
-/// (`let r0 = …`) and each field read is `r0.field`: spelling the call out at
-/// every read would show it executed once per field. At -Onone makeWide passes
-/// a frame buffer to its initializer; the buffer lies below the register save
-/// area, so the saved x29 survives the call (`Preservation.State.markEscape`)
-/// and the sum reads the result's fields. At -O the linker folds `makeWide` and `Wide5.init` onto one body, and a
+/// (`let r0 = …`) and each proven field read is `r0.field`: spelling the call
+/// out at every read would show it executed once per field. At -Onone,
+/// makeWide passes a frame buffer to its initializer. Its extent is unknown,
+/// so the saved x29 cannot be proven intact and the sum declines. At -O the
+/// linker folds `makeWide` and `Wide5.init` onto one body, and a
 /// call to a folded address takes neither name nor either signature: it read
 /// `let r0 = Indirect.Wide5.init(…)` for a call to `makeWide`. With no
 /// signature the result has no type to lay out, so the -O sum declines.
 @Test func readsIndirectCallResultFromFrameSlotIfPresent() async throws {
     guard let onone = try await reconstructionPseudo("wideSum", in: indirectFixture) else { return }
     #expect(onone.contains("Indirect.makeWide(arg0, arg1, arg2, arg3, arg4)"))
-    #expect(onone.contains("return (r0.a + r0.e)"), "\(onone)")
+    #expect(onone.contains("return ?"), "\(onone)")
+    #expect(!onone.contains("return arg0"), "\(onone)")
     #expect(onone.components(separatedBy: "makeWide(").count == 2, "the call must render once: \(onone)")
 
     guard let opt = try await reconstructionPseudo(
@@ -923,6 +928,13 @@ private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
     #expect(opt.contains("sub_") && opt.contains("(arg0, arg1, arg2, arg3, arg4)"), "\(opt)")
     #expect(!opt.contains("Wide5.init") && !opt.contains("makeWide"), "\(opt)")
     #expect(opt.contains("return ?"), "\(opt)")
+    for fixture in [indirectFixture, "Fixtures/Sample/libIndirect.opt.dylib"] {
+        let library = try #require(dlopen(fixture, RTLD_NOW | RTLD_LOCAL))
+        defer { dlclose(library) }
+        let address = try #require(dlsym(library, "$s8Indirect7wideSumyS2i_S4itF"))
+        typealias Oracle = @convention(thin) (Int, Int, Int, Int, Int) -> Int
+        #expect(unsafeBitCast(address, to: Oracle.self)(1, 2, 3, 4, 5) == 6)
+    }
 }
 
 /// Negative: a field stored on only one path does not meet at the shared `ret`,
@@ -981,15 +993,31 @@ private struct NativeWide5Result {
 }
 
 /// A callee's result partially overwritten afterwards is neither the call nor a
-/// set of plain stores: the overwritten field is the new value and the rest are
-/// read back as fields of the call's result.
+/// set of plain stores. The optimized callee preserves its frame, so untouched
+/// fields are read back from its result. At -Onone, an initializer receives a
+/// frame pointer with no proven extent; the untouched fields must decline.
 @Test func recoversPartiallyOverwrittenIndirectResultIfPresent() async throws {
     for fixture in [indirectFixture, "Fixtures/Sample/libIndirect.opt.dylib"] {
         guard let modified = try await reconstructionPseudo("modifiedWide", in: fixture) else { continue }
-        // otherWide passes its initializer a result buffer below the
-        // register save area, so its x29 restore holds at -Onone too.
-        #expect(modified.contains("let r0 = Indirect.otherWide("), "in \(fixture)")
-        #expect(modified.contains("return Indirect.Wide5(a: arg0, b: r0.b, c: r0.c, d: r0.d, e: r0.e)"), "in \(fixture)")
+        let library = try #require(dlopen(fixture, RTLD_NOW | RTLD_LOCAL))
+        defer { dlclose(library) }
+        let address = try #require(dlsym(library, "$s8Indirect12modifiedWideyAA5Wide5VSiF"))
+        let native = unsafeBitCast(address, to: (@convention(thin) (Int) -> NativeWide5Result).self)(41)
+        let fields: [Int] = [native.a, native.b, native.c, native.d, native.e]
+        let expected: [Int] = [41, 9, 9, 9, 9]
+        #expect(fields == expected)
+        #expect(modified.components(separatedBy: "Indirect.otherWide(").count == 2)
+        if fixture.hasSuffix(".opt.dylib") {
+            #expect(modified.contains("let r0 = Indirect.otherWide("), "in \(fixture)")
+            #expect(modified.contains("return Indirect.Wide5(a: arg0, b: r0.b, c: r0.c, d: r0.d, e: r0.e)"), "in \(fixture)")
+        } else {
+            // -Onone: otherWide passes a local to Wide5.init, whose writes
+            // are unbounded, so its saved x29 may be overwritten and a call to
+            // it escapes this whole frame (47ceb26): every spill after it
+            // declines, and nothing claims the copied fields.
+            #expect(modified.contains("return ?"), "in \(fixture)")
+            #expect(!modified.contains("r0.b"), "in \(fixture)")
+        }
         #expect(!modified.contains("return arg0"))
     }
 }
@@ -1299,10 +1327,21 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
     #expect(try text("small").contains("return \"ok\""))
     #expect(try text("large").contains("return \"a literal longer than fifteen bytes\""))
     #expect(try text("Person.current").contains("return self.name"))
-    // Kept across a call, the result is bound where the call runs.
+    // The intervening sink passes a frame address to an unsupported helper.
+    // Without a callee footprint or object ownership proof, its carrier
+    // registers cannot be proven preserved; the String result declines.
     let forward = try text("forward")
-    #expect(forward.contains("let r0 = StringReturns.greeting()\n    StringReturns.sink()\n    return r0"),
-            Comment(rawValue: forward))
+    #expect(forward.contains("StringReturns.greeting()\n    StringReturns.sink()\n    return ?"), Comment(rawValue: forward))
+    #expect(!forward.contains("return r0"), Comment(rawValue: forward))
+    let library = try #require(dlopen(path, RTLD_NOW | RTLD_LOCAL))
+    defer { dlclose(library) }
+    let address = try #require(dlsym(library, "$s13StringReturns7forwardSSyF"))
+    // Destroy the returned String before its library is unloaded.
+    let nativeMatches = {
+        let value = unsafeBitCast(address, to: (@convention(thin) () -> String).self)()
+        return ["hi", "hihi", "hihihi"].contains(value)
+    }()
+    #expect(nativeMatches)
     // With nothing between, the call is the return, not also a statement.
     let fromLocal = try text("fromLocal")
     #expect(fromLocal.contains("return StringReturns.describe("), Comment(rawValue: fromLocal))

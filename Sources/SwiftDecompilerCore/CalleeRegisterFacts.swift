@@ -18,6 +18,8 @@ struct CalleeRegisterFacts: Sendable {
     let readsFramePointer: Bool
     let readsContextRegister: Bool
     let readsSelfRegister: Bool
+    /// Positive uses of incoming x0...x7 and x19...x29 (bit n for xn).
+    let provenEntryRegisterReads: UInt32
     let clobberedCalleeSaved: Set<String>
     let storesOnlyToStack: Bool
     let writesNoFields: Bool
@@ -37,6 +39,7 @@ struct CalleeRegisterFacts: Sendable {
         readsFramePointer = summary.readsFramePointer
         readsContextRegister = summary.readsContextRegister
         readsSelfRegister = summary.readsSelfRegister
+        provenEntryRegisterReads = summary.provenEntryRegisterReads
         clobberedCalleeSaved = summary.clobberedCalleeSaved
         storesOnlyToStack = summary.storesOnlyToStack
         writesNoFields = summary.writesNoFields

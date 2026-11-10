@@ -1132,6 +1132,19 @@ public extension DisassembledFunction {
         return prefixes.contains { callee.hasPrefix($0) }
     }
 
+    /// Shared by IR transfer and expression rendering. Swift's runtime ABI
+    /// marks these retain results FirstParamReturned; queries and releases
+    /// are deliberately absent. Cache the exact-name set once for both users.
+    private static let argumentIdentityRuntimeCallees: Set<String> = [
+        "swift_retain", "swift_retain_n", "swift_nonatomic_retain",
+        "swift_bridgeObjectRetain", "swift_bridgeObjectRetain_n",
+        "swift_unknownObjectRetain", "swift_unknownObjectRetain_n",
+        "objc_retain", "objc_autorelease", "objc_retainAutorelease",
+        "objc_retainAutoreleasedReturnValue", "objc_claimAutoreleasedReturnValue",
+        "objc_unsafeClaimAutoreleasedReturnValue", "objc_retainAutoreleaseReturnValue",
+        "objc_autoreleaseReturnValue",
+    ]
+
     /// Runtime calls that return their (first) argument unchanged: the retain
     /// and autorelease family. Only these may be read through as their
     /// argument. The rest of `isRuntimeNoise` returns nothing (`swift_release`,

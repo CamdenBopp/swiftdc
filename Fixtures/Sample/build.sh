@@ -954,3 +954,58 @@ python3 build-result-identity.py
 python3 build-result-identity.py --legacy-bindings
 python3 build-result-identity.py --indirect-calls
 python3 build-result-identity.py --legacy-bindings --indirect-calls
+
+echo "==> an entry-register spill inside an escaped local is not an object boundary (frame_preserve_alias.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib frame_preserve_alias.s -o libFramePreserveAlias.dylib
+
+echo "==> value self and direct/forwarded context self use different registers (self_register_role.swift + self_register_role.s, -O)"
+SELF_REGISTER_ROLE_TMP=$(mktemp -d)
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -c self_register_role.s -o "$SELF_REGISTER_ROLE_TMP/entry.o"
+$SWIFTC -O -parse-as-library -emit-library -module-name SelfRole self_register_role.swift "$SELF_REGISTER_ROLE_TMP/entry.o" -o libSelfRegisterRole.dylib
+rm -rf "$SELF_REGISTER_ROLE_TMP"
+
+echo "==> signature-only receiver proofs without Swift mangling or metadata (entry_role_consumers.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib entry_role_consumers.s -o libEntryRoleConsumers.dylib
+
+echo "==> preserve whole indirect-result producer order across effects (indirect_result_order.swift + .s, -Onone, -O and -Osize)"
+INDIRECT_RESULT_ORDER_TMP=$(mktemp -d)
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -c indirect_result_order.s -o "$INDIRECT_RESULT_ORDER_TMP/entry.o"
+$SWIFTC -Onone -parse-as-library -emit-library -module-name IndirectOrder indirect_result_order.swift "$INDIRECT_RESULT_ORDER_TMP/entry.o" -o libIndirectResultOrder.dylib
+$SWIFTC -O -parse-as-library -emit-library -module-name IndirectOrder indirect_result_order.swift "$INDIRECT_RESULT_ORDER_TMP/entry.o" -o libIndirectResultOrder.opt.dylib
+$SWIFTC -Osize -parse-as-library -emit-library -module-name IndirectOrder indirect_result_order.swift "$INDIRECT_RESULT_ORDER_TMP/entry.o" -o libIndirectResultOrder.size.dylib
+rm -rf "$INDIRECT_RESULT_ORDER_TMP"
+
+
+echo "==> context receivers preserve one producer and its order (context_result_use.swift + .s, -Onone, -O and -Osize)"
+CONTEXT_RESULT_USE_TMP=$(mktemp -d)
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -c context_result_use.s -o "$CONTEXT_RESULT_USE_TMP/entry.o"
+$SWIFTC -Onone -parse-as-library -emit-library -module-name SelfUse context_result_use.swift "$CONTEXT_RESULT_USE_TMP/entry.o" -o libContextResultUse.dylib
+$SWIFTC -O -parse-as-library -emit-library -module-name SelfUse context_result_use.swift "$CONTEXT_RESULT_USE_TMP/entry.o" -o libContextResultUse.opt.dylib
+$SWIFTC -Osize -parse-as-library -emit-library -module-name SelfUse context_result_use.swift "$CONTEXT_RESULT_USE_TMP/entry.o" -o libContextResultUse.size.dylib
+rm -rf "$CONTEXT_RESULT_USE_TMP"
+
+
+echo "==> complete body register outputs and caller-owned result aliases (callee_body_transfer.swift + .s, -Onone, -O and -Osize)"
+CALLEE_BODY_TRANSFER_TMP=$(mktemp -d)
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -c callee_body_transfer.s -o "$CALLEE_BODY_TRANSFER_TMP/entry.o"
+$SWIFTC -Onone -parse-as-library -emit-library -module-name PlanAlias callee_body_transfer.swift "$CALLEE_BODY_TRANSFER_TMP/entry.o" -o libCalleeBodyTransfer.dylib
+$SWIFTC -O -parse-as-library -emit-library -module-name PlanAlias callee_body_transfer.swift "$CALLEE_BODY_TRANSFER_TMP/entry.o" -o libCalleeBodyTransfer.opt.dylib
+$SWIFTC -Osize -parse-as-library -emit-library -module-name PlanAlias callee_body_transfer.swift "$CALLEE_BODY_TRANSFER_TMP/entry.o" -o libCalleeBodyTransfer.size.dylib
+rm -rf "$CALLEE_BODY_TRANSFER_TMP"
+
+
+echo "==> caller-owned value-self can alias positive frame coordinates (caller_frame_alias.swift + .s, -Onone, -O and -Osize)"
+CALLER_FRAME_ALIAS_TMP=$(mktemp -d)
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -c caller_frame_alias.s -o "$CALLER_FRAME_ALIAS_TMP/entry.o"
+$SWIFTC -Onone -parse-as-library -emit-library -module-name FrameSelf caller_frame_alias.swift "$CALLER_FRAME_ALIAS_TMP/entry.o" -o libCallerFrameAlias.dylib
+$SWIFTC -O -parse-as-library -emit-library -module-name FrameSelf caller_frame_alias.swift "$CALLER_FRAME_ALIAS_TMP/entry.o" -o libCallerFrameAlias.opt.dylib
+$SWIFTC -Osize -parse-as-library -emit-library -module-name FrameSelf caller_frame_alias.swift "$CALLER_FRAME_ALIAS_TMP/entry.o" -o libCallerFrameAlias.size.dylib
+rm -rf "$CALLER_FRAME_ALIAS_TMP"
+
+echo "==> Imported receiver ABI and unchanged ordinary self (imported_receiver.swift/.s, -Onone/-O/-Osize)"
+IMPORTED_RECEIVER_TMP=$(mktemp -d)
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -c imported_receiver.s -o "$IMPORTED_RECEIVER_TMP/entry.o"
+$SWIFTC -Onone -parse-as-library -emit-library -module-name ImportedSelf imported_receiver.swift "$IMPORTED_RECEIVER_TMP/entry.o" -o libImportedReceiver.dylib
+$SWIFTC -O -parse-as-library -emit-library -module-name ImportedSelf imported_receiver.swift "$IMPORTED_RECEIVER_TMP/entry.o" -o libImportedReceiver.opt.dylib
+$SWIFTC -Osize -parse-as-library -emit-library -module-name ImportedSelf imported_receiver.swift "$IMPORTED_RECEIVER_TMP/entry.o" -o libImportedReceiver.size.dylib
+rm -rf "$IMPORTED_RECEIVER_TMP"

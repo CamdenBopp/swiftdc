@@ -276,9 +276,9 @@ private func tailInputProgram() -> TailInputProgram {
     var summaries = try program.summaries(functions)
     CalleeRegisterSummary.closeOverReads(&summaries)
     func rebuild(_ start: UInt64, _ effects: (UInt64) -> CalleeEffect,
-                 _ reads: CalleeRegisterSummary) -> CalleeRegisterSummary? {
+                 _ reads: CalleeRegisterSummary, _ reuse: Bool) -> CalleeRegisterSummary? {
         CalleeRegisterSummary.recomputingPreservation(functions[start]!, retainingReadsFrom: reads,
-            calleeEffects: effects, isFunction: Set(program.addresses.values).contains)
+            reusingPreservation: reuse, calleeEffects: effects, isFunction: Set(program.addresses.values).contains)
     }
     CalleeRegisterSummary.closeOverCalls(&summaries, recompute: rebuild)
     for cap in [false, true] {

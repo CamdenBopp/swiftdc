@@ -63,7 +63,7 @@ struct DurableFrameReachTests {
         var joined = clear.merged(with: escaped)
         Preservation.applyCall(CalleeEffect(), inputs: [], to: &joined, clobbersMayAliasStack: false)
         #expect(joined.load(at: -48) == .unknown)
-        #expect(joined.load(at: -8) == .entry("x29"))
+        #expect(joined.load(at: -8) == .unknown)
         var control = clear
         Preservation.applyCall(CalleeEffect(), inputs: [], to: &control, clobbersMayAliasStack: false)
         #expect(control.load(at: -48) == .incoming(64))
@@ -92,11 +92,13 @@ struct DurableFrameReachTests {
         #expect(control.exitValues[0x1030] == .immediate(7))
     }
 
-    @Test func finiteReachFeedsTheActualSelfRegisterReadConsumer() throws {
+    @Test func unknownObjectExtentFeedsTheActualSelfRegisterReadConsumer() throws {
         // The byte overwrite destroys the must save of x20 but leaves the
-        // remaining bytes as MAY self. x29's save bounds a finite escape.
-        // sp+8 reaches it; sp+16 touches its upper end and must not read it.
-        for (pointer, expected): (UInt32, Bool) in [(0x910023e0, true), (0x910043e0, false)] {
+        // remaining bytes as MAY self. Neither frame coordinate proves an
+        // object bound at x29's save; a non-pointer argument is the control.
+        for (pointer, expected): (UInt32, Bool) in [
+            (0x910023e0, true), (0x910043e0, true), (0xaa1f03e0, false),
+        ] {
             let function = try Self.body([
                 0xd10083ff, 0xf9000ffd, 0xf90007f4, 0xaa1f03f4, 0x390023ff,
                 pointer, 0x940007fa, 0x910083ff, 0xd65f03c0,
@@ -114,7 +116,9 @@ struct DurableFrameReachTests {
         // Self is spilled only after the branch join; the frozen escape must
         // survive until the second call. A register contains self at the first
         // call, but its explicit input set excludes x20.
-        for (pointer, expected): (UInt32, Bool) in [(0x910023e0, true), (0x910043e0, false)] {
+        for (pointer, expected): (UInt32, Bool) in [
+            (0x910023e0, true), (0x910043e0, true), (0xaa1f03e0, false),
+        ] {
             let function = try Self.body([
                 0xd10083ff, 0xf9000ffd, 0xb4000081, pointer, 0x940007fc,
                 0x14000002, 0xaa1f03e0, 0xf90007f4, 0xaa1f03f4, 0x390023ff,

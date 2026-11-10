@@ -952,13 +952,31 @@ public struct Disassembler: Sendable {
         let functionStarts = Set(boundaries)
         let isFunction = { (target: UInt64) in functionStarts.contains(target) }
         let arcReferences = arcFunctionReferences(in: machO)
+        // Names and function membership are fixed for this summary pass.
+        // Remember unknown arities too; sharing an address across images
+        // must never share this image-local result.
+        var summaryArities: [UInt64: Int?] = [:]
         let arity = { [names] target in
-            self.knownArity(ofCallTarget: target, names: names, cacheSymbols: cacheSymbols,
-                            arcFunctions: arcReferences, isFunction: isFunction)
+            if let cached = summaryArities[target] { return cached }
+            let result = self.knownArity(ofCallTarget: target, names: names, cacheSymbols: cacheSymbols,
+                                         arcFunctions: arcReferences, isFunction: isFunction)
+            summaryArities[target] = .some(result)
+            return result
         }
         let fileRanges = FileBackedRanges(standalone: machO)
         let importStubs = CodeSection.importStubRanges(of: machO)
         let isImportStub = { (target: UInt64) in importStubs.contains { $0.contains(target) } }
+        var swiftTargets = Set(labelByAddress.compactMap { address, symbol in
+            Self.isSwiftMangled(symbol) ? address : nil
+        })
+        swiftTargets.formUnion(metadataNames.keys)
+        // A recognised IRGen helper is a C function: its x20 is no `self`.
+        swiftTargets.subtract(metadataNames.filter { Self.helperShapeNames.contains($0.value) }.keys)
+        swiftTargets.formUnion(swiftStubStarts)
+        swiftTargets.formUnion(swiftStubAddresses(in: machO))
+        swiftTargets.subtract(objcIndex.addresses)
+        var hasEntryRoleConsumer = Self.needsEntryRegisterProofs(
+            in: machO, names: names, folded: foldedByAddress, swiftTargets: swiftTargets)
         let section = textSection(in: machO)
         func decode(_ span: (start: UInt64, stop: UInt64)) -> [Instruction] {
             section?.instructions(span: span) ?? capstoneInstructions(in: machO, span: span)
@@ -966,6 +984,7 @@ public struct Disassembler: Sendable {
         for index in boundaries.indices {
             // Muted: pass 2 decodes the same span again and records its events.
             let instructions = Probe.muted { decode(span(index)) }
+            hasEntryRoleConsumer = hasEntryRoleConsumer || Self.hasRawSwiftCall(in: instructions)
             collectUnnamedCallTargets(in: instructions, names: names, into: &targets)
             // The callee-side x8 fact every caller's analysis consults (see
             // `PerFunctionContext.indirectResultUses`); decoded here so pass 2
@@ -1004,10 +1023,16 @@ public struct Disassembler: Sendable {
             }
         }
         CalleeRegisterSummary.closeOverReads(&registerSummaries)
+        // Keep the arity closure's original name snapshot. The complete name
+        // index is needed here only to decide whether positive entry-role
+        // proofs have any possible consumer in this image.
+        names = resolveCrossImageNames(targets, into: names, resolver: cacheSymbols)
+        let rebuildingEntryRoles = hasEntryRoleConsumer || Self.needsEntryRegisterProofs(
+            in: machO, names: names, folded: foldedByAddress, swiftTargets: swiftTargets)
         // Clobbers and reloads carried through calls; the few functions
         // whose callees change anything are decoded again.
         let spanIndex = Dictionary(boundaries.indices.map { (boundaries[$0], $0) }, uniquingKeysWith: { a, _ in a })
-        CalleeRegisterSummary.closeOverCalls(&registerSummaries) { start, effects, readFacts in
+        CalleeRegisterSummary.closeOverCalls(&registerSummaries, rebuildingEntryRoles: rebuildingEntryRoles) { start, effects, readFacts, reusePreservation in
             guard let index = spanIndex[start] else { return nil }
             let instructions = Probe.muted { decode(span(index)) }
             guard !instructions.isEmpty else { return nil }
@@ -1019,12 +1044,14 @@ public struct Disassembler: Sendable {
             return Probe.muted {
                 CalleeRegisterSummary.recomputingPreservation(
                     Self.withJumpTables(function, machO: machO, ranges: fileRanges),
-                    retainingReadsFrom: readFacts, calleeEffects: effects, calleeArity: arity,
+                    retainingReadsFrom: readFacts, reusingPreservation: reusePreservation,
+                    rebuildingEntryRoles: rebuildingEntryRoles, calleeEffects: effects, calleeArity: arity,
                     isFunction: isFunction, isImportStub: isImportStub)
             }
         }
         names = resolveCrossImageNames(targets, into: names, resolver: cacheSymbols)
         outlinedFragments = Self.inlinableFragments(outlinedFragments, names: names)
+        if rebuildingEntryRoles { CalleeRegisterSummary.closeOverProvenEntryReads(&registerSummaries) }
         let resolver = ReferenceResolver(
             names: names,
             stringRanges: stringSectionRanges(in: machO),
@@ -1039,22 +1066,13 @@ public struct Disassembler: Sendable {
             foldedCandidates: referenceFolds,
             witnessTables: foldedByAddress.isEmpty ? [] : witnessTables(in: machO),
             protocolDescriptorSymbols: protocolDescriptorSymbols(in: machO),
+            importedStubFunctions: importedStubFunctions(in: machO),
             specializationSymbols: ReferenceResolver.specializationSymbols(
                 labels: labelByAddress, names: names, folded: referenceFolds)
         )
         CalleeRegisterSummary.closeOverFieldWrites(&registerSummaries, arcIdentityContract: { target, callee in
             resolver.arcIdentityContract(at: target, named: callee)
         }) { names[$0] }
-
-        var swiftTargets = Set(labelByAddress.compactMap { address, symbol in
-            Self.isSwiftMangled(symbol) ? address : nil
-        })
-        swiftTargets.formUnion(metadataNames.keys)
-        // A recognised IRGen helper is a C function: its x20 is no `self`.
-        swiftTargets.subtract(metadataNames.filter { Self.helperShapeNames.contains($0.value) }.keys)
-        swiftTargets.formUnion(swiftStubStarts)
-        swiftTargets.formUnion(swiftStubAddresses(in: machO))
-        swiftTargets.subtract(objcIndex.addresses)
 
         // Async funclet chains, from the hint sections plus a decode of just the
         // funclets' own spans, so the grouping costs no whole-image residency.
@@ -1323,6 +1341,7 @@ public struct Disassembler: Sendable {
             foldedCandidates: referenceFolds,
             witnessTables: foldedByAddress.isEmpty ? [] : witnessTables(in: machO),
             protocolDescriptorSymbols: protocolDescriptorSymbols(in: machO),
+            importedStubFunctions: importedStubFunctions(in: machO),
             specializationSymbols: ReferenceResolver.specializationSymbols(
                 labels: labelByAddress, names: resolvedNames, folded: referenceFolds)
         )
@@ -1355,13 +1374,19 @@ public struct Disassembler: Sendable {
         let isFunction = { (target: UInt64) in boundaries.contains(target) }
         let importStubs = CodeSection.importStubRanges(of: machO)
         let isImportStub = { (target: UInt64) in importStubs.contains { $0.contains(target) } }
+        var summaryArities: [UInt64: Int?] = [:]
         let arity = { target in
-            self.knownArity(
+            if let cached = summaryArities[target] { return cached }
+            let result = self.knownArity(
                 ofCallTarget: target, names: resolver.names, cacheSymbols: cacheSymbols,
-                        arcFunctions: resolver.arcFunctions, isFunction: isFunction)
+                arcFunctions: resolver.arcFunctions, isFunction: isFunction)
+            summaryArities[target] = .some(result)
+            return result
         }
         var indirectResultUses: [UInt64: IndirectResultUse] = [:]
         var summaries: [UInt64: CalleeRegisterSummary] = [:]
+        var hasEntryRoleConsumer = Self.needsEntryRegisterProofs(
+            in: machO, names: resolvedNames, folded: foldedByAddress, swiftTargets: swiftTargets)
         // The callees decoded below the requested functions, rebuilt from
         // their address when a closure reads them again.
         var calleeBodies = Set<UInt64>()
@@ -1388,6 +1413,7 @@ public struct Disassembler: Sendable {
         var firstAtStart: Set<UInt64> = []
         for span in spans {
             for function in Probe.muted({ functions(of: span) }) where firstAtStart.insert(function.startAddress).inserted {
+                hasEntryRoleConsumer = hasEntryRoleConsumer || Self.hasRawSwiftCall(in: function.instructions)
                 indirectResultUses[function.startAddress] = Self.indirectResultUse(of: function)
                 if let summary = CalleeRegisterSummary.of(
                     Self.withJumpTables(function, machO: machO, ranges: resolver.fileRanges),
@@ -1407,6 +1433,7 @@ public struct Disassembler: Sendable {
                     self.decodeFunction(at: target, boundaries: sortedBoundaries, in: machO)
                 }
                 guard !instructions.isEmpty else { continue }
+                hasEntryRoleConsumer = hasEntryRoleConsumer || Self.hasRawSwiftCall(in: instructions)
                 decodedCallees += 1
                 calleeBodies.insert(target)
                 guard let callee = calleeBody(at: target, instructions: instructions), let summary = Probe.muted({
@@ -1426,15 +1453,19 @@ public struct Disassembler: Sendable {
             }
         }
         CalleeRegisterSummary.closeOverReads(&summaries)
-        CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects, readFacts in
+        let rebuildingEntryRoles = hasEntryRoleConsumer || Self.needsEntryRegisterProofs(
+            in: machO, names: resolvedNames, folded: foldedByAddress, swiftTargets: swiftTargets)
+        CalleeRegisterSummary.closeOverCalls(&summaries, rebuildingEntryRoles: rebuildingEntryRoles) { start, effects, readFacts, reusePreservation in
             body(at: start).flatMap { function in
                 Probe.muted {
                     CalleeRegisterSummary.recomputingPreservation(
-                        function, retainingReadsFrom: readFacts, calleeEffects: effects, calleeArity: arity, isFunction: isFunction,
+                        function, retainingReadsFrom: readFacts, reusingPreservation: reusePreservation,
+                        rebuildingEntryRoles: rebuildingEntryRoles, calleeEffects: effects, calleeArity: arity, isFunction: isFunction,
                         isImportStub: isImportStub)
                 }
             }
         }
+        if rebuildingEntryRoles { CalleeRegisterSummary.closeOverProvenEntryReads(&summaries) }
         CalleeRegisterSummary.closeOverFieldWrites(&summaries, arcIdentityContract: { target, callee in
             resolver.arcIdentityContract(at: target, named: callee)
         }) { resolvedNames[$0] }
@@ -1556,6 +1587,7 @@ public struct Disassembler: Sendable {
             foldedCandidates: referenceFolds,
             witnessTables: foldedByAddress.isEmpty ? [] : witnessTables(in: machO),
             protocolDescriptorSymbols: protocolDescriptorSymbols(in: machO),
+            importedStubFunctions: importedStubFunctions(in: machO),
             specializationSymbols: ReferenceResolver.specializationSymbols(
                 labels: labelByAddress, names: resolvedNames, folded: referenceFolds)
         )
@@ -1622,10 +1654,14 @@ public struct Disassembler: Sendable {
                 let isFunction = { (target: UInt64) in boundaries.contains(target) }
                 let importStubs = CodeSection.importStubRanges(of: machO)
                 let isImportStub = { (target: UInt64) in importStubs.contains { $0.contains(target) } }
+                var summaryArities: [UInt64: Int?] = [:]
                 let arity = { target in
-                    self.knownArity(
+                    if let cached = summaryArities[target] { return cached }
+                    let result = self.knownArity(
                         ofCallTarget: target, names: resolver.names, cacheSymbols: cacheSymbols,
                         arcFunctions: resolver.arcFunctions, isFunction: isFunction)
+                    summaryArities[target] = .some(result)
+                    return result
                 }
                 // A summary reads a switch's `br` as the jump inside the body
                 // it is, not as a tail call out of it.
@@ -1640,6 +1676,9 @@ public struct Disassembler: Sendable {
                     },
                     uniquingKeysWith: { a, _ in a }
                 )
+                var hasEntryRoleConsumer = Self.needsEntryRegisterProofs(
+                    in: machO, names: resolvedNames, folded: foldedByAddress, swiftTargets: swiftTargets)
+                    || bodies.values.contains { Self.hasRawSwiftCall(in: $0.instructions) }
                 // A filtered run decodes its matches and their direct callees;
                 // a clobber further down (a callee's callee) is decoded here, a
                 // level at a time in address order, so the summaries see what
@@ -1655,6 +1694,7 @@ public struct Disassembler: Sendable {
                             self.decodeFunction(at: target, boundaries: sortedBoundaries, in: machO)
                         }
                         guard !instructions.isEmpty else { continue }
+                        hasEntryRoleConsumer = hasEntryRoleConsumer || Self.hasRawSwiftCall(in: instructions)
                         decoded += 1
                         let body = Self.withJumpTables(
                             DisassembledFunction(
@@ -1679,15 +1719,19 @@ public struct Disassembler: Sendable {
                     }
                 }
                 CalleeRegisterSummary.closeOverReads(&summaries)
-                CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects, readFacts in
+                let rebuildingEntryRoles = hasEntryRoleConsumer || Self.needsEntryRegisterProofs(
+                    in: machO, names: resolvedNames, folded: foldedByAddress, swiftTargets: swiftTargets)
+                CalleeRegisterSummary.closeOverCalls(&summaries, rebuildingEntryRoles: rebuildingEntryRoles) { start, effects, readFacts, reusePreservation in
                     bodies[start].flatMap { function in
                         Probe.muted {
                             CalleeRegisterSummary.recomputingPreservation(
-                                function, retainingReadsFrom: readFacts, calleeEffects: effects, calleeArity: arity, isFunction: isFunction,
+                                function, retainingReadsFrom: readFacts, reusingPreservation: reusePreservation,
+                                rebuildingEntryRoles: rebuildingEntryRoles, calleeEffects: effects, calleeArity: arity, isFunction: isFunction,
                                 isImportStub: isImportStub)
                         }
                     }
                 }
+                if rebuildingEntryRoles { CalleeRegisterSummary.closeOverProvenEntryReads(&summaries) }
                 CalleeRegisterSummary.closeOverFieldWrites(&summaries, arcIdentityContract: { target, callee in
                     resolver.arcIdentityContract(at: target, named: callee)
                 }) { resolvedNames[$0] }
@@ -2691,11 +2735,13 @@ public struct Disassembler: Sendable {
         symbolStubReferences(in: machO).mapValues(\.name)
     }
 
+    /// A name alone does not distinguish a local definition from an import.
+    /// Keep the raw nlist record until a consumer has checked that origin.
     private func symbolStubReferences(in machO: MachOFile) -> [UInt64: MachOFile.Symbol] {
         guard let table = machO.indirectSymbols else { return [:] }
         let indirect = Array(table)
         let symbols = Array(machO.symbols)
-        var names: [UInt64: MachOFile.Symbol] = [:]
+        var symbolsByStub: [UInt64: MachOFile.Symbol] = [:]
 
         for section in machO.sections where section.flags.type == .symbol_stubs {
             guard let first = section.indirectSymbolIndex,
@@ -2710,13 +2756,38 @@ public struct Disassembler: Sendable {
                       symbols.indices.contains(symbolIndex)
                 else { continue }
                 let symbol = symbols[symbolIndex]
-                let raw = symbol.name
-                guard !raw.isEmpty else { continue }
+                guard !symbol.name.isEmpty else { continue }
                 let address = UInt64(section.address + slot * stubSize)
-                names[address] = symbol
+                symbolsByStub[address] = symbol
             }
         }
-        return names
+        return symbolsByStub
+    }
+
+    struct ImportedFunctionReference: Sendable, Equatable {
+        let rawSymbol: String
+        let libraryName: String
+
+        /// Compiler/native ABI reference: one formal String followed by the
+        /// two ordinary receiver words; no context self in x20.
+        var isStringHasPrefix: Bool {
+            Disassembler.stripLeadingUnderscore(rawSymbol) == "$sSS9hasPrefixySbSSF"
+                && ["/usr/lib/swift/libswiftCore.dylib", "@rpath/libswiftCore.dylib"].contains(libraryName)
+        }
+    }
+
+    private func importedStubFunctions(in machO: MachOFile) -> [UInt64: ImportedFunctionReference] {
+        guard !machO.isLoadedFromDyldCache else { return [:] }
+        var imported: [UInt64: ImportedFunctionReference] = [:]
+        for (address, symbol) in symbolStubReferences(in: machO) {
+            guard let flags = symbol.nlist.flags, flags.stab == nil, flags.contains(.ext),
+                  flags.type == .undf, symbol.offset == 0,
+                  let description = symbol.nlist.symbolDescription, description.libraryOrdinalType == nil,
+                  let library = Self.externalLibraryName(ordinal: Int(description.libraryOrdinal), in: machO)
+            else { continue }
+            imported[address] = ImportedFunctionReference(rawSymbol: symbol.name, libraryName: library)
+        }
+        return imported
     }
 
     /// Positive ordinary two-level ordinals only: self, flat lookup, weak
@@ -4274,6 +4345,8 @@ public struct Disassembler: Sendable {
         /// Every protocol and method descriptor symbol, demangled, by address
         /// (`protocolRequirement(descriptor:word:)`).
         var protocolDescriptorSymbols: [UInt64: [String]] = [:]
+        /// Loader-proven external entries, separate from presentation names.
+        var importedStubFunctions: [UInt64: ImportedFunctionReference] = [:]
         /// The mangled symbol of each generic specialization in the image, by
         /// address, so a call to one can be laid out from its substituted
         /// signature (`specializedSignature`). An address the linker folded
@@ -4718,6 +4791,22 @@ public struct Disassembler: Sendable {
             }
         }
 
+        func importedFunction(at target: UInt64) -> ImportedFunctionReference? {
+            importedStubFunctions[target]
+        }
+
+        func importedFunction(for value: AbstractValue) -> ImportedFunctionReference? {
+            switch value {
+            case .address(let target), .immediate(let target):
+                return importedFunction(at: target)
+            case .loaded(let slot):
+                guard holdsFixedPointer(at: slot), let offset = machO.fileOffset(of: slot) else { return nil }
+                return chainedFixups.importedFunction(at: UInt64(offset), in: machO)
+            default:
+                return nil
+            }
+        }
+
         /// Writable sections whose pointers only dyld and the Objective-C
         /// runtime set: class, superclass and protocol references, and the
         /// symbol pointer tables.
@@ -4822,6 +4911,9 @@ public struct Disassembler: Sendable {
         private var legacyStrongFunctions: [UInt64: RuntimeFunctionReference] = [:]
         private var legacyLazyEntries: [UInt64: Int] = [:]
         private var legacyLazyValidity: [UInt64: Bool] = [:]
+        /// Each strong two-level import's raw symbol and library, by fixup
+        /// file offset, for a consumer that checks an import's origin.
+        private var importedFunctions: [UInt64: ImportedFunctionReference] = [:]
         private var rebases: [UInt64: UInt64] = [:]
         private var built = false
 
@@ -4830,6 +4922,13 @@ public struct Disassembler: Sendable {
             defer { lock.unlock() }
             build(machO)
             return binds[fileOffset]
+        }
+
+        func importedFunction(at fileOffset: UInt64, in machO: MachOFile) -> ImportedFunctionReference? {
+            lock.lock()
+            defer { lock.unlock() }
+            build(machO)
+            return importedFunctions[fileOffset]
         }
 
         func arcFunction(at fileOffset: UInt64, in machO: MachOFile) -> RuntimeFunctionReference? {
@@ -4893,6 +4992,10 @@ public struct Disassembler: Sendable {
                            pointerAddend == 0, entry.addend == 0, !entry.isWeakImport,
                            let library = Disassembler.externalLibraryName(ordinal: entry.libraryOrdinal, in: machO) {
                             arcFunctions[offset] = RuntimeFunctionReference(rawSymbol: name, libraryName: library)
+                        }
+                        if pointerAddend == 0, entry.addend == 0, !entry.isWeakImport,
+                           let library = Disassembler.externalLibraryName(ordinal: entry.libraryOrdinal, in: machO) {
+                            importedFunctions[offset] = ImportedFunctionReference(rawSymbol: name, libraryName: library)
                         }
                     }
                 }
@@ -5218,6 +5321,31 @@ public struct Disassembler: Sendable {
     private static func isSwiftCall(_ insn: Instruction, swiftTargets: Set<UInt64>) -> Bool {
         if let target = insn.branchTarget, swiftTargets.contains(target) { return true }
         return rawCalleeSymbol(of: insn).map(isSwiftMangled) ?? false
+    }
+
+    private static func hasRawSwiftCall(in instructions: [Instruction]) -> Bool {
+        instructions.contains {
+            // The exact call predicate below only accepts these two manglings.
+            // Avoid splitting ordinary instruction text on a non-Swift image.
+            ($0.text.contains("$s") || $0.text.contains("$S")) && isSwiftCall($0, swiftTargets: [])
+        }
+    }
+
+    /// Positive entry-register proofs are consumed by Swift calls and by
+    /// signature-derived leading receiver layouts. A signature need not have
+    /// Swift mangling or metadata, so `swiftTargets.isEmpty` alone is no proof
+    /// that these facts are unused. Any Swift evidence keeps the whole image's
+    /// proof dependency graph, including its ordinary argument/helper bodies.
+    static func needsEntryRegisterProofs(
+        in machO: MachOFile, names: [UInt64: String], folded: [UInt64: [String]], swiftTargets: Set<UInt64>
+    ) -> Bool {
+        guard swiftTargets.isEmpty, machO.fullCache == nil,
+              !machO.sections.contains(where: { $0.sectionName.hasPrefix("__swift") }) else { return true }
+        func possibleConsumer(_ name: String) -> Bool {
+            isSwiftMangled(name) || DisassembledFunction.splitSignature(name) != nil
+        }
+        return names.values.contains(where: possibleConsumer)
+            || folded.values.contains { $0.contains(where: possibleConsumer) }
     }
 
     /// Split an Objective-C method symbol (`-[Class sel:with:]`, `+[Class sel]`,
@@ -7744,6 +7872,22 @@ public struct Disassembler: Sendable {
             calleeByAddress[insn.address] = DisassembledFunction.calleeName(of: insn)
         }
 
+        // Missing body summaries and demangled names are not external ABI
+        // proof. Both receiver consumers use the same exact loader binding.
+        var importedStringReceiverSites: Set<UInt64> = []
+        for insn in function.instructions where calleeByAddress[insn.address] != nil {
+            let imported: ImportedFunctionReference?
+            if let target = insn.branchTarget {
+                imported = resolver.importedFunction(at: target)
+            } else {
+                imported = analysis.indirectControlFlowTargets[insn.address].flatMap { resolver.importedFunction(for: $0) }
+            }
+            if let imported, imported.isStringHasPrefix,
+               resolver.demangleSymbol(imported.rawSymbol) == calleeByAddress[insn.address] {
+                importedStringReceiverSites.insert(insn.address)
+            }
+        }
+
         // x20 is `self` only under the Swift calling convention; for any
         // other callee it's a callee-saved register the caller happens to be
         // using, and calling it `self` would be a fabrication. Decided once
@@ -7793,15 +7937,15 @@ public struct Disassembler: Sendable {
         var valueSelfBySite: [UInt64: AbstractValue] = [:]
         for insn in function.instructions {
             guard let site = sites[insn.address], Self.isSwiftCall(insn, swiftTargets: swiftTargets),
-                  site.selfValue != .unknown
+                  site.selfValue != .unknown, !importedStringReceiverSites.contains(insn.address)
             else { continue }
             // A String result's second word moved into x20 is no receiver.
             if case .callResultHigh = site.selfValue { continue }
-            // An in-image callee whose body never reads the x20 it is
-            // handed has no `self` there: the caller parked a temporary in
-            // the callee-saved register (`Mode.weight(self: r0, r0)` for a
-            // by-value enum method, `inner #1 (self: r1, r0)`).
-            if let target = insn.branchTarget, let summary = registerSummaries[target], !summary.readsSelfRegister {
+            // An in-image receiver requires positive entry-x20 use. A MAY
+            // read of an overlapping save through an escaped frame proves
+            // no context-self ABI and must not replace an ordinary argument.
+            if let target = insn.branchTarget, let summary = registerSummaries[target],
+               summary.provenEntryRegisterReads & (1 << 20) == 0 {
                 continue
             }
             if let callee = calleeByAddress[insn.address] {
@@ -8025,6 +8169,63 @@ public struct Disassembler: Sendable {
                   Self.twoWordStringMangledTypes.contains(type)
             else { return nil }
             return fieldPath(name)
+        }
+
+        /// A receiver's physical footprint is not a whole String expression.
+        /// Validate both words before sanitizing a call-result high word away.
+        func stringReceiver(_ raw: [AbstractValue]) -> AbstractValue {
+            guard raw.count == 2 else { return .unknown }
+            if let site = stringCallResult(raw[0], raw[1]),
+               calleeByAddress[site].flatMap({ Self.swiftReturnTypeName(forDemangledName: $0) }) == "Swift.String" {
+                return .aggregate(raw)
+            }
+            let words = raw.map(sanitizeValue)
+            return swiftStringLiteral(words[0], words[1]) != nil || selfStringField(words[0], words[1]) != nil
+                ? .aggregate(words) : .unknown
+        }
+
+        /// A whole GPR expression, rather than a whole source value whose
+        /// first word happened to be copied here. Width alone also cannot
+        /// turn a Double field into an integer expression.
+        func isWholeIntegerReceiverWord(_ value: AbstractValue, depth: Int = 0) -> Bool {
+            guard depth < 8 else { return false }
+            func integerField(_ map: FieldMap?, offset: Int) -> Bool {
+                guard let map, let field = map.fields.first(where: { $0.offset == offset }), field.bytes <= 8,
+                      let type = map.fieldTypeNames[field.name]
+                else { return false }
+                return SwiftLowering.of(type, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) == .oneInteger
+            }
+            switch value {
+            case .callResult(let site):
+                return calleeByAddress[site].map {
+                    Self.callResultBank(of: $0, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cache: callResultBanks) == .integer
+                } ?? false
+            case .callResultHigh, .aggregate, .arrayLiteral, .indirectCallResultWord:
+                return false
+            case .selfFieldValue(let offset):
+                guard let widths = selfFieldReadWidths[offset], widths.count == 1, let width = widths.first,
+                      let fieldMap, case .success(.whole) = fieldMap.lookup(offset: offset, bytes: width)
+                else { return false }
+                return integerField(fieldMap, offset: offset)
+            case .argumentField(let argument, let offset):
+                return integerField(argumentFieldMaps[argument] ?? classArgumentFieldMaps[argument], offset: offset)
+            case .binary(_, let lhs, let rhs):
+                return isWholeIntegerReceiverWord(lhs, depth: depth + 1) && isWholeIntegerReceiverWord(rhs, depth: depth + 1)
+            case .select(let condition, let whenTrue, let whenFalse):
+                return isWholeIntegerReceiverWord(condition, depth: depth + 1)
+                    && isWholeIntegerReceiverWord(whenTrue, depth: depth + 1)
+                    && isWholeIntegerReceiverWord(whenFalse, depth: depth + 1)
+            case .unary(let op, let operand):
+                switch op {
+                case .negate, .bitwiseNot, .byteSwap, .leadingZeros, .leadingSignBits, .bitReverse:
+                    return isWholeIntegerReceiverWord(operand, depth: depth + 1)
+                default:
+                    // FP conversions need a separate operand-bank proof.
+                    return false
+                }
+            default:
+                return true
+            }
         }
 
         /// A call to an in-image function whose name is also a C library
@@ -8266,6 +8467,7 @@ public struct Disassembler: Sendable {
                     }
                 }
                 var following: [AbstractValue] = []
+                var followingTypes: [String] = []
                 if leadingSlots != nil {
                     // The registers after the formal parameters are `self`'s
                     // words only for a non-mutating method. A call whose
@@ -8289,18 +8491,27 @@ public struct Disassembler: Sendable {
                     // `self`'s two Doubles in d2 and d3, and read `dot(?,
                     // sub_…())`, a stale x0 as `self`.
                     let receiver = calleeByAddress[address].flatMap(Self.valueMethodReceiver).flatMap {
-                        SwiftLowering.aggregateRegisters(of: $0, fieldMaps: typeFieldMaps,
+                        SwiftLowering.directAggregateRegisters(of: $0, fieldMaps: typeFieldMaps,
                                                          enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
                     }
-                    if selfValueBySite[address] == nil, leadingLayout?.unplaced == 0, !isGeneric,
-                       receiver.map({ $0.floats == 0 }) ?? true {
-                        following = values.dropFirst(integer).map(sanitizeValue)
-                        // A register still holding the value it had at entry
-                        // was not set up for this call: `takeTwo(_: String,
-                        // _: Int)` read `utf8.getter(?, ?, arg1)` for its
-                        // String's words and the Int left in x2.
-                        following = withoutTrailingEntryValues(following, from: integer)
-                        while following.last == .unknown { following.removeLast() }
+                    let receiverSummary = callTargets[address].flatMap { registerSummaries[$0] }
+                    let hasContextRole = receiverSummary.map { $0.provenEntryRegisterReads & (1 << 20) != 0 } ?? false
+                    if selfValueBySite[address] == nil, !hasContextRole, leadingLayout?.unplaced == 0, !isGeneric {
+                        if importedStringReceiverSites.contains(address), integer == 2 {
+                            let raw = (integer ..< integer + 2).map { $0 < values.count ? values[$0] : .unknown }
+                            following = [stringReceiver(raw)]
+                            followingTypes = ["Swift.String"]
+                        } else if let summary = receiverSummary, let receiver, receiver.floats == 0,
+                                  receiver.integers > 0, integer + receiver.integers <= 8,
+                                  (integer ..< integer + receiver.integers).allSatisfy({ summary.provenEntryRegisterReads & (1 << $0) != 0 }) {
+                            // The exact ordinary inputs must be positively
+                            // read, irrespective of legacy MAY-x20 analysis.
+                            // An unchanged entry value is still a real input.
+                            following = (integer ..< integer + receiver.integers).map {
+                                $0 < values.count && isWholeIntegerReceiverWord(values[$0]) ? sanitizeValue(values[$0]) : .unknown
+                            }
+                            followingTypes = following.map { _ in "" }
+                        }
                     }
                 }
                 // Those words are the receiver, not more arguments: listed
@@ -8326,7 +8537,7 @@ public struct Disassembler: Sendable {
                 }
                 if !(laidOut + unplaced + following).isEmpty {
                     argumentsByAddress[address] = (laidOut + unplaced).map(sanitizeValue) + following
-                    laidOutTypes[address] = slots.map(\.type) + (unplaced + following).map { _ in "" }
+                    laidOutTypes[address] = slots.map(\.type) + unplaced.map { _ in "" } + followingTypes
                 }
                 strategy = leadingSlots != nil ? "swift-leading" : cLayout == nil ? "swift-signature" : "c-declaration"
                 continue
@@ -10414,6 +10625,16 @@ public struct Disassembler: Sendable {
         for (address, value) in analysis.exitFloatValues where returnsDirectly && normalReturnIsProven(at: address) { collectWordSites(in: value, into: &wordSites) }
         for value in analysis.branchConditions.values { collectWordSites(in: value, into: &wordSites) }
         for values in argumentsByAddress.values { for value in values { collectWordSites(in: value, into: &wordSites) } }
+        // Context self is a value use too, including a field loaded from an
+        // indirect result. Keep its producer at the original instruction even
+        // for one adjacent use: a later presentation rewrite can hide the
+        // consuming call, but must never hide the earlier evaluation with it.
+        // The ABI-role map remains independent of presentation filtering.
+        var contextSelfResultSites = Set<UInt64>()
+        for value in selfValueBySite.values {
+            collectWordSites(in: value, into: &wordSites)
+            collectCallResults(in: value, into: &contextSelfResultSites)
+        }
         for access in analysis.selfFieldAccesses.values {
             if let value = access.storedValue { collectWordSites(in: value, into: &wordSites) }
             for value in access.storedValues ?? [] { collectWordSites(in: value, into: &wordSites) }
@@ -10507,6 +10728,7 @@ public struct Disassembler: Sendable {
                 .forEach { countDirectUses($0, at: address) }
             if let value = valueSelfBySite[address] { countDirectUses(value, at: address) }
         }
+        for (address, value) in selfValueBySite { countDirectUses(value, at: address) }
         for (address, value) in analysis.branchConditions { countDirectUses(value, at: address) }
         // Declining a complete comparison does not erase a known operand's
         // producer. The text condition path may still use that saved result;
@@ -10540,6 +10762,17 @@ public struct Disassembler: Sendable {
                 swiftStringReturnCall(at: insn.address).map { countDirectUses(.callResult($0), at: insn.address) }
             }
         }
+        // A whole indirect result is also evaluated at its producer. Count
+        // the same values the return later consumes, so a call/effect between
+        // producer and return forces the existing binding at the original PC.
+        // Otherwise `makePacket(); effect(); ret` rendered as
+        // `effect(); return makePacket()` after suppressing the producer.
+        if function.objcMethod == nil, !returnsDirectly {
+            for insn in function.instructions where insn.controlFlow == .return && normalReturnIsProven(at: insn.address) {
+                let values = Probe.muted { indirectReturn(at: insn.address)?.consumedValues } ?? []
+                for value in values { countDirectUses(value, at: insn.address) }
+            }
+        }
         for address in throwingForwardCalls.keys {
             throwingForwardValue(at: address).map { countDirectUses($0, at: address) }
         }
@@ -10571,7 +10804,7 @@ public struct Disassembler: Sendable {
             let feedsUniquenessCheck = (directConsumers[site] ?? []).contains {
                 calleeByAddress[$0].map(DisassembledFunction.isUniquenessCheck) == true
             }
-            guard uses > 1 || crossesEffect(site) || feedsUniquenessCheck,
+            guard uses > 1 || contextSelfResultSites.contains(site) || crossesEffect(site) || feedsUniquenessCheck,
                   let callee = calleeByAddress[site],
                   // A uniqueness predicate is a value read at this call, not
                   // a fresh query to repeat after a reference-count change.

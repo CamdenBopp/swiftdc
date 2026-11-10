@@ -104,15 +104,16 @@ private func fragment(_ words: [UInt32]) throws -> DisassembledFunction {
     #expect(epilogue.clobberedCalleeSaved == ["x19", "x20", "x21", "x22", "x23", "x24"])
     // x21 is not carried through calls, reloaded or not.
     #expect(epilogue.effect == CalleeEffect(
-        clobbers: [], restores: ["x19": 0x28, "x20": 0x20, "x22": 0x10, "x23": 0x8, "x24": 0x0]))
+        clobbers: [], restores: ["x19": 0x28, "x20": 0x20, "x22": 0x10, "x23": 0x8, "x24": 0x0],
+        entryValueClobbers: epilogue.clobberedCalleeSaved))
     // sturb w1, [sp, #-8]; ldur x19, [sp, #-8]; ret: below entry sp is this
     // body's own frame, which it has just written.
     let below = try #require(CalleeRegisterSummary.of(fragment([0x381f83e1, 0xf85f83f3, 0xd65f03c0])))
-    #expect(below.effect == CalleeEffect(clobbers: ["x19"]))
+    #expect(below.effect == CalleeEffect(clobbers: ["x19"], entryValueClobbers: ["x19"]))
     // cbz x0, 1f; ldr x19, [sp]; ret; 1: ldr x19, [sp, #8]; ret: two exits
     // reload different slots.
     let split = try #require(CalleeRegisterSummary.of(fragment([0xb4000060, 0xf94003f3, 0xd65f03c0, 0xf94007f3, 0xd65f03c0])))
-    #expect(split.effect == CalleeEffect(clobbers: ["x19"]))
+    #expect(split.effect == CalleeEffect(clobbers: ["x19"], entryValueClobbers: ["x19"]))
 }
 
 /// The closure over calls claims nothing where it cannot finish: a function
@@ -138,13 +139,13 @@ private func fragment(_ words: [UInt32]) throws -> DisassembledFunction {
 
     var settled = graph()
     let original = settled
-    CalleeRegisterSummary.closeOverCalls(&settled) { start, effects, _ in rebuild(original, start, effects) }
+    CalleeRegisterSummary.closeOverCalls(&settled) { start, effects, _, _ in rebuild(original, start, effects) }
     #expect(settled[0x40]?.clobberedCalleeSaved == ["x19"])
 
     // One rebuild (0x20) fits under the cap; 0x30 waits. 0x40 was summarised
     // before 0x20 was known to clobber x19, so it claims nothing either.
     var capped = graph()
-    CalleeRegisterSummary.closeOverCalls(&capped, cap: 1) { start, effects, _ in rebuild(original, start, effects) }
+    CalleeRegisterSummary.closeOverCalls(&capped, cap: 1) { start, effects, _, _ in rebuild(original, start, effects) }
     #expect(capped[0x20]?.clobberedCalleeSaved == ["x19"])
     #expect(capped[0x30]?.clobberedCalleeSaved == all)
     #expect(capped[0x40]?.clobberedCalleeSaved == all)
@@ -152,7 +153,7 @@ private func fragment(_ words: [UInt32]) throws -> DisassembledFunction {
 
     // 0x20 cannot be rebuilt: it claims nothing, and its callers carry that.
     var failed = graph()
-    CalleeRegisterSummary.closeOverCalls(&failed) { start, effects, _ in
+    CalleeRegisterSummary.closeOverCalls(&failed) { start, effects, _, _ in
         start == 0x20 ? nil : rebuild(original, start, effects)
     }
     #expect(failed[0x20]?.clobberedCalleeSaved == all)
@@ -169,7 +170,7 @@ private func fragment(_ words: [UInt32]) throws -> DisassembledFunction {
                                     clobberedCalleeSaved: [], callees: [0x10]),
     ]
     let original = summaries
-    CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects, _ in
+    CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects, _, _ in
         let callees = original[start]?.callees ?? []
         let clobbers = callees.reduce(into: Set<String>()) { $0.formUnion(effects($1).clobbers) }
         return CalleeRegisterSummary(argumentReads: [], clobberedCalleeSaved: clobbers, definitelyClobbered: clobbers, callees: callees)

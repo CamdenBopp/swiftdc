@@ -79,9 +79,10 @@ private func fpAliasWords(register: Int) -> [UInt32] {
     }
 }
 
-@Test func fpArgumentAliasesKeepProvenDisjointLocalBounds() throws {
+@Test func fpArgumentCoordinatesDoNotProveDisjointLocalBounds() throws {
     // 48-byte frame: local at sp, x19/lr saved at sp+32. The callback may
-    // change the local, but that bounded escape does not reach the save.
+    // change memory through that coordinate. The saved register's position
+    // supplies no proof that the escaped object ends before it.
     let direct: [UInt32] = [0xd100c3ff, 0xa9027bf3, 0x910003e0, 0x9e670000,
                              0xaa1f03e0, 0xd63f0200, 0xa9427bf3, 0x9100c3ff, 0xd65f03c0]
     let joined: [UInt32] = [0xd100c3ff, 0xa9027bf3, 0xb4000081, 0x910003e0, 0x9e670000,
@@ -89,7 +90,7 @@ private func fpAliasWords(register: Int) -> [UInt32] {
                              0xa9427bf3, 0x9100c3ff, 0xd65f03c0]
     for imported in [false, true] {
         for words in [direct, joined] {
-            #expect(try fpAliasSummary(words, imported: imported).clobberedCalleeSaved.isEmpty)
+            #expect(try fpAliasSummary(words, imported: imported).clobberedCalleeSaved.contains("x19"))
         }
     }
 }

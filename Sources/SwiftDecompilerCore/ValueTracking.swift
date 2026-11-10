@@ -232,7 +232,8 @@ public indirect enum AbstractValue: Equatable, Sendable {
     /// method whose parameter is a small floating-point aggregate. Also the
     /// value a load read from a field of a class argument
     /// (`ValueTracer.argumentObjectFields`): there it is mutable memory, and
-    /// a store or a call forgets it.
+    /// a store or a call forgets the mutable field name. By-value entry
+    /// fields remain unchanged by memory writes.
     case argumentField(argument: Int, offset: Int)
     /// A value merged from the two arms of a control-flow diamond — the phi at a
     /// join. Renders as `condition ? whenTrue : whenFalse`, reconstructing a
@@ -709,6 +710,8 @@ public struct ValueTracer: Sendable {
         case result(offset: Int, bytes: Int32)
         case resultWhole
         case resultPoison
+        /// Some result contents have been observed on a predecessor path.
+        case resultTracked
         case flags
         case flagsWidth
         /// x20 was written since the last call (see `selfFreshKey`).
@@ -772,6 +775,7 @@ public struct ValueTracer: Sendable {
             case .result(let offset, let bytes): "result@\(offset)/\(bytes)"
             case .resultWhole: "result.whole"
             case .resultPoison: "result.poison"
+            case .resultTracked: "result.tracked"
             case .flags: "nzcv.flags"
             case .flagsWidth: "nzcv.width"
             case .selfFresh: "swiftself.fresh"
@@ -1669,6 +1673,13 @@ public struct ValueTracer: Sendable {
             }
             let incomingX0 = registers[.x(0)] ?? .unknown
             let beforeCall = registers
+            let call = facts.call(insn)
+            if let effect = insn.branchTarget.flatMap({ calleeMemoryEffects[$0] }),
+               let plan = completeCallPlan(effect, at: insn.address, call: call, before: beforeCall) {
+                applyCompleteCall(plan, at: insn.address, before: beforeCall, into: &registers,
+                    recordUnboundedMemoryWrite: recordUnboundedMemoryWrite)
+                return
+            }
             // `memcpy`/`memset` and the outlined value-witness copies are modelled
             // as the stores they perform (see `applyMemoryHelper`): their source
             // must be read before the invalidation below forgets it, and their
@@ -1676,7 +1687,6 @@ public struct ValueTracer: Sendable {
             // not apply to them. An in-image function named `memset` is an
             // ordinary call: a `memset(&a, 0, 8)` whose body writes nothing
             // rendered the `a` loaded after it as 0.
-            let call = facts.call(insn)
             let memory = insn.branchTarget.flatMap { calleeMemoryEffects[$0] }?.framePlan { register in
                 if case .frame(let offset)? = beforeCall[Location(register)] { return offset }
                 return nil
@@ -1745,10 +1755,31 @@ public struct ValueTracer: Sendable {
             // (guarded by `resolvesConcreteWitnessTableDispatchIfPresent`).
             // Neither it nor an exactly modelled memory helper keeps a pointer.
             if memory != nil || !(call.readsOnly || handledAsMemoryHelper) {
+                // Escaped frame reach persists across calls. Its unknown
+                // object extent can include the opaque caller-owned result.
+                if registers.reach.logicalCount != 0, Self.hasResultContents(registers) { Self.poisonResult(&registers) }
                 // A runtime entry point with a fixed C arity receives only its
                 // parameters; anything else may also be an input.
-                for (_, value) in registers.registerFacts.selected(call.passedRegisters) {
-                    if let value { Self.markEscape(value, into: &registers) }
+                for (location, value) in registers.registerFacts.selected(call.passedRegisters) {
+                    if let value {
+                        // The dedicated x8 convention handler below models a
+                        // result buffer forwarded to its producer. Other
+                        // argument/context aliases can escape independently.
+                        if location == .x(8), Self.isResultPointer(value) { continue }
+                        Self.markEscape(value, into: &registers)
+                    }
+                }
+                // A complete body can read nonstandard entry registers (or
+                // its entry sp). A failed transfer must not hide those inputs
+                // merely because they are outside the default ABI argument set.
+                if let effect = insn.branchTarget.flatMap({ calleeMemoryEffects[$0] }),
+                   case .literalStores(_, let inputs, _) = effect {
+                    for input in inputs where !(input.kind == .gpr && input.number == 30) {
+                        let location = Location(input)
+                        if !call.passedRegisters.contains(location), let value = beforeCall[location] {
+                            Self.markEscape(value, into: &registers)
+                        }
+                    }
                 }
                 // x29 is not an argument, but a callee that uses it reaches
                 // the frame through it, below the frame record as well as
@@ -1815,7 +1846,7 @@ public struct ValueTracer: Sendable {
             // a field.
             if !call.writesNoFields, !(insn.branchTarget.map(fieldPreservingCallees.contains) ?? false) {
                 Self.invalidateSelfFieldAliases(in: &registers)
-                if !argumentObjectFields.isEmpty { Self.invalidateArgumentFieldAliases(in: &registers) }
+                if !argumentObjectFields.isEmpty { invalidateArgumentFieldAliases(in: &registers) }
             }
             if !handledAsMemoryHelper { applyCallToResultBuffers(insn, site: site, into: &registers) }
             // AAPCS64: x0–x17 are caller-saved, so a call clobbers them. x18 is
@@ -2122,7 +2153,7 @@ public struct ValueTracer: Sendable {
             // not in the earlier raw must intersection/self-isa phase.
             accumulator.reach.formUnion(state.reach)
             state.registerFacts.forEachLostExact(comparedWith: accumulator.registerFacts) { key, value in
-                if holdsValue(key), containsFrame(value) || containsContext(value) { dropped.append(value) }
+                if holdsValue(key), containsFrame(value) || containsContext(value) || isResultPointer(value) { dropped.append(value) }
             }
             for (key, value) in state.nonRegisterEntries {
                 if isEscapeMarker(key) {
@@ -2130,7 +2161,7 @@ public struct ValueTracer: Sendable {
                 } else if accumulator[key] != value {
                     if key == .flagsWidth {
                         unsizedFlags = true
-                    } else if holdsValue(key), containsFrame(value) || containsContext(value) {
+                    } else if holdsValue(key), containsFrame(value) || containsContext(value) || isResultPointer(value) {
                         dropped.append(value)
                     }
                 }
@@ -2141,7 +2172,7 @@ public struct ValueTracer: Sendable {
                 offset, _, _ in unsizedSlots.append(offset)
             }
             state.frame.forEachLostValue(comparedWith: accumulator.frame) { value in
-                if containsFrame(value) || containsContext(value) { dropped.append(value) }
+                if containsFrame(value) || containsContext(value) || isResultPointer(value) { dropped.append(value) }
             }
         }
         // A slot is known only at the width stored to it. Where the paths
@@ -2182,6 +2213,10 @@ public struct ValueTracer: Sendable {
         registers[resultPoisonKey] = .immediate(1)
     }
 
+    private static func hasResultContents(_ registers: State) -> Bool {
+        registers[resultWholeKey] != nil || registers[resultPoisonKey] != nil || registers[.resultTracked] != nil
+    }
+
     /// Record a store of `bytes` bytes at `offset` of the result buffer. A store
     /// wider than a word (a `q` register) is split into words; one whose value is
     /// not word-decomposable fills its words with `.unknown`, which still counts
@@ -2189,6 +2224,10 @@ public struct ValueTracer: Sendable {
     /// over a whole-buffer call fill is a partial overwrite: the buffer is then
     /// neither the call's result nor a complete set of stores, so it poisons.
     private static func storeResult(_ value: AbstractValue, at offset: Int, bytes: Int, into registers: inout State) {
+        registers[.resultTracked] = .immediate(1)
+        // The opaque entry buffer can occupy caller-owned stack memory.
+        // Forget its possible aliases, retaining any pointer reach we lose.
+        forgetCallerOwnedFrame(into: &registers)
         if registers[resultWholeKey] != nil {
             registers[resultWholeKey] = nil
             poisonResult(&registers)
@@ -2211,6 +2250,10 @@ public struct ValueTracer: Sendable {
         } else {
             registers[resultKey(offset, bytes: bytes)] = value
         }
+    }
+
+    private static func forgetCallerOwnedFrame(into registers: inout State) {
+        forgetFrame(in: &registers, effect: FrameMemoryEffect(.atOrAbove(0), arithmetic: .checked))
     }
 
     /// The buffer state at a `ret`.
@@ -2315,6 +2358,7 @@ public struct ValueTracer: Sendable {
         let convention = calleeConventions[insn.address]
         switch registers[.x(8)] {
         case .indirectResultPointer?:
+            if convention != .direct { Self.forgetCallerOwnedFrame(into: &registers) }
             switch convention {
             case .indirect?:
                 for key in registers.keys where Self.resultOffset(from: key) != nil { registers[key] = nil }
@@ -2325,6 +2369,7 @@ public struct ValueTracer: Sendable {
                 Self.poisonResult(&registers)
             }
         case .indirectResultField?:
+            if convention != .direct { Self.forgetCallerOwnedFrame(into: &registers) }
             // A callee filling only part of the buffer is not reconstructed.
             if convention != .direct { Self.poisonResult(&registers) }
         case .frame(let base)?:
@@ -2357,6 +2402,198 @@ public struct ValueTracer: Sendable {
     /// result assembled in a local and then copied into the x8 buffer, or a
     /// buffer zeroed with `memset`, is tracked rather than lost. Only a constant
     /// length is modelled; anything else falls through to the generic call
+    private struct CompleteCallPlan {
+        struct Store {
+            let address: AbstractValue
+            let bytes: Int
+            let value: UInt64
+            let source: PhysReg
+        }
+        let stores: [Store]
+        let outputs: [(PhysReg, AbstractValue)]
+        let frameInputs: [AbstractValue]
+    }
+
+    /// Instantiate the entire entry-rooted body before committing any effect.
+    /// Unsupported spaces or arithmetic retain the ordinary conservative call.
+    private func completeCallPlan(_ effect: CalleeMemoryEffect, at site: UInt64, call: CallFacts, before: State) -> CompleteCallPlan? {
+        guard case .literalStores(let stores, let inputs, let outputs?) = effect,
+              !stores.isEmpty || outputs.contains(where: { if case .input = $0.value { true } else { false } })
+        else { return nil }
+        // This adapter imports memory effects and entry-rooted register
+        // transport. A constant-only or RET-only leaf keeps the ordinary
+        // logical call result. Typed direct results also need that contract:
+        // replacing a String's two result words by unrelated literals loses
+        // their grouping; replacing a scalar's producer loses its evaluation.
+        if call.returnsString || call.hasTupleResult { return nil }
+        if let result = call.cResult, result != "v" { return nil }
+        if let bank = callResultBank?(call.callee), bank != .unknown {
+            // Reading x8 alone does not settle a conflicting direct-return
+            // contract. Only a known-size wide indirect layout is projected.
+            guard bank == .notOneRegister,
+                  case .indirect(let size?)? = calleeConventions[site], size > 0 else { return nil }
+        }
+        func offset(_ value: AbstractValue, by delta: Int64) -> AbstractValue? {
+            if delta == 0 { return value == .unknown ? nil : value }
+            switch value {
+            case .frame(let base):
+                let (sum, overflow) = base.addingReportingOverflow(delta)
+                return overflow ? nil : .frame(sum)
+            case .indirectResultPointer:
+                guard let value = Int(exactly: delta), value >= 0 else { return nil }
+                return .indirectResultField(offset: value)
+            case .indirectResultField(let base):
+                guard let amount = Int(exactly: delta) else { return nil }
+                let (sum, overflow) = base.addingReportingOverflow(amount)
+                return overflow || sum < 0 ? nil : .indirectResultField(offset: sum)
+            case .immediate(let bits):
+                let result = delta > 0 ? bits.addingReportingOverflow(UInt64(delta))
+                    : bits.subtractingReportingOverflow(delta.magnitude)
+                return result.overflow ? nil : .immediate(result.partialValue)
+            default: return nil
+            }
+        }
+        func root(_ register: PhysReg) -> AbstractValue? {
+            guard !(register.kind == .gpr && register.number == 30),
+                  let value = before[Location(register)], value != .unknown else { return nil }
+            return value
+        }
+        // Even a nonstandard input is part of this proof transaction.
+        var frameInputs: [AbstractValue] = []
+        for input in inputs {
+            guard let value = root(input) else { return nil }
+            if Self.containsFrame(value) { frameInputs.append(value) }
+        }
+        var resolved: [CompleteCallPlan.Store] = []
+        for store in stores {
+            guard let base = root(store.base), let address = offset(base, by: store.offset),
+                  let bytes = Int(exactly: store.bytes), [1, 2, 4, 8].contains(bytes) else { return nil }
+            switch address {
+            case .frame(let start):
+                guard !start.addingReportingOverflow(store.bytes).overflow else { return nil }
+            case .indirectResultPointer: break
+            case .indirectResultField(let start):
+                guard start >= 0, !start.addingReportingOverflow(bytes).overflow else { return nil }
+            default: return nil
+            }
+            resolved.append(.init(address: address, bytes: bytes, value: store.value, source: store.source))
+        }
+        var writes: [(PhysReg, AbstractValue)] = []
+        for output in outputs {
+            let value: AbstractValue
+            switch output.value {
+            case .literal(let bits): value = .immediate(bits)
+            case .vector128(let low, let high): value = .aggregate([.immediate(low), .immediate(high)])
+            case .input(let input, let delta):
+                guard let base = root(input), let result = offset(base, by: delta) else { return nil }
+                value = result
+            case .unknown: return nil
+            }
+            writes.append((output.destination, value))
+        }
+        return CompleteCallPlan(stores: resolved, outputs: writes, frameInputs: frameInputs)
+    }
+
+    private func applyCompleteCall(_ plan: CompleteCallPlan, at site: UInt64, before: State, into registers: inout State,
+        recordUnboundedMemoryWrite: (() -> Void)? = nil
+    ) {
+        // Retain the existing durable MAY reach for later unproved calls,
+        // including outlined inputs outside the ordinary argument registers.
+        // This complete call itself performs only the writes below.
+        for input in plan.frameInputs { Self.markFrameEscape(input, into: &registers) }
+        // Address spaces are dispatched through the same owners as local
+        // stores. Only literals enter memory; exact address outputs stay in
+        // registers and retain their provenance for subsequent writes/escapes.
+        var invalidatesFields = false
+        for store in plan.stores {
+            let target: MemoryTarget
+            switch store.address {
+            case .frame(let start): target = .stackSlot(Self.stackKey(start))
+            case .indirectResultPointer: target = .resultSlot(0)
+            case .indirectResultField(let start): target = .resultSlot(start)
+            default: continue // rejected while preparing the transaction
+            }
+            if invalidateAsyncMemoryForWrite(target, bytes: store.bytes, into: &registers) {
+                recordUnboundedMemoryWrite?()
+            }
+            invalidateResultMemoryForWrite(target, bytes: store.bytes, into: &registers)
+            if !Self.isPrivateFrameWrite(target, bytes: store.bytes) {
+                invalidatesFields = true
+                Self.invalidateSelfFieldAliases(in: &registers)
+                if !argumentObjectFields.isEmpty { invalidateArgumentFieldAliases(in: &registers) }
+            }
+            switch store.address {
+            case .frame(let start):
+                Self.storeStack(.immediate(store.value), at: start, bytes: store.bytes,
+                    outgoing: false, from: store.source,
+                    writeEffect: FrameMemoryEffect(.finite(lower: start, upper: start + Int64(store.bytes)), arithmetic: .wrapping),
+                    into: &registers)
+            case .indirectResultPointer:
+                Self.storeResult(.immediate(store.value), at: 0, bytes: store.bytes, into: &registers)
+            case .indirectResultField(let start):
+                Self.storeResult(.immediate(store.value), at: start, bytes: store.bytes, into: &registers)
+            default: break // the complete plan admits only these spaces
+            }
+        }
+        // All expressions were resolved from beforeCall: swaps and outputs
+        // derived from a subsequently overwritten base apply in parallel.
+        for (destination, priorValue) in plan.outputs {
+            // A pre-call field name denotes the old loaded bits. Do not
+            // reinstall that name after this same transaction invalidated it.
+            let value: AbstractValue
+            if invalidatesFields, priorValue == .selfFieldValue(offset: 0) {
+                value = .selfIsaSnapshot
+            } else if invalidatesFields,
+                      Self.containsSelfFieldValue(priorValue)
+                        || !argumentObjectFields.isEmpty && containsMutableArgumentField(priorValue) {
+                value = .unknown
+            } else { value = priorValue }
+            write(destination, value, into: &registers)
+        }
+        registers[.x(30)] = .unknown
+        registers.frame.removeComponents(.outgoing)
+        registers[Self.selfFreshKey] = nil
+
+        // Retain the logical producer of a complete known-size indirect
+        // result, without replacing any exact physical register outputs.
+        guard case .indirect(let size?)? = calleeConventions[site], size > 0, size <= 4096,
+              let buffer = before[.x(8)] else { return }
+        var ranges: [Range<Int>] = []
+        for store in plan.stores {
+            let start: Int?
+            switch (buffer, store.address) {
+            case (.frame(let base), .frame(let address)):
+                let (delta, overflow) = address.subtractingReportingOverflow(base)
+                start = overflow ? nil : Int(exactly: delta)
+            case (.indirectResultPointer, .indirectResultPointer): start = 0
+            case (.indirectResultPointer, .indirectResultField(let offset)): start = offset
+            default: start = nil
+            }
+            if let start, start >= 0, start <= size, store.bytes <= size - start {
+                ranges.append(start ..< start + store.bytes)
+            }
+        }
+        var covered = 0
+        for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            guard range.lowerBound <= covered else { return }
+            covered = max(covered, range.upperBound)
+        }
+        guard covered == size else { return }
+        switch buffer {
+        case .frame(let base):
+            guard !base.addingReportingOverflow(Int64(size)).overflow else { return }
+            for offset in stride(from: 0, to: size, by: 8) {
+                registers.frame.patch(at: base + Int64(offset),
+                    value: .assign(.indirectCallResultWord(site: site, offset: offset)),
+                    width: .assign(.immediate(UInt64(min(8, size - offset)))), bank: .erase)
+            }
+        case .indirectResultPointer where registers[Self.resultPoisonKey] == nil:
+            for key in registers.keys where Self.resultOffset(from: key) != nil { registers[key] = nil }
+            registers[Self.resultWholeKey] = .callResult(site)
+        default: break
+        }
+    }
+
     /// handling, where a result pointer in an argument poisons the buffer.
     private func applyMemoryHelper(callee: String, site: CallSite, into registers: inout State) -> Bool {
         let name = callee.hasPrefix("_") ? String(callee.drop(while: { $0 == "_" })) : callee
@@ -3179,9 +3416,12 @@ public struct ValueTracer: Sendable {
         }
         if detail.operands.contains(where: { $0.operand.isMemory }),
            !Self.readOnlyMemoryIDs.contains(detail.id.rawValue) {
-            if invalidateAsyncMemoryForWrite(detail, into: &registers) {
+            let target = memoryTarget(detail, in: registers)
+            let bytes = Self.accessBytes(detail)
+            if invalidateAsyncMemoryForWrite(target, bytes: bytes, into: &registers) {
                 recordUnboundedMemoryWrite?()
             }
+            invalidateResultMemoryForWrite(target, bytes: bytes, into: &registers)
         }
 
         // Branches and returns write no general register. (Calls never reach
@@ -4945,20 +5185,20 @@ public struct ValueTracer: Sendable {
     /// parameters may be one object, and a pointer of unknown origin may be
     /// any of them, so every write outside the frame reaches this, not only
     /// one through the argument.
-    private static func invalidateArgumentFieldAliases(in registers: inout State) {
-        for key in registers.compactMap({ key, value in containsArgumentField(value) ? key : nil }) {
+    private func invalidateArgumentFieldAliases(in registers: inout State) {
+        for key in registers.compactMap({ key, value in containsMutableArgumentField(value) ? key : nil }) {
             registers[key] = nil
         }
     }
 
-    private static func containsArgumentField(_ value: AbstractValue) -> Bool {
+    private func containsMutableArgumentField(_ value: AbstractValue) -> Bool {
         switch value {
-        case .argumentField: return true
-        case .unary(_, let operand): return containsArgumentField(operand)
-        case .binary(_, let lhs, let rhs): return containsArgumentField(lhs) || containsArgumentField(rhs)
+        case .argumentField(let argument, _): return argumentObjectFields[argument] != nil
+        case .unary(_, let operand): return containsMutableArgumentField(operand)
+        case .binary(_, let lhs, let rhs): return containsMutableArgumentField(lhs) || containsMutableArgumentField(rhs)
         case .select(let condition, let yes, let no):
-            return containsArgumentField(condition) || containsArgumentField(yes) || containsArgumentField(no)
-        case .aggregate(let values): return values.contains(where: containsArgumentField)
+            return containsMutableArgumentField(condition) || containsMutableArgumentField(yes) || containsMutableArgumentField(no)
+        case .aggregate(let values): return values.contains(where: containsMutableArgumentField)
         default: return false
         }
     }
@@ -5010,7 +5250,7 @@ public struct ValueTracer: Sendable {
             let value = self.source(source, in: registers)
             if value != .unknown, !Self.isConstant(value), !Self.isArgument(value) { stored = (register, field) }
         }
-        Self.invalidateArgumentFieldAliases(in: &registers)
+        invalidateArgumentFieldAliases(in: &registers)
         if let stored {
             write(stored.register, stored.field, into: &registers)
             registers[Location(stored.register)] = stored.field
@@ -5058,6 +5298,12 @@ public struct ValueTracer: Sendable {
         writeEffect: FrameMemoryEffect? = nil,
         into registers: inout State
     ) {
+        // Entry-relative caller-owned memory may be the opaque return buffer.
+        // An exact coordinate does not establish disjointness from that space.
+        let (end, overflow) = offset.addingReportingOverflow(Int64(bytes))
+        if Self.hasResultContents(registers), overflow || end > 0 {
+            Self.poisonResult(&registers)
+        }
         // A byte/halfword store can overwrite part of an older tracked word.
         // Forget intersecting snapshots rather than retaining their old bits.
         // Known callee writes retain call-time wrapping fact endpoints.
@@ -5189,14 +5435,23 @@ public struct ValueTracer: Sendable {
 
     /// Return true when a write may affect any context byte. Only a complete
     /// negative private-frame extent is disjoint under the ordinary frame ABI.
-    private func invalidateAsyncMemoryForWrite(_ detail: StructuredInsn, into registers: inout State) -> Bool {
-        let target = memoryTarget(detail, in: registers)
-        let bytes = Self.accessBytes(detail)
-        if case .stackSlot(let key)? = target, let start = Self.stackOffset(from: key),
-           let bytes, bytes > 0 {
-            let (end, overflow) = start.addingReportingOverflow(Int64(bytes))
-            if !overflow, start < 0, end <= 0 { return false }
-        }
+    private static func isPrivateFrameWrite(_ target: MemoryTarget?, bytes: Int?) -> Bool {
+        guard case .stackSlot(let key)? = target, let start = stackOffset(from: key),
+              let bytes, bytes > 0 else { return false }
+        let (end, overflow) = start.addingReportingOverflow(Int64(bytes))
+        return !overflow && start < 0 && end <= 0
+    }
+
+    /// Every other writable space may alias the opaque entry result. Only
+    /// its own exact stores and a complete private-frame extent are exempt.
+    private func invalidateResultMemoryForWrite(_ target: MemoryTarget?, bytes: Int?, into registers: inout State) {
+        guard Self.hasResultContents(registers), !Self.isPrivateFrameWrite(target, bytes: bytes) else { return }
+        if case .resultSlot? = target { return }
+        Self.poisonResult(&registers)
+    }
+
+    private func invalidateAsyncMemoryForWrite(_ target: MemoryTarget?, bytes: Int?, into registers: inout State) -> Bool {
+        if Self.isPrivateFrameWrite(target, bytes: bytes) { return false }
         if case .asyncSlot(let offset)? = target, let bytes, bytes > 0 {
             // Relative offsets do not establish disjoint allocations. A write
             // through the parent can also reach the child's cached parent word.
@@ -5464,7 +5719,7 @@ public struct ValueTracer: Sendable {
 
     private static func isEscapeMarker(_ key: Location) -> Bool {
         switch key {
-        case .frameEscaped, .frameBelow, .frameEscapedAll, .frameDynamic, .contextEscaped, .calleeContextEscaped: true
+        case .frameEscaped, .frameBelow, .frameEscapedAll, .frameDynamic, .contextEscaped, .calleeContextEscaped, .resultTracked: true
         default: false
         }
     }
@@ -5485,9 +5740,14 @@ public struct ValueTracer: Sendable {
         contains(.asyncContext, in: value) || contains(.asyncCalleeContext, in: value)
     }
 
-    /// A value leaves what the tracer follows: any frame address or async
-    /// context pointer in it escapes.
+    /// A value leaves what the tracer follows: a result alias poisons its
+    /// buffer; a frame address or async context pointer escapes.
     private static func markEscape(_ value: AbstractValue, into registers: inout State) {
+        // A pointer lost from a reachable frame slot or a CFG join can still
+        // be used through that memory. Forgetting its exact alias must not
+        // leave a whole-result claim that a later unknown call can overwrite.
+        if isResultPointer(value) { poisonResult(&registers) }
+        if containsFrame(value), hasResultContents(registers) { poisonResult(&registers) }
         if contains(.asyncContext, in: value) {
             let offset: Int64 = if case .binary(.add, .asyncContext, .immediate(let k)) = value,
                                    k < UInt64(Int64.max) { Int64(k) } else { 0 }
@@ -5622,11 +5882,15 @@ public struct ValueTracer: Sendable {
                 .contains { mnemonic.hasPrefix($0) }
     }
 
-    /// Entry-provenance pointers: computed before this frame existed, so no
-    /// store through one reaches it.
-    private static func predatesFrame(_ value: AbstractValue?) -> Bool {
+    /// Entry-provenance pointers predate this function's private allocation.
+    /// That does not exclude caller-owned slots at positive frame offsets.
+    private func predatesPrivateFrame(_ value: AbstractValue?) -> Bool {
         switch value {
-        case .argument?, .argumentField?, .selfPointer?, .selfField?, .indirectResultPointer?,
+        case .argumentField(let argument, _)?:
+            // HFA/by-value fields are entry snapshots. A mutable class field
+            // can instead contain an address created in this function.
+            return argumentObjectFields[argument] == nil
+        case .argument?, .selfPointer?, .selfField?, .indirectResultPointer?,
              .indirectResultField?, .asyncContext?, .asyncCalleeContext?:
             return true
         default:
@@ -5701,7 +5965,10 @@ public struct ValueTracer: Sendable {
             } ?? .atOrAbove(start)
             Self.forgetFrame(in: &registers, effect: FrameMemoryEffect([region], arithmetic: .wrapping))
         case .absolute?, .selfField?, .vtableMethod?, .arrayElement?, .resultSlot?, .asyncSlot?, .asyncCalleeSlot?:
-            break
+            // Entry self, result and context pointers can name storage in
+            // the caller's frame. Their address-space tags are not proof
+            // of disjointness from positive entry-relative coordinates.
+            Self.forgetCallerOwnedFrame(into: &registers)
         // A store through a loaded pointer is the untracked store it was
         // before loads through one were named.
         case nil, .throughStaticPointer?, .throughValue?:
@@ -5718,8 +5985,11 @@ public struct ValueTracer: Sendable {
                 } else {
                     Self.forgetFrame(in: &registers, effect: FrameMemoryEffect(arithmetic: .wrapping, everything: true))
                 }
-            } else if !(Self.predatesFrame(base) && !indexed) {
-                Self.forgetEscapedFrame(in: &registers, evidence: frame.escapeEvidence)
+            } else {
+                Self.forgetCallerOwnedFrame(into: &registers)
+                if !(predatesPrivateFrame(base) && !indexed) {
+                    Self.forgetEscapedFrame(in: &registers, evidence: frame.escapeEvidence)
+                }
             }
         }
         return (false, false)

@@ -162,7 +162,7 @@ private func vectorPreservationSummary(_ name: String) throws -> CalleeRegisterS
     let leaf = try vectorPreservationBody([0x1e6e1008, 0xd65f03c0], at: 0x2000)
     let functions = [caller.startAddress: caller, leaf.startAddress: leaf]
     var summaries = try functions.mapValues { try #require(CalleeRegisterSummary.of($0)) }
-    CalleeRegisterSummary.closeOverCalls(&summaries) { address, effect, _ in
+    CalleeRegisterSummary.closeOverCalls(&summaries) { address, effect, _, _ in
         functions[address].flatMap { CalleeRegisterSummary.of($0, calleeEffects: effect) }
     }
     #expect(summaries[0x1000]?.clobberedCalleeSaved == ["v8"])
@@ -175,7 +175,7 @@ private func vectorPreservationSummary(_ name: String) throws -> CalleeRegisterS
         let leaf = try vectorPreservationBody([store, 0x1e6e1008, 0x910043ff, 0xd65f03c0], at: 0x2000)
         let functions = [caller.startAddress: caller, leaf.startAddress: leaf]
         var summaries = try functions.mapValues { try #require(CalleeRegisterSummary.of($0)) }
-        CalleeRegisterSummary.closeOverCalls(&summaries) { address, effect, _ in
+        CalleeRegisterSummary.closeOverCalls(&summaries) { address, effect, _, _ in
             functions[address].flatMap { CalleeRegisterSummary.of($0, calleeEffects: effect) }
         }
         #expect(summaries[0x2000]?.definitelyClobbered.contains("v8") == true)
@@ -239,7 +239,7 @@ private let vectorPreservationShapes: [String: [UInt32]] = [
     let functions = Dictionary(uniqueKeysWithValues: [caller, overwrite, relay, reload].map { ($0.startAddress, $0) })
     var summaries = try functions.mapValues { try #require(CalleeRegisterSummary.of($0)) }
     #expect(summaries[0x2000]?.definitelyClobbered == ["v8"])
-    CalleeRegisterSummary.closeOverCalls(&summaries) { address, effects, _ in
+    CalleeRegisterSummary.closeOverCalls(&summaries) { address, effects, _, _ in
         functions[address].flatMap { CalleeRegisterSummary.of($0, calleeEffects: effects) }
     }
     #expect(summaries[0x4000]?.restoredFrom == ["v8": 0])
@@ -262,11 +262,11 @@ private let vectorPreservationShapes: [String: [UInt32]] = [
             definitelyClobbered: clobbers, callees: callees)
     }
     var capped = graph
-    CalleeRegisterSummary.closeOverCalls(&capped, cap: 1) { address, effects, _ in rebuild(address, effects) }
+    CalleeRegisterSummary.closeOverCalls(&capped, cap: 1) { address, effects, _, _ in rebuild(address, effects) }
     #expect(capped[0x30]?.clobberedCalleeSaved == all)
     #expect(capped[0x40]?.definitelyClobbered == all)
     var failed = graph
-    CalleeRegisterSummary.closeOverCalls(&failed) { address, effects, _ in
+    CalleeRegisterSummary.closeOverCalls(&failed) { address, effects, _, _ in
         address == 0x20 ? nil : rebuild(address, effects)
     }
     #expect(failed[0x20]?.clobberedCalleeSaved == all)

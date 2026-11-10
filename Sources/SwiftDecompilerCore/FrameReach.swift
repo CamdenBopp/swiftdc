@@ -39,16 +39,11 @@ struct TraceLayoutEvidence: Sendable {
 }
 struct NoFrameQueryEvidence {}
 
-/// Snapshot once at escape, from the live `.entry` save facts at that point.
-/// Only the frozen bounds below enter range equality, never this evidence.
-struct LiveEntrySaveEvidence {
+/// The legacy below-allocation policy consults live entry saves. This is not
+/// object ownership evidence for an exact address: an entry-register spill
+/// may itself be a word of the object whose address reaches a call.
+struct DynamicEscapeSaveEvidence {
     let sortedEntryStarts: [Int64]
-    func range(from offset: Int64) -> FrozenFrameRange? {
-        guard !sortedEntryStarts.contains(where: { offset >= $0 && offset < $0 &+ 8 }),
-              let next = sortedEntryStarts.first(where: { $0 > offset })
-        else { return nil }
-        return FrozenFrameRange(floor: offset, bound: next)
-    }
     func range(below bound: Int64) -> FrozenFrameRange? {
         guard sortedEntryStarts.contains(where: { $0 >= bound }) else { return nil }
         return FrozenFrameRange(floor: Int64.min, bound: bound)
@@ -232,30 +227,26 @@ extension DurableFrameReach where Storage == FrozenReachStorage {
             if whole { self[.whole] = ReachPresence() }
         }
     }
-    /// Resolve the entire input before insertion. If one alternative is
-    /// unbounded, legacy markEscape sets whole without adding partial ranges
-    /// from that input. Previously recorded ranges still remain.
-    mutating func recordEscape(_ input: PossibleFrameOrigins, against evidence: LiveEntrySaveEvidence) {
+    /// Coordinates identify locations, not object extents. Any exact-address
+    /// alternative therefore escapes the frame; live entry saves cannot bound
+    /// it. Dynamic-only origins retain their existing below-bound policy.
+    /// Previously recorded ranges remain independent of whole-frame reach.
+    mutating func recordEscape(_ input: PossibleFrameOrigins, against evidence: DynamicEscapeSaveEvidence) {
         switch input {
         case .none: return
         case .any: self[.whole] = ReachPresence()
         case .finite(let offsets, let below):
-            var resolved: [FrozenFrameRange] = []
-            for offset in offsets.sorted() {
-                guard let range = evidence.range(from: offset) else {
-                    self[.whole] = ReachPresence()
-                    return
-                }
-                resolved.append(range)
+            guard offsets.isEmpty else {
+                self[.whole] = ReachPresence()
+                return
             }
             if let below {
                 guard let range = evidence.range(below: below) else {
                     self[.whole] = ReachPresence()
                     return
                 }
-                resolved.append(range)
+                self[.range(range)] = ReachPresence()
             }
-            for range in resolved { self[.range(range)] = ReachPresence() }
         }
     }
 }

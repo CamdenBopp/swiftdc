@@ -128,12 +128,12 @@ struct CalleeMemoryFlowTests {
         // Force the independent clobber rebuilder. Its synthetic replacement
         // lacks the immutable fact, which must be retained from the old body.
         summaries[0x2000]?.callees = [0x3000]
-        CalleeRegisterSummary.closeOverCalls(&summaries) { _, _, _ in
+        CalleeRegisterSummary.closeOverCalls(&summaries) { _, _, _, _ in
             CalleeRegisterSummary(argumentReads: [], clobberedCalleeSaved: ["x19"], definitelyClobbered: ["x19"])
         }
         #expect(summaries[0x2000]?.clobberedCalleeSaved == ["x19"])
         #expect(summaries[0x2000]?.memoryEffect == memory)
-        CalleeRegisterSummary.closeOverCalls(&summaries, cap: 0) { _, _, _ in nil }
+        CalleeRegisterSummary.closeOverCalls(&summaries, cap: 0) { _, _, _, _ in nil }
         #expect(summaries[0x2000]?.memoryEffect == memory)
     }
 

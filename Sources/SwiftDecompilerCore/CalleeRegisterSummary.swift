@@ -17,6 +17,11 @@ struct CalleeEffect: Sendable, Equatable {
     /// caller's x29 points at, its frame, the callee can then write.
     var readsFramePointer = false
     var memoryEffect: CalleeMemoryEffect = .unknown
+    /// Direct MUST-preservation failures for positive entry-value evidence.
+    /// The carried clobbers above deliberately omit uncertain save escapes;
+    /// that propagation policy cannot prove a value survived a direct call.
+    /// Nil means this callee's body has not supplied a preservation proof.
+    var entryValueClobbers: Set<String>?
 }
 
 /// What an in-image function's own body proves about the registers a call to
@@ -65,6 +70,44 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// registers (bit n for xn) the body has not written at them on some
     /// path: the call reads those of them its target reads.
     var pendingReads: [PendingRead] = []
+    /// Calls whose entry-register reads `closeOverProvenEntryReads` adds to
+    /// `provenEntryRegisterReads`.
+    var pendingEntryRegisterReads: [EntryRegisterForward] = []
+
+    /// A direct in-image call's MUST entry-value origins. Four bits per
+    /// physical x0...x30 encode entry x19...x29 (1...11; zero is unknown).
+    /// No body, register dictionary or per-register heap object is retained.
+    struct EntryRegisterForward: Sendable, Equatable {
+        let target: UInt64
+        private var low: UInt64 = 0
+        private var high: UInt64 = 0
+
+        init(target: UInt64, values: [String: Preservation.Value]) {
+            self.target = target
+            for (key, value) in values {
+                guard key.first == "x", let register = Int(key.dropFirst()), (0...30).contains(register),
+                      case .entry(let origin) = value, origin.first == "x",
+                      let entry = Int(origin.dropFirst()), (19...29).contains(entry) else { continue }
+                let code = UInt64(entry - 18)
+                if register < 16 { low |= code << (4 * register) }
+                else { high |= code << (4 * (register - 16)) }
+            }
+        }
+
+        var isEmpty: Bool { low == 0 && high == 0 }
+
+        func origins(consumedBy inputs: UInt32) -> UInt32 {
+            var remaining = inputs
+            var origins: UInt32 = 0
+            while remaining != 0 {
+                let register = remaining.trailingZeroBitCount
+                remaining &= remaining - 1
+                let code = register < 16 ? (low >> (4 * register)) & 15 : (high >> (4 * (register - 16))) & 15
+                if code != 0 { origins |= 1 << (code + 18) }
+            }
+            return origins
+        }
+    }
     /// Callee-saved registers (`x19`…`x29` and the low 64 bits of `v8`…`v15`)
     /// the body writes and does not provably hand back: at some exit (a `ret`
     /// or a tail branch out) the
@@ -184,14 +227,23 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     }
     private var inputProofEntryAddress: UInt64 = 0
     private var pureTailOffset: Int32 = 0
+    // The entry-role facts are small: stored with the flags so they pack.
+    /// Positive uses of incoming x0...x7 and x19...x29 (bit n for xn).
+    /// Unlike `readsSelfRegister`, a possible read through escaped memory
+    /// proves no calling-convention role. These uses require a known entry
+    /// value at the instruction that consumes it.
+    var provenEntryRegisterReads: UInt32 = 0
     private var hasInputProofEntry = false
     private var hasPureTailTarget = false
+    var needsEntryPreservation = false
 
     init(
         argumentReads: RegisterSet, provenArgumentReads: RegisterSet = [], provenFloatArgumentReads: RegisterSet = [],
         floatArgumentWidths: [Int: Int] = [:], mayWriteFloatResult: Bool = true, mayWriteResult: Bool = true,
         resultReads: [UInt64: ResultRead] = [:], pendingReads: [PendingRead] = [], readsFramePointer: Bool = false,
-        readsContextRegister: Bool = false, readsSelfRegister: Bool = true, clobberedCalleeSaved: Set<String>,
+        readsContextRegister: Bool = false, readsSelfRegister: Bool = true,
+        provenEntryRegisterReads: UInt32 = 0, pendingEntryRegisterReads: [EntryRegisterForward] = [],
+        needsEntryPreservation: Bool = false, clobberedCalleeSaved: Set<String>,
         definitelyClobbered: Set<String> = [], restoredFrom: [String: Int64] = [:], callees: [UInt64] = [],
         outgoingCalls: [OutgoingCall] = [], storesOnlyToStack: Bool = false, writesNoFields: Bool = false,
         memoryEffect: CalleeMemoryEffect = .unknown, inputProofEntry: UInt64? = nil, pureTailTarget: UInt64? = nil
@@ -215,6 +267,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         self.readsSelfRegister = readsSelfRegister
         self.storesOnlyToStack = storesOnlyToStack
         self.writesNoFields = writesNoFields
+        self.provenEntryRegisterReads = provenEntryRegisterReads
+        self.pendingEntryRegisterReads = pendingEntryRegisterReads
+        self.needsEntryPreservation = needsEntryPreservation
         // The target is stored relative to the entry, so the entry first.
         self.inputProofEntry = inputProofEntry
         self.pureTailTarget = pureTailTarget
@@ -240,7 +295,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// registers, as far as it carries beyond the direct callers.
     var effect: CalleeEffect {
         CalleeEffect(clobbers: definitelyClobbered.subtracting(restoredFrom.keys), restores: restoredFrom,
-                     readsFramePointer: readsFramePointer, memoryEffect: memoryEffect)
+                     readsFramePointer: readsFramePointer, memoryEffect: memoryEffect,
+                     entryValueClobbers: clobberedCalleeSaved)
     }
 
     /// The integer arguments a call to this function can pass: through the
@@ -289,17 +345,20 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     }
 
     /// Rebuild preservation for the same immutable body after its reads have
-    /// been closed over calls. Clobber closure retains those reads; redoing
-    /// their argument/self-flow analyses cannot contribute any new fact.
+    /// been closed over calls. Clobber closure retains those MAY reads;
+    /// positive entry-value uses must be rebuilt against the new clobbers.
     static func recomputingPreservation(
         _ function: DisassembledFunction, retainingReadsFrom summary: CalleeRegisterSummary,
+        reusingPreservation: Bool = false,
+        rebuildingEntryRoles: Bool = true,
         calleeEffects: (UInt64) -> CalleeEffect,
         calleeArity: (UInt64) -> Int? = { _ in nil },
         isFunction: (UInt64) -> Bool = { _ in false },
         isImportStub: (UInt64) -> Bool = { _ in false }
     ) -> CalleeRegisterSummary? {
         analyze(function, calleeEffects: calleeEffects, calleeArity: calleeArity,
-                isFunction: isFunction, isImportStub: isImportStub, retainingReads: summary)
+                isFunction: isFunction, isImportStub: isImportStub, retainingReads: summary,
+                reusingPreservation: reusingPreservation, rebuildingEntryRoles: rebuildingEntryRoles)
     }
 
     private static func analyze(
@@ -307,7 +366,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         calleeArity: (UInt64) -> Int? = { _ in nil },
         isFunction: (UInt64) -> Bool = { _ in false },
         isImportStub: (UInt64) -> Bool = { _ in false },
-        retainingReads readFacts: CalleeRegisterSummary?
+        retainingReads readFacts: CalleeRegisterSummary?, reusingPreservation: Bool = false,
+        rebuildingEntryRoles: Bool = true
     ) -> CalleeRegisterSummary? {
         let instructions = function.instructions
         guard !instructions.isEmpty, instructions.allSatisfy({ $0.detail != nil }) else { return nil }
@@ -315,6 +375,10 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         let blocks = function.basicBlocks()
         guard let entry = blocks.first?.startAddress else { return nil }
         let blockAt = readFacts == nil ? Dictionary(blocks.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a }) : [:]
+        // Direct entry-value clobbers only affect the positive role proof.
+        // If the carried effects have not changed, the same body's exit
+        // preservation and call topology remain valid without another pass.
+        let preservedFacts = reusingPreservation ? readFacts : nil
 
         // Forward must-analysis: the argument registers written on every path
         // into a block (intersection at joins). A read of one not in the set is
@@ -417,11 +481,11 @@ struct CalleeRegisterSummary: Sendable, Equatable {
 
         var writtenCalleeSaved = Set<String>()
         var storedGeneralCalleeSaved = Set<String>()
-        var callees = Set<UInt64>()
-        var outgoingCalls: [OutgoingCall] = []
-        var storesOnlyToStack = true
-        var writesResult = false
-        for insn in instructions {
+        var callees = Set(preservedFacts?.callees ?? [])
+        var outgoingCalls: [OutgoingCall] = preservedFacts?.outgoingCalls ?? []
+        var storesOnlyToStack = preservedFacts?.storesOnlyToStack ?? true
+        var writesResult = preservedFacts?.mayWriteResult ?? false
+        for insn in preservedFacts == nil ? instructions : [] {
             guard let detail = insn.detail else { return nil }
             if detail.writtenRegisterKeys.contains("x0")
                 || insn.controlFlow == .call
@@ -481,20 +545,23 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         // Where the incoming x20 may be, through moves and spills. A call to
         // an in-image function with it still in x20 reads it if that
         // function does: its pending read carries the bit.
+        // Initial MAY analysis always runs. Once its reads are closed, an
+        // image with no possible receiver-proof consumer needs no positive
+        // replay; its closed MAY facts remain the only read facts retained.
+        let selfFlow = readFacts != nil && !rebuildingEntryRoles ? nil : Preservation.selfRegisterFlow(
+            blocks: blocks, entry: entry, addresses: addresses, callEffect: callEffect, callInputs: callInputs,
+            forwards: { insn in insn.branchTarget.map { calleeArity($0) == nil && isFunction($0) } ?? false })
         let readsSelfRegister: Bool
         if let readFacts {
             readsSelfRegister = readFacts.readsSelfRegister
         } else {
-            let selfFlow = Preservation.selfRegisterFlow(
-                blocks: blocks, entry: entry, addresses: addresses, callEffect: callEffect, callInputs: callInputs,
-                forwards: { insn in insn.branchTarget.map { calleeArity($0) == nil && isFunction($0) } ?? false })
             for (address, call) in pending where selfFlow?.forwardedAt.contains(address) ?? true {
                 pending[address] = PendingRead(target: call.target, unwritten: call.unwritten | Self.selfRegisterBit)
             }
             readsSelfRegister = selfFlow?.reads ?? true
         }
-        var clobbered = Set<String>()
-        var restoredFrom: [String: Int64] = [:]
+        var clobbered = preservedFacts?.clobberedCalleeSaved ?? Set<String>()
+        var restoredFrom: [String: Int64] = preservedFacts?.restoredFrom ?? [:]
         if !writtenCalleeSaved.isEmpty {
             let exits = Preservation.exitValues(
                 blocks: blocks, entry: entry, addresses: addresses,
@@ -526,7 +593,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         }
         // The save-slot escape exception belongs to GPRs only. A stored but
         // unrestored vector must still invalidate its callers' low lanes.
-        let definitelyClobbered = clobbered.subtracting(storedGeneralCalleeSaved).subtracting(["x21"])
+        let definitelyClobbered = preservedFacts?.definitelyClobbered
+            ?? clobbered.subtracting(storedGeneralCalleeSaved).subtracting(["x21"])
         var summary = CalleeRegisterSummary(
             argumentReads: reads,
             provenArgumentReads: provenReads,
@@ -537,6 +605,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             readsFramePointer: readsFramePointer,
             readsContextRegister: readsContextRegister,
             readsSelfRegister: readsSelfRegister,
+            provenEntryRegisterReads: selfFlow?.provenReads ?? 0,
+            pendingEntryRegisterReads: selfFlow?.pendingProvenReads ?? [],
+            needsEntryPreservation: selfFlow?.needsEntryPreservation ?? false,
             clobberedCalleeSaved: clobbered,
             definitelyClobbered: definitelyClobbered,
             restoredFrom: restoredFrom.filter { definitelyClobbered.contains($0.key) },
@@ -625,7 +696,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     ) {
         let effects = summaries.compactMapValues { summary -> CalleeEffect? in
             guard case .literalStores = summary.memoryEffect else { return nil }
-            return CalleeEffect(memoryEffect: summary.memoryEffect)
+            return CalleeEffect(memoryEffect: summary.memoryEffect, entryValueClobbers: summary.clobberedCalleeSaved)
         }
         guard !effects.isEmpty else { return }
         let callers = summaries.keys.sorted().filter { start in
@@ -813,6 +884,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             mayWriteFloatResult: mayWriteFloatResult, pendingReads: pendingReads,
             readsFramePointer: readsFramePointer,
             readsContextRegister: readsContextRegister, readsSelfRegister: readsSelfRegister,
+            provenEntryRegisterReads: provenEntryRegisterReads, pendingEntryRegisterReads: pendingEntryRegisterReads,
+            needsEntryPreservation: needsEntryPreservation,
             clobberedCalleeSaved: clobberedCalleeSaved,
             definitelyClobbered: definitelyClobbered, restoredFrom: restoredFrom, callees: callees,
             outgoingCalls: outgoingCalls, storesOnlyToStack: storesOnlyToStack, memoryEffect: memoryEffect,
@@ -820,6 +893,39 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         summary.mayWriteResult = mayWriteResult
         summary.resultReads = resultReads
         return summary
+    }
+
+    /// Close positive register uses only after call effects have settled.
+    /// A caller forwards a role only when the actual register at the call
+    /// has a MUST entry origin and a finite chain reaches an explicit use.
+    /// Unknown callees and ungrounded cycles supply no positive evidence.
+    static func closeOverProvenEntryReads(_ summaries: inout [UInt64: CalleeRegisterSummary]) {
+        let starts = summaries.keys.sorted()
+        var callers: [UInt64: [UInt64]] = [:]
+        for start in starts {
+            for target in Set((summaries[start]?.pendingEntryRegisterReads ?? []).map(\.target)).sorted() {
+                callers[target, default: []].append(start)
+            }
+        }
+        var worklist = starts.filter { summaries[$0]?.pendingEntryRegisterReads.isEmpty == false }
+        var queued = Set(worklist)
+        var next = 0
+        while next < worklist.count {
+            let start = worklist[next]
+            next += 1
+            queued.remove(start)
+            guard let summary = summaries[start] else { continue }
+            var reads = summary.provenEntryRegisterReads
+            for call in summary.pendingEntryRegisterReads {
+                guard let callee = summaries[call.target] else { continue }
+                let inputs = callee.provenEntryRegisterReads
+                reads |= call.origins(consumedBy: inputs)
+            }
+            guard reads != summary.provenEntryRegisterReads else { continue }
+            summaries[start]?.provenEntryRegisterReads = reads
+            for caller in callers[start] ?? [] where queued.insert(caller).inserted { worklist.append(caller) }
+        }
+        for start in starts { summaries[start]?.pendingEntryRegisterReads = [] }
     }
 
     /// Whether an instruction uses a callee-saved register (`key`, x29 or
@@ -860,37 +966,57 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// A run still changing at the cap claims nothing for the functions
     /// waiting to be rebuilt and for every function that calls one of them,
     /// directly or not: those were built on effects that are now stale.
-    /// The callback also receives this body's existing, closed read facts.
-    /// Its immutable body can reuse them while rebuilding preservation.
+    /// The callback receives this body's existing, closed read facts and
+    /// whether its exit preservation is still current. An entry-role-only
+    /// refresh must replay positive uses, but can reuse that preservation.
     static func closeOverCalls(
         _ summaries: inout [UInt64: CalleeRegisterSummary],
         cap fixedCap: Int? = nil,
-        recompute: (UInt64, (UInt64) -> CalleeEffect, CalleeRegisterSummary) -> CalleeRegisterSummary?
+        rebuildingEntryRoles: Bool = true,
+        recompute: (UInt64, (UInt64) -> CalleeEffect, CalleeRegisterSummary, Bool) -> CalleeRegisterSummary?
     ) {
+        let starts = summaries.keys.sorted()
+        if !rebuildingEntryRoles {
+            // Unrequested positive facts are absent, never provisional facts
+            // from before call effects settled. Leaves need this too.
+            for start in starts {
+                summaries[start]?.provenEntryRegisterReads = 0
+                summaries[start]?.pendingEntryRegisterReads = []
+                summaries[start]?.needsEntryPreservation = false
+            }
+        }
         var callers: [UInt64: [UInt64]] = [:]
-        for start in summaries.keys.sorted() {
+        for start in starts {
             for callee in summaries[start]?.callees ?? [] where summaries[callee] != nil {
                 callers[callee, default: []].append(start)
             }
         }
-        var worklist = summaries.keys.sorted().filter { start in
+        var needsPreservation = Set(starts.filter { start in
             summaries[start]?.callees.contains {
                 summaries[$0]?.definitelyClobbered.isEmpty == false || summaries[$0]?.readsFramePointer == true
             } == true
+        })
+        var worklist = starts.filter { start in
+            needsPreservation.contains(start) || (rebuildingEntryRoles && (summaries[start]?.needsEntryPreservation == true
+                || summaries[start]?.callees.contains {
+                    summaries[$0]?.clobberedCalleeSaved.isEmpty == false
+            } == true))
         }
         var queued = Set(worklist)
         var rounds = 0
+        var next = 0
         // A run that settles rebuilds each function a few times at most; the
         // cap stops only one whose effects keep feeding each other (a cycle).
         let edges = callers.values.reduce(0) { $0 + $1.count }
         let cap = fixedCap ?? (summaries.count + (2 * calleeSavedKeys.count + 1) * edges + 64)
-        while !worklist.isEmpty {
-            let start = worklist.removeFirst()
+        while next < worklist.count {
+            let start = worklist[next]
+            next += 1
             queued.remove(start)
             rounds += 1
             guard rounds <= cap else {
                 Probe.record(.summaryCap, at: start, ["pass": .label("call-clobbers")])
-                var unsettled = Set([start] + worklist)
+                var unsettled = Set([start] + Array(worklist[next...]))
                 var pending = unsettled.sorted()
                 while let next = pending.popLast() {
                     for caller in callers[next] ?? [] where unsettled.insert(caller).inserted {
@@ -905,7 +1031,11 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             guard let old = summaries[start] else { continue }
             // A body that cannot be summarised again claims nothing, rather
             // than keeping a summary built before its callees were known.
-            let rebuilt = recompute(start, { summaries[$0]?.effect ?? CalleeEffect() }, old) ?? old.claimingNothing()
+            // Consume before rebuilding: a recursive carried-effect change
+            // below must be able to invalidate this body's next visit.
+            let reusePreservation = needsPreservation.remove(start) == nil
+            let rebuilt = recompute(start, { summaries[$0]?.effect ?? CalleeEffect() }, old, reusePreservation)
+                ?? old.claimingNothing()
             var new = CalleeRegisterSummary(
                 argumentReads: old.argumentReads,
                 provenArgumentReads: old.provenArgumentReads,
@@ -920,6 +1050,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 // function calling a clobbering fragment read as reading x20
                 // again, and a temporary its caller parked there as `self`.
                 readsSelfRegister: old.readsSelfRegister,
+                provenEntryRegisterReads: rebuildingEntryRoles ? rebuilt.provenEntryRegisterReads : 0,
+                pendingEntryRegisterReads: rebuildingEntryRoles ? rebuilt.pendingEntryRegisterReads : [],
+                needsEntryPreservation: rebuildingEntryRoles && rebuilt.needsEntryPreservation,
                 clobberedCalleeSaved: rebuilt.clobberedCalleeSaved,
                 definitelyClobbered: rebuilt.definitelyClobbered,
                 restoredFrom: rebuilt.restoredFrom,
@@ -931,8 +1064,18 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             new.mayWriteResult = old.mayWriteResult
             new.resultReads = old.resultReads
             summaries[start] = new
-            guard new.effect != old.effect else { continue }
-            for caller in callers[start] ?? [] where !queued.contains(caller) {
+            var newCarriedEffect = new.effect
+            var oldCarriedEffect = old.effect
+            newCarriedEffect.entryValueClobbers = nil
+            oldCarriedEffect.entryValueClobbers = nil
+            guard newCarriedEffect != oldCarriedEffect
+                || (rebuildingEntryRoles && new.effect != old.effect) else { continue }
+            for caller in callers[start] ?? [] {
+                // Promote a pending role refresh too: it may already be in
+                // the queue when this callee first exposes a carried clobber
+                // or changes an outlined reload's offset.
+                if newCarriedEffect != oldCarriedEffect { needsPreservation.insert(caller) }
+                guard !queued.contains(caller) else { continue }
                 worklist.append(caller)
                 queued.insert(caller)
             }
@@ -1106,22 +1249,18 @@ enum Preservation {
             registerFacts.origins(key)
         }
 
-        /// The frame addresses in `keys` reach code this body does not see.
-        /// One strictly below every save made so far reaches up to the
-        /// lowest save; anything else may reach every slot.
+        /// The frame origins in `keys` reach code this body does not see.
+        /// An exact address alone proves no object extent. Dynamic origins
+        /// retain the existing below-allocation policy.
         mutating func markEscape<Keys: Sequence>(_ keys: Keys) where Keys.Element == String {
-            // Each saved or spilled entry value is a slot of its own. An
-            // escaped address outside every one reaches up to the next one
-            // above it, the extent of the object it points at: a local below
-            // the save area, or one in a gap inside it (a byte local in the
-            // padding word `str x28, [sp, #-0x60]!` leaves at sp + 8). An
-            // address inside a saved value, or with no saved value above it,
-            // may reach every slot.
+            // A saved entry value can be a field of an escaped local, so it
+            // supplies no object boundary for an exact pointer. These starts
+            // are consulted only by the legacy dynamic-origin policy.
             let entrySlots = slots.compactMap { offset, value -> Int64? in
                 if case .entry = value { return offset }
                 return nil
             }.sorted()
-            let evidence = LiveEntrySaveEvidence(sortedEntryStarts: entrySlots)
+            let evidence = DynamicEscapeSaveEvidence(sortedEntryStarts: entrySlots)
             for (key, _) in registerFacts.selected(keys) {
                 // Keep each selected register's transaction separate: an Any
                 // input must not erase a different input's bounded ranges.
@@ -1583,6 +1722,10 @@ extension Preservation {
         /// The in-image calls and tail branches, by address, where x20 may
         /// still hold it.
         var forwardedAt: Set<UInt64> = []
+        /// Positive evidence is separate from the MAY flow above.
+        var provenReads: UInt32 = 0
+        var pendingProvenReads: [CalleeRegisterSummary.EntryRegisterForward] = []
+        var needsEntryPreservation = false
     }
 
     /// The registers a function returns its result in.
@@ -1590,6 +1733,9 @@ extension Preservation {
 
     private struct SelfState: Equatable {
         var frame: State
+        /// Incoming argument values still present on EVERY path here. This
+        /// positive mask is separate from the summary's conservative reads.
+        var untouchedArguments: UInt32 = 0xff
         /// Registers that may hold the incoming x20.
         var registers: Set<String> = ["x20"]
         /// Eight-byte frame slots (offsets from entry sp) that may hold it.
@@ -1598,6 +1744,7 @@ extension Preservation {
         func merged(with other: SelfState) -> SelfState {
             SelfState(
                 frame: frame.merged(with: other.frame),
+                untouchedArguments: untouchedArguments & other.untouchedArguments,
                 registers: registers.union(other.registers),
                 slots: slots.mayUnion(with: other.slots))
         }
@@ -1634,6 +1781,11 @@ extension Preservation {
         let blockAt = Dictionary(blocks.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
         var inState: [UInt64: SelfState] = [entry: SelfState(frame: frame)]
         var flow = SelfRegisterFlow()
+        // A MUST origin can disappear when a second predecessor arrives.
+        // Replace each block's proof on revisits; do not OR transient proofs
+        // into the final result before the dataflow reaches its fixpoint.
+        var blockReads: [UInt64: UInt32] = [:]
+        var blockForwards: [UInt64: [CalleeRegisterSummary.EntryRegisterForward]] = [:]
         var worklist = [entry]
         var visits = 0
         while let start = worklist.popLast() {
@@ -1643,15 +1795,23 @@ extension Preservation {
                 return nil
             }
             guard let block = blockAt[start], var state = inState[start] else { return nil }
+            var provenReads: UInt32 = 0
+            var pendingProvenReads: [CalleeRegisterSummary.EntryRegisterForward] = []
             for insn in block.instructions {
                 guard let detail = insn.detail else { return nil }
+                provenReads |= explicitArgumentReads(detail, untouched: state.untouchedArguments)
                 let internalBranch = insn.branchTarget.map(addresses.contains) == true
                 let isTailBranch = (insn.controlFlow == .branch || insn.controlFlow == .conditionalBranch)
                     && !internalBranch && block.switchCases == nil
                 if insn.controlFlow == .call || isTailBranch {
                     // An indirect target register is read as a value.
+                    for key in detail.readRegisterKeys { provenReads |= entryBit(state.frame.value(key)) }
                     if !state.registers.isDisjoint(with: detail.readRegisterKeys) { flow.reads = true }
                     if forwards(insn) {
+                        if let target = insn.branchTarget {
+                            let call = CalleeRegisterSummary.EntryRegisterForward(target: target, values: state.frame.registers)
+                            if !call.isEmpty { pendingProvenReads.append(call) }
+                        }
                         if state.registers.contains("x20") { flow.forwardedAt.insert(insn.address) }
                         // An in-image function may be an outlined fragment,
                         // which takes an input in any register.
@@ -1663,8 +1823,27 @@ extension Preservation {
                     }
                     if isTailBranch { continue }
                     let effect = callEffect(insn)
+                    let entryClobbers: Set<String>
+                    if forwards(insn) {
+                        if let clobbers = effect.entryValueClobbers { entryClobbers = clobbers }
+                        else {
+                            // Missing in-image bodies may be outlined fragments.
+                            // Until their direct preservation is known, they
+                            // cannot carry a MUST incoming register value.
+                            entryClobbers = Set(calleeSavedKeys)
+                            flow.needsEntryPreservation = true
+                        }
+                    } else { entryClobbers = [] }
                     let spBefore = state.frame.value("sp")
                     let memory = applyCall(effect, inputs: callInputs(insn), to: &state.frame, clobbersMayAliasStack: true)
+                    // A failed entry-value proof does not invent a new frame
+                    // alias. Retain the existing MAY origins while dropping
+                    // exact values; known outlined reloads were applied above.
+                    for key in entryClobbers where effect.restores[key] == nil {
+                        let mayAlias = state.frame.stackAliases.contains(key)
+                        state.frame.setRegister(key, to: .unknown, mayAliasStack: mayAlias)
+                    }
+                    state.untouchedArguments = 0
                     if let memory {
                         // Literal stores read no old memory. A whole word
                         // replaces self there; partial writes retain MAY bits.
@@ -1693,11 +1872,28 @@ extension Preservation {
                     // Returned: `mov x0, x20; …; ret` is an initializer
                     // handing back the self it was given.
                     if !state.registers.isDisjoint(with: resultKeys) { flow.reads = true }
+                    for key in resultKeys { provenReads |= entryBit(state.frame.value(key)) }
+                    for key in detail.readRegisterKeys { provenReads |= entryBit(state.frame.value(key)) }
                     continue
                 }
+                provenReads |= explicitEntryReads(detail, in: state.frame)
                 if transfer(detail, to: &state) { flow.reads = true }
                 apply(detail, to: &state.frame)
+                for info in detail.operands {
+                    guard let register = info.operand.register, register.kind == .gpr else { continue }
+                    if (info.isWritten || info.access == 0), register.number < 8 {
+                        state.untouchedArguments &= ~(1 << register.number)
+                    }
+                    if info.access == 0 {
+                        // Missing access flags cannot prove an old register
+                        // survived an otherwise unmodelled instruction.
+                        let mayAlias = state.frame.stackAliases.contains(register.key)
+                        state.frame.setRegister(register.key, to: .unknown, mayAliasStack: mayAlias)
+                    }
+                }
             }
+            blockReads[start] = provenReads
+            blockForwards[start] = pendingProvenReads
             for successor in block.successors where addresses.contains(successor) {
                 let merged = inState[successor].map { $0.merged(with: state) } ?? state
                 if merged != inState[successor] {
@@ -1706,7 +1902,77 @@ extension Preservation {
                 }
             }
         }
+        for start in blockReads.keys.sorted() {
+            flow.provenReads |= blockReads[start] ?? 0
+            flow.pendingProvenReads.append(contentsOf: blockForwards[start] ?? [])
+        }
         return flow
+    }
+
+    private static func explicitArgumentReads(_ detail: StructuredInsn, untouched: UInt32) -> UInt32 {
+        var reads: UInt32 = 0
+        func consume(_ register: PhysReg) {
+            if register.kind == .gpr, register.number < 8 { reads |= untouched & (1 << register.number) }
+        }
+        for info in detail.operands {
+            switch info.operand {
+            case .register(let register) where info.isRead: consume(register)
+            case .memory(let base, let index, _):
+                if let base { consume(base) }
+                if let index { consume(index) }
+            default: break
+            }
+        }
+        return reads
+    }
+
+    private static func entryBit(_ value: Value) -> UInt32 {
+        guard case .entry(let key) = value, key.first == "x",
+              let index = Int(key.dropFirst()), (19...29).contains(index) else { return 0 }
+        return 1 << index
+    }
+
+    /// Full-word moves and exact frame spills transport an entry value;
+    /// they do not prove it is an input. Only explicit GPR consumption at a
+    /// known origin counts. Possible slot overlap and unknown calls never do.
+    private static func explicitEntryReads(_ detail: StructuredInsn, in frame: State) -> UInt32 {
+        let operands = detail.operands
+        func register(_ index: Int) -> PhysReg? {
+            index < operands.count ? operands[index].operand.register : nil
+        }
+        if detail.id == AARCH64_INS_MOV || detail.id == AARCH64_INS_FMOV,
+           operands.count == 2, operands.allSatisfy({ $0.vectorIndex == nil }),
+           let destination = register(0), let source = register(1),
+           destination.widthBits == 64, source.widthBits == 64 { return 0 }
+
+        var spill0: String?
+        var spill1: String?
+        switch detail.id {
+        case AARCH64_INS_STR, AARCH64_INS_STUR, AARCH64_INS_STP, AARCH64_INS_STNP:
+            if access(detail, in: frame).address != nil {
+                if let source = register(0), source.kind == .gpr, source.widthBits == 64 { spill0 = source.key }
+                if detail.id == AARCH64_INS_STP || detail.id == AARCH64_INS_STNP,
+                   let source = register(1), source.kind == .gpr, source.widthBits == 64 { spill1 = source.key }
+            }
+        default: break
+        }
+        var reads: UInt32 = 0
+        func consume(_ key: String) {
+            guard key != spill0 && key != spill1 else { return }
+            reads |= entryBit(frame.value(key))
+        }
+        for info in operands {
+            switch info.operand {
+            case .register(let register) where register.kind == .gpr && info.isRead:
+                consume(register.key)
+            case .memory(let base, let index, _):
+                if let base { consume(base.key) }
+                if let index { consume(index.key) }
+            default: break
+            }
+        }
+        for key in detail.readRegisterKeys { consume(key) }
+        return reads
     }
 
     /// Moves the incoming x20 through one instruction that is no call or

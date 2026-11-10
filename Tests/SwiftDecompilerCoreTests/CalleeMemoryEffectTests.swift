@@ -22,7 +22,8 @@ struct CalleeMemoryEffectTests {
         let summary = CalleeMemoryEffect.discover(in: try Self.body([0xd2800169, 0xf9000009, 0xd65f03c0]))
         let x0 = PhysReg(kind: .gpr, number: 0, widthBits: 64)
         let x9 = PhysReg(kind: .gpr, number: 9, widthBits: 64)
-        #expect(summary == .literalStores([.init(base: x0, offset: 0, bytes: 8, value: 11, source: x9)], inputs: [x0]))
+        #expect(summary == .literalStores([.init(base: x0, offset: 0, bytes: 8, value: 11, source: x9)], inputs: [x0],
+            outputs: [.init(destination: x9, value: .literal(11))]))
         let plan = try #require(summary.framePlan { $0 == x0 ? -32 : nil })
         #expect(plan.stores == [.init(start: -32, bytes: 8, value: 11, source: x9)])
         let effect = plan.writeEffect(arithmetic: .wrapping)

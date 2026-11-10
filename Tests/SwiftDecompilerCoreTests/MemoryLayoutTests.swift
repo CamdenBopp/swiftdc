@@ -17,8 +17,10 @@ import Ccapstone
     #expect(MemoryLayout<FunctionCallSites>.stride <= 48)
     // One per function for the whole run; field order padded it to 128.
     // The pure-alias input proof adds 16: the decoded entry and the
-    // branch's 32-bit offset.
-    #expect(MemoryLayout<CalleeRegisterSummary>.stride <= 112)
+    // branch's 32-bit offset. Entry-register roles add 24: their pending
+    // forwards (construction state, emptied by closeOverProvenEntryReads),
+    // the 32-bit proven-read mask and a flag.
+    #expect(MemoryLayout<CalleeRegisterSummary>.stride <= 136)
 }
 
 /// Packing keeps every value: a Capstone id past a bank (`.other`), the

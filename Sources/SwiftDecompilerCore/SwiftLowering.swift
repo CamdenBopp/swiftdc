@@ -173,6 +173,30 @@ extension SwiftLowering {
         of type: String, fieldMaps: [String: FieldMap],
         enumCaseIndex: EnumCaseIndex = EnumCaseIndex(), classTypeIndex: ClassTypeIndex = ClassTypeIndex()
     ) -> (integers: Int, floats: Int)? {
+        guard let footprint = aggregateRegisterFootprint(
+            of: type, fieldMaps: fieldMaps, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
+        else { return nil }
+        if footprint.integers + footprint.floats > 4 { return (1, 0) }
+        return footprint
+    }
+
+    /// A complete direct value, never the pointer used to transport an
+    /// indirect formal. The latter does not prove an ordinary value receiver.
+    static func directAggregateRegisters(
+        of type: String, fieldMaps: [String: FieldMap],
+        enumCaseIndex: EnumCaseIndex = EnumCaseIndex(), classTypeIndex: ClassTypeIndex = ClassTypeIndex()
+    ) -> (integers: Int, floats: Int)? {
+        guard let footprint = aggregateRegisterFootprint(
+            of: type, fieldMaps: fieldMaps, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex),
+              footprint.integers + footprint.floats <= 4
+        else { return nil }
+        return footprint
+    }
+
+    private static func aggregateRegisterFootprint(
+        of type: String, fieldMaps: [String: FieldMap],
+        enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex
+    ) -> (integers: Int, floats: Int)? {
         // An explicit Void parameter is still a source argument, but the
         // empty tuple has no payload in either register bank. Keep its opaque
         // slot while placing later arguments; dropping the slot would change
@@ -189,7 +213,6 @@ extension SwiftLowering {
                              classTypeIndex: classTypeIndex, depth: 0,
                              integerChunks: &integerChunks, floats: &floats)
         else { return nil }
-        if integerChunks.count + floats > 4 { return (1, 0) }
         return (integerChunks.count, floats)
     }
 

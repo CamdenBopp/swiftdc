@@ -285,24 +285,22 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     #expect(try clobbers(0x940003fc).contains("x29")) // bl 0x2000, unknown
 }
 
-/// A local's address handed to a call reaches that local, below the
-/// register save area, not the saves above it, the extent the tracer's
-/// `escapedReach` gives a local:
+/// A local's address gives a coordinate, not a proof of its allocation's
+/// extent. A register spill above it cannot bound an unknown callee's writes:
 ///
 ///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
 ///     sub sp, sp, #0x10; mov x19, x0; mov x0, sp; bl 0x2000
 ///     add sp, sp, #0x10; ldp x20, x19, [sp, #0x10]; ldp x29, x30, [sp], #0x20; ret
 ///
-/// The escape forgot every save, and the summary claimed x19, x20 and x29
-/// clobbered: `-Onone` `makeWide` passing its result buffer to its
-/// initializer read `return ?` in `wideSum` after it.
-@Test func anEscapedLocalReachesNoSaveAboveIt() throws {
+/// Recovering the saves needs a callee footprint or independent ownership
+/// evidence; their current values alone do not supply that evidence.
+@Test func anEscapedLocalHasNoObjectBoundFromRegisterSaves() throws {
     var words: [UInt32] = [
         0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xaa0003f3, 0x910003e0, 0x940003fa,
         0x910043ff, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
     ]
     let local = try #require(CalleeRegisterSummary.of(try body(words, name: "local")))
-    #expect(local.clobberedCalleeSaved.isEmpty, "\(local.clobberedCalleeSaved)")
+    #expect(local.clobberedCalleeSaved == ["x19", "x20", "x29"])
     // The control: x29's own address, the frame record among the saves, may
     // reach every one of them (`mov x0, x29`).
     words[5] = 0x910003a0
@@ -327,25 +325,24 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     #expect(summary.clobberedCalleeSaved == ["x19", "x20", "x29"], "\(summary.clobberedCalleeSaved)")
 }
 
-/// The save area is the run of entry values at the top of the frame. An
-/// entry value spilled among the locals (`str x21, [sp]`) is no save, and a
-/// local above it (`add x0, sp, #8`) is still a local:
+/// An entry value spilled among locals (`str x21, [sp]`) supplies no
+/// allocation boundary for a pointer above it (`add x0, sp, #8`):
 ///
 ///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
 ///     sub sp, sp, #0x20; mov x19, x0; str x21, [sp]; add x0, sp, #8
 ///     bl 0x2000; add sp, sp, #0x20; ldp …; ldp …; ret
-@Test func aSpilledEntryValueIsNoPartOfTheSaveArea() throws {
+@Test func aSpilledEntryValueDoesNotProveLocalOwnership() throws {
     let words: [UInt32] = [
         0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10083ff, 0xaa0003f3, 0xf90003f5, 0x910023e0,
         0x940003f9, 0x910083ff, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
     ]
     let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "spilled")))
-    #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
+    #expect(summary.clobberedCalleeSaved == ["x19", "x20", "x29"])
 }
 
 /// A join that loses a frame alias's exact offset keeps the offsets it may
 /// hold: x1 is `mov x1, sp`, a local, on one path and no frame address on the
-/// other, so the call reaches at most that local:
+/// other. That possible coordinate must still escape without an object bound:
 ///
 ///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
 ///     sub sp, sp, #0x10; mov x19, x0; cbz x0, 1f; mov x1, sp
@@ -356,13 +353,13 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
         0x940003f9, 0x910043ff, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
     ]
     let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "joined")))
-    #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
+    #expect(summary.clobberedCalleeSaved == ["x19", "x20", "x29"])
     // A copy of the alias keeps the offsets: `mov x2, x1` before the call.
     var copied = words
     copied.insert(0xaa0103e2, at: 7)
     copied[8] = 0x940003f8 // bl 0x2000 from its new address
     let copy = try #require(CalleeRegisterSummary.of(try body(copied, name: "copied")))
-    #expect(copy.clobberedCalleeSaved.isEmpty, "\(copy.clobberedCalleeSaved)")
+    #expect(copy.clobberedCalleeSaved == ["x19", "x20", "x29"])
     // The control: the same join where the other path holds x29's own
     // address, the frame record, may reach every save.
     var record = words
@@ -371,24 +368,22 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     #expect(control.clobberedCalleeSaved.contains("x29"), "\(control.clobberedCalleeSaved)")
 }
 
-/// An escaped address reaches the object it points at, up to the next saved
-/// value above it, wherever it lies: a local below the save area, or a byte
-/// local the compiler keeps in the padding word `str x28, [sp, #-0x60]!`
-/// leaves at sp + 8. Two escapes keep two ranges; one widened interval
-/// spanned the saves between them.
+/// Neither a pointer below the saved registers nor a pointer in their
+/// padding proves an object extent. Two such coordinates must not protect
+/// the saves between them against an unknown writer.
 ///
 ///     str x28, [sp, #-0x60]!; stp x27, x26, [sp, #0x10]
 ///     stp x29, x30, [sp, #0x50]; add x29, sp, #0x50; sub sp, sp, #0x10
 ///     mov x27, x0; mov x0, sp; bl 0x2000; add x0, sp, #0x1f; bl 0x2000
 ///     add sp, sp, #0x10; ldp x29, x30, [sp, #0x50]; ldp x27, x26, [sp, #0x10]
 ///     ldr x28, [sp], #0x60; ret
-@Test func anEscapedAddressReachesUpToTheNextSave() throws {
+@Test func escapedCoordinatesDoNotBoundObjectsAtTheNextSave() throws {
     var words: [UInt32] = [
         0xf81a0ffc, 0xa9016bfb, 0xa9057bfd, 0x910143fd, 0xd10043ff, 0xaa0003fb, 0x910003e0,
         0x940003f9, 0x91007fe0, 0x940003f7, 0x910043ff, 0xa9457bfd, 0xa9416bfb, 0xf84607fc, 0xd65f03c0,
     ]
     let gaps = try #require(CalleeRegisterSummary.of(try body(words, name: "gaps")))
-    #expect(gaps.clobberedCalleeSaved.isEmpty, "\(gaps.clobberedCalleeSaved)")
+    #expect(gaps.clobberedCalleeSaved == ["x26", "x27", "x28", "x29"])
     // The control: `add x0, sp, #0x20` is x27's own save slot.
     words[8] = 0x910083e0
     let saved = try #require(CalleeRegisterSummary.of(try body(words, name: "saved")))
@@ -530,15 +525,31 @@ private func callTarget(_ function: DisassembledFunction) throws -> UInt64 {
 /// The -Onone initializers spill self (`str x20, [sp, #8]; ldr x20,
 /// [sp, #8]; bl Animal.init`), and `Animal.init` returns it: both keep it.
 @Test func anInitializerThatSpillsSelfKeepsItIfPresent() async throws {
-    guard let text = try await structured("__allocating_init", in: "Fixtures/Sample/libReconstruction.dylib") else { return }
-    #expect(text.contains("return Reconstruction.Dog.init(self: swift_allocObject(?, 16, 7))"), Comment(rawValue: text))
-    #expect(text.contains("return Reconstruction.Animal.init(self: swift_allocObject(?, 16, 7))"), Comment(rawValue: text))
+    let path = "Fixtures/Sample/libReconstruction.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler().disassemble(path: path, functionFilter: "__allocating_init")
+    }
+    for type in ["Dog", "Animal"] {
+        let function = try #require(functions.first { $0.displayName.hasPrefix("Reconstruction.\(type).__allocating_init(") })
+        let allocation = try #require(function.instructions.first { $0.callee == "swift_allocObject" })
+        let binding = try #require(allocation.binding)
+        #expect(binding.expression == "swift_allocObject(?, 16, 7)")
+        let initializer = try #require(function.instructions.first { $0.callee?.hasPrefix("Reconstruction.\(type).init(") == true })
+        #expect(initializer.callSelf == binding.name)
+        for text in [function.renderPseudo(), function.renderStructured()] {
+            #expect(text.contains("return Reconstruction.\(type).init(self: \(binding.name))"), Comment(rawValue: text))
+            #expect(text.components(separatedBy: "swift_allocObject(").count == 2, Comment(rawValue: text))
+        }
+    }
 }
 
-/// An enum method takes its payload words, not x20: `Tree.sum` loads x20
-/// (`ldrb w20, [x0, #0x28]`) before any use of it.
+/// The payload enum method has no context self. This image does not yet
+/// supply its complete direct receiver layout: ordinary positive reads alone
+/// cannot decide which of the remaining physical words are its whole value.
+/// Keep the call, declining that unsupported positional reconstruction.
 @Test func aByValueEnumMethodTakesNoSelfIfPresent() async throws {
     guard let text = try await structured("Sample.run", in: "Fixtures/Sample/libSample.dylib") else { return }
-    #expect(text.contains("Sample.Tree.sum(r"), Comment(rawValue: text))
+    #expect(text.contains("Sample.Tree.sum()"), Comment(rawValue: text))
     #expect(!text.contains("Sample.Tree.sum(self:"), Comment(rawValue: text))
 }

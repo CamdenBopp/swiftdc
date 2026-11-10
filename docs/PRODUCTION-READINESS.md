@@ -88,30 +88,28 @@ results do not replace previously recorded release performance measurements.
   missing target gains nothing. PureTailInputTests covers every summary
   route. Ported from the compiler-ir-arc-origin-20261107 worktree.
 
-- **OPEN — the frame-ownership work and the x29-clobber escape are not
-  yet compatible (2026-11-10).** The compiler-ir-frame-ownership worktree
-  (Codex, an in-progress checkpoint) stops treating an entry-register spill
-  as an escaped local's object bound, a soundness fix with a native
-  counterexample (`frame_preserve_alias.s`: an x19 spill that is a word of the
-  local passed to a call). Preservation then gives an escaped local MAY reach
-  over its whole frame, so a body that passes a local's address to a callee
-  with no complete store plan (`otherWide` passing `&local` to
-  `Wide5.init` at -Onone) may clobber its saved x29. Dev's 47ceb26 then
-  escapes the whole caller frame at every call to such a body. Each rule is
-  sound; together, merged onto 7d57779, they change 12,787 structured lines
-  in 96 fixtures, raise GoodLinks cfg.unresolved-indirect-call 14,853 ->
-  15,504, fail the cost budget and seven precision tests (`modifiedWide` at
-  -Onone loses every spill after the call). Exempting the ABI frame record
-  (the entry x29/x30 at the frame pointer) from an escaped local's reach
-  recovers part (15,336; 9,496 lines) but contradicts dev's own
-  CalleeRegisterSummaryTests, which treat the record as reachable through an
-  escaped frame alias. Landing it needs that policy decided (whether
-  memory-safe code may be assumed not to write a frame record through a
-  local's address) and bounded callee writes through passed pointers. The
-  merged state is kept outside the repository; the worktree's other parts
-  (entry-register roles, indirect-result and context-result order, callee
-  body transfer, caller-owned frame aliases, imported receivers) were
-  ported into it and pass their tests there.
+- **FIXED (soundness, 2026-11-10) — an entry spill was used as an escaped
+  local's object bound; ported with the rest of the frame-ownership work.**
+  `frame_preserve_alias.s`: an x19 spill that is a word of the local passed
+  to a call was kept across it, where native execution rewrites it. An
+  escaped local's MAY reach is now its whole frame. Ported from the
+  compiler-ir-frame-ownership worktree (Codex) together with its entry-register
+  roles, indirect-result and context-result producer order, complete-body
+  register transfer, caller-owned frame aliases and imported-receiver proofs.
+- **OPEN — what that soundness costs with the x29-clobber escape.** A body
+  that passes a local's address to a callee with no complete store plan
+  (`otherWide` passing `&local` to `Wide5.init` at -Onone) may now overwrite
+  its own saved x29 and x19, so its summary reports them as possibly
+  clobbered, and 47ceb26 escapes the whole caller frame at every call to it.
+  Each rule is sound; together, against 7d57779, 12,787 structured lines in
+  96 fixtures move to declines (spills after such a call, witness calls
+  through slots, uniqueness snapshots across calls), and GoodLinks
+  cfg.unresolved-indirect-call rises 14,853 -> 15,504. Exempting the ABI frame
+  record (the entry x29/x30 at the frame pointer) from an escaped local's reach
+  recovers part (15,336, 9,496 lines): sound if memory-safe code never writes a
+  frame record through a local's address, which dev's CalleeRegisterSummaryTests
+  currently treat as possible. That policy is the owner's call. Bounded writes
+  through passed pointers (a callee's own store extents) are the precise fix.
 
 - **OPEN — the remaining 2,276 of those sites.** Stripped countAll is one:
   its third buffer's size is read through an argument the stripped tracer
@@ -2217,17 +2215,18 @@ because it cannot be distinguished from a right one by reading the output.
   pass a call an address inside a saved register's slot (a dead `x8 =
   x29 - 0x10` from an earlier store) or one whose offset arithmetic the
   pass does not follow.
-- **FIXED — a local inside the register save area escaped every save.**
-  Swift keeps byte locals in gaps of the save area, such as the padding
-  word `str x28, [sp, #-0x60]!` leaves at sp + 8. Their addresses go to
-  `KeyedDecodingContainer.decode(_:forKey:)` and its kin, and counted as
-  pointing at the saves. An escaped address now reaches the object it
-  points at, up to the next saved value above it; only an address inside
-  a saved value escapes them all. Escapes in different places keep
-  separate ranges. Functions summarized as clobbering x29: 63 → 41
-  (plugin library), 18 → 16 (libSwiftIfConfig), 52 → 41
-  (libSwiftParserDiagnostics). Raw `mem[x29 …]` stores: plugin library
-  15 → 1, libSwiftParserDiagnostics 419 → 325.
+- **SUPERSEDED — entry-register spills were used as object bounds.**
+  The earlier optimization bounded an escaped address at the next saved
+  entry value. Its historical clobbered-x29 counts were 63 → 41 (plugin
+  library), 18 → 16 (libSwiftIfConfig), and 52 → 41
+  (libSwiftParserDiagnostics); raw `mem[x29 …]` stores fell from 15 → 1
+  and 419 → 325 in the first and last libraries. Those reductions did not
+  prove the bound: a saved entry value can itself be a word of the object
+  passed to a call. The authored `frame_preserve_alias.s` native reduction
+  demonstrates an overwrite beyond that spill. Preservation now records
+  whole-frame MAY reach for exact-address alternatives; it retains the
+  separate legacy policy for dynamic allocations. Coordinates and saved
+  values alone are not evidence of an allocation's extent.
 - **FIXED — a frame alias whose offset a join lost escaped every saved
   register.** x1 is `sub x1, x29, #0x48` on one path into a block and no
   frame address on the other. The join kept x1 as a possible alias but
@@ -11926,3 +11925,97 @@ ABI review item 11. Truth for every shape is `swiftc -O -emit-ir` on
   `generic specialization <Swift.Int8> of P.meta<A>(arg0)`, the clause and
   the name up to its generic list. It reads shorter than the printed
   declaration because the metatype is gone.
+- **OPEN — full shared memory semantics and value identity.** The bounded
+  producer proves complete supported literal-store bodies and selected final
+  register expressions rooted in one call-entry snapshot. It can instantiate
+  frame and own-result destinations, transport exact register aliases, and
+  split supported q stores into raw words. Typed direct return contracts keep
+  their ordinary logical call-result path; known-size indirect results gain
+  producer identity only after complete byte coverage. General callee reads,
+  captures and call composition, structured object extents and a unified memory
+  model remain open. Independent addresses are insufficient ownership evidence.
+
+- **FIXED (ported 2026-11-10) — caller-owned slots and mutable field provenance.**
+  The authored `caller_frame_alias.swift` / `.s` pair fixes a valid inout value
+  self at entry-SP+64. Native execution returns 99 after a store through that
+  pointer, while both the published binary and the earlier candidate rendered
+  the cached 7. Writes through other spaces now forget potentially aliased
+  caller-owned frame facts through the shared frame owner. Lost pointers keep
+  their MAY reach; the paired private-frame control still returns 7. A second
+  reduction creates a private pointer, stores it into a class argument's field,
+  reloads it and writes 99 through it. That field load cannot inherit entry
+  provenance. The per-argument class-field map now distinguishes mutable field
+  names from immutable by-value argument fields for private-frame reasoning,
+  alias invalidation and complete-call output sanitization.
+
+  Native oracles check the changed value, private controls, pointer coordinates,
+  neighboring words and the independently compiled Swift ABI references at
+  `-Onone`, `-O` and `-Osize`. The separate `callee_body_transfer` controls include
+  an external `memset` into a caller-owned result and a q store followed by a
+  narrow vector reload: the latter returns raw UInt32 bits 9 after overwriting
+  an earlier GPR store. Across these fixtures, all **26 native oracles at all
+  three optimization levels** pass. Listing, array, filtered, streaming and
+  selected-function analyses exercise the relevant raw-state checks; the
+  explicit raw ABI seeds are checked against the compiler/native references,
+  not claimed as automatic one-word aggregate decomposition.
+
+  The current enforcing run passes **1,476 tests / 39 suites**. The new frame
+  checkpoint has four independently compiled-red mutations (explicit and opaque
+  writes, lost-pointer reach, and the `memset` storeStack path). The field/q
+  checkpoint has six (mutable-field provenance, per-index entry provenance,
+  entry-field invalidation, complete-output sanitization, q source bank and
+  erasure of an old bank). Both checkpoints restore and rebuild green. Ported onto dev with the rest of the worktree; see the entry on what it costs with the x29-clobber escape.
+
+  Reproduce the enforcing checks after rebuilding fixtures and tests:
+  ```sh
+  Tools/fixtures.sh
+  swift build --build-tests -j 2
+  SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build
+  ```
+
+- **FIXED (ported 2026-11-10): receiver arguments require positive ABI proof.**
+  Real-app review found stale ordinary arguments attached to imported resilient
+  value methods. An authored native URL bridge reproduces eight fabricated
+  arguments when its real pointer receiver loses symbolic provenance. A real
+  `String.hasPrefix` call with an unrelated address in x20 acquired false
+  context self; with a scalar in x20 it acquired four stale ordinary words.
+
+  The candidate requires complete direct integer receiver layout and positive
+  ordinary entry-register reads for in-image methods, independently of MAY-x20
+  analysis. Indirect formal transport is separate from direct value footprint.
+  Proven unchanged entry arguments and unknown word placeholders are retained.
+  The narrowly compiler-verified external `String.hasPrefix` ABI requires an
+  exact libswiftCore import and matching semantic identity: a checked undefined
+  stub symbol/dependency, or a fixed GOT bind with both addends zero. Cache
+  presentation names alone supply no such proof. The same per-site proof
+  excludes context x20 and selects exactly one paired String receiver after
+  its formal parameter. A whole String call requires both words and a String
+  result declaration; an integer word cannot name a whole multiword producer
+  or a Double field read through a GPR.
+
+  A self-field word also requires a unique actual load width covering exactly
+  one whole field. A packed eight-byte load across eight UInt8 fields must not
+  name only the first field. A whole Int-field control remains nameable.
+
+  `imported_receiver.swift/.s` supplies sixteen native oracles at each of
+  `-Onone`, `-O` and `-Osize`, including direct/GOT imports, unknown URL receiver,
+  unchanged integer receiver, unread receiver, matched/mismatched String
+  words, scalar/partial producers, Double/Int fields and four/five-word ABI
+  boundary and spanning-field controls. Relevant listing, array, filtered, streaming and selected
+  analyses are covered. The enforcing suite passes **1,482 tests / 39 suites**.
+  Thirteen independent mutations compile and fail the relevant checks while
+  the native oracles remain green: unproved tails, missing ordinary reads,
+  entry trimming, direct/indirect boundary, context role, direct/GOT proof use,
+  shared String-pair identity, exact footprint, scalar result admission,
+  argument/self field types and self-field extent. Restoration rebuilds the
+  identical binary from the full-suite pass. The shared pair validator was
+  mutated directly; bypassing only its redundant caller check left the render
+  safely protected and is not counted as a red proof.
+  Full original fixture regeneration, release cost/profile measurements,
+  negative binding/addend and remaining proof-limit audits, actual real-app
+  diff qualification and the original integration gate remain required before
+  shipping.
+  `Sample.Tree.sum` now retains the call while declining its unsupported
+  payload-enum receiver layout, replacing an expectation based on the old
+  unbounded heuristic. Recovering that receiver requires a separate complete
+  payload ABI proof.

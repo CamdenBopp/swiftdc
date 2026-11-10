@@ -91,10 +91,10 @@ struct FrameRegisterMigrationControlsTests {
 
     @Test func differentSelectedInputsKeepTheirSeparateEscapeTransactions() {
         var state = Preservation.State(
-            registers: ["x0": .stack(-48), "x1": .unknown],
+            registers: ["x0": .below(-32), "x1": .unknown],
             slots: [-32: .entry("x19"), -8: .entry("x20")], stackAliases: ["x0", "x1"])
         state.markEscape(["x0", "x1"])
         #expect(state.stackAddressEscaped)
-        #expect(state.escapedRanges == [.init(floor: -48, bound: -32)])
+        #expect(state.escapedRanges == [.init(floor: .min, bound: -32)])
     }
 }
