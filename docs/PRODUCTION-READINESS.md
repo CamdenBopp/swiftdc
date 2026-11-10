@@ -1278,6 +1278,20 @@ because it cannot be distinguished from a right one by reading the output.
   marks bodies it did not fold. **DEAD END — a forwarding `b`.** The 12 sites
   that looked wrong in libReconstruction are vtable dispatches on self whose
   owner is proven; the unstripped build names them too.
+- **FIXED — a cache image listed types it does not declare.** A prespecialized
+  generic's `__swift5_types` record is indirect. On disk the cell is a bind and
+  reads as nothing; in a shared cache the bind is resolved, so
+  libswiftObservation listed `Optional` and `Dictionary` out of libswiftCore in
+  `interface`, `dump` and `layout`, and every metadata index read them too. A
+  record whose descriptor lies outside the image's segments is now dropped
+  (`ImageExtent`, `UnrecordedTypes.ownRecords`). `interface` indexes the section
+  inside MachOSwiftSection, so the block it printed for such a type is removed
+  by its exact text. `dump` printed a conformance's requirement in another image
+  as a function, `sub_1927A4351` for `associated conformance descriptor`: it is
+  now named from the owning image's export trie, and read through
+  `CacheSymbolResolver.exportName(inTextSegmentAt:)`, since a descriptor lies
+  outside `__text`. `interface`, `dump` and `layout` of the host cache's image
+  match the RuntimeRoot twin line for line. `CacheImageOwnershipTests`.
 - **FIXED — a function and its own witness read as a fold.** With symbols,
   `GaugeKit.Tank.level.getter` and its witness for `Gauge.level` at one address
   declined as `sub_640`, while `MetadataSymbolizer` already read a class method

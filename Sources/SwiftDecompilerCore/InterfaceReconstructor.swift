@@ -1,6 +1,11 @@
 import Foundation
 import MachOKit
-import SwiftInterface
+// `indexer` and `printer` are SPI. Safe while MachOSwiftSection is exact-pinned;
+// re-check them at each bump.
+@_spi(Support) import SwiftInterface
+@_spi(Support) import SwiftIndexing
+@_spi(Support) import SwiftPrinting
+import MachOSwiftSection
 
 /// Reconstructs a Swift *interface* — `.swiftinterface`-style source — from a
 /// Mach-O's Swift metadata, via MachOSwiftSection's `SwiftInterfaceBuilder`.
@@ -74,9 +79,24 @@ public struct InterfaceReconstructor: Sendable {
             builder.addExtraDataProvider(SwiftInterfaceBuilderOpaqueTypeProvider(machO: machO))
         }
         try await builder.prepare()
-        let text = try await builder.printRoot().string
+        var text = try await builder.printRoot().string
+        // The builder indexes `__swift5_types` itself, so a record that
+        // reaches into another image (`UnrecordedTypes.ownRecords`) prints
+        // as a declaration here. Take out exactly what it printed.
+        if let extent = ImageExtent(cacheImage: machO) {
+            for definition in builder.indexer.rootTypeDefinitions.values
+            where !extent.contains(cacheOffset: definition.typeContextDescriptorWrapper.contextDescriptor.offset) {
+                text = Self.removing(try await builder.printer.printTypeDefinition(definition).string, from: text)
+            }
+        }
         // The printer's address is the symbol it attributed a member to,
         // which for a stripped witness is a data slot; see MemberAddressAudit.
         return options.memberAddresses ? MemberAddressAudit(machO).audit(text).text : text
+    }
+
+    /// `text` without `block`, a whole run of lines of it.
+    static func removing(_ block: String, from text: String) -> String {
+        guard !block.isEmpty, let range = text.range(of: "\n" + block + "\n") else { return text }
+        return text.replacingCharacters(in: range, with: "\n")
     }
 }

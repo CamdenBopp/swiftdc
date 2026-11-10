@@ -78,6 +78,9 @@ final class CacheSymbolResolver {
     private let tracer = ValueTracer()
     /// Sorted by text range, for a binary search on the call target.
     private var images: [(range: Range<UInt64>, base: UInt64, image: MachOFile)] = []
+    /// Each image's whole `__TEXT`, as `images` holds its `__text`, in the
+    /// same order: descriptors sit outside the code.
+    private var textSegments: [Range<UInt64>] = []
     private var exportsByImage: [Int: [UInt64: String]] = [:]
     private var arcExportsByImage: [Int: [UInt64: Set<String>]] = [:]
     private var resolved: [UInt64: String?] = [:]
@@ -100,6 +103,10 @@ final class CacheSymbolResolver {
             images.append((start ..< (start + UInt64(text.size)), base, image))
         }
         images.sort { $0.range.lowerBound < $1.range.lowerBound }
+        textSegments = images.map { entry in
+            let segment = entry.image.loadCommands.infos(of: LoadCommand.segment64).first { $0.segmentName == "__TEXT" }
+            return entry.base ..< entry.base + UInt64(segment?.vmsize ?? 0)
+        }
     }
 
     /// An image's load address: its `__TEXT` segment's vmaddr.
@@ -259,6 +266,18 @@ final class CacheSymbolResolver {
     /// address.
     private func symbol(at address: UInt64) -> String? {
         guard let index = imageIndex(containing: address) else { return nil }
+        return exports(ofImage: index)[address]
+    }
+
+    /// The exported symbol at `address` anywhere in an image's `__TEXT`, for
+    /// data a cross-image reference can reach: a protocol requirement
+    /// descriptor lies in `__const`, outside the code `symbol(at:)` covers.
+    func exportName(inTextSegmentAt address: UInt64) -> String? {
+        guard let index = textSegments.firstIndex(where: { $0.contains(address) }) else { return nil }
+        return exports(ofImage: index)[address]
+    }
+
+    private func exports(ofImage index: Int) -> [UInt64: String] {
         if exportsByImage[index] == nil {
             var table: [UInt64: String] = [:]
             let base = images[index].base
@@ -273,7 +292,7 @@ final class CacheSymbolResolver {
             }
             exportsByImage[index] = table
         }
-        return exportsByImage[index]?[address]
+        return exportsByImage[index] ?? [:]
     }
 
     private func imageIndex(containing address: UInt64) -> Int? {

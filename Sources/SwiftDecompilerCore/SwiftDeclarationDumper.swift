@@ -70,7 +70,7 @@ public struct SwiftDeclarationDumper: Sendable {
         })
         var blocks: [String] = []
 
-        if sections.contains(.types), let recorded = try? machO.swift.types {
+        if sections.contains(.types), let recorded = UnrecordedTypes.ownRecords(in: machO) {
             let types = recorded + UnrecordedTypes.types(in: machO, recorded: recorded)
             let descriptorSymbols = Self.descriptorSymbols(in: machO)
             for type in types {
@@ -91,8 +91,10 @@ public struct SwiftDeclarationDumper: Sendable {
         }
 
         if sections.contains(.conformances), let conformances = try? machO.swift.protocolConformances {
+            let foreign = ForeignRequirementNames(machO, options: preset.options)
             for conformance in conformances {
-                blocks.append(await render("protocol conformance") { try await conformance.dump(using: configuration, in: machO) })
+                let text = await render("protocol conformance") { try await conformance.dump(using: configuration, in: machO) }
+                blocks.append(foreign?.naming(in: text, conformance) ?? text)
             }
         }
 

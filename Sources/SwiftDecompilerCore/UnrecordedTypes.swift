@@ -31,8 +31,24 @@ enum UnrecordedTypes {
     /// Every type the image describes: the recorded ones, then the
     /// unrecorded ones in address order.
     static func all(in machO: MachOFile) -> [TypeContextWrapper] {
-        let recorded = (try? machO.swift.types) ?? []
+        let recorded = ownRecords(in: machO) ?? []
         return recorded + types(in: machO, recorded: recorded)
+    }
+
+    /// The image's type records, without the ones that describe another
+    /// image's type. A prespecialized generic's record is indirect: the
+    /// cell it reaches through is a bind on disk, which reads as nothing,
+    /// and in a shared cache the bind is resolved, so libswiftObservation
+    /// listed `Optional` and `Dictionary` out of libswiftCore. Nil when the
+    /// records cannot be read.
+    ///
+    /// Filters on the descriptor's offset, reading nothing new: additive to
+    /// the reads being rerouted in `FileBackedRanges` and the metadata
+    /// indexes.
+    static func ownRecords(in machO: MachOFile) -> [TypeContextWrapper]? {
+        guard let records = try? machO.swift.types else { return nil }
+        guard let extent = ImageExtent(cacheImage: machO) else { return records }
+        return records.filter { extent.contains(cacheOffset: SwiftDeclarationDumper.descriptorOffset(of: $0)) }
     }
 
     static func fieldDescriptorOffset(of type: TypeContextWrapper, in machO: MachOFile) -> Int? {
