@@ -36,6 +36,10 @@ private let stackLifetimeFixture = "Fixtures/Sample/libStackLifetime.dylib"
     #expect(mismatch(16, -16) == 99)
     let probedTwice = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime16reuseProbedTwiceyS2iF")), to: Dynamic.self)
     for bytes: Int64 in [0, 1, 16, 100] { #expect(probedTwice(bytes) == 7) }
+    for symbol in ["18reuseProbedSpilled", "23reuseProbedSpilledTwice"] {
+        let spilled = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime\(symbol)yS2iF")), to: Dynamic.self)
+        for bytes: Int64 in [0, 1, 16, 100] { #expect(spilled(bytes) == 7, Comment(rawValue: symbol)) }
+    }
     let stacked = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime12probeStackedyS2i_SitF")), to: Pair.self)
     #expect(stacked(16, 16) == 7)
     #expect(stacked(0, -16) == 99)
@@ -77,7 +81,7 @@ private let stackLifetimeFixture = "Fixtures/Sample/libStackLifetime.dylib"
         }
         for (name, expected) in [("reuseProven", 7), ("reuseExact", 99), ("reuseAbove", 7), ("keepPreservation", 7),
                                  ("reuseProbed", 7), ("reuseProbedRaw", 7),
-                                 ("reuseProbedTwice", 7)] {
+                                 ("reuseProbedTwice", 7), ("reuseProbedSpilled", 7), ("reuseProbedSpilledTwice", 7)] {
             let function = try #require(group.first { $0.displayName.hasPrefix("StackLifetime.\(name)(") })
             for text in [function.renderPseudo(), function.renderStructured()] {
                 #expect(text.contains("return \(expected)"), Comment(rawValue: text))

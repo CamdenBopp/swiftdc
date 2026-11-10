@@ -295,6 +295,71 @@ _$s13StackLifetime16reuseProbedTwiceyS2iF:
   add sp, sp, #48
   ret
 
+// Swift spills the new sp to a frame slot between the probe and the move
+// (`stur x9, [x29, #-0xb0]; mov sp, x9`). A store to an unescaped slot of
+// this frame cannot change the probed size, so the proof holds. Native: 7.
+.globl _$s13StackLifetime18reuseProbedSpilledyS2iF
+_$s13StackLifetime18reuseProbedSpilledyS2iF:
+  sub sp, sp, #48
+  stp x19, x20, [sp, #16]
+  stp x29, x30, [sp, #32]
+  add x29, sp, #32
+  mov x19, sp
+  mov x9, #7
+  str x9, [sp, #8]
+  mov x9, x0
+  add x8, x9, #15
+  and x8, x8, #0xfffffffffffffff0
+  bl ___chkstk_darwin
+  mov x9, sp
+  sub x8, x9, x8
+  str x8, [x19]
+  mov sp, x8
+  bl _stack_lifetime_unproved
+  mov sp, x19
+  ldr x0, [sp, #8]
+  ldp x29, x30, [sp, #32]
+  ldp x19, x20, [sp, #16]
+  add sp, sp, #48
+  ret
+
+// Two spilled probed allocations: the first leaves a dynamic-allocation
+// marker, which is no escape, so the second spill keeps its proof too.
+// Native: 7.
+.globl _$s13StackLifetime23reuseProbedSpilledTwiceyS2iF
+_$s13StackLifetime23reuseProbedSpilledTwiceyS2iF:
+  sub sp, sp, #48
+  stp x19, x20, [sp, #16]
+  stp x29, x30, [sp, #32]
+  add x29, sp, #32
+  mov x19, sp
+  mov x20, x0
+  mov x9, #7
+  str x9, [sp, #8]
+  mov x9, x20
+  add x8, x9, #15
+  and x8, x8, #0xfffffffffffffff0
+  bl ___chkstk_darwin
+  mov x9, sp
+  sub x8, x9, x8
+  str x8, [x19]
+  mov sp, x8
+  mov x9, x20
+  add x8, x9, #15
+  and x8, x8, #0xfffffffffffffff0
+  bl ___chkstk_darwin
+  mov x9, sp
+  sub x8, x9, x8
+  str x8, [x19]
+  mov sp, x8
+  bl _stack_lifetime_unproved
+  mov sp, x19
+  ldr x0, [sp, #8]
+  ldp x29, x30, [sp, #32]
+  ldp x19, x20, [sp, #16]
+  add sp, sp, #48
+  ret
+
 // A probed allocation on top of an unprobed `sub sp, sp, x20`: the first
 // move is unproved. The word at k + 8 is stored after both, through x19.
 // With m = -16 and n = 0, sp ends 16 above k and the next callee writes 99

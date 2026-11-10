@@ -2760,6 +2760,19 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   table: `ExistentialWitness.Named.name() witness for arg0(…)`. A method's
   parameters are laid out the same way, self in x20 (`Registry.lookup(_:)`).
   GoodLinks is unchanged at 14,810 for both.
+- **FIXED (2026-11-10, completeness): a probed allocation lost its proof at
+  the spill of its new sp.** Swift stores the new sp to a frame slot between
+  `___chkstk_darwin` and the move (`stur x9, [x29, #-0xb0]; mov sp, x9`),
+  and any memory write ended d9bbf74's probe proof, so sp became unknown and
+  every later call forgot the fixed frame (20 of 30 sampled GoodLinks
+  frame-table sites). A store to an exact slot of this frame, while no frame
+  address has escaped, now keeps the proof: it cannot change memory read
+  through another pointer. A dynamic allocation's own marker counts as no
+  escape. probeReload (a store through a pointer to the size's global) still
+  declines. Fixtures reuseProbedSpilled and reuseProbedSpilledTwice (native
+  7). SpillWitness's `put` now names `initializeWithCopy value witness for A`,
+  true of `table[k] = v`. GoodLinks cfg.unresolved-indirect-call 14,182 ->
+  13,595.
 - **DECIDED and FIXED (2026-11-10, completeness): an escaped local no
   longer reaches the prologue's register saves.** GoodLinks' largest group
   of unresolved calls (about 3,300) were value witnesses whose table was held

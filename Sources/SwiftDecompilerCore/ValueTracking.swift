@@ -1983,6 +1983,22 @@ public struct ValueTracer: Sendable {
         }
         let hadSelf = registers[Self.selfFreshKey]
         let spBefore = registers[.sp]
+        // A plain store to an exact slot of this frame, while no frame
+        // address has escaped: it cannot change memory read through any
+        // other pointer, such as a probed allocation's size.
+        let storesOnlyToOwnFrame: Bool = {
+            // A dynamic allocation's marker is evidence of the allocation,
+            // not an escape.
+            let escaped = registers.keys.contains { key in
+                if case .frameDynamic = key { return false }
+                return Self.isEscapeMarker(key)
+            }
+            guard !escaped, let detail = insn.detail,
+                  insn.text.hasPrefix("st"), !detail.writeback, !detail.postIndex,
+                  case .stackSlot? = memoryTarget(detail, in: registers)
+            else { return false }
+            return true
+        }()
         let inputs = noteFrameMemoryWrite(insn, into: &registers, frame: facts.frame)
         if !argumentObjectFields.isEmpty, let detail = insn.detail { noteArgumentObjectWrite(detail, into: &registers) }
         apply(insn, into: &registers, recordAccess: recordAccess,
@@ -2004,7 +2020,8 @@ public struct ValueTracer: Sendable {
         if let sp = registers[.sp], let base = Self.allocationBase(sp) {
             registers[.frameDynamic(base)] = .immediate(1)
         }
-        Self.noteProbedAllocation(insn, spBefore: spBefore, into: &registers)
+        Self.noteProbedAllocation(insn, spBefore: spBefore, storesOnlyToOwnFrame: storesOnlyToOwnFrame,
+                                  into: &registers)
         if Self.writesSwiftSelf(insn) {
             registers[Self.selfFreshKey] = .immediate(1)
         } else {
@@ -5900,8 +5917,12 @@ public struct ValueTracer: Sendable {
     /// reload of the size reads, so it ends the proof; any other write to
     /// sp ends the allocation's.
     private static func noteProbedAllocation(_ insn: Instruction, spBefore: AbstractValue?,
+                                             storesOnlyToOwnFrame: Bool = false,
                                              into registers: inout State) {
-        if registers[.probedSize] != nil, mayWriteMemory(insn) { registers[.probedSize] = nil }
+        // A store to an unescaped slot of this frame cannot change what the
+        // size was read from (Swift spills the new sp before moving it:
+        // `stur x9, [x29, #-0xb0]; mov sp, x9`).
+        if registers[.probedSize] != nil, mayWriteMemory(insn), !storesOnlyToOwnFrame { registers[.probedSize] = nil }
         let sp = registers[.sp]
         guard sp != spBefore else { return }
         let previous = registers[.probedAllocation]

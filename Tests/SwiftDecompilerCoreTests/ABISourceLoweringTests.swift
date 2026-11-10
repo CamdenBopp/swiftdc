@@ -779,18 +779,18 @@ struct ABISourceLoweringTests {
 }
 
 /// A callee-saved isa register retains its proven B metadata. The separate
-/// A witness spills through an unbounded dynamic stack position; naming it
-/// again requires a stack-bound proof that this IR does not yet supply.
+/// A witness is spilled across probed stack allocations whose new sp is
+/// itself spilled to a frame slot before the move; the probe proof holds
+/// across that store, so the spill survives and the copy of `k` is named.
 @Test func anIsaKeptAcrossACallNamesItsGenericArgumentsWitnessesIfPresent() async throws {
     let path = "Fixtures/Sample/libSpillWitness.dylib"
     guard FileManager.default.fileExists(atPath: path) else { return }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let put = try #require(functions.first { $0.displayName.hasPrefix("SpillWitness.Store.put(") }).renderStructured()
     #expect(put.contains("getEnumTagSinglePayload value witness for B("), Comment(rawValue: put))
-    // Native Swift still copies k as A; the erased frame fact cannot prove
-    // that call target. Preserve the proven B witness and decline this one.
-    #expect(!put.contains("initializeWithCopy value witness for A("), Comment(rawValue: put))
-    #expect(put.contains("indirect_call("), Comment(rawValue: put))
+    // `table[k] = v` copies k, an A (Store<K, V>: K is the first argument).
+    #expect(put.contains("initializeWithCopy value witness for A("), Comment(rawValue: put))
+    #expect(!put.contains("indirect_call("), Comment(rawValue: put))
 }
 
 /// The probe preserves its declared registers, but an unknown later sp
