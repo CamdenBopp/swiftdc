@@ -3280,7 +3280,14 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   `__swift5_*`, `__objc_*`, `__const` and fat slices; the Python harnesses
   named in older entries are gone. Unprobed: data beyond the 1 MiB preflight
   prefix that no validator reads, and type encodings deeper than a mutation
-  reaches (see the nested-encoding entry).
+  reaches (see the nested-encoding entry). Since 2026-11-10 both modes also
+  run `disasm --pseudo`, `disasm --structured`, the plain listing and `xrefs
+  --unreferenced`, the streamed Capstone and call-graph paths no mutant had
+  reached. At 9369b0e: metadata mode, 150 mutants each (seed 20261110) of
+  libSample, libImportedReceiver.opt, libABISource.resilient and
+  libProtocolWitness.resilient, 6,000 runs; container mode, 150 each (seed
+  20261111) of libSample and libImportedReceiver.opt, 2,700 runs. No crash
+  and no timeout.
 - **MITIGATED — behavior across optimization levels.** The differential oracle
   now runs at both `-Onone` and `-O` (318 comparisons each), executing the
   recovered expression against the real compiled function at each level. This is
