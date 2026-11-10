@@ -10,3 +10,6 @@ public func existentialWitnessGrow() -> Int { ExistentialWitness.grow(Square(3),
 
 @_cdecl("existential_witness_name")
 public func existentialWitnessName() -> Int { ExistentialWitness.callName(Tag()) }
+
+@_cdecl("existential_witness_name_then")
+public func existentialWitnessNameThen() -> Int { ExistentialWitness.callNameThen(Tag(), 2) }

@@ -4131,6 +4131,10 @@ public struct ValueTracer: Sendable {
                 case .asyncCalleeSlot(let offset) where register.kind == .gpr && registerBytes == 8
                     && offset + index * 8 == 0:
                     registers[Self.calleeParentKey] ?? .unknown
+                // `ldp x19, x21, [x0, #0x18]`: an existential argument's
+                // metadata and table together, each word as its own load.
+                case .throughValue(.argument(let argument), 0x18) where register.kind == .gpr && registerBytes == 8:
+                    .loadedFrom(.argument(argument), offset: 0x18 + index * 8)
                 case .absolute, .vtableMethod, .arrayElement, .asyncSlot, .asyncCalleeSlot, .throughStaticPointer,
                      .throughValue, .none:
                     .unknown
@@ -5590,6 +5594,12 @@ public struct ValueTracer: Sendable {
                  && !detail.postIndex && !detail.writeback,
              // The same through an argument: its isa, then the slot.
              .argument where effective == 0 && !detail.postIndex && !detail.writeback,
+             // An opaque existential argument's metadata and witness table
+             // (words 3 and 4 of its container); named only for a call
+             // that hands both on (`existentialWitnessCall`).
+             .argument where (effective == 0x18 || effective == 0x20) && !detail.postIndex && !detail.writeback,
+             .loadedFrom(.argument, 0x20) where effective >= 8 && effective % 8 == 0
+                 && !detail.postIndex && !detail.writeback,
              .loadedFrom(.argument, 0) where effective >= 0 && effective % 8 == 0
                  && !detail.postIndex && !detail.writeback,
              // And through an object held in a class argument's field.

@@ -2738,6 +2738,21 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   parameter is not seeded as an argument at all, since the entry
   convention proves only one-register scalars) and objects loaded from other
   memory are not typed yet.
+- **FIXED (2026-11-10, completeness): a requirement called on an opaque
+  existential argument stayed unresolved.** `measure(_ shape: any Shape)` is
+  `ldp x19, x21, [x0, #0x18]` (metadata, table), the projected value in x20,
+  `ldr x8, [x21, #8]; blr x8` with the metadata and table passed last, and
+  read `indirect_call(?, …)`: the entry convention seeded no argument once a
+  parameter was not a one-register scalar. A parameter whose printed type is
+  a protocol this image declares with an opaque existential (bit 16 of its
+  descriptor flags set, no special protocol) is now one register, the
+  container's address, and a call through its table is named from the
+  descriptor when it hands on that metadata and table: `ExistentialWitness.Shape.area()
+  witness for arg0()` under library evolution, `ExistentialWitness.Shape
+  requirement 0 (method) witness for arg0()` otherwise, at -O and -Onone.
+  A class-bound existential (two registers) and Error's box are not this
+  layout and stay as they were. GoodLinks cfg.unresolved-indirect-call
+  15,160 -> 14,810.
 - **FIXED (2026-11-10, correctness): a protocol whose name sits at an odd
   address had no requirement shapes.** `protocolRequirementShape` read every
   relative field of the descriptor as indirectable and declined an odd

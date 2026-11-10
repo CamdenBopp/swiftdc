@@ -772,18 +772,19 @@ for level in O Onone; do
 done
 rm -rf fvo_module
 
-echo "==> requirement calls through an opaque existential argument's witness table (existentialwitness.swift, -O, -Onone, library evolution)"
+echo "==> requirement calls through an opaque existential argument's witness table (existentialwitness.swift, existential_unpassed.s, -O, -Onone, library evolution)"
+$CLANG -arch arm64 -c existential_unpassed.s -o existential_unpassed.o
 for variant in "O:" "Onone:.Onone" "O -enable-library-evolution:.resilient"; do
     flags=${variant%%:*}; suffix=${variant#*:}
     rm -rf ew_module && mkdir ew_module
-    $SWIFTC -parse-as-library -$flags -emit-library -emit-module -module-name ExistentialWitness existentialwitness.swift \
+    $SWIFTC -parse-as-library -$flags -emit-library -emit-module -module-name ExistentialWitness existentialwitness.swift existential_unpassed.o \
         -emit-module-path ew_module/ExistentialWitness.swiftmodule \
         -Xlinker -install_name -Xlinker @rpath/libExistentialWitness$suffix.dylib -o libExistentialWitness$suffix.dylib
     $SWIFTC -parse-as-library -$flags -emit-library -module-name ExistentialWitnessOracle existentialwitness_oracle.swift \
         -I ew_module -L . -lExistentialWitness$suffix -Xlinker -rpath -Xlinker @loader_path \
         -o libExistentialWitnessOracle$suffix.dylib
 done
-rm -rf ew_module
+rm -rf ew_module existential_unpassed.o
 
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib

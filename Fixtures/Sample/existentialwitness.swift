@@ -31,4 +31,6 @@ public struct Failure: Error { public init() {} }
 @inline(never) public func measure(_ shape: any Shape) -> Int { shape.area() }
 @inline(never) public func grow(_ shape: any Shape, by k: Int) -> Int { shape.scale(k) }
 @inline(never) public func callName(_ named: any Named) -> Int { named.name() }
+// A class-bound existential is two registers (object, table): `k` is x2.
+@inline(never) public func callNameThen(_ named: any Named, _ k: Int) -> Int { named.name() &+ k }
 @inline(never) public func describe(_ error: any Error) -> Int { error._code }

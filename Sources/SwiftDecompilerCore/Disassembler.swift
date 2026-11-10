@@ -2091,6 +2091,8 @@ public struct Disassembler: Sendable {
             ? Self.swiftValueTypeSelfFields(of: function, fieldMaps: context.fieldMaps)
             : nil
         let selfTypeName = classSelfTypeName ?? valueSelf?.typeName
+        let resolver = context.resolver
+        let isOpaqueExistential: (String) -> Bool = { resolver.opaqueExistentialDescriptor(named: $0) != nil }
         let entry: MethodEntryConvention? = if isResumeFunclet {
             nil
         } else if let objcMethod {
@@ -2105,8 +2107,8 @@ public struct Disassembler: Sendable {
             .swiftValueInstance(seededRegisters: valueSelf.seeded)
         } else if classSelfTypeName != nil || (!isResumeFunclet && symbolEntry == nil
                     && Self.swiftEnumSelfType(of: function, enumCaseIndex: context.enumCaseIndex) != nil) {
-            .swiftInstance(scalarArguments: Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps) ?? [:])
-        } else if let scalarArgs = Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps) {
+            .swiftInstance(scalarArguments: Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps, isOpaqueExistential: isOpaqueExistential) ?? [:])
+        } else if let scalarArgs = Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps, isOpaqueExistential: isOpaqueExistential) {
             {
                 let metadata = Self.genericMetadataRegisters(
                     of: function, enumCaseIndex: context.enumCaseIndex,
@@ -4130,7 +4132,8 @@ public struct Disassembler: Sendable {
         callArguments: [UInt64: [AbstractValue]] = [:],
         selfFieldClass: (Int) -> String? = { _ in nil },
         argumentClass: (Int) -> String? = { _ in nil },
-        argumentFieldClass: (Int, Int) -> String? = { _, _ in nil }
+        argumentFieldClass: (Int, Int) -> String? = { _, _ in nil },
+        argumentType: (Int) -> String? = { _ in nil }
     ) -> (function: DisassembledFunction, changesCFG: Bool) {
         /// Resolve a `blr` target to a (name, address). A class vtable dispatch is
         /// resolved through the class's metadata layout; anything else through the
@@ -4148,6 +4151,7 @@ public struct Disassembler: Sendable {
                 return (address, Self.namingItsProperty(name, ownedBy: selfTypeName), true)
             }
             if let dispatch = fieldVTableMethod(value) { return (dispatch.address, dispatch.name, false) }
+            if let witness = existentialWitnessCall(value, site: site) { return (nil, witness, false) }
             if let witness = valueWitnessCall(value, site: site) { return (nil, witness, false) }
             if let witness = protocolWitnessCall(value, site: site) { return (nil, witness.name, false) }
             return resolver.indirectCallTarget(for: value).map { ($0.address, $0.name, false) }
@@ -4161,6 +4165,31 @@ public struct Disassembler: Sendable {
         /// implementation's demangled owner is the field's declared type:
         /// `VTableIndex` is keyed by simple name, and another module's class
         /// of the same name must not match.
+        /// A call through word `k` of an opaque existential argument's
+        /// witness table: `ldp x19, x21, [x0, #0x18]` (its metadata and
+        /// table), `ldr x8, [x21, #k]`, the projected value in x20, and the
+        /// metadata and table passed last. The parameter's printed type must
+        /// be a protocol this image declares with an opaque existential, and
+        /// the call must hand on that same metadata and table, as a witness
+        /// takes them. Named `<requirement> witness for argN` from the
+        /// protocol's descriptor.
+        func existentialWitnessCall(_ value: AbstractValue, site: UInt64) -> String? {
+            guard case .loadedFrom(.loadedFrom(.argument(let argument), offset: 0x20), let offset) = value,
+                  offset >= 8, offset % 8 == 0,
+                  let type = argumentType(argument),
+                  let descriptor = resolver.opaqueExistentialDescriptor(named: type),
+                  let arguments = callArguments[site], arguments.count >= 2,
+                  arguments[arguments.count - 1] == .loadedFrom(.argument(argument), offset: 0x20),
+                  arguments[arguments.count - 2] == .loadedFrom(.argument(argument), offset: 0x18)
+            else { return nil }
+            if let requirement = resolver.protocolRequirement(descriptor: descriptor, word: offset / 8) {
+                return "\(requirement.name) witness for arg\(argument)"
+            }
+            if let shape = resolver.protocolRequirementShape(descriptor: descriptor, word: offset / 8) {
+                return "\(shape.protocolName) requirement \(shape.index) (\(shape.kind)) witness for arg\(argument)"
+            }
+            return nil
+        }
         /// A call's result has its callee's declared result type: x0 of a
         /// call whose demangled signature returns a plain class (or an
         /// Optional of one, which the dispatch only reaches non-nil). Not a
@@ -4582,6 +4611,20 @@ public struct Disassembler: Sendable {
                   let module = Self.cString(at: moduleNameAddress, in: machO, ranges: fileRanges), !module.isEmpty
             else { return nil }
             return ("\(module).\(name)", word - 1, kind + (requirementFlags & 0x10 == 0 ? ", static" : ""))
+        }
+
+        /// The descriptor of an in-image protocol named exactly `name` whose
+        /// existential is opaque: not class-constrained (ProtocolContext
+        /// flags bit 16 set: `ProtocolClassConstraint::Any`) and no special
+        /// protocol (`Error`'s existential is a box). A value of such an
+        /// `any P` is a five-word container, passed and held by address.
+        func opaqueExistentialDescriptor(named name: String) -> UInt64? {
+            guard machO.cache == nil, let descriptor = protocolDescriptor(named: name),
+                  let base = machO.fileOffset(of: descriptor).map(Int.init),
+                  let flags = UnrecordedTypes.read(base, as: UInt32.self, in: machO),
+                  flags & 0x1F == 3, (flags >> 16) & 1 == 1, (flags >> 18) & 0x3F == 0
+            else { return nil }
+            return descriptor
         }
 
         func protocolRequirement(descriptor: UInt64, word: Int) -> (signature: String, name: String)? {
@@ -6219,7 +6262,8 @@ public struct Disassembler: Sendable {
 
     static func swiftScalarArgumentRegisters(
         of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
-        classTypeIndex: ClassTypeIndex = ClassTypeIndex(), fieldMaps: [String: FieldMap] = [:]
+        classTypeIndex: ClassTypeIndex = ClassTypeIndex(), fieldMaps: [String: FieldMap] = [:],
+        isOpaqueExistential: (String) -> Bool = { _ in false }
     ) -> [String: Int]? {
         guard function.objcMethod == nil, let name = function.layoutName,
               Self.isSwiftMangled(function.symbol),
@@ -6274,6 +6318,16 @@ public struct Disassembler: Sendable {
                 // its address, one integer register (as `swiftCallArgumentLayout`
                 // lays it out), and that address is the parameter.
                 if Self.isGenericValue(type, Self.genericParameterNames(in: split.head)) {
+                    guard integerIndex < 8 else { return nil }
+                    registers["x\(integerIndex)"] = index
+                    integerIndex += 1
+                    continue
+                }
+                // An opaque existential of a protocol this image declares
+                // (`_ s: any Shape`, printed `Module.Shape`) is a five-word
+                // container passed by address: one integer register, which
+                // is the parameter.
+                if isOpaqueExistential(type) {
                     guard integerIndex < 8 else { return nil }
                     registers["x\(integerIndex)"] = index
                     integerIndex += 1
@@ -7367,6 +7421,16 @@ public struct Disassembler: Sendable {
     /// `type` when it is a plain qualified nominal name, or an Optional of
     /// one (unwrapped); nil for anything generic, functional, existential,
     /// composed or unqualified.
+    /// Parameter `index`'s type as the function's signature prints it, the
+    /// numbering the entry convention seeds `.argument(index)` with.
+    static func printedParameterType(of function: DisassembledFunction, at index: Int) -> String? {
+        guard let name = function.layoutName, let split = DisassembledFunction.splitSignature(name),
+              let range = DisassembledFunction.outermostArgumentListRange(of: split.head)
+        else { return nil }
+        let parameters = DisassembledFunction.splitTopLevelArguments(split.head[range])
+        return parameters.indices.contains(index) ? parameterType(parameters[index]) : nil
+    }
+
     static func plainNominalName(_ type: String) -> String? {
         var type = type
         let optional = "Swift.Optional<"
@@ -7756,7 +7820,8 @@ public struct Disassembler: Sendable {
             argumentClass: { classArgumentTypes[$0] },
             argumentFieldClass: { argument, offset in
                 Self.declaredClassOfField(at: offset, in: classArgumentFieldMaps[argument])
-            }
+            },
+            argumentType: { argument in Self.printedParameterType(of: function, at: argument) }
         )
         let function = resolvedControlFlow.function
         // Resolving an external BR adds its successor address. BLR naming
