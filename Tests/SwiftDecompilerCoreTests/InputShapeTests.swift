@@ -180,4 +180,117 @@ struct InputShapeTests {
             #expect(result.stdout.contains("sum4"), "\(result.stdout)")
         }
     }
+
+    // MARK: - Not arm64
+
+    private static let x86 = "Fixtures/Sample/inputshape_x86_64.shape"
+    private static let universal = "Fixtures/Sample/inputshape_universal.shape"
+
+    /// `disasm --pseudo -f sum4` printed `mem0[x2 + 0x4a] = ?` for
+    /// `pushq %rbp`, and `xrefs` printed `callees (0)`, both exit 0.
+    @Test func everyCodeCommandRefusesAnotherArchitectureIfPresent() throws {
+        guard FileManager.default.fileExists(atPath: Self.x86) else { return }
+        let codeCommands: [[String]] = [
+            ["disasm", "--pseudo"], ["disasm", "--structured"], ["disasm", "--cfg"], ["disasm", "--json"],
+            ["disasm", "-f", "sum4"], ["disasm", "--pseudo", "-f", "sum4"], ["disasm", "--json", "-f", "sum4"],
+            ["xrefs", "--unreferenced"], ["xrefs", "-f", "sum4"],
+            ["objc", "--methods"], ["objc", "--pseudo"], ["objc", "--structured"], ["objc", "-f", "add"],
+        ]
+        for (path, extra) in [(Self.x86, []), (Self.universal, ["--arch", "x86_64"])] {
+            for reader in codeCommands {
+                guard let result = try run(command(reader, path) + extra) else { return }
+                #expect(result.status == 1, "\(reader) \(extra)")
+                #expect(result.stderr.contains("x86_64 code cannot be analyzed"), "\(reader): \(result.stderr)")
+                #expect(result.stdout.isEmpty, "\(reader): \(result.stdout)")
+            }
+        }
+        // `score` decodes through the same streaming pass.
+        let directory = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let manifest = directory.appendingPathComponent("oracle.json")
+        try JSONEncoder().encode(ReturnOracle([ReturnExpectation(1, in: 0x1000)])).write(to: manifest)
+        guard let score = try run(["score", Self.x86, "--oracle", manifest.path]) else { return }
+        #expect(score.status == 2)
+        #expect(score.stderr.contains("x86_64 code cannot be analyzed"), "\(score.stderr)")
+    }
+
+    /// The other half: what reaches the decoder without the command's check
+    /// claims nothing, rather than reading x86_64 bytes as ARM64.
+    @Test func theDecoderDeclinesAnotherArchitectureIfPresent() async throws {
+        guard FileManager.default.fileExists(atPath: Self.x86) else { return }
+        let machO = try BinaryLoader.load(path: Self.x86)
+        let disassembler = Disassembler()
+        #expect(!Disassembler.decodesCode(of: machO))
+        try await withStableDependencies {
+            #expect(await disassembler.disassemble(machO: machO).isEmpty)
+            #expect(await disassembler.disassemble(machO: machO, functionFilter: "sum4").isEmpty)
+            let streamed: [String] = await disassembler.disassembleStreaming(machO: machO) { $0.symbol }
+            #expect(streamed.isEmpty)
+            let starts = Set(disassembler.functionStarts(of: machO))
+            #expect(!starts.isEmpty)
+            #expect(await disassembler.disassembleFunctions(at: starts, in: machO).isEmpty)
+            await #expect(throws: Disassembler.DisassembleError.self) {
+                _ = try await disassembler.disassemble(path: Self.x86)
+            }
+        }
+    }
+
+    /// Plain `disasm` is llvm-objdump's text for the real architecture, with
+    /// a warning, and none of the ARM64 analysis.
+    @Test func thePlainListingShowsTheRealInstructionsIfPresent() throws {
+        guard FileManager.default.fileExists(atPath: Self.x86) else { return }
+        for (path, extra) in [(Self.x86, []), (Self.universal, ["--arch", "x86_64"])] {
+            guard let result = try run(["disasm", path] + extra) else { return }
+            #expect(result.status == 0, "\(result.stderr)")
+            #expect(result.stderr.contains("x86_64 code is not analyzed"), "\(result.stderr)")
+            #expect(result.stdout.contains("pushq"), "\(result.stdout)")
+            #expect(!result.stdout.contains("sub_"), "\(result.stdout)")
+            #expect(!result.stdout.contains("[recovered from"), "\(result.stdout)")
+        }
+    }
+
+    /// `analyze` keeps its declarations and states the refusal, in text and
+    /// JSON, and the run fails. `(no functions recovered)` would be a lie.
+    @Test func analyzePrintsDeclarationsAndFailsIfPresent() throws {
+        guard FileManager.default.fileExists(atPath: Self.x86) else { return }
+        guard let text = try run(["analyze", Self.x86]), let json = try run(["analyze", Self.x86, "--json"]) else { return }
+        #expect(text.status == 1)
+        #expect(json.status == 1)
+        #expect(text.stdout.contains("Tally"), "\(text.stdout)")
+        #expect(text.stdout.contains("// disassembly failed: x86_64 code cannot be analyzed"), "\(text.stdout)")
+        #expect(!text.stdout.contains("no functions recovered"), "\(text.stdout)")
+        #expect(json.stdout.contains("x86_64 code cannot be analyzed"), "\(json.stdout)")
+        #expect(text.stderr.contains("error: disassembly failed"), "\(text.stderr)")
+    }
+
+    /// The loaded-image route, which a cache image takes.
+    @Test func analyzeOfALoadedImageFailsAlikeIfPresent() async throws {
+        guard FileManager.default.fileExists(atPath: Self.x86) else { return }
+        let machO = try BinaryLoader.load(path: Self.x86)
+        let report = await withStableDependencies { await AnalysisReport().report(machO: machO, json: false) }
+        #expect(report.disassemblyError?.contains("x86_64 code cannot be analyzed") == true)
+        #expect(report.text.contains("// disassembly failed: x86_64 code cannot be analyzed"), "\(report.text)")
+    }
+
+    /// Metadata needs no decoder, and must keep working.
+    @Test func metadataCommandsReadAnotherArchitectureIfPresent() throws {
+        guard FileManager.default.fileExists(atPath: Self.x86) else { return }
+        for (path, extra) in [(Self.x86, []), (Self.universal, ["--arch", "x86_64"])] {
+            for (reader, expected) in [(["dump"], "Tally"), (["interface"], "Tally"), (["layout"], "Pair"),
+                                       (["objc"], "Tally"), (["objc", "--metadata-only"], "Tally"),
+                                       (["swift-version"], "Swift")] as [([String], String)] {
+                guard let result = try run(command(reader, path) + extra) else { return }
+                #expect(result.status == 0, "\(reader): \(result.stderr)")
+                #expect(result.stdout.contains(expected), "\(reader): \(result.stdout)")
+            }
+        }
+    }
+
+    /// The universal file's arm64 slice still decodes.
+    @Test func theArm64SliceOfAUniversalFileDecodesIfPresent() throws {
+        guard FileManager.default.fileExists(atPath: Self.universal) else { return }
+        guard let result = try run(["disasm", Self.universal, "--arch", "arm64", "--pseudo", "-f", "sum4"]) else { return }
+        #expect(result.status == 0, "\(result.stderr)")
+        #expect(result.stdout.contains("sum4"), "\(result.stdout)")
+    }
 }

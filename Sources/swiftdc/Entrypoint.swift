@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import MachOKit
 import SwiftDecompilerCore
 
 @main
@@ -93,6 +94,8 @@ struct ObjCCommand: AsyncParsableCommand {
             ? ObjCDumper().metadataOnlyBlocks(machO)
             : await ObjCDumper().blocks(machO, disassembler: Disassembler(preset: .simplified))
         let includeMethods = methods || pseudo || structured || function != nil
+        // Bodies need the decoder. Headers come from metadata, on any architecture.
+        if includeMethods { try Disassembler.requireDecodableCode(machO) }
         guard includeMethods else {
             if json {
                 try emit(jsonStrings(blocks), to: output)
@@ -200,27 +203,25 @@ struct AnalyzeCommand: AsyncParsableCommand {
 
     private func runAnalyze() async throws {
         let report = AnalysisReport(preset: demangle)
-        let text: String
+        let result: (text: String, disassemblyError: String?)
         if image != nil || imagePath != nil || cache != nil {
             let machO = try BinaryLoader.loadMachO(
                 path: path, image: image, imagePath: imagePath, cachePath: cache, binary: binary
             )
-            text = json ? await report.generateJSON(machO: machO) : await report.generate(machO: machO)
+            result = await report.report(machO: machO, json: json)
         } else if let path {
             // Accept an .app/.framework/.ipa, resolving to a real Mach-O for llvm-objdump.
             let resolved = try BinaryLoader.resolveBinaryInput(path, binary: binary)
-            let result = try await report.report(path: resolved, architecture: architecture, json: json)
-            try emit(result.text, to: output)
-            // The declarations printed; the failure must still fail the run.
-            if let failure = result.disassemblyError {
-                FileHandle.standardError.write(Data("error: disassembly failed: \(failure)\n".utf8))
-                throw ExitCode.failure
-            }
-            return
+            result = try await report.report(path: resolved, architecture: architecture, json: json)
         } else {
             throw BinaryLoadError("Provide a binary path, or --image <name> to analyze a dyld shared-cache image.")
         }
-        try emit(text, to: output)
+        try emit(result.text, to: output)
+        // The declarations printed; the failure must still fail the run.
+        if let failure = result.disassemblyError {
+            FileHandle.standardError.write(Data("error: disassembly failed: \(failure)\n".utf8))
+            throw ExitCode.failure
+        }
     }
 }
 
@@ -479,12 +480,17 @@ struct DisasmCommand: AsyncParsableCommand {
         // instruction, so a 7M-instruction debug app could not render in 4 GB.
         // The plain listing and --cfg print objdump's instruction text.
         let streamsStandalone = !isCacheImage && path != nil && (structured || pseudo)
-        if isCacheImage || streamsStandalone, (function ?? "").isEmpty, !json {
+        func loadDecodableImage() throws -> MachOFile {
             let machO = isCacheImage
                 ? try BinaryLoader.loadMachO(
                     path: path, image: image, imagePath: imagePath, cachePath: cache, binary: binary)
                 : try BinaryLoader.load(path: BinaryLoader.resolveBinaryInput(path ?? "", binary: binary),
                                         architecture: architecture)
+            try Disassembler.requireDecodableCode(machO)
+            return machO
+        }
+        if isCacheImage || streamsStandalone, (function ?? "").isEmpty, !json {
+            let machO = try loadDecodableImage()
             let declared = disassembler.declaredFunctionCount(in: machO)
             let renderOne: (DisassembledFunction) -> String =
                 structured ? { $0.renderStructured() }
@@ -516,20 +522,29 @@ struct DisasmCommand: AsyncParsableCommand {
         let functions: [DisassembledFunction]
         // Declared by the binary itself; 0 when the load command is absent.
         var declared = 0
-        if image != nil || imagePath != nil || cache != nil {
+        if isCacheImage {
             // dyld shared-cache image: no standalone file for llvm-objdump, so
             // decode in-process with Capstone.
-            let machO = try BinaryLoader.loadMachO(
-                path: path, image: image, imagePath: imagePath, cachePath: cache, binary: binary
-            )
+            let machO = try loadDecodableImage()
             declared = disassembler.declaredFunctionCount(in: machO)
             functions = await disassembler.disassemble(machO: machO, functionFilter: function)
         } else if let path {
             // Accept an .app/.framework/.ipa, resolving to a real Mach-O for llvm-objdump.
             let resolved = try BinaryLoader.resolveBinaryInput(path, binary: binary)
-            functions = try await disassembler.disassemble(
-                path: resolved, architecture: architecture, functionFilter: function
-            )
+            do {
+                functions = try await disassembler.disassemble(
+                    path: resolved, architecture: architecture, functionFilter: function
+                )
+            } catch Disassembler.DisassembleError.unsupportedArchitecture(let name)
+                where (function ?? "").isEmpty && !json && !cfg {
+                // The plain listing is the one view that needs no analysis:
+                // llvm-objdump reads the slice's real architecture. Everything
+                // built on the ARM64 decoder stays refused.
+                FileHandle.standardError.write(Data(
+                    "warning: \(name) code is not analyzed: this is llvm-objdump's text, with no swiftdc annotations.\n".utf8))
+                try emit(disassembler.objdumpListing(path: resolved, architecture: architecture), to: output)
+                return
+            }
         } else {
             throw BinaryLoadError("Provide a binary path, or --image <name> to disassemble a dyld shared-cache image.")
         }

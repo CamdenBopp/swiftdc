@@ -350,9 +350,10 @@ instead of getting wrong ones.
 - **Original source.** You don't get local names, macros, comments, exact
   source types, arbitrary pointer aliasing, or every optimized expression.
   The annotated assembly stays the authority to fall back on.
-- **Other architectures.** x86_64 slices load, and their metadata,
-  declarations and interfaces work, but disassembly and annotation are tuned
-  for ARM64.
+- **Other architectures.** On an x86_64 slice, `dump`, `interface`,
+  `layout`, `objc` headers and `swift-version` work from metadata. Plain
+  `disasm` prints llvm-objdump's text with no analysis, `analyze` prints the
+  declarations and fails, and every other view of the code refuses.
 - **All names on stripped binaries.** Function boundaries always recover.
   Names come from ObjC method records and from Swift metadata for class
   vtable methods (`Type.method`) and protocol-conformance witnesses

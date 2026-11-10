@@ -663,8 +663,17 @@ public struct Disassembler: Sendable {
         /// analysis failure and must be reported as one rather than returned as
         /// "no functions".
         case parsedNothing(lines: Int, knownStarts: Int)
+        /// The image's code is not arm64: the decoder would read its bytes as
+        /// ARM64 anyway and fabricate instructions, so nothing decodes them.
+        case unsupportedArchitecture(String)
         public var description: String {
             switch self {
+            case .unsupportedArchitecture(let architecture):
+                return """
+                    \(architecture) code cannot be analyzed: swiftdc decodes arm64 only. `dump`, `interface`, \
+                    `layout` and `objc` read this image's metadata, and plain `disasm` on a file prints \
+                    llvm-objdump's text.
+                    """
             case .toolFailed(let m): return "llvm-objdump failed: \(m)"
             case .parsedNothing(let lines, let starts):
                 return """
@@ -676,6 +685,36 @@ public struct Disassembler: Sendable {
         }
     }
 
+    /// Whether the decoder can read this image's code. Exactly arm64: x86_64
+    /// bytes decoded as ARM64 printed `mem0[x2 + 0x4a] = ?` for `pushq %rbp`
+    /// and exit 0, and arm64_32 decodes but has 32-bit pointers, which every
+    /// analysis behind the decoder assumes are 64.
+    public static func decodesCode(of machO: MachOFile) -> Bool {
+        machO.header.cpu.type == .arm64
+    }
+
+    /// Fails on an image whose code cannot be decoded. Every command that
+    /// reads code calls this: the non-throwing entry points decline to an
+    /// empty result (`codeSections`), and a refusal must not read as one.
+    public static func requireDecodableCode(_ machO: MachOFile) throws {
+        guard decodesCode(of: machO) else {
+            throw DisassembleError.unsupportedArchitecture(BinaryLoader.archName(machO))
+        }
+    }
+
+    /// llvm-objdump's own text for a file, which decodes the slice's real
+    /// architecture. Nothing here goes through the ARM64 decoder, so it
+    /// carries no analysis.
+    public func objdumpListing(path: String, architecture: String? = nil) throws -> String {
+        var args = ["-d", "--macho", "--no-show-raw-insn"]
+        if let architecture { args += ["--arch", architecture] }
+        let result = try Shell.xcrun("llvm-objdump", args + [path])
+        guard result.status == 0 else {
+            throw DisassembleError.toolFailed(result.stderr.isEmpty ? result.stdout : result.stderr)
+        }
+        return result.stdout
+    }
+
     /// Disassemble the binary at `path`. For fat binaries pass `architecture`.
     /// `functionFilter`, if given, keeps only functions whose raw symbol or
     /// demangled name contains it (case-insensitive).
@@ -685,6 +724,7 @@ public struct Disassembler: Sendable {
         functionFilter: String? = nil
     ) async throws -> [DisassembledFunction] {
         let machO = try BinaryLoader.load(path: path, architecture: architecture)
+        try Self.requireDecodableCode(machO)
 
         // Filtered: decode in-process with Capstone (only the matched functions'
         // ranges). `llvm-objdump` re-parses the whole binary on every invocation
@@ -2274,7 +2314,10 @@ public struct Disassembler: Sendable {
 
     /// The code sections of `machO` (`CodeSection.of`), in address order,
     /// computed once per image: streaming decodes each function separately.
+    /// None for an image the decoder cannot read (`decodesCode`), so whatever
+    /// reaches here without `requireDecodableCode` claims nothing.
     func codeSections(in machO: MachOFile) -> [CodeSection] {
+        guard Self.decodesCode(of: machO) else { return [] }
         let key = "\(machO.url.path)#\(machO.headerStartOffset)#\(machO.headerStartOffsetInCache)"
         return codeSectionCache.value(for: key) {
             CodeSection.of(machO, functionStarts: functionStarts(of: machO))

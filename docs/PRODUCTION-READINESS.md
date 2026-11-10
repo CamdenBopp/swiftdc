@@ -11787,3 +11787,19 @@ Commit messages on dev stay as they are; these are the true records.
   bundle's name. Measured on `disasm`, `dump`, `layout`, `interface`, `objc`,
   `analyze`, `xrefs` and `swift-version`: all read a link to a link and give
   the target's output byte for byte. Test: `InputShapeTests`.
+
+## 2026-11-04: input shapes
+- **FIXED (soundness) — x86_64 code was decoded as ARM64.** `disasm --pseudo
+  -f sum4` on an x86_64 dylib printed `mem0[x2 + 0x4a] = ?` for `pushq %rbp`,
+  exit 0, and `xrefs` printed `callees (0)`. Each command now decides:
+  `disasm --pseudo`, `--structured`, `--cfg`, `--json` and `-f`, `xrefs`,
+  `score` and `objc --methods`/`--pseudo`/`--structured`/`-f` refuse with
+  `x86_64 code cannot be analyzed`, exit 1 (`score` 2). `analyze` prints the
+  declarations, states the refusal in place of a disassembly, and exits 1, as
+  it does for any failed disassembly. Plain `disasm` prints llvm-objdump's
+  listing, which decodes the real architecture, with a stderr warning and no
+  swiftdc annotation. `dump`, `interface`, `layout`, `objc` headers and
+  `swift-version` read metadata and are unchanged. Behind the commands,
+  `codeSections` is empty for such an image, so a path that misses the check
+  declines rather than decodes. `arm64_32` counts as not arm64: it decodes,
+  but every analysis assumes 64-bit pointers; no fixture has one.

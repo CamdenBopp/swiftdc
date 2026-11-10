@@ -22,7 +22,7 @@ struct ScoreCommand: AsyncParsableCommand {
         catch let code as ExitCode { throw code }
         catch {
             let message = (error as? ProbeScoreError)?.description
-                ?? (error as? ValidationError)?.description ?? error.localizedDescription
+                ?? (error as? ValidationError)?.description ?? String(describing: error)
             FileHandle.standardError.write(Data("Error: \(message)\n".utf8))
             throw ExitCode(2)
         }
@@ -35,6 +35,7 @@ struct ScoreCommand: AsyncParsableCommand {
         if trace { try score.readTrace(at: URL(fileURLWithPath: path)) }
         else {
             let machO = try BinaryLoader.loadMachO(path: path)
+            try Disassembler.requireDecodableCode(machO)
             await Probe.recording(score.recorder) {
                 let _: [Void] = await Disassembler().disassembleStreaming(machO: machO) {
                     if !rawRegister && !widthFlags { _ = $0.renderStructured() }

@@ -92,6 +92,7 @@ struct XrefsCommand: AsyncParsableCommand {
         } else {
             throw BinaryLoadError("Provide a binary path, or --image <name> to read a dyld shared-cache image.")
         }
+        try Disassembler.requireDecodableCode(machO)
         // One function at a time, keeping only its call sites: holding the
         // whole image's instructions took about 1 KB each.
         let sites = await disassembler.disassembleStreaming(machO: machO, transform: CallGraph.callSites(of:))
