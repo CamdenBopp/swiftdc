@@ -59,6 +59,27 @@ harness reports timeouts separately from crashes and counts subcommand runs.
 The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
+
+## Assumptions the output depends on
+
+Each render is sound under these ABI facts and no others. Code that breaks
+one (hand-written assembly, or Swift that reaches private memory through
+unsafe pointers) can be rendered wrongly; each has a fixture that shows the
+shape it excludes.
+
+- **The frame record is no object.** A pointer to a local below a function's
+  frame record grants no write to the saved x29 and x30 (7c04597). The
+  saved x30 coming back intact is already what every call's return assumes.
+- **A callee's async context is private to it.** Its caller allocates it but
+  keeps no pointer into it, as an argument or anywhere else, so its slots
+  change only through the callee's own stores and pointers the callee hands
+  out. `incomingLeaf` (async_call_effects.s) passes an Int that is a pointer
+  to the callee's slot 16 and renders `observe(7)` against native 11.
+- **Unescaped negative save slots are the function's own.** A store through
+  an incoming pointer cannot reach them unless the frame's address escaped.
+- **Outlined code saves x21 where it writes it.** A chain of fragments
+  writing x21 would go unseen by its callers' summaries.
+
 ---
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
@@ -4909,8 +4930,10 @@ if a test was observed to fail without the fix.
   now also covers the async, frame-escape and compiled stack fixtures.
   Enforcing suite: 696 tests in 11 suites.
 
-- **OPEN (assumption) — a caller does not pass pointers into the callee's
-  own context.** `incomingLeaf` (an incoming argument aliasing slot 16)
+- **ASSUMED (2026-11-10, see "Assumptions the output depends on") — a
+  caller does not pass pointers into the callee's own context.** No sound
+  rule short of forgetting every context slot at every unknown call covers
+  it: the caller allocated the context and could keep a pointer anywhere. `incomingLeaf` (an incoming argument aliasing slot 16)
   still renders `observe(7)` against native 11; compiled Swift does not
   pass one. The second half of this entry, a sync callee that reads x22,
   is fixed (b9c1b02): `implicitLeaf` (a C helper writing through x22)
