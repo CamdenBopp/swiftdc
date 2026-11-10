@@ -2717,8 +2717,45 @@ public struct Disassembler: Sendable {
                 labels[address] = symbol.name
             }
         }
+        // Either spelling of a function and its own witness can come first.
+        for (address, symbols) in symbolsSharingAddresses(in: machO, sections: sections) {
+            if let function = Self.functionBehindOwnWitnesses(symbols, demangle: { self.demangle($0) }) {
+                labels[address] = function
+            }
+        }
         goLabels(in: machO, adding: &labels)
         return labels
+    }
+
+    /// The one function `symbols` describe, when every other symbol is that
+    /// function's own witness: `One.hash(into:)` and `protocol witness for
+    /// Hashable.hash(into:) in conformance One` share a body because the
+    /// witness is the function, with nothing to adapt. That is one function
+    /// described twice, not a fold, as a class method and its own witness
+    /// are in `MetadataSymbolizer`. The witness has to name the same member
+    /// with the same signature: `ImplS.y()` folded with the witness for
+    /// `Impl2.x()` is two functions.
+    static func functionBehindOwnWitnesses(_ symbols: [String], demangle: (String) -> String?) -> String? {
+        let witnessSuffix = "TW"
+        let functions = symbols.filter { !$0.hasSuffix(witnessSuffix) }
+        guard functions.count == 1, functions.count < symbols.count, let function = demangle(functions[0]) else { return nil }
+        let prefix = "protocol witness for ", conformanceMarker = " in conformance "
+        for symbol in symbols where symbol.hasSuffix(witnessSuffix) {
+            guard let witness = demangle(symbol), witness.hasPrefix(prefix),
+                  let marker = witness.range(of: conformanceMarker),
+                  let separator = witness.range(of: " : ", range: marker.upperBound ..< witness.endIndex),
+                  let module = witness.range(of: " in ", range: separator.upperBound ..< witness.endIndex)
+            else { return nil }
+            var requirement = witness[witness.index(witness.startIndex, offsetBy: prefix.count) ..< marker.lowerBound]
+            let isStatic = requirement.hasPrefix("static ")
+            if isStatic { requirement = requirement.dropFirst("static ".count) }
+            let proto = witness[separator.upperBound ..< module.lowerBound] + "."
+            guard requirement.hasPrefix(proto) else { return nil }
+            let member = requirement.dropFirst(proto.count)
+            let type = witness[marker.upperBound ..< separator.lowerBound]
+            guard function == (isStatic ? "static " : "") + type + "." + member else { return nil }
+        }
+        return functions[0]
     }
 
     /// Addresses in `__text` that two or more *distinct* symbols name.
@@ -3050,7 +3087,13 @@ public struct Disassembler: Sendable {
     private func foldedSymbolAddresses(in machO: MachOFile) -> [UInt64: [String]] {
         let sections = codeSections(in: machO)
         guard !sections.isEmpty else { return [:] }
+        return symbolsSharingAddresses(in: machO, sections: sections).filter {
+            Self.functionBehindOwnWitnesses($0.value, demangle: { self.demangle($0) }) == nil
+        }
+    }
 
+    /// Every code address two or more distinct symbols name, sorted.
+    private func symbolsSharingAddresses(in machO: MachOFile, sections: [CodeSection]) -> [UInt64: [String]] {
         var namesByAddress: [UInt64: Set<String>] = [:]
         for symbol in machO.symbols where !symbol.name.isEmpty {
             guard let address = Self.sectionAddress(of: symbol),
@@ -11217,7 +11260,7 @@ public struct Disassembler: Sendable {
     // MARK: - Demangling / annotation
 
     /// Demangle a Swift mangled symbol token to a readable name.
-    private func demangle(_ token: String) -> String? {
+    func demangle(_ token: String) -> String? {
         var s = token
         if s.hasPrefix("_$s") || s.hasPrefix("_$S") || s.hasPrefix("_$e") {
             s.removeFirst()

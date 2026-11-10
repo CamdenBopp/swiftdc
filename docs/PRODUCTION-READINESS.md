@@ -1278,6 +1278,16 @@ because it cannot be distinguished from a right one by reading the output.
   marks bodies it did not fold. **DEAD END — a forwarding `b`.** The 12 sites
   that looked wrong in libReconstruction are vtable dispatches on self whose
   owner is proven; the unstripped build names them too.
+- **FIXED — a function and its own witness read as a fold.** With symbols,
+  `GaugeKit.Tank.level.getter` and its witness for `Gauge.level` at one address
+  declined as `sub_640`, while `MetadataSymbolizer` already read a class method
+  and its own witness as one function. The witness is the function, with nothing
+  to adapt. Two symbols now collapse when one is a function and every other is
+  a witness for the same member, with the same signature, in a conformance of
+  that type, and the function's symbol labels the address. `ImplS.y()` folded
+  with the witness for `Impl2.x()` stays a fold, and so does
+  `__derived_enum_equals` with `==` (different members, 5 addresses). 80
+  addresses over the 425 measured inputs. `OwnWitnessTests`.
 - **OPEN — what strip still hides.** 22 of the 81 remain. 14 are value witness
   names whose partner is a `merged` alias or `outlined` copy of the same
   operation on the same type: true of the body, and declining all of them costs
