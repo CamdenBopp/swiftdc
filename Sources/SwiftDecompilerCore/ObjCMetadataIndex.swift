@@ -271,7 +271,129 @@ struct ObjCMetadataSnapshot {
             }
             snapshot.categories = (objc.categories32 ?? []).compactMap { $0.info(in: machO) }
         }
-        return snapshot
+        return snapshot.boundingTypeNesting()
+    }
+
+    /// The deepest recursion an encoding can drive a recursive decoder to,
+    /// over-estimated: every pointer or qualifier prefix in the string plus
+    /// the deepest bracket nesting. A decoder's depth at any point is the
+    /// open brackets plus the prefixes on the path to it, which this bounds.
+    /// A struct or union's name (up to its `=`) and a quoted name are text,
+    /// not type codes, so their letters are not counted.
+    static func nestingBound(of encoding: String) -> Int {
+        var prefixes = 0, depth = 0, deepest = 0
+        var inName = false, inQuote = false
+        for byte in encoding.utf8 {
+            if inQuote {
+                if byte == UInt8(ascii: "\"") { inQuote = false }
+                continue
+            }
+            if inName {
+                switch byte {
+                case UInt8(ascii: "="): inName = false
+                case UInt8(ascii: "}"), UInt8(ascii: ")"): inName = false; depth = max(0, depth - 1)
+                case UInt8(ascii: "{"), UInt8(ascii: "("): depth += 1; deepest = max(deepest, depth)
+                default: break
+                }
+                continue
+            }
+            switch byte {
+            case UInt8(ascii: "\""):
+                inQuote = true
+            case UInt8(ascii: "^"), UInt8(ascii: "r"), UInt8(ascii: "n"), UInt8(ascii: "N"),
+                 UInt8(ascii: "o"), UInt8(ascii: "O"), UInt8(ascii: "R"), UInt8(ascii: "V"),
+                 UInt8(ascii: "A"):
+                prefixes += 1
+            case UInt8(ascii: "{"), UInt8(ascii: "("):
+                depth += 1
+                deepest = max(deepest, depth)
+                inName = true
+            case UInt8(ascii: "["):
+                depth += 1
+                deepest = max(deepest, depth)
+            case UInt8(ascii: "}"), UInt8(ascii: "]"), UInt8(ascii: ")"):
+                depth = max(0, depth - 1)
+            default:
+                break
+            }
+        }
+        return prefixes + deepest
+    }
+
+    /// Past this bound an encoding is not handed to ObjCDump, whose
+    /// `ObjCTypeDecoder` recurses once per level with no limit of its own:
+    /// 4,000 `^` or 3,000 nested `[1` in one ivar's type overflowed the
+    /// stack (SIGBUS). The deepest real encoding among 197,428 measured
+    /// nests 11 levels; a long struct of pointer fields adds one prefix per
+    /// field, so the bound leaves room for those.
+    static let maximumDecodedNesting = 512
+
+    /// The snapshot with every type encoding too deep to decode safely
+    /// replaced by the unknown type `?`. A method keeps its selector, one
+    /// unknown per argument, so its header line keeps every label; a
+    /// property keeps its attributes after the type, which never contains
+    /// a comma. Nothing that decodes within the bound changes.
+    func boundingTypeNesting() -> ObjCMetadataSnapshot {
+        func tooDeep(_ encoding: String) -> Bool {
+            encoding.utf8.count > Self.maximumDecodedNesting && Self.nestingBound(of: encoding) > Self.maximumDecodedNesting
+        }
+        func ivar(_ ivar: ObjCIvarInfo) -> ObjCIvarInfo {
+            tooDeep(ivar.typeEncoding) ? ObjCIvarInfo(name: ivar.name, typeEncoding: "?", offset: ivar.offset) : ivar
+        }
+        func method(_ method: ObjCMethodInfo) -> ObjCMethodInfo {
+            guard tooDeep(method.typeEncoding) else { return method }
+            let arguments = method.name.utf8.filter { $0 == UInt8(ascii: ":") }.count
+            // Every type carries an offset, as compiled encodings do.
+            let unknowns = String(repeating: "?0", count: arguments)
+            return ObjCMethodInfo(name: method.name, typeEncoding: "?0@0:0" + unknowns,
+                                  isClassMethod: method.isClassMethod, imp: method.imp)
+        }
+        func property(_ property: ObjCPropertyInfo) -> ObjCPropertyInfo {
+            guard tooDeep(property.attributesString) else { return property }
+            let rest = property.attributesString.firstIndex(of: ",").map { String(property.attributesString[$0...]) } ?? ""
+            return ObjCPropertyInfo(name: property.name, attributesString: "T?" + rest,
+                                    isClassProperty: property.isClassProperty)
+        }
+        func proto(_ p: ObjCProtocolInfo) -> ObjCProtocolInfo {
+            ObjCProtocolInfo(
+                name: p.name, protocols: p.protocols.map(proto),
+                classProperties: p.classProperties.map(property), properties: p.properties.map(property),
+                classMethods: p.classMethods.map(method), methods: p.methods.map(method),
+                optionalClassProperties: p.optionalClassProperties.map(property),
+                optionalProperties: p.optionalProperties.map(property),
+                optionalClassMethods: p.optionalClassMethods.map(method), optionalMethods: p.optionalMethods.map(method))
+        }
+        func deep(_ properties: [ObjCPropertyInfo], _ methods: [ObjCMethodInfo]) -> Bool {
+            properties.contains { tooDeep($0.attributesString) } || methods.contains { tooDeep($0.typeEncoding) }
+        }
+        func protoNeedsRewrite(_ p: ObjCProtocolInfo) -> Bool {
+            deep(p.classProperties + p.properties + p.optionalClassProperties + p.optionalProperties,
+                 p.classMethods + p.methods + p.optionalClassMethods + p.optionalMethods)
+                || p.protocols.contains(where: protoNeedsRewrite)
+        }
+        var result = self
+        result.classes = classes.map { c in
+            guard c.ivars.contains(where: { tooDeep($0.typeEncoding) })
+                    || deep(c.classProperties + c.properties, c.classMethods + c.methods)
+                    || c.protocols.contains(where: protoNeedsRewrite)
+            else { return c }
+            return ObjCClassInfo(
+                name: c.name, version: c.version, imageName: c.imageName, instanceSize: c.instanceSize,
+                superClassName: c.superClassName, protocols: c.protocols.map(proto), ivars: c.ivars.map(ivar),
+                classProperties: c.classProperties.map(property), properties: c.properties.map(property),
+                classMethods: c.classMethods.map(method), methods: c.methods.map(method))
+        }
+        result.protocols = protocols.map { protoNeedsRewrite($0) ? proto($0) : $0 }
+        result.categories = categories.map { c in
+            guard deep(c.classProperties + c.properties, c.classMethods + c.methods)
+                    || c.protocols.contains(where: protoNeedsRewrite)
+            else { return c }
+            return ObjCCategoryInfo(
+                name: c.name, className: c.className, protocols: c.protocols.map(proto),
+                classProperties: c.classProperties.map(property), properties: c.properties.map(property),
+                classMethods: c.classMethods.map(method), methods: c.methods.map(method))
+        }
+        return result
     }
 
     /// Recover superclass names that the metadata leaves nil because the

@@ -5612,14 +5612,17 @@ if a test was observed to fail without the fix.
   `corruptIvarTypeEncodingsDeclineTheirFieldIfPresent`, which builds the
   corrupt copies from the fixture's bytes). Blast radius: every fixture's
   structured, pseudo, listing and JSON views are byte-identical.
-- **OPEN (robustness) (audited 2026-11-10): a deeply nested type encoding
-  still overflows the stack in `objc`.** Release 9369b0e: 4,000 `^` or 3,000
-  nested `[1` in an ivar type kill `objc` and `objc --metadata-only` (SIGBUS,
-  exit 138) inside ObjCDump's `ObjCTypeDecoder._decode`; 2,000 / 1,000
-  survive, and `dump`, `disasm`, `interface` and `layout` exit 0.
-
-## 2026-10-23: 64-bit segment fields past Int.max
-
+- **FIXED (robustness, 2026-11-10): a deeply nested type encoding
+  overflowed the stack in `objc`.** 4,000 or 12,000 `^`, or 3,000 or 4,000
+  nested `[1`, in an ivar's type killed `objc` and `objc --metadata-only`
+  (SIGBUS, exit 138) inside ObjCDump's unbounded `ObjCTypeDecoder._decode`.
+  `ObjCMetadataSnapshot.boundingTypeNesting` now replaces any ivar, method
+  or property encoding whose nesting bound passes 512 (prefixes plus bracket
+  depth, names excluded; real encodings nest at most 11) with the unknown
+  type `?`, keeping a method's labels and a property's attributes. All four
+  copies exit 0 from every subcommand and print `unknown _target;`. Tests:
+  `headersOfCorruptlyNestedIvarTypesStillPrintIfPresent`,
+  `onlyEncodingsPastTheNestingBoundAreReplaced`.
 - **FIXED (robustness, below): a segment `vmaddr` or `vmsize` at or above
   2^63 trapped.** MachOKit's `SegmentCommand64.virtualMemoryAddress` and
   `virtualMemorySize` convert the raw `UInt64` with a trapping
