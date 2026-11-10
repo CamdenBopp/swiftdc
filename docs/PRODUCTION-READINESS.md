@@ -3836,25 +3836,19 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   Data bytes were made unaligned in the sanitizer build's own checkout: under
   ThreadSanitizer those loads trap (`load from misaligned raw pointer`), serial
   or parallel, a latent dependency defect recorded below.
-- **OPEN (robustness, dependency) — aligned loads of file bytes in
-  dependencies.** MachOKit's `FileHandle+.swift`, swift-binary-parse-support's
-  `DataSequence`/`MemorySequence`/`FileHandle+` and swift-fileio's streamed
-  files read integers with `UnsafeRawBufferPointer.load(as:)` from Data or
-  file bytes whose address is not proven aligned. A ThreadSanitizer build
-  traps on the first such read (`disasm` of any fixture). Release builds skip
-  the check and arm64 tolerates the access, so no run fails today; the fix is
-  `loadUnaligned(as:)` in each. Counted at the pinned revisions (2026-11-10):
-  MachOKit 10, MachOSwiftSection 15, MachOObjCSection 5,
-  swift-binary-parse-support 5, swift-fileio 3, swift-fileio-extra 4 (the
-  last three are not forked). All six are fixed as local commits on the
-  pinned revisions under ~/src-deps/<package>-unaligned, none pushed:
-  MachOKit 3262982, MachOSwiftSection 4de80b7d, MachOObjCSection eabdb35,
-  swift-binary-parse-support 7334d34, swift-fileio 46d4e36,
-  swift-fileio-extra 17dfa37. With all six substituted, a ThreadSanitizer
-  build runs `disasm --structured`, `objc`, `dump` and `xrefs` on seven
-  inputs with no trap and no race; with MachOKit's alone the first trap moves
-  to MachOObjCSection. Landing it needs the forks pushed, the three upstream
-  packages forked (or the change sent upstream), and the pins moved.
+- **FIXED (robustness, 2026-11-10) — aligned loads of file bytes in
+  dependencies.** MachOKit, MachOSwiftSection, MachOObjCSection,
+  swift-binary-parse-support, swift-fileio and swift-fileio-extra read
+  integers from Data or file bytes with `load(as:)`, which requires
+  alignment the bytes do not have (42 sites). A ThreadSanitizer build trapped
+  on the first such read of any input; release builds skip the check, so no
+  run failed. Every site now uses `loadUnaligned(as:)`: the three Mach-O
+  forks on new `swiftdc-interim/*-unaligned-loads` branches, and new forks of
+  the three p-x9 packages (`swiftdc-interim/unaligned-loads`) declared in
+  Package.swift so those identities resolve to them. A ThreadSanitizer build
+  from the pins runs `disasm --structured`, `objc`, `dump`, `xrefs`,
+  `interface` and `layout` on seven inputs (42 runs) with no trap and no
+  race; release output is byte-identical on every fixture view.
 - **MITIGATED (memory) — a whole-image memory regression guard now exists**
   (`MemoryRegressionTests`). The memory limit above is now FIXED by
   streaming, but nothing stopped it regressing meanwhile, and it still guards the

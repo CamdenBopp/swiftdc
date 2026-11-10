@@ -65,7 +65,7 @@ let package = Package(
         // docs/PRODUCTION-READINESS.md.
         .package(
             url: "https://github.com/CamdenBopp/MachOSwiftSection",
-            revision: "6e6db62a9a76b0444a043ac44ef7638d4def7e43"
+            revision: "4de80b7d55513b6c3e333d930ea092ab1a4dae4f"
         ),
         // INTERIM FORK: upstream 1.3.0 plus `MachOSegmentMap`, branch
         // swiftdc-interim/1.3.0-vm-relative. The file-to-memory mapping everything
@@ -99,7 +99,7 @@ let package = Package(
         // return to an upstream version pin once the memo ships.
         .package(
             url: "https://github.com/CamdenBopp/MachOKit.git",
-            revision: "c9177864cd57339ddafef4639719f1c5d6369015"
+            revision: "32629829cccea576194b3c5667328cb68e17fd2e"
         ),
         // `Semantic` provides SemanticString, the return type of SwiftDump's
         // `.dump(...)`. Moves in lockstep with MachOSwiftSection: 0.15.0 raised its
@@ -134,7 +134,26 @@ let package = Package(
         // be the upstream one; see the note above on why it is not.
         .package(
             url: "https://github.com/CamdenBopp/MachOObjCSection.git",
-            revision: "3873494bec69946c707bd42847a3085972989335"
+            revision: "eabdb358cd181b7aafbd9bb38adcd98a9f2448e2"
+        ),
+        // INTERIM FORKS of p-x9's binary-parsing and file packages, branch
+        // swiftdc-interim/unaligned-loads on the versions MachOKit and
+        // MachOSwiftSection resolve (0.3.0, 0.14.0, 0.2.2): their reads of file
+        // bytes use loadUnaligned. With aligned `load(as:)` a ThreadSanitizer
+        // build trapped on its first read of any input. Declared here so these
+        // identities resolve to the forks; return each to upstream when the
+        // change ships there. The three Mach-O forks above carry the same change.
+        .package(
+            url: "https://github.com/CamdenBopp/swift-binary-parse-support.git",
+            revision: "7334d3457d121ea9f629dee9694a36da88ca2df7"
+        ),
+        .package(
+            url: "https://github.com/CamdenBopp/swift-fileio.git",
+            revision: "46d4e36993d7e696658f3d919fc2b56b95e30b78"
+        ),
+        .package(
+            url: "https://github.com/CamdenBopp/swift-fileio-extra.git",
+            revision: "17dfa37434f184dcb446e2a5eed8a169a8a915fd"
         ),
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/swift-objc-dump",

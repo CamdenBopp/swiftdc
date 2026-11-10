@@ -1,5 +1,5 @@
 {
-  "originHash" : "9bac669b49b9f880a0ec148daea38304ff58cee6aa5acccff604457a4eeff4a7",
+  "originHash" : "8c03680e3fa96407d26b5f978d6688bb92066754c2c3b3bf805a05ab663c92b9",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -42,7 +42,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/CamdenBopp/MachOKit.git",
       "state" : {
-        "revision" : "c9177864cd57339ddafef4639719f1c5d6369015"
+        "revision" : "32629829cccea576194b3c5667328cb68e17fd2e"
       }
     },
     {
@@ -58,7 +58,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/CamdenBopp/MachOObjCSection.git",
       "state" : {
-        "revision" : "3873494bec69946c707bd42847a3085972989335"
+        "revision" : "eabdb358cd181b7aafbd9bb38adcd98a9f2448e2"
       }
     },
     {
@@ -66,7 +66,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/CamdenBopp/MachOSwiftSection",
       "state" : {
-        "revision" : "6e6db62a9a76b0444a043ac44ef7638d4def7e43"
+        "revision" : "4de80b7d55513b6c3e333d930ea092ab1a4dae4f"
       }
     },
     {
@@ -144,10 +144,9 @@
     {
       "identity" : "swift-binary-parse-support",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/p-x9/swift-binary-parse-support.git",
+      "location" : "https://github.com/CamdenBopp/swift-binary-parse-support.git",
       "state" : {
-        "revision" : "b4042df3819fde93ce952a111607ec8ffc4ee704",
-        "version" : "0.3.0"
+        "revision" : "7334d3457d121ea9f629dee9694a36da88ca2df7"
       }
     },
     {
@@ -216,19 +215,17 @@
     {
       "identity" : "swift-fileio",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/p-x9/swift-fileio.git",
+      "location" : "https://github.com/CamdenBopp/swift-fileio.git",
       "state" : {
-        "revision" : "e581ae04d4079c675042fa62aeabc5ba7480d3df",
-        "version" : "0.14.0"
+        "revision" : "46d4e36993d7e696658f3d919fc2b56b95e30b78"
       }
     },
     {
       "identity" : "swift-fileio-extra",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/p-x9/swift-fileio-extra.git",
+      "location" : "https://github.com/CamdenBopp/swift-fileio-extra.git",
       "state" : {
-        "revision" : "8d83506dd4dff737807d90dbf2264096ed98c7a7",
-        "version" : "0.2.2"
+        "revision" : "17dfa37434f184dcb446e2a5eed8a169a8a915fd"
       }
     },
     {

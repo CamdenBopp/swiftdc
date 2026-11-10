@@ -336,8 +336,10 @@ Also update `docs/INSTRUMENTATION.md` when the event catalogue changes.
 - SwiftPM warns that `machokit` and its siblings have two identities:
   MachOKit, MachOKitExtensions, MachOObjCSection and MachOSwiftSection are
   pinned to `CamdenBopp` forks (`swiftdc-interim/*` branches) for the
-  `MachOFile.cache` memo, reading through slid segments, and the
-  `interface` fixes. The warning is expected. Return each to upstream when
+  `MachOFile.cache` memo, reading through slid segments, the
+  `interface` fixes and unaligned reads of file bytes; swift-binary-parse-support,
+  swift-fileio and swift-fileio-extra are pinned to `CamdenBopp` forks for
+  the unaligned reads. The warning is expected. Return each to upstream when
   its change ships there.
 - `llvm-objdump` comes through `xcrun`. Capstone 6 builds from source as a
   SwiftPM dependency; there is no Homebrew capstone.
