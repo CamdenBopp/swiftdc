@@ -2734,10 +2734,8 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   `makeEngine(turbo).start()` reads `FieldVTable.Engine.start(self: r0)`.
   GoodLinks is unchanged again: it is stripped, and a `sub_` callee has no
   signature to type its result. Methods' and specializations' parameters,
-  results of unnamed callees, existentials (an `any P`
-  parameter is not seeded as an argument at all, since the entry
-  convention proves only one-register scalars) and objects loaded from other
-  memory are not typed yet.
+  results of unnamed callees, class-bound existentials and objects loaded
+  from other memory are not typed yet (opaque existentials: the next entry).
 - **FIXED (2026-11-10, completeness): a requirement called on an opaque
   existential argument stayed unresolved.** `measure(_ shape: any Shape)` is
   `ldp x19, x21, [x0, #0x18]` (metadata, table), the projected value in x20,
