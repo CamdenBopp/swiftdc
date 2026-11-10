@@ -67,11 +67,12 @@ today.
    generic function with a direct result too (a8 #1, reported).
 4. **A specialization does not inherit its original's layout.** Needs:
    the specialization clause, parsed once. Enforced for function signature
-   specializations (dcb54c3, 8c1f202). Open: `Tt` (dropped metatype)
-   specializations print like `Tg` (a8 #2, reported); closure-propagated
-   survivors (a8 #3, reported). The unclosed `[` of a closure-propagation
-   name is FIXED: its signature parses, and nested clauses must all keep
-   the layout.
+   specializations (dcb54c3, 8c1f202), `Tt` (dropped argument) and
+   closure-propagated survivors: `specializationClause` reads the demangle
+   tree once per symbol, and `layoutName` is what every parameter query
+   reads. A clause that cannot be followed declines. Open: a capture after
+   one whose registers the mangling does not fix (a by-address capture
+   prints as by-value), `Arg[n] = Dead` under them, methods, async.
 5. **A receiver is never taken from a callee-saved register without
    proof.** Needs: whether the callee reads x20. Enforced for in-image
    callees (6c07b3e), and for methods and initializers of frozen
@@ -137,7 +138,7 @@ soundness change, measured on its own).
 | 8 | One-case enums are zero-sized | `isNoPayloadEnum` | FIXED 4aa9d18 | soundness | onecase.swift | functions taking unit-like enums | shared lowering |
 | 9 | Narrow ints: high bits undefined | `renderTypedConstant`, `narrowedResult` | constants FIXED 1fd4b94; computed returns FIXED; C declared parameters and printf conversions FIXED | soundness | narrowreturns.swift, a11 #2 | Int8-32 returns; C APIs taking `int` | shared (type width) |
 | 10 | Vector lanes, Float16, vector immediates, ucvtf | `InstructionSemantics`, fmov | open | soundness | a2 #1/#3/#4, a12 #1 | SIMD code, struct copies via q regs | isolated (instruction semantics) |
-| 11 | Generic x0 indirect result; `Tt`; closure-prop survivors | positional, `specializedSignature` | open | soundness | a8 #1-#3 | unspecialized generics, stdlib specializations | shared lowering + specialization parse |
+| 11 | Generic x0 indirect result; `Tt`; closure-prop survivors | `specializationClause`, `layoutName` | FIXED but for unprovable captures, `Dead` entries, methods and async | soundness | a8 #1-#3 | unspecialized generics, stdlib specializations | shared lowering + specialization parse |
 | 12 | Struct/SIMD/closure params | `swiftCallArgumentLayout` unplaced tail | FIXED (unplaced from the first unprovable parameter) | soundness | structargs.swift | any call passing a struct by value | shared lowering |
 | 13 | Body-reads sees only x0-x7 | `CalleeRegisterSummary` | v0-v7 FIXED; incoming stack area open | soundness (arity) | floatreads.c | C callees with float or stack args | isolated (summary) |
 | 14 | -Onone stack reloads in conditions | `Structurer.condition` | open | soundness | a14 #1 | -Onone payload switches | isolated (text path) |

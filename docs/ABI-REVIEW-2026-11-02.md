@@ -74,8 +74,8 @@ omitted.
     `fmov.2d #3.0` stores one Double (lane 1 reads 0); Float16 constants read
     `0.0` or a Double pattern; `ucvtf` renders `Double(x)` for an unsigned
     convert; v8-v15 keep their upper halves across a call.
-11. **PARTLY FIXED (unspecialized generic calls; `Tt` and closure-propagated
-    specializations OPEN) — Generic and specialization layouts.** A generic function with a
+11. **FIXED (unprovable captures, `Dead` entries, methods and async OPEN;
+    see PRODUCTION-READINESS, 2026-11-04) — Generic and specialization layouts.** A generic function with a
     direct and an indirect result takes the buffer in x0, read as the first
     formal (`split<A>(local_18, local_20, ?, …)`); a `Tt` specialization
     drops metatype arguments but prints like `Tg`; a closure-propagated

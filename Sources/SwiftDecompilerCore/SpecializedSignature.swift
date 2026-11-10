@@ -15,16 +15,16 @@ import Synchronization
 /// replaced, printed as a plain function: `Spec.bump(Swift.Double) ->
 /// Swift.Double`.
 ///
-/// An argument can then leave the list, and nothing printed says so: a `Tt`
+/// Arguments can then leave the list, and nothing printed says so: a `Tt`
 /// clause drops a metatype (NodePrinter skips `DroppedArgument`, so
 /// `generic specialization <Swift.Int8> of P.meta<A>(A.Type, Swift.Int)`
-/// takes one Int in x0). The tree says so.
+/// takes one Int in x0), and a closure-propagated clause drops the closure
+/// and appends its captures after every argument left. The tree says both.
 ///
 /// Proven only when every link holds:
 ///
-/// - the symbol is one generic specialization of a function, static or not,
-///   with no function signature specialization (which drops and explodes
-///   arguments) and no closure;
+/// - the symbol is function signature specializations over at most one
+///   generic specialization of a function;
 /// - the tree prints exactly the name it was given;
 /// - the function's generic signature has one depth, its parameter count is
 ///   the substitution count, and its requirements are conformances or
@@ -33,10 +33,19 @@ import Synchronization
 ///   itself (no member type such as `A.Element`, no nested generic type);
 /// - a tuple result has no generic element, since a buffer then stays in x0;
 /// - a clause that removes arguments is on a synchronous function with no
-///   tuple formal, and every index it names is accounted for (`survivors`).
+///   tuple formal, every index it names is accounted for (`survivors`), and
+///   a function signature specialization has one entry per parameter, so
+///   no `self` is among its arguments (`applying`). It may re-own or remove
+///   a closure; anything else, `Arg[0] = Dead` included, is left to the
+///   printed name.
 struct SpecializedLayout: Equatable, Sendable {
-    /// `P.meta(Swift.Int) -> Swift.Int`.
+    /// `P.apply(Swift.Int, Swift.Int) -> Swift.Int`.
     let signature: String
+    /// False when a capture the mangling cannot place follows the parameters
+    /// `signature` lists (`isPlacedCapture`). The listed ones are still in
+    /// their registers, so a body can be seeded from them. A call cannot be
+    /// laid out from them: it passes more.
+    let isComplete: Bool
 }
 
 /// What a symbol's mangled clauses say about the printed name.
@@ -53,9 +62,16 @@ enum SpecializationClause: Equatable, Sendable {
     case declined
 }
 
+/// One parameter of a specialization, as a tuple element.
+private struct SpecializedParameter {
+    let element: Node
+    let isCapture: Bool
+}
+
 extension DisassembledFunction {
     static func specializedSignature(symbol: String, printedName: String) -> String? {
-        guard case .proven(let layout) = specializationClause(symbol: symbol, printedName: printedName)
+        guard case .proven(let layout) = specializationClause(symbol: symbol, printedName: printedName),
+              layout.isComplete
         else { return nil }
         return layout.signature
     }
@@ -156,7 +172,10 @@ extension DisassembledFunction {
     }
 
     private static func layout(of entity: Node, under clauses: [Node]) -> SpecializedLayout? {
-        guard clauses.count == 1, let genericClause = clauses.first, genericClause.kind == .genericSpecialization
+        var signatureClauses = clauses
+        let genericClause = signatureClauses.last?.kind == .genericSpecialization ? signatureClauses.removeLast() : nil
+        guard signatureClauses.allSatisfy({ $0.kind == .functionSignatureSpecialization }),
+              genericClause != nil || !signatureClauses.isEmpty
         else { return nil }
 
         let isStatic = entity.kind == .static
@@ -165,49 +184,58 @@ extension DisassembledFunction {
               let typeNode = function.children.last, typeNode.kind == .type
         else { return nil }
 
+        let functionType: Node
         var substitutions: [Node] = []
         // Each dropped argument's index in the SIL argument list.
         var dropped = Set<Int>()
-        for child in genericClause.children {
-            switch child.kind {
-            case .isSerialized, .specializationPassID:
-                continue
-            case .droppedArgument:
-                guard let index = child.index else { return nil }
-                dropped.insert(Int(index))
-            case .genericSpecializationParam:
-                guard child.children.count == 1, let type = child.children.first, type.kind == .type else { return nil }
-                substitutions.append(type)
-            default:
-                return nil
+        if let genericClause {
+            for child in genericClause.children {
+                switch child.kind {
+                case .isSerialized, .specializationPassID:
+                    continue
+                case .droppedArgument:
+                    guard let index = child.index else { return nil }
+                    dropped.insert(Int(index))
+                case .genericSpecializationParam:
+                    guard child.children.count == 1, let type = child.children.first, type.kind == .type else { return nil }
+                    substitutions.append(type)
+                default:
+                    return nil
+                }
             }
-        }
-        guard let generic = unwrappingType(typeNode), generic.kind == .dependentGenericType,
-              generic.children.count == 2,
-              let signature = generic.children.first, signature.kind == .dependentGenericSignature,
-              let declared = unwrappingType(generic.children[1]), declared.kind == .functionType
-        else { return nil }
-        var parameterCount: UInt64?
-        for child in signature.children {
-            switch child.kind {
-            case .dependentGenericParamCount:
-                guard parameterCount == nil, let count = child.index else { return nil }
-                parameterCount = count
-            case .dependentGenericConformanceRequirement, .dependentGenericLayoutRequirement,
-                 .dependentGenericInverseConformanceRequirement:
-                continue
-            default:
-                return nil
+            guard let generic = unwrappingType(typeNode), generic.kind == .dependentGenericType,
+                  generic.children.count == 2,
+                  let signature = generic.children.first, signature.kind == .dependentGenericSignature,
+                  let declared = unwrappingType(generic.children[1]), declared.kind == .functionType
+            else { return nil }
+            var parameterCount: UInt64?
+            for child in signature.children {
+                switch child.kind {
+                case .dependentGenericParamCount:
+                    guard parameterCount == nil, let count = child.index else { return nil }
+                    parameterCount = count
+                case .dependentGenericConformanceRequirement, .dependentGenericLayoutRequirement,
+                     .dependentGenericInverseConformanceRequirement:
+                    continue
+                default:
+                    return nil
+                }
             }
+            guard parameterCount == UInt64(substitutions.count) else { return nil }
+            functionType = declared
+        } else {
+            // A generic function left generic takes metadata after its
+            // formals, and the clause's list does not say where.
+            guard let declared = unwrappingType(typeNode), declared.kind == .functionType else { return nil }
+            functionType = declared
         }
-        guard parameterCount == UInt64(substitutions.count) else { return nil }
-        let functionType = declared
         guard let substituted = substituting(functionType, with: substitutions),
               let result = resultType(of: functionType), !isGenericTuple(result)
         else { return nil }
 
-        if dropped.isEmpty {
-            return SpecializedLayout(signature: printed(function, isStatic: isStatic, type: substituted, labels: true))
+        if dropped.isEmpty, signatureClauses.isEmpty {
+            return SpecializedLayout(signature: printed(function, isStatic: isStatic, type: substituted, labels: true),
+                                     isComplete: true)
         }
         // A typed error can add an indirect SIL result before the formals, and
         // whether it does turns on its resilience, which the symbol does not
@@ -218,13 +246,30 @@ extension DisassembledFunction {
               let kept = survivors(of: declared, dropping: dropped, result: result,
                                    isFree: isFreeFunction(function, isStatic: isStatic))
         else { return nil }
-        var placed: [Node] = []
+        var parameters = [SpecializedParameter]()
         for formal in kept {
             guard let element = substituting(formal, with: substitutions) else { return nil }
-            placed.append(element)
+            parameters.append(SpecializedParameter(element: element, isCapture: false))
+        }
+
+        // Mangled last, printed first: the innermost clause is the last one.
+        for clause in signatureClauses.reversed() {
+            guard let rewritten = applying(clause, to: parameters) else { return nil }
+            parameters = rewritten
+        }
+
+        var placed: [Node] = []
+        var isComplete = true
+        for parameter in parameters {
+            guard !parameter.isCapture || isPlacedCapture(parameter.element) else {
+                isComplete = false
+                break
+            }
+            placed.append(parameter.element)
         }
         guard let rebuilt = replacingFormals(of: substituted, with: placed) else { return nil }
-        return SpecializedLayout(signature: printed(function, isStatic: isStatic, type: rebuilt, labels: false))
+        return SpecializedLayout(signature: printed(function, isStatic: isStatic, type: rebuilt, labels: false),
+                                 isComplete: isComplete)
     }
 
     /// `function` with `type`, printed as a plain function. The label list
@@ -304,6 +349,78 @@ extension DisassembledFunction {
     private static func indirectResultCount(of result: Node) -> Int? {
         if unwrappingType(result)?.kind == .dependentGenericParamType { return 1 }
         return SwiftLowering.of(result.print(using: .default)).isDirect ? 0 : nil
+    }
+
+    /// `parameters` after one function signature specialization, or nil when
+    /// the clause does more than remove a closure or re-own an argument.
+    ///
+    /// The clause has one entry per SIL argument
+    /// (`FunctionSignatureSpecializationMangler`'s constructor), which checks
+    /// this parameter list independently: an indirect result or a `self` the
+    /// list does not hold makes the counts differ. The specialization takes
+    /// the arguments that are left, then each closure's captures, in clause
+    /// order (ClosureSpecialization.swift, `addFunctionArgumentsForCaptures`):
+    /// `capTwo`'s `Tf1cncn_n` is `(double x, i64 z, i64 a, i64 b)`.
+    private static func applying(_ clause: Node, to parameters: [SpecializedParameter]) -> [SpecializedParameter]? {
+        var entries: [Node] = []
+        for child in clause.children {
+            switch child.kind {
+            case .isSerialized, .specializationPassID:
+                continue
+            case .functionSignatureSpecializationParam:
+                entries.append(child)
+            default:
+                // `Return = …`, a representation change, a removed `async`.
+                return nil
+            }
+        }
+        guard entries.count == parameters.count else { return nil }
+        var kept: [SpecializedParameter] = []
+        var captures: [SpecializedParameter] = []
+        for (entry, parameter) in zip(entries, parameters) {
+            guard let kind = entry.children.first else {
+                kept.append(parameter)
+                continue
+            }
+            guard kind.kind == .functionSignatureSpecializationParamKind, let value = kind.index else { return nil }
+            switch value {
+            case ParameterKind.ownedToGuaranteed, ParameterKind.guaranteedToOwned:
+                kept.append(parameter)
+            case ParameterKind.closure, ParameterKind.escapingClosure:
+                for capture in entry.children where capture.kind == .type {
+                    captures.append(SpecializedParameter(element: Node.create(kind: .tupleElement, child: capture),
+                                                         isCapture: true))
+                }
+            case ParameterKind.sameClosureAsEarlierArgument:
+                continue
+            default:
+                return nil
+            }
+        }
+        return kept + captures
+    }
+
+    /// The `FunctionSigSpecializationParamKind` values this reads. That enum
+    /// is internal to Demangling, whose numbering is not the compiler's past
+    /// `constantPropKeyPath`.
+    private enum ParameterKind {
+        static let closure: UInt64 = 5
+        static let sameClosureAsEarlierArgument: UInt64 = 11
+        static let escapingClosure: UInt64 = 12
+        static let ownedToGuaranteed: UInt64 = 128
+        static let guaranteedToOwned: UInt64 = 512
+    }
+
+    /// Whether a capture's registers are fixed by its mangling. The clause
+    /// lists SIL value types, so a capture by address prints like one by
+    /// value: `capDouble`'s and `capVar`'s `Swift.Double` are `double %1` and
+    /// `ptr %1`. Only a one-integer-register type takes the same register
+    /// either way. A float's bank and a String's register count are unknown,
+    /// and with them the place of every capture after them.
+    private static func isPlacedCapture(_ element: Node) -> Bool {
+        guard let type = formalType(element), let inner = unwrappingType(type) else { return false }
+        if inner.kind == .class || inner.kind == .boundGenericClass { return true }
+        return SwiftLowering.of(type.print(using: .default)) == .oneInteger
     }
 
     /// A function type with `elements` for its formals, or nil when it has

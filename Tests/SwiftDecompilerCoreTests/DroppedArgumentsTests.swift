@@ -11,14 +11,14 @@ private func clause(_ symbol: String) throws -> SpecializationClause {
     return DisassembledFunction.specializationClause(symbol: "_" + symbol, printedName: name)
 }
 
-private func proven(_ signature: String) -> SpecializationClause {
-    .proven(SpecializedLayout(signature: "DroppedArgs." + signature))
+private func proven(_ signature: String, isComplete: Bool = true) -> SpecializationClause {
+    .proven(SpecializedLayout(signature: "DroppedArgs." + signature, isComplete: isComplete))
 }
 
 private extension SpecializationClause {
     var asStatic: SpecializationClause {
         guard case .proven(let layout) = self else { return self }
-        return .proven(SpecializedLayout(signature: "static " + layout.signature))
+        return .proven(SpecializedLayout(signature: "static " + layout.signature, isComplete: layout.isComplete))
     }
 }
 
@@ -116,11 +116,62 @@ private func function(_ symbol: String) throws -> DisassembledFunction {
     #expect(try clause("$s11DroppedArgs4pairyx_xtxlFSi_Tg5") == .absent)
     // The same clause with nothing dropped reads as it always did.
     #expect(try clause("$s15Specializations4bumpyxxSjRzlFSd_Tg5")
-        == .proven(SpecializedLayout(signature: "Specializations.bump(Swift.Double) -> Swift.Double")))
+        == .proven(SpecializedLayout(signature: "Specializations.bump(Swift.Double) -> Swift.Double", isComplete: true)))
     // A member type needs a conformance to resolve, so the printed name stands.
     #expect(try clause("$s15Specializations10firstCounty7ElementQzSgxSlRzlFSaySiG_Tg5") == .absent)
     // Not a specialization.
     #expect(DisassembledFunction.specializationClause(symbol: "_$s1M1fyS2iF", printedName: "M.f(Swift.Int) -> Swift.Int") == .absent)
+}
+
+@Test func aPropagatedClosureGoesAndItsCapturesFollowTheSurvivors() throws {
+    #expect(try clause("$s11DroppedArgs5applyySixm_S3iXEtlFSi_Ttg504$s11A26Args8useApplyyS2iFS2iXEfU_SiTf1nc_n")
+        == proven("apply(Swift.Int, Swift.Int) -> Swift.Int"))
+    #expect(try clause("$s11DroppedArgs5applyySixm_S3iXEtlFSS_Ttg504$s11A36Args17useApplyNoCaptureyS2iFS2iXEfU_Tf1nc_n")
+        == proven("apply(Swift.Int) -> Swift.Int"))
+    // Every survivor comes first, then each closure's captures in clause order.
+    #expect(try clause("$s11DroppedArgs11twoClosuresySdS2iXE_SdS2iXESitF04$s11a26Args14useTwoClosuresySdSi_jI12SitFS2iXEfU_Si0eafghij1_jiklM3U0_SiTf1cncn_n")
+        == proven("twoClosures(Swift.Double, Swift.Int, Swift.Int, Swift.Int) -> Swift.Double"))
+    #expect(try clause("$s11DroppedArgs8oneOfTwoyS3iXE_S2iXESitF04$s11a12Args11useOneD23TwoyS2i_S3iXEtFS2iXEfU_SiTf1cnn_n")
+        == proven("oneOfTwo((Swift.Int) -> Swift.Int, Swift.Int, Swift.Int) -> Swift.Int"))
+    // A dropped metatype and a substituted survivor, under the closure clause.
+    #expect(try clause("$s11DroppedArgs12genericValueySixm_xSixXEtlFSd_Ttg504$s11a33Args15useGenericValueySiSd_SitFSiJ5XEfU_SiTf1nc_n")
+        == proven("genericValue(Swift.Double, Swift.Int) -> Swift.Int"))
+    // The `@out T` became a direct result, so the clause has three entries.
+    #expect(try clause("$s11DroppedArgs6foldedyxx_Sixx_SitXEtlFSd_Tg504$s11a27Args9useFoldedyS2d_SitFS2d_H5XEfU_SiTf1nnc_n")
+        == proven("folded(Swift.Double, Swift.Int, Swift.Int) -> Swift.Double"))
+    // An escaping closure, and the same closure as an earlier argument.
+    #expect(try clause("$s11DroppedArgs9sameTwiceyS3iXE_S2iXESitF04$s11A34Args12useSameTwiceyS2i_SitFS2icfU_SiTf1EC0n_n")
+        == proven("sameTwice(Swift.Int, Swift.Int) -> Swift.Int"))
+    #expect(try clause("$s11DroppedArgs3runyS2i_S2iXEtF04$s11A44Args12captureClassyS2i_AA7CounterCtFS2iXEfU_AA0I0CTf1nc_n")
+        == proven("run(Swift.Int, DroppedArgs.Counter) -> Swift.Int"))
+}
+
+/// A clause lists SIL value types, so these two print the same capture and
+/// take it in different banks: `(i64, double)` and `(i64, ptr)`. A String's
+/// two words may be one address. What follows such a capture has no proven
+/// register, but the survivors before it do.
+@Test func aCaptureOfAnUnplacedTypeEndsTheListWithoutEndingTheSurvivors() throws {
+    let survivor = proven("run(Swift.Int) -> Swift.Int", isComplete: false)
+    #expect(try clause("$s11DroppedArgs3runyS2i_S2iXEtF04$s11A36Args13captureDoubleyS2i_SdtFS2iXEfU_SdTf1nc_n") == survivor)
+    #expect(try clause("$s11DroppedArgs3runyS2i_S2iXEtF04$s11A35Args16captureDoubleVaryS2iFS2iXEfU_SdTf1nc_n") == survivor)
+    #expect(try clause("$s11DroppedArgs3runyS2i_S2iXEtF04$s11A38Args13captureStringyS2i_SSSitFS2iXEfU_SSSiTf1nc_n") == survivor)
+    // A call passes the capture too, so no call is laid out from that list.
+    #expect(DisassembledFunction.specializedSignature(
+        symbol: "$s11DroppedArgs3runyS2i_S2iXEtF04$s11A36Args13captureDoubleyS2i_SdtFS2iXEfU_SdTf1nc_n",
+        printedName: try demangleAsNode("$s11DroppedArgs3runyS2i_S2iXEtF04$s11A36Args13captureDoubleyS2i_SdtFS2iXEfU_SdTf1nc_n")
+            .print(using: .default)) == nil)
+}
+
+/// The clause has an entry per SIL argument, which `self` is one of: three
+/// entries against two formals is a list this does not hold.
+@Test func aClosureClauseWhoseEntriesDisagreeWithTheParametersIsLeftToTheName() throws {
+    #expect(try clause("$s11DroppedArgs6RunnerV3runyS2i_S2iXEtF04$s11A36Args9useRunnerySiAA0D0V_SitFS2iXEfU_SiTf1ncn_n") == .absent)
+    // One entry too few for `run`'s two formals.
+    #expect(try clause("$s11DroppedArgs3runyS2i_S2iXEtF04$s11A36Args13captureDoubleyS2i_SdtFS2iXEfU_SdTf1c_n") == .absent)
+    // An async closure specialization is not measured.
+    #expect(try clause("$s1A2acyS2i_S2iXEtYaF29$s1A5useACyS2i_SitYaFS2iXEfU_SiTf1nc_n") == .absent)
+    // `Arg[0] = Dead` stays declined by the printed name.
+    #expect(try clause("$s9CallArity3genyS2i_xtlFSi_Tg5Tf4nd_n") == .absent)
 }
 
 // MARK: - The fixture
@@ -204,6 +255,25 @@ func aBufferInX0IsNoParameterIfPresent(path: String) async throws {
     #expect(try !body(functions, "pair<").contains("arg0"))
 }
 
+@Test(arguments: optimizedBuilds)
+func aClosurePropagatedBodyNamesItsSurvivorsAndCapturesIfPresent(path: String) async throws {
+    guard let functions = try await functions(path) else { return }
+    // y * x + 8.
+    #expect(try body(functions, "apply", "useApplyyS2iF").contains("return (8 + (arg1 * arg0))"))
+    // x + 18.
+    #expect(try body(functions, "apply", "useApplyNoCapture").contains("return (arg0 + 18)"))
+    // (z + a) * 2: the second parameter is the capture.
+    #expect(try body(functions, "sameTwice").contains("((arg1 + arg0) << 1)"))
+    // x + Double(z * a + z + b): survivors first, then each capture.
+    let two = try body(functions, "twoClosures")
+    #expect(two.contains("(arg2 * arg1)") && two.contains("(arg3 + arg1)"), Comment(rawValue: two))
+    // v + Double(n + k).
+    #expect(try body(functions, "folded<").contains("(arg0 + Double((arg2 + arg1)))"))
+    // The survivor is seeded; the capture in x1 or d0 is no parameter.
+    let double = try body(functions, "run(", "captureDoubleyS2i_SdtF")
+    #expect(double.contains("return ") && !double.contains("arg1"), Comment(rawValue: double))
+}
+
 /// A closure-propagated clause prints an unclosed `[`, and the signature was
 /// left in the call: `… P.apply<A>(A.Type, Swift.Int, (Swift.Int) -> Swift.Int)
 /// -> Swift.Int(arg0, arg0)`.
@@ -212,6 +282,20 @@ func aClosurePropagatedCallHasNoSignatureInItIfPresent(path: String) async throw
     guard let functions = try await functions(path) else { return }
     let text = try caller(functions, "useApply")
     #expect(text.contains("of DroppedArgs.apply<A>(arg0, arg0)"), Comment(rawValue: text))
+}
+
+/// A capture no layout proves: the call passes more than the list holds, and
+/// shows what the body reads.
+@Test(arguments: optimizedBuilds)
+func aCallWithAnUnplacedCaptureFollowsTheBodyIfPresent(path: String) async throws {
+    guard let functions = try await functions(path) else { return }
+    let string = try caller(functions, "captureString")
+    #expect(string.contains("of DroppedArgs.run(arg0, ?, ?, arg2)"), Comment(rawValue: string))
+    // x1 is left over from the caller, and the body never reads it.
+    let stale = try caller(functions, "captureDoubleThenAdd")
+    #expect(!stale.contains("of DroppedArgs.run(arg0, arg1"), Comment(rawValue: stale))
+    let double = try caller(functions, "captureDoubleVar")
+    #expect(double.contains("of DroppedArgs.run(arg0, local_18)"), Comment(rawValue: double))
 }
 
 /// Nothing is specialized at -Onone, so each call passes its metatype.

@@ -11872,3 +11872,23 @@ ABI review item 11. Truth for every shape is `swiftc -O -emit-ir` on
   `TypeInference.argumentTypes`) and for the result type, so `arg1` in
   `float<Int8>` is its Int, not the printed list's Double. `arg k` numbers
   the real list. `bump<Double>(A) -> A` returns `(arg0 + arg0)`.
+- **FIXED: a closure-propagated specialization's survivors.** A `Tf`
+  clause has one entry per SIL argument, which checks the parameter list:
+  a `self` or an indirect result makes the counts differ, and the name
+  stands. The closure goes, every argument left comes first, then each
+  closure's captures in clause order (`Tf1cncn_n` is `(double x, i64 z, i64
+  a, i64 b)`). `C<n>` adds no capture.
+- **OPEN (not provable): a capture after a float or multi-word capture.** A
+  clause lists SIL value types, so a capture by address prints as one by
+  value: `captureDouble` and `captureDoubleVar` both say `Swift.Double`, and
+  are `(i64, double)` and `(i64, ptr)`. Only a one-integer-register type
+  takes the same register either way. The list stops there, the survivors
+  stay seeded, and a call is bounded by the body. An integer capture by
+  address reads as its pointer, in the right register.
+- **OPEN: `Arg[n] = Dead`, methods, async.** A `Dead` entry stays declined,
+  which `ABISourceLoweringTests` pins, so `Tt0g5Tf4dn_n` is declined whole.
+  A method's closure clause has `self` among its entries, and a value
+  `self` is not seeded after a `Tt` (`Holder.method` reads `return ?`).
+  Async specializations are not measured, though `am<Int8>` is `(swiftasync,
+  i64 a)`. A `Tg` with a member type (`A.Element`) still reads its printed
+  name.

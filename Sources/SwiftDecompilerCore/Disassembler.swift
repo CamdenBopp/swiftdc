@@ -7320,7 +7320,7 @@ public struct Disassembler: Sendable {
         /// target's symbol proves whole, or the printed one where that stands.
         func followsASignature(target: UInt64, callee: String) -> Bool {
             switch resolver.specializationClause(at: target, printedName: callee) {
-            case .proven: true
+            case .proven(let layout): layout.isComplete
             case .declined: false
             case .absent: Self.signatureSpecializationKeepsLayout(callee)
             }
