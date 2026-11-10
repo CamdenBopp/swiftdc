@@ -5584,8 +5584,14 @@ public struct ValueTracer: Sendable {
              // two loads of a vtable dispatch on it (`ldr x8, [x20]; ldr x8,
              // [x8, #slot]`). Unknown as values; only a call through the
              // slot is named, from the field's declared class.
-             .selfFieldValue where effective == 0,
-             .loadedFrom(.selfFieldValue, 0) where effective >= 0 && effective % 8 == 0,
+             // A plain load only: a dispatch never writes its base back.
+             .selfFieldValue where effective == 0 && !detail.postIndex && !detail.writeback,
+             .loadedFrom(.selfFieldValue, 0) where effective >= 0 && effective % 8 == 0
+                 && !detail.postIndex && !detail.writeback,
+             // The same through an argument: its isa, then the slot.
+             .argument where effective == 0 && !detail.postIndex && !detail.writeback,
+             .loadedFrom(.argument, 0) where effective >= 0 && effective % 8 == 0
+                 && !detail.postIndex && !detail.writeback,
              .argument where effective == -8,
              .loadedFrom(.argument, -8) where effective % 8 == 0
                  && ((0 ..< 0x40).contains(effective) || (0x58 ... 0x68).contains(effective)):

@@ -16,7 +16,8 @@ private let fieldVTableFixtures = [
         let library = try #require(dlopen(path, RTLD_NOW | RTLD_LOCAL), Comment(rawValue: String(cString: dlerror())))
         defer { dlclose(library) }
         typealias Entry = @convention(c) () -> Int
-        for (name, expected) in [("field_vtable_go_turbo", 3), ("field_vtable_park", 9), ("field_vtable_garage", 7)] {
+        for (name, expected) in [("field_vtable_go_turbo", 3), ("field_vtable_park", 9), ("field_vtable_garage", 7),
+                                 ("field_vtable_run_turbo", 3), ("field_vtable_run_other", 7), ("field_vtable_borrow", 4)] {
             let entry = try #require(dlsym(library, name))
             #expect(unsafeBitCast(entry, to: Entry.self)() == expected, "\(path): \(name)")
         }
@@ -48,6 +49,27 @@ private let fieldVTableFixtures = [
             }
         }
         for text in try views("Garage.run") {
+            #expect(!text.contains("FieldVTable.Engine"), "\(path): \(text)")
+            #expect(text.contains("unresolved call"), "\(path): \(text)")
+        }
+    }
+}
+
+/// A free function's class parameter is typed by its signature: `runEngine(_
+/// engine: Engine)` calls Engine.start() through its argument's vtable. The
+/// other module's Engine has no layout in this image, so `runOther` stays
+/// unresolved rather than taking this module's same-named class.
+@Test func aVTableCallOnAClassArgumentIsNamedForItsTypeIfPresent() async throws {
+    for path in fieldVTableFixtures where FileManager.default.fileExists(atPath: path) {
+        let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+        func views(_ member: String) throws -> [String] {
+            let function = try #require(functions.first { $0.displayName.hasPrefix("FieldVTable.\(member)(") }, "\(member)")
+            return [function.renderPseudo(), function.renderStructured()]
+        }
+        for text in try views("runEngine") {
+            #expect(text.contains("return FieldVTable.Engine.start(self: arg0)"), "\(path): \(text)")
+        }
+        for text in try views("runOther") {
             #expect(!text.contains("FieldVTable.Engine"), "\(path): \(text)")
             #expect(text.contains("unresolved call"), "\(path): \(text)")
         }

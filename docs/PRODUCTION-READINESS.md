@@ -2722,8 +2722,13 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   object may be a subclass, as for self (`Car(Turbo()).go()` runs Turbo's
   override, native 3). Fixture fieldvtable.swift with fieldvtable_other.swift
   (-O, -Onone). GoodLinks cfg.unresolved-indirect-call 15,350 -> 15,273;
-  `xrefs` resolves 64 more dispatch sites. Receivers that are arguments,
-  call results or loaded from other objects are not typed yet.
+  `xrefs` resolves 64 more dispatch sites. A free function's class parameter
+  is typed the same way, from its exact qualified type in the signature
+  (`ClassParameterFieldIndex`): `runEngine(_ engine: Engine)` reads
+  `return FieldVTable.Engine.start(self: arg0)`, and StrippedFold's `bump(_:)`
+  names `Base.w.modify`. GoodLinks 15,273 -> 15,160. Methods' and
+  specializations' parameters, call results and objects loaded from other
+  memory are not typed yet.
 - **MEASURED (2026-11-10): what the remaining unresolved calls are.** A
   backward slice over the 24 instructions before each of GoodLinks' 15,350
   sites (`llvm-objdump`, classified by how the target register was formed):

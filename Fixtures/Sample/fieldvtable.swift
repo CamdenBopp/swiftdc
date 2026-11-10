@@ -42,3 +42,21 @@ public final class Garage {
 
 @_cdecl("field_vtable_garage")
 public func fieldVTableGarage() -> Int { Garage(FieldVTableOther.Engine()).run() }
+
+// The receiver is an argument whose declared type is the class: `ldr x8,
+// [x0]; ldr x8, [x8, #slot]; mov x20, x0; blr x8`.
+@inline(never) public func runEngine(_ engine: Engine) -> Int { engine.start() }
+@inline(never) public func runOther(_ engine: FieldVTableOther.Engine) -> Int { engine.coast() }
+
+extension Car {
+    @inline(never) public func borrow(_ other: Engine, for seconds: Int) -> Int { other.stop(after: seconds) }
+}
+
+@_cdecl("field_vtable_run_turbo")
+public func fieldVTableRunTurbo() -> Int { runEngine(Turbo()) }
+
+@_cdecl("field_vtable_run_other")
+public func fieldVTableRunOther() -> Int { runOther(FieldVTableOther.Engine()) }
+
+@_cdecl("field_vtable_borrow")
+public func fieldVTableBorrow() -> Int { Car(Engine()).borrow(Turbo(), for: 4) }

@@ -2073,11 +2073,12 @@ public struct Disassembler: Sendable {
         // chain pass proved.
         let asyncEntry = Self.asyncConvention(for: function, base: entry, index: context.asyncIndex)
         let chainSlots = context.asyncChainSlots[function.startAddress] ?? [:]
-        let classArgumentFieldMaps: [Int: FieldMap] = if case .swiftFunction(let scalarArguments, _, _)? = entry {
-            Self.classArgumentFieldMaps(of: function, scalarArguments: scalarArguments, index: context.classParameterFields)
+        let classArguments: [Int: (type: String, map: FieldMap)] = if case .swiftFunction(let scalarArguments, _, _)? = entry {
+            Self.classArguments(of: function, scalarArguments: scalarArguments, index: context.classParameterFields)
         } else {
             [:]
         }
+        let classArgumentFieldMaps = classArguments.mapValues(\.map)
         let callerProvenResult = objcMethod == nil && symbolEntry == nil && asyncEntry == nil
             && function.asyncFunclet == nil
             && !DisassembledFunction.signatureKnown(displayName: function.analysisDisplayName, objcSignature: nil)
@@ -2090,6 +2091,7 @@ public struct Disassembler: Sendable {
             selfTypeName: selfTypeName, vtableIndex: context.vtableIndex,
             argumentFieldMaps: valueSelf?.argumentFieldMaps ?? [:],
             classArgumentFieldMaps: classArgumentFieldMaps,
+            classArgumentTypes: classArguments.mapValues(\.type),
             enumCaseIndex: context.enumCaseIndex,
             payloadEnumIndex: context.payloadEnumIndex,
             argumentEnumTypes: Self.swiftEnumArgumentTypes(of: function, enumCaseIndex: context.enumCaseIndex),
@@ -4044,7 +4046,8 @@ public struct Disassembler: Sendable {
         selfTypeName: String? = nil,
         vtableIndex: VTableIndex = VTableIndex(),
         callArguments: [UInt64: [AbstractValue]] = [:],
-        selfFieldClass: (Int) -> String? = { _ in nil }
+        selfFieldClass: (Int) -> String? = { _ in nil },
+        argumentClass: (Int) -> String? = { _ in nil }
     ) -> (function: DisassembledFunction, changesCFG: Bool) {
         /// Resolve a `blr` target to a (name, address). A class vtable dispatch is
         /// resolved through the class's metadata layout; anything else through the
@@ -4075,10 +4078,20 @@ public struct Disassembler: Sendable {
         /// implementation's demangled owner is the field's declared type:
         /// `VTableIndex` is keyed by simple name, and another module's class
         /// of the same name must not match.
+        /// A class parameter of a free function is the same: its declared
+        /// type, exactly as the signature prints it (`classArguments`).
         func fieldVTableMethod(_ value: AbstractValue) -> (address: UInt64, name: String)? {
-            guard case .loadedFrom(.loadedFrom(.selfFieldValue(let field), offset: 0), offset: let slot) = value,
-                  slot >= 0, slot % 8 == 0,
-                  let owner = selfFieldClass(field),
+            let receiverClass: String?, slot: Int
+            switch value {
+            case .loadedFrom(.loadedFrom(.selfFieldValue(let field), offset: 0), offset: let offset):
+                receiverClass = selfFieldClass(field); slot = offset
+            case .loadedFrom(.loadedFrom(.argument(let argument), offset: 0), offset: let offset):
+                receiverClass = argumentClass(argument); slot = offset
+            default:
+                return nil
+            }
+            guard slot >= 0, slot % 8 == 0,
+                  let owner = receiverClass,
                   let simple = owner.split(separator: ".").last.map(String.init),
                   let address = vtableIndex.methodAddress(type: simple, offset: slot),
                   let name = resolver.name(at: address, ownedBy: simple),
@@ -7262,6 +7275,7 @@ public struct Disassembler: Sendable {
         vtableIndex: VTableIndex = VTableIndex(),
         argumentFieldMaps: [Int: FieldMap] = [:],
         classArgumentFieldMaps: [Int: FieldMap] = [:],
+        classArgumentTypes: [Int: String] = [:],
         enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
         payloadEnumIndex: PayloadEnumCaseIndex = PayloadEnumCaseIndex(),
         argumentEnumTypes: [Int: String] = [:],
@@ -7624,7 +7638,8 @@ public struct Disassembler: Sendable {
             in: function, targets: analysis.indirectControlFlowTargets,
             resolver: resolver, selfTypeName: selfTypeName, vtableIndex: vtableIndex,
             callArguments: analysis.callSites.mapValues(\.arguments),
-            selfFieldClass: { offset in Self.declaredClassOfField(at: offset, in: fieldMap) }
+            selfFieldClass: { offset in Self.declaredClassOfField(at: offset, in: fieldMap) },
+            argumentClass: { classArgumentTypes[$0] }
         )
         let function = resolvedControlFlow.function
         // Resolving an external BR adds its successor address. BLR naming
