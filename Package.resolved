@@ -1,5 +1,5 @@
 {
-  "originHash" : "9d880dfe6158652048d1fb0b9a67b778f220e2f8f43f20ccfec4dbd12e9bfabb",
+  "originHash" : "9bac669b49b9f880a0ec148daea38304ff58cee6aa5acccff604457a4eeff4a7",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -42,25 +42,23 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/CamdenBopp/MachOKit.git",
       "state" : {
-        "revision" : "02d5c675ffe17620bd51e69e83bf67f091885e38"
+        "revision" : "c9177864cd57339ddafef4639719f1c5d6369015"
       }
     },
     {
       "identity" : "machokitextensions",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/MxIris-Reverse-Engineering/MachOKitExtensions",
+      "location" : "https://github.com/CamdenBopp/MachOKitExtensions.git",
       "state" : {
-        "revision" : "568a6e8fa6e6bcb984f11d8ccd3e7fced6777924",
-        "version" : "1.3.0"
+        "revision" : "06195c5f9d6e3a3a5fb109cbfb0b847f66cbf5eb"
       }
     },
     {
       "identity" : "machoobjcsection",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/MxIris-Reverse-Engineering/MachOObjCSection.git",
+      "location" : "https://github.com/CamdenBopp/MachOObjCSection.git",
       "state" : {
-        "revision" : "02c7241b3756cd4056b7aa26578b822a382b595b",
-        "version" : "0.8.205"
+        "revision" : "3873494bec69946c707bd42847a3085972989335"
       }
     },
     {
@@ -68,7 +66,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/CamdenBopp/MachOSwiftSection",
       "state" : {
-        "revision" : "393d3aea2ba9af2482983ee367b5e98ec4016cbd"
+        "revision" : "6e6db62a9a76b0444a043ac44ef7638d4def7e43"
       }
     },
     {

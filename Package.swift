@@ -49,23 +49,42 @@ let package = Package(
         // clearing detail, and cs_disasm_iter flags, none of which swiftdc's
         // cs_disasm decoder reaches (listing and JSON of 192 fixtures:
         // byte-identical).
-        // INTERIM FORK: 0.24.0 plus six `interface` soundness commits
-        // (constrained existentials printed as themselves, inferred
-        // attributes marked, a hand-written `_a` not hidden, an `@objc`
-        // thunk marking only its own member, a case count where no record
-        // names cases, `let`/`var` read off a global's section, a vtable
-        // offset under a resilient superclass called relative). Branch
-        // swiftdc-interim/0.24.0-interface-only; return to an upstream
-        // version pin once these ship there.
+        // INTERIM FORK: 0.24.0 plus two changes, branch
+        // swiftdc-interim/0.24.0-interface (vm-relative, then interface on top).
+        // A relative pointer's delta counts in memory, so
+        // `MachOContext.advanceAddress` goes file offset -> address -> file
+        // offset through each end's own segment, and a target with no file
+        // bytes reads as an error; upstream adds the delta to the file offset,
+        // which misreads any image whose segments lie at different slides. And
+        // six `interface` soundness commits (constrained existentials printed
+        // as themselves, inferred attributes marked, a hand-written `_a` not
+        // hidden, an `@objc` thunk marking only its own member, a case count
+        // where no record names cases, `let`/`var` read off a global's section,
+        // a vtable offset under a resilient superclass called relative). Return
+        // to an upstream version pin once these ship there; see
+        // docs/PRODUCTION-READINESS.md.
         .package(
             url: "https://github.com/CamdenBopp/MachOSwiftSection",
-            revision: "393d3aea2ba9af2482983ee367b5e98ec4016cbd"
+            revision: "6e6db62a9a76b0444a043ac44ef7638d4def7e43"
+        ),
+        // INTERIM FORK: upstream 1.3.0 plus `MachOSegmentMap`, branch
+        // swiftdc-interim/1.3.0-vm-relative. The file-to-memory mapping everything
+        // above it resolves through, and `address(forOffset:)` through the segment
+        // holding the offset. Declared so this revision overrides the transitive
+        // one, and because SwiftDecompilerCore reads the map itself.
+        .package(
+            url: "https://github.com/CamdenBopp/MachOKitExtensions.git",
+            revision: "06195c5f9d6e3a3a5fb109cbfb0b847f66cbf5eb"
         ),
         // MachOKit is the Mach-O container parser MachOSwiftSection is built on.
         // It is NOT re-exported, so we depend on the same identity directly to name
         // `MachOFile` / `loadFromFile` without a package-identity conflict.
         //
-        // INTERIM FORK: upstream 0.55.100 plus one change, a memoized negative
+        // INTERIM FORK: upstream 0.55.100 plus two changes. Fixup chains are read
+        // through the segment that starts at `segment_offset`, an offset in
+        // memory, so `pointer.offset` is a file offset in every image, and
+        // `fileOffset(of:)` takes a rebase target and refuses zero fill. And a
+        // memoized negative
         // result of `MachOFile.cache` (as 4c4738f was on 0.54.101 and 07d7633 on
         // 0.52.102; upstream MxIris-Reverse-Engineering/MachOKit#1 closed
         // unmerged). Without it a standalone binary re-opens and maps itself as
@@ -74,12 +93,13 @@ let package = Package(
         // 4.4s, dump 168s -> 77s, interface 240s -> 74s. The 64-bit fat header
         // fix the old fork cherry-picked (p-x9 #340) is upstream in 0.55.0,
         // line for line, and FatArch64Tests passes on it.
-        // Branch swiftdc-interim/0.55.100-memoize-cache.
+        // Branch swiftdc-interim/0.55.100-vm-relative, on top of
+        // swiftdc-interim/0.55.100-memoize-cache.
         // As the root package this revision overrides the transitive range;
         // return to an upstream version pin once the memo ships.
         .package(
             url: "https://github.com/CamdenBopp/MachOKit.git",
-            revision: "02d5c675ffe17620bd51e69e83bf67f091885e38"
+            revision: "c9177864cd57339ddafef4639719f1c5d6369015"
         ),
         // `Semantic` provides SemanticString, the return type of SwiftDump's
         // `.dump(...)`. Moves in lockstep with MachOSwiftSection: 0.15.0 raised its
@@ -109,9 +129,12 @@ let package = Package(
         // 0.8.201 and later require MachOKit 0.55.100, and a `from:` range
         // resolved to 0.8.200, which lacks the selector, signed-IMP and
         // relative-method-list fixes.
+        // INTERIM FORK of 0.8.205, branch swiftdc-interim/0.8.205-vm-relative: a
+        // relative method list's fields through their segments. An exact pin would
+        // be the upstream one; see the note above on why it is not.
         .package(
-            url: "https://github.com/MxIris-Reverse-Engineering/MachOObjCSection.git",
-            exact: "0.8.205"
+            url: "https://github.com/CamdenBopp/MachOObjCSection.git",
+            revision: "3873494bec69946c707bd42847a3085972989335"
         ),
         .package(
             url: "https://github.com/MxIris-Reverse-Engineering/swift-objc-dump",
@@ -172,6 +195,7 @@ let package = Package(
             dependencies: [
                 .product(name: "Ccapstone", package: "capstone"),
                 .product(name: "MachOKit", package: "MachOKit"),
+                .product(name: "MachOKitExtensions", package: "MachOKitExtensions"),
                 .product(name: "MachOSwiftSection", package: "MachOSwiftSection"),
                 .product(name: "SwiftDump", package: "MachOSwiftSection"),
                 // 0.12.0 modularized MachOSwiftSection; the render configuration
