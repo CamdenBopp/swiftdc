@@ -3843,7 +3843,13 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   file bytes whose address is not proven aligned. A ThreadSanitizer build
   traps on the first such read (`disasm` of any fixture). Release builds skip
   the check and arm64 tolerates the access, so no run fails today; the fix is
-  `loadUnaligned(as:)` in each fork.
+  `loadUnaligned(as:)` in each. Counted at the pinned revisions (2026-11-10):
+  MachOKit 10, MachOSwiftSection 15, MachOObjCSection 5,
+  swift-binary-parse-support 5, swift-fileio 3, swift-fileio-extra 4 (the
+  last three are not forked). The MachOKit change is committed locally on
+  `swiftdc-interim/0.55.100-unaligned-loads` (3262982, on c917786), not
+  pushed: with it a sanitizer build's first trap moves from MachOKit's
+  `FileHandle+.swift:194` to MachOObjCSection's `ObjCIvarProtocol.offset`.
 - **MITIGATED (memory) — a whole-image memory regression guard now exists**
   (`MemoryRegressionTests`). The memory limit above is now FIXED by
   streaming, but nothing stopped it regressing meanwhile, and it still guards the
