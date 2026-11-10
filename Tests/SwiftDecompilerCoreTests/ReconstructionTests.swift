@@ -1319,12 +1319,12 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
     #expect(try text("small").contains("return \"ok\""))
     #expect(try text("large").contains("return \"a literal longer than fifteen bytes\""))
     #expect(try text("Person.current").contains("return self.name"))
-    // The intervening sink passes a frame address to an unsupported helper.
-    // Without a callee footprint or object ownership proof, its carrier
-    // registers cannot be proven preserved; the String result declines.
+    // Kept across a call, the result is bound where the call runs. The sink
+    // passes a local's address on, which reaches no prologue save, so the
+    // callee-saved carrier registers survive it.
     let forward = try text("forward")
-    #expect(forward.contains("StringReturns.greeting()\n    StringReturns.sink()\n    return ?"), Comment(rawValue: forward))
-    #expect(!forward.contains("return r0"), Comment(rawValue: forward))
+    #expect(forward.contains("let r0 = StringReturns.greeting()\n    StringReturns.sink()\n    return r0"),
+            Comment(rawValue: forward))
     let library = try #require(dlopen(path, RTLD_NOW | RTLD_LOCAL))
     defer { dlclose(library) }
     let address = try #require(dlsym(library, "$s13StringReturns7forwardSSyF"))

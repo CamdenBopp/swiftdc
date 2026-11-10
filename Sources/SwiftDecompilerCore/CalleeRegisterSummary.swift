@@ -1179,6 +1179,14 @@ enum Preservation {
         // and no object of this frame overlaps the record; an escape of the
         // frame pointer itself, or of an address not proven below it, does.
         var recordReachable = false
+        // The prologue's register save area: the frame offsets where an entry
+        // x19–x28 was stored before x29 was set from sp. Exempting it needs a
+        // proven frame record, so a function that never sets x29 has none.
+        // Like the frame record, it is no object of this frame; a body spill
+        // after the prologue may be a word of a local (frame_preserve_alias.s)
+        // and is not here.
+        var prologueSaves: Set<Int64> = []
+        var prologueOpen = true
         // For a frame alias whose exact value a join lost, the frame
         // addresses it may hold: x1 is `sub x1, x29, #0x48` on one path and
         // no frame address on the other, x25 a dynamic allocation on one and
@@ -1203,6 +1211,18 @@ enum Preservation {
 
         mutating func setRegister(_ key: String, to value: Value, mayAliasStack: Bool = false) {
             registerFacts.installPreservation(key, value: value, mayAlias: mayAliasStack)
+        }
+
+        /// A store of entry `register`'s value at `slot`: a prologue save
+        /// while the prologue is open and the register is x19–x28. Once x29
+        /// holds a frame address (`add x29, sp, #k`, `mov x29, sp`) the
+        /// prologue has ended, whichever instruction set it.
+        mutating func notePrologueSave(_ register: String, at slot: Int64) {
+            if case .stack = value("x29") { prologueOpen = false }
+            guard prologueOpen, register.hasPrefix("x"), let number = Int(register.dropFirst()),
+                  (19 ... 28).contains(number), value(register) == .entry(register)
+            else { return }
+            prologueSaves.insert(slot)
         }
 
         func value(_ key: String) -> Value { registerFacts[key] ?? .unknown }
@@ -1244,6 +1264,8 @@ enum Preservation {
                 incomingIntact: incomingIntact && other.incomingIntact
             )
             result.recordReachable = recordReachable || other.recordReachable
+            result.prologueSaves = prologueSaves.intersection(other.prologueSaves)
+            result.prologueOpen = prologueOpen && other.prologueOpen
             result.registerFacts = registerFacts.mergedPreservation(with: other.registerFacts)
             result.reach = reach.union(other.reach)
             return result
@@ -1268,7 +1290,7 @@ enum Preservation {
                 return nil
             }.sorted()
             let evidence = DynamicEscapeSaveEvidence(sortedEntryStarts: entrySlots)
-            let record = frameRecordBase()
+            let record = saveAreaFloor()
             for (key, _) in registerFacts.selected(keys) {
                 // Keep each selected register's transaction separate: an Any
                 // input must not erase a different input's bounded ranges.
@@ -1300,7 +1322,7 @@ enum Preservation {
             // only addresses of locals below the frame record, the record
             // keeps its entry values: writing it through a local's address
             // would also break the return the analysis already assumes.
-            let record = recordReachable ? [] : frameRecord()
+            let record = recordReachable ? [] : frameRecord() + prologueSaveArea()
             defer { for (offset, value) in record { slots[offset] = value } }
             if stackAddressEscaped {
                 slots.removeAll()
@@ -1309,6 +1331,25 @@ enum Preservation {
             // Caller-owned reach is an operation policy, not a durable escape.
             let effect = reach.effect(using: NoFrameQueryEvidence(), arithmetic: .checked, includingCallerOwned: true)
             slots.forget(effect, removing: .value)
+        }
+
+        /// The prologue's saves that still hold their entry values, in this
+        /// function's own frame. None without a proven frame record, and none
+        /// at or above entry sp: that memory is the caller's, and an incoming
+        /// pointer may reach it (abi_frame_ownership.s).
+        private func prologueSaveArea() -> [(Int64, Value)] {
+            guard frameRecordBase() != nil else { return [] }
+            return prologueSaves.filter { $0 < 0 }.sorted().compactMap { offset in
+                guard case .entry(let register)? = slots[offset] else { return nil }
+                return (offset, .entry(register))
+            }
+        }
+
+        /// The lowest offset of the save area (the prologue's saves and the
+        /// frame record), or nil while no frame record is proven.
+        func saveAreaFloor() -> Int64? {
+            guard let record = frameRecordBase() else { return nil }
+            return ([record] + prologueSaves.filter { $0 < 0 }).min()
         }
 
         /// The frame pointer's offset while x29 holds a frame address whose
@@ -1678,6 +1719,7 @@ enum Preservation {
                     if (bytes == 8 && source.kind == .gpr)
                         || (bytes >= 8 && source.kind == .vector) {
                         state.slots[slot] = state.value(source.key)
+                        state.notePrologueSave(source.key, at: slot)
                     }
                 }
             } else if let (limit, base, after) = dynamicAccess(detail, in: state) {

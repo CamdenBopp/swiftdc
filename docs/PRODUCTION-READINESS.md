@@ -67,9 +67,13 @@ one (hand-written assembly, or Swift that reaches private memory through
 unsafe pointers) can be rendered wrongly; each has a fixture that shows the
 shape it excludes.
 
-- **The frame record is no object.** A pointer to a local below a function's
-  frame record grants no write to the saved x29 and x30 (7c04597). The
-  saved x30 coming back intact is already what every call's return assumes.
+- **The frame record and the prologue's register saves are no object.** A
+  pointer to a local below them grants no write to the saved x29 and x30
+  (7c04597) or to the x19–x28 the prologue stored before setting x29
+  (2026-11-10). The saved x30 coming back intact is already what every
+  call's return assumes. A save at or above entry sp is the caller's memory
+  and gets no exemption (abi_frame_ownership.s), nor does a body spill after
+  the prologue, which may be a word of a local (frame_preserve_alias.s).
 - **A callee's async context is private to it.** Its caller allocates it but
   keeps no pointer into it, as an argument or anywhere else, so its slots
   change only through the callee's own stores and pointers the callee hands
@@ -2756,6 +2760,22 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   table: `ExistentialWitness.Named.name() witness for arg0(…)`. A method's
   parameters are laid out the same way, self in x20 (`Registry.lookup(_:)`).
   GoodLinks is unchanged at 14,810 for both.
+- **DECIDED and FIXED (2026-11-10, completeness): an escaped local no
+  longer reaches the prologue's register saves.** GoodLinks' largest group
+  of unresolved calls (about 3,300) were value witnesses whose table was held
+  in a callee-saved register across a call to an in-image function that
+  passes a local's address on: that callee was summarised as not preserving
+  x19–x29, because an upward write through its local could reach its save
+  area, and 47ceb26 then escaped the caller's whole frame. The owner chose
+  the policy: like the frame record, the stores of entry x19–x28 made before
+  x29 is set from sp, in the function's own frame, are no local's object, so
+  an escape that cannot address the save area leaves them. A pointer into
+  the save area itself (its padding included), an escape before the record
+  is proven, a save at or above entry sp, and a body spill after the
+  prologue all stay reachable. Against e6231c8: 27 fixtures, 5,900
+  structured lines (`?`-bearing lines 1,058 removed, 845 added, the rest
+  renumbered bindings); no return changed from one concrete value to
+  another. GoodLinks cfg.unresolved-indirect-call 14,693 -> 14,182.
 - **FIXED (2026-11-10, completeness): a value witness on an existential's
   dynamic type stayed unresolved.** An outlined copy, take, assign or destroy
   helper reads the container's metadata (word 3, `ldr x2, [x0, #0x18]`), its
