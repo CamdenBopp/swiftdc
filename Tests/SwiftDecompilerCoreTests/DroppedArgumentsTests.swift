@@ -235,6 +235,14 @@ func aDroppedSelfMetatypeKeepsTheFormalsIfPresent(path: String) async throws {
     #expect(of.contains("arg1") && !of.contains("return ?"), Comment(rawValue: of))
 }
 
+/// A specialization that tail-calls for its result returns it.
+@Test(arguments: optimizedBuilds)
+func aSpecializationsOwnTailCallIsAReturnIfPresent(path: String) async throws {
+    guard let functions = try await functions(path) else { return }
+    let text = try body(functions, "tails<")
+    #expect(text.contains("return DroppedArgs.helper("), Comment(rawValue: text))
+}
+
 @Test(arguments: optimizedBuilds)
 func aDroppedArgumentCallPassesTheSurvivorsIfPresent(path: String) async throws {
     guard let functions = try await functions(path) else { return }
@@ -246,6 +254,14 @@ func aDroppedArgumentCallPassesTheSurvivorsIfPresent(path: String) async throws 
     #expect(try caller(functions, "useTupled").contains("tupled<A>(…)"))
     #expect(try caller(functions, "useKeyed").contains("keyed<A>(…)"))
     #expect(try caller(functions, "useKeyedThenAdd").contains("keyed<A>(…)"))
+}
+
+/// A tail call to a specialization for the same result is a return.
+@Test(arguments: optimizedBuilds)
+func aSpecializationTailCallIsAReturnIfPresent(path: String) async throws {
+    guard let functions = try await functions(path) else { return }
+    #expect(try caller(functions, "useMetaTail").contains("return generic specialization <Swift.Int16> of DroppedArgs.meta<A>(arg0)"))
+    #expect(try caller(functions, "useLast").contains("return generic specialization <Swift.Int16> of DroppedArgs.last<A>(arg0, arg1)"))
 }
 
 /// `pair` keeps a buffer in x0, so its x0 is no parameter.
@@ -296,6 +312,17 @@ func aCallWithAnUnplacedCaptureFollowsTheBodyIfPresent(path: String) async throw
     #expect(!stale.contains("of DroppedArgs.run(arg0, arg1"), Comment(rawValue: stale))
     let double = try caller(functions, "captureDoubleVar")
     #expect(double.contains("of DroppedArgs.run(arg0, local_18)"), Comment(rawValue: double))
+}
+
+/// The tail call of a closure-propagated specialization over a generic one
+/// is a return, a substituted result included.
+@Test(arguments: optimizedBuilds)
+func aClosurePropagatedTailCallIsAReturnIfPresent(path: String) async throws {
+    guard let functions = try await functions(path) else { return }
+    let text = try caller(functions, "useApply")
+    #expect(text.contains("    return function signature specialization <"), Comment(rawValue: text))
+    let folded = try caller(functions, "useFolded")
+    #expect(folded.contains("    return function signature specialization <"), Comment(rawValue: folded))
 }
 
 /// Nothing is specialized at -Onone, so each call passes its metatype.

@@ -11892,3 +11892,12 @@ ABI review item 11. Truth for every shape is `swiftc -O -emit-ir` on
   Async specializations are not measured, though `am<Int8>` is `(swiftasync,
   i64 a)`. A `Tg` with a member type (`A.Element`) still reads its printed
   name.
+- **FIXED: a tail call to a specialization was a statement.** `useLast`
+  read `generic specialization <Swift.Int16> of last<A>(arg0, arg1)` with no
+  `return`, as did a closure-propagated specialization over a generic one
+  and a specialization's own tail call. A proven signature now supplies the
+  callee's head and result, so `-> A` compares as the Double it is.
+- **Not changed: a call's name.** A `Tg` or `Tt` call still prints
+  `generic specialization <Swift.Int8> of P.meta<A>(arg0)`, the clause and
+  the name up to its generic list. It reads shorter than the printed
+  declaration because the metatype is gone.

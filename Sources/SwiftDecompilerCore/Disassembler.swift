@@ -5398,7 +5398,8 @@ public struct Disassembler: Sendable {
     static func scalarTailReturnSites(
         in function: DisassembledFunction,
         enumCaseIndex: EnumCaseIndex = EnumCaseIndex(), classTypeIndex: ClassTypeIndex = ClassTypeIndex(),
-        cfg: FunctionCFG? = nil
+        cfg: FunctionCFG? = nil,
+        provenSignature: (_ target: UInt64, _ printedName: String) -> String? = { _, _ in nil }
     ) -> Set<UInt64> {
         func ordinaryHead(_ head: String) -> Bool {
             guard let args = DisassembledFunction.outermostArgumentListRange(of: head) else { return false }
@@ -5409,7 +5410,7 @@ public struct Disassembler: Sendable {
         // Compute caller ABI eligibility once, not once per external branch.
         guard function.objcMethod == nil,
               let first = function.instructions.first, let last = function.instructions.last,
-              let name = function.analysisName,
+              let name = function.layoutName,
               let caller = DisassembledFunction.splitSignature(name), !caller.isAsync, !caller.isThrowing,
               ordinaryHead(caller.head),
               swiftReturnRegister(of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cfg: cfg) != nil
@@ -5417,7 +5418,10 @@ public struct Disassembler: Sendable {
         return Set(function.instructions.compactMap { insn in
             guard insn.controlFlow == .branch,
                   insn.branchTarget.map({ $0 < first.address || $0 > last.address }) ?? true,
-                  let name = DisassembledFunction.calleeName(of: insn),
+                  let printed = DisassembledFunction.calleeName(of: insn),
+                  // A proven specialization's result is its own: `bump<Double>`
+                  // prints `-> A`, and a tail call to it returns a Double.
+                  case let name = insn.branchTarget.flatMap({ provenSignature($0, printed) }) ?? printed,
                   let callee = DisassembledFunction.splitSignature(name), !callee.isAsync, !callee.isThrowing,
                   caller.result == callee.result,
                   ordinaryHead(callee.head) || signatureSpecializationKeepsResult(callee.head) && ordinaryHead(withoutSpecializationClauses(callee.head))
@@ -10710,7 +10714,13 @@ public struct Disassembler: Sendable {
         }()
 
         var observedReturnPaths: [UInt64: AbstractValue]?
-        let scalarTailReturns = Self.scalarTailReturnSites(in: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cfg: cfg)
+        let scalarTailReturns = Self.scalarTailReturnSites(
+            in: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cfg: cfg,
+            provenSignature: { target, printed in
+                guard case .proven(let layout) = resolver.specializationClause(at: target, printedName: printed)
+                else { return nil }
+                return layout.signature
+            })
         func returnPath(at address: UInt64) -> ProbeValue {
             if observedReturnPaths == nil { observedReturnPaths = Probe.returnPathConditions(analysis, of: function, cfg: cfg) }
             return .abstractValue(observedReturnPaths?[address] ?? .unknown)
