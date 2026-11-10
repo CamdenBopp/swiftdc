@@ -3846,10 +3846,15 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   `loadUnaligned(as:)` in each. Counted at the pinned revisions (2026-11-10):
   MachOKit 10, MachOSwiftSection 15, MachOObjCSection 5,
   swift-binary-parse-support 5, swift-fileio 3, swift-fileio-extra 4 (the
-  last three are not forked). The MachOKit change is committed locally on
-  `swiftdc-interim/0.55.100-unaligned-loads` (3262982, on c917786), not
-  pushed: with it a sanitizer build's first trap moves from MachOKit's
-  `FileHandle+.swift:194` to MachOObjCSection's `ObjCIvarProtocol.offset`.
+  last three are not forked). All six are fixed as local commits on the
+  pinned revisions under ~/src-deps/<package>-unaligned, none pushed:
+  MachOKit 3262982, MachOSwiftSection 4de80b7d, MachOObjCSection eabdb35,
+  swift-binary-parse-support 7334d34, swift-fileio 46d4e36,
+  swift-fileio-extra 17dfa37. With all six substituted, a ThreadSanitizer
+  build runs `disasm --structured`, `objc`, `dump` and `xrefs` on seven
+  inputs with no trap and no race; with MachOKit's alone the first trap moves
+  to MachOObjCSection. Landing it needs the forks pushed, the three upstream
+  packages forked (or the change sent upstream), and the pins moved.
 - **MITIGATED (memory) — a whole-image memory regression guard now exists**
   (`MemoryRegressionTests`). The memory limit above is now FIXED by
   streaming, but nothing stopped it regressing meanwhile, and it still guards the
