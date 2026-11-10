@@ -276,18 +276,18 @@ public enum MachOPreflight {
             )
         }
 
-        // A layout the Mach-O readers underneath would misread: decline it by
-        // its own cause before any of them reads it (`misreadSegments`).
+        // A layout no reader can place: decline it by its own cause before any
+        // of them reads it (`misreadSegments`).
         let misread = misreadSegments(prefix: prefix, image: image)
         if !misread.isEmpty {
             let described = misread.map {
                 "\($0.name) (VM offset 0x\(String($0.vmOffset, radix: 16)), file offset 0x\(String($0.fileOffset, radix: 16)))"
             }.joined(separator: ", ")
             throw BinaryLoadError(
-                "Unsupported Mach-O layout: \(path) — \(described) "
-                + "\(misread.count == 1 ? "lies" : "lie") at a different offset in memory than in the file, "
-                + "and \(misread.count == 1 ? "holds" : "hold") fixups or metadata. The Mach-O readers swiftdc uses "
-                + "resolve those by file offset and would read unrelated bytes, so the image is declined rather than misread."
+                "Unsupported Mach-O layout: \(path) — \(described): "
+                + "the fixup chains or the metadata \(misread.count == 1 ? "it holds" : "they hold") cannot be placed, "
+                + "because the chain starts disagree with the segment's address, or its file bytes overlap another "
+                + "segment's. The image is declined rather than misread."
             )
         }
 
@@ -1247,51 +1247,50 @@ public enum MachOPreflight {
         }
     }
 
-    /// The segments whose bytes lie at a different offset from `__TEXT` in
-    /// memory than in the file, and which the Mach-O readers swiftdc depends
-    /// on would read at the file offset of the memory one.
+    /// The segments whose fixups or metadata no reader can place.
     ///
     /// Segments normally keep one slide: each one's file offset from `__TEXT`
     /// equals its VM offset. Zero fill breaks that for every segment after
     /// it, because it takes memory and no file bytes: a user reported an iOS
     /// app whose `__DATA` ends in 0x870000 bytes of it, with segments after
-    /// it. The dependencies conflate the two offsets in two places:
+    /// it. Such an image is read: fixup chains are found through the segment
+    /// that starts at `segment_offset`, and relative pointers through their
+    /// own segment and their target's (`MachOSegmentMap`). Both need that
+    /// mapping to mean one thing, and two layouts leave it without one:
     ///
-    /// - MachOKit reads a segment's fixup chains at
-    ///   `dyld_chained_starts_in_segment.segment_offset`, which dyld defines
-    ///   as the segment's offset in memory, as if it were a file offset
-    ///   (`MachOFile.DyldChainedFixups.pointers(of:in:)`). Every bind and
-    ///   rebase lookup walks those chains: a `try!` traps when the offset is
-    ///   past the file, and otherwise the chains are decoded out of whatever
-    ///   bytes lie there.
-    /// - MachOSwiftSection resolves a relative pointer as `file offset + delta`
-    ///   (`MachOContext.advanceAddress`), but the delta is a VM displacement,
-    ///   so a pointer into or out of such a segment leads to the wrong bytes.
+    /// - A segment's `dyld_chained_starts_in_segment.segment_offset`, which
+    ///   dyld defines as its offset in memory, is not where the segment lies.
+    ///   Its chains would be found in another segment's pages, or nowhere,
+    ///   and with no fixups a slot's raw chain bits read as a pointer.
+    /// - A slid segment that holds fixup chains or a section metadata reaches
+    ///   shares file bytes with another segment. A file offset there is two
+    ///   addresses, and the map claims neither.
     ///
-    /// So a segment counts when it is slid and holds either fixup chains or
-    /// a section Swift or Objective-C metadata reaches by relative pointer.
-    /// A slid segment that holds neither (bitcode in `__LLVM`, font blobs in
-    /// NanoTimeKit's `__FONT_DATA`, measured over 29,155 arm64 images on this
-    /// host: 55 have a slid file-backed segment) is read correctly, because
-    /// code reaches it by address, and does not count.
+    /// A slid segment that holds neither chains nor metadata (bitcode in
+    /// `__LLVM`, font blobs in NanoTimeKit's `__FONT_DATA`) is not reached by
+    /// file offset and does not count.
     static func misreadSegments(
         prefix: Data, image: ImageReader
     ) -> [(name: String, vmOffset: UInt64, fileOffset: UInt64)] {
         guard let segments = segmentTable(prefix: prefix),
               let text = segments.first(where: { $0.name == "__TEXT" })
         else { return [] }
-        // Which segments the chained fixups give chains: a nonzero
-        // `seg_info_offset[i]` in `dyld_chained_starts_in_image`, indexed in
-        // segment-command order.
-        var chained: Set<Int> = []
+        // Which segments the chained fixups give chains, and where they say
+        // each one starts: a nonzero `seg_info_offset[i]` in
+        // `dyld_chained_starts_in_image`, indexed in segment-command order,
+        // leads to a `dyld_chained_starts_in_segment` with `segment_offset`
+        // 8 bytes in. Nil when that cannot be read.
+        var chained: [Int: UInt64?] = [:]
         if let fixups = chainedFixups(prefix: prefix),
            let header = image.read(offset: fixups.dataoff, count: 8),
            let startsOffset = header.u32(at: 4),
            let count = image.read(offset: fixups.dataoff + Int(startsOffset), count: 4)?.u32(at: 0),
            Int(count) <= segments.count,
            let starts = image.read(offset: fixups.dataoff + Int(startsOffset), count: 4 + 4 * Int(count)) {
-            for index in 0..<Int(count) where (starts.u32(at: 4 + 4 * index) ?? 0) != 0 {
-                chained.insert(index)
+            for index in 0..<Int(count) {
+                guard let info = starts.u32(at: 4 + 4 * index), info != 0 else { continue }
+                let field = fixups.dataoff + Int(startsOffset) + Int(info) + 8
+                chained[index] = image.read(offset: field, count: 8)?.u64(at: 0)
             }
         }
         let hasMetadata = segments.contains { segment in
@@ -1301,15 +1300,26 @@ public enum MachOPreflight {
             section.hasPrefix("__swift") || section.hasPrefix("__objc_")
                 || (hasMetadata && ["__got", "__auth_got", "__data", "__const", "__constg_swiftt"].contains(section))
         }
+        func fileRange(_ segment: SegmentEntry) -> Range<UInt64>? {
+            let (end, overflow) = segment.fileoff.addingReportingOverflow(min(segment.filesize, segment.vmsize))
+            return overflow ? nil : segment.fileoff ..< end
+        }
+        func sharesFileBytes(_ index: Int) -> Bool {
+            guard let range = fileRange(segments[index]) else { return true }
+            return segments.indices.contains { other in
+                guard other != index, let bytes = fileRange(segments[other]), !bytes.isEmpty else { return false }
+                return bytes.overlaps(range)
+            }
+        }
         var found: [(name: String, vmOffset: UInt64, fileOffset: UInt64)] = []
         for (index, segment) in segments.enumerated() where segment.filesize > 0 {
             // Wrapping: a segment below `__TEXT` (malformed, or in a file
             // whose `__TEXT` is not first) still compares by its offsets.
             let vmOffset = segment.vmaddr &- text.vmaddr
             let fileOffset = segment.fileoff &- text.fileoff
-            guard vmOffset != fileOffset,
-                  chained.contains(index) || segment.sections.contains(where: reachedByMetadata)
-            else { continue }
+            let startsElsewhere = chained[index].map { $0 != vmOffset } ?? false
+            let counts = chained[index] != nil || segment.sections.contains(where: reachedByMetadata)
+            guard startsElsewhere || (vmOffset != fileOffset && counts && sharesFileBytes(index)) else { continue }
             found.append((segment.name, vmOffset, fileOffset))
         }
         return found

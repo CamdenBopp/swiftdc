@@ -18,6 +18,10 @@ Fixtures/Sample/goProgram
 Fixtures/Sample/goProgram.stripped
 Fixtures/Sample/slidsegments
 Fixtures/Sample/slidsegments_c
+Fixtures/Sample/slidsegments_flat
+Fixtures/Sample/slidsegments_c_flat
+Fixtures/Sample/slidsegments_stripped
+Fixtures/Sample/slidsegments_flat_stripped
 Fixtures/Sample/*.dylib
 Fixtures/Sample/*.dSYM/
 Fixtures/Sample/*.swiftmodule

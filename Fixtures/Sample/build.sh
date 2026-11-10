@@ -827,13 +827,32 @@ $SWIFTC -parse-as-library -O -emit-library -module-name ClassParamClient classpa
 
 echo "==> segments at different VM-to-file slides: zero fill ends __DATA, slid segments follow (slidsegments.swift, -O, executable; slidsegments_c.c)"
 $CLANG -arch arm64 -c slidsegments_zerofill.s -o slidsegments_zerofill.o
+$CLANG -arch arm64 -c slidsegments_tail.s -o slidsegments_tail.o
 $CLANG -arch arm64 -O1 -dynamiclib slidsegments_c.c slidsegments_zerofill.o -o slidsegments_c \
     -Wl,-rename_section,__DATA,__data,__DATA_DIRTY,__data -Wl,-sectcreate,__FONT_DATA,__blob,slidsegments_zerofill.s
-$SWIFTC -O -module-name SlidSegments slidsegments.swift slidsegments_zerofill.o -o slidsegments \
+$SWIFTC -O -module-name SlidSegments slidsegments.swift slidsegments_zerofill.o slidsegments_tail.o -o slidsegments \
     -Xlinker -rename_section -Xlinker __DATA -Xlinker __data -Xlinker __DATA_DIRTY -Xlinker __data \
     -Xlinker -rename_section -Xlinker __DATA -Xlinker __objc_selrefs -Xlinker __DATA_DIRTY -Xlinker __objc_selrefs \
     -Xlinker -rename_section -Xlinker __DATA_CONST -Xlinker __got -Xlinker __DATA_DIRTY -Xlinker __got \
-    -Xlinker -rename_section -Xlinker __TEXT -Xlinker __swift5_fieldmd -Xlinker __SWIFT_FIELDS -Xlinker __swift5_fieldmd
+    -Xlinker -rename_section -Xlinker __TEXT -Xlinker __swift5_fieldmd -Xlinker __SWIFT_FIELDS -Xlinker __swift5_fieldmd \
+    -Xlinker -rename_section -Xlinker __TEXT -Xlinker __constg_swiftt -Xlinker __SWIFT_FIELDS -Xlinker __constg_swiftt \
+    -Xlinker -rename_section -Xlinker __TEXT -Xlinker __const -Xlinker __SWIFT_FIELDS -Xlinker __const
+echo "==> the same two linked alike without the zero fill: one slide, the oracle for the renders above (slidsegments_flat, slidsegments_c_flat)"
+$CLANG -arch arm64 -O1 -dynamiclib slidsegments_c.c -DSLIDSEGMENTS_FLAT -o slidsegments_c_flat \
+    -Wl,-rename_section,__DATA,__data,__DATA_DIRTY,__data -Wl,-sectcreate,__FONT_DATA,__blob,slidsegments_zerofill.s
+$SWIFTC -O -module-name SlidSegments slidsegments.swift -o slidsegments_flat \
+    -Xlinker -rename_section -Xlinker __DATA -Xlinker __data -Xlinker __DATA_DIRTY -Xlinker __data \
+    -Xlinker -rename_section -Xlinker __DATA -Xlinker __objc_selrefs -Xlinker __DATA_DIRTY -Xlinker __objc_selrefs \
+    -Xlinker -rename_section -Xlinker __DATA_CONST -Xlinker __got -Xlinker __DATA_DIRTY -Xlinker __got \
+    -Xlinker -rename_section -Xlinker __TEXT -Xlinker __swift5_fieldmd -Xlinker __SWIFT_FIELDS -Xlinker __swift5_fieldmd \
+    -Xlinker -rename_section -Xlinker __TEXT -Xlinker __constg_swiftt -Xlinker __SWIFT_FIELDS -Xlinker __constg_swiftt \
+    -Xlinker -rename_section -Xlinker __TEXT -Xlinker __const -Xlinker __SWIFT_FIELDS -Xlinker __const
+echo "==> both stripped: names then come from metadata, through the pointers the slide moves (slidsegments_stripped, slidsegments_flat_stripped)"
+cp slidsegments slidsegments_stripped
+strip -x slidsegments_stripped 2>/dev/null || strip slidsegments_stripped
+cp slidsegments_flat slidsegments_flat_stripped
+strip -x slidsegments_flat_stripped 2>/dev/null || strip slidsegments_flat_stripped
+
 echo "==> which register holds each parameter at entry (entryseedkit, entryseed, -Onone, -O and -Osize)"
 $SWIFTC -parse-as-library -O -emit-library -emit-module -module-name EntrySeedKit entryseedkit.swift -o libEntrySeedKit.dylib
 $SWIFTC -parse-as-library -Onone -emit-library -module-name EntrySeed entryseed.swift -I . -L . -lEntrySeedKit -o libEntrySeed.dylib

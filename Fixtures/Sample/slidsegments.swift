@@ -2,8 +2,9 @@
 // layout a user reported from an iOS app. `slidsegments_zerofill.s` puts an
 // 0x870000-byte zero-fill section at the end of __DATA, so __DATA's vmsize
 // is far larger than its filesize. build.sh then moves three sections into a
-// __DATA_DIRTY segment after it and `__swift5_fieldmd` into a __SWIFT_FIELDS
-// segment after that (`ld -rename_section`). Their file bytes follow
+// __DATA_DIRTY segment after it and `__swift5_fieldmd`, `__constg_swiftt` and
+// `__TEXT,__const` into a __SWIFT_FIELDS segment after that
+// (`ld -rename_section`). Their file bytes follow
 // __DATA's directly, but their addresses follow the zero fill: each one's VM
 // offset from __TEXT is its file offset plus 0x870000. __DATA_DIRTY holds
 // fixup chains; __SWIFT_FIELDS holds none, only relative pointers.
@@ -17,6 +18,11 @@
 //   - `Bridged`'s superclass is a mangled name in __TEXT with an indirect
 //     symbolic reference (`\x02` + rel32) to an `NSObject` slot in
 //     __DATA_DIRTY,__got;
+//   - __SWIFT_FIELDS,__constg_swiftt holds the type descriptors, so a method
+//     descriptor's implementation and an accessor lead out of it into
+//     __TEXT,__text, and __TEXT,__swift5_types leads into it;
+//   - __SWIFT_FIELDS,__const holds mangled-name pairs, whose names lie in
+//     __TEXT, and async function pointers, whose code does;
 //   - the chained fixups' starts for __DATA_DIRTY give its VM offset.
 // dyld loads it and it prints "d3 6.0 2 first".
 import Foundation
@@ -38,11 +44,22 @@ open class Base {
     public var name: String = "base"
     public init() {}
     open func greet() -> String { name }
+    // Its vtable slot leads to an async function pointer, a record that leads
+    // on to the code: `MethodImplementation`'s second hop.
+    open func later(_ n: Int) async -> Int { n + name.utf8.count }
 }
 
 public final class Derived: Base {
     public var count = 3
     public override func greet() -> String { "d\(count)" }
+}
+
+// A key conformance requirement: its subject's name lies in
+// __TEXT,__swift5_typeref, its descriptor in __SWIFT_FIELDS.
+open class Box<T: Shape> {
+    public var item: T
+    public init(_ item: T) { self.item = item }
+    open func size() -> Double { item.area() }
 }
 
 @objc public class Bridged: NSObject {

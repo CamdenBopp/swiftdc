@@ -9943,14 +9943,21 @@ bitcode; Electron's `PROTECTED_MEMORY`).
   its 51 `SwiftObject` binds sit in `__DATA_DIRTY`. Now every entry point
   exits 1 with the layout as the cause. NanoTimeKit and the bitcode
   `libswiftCore.dylib` still read.
-- **OPEN — a declined layout could still be read.** The decline is whole
-  image, so `disasm` loses even code no fixup touches (libsystem_pthread,
-  whose four `__DATA_DIRTY` fixups are the only slid ones). Lifting it
-  needs the two dependency fixes: MachOKit reading each chain's pages at its segment's file
-  offset and reporting slots by file offset, and MachOSwiftSection
-  advancing a file offset through VM (`fileOffset → vmaddr + delta →
-  fileOffset`). swiftdc's own `address(forOffset:)` uses (20 sites) need
-  the same mapping before the decline can go.
+- **FIXED (completeness, 2026-11-09) — a declined layout is now read.**
+  The four Mach-O dependencies are pinned to forks that resolve through
+  segments (d27d804): MachOKit reads each chain at its segment's file
+  offset, MachOKitExtensions maps offsets with `MachOSegmentMap`,
+  MachOSwiftSection advances a relative pointer through memory and
+  MachOObjCSection does the same for relative method lists. swiftdc's own
+  readers resolve through one helper (8c1d9de). The preflight now declines
+  only what no reader can place: chain starts that disagree with the
+  segment's address, or a slid segment holding fixups or metadata whose file
+  bytes overlap another segment's. All nine views of the slid fixtures
+  render line for line as their flat twins (`slidsegments_flat`,
+  `slidsegments_c_flat`, and stripped copies), and every fixup `dyld_info
+  -fixups` reports is found at its slot. GameServices: all 17 classes match
+  `dyld_info -objc`. A sweep of 2,600 real arm64 images: 2 newly read, 0
+  newly refused. Ported from the agent-ae29ddf26679fcf00 worktree.
 - **FIXED (soundness, 8dd56e4) — the preflight's own record checks added a VM
   displacement to a file offset.** `__swift5_fieldmd`, `__swift5_assocty`,
   `__swift5_builtin`, `__swift5_mpenum`, the flat relative tables and a
@@ -9968,16 +9975,11 @@ bitcode; Electron's `PROTECTED_MEMORY`).
   arm64 images (a third of /Applications, /usr/lib/swift, the command line
   tools and Homebrew, by `swift-version`): 0 newly refused, 3 declined by
   layout, 3 malformed under both binaries, no signals.
-- **OPEN — readers that take their offsets from the dependency.**
-  `VTableIndex`, `SelfTypeIndex` and `MetadataSymbolizer` (`fieldOffset +
-  relative`), `MangledNamePair`, `UnrecordedTypes.types`,
-  `MethodImplementation.code` and the 20 `address(forOffset:)` sites still
-  assume one slide. They are not converted: a slid image that could reach
-  them is declined above, and every one starts from a descriptor the
-  dependency parsed, so no fixture can show a change until the dependency
-  resolves it through VM. They move to `relativeTarget` with the decline's
-  removal. MachOObjCSection's relative method lists are a third dependency
-  site: `resolvedOffset(base: fileOffset, relative:)` in `ObjCMethodList`.
+- **FIXED (8c1d9de) — readers that took their offsets from the dependency.**
+  `VTableIndex`, `SelfTypeIndex`, `MetadataSymbolizer`, `MangledNamePair`,
+  `UnrecordedTypes`, `MethodImplementation` and the `address(forOffset:)`
+  sites resolve through `MachOFile.relativeAddress`/`relativeOffset`, and
+  ObjC method lists through the MachOObjCSection fork.
 - **FIXED (speed): `ObjCMetadataIndex.outgoingSignature` dominated
   `objc` on many classes.** `sample` of the 1,600-class run put 3,066 of
   4,244 main-thread samples in it: `-owner`, implemented by 1,600 classes
