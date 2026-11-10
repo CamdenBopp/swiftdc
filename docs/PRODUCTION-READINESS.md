@@ -3773,6 +3773,33 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   listing and `--cfg` (objdump's instruction text), `--json` and `analyze`
   still materialise every function; a streaming JSON writer, or chunking the
   array modes, is the remaining scale work.
+- **FIXED (speed, 2026-11-10) — streamed pass 2 ran on one core.** The
+  per-function analysis of `disassembleStreaming` (the streamed `disasm
+  --pseudo`/`--structured` views and `xrefs`) is about 85% of a whole-image
+  run (`sample` of libSwiftParser `--structured`: `analyzeFunction` 9,048
+  and rendering 2,049 of 12,034 samples on the working thread). Functions
+  now analyse across the cores in batches of 256, chunks of 8 with a
+  decoder each, and reach `transform` in input order, so the output is the
+  serial loop's. Not while a probe records (its events keep their order),
+  not for a dyld-cache image (`CacheSymbolResolver` and `CacheReader` keep
+  unlocked memos), and not with `SWIFTDC_SERIAL` set. Release, three rounds
+  each, alternated: libSwiftParser `--structured` 17.3 s -> 9.6 s,
+  libSwiftSyntax 46.5 s -> 25.8 s; peak footprint +6 to +30 MB (`xrefs`
+  libSwiftParser 45 -> 75 MB). Every fixture view and the swift-syntax dylibs
+  are byte-identical to the serial build; ThreadSanitizer reports no race over
+  16 whole-image runs (fixtures and libSwiftOperators), once MachOKit,
+  swift-binary-parse-support and swift-fileio's aligned `load(as:)` reads of
+  Data bytes were made unaligned in the sanitizer build's own checkout: under
+  ThreadSanitizer those loads trap (`load from misaligned raw pointer`), serial
+  or parallel, a latent dependency defect recorded below.
+- **OPEN (robustness, dependency) — aligned loads of file bytes in
+  dependencies.** MachOKit's `FileHandle+.swift`, swift-binary-parse-support's
+  `DataSequence`/`MemorySequence`/`FileHandle+` and swift-fileio's streamed
+  files read integers with `UnsafeRawBufferPointer.load(as:)` from Data or
+  file bytes whose address is not proven aligned. A ThreadSanitizer build
+  traps on the first such read (`disasm` of any fixture). Release builds skip
+  the check and arm64 tolerates the access, so no run fails today; the fix is
+  `loadUnaligned(as:)` in each fork.
 - **MITIGATED (memory) — a whole-image memory regression guard now exists**
   (`MemoryRegressionTests`). The memory limit above is now FIXED by
   streaming, but nothing stopped it regressing meanwhile, and it still guards the

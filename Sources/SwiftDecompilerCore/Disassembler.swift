@@ -1125,6 +1125,38 @@ public struct Disassembler: Sendable {
         var rendered: [T] = []
         rendered.reserveCapacity(boundaries.count)
         let total = boundaries.count
+        if Self.analysesInParallel(machO: machO, resolver: context.resolver) {
+            // Each function's analysis reads only the finished context, so
+            // functions are analysed across the cores in bounded batches and
+            // handed to `transform` in input order: the same results, in the
+            // same order, as the loop below.
+            _ = machO.cache // resolve MachOKit's lazy memo once, before any reader thread
+            let frozenNames = names
+            let work = ParallelPassTwo(section: section) { index, decoder in
+                let span = span(index)
+                let instructions = decoder?.instructions(span: span) ?? self.capstoneInstructions(in: machO, span: span)
+                let function = self.makeFunction(
+                    start: boundaries[index], instructions: instructions,
+                    labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
+                    metadataNames: metadataNames, objcIndex: objcIndex, in: machO
+                )
+                guard !instructions.isEmpty else { return function }
+                let grouped = asyncIndex.info(for: function.startAddress, parentName: { frozenNames[$0] })
+                    .map(function.attachingAsyncFunclet) ?? function
+                return self.analyzeFunction(grouped, context: context)
+            }
+            var start = 0
+            while start < total {
+                let end = min(start + Self.parallelBatch, total)
+                let functions = Parallel.mapChunks(start ..< end, chunk: Self.parallelChunk) { range in
+                    work.analyze(range)
+                }
+                for function in functions { rendered.append(transform(function)) }
+                if let progress { progress(end, total) }
+                start = end
+            }
+            return rendered
+        }
         for index in boundaries.indices {
             let instructions = decode(span(index))
             if instructions.isEmpty {
@@ -1152,6 +1184,45 @@ public struct Disassembler: Sendable {
             }
         }
         return rendered
+    }
+
+    /// Functions per batch of pass 2: what is analysed and held at once
+    /// before `transform` releases it.
+    static let parallelBatch = 256
+    /// Consecutive functions one thread analyses, with one decoder.
+    static let parallelChunk = 8
+
+    /// Whether pass 2 may analyse functions concurrently. Not while a probe
+    /// records (its events must keep their order), not for a dyld-cache
+    /// image (its resolver's cache reader keeps unlocked memo state), and
+    /// not when `SWIFTDC_SERIAL` is set, which is the A/B switch and the
+    /// determinism oracle for this path.
+    static func analysesInParallel(machO: MachOFile, resolver: ReferenceResolver) -> Bool {
+        !Probe.isActive && !machO.isLoadedFromDyldCache
+            && resolver.cacheSymbols == nil && resolver.cacheReader == nil
+            && ProcessInfo.processInfo.environment["SWIFTDC_SERIAL"] == nil
+            && ProcessInfo.processInfo.activeProcessorCount > 1
+    }
+
+    /// Pass 2's per-function work handed to the worker threads. Unchecked
+    /// because it captures the image and the context, which are only read
+    /// once pass 1 ends: their caches are lock-guarded (`SelfMemberCache`,
+    /// `CallResultBankCache`, `ChainedFixupTable`, `DemangleCache`), the one
+    /// unguarded memo (`MachOFile.cache`) is resolved before the threads
+    /// start, and each chunk decodes with an engine of its own.
+    struct ParallelPassTwo: @unchecked Sendable {
+        let section: TextSection?
+        let body: (Int, TextSection?) -> DisassembledFunction
+
+        init(section: TextSection?, body: @escaping (Int, TextSection?) -> DisassembledFunction) {
+            self.section = section
+            self.body = body
+        }
+
+        func analyze(_ range: Range<Int>) -> [DisassembledFunction] {
+            let decoder = section?.withOwnEngine()
+            return range.map { body($0, decoder) }
+        }
     }
 
     /// Disassemble only the functions beginning at `addresses`, each decoded up
@@ -2468,6 +2539,17 @@ public struct Disassembler: Sendable {
             guard let engine = CapstoneEngine() else { return nil }
             self.pieces = read
             self.engine = engine
+        }
+
+        private init(pieces: [(address: UInt64, bytes: Data)], engine: CapstoneEngine) {
+            self.pieces = pieces
+            self.engine = engine
+        }
+
+        /// The same bytes with an engine of its own: a Capstone handle is one
+        /// thread's at a time.
+        func withOwnEngine() -> TextSection? {
+            CapstoneEngine().map { TextSection(pieces: pieces, engine: $0) }
         }
 
         /// The instructions of `[start, stop)`, clipped to the sections, as

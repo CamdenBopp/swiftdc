@@ -78,7 +78,11 @@ The pipeline:
    attached for detail. Filtered runs, dyld-cache images and `xrefs` decode with
    Capstone in process.
 2. **Segment** at `LC_FUNCTION_STARTS`, symbols and ObjC IMPs.
-3. **Analyse** with `analyzeFunction`: tracer, then enrichment.
+3. **Analyse** with `analyzeFunction`: tracer, then enrichment. The streamed
+   views of a standalone image analyse functions across the cores in batches
+   and render them in input order; `SWIFTDC_SERIAL=1` forces the serial loop,
+   and a probe run or a dyld-cache image is always serial. Anything analysis
+   shares across functions must be read-only or lock-guarded.
 4. **Render** from `render`, `renderPseudo`, `renderStructured`,
    `renderCFG` or JSON.
 

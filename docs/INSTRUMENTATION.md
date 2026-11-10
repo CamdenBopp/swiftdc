@@ -92,6 +92,10 @@ Probe.inFunction(start, name) { … }               // attribute events to a fun
   The structurer runs on its own large-stack `Thread`, so
   `ControlFlowStructure.onLargeStack` carries them across with
   `Probe.context`/`withContext`; task-locals do not cross a raw thread.
+- **A probe run analyses serially.** The streamed views analyse functions
+  across the cores only while no recorder is active, so a probe run keeps
+  its event order and loses no event to a worker thread. Its timing is the
+  serial loop's.
 - **Near-zero cost when off.** A call loads one relaxed atomic (the number of
   installed recorders anywhere in the process) and branches. The payload is
   an `@autoclosure` and is never built.

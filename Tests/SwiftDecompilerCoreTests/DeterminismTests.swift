@@ -12,10 +12,11 @@ import Foundation
 /// reuse the same seed and reorder nothing. Verified on this toolchain — a
 /// 12-element `Set` prints in three different orders across three processes.
 ///
-/// What this actually guards. The decompiler has **no concurrent fan-out** (no
-/// task groups, no `async let`, no `Task {}`, no `concurrentPerform`; the one
-/// worker thread is joined before its result is read), so scheduling is not a
-/// source of variation. The real dependency is the ~16 explicit `.sorted()`
+/// What this actually guards. The one concurrent fan-out is pass 2 of a
+/// standalone image's streamed views, which analyses functions across the
+/// cores and hands them on in input order; `parallelAnalysisMatchesSerial`
+/// compares it with the serial loop (`SWIFTDC_SERIAL`). Otherwise scheduling
+/// is not a source of variation. The real dependency is the ~16 explicit `.sorted()`
 /// calls placed where an unordered collection reaches output. Nothing enforces
 /// them: emitting straight from a `Dictionary` or `Set` in a future change
 /// would reorder output silently, and only a cross-process comparison notices.
@@ -126,11 +127,14 @@ private let cases: [(label: String, arguments: [String])] = [
     ("disasm --json imported receivers", ["disasm", "Fixtures/Sample/libImportedReceiver.opt.dylib", "--json"]),
 ]
 
-private func capture(_ arguments: [String]) throws -> Data {
+private func capture(_ arguments: [String], environment: [String: String] = [:]) throws -> Data {
     let output = Pipe()
     let process = Process()
     process.executableURL = binary
     process.arguments = arguments
+    if !environment.isEmpty {
+        process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
+    }
     process.standardOutput = output
     process.standardError = FileHandle.nullDevice
     try process.run()
@@ -178,7 +182,28 @@ private func capture(_ arguments: [String]) throws -> Data {
     )
 }
 
-/// The premise the test above rests on: iteration order really does vary between
+/// Pass 2 analyses a standalone image's functions concurrently and must give
+/// exactly what the serial loop gives. Each case runs both ways in its own
+/// process; the fixtures here have from a dozen to a few hundred functions,
+/// so several chunks run at once.
+@Test func parallelAnalysisMatchesSerialIfPresent() throws {
+    guard FileManager.default.fileExists(atPath: binary.path) else { return }
+    var compared = 0
+    for path in ["Fixtures/Sample/libSample.dylib", "Fixtures/Sample/sample.debug", "Fixtures/Sample/libFieldVTable.dylib",
+                 "Fixtures/Sample/libImportedReceiver.opt.dylib", "Fixtures/Sample/libIndirect.dylib"]
+    where FileManager.default.fileExists(atPath: path) {
+        for view in ["--structured", "--pseudo"] {
+            let serial = try capture(["disasm", path, view], environment: ["SWIFTDC_SERIAL": "1"])
+            let parallel = try capture(["disasm", path, view])
+            #expect(!serial.isEmpty, "\(path) \(view): no output")
+            #expect(parallel == serial, "\(path) \(view): parallel pass 2 differs from serial (\(parallel.count) vs \(serial.count) bytes)")
+            compared += 1
+        }
+    }
+    #expect(compared == 0 || compared == 10, "compared \(compared) of 10")
+}
+
+/// The premise `outputIsIdenticalAcrossProcessesIfPresent` rests on: iteration order really does vary between
 /// processes on this toolchain. If a future toolchain made hashing deterministic
 /// by default, the guard would still pass while having lost its power, and that
 /// should be visible rather than silent.
