@@ -2726,8 +2726,13 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   is typed the same way, from its exact qualified type in the signature
   (`ClassParameterFieldIndex`): `runEngine(_ engine: Engine)` reads
   `return FieldVTable.Engine.start(self: arg0)`, and StrippedFold's `bump(_:)`
-  names `Base.w.modify`. GoodLinks 15,273 -> 15,160. Methods' and
-  specializations' parameters, call results and objects loaded from other
+  names `Base.w.modify`. GoodLinks 15,273 -> 15,160. An object in a field of
+  such an argument is typed by the argument class's field record:
+  `driveHeld(_ car: Car)` reads `return FieldVTable.Engine.start(self:
+  arg0.engine)` (GoodLinks unchanged at 15,160). Methods' and
+  specializations' parameters, call results, existentials (an `any P`
+  parameter is not seeded as an argument at all, since the entry
+  convention proves only one-register scalars) and objects loaded from other
   memory are not typed yet.
 - **MEASURED (2026-11-10): what the remaining unresolved calls are.** A
   backward slice over the 24 instructions before each of GoodLinks' 15,350

@@ -17,7 +17,8 @@ private let fieldVTableFixtures = [
         defer { dlclose(library) }
         typealias Entry = @convention(c) () -> Int
         for (name, expected) in [("field_vtable_go_turbo", 3), ("field_vtable_park", 9), ("field_vtable_garage", 7),
-                                 ("field_vtable_run_turbo", 3), ("field_vtable_run_other", 7), ("field_vtable_borrow", 4)] {
+                                 ("field_vtable_run_turbo", 3), ("field_vtable_run_other", 7), ("field_vtable_borrow", 4),
+                                 ("field_vtable_drive_held", 3)] {
             let entry = try #require(dlsym(library, name))
             #expect(unsafeBitCast(entry, to: Entry.self)() == expected, "\(path): \(name)")
         }
@@ -72,6 +73,25 @@ private let fieldVTableFixtures = [
         for text in try views("runOther") {
             #expect(!text.contains("FieldVTable.Engine"), "\(path): \(text)")
             #expect(text.contains("unresolved call"), "\(path): \(text)")
+        }
+    }
+}
+
+/// An object held in a field of a free function's class argument is typed by
+/// that class's field record: `car.engine.start()` in `driveHeld(_ car: Car)`.
+@Test func aVTableCallOnAClassArgumentsFieldIsNamedIfPresent() async throws {
+    for path in fieldVTableFixtures where FileManager.default.fileExists(atPath: path) {
+        let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+        for member in ["driveHeld", "driveSpare"] {
+            let function = try #require(functions.first { $0.displayName.hasPrefix("FieldVTable.\(member)(") }, "\(member)")
+            for text in [function.renderPseudo(), function.renderStructured()] {
+                #expect(text.contains("FieldVTable.Engine.start("), "\(path) \(member): \(text)")
+                #expect(!text.contains("unresolved call"), "\(path) \(member): \(text)")
+            }
+        }
+        if path == fieldVTableFixtures[0] {
+            let held = try #require(functions.first { $0.displayName.hasPrefix("FieldVTable.driveHeld(") })
+            #expect(held.renderPseudo().contains("return FieldVTable.Engine.start(self: arg0.engine)"))
         }
     }
 }

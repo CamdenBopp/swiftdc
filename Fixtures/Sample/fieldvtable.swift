@@ -60,3 +60,11 @@ public func fieldVTableRunOther() -> Int { runOther(FieldVTableOther.Engine()) }
 
 @_cdecl("field_vtable_borrow")
 public func fieldVTableBorrow() -> Int { Car(Engine()).borrow(Turbo(), for: 4) }
+
+// The receiver is a field of a class argument: `ldr x20, [x0, #0x10]; ldr
+// x8, [x20]; ldr x8, [x8, #slot]; blr x8`, typed by Car's field record.
+@inline(never) public func driveHeld(_ car: Car) -> Int { car.engine.start() }
+@inline(never) public func driveSpare(_ car: Car) -> Int { car.spare?.start() ?? -1 }
+
+@_cdecl("field_vtable_drive_held")
+public func fieldVTableDriveHeld() -> Int { driveHeld(Car(Turbo())) }

@@ -4129,7 +4129,8 @@ public struct Disassembler: Sendable {
         vtableIndex: VTableIndex = VTableIndex(),
         callArguments: [UInt64: [AbstractValue]] = [:],
         selfFieldClass: (Int) -> String? = { _ in nil },
-        argumentClass: (Int) -> String? = { _ in nil }
+        argumentClass: (Int) -> String? = { _ in nil },
+        argumentFieldClass: (Int, Int) -> String? = { _, _ in nil }
     ) -> (function: DisassembledFunction, changesCFG: Bool) {
         /// Resolve a `blr` target to a (name, address). A class vtable dispatch is
         /// resolved through the class's metadata layout; anything else through the
@@ -4169,6 +4170,8 @@ public struct Disassembler: Sendable {
                 receiverClass = selfFieldClass(field); slot = offset
             case .loadedFrom(.loadedFrom(.argument(let argument), offset: 0), offset: let offset):
                 receiverClass = argumentClass(argument); slot = offset
+            case .loadedFrom(.loadedFrom(.argumentField(let argument, let field), offset: 0), offset: let offset):
+                receiverClass = argumentFieldClass(argument, field); slot = offset
             default:
                 return nil
             }
@@ -7721,7 +7724,10 @@ public struct Disassembler: Sendable {
             resolver: resolver, selfTypeName: selfTypeName, vtableIndex: vtableIndex,
             callArguments: analysis.callSites.mapValues(\.arguments),
             selfFieldClass: { offset in Self.declaredClassOfField(at: offset, in: fieldMap) },
-            argumentClass: { classArgumentTypes[$0] }
+            argumentClass: { classArgumentTypes[$0] },
+            argumentFieldClass: { argument, offset in
+                Self.declaredClassOfField(at: offset, in: classArgumentFieldMaps[argument])
+            }
         )
         let function = resolvedControlFlow.function
         // Resolving an external BR adds its successor address. BLR naming

@@ -5592,6 +5592,10 @@ public struct ValueTracer: Sendable {
              .argument where effective == 0 && !detail.postIndex && !detail.writeback,
              .loadedFrom(.argument, 0) where effective >= 0 && effective % 8 == 0
                  && !detail.postIndex && !detail.writeback,
+             // And through an object held in a class argument's field.
+             .argumentField where effective == 0 && !detail.postIndex && !detail.writeback,
+             .loadedFrom(.argumentField, 0) where effective >= 0 && effective % 8 == 0
+                 && !detail.postIndex && !detail.writeback,
              .argument where effective == -8,
              .loadedFrom(.argument, -8) where effective % 8 == 0
                  && ((0 ..< 0x40).contains(effective) || (0x58 ... 0x68).contains(effective)):
