@@ -601,6 +601,19 @@ public struct DisassembledFunction: Sendable {
     /// The name to show: demangled if available, else the raw symbol.
     public var displayName: String { demangledName ?? symbol }
     var analysisName: String? { semanticName ?? demangledName }
+    /// What the mangled clauses of this function's symbol prove.
+    var specializationClause: SpecializationClause {
+        analysisName.map { Self.specializationClause(symbol: symbol, printedName: $0) } ?? .absent
+    }
+    /// The name this function's own registers follow, which is what numbers
+    /// its parameters: a proven specialization's real signature, or the name.
+    /// Every query that indexes a parameter reads this: seeded from the real
+    /// list, `fl<Int8>(A.Type, Swift.Double, Swift.Int)`'s `arg1` is the Int,
+    /// and its printed list calls that a Double.
+    var layoutName: String? {
+        if case .proven(let layout) = specializationClause { return layout.signature }
+        return analysisName
+    }
     var analysisDisplayName: String { analysisName ?? symbol }
 
     /// Render this function as annotated assembly text.
@@ -5302,7 +5315,7 @@ public struct Disassembler: Sendable {
     /// A function/method spells its result after ` -> `; a property *getter*
     /// demangles as `Type.prop.getter : PropType`.
     static func swiftReturnTypeName(of function: DisassembledFunction) -> String? {
-        guard function.objcMethod == nil, let name = function.analysisName else { return nil }
+        guard function.objcMethod == nil, let name = function.layoutName else { return nil }
         return swiftReturnTypeName(forDemangledName: name)
     }
 
@@ -5935,7 +5948,7 @@ public struct Disassembler: Sendable {
         of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
         classTypeIndex: ClassTypeIndex = ClassTypeIndex(), fieldMaps: [String: FieldMap] = [:]
     ) -> [String: Int]? {
-        guard function.objcMethod == nil, let name = function.analysisName,
+        guard function.objcMethod == nil, let name = function.layoutName,
               Self.isSwiftMangled(function.symbol),
               Self.signatureSpecializationKeepsLayout(name),
               // A getter/setter/accessor or a name without a call signature has no
@@ -6633,7 +6646,7 @@ public struct Disassembler: Sendable {
     static func swiftEnumArgumentTypes(
         of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex
     ) -> [Int: String] {
-        guard function.objcMethod == nil, let name = function.analysisName,
+        guard function.objcMethod == nil, let name = function.layoutName,
               Self.isSwiftMangled(function.symbol),
               let signature = DisassembledFunction.splitSignature(name)?.head
         else { return [:] }
@@ -6657,7 +6670,7 @@ public struct Disassembler: Sendable {
     /// lets `!b` (lowered `(arg ^ 1) & 1`) fold to `!arg` and `b == true`/`b`
     /// used in a condition read cleanly rather than as a masked integer test.
     static func swiftBoolArgumentIndices(of function: DisassembledFunction) -> Set<Int> {
-        guard function.objcMethod == nil, let name = function.analysisName,
+        guard function.objcMethod == nil, let name = function.layoutName,
               Self.isSwiftMangled(function.symbol),
               let signature = DisassembledFunction.splitSignature(name)?.head
         else { return [] }
@@ -6684,7 +6697,7 @@ public struct Disassembler: Sendable {
     static func swiftFloatArgumentInfo(
         of function: DisassembledFunction
     ) -> (indices: Set<Int>, isDouble: Bool)? {
-        guard function.objcMethod == nil, let name = function.analysisName,
+        guard function.objcMethod == nil, let name = function.layoutName,
               Self.isSwiftMangled(function.symbol),
               let split = DisassembledFunction.splitSignature(name)
         else { return nil }

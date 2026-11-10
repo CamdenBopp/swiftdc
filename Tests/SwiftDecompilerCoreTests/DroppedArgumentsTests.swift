@@ -91,6 +91,26 @@ private extension SpecializationClause {
     #expect(try clause("$s1Q2rgyxxm_SixtlFSi_Tt0g5Tf4dn_n") == .declined)
 }
 
+/// A hand-built function: what the clause says, without a binary around it.
+private func function(_ symbol: String) throws -> DisassembledFunction {
+    DisassembledFunction(symbol: "_" + symbol, demangledName: try demangleAsNode(symbol).print(using: .default),
+                         startAddress: 0x1000, instructions: [], source: .symbol)
+}
+
+/// `ignores<A>(A, Swift.Int, Swift.Int) -> Holder` with its unused value
+/// gone: the printed list seeds x1 and x2, which hold nothing of the kind.
+@Test func aDeclinedClauseSeedsNothing() throws {
+    let declined = try function("$s11DroppedArgs7ignoresyAA6HolderVx_S2itlFSS_Ttg5")
+    #expect(declined.specializationClause == .declined)
+    #expect(Disassembler.swiftScalarArgumentRegisters(of: declined) == nil)
+}
+
+/// The printed list's Double is its second parameter, and the real list's first.
+@Test func aFloatArgumentIsCountedInTheRealList() throws {
+    let float = try function("$s11DroppedArgs5floatySdxm_SdSitlFs4Int8V_Ttg5")
+    #expect(Disassembler.swiftFloatArgumentInfo(of: float)?.indices == [0])
+}
+
 @Test func anUndroppedSpecializationKeepsWhatItPrinted() throws {
     // A buffer stays in x0, with or without a dropped argument.
     #expect(try clause("$s11DroppedArgs4pairyx_xtxlFSi_Tg5") == .absent)
@@ -128,6 +148,43 @@ private func caller(_ functions: [DisassembledFunction], _ name: String) throws 
 private let optimizedBuilds = ["Fixtures/Sample/libDroppedArgs.dylib", "Fixtures/Sample/libDroppedArgs.Osize.dylib"]
 
 @Test(arguments: optimizedBuilds)
+func aDroppedArgumentSpecializationIsSeededFromItsRealRegistersIfPresent(path: String) async throws {
+    guard let functions = try await functions(path) else { return }
+    #expect(try body(functions, "meta", "Swift.Int8").contains("return (arg0 + 1)"))
+    let last = try body(functions, "last<")
+    #expect(last.contains("arg0") && last.contains("arg1") && !last.contains("return ?"), Comment(rawValue: last))
+    #expect(try body(functions, "two<").contains("((arg0 - arg1) + 3)"))
+    // arg1 is the Int, and the printed list's second parameter is a Double.
+    #expect(try body(functions, "float<").contains("Double(arg1)"))
+    // A result the name spells `A` is the Double in d0.
+    #expect(try body(functions, "genericResult<").contains("return arg1"))
+}
+
+/// Each query that indexes a parameter reads the real list: in each of these
+/// the printed list's first parameter is a metatype.
+@Test(arguments: optimizedBuilds)
+func aParameterQueryIndexesTheRealListIfPresent(path: String) async throws {
+    guard let functions = try await functions(path) else { return }
+    #expect(try body(functions, "chosen<").contains("(arg0 ? arg1 : 1)"))
+    // A typed UInt needs no unsigned mark.
+    #expect(try body(functions, "below<").contains("return (arg0 < arg1)"))
+    #expect(try body(functions, "moded<").contains("(arg0 != DroppedArgs.Mode.second)"))
+}
+
+/// A static's own metatype leaves its formals in place, rebuilt or not.
+@Test(arguments: optimizedBuilds)
+func aDroppedSelfMetatypeKeepsTheFormalsIfPresent(path: String) async throws {
+    guard let functions = try await functions(path) else { return }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.contains("of static DroppedArgs.\(name)") }).renderStructured()
+    }
+    let combine = try text("Pack.combine")
+    #expect(combine.contains("arg1") && !combine.contains("return ?"), Comment(rawValue: combine))
+    let of = try text("Scale.of")
+    #expect(of.contains("arg1") && !of.contains("return ?"), Comment(rawValue: of))
+}
+
+@Test(arguments: optimizedBuilds)
 func aDroppedArgumentCallPassesTheSurvivorsIfPresent(path: String) async throws {
     guard let functions = try await functions(path) else { return }
     // The Int in x0 and the Double in d0, by index 1 of the SIL list.
@@ -138,6 +195,13 @@ func aDroppedArgumentCallPassesTheSurvivorsIfPresent(path: String) async throws 
     #expect(try caller(functions, "useTupled").contains("tupled<A>(…)"))
     #expect(try caller(functions, "useKeyed").contains("keyed<A>(…)"))
     #expect(try caller(functions, "useKeyedThenAdd").contains("keyed<A>(…)"))
+}
+
+/// `pair` keeps a buffer in x0, so its x0 is no parameter.
+@Test(arguments: optimizedBuilds)
+func aBufferInX0IsNoParameterIfPresent(path: String) async throws {
+    guard let functions = try await functions(path) else { return }
+    #expect(try !body(functions, "pair<").contains("arg0"))
 }
 
 /// A closure-propagated clause prints an unclosed `[`, and the signature was
