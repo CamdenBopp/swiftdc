@@ -34,3 +34,11 @@ public struct Failure: Error { public init() {} }
 // A class-bound existential is two registers (object, table): `k` is x2.
 @inline(never) public func callNameThen(_ named: any Named, _ k: Int) -> Int { named.name() &+ k }
 @inline(never) public func describe(_ error: any Error) -> Int { error._code }
+
+// A method's class-bound existential parameter: self in x20, the object in
+// x0 and its table in x1, as for a free function.
+public final class Registry {
+    public var base: Int
+    public init(_ base: Int) { self.base = base }
+    @inline(never) public func lookup(_ named: any Named) -> Int { named.name() &+ base }
+}

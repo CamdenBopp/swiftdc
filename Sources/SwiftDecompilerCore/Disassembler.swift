@@ -2108,7 +2108,14 @@ public struct Disassembler: Sendable {
             .swiftValueInstance(seededRegisters: valueSelf.seeded)
         } else if classSelfTypeName != nil || (!isResumeFunclet && symbolEntry == nil
                     && Self.swiftEnumSelfType(of: function, enumCaseIndex: context.enumCaseIndex) != nil) {
-            .swiftInstance(scalarArguments: Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps, isOpaqueExistential: isOpaqueExistential) ?? [:])
+            {
+                let arguments = Self.swiftArgumentRegisters(
+                    of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex,
+                    fieldMaps: context.fieldMaps, isOpaqueExistential: isOpaqueExistential,
+                    isClassBoundExistential: isClassBoundExistential)
+                return .swiftInstance(scalarArguments: arguments?.scalars ?? [:],
+                                      existentialTables: arguments?.existentialTables ?? [:])
+            }()
         } else if let arguments = Self.swiftArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps, isOpaqueExistential: isOpaqueExistential, isClassBoundExistential: isClassBoundExistential) {
             {
                 let metadata = Self.genericMetadataRegisters(
@@ -8201,7 +8208,7 @@ public struct Disassembler: Sendable {
         // inside another expression all name the same `self`.
         // The register each seeded parameter arrived in.
         let entryArgumentRegisters: [String: Int] = switch entry {
-        case .swiftFunction(let map, _, _, _)?, .swiftInstance(let map)?: map
+        case .swiftFunction(let map, _, _, _)?, .swiftInstance(let map, _)?: map
         default: [:]
         }
         /// `values`, the registers from x`first` on, without its trailing run

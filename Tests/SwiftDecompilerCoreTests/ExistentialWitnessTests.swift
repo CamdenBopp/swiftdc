@@ -21,7 +21,8 @@ private let existentialFixtures = [
         defer { dlclose(handle) }
         typealias Entry = @convention(c) () -> Int
         for (name, expected) in [("existential_witness_measure", 9), ("existential_witness_grow", 12),
-                                 ("existential_witness_name", 5), ("existential_witness_name_then", 7)] {
+                                 ("existential_witness_name", 5), ("existential_witness_name_then", 7),
+                                 ("existential_witness_lookup", 15)] {
             let entry = try #require(dlsym(handle, name))
             #expect(unsafeBitCast(entry, to: Entry.self)() == expected, "\(path): \(name)")
         }
@@ -62,6 +63,10 @@ private let existentialFixtures = [
         for text in try views("callName") { #expect(text.contains("return \(name)"), "\(path): \(text)") }
         for text in try views("callNameThen") {
             #expect(text.contains(name) && text.contains(" + arg1)"), "\(path): \(text)")
+        }
+        // A method's: self in x20, the object and table in x0 and x1.
+        for text in try views("Registry.lookup") {
+            #expect(text.contains(name) && text.contains("self.base"), "\(path): \(text)")
         }
     }
 }

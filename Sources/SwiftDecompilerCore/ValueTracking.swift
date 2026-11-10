@@ -350,7 +350,7 @@ public enum MethodEntryConvention: Sendable, Equatable {
     /// (register key → source argument index — integers in x0…, floats in v0…).
     /// The map is empty when any parameter isn't provably single-register (they
     /// are left unseeded rather than mislabeled).
-    case swiftInstance(scalarArguments: [String: Int])
+    case swiftInstance(scalarArguments: [String: Int], existentialTables: [String: Int] = [:])
     /// Objective-C class or instance method: `self` is x0, `_cmd` is x1, and
     /// explicit selector arguments begin in x2.
     case objectiveC(argumentCount: Int, scalarArguments: [String: Int]? = nil)
@@ -1087,12 +1087,15 @@ public struct ValueTracer: Sendable {
         // `AbstractValue.indirectResultPointer`.
         var state: State = [.sp: .frame(0), .x(8): .indirectResultPointer]
         switch entry {
-        case .swiftInstance(let scalarArguments):
+        case .swiftInstance(let scalarArguments, let existentialTables):
             state[.x(20)] = .selfPointer
             // Parameters occupy x0…/v0… independently of the `self` register
             // (x20), so an instance method's scalar arguments are seeded the same
             // way a free function's are.
             for (register, argument) in scalarArguments { if let location = Location(key: register) { state[location] = .argument(argument) } }
+            for (register, argument) in existentialTables {
+                if let location = Location(key: register) { state[location] = .existentialWitnessTable(argument: argument) }
+            }
         case .objectiveC(let argumentCount, let typed), .objectiveCInitializer(let argumentCount, let typed):
             state[.x(0)] = .selfPointer
             // Metadata-typed locations: integer arguments in x2…, floating-point
