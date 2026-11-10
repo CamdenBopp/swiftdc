@@ -1436,3 +1436,45 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
         "merged function signature specialization <Arg[1] = Dead> of M.T.x.getter : Swift.Int"))
     #expect(!Disassembler.signatureSpecializationRewritesSelf("generic specialization <Swift.Int> of M.T.f(Swift.Int) -> ()"))
 }
+
+/// A no-payload enum held by address reads its tag through x20: a resilient
+/// enum's members and any enum's witnesses. x20 unseeded, the compares and
+/// the `csel`s built on them were unknown. Seeded, the tag is `self`, and it
+/// compares with the case it spells at every optimization level, and -O and
+/// -Osize's `csel` pairs are a String pick. A frozen
+/// enum's x20 and a payload enum's first byte are neither, and neither is
+/// x20 in a static witness, an initializer or a closure
+/// (resilientself.swift, resilient_self.s).
+@Test func aResilientEnumsSelfIsItsTagIfPresent() async throws {
+    for level in ["Onone", "O", "Osize"] {
+        let path = "Fixtures/Sample/libResilientSelf.\(level).dylib"
+        guard FileManager.default.fileExists(atPath: path) else { return }
+        let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+        func text(_ name: String) throws -> String {
+            try #require(functions.first { $0.displayName.hasPrefix(name) }, "\(level) \(name)").renderStructured()
+        }
+        let alpha = "(self == ResilientSelf.Mode.alpha)"
+        let beta = "(self == ResilientSelf.Mode.beta)"
+        let label = try text("ResilientSelf.Mode.label.getter")
+        let isAlpha = try text("ResilientSelf.Mode.isAlpha.getter")
+        #expect(isAlpha.contains("return \(alpha)"), "\(level): \(isAlpha)")
+        if level == "Onone" {
+            // A branch per case and a String joined in a frame slot: no pick.
+            #expect(label.contains("return ?"), "\(level): \(label)")
+        } else {
+            #expect(label.contains("return (\(alpha) ? \"first\" : (\(beta) ? \"second\" : \"third\"))"), "\(level): \(label)")
+        }
+        let witness = try text("protocol witness for ResilientSelf.Kind.peek")
+        #expect(witness.contains("return (self & 0xffffffff)"), "\(level): \(witness)")
+        let rank = try text("ResilientSelf.Mode.rank(")
+        #expect(rank.contains("self") && rank.contains("arg0"), "\(level): \(rank)")
+        let none = try text("ResilientSelf.Payload.isNone.getter")
+        #expect(!none.contains("self"), "\(level): \(none)")
+        for name in ["protocol witness for static ResilientSelf.Kind.make", "protocol witness for ResilientSelf.Kind.init(seed",
+                     "ResilientSelf.Asm.init(tag", "closure #1 () -> Swift.Int in ResilientSelf.Asm.boxed", "ResilientSelf.Fixed.peek(",
+                     "ResilientSelf.Asm.overwrite(", "ResilientSelf.Asm.jump("] {
+            let body = try text(name)
+            #expect(!body.contains("self"), "\(level) \(name): \(body)")
+        }
+    }
+}

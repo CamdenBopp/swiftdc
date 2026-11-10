@@ -9569,12 +9569,12 @@ outcomes, 513 void, 440 no-signature, 248 `unknown`, 179
 from each event's function in a plain listing (a type-and-shape
 heuristic, so the bins are approximate):
 
-- **FIXED (4e3efb9) — a String return was never read from its two
+- **FIXED (completeness) — a String return was never read from its two
   words.** 37 of the 248 `unknown`. A literal, a String call's whole
   result or a String field of self is now the return. After: unknown
   248 -> 241, recovered 39 -> 46; over all four swift-syntax dylibs,
   unknown 972 -> 933, recovered 100 -> 139. Fixture `stringreturns.swift`.
-- **FIXED (6f7d865) — two selects on one condition were never
+- **FIXED (completeness) — two selects on one condition were never
   paired into one String.** A String whose x0 and x1 are selects on the
   same condition is now the ternary of the two Strings each side's words
   spell, nested for a chain: `return (arg0 ? "yes" : "no")`. Selects on
@@ -9601,19 +9601,36 @@ heuristic, so the bins are approximate):
   `makeMissing(self: sub_85a0(?), …)`. Self is the parameter after the
   formals, so an `Arg[n]` at or past their count now declines the label.
   Fixtures `tfself.swift`, `tf_self.s`.
-- **OPEN — a resilient value type's self is not seeded through x20.** The
-  30 String returns left in the plugin library are CodingKey
-  `stringValue` and enum `rawValue` getters of types in a
-  library-evolution module. Their self is passed indirectly, `ldrb w8,
-  [x20]` reads the case tag, and the tracer does not know x20 there, so
-  the compares, their `csel` chains and the branch conditions are all
-  unknown (`b.le` with no `cond:` note). The pairing above applies once
-  that tag is known. One-register scalars that join at a block (23,
-  `mov w0, #0` / `mov w0, #1` before a shared `ret`) are a separate
-  cause: a join of more than two predecessors, which the tracer's
-  diamond merge does not model.
-- **FIXED ("Forward a throwing call's outcome as return try", the commit
-  after 6f7d865) — a `ret` straight after a throwing call was an
+- **FIXED (completeness) — a no-payload enum held by address had no self.**
+  A resilient enum's members and an enum's witnesses take self through
+  x20 (`ldrb w8, [x20]`), which was unseeded, so the tag and the compares
+  and `csel`s on it were unknown. x20 is now self where the name is an
+  instance member or instance witness of a no-payload enum the image
+  lists, and the body loads through x20 before writing it; a frozen
+  enum's self in x0 stays as it was. The tag renders `self` and compares
+  by case: `return ((self == Mode.alpha) ? "first" : …)`. Checked at
+  -Onone, -O and -Osize: all three compare, and -O and -Osize's `csel`
+  pairs are a String pick. Plugin library: unknown 241 -> 237, recovered
+  46 -> 50; four dylibs: 933 -> 926, 139 -> 146. Fixtures
+  `resilientself.swift`, `resilient_self.s`.
+- **OPEN — what the enum seed does not reach.**
+  - A private enum (`CodingKeys`, most of the 26 String returns left in
+    the plugin library) has an anonymous parent context, so
+    `FieldMapBuilder.qualifiedName` gives it no key and `EnumCaseIndex`
+    cannot prove it has no payload. An anonymous context carries a mangled
+    name, which is the place to start.
+  - -Onone's `label` stays `return ?`: a branch per case, the literal
+    joined in a frame slot, and `cbz w8` left to the text path, which
+    prints `w8`.
+  - A word-sized use of the tag still shows its mask, `(self &
+    0xffffffff)`, and a signed compare its sign extension, `(((self &
+    0xffffffff) << 32) >>ˢ 32) > 7`. A String's two words passed or stored
+    as selects render as raw words, not through the pick.
+  - One-register scalars that join at a block (23, `mov w0, #0` / `mov
+    w0, #1` before a shared `ret`) are a separate cause: a join of more
+    than two predecessors, which the tracer's diamond merge does not
+    model.
+- **FIXED (completeness) — a `ret` straight after a throwing call was an
   unresolved exit.** `unsupported-layout-or-value` is all throwing
   functions whose normal exit is not proven (179 of 179 in the plugin
   library), and 119 of them `ret` straight after a throwing call, mostly

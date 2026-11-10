@@ -1892,7 +1892,8 @@ public struct Disassembler: Sendable {
             symbolEntry
         } else if let valueSelf {
             .swiftValueInstance(seededRegisters: valueSelf.seeded)
-        } else if classSelfTypeName != nil {
+        } else if classSelfTypeName != nil || (!isResumeFunclet && symbolEntry == nil
+                    && Self.swiftEnumSelfType(of: function, enumCaseIndex: context.enumCaseIndex) != nil) {
             .swiftInstance(scalarArguments: Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps) ?? [:])
         } else if let scalarArgs = Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps) {
             {
@@ -4781,6 +4782,45 @@ public struct Disassembler: Sendable {
         return fromSymbol
     }
 
+    /// The no-payload enum an instance member or witness holds by address in
+    /// x20, or nil. A resilient enum's members and every witness of a
+    /// non-class protocol take self `@in_guaranteed`, and the swiftself
+    /// register carries that address; a frozen or private enum's own members
+    /// take the tag in x0 and leave x20 alone. The name cannot tell those
+    /// apart, so the body must: x20 read as a load's base before anything
+    /// writes it, in the straight line from the entry. x20 holds nothing else
+    /// a Swift function dereferences on entry here. A static requirement and
+    /// an initializer have a metatype there, and a closure its context; the
+    /// name excludes those. Of a no-payload enum the byte at self is its tag,
+    /// the case index `EnumCaseIndex` names. A private enum has no qualified
+    /// name there (its parent is an anonymous context) and is declined.
+    static func swiftEnumSelfType(of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex) -> String? {
+        guard function.objcMethod == nil, let name = function.analysisName, isSwiftMangled(function.symbol)
+        else { return nil }
+        let type: String
+        if name.hasPrefix("protocol witness for ") {
+            guard !name.hasPrefix("protocol witness for static "),
+                  let conformance = name.range(of: " in conformance "),
+                  !name[..<conformance.lowerBound].contains(".init("),
+                  let colon = name[conformance.upperBound...].range(of: " : ")
+            else { return nil }
+            type = String(name[conformance.upperBound ..< colon.lowerBound])
+        } else {
+            guard let qualified = qualifiedSelfTypeFromDemangledName(name) else { return nil }
+            type = qualified
+        }
+        guard enumCaseIndex.isNoPayloadEnum(type) else { return nil }
+        for insn in function.instructions {
+            guard (insn.controlFlow ?? .sequential) == .sequential, let detail = insn.detail else { return nil }
+            if insn.text.hasPrefix("ld"), detail.operands.contains(where: { info in
+                if case .memory(let base?, _, _) = info.operand { return base.key == "x20" }
+                return false
+            }) { return type }
+            if detail.writtenRegisterKeys.contains("x20") { return nil }
+        }
+        return nil
+    }
+
     /// Strip a trailing `(…)` argument list.
     ///
     /// Matched from the end, for two reasons. A tuple argument
@@ -7394,6 +7434,11 @@ public struct Disassembler: Sendable {
             return function.replacingInstructions(instructions).retainingCFG(cfg)
         }
 
+        // The no-payload enum self is, when x20 holds its address.
+        let selfEnumType: String? = if case .swiftInstance? = entry {
+            Self.swiftEnumSelfType(of: function, enumCaseIndex: enumCaseIndex)
+        } else { nil }
+
         // Facts of the function's own signature, read once rather than at
         // every instruction: each parses the demangled name, and the return
         // register walks the CFG.
@@ -8398,6 +8443,8 @@ public struct Disassembler: Sendable {
             switch value {
             case .argument(let index):
                 return argumentEnumTypes[index]
+            case .selfFieldValue(offset: 0) where selfEnumType != nil:
+                return selfEnumType
             case .binary(.bitAnd, let inner, .immediate(let mask))
                 where mask == 0xFF || mask == 0xFFFF || mask == 0xFFFF_FFFF:
                 return enumArgumentType(of: inner)
@@ -8797,6 +8844,9 @@ public struct Disassembler: Sendable {
                     return "&self+0x\(String(offset, radix: 16))"
                 }
                 return "&\(fieldPath(name))"
+            case .selfFieldValue(offset: 0) where selfEnumType != nil:
+                // The tag of a no-payload enum is the value itself.
+                return "self"
             case .selfFieldValue(let offset):
                 // Part of a field is not the field: a four-byte read at
                 // `fCurPos + 80` rendered `self->fCurPos`. Every such value
