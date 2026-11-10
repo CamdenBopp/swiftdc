@@ -11803,3 +11803,18 @@ Commit messages on dev stay as they are; these are the true records.
   `codeSections` is empty for such an image, so a path that misses the check
   declines rather than decodes. `arm64_32` counts as not arm64: it decodes,
   but every analysis assumes 64-bit pointers; no fixture has one.
+
+## 2026-11-04: input shapes
+- **FIXED (soundness) — relocations in `.o` files were ignored.** `disasm
+  c1.o` printed `bl _printf ; args(sub_0)`, `xrefs` a callee `0x30 sub_30`,
+  and a function at offset 0 two symbols "folded by identical code folding".
+  A valid Swift object failed as `Malformed Mach-O: … __objc_classlist[0]
+  points at 0x0` while the C object was accepted (D2). Metadata in an object
+  is relocated too, so the refusal covers every command: `MH_OBJECT` reads
+  `Relocatable object: … is not linked`, thin or in a universal file, before
+  the section checks. A relocation pass stays out of scope; the message names
+  `llvm-objdump -d -r`, which applies them. `dump` on a C object used to say
+  there was no metadata and now refuses like the rest.
+  An object whose sections list no relocation has nothing unresolved and is
+  read as it stands (`MachOPreflight.mayHoldRelocations`); the tests'
+  hand-built images are such objects.

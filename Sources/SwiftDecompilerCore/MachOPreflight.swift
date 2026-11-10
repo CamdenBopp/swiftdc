@@ -169,6 +169,42 @@ public enum MachOPreflight {
         )
     }
 
+    /// Whether an object's sections may list relocations: any section's
+    /// `nreloc` is nonzero, or its load commands cannot all be read (a
+    /// big-endian or truncated header counts as holding them).
+    static func mayHoldRelocations(prefix: Data) -> Bool {
+        guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE || magic == Magic.machO32LE,
+              let ncmds = prefix.u32(at: 16) else { return true }
+        let commands = loadCommands(prefix: prefix)
+        guard commands.count == Int(ncmds) else { return true }
+        let is64 = magic == Magic.machO64LE
+        // segment_command(_64): nsects at 64 (48); sections follow at 72 (56),
+        // 80 (68) bytes each, with nreloc at 60 (52).
+        let segment: UInt32 = is64 ? 0x19 : 0x1
+        let nsectsAt = is64 ? 64 : 48, sectionsAt = is64 ? 72 : 56
+        let sectionSize = is64 ? 80 : 68, nrelocAt = is64 ? 60 : 52
+        for command in commands where command.cmd == segment {
+            guard let nsects = prefix.u32(at: command.offset + nsectsAt) else { return true }
+            for index in 0..<Int(nsects) {
+                guard let nreloc = prefix.u32(at: command.offset + sectionsAt + index * sectionSize + nrelocAt)
+                else { return true }
+                if nreloc != 0 { return true }
+            }
+        }
+        return false
+    }
+
+    /// Whether a thin image's header says `MH_OBJECT`.
+    static func isRelocatableObject(prefix: Data) -> Bool {
+        guard let magic = prefix.u32(at: 0) else { return false }
+        let object: UInt32 = 0x1
+        switch magic {
+        case Magic.machO64LE, Magic.machO32LE: return prefix.u32(at: 12) == object
+        case Magic.machO64BE, Magic.machO32BE: return prefix.u32(at: 12, bigEndian: true) == object
+        default: return false
+        }
+    }
+
     /// One image's bytes: the whole file for a thin image, or one fat slice.
     /// Offsets are relative to the image, as its load commands give them, and
     /// a read that would leave the image returns nil.
@@ -190,6 +226,18 @@ public enum MachOPreflight {
     /// start `prefix`.
     static func validateImageContents(prefix: Data, image: ImageReader, path: String) throws {
         let fileSize = image.size
+        // An object's branches, pointers and metadata references hold nothing
+        // until the linker applies its relocations, and swiftdc applies none:
+        // `bl _printf` decoded as a call to offset 0, and a valid Swift
+        // object failed below as malformed for its `__objc_classlist[0]`
+        // of 0. One message, whatever the object holds. An object with no
+        // relocation left has nothing unresolved, and is read as it stands.
+        if isRelocatableObject(prefix: prefix), mayHoldRelocations(prefix: prefix) {
+            throw BinaryLoadError(
+                "Relocatable object: \(path) is not linked, so its calls, pointers and metadata references are "
+                + "unresolved and swiftdc does not read it. Link it first; `xcrun llvm-objdump -d -r --macho` lists its text."
+            )
+        }
         // FairPlay ciphertext is not a malformed image, and no reading of it
         // is true: decoded, it renders fabricated code (the corpus sweep
         // found 11 App Store binaries that exited 0 with only a warning), and

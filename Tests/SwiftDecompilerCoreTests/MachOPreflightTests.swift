@@ -1755,7 +1755,8 @@ private func loadPadded(_ header: Data, to size: Int) throws -> MachOFile {
 }
 
 @Test func aFileShorterThanACacheHeaderIsRefusedNotTrapped() throws {
-    let header = machHeader64(ncmds: 0, sizeofcmds: 0, filetype: 1)
+    // MH_DYLINKER: no segments required, and an object is refused for its own cause.
+    let header = machHeader64(ncmds: 0, sizeofcmds: 0, filetype: 7)
     for size in [32, 424, 567] {
         #expect(throws: BinaryLoadError.self) { _ = try loadPadded(header, to: size) }
     }
@@ -1773,4 +1774,10 @@ private func loadPadded(_ header: Data, to size: Int) throws -> MachOFile {
     await #expect(throws: BinaryLoadError.self) {
         _ = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     }
+}
+
+/// The same test on a short image that is not an object.
+@Test func aShortImageFailsOnItsLengthIfPresent() throws {
+    let header = machHeader64(ncmds: 0, sizeofcmds: 0, filetype: 7)
+    #expect { _ = try loadPadded(header, to: 424) } throws: { "\($0)".contains("shorter than a dyld shared cache header") }
 }

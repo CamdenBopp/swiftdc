@@ -293,4 +293,81 @@ struct InputShapeTests {
         #expect(result.status == 0, "\(result.stderr)")
         #expect(result.stdout.contains("sum4"), "\(result.stdout)")
     }
+
+    // MARK: - Relocatable objects
+
+    /// `disasm c1.o` printed `bl _printf ; args(sub_0)`, `xrefs` a callee
+    /// `0x30 sub_30`, and a function at offset 0 two folded symbols, because
+    /// nothing applied the relocations. A Swift object failed as "Malformed
+    /// Mach-O" while the C object was accepted. Every command, one message.
+    @Test func everyCommandRefusesAnObjectAlikeIfPresent() throws {
+        let objects = ["Fixtures/Sample/inputshape_c.o", "Fixtures/Sample/inputshape_swift.o"]
+        guard objects.allSatisfy(FileManager.default.fileExists(atPath:)) else { return }
+        for object in objects {
+            for reader in Self.readers + [["xrefs", "-f", "entry"], ["disasm", "-f", "entry"], ["objc", "--methods"]] {
+                guard let result = try run(command(reader, object)) else { return }
+                #expect(result.status == 1, "\(reader) \(object)")
+                #expect(result.stderr.contains("Relocatable object: "), "\(reader) \(object): \(result.stderr)")
+                #expect(!result.stderr.contains("Malformed"), "\(reader) \(object): \(result.stderr)")
+                #expect(result.stdout.isEmpty, "\(reader) \(object): \(result.stdout)")
+            }
+        }
+    }
+
+    /// A universal object: each slice is refused for the same cause.
+    @Test func aUniversalObjectIsRefusedAlikeIfPresent() throws {
+        let object = "Fixtures/Sample/inputshape_c.o"
+        guard let bytes = FileManager.default.contents(atPath: object) else { return }
+        // `fat_header`, one `fat_arch` for arm64, the object at offset 4096.
+        var fat = Data()
+        for word in [0xcafe_babe, 1, 0x0100_000c, 0, 4096, UInt32(bytes.count), 12] as [UInt32] {
+            withUnsafeBytes(of: word.bigEndian) { fat.append(contentsOf: $0) }
+        }
+        fat.append(Data(count: 4096 - fat.count))
+        fat.append(bytes)
+        let directory = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("fat.o")
+        try fat.write(to: path)
+        #expect { _ = try BinaryLoader.load(path: path.path, architecture: "arm64") } throws: {
+            "\($0)".contains("Relocatable object: ")
+        }
+    }
+
+    /// The header test on all four magic spellings, and only `MH_OBJECT`.
+    @Test func anObjectIsKnownByItsHeader() {
+        func header(_ magic: UInt32, filetype: UInt32, bigEndian: Bool) -> Data {
+            var data = Data()
+            for word in [magic, 0, 0, filetype] {
+                withUnsafeBytes(of: bigEndian ? word.bigEndian : word.littleEndian) { data.append(contentsOf: $0) }
+            }
+            return data
+        }
+        for magic in [0xfeed_facf, 0xfeed_face] as [UInt32] {
+            #expect(MachOPreflight.isRelocatableObject(prefix: header(magic, filetype: 1, bigEndian: false)))
+            #expect(MachOPreflight.isRelocatableObject(prefix: header(magic, filetype: 1, bigEndian: true)))
+            #expect(!MachOPreflight.isRelocatableObject(prefix: header(magic, filetype: 6, bigEndian: false)))
+            #expect(!MachOPreflight.isRelocatableObject(prefix: header(magic, filetype: 6, bigEndian: true)))
+        }
+        #expect(!MachOPreflight.isRelocatableObject(prefix: header(0xcafe_babe, filetype: 1, bigEndian: false)))
+    }
+
+    /// An object is refused only for relocations it may hold: one section
+    /// listing any, or load commands that cannot all be read. A relocation-free
+    /// object (the tests' hand-built images) has nothing unresolved.
+    @Test func anObjectIsRefusedOnlyForItsRelocations() {
+        func object(nreloc: [UInt32], ncmds: UInt32? = nil, truncate: Int = 0) -> Data {
+            var words: [UInt32] = [0xfeed_facf, 0x0100_000c, 0, 1, ncmds ?? 1, 72 + 80 * UInt32(nreloc.count), 0, 0]
+            words += [0x19, 72 + 80 * UInt32(nreloc.count)] + Array(repeating: 0, count: 14) + [UInt32(nreloc.count), 0]
+            for count in nreloc { words += Array(repeating: 0, count: 15) + [count] + Array(repeating: 0, count: 4) }
+            var data = Data()
+            for word in words { withUnsafeBytes(of: word.littleEndian) { data.append(contentsOf: $0) } }
+            return data.dropLast(truncate)
+        }
+        #expect(!MachOPreflight.mayHoldRelocations(prefix: object(nreloc: [])))
+        #expect(!MachOPreflight.mayHoldRelocations(prefix: object(nreloc: [0, 0])))
+        #expect(MachOPreflight.mayHoldRelocations(prefix: object(nreloc: [0, 2])))
+        #expect(MachOPreflight.mayHoldRelocations(prefix: object(nreloc: [0], truncate: 24)))
+        #expect(MachOPreflight.mayHoldRelocations(prefix: object(nreloc: [], ncmds: 2)))
+    }
 }
