@@ -194,3 +194,40 @@ private let stackLifetimeFixture = "Fixtures/Sample/libStackLifetime.dylib"
     #expect(pointer.load(at: -24) == .unknown)
     #expect(pointer.stackAddressEscaped)
 }
+
+/// Edge refinement: a block spills a loaded word to [sp, #8] and tests it
+/// with `cbz`; on the zero edge the slot holds zero too, so its reload passes
+/// 0 (`stack_lifetime.s`, `_stack_lifetime_edge_*`). Each control breaks the
+/// identity between the spill and the branch (an unknown store to the slot,
+/// a byte store inside it, a write of the register, a store of unknown
+/// extent through its address), tests the other edge or only the low half,
+/// and reads no 0 from the slot. The -Onone `try` exit is the same shape:
+/// `Reconstruction.typedForward` reloads x21 from its spill on the zero edge.
+@Test func aSpilledRegisterTestedZeroLeavesItsSlotZeroIfPresent() async throws {
+    guard FileManager.default.fileExists(atPath: stackLifetimeFixture) else { return }
+    let library = try #require(dlopen(stackLifetimeFixture, RTLD_NOW | RTLD_LOCAL))
+    defer { dlclose(library) }
+    typealias Edge = @convention(c) (UnsafeMutablePointer<Int64>) -> Int64
+    let spilled = unsafeBitCast(try #require(dlsym(library, "stack_lifetime_edge_spilled")), to: Edge.self)
+    var word: Int64 = 0
+    #expect(spilled(&word) == 1)
+    word = 5
+    #expect(spilled(&word) == 10)
+    typealias Escaped = @convention(c) (UnsafeMutablePointer<Int64>, Int64, Int64) -> Int64
+    let escaped = unsafeBitCast(try #require(dlsym(library, "stack_lifetime_edge_escaped")), to: Escaped.self)
+    word = 0
+    #expect(escaped(&word, 0, 41) == 42)
+    let lowHalf = unsafeBitCast(try #require(dlsym(library, "stack_lifetime_edge_lowhalf")), to: Edge.self)
+    word = 1 << 32
+    #expect(lowHalf(&word) == 1 << 32 + 1)
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: stackLifetimeFixture) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName == "_stack_lifetime_edge_\(name)" }, "no \(name)").renderStructured()
+    }
+    let refined = try text("spilled")
+    #expect(refined.contains("stack_lifetime_take(0)"), Comment(rawValue: refined))
+    for name in ["overwritten", "narrowed", "rewritten", "nonzero", "escaped", "lowhalf"] {
+        let control = try text(name)
+        #expect(!control.contains("stack_lifetime_take(0)"), Comment(rawValue: "\(name): \(control)"))
+    }
+}

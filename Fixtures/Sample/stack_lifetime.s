@@ -856,6 +856,157 @@ _$s13StackLifetime19reuseProbedRebasedPyS2iF:
   add sp, sp, #48
   ret
 
+// Edge refinement: a block spills a loaded word (`ldr x0, [x0]`, which
+// nothing else names) to [sp, #8] and tests it with cbz. On the zero edge
+// the slot holds zero too, so the reload passes 0. Each control
+// breaks the identity between the spill and the branch (an unknown store to
+// the slot, a byte store inside it, a write of the register, a store of
+// unknown extent through its address), tests the other edge, or tests only
+// the low half (`cbz w0`), and must not read 0 from the slot.
+.globl _stack_lifetime_edge_spilled
+_stack_lifetime_edge_spilled:
+  sub sp, sp, #32
+  stp x29, x30, [sp, #16]
+  add x29, sp, #16
+  ldr x0, [x0]
+  str x0, [sp, #8]
+  cbz x0, 1f
+  mov x0, #9
+  bl _stack_lifetime_take
+  b 2f
+1:
+  ldr x0, [sp, #8]
+  bl _stack_lifetime_take
+2:
+  ldp x29, x30, [sp, #16]
+  add sp, sp, #32
+  ret
+
+.globl _stack_lifetime_edge_overwritten
+_stack_lifetime_edge_overwritten:
+  sub sp, sp, #32
+  stp x29, x30, [sp, #16]
+  add x29, sp, #16
+  ldr x0, [x0]
+  str x0, [sp, #8]
+  str x1, [sp, #8]
+  cbz x0, 1f
+  mov x0, #9
+  bl _stack_lifetime_take
+  b 2f
+1:
+  ldr x0, [sp, #8]
+  bl _stack_lifetime_take
+2:
+  ldp x29, x30, [sp, #16]
+  add sp, sp, #32
+  ret
+
+.globl _stack_lifetime_edge_narrowed
+_stack_lifetime_edge_narrowed:
+  sub sp, sp, #32
+  stp x29, x30, [sp, #16]
+  add x29, sp, #16
+  ldr x0, [x0]
+  str x0, [sp, #8]
+  strb w1, [sp, #9]
+  cbz x0, 1f
+  mov x0, #9
+  bl _stack_lifetime_take
+  b 2f
+1:
+  ldr x0, [sp, #8]
+  bl _stack_lifetime_take
+2:
+  ldp x29, x30, [sp, #16]
+  add sp, sp, #32
+  ret
+
+.globl _stack_lifetime_edge_rewritten
+_stack_lifetime_edge_rewritten:
+  sub sp, sp, #32
+  stp x29, x30, [sp, #16]
+  add x29, sp, #16
+  ldr x0, [x0]
+  str x0, [sp, #8]
+  sub x0, x0, #1
+  cbz x0, 1f
+  mov x0, #9
+  bl _stack_lifetime_take
+  b 2f
+1:
+  ldr x0, [sp, #8]
+  bl _stack_lifetime_take
+2:
+  ldp x29, x30, [sp, #16]
+  add sp, sp, #32
+  ret
+
+.globl _stack_lifetime_edge_nonzero
+_stack_lifetime_edge_nonzero:
+  sub sp, sp, #32
+  stp x29, x30, [sp, #16]
+  add x29, sp, #16
+  ldr x0, [x0]
+  str x0, [sp, #8]
+  cbnz x0, 1f
+  mov x0, #9
+  bl _stack_lifetime_take
+  b 2f
+1:
+  ldr x0, [sp, #8]
+  bl _stack_lifetime_take
+2:
+  ldp x29, x30, [sp, #16]
+  add sp, sp, #32
+  ret
+
+.globl _stack_lifetime_edge_escaped
+_stack_lifetime_edge_escaped:
+  sub sp, sp, #32
+  stp x29, x30, [sp, #16]
+  add x29, sp, #16
+  ldr x0, [x0]
+  str x0, [sp, #8]
+  add x9, sp, #8
+  str x2, [x9, x1]
+  cbz x0, 1f
+  mov x0, #9
+  bl _stack_lifetime_take
+  b 2f
+1:
+  ldr x0, [sp, #8]
+  bl _stack_lifetime_take
+2:
+  ldp x29, x30, [sp, #16]
+  add sp, sp, #32
+  ret
+
+.globl _stack_lifetime_edge_lowhalf
+_stack_lifetime_edge_lowhalf:
+  sub sp, sp, #32
+  stp x29, x30, [sp, #16]
+  add x29, sp, #16
+  ldr x0, [x0]
+  str x0, [sp, #8]
+  cbz w0, 1f
+  mov x0, #9
+  bl _stack_lifetime_take
+  b 2f
+1:
+  ldr x0, [sp, #8]
+  bl _stack_lifetime_take
+2:
+  ldp x29, x30, [sp, #16]
+  add sp, sp, #32
+  ret
+
+// Reads x0, so a call to it renders its argument.
+.globl _stack_lifetime_take
+_stack_lifetime_take:
+  add x0, x0, #1
+  ret
+
 // Two spilled probed allocations: the first leaves a dynamic-allocation
 // marker, which is no escape, so the second spill keeps its proof too.
 // Native: 7.

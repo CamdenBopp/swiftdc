@@ -409,7 +409,13 @@ fix, measured and explained like any other.
 5. **Value identity and edge refinement.** Recovers declined exits such as the
    -Onone `try` shape and gives conditions and loop variables stable names.
 
-   Design (2026-11-11, not started). The target is `Reconstruction.typedForward`
+   Landed (2026-11-11) in a narrower, block-local form: the spill and the
+   branch must be in one block, so the identity is proved by replaying that
+   block and needs no fact that outlives it; see PRODUCTION-READINESS.md.
+   The cross-block design below stays the plan for spills made before the
+   branch's block.
+
+   Design (2026-11-11). The target is `Reconstruction.typedForward`
    at -Onone: `bl typedPick; str x21, [sp, #0x18]; cbz x21, ok; …; ok: ldr x21,
    [sp, #0x18]; …; ret`. The source returns `r0 + 1` on that path; swiftdc
    renders `machine_return()` because the reload of x21 is unknown.

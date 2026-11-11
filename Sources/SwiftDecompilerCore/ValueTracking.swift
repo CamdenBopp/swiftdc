@@ -1248,6 +1248,10 @@ public struct ValueTracer: Sendable {
         var inState: [UInt64: State] = [:]
         var escapeMarkers: [UInt64: State] = [:]
         var outState: [UInt64: State] = [:]
+        // Per block that ends in `cbz`/`cbnz` on a register it spilled to an
+        // exact frame slot with nothing writing either since: the edge where
+        // that register is zero, on which the slot is zero too.
+        var zeroEdges: [UInt64: ZeroEdge] = [:]
         var worklist = blocks.map(\.startAddress)
         var queued = Set(worklist)
         var iterations = 0
@@ -1278,7 +1282,9 @@ public struct ValueTracer: Sendable {
             // back edges, it lost its arguments and self.
             var incoming: [State] = []
             if reached.contains(addr) {
-                incoming = preds.compactMap { outState[$0] }
+                incoming = preds.compactMap { pred in
+                    outState[pred].map { Self.refined($0, along: zeroEdges[pred], to: addr) }
+                }
                 if addr == function.startAddress { incoming.append(Self.initialState(entry: entry, asyncContextSlots: asyncContextSlots)) }
                 // None of its predecessors has run: not reached yet, so its
                 // entry is unconstrained, not empty. Run from nothing, it
@@ -1297,12 +1303,24 @@ public struct ValueTracer: Sendable {
             heldFacts += blockEntry.count - (inState[addr]?.count ?? 0)
             inState[addr] = blockEntry
             var registers = blockEntry
+            var spills: [String: Int64] = [:]
             for insn in block.instructions {
+                spills = nextSpills(insn, after: spills, in: registers)
                 transfer(
                     insn, into: &registers, record: nil, recordAccess: nil,
                     initializerEntry: entry?.isObjectiveCInitializer == true,
                     facts: facts
                 )
+            }
+            let zeroEdge = Self.zeroEdge(of: block, spills: spills)
+            let edgeChanged = zeroEdges[addr] != zeroEdge
+            zeroEdges[addr] = zeroEdge
+            if edgeChanged, outState[addr] != nil {
+                for successor in block.successors
+                where blockByStart[successor] != nil && !queued.contains(successor) {
+                    worklist.append(successor)
+                    queued.insert(successor)
+                }
             }
             if !Self.sameFacts(outState[addr], registers) {
                 heldFacts += registers.count - (outState[addr]?.count ?? 0)
@@ -1328,7 +1346,7 @@ public struct ValueTracer: Sendable {
         resolveAcyclicSelects(
             blocks: blocks, entryAddress: function.startAddress, predecessors: predecessors,
             blockByStart: blockByStart, inState: &inState, outState: outState,
-            entry: entry, facts: facts
+            entry: entry, facts: facts, zeroEdges: zeroEdges
         )
         // Loop-carried induction variables: a header slot with a proven constant
         // initial value and a proven `i ± c` recurrence across the back-edge is
@@ -1442,7 +1460,9 @@ public struct ValueTracer: Sendable {
             let preds = predecessors[block.startAddress] ?? []
             guard preds.count > 1 else { continue }
             for predecessor in preds {
-                guard var registers = outState[predecessor],
+                guard var registers = outState[predecessor].map({
+                          Self.refined($0, along: zeroEdges[predecessor], to: block.startAddress)
+                      }),
                       let end = blockByStart[predecessor]?.instructions.last?.address else { continue }
                 for insn in block.instructions {
                     if insn.controlFlow == .return {
@@ -2724,7 +2744,8 @@ public struct ValueTracer: Sendable {
     private func resolveAcyclicSelects(
         blocks: [BasicBlock], entryAddress: UInt64, predecessors: [UInt64: [UInt64]],
         blockByStart: [UInt64: BasicBlock], inState: inout [UInt64: State],
-        outState: [UInt64: State], entry: MethodEntryConvention?, facts: FunctionFacts
+        outState: [UInt64: State], entry: MethodEntryConvention?, facts: FunctionFacts,
+        zeroEdges: [UInt64: ZeroEdge] = [:]
     ) {
         let rawInState = inState
         resolveDiamondSelects(blocks: blocks, entryAddress: entryAddress, predecessors: predecessors,
@@ -2741,7 +2762,10 @@ public struct ValueTracer: Sendable {
             while cursor < queue.count {
                 let address = queue[cursor]; cursor += 1
                 guard let block = blockByStart[address] else { continue }
-                var inputs = (predecessors[address] ?? []).compactMap { forwarded[$0] }
+                // The same edge-refined inputs as the fixpoint's meet.
+                var inputs = (predecessors[address] ?? []).compactMap { pred in
+                    forwarded[pred].map { Self.refined($0, along: zeroEdges[pred], to: address) }
+                }
                 if address == blocks.first?.startAddress { inputs.append(Self.initialState(entry: entry, asyncContextSlots: asyncContextSlots)) }
                 let prior = rawInState[address]
                 inState[address] = Self.meet(inputs)
@@ -6035,6 +6059,64 @@ public struct ValueTracer: Sendable {
     /// The depth at which a chain of probed allocations rebases sp, below
     /// the arithmetic depth limit an operand must stay under (8).
     private static let allocationChainDepth = 6
+
+    /// The zero edge of a block's closing `cbz`/`cbnz` (`ZeroEdge`).
+    struct ZeroEdge: Equatable {
+        let register: String
+        let slot: Int64
+        let successor: UInt64
+    }
+
+    /// The registers a block has spilled to exact frame slots as of `insn`,
+    /// register to slot: a plain 64-bit `str`/`stur` of a general register
+    /// adds one; a write of the register, a store that may overlap its slot,
+    /// a store of unknown extent, or a call ends it. Each slot's word is then
+    /// its register's, which edge refinement relies on. Read before `insn`'s
+    /// transfer, so its address is the one it stores to.
+    private func nextSpills(
+        _ insn: Instruction, after spills: [String: Int64], in registers: State
+    ) -> [String: Int64] {
+        guard let detail = insn.detail, insn.controlFlow != .call else { return [:] }
+        let written = detail.writtenRegisterKeys
+        var current = spills.filter { !written.contains($0.key) }
+        guard Self.mayWriteMemory(insn) else { return current }
+        guard !detail.writeback, !detail.postIndex,
+              case .stackSlot(let key)? = memoryTarget(detail, in: registers),
+              let start = Self.stackOffset(from: key), let bytes = Self.accessBytes(detail)
+        else { return [:] }
+        current = current.filter { _, slot in !(start < slot &+ 8 && slot < start &+ Int64(bytes)) }
+        if detail.id == AARCH64_INS_STR || detail.id == AARCH64_INS_STUR, bytes == 8,
+           let source = detail.operands.first?.operand.register, source.kind == .gpr, source.widthBits == 64 {
+            current[source.key] = start
+        }
+        return current
+    }
+
+    /// The edge on which a block's closing 64-bit `cbz`/`cbnz` finds
+    /// `register` zero: the target of a `cbz`, the fallthrough of a `cbnz`.
+    /// None when both edges reach the same block.
+    private static func zeroEdge(of block: BasicBlock, spills: [String: Int64]) -> ZeroEdge? {
+        guard let last = block.instructions.last, let detail = last.detail,
+              detail.id == AARCH64_INS_CBZ || detail.id == AARCH64_INS_CBNZ,
+              let tested = detail.operands.first?.operand.register, tested.kind == .gpr,
+              tested.widthBits == 64, let slot = spills[tested.key], let target = last.branchTarget
+        else { return nil }
+        let register = tested.key
+        let next = last.address &+ 4
+        guard target != next else { return nil }
+        return ZeroEdge(register: register, slot: slot,
+                        successor: detail.id == AARCH64_INS_CBZ ? target : next)
+    }
+
+    /// A predecessor's state along one edge: on its zero edge, the tested
+    /// register and the slot it was spilled to are both zero.
+    private static func refined(_ state: State, along edge: ZeroEdge?, to successor: UInt64) -> State {
+        guard let edge, edge.successor == successor, let register = Location(key: edge.register) else { return state }
+        var refined = state
+        refined[register] = .immediate(0)
+        refined[.stack(edge.slot)] = .immediate(0)
+        return refined
+    }
 
     /// `(n + 15) & ~15` as the tracer spells it.
     private static func roundedTo16(_ value: AbstractValue) -> AbstractValue {

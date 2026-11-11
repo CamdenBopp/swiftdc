@@ -202,6 +202,10 @@ private func statementsAfterThrow(_ body: String) -> [String] {
     guard let body = try await structured("Reconstruction.typedForward(", in: path) else { return }
     #expect(body.contains("throw ?"), "\(level): \(body)")
     #expect(!body.contains("& 255"), "\(level): \(body)")
+    // Its success exit reloads x21 from the spill `cbz x21` tested; on that
+    // zero edge the spill holds zero, so it is the source's `return r0 + 1`.
+    #expect(body.contains("return (r0 + 1)"), "\(level): \(body)")
+    #expect(!body.contains("machine_return()"), "\(level): \(body)")
 }
 
 @Test func aMergedExitIsNotClassifiedAsAThrowIfPresent() async throws {

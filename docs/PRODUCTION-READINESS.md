@@ -5112,12 +5112,25 @@ if a test was observed to fail without the fix.
   the opaque-branch declines and the async x20 proof (caught by
   `asyncThrowsRenderAsThrows`). Enforcing suite: 688 tests in 11 suites.
 
-- **OPEN — the -Onone `try` exit declines.** `Reconstruction.typedForward`
-  at -Onone (and resilient) spills the callee's x21, tests it with `cbz`,
-  and on the zero edge reloads x21 from the spill. Proving the reload zero
-  needs "this slot holds the value that was tested", which no analysis can
-  say. It renders `machine_return()` where the source returns `r0 + 1`.
-  Needs value identity with edge refinement ([IR.md](IR.md) step 5).
+- **FIXED (2026-11-11, completeness) — the -Onone `try` exit declined.**
+  `Reconstruction.typedForward` at -Onone (and resilient) spills the
+  callee's x21, tests it with `cbz`, and on the zero edge reloads x21 from
+  the spill; it rendered `machine_return()` where the source returns
+  `r0 + 1`. The tracer now proves "this slot holds the tested word" inside
+  the block that ends in the branch: replaying it, a plain 64-bit store of a
+  register to an exact frame slot records a spill, and a write of the
+  register, a store that may overlap the slot, a store of unknown extent or
+  a call ends it. On the zero edge of a closing 64-bit `cbz`/`cbnz` on a
+  spilled register, both the register and its slot are zero, in the
+  fixpoint's meet, the select pass's meet and the per-predecessor exit
+  replay alike. typedForward now renders `return (r0 + 1)`. Fixtures
+  `_stack_lifetime_edge_*` (one positive case and six controls). Against
+  d49207f: 6 files, 34 structured lines; TypedThrowsNever's throwing
+  specializations and wrappers now return on success (`y &+ 1`, `r0`) and
+  keep their error branch, and a Go `runtime.systemstack` call lists an x2
+  the zero edge proves 0. No return changed from one concrete value to
+  another; GoodLinks cfg.unresolved-indirect-call stays 10,849.
+  Instructions +1.41%.
 
 - **FIXED (the commit after 6cca3c4) — `throws(Never)` specializations
   declined.** Two generic specializations of `withUTF8CodeUnits` in
