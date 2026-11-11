@@ -48,6 +48,7 @@ private let stackLifetimeFixture = "Fixtures/Sample/libStackLifetime.dylib"
     // `***pp` is the size; `q` points at the same word.
     typealias Deep = @convention(c) (UnsafeMutableRawPointer, UnsafeMutablePointer<Int64>) -> Int64
     let deepSize = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime19reuseProbedDeepSizeyS2iF")), to: Deep.self)
+    let deepTwice = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime20reuseProbedDeepTwiceyS2iF")), to: Deep.self)
     let deepReload = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime15probeDeepReloadyS2i_SitF")), to: Deep.self)
     for bytes: Int64 in [0, 1, 16, 100] {
         let size = UnsafeMutablePointer<Int64>.allocate(capacity: 1)
@@ -57,6 +58,7 @@ private let stackLifetimeFixture = "Fixtures/Sample/libStackLifetime.dylib"
         inner.pointee = size; outer.pointee = inner
         size.pointee = bytes
         #expect(deepSize(UnsafeMutableRawPointer(outer), size) == 7)
+        #expect(deepTwice(UnsafeMutableRawPointer(outer), size) == 7)
         size.pointee = 16
         #expect(deepReload(UnsafeMutableRawPointer(outer), size) == 99)
     }
@@ -122,7 +124,8 @@ private let stackLifetimeFixture = "Fixtures/Sample/libStackLifetime.dylib"
                                  ("reuseProbed", 7), ("reuseProbedRaw", 7),
                                  ("reuseProbedTwice", 7), ("reuseProbedSpilled", 7), ("reuseProbedSpilledTwice", 7),
                                  ("reuseProbedSpilledEscaped", 7), ("reuseProbedChain", 7),
-                                 ("reuseProbedDeepSize", 7), ("reuseProbedPushed", 7)] {
+                                 ("reuseProbedDeepSize", 7), ("reuseProbedPushed", 7),
+                                 ("reuseProbedDeepTwice", 7)] {
             let function = try #require(group.first { $0.displayName.hasPrefix("StackLifetime.\(name)(") })
             for text in [function.renderPseudo(), function.renderStructured()] {
                 #expect(text.contains("return \(expected)"), Comment(rawValue: text))

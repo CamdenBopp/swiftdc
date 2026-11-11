@@ -2798,6 +2798,18 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   7). SpillWitness's `put` now names `initializeWithCopy value witness for A`,
   true of `table[k] = v`. GoodLinks cfg.unresolved-indirect-call 14,182 ->
   13,595.
+- **FIXED (2026-11-11, completeness): the summary did not report a chain's
+  later allocations to the tracer.** `provenAllocationSites` (10e0f62)
+  recorded an sp move only when sp's abstract value changed, but the second
+  allocation of a chain leaves sp `below(k)` with the same k (GoodLinks
+  0x100a9cc34 and 0x100a9cc64), so the tracer, which holds those sizes as
+  unknown, lost the chain there. Any instruction that writes sp now counts
+  as a move. Fixture reuseProbedDeepTwice (two allocations of a size three
+  loads deep, native 7, now `return 7`). Against 9b9f2bc: 5 files, 230
+  structured lines, 102 unresolved indirect calls resolved and none added;
+  no return changed from one concrete value to another. GoodLinks
+  cfg.unresolved-indirect-call 11,088 -> 10,899 (189 sites resolved, none
+  new); instructions +0.39%.
 - **FIXED (2026-11-11, correctness): the tracer did not converge where a
   frame word alternated between unknown and absent.** 2292132 compared
   numbered registers by facts but every slot literally, and the tracer

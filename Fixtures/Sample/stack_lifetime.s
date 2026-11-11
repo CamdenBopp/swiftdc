@@ -694,6 +694,51 @@ _$s13StackLifetime14probeStaleSizeyS2i_SitF:
   add sp, sp, #48
   ret
 
+// Two allocations of a size three loads deep. The summary proves both,
+// but sp stays `below(k)` across the second move, and a move whose
+// abstract value did not change went unreported to the tracer. Native: 7.
+.globl _$s13StackLifetime20reuseProbedDeepTwiceyS2iF
+_$s13StackLifetime20reuseProbedDeepTwiceyS2iF:
+  sub sp, sp, #48
+  stp x19, x20, [sp, #16]
+  stp x29, x30, [sp, #32]
+  add x29, sp, #32
+  mov x19, sp
+  mov x20, x0
+  mov x9, #7
+  str x9, [sp, #8]
+  ldr x8, [x20]
+  ldr x8, [x8]
+  ldr x8, [x8]
+  mov x9, x8
+  adrp x16, ___chkstk_darwin@GOTPAGE
+  ldr x16, [x16, ___chkstk_darwin@GOTPAGEOFF]
+  blr x16
+  add x8, x8, #15
+  and x8, x8, #0xfffffffffffffff0
+  mov x9, sp
+  sub x8, x9, x8
+  mov sp, x8
+  ldr x8, [x20]
+  ldr x8, [x8]
+  ldr x8, [x8]
+  mov x9, x8
+  adrp x16, ___chkstk_darwin@GOTPAGE
+  ldr x16, [x16, ___chkstk_darwin@GOTPAGEOFF]
+  blr x16
+  add x8, x8, #15
+  and x8, x8, #0xfffffffffffffff0
+  mov x9, sp
+  sub x8, x9, x8
+  mov sp, x8
+  bl _stack_lifetime_unproved
+  mov sp, x19
+  ldr x0, [sp, #8]
+  ldp x29, x30, [sp, #32]
+  ldp x19, x20, [sp, #16]
+  add sp, sp, #48
+  ret
+
 // Two spilled probed allocations: the first leaves a dynamic-allocation
 // marker, which is no escape, so the second spill keeps its proof too.
 // Native: 7.

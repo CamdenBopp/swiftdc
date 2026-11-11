@@ -1580,7 +1580,10 @@ enum Preservation {
                 }
                 let spBefore = state.value("sp")
                 apply(detail, site: insn.address, to: &state)
-                if let onStackMove, state.value("sp") != spBefore {
+                // A move whose value stays `below(k)` is a move too: the second
+                // allocation of a chain hangs below the same base as the first
+                // (`mov sp, x28` at GoodLinks 0x100a9cc34).
+                if let onStackMove, state.value("sp") != spBefore || detail.writtenRegisterKeys.contains("sp") {
                     var proven = false
                     if let base = state.probedBase, case .below(base) = state.value("sp") { proven = true }
                     onStackMove(insn.address, proven)
