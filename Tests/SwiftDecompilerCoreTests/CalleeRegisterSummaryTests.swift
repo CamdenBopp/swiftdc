@@ -793,6 +793,31 @@ private func callTarget(_ function: DisassembledFunction) throws -> UInt64 {
     var table: [UInt64: CalleeRegisterSummary] = [0x1000: pending]
     CalleeRegisterSummary.closeOverReads(&table)
     #expect(table[0x1000]?.provenAllocationSites == [0x1028], "\(String(describing: table[0x1000]?.provenAllocationSites))")
+    // The call closure's rebuild takes its sites from the rebuilt body: in
+    // place when nothing else changed, and with a changed summary too.
+    #expect(pending.callees.contains(0x3000))
+    let clobbering = CalleeRegisterSummary(argumentReads: [], clobberedCalleeSaved: ["x19"], definitelyClobbered: ["x19"])
+    // A summary the rebuild reproduces field for field takes the in-place
+    // path (one with result reads never does: those are set after the
+    // comparison).
+    var bare = CalleeRegisterSummary(argumentReads: [], clobberedCalleeSaved: [], definitelyClobbered: [], callees: [0x3000])
+    bare.provenAllocationSites = [0x1028]
+    var unchanged: [UInt64: CalleeRegisterSummary] = [0x1000: bare, 0x3000: clobbering]
+    CalleeRegisterSummary.closeOverCalls(&unchanged, rebuildingEntryRoles: false) { start, _, old, _ in
+        guard start == 0x1000 else { return old }
+        var rebuilt = old
+        rebuilt.provenAllocationSites = [0x1028, 0x1030]
+        return rebuilt
+    }
+    #expect(unchanged[0x1000]?.provenAllocationSites == [0x1028, 0x1030])
+    var changed: [UInt64: CalleeRegisterSummary] = [0x1000: pending, 0x3000: clobbering]
+    CalleeRegisterSummary.closeOverCalls(&changed) { start, _, old, _ in
+        guard start == 0x1000 else { return old }
+        var rebuilt = CalleeRegisterSummary(argumentReads: [], clobberedCalleeSaved: ["x20"], definitelyClobbered: ["x20"])
+        rebuilt.provenAllocationSites = [0x1030]
+        return rebuilt
+    }
+    #expect(changed[0x1000]?.provenAllocationSites == [0x1030])
     // The control: with the probe unrecognised, sp is unknown at the call.
     let unproven = try #require(CalleeRegisterSummary.of(try body(words, name: "unprobed")))
     #expect(unproven.clobberedCalleeSaved.isSuperset(of: ["x19", "x20", "x29"]), "\(unproven.clobberedCalleeSaved)")
