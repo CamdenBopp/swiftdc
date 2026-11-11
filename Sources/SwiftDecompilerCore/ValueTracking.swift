@@ -5904,7 +5904,12 @@ public struct ValueTracer: Sendable {
     /// drops it), and each allocation in its chain moved sp down from the
     /// last, so the callee stack starts below k.
     private static func probedAllocationBase(_ registers: State) -> Int64? {
-        guard var value = registers[.probedAllocation] else { return nil }
+        registers[.probedAllocation].flatMap(chainBase)
+    }
+
+    /// The frame offset under a chain of subtractions from it.
+    private static func chainBase(_ allocation: AbstractValue) -> Int64? {
+        var value = allocation
         while case .binary(.subtract, let inner, _) = value { value = inner }
         guard case .frame(let base) = value else { return nil }
         return base
@@ -5931,8 +5936,23 @@ public struct ValueTracer: Sendable {
               case .binary(.subtract, spBefore, let size)? = sp,
               size == probed || size == roundedTo16(probed) else { return }
         if case .frame = spBefore {} else if spBefore != previous { return }
-        registers[.probedAllocation] = sp
+        // Each allocation in a chain nests sp one subtraction deeper, and the
+        // arithmetic depth limit made the seventh unknown (GoodLinks
+        // 0x100858518 makes seven, one per keyed container). A deep chain
+        // is rebased to "some amount below its base", which names no size
+        // and keeps the base the proof needs.
+        var allocated = sp
+        if let current = sp, Self.expressionDepth(current) >= Self.allocationChainDepth,
+           let base = Self.chainBase(current) {
+            allocated = .binary(.subtract, .frame(base), .unknown)
+            registers[.sp] = allocated
+        }
+        registers[.probedAllocation] = allocated
     }
+
+    /// The depth at which a chain of probed allocations rebases sp, below
+    /// the arithmetic depth limit an operand must stay under (8).
+    private static let allocationChainDepth = 6
 
     /// `(n + 15) & ~15` as the tracer spells it.
     private static func roundedTo16(_ value: AbstractValue) -> AbstractValue {

@@ -2798,6 +2798,22 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   7). SpillWitness's `put` now names `initializeWithCopy value witness for A`,
   true of `table[k] = v`. GoodLinks cfg.unresolved-indirect-call 14,182 ->
   13,595.
+- **FIXED (2026-11-11, completeness): a chain of probed allocations lost
+  sp at its seventh link.** Each allocation nests sp one subtraction
+  deeper, and an operand at the arithmetic depth limit (8) made the next
+  value unknown: a synthesized Codable init makes one buffer per keyed
+  container, seven in GoodLinks 0x100858518, and every call after the
+  seventh forgot the frame (7 of the 19 sampled unknown-sp functions). A
+  proven allocation whose sp reaches depth 6 is rebased to `frame(base) -
+  ?`, which names no size and keeps the base the proof reads. Fixtures
+  reuseProbedChain (seven links, native 7, now `return 7`) and
+  probeChainStore (a store at the bottom of a rebased allocation may hit
+  the base word: still `return ?`). Against d1754ef: libStackLifetime and
+  the stripped libSwiftCompilerPluginMessageHandling, 476 structured lines;
+  158 unresolved indirect calls resolved there and none added (value
+  witnesses on `type metadata accessor for Swift.Optional(0, arg3)`), no
+  return changed from one concrete value to another. GoodLinks
+  cfg.unresolved-indirect-call 12,036 -> 11,273; instructions +0.24%.
 - **FIXED (2026-11-10, completeness): any escape ended the probe proof at
   the spill of the new sp.** 326a7ee let a store to an exact frame slot keep
   `___chkstk_darwin`'s proof only while no frame address had escaped at
