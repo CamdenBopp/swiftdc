@@ -739,6 +739,46 @@ _$s13StackLifetime20reuseProbedDeepTwiceyS2iF:
   add sp, sp, #48
   ret
 
+// A frame address left in x8 (the slot holding 7) is no input to a callee
+// that never reads x8: `_stack_lifetime_unproved` writes only below sp, so
+// the 7 survives. As a possible input it escaped and the 7 was forgotten.
+// Native: 7.
+.globl _$s13StackLifetime13reuseX8UnreadSiyF
+_$s13StackLifetime13reuseX8UnreadSiyF:
+  sub sp, sp, #32
+  stp x29, x30, [sp, #16]
+  add x29, sp, #16
+  mov x9, #7
+  str x9, [sp, #8]
+  add x8, sp, #8
+  bl _stack_lifetime_unproved
+  ldr x0, [sp, #8]
+  ldp x29, x30, [sp, #16]
+  add sp, sp, #32
+  ret
+
+// The control: a callee that reads x8 and stores through it. Native: 0.
+.globl _$s13StackLifetime14probeX8WrittenSiyF
+_$s13StackLifetime14probeX8WrittenSiyF:
+  sub sp, sp, #32
+  stp x29, x30, [sp, #16]
+  add x29, sp, #16
+  mov x9, #7
+  str x9, [sp, #8]
+  add x8, sp, #8
+  bl _stack_lifetime_writes_x8
+  ldr x0, [sp, #8]
+  ldp x29, x30, [sp, #16]
+  add sp, sp, #32
+  ret
+
+// Its load keeps the body's memory effect unproved, as for the others.
+.globl _stack_lifetime_writes_x8
+_stack_lifetime_writes_x8:
+  ldr x9, [sp]
+  str xzr, [x8]
+  ret
+
 // Two spilled probed allocations: the first leaves a dynamic-allocation
 // marker, which is no escape, so the second spill keeps its proof too.
 // Native: 7.

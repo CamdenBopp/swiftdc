@@ -27,6 +27,8 @@ struct CalleeRegisterFacts: Sendable {
     /// `CalleeRegisterSummary.provenAllocationSites`, for the function's own
     /// tracer.
     let provenAllocationSites: [UInt64]
+    /// `CalleeRegisterSummary.mayReadRegisters`.
+    let mayReadRegisters: UInt32
 
     var argumentCount: Int { (argumentReads.max() ?? -1) + 1 }
     var provenArgumentCount: Int { (provenArgumentReads.max() ?? -1) + 1 }
@@ -48,6 +50,7 @@ struct CalleeRegisterFacts: Sendable {
         writesNoFields = summary.writesNoFields
         memoryEffect = summary.memoryEffect
         provenAllocationSites = summary.provenAllocationSites
+        mayReadRegisters = summary.mayReadRegisters
     }
 
     /// The finished summaries: what analysis reads of each, and the results

@@ -2798,6 +2798,25 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   7). SpillWitness's `put` now names `initializeWithCopy value witness for A`,
   true of `table[k] = v`. GoodLinks cfg.unresolved-indirect-call 14,182 ->
   13,595.
+- **FIXED (2026-11-11, completeness): a call to an in-image function took
+  every register as an input.** Machine-outlined fragments take inputs in any
+  register, so the summary treated every register but sp and x29 as a
+  possible input to an in-image callee without an arity, and the tracer took
+  x0–x8 and x20: any frame address a body left in a scratch register
+  escaped there (GoodLinks 0x10017e040 leaves `mov x8, sp; add x8, x8, x19`,
+  a local indexed by an unknown amount, before a call, and the whole-frame
+  escape made it clobber x29 for its callers). Each summary now records the
+  incoming x0–x28 its body may read before writing them
+  (`mayReadRegisters`), closed over its in-image calls like the argument
+  reads, with an import or indirect call taking the ABI inputs and any other
+  target every register; a call takes only those (and any vector register,
+  whose reads are not tracked). libc_twins' in-image `memset` reads only x1
+  and x2, so `useFill` renders `sink(1)`, true of the source, where it
+  rendered `sink(?)`. Against d7a8de3: 3 files, 7 structured lines (also an
+  -Onone async funclet's `br x0` now reads as the return into its parent's
+  continuation, as its siblings do); no return changed from one concrete
+  value to another. GoodLinks cfg.unresolved-indirect-call 10,899 -> 10,882;
+  instructions +0.53%. The field fits the summary's padding.
 - **FIXED (2026-11-11, completeness): the summary did not report a chain's
   later allocations to the tracer.** `provenAllocationSites` (10e0f62)
   recorded an sp move only when sp's abstract value changed, but the second

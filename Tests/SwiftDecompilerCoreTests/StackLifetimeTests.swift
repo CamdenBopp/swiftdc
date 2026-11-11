@@ -77,6 +77,11 @@ private let stackLifetimeFixture = "Fixtures/Sample/libStackLifetime.dylib"
     let popPast = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime16probePopPastPushyS2iF")), to: Dynamic.self)
     #expect(popPast(0) == 99)
     #expect(popPast(32) == 7)
+    typealias Plain = @convention(c) () -> Int64
+    let x8Unread = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime13reuseX8UnreadSiyF")), to: Plain.self)
+    #expect(x8Unread() == 7)
+    let x8Written = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime14probeX8WrittenSiyF")), to: Plain.self)
+    #expect(x8Written() == 0)
     let reaching = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime18probeSpillReachingyS2iF")), to: Dynamic.self)
     #expect(reaching(16) == 99)
     let stacked = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime12probeStackedyS2i_SitF")), to: Pair.self)
@@ -113,7 +118,8 @@ private let stackLifetimeFixture = "Fixtures/Sample/libStackLifetime.dylib"
         for name in ["reuseUnknown", "reuseDynamic", "reuseDynamicAbove", "reusePreservation", "reusePointer",
                      "probeMismatch", "probeReload", "probeCall", "probeTwice", "probeStacked", "probeSpillReaching",
                      "probeChainStore", "probeDeepReload",
-                     "probePopPastPush", "probeStaleSize"] {
+                     "probePopPastPush", "probeStaleSize",
+                     "probeX8Written"] {
             let function = try #require(group.first { $0.displayName.hasPrefix("StackLifetime.\(name)(") })
             for text in [function.renderPseudo(), function.renderStructured()] {
                 #expect(text.contains("return ?"), Comment(rawValue: text))
@@ -125,7 +131,7 @@ private let stackLifetimeFixture = "Fixtures/Sample/libStackLifetime.dylib"
                                  ("reuseProbedTwice", 7), ("reuseProbedSpilled", 7), ("reuseProbedSpilledTwice", 7),
                                  ("reuseProbedSpilledEscaped", 7), ("reuseProbedChain", 7),
                                  ("reuseProbedDeepSize", 7), ("reuseProbedPushed", 7),
-                                 ("reuseProbedDeepTwice", 7)] {
+                                 ("reuseProbedDeepTwice", 7), ("reuseX8Unread", 7)] {
             let function = try #require(group.first { $0.displayName.hasPrefix("StackLifetime.\(name)(") })
             for text in [function.renderPseudo(), function.renderStructured()] {
                 #expect(text.contains("return \(expected)"), Comment(rawValue: text))

@@ -497,6 +497,55 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     #expect(walked.clobberedCalleeSaved.contains("x29"), "\(walked.clobberedCalleeSaved)")
 }
 
+/// A frame address a body leaves in x8 (`mov x8, sp; add x8, x8, x1`, a
+/// local indexed by an unknown amount, so any word of the frame) is no input
+/// to an in-image callee that never reads x8: the caller's saves and frame
+/// record stay its own. GoodLinks 0x10017e040 leaves such an x8 before a
+/// call, and the frame-wide escape made it clobber x29 for its callers.
+///
+///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
+///     sub sp, sp, #0x10; mov x19, x0; mov x8, sp; add x8, x8, x1; bl 0x2000
+///     add sp, sp, #0x10; ldp x20, x19, [sp, #0x10]; ldp x29, x30, [sp], #0x20; ret
+@Test func aCalleeThatReadsNoX8TakesNoFrameAddressInIt() throws {
+    let words: [UInt32] = [
+        0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xaa0003f3, 0x910003e8,
+        0x8b010108, 0x940003f9, 0x910043ff, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
+    ]
+    let readsX0 = CalleeEffect(mayReadRegisters: 1 << 0)
+    let kept = try #require(CalleeRegisterSummary.of(try body(words, name: "kept"), calleeEffects: { _ in readsX0 }))
+    #expect(kept.clobberedCalleeSaved.isEmpty, "\(kept.clobberedCalleeSaved)")
+    // The control: a callee that may read x8 takes the address.
+    let readsX8 = CalleeEffect(mayReadRegisters: 1 << 8)
+    let taken = try #require(CalleeRegisterSummary.of(try body(words, name: "taken"), calleeEffects: { _ in readsX8 }))
+    #expect(taken.clobberedCalleeSaved.contains("x29"), "\(taken.clobberedCalleeSaved)")
+}
+
+/// The registers a body may read close over its in-image calls: a caller
+/// that leaves its incoming x8 unwritten before `bl` to a body reading x8
+/// may read x8 too; one that writes x8 first does not.
+///
+///     callee: ldr x0, [x8]; ret
+///     caller: stp x29, x30, [sp, #-16]!; mov x29, sp; [mov x8, #0;] bl 0x2000
+///             ldp x29, x30, [sp], #16; ret
+@Test func aBodysReadRegistersCloseOverItsCalls() throws {
+    let callee = try #require(CalleeRegisterSummary.of(try body([0xf9400100, 0xd65f03c0], name: "callee")))
+    #expect(callee.mayReadRegisters == 1 << 8, "\(String(callee.mayReadRegisters, radix: 2))")
+    func closed(_ words: [UInt32]) throws -> UInt32 {
+        let caller = try #require(CalleeRegisterSummary.of(try body(words, name: "caller"), isFunction: { $0 == 0x2000 }))
+        var table: [UInt64: CalleeRegisterSummary] = [0x1000: caller, 0x2000: callee]
+        CalleeRegisterSummary.closeOverReads(&table)
+        return try #require(table[0x1000]).mayReadRegisters
+    }
+    #expect(try closed([0xa9bf7bfd, 0x910003fd, 0x940003fe, 0xa8c17bfd, 0xd65f03c0]) & (1 << 8) != 0)
+    #expect(try closed([0xa9bf7bfd, 0x910003fd, 0xd2800008, 0x940003fd, 0xa8c17bfd, 0xd65f03c0]) & (1 << 8) == 0)
+    // A call to an import may take any of the ABI's inputs still unwritten.
+    let viaImport = try #require(CalleeRegisterSummary.of(
+        try body([0xa9bf7bfd, 0x910003fd, 0x940003fe, 0xa8c17bfd, 0xd65f03c0], name: "import"),
+        isImportStub: { $0 == 0x2000 }))
+    #expect(viaImport.mayReadRegisters == (1 << 9 - 1) | 1 << 20 | 1 << 21,
+            "\(String(viaImport.mayReadRegisters, radix: 2))")
+}
+
 /// A join of two dynamic allocations keeps sp below the higher bound, so a
 /// store through it still reaches no save:
 ///

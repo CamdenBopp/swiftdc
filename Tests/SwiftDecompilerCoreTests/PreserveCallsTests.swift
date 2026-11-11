@@ -105,15 +105,15 @@ private func fragment(_ words: [UInt32]) throws -> DisassembledFunction {
     // x21 is not carried through calls, reloaded or not.
     #expect(epilogue.effect == CalleeEffect(
         clobbers: [], restores: ["x19": 0x28, "x20": 0x20, "x22": 0x10, "x23": 0x8, "x24": 0x0],
-        entryValueClobbers: epilogue.clobberedCalleeSaved))
+        entryValueClobbers: epilogue.clobberedCalleeSaved, mayReadRegisters: 0))
     // sturb w1, [sp, #-8]; ldur x19, [sp, #-8]; ret: below entry sp is this
     // body's own frame, which it has just written.
     let below = try #require(CalleeRegisterSummary.of(fragment([0x381f83e1, 0xf85f83f3, 0xd65f03c0])))
-    #expect(below.effect == CalleeEffect(clobbers: ["x19"], entryValueClobbers: ["x19"]))
+    #expect(below.effect == CalleeEffect(clobbers: ["x19"], entryValueClobbers: ["x19"], mayReadRegisters: 1 << 1))
     // cbz x0, 1f; ldr x19, [sp]; ret; 1: ldr x19, [sp, #8]; ret: two exits
     // reload different slots.
     let split = try #require(CalleeRegisterSummary.of(fragment([0xb4000060, 0xf94003f3, 0xd65f03c0, 0xf94007f3, 0xd65f03c0])))
-    #expect(split.effect == CalleeEffect(clobbers: ["x19"], entryValueClobbers: ["x19"]))
+    #expect(split.effect == CalleeEffect(clobbers: ["x19"], entryValueClobbers: ["x19"], mayReadRegisters: 1 << 0))
 }
 
 /// The closure over calls claims nothing where it cannot finish: a function

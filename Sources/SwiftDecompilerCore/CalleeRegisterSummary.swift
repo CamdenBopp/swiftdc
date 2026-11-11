@@ -25,6 +25,9 @@ struct CalleeEffect: Sendable, Equatable {
     /// that propagation policy cannot prove a value survived a direct call.
     /// Nil means this callee's body has not supplied a preservation proof.
     var entryValueClobbers: Set<String>?
+    /// The incoming x0–x28 the callee may read (bit n for xn), through its
+    /// own calls; nil when unknown, so any register may be an input.
+    var mayReadRegisters: UInt32?
 }
 
 /// What an in-image function's own body proves about the registers a call to
@@ -49,6 +52,10 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         /// Bit n set when xn may still hold the body's incoming value there,
         /// for x0-x7 and x29.
         let unwritten: UInt32
+        /// The same for every one of x0–x28, for `mayReadRegisters`. Kept
+        /// apart: bits 20 and 22 above mean only the self and context proofs.
+        /// All of them unless the read pass says otherwise.
+        var unwrittenRegisters: UInt32 = CalleeRegisterSummary.allRegisterBits
     }
 
     /// The width each of those is read at (16 h, 32 s, 64 d), when every read
@@ -242,6 +249,12 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// proves no calling-convention role. These uses require a known entry
     /// value at the instruction that consumes it.
     var provenEntryRegisterReads: UInt32 = 0
+    /// The incoming x0–x28 this body may read before writing them (bit n for
+    /// xn), closed over its in-image calls (`closeOverReads`). A call to it
+    /// takes no input in any other: a frame address a caller left in x8
+    /// (`add x8, sp, #0x20; add x8, x8, x19`) reaches no callee that never
+    /// reads x8. All bits when nothing is known.
+    var mayReadRegisters: UInt32 = CalleeRegisterSummary.allRegisterBits
     private var hasInputProofEntry = false
     private var hasPureTailTarget = false
     var needsEntryPreservation = false
@@ -305,7 +318,16 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     var effect: CalleeEffect {
         CalleeEffect(clobbers: definitelyClobbered.subtracting(restoredFrom.keys), restores: restoredFrom,
                      readsFramePointer: readsFramePointer, memoryEffect: memoryEffect,
-                     entryValueClobbers: clobberedCalleeSaved)
+                     entryValueClobbers: clobberedCalleeSaved,
+                     mayReadRegisters: mayReadRegisters == Self.allRegisterBits ? nil : mayReadRegisters)
+    }
+
+    /// x0–x28, by number.
+    static let registerNumbers: [String: Int] = Dictionary(uniqueKeysWithValues: (0...28).map { ("x\($0)", $0) })
+    static let allRegisterBits: UInt32 = (1 << 29) - 1
+    /// The registers a set of bits names.
+    static func registerKeys(_ bits: UInt32) -> Set<String> {
+        Set((0...28).filter { bits & (1 << $0) != 0 }.map { "x\($0)" })
     }
 
     /// The integer arguments a call to this function can pass: through the
@@ -323,6 +345,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     var provenFloatArgumentCount: Int { (provenFloatArgumentReads.max() ?? -1) + 1 }
 
     private static let argumentKeys = (0...7).map { "x\($0)" }
+    private static let trackedWrites = Set((0...29).map { "x\($0)" })
+    private static let vectorKeys = Set((0...31).map { "v\($0)" })
+    private static let callWrites = (0...18).map { "x\($0)" } + floatArgumentKeys
     private static let floatArgumentKeys = (0...7).map { "v\($0)" }
     private static let framePointerBit: UInt32 = 1 << 29
     private static let contextRegisterBit: UInt32 = 1 << 22
@@ -421,6 +446,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         var writesFloatResult = readFacts?.mayWriteFloatResult ?? false
         var readsFramePointer = readFacts?.readsFramePointer ?? false
         var readsContextRegister = readFacts?.readsContextRegister ?? false
+        var mayRead: UInt32 = readFacts?.mayReadRegisters ?? 0
         // By call address: a block revisited with fewer registers written
         // widens the mask, as it widens `reads`.
         var pending: [UInt64: PendingRead] = [:]
@@ -439,6 +465,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             for insn in block.instructions {
                 guard let detail = insn.detail else { return nil }
                 func read(_ key: String, proven: Bool = true) {
+                    if let number = Self.registerNumbers[key], !written.contains(key) { mayRead |= 1 << number }
                     guard let index = argumentKeys.firstIndex(of: key), !written.contains(key) else { return }
                     reads.insert(index)
                     if proven { provenReads.insert(index) }
@@ -462,10 +489,22 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                         }
                         if !written.contains("x29") { unwritten |= Self.framePointerBit }
                         if !written.contains("x22") { unwritten |= Self.contextRegisterBit }
-                        pending[insn.address] = PendingRead(target: target, unwritten: unwritten)
+                        var unwrittenRegisters = pending[insn.address]?.unwrittenRegisters ?? 0
+                        for (key, number) in Self.registerNumbers where !written.contains(key) {
+                            unwrittenRegisters |= 1 << number
+                        }
+                        pending[insn.address] = PendingRead(
+                            target: target, unwritten: unwritten, unwrittenRegisters: unwrittenRegisters)
                     } else {
                         let known = insn.branchTarget.flatMap(calleeArity)
                         argumentKeys.prefix(known ?? argumentKeys.count).forEach { read($0, proven: false) }
+                        // A callee of known arity also takes x8; an ABI
+                        // callee (an import, an indirect call) the ABI's
+                        // inputs; any other target may take any register.
+                        let inputs: Set<String> = if known != nil { ["x8"] }
+                            else if insn.branchTarget.map(isImportStub) ?? true { Preservation.abiCallInputs }
+                            else { Set(Self.registerNumbers.keys) }
+                        for key in inputs { if let number = Self.registerNumbers[key], !written.contains(key) { mayRead |= 1 << number } }
                     }
                 }
                 // Operands without access flags are counted as read, so a gap
@@ -497,8 +536,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 }
                 if leavesThroughCall { writesFloatResult = true }
                 detail.readRegisterKeys.forEach { read($0) }
-                written.formUnion(detail.writtenRegisterKeys.intersection(argumentKeys + ["x29", "x22"]))
-                if insn.controlFlow == .call { written.formUnion(argumentKeys + floatArgumentKeys) }
+                written.formUnion(detail.writtenRegisterKeys.intersection(Self.trackedWrites))
+                // A call leaves x0–x18 holding its own values, not the body's.
+                if insn.controlFlow == .call { written.formUnion(Self.callWrites) }
             }
             for successor in block.successors where addresses.contains(successor) {
                 let merged = inState[successor].map { $0.intersection(written) } ?? written
@@ -577,7 +617,14 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             // fragment, and takes exactly its parameters, and x8 when
             // it returns a large struct through it.
             if let arity = calleeArity(target) { return Set((0..<min(arity, 8)).map { "x\($0)" } + ["x8"]) }
-            return isImportStub(target) ? Preservation.abiCallInputs : nil
+            if isImportStub(target) { return Preservation.abiCallInputs }
+            // An in-image body takes only the registers it may read, closed
+            // over its own calls; vector reads are not tracked, so any of
+            // those may be an input still.
+            if let bits = calleeEffects(target).mayReadRegisters {
+                return Self.registerKeys(bits).union(Self.vectorKeys)
+            }
+            return nil
         }
         // Where the incoming x20 may be, through moves and spills. A call to
         // an in-image function with it still in x20 reads it if that
@@ -593,7 +640,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             readsSelfRegister = readFacts.readsSelfRegister
         } else {
             for (address, call) in pending where selfFlow?.forwardedAt.contains(address) ?? true {
-                pending[address] = PendingRead(target: call.target, unwritten: call.unwritten | Self.selfRegisterBit)
+                pending[address] = PendingRead(target: call.target, unwritten: call.unwritten | Self.selfRegisterBit,
+                                               unwrittenRegisters: call.unwrittenRegisters)
             }
             readsSelfRegister = selfFlow?.reads ?? true
         }
@@ -660,6 +708,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             inputProofEntry: readFacts?.inputProofEntry ?? instructions.first?.address,
             pureTailTarget: readFacts?.pureTailTarget ?? pureTailTarget(of: function, isFunction: isFunction))
         summary.provenAllocationSites = allocationSites
+        summary.mayReadRegisters = mayRead
         summary.mayWriteResult = writesResult
         summary.resultReads = readFacts?.resultReads ?? Self.resultReads(
             instructions, blockStarts: Set(blocks.map(\.startAddress)), isFunction: isFunction,
@@ -727,6 +776,13 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             readsContextRegister: readsContextRegister, clobberedCalleeSaved: Self.calleeSavedKeys,
             definitelyClobbered: Self.calleeSavedKeys, callees: callees, memoryEffect: memoryEffect,
             inputProofEntry: inputProofEntry, pureTailTarget: pureTailTarget)
+            .keepingReadRegisters(mayReadRegisters)
+    }
+
+    private func keepingReadRegisters(_ bits: UInt32) -> CalleeRegisterSummary {
+        var summary = self
+        summary.mayReadRegisters = bits
+        return summary
     }
 
     /// Initial read/preservation analyses precede the callee summaries. Once
@@ -843,7 +899,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             var readsFramePointer = summary.readsFramePointer
             var readsContextRegister = summary.readsContextRegister
             var readsSelfRegister = summary.readsSelfRegister
+            var mayRead = summary.mayReadRegisters
             for call in summary.pendingReads {
+                mayRead |= (summaries[call.target]?.mayReadRegisters ?? allRegisterBits) & call.unwrittenRegisters
                 let targetReads = summaries[call.target]?.argumentReads ?? RegisterSet(0 ..< argumentKeys.count)
                 for index in targetReads where call.unwritten & (1 << index) != 0 { reads.insert(index) }
                 if call.unwritten & framePointerBit != 0, summaries[call.target]?.readsFramePointer ?? true {
@@ -859,10 +917,12 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             guard reads != summary.argumentReads || readsFramePointer != summary.readsFramePointer
                 || readsContextRegister != summary.readsContextRegister
                 || readsSelfRegister != summary.readsSelfRegister
+                || mayRead != summary.mayReadRegisters
             else { continue }
             summaries[start] = summary.replacingReads(
                 reads, readsFramePointer: readsFramePointer, readsContextRegister: readsContextRegister,
                 readsSelfRegister: readsSelfRegister)
+            summaries[start]?.mayReadRegisters = mayRead
             for caller in callers[start] ?? [] where queued.insert(caller).inserted {
                 worklist.append(caller)
             }
@@ -936,6 +996,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         summary.mayWriteResult = mayWriteResult
         summary.resultReads = resultReads
         summary.provenAllocationSites = provenAllocationSites
+        summary.mayReadRegisters = mayReadRegisters
         return summary
     }
 
@@ -1108,6 +1169,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             // the fixpoint's comparison: a change to them alone updates in
             // place.
             new.provenAllocationSites = old.provenAllocationSites
+            new.mayReadRegisters = old.mayReadRegisters
             guard new != old else {
                 summaries[start]?.provenAllocationSites = rebuilt.provenAllocationSites
                 continue

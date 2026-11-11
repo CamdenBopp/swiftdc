@@ -57,7 +57,8 @@ private func pseudo(_ path: String) async throws -> (array: String, streamed: St
     let summary = try #require(CalleeRegisterSummary.of(function, isFunction: { $0 == 0x1104 }))
     #expect(summary.argumentReads.isEmpty)
     // x29, x22 and x20 are unwritten there too.
-    #expect(summary.pendingReads == [.init(target: 0x1104, unwritten: 0b1111_1110 | 1 << 29 | 1 << 22 | 1 << 20)])
+    #expect(summary.pendingReads.map(\.target) == [0x1104])
+    #expect(summary.pendingReads.map(\.unwritten) == [0b1111_1110 | 1 << 29 | 1 << 22 | 1 << 20])
     #expect(!summary.readsSelfRegister)
     // Not an in-image function: the call may read every unwritten register,
     // x20 as a Swift method's `self` among them.

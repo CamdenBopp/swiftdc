@@ -7865,6 +7865,10 @@ public struct Disassembler: Sendable {
                 tracer.calleeClobbers[target] = clobbered
             }
             if registerSummaries[target]?.writesNoFields == true { tracer.fieldPreservingCallees.insert(target) }
+            if insn.controlFlow == .call, let mask = registerSummaries[target]?.mayReadRegisters,
+               mask != CalleeRegisterSummary.allRegisterBits {
+                tracer.calleeReadRegisters[target] = mask
+            }
             if insn.controlFlow == .call, registerSummaries[target]?.readsFramePointer == true {
                 tracer.framePointerUsers.insert(target)
             }

@@ -649,6 +649,10 @@ public struct ValueTracer: Sendable {
     /// The sp moves the function's own preservation summary proves move to a
     /// probed allocation (`CalleeRegisterSummary.provenAllocationSites`).
     var summaryProvenAllocations: Set<UInt64> = []
+    /// The incoming x0–x28 each in-image callee may read
+    /// (`CalleeRegisterSummary.mayReadRegisters`): a register it never reads
+    /// passes it no pointer.
+    var calleeReadRegisters: [UInt64: UInt32] = [:]
     /// Loader-owned slots holding `swift_isaMask`'s address: `ldr x9,
     /// [slot]; ldr x9, [x9]; and x8, x9, isa` is the class metadata of an
     /// object whose class inherits from Objective-C.
@@ -1779,7 +1783,14 @@ public struct ValueTracer: Sendable {
                 if registers.reach.logicalCount != 0, Self.hasResultContents(registers) { Self.poisonResult(&registers) }
                 // A runtime entry point with a fixed C arity receives only its
                 // parameters; anything else may also be an input.
-                for (location, value) in registers.registerFacts.selected(call.passedRegisters) {
+                let readMask = insn.branchTarget.flatMap { calleeReadRegisters[$0] }
+                let passed = readMask.map { mask in
+                    call.passedRegisters.filter { location in
+                        if case .x(let number) = location { return number > 28 || mask & (1 << number) != 0 }
+                        return true
+                    }
+                } ?? call.passedRegisters
+                for (location, value) in registers.registerFacts.selected(passed) {
                     if let value {
                         // The dedicated x8 convention handler below models a
                         // result buffer forwarded to its producer. Other
