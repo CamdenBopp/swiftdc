@@ -24,10 +24,23 @@ import Testing
     let sdk = try #require(CPrototypeDump.sdkPath())
     let frameworks = (try? FileManager.default.contentsOfDirectory(atPath: sdk + "/System/Library/Frameworks")) ?? []
     var units = [CPrototypeDump.libraryUnit]
-    units += frameworks.filter { $0.hasSuffix(".framework") }.sorted().map {
-        let name = String($0.dropLast(".framework".count))
-        return "#import <\(name)/\(name).h>\n"
+    for framework in frameworks.filter({ $0.hasSuffix(".framework") }).sorted() {
+        let name = String(framework.dropLast(".framework".count))
+        let headers = sdk + "/System/Library/Frameworks/" + framework + "/Headers"
+        if FileManager.default.fileExists(atPath: headers + "/" + name + ".h") {
+            units.append("#import <\(name)/\(name).h>\n")
+        } else if !CPrototypeDump.kernelFrameworks.contains(name) {
+            // No umbrella (IOKit's is IOKitLib.h): each header is a unit.
+            units += CPrototypeDump.headers(under: headers).map { "#import <\(name)/\($0)>\n" }
+        }
     }
+    // Every C library header is a unit of its own, so one that does not
+    // compile alone costs only itself: `closedir`, `sysctl` and `ioctl`
+    // were missing because no unit included `dirent.h`, `sys/sysctl.h` or
+    // `sys/ioctl.h`.
+    units += CPrototypeDump.headers(under: sdk + "/usr/include")
+        .filter { header in !CPrototypeDump.skippedIncludeDirectories.contains { header.hasPrefix($0 + "/") } }
+        .map { "#include <\($0)>\n" }
     var prototypes: [String: String] = [:]
     var conflicting: Set<String> = []
     var compiled = 0
@@ -112,6 +125,19 @@ private enum CPrototypeDump {
     "mach/mach.h", "math.h", "unistd.h", "fcntl.h", "sys/stat.h", "xpc/xpc.h", "notify.h", "zlib.h",
     "libproc.h",
     ]
+
+    /// Kernel and driver frameworks: not user-space C.
+    static let kernelFrameworks: Set<String> = ["Kernel", "DriverKit"]
+
+    /// `usr/include` directories that are C++, another project's private
+    /// headers, or another architecture's.
+    static let skippedIncludeDirectories = ["c++", "apache2", "apr-1", "net-snmp", "_modules", "i386", "pexpert"]
+
+    /// The `.h` files under `root`, as paths relative to it, sorted.
+    static func headers(under root: String) -> [String] {
+        guard let enumerator = FileManager.default.enumerator(atPath: root) else { return [] }
+        return enumerator.compactMap { $0 as? String }.filter { $0.hasSuffix(".h") }.sorted()
+    }
 
     static var libraryUnit: String { libraryHeaders.map { "#include <\($0)>\n" }.joined() }
 

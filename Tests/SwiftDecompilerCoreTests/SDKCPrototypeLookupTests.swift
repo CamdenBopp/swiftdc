@@ -20,8 +20,8 @@ import Testing
     }
     #expect(missed.isEmpty, "\(missed.prefix(5))")
     // Neither a prefix of a name nor a name extended matches.
-    #expect(SDKCPrototypes.entry("open") == "i iw...")
-    #expect(SDKCPrototypes.entry("ope") == nil)
-    #expect(SDKCPrototypes.entry("openx") == nil)
+    #expect(SDKCPrototypes.entry("ioctl") == "i wi...")
+    #expect(SDKCPrototypes.entry("ioct") == nil)
+    #expect(SDKCPrototypes.entry("ioctlx") == nil)
     #expect(SDKCPrototypes.entry("") == nil)
 }

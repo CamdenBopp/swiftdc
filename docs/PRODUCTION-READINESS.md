@@ -254,10 +254,34 @@ shape it excludes.
   variadic_calls.c: `open(?, 0, …)`, `open(?, 513, …)`, `fcntl(?, 0, …)`
   and `open(?, -1, …)`. Against f77b7a0: the fixture and goProgram's open
   and fcntl calls (24 structured lines); GoodLinks stays 10,849.
-- **OPEN (completeness) (audited 2026-11-10): SDK variadics the prototype
-  table lacks.** `closedir`, `sysctl` and `ioctl` are missing from the table
-  (224 of 333 SDK translation units compiled). Terminal 125 / TextEdit 7 not
-  re-measured since 0e4b26c.
+- **FIXED (COMMIT) — SDK functions the prototype table lacked.**
+  `closedir`, `sysctl` and `ioctl` were missing: the generator compiled
+  each framework's umbrella and one unit of 22 library headers, so no unit
+  included `dirent.h`, `sys/sysctl.h` or `sys/ioctl.h`, and a framework
+  with no umbrella named after it (IOKit's is `IOKitLib.h`) contributed
+  nothing. Every `usr/include` header (less C++, Apache, APR, net-snmp,
+  i386 and pexpert) and every header of an umbrella-less framework (less
+  Kernel and DriverKit) is now a unit of its own: 1,458 of 1,578 units
+  compile, against 224 of 333. The table grows from 20,279 to 26,992
+  functions; no earlier entry is dropped or changed, and 4 names declared
+  two ways are declined. `variadic_calls.c`: `ioctl(…)` became `ioctl(?,
+  0x8004667e, …)`, `closedir(…)` `closedir(arg0)`, and `sysctl args(…)`
+  `args(local_20, 2, local_24, local_30, 0, 0)`. The 120 units that still
+  fail are Swift-only frameworks with no headers and headers that do not
+  compile alone. Terminal 125 / TextEdit 7 not re-measured since 0e4b26c.
+  Also changed: `__clang_call_terminate(_Unwind_Resume(?))` in
+  `libLandingPadLoop` became `_Unwind_Resume(?)` then
+  `__clang_call_terminate()`: `_Unwind_Resume` is declared void and never
+  returns, so its "result" was no argument; the helper's x0 is now
+  unknown, and a reserved `__` name keeps the positional layout, which
+  drops it (the OPEN arity entry below).
+- **FIXED (e15558c) — every process built a dictionary of the whole SDK
+  prototype table.** Looked up once per C callee, the 20,279-entry table
+  was parsed into a `[String: String]` in each run; at 26,992 entries the
+  blast radius's median render grew 2.5 MB and total footprint 17%. The
+  sorted lines are now binary-searched in place (a `StaticString`):
+  instructions -8.06% and footprint -24.10% over 1,780 renders, no render
+  changed (`Tools/blast-radius.sh … --real --perf` against d4a7154).
 
   Not covered: a call through a register (`blr x8` can land on an
   in-image body), and names whose arity is knowable though no table holds

@@ -210,3 +210,22 @@ func aFailedForcedTryPassesItsFiveArgumentsIfPresent(path: String) async throws 
     // The int at its declared width: -1, not 0xffffffff.
     #expect(try text("_openNegative").contains("open(?, -1, …)"))
 }
+
+/// C library functions whose headers no translation unit of the prototype
+/// generator included (`sys/ioctl.h`, `dirent.h`, `sys/sysctl.h`) had no
+/// declaration: `ioctl(…)`, `closedir(…)` and `sysctl args(…)`. Every SDK
+/// header is now a unit of its own (`variadic_calls.c`).
+@Test func aLibraryCallOutsideTheUmbrellasRendersFromItsDeclarationIfPresent() async throws {
+    let path = "Fixtures/Sample/libVariadicCalls.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func function(_ name: String) throws -> DisassembledFunction {
+        try #require(functions.first { $0.displayName == name }, "no \(name)")
+    }
+    // The request is the fixed unsigned long; `&on` is the variadic part.
+    #expect(try function("_setNonBlocking").renderStructured().contains("ioctl(?, 0x8004667e, …)"))
+    #expect(try function("_closeAfterUse").renderStructured().contains("closedir(arg0)"))
+    let sysctl = try function("_cpuCount").instructions.compactMap(\.annotation).first { $0.contains("→ sysctl") }
+    #expect(sysctl?.contains("args(local_20, 2, local_24, local_30, 0, 0)") == true,
+            Comment(rawValue: sysctl ?? "no sysctl call"))
+}
