@@ -254,7 +254,7 @@ shape it excludes.
   variadic_calls.c: `open(?, 0, …)`, `open(?, 513, …)`, `fcntl(?, 0, …)`
   and `open(?, -1, …)`. Against f77b7a0: the fixture and goProgram's open
   and fcntl calls (24 structured lines); GoodLinks stays 10,849.
-- **FIXED (COMMIT) — SDK functions the prototype table lacked.**
+- **FIXED (c149b8e) — SDK functions the prototype table lacked.**
   `closedir`, `sysctl` and `ioctl` were missing: the generator compiled
   each framework's umbrella and one unit of 22 library headers, so no unit
   included `dirent.h`, `sys/sysctl.h` or `sys/ioctl.h`, and a framework
