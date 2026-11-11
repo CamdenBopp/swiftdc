@@ -600,7 +600,17 @@ struct ControlFlowStructure {
                 // Collapse empty branches: drop a no-op `if`, invert when only the
                 // `then` side is empty.
                 if thenLines.isEmpty, elseLines.isEmpty {
-                    // both rejoin immediately — nothing to emit
+                    // Both rejoin immediately: no `if`, but a call the
+                    // condition consumed still ran. `sysctl(…) == 0 ? *p : -1`
+                    // in a function with no proven result rendered `{ return }`.
+                    // A statement between the call and the branch makes the
+                    // call a binding, not part of the condition (measured), so
+                    // a consumed call is the block's last statement.
+                    for insn in blocks[current].instructions where branch?.consumed.contains(insn.address) == true {
+                        guard let statement = DisassembledFunction.pseudoStatement(of: insn, hideRuntime: true)
+                        else { continue }
+                        lines += statement.components(separatedBy: "\n").map { "\(pad)\($0)" }
+                    }
                 } else if thenLines.isEmpty {
                     lines.append("\(pad)if (\(Self.inverted(cond))) {")
                     lines += elseLines

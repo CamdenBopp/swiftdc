@@ -362,6 +362,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name CStructField cstructfiel
 echo "==> SDK calls from their declarations: open, fcntl, ioctl, closedir, sysctl (variadic_calls.c, -O1)"
 $CLANG -O1 -dynamiclib variadic_calls.c -o libVariadicCalls.dylib
 
+echo "==> a call that only decides a branch whose arms render nothing (consumed_call.c, -O1)"
+$CLANG -O1 -dynamiclib -undefined dynamic_lookup consumed_call.c -o libConsumedCall.dylib
+
 echo "==> variadic ObjC fixture (-O1) — format arguments on the stack"
 $CLANG -O1 -fobjc-arc -framework Foundation -dynamiclib variadic.m -o libVariadic.dylib
 

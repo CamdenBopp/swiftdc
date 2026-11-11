@@ -3213,6 +3213,20 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   Sample.Widget`. Naming Swift metadata addresses is still OPEN
   (reconstruction quality).
 
+- **FIXED (COMMIT) — a call that only decided an empty branch vanished from
+  `--structured`.** A call whose result only feeds a branch is inlined into
+  the condition and left out of the statements before it. When both arms
+  render nothing (each only sets a result no signature proves), the `if`
+  was dropped and the call with it: `consumed_call.c`'s `probeLevel`
+  (`return sysctl(…) == 0 ? *p : -1`) rendered `{ return }`. The pseudo
+  view, which has no `if`, always kept it. The call now stands where the
+  `if` was. Blast radius: 18 files, 45 structured lines, every one a call
+  that ran: Go's `cpu.osInit` (six `sysctlbynameInt32`), three
+  `swift_initClassMetadata2` in metadata accessors, the casts of
+  `castToString` and `instanceOptional`, witness getters in swift-syntax,
+  and two nested `if`s whose inner call kept the outer one alive
+  (`os.(*file).close`, ClassParam's metadata instantiation).
+
 ## 3. Robustness — what breaks it?
 
 - **FIXED — a file shorter than a dyld cache header trapped four
