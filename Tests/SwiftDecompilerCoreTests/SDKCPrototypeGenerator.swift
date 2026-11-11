@@ -58,16 +58,43 @@ import Testing
     /// `H` unsigned short, `b` char (signed on arm64), `B` unsigned char,
     /// `z` bool.
     enum SDKCPrototypes {
-        static let table: [String: String] = {
-            var table: [String: String] = [:]
-            for line in data.split(separator: "\\n") {
-                guard let space = line.firstIndex(of: " ") else { continue }
-                table[String(line[..<space])] = String(line[line.index(after: space)...])
-            }
-            return table
-        }()
+        /// The declaration of `name`, by binary search over `data`'s lines,
+        /// which are sorted bytewise by name. A dictionary of every entry,
+        /// built in each process, cost about 2.5 MB of footprint per run.
+        static func entry(_ name: String) -> String? {
+            var name = name
+            return name.withUTF8 { key in data.withUTF8Buffer { lookup(key, in: $0) } }
+        }
 
-        private static let data = \"\"\"
+        static func lookup(_ key: UnsafeBufferPointer<UInt8>, in bytes: UnsafeBufferPointer<UInt8>) -> String? {
+            let newline = UInt8(ascii: "\\n"), space = UInt8(ascii: " ")
+            var low = 0, high = bytes.count
+            while low < high {
+                var start = low + (high - low) / 2
+                while start > low, bytes[start - 1] != newline { start -= 1 }
+                var end = start
+                while end < bytes.count, bytes[end] != newline { end += 1 }
+                var nameEnd = start
+                while nameEnd < end, bytes[nameEnd] != space { nameEnd += 1 }
+                var order = 0
+                var index = 0
+                while order == 0 {
+                    let a: Int = index < key.count ? Int(key[index]) : -1
+                    let b: Int = start + index < nameEnd ? Int(bytes[start + index]) : -1
+                    if a == -1, b == -1 { break }
+                    order = a < b ? -1 : (a > b ? 1 : 0)
+                    index += 1
+                }
+                if order == 0 {
+                    guard nameEnd < end else { return nil }
+                    return String(decoding: UnsafeBufferPointer(rebasing: bytes[(nameEnd + 1)..<end]), as: UTF8.self)
+                }
+                if order < 0 { high = start } else { low = end + 1 }
+            }
+            return nil
+        }
+
+        static let data: StaticString = \"\"\"
     \(lines.joined(separator: "\n"))
     \"\"\"
     }

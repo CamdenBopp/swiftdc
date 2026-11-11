@@ -1070,7 +1070,7 @@ public extension DisassembledFunction {
     ]
 
     static func cPrototype(of callee: String) -> CPrototype? {
-        guard let entry = SDKCPrototypes.table[callee] ?? SwiftRuntimeSignatures.table[callee],
+        guard let entry = SDKCPrototypes.entry(callee) ?? SwiftRuntimeSignatures.table[callee],
               let result = entry.first else { return nil }
         var body = Substring(entry.dropFirst(2))
         let isVariadic = body.hasSuffix("...")
