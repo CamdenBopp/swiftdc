@@ -162,3 +162,23 @@ private func symbols() -> [UInt64: String]? {
     #expect(spans("go:buildid", code).isEmpty)
     #expect(spans("runtime.text", prefix).isEmpty)
 }
+
+/// Go's linker writes 6 as the size of its 12-byte import stubs
+/// (`__symbol_stub1`, reserved2), and stubs numbered by it were named from
+/// the eleventh on after another stub's import, by swiftdc's table and by
+/// objdump's `symbol stub for:` alike: `runtime.walltime_trampoline` read
+/// `fcntl(…)` for the `clock_gettime` its stub's GOT slot is bound to. The
+/// stride now comes from the stubs (`adrp; ldr; br`), and each runtime
+/// trampoline calls the libc function it is named for.
+@Test func goImportStubsAreNamedByTheirOwnStrideIfPresent() async throws {
+    guard FileManager.default.fileExists(atPath: full) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: full) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName == name }, "no \(name)").renderStructured()
+    }
+    #expect(try text("_runtime.walltime_trampoline.abi0").contains("clock_gettime(0, arg0)"))
+    #expect(try text("_runtime.exit_trampoline.abi0").contains("_exit("))
+    #expect(try text("_runtime.mmap_trampoline.abi0").contains("mmap("))
+    #expect(try text("_runtime.usleep_trampoline.abi0").contains("usleep("))
+    #expect(try text("_runtime.open_trampoline.abi0").contains("open("))
+}

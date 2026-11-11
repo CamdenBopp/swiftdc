@@ -2894,6 +2894,20 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   to another. GoodLinks cfg.unresolved-indirect-call 11,273 -> 11,235;
   instructions +0.13%. The summary grows by one array word (stride budget
   136 -> 144).
+- **FIXED (2026-11-11, soundness): import stubs numbered by a wrong stub
+  size were named after other imports.** Go's linker writes 6 as the size
+  (`__symbol_stub1` reserved2) of its 12-byte `adrp; ldr; br` stubs. swiftdc
+  divided the section by it and named stub n from the indirect symbol of
+  slot n at a 6-byte stride, as objdump's `symbol stub for:` does, so from
+  the eleventh stub on every call named another import: 45 of goProgram's
+  46 stub calls, checked against each stub's own GOT slot binding
+  (`llvm-objdump --bind`); `runtime.walltime_trampoline` read `fcntl(…)`
+  for `clock_gettime`. The stride now comes from the first stub's shape
+  (12, or 16 for arm64e), the header's only for an unrecognised one, and on
+  the objdump path a stub call whose comment names another C import than
+  the table takes the table's name. 0 of 46 mismatch now. Only goProgram
+  and its stripped copy change (380 structured lines); ld64-linked fixtures
+  and GoodLinks (10,849) are unchanged.
 - **FIXED (2026-11-11, completeness): a rebase of a probed chain dropped a
   pushed constant.** d997846 rebases a deep allocation chain's sp to
   `frame(base) - ?`; when the push of outgoing stack arguments was what took

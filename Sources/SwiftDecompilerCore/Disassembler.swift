@@ -2875,10 +2875,16 @@ public struct Disassembler: Sendable {
                   let count = section.numberOfIndirectSymbols,
                   count > 0, first >= 0, first + count <= indirect.count
             else { continue }
-            let stubSize = section.size / count
+            // The stride from the stubs themselves: Go's linker writes 6 as
+            // its 12-byte stubs' size, and dividing by that count named every
+            // stub from the eleventh on after another (`clock_gettime`'s stub
+            // read `fcntl`). Only an unrecognised shape keeps the header's.
+            let stubSize = Self.stubStride(at: UInt64(section.address), in: machO, bytes: sectionBytes)
+                ?? section.size / count
             guard stubSize > 0 else { continue }
+            let stubs = min(count, section.size / stubSize)
 
-            for slot in 0..<count {
+            for slot in 0..<stubs {
                 guard let symbolIndex = indirect[first + slot].index,
                       symbols.indices.contains(symbolIndex)
                 else { continue }
@@ -2889,6 +2895,21 @@ public struct Disassembler: Sendable {
             }
         }
         return symbolsByStub
+    }
+
+    /// The size of an arm64 import stub, read from the first one: `adrp;
+    /// ldr; br` is 12 bytes, arm64e's `adrp; add; ldr; braa` 16. Nil for any
+    /// other shape.
+    static func stubStride(
+        at address: UInt64, in machO: MachOFile, bytes: (UInt64, Int, MachOFile) -> Data?
+    ) -> Int? {
+        guard let data = bytes(address, 16, machO), let engine = CapstoneEngine() else { return nil }
+        let ids = engine.disassemble(data, address: address).compactMap { $0.detail?.id }
+        guard ids.count >= 3, ids[0] == AARCH64_INS_ADRP else { return nil }
+        if ids[1] == AARCH64_INS_LDR, ids[2] == AARCH64_INS_BR { return 12 }
+        if ids.count == 4, ids[1] == AARCH64_INS_ADD, ids[2] == AARCH64_INS_LDR,
+           ids[3] == AARCH64_INS_BRAA || ids[3] == AARCH64_INS_BRAAZ { return 16 }
+        return nil
     }
 
     struct ImportedFunctionReference: Sendable, Equatable {
@@ -4117,6 +4138,25 @@ public struct Disassembler: Sendable {
                     callArguments: insn.callArguments, detail: insn.detail,
                     callee: .kept(name)
                 )
+            }
+            // objdump numbers a stub section by its header's stub size, which
+            // Go's linker writes as 6 for 12-byte stubs, so its `symbol stub
+            // for:` named `clock_gettime`'s stub `_fcntl`. The stub table
+            // reads the stride from the stubs (`stubStride`); where the two
+            // disagree on a C import, the table's name stands, in the text
+            // too, so no later parse of it reads objdump's.
+            if let flow = insn.controlFlow, branchFlows.contains(flow), let target = insn.branchTarget,
+               let range = insn.text.range(of: "symbol stub for: "),
+               let name = resolver.callTargetName(at: target) {
+                let raw = String(insn.text[range.upperBound...].prefix { !$0.isWhitespace && $0 != ";" })
+                let bare = raw.hasPrefix("_") ? String(raw.dropFirst()) : raw
+                if !Self.isSwiftMangled(raw), !name.isEmpty, bare != name {
+                    return Instruction(
+                        address: insn.address, text: insn.text.replacingOccurrences(of: raw, with: "_" + name),
+                        annotation: insn.annotation, controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
+                        callArguments: insn.callArguments, detail: insn.detail, callee: .kept(name)
+                    )
+                }
             }
             // Only name calls not already annotated — objdump's file-mode calls
             // carry their name in-text; this fills the bare-address in-process path.
