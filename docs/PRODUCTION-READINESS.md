@@ -2798,6 +2798,22 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   7). SpillWitness's `put` now names `initializeWithCopy value witness for A`,
   true of `table[k] = v`. GoodLinks cfg.unresolved-indirect-call 14,182 ->
   13,595.
+- **FIXED (2026-11-11, completeness): the tracer ended a probed
+  allocation's proof at the push of stack arguments.** The summary keeps
+  the proof across a constant shift of sp (e978917, 5581ef5), but the
+  tracer ended it at any write to sp, and made sp unknown at a writeback
+  through it: `sub sp, sp, #0x20; bl; add sp, sp, #0x20` (GoodLinks
+  0x1007b5b14) and `str x8, [sp, #-0x10]!` (0x100b04f9c) below a probed
+  allocation forgot the frame at every later call (4 of the 13 sampled
+  unknown-sp functions left). A writeback through such an sp now moves it
+  by the constant, and a constant shift of sp from itself keeps the proof
+  while sp still hangs below the base; a pop folds back exactly (`(x - c) +
+  d` is `x - (c - d)` for c >= d), and a pop past the push ends the proof.
+  Fixtures reuseProbedPushed (native 7, now `return 7`) and
+  probePopPastPush (native 99 at size 0: still `return ?`). Against
+  10e0f62: 3 files, 12 structured lines, 5 unresolved indirect calls
+  resolved and none added. GoodLinks cfg.unresolved-indirect-call 11,235 ->
+  11,099; instructions -0.12%.
 - **FIXED (2026-11-11, completeness): the tracer could not prove an
   allocation whose size it holds as unknown.** An unnamed body reading a
   dynamic size from its class's generic-argument metadata (`ldr x8, [x0];

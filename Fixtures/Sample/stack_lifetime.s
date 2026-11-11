@@ -594,6 +594,70 @@ _$s13StackLifetime15probeDeepReloadyS2i_SitF:
   add sp, sp, #48
   ret
 
+// Outgoing stack arguments pushed and popped below a probed allocation,
+// by an immediate (`sub sp, sp, #0x20 ... add sp, sp, #0x20`) and by
+// writeback (`str xzr, [sp, #-0x10]! ... ldr x9, [sp], #0x10`). sp still
+// hangs below the allocation's base around every call. Native: 7.
+.globl _$s13StackLifetime17reuseProbedPushedyS2iF
+_$s13StackLifetime17reuseProbedPushedyS2iF:
+  sub sp, sp, #48
+  stp x19, x20, [sp, #16]
+  stp x29, x30, [sp, #32]
+  add x29, sp, #32
+  mov x19, sp
+  mov x9, #7
+  str x9, [sp, #8]
+  mov x9, x0
+  add x8, x9, #15
+  and x8, x8, #0xfffffffffffffff0
+  bl ___chkstk_darwin
+  mov x9, sp
+  sub x8, x9, x8
+  mov sp, x8
+  sub sp, sp, #0x20
+  bl _stack_lifetime_unproved
+  add sp, sp, #0x20
+  str xzr, [sp, #-0x10]!
+  bl _stack_lifetime_unproved
+  ldr x9, [sp], #0x10
+  bl _stack_lifetime_unproved
+  mov sp, x19
+  ldr x0, [sp, #8]
+  ldp x29, x30, [sp, #32]
+  ldp x19, x20, [sp, #16]
+  add sp, sp, #48
+  ret
+
+// The control: a pop past the push (`sub sp, sp, #0x10; add sp, sp,
+// #0x20`) can leave sp above the allocation's base when its size is zero,
+// and the callee's store below sp then reaches the 7. Native: 99 for
+// size 0, 7 for 32.
+.globl _$s13StackLifetime16probePopPastPushyS2iF
+_$s13StackLifetime16probePopPastPushyS2iF:
+  sub sp, sp, #48
+  stp x19, x20, [sp, #16]
+  stp x29, x30, [sp, #32]
+  add x29, sp, #32
+  mov x19, sp
+  mov x9, #7
+  str x9, [sp, #8]
+  mov x9, x0
+  add x8, x9, #15
+  and x8, x8, #0xfffffffffffffff0
+  bl ___chkstk_darwin
+  mov x9, sp
+  sub x8, x9, x8
+  mov sp, x8
+  sub sp, sp, #0x10
+  add sp, sp, #0x20
+  bl _stack_lifetime_unproved
+  mov sp, x19
+  ldr x0, [sp, #8]
+  ldp x29, x30, [sp, #32]
+  ldp x19, x20, [sp, #16]
+  add sp, sp, #48
+  ret
+
 // Two spilled probed allocations: the first leaves a dynamic-allocation
 // marker, which is no escape, so the second spill keeps its proof too.
 // Native: 7.

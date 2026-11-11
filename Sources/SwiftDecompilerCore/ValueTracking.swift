@@ -5937,6 +5937,21 @@ public struct ValueTracer: Sendable {
         guard sp != spBefore else { return }
         let previous = registers[.probedAllocation]
         if previous != nil { registers[.probedAllocation] = nil }
+        // sp moved from itself by a constant (outgoing stack arguments pushed
+        // below a probed allocation, `sub sp, sp, #0x20` or `str x8, [sp,
+        // #-0x10]!`) still hangs below the allocation's base when its value
+        // does: a pop that folds back to the allocation, or a push below it.
+        // A pop past what was pushed folds to no subtraction chain and ends
+        // the proof (every size may be zero).
+        if let previous, spBefore == previous, shiftsStackPointerByConstant(insn), let shifted = sp {
+            let now = foldingPop(shifted)
+            // A shift of `previous`, or a fold back into it, walks to its base.
+            if let base = chainBase(now) {
+                registers[.sp] = now
+                registers[.probedAllocation] = rebasedIfDeep(now, base: base, into: &registers)
+                return
+            }
+        }
         guard let spBefore, case .binary(.subtract, spBefore, let size)? = sp else { return }
         // The probed size, or a size the tracer holds only as unknown at a
         // move the function's preservation summary proves (it names sizes by
@@ -5951,13 +5966,45 @@ public struct ValueTracer: Sendable {
         // 0x100858518 makes seven, one per keyed container). A deep chain
         // is rebased to "some amount below its base", which names no size
         // and keeps the base the proof needs.
-        var allocated = sp
-        if let current = sp, Self.expressionDepth(current) >= Self.allocationChainDepth,
-           let base = Self.chainBase(current) {
-            allocated = .binary(.subtract, .frame(base), .unknown)
-            registers[.sp] = allocated
+        guard let current = sp, let base = chainBase(current) else {
+            registers[.probedAllocation] = sp
+            return
         }
-        registers[.probedAllocation] = allocated
+        registers[.probedAllocation] = rebasedIfDeep(current, base: base, into: &registers)
+    }
+
+    /// A deep allocation sp rebased to "some amount below its base", which
+    /// names no size: the value sp and the allocation marker then hold.
+    private static func rebasedIfDeep(_ value: AbstractValue, base: Int64, into registers: inout State) -> AbstractValue {
+        guard expressionDepth(value) >= allocationChainDepth else { return value }
+        let rebased = AbstractValue.binary(.subtract, .frame(base), .unknown)
+        registers[.sp] = rebased
+        return rebased
+    }
+
+    /// `(x - c) + d`, the pop of a push, as the same value without the pair:
+    /// x when c == d, `x - (c - d)` when c > d. Exact in wrapping arithmetic.
+    private static func foldingPop(_ value: AbstractValue) -> AbstractValue {
+        guard case .binary(.add, .binary(.subtract, let inner, .immediate(let pushed)), .immediate(let popped)) = value,
+              pushed >= popped
+        else { return value }
+        return pushed == popped ? inner : .binary(.subtract, inner, .immediate(pushed - popped))
+    }
+
+    /// `add`/`sub sp, sp, #imm`, or a pre- or post-indexed access through sp.
+    private static func shiftsStackPointerByConstant(_ insn: Instruction) -> Bool {
+        guard let detail = insn.detail else { return false }
+        if detail.writeback || detail.postIndex {
+            return detail.operands.contains { info in
+                if case .memory(let base?, _, _) = info.operand { return base.kind == .stackPointer }
+                return false
+            }
+        }
+        guard detail.id == AARCH64_INS_ADD || detail.id == AARCH64_INS_SUB, detail.operands.count == 3,
+              detail.operands[0].operand.register?.kind == .stackPointer,
+              detail.operands[1].operand.register?.kind == .stackPointer
+        else { return false }
+        return detail.operands[2].shiftedImmediate != nil
     }
 
     /// The depth at which a chain of probed allocations rebases sp, below
@@ -6138,6 +6185,11 @@ public struct ValueTracer: Sendable {
         case .frame(let offset):
             registers[Location(base)] = .frame(FrameCoordinatePlanner.exactWriteback(offset, delta: delta))
         case .address(let address): registers[Location(base)] = .address(address &+ UInt64(bitPattern: delta))
+        // sp inside a dynamic allocation moves by the constant: the push of
+        // outgoing stack arguments (`str x8, [sp, #-0x10]!`) and its pop.
+        case let value? where base.kind == .stackPointer && Self.chainBase(value) != nil && delta != Int64.min:
+            registers[Location(base)] = expression(
+                delta < 0 ? .subtract : .add, value, .immediate(UInt64(delta.magnitude)))
         default: registers[Location(base)] = .unknown
         }
     }
