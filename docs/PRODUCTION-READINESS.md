@@ -3161,7 +3161,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   alignment padding between functions. Comparing a decoder against itself proves
   nothing; the numbers above use an external tool.
 
-- **FIXED (COMMIT) — a send whose receiver is another send's result dropped
+- **FIXED (92e29b9) — a send whose receiver is another send's result dropped
   a known argument.** `objc_factory_return.m` (-O2): `[r0 setLimit:?]` with
   `mov w2, #4` right before the send, and `[r0 addObject:?]` with `x2 =
   @"y"`, where r0 came from `initWithLimit:`/`initWithCapacity:`. The
