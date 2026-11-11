@@ -7840,6 +7840,9 @@ public struct Disassembler: Sendable {
                 }
             }
         }
+        if let sites = registerSummaries[function.startAddress]?.provenAllocationSites, !sites.isEmpty {
+            tracer.summaryProvenAllocations = Set(sites)
+        }
         for insn in function.instructions where insn.controlFlow == .call || insn.controlFlow == .branch {
             guard let target = insn.branchTarget else { continue }
             // This proof is about the symbol, independent of whether a body

@@ -736,6 +736,14 @@ private func callTarget(_ function: DisassembledFunction) throws -> UInt64 {
     ]
     let proven = try #require(CalleeRegisterSummary.of(try body(words, name: "probed"), isStackProbe: { $0 == probe }))
     #expect(proven.clobberedCalleeSaved.isEmpty, "\(proven.clobberedCalleeSaved)")
+    #expect(proven.provenAllocationSites == [0x1028], "\(proven.provenAllocationSites)")
+    // The proven move survives closing reads over a pending in-image call
+    // (`replacingReads`), which rebuilds the summary.
+    let pending = try #require(CalleeRegisterSummary.of(
+        try body(words, name: "pending"), isFunction: { $0 == 0x3000 }, isStackProbe: { $0 == probe }))
+    var table: [UInt64: CalleeRegisterSummary] = [0x1000: pending]
+    CalleeRegisterSummary.closeOverReads(&table)
+    #expect(table[0x1000]?.provenAllocationSites == [0x1028], "\(String(describing: table[0x1000]?.provenAllocationSites))")
     // The control: with the probe unrecognised, sp is unknown at the call.
     let unproven = try #require(CalleeRegisterSummary.of(try body(words, name: "unprobed")))
     #expect(unproven.clobberedCalleeSaved.isSuperset(of: ["x19", "x20", "x29"]), "\(unproven.clobberedCalleeSaved)")

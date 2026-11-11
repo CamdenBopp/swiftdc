@@ -45,6 +45,21 @@ private let stackLifetimeFixture = "Fixtures/Sample/libStackLifetime.dylib"
     let chainStore = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime15probeChainStoreyS2iF")), to: Dynamic.self)
     #expect(chainStore(16) == 7)
     #expect(chainStore(0) == 5)
+    // `***pp` is the size; `q` points at the same word.
+    typealias Deep = @convention(c) (UnsafeMutableRawPointer, UnsafeMutablePointer<Int64>) -> Int64
+    let deepSize = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime19reuseProbedDeepSizeyS2iF")), to: Deep.self)
+    let deepReload = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime15probeDeepReloadyS2i_SitF")), to: Deep.self)
+    for bytes: Int64 in [0, 1, 16, 100] {
+        let size = UnsafeMutablePointer<Int64>.allocate(capacity: 1)
+        let inner = UnsafeMutablePointer<UnsafeMutablePointer<Int64>>.allocate(capacity: 1)
+        let outer = UnsafeMutablePointer<UnsafeMutablePointer<UnsafeMutablePointer<Int64>>>.allocate(capacity: 1)
+        defer { size.deallocate(); inner.deallocate(); outer.deallocate() }
+        inner.pointee = size; outer.pointee = inner
+        size.pointee = bytes
+        #expect(deepSize(UnsafeMutableRawPointer(outer), size) == 7)
+        size.pointee = 16
+        #expect(deepReload(UnsafeMutableRawPointer(outer), size) == 99)
+    }
     let reaching = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime18probeSpillReachingyS2iF")), to: Dynamic.self)
     #expect(reaching(16) == 99)
     let stacked = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime12probeStackedyS2i_SitF")), to: Pair.self)
@@ -80,7 +95,7 @@ private let stackLifetimeFixture = "Fixtures/Sample/libStackLifetime.dylib"
     for group in [listing, array, filtered, streamed, Array(each.values)] {
         for name in ["reuseUnknown", "reuseDynamic", "reuseDynamicAbove", "reusePreservation", "reusePointer",
                      "probeMismatch", "probeReload", "probeCall", "probeTwice", "probeStacked", "probeSpillReaching",
-                     "probeChainStore"] {
+                     "probeChainStore", "probeDeepReload"] {
             let function = try #require(group.first { $0.displayName.hasPrefix("StackLifetime.\(name)(") })
             for text in [function.renderPseudo(), function.renderStructured()] {
                 #expect(text.contains("return ?"), Comment(rawValue: text))
@@ -90,7 +105,8 @@ private let stackLifetimeFixture = "Fixtures/Sample/libStackLifetime.dylib"
         for (name, expected) in [("reuseProven", 7), ("reuseExact", 99), ("reuseAbove", 7), ("keepPreservation", 7),
                                  ("reuseProbed", 7), ("reuseProbedRaw", 7),
                                  ("reuseProbedTwice", 7), ("reuseProbedSpilled", 7), ("reuseProbedSpilledTwice", 7),
-                                 ("reuseProbedSpilledEscaped", 7), ("reuseProbedChain", 7)] {
+                                 ("reuseProbedSpilledEscaped", 7), ("reuseProbedChain", 7),
+                                 ("reuseProbedDeepSize", 7)] {
             let function = try #require(group.first { $0.displayName.hasPrefix("StackLifetime.\(name)(") })
             for text in [function.renderPseudo(), function.renderStructured()] {
                 #expect(text.contains("return \(expected)"), Comment(rawValue: text))

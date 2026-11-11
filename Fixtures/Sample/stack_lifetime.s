@@ -521,6 +521,79 @@ _$s13StackLifetime15probeChainStoreyS2iF:
   add sp, sp, #48
   ret
 
+// A size three loads deep (`**pp` then one more load: metadata, its
+// value-witness table, the table's size word in a Swift body) is unknown to
+// the tracer, which models two loads through an argument. The preservation
+// summary names a size by its load and proves the allocation, and the
+// tracer takes that proof for the move. The probe is called through the
+// GOT, as Swift calls it. Native: 7 for any small n.
+.globl _$s13StackLifetime19reuseProbedDeepSizeyS2iF
+_$s13StackLifetime19reuseProbedDeepSizeyS2iF:
+  sub sp, sp, #48
+  stp x19, x20, [sp, #16]
+  stp x29, x30, [sp, #32]
+  add x29, sp, #32
+  mov x19, sp
+  mov x9, #7
+  str x9, [sp, #8]
+  ldr x8, [x0]
+  ldr x8, [x8]
+  ldr x8, [x8]
+  mov x9, x8
+  adrp x16, ___chkstk_darwin@GOTPAGE
+  ldr x16, [x16, ___chkstk_darwin@GOTPAGEOFF]
+  blr x16
+  add x8, x8, #15
+  and x8, x8, #0xfffffffffffffff0
+  mov x9, sp
+  sub x8, x9, x8
+  mov sp, x8
+  bl _stack_lifetime_unproved
+  mov sp, x19
+  ldr x0, [sp, #8]
+  ldp x29, x30, [sp, #32]
+  ldp x19, x20, [sp, #16]
+  add sp, sp, #48
+  ret
+
+// The control: the size is overwritten through another pointer to it
+// (x1) after the probe and reloaded, so the summary proves nothing, and the
+// reloaded -16 moves sp up into the frame. Native: 99.
+.globl _$s13StackLifetime15probeDeepReloadyS2i_SitF
+_$s13StackLifetime15probeDeepReloadyS2i_SitF:
+  sub sp, sp, #48
+  stp x19, x20, [sp, #16]
+  stp x29, x30, [sp, #32]
+  add x29, sp, #32
+  mov x19, sp
+  mov x20, x0
+  mov x9, #7
+  str x9, [sp, #8]
+  ldr x8, [x20]
+  ldr x8, [x8]
+  ldr x8, [x8]
+  mov x9, x8
+  adrp x16, ___chkstk_darwin@GOTPAGE
+  ldr x16, [x16, ___chkstk_darwin@GOTPAGEOFF]
+  blr x16
+  mov x10, #-16
+  str x10, [x1]
+  ldr x8, [x20]
+  ldr x8, [x8]
+  ldr x8, [x8]
+  add x8, x8, #15
+  and x8, x8, #0xfffffffffffffff0
+  mov x9, sp
+  sub x8, x9, x8
+  mov sp, x8
+  bl _stack_lifetime_unproved
+  mov sp, x19
+  ldr x0, [sp, #8]
+  ldp x29, x30, [sp, #32]
+  ldp x19, x20, [sp, #16]
+  add sp, sp, #48
+  ret
+
 // Two spilled probed allocations: the first leaves a dynamic-allocation
 // marker, which is no escape, so the second spill keeps its proof too.
 // Native: 7.

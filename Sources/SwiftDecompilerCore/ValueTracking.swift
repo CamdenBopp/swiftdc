@@ -646,6 +646,9 @@ public struct ValueTracer: Sendable {
     /// Loader-owned slots bound to `___chkstk_darwin`: a `blr` through one
     /// is the stack probe, which preserves everything but x9 and the flags.
     var stackProbeSlots: Set<UInt64> = []
+    /// The sp moves the function's own preservation summary proves move to a
+    /// probed allocation (`CalleeRegisterSummary.provenAllocationSites`).
+    var summaryProvenAllocations: Set<UInt64> = []
     /// Loader-owned slots holding `swift_isaMask`'s address: `ldr x9,
     /// [slot]; ldr x9, [x9]; and x8, x9, isa` is the class metadata of an
     /// object whose class inherits from Objective-C.
@@ -2021,6 +2024,7 @@ public struct ValueTracer: Sendable {
             registers[.frameDynamic(base)] = .immediate(1)
         }
         Self.noteProbedAllocation(insn, spBefore: spBefore, storesOnlyToOwnFrame: storesOnlyToOwnFrame,
+                                  summaryProven: summaryProvenAllocations.contains(insn.address),
                                   into: &registers)
         if Self.writesSwiftSelf(insn) {
             registers[Self.selfFreshKey] = .immediate(1)
@@ -5923,6 +5927,7 @@ public struct ValueTracer: Sendable {
     /// sp ends the allocation's.
     private static func noteProbedAllocation(_ insn: Instruction, spBefore: AbstractValue?,
                                              storesOnlyToOwnFrame: Bool = false,
+                                             summaryProven: Bool = false,
                                              into registers: inout State) {
         // A store to an unescaped slot of this frame cannot change what the
         // size was read from (Swift spills the new sp before moving it:
@@ -5932,9 +5937,14 @@ public struct ValueTracer: Sendable {
         guard sp != spBefore else { return }
         let previous = registers[.probedAllocation]
         if previous != nil { registers[.probedAllocation] = nil }
-        guard let spBefore, let probed = registers[.probedSize],
-              case .binary(.subtract, spBefore, let size)? = sp,
-              size == probed || size == roundedTo16(probed) else { return }
+        guard let spBefore, case .binary(.subtract, spBefore, let size)? = sp else { return }
+        // The probed size, or a size the tracer holds only as unknown at a
+        // move the function's preservation summary proves (it names sizes by
+        // their loads): `ldr x8, [x0]; ldr x8, [x8, #0x80]; ldur x8, [x8,
+        // #-0x8]; ldr x8, [x8, #0x40]` in an unnamed body, whose x0 is no
+        // argument the tracer knows.
+        let probedMatch = registers[.probedSize].map { size == $0 || size == roundedTo16($0) } ?? false
+        guard probedMatch || (summaryProven && !containsFrame(size)) else { return }
         if case .frame = spBefore {} else if spBefore != previous { return }
         // Each allocation in a chain nests sp one subtraction deeper, and the
         // arithmetic depth limit made the seventh unknown (GoodLinks

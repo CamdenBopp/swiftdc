@@ -19,8 +19,9 @@ import Ccapstone
     // The pure-alias input proof adds 16: the decoded entry and the
     // branch's 32-bit offset. Entry-register roles add 24: their pending
     // forwards (construction state, emptied by closeOverProvenEntryReads),
-    // the 32-bit proven-read mask and a flag.
-    #expect(MemoryLayout<CalleeRegisterSummary>.stride <= 136)
+    // the 32-bit proven-read mask and a flag. The proven probed-allocation
+    // sites add 8: one array, empty for every function without a probe.
+    #expect(MemoryLayout<CalleeRegisterSummary>.stride <= 144)
 }
 
 /// Packing keeps every value: a Capstone id past a bank (`.other`), the

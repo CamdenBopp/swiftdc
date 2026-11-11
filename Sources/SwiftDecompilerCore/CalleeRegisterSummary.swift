@@ -60,6 +60,12 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// result register after a call only when the callee returns one there,
     /// so these are evidence about the callee's result (`callerProvenResults`).
     var resultReads: [UInt64: ResultRead] = [:]
+    /// The instructions that move sp to a probed allocation the
+    /// preservation pass proves on every path that reaches them (d9bbf74's
+    /// probe proof, its sizes named by their loads). The tracer accepts an
+    /// allocation there whose size it holds only as an unknown: a size read
+    /// from a class's generic-argument metadata in an unnamed body.
+    var provenAllocationSites: [UInt64] = []
 
     struct ResultRead: OptionSet, Sendable, Hashable {
         let rawValue: UInt8
@@ -593,7 +599,10 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         }
         var clobbered = preservedFacts?.clobberedCalleeSaved ?? Set<String>()
         var restoredFrom: [String: Int64] = preservedFacts?.restoredFrom ?? [:]
+        var allocationSites = preservedFacts?.provenAllocationSites ?? []
         if !writtenCalleeSaved.isEmpty {
+            // Every visit to an sp move must prove its allocation.
+            var stackMoves: [UInt64: Bool] = [:]
             let exits = Preservation.exitValues(
                 blocks: blocks, entry: entry, addresses: addresses,
                 callEffect: callEffect,
@@ -606,7 +615,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 // address: read as one, a later store through it unproved
                 // every save the caller made, and a method one call up lost
                 // `self` across a call it never passed self to.
-                clobbersMayAliasStack: false)
+                clobbersMayAliasStack: false,
+                onStackMove: { site, proven in stackMoves[site] = (stackMoves[site] ?? true) && proven })
+            allocationSites = exits == nil ? [] : stackMoves.filter(\.value).keys.sorted()
             if let exits {
                 for values in exits.values {
                     clobbered.formUnion(writtenCalleeSaved.filter { values[$0] != .entry($0) })
@@ -648,6 +659,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             memoryEffect: readFacts?.memoryEffect ?? CalleeMemoryEffect.discover(in: function),
             inputProofEntry: readFacts?.inputProofEntry ?? instructions.first?.address,
             pureTailTarget: readFacts?.pureTailTarget ?? pureTailTarget(of: function, isFunction: isFunction))
+        summary.provenAllocationSites = allocationSites
         summary.mayWriteResult = writesResult
         summary.resultReads = readFacts?.resultReads ?? Self.resultReads(
             instructions, blockStarts: Set(blocks.map(\.startAddress)), isFunction: isFunction,
@@ -923,6 +935,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             inputProofEntry: inputProofEntry, pureTailTarget: pureTailTarget)
         summary.mayWriteResult = mayWriteResult
         summary.resultReads = resultReads
+        summary.provenAllocationSites = provenAllocationSites
         return summary
     }
 
@@ -1091,7 +1104,15 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 outgoingCalls: old.outgoingCalls,
                 storesOnlyToStack: old.storesOnlyToStack, memoryEffect: old.memoryEffect,
                 inputProofEntry: old.inputProofEntry, pureTailTarget: old.pureTailTarget)
-            guard new != old else { continue }
+            // The sites change no other summary, so they take no part in
+            // the fixpoint's comparison: a change to them alone updates in
+            // place.
+            new.provenAllocationSites = old.provenAllocationSites
+            guard new != old else {
+                summaries[start]?.provenAllocationSites = rebuilt.provenAllocationSites
+                continue
+            }
+            new.provenAllocationSites = rebuilt.provenAllocationSites
             new.mayWriteResult = old.mayWriteResult
             new.resultReads = old.resultReads
             summaries[start] = new
@@ -1515,7 +1536,8 @@ enum Preservation {
         callEffect: (Instruction) -> CalleeEffect = { _ in CalleeEffect() },
         exitEffect: (Instruction) -> CalleeEffect = { _ in CalleeEffect() },
         callInputs: (Instruction) -> Set<String>? = { _ in nil },
-        clobbersMayAliasStack: Bool = true
+        clobbersMayAliasStack: Bool = true,
+        onStackMove: ((UInt64, Bool) -> Void)? = nil
     ) -> [UInt64: [String: Value]]? {
         let calleeSaved = calleeSavedKeys
         var initial = State(registers: ["sp": .stack(0)], slots: [:])
@@ -1556,7 +1578,13 @@ enum Preservation {
                         clobbersMayAliasStack: clobbersMayAliasStack)
                     continue
                 }
+                let spBefore = state.value("sp")
                 apply(detail, site: insn.address, to: &state)
+                if let onStackMove, state.value("sp") != spBefore {
+                    var proven = false
+                    if let base = state.probedBase, case .below(base) = state.value("sp") { proven = true }
+                    onStackMove(insn.address, proven)
+                }
             }
             for successor in block.successors where addresses.contains(successor) {
                 if let end = block.instructions.last?.address,

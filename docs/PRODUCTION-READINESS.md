@@ -2798,6 +2798,30 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   7). SpillWitness's `put` now names `initializeWithCopy value witness for A`,
   true of `table[k] = v`. GoodLinks cfg.unresolved-indirect-call 14,182 ->
   13,595.
+- **FIXED (2026-11-11, completeness): the tracer could not prove an
+  allocation whose size it holds as unknown.** An unnamed body reading a
+  dynamic size from its class's generic-argument metadata (`ldr x8, [x0];
+  ldr x8, [x8, #0x80]; ldur x8, [x8, #-0x8]; ldr x8, [x8, #0x40]`) gives the
+  tracer no value for x9 at `___chkstk_darwin`, since it seeds no argument
+  there, so the allocation went unproved and every later call forgot the
+  frame (5 of the 19 sampled unknown-sp functions). The preservation
+  summary already proves such allocations by naming sizes by their loads;
+  it now records the sp moves it proves on every visit
+  (`provenAllocationSites`), and the tracer accepts an allocation of
+  unknown size at one of them. Fixtures reuseProbedDeepSize (a size three
+  loads deep, native 7, now `return 7`) and probeDeepReload (overwritten
+  through another pointer and reloaded: native 99, still `return ?`).
+  Against d997846: 4 files, 332 structured lines, 16 unresolved indirect
+  calls resolved and none added, no return changed from one concrete value
+  to another. GoodLinks cfg.unresolved-indirect-call 11,273 -> 11,235;
+  instructions +0.13%. The summary grows by one array word (stride budget
+  136 -> 144).
+- **OPEN (2026-11-11, completeness): the summary does not recognise a
+  stack probe called through an import stub.** `bl ___chkstk_darwin` via
+  a stub in stack_lifetime.s gave the preservation summary an ordinary
+  call, which forgot x8 and the size; the tracer recognises it by name.
+  Swift calls the probe through the GOT (`adrp x16; ldr x16; blr x16`),
+  which both recognise, so no Swift site is known to be affected.
 - **FIXED (2026-11-11, completeness): a chain of probed allocations lost
   sp at its seventh link.** Each allocation nests sp one subtraction
   deeper, and an operand at the arithmetic depth limit (8) made the next
