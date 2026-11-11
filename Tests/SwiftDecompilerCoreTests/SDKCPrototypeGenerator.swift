@@ -49,6 +49,15 @@ import Testing
         compiled += 1
         CPrototypeDump.collect(lines, into: &prototypes, conflicting: &conflicting)
     }
+    // The Itanium C++ ABI runtime (`__cxa_begin_catch`, `__cxa_throw`, …)
+    // is declared `extern "C"` in a C++ header, so its names are the
+    // symbols. Only those declarations are kept: any other function there
+    // has C++ linkage, and a mangled symbol.
+    units.append(CPrototypeDump.cxxABIUnit)
+    if let lines = CPrototypeDump.astDump(of: CPrototypeDump.cxxABIUnit, cLinkageOnly: true) {
+        compiled += 1
+        CPrototypeDump.collect(lines, into: &prototypes, conflicting: &conflicting, emptyParenthesesTakeNothing: true)
+    }
     for name in conflicting { prototypes[name] = nil }
     let settings = (try? String(contentsOfFile: sdk + "/SDKSettings.json", encoding: .utf8)) ?? ""
     let sdkVersion = settings.range(of: #""Version":"[^"]*""#, options: .regularExpression)
@@ -139,6 +148,8 @@ private enum CPrototypeDump {
         return enumerator.compactMap { $0 as? String }.filter { $0.hasSuffix(".h") }.sorted()
     }
 
+    static let cxxABIUnit = "#include <cxxabi.h>\n"
+
     static var libraryUnit: String { libraryHeaders.map { "#include <\($0)>\n" }.joined() }
 
     /// The macOS SDK this host's Xcode builds against.
@@ -159,11 +170,15 @@ private enum CPrototypeDump {
     /// typedefs, function declarations and their parameters) for one
     /// translation unit, or nil when it does not compile. The dump is read
     /// in chunks, never whole.
-    static func astDump(of unit: String) -> [Substring]? {
+    ///
+    /// With `cLinkageOnly` the unit is Objective-C++, and the functions kept
+    /// are those of an `extern "C"` block in a namespace, re-indented as
+    /// top-level ones; every other function is dropped.
+    static func astDump(of unit: String, cLinkageOnly: Bool = false) -> [Substring]? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-        process.arguments = ["clang", "-x", "objective-c", "-fsyntax-only", "-fno-color-diagnostics",
-                             "-Xclang", "-ast-dump", "-"]
+        process.arguments = ["clang", "-x", cLinkageOnly ? "objective-c++" : "objective-c", "-fsyntax-only",
+                             "-fno-color-diagnostics", "-Xclang", "-ast-dump", "-"]
         let input = Pipe(), output = Pipe()
         process.standardInput = input
         process.standardOutput = output
@@ -174,8 +189,26 @@ private enum CPrototypeDump {
         var kept: [Substring] = []
         var pending = Data()
         let handle = output.fileHandleForReading
+        // Inside `namespace … { extern "C" { … } }`, at depth two.
+        var inCLinkage = false
         func keep(_ line: Data) {
-            guard let text = String(data: line, encoding: .utf8) else { return }
+            guard var text = String(data: line, encoding: .utf8) else { return }
+            if cLinkageOnly {
+                if text.hasPrefix("| |-") || text.hasPrefix("| `-") || text.hasPrefix("|-") || text.hasPrefix("`-") {
+                    inCLinkage = (text.hasPrefix("| |-LinkageSpecDecl ") || text.hasPrefix("| `-LinkageSpecDecl "))
+                        && text.hasSuffix(" C")
+                }
+                if text.hasPrefix("|-FunctionDecl ") || text.hasPrefix("`-FunctionDecl ")
+                    || text.hasPrefix("| |-ParmVarDecl ") || text.hasPrefix("| `-ParmVarDecl ") {
+                    return
+                }
+                if inCLinkage, text.hasPrefix("|   |-") || text.hasPrefix("|   `-") || text.hasPrefix("|   | ") {
+                    text = String(text.dropFirst(4))
+                    guard text.hasPrefix("|-FunctionDecl ") || text.hasPrefix("`-FunctionDecl ")
+                        || text.hasPrefix("| |-ParmVarDecl ") || text.hasPrefix("| `-ParmVarDecl ")
+                    else { kept.append("|-Other"); return }
+                }
+            }
             if text.hasPrefix("|-FunctionDecl ") || text.hasPrefix("`-FunctionDecl ")
                 || text.hasPrefix("| |-ParmVarDecl ") || text.hasPrefix("| `-ParmVarDecl ")
                 || text.hasPrefix("|-TypedefDecl ") || text.hasPrefix("`-TypedefDecl ")
@@ -220,7 +253,10 @@ private enum CPrototypeDump {
         return (name, type, desugared, String(tail))
     }
 
-    static func collect(_ lines: [Substring], into prototypes: inout [String: String], conflicting: inout Set<String>) {
+    /// `emptyParenthesesTakeNothing`: in C++ `f()` takes no parameters; in
+    /// C it declares none, which leaves them unknown.
+    static func collect(_ lines: [Substring], into prototypes: inout [String: String], conflicting: inout Set<String>,
+                        emptyParenthesesTakeNothing: Bool = false) {
         var typedefs: [String: String] = [:]
         for line in lines where line.hasPrefix("|-TypedefDecl ") || line.hasPrefix("`-TypedefDecl ") {
             // `typedef struct { … } CMTime` prints `'struct CMTime':'CMTime'`:
@@ -373,6 +409,7 @@ private enum CPrototypeDump {
             // clang prints one that takes nothing as `int (void)`.
             guard parsed, let open = decl.type.firstIndex(of: "("),
                   !parameters.isEmpty || decl.type.contains("(void)")
+                    || (emptyParenthesesTakeNothing && decl.type[open...].hasPrefix("()"))
             else { continue }
             // `void (*(int, void (*)(int)))(int)` is `signal`: the first
             // parenthesis opens the declarator of a function pointer it

@@ -229,3 +229,20 @@ func aFailedForcedTryPassesItsFiveArgumentsIfPresent(path: String) async throws 
     #expect(sysctl?.contains("args(local_20, 2, local_24, local_30, 0, 0)") == true,
             Comment(rawValue: sysctl ?? "no sysctl call"))
 }
+
+/// The Itanium C++ ABI runtime is declared `extern "C"` in `cxxabi.h`, a
+/// C++ header no C translation unit reads, so `__cxa_begin_catch(void *)`
+/// had no declaration, and its reserved name keeps the positional layout:
+/// `__cxa_begin_catch()`, the exception it is handed dropped
+/// (`libLandingPadLoop`).
+@Test func aCxxABIRuntimeCallTakesItsDeclaredParametersIfPresent() async throws {
+    let path = "Fixtures/Sample/libLandingPadLoop.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = functions.map { $0.render() + "\n" + $0.renderStructured() }.joined(separator: "\n")
+    #expect(text.contains("→ __cxa_begin_catch  args(?)"))
+    #expect(text.contains("__cxa_begin_catch(?)"))
+    #expect(!text.contains("__cxa_begin_catch()"))
+    #expect(SDKCPrototypes.entry("__cxa_end_catch") == "v ")
+    #expect(SDKCPrototypes.entry("__cxa_throw") == "v iii")
+}

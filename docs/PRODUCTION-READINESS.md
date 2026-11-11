@@ -287,9 +287,15 @@ shape it excludes.
   in-image body), and names whose arity is knowable though no table holds
   it yet: an Itanium-mangled C++ name, a reserved `__` name, and the Swift
   and Objective-C runtimes' entry points. Those keep the positional
-  layout and stay OPEN: `_ZSt9terminatev(__cxa_begin_catch())`
-  (`std::terminate()` takes nothing), `__cxa_begin_catch()`, and
-  `objc_retain_x20`'s listing note `args(arg0)` (it takes x20). Blast
+  layout and stay OPEN: `_ZSt9terminatev(__cxa_begin_catch(?))`
+  (`std::terminate()` takes nothing) and `objc_retain_x20`'s listing note
+  `args(arg0)` (it takes x20). FIXED (COMMIT): the C++ ABI runtime
+  (`__cxa_begin_catch(void *)`, `__cxa_throw`, 35 functions) is declared
+  `extern "C"` in `cxxabi.h`, which the generator now reads as one
+  Objective-C++ unit, keeping only declarations in an `extern "C"` block
+  (anything else there has C++ linkage; on SDK 27.0 that filter drops
+  nothing). `__cxa_begin_catch()` became `__cxa_begin_catch(?)` at all
+  five `libLandingPadLoop` sites; nothing else moved. Blast
   radius against origin/dev: 7 files (the two new fixtures included),
   structured 141 lines, pseudo 137,
   listing 140, all argument lists of `A`, `B`, `C`, `P`, `Q`,
