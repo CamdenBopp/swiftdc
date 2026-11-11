@@ -408,6 +408,48 @@ fix, measured and explained like any other.
 
 5. **Value identity and edge refinement.** Recovers declined exits such as the
    -Onone `try` shape and gives conditions and loop variables stable names.
+
+   Design (2026-11-11, not started). The target is `Reconstruction.typedForward`
+   at -Onone: `bl typedPick; str x21, [sp, #0x18]; cbz x21, ok; …; ok: ldr x21,
+   [sp, #0x18]; …; ret`. The source returns `r0 + 1` on that path; swiftdc
+   renders `machine_return()` because the reload of x21 is unknown.
+
+   - *Identity, not a value.* After a call that may throw, x21 is `.unknown`
+     today, and it must stay unknown to every consumer that reads it as a
+     value: `exitErrorValues` records any x21 that is not `.unknown`, and the
+     exit classifier reads a recorded value as the thrown error. So the
+     identity is a separate fact, not a new `AbstractValue` case: a State key
+     `copyOf(slot) = register` (and register-to-register), meaning "this slot
+     holds the word that register held when it was stored, and neither has
+     been written since". Nothing renders it.
+   - *Invalidation.* Any write to the register or to any byte of the slot ends
+     the fact. The tracer writes registers through many paths, so the fact
+     lives in the State storage owner and is cleared there, not at each call
+     site: every register install and every frame write effect (exact store,
+     forget, escape reach) consults it. A call ends facts for registers it
+     does not preserve. Joins keep a fact only where every predecessor has
+     it with the same register.
+   - *Refinement point.* The meet in the forward fixpoint is the only place:
+     when an incoming state's predecessor ends in `cbz`/`cbnz` on register R
+     and this block is the edge where R == 0, that state is refined before
+     the meet: R becomes `.immediate(0)`, and so does every slot whose
+     `copyOf` names R. `tbz`/`tbnz` and flag branches are out of scope at
+     first. The snapshot pass and the per-predecessor exit replay
+     (`exitErrorValuesByPredecessor`) read the same refined states, or a
+     path would classify differently from the fixpoint that proved it.
+   - *Soundness argument.* On the zero edge R is 0, and a slot that still
+     holds R's stored word holds 0. Both facts are exact, so the refinement
+     claims nothing a run could contradict. A refinement that reached a slot
+     after an intervening write would fabricate a value, so the invalidation
+     rules carry the whole proof and each needs its own mutation test.
+   - *Tests.* The -Onone and resilient typedForward renders (`return r0 + 1`
+     natively checked), plus hand-built bodies: a store to the slot between
+     the spill and the branch, a write of R, a call between, a join where one
+     path lacks the fact, and the nonzero edge. Each must stay declined, and
+     each invalidation rule is mutated away to watch its test fail.
+   - *Cost.* One more key family in every block state; the cost gate
+     measures it, and a function with no `cbz`/`cbnz` on a spilled register
+     never installs one.
 6. **Renderers read the IR**, then the §9.3 layers above it.
 
 Steps 1–3 and the step 4 extractions of write footprints, fact storage,
