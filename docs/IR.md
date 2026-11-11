@@ -423,12 +423,19 @@ fix, measured and explained like any other.
      holds the word that register held when it was stored, and neither has
      been written since". Nothing renders it.
    - *Invalidation.* Any write to the register or to any byte of the slot ends
-     the fact. The tracer writes registers through many paths, so the fact
-     lives in the State storage owner and is cleared there, not at each call
-     site: every register install and every frame write effect (exact store,
-     forget, escape reach) consults it. A call ends facts for registers it
-     does not preserve. Joins keep a fact only where every predecessor has
-     it with the same register.
+     the fact. An audit of the write paths (2026-11-11) rules out hooking
+     each one: registers change through 105 subscript assignments in
+     ValueTracking.swift plus `installCopy` and `reset`; frame words through
+     the subscript, `patch` (3 sites), `removeComponents` (2), `forget` (2)
+     and `clearValueStarts`, and the meet. So the identity rides on the facts
+     themselves: the spill stamps one token on the register's fact and the
+     slot's fact, every write replaces a fact (dropping its token) whatever
+     path it takes, and refinement requires the two tokens to match. A join
+     keeps a token only where its facts are equal on every predecessor, which
+     the existing intersection already does once the token is part of the
+     fact. Unknown-valued registers and slots hold no fact today, so the
+     token needs a fact that is present but valueless: that is the change
+     to `TraceFrameRegisterFacts` and `TraceFrameFact` this step makes.
    - *Refinement point.* The meet in the forward fixpoint is the only place:
      when an incoming state's predecessor ends in `cbz`/`cbnz` on register R
      and this block is the edge where R == 0, that state is refined before
