@@ -2798,6 +2798,21 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   7). SpillWitness's `put` now names `initializeWithCopy value witness for A`,
   true of `table[k] = v`. GoodLinks cfg.unresolved-indirect-call 14,182 ->
   13,595.
+- **FIXED (2026-11-10, completeness): a push below a dynamic allocation
+  lost sp.** A function that passes outgoing stack arguments while sp holds
+  a probed allocation pushes them (`stp x28, x0, [sp, #-0x10]!`). The
+  summary's writeback rule reset any base that was no exact frame address
+  before the store could place it inside the allocation, so sp became
+  unknown, the store forgot every save, and the callee read as clobbering
+  x19–x29 (GoodLinks 0x1003bf44c, the fifth of the sample's x29-clobbering
+  callees). A writeback through sp inside an allocation now moves it within
+  the allocation: a store through the dynamic path as before, and a load to
+  the allocation shifted by its writeback, so a pop may again reach the
+  frame above. Another register walking a buffer by writeback stays unknown,
+  since its bound would rise on every loop iteration (the first version
+  capped 24 goProgram summaries and cost it 10% more instructions). No
+  render changes alone: the pop that follows the push still lost the probe
+  proof (next entry).
 - **FIXED (2026-11-10, completeness): a byte loaded through the frame
   pointer read as a frame address.** The preservation summary's fallback
   transfer marked every register an unmodelled instruction writes as a

@@ -226,6 +226,41 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     #expect(control.clobberedCalleeSaved.contains("x29"), "\(control.clobberedCalleeSaved)")
 }
 
+/// A push below a dynamic allocation stays below it. GoodLinks passes
+/// outgoing stack arguments while sp holds an allocation (`stp x28, x0,
+/// [sp, #-0x10]!`), and the writeback made sp unknown before the store was
+/// placed, so the store forgot every save and the callee read as clobbering
+/// x19, x20 and x29. Here `aStoreIntoADynamicAllocationKeepsTheSaves`'
+/// store becomes `stp xzr, xzr, [sp, #-0x10]!`.
+@Test func aPushBelowADynamicAllocationKeepsTheSaves() throws {
+    var words: [UInt32] = [
+        0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xaa0003f3, 0xf9400008, 0x910003e9,
+        0xcb080129, 0x9100013f, 0xa9bf7fff, 0x910003bf, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
+    ]
+    let pushed = try #require(CalleeRegisterSummary.of(try body(words, name: "pushed")))
+    #expect(pushed.clobberedCalleeSaved.isEmpty, "\(pushed.clobberedCalleeSaved)")
+    // A pop moves sp up by its writeback: after `ldr x10, [sp], #0x10` the
+    // allocation's sp may sit 16 bytes higher, at the locals' base, and
+    // `str xzr, [sp, #8]` may then reach the frame record above them.
+    words.replaceSubrange(9...9, with: [0xf84107ea, 0xf90007ff])
+    let popped = try #require(CalleeRegisterSummary.of(try body(words, name: "popped")))
+    #expect(popped.clobberedCalleeSaved.contains("x29"), "\(popped.clobberedCalleeSaved)")
+}
+
+/// Only sp moves within an allocation by writeback. Another register walking
+/// a buffer (`1: ldr x10, [x9], #8; cbnz x10, 1b` over the allocation) would
+/// raise its bound on every iteration and never reach a fixpoint; capped, the
+/// summary would claim every written save clobbered. The walk's base is
+/// unknown instead, and the saves survive the loop.
+@Test func aBufferWalkInsideAnAllocationConverges() throws {
+    let words: [UInt32] = [
+        0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xaa0003f3, 0xf9400008, 0x910003e9,
+        0xcb080129, 0x9100013f, 0xf840852a, 0xb5ffffea, 0x910003bf, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
+    ]
+    let walked = try #require(CalleeRegisterSummary.of(try body(words, name: "walked")))
+    #expect(walked.clobberedCalleeSaved.isEmpty, "\(walked.clobberedCalleeSaved)")
+}
+
 /// A frame alias reaches a call only through a register the callee can take
 /// an input in. One that keeps the calling convention takes the argument
 /// registers, x8, x20 and x21: an indirect call (the machine outliner calls
@@ -715,3 +750,4 @@ private func callTarget(_ function: DisassembledFunction) throws -> UInt64 {
     let reloaded = try #require(CalleeRegisterSummary.of(try body(reload, name: "reloaded"), isStackProbe: { $0 == probe }))
     #expect(reloaded.clobberedCalleeSaved.isSuperset(of: ["x19", "x20", "x29"]), "\(reloaded.clobberedCalleeSaved)")
 }
+

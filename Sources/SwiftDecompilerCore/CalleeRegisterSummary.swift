@@ -1676,6 +1676,13 @@ enum Preservation {
         return (plan.start, base.key, after)
     }
 
+    /// `dynamicAccess` for a writeback through sp while it holds a dynamic
+    /// allocation, nil for any other access.
+    private static func spWriteback(_ detail: StructuredInsn, in state: State) -> (limit: Int64, base: String, after: Value?)? {
+        guard detail.writeback || detail.postIndex, memoryBase(of: detail)?.kind == .stackPointer else { return nil }
+        return dynamicAccess(detail, in: state)
+    }
+
     /// The transfer, then the stack-probe bookkeeping around it: size
     /// values named by their load (`site`), the proven allocation a
     /// `sub xD, xS, size` computes, and the base sp hangs below once it moves
@@ -1753,8 +1760,12 @@ enum Preservation {
             return state.stackAliases.contains(base.key)
         }
         // A writeback through a base that is no known stack address still
-        // moves that base.
-        if detail.writeback, access(detail, in: state).address == nil,
+        // moves that base. An sp inside a dynamic allocation (a push of
+        // outgoing stack arguments) moves within it, as the store and load
+        // paths below record. Another register walking a buffer by
+        // writeback would raise its bound on every loop iteration, so it
+        // stays unknown.
+        if detail.writeback, access(detail, in: state).address == nil, spWriteback(detail, in: state) == nil,
            let memory = operands.first(where: { $0.operand.isMemory }),
            case .memory(let base?, _, _) = memory.operand {
             state.setRegister(base.key, to: .unknown, mayAliasStack: state.stackAliases.contains(base.key))
@@ -1902,6 +1913,7 @@ enum Preservation {
             return
         case AARCH64_INS_LDR, AARCH64_INS_LDUR, AARCH64_INS_LDP:
             let (address, base, after) = access(detail, in: state)
+            let dynamic = address == nil ? spWriteback(detail, in: state) : nil
             let count = detail.id == AARCH64_INS_LDP ? 2 : 1
             for offset in 0..<count {
                 guard let destination = register(offset) else { continue }
@@ -1913,6 +1925,7 @@ enum Preservation {
                 }
             }
             if let base, let after { state.setRegister(base, to: after) }
+            else if let dynamic, let after = dynamic.after { state.setRegister(dynamic.base, to: after) }
             return
         default:
             break
@@ -1953,6 +1966,14 @@ enum Preservation {
             let mayAlias = readsStackAlias && (!narrowLoad || key == writebackBase)
             state.setRegister(key, to: .unknown, mayAliasStack: mayAlias)
         }
+    }
+
+    /// The base register of an instruction's memory operand.
+    private static func memoryBase(of detail: StructuredInsn) -> PhysReg? {
+        for info in detail.operands {
+            if case .memory(let base?, _, _) = info.operand { return base }
+        }
+        return nil
     }
 
     /// Loads of one, two or four bytes, zero- or sign-extended.
