@@ -415,12 +415,14 @@ public struct CallSite: Equatable, Sendable {
     public var errorValue: AbstractValue = .unknown
     /// x8 — AAPCS64's indirect result buffer, used for returns too large for x0.
     public var indirectResult: AbstractValue = .unknown
+    /// xN for `objc_retain_xN`, the one argument it takes.
+    public var retainedValue: AbstractValue = .unknown
 
     /// Whether nothing at all was inferred (so there's nothing worth showing).
     public var isEmpty: Bool {
         arguments.isEmpty && floatArguments.allSatisfy { $0 == .unknown }
             && stackArguments.isEmpty && selfValue == .unknown
-            && errorValue == .unknown && indirectResult == .unknown
+            && errorValue == .unknown && indirectResult == .unknown && retainedValue == .unknown
     }
 }
 
@@ -1705,13 +1707,14 @@ public struct ValueTracer: Sendable {
         facts: FunctionFacts = FunctionFacts()
     ) {
         if insn.controlFlow == .call {
-            let site = Self.snapshot(registers, saveSlots: facts.frame.saveSlots)
+            let call = facts.call(insn)
+            var site = Self.snapshot(registers, saveSlots: facts.frame.saveSlots)
+            if let source = call.retainedRegister { site.retainedValue = registers[.x(source)] ?? .unknown }
             if let record {
                 if !site.isEmpty { record(insn.address, site) }
             }
             let incomingX0 = registers[.x(0)] ?? .unknown
             let beforeCall = registers
-            let call = facts.call(insn)
             if let effect = insn.branchTarget.flatMap({ calleeMemoryEffects[$0] }),
                let plan = completeCallPlan(effect, at: insn.address, call: call, before: beforeCall) {
                 applyCompleteCall(plan, at: insn.address, before: beforeCall, into: &registers,

@@ -8722,6 +8722,14 @@ public struct Disassembler: Sendable {
                 values = site.errorValue == .unknown ? [] : [site.errorValue]
                 strategy = "will-throw"
             }
+            // `objc_retain_xN` takes the object in xN, nothing in x0: a
+            // Swift method's `objc_retain_x20` read `args(arg0)`, x0's
+            // value, where it retains `self`.
+            if let callee = calleeByAddress[address], ValueTracer.retainedRegister(callee) != nil {
+                argumentsByAddress[address] = [sanitizeValue(site.retainedValue)]
+                strategy = "retained-register"
+                continue
+            }
             // A getter that takes no explicit argument shows none, whatever
             // x0 held: `static DispatchQoS.unspecified.getter(r0)` was a stale
             // register (55 static getters in one app).

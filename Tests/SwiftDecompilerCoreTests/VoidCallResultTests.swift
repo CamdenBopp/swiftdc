@@ -61,6 +61,8 @@ import Testing
                                             instructions: body, source: .symbol)
         let result = ValueTracer().analyze(function, entry: .swiftFunction(scalarArguments: ["x0": 0, "x1": 1]))
         #expect(result.exitValues[0x1008] == (trusted ? .argument(1) : .callResult(0x1004)))
+        // Its one argument is x20's value, never x0's.
+        #expect(result.callSites[0x1004]?.retainedValue == (trusted ? .argument(1) : .unknown))
     }
     #expect(ValueTracer.retainedRegister("objc_retain_x20") == 20)
     #expect(ValueTracer.retainedRegister("objc_retain") == nil)
@@ -76,4 +78,8 @@ import Testing
     #expect(text.contains("RetainRegister.enroll("), Comment(rawValue: text))
     #expect(!text.contains("enroll(self: arg0"), Comment(rawValue: text))
     #expect(!text.contains("enroll(arg0"), Comment(rawValue: text))
+    // The stub's argument is x20, which nothing here proves; x0 is `k`.
+    let listing = try #require(functions.first).render()
+    #expect(listing.contains("→ objc_retain_x20  args(?)"), Comment(rawValue: listing))
+    #expect(!listing.contains("objc_retain_x20  args(arg0)"), Comment(rawValue: listing))
 }

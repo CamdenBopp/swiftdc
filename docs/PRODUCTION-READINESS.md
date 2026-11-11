@@ -287,9 +287,13 @@ shape it excludes.
   in-image body), and names whose arity is knowable though no table holds
   it yet: an Itanium-mangled C++ name, a reserved `__` name, and the Swift
   and Objective-C runtimes' entry points. Those keep the positional
-  layout and stay OPEN: `objc_retain_x20`'s listing note `args(arg0)` (it
-  takes x20), and a nested or templated Itanium name, whose mangling does
-  not say whether it takes `this`. FIXED (507b8f9): an unscoped or `std::`
+  layout and stay OPEN: a nested or templated Itanium name, whose mangling
+  does not say whether it takes `this`. FIXED (COMMIT): `objc_retain_xN`
+  takes its one argument from xN: `objc_retain_x20  args(arg0)` in
+  `RetainRegister.Node.join` read x0, which holds `k`, an Int; it is now
+  `args(?)` (x20 is `self`, which the tracer does not seed for a Swift
+  method of an NSObject subclass), and `objc_retain_x19` in `enroll`
+  gained `args(arg0)`, the object x19 keeps. FIXED (507b8f9): an unscoped or `std::`
   Itanium free function whose parameter list is `v` takes nothing:
   `_ZSt9terminatev(__cxa_begin_catch(?))` became `__cxa_begin_catch(?)`
   then `_ZSt9terminatev()`. FIXED (4a95e81): the C++ ABI runtime
