@@ -2798,6 +2798,24 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   7). SpillWitness's `put` now names `initializeWithCopy value witness for A`,
   true of `table[k] = v`. GoodLinks cfg.unresolved-indirect-call 14,182 ->
   13,595.
+- **FIXED (2026-11-10, completeness): any escape ended the probe proof at
+  the spill of the new sp.** 326a7ee let a store to an exact frame slot keep
+  `___chkstk_darwin`'s proof only while no frame address had escaped at
+  all. GoodLinks 0x10085222c leaves `x29 - 0x20` in x8 before an unrelated
+  call, which escapes that local, then spills each of three allocations' sp
+  far below it; the tracer lost the proof, sp became unknown, and every
+  later call forgot the frame. The store now keeps the proof when no escaped
+  address can reach its slot (the reach `noteFrameMemoryWrite` already
+  consults). Fixtures reuseProbedSpilledEscaped (native 7, now `return 7`)
+  and probeSpillReaching (a size reloaded through a laundered pointer to the
+  stored slot: native 99, still `return ?`). ChkstkWitness's decode now
+  names each keyed container's destroy, true of the source (the Ping
+  table is spilled from cache 0x8010's metadata); the test that pinned the
+  old limitation is restated as that recovery. Against 5581ef5: 4 files,
+  362 structured lines, 72 unresolved indirect calls resolved and none
+  added; `self: ?` arguments that were dropped now show. No return changed
+  from one concrete value to another. GoodLinks
+  cfg.unresolved-indirect-call 12,204 -> 12,036; instructions -2.04%.
 - **FIXED (2026-11-10, completeness): the pop of outgoing stack arguments
   lost a probed allocation's proof.** After a push below a probed
   allocation, `add sp, sp, #0x10` moved sp from below the allocation's base

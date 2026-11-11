@@ -793,15 +793,20 @@ struct ABISourceLoweringTests {
     #expect(!put.contains("indirect_call("), Comment(rawValue: put))
 }
 
-/// The probe preserves its declared registers, but an unknown later sp
-/// supplies no frame-lifetime proof for calls made after allocation. A
-/// spilled table cannot be named from its earlier value (chkstkwitness.swift).
-@Test func aStackProbeDoesNotProveALaterDynamicStackBoundaryIfPresent() async throws {
+/// Each keyed container lives in a probed allocation, and its value-witness
+/// table is spilled to the frame before later allocations and calls. The
+/// probe proof holds across the spills of the new sp, so each table
+/// survives and its destroy is named: the Ping container's table is spilled
+/// to `[x29, #-0x60]` from the metadata of cache 0x8010
+/// (`KeyedDecodingContainer<PingCodingKeys>`) and reloaded for its destroy
+/// (chkstkwitness.swift). Until a frame address escaping anywhere ended the
+/// proof at a spill, the destroy read as unnamed.
+@Test func aStackProbeKeepsASpilledTableAcrossLaterAllocationsIfPresent() async throws {
     let path = "Fixtures/Sample/libChkstkWitness.dylib"
     guard FileManager.default.fileExists(atPath: path) else { return }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let decode = try #require(functions.first { $0.displayName.contains("of ChkstkWitness.Message.init(from:") }).renderStructured()
-    #expect(!decode.contains("destroy value witness for Swift.KeyedDecodingContainer<ChkstkWitness.Message.(PingCodingKeys"),
+    #expect(decode.contains("destroy value witness for Swift.KeyedDecodingContainer<ChkstkWitness.Message.(PingCodingKeys"),
             Comment(rawValue: decode))
     // The allocation's address is no source value.
     #expect(!decode.contains("& -16"), Comment(rawValue: decode))

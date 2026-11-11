@@ -323,6 +323,82 @@ _$s13StackLifetime18reuseProbedSpilledyS2iF:
   add sp, sp, #48
   ret
 
+// A local's address escapes before the probe (a stale `add x8, sp, #16`,
+// frame offset -48, passed to a call), and the new sp is then spilled to
+// [sp], at -64. An escaped local reaches only upward from itself, so the
+// spill cannot change what the size was read from and the proof holds.
+// Native: 7.
+.globl _$s13StackLifetime25reuseProbedSpilledEscapedyS2iF
+_$s13StackLifetime25reuseProbedSpilledEscapedyS2iF:
+  sub sp, sp, #64
+  stp x19, x20, [sp, #32]
+  stp x29, x30, [sp, #48]
+  add x29, sp, #48
+  mov x19, sp
+  mov x20, x0
+  mov x9, #7
+  str x9, [sp, #8]
+  add x8, sp, #16
+  bl _stack_lifetime_no_write
+  mov x9, x20
+  add x8, x9, #15
+  and x8, x8, #0xfffffffffffffff0
+  bl ___chkstk_darwin
+  mov x9, sp
+  sub x8, x9, x8
+  str x8, [x19]
+  mov sp, x8
+  bl _stack_lifetime_unproved
+  mov sp, x19
+  ldr x0, [sp, #8]
+  ldp x29, x30, [sp, #48]
+  ldp x19, x20, [sp, #32]
+  add sp, sp, #64
+  ret
+
+// The control: the size lives in a local whose address escaped and comes
+// back as a call result. A store to that local (reachable by the escape)
+// changes what the size is reloaded from: storing -16 and reloading moves
+// sp up by 16, into the frame, and the unproved callee overwrites the 7.
+// The proof must end at the store. Native: 99.
+.globl _$s13StackLifetime18probeSpillReachingyS2iF
+_$s13StackLifetime18probeSpillReachingyS2iF:
+  sub sp, sp, #64
+  stp x19, x20, [sp, #32]
+  stp x29, x30, [sp, #48]
+  add x29, sp, #48
+  mov x19, sp
+  mov x9, #7
+  str x9, [sp, #8]
+  str x0, [sp, #16]
+  add x0, sp, #16
+  bl _stack_lifetime_launder
+  mov x20, x0
+  ldr x9, [x20]
+  bl ___chkstk_darwin
+  mov x9, #-16
+  str x9, [x19, #16]
+  ldr x10, [x20]
+  add x8, x10, #15
+  and x8, x8, #0xfffffffffffffff0
+  mov x9, sp
+  sub x8, x9, x8
+  mov sp, x8
+  bl _stack_lifetime_unproved
+  mov sp, x19
+  ldr x0, [sp, #8]
+  ldp x29, x30, [sp, #48]
+  ldp x19, x20, [sp, #32]
+  add sp, sp, #64
+  ret
+
+// Returns its argument through arithmetic no analysis follows.
+.globl _stack_lifetime_launder
+_stack_lifetime_launder:
+  eor x9, x0, #1
+  eor x0, x9, #1
+  ret
+
 // Two spilled probed allocations: the first leaves a dynamic-allocation
 // marker, which is no escape, so the second spill keeps its proof too.
 // Native: 7.

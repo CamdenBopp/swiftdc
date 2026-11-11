@@ -1983,21 +1983,21 @@ public struct ValueTracer: Sendable {
         }
         let hadSelf = registers[Self.selfFreshKey]
         let spBefore = registers[.sp]
-        // A plain store to an exact slot of this frame, while no frame
-        // address has escaped: it cannot change memory read through any
-        // other pointer, such as a probed allocation's size.
+        // A plain store to an exact slot of this frame that no escaped frame
+        // address can reach: it cannot change memory read through any other
+        // pointer, such as a probed allocation's size. An escaped local
+        // reaches only its own object (GoodLinks' 0x10085222c passes a stale
+        // `x29 - 0x20` in x8 to a call before spilling each allocation's sp
+        // far below it), and a dynamic allocation's marker escapes no frame
+        // region.
         let storesOnlyToOwnFrame: Bool = {
-            // A dynamic allocation's marker is evidence of the allocation,
-            // not an escape.
-            let escaped = registers.keys.contains { key in
-                if case .frameDynamic = key { return false }
-                return Self.isEscapeMarker(key)
-            }
-            guard !escaped, let detail = insn.detail,
+            guard let detail = insn.detail,
                   insn.text.hasPrefix("st"), !detail.writeback, !detail.postIndex,
-                  case .stackSlot? = memoryTarget(detail, in: registers)
+                  case .stackSlot(let key)? = memoryTarget(detail, in: registers),
+                  let start = Self.stackOffset(from: key), let bytes = Self.accessBytes(detail)
             else { return false }
-            return true
+            return !(Self.escapedReach(registers, evidence: facts.frame.escapeEvidence)?.mayInvalidate(
+                FrameMemoryExtent(start: start, bytes: Int64(bytes))) ?? false)
         }()
         let inputs = noteFrameMemoryWrite(insn, into: &registers, frame: facts.frame)
         if !argumentObjectFields.isEmpty, let detail = insn.detail { noteArgumentObjectWrite(detail, into: &registers) }
