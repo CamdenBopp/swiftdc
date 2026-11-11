@@ -3176,7 +3176,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   `[? put:? at:?]`; with any callee counting it read the integer layout,
   `args(Mod.pair(), 7)`.
 
-- **FIXED (COMMIT) — an in-image Objective-C class object rendered as its
+- **FIXED (d09224d) — an in-image Objective-C class object rendered as its
   address.** `objc_factory_return.m`: `[[0x8180 alloc] initWithLimit:3]`,
   where `adrp; add x0, …, #0x180` before `objc_alloc` loads
   `_OBJC_CLASS_$_SDFactory`. The class list's entries now name their class
