@@ -288,7 +288,7 @@ shape it excludes.
   it yet: an Itanium-mangled C++ name, a reserved `__` name, and the Swift
   and Objective-C runtimes' entry points. Those keep the positional
   layout and stay OPEN: a nested or templated Itanium name, whose mangling
-  does not say whether it takes `this`. FIXED (COMMIT): `objc_retain_xN`
+  does not say whether it takes `this`. FIXED (5ff2b18): `objc_retain_xN`
   takes its one argument from xN: `objc_retain_x20  args(arg0)` in
   `RetainRegister.Node.join` read x0, which holds `k`, an Int; it is now
   `args(?)` (x20 is `self`, which the tracer does not seed for a Swift
