@@ -1197,8 +1197,13 @@ public struct Disassembler: Sendable {
         return { address in
             if let known = cache.withLock({ $0[address] }) { return known }
             var result = resolver.loadedName(at: address) == "__chkstk_darwin"
-            if !result, importStubs.contains(where: { $0.contains(address) }) {
-                let stub = self.capstoneInstructions(in: machO, span: (address, address + 12))
+            // An import stub lies outside the code sections the decoder
+            // reads (`decodeText`), so its three instructions are decoded
+            // from its own bytes: through the code sections a stub decoded
+            // to nothing, and a probe called through one went unrecognised.
+            if !result, importStubs.contains(where: { $0.contains(address) }),
+               let bytes = self.sectionBytes(address: address, size: 12, in: machO), let engine = CapstoneEngine() {
+                let stub = engine.disassemble(bytes, address: address).map(Self.instruction(decoded:))
                 if stub.count == 3, let slot = CalleeRegisterSummary.stackProbeAddress(
                     of: Instruction(address: stub[2].address, text: stub[2].text, controlFlow: .call,
                                     branchTarget: nil, detail: stub[2].detail),

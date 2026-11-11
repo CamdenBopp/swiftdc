@@ -2885,12 +2885,16 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   to another. GoodLinks cfg.unresolved-indirect-call 11,273 -> 11,235;
   instructions +0.13%. The summary grows by one array word (stride budget
   136 -> 144).
-- **OPEN (2026-11-11, completeness): the summary does not recognise a
-  stack probe called through an import stub.** `bl ___chkstk_darwin` via
-  a stub in stack_lifetime.s gave the preservation summary an ordinary
-  call, which forgot x8 and the size; the tracer recognises it by name.
-  Swift calls the probe through the GOT (`adrp x16; ldr x16; blr x16`),
-  which both recognise, so no Swift site is known to be affected.
+- **FIXED (2026-11-11, completeness): the summary did not recognise a
+  stack probe called through an import stub.** `stackProbeRecognizer`
+  decoded the stub through the code sections, and `__stubs` is none of
+  them, so a stub always decoded to nothing: `bl ___chkstk_darwin` through
+  a stub was an ordinary call to the summary, which forgot the size (the
+  tracer recognises it by name). The stub is now decoded from its own
+  bytes. Fixture reuseProbedStubbed (native 7, now `return 7`). Swift calls
+  the probe through the GOT, which was recognised already, so no Swift
+  render changes: against d674f17 only that fixture moves, and GoodLinks
+  cfg.unresolved-indirect-call stays 10,882.
 - **FIXED (2026-11-11, completeness): a chain of probed allocations lost
   sp at its seventh link.** Each allocation nests sp one subtraction
   deeper, and an operand at the arithmetic depth limit (8) made the next

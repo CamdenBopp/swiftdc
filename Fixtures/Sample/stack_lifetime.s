@@ -556,6 +556,37 @@ _$s13StackLifetime19reuseProbedDeepSizeyS2iF:
   add sp, sp, #48
   ret
 
+// reuseProbedDeepSize with the probe called through an import stub (`bl
+// ___chkstk_darwin`). The summary decoded a stub through the code sections,
+// which hold no stubs, so it never recognised the probe and proved nothing.
+// Native: 7.
+.globl _$s13StackLifetime18reuseProbedStubbedyS2iF
+_$s13StackLifetime18reuseProbedStubbedyS2iF:
+  sub sp, sp, #48
+  stp x19, x20, [sp, #16]
+  stp x29, x30, [sp, #32]
+  add x29, sp, #32
+  mov x19, sp
+  mov x9, #7
+  str x9, [sp, #8]
+  ldr x8, [x0]
+  ldr x8, [x8]
+  ldr x8, [x8]
+  mov x9, x8
+  bl ___chkstk_darwin
+  add x8, x8, #15
+  and x8, x8, #0xfffffffffffffff0
+  mov x9, sp
+  sub x8, x9, x8
+  mov sp, x8
+  bl _stack_lifetime_unproved
+  mov sp, x19
+  ldr x0, [sp, #8]
+  ldp x29, x30, [sp, #32]
+  ldp x19, x20, [sp, #16]
+  add sp, sp, #48
+  ret
+
 // The control: the size is overwritten through another pointer to it
 // (x1) after the probe and reloaded, so the summary proves nothing, and the
 // reloaded -16 moves sp up into the frame. Native: 99.
