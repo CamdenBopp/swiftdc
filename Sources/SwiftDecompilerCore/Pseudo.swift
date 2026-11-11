@@ -848,6 +848,36 @@ public extension DisassembledFunction {
             }
     }
 
+    /// `_Z`, an optional `L` (internal linkage), an optional `St`
+    /// (`std::`), one source name (its length, then that many bytes), and
+    /// the parameter list `v`: a free function that takes nothing. A
+    /// nested name (`_ZN3Foo3barEv`) is declined, because a static member
+    /// takes nothing where an instance method takes `this`, and the
+    /// mangling does not say which; so is a template, a special name and
+    /// anything else this does not parse whole.
+    static func isItaniumFreeFunctionTakingNothing(_ callee: String) -> Bool {
+        var bytes = Substring(callee).utf8[...]
+        guard bytes.starts(with: "_Z".utf8) else { return false }
+        bytes = bytes.dropFirst(2)
+        if bytes.first == UInt8(ascii: "L") { bytes = bytes.dropFirst() }
+        if bytes.starts(with: "St".utf8) { bytes = bytes.dropFirst(2) }
+        var length = 0
+        var digits = 0
+        while let byte = bytes.first, byte >= UInt8(ascii: "0"), byte <= UInt8(ascii: "9") {
+            guard digits < 4, !(digits == 0 && byte == UInt8(ascii: "0")) else { return false }
+            length = length * 10 + Int(byte - UInt8(ascii: "0"))
+            digits += 1
+            bytes = bytes.dropFirst()
+        }
+        guard length > 0, bytes.count == length + 1 else { return false }
+        let name = bytes.prefix(length)
+        guard name.allSatisfy({ byte in
+            byte == UInt8(ascii: "_") || (byte | 0x20 >= UInt8(ascii: "a") && byte | 0x20 <= UInt8(ascii: "z"))
+                || (byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9"))
+        }) else { return false }
+        return bytes.last == UInt8(ascii: "v")
+    }
+
     static func knownCArity(of callee: String) -> Int? {
         switch callee {
         case "abort", "__stack_chk_fail", "objc_autoreleasePoolPush", "objc_exception_rethrow",
@@ -1010,6 +1040,10 @@ public extension DisassembledFunction {
         default:
             // The formatted-emit os_log helpers: (dso, log, type, format, buf, size).
             if callee.hasPrefix("_os_log"), callee.hasSuffix("_impl") { return 6 }
+            // An Itanium-mangled free function whose parameter list is `v`
+            // takes nothing: `_ZSt9terminatev` is `std::terminate()`, and a
+            // stale x0 printed as its argument.
+            if isItaniumFreeFunctionTakingNothing(callee) { return 0 }
             // `() -> WitnessTable` (swift/lib/IRGen/GenDecl.cpp:6384,
             // `FunctionType::get(WitnessTablePtrTy, false)`). A stale x0 used
             // to print as its argument, often a whole unrelated call.

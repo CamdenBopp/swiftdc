@@ -246,3 +246,25 @@ func aFailedForcedTryPassesItsFiveArgumentsIfPresent(path: String) async throws 
     #expect(SDKCPrototypes.entry("__cxa_end_catch") == "v ")
     #expect(SDKCPrototypes.entry("__cxa_throw") == "v iii")
 }
+
+/// An Itanium-mangled free function whose parameter list is `v` takes
+/// nothing: `_ZSt9terminatev` is `std::terminate()`, and read
+/// `_ZSt9terminatev(__cxa_begin_catch(?))` with a stale x0
+/// (`libLandingPadLoop`). A nested name is declined: `_ZN3Foo3barEv` is a
+/// static member taking nothing or an instance method taking `this`.
+@Test func anItaniumFreeFunctionOfVoidTakesNothingIfPresent() async throws {
+    for name in ["_ZSt9terminatev", "_Z3foov", "_ZL3foov", "_Z10long_name1v"] {
+        #expect(DisassembledFunction.isItaniumFreeFunctionTakingNothing(name), "\(name)")
+        #expect(DisassembledFunction.knownCArity(of: name) == 0, "\(name)")
+    }
+    for name in ["_ZN3Foo3barEv", "_Z3fooi", "_Z3foo", "_Z03foov", "_Z3foovv", "_Z3fooiv",
+                 "_Z1fIiEvv", "_ZSt9terminatevx", "_Z4foov", "Z3foov", "_Z", "_Zv", "_Z3a.bv"] {
+        #expect(!DisassembledFunction.isItaniumFreeFunctionTakingNothing(name), "\(name)")
+    }
+    let path = "Fixtures/Sample/libLandingPadLoop.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(text.contains("_ZSt9terminatev()"), Comment(rawValue: text))
+    #expect(!text.contains("_ZSt9terminatev(__cxa_begin_catch"), Comment(rawValue: text))
+}
