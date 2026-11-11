@@ -1935,13 +1935,32 @@ enum Preservation {
             state.stackAddressEscaped = true
             state.recordReachable = true
         }
+        // A load of fewer than eight bytes reads data, not an address: the
+        // frame base it was read through gives its destination no frame
+        // alias (`ldrb w15, [x29, #0x58]; strb w15, [sp, #0x130]` is a Bool
+        // argument copied, no escape). Only a writeback base stays an alias.
+        let narrowLoad = Self.narrowLoads.contains(detail.id)
+        let writebackBase: String? = narrowLoad && (detail.writeback || detail.postIndex)
+            ? operands.lazy.compactMap { info -> String? in
+                if case .memory(let base?, _, _) = info.operand { return base.key }
+                return nil
+            }.first
+            : nil
         for key in writtenRegisterKeys(in: detail) {
             // The unmodeled overlapping bank was already invalidated above,
             // including aliases that an SVE register spelling cannot name.
             if writesUnmodeledRegister(detail) && key.hasPrefix("v") { continue }
-            state.setRegister(key, to: .unknown, mayAliasStack: readsStackAlias)
+            let mayAlias = readsStackAlias && (!narrowLoad || key == writebackBase)
+            state.setRegister(key, to: .unknown, mayAliasStack: mayAlias)
         }
     }
+
+    /// Loads of one, two or four bytes, zero- or sign-extended.
+    private static let narrowLoads: Set<aarch64_insn> = [
+        AARCH64_INS_LDRB, AARCH64_INS_LDURB, AARCH64_INS_LDRH, AARCH64_INS_LDURH,
+        AARCH64_INS_LDRSB, AARCH64_INS_LDURSB, AARCH64_INS_LDRSH, AARCH64_INS_LDURSH,
+        AARCH64_INS_LDRSW, AARCH64_INS_LDURSW,
+    ]
 }
 
 /// Where the x20 a body was called with may live, and whether the body reads

@@ -433,6 +433,35 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
 }
 
+/// A byte loaded through the frame pointer is data, not a frame address:
+/// storing it to a local escapes nothing (GoodLinks copies a Bool stack
+/// argument, `ldrb w15, [x29, #0x58]; strb w15, [sp, #0x130]`). Its
+/// destination was a possible frame alias, which made the store an escape of
+/// the whole frame, so the callee read as clobbering x19, x20 and x29.
+///
+///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
+///     sub sp, sp, #0x10; mov x19, x0; ldrb w9, [x29, #0x20]; strb w9, [sp]
+///     mov x0, sp; bl 0x2000; add sp, sp, #0x10; ldp x20, x19, [sp, #0x10]
+///     ldp x29, x30, [sp], #0x20; ret
+@Test func aNarrowLoadThroughTheFrameIsNoFrameAddress() throws {
+    var words: [UInt32] = [
+        0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xaa0003f3, 0x394083a9, 0x390003e9,
+        0x910003e0, 0x940003f8, 0x910043ff, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
+    ]
+    let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "flag")))
+    #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
+    // The control: a byte store of x29 itself (`strb w29, [sp]`) still
+    // escapes the frame.
+    words[6] = 0x390003fd
+    let control = try #require(CalleeRegisterSummary.of(try body(words, name: "fp")))
+    #expect(control.clobberedCalleeSaved.contains("x29"), "\(control.clobberedCalleeSaved)")
+    // A post-indexed load's base is still an address: `mov x1, sp;
+    // ldrb w9, [x1], #1; str x1, [x19]` stores a frame address to memory.
+    words[5] = 0x910003e1; words[6] = 0x38401429; words[7] = 0xf9000261
+    let walked = try #require(CalleeRegisterSummary.of(try body(words, name: "walked")))
+    #expect(walked.clobberedCalleeSaved.contains("x29"), "\(walked.clobberedCalleeSaved)")
+}
+
 /// A join of two dynamic allocations keeps sp below the higher bound, so a
 /// store through it still reaches no save:
 ///

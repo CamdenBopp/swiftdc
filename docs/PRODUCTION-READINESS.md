@@ -2798,6 +2798,21 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   7). SpillWitness's `put` now names `initializeWithCopy value witness for A`,
   true of `table[k] = v`. GoodLinks cfg.unresolved-indirect-call 14,182 ->
   13,595.
+- **FIXED (2026-11-10, completeness): a byte loaded through the frame
+  pointer read as a frame address.** The preservation summary's fallback
+  transfer marked every register an unmodelled instruction writes as a
+  possible frame alias when it read one, and a narrow load (`ldrb`, `ldrh`,
+  `ldrsw` and kin) reads its base. GoodLinks copies a Bool stack argument
+  (`ldrb w15, [x29, #0x58]; strb w15, [sp, #0x130]`), which became an escape
+  of the whole frame and a callee summarised as clobbering x19–x29. A load of
+  fewer than eight bytes now gives its destination no alias; a writeback
+  base keeps it. An eight-byte `ldr` already gave none.
+  Against 4b30c61: 8 real dylibs, 1,208 structured lines (`?`-bearing lines
+  181 removed, 63 added); callee-saved frame bases and indirect results
+  survive calls (`&result`, `self: local_78`), so their stores become
+  frame-slot stores, which the renderer already hides. No return changed
+  from one concrete value to another. GoodLinks
+  cfg.unresolved-indirect-call 12,350 -> 12,225.
 - **FIXED (2026-11-10, completeness): a local in the save area's padding
   reached the saves.** LLVM places small locals in the alignment holes of
   the prologue's save area: GoodLinks passes `x29 - 0x48` (between x28's
