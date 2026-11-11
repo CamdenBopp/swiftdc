@@ -3161,13 +3161,20 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   alignment padding between functions. Comparing a decoder against itself proves
   nothing; the numbers above use an external tool.
 
-- **OPEN — a send whose receiver is another send's result drops a known
-  argument.** `objc_factory_return.m` (-O2): `[r0 setLimit:?]` with `mov w2,
-  #4` right before the send, and `[r0 addObject:?]` with `x2 = @"y"`, where
-  r0 came from `initWithLimit:`/`initWithCapacity:`. The same argument
-  renders when the receiver comes from `objc_alloc_init` or `objc_opt_new`
-  (`setLimit:arg0`, `addObject:@"x"`). A decline, not a wrong value; the
-  mechanism is not yet found.
+- **FIXED (COMMIT) — a send whose receiver is another send's result dropped
+  a known argument.** `objc_factory_return.m` (-O2): `[r0 setLimit:?]` with
+  `mov w2, #4` right before the send, and `[r0 addObject:?]` with `x2 =
+  @"y"`, where r0 came from `initWithLimit:`/`initWithCapacity:`. The
+  untyped-float check walks back to the previous call and declines when
+  that call may have left a double in d0; a send of unknown signature may.
+  But the next send's receiver is that send's x0 result, so it returned in
+  x0, and a C or Objective-C return is in x registers or v registers,
+  never both. Now `[r0 setLimit:4]` and `[r0 addObject:@"y"]`. Only a send
+  counts: a Swift callee returns a `{object, Double}` struct in x0 and d0
+  at once, and `_putPairPart` (assembly in `objc_untyped_float.m`, since
+  compiled Swift retains between the call and the send) keeps
+  `[? put:? at:?]`; with any callee counting it read the integer layout,
+  `args(Mod.pair(), 7)`.
 
 ## 3. Robustness — what breaks it?
 

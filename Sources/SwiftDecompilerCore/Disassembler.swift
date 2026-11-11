@@ -8519,7 +8519,8 @@ public struct Disassembler: Sendable {
             // pointer or nothing.
             return isNameTwin(insn.address) || DisassembledFunction.knownCArity(of: callee) == nil
         }
-        func setsFloatingPointArgument(before address: UInt64, integerGap: Bool = true) -> Bool {
+        func setsFloatingPointArgument(before address: UInt64, integerGap: Bool = true,
+                                       receiver: AbstractValue = .unknown) -> Bool {
             guard let callIndex = instructionIndex[address] else { return false }
             var settled = Set<Int>()
             var stored = Set<Int>()
@@ -8532,7 +8533,17 @@ public struct Disassembler: Sendable {
                 // may be the argument: `[o zput:f() at:7]` passes f()'s
                 // double in d0 and rendered `zput:7 at:?`.
                 if insn.controlFlow == .call {
-                    if !settled.contains(0), !stored.contains(0), callMayReturnFloat(insn) { return true }
+                    // A send whose receiver is that call's x0 result proves
+                    // the call returned in x0, and a C or Objective-C return
+                    // is in x registers or v registers, never both: v0 holds
+                    // no result of it. `[[F alloc] initWithLimit:3]` then
+                    // `setLimit:4` rendered `setLimit:?`. (A Swift callee can
+                    // return in both, so only a send counts.)
+                    let returnedInX0 = receiver == .callResult(insn.address)
+                        && calleeByAddress[insn.address].map {
+                            selectorName(callee: $0, arguments: sites[insn.address]?.arguments ?? []) != nil
+                        } == true
+                    if !returnedInX0, !settled.contains(0), !stored.contains(0), callMayReturnFloat(insn) { return true }
                     break
                 }
                 if let flow = insn.controlFlow, flow != .sequential { break }
@@ -9177,7 +9188,7 @@ public struct Disassembler: Sendable {
                         let value = sanitizeValue(values[index])
                         return value == .unknown || value == .argument(index)
                     }
-                    if colons > 0, setsFloatingPointArgument(before: address, integerGap: integerGap) {
+                    if colons > 0, setsFloatingPointArgument(before: address, integerGap: integerGap, receiver: receiver) {
                         argumentsByAddress[address] = ([receiver, selectorValue]
                             + Array(repeating: AbstractValue.unknown, count: colons)).map(sanitizeValue)
                         strategy = "objc-untyped-float"

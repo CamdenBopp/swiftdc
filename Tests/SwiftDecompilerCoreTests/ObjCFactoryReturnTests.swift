@@ -31,9 +31,9 @@ private func occurrences(of needle: String, in text: String) -> Int {
     guard let bodies = try await factoryBodies("Fixtures/Sample/libObjCFactoryReturn.dylib") else { return }
     let expected: [(name: String, binding: String, send: String)] = [
         ("+[SDFactory k1:]", "let r0 = [[self alloc] init]", "[r0 setLimit:arg0]"),
-        ("+[SDFactory k2]", "initWithLimit:3]", "[r0 setLimit:"),
+        ("+[SDFactory k2]", "initWithLimit:3]", "[r0 setLimit:4]"),
         ("+[SDFactory k3]", "let r0 = [[NSMutableArray alloc] init]", "[r0 addObject:@\"x\"]"),
-        ("+[SDFactory k4]", "let r0 = [[NSMutableArray alloc] initWithCapacity:4]", "[r0 addObject:"),
+        ("+[SDFactory k4]", "let r0 = [[NSMutableArray alloc] initWithCapacity:4]", "[r0 addObject:@\"y\"]"),
     ]
     for (name, binding, send) in expected {
         let body = try #require(bodies[name], "\(name) missing")
