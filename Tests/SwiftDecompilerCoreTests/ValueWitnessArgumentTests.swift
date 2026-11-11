@@ -80,13 +80,14 @@ private func structured(_ path: String) async throws -> [String: String] {
                     "initializeWithTake value witness for A.Element("] {
         #expect(withSymbols.contains(witness), "\(witness)")
     }
-    // Stripped, the third buffer's size is read through an argument the
-    // tracer cannot name, so the probed size and sp's adjustment are not
-    // shown equal: an unproved callee may reuse any slot, and the witness
-    // calls stay unresolved rather than named from a stale slot. Each
-    // associated type's metadata still reaches the call that needs it.
+    // Stripped, the third buffer's size is read from the argument
+    // metadata's value-witness table (`[[arg1 - 8] + 0x40]`); followed, it is
+    // the probed size, so the same witnesses are named, for arg1.
     let bare = try await structured(stripped).values.joined(separator: "\n")
-    #expect(bare.contains("associated type descriptor for Swift.Sequence.Element"))
+    for witness in ["destroy value witness for arg1.Iterator(", "destroy value witness for arg1.Element(",
+                    "initializeWithTake value witness for arg1.Element("] {
+        #expect(bare.contains(witness), "\(witness)")
+    }
     #expect(!bare.contains(" value witness for ?."))
     let text = try await structured(asm)
     #expect(text["_vwAssocDestroy"]?.contains("destroy value witness for arg6.Element(") == true, "\(text["_vwAssocDestroy"] ?? "")")

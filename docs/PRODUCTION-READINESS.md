@@ -159,8 +159,8 @@ shape it excludes.
   (14,853 − 12,577) is stale: GoodLinks has 15,504 unresolved indirect calls
   at 9369b0e, and the unknown-sp share is not separated from the
   frame-ownership cost. Stripped countAll (libAssociatedWitness.stripped
-  `sub_590`) still has 7 unresolved witness calls: its third buffer's size is
-  read through an argument the stripped tracer cannot name. The preservation
+  `sub_590`) names its witnesses since the argument-metadata size is followed
+  (2026-11-10). The preservation
   summary forgot every saved value when sp was not exact; since 774a43e it
   keeps a `___chkstk_darwin`-probed allocation's bound, as the tracer does.
 
@@ -2761,6 +2761,17 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   table: `ExistentialWitness.Named.name() witness for arg0(…)`. A method's
   parameters are laid out the same way, self in x20 (`Registry.lookup(_:)`).
   GoodLinks is unchanged at 14,810 for both.
+- **FIXED (2026-11-10, completeness): a dynamic allocation sized from
+  argument metadata had no probe proof.** A generic function's buffer size is
+  `[[arg - 8] + 0x40]`, its type's value-witness size, and the tracer followed
+  argument metadata only through the witness function slots (excluding
+  +0x40, since a tracked size once fed the pre-probe dynamic-allocation
+  rule). So the probed size was unknown and no proof formed. +0x40 is
+  followed now; the probe proof (d9bbf74, 326a7ee) needs exactly that value.
+  Stripped countAll (libAssociatedWitness.stripped), recorded OPEN as
+  declined, names its witnesses as the symbol build does, for arg1 (`destroy
+  value witness for arg1.Iterator`). GoodLinks cfg.unresolved-indirect-call
+  12,741 -> 12,451.
 - **FIXED (774a43e, completeness): the preservation summary forgot every
   save after a probed allocation.** A Swift function with a dynamically
   sized local (`bl ___chkstk_darwin; mov x9, sp; sub x8, x9, x8; mov sp,

@@ -5644,7 +5644,7 @@ public struct ValueTracer: Sendable {
                  && !detail.postIndex && !detail.writeback,
              .argument where effective == -8,
              .loadedFrom(.argument, -8) where effective % 8 == 0
-                 && ((0 ..< 0x40).contains(effective) || (0x58 ... 0x68).contains(effective)):
+                 && ((0 ... 0x40).contains(effective) || (0x58 ... 0x68).contains(effective)):
             return .throughValue(registers[Location(base)] ?? .unknown, offset: Int(effective))
         case .selfPointer: return .selfField(Int(effective))
         case .selfField(let field): return .selfField(field + Int(effective))
