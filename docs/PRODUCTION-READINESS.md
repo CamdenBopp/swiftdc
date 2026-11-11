@@ -165,6 +165,15 @@ shape it excludes.
   (2026-11-10). The preservation
   summary forgot every saved value when sp was not exact; since 774a43e it
   keeps a `___chkstk_darwin`-probed allocation's bound, as the tracer does.
+  Re-measured 2026-11-11 at d49207f: GoodLinks has 10,849 unresolved
+  indirect calls. Since 2ec4e99 (12,451) the probe proof survives pushes and
+  pops of stack arguments (e978917, 5581ef5, 32bfbfe, d49207f), spills of
+  the new sp (d1754ef), long chains (d997846), sizes only the summary
+  proves (10e0f62, d7a8de3) and stub-called probes (8acb347). Of a fixed
+  40-function sample, 26 are now free of every whole-frame escape (14 at
+  2ec4e99); an unknown sp remains in 6, a callee that reads a register
+  holding a frame address in 9 (d674f17 removed those it never reads), and
+  an unbounded value in 4.
 
 - **FIXED — a callee that may clobber x29 left the caller's frame
   intact.** A call to a body summarised as not preserving x29, made while
@@ -3641,7 +3650,10 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   libSample, libImportedReceiver.opt, libABISource.resilient and
   libProtocolWitness.resilient, 6,000 runs; container mode, 150 each (seed
   20261111) of libSample and libImportedReceiver.opt, 2,700 runs. No crash
-  and no timeout.
+  and no timeout. At 8acb347 (2026-11-11), both modes, 40 mutants each (seed
+  20261111) of libStackLifetime, libChkstkWitness and libExistentialWitness:
+  1,880 runs, no crash and no timeout (libStackLifetime has no Swift
+  metadata to mutate).
 - **MITIGATED — behavior across optimization levels.** The differential oracle
   now runs at both `-Onone` and `-O` (318 comparisons each), executing the
   recovered expression against the real compiled function at each level. This is
