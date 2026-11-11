@@ -289,7 +289,7 @@ shape it excludes.
   and Objective-C runtimes' entry points. Those keep the positional
   layout and stay OPEN: `objc_retain_x20`'s listing note `args(arg0)` (it
   takes x20), and a nested or templated Itanium name, whose mangling does
-  not say whether it takes `this`. FIXED (COMMIT): an unscoped or `std::`
+  not say whether it takes `this`. FIXED (507b8f9): an unscoped or `std::`
   Itanium free function whose parameter list is `v` takes nothing:
   `_ZSt9terminatev(__cxa_begin_catch(?))` became `__cxa_begin_catch(?)`
   then `_ZSt9terminatev()`. FIXED (4a95e81): the C++ ABI runtime
