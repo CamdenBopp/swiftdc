@@ -1226,6 +1226,11 @@ enum Preservation {
         // and is not here.
         var prologueSaves: Set<Int64> = []
         var prologueOpen = true
+        // Every byte range the prologue stored, whatever the register: start
+        // to width. Bytes of the save area it never stored are padding, where
+        // LLVM places small locals (a byte flag at x29 - 0x41, an inout word
+        // at x29 - 0x48), and an address there names that local.
+        var prologueStores: [Int64: Int] = [:]
         // `___chkstk_darwin`'s proof, as the tracer keeps it (d9bbf74): the
         // size it probed (x9, a `.size` value), the registers a proven
         // allocation `stack - size` (or its 16-rounding) was computed into,
@@ -1266,6 +1271,12 @@ enum Preservation {
         /// while the prologue is open and the register is x19–x28. Once x29
         /// holds a frame address (`add x29, sp, #k`, `mov x29, sp`) the
         /// prologue has ended, whichever instruction set it.
+        mutating func notePrologueStore(at slot: Int64, bytes: Int) {
+            if case .stack = value("x29") { prologueOpen = false }
+            guard prologueOpen else { return }
+            prologueStores[slot] = max(prologueStores[slot] ?? 0, bytes)
+        }
+
         mutating func notePrologueSave(_ register: String, at slot: Int64) {
             if case .stack = value("x29") { prologueOpen = false }
             guard prologueOpen, register.hasPrefix("x"), let number = Int(register.dropFirst()),
@@ -1315,6 +1326,7 @@ enum Preservation {
             result.recordReachable = recordReachable || other.recordReachable
             result.prologueSaves = prologueSaves.intersection(other.prologueSaves)
             result.prologueOpen = prologueOpen && other.prologueOpen
+            result.prologueStores = prologueStores.merging(other.prologueStores, uniquingKeysWith: max)
             // A probe and its allocation are one straight-line sequence.
             result.provenAllocations = provenAllocations.filter { other.provenAllocations[$0.key] == $0.value }
             result.probedBase = probedBase == other.probedBase ? probedBase : nil
@@ -1343,6 +1355,7 @@ enum Preservation {
             }.sorted()
             let evidence = DynamicEscapeSaveEvidence(sortedEntryStarts: entrySlots)
             let record = saveAreaFloor()
+            let padding = savePadding()
             for (key, _) in registerFacts.selected(keys) {
                 // Keep each selected register's transaction separate: an Any
                 // input must not erase a different input's bounded ranges.
@@ -1353,7 +1366,7 @@ enum Preservation {
                 case .finite(let offsets, let below):
                     // A dynamic allocation lies below sp, so below the record.
                     if let record {
-                        if offsets.contains(where: { $0 >= record }) || below.map({ $0 > record }) == true {
+                        if offsets.contains(where: { $0 >= record && !padding($0) }) || below.map({ $0 > record }) == true {
                             recordReachable = true
                         }
                     } else if !offsets.isEmpty || below != nil {
@@ -1402,6 +1415,21 @@ enum Preservation {
         func saveAreaFloor() -> Int64? {
             guard let record = frameRecordBase() else { return nil }
             return ([record] + prologueSaves.filter { $0 < 0 }).min()
+        }
+
+        /// Whether a frame offset is save-area padding: below the frame record
+        /// and inside no byte range the prologue stored. Such a byte is no
+        /// save, so an address of it is a local's (the owner's policy: the
+        /// saves are no local's object). Every save at or above the floor was
+        /// stored by the prologue, which `saveAreaFloor` is made of.
+        func savePadding() -> (Int64) -> Bool {
+            guard let base = frameRecordBase() else { return { _ in false } }
+            let ranges = prologueStores.sorted { $0.key < $1.key }
+            return { offset in
+                offset < base && !ranges.contains { start, bytes in
+                    offset >= start && offset - start < Int64(bytes)
+                }
+            }
         }
 
         /// The frame pointer's offset while x29 holds a frame address whose
@@ -1844,6 +1872,7 @@ enum Preservation {
                     }
                     let slot = address &+ Int64(offset * bytes)
                     state.invalidateSlots(at: slot, bytes: bytes)
+                    state.notePrologueStore(at: slot, bytes: bytes)
                     // A GPR word or a vector's low 64 bits can save an entry
                     // value. A Q store invalidated all 16 bytes first; its
                     // upper word is not part of the low-lane proof.

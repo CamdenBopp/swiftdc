@@ -74,6 +74,8 @@ shape it excludes.
   call's return assumes. A save at or above entry sp is the caller's memory
   and gets no exemption (abi_frame_ownership.s), nor does a body spill after
   the prologue, which may be a word of a local (frame_preserve_alias.s).
+  Bytes of the save area the prologue never stored are padding, where LLVM
+  places small locals; an address there is a local's and reaches no save.
 - **A callee's async context is private to it.** Its caller allocates it but
   keeps no pointer into it, as an argument or anywhere else, so its slots
   change only through the callee's own stores and pointers the callee hands
@@ -2796,6 +2798,22 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   7). SpillWitness's `put` now names `initializeWithCopy value witness for A`,
   true of `table[k] = v`. GoodLinks cfg.unresolved-indirect-call 14,182 ->
   13,595.
+- **FIXED (2026-11-10, completeness): a local in the save area's padding
+  reached the saves.** LLVM places small locals in the alignment holes of
+  the prologue's save area: GoodLinks passes `x29 - 0x48` (between x28's
+  save and the x27/x26 pair) as an inout x20, and stores a flag at
+  `x29 - 0x41` before passing its address on. 06da5b7 kept the whole save
+  area reachable from any address inside it, so those callees were
+  summarised as clobbering x29 and 47ceb26 escaped each caller's frame
+  (three of the five x29-clobbering callees behind the 40-site sample's
+  clobber-only group). Only a byte the prologue stored (before x29 holds the
+  frame address) now makes the save area; a pointer into such a word, at or
+  above the record, or before the record is proven still reaches the saves.
+  Against 2ec4e99: 7 real dylibs, 807 structured lines (`?`-bearing lines
+  123 removed, 37 added): indirect results now named `&result`, arguments
+  bound, ContiguousArray headers read as `(1, 2)`; no return changed from
+  one concrete value to another. GoodLinks cfg.unresolved-indirect-call
+  12,451 -> 12,350.
 - **DECIDED and FIXED (2026-11-10, completeness): an escaped local no
   longer reaches the prologue's register saves.** GoodLinks' largest group
   of unresolved calls (about 3,300) were value witnesses whose table was held
@@ -2806,7 +2824,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   the policy: like the frame record, the stores of entry x19–x28 made before
   x29 is set from sp, in the function's own frame, are no local's object, so
   an escape that cannot address the save area leaves them. A pointer into
-  the save area itself (its padding included), an escape before the record
+  the save area itself (its padding too, until the entry above), an escape before the record
   is proven, a save at or above entry sp, and a body spill after the
   prologue all stay reachable. Against e6231c8: 27 fixtures, 5,900
   structured lines (`?`-bearing lines 1,058 removed, 845 added, the rest

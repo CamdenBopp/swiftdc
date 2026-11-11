@@ -371,10 +371,12 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     #expect(control.clobberedCalleeSaved.contains("x29"), "\(control.clobberedCalleeSaved)")
 }
 
-/// A pointer in the saved registers' padding is inside the prologue's save
-/// area, so it may reach the saves and the record. A pointer to a local below
-/// the save area reaches none of it: the save area, like the frame record,
-/// is no object of this frame.
+/// A pointer in the saved registers' padding, bytes the prologue never
+/// stored, is a local's: LLVM places small locals there (GoodLinks passes
+/// `x29 - 0x48` as an inout x20 and stores a flag byte at `x29 - 0x41`). Like
+/// a pointer to a local below the save area, it reaches none of the saves:
+/// the save area, like the frame record, is no object of this frame. A
+/// pointer into a word the prologue stored is no local's and reaches them.
 ///
 ///     str x28, [sp, #-0x60]!; stp x27, x26, [sp, #0x10]
 ///     stp x29, x30, [sp, #0x50]; add x29, sp, #0x50; sub sp, sp, #0x10
@@ -388,9 +390,8 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     ]
     let gaps = try #require(CalleeRegisterSummary.of(try body(words, name: "gaps")))
     // `add x0, sp, #0x1f` lies in the padding between x28's save and
-    // x27's, inside the prologue's save area: no local's address, so it may
-    // reach the saves and the record.
-    #expect(gaps.clobberedCalleeSaved == ["x26", "x27", "x28", "x29"], "\(gaps.clobberedCalleeSaved)")
+    // x27's: a local's address, so it reaches none of the saves.
+    #expect(gaps.clobberedCalleeSaved.isEmpty, "\(gaps.clobberedCalleeSaved)")
     // Both calls given only the local (`mov x0, sp`): below the save area,
     // it reaches none of it.
     var local = words
@@ -406,6 +407,30 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     words[8] = 0x910183e0
     let record = try #require(CalleeRegisterSummary.of(try body(words, name: "record")))
     #expect(record.clobberedCalleeSaved.contains("x29"), "\(record.clobberedCalleeSaved)")
+    // `add x0, sp, #0x70` is entry sp, above the record: the prologue stored
+    // nothing there, but no byte at or above the record is padding.
+    words[8] = 0x9101c3e0
+    let entry = try #require(CalleeRegisterSummary.of(try body(words, name: "entry")))
+    #expect(entry.clobberedCalleeSaved.contains("x29"), "\(entry.clobberedCalleeSaved)")
+}
+
+/// A local in the save area's padding that the body writes before passing its
+/// address on (GoodLinks: `sturb w25, [x29, #-0x41]`, then `sub x1, x29,
+/// #0x41` to a call) is still padding: only the prologue's stores, before x29
+/// holds the frame address, make a byte of the save area.
+///
+///     str x28, [sp, #-0x60]!; stp x27, x26, [sp, #0x10]
+///     stp x29, x30, [sp, #0x50]; add x29, sp, #0x50; sub sp, sp, #0x10
+///     mov x27, x0; sturb wzr, [x29, #-0x41]; sub x0, x29, #0x41; bl 0x2000
+///     add sp, sp, #0x10; ldp x29, x30, [sp, #0x50]; ldp x27, x26, [sp, #0x10]
+///     ldr x28, [sp], #0x60; ret
+@Test func aBodyStoreDoesNotMakePaddingASave() throws {
+    let words: [UInt32] = [
+        0xf81a0ffc, 0xa9016bfb, 0xa9057bfd, 0x910143fd, 0xd10043ff, 0xaa0003fb, 0x381bf3bf,
+        0xd10107a0, 0x940003f8, 0x910043ff, 0xa9457bfd, 0xa9416bfb, 0xf84607fc, 0xd65f03c0,
+    ]
+    let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "flag")))
+    #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
 }
 
 /// A join of two dynamic allocations keeps sp below the higher bound, so a
