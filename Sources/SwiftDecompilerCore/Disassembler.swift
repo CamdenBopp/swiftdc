@@ -9785,7 +9785,7 @@ public struct Disassembler: Sendable {
                 // Sanitised to `.unknown` before rendering; plumbing, not a value.
                 return unknownRenderedValue()
             case .address(let a):
-                return resolver.name(at: a) ?? "0x" + String(a, radix: 16)
+                return resolver.name(at: a) ?? objcIndex?.classObjectNames[a] ?? "0x" + String(a, radix: 16)
             case .loaded(let a):
                 // Sanitised above, so a surviving `.loaded` always has a name.
                 return resolver.loadedName(at: a) ?? unknownRenderedValue()

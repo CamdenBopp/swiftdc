@@ -95,6 +95,18 @@ struct ObjCMetadataSnapshot {
     /// metadata (see `resolveExternalSuperclasses`). Empty on chained-fixup or
     /// shared-cache inputs, where the superclass is already resolved.
     var superclassBinds: [String: String] = [:]
+    /// The address of each Objective-C class object this image defines
+    /// (what `__objc_classlist` points to) → its class. An address two
+    /// classes claim names neither. Standalone images only.
+    var classObjects: [UInt64: String] = [:]
+
+    /// Class object address → class, from each class's address and name.
+    /// An address two classes claim names neither.
+    static func classObjects(_ claims: [(address: UInt64, name: String)]) -> [UInt64: String] {
+        var names: [UInt64: Set<String>] = [:]
+        for claim in claims { names[claim.address, default: []].insert(claim.name) }
+        return names.compactMapValues { $0.count == 1 ? $0.first : nil }
+    }
 
     /// Whether reading this class would take MachOObjCSection down its
     /// shared-cache "relative list list" path — which, on a binary that is not a
@@ -255,6 +267,15 @@ struct ObjCMetadataSnapshot {
             snapshot.superclassBinds = resolveExternalSuperclasses(
                 classes: pairs, boundSlots: boundSlots, in: machO
             )
+            if machO.cache == nil {
+                // A Swift class's object is its type metadata, which a
+                // metadata accessor returns: named by the class's runtime
+                // name it read `return _TtC14Reconstruction3Dog`, or the
+                // `@objc` name of a Swift class. Objective-C classes only.
+                snapshot.classObjects = classObjects(pairs.compactMap { raw, info in
+                    raw.isSwift ? nil : machO.imageAddress(ofOffset: raw.offset).map { ($0, info.name) }
+                })
+            }
             if includeProtocols {
                 snapshot.protocols = (objc.protocols64 ?? []).compactMap { $0.info(in: machO) }
             }
@@ -525,6 +546,10 @@ struct ObjCMetadataSnapshot {
 public struct ObjCMetadataIndex: Sendable {
     private let methods: [UInt64: [ObjCMethodBinding]]
     let fieldMaps: [String: FieldMap]
+    /// The class each of this image's class objects is, by address. A value
+    /// that is one of these addresses is the class itself: `adrp x8, …; add
+    /// x0, x8, #0x180` before `objc_alloc` is `[SDFactory alloc]`.
+    private(set) var classObjectNames: [UInt64: String] = [:]
     /// Every binding of each selector, in implementation-address order. A send
     /// asks for its selector's implementations; scanning every method of the
     /// image per send was 2,521 of 8,875 analysis samples on Fiery Feeds
@@ -801,10 +826,12 @@ public struct ObjCMetadataIndex: Sendable {
             }
         }
 
-        return ObjCMetadataIndex(
+        var index = ObjCMetadataIndex(
             methods: methods,
             fieldMaps: buildFieldMaps(classes: snapshot.classes)
         )
+        index.classObjectNames = snapshot.classObjects
+        return index
     }
 
     /// Build ivar maps with inherited fields when the superclass is present in

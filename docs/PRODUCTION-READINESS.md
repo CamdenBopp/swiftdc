@@ -3176,6 +3176,19 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   `[? put:? at:?]`; with any callee counting it read the integer layout,
   `args(Mod.pair(), 7)`.
 
+- **FIXED (COMMIT) — an in-image Objective-C class object rendered as its
+  address.** `objc_factory_return.m`: `[[0x8180 alloc] initWithLimit:3]`,
+  where `adrp; add x0, …, #0x180` before `objc_alloc` loads
+  `_OBJC_CLASS_$_SDFactory`. The class list's entries now name their class
+  objects when a value is one of them: `[[SDFactory alloc] …]`, and
+  `SDNonselfTarget`, `SDNonselfCaller` and `SDOutgoingProbe` in their
+  fixtures. An address two classes claim names neither. Swift classes are
+  excluded by the runtime's Swift bit: a Swift class's object is its type
+  metadata, and named it read `return _TtC14Reconstruction3Dog`, or
+  `return SDWidget` (an `@objc` name) in `type metadata accessor for
+  Sample.Widget`. Naming Swift metadata addresses is still OPEN
+  (reconstruction quality).
+
 ## 3. Robustness — what breaks it?
 
 - **FIXED — a file shorter than a dyld cache header trapped four
