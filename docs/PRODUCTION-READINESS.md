@@ -2798,6 +2798,17 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   7). SpillWitness's `put` now names `initializeWithCopy value witness for A`,
   true of `table[k] = v`. GoodLinks cfg.unresolved-indirect-call 14,182 ->
   13,595.
+- **FIXED (2026-11-11, soundness): a probe of an unknown size kept the
+  last probe's size.** At `___chkstk_darwin` the tracer recorded x9 only
+  when it knew it, so a probe of an unknown size left the previous probe's
+  size standing, and an allocation after it by that earlier size was
+  accepted as probed though this probe covered another (GoodLinks
+  0x100a9cc50 probes an unknown size with the second probe's still
+  recorded). The probe now clears the size it cannot name. Fixture
+  probeStaleSize (the second allocation reuses the first rounded size
+  under a probe of `***pp`: rendered `return 7` from the stale proof, now
+  `return ?`). Against 32bfbfe: only that fixture changes; GoodLinks
+  cfg.unresolved-indirect-call stays 11,099.
 - **FIXED (2026-11-11, completeness): the tracer ended a probed
   allocation's proof at the push of stack arguments.** The summary keeps
   the proof across a constant shift of sp (e978917, 5581ef5), but the

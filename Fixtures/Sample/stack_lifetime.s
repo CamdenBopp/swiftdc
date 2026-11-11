@@ -658,6 +658,42 @@ _$s13StackLifetime16probePopPastPushyS2iF:
   add sp, sp, #48
   ret
 
+// A second probe of an unknown size (`***pp`) ends the first probe's proof:
+// the allocation after it reuses the first, rounded size (x12), which this
+// probe did not cover. Native: 7, but nothing proves it; `return ?`.
+.globl _$s13StackLifetime14probeStaleSizeyS2i_SitF
+_$s13StackLifetime14probeStaleSizeyS2i_SitF:
+  sub sp, sp, #48
+  stp x19, x20, [sp, #16]
+  stp x29, x30, [sp, #32]
+  add x29, sp, #32
+  mov x19, sp
+  mov x20, x0
+  mov x21, x1
+  mov x9, #7
+  str x9, [sp, #8]
+  mov x9, x20
+  add x12, x9, #15
+  and x12, x12, #0xfffffffffffffff0
+  bl ___chkstk_darwin
+  mov x9, sp
+  sub x8, x9, x12
+  mov sp, x8
+  ldr x9, [x21]
+  ldr x9, [x9]
+  ldr x9, [x9]
+  bl ___chkstk_darwin
+  mov x9, sp
+  sub x8, x9, x12
+  mov sp, x8
+  bl _stack_lifetime_unproved
+  mov sp, x19
+  ldr x0, [sp, #8]
+  ldp x29, x30, [sp, #32]
+  ldp x19, x20, [sp, #16]
+  add sp, sp, #48
+  ret
+
 // Two spilled probed allocations: the first leaves a dynamic-allocation
 // marker, which is no escape, so the second spill keeps its proof too.
 // Native: 7.

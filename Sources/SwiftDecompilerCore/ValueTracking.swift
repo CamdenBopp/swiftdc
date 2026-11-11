@@ -1728,8 +1728,13 @@ public struct ValueTracer: Sendable {
                 }
                 registers[Self.flagsKey] = nil
                 registers[Self.flagsWidthKey] = nil
+                // This probe's size replaces the last one's, even when it is
+                // unknown: an allocation by the earlier size is not what this
+                // probe covered.
                 if let probed, probed != .unknown, !Self.containsFrame(probed) {
                     registers[.probedSize] = probed
+                } else {
+                    registers[.probedSize] = nil
                 }
                 return
             }

@@ -60,6 +60,16 @@ private let stackLifetimeFixture = "Fixtures/Sample/libStackLifetime.dylib"
         size.pointee = 16
         #expect(deepReload(UnsafeMutableRawPointer(outer), size) == 99)
     }
+    typealias Stale = @convention(c) (Int64, UnsafeMutableRawPointer) -> Int64
+    let stale = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime14probeStaleSizeyS2i_SitF")), to: Stale.self)
+    do {
+        let size = UnsafeMutablePointer<Int64>.allocate(capacity: 1)
+        let inner = UnsafeMutablePointer<UnsafeMutablePointer<Int64>>.allocate(capacity: 1)
+        let outer = UnsafeMutablePointer<UnsafeMutablePointer<UnsafeMutablePointer<Int64>>>.allocate(capacity: 1)
+        defer { size.deallocate(); inner.deallocate(); outer.deallocate() }
+        inner.pointee = size; outer.pointee = inner; size.pointee = 16
+        #expect(stale(16, UnsafeMutableRawPointer(outer)) == 7)
+    }
     let pushed = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime17reuseProbedPushedyS2iF")), to: Dynamic.self)
     for bytes: Int64 in [0, 1, 16, 100] { #expect(pushed(bytes) == 7) }
     let popPast = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime16probePopPastPushyS2iF")), to: Dynamic.self)
@@ -101,7 +111,7 @@ private let stackLifetimeFixture = "Fixtures/Sample/libStackLifetime.dylib"
         for name in ["reuseUnknown", "reuseDynamic", "reuseDynamicAbove", "reusePreservation", "reusePointer",
                      "probeMismatch", "probeReload", "probeCall", "probeTwice", "probeStacked", "probeSpillReaching",
                      "probeChainStore", "probeDeepReload",
-                     "probePopPastPush"] {
+                     "probePopPastPush", "probeStaleSize"] {
             let function = try #require(group.first { $0.displayName.hasPrefix("StackLifetime.\(name)(") })
             for text in [function.renderPseudo(), function.renderStructured()] {
                 #expect(text.contains("return ?"), Comment(rawValue: text))
