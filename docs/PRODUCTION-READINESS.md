@@ -2798,6 +2798,15 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   7). SpillWitness's `put` now names `initializeWithCopy value witness for A`,
   true of `table[k] = v`. GoodLinks cfg.unresolved-indirect-call 14,182 ->
   13,595.
+- **FIXED (2026-11-10, completeness): the pop of outgoing stack arguments
+  lost a probed allocation's proof.** After a push below a probed
+  allocation, `add sp, sp, #0x10` moved sp from below the allocation's base
+  k to below k + 16, which no longer matched the base the probe recorded, so
+  the next call forgot every save (GoodLinks 0x1003bf44c). sp moved from
+  itself by the transfer (an immediate add or sub, a writeback through sp)
+  now carries the proof to its new bound; an sp taken from another
+  register's allocation still proves nothing. No fixture render changes.
+  GoodLinks cfg.unresolved-indirect-call 12,225 -> 12,204.
 - **FIXED (2026-11-10, completeness): a push below a dynamic allocation
   lost sp.** A function that passes outgoing stack arguments while sp holds
   a probed allocation pushes them (`stp x28, x0, [sp, #-0x10]!`). The

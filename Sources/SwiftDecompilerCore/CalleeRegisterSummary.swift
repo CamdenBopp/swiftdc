@@ -1739,7 +1739,17 @@ enum Preservation {
         }
         if let base = provenBase, let destination = register(0) { state.provenAllocations[destination.key] = base }
         if state.value("sp") != spBefore {
-            state.probedBase = sourceBase ?? (register(0)?.kind == .stackPointer ? provenBase : nil)
+            // sp moved from itself (the pop of outgoing stack arguments,
+            // `add sp, sp, #0x10`, or a writeback through sp) keeps its
+            // proof: the transfer bounded the new sp from the probed one. An
+            // sp taken from another register's allocation proves nothing.
+            let fromItself = (detail.writeback || detail.postIndex) && Self.memoryBase(of: detail)?.kind == .stackPointer
+                || ((detail.id == AARCH64_INS_ADD || detail.id == AARCH64_INS_SUB)
+                    && operands.count == 3 && register(1)?.kind == .stackPointer)
+            var shifted: Int64?
+            if fromItself, let base = state.probedBase, case .below(base) = spBefore,
+               case .below(let k) = state.value("sp") { shifted = k }
+            state.probedBase = sourceBase ?? (register(0)?.kind == .stackPointer ? provenBase : nil) ?? shifted
         }
     }
 

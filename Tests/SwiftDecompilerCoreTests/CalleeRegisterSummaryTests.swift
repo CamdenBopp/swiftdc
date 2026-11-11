@@ -751,3 +751,30 @@ private func callTarget(_ function: DisassembledFunction) throws -> UInt64 {
     #expect(reloaded.clobberedCalleeSaved.isSuperset(of: ["x19", "x20", "x29"]), "\(reloaded.clobberedCalleeSaved)")
 }
 
+/// Outgoing stack arguments pushed and popped while sp holds a probed
+/// allocation keep its proof (GoodLinks 0x1003bf44c: `stp x28, x0, [sp,
+/// #-0x10]!; …; bl; add sp, sp, #0x10`). The pop moved sp from below the
+/// allocation's base to below base + 16, which no longer matched the probe's
+/// base, so the next call forgot every save. Here the probed test's call
+/// becomes `stp xzr, xzr, [sp, #-0x10]!; bl 0x3000; add sp, sp, #0x10;
+/// bl 0x3000`.
+@Test func aPopOfStackArgumentsKeepsTheProbedAllocation() throws {
+    let probe: UInt64 = 0x2000
+    var words: [UInt32] = [
+        0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xf9400009, 0x91003d28, 0x927ced08, 0x940003f9,
+        0x910003e9, 0xcb080128, 0x9100011f, 0xa9bf7fff, 0x940007f4, 0x910043ff, 0x940007f2,
+        0x910003bf, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
+    ]
+    let popped = try #require(CalleeRegisterSummary.of(try body(words, name: "popped"), isStackProbe: { $0 == probe }))
+    #expect(popped.clobberedCalleeSaved.isEmpty, "\(popped.clobberedCalleeSaved)")
+    // A post-indexed pop (`ldr x10, [sp], #0x10`) is the same shift.
+    var loaded = words
+    loaded[13] = 0xf84107ea
+    let reloaded = try #require(CalleeRegisterSummary.of(try body(loaded, name: "loaded"), isStackProbe: { $0 == probe }))
+    #expect(reloaded.clobberedCalleeSaved.isEmpty, "\(reloaded.clobberedCalleeSaved)")
+    // The control: sp taken from an unprobed allocation in another register
+    // (`sub x10, x29, x11; mov sp, x10` for the pop) has no proof to keep.
+    words.replaceSubrange(13...14, with: [0xcb0b03aa, 0x9100015f, 0x940007f1])
+    let resized = try #require(CalleeRegisterSummary.of(try body(words, name: "resized"), isStackProbe: { $0 == probe }))
+    #expect(resized.clobberedCalleeSaved.isSuperset(of: ["x19", "x20", "x29"]), "\(resized.clobberedCalleeSaved)")
+}
