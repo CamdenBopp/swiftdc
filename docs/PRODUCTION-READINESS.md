@@ -3213,7 +3213,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   Sample.Widget`. Naming Swift metadata addresses is still OPEN
   (reconstruction quality).
 
-- **FIXED (COMMIT) — a call that only decided an empty branch vanished from
+- **FIXED (bbecdbe) — a call that only decided an empty branch vanished from
   `--structured`.** A call whose result only feeds a branch is inlined into
   the condition and left out of the statements before it. When both arms
   render nothing (each only sets a result no signature proves), the `if`
