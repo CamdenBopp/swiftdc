@@ -244,13 +244,20 @@ shape it excludes.
   become `(…)`: 17 of the old lines were an empty `()`, and 46 calls that
   had been nested inside a false argument list become their own statements.
   Binding names renumber around them.
-- **OPEN (completeness) (audited 2026-11-10): a declared variadic still
-  renders `(…)`.** `open` and `fcntl` have been in SDKCPrototypes since
-  a395807 (`iw...`, `ww...`), yet `b _open` still reads `open args(…)` with w1
-  set just before it: render a declared variadic by its fixed arguments.
-  `closedir`, `sysctl` and `ioctl` are missing from the table (224 of 333 SDK
-  translation units compiled). Terminal 125 / TextEdit 7 not re-measured since
-  0e4b26c.
+- **FIXED (2026-11-11, completeness): a declared variadic rendered `(…)`.**
+  `open` and `fcntl` have been in SDKCPrototypes since a395807 (`iw...`,
+  `ww...`), yet a call read `open(…)` with x0 and w1 set just before it.
+  A call to an SDK variadic with only integer fixed parameters and no format
+  now renders its fixed arguments from their registers at their declared
+  widths, then `…` (Apple arm64 passes every variadic argument on the
+  stack); the typed argument renderer now appends that `…` too. Fixture
+  variadic_calls.c: `open(?, 0, …)`, `open(?, 513, …)`, `fcntl(?, 0, …)`
+  and `open(?, -1, …)`. Against f77b7a0: the fixture and goProgram's open
+  and fcntl calls (24 structured lines); GoodLinks stays 10,849.
+- **OPEN (completeness) (audited 2026-11-10): SDK variadics the prototype
+  table lacks.** `closedir`, `sysctl` and `ioctl` are missing from the table
+  (224 of 333 SDK translation units compiled). Terminal 125 / TextEdit 7 not
+  re-measured since 0e4b26c.
 
   Not covered: a call through a register (`blr x8` can land on an
   in-image body), and names whose arity is knowable though no table holds

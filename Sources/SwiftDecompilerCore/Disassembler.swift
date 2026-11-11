@@ -9009,6 +9009,26 @@ public struct Disassembler: Sendable {
                 }
                 continue
             }
+            // A declared variadic with no format (`int open(const char *, int,
+            // ...)`): Apple arm64 passes the fixed arguments in registers and
+            // every variadic one on the stack, so the fixed ones render from
+            // their registers at their declared widths, then `…`. It read
+            // `open(…)` with x0 and w1 set just before the call. Only integer
+            // fixed parameters; an in-image twin is no evidence for the layout.
+            if let callee = calleeByAddress[address], !isNameTwin(address),
+               let prototype = DisassembledFunction.cPrototype(of: callee), prototype.isVariadic,
+               prototype.parameters.count <= 8 {
+                let types = prototype.parameters.compactMap { DisassembledFunction.cIntegerParameterTypes[$0] }
+                if types.count == prototype.parameters.count {
+                    argumentsByAddress[address] = (0 ..< types.count).map {
+                        $0 < values.count ? sanitizeValue(values[$0]) : .unknown
+                    }
+                    laidOutTypes[address] = types
+                    unprovenVariadicSites.insert(address)
+                    strategy = "c-variadic"
+                    continue
+                }
+            }
             // A format selector's variadic arguments are exactly its format's
             // conversions, one stack slot each: `?` where a slot is unknown,
             // none dropped as trailing unknowns, no stale x3–x7 before them.
@@ -10135,6 +10155,9 @@ public struct Disassembler: Sendable {
                     }
                     index += 1
                 }
+                // A typed fixed part (a declared variadic's) is still followed
+                // by variadic arguments no one counted.
+                if let site, unprovenVariadicSites.contains(site) { parts.append("…") }
                 return parts
             }
             var parts: [String] = []

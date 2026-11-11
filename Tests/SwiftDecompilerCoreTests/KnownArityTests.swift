@@ -190,3 +190,23 @@ func aFailedForcedTryPassesItsFiveArgumentsIfPresent(path: String) async throws 
     #expect(landing.contains("_Unwind_Resume(?)"))
     #expect(probe.contains("→ __chkstk_darwin\n") && !probe.contains("__chkstk_darwin  args("))
 }
+
+/// A C function the SDK declares variadic with a fixed part and no format
+/// (`int open(const char *, int, ...)`, `int fcntl(int, int, ...)`) read
+/// `open(…)` with x0 and w1 set just before the call. Apple arm64 passes the
+/// fixed arguments in registers and every variadic one on the stack, so the
+/// fixed ones render from their registers at their declared widths, and the
+/// uncounted rest is `…` (`variadic_calls.c`).
+@Test func aDeclaredVariadicRendersItsFixedArgumentsIfPresent() async throws {
+    let path = "Fixtures/Sample/libVariadicCalls.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName == name }, "no \(name)").renderStructured()
+    }
+    #expect(try text("_openReadOnly").contains("open(?, 0, …)"))
+    #expect(try text("_openCreate").contains("open(?, 513, …)"))
+    #expect(try text("_dupFrom").contains("fcntl(?, 0, …)"))
+    // The int at its declared width: -1, not 0xffffffff.
+    #expect(try text("_openNegative").contains("open(?, -1, …)"))
+}
