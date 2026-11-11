@@ -810,6 +810,52 @@ _stack_lifetime_writes_x8:
   str xzr, [x8]
   ret
 
+// Three probed allocations, then outgoing stack arguments pushed and
+// popped around calls. The push takes sp to the depth at which a chain is
+// rebased, and a rebase that dropped the pushed constant left the pop no
+// push to fold into, so the proof ended at it. Native: 7.
+.globl _$s13StackLifetime19reuseProbedRebasedPyS2iF
+_$s13StackLifetime19reuseProbedRebasedPyS2iF:
+  sub sp, sp, #48
+  stp x19, x20, [sp, #16]
+  stp x29, x30, [sp, #32]
+  add x29, sp, #32
+  mov x19, sp
+  mov x20, x0
+  mov x9, #7
+  str x9, [sp, #8]
+  mov x9, x20
+  add x8, x9, #15
+  and x8, x8, #0xfffffffffffffff0
+  bl ___chkstk_darwin
+  mov x9, sp
+  sub x8, x9, x8
+  mov sp, x8
+  mov x9, x20
+  add x8, x9, #15
+  and x8, x8, #0xfffffffffffffff0
+  bl ___chkstk_darwin
+  mov x9, sp
+  sub x8, x9, x8
+  mov sp, x8
+  mov x9, x20
+  add x8, x9, #15
+  and x8, x8, #0xfffffffffffffff0
+  bl ___chkstk_darwin
+  mov x9, sp
+  sub x8, x9, x8
+  mov sp, x8
+  sub sp, sp, #0x20
+  bl _stack_lifetime_unproved
+  add sp, sp, #0x20
+  bl _stack_lifetime_unproved
+  mov sp, x19
+  ldr x0, [sp, #8]
+  ldp x29, x30, [sp, #32]
+  ldp x19, x20, [sp, #16]
+  add sp, sp, #48
+  ret
+
 // Two spilled probed allocations: the first leaves a dynamic-allocation
 // marker, which is no escape, so the second spill keeps its proof too.
 // Native: 7.

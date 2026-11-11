@@ -76,6 +76,8 @@ private let stackLifetimeFixture = "Fixtures/Sample/libStackLifetime.dylib"
     }
     let pushed = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime17reuseProbedPushedyS2iF")), to: Dynamic.self)
     for bytes: Int64 in [0, 1, 16, 100] { #expect(pushed(bytes) == 7) }
+    let rebasedPush = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime19reuseProbedRebasedPyS2iF")), to: Dynamic.self)
+    for bytes: Int64 in [0, 1, 16, 100] { #expect(rebasedPush(bytes) == 7) }
     let popPast = unsafeBitCast(try #require(dlsym(library, "$s13StackLifetime16probePopPastPushyS2iF")), to: Dynamic.self)
     #expect(popPast(0) == 99)
     #expect(popPast(32) == 7)
@@ -134,7 +136,7 @@ private let stackLifetimeFixture = "Fixtures/Sample/libStackLifetime.dylib"
                                  ("reuseProbedSpilledEscaped", 7), ("reuseProbedChain", 7),
                                  ("reuseProbedDeepSize", 7), ("reuseProbedPushed", 7),
                                  ("reuseProbedDeepTwice", 7), ("reuseX8Unread", 7),
-                                 ("reuseProbedStubbed", 7)] {
+                                 ("reuseProbedStubbed", 7), ("reuseProbedRebasedP", 7)] {
             let function = try #require(group.first { $0.displayName.hasPrefix("StackLifetime.\(name)(") })
             for text in [function.renderPseudo(), function.renderStructured()] {
                 #expect(text.contains("return \(expected)"), Comment(rawValue: text))

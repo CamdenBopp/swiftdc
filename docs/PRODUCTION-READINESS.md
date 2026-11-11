@@ -2885,6 +2885,15 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   to another. GoodLinks cfg.unresolved-indirect-call 11,273 -> 11,235;
   instructions +0.13%. The summary grows by one array word (stride budget
   136 -> 144).
+- **FIXED (2026-11-11, completeness): a rebase of a probed chain dropped a
+  pushed constant.** d997846 rebases a deep allocation chain's sp to
+  `frame(base) - ?`; when the push of outgoing stack arguments was what took
+  sp to that depth, the rebase dropped the pushed constant, the matching
+  pop (32bfbfe) had no push to fold into, and the proof ended there. The
+  rebase now keeps a trailing pushed constant (`frame(base) - ? - c`).
+  Fixture reuseProbedRebasedP (three allocations, a push and pop around
+  calls, native 7, now `return 7`). Against 3d03dac only that fixture moves;
+  GoodLinks cfg.unresolved-indirect-call 10,882 -> 10,849.
 - **FIXED (2026-11-11, completeness): the summary did not recognise a
   stack probe called through an import stub.** `stackProbeRecognizer`
   decoded the stub through the code sections, and `__stubs` is none of

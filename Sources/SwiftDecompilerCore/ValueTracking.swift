@@ -5997,9 +5997,12 @@ public struct ValueTracer: Sendable {
 
     /// A deep allocation sp rebased to "some amount below its base", which
     /// names no size: the value sp and the allocation marker then hold.
+    /// A push of outgoing stack arguments that brings sp to that depth keeps
+    /// its constant (`frame(base) - ? - c`), so its pop still folds back.
     private static func rebasedIfDeep(_ value: AbstractValue, base: Int64, into registers: inout State) -> AbstractValue {
         guard expressionDepth(value) >= allocationChainDepth else { return value }
-        let rebased = AbstractValue.binary(.subtract, .frame(base), .unknown)
+        var rebased = AbstractValue.binary(.subtract, .frame(base), .unknown)
+        if case .binary(.subtract, _, .immediate(let pushed)) = value { rebased = .binary(.subtract, rebased, .immediate(pushed)) }
         registers[.sp] = rebased
         return rebased
     }
