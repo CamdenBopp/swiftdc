@@ -2798,6 +2798,17 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   7). SpillWitness's `put` now names `initializeWithCopy value witness for A`,
   true of `table[k] = v`. GoodLinks cfg.unresolved-indirect-call 14,182 ->
   13,595.
+- **FIXED (2026-11-11, correctness): the tracer did not converge where a
+  frame word alternated between unknown and absent.** 2292132 compared
+  numbered registers by facts but every slot literally, and the tracer
+  spells an unknown word both ways (a store of `.unknown`, a meet that drops
+  a key). GoodLinks 0x100a88730's slot at -256 alternated around a
+  ten-block loop until the iteration bound, so the function claimed nothing
+  (its probe calls and a witness went unnamed) once the next commit kept
+  its frame across the loop's calls. A word of the function's own frame now
+  compares by facts; an incoming slot, which reads the caller's bytes while
+  absent, still compares literally. No fixture render changes; GoodLinks
+  cfg.unresolved-indirect-call 11,099 -> 11,088.
 - **FIXED (2026-11-11, soundness): a probe of an unknown size kept the
   last probe's size.** At `___chkstk_darwin` the tracer recorded x9 only
   when it knew it, so a probe of an unknown size left the previous probe's

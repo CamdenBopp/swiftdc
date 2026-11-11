@@ -2135,13 +2135,19 @@ public struct ValueTracer: Sendable {
     /// dictionaries literally saw a loop's x9 flip between the two forever:
     /// WeatherRadio's grid sampler (20 blocks) never converged and replayed an
     /// unconverged state. Marker keys (`result.whole`, `result.poison`, the
-    /// fresh-self flag) and slots mean something by presence and compare
-    /// literally.
-    private static func sameFacts(_ a: State?, _ b: State) -> Bool {
+    /// fresh-self flag) mean something by presence and compare literally,
+    /// as do incoming slots (offset 0 and up), which read the caller's bytes
+    /// while absent. A word of the function's own frame reads as unknown
+    /// either way: GoodLinks 0x100a88730's slot at -256 flipped between the
+    /// two around a ten-block loop and hit the bound once the probe proof
+    /// kept its frame across the loop's calls.
+    static func sameFacts(_ a: State?, _ b: State) -> Bool {
         guard let a else { return false }
         if a == b { return true }
         for key in Set(a.keys).union(b.keys) where a[key] != b[key] {
-            guard key.isNumberedRegister, (a[key] ?? .unknown) == .unknown, (b[key] ?? .unknown) == .unknown
+            let ownFrameWord: Bool = if case .stack(let offset) = key { offset < 0 } else { false }
+            guard key.isNumberedRegister || ownFrameWord,
+                  (a[key] ?? .unknown) == .unknown, (b[key] ?? .unknown) == .unknown
             else { return false }
         }
         return true
