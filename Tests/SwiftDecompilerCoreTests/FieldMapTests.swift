@@ -171,3 +171,19 @@ private func map(
 
     #expect(maps["Layout"] == nil)
 }
+
+/// A class field of an imported C struct (`stamp: timespec`) read and written
+/// through its member rendered `self.stamp[8..<16]`, though the image's
+/// `__C.timespec` field record names +8 `tv_nsec`. Part of such a field now
+/// reads as its member; the field's own type is its symbolic reference,
+/// resolved through the class map's `fieldTypeNames` (`cstructfield.swift`).
+@Test func aCStructFieldPartReadsAsItsMemberIfPresent() async throws {
+    let path = "Fixtures/Sample/libCStructField.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("CStructField.Clock.\(name)(") }, "no \(name)").renderStructured()
+    }
+    #expect(try text("nanos").contains("return self.stamp.tv_nsec"))
+    #expect(try text("setNanos").contains("self.stamp.tv_nsec = arg0"))
+}

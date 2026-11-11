@@ -7644,6 +7644,36 @@ public struct Disassembler: Sendable {
             objcFieldSyntax ? "self->\(name)" : "self.\(name)"
         }
 
+        /// Part of a field: its member when the field is an imported C struct
+        /// whose own field record in the image names those bytes (`stamp:
+        /// timespec` at +8 is `stamp.tv_nsec`), else its byte range
+        /// (`name[8..<16]`). A C struct's layout is the C ABI's, which the
+        /// record states; a Swift struct's part keeps its range.
+        /// `owner` is the map `name`'s last component is a field of: self's
+        /// at the top, which resolves the field's symbolic type reference
+        /// (`fieldTypeNames`); a member's own C struct's below.
+        func memberPath(
+            _ name: String, type: String?, subOffset: Int, bytes: Int,
+            field: String? = nil, owner: FieldMap? = nil
+        ) -> String {
+            let fieldName = field ?? name
+            let resolved = type.map { FieldMap.printableTypeName(
+                mangled: $0, resolved: (owner ?? fieldMap)?.fieldTypeNames[fieldName]) }
+            if let resolved, resolved.hasPrefix("__C."), let map = typeFieldMaps[resolved],
+               case .success(let hit) = map.lookup(offset: subOffset, bytes: max(bytes, 1)) {
+                switch hit {
+                case .whole(let member, _):
+                    return "\(name).\(member)"
+                case .part(let member, let memberType, let inner, let innerBytes):
+                    return memberPath("\(name).\(member)", type: memberType, subOffset: inner, bytes: innerBytes,
+                                      field: member, owner: map)
+                case .spans:
+                    break
+                }
+            }
+            return "\(name)[\(subOffset)..<\(subOffset + bytes)]"
+        }
+
         /// Render a by-value struct argument's field — `arg1.y` — from the
         /// parameter's own field map, falling back to a byte offset.
         func argumentFieldName(argument: Int, offset: Int) -> String {
@@ -9776,9 +9806,9 @@ public struct Disassembler: Sendable {
                 if let fieldMap {
                     let widths = selfFieldReadWidths[offset] ?? []
                     if widths.count == 1, let width = widths.first,
-                       case .success(.part(let name, _, let subOffset, let bytes)) =
+                       case .success(.part(let name, let partType, let subOffset, let bytes)) =
                         fieldMap.lookup(offset: offset, bytes: width) {
-                        return fieldPath("\(name)[\(subOffset)..<\(subOffset + bytes)]")
+                        return fieldPath(memberPath(name, type: partType, subOffset: subOffset, bytes: bytes))
                     }
                     if widths.count != 1,
                        case .success(.part(let name, _, let subOffset, _)) = fieldMap.lookup(offset: offset, bytes: 1),
@@ -10256,15 +10286,15 @@ public struct Disassembler: Sendable {
                 guard case .selfFieldValue(let offset) = value, let fieldMap else { return nil }
                 switch fieldMap.lookup(offset: offset, bytes: max(bytes, 1)) {
                 case .success(.whole(let name, _)): return fieldPath(name)
-                case .success(.part(let name, _, let subOffset, let bytes)):
-                    return fieldPath("\(name)[\(subOffset)..<\(subOffset + bytes)]")
+                case .success(.part(let name, let partType, let subOffset, let bytes)):
+                    return fieldPath(memberPath(name, type: partType, subOffset: subOffset, bytes: bytes))
                 default: return nil
                 }
             }
             if field.names.count == 1, let fieldMap {
                 switch fieldMap.lookup(offset: access.offset, bytes: max(access.bytes, 1)) {
-                case .success(.part(let partName, _, let subOffset, let bytes)):
-                    let partPath = fieldPath("\(partName)[\(subOffset)..<\(subOffset + bytes)]")
+                case .success(.part(let partName, let partType, let subOffset, let bytes)):
+                    let partPath = fieldPath(memberPath(partName, type: partType, subOffset: subOffset, bytes: bytes))
                     guard let rawValue = access.storedValue, sanitizeValue(rawValue) != .unknown
                     else { return "\(partPath) = …" }
                     let value = sanitizeValue(rawValue)
@@ -10322,8 +10352,8 @@ public struct Disassembler: Sendable {
             if case .selfFieldValue(let source) = value, let fieldMap {
                 switch fieldMap.lookup(offset: source, bytes: max(access.bytes, 1)) {
                 case .success(.whole(let name, _)): return "\(path) = \(fieldPath(name))"
-                case .success(.part(let name, _, let subOffset, let bytes)):
-                    return "\(path) = \(fieldPath("\(name)[\(subOffset)..<\(subOffset + bytes)]"))"
+                case .success(.part(let name, let partType, let subOffset, let bytes)):
+                    return "\(path) = \(fieldPath(memberPath(name, type: partType, subOffset: subOffset, bytes: bytes)))"
                 case .success(.spans(let names)):
                     return "\(path) = \(fieldPath("{\(names.joined(separator: ", "))}"))"
                 case .failure:
@@ -10411,8 +10441,8 @@ public struct Disassembler: Sendable {
                 switch fieldMap.lookup(offset: access.offset + index * width, bytes: width) {
                 case .success(.whole(let name, _)):
                     targets.append(fieldPath(name))
-                case .success(.part(let name, _, let subOffset, let bytes)):
-                    targets.append(fieldPath("\(name)[\(subOffset)..<\(subOffset + bytes)]"))
+                case .success(.part(let name, let partType, let subOffset, let bytes)):
+                    targets.append(fieldPath(memberPath(name, type: partType, subOffset: subOffset, bytes: bytes)))
                 default:
                     return nil
                 }
@@ -10426,8 +10456,8 @@ public struct Disassembler: Sendable {
                     case .whole(let name, _):
                         values.append(fieldPath(name))
                         continue
-                    case .part(let name, _, let subOffset, let bytes):
-                        values.append(fieldPath("\(name)[\(subOffset)..<\(subOffset + bytes)]"))
+                    case .part(let name, let partType, let subOffset, let bytes):
+                        values.append(fieldPath(memberPath(name, type: partType, subOffset: subOffset, bytes: bytes)))
                         continue
                     case .spans:
                         break
@@ -11467,9 +11497,9 @@ public struct Disassembler: Sendable {
                         // A load of part of a field reads that byte range.
                         var readPath = fieldPath(name)
                         if field.names.count == 1, let fieldMap,
-                           case .success(.part(let partName, _, let subOffset, let bytes)) =
+                           case .success(.part(let partName, let partType, let subOffset, let bytes)) =
                             fieldMap.lookup(offset: access.offset, bytes: max(access.bytes, 1)) {
-                            readPath = fieldPath("\(partName)[\(subOffset)..<\(subOffset + bytes)]")
+                            readPath = fieldPath(memberPath(partName, type: partType, subOffset: subOffset, bytes: bytes))
                         }
                         facts.fieldRead = readPath
                         sourceNotes.append(readPath)

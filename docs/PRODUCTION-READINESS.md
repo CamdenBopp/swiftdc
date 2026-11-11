@@ -1763,12 +1763,17 @@ because it cannot be distinguished from a right one by reading the output.
   known AND offset inside the type's trusted prefix; the `isInstance` flag
   refuses metatypes. Consulting the symbol first (which lacks that flag) produced
   a real `swift_allocObject(self, …)` fabrication before the ordering was fixed.
-- **OPEN (audited 2026-11-10): a field of an imported C struct renders as a
-  byte range of its Swift field.** A class field `layout: timespec` reads
-  `self.layout[8..<16]` (getter and setter) for `layout.tv_nsec`, though
-  `layout` prints `__C.timespec +0x8 tv_nsec` from the same image's field
-  record. Descend into the `__C` record when it is present. No fixture pins
-  it.
+- **FIXED (2026-11-11, completeness): a field of an imported C struct
+  rendered as a byte range of its Swift field.** A class field `stamp:
+  timespec` read `self.stamp[8..<16]` (getter and setter) for
+  `stamp.tv_nsec`, though `layout` prints `__C.timespec +0x8 tv_nsec` from
+  the same image's field record. Part of a field whose type is an imported C
+  struct with a field record now reads as its member, through nested members
+  too; the field's type is a symbolic reference, resolved through the
+  class map's `fieldTypeNames`. A Swift struct's part keeps its byte range.
+  Fixture cstructfield.swift: `return self.stamp.tv_nsec`,
+  `self.stamp.tv_nsec = arg0`. Against cd44e31 only that fixture moves.
+  GoodLinks stays 10,849.
 - **MITIGATED — a differential oracle now exists** (`DifferentialOracleTests`).
   Every other soundness test compares recovered pseudocode against a string
   someone wrote down, which cannot catch a plausible-but-wrong render: the

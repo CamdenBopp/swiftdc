@@ -356,6 +356,9 @@ $CLANG -O2 -dynamiclib arity_twin.c -o libArityTwin.dylib
 echo "==> in-image functions named like C library functions, with other bodies (libc_twins.c, -O2 -fno-builtin)"
 $CLANG -O2 -fno-builtin -dynamiclib libc_twins.c -o libLibcTwins.dylib
 
+echo "==> a class field of an imported C struct, read through its member (cstructfield.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name CStructField cstructfield.swift -o libCStructField.dylib
+
 echo "==> SDK variadics with a fixed part and no format: open, fcntl (variadic_calls.c, -O1)"
 $CLANG -O1 -dynamiclib variadic_calls.c -o libVariadicCalls.dylib
 
