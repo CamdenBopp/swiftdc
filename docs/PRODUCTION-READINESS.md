@@ -3323,7 +3323,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   stringByAppendingFormat:@"+%ld", arg1]`, `raise:format:@"bad %ld", …`.
   Found by a probe sweep; only the fixture changed in the corpus.
 
-- **FIXED (COMMIT) — `interface` on an image with no Swift printed a
+- **FIXED (0cb1c6e) — `interface` on an image with no Swift printed a
   plausible empty module.** A C or Objective-C dylib read `import Swift`,
   `import _Concurrency`, … and nothing said why, where `dump` says no
   Swift metadata was found. When the interface is nothing but imports and
