@@ -1595,7 +1595,7 @@ because it cannot be distinguished from a right one by reading the output.
   arguments, and one stale x0 leaves a precondition message's autoclosure
   (`implicit closure #1 ()`, whose body reads no argument).
 
-- **FIXED (COMMIT) — a small struct's method with formals had no `self`.** A
+- **FIXED (9d19914) — a small struct's method with formals had no `self`.** A
   non-mutating method of a struct of integer words takes its self's words in
   the general registers after its formals (`g(_ k:)`: k in x0, s in x1). Self
   was seeded only for a method with no formals, so every one with a formal
