@@ -89,6 +89,15 @@ public struct InterfaceReconstructor: Sendable {
                 text = Self.removing(try await builder.printer.printTypeDefinition(definition).string, from: text)
             }
         }
+        // Nothing but imports from an image with no Swift section: there is
+        // no module here, and the import block read as a valid empty one
+        // (`interface` on a C dylib). Empty lets the caller say so, as `dump`
+        // does. A module of free functions has no Swift section either, but
+        // its declarations print.
+        let declares = text.split(separator: "\n").contains { line in
+            !line.allSatisfy(\.isWhitespace) && !line.hasPrefix("import ")
+        }
+        if !declares, !machO.sections.contains(where: { $0.sectionName.hasPrefix("__swift5_") }) { return "" }
         // The printer's address is the symbol it attributed a member to,
         // which for a stripped witness is a data slot; see MemberAddressAudit.
         return options.memberAddresses ? MemberAddressAudit(machO).audit(text).text : text

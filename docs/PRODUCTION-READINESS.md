@@ -3322,6 +3322,16 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   `SDKVariadicSelectors`), and the check consults it: `[arg0
   stringByAppendingFormat:@"+%ld", arg1]`, `raise:format:@"bad %ld", …`.
   Found by a probe sweep; only the fixture changed in the corpus.
+
+- **FIXED (COMMIT) — `interface` on an image with no Swift printed a
+  plausible empty module.** A C or Objective-C dylib read `import Swift`,
+  `import _Concurrency`, … and nothing said why, where `dump` says no
+  Swift metadata was found. When the interface is nothing but imports and
+  the image has no `__swift5_*` section, the result is empty and the CLI
+  prints `// No Swift metadata found.`. A section-only rule was tried
+  first and would have emptied 91 fixtures: a module of free functions
+  has no Swift section, but its functions print from symbols. Across the
+  fixtures, 121 C and ObjC images change and none loses content.
   Blast radius: 18 files, 84 structured lines, `x20`/`x19`/`?` becoming
   `self`, plus `self.run(arg0)` style vtable calls in such classes.
 
