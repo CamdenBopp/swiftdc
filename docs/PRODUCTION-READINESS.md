@@ -3360,7 +3360,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   signature. Found by a probe sweep; the fixture and one swift-syntax
   witness (`KeyedContainer.contains`) changed.
 
-- **FIXED (COMMIT) — a damaged LC_FUNCTION_STARTS silenced the boundary
+- **FIXED (139a624) — a damaged LC_FUNCTION_STARTS silenced the boundary
   warning.** A stripped executable whose table holds one entry far past the
   image decoded as one function with nothing on stderr, because the warning
   fired only for an empty table. It now fires when no listed start lies in
