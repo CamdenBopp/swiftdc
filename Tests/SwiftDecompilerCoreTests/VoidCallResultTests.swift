@@ -78,8 +78,9 @@ import Testing
     #expect(text.contains("RetainRegister.enroll("), Comment(rawValue: text))
     #expect(!text.contains("enroll(self: arg0"), Comment(rawValue: text))
     #expect(!text.contains("enroll(arg0"), Comment(rawValue: text))
-    // The stub's argument is x20, which nothing here proves; x0 is `k`.
+    #expect(text.contains("RetainRegister.enroll(self)"), Comment(rawValue: text))
+    // The stub's argument is x20, self; x0 is `k`.
     let listing = try #require(functions.first).render()
-    #expect(listing.contains("→ objc_retain_x20  args(?)"), Comment(rawValue: listing))
+    #expect(listing.contains("→ objc_retain_x20  args(self)"), Comment(rawValue: listing))
     #expect(!listing.contains("objc_retain_x20  args(arg0)"), Comment(rawValue: listing))
 }

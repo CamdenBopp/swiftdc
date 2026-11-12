@@ -96,3 +96,48 @@ import Foundation
         fieldMaps: cfgMaps.merging(["st.Cfg": cfgMaps["Cfg"]!]) { _, exact in exact }
     ) == "Cfg")
 }
+
+/// A class with no stored property has no field map, and a final method no
+/// vtable slot, so `final class Node: NSObject`'s `join` seeded no self:
+/// `enroll(?)` for `enroll(self)`. A symbol-named type the class index
+/// proves a class takes self in x20 all the same; a struct of that name, a
+/// class only by simple name, or a free function (its module) does not.
+@Test func aSymbolNamedClassWithNoLayoutStillHasSelf() {
+    let join = DisassembledFunction(
+        symbol: "_$s14RetainRegister4NodeC4joinyS2iF",
+        demangledName: "RetainRegister.Node.join(Swift.Int) -> Swift.Int",
+        startAddress: 0x1000, instructions: [], source: .symbol)
+    let none = SelfTypeIndex(bindings: [:])
+    let classes = ClassTypeIndex(qualifiedClassNames: ["RetainRegister.Node"])
+    #expect(Disassembler.selfType(of: join, selfIndex: none, fieldMaps: [:], classTypeIndex: classes) == "Node")
+    #expect(Disassembler.selfType(of: join, selfIndex: none, fieldMaps: [:]) == nil)
+    #expect(Disassembler.selfType(of: join, selfIndex: none, fieldMaps: [:],
+                                  classTypeIndex: ClassTypeIndex(classNames: ["Node"])) == nil)
+    let free = DisassembledFunction(
+        symbol: "_$s14RetainRegister4codeSiyF", demangledName: "RetainRegister.code() -> Swift.Int",
+        startAddress: 0x2000, instructions: [], source: .symbol)
+    #expect(Disassembler.selfType(of: free, selfIndex: none, fieldMaps: [:],
+                                  classTypeIndex: ClassTypeIndex(qualifiedClassNames: ["RetainRegister"])) == nil)
+    // A name metadata gives a stripped body has no signature, so it cannot
+    // say `static`: declined.
+    let stripped = DisassembledFunction(
+        symbol: "sub_1000", demangledName: "RetainRegister.Node.method",
+        startAddress: 0x3000, instructions: [], source: .symbol)
+    #expect(Disassembler.selfType(of: stripped, selfIndex: none, fieldMaps: [:], classTypeIndex: classes) == nil)
+    // Each half alone: a metadata name with a signature on a stripped body,
+    // and a Swift symbol whose name carries none.
+    let strippedSigned = DisassembledFunction(
+        symbol: "sub_4000", demangledName: "RetainRegister.Node.join(Swift.Int) -> Swift.Int",
+        startAddress: 0x4000, instructions: [], source: .symbol)
+    #expect(Disassembler.selfType(of: strippedSigned, selfIndex: none, fieldMaps: [:], classTypeIndex: classes) == nil)
+    let unsigned = DisassembledFunction(
+        symbol: "_$s14RetainRegister4NodeC4joinyS2iF", demangledName: "RetainRegister.Node.method",
+        startAddress: 0x5000, instructions: [], source: .symbol)
+    #expect(Disassembler.selfType(of: unsigned, selfIndex: none, fieldMaps: [:], classTypeIndex: classes) == nil)
+    // The vtable index's "not an instance" still wins.
+    let staticIndex = SelfTypeIndex(bindings: [
+        0x1000: SelfBinding(selfTypeName: "Node", kind: "method", isInstance: false,
+                            source: .vtableSlot(type: "Node", slot: 0)),
+    ])
+    #expect(Disassembler.selfType(of: join, selfIndex: staticIndex, fieldMaps: [:], classTypeIndex: classes) == nil)
+}

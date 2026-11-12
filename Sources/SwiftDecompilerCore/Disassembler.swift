@@ -2112,7 +2112,8 @@ public struct Disassembler: Sendable {
         // signature would label the awaited result (x0) as the first parameter.
         let isResumeFunclet = function.asyncFunclet.map { !$0.isEntry } ?? false
         let classSelfTypeName = objcMethod == nil && symbolEntry == nil && !isResumeFunclet
-            ? Self.selfType(of: function, selfIndex: context.selfIndex, fieldMaps: context.fieldMaps)
+            ? Self.selfType(of: function, selfIndex: context.selfIndex, fieldMaps: context.fieldMaps,
+                            classTypeIndex: context.classTypeIndex)
             : nil
         // A nonmutating HFA-struct instance method passes `self` decomposed in
         // SIMD registers rather than through x20, so it needs the value-self
@@ -5448,7 +5449,8 @@ public struct Disassembler: Sendable {
     static func selfType(
         of function: DisassembledFunction,
         selfIndex: SelfTypeIndex,
-        fieldMaps: [String: FieldMap]
+        fieldMaps: [String: FieldMap],
+        classTypeIndex: ClassTypeIndex = ClassTypeIndex()
     ) -> String? {
         // A type whose SIMPLE name collided was dropped from the map by the
         // collision guard, but its QUALIFIED key survives — so a self type counts
@@ -5466,10 +5468,25 @@ public struct Disassembler: Sendable {
             guard binding.isInstance else { return nil }
             return binding.selfTypeName
         }
-        guard let fromSymbol = selfTypeFromDemangledName(function.analysisName),
-              resolves(fromSymbol)
-        else { return nil }
-        return fromSymbol
+        guard let fromSymbol = selfTypeFromDemangledName(function.analysisName) else { return nil }
+        if resolves(fromSymbol) { return fromSymbol }
+        // A class instance member takes self in x20 whether or not the class
+        // has a stored property to lay out. A final method has no vtable
+        // slot and a property-less class no field map, so neither source
+        // above saw `final class Node: NSObject`'s `join`, and its self was
+        // never seeded. The qualified name must be a class by metadata:
+        // a free function parses to its module, which has no qualified name.
+        // The name must be the function's own demangled symbol, with its
+        // signature: only that says `static` for a type member. A name
+        // metadata gives a stripped body (`SwiftSoup.Evaluator.IsEmpty.method`)
+        // does not, and seeding self there lost 25 calls' arguments in one app.
+        if isSwiftMangled(function.symbol), let name = function.analysisName,
+           DisassembledFunction.signatureKnown(displayName: name, objcSignature: nil),
+           let qualified = qualifiedSelfTypeFromDemangledName(name),
+           classTypeIndex.isClass(qualified) {
+            return fromSymbol
+        }
+        return nil
     }
 
     /// The no-payload enum an instance member or witness holds by address in

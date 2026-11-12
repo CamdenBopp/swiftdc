@@ -3240,6 +3240,20 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   and two nested `if`s whose inner call kept the outer one alive
   (`os.(*file).close`, ClassParam's metadata instantiation).
 
+- **FIXED (COMMIT) — a class with no stored property seeded no `self` in
+  its final members.** `retainregister.swift`'s `final class Node:
+  NSObject` has no field map and `join` no vtable slot, so neither source
+  of the self type saw it: `enroll(?)` and `objc_retain_x20  args(?)` for
+  `enroll(self)`. A Swift symbol whose demangled name has a signature and
+  names a type the class index proves a class (by its qualified name) now
+  takes self in x20. A name metadata gives a stripped body
+  (`SwiftSoup.Evaluator.IsEmpty.method`) has no signature and cannot say
+  `static`; taken first, it seeded self in place of the body-proven
+  arguments and GoodLinks lost 25 calls' targets (10,849 -> 10,868), so
+  it is declined. Deinit names carry no signature either and keep `?`.
+  Blast radius: 18 files, 84 structured lines, `x20`/`x19`/`?` becoming
+  `self`, plus `self.run(arg0)` style vtable calls in such classes.
+
 ## 3. Robustness — what breaks it?
 
 - **FIXED — a file shorter than a dyld cache header trapped four
