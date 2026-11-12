@@ -386,6 +386,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name SelfAgain selfagain.swif
 echo "==> a protocol witness that tail-calls its member (witnesstail.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name WitnessTail witnesstail.swift -o libWitnessTail.dylib
 
+echo "==> a closure's captures passed after its formals (closurecapture.swift, -Onone)"
+$SWIFTC -parse-as-library -Onone -emit-library -module-name ClosureCapture closurecapture.swift -o libClosureCapture.dylib
+
 echo "==> SDK calls from their declarations: open, fcntl, ioctl, closedir, sysctl (variadic_calls.c, -O1)"
 $CLANG -O1 -dynamiclib variadic_calls.c -o libVariadicCalls.dylib
 

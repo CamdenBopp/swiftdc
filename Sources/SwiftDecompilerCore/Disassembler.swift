@@ -9416,9 +9416,13 @@ public struct Disassembler: Sendable {
             // original's signature, not its own, so it has none either:
             // `<Arg[0] = Dead> of helperI(Swift.Int, Swift.Int)` takes x0
             // alone, and positionally read `helperI(arg1, arg1)`.
+            // A closure's printed signature lists its formals only; what it
+            // captured follows them as more arguments (`ldr x1, [x20, #0x10];
+            // b closure #1` passed k after y, and rendered `closure #1 (arg0)`).
             if let target = callTargets[address], let summary = registerSummaries[target],
                calleeByAddress[address].flatMap({ DisassembledFunction.splitSignature($0) }) == nil
-                || calleeByAddress[address].map({ !followsASignature(target: target, callee: $0) }) == true,
+                || calleeByAddress[address].map({ !followsASignature(target: target, callee: $0) }) == true
+                || calleeByAddress[address].map({ $0.hasPrefix("closure #") || $0.hasPrefix("implicit closure #") }) == true,
                calleeByAddress[address].flatMap({ selectorName(callee: $0, arguments: values) }) == nil,
                calleeByAddress[address].flatMap(DisassembledFunction.knownCArity(of:)) == nil || isNameTwin(address) {
                 // A register below the highest one read that the body never
