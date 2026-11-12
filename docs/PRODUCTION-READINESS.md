@@ -3240,7 +3240,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   and two nested `if`s whose inner call kept the outer one alive
   (`os.(*file).close`, ClassParam's metadata instantiation).
 
-- **FIXED (COMMIT) — a class with no stored property seeded no `self` in
+- **FIXED (71e5547) — a class with no stored property seeded no `self` in
   its final members.** `retainregister.swift`'s `final class Node:
   NSObject` has no field map and `join` no vtable slot, so neither source
   of the self type saw it: `enroll(?)` and `objc_retain_x20  args(?)` for
