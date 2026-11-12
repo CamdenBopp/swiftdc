@@ -3268,7 +3268,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   name becoming its register (`if (x19 != 0)`), including swift-syntax's
   LRUCache where `swift_unownedRetainStrong` sits between.
 
-- **FIXED (COMMIT) — an exit leaving two loops rendered as a `break` into
+- **FIXED (d3fff80) — an exit leaving two loops rendered as a `break` into
   the outer loop.** `loopexit.swift` (-O): `for i { for j { if ext(i+j)
   == 6 { return }; sink(j) }; sink(-i) }` rendered the exit as `break`,
   which falls into `sink(-i)` and the outer loop's test; the code
