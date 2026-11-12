@@ -5444,6 +5444,17 @@ public struct Disassembler: Sendable {
 
     /// Run value tracking on a function and append recovered call arguments
     /// (`args(…)`) to each call instruction.
+    /// Whether `callee`, a demangled Swift name with its signature, is an
+    /// instance member of a type the class index proves a class: such a
+    /// member takes `self` in x20. Static members, allocating initializers,
+    /// thunks and free functions do not parse to an instance member.
+    static func isClassInstanceMember(_ callee: String, classTypeIndex: ClassTypeIndex) -> Bool {
+        guard DisassembledFunction.signatureKnown(displayName: callee, objcSignature: nil),
+              let qualified = qualifiedSelfTypeFromDemangledName(callee)
+        else { return false }
+        return classTypeIndex.isClass(qualified)
+    }
+
     /// A short name for an entry convention's kind, for the probe.
     static func conventionName(_ entry: MethodEntryConvention) -> String {
         switch entry {
@@ -8420,9 +8431,19 @@ public struct Disassembler: Sendable {
         /// formals, by site: the ones every path that renders the call shows.
         var valueSelfBySite: [UInt64: AbstractValue] = [:]
         for insn in function.instructions {
-            guard let site = sites[insn.address], Self.isSwiftCall(insn, swiftTargets: swiftTargets),
-                  site.selfValue != .unknown, !importedStringReceiverSites.contains(insn.address)
+            guard var site = sites[insn.address], Self.isSwiftCall(insn, swiftTargets: swiftTargets),
+                  !importedStringReceiverSites.contains(insn.address)
             else { continue }
+            // x20 not written since the last call is still the receiver of a
+            // callee whose own name proves it a class instance member: x20
+            // is callee-saved, so `c.m1() + c.m2()` passes c to both, and
+            // the second read `P7.K.m2()`.
+            // A dispatch through self's vtable already renders as `self.m(…)`.
+            if site.selfValue == .unknown, !insn.isSelfDispatch, let callee = calleeByAddress[insn.address],
+               Self.isClassInstanceMember(callee, classTypeIndex: classTypeIndex) {
+                site.selfValue = site.x20Value
+            }
+            guard site.selfValue != .unknown else { continue }
             // A String result's second word moved into x20 is no receiver.
             if case .callResultHigh = site.selfValue { continue }
             // An in-image receiver requires positive entry-x20 use. A MAY

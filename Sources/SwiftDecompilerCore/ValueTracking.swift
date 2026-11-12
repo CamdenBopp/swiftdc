@@ -417,12 +417,17 @@ public struct CallSite: Equatable, Sendable {
     public var indirectResult: AbstractValue = .unknown
     /// xN for `objc_retain_xN`, the one argument it takes.
     public var retainedValue: AbstractValue = .unknown
+    /// x20 at the call whether or not it was written for this call: the
+    /// receiver of a callee proven to take `self` there (a class instance
+    /// member), which a value left in x20 from an earlier call still is.
+    public var x20Value: AbstractValue = .unknown
 
     /// Whether nothing at all was inferred (so there's nothing worth showing).
     public var isEmpty: Bool {
         arguments.isEmpty && floatArguments.allSatisfy { $0 == .unknown }
             && stackArguments.isEmpty && selfValue == .unknown
             && errorValue == .unknown && indirectResult == .unknown && retainedValue == .unknown
+            && x20Value == .unknown
     }
 }
 
@@ -2137,7 +2142,8 @@ public struct ValueTracer: Sendable {
             selfValue: registers[selfFreshKey] != nil && !isResultPointer(registers[.x(20)])
                 ? (registers[.x(20)] ?? .unknown) : .unknown,
             errorValue: registers[.x(21)] ?? .unknown,
-            indirectResult: registers[.x(8)] ?? .unknown
+            indirectResult: registers[.x(8)] ?? .unknown,
+            x20Value: isResultPointer(registers[.x(20)]) ? .unknown : (registers[.x(20)] ?? .unknown)
         )
     }
 

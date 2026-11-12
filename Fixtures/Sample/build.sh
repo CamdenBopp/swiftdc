@@ -379,6 +379,10 @@ echo "==> direct calls in a stripped executable with no function starts (mergedc
 $CLANG -O1 mergedcalls.c -Wl,-no_function_starts -o mergedcalls.stripped
 xcrun strip mergedcalls.stripped
 
+echo "==> a receiver left in x20 across a call to another module (selfagain.swift, selfagainkit.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -emit-module -module-name SelfAgainKit selfagainkit.swift -o libSelfAgainKit.dylib
+$SWIFTC -parse-as-library -O -emit-library -module-name SelfAgain selfagain.swift -I . -L . -lSelfAgainKit -o libSelfAgain.dylib
+
 echo "==> SDK calls from their declarations: open, fcntl, ioctl, closedir, sysctl (variadic_calls.c, -O1)"
 $CLANG -O1 -dynamiclib variadic_calls.c -o libVariadicCalls.dylib
 

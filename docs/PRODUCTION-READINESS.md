@@ -1794,8 +1794,13 @@ because it cannot be distinguished from a right one by reading the output.
   clamped to their arity. Swift callees and every other C callee are not: see
   the OPEN arity entries above.
 - **MITIGATED — `self` is conservative.** x20 is read as `self` only for a
-  Swift-mangled callee and only when freshly written (`Disassembler.swift:2847`,
-  `ValueTracking.swift:636`). Deliberate false-negative-over-false-positive.
+  Swift-mangled callee and only when freshly written, or (since COMMIT) when
+  the callee's own demangled name proves it an instance member of a class,
+  which takes self in x20 whoever wrote it: `c.m1() &+ c.m2()` read
+  `Box.m2()`, now `Box.m2(self: arg0)` (`selfagain.swift`). OPEN: a fresh
+  x20 that holds a saved temporary is read as a value type's receiver,
+  `Pair.sum(self: r0, 1)` and `Mode.code(self: r0)`, where a struct's or
+  enum's method takes its value elsewhere.
 - **MITIGATED — field naming requires two independent halves.** Receiver type
   known AND offset inside the type's trusted prefix; the `isInstance` flag
   refuses metatypes. Consulting the symbol first (which lacks that flag) produced
