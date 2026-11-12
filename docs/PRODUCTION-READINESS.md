@@ -3311,7 +3311,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   is declined (`currentTime` is a CMTime on AVPlayer). Found by a probe
   sweep; only the fixture changed in the corpus.
 
-- **FIXED (COMMIT) — a variadic SDK selector outside the name suffixes
+- **FIXED (48b229b) — a variadic SDK selector outside the name suffixes
   dropped its variadic part.** `isVariadicSelector` knew only
   `…WithFormat:`, `appendFormat:`, `…WithObjects:` and
   `…WithObjectsAndKeys:`, so `[s stringByAppendingFormat:@"+%ld", n]`
