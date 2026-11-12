@@ -3251,7 +3251,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   `static`; taken first, it seeded self in place of the body-proven
   arguments and GoodLinks lost 25 calls' targets (10,849 -> 10,868), so
   it is declined. A destructor has no signature but is never static, so
-  `….deinit` and `….__deallocating_deinit` qualify (FIXED (COMMIT)); the
+  `….deinit` and `….__deallocating_deinit` qualify (FIXED (a99e8d5)); the
   parser had also read `deinit` as a property accessor, so
   `LRUCache.(_Node in …).deinit` took its parent `LRUCache`'s field names
   (`self.head`, a field `_Node` does not have) and now shows offsets.
