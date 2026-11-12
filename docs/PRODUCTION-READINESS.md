@@ -3286,7 +3286,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   render loops forever where the code returns. The empty edge to the
   return block is taken as falling through.
 
-- **FIXED (COMMIT) — an image that rebases by opcode lost every selector
+- **FIXED (b7500e0) — an image that rebases by opcode lost every selector
   and CFString.** A deployment target below macOS 12 or iOS 15 links with
   `LC_DYLD_INFO`: a rebased slot holds its target's unslid address, and
   only the slots the rebase opcodes list are pointers. The selector table
