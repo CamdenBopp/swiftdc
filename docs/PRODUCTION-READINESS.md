@@ -1614,7 +1614,7 @@ because it cannot be distinguished from a right one by reading the output.
   load into x19-x30 there is an outlined epilogue's restore, not an
   argument. Found by a probe sweep; Go's ABI0 stubs (all stack-passed) and
   frame-reading outlined fragments also gain `…`.
-- **FIXED (COMMIT) — a loop counter held in a register read as a constant.**
+- **FIXED (651cc12) — a loop counter held in a register read as a constant.**
   `registerloop.swift` at -O: `countUp` keeps `i` in x19 and steps it
   before the test (`add x19, x19, #3; …; cmp x19, #0x3e5; b.lo`), and
   rendered `if (x19 <ᵁ 0x3e5) { continue }`, a test on a register nothing
