@@ -3366,6 +3366,15 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   fired only for an empty table. It now fires when no listed start lies in
   the code, as `warning: LC_FUNCTION_STARTS lists no address inside the
   code, …`. Found by a probe sweep; no render changed.
+
+- **FIXED (COMMIT) — plain `disasm` blamed its parser for damaged input.**
+  A dylib whose symbol values all lie outside it makes llvm-objdump print
+  `section data ends, _add lies outside valid range` and no instruction,
+  and swiftdc said "This is a parser defect, not an empty binary". The
+  error now carries llvm-objdump's own complaint when it makes one and
+  says the input looks damaged (pointing at `--structured`/`--pseudo`,
+  which decode without llvm-objdump); with no complaint it is still
+  reported as swiftdc's parse failure. Found by a probe sweep.
   Blast radius: 18 files, 84 structured lines, `x20`/`x19`/`?` becoming
   `self`, plus `self.run(arg0)` style vtable calls in such classes.
 

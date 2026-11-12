@@ -698,7 +698,10 @@ public struct Disassembler: Sendable {
         /// source agrees the binary is empty; here one does not, so this is an
         /// analysis failure and must be reported as one rather than returned as
         /// "no functions".
-        case parsedNothing(lines: Int, knownStarts: Int)
+        /// `toolReport` is llvm-objdump's own complaint about the input
+        /// (`section data ends, _add lies outside valid range`), when it made
+        /// one: then the input is damaged, and the parser is not at fault.
+        case parsedNothing(lines: Int, knownStarts: Int, toolReport: String? = nil)
         /// The image's code is not arm64: the decoder would read its bytes as
         /// ARM64 anyway and fabricate instructions, so nothing decodes them.
         case unsupportedArchitecture(String)
@@ -711,7 +714,13 @@ public struct Disassembler: Sendable {
                     llvm-objdump's text.
                     """
             case .toolFailed(let m): return "llvm-objdump failed: \(m)"
-            case .parsedNothing(let lines, let starts):
+            case .parsedNothing(let lines, let starts, let report?):
+                return """
+                    llvm-objdump could not disassemble this image (\(lines) lines, no instruction), \
+                    though LC_FUNCTION_STARTS lists \(starts) function(s), and it reported: \(report). \
+                    The input looks damaged; `disasm --structured` and `--pseudo` decode it without llvm-objdump.
+                    """
+            case .parsedNothing(let lines, let starts, nil):
                 return """
                     disassembly parse failed: llvm-objdump produced \(lines) lines but no \
                     instruction was recognised, while LC_FUNCTION_STARTS lists \(starts) \
@@ -3805,6 +3814,19 @@ public struct Disassembler: Sendable {
     /// itself out of. Returning [] here unconditionally is what let a
     /// leading-whitespace parse bug masquerade as "no functions" on every
     /// low-based dylib.
+    /// The first line in which llvm-objdump says the input itself is wrong:
+    /// a range or bounds complaint, or an error or warning line. Nil when it
+    /// said nothing of the kind.
+    static func objdumpComplaint(stdout: String, stderr: String) -> String? {
+        let lines = (stderr + "\n" + stdout).split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        return lines.first { line in
+            let lower = line.lowercased()
+            return lower.contains("outside valid range") || lower.contains("truncated") || lower.contains("malformed")
+                || lower.hasPrefix("error") || lower.hasPrefix("warning") || lower.contains(": error:")
+                || lower.contains(": warning:")
+        }
+    }
+
     private func objdumpInstructions(
         _ args: [String], machO: MachOFile
     ) throws -> (instructions: [Instruction], labels: [UInt64: String]) {
@@ -3822,7 +3844,8 @@ public struct Disassembler: Sendable {
             guard knownStarts == 0 else {
                 throw DisassembleError.parsedNothing(
                     lines: result.stdout.split(separator: "\n").count,
-                    knownStarts: knownStarts
+                    knownStarts: knownStarts,
+                    toolReport: Self.objdumpComplaint(stdout: result.stdout, stderr: result.stderr)
                 )
             }
         }
