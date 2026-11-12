@@ -1639,7 +1639,7 @@ because it cannot be distinguished from a right one by reading the output.
 - **OPEN — loop counters still raw.** A 32-bit counter (`int` at -O1:
   `subs w19, w19, #2`) wraps each step (`((i & M) - 2) & M`) and is not
   matched.
-- **FIXED (COMMIT) — Swift's checked step left its loop counter raw.**
+- **FIXED (cd0057e) — Swift's checked step left its loop counter raw.**
   `registerloop.swift` checkedDown (`i -= 2`) at -O ends the header in
   its overflow guard (`subs x19, x19, #2; b.vs trap`) and tests in the
   block that closes the lap (`cmp x19, #0; b.gt header`), so the header's
