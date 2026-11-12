@@ -3298,6 +3298,18 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   render the same. Found by a probe sweep. Blast radius: the fixture and
   goProgram (opcode-linked), whose six calls through `__go_func`
   function values in `__DATA_CONST` are now named (`main.main()`).
+
+- **FIXED (COMMIT) — an SDK send returning an integer struct rendered as
+  its first word.** `objc_range_return.m`: `return [s
+  rangeOfString:@"x"].location` read `return [arg0 rangeOfString:@"x"]`,
+  an NSNotFound test read `([arg0 rangeOfString:@"q"] !=
+  0x7fffffffffffffff)`, and `_u = [view selectedRange].location` stored
+  the whole send. The SDK selector table recorded only v-register
+  returns; it now marks `a` for every selector some public declaration
+  returns as an integer struct (in x0 and x1, or through x8), 476 of
+  them, and that is an aggregate veto: x0 is one word, and a float claim
+  is declined (`currentTime` is a CMTime on AVPlayer). Found by a probe
+  sweep; only the fixture changed in the corpus.
   Blast radius: 18 files, 84 structured lines, `x20`/`x19`/`?` becoming
   `self`, plus `self.run(arg0)` style vtable calls in such classes.
 

@@ -369,6 +369,9 @@ echo "==> the same ObjC with opcode rebases and with chained fixups (opcodefixup
 $CLANG -fobjc-arc -O1 -dynamiclib -framework Foundation -mmacosx-version-min=11.0 opcodefixups.m -o libOpcodeFixups.dylib
 $CLANG -fobjc-arc -O1 -dynamiclib -framework Foundation -mmacosx-version-min=13.0 opcodefixups.m -o libOpcodeFixups.chained.dylib
 
+echo "==> SDK sends returning an NSRange in x0 and x1 (objc_range_return.m, -O1)"
+$CLANG -fobjc-arc -O1 -dynamiclib -framework Foundation -framework AppKit objc_range_return.m -o libObjCRangeReturn.dylib
+
 echo "==> SDK calls from their declarations: open, fcntl, ioctl, closedir, sysctl (variadic_calls.c, -O1)"
 $CLANG -O1 -dynamiclib variadic_calls.c -o libVariadicCalls.dylib
 

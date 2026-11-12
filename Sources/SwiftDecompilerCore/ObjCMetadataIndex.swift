@@ -696,7 +696,7 @@ public struct ObjCMetadataIndex: Sendable {
     func selectorReturnsOneFloat(_ selector: String) -> Bool {
         let matching = bySelector[selector] ?? []
         let sdk = SDKSelectorReturns.table[selector]
-        guard sdk != "h", !matching.contains(where: \.returnsFloatAggregate) else { return false }
+        guard sdk != "h", sdk != "a", !matching.contains(where: \.returnsFloatAggregate) else { return false }
         return sdk == "f" || matching.contains(where: \.returnsOneFloat)
     }
 
@@ -705,7 +705,7 @@ public struct ObjCMetadataIndex: Sendable {
     /// and an unknown receiver can select any indexed implementation. Even a
     /// one-word struct is not its scalar field as a source-level value.
     func selectorMayReturnAggregate(_ selector: String) -> Bool {
-        SDKSelectorReturns.table[selector] == "h" || selectorHasAggregateDeclaration(selector)
+        ["h", "a"].contains(SDKSelectorReturns.table[selector]) || selectorHasAggregateDeclaration(selector)
     }
 
     /// Indexed aggregate declarations remain a veto even when a receiver's
