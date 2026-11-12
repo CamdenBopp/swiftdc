@@ -218,6 +218,7 @@ now represented directly:
 | `analysis.function` | symbol, instructions, blocks, calls; one completed analysis |
 | `cfg.block` | successors, instructions; CFG evidence |
 | `values.exit-registers` | x0, v0, x20, x21, path; raw facts and branch predicates at ordinary/async returns, not source ABI claims |
+| `analysis.entry` | convention, selfType, seeds (register → value) |
 | `values.call` | arguments, floatingArguments, stackArguments, receiver, indirectResult |
 | `values.condition` | value; signed and unsigned operators stay distinct |
 | `values.loop-initialization` | name, value, stackOffset; proven constant entry binding, at the header branch |

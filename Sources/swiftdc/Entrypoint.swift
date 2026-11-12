@@ -12,7 +12,7 @@ struct SwiftDC: AsyncParsableCommand {
         subcommands: [
             AnalyzeCommand.self, DumpCommand.self, InterfaceCommand.self, ObjCCommand.self,
             DisasmCommand.self, XrefsCommand.self, LayoutCommand.self, SwiftVersionCommand.self,
-            DevicesCommand.self, AppsCommand.self, ScoreCommand.self, ResearchCommand.self,
+            DevicesCommand.self, AppsCommand.self, ScoreCommand.self, ResearchCommand.self, LabCommand.self,
         ],
         defaultSubcommand: AnalyzeCommand.self
     )

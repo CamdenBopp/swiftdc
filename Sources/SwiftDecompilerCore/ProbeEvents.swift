@@ -10,6 +10,8 @@ public extension ProbeEvent {
         "A recovered basic block and its successors; missing edges remain missing.")
     static let exitRegisters = ProbeEvent("values.exit-registers", .values, .decision,
         "Raw register facts at a return; these are not a claim about a source-level result's ABI.")
+    static let entryConvention = ProbeEvent("analysis.entry", .values, .decision,
+        "The convention a function's analysis was seeded with: its kind, the self type, and each seeded register.")
     static let callSnapshot = ProbeEvent("values.call", .values, .decision,
         "Raw argument, receiver and result-buffer facts at a machine call site.")
     static let conditionSnapshot = ProbeEvent("values.condition", .values, .decision,

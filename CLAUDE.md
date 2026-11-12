@@ -209,6 +209,13 @@ around what a rebuild costs:
   while the release build runs.
 - **Do not touch a tree while it builds** for a measurement or a release.
   Run a parallel experiment in a second worktree.
+- **Ask the analysis, not the render:** `swiftdc lab <binary> -f <name>`
+  prints each instruction of the matching functions beside what the
+  analysis concluded there: the entry convention and its seeded registers,
+  each call's callee, registers and argument layout, each branch condition
+  and the exit registers. It reads the probe records of an ordinary
+  filtered run, so it shows what `disasm` decided. Use it to find which
+  stage went wrong before reading code or diffing renders.
 - **Profile before optimizing a run:** `sample <pid> <seconds>` on a release
   run, then sum the call tree by frame. The first such profile found 7.4%
   of a GoodLinks `--pseudo` run re-opening the file as a dyld cache.

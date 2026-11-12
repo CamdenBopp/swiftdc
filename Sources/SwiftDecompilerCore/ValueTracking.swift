@@ -1090,6 +1090,18 @@ public struct ValueTracer: Sendable {
     /// Entry state: `sp` anchors the frame at offset 0. Receiver/argument
     /// registers are seeded only when runtime or Swift metadata establishes the
     /// method convention for this exact implementation address.
+    /// The registers `entry` seeds before the first instruction, in register
+    /// order, for the `analysis.entry` probe.
+    static func entrySeeds(_ entry: MethodEntryConvention?) -> [(register: String, value: AbstractValue)] {
+        initialState(entry: entry).compactMap { element -> (Int, String, AbstractValue)? in
+            switch element.key {
+            case .x(let n): (n, "x\(n)", element.value)
+            case .v(let n): (100 + n, "v\(n)", element.value)
+            default: nil
+            }
+        }.sorted { $0.0 < $1.0 }.map { ($0.1, $0.2) }
+    }
+
     private static func initialState(entry: MethodEntryConvention?, asyncContextSlots: [Int: AbstractValue] = [:]) -> State {
         // x8 is the indirect-result address in every ARM64 convention, so the
         // seed is a fact about the ABI, not about this function; see

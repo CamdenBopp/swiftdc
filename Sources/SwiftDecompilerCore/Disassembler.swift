@@ -2187,6 +2187,18 @@ public struct Disassembler: Sendable {
         // result) over the ordinary convention, and bring the context slots the
         // chain pass proved.
         let asyncEntry = Self.asyncConvention(for: function, base: entry, index: context.asyncIndex)
+        if Probe.isActive {
+            let seeded = asyncEntry ?? entry
+            Probe.inFunction(function.startAddress, function.displayName) {
+                Probe.record(.entryConvention, at: function.startAddress, [
+                    "convention": .label(seeded.map(Self.conventionName) ?? "none"),
+                    "selfType": .name(selfTypeName ?? "none"),
+                    "seeds": .object(Dictionary(uniqueKeysWithValues: ValueTracer.entrySeeds(seeded).map {
+                        ($0.register, ProbeValue.abstractValue($0.value))
+                    })),
+                ])
+            }
+        }
         let chainSlots = context.asyncChainSlots[function.startAddress] ?? [:]
         let classArguments: [Int: (type: String, map: FieldMap)] = if case .swiftFunction(let scalarArguments, _, _, _)? = entry {
             Self.classArguments(of: function, scalarArguments: scalarArguments, index: context.classParameterFields)
@@ -5429,6 +5441,18 @@ public struct Disassembler: Sendable {
 
     /// Run value tracking on a function and append recovered call arguments
     /// (`args(…)`) to each call instruction.
+    /// A short name for an entry convention's kind, for the probe.
+    static func conventionName(_ entry: MethodEntryConvention) -> String {
+        switch entry {
+        case .swiftInstance: "swift-instance"
+        case .objectiveC: "objc"
+        case .objectiveCInitializer: "objc-initializer"
+        case .swiftFunction: "swift-function"
+        case .swiftValueInstance: "swift-value-instance"
+        case .asyncFunclet(let base, _): "async-funclet(" + (base.map(conventionName) ?? "none") + ")"
+        }
+    }
+
     /// The type whose instance arrives in x20, for one function — or nil, which
     /// is the honest answer for everything that isn't a Swift instance method.
     ///
