@@ -5300,6 +5300,9 @@ public struct Disassembler: Sendable {
             built = true
             guard let fixups = machO.dyldChainedFixups else {
                 buildLegacyBindings(machO)
+                for (offset, target) in ChainedRebases.opcodeTargets(in: machO) ?? [:] {
+                    rebases[UInt64(offset)] = target
+                }
                 return
             }
             guard let startsInImage = fixups.startsInImage else { return }

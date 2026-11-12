@@ -365,6 +365,10 @@ $SWIFTC -parse-as-library -O -emit-library -module-name FieldStore fieldstore.sw
 echo "==> an inner loop's exit that leaves the outer loop too (loopexit.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name LoopExit loopexit.swift -o libLoopExit.dylib
 
+echo "==> the same ObjC with opcode rebases and with chained fixups (opcodefixups.m, -O1)"
+$CLANG -fobjc-arc -O1 -dynamiclib -framework Foundation -mmacosx-version-min=11.0 opcodefixups.m -o libOpcodeFixups.dylib
+$CLANG -fobjc-arc -O1 -dynamiclib -framework Foundation -mmacosx-version-min=13.0 opcodefixups.m -o libOpcodeFixups.chained.dylib
+
 echo "==> SDK calls from their declarations: open, fcntl, ioctl, closedir, sysctl (variadic_calls.c, -O1)"
 $CLANG -O1 -dynamiclib variadic_calls.c -o libVariadicCalls.dylib
 

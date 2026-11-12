@@ -3285,6 +3285,19 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   returns, the text continues into `loc_83c` (`sink(-j)`), and the
   render loops forever where the code returns. The empty edge to the
   return block is taken as falling through.
+
+- **FIXED (COMMIT) — an image that rebases by opcode lost every selector
+  and CFString.** A deployment target below macOS 12 or iOS 15 links with
+  `LC_DYLD_INFO`: a rebased slot holds its target's unslid address, and
+  only the slots the rebase opcodes list are pointers. The selector table
+  and the CFString reader resolved rebases only through chained fixups,
+  so `opcodefixups.m` built for macOS 11 rendered `NSLog(0x4000)` and
+  each send as an unresolved call, where the macOS 13 build reads
+  `NSLog(@"n=%ld", arg1)` and `[arg0 removeAllObjects]`. Opcode rebases
+  now feed both (`ChainedRebases.opcodeTargets`), and the two builds
+  render the same. Found by a probe sweep. Blast radius: the fixture and
+  goProgram (opcode-linked), whose six calls through `__go_func`
+  function values in `__DATA_CONST` are now named (`main.main()`).
   Blast radius: 18 files, 84 structured lines, `x20`/`x19`/`?` becoming
   `self`, plus `self.run(arg0)` style vtable calls in such classes.
 
