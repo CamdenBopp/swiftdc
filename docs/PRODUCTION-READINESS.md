@@ -1797,7 +1797,7 @@ because it cannot be distinguished from a right one by reading the output.
   Swift-mangled callee and only when freshly written, or (since 3ae5002) when
   the callee's own demangled name proves it an instance member of a class,
   which takes self in x20 whoever wrote it: `c.m1() &+ c.m2()` read
-  `Box.m2()`, now `Box.m2(self: arg0)` (`selfagain.swift`). FIXED (COMMIT):
+  `Box.m2()`, now `Box.m2(self: arg0)` (`selfagain.swift`). FIXED (4b6b282):
   a fresh x20 holding a saved temporary read as a value type's receiver,
   `Pair.sum(self: r0, 1)` and `Mode.code(self: r0)` of m1's Int; a call
   declared to return a plain scalar is now never a receiver. DEAD END: "a
