@@ -372,6 +372,9 @@ $CLANG -fobjc-arc -O1 -dynamiclib -framework Foundation -mmacosx-version-min=13.
 echo "==> SDK sends returning an NSRange in x0 and x1 (objc_range_return.m, -O1)"
 $CLANG -fobjc-arc -O1 -dynamiclib -framework Foundation -framework AppKit objc_range_return.m -o libObjCRangeReturn.dylib
 
+echo "==> variadic SDK selectors outside the name suffixes (objc_variadic_selectors.m, -O1)"
+$CLANG -fobjc-arc -O1 -dynamiclib -framework Foundation objc_variadic_selectors.m -o libObjCVariadicSelectors.dylib
+
 echo "==> SDK calls from their declarations: open, fcntl, ioctl, closedir, sysctl (variadic_calls.c, -O1)"
 $CLANG -O1 -dynamiclib variadic_calls.c -o libVariadicCalls.dylib
 

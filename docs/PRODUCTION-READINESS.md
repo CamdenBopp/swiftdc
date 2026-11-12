@@ -3310,6 +3310,18 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   them, and that is an aggregate veto: x0 is one word, and a float claim
   is declined (`currentTime` is a CMTime on AVPlayer). Found by a probe
   sweep; only the fixture changed in the corpus.
+
+- **FIXED (COMMIT) — a variadic SDK selector outside the name suffixes
+  dropped its variadic part.** `isVariadicSelector` knew only
+  `…WithFormat:`, `appendFormat:`, `…WithObjects:` and
+  `…WithObjectsAndKeys:`, so `[s stringByAppendingFormat:@"+%ld", n]`
+  read `[arg0 stringByAppendingFormat:@"+%ld"]` and `raise:format:`
+  showed its format alone, with no `…`. A type encoding does not say a
+  method is variadic; the SDK headers do. The prototype generator now
+  collects every variadic method declaration (44 selectors,
+  `SDKVariadicSelectors`), and the check consults it: `[arg0
+  stringByAppendingFormat:@"+%ld", arg1]`, `raise:format:@"bad %ld", …`.
+  Found by a probe sweep; only the fixture changed in the corpus.
   Blast radius: 18 files, 84 structured lines, `x20`/`x19`/`?` becoming
   `self`, plus `self.run(arg0)` style vtable calls in such classes.
 

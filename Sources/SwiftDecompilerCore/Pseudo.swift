@@ -450,10 +450,13 @@ public extension DisassembledFunction {
 
         static func isVariadicSelector(_ selector: String) -> Bool {
             guard !selector.contains("arguments:") else { return false }
+            // The SDK's declarations name the rest: `stringByAppendingFormat:`
+            // and `raise:format:` dropped their format arguments with no `…`.
             return selector.hasSuffix("WithFormat:")
                 || selector.hasSuffix("appendFormat:")
                 || selector.hasSuffix("WithObjects:")
                 || selector.hasSuffix("WithObjectsAndKeys:")
+                || SDKVariadicSelectors.all.contains(selector)
         }
 
         /// `[receiver setBool:1 forKey:@"k"]`, or `[receiver reload]` for a
