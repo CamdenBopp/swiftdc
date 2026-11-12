@@ -5444,6 +5444,14 @@ public struct Disassembler: Sendable {
 
     /// Run value tracking on a function and append recovered call arguments
     /// (`args(…)`) to each call instruction.
+    /// Standard-library scalar types: a value of one is never a reference or
+    /// an address, so never any method's `self` in x20.
+    static let plainScalarTypes: Set<String> = [
+        "Swift.Int", "Swift.Int8", "Swift.Int16", "Swift.Int32", "Swift.Int64",
+        "Swift.UInt", "Swift.UInt8", "Swift.UInt16", "Swift.UInt32", "Swift.UInt64",
+        "Swift.Bool", "Swift.Double", "Swift.Float",
+    ]
+
     /// Whether `callee`, a demangled Swift name with its signature, is an
     /// instance member of a type the class index proves a class: such a
     /// member takes `self` in x20. Static members, allocating initializers,
@@ -8476,6 +8484,15 @@ public struct Disassembler: Sendable {
                    isStatic || !isAddressValue(site.selfValue) { continue }
                 // Nor does a global variable's addressor.
                 if DisassembledFunction.isGlobalVariableAddressor(callee) { continue }
+                // A value a call declared to return as a plain scalar is no
+                // receiver: no method takes an Int as its self, by value or
+                // by address. A caller that parks such a result in x20
+                // (callee-saved) across the next call made `Pair.sum(self:
+                // r0, 1)` and `Mode.code(self: r0)` of m1's Int.
+                if case .callResult(let producer) = site.selfValue,
+                   let producerName = calleeByAddress[producer],
+                   let result = DisassembledFunction.splitSignature(producerName)?.result,
+                   Self.plainScalarTypes.contains(result) { continue }
                 // A free function, `Module.name(…)`, has no `self`; nor does a
                 // specialization of one, whose name prints the original's
                 // after its clause (`function signature specialization

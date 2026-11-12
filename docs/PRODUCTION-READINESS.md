@@ -1797,10 +1797,14 @@ because it cannot be distinguished from a right one by reading the output.
   Swift-mangled callee and only when freshly written, or (since 3ae5002) when
   the callee's own demangled name proves it an instance member of a class,
   which takes self in x20 whoever wrote it: `c.m1() &+ c.m2()` read
-  `Box.m2()`, now `Box.m2(self: arg0)` (`selfagain.swift`). OPEN: a fresh
-  x20 that holds a saved temporary is read as a value type's receiver,
-  `Pair.sum(self: r0, 1)` and `Mode.code(self: r0)`, where a struct's or
-  enum's method takes its value elsewhere.
+  `Box.m2()`, now `Box.m2(self: arg0)` (`selfagain.swift`). FIXED (COMMIT):
+  a fresh x20 holding a saved temporary read as a value type's receiver,
+  `Pair.sum(self: r0, 1)` and `Mode.code(self: r0)` of m1's Int; a call
+  declared to return a plain scalar is now never a receiver. DEAD END: "a
+  struct's or enum's member takes x20 only as an address" broke four
+  tests: a resilient struct (`Foundation.URL`) takes self by address in
+  x20 even when non-mutating, unprovably so, and `Mod.A.Shared.init()`
+  parses `init` as an accessor and names the enum `A` its type.
 - **MITIGATED — field naming requires two independent halves.** Receiver type
   known AND offset inside the type's trusted prefix; the `isInstance` flag
   refuses metatypes. Consulting the symbol first (which lacks that flag) produced
