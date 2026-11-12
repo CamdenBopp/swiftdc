@@ -37,3 +37,17 @@ public func countUp() {
     var i = start()
     repeat { sink(i); i &+= 1 } while i < 100
 }
+
+// Checked arithmetic: at -O the header ends in the overflow guard
+// (`subs x19, x19, #2; b.vs trap`) and the loop test is in the block that
+// closes the lap (`cmp x19, #0; b.gt header`). sink sees n, n - 2, …
+@inline(never) public func checkedDown(_ n: Int) {
+    var i = n
+    repeat { sink(i); i -= 2 } while i > 0
+}
+
+// The same with a bound from the argument: sink sees 0, 1, …, n - 1.
+@inline(never) public func checkedUp(_ n: Int) {
+    var i = 0
+    while i < n { sink(i); i += 1 }
+}

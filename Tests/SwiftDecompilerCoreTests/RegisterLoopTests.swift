@@ -33,6 +33,13 @@ func aRegisterLoopCounterIsNamedAndSteppedIfPresent(path: String) async throws {
         #expect(down.contains(line), Comment(rawValue: down))
     }
     #expect(!down.contains("x19"), Comment(rawValue: down))
+    // Checked `i -= 2`: the header ends in the overflow guard and the test
+    // closes the lap in its own block.
+    let checked = try structured("RegisterLoop.checkedDown(Swift.Int) -> ()")
+    for line in ["var i = arg0", "RegisterLoop.sink(i)", "((i - 2) > 0)", "i -= 2"] {
+        #expect(checked.contains(line), Comment(rawValue: checked))
+    }
+    #expect(!checked.contains("x19"), Comment(rawValue: checked))
     // A start from a closure's result is unproven: nothing is named.
     let fromCall = try structured("RegisterLoop.fromCall(() -> Swift.Int) -> ()")
     #expect(!fromCall.contains("var i") && !fromCall.contains("i += 1"), Comment(rawValue: fromCall))
@@ -47,6 +54,32 @@ func aRegisterLoopCounterIsNamedAndSteppedIfPresent(path: String) async throws {
 /// The flat view declares a loop's counters on the instruction that enters
 /// the loop, but only where that comes before every block of the loop:
 /// declared below the loop, `--pseudo` would read `i` and declare it after.
+private func counterAnalysis(_ words: [UInt32]) throws -> FunctionAnalysis {
+    let engine = try #require(CapstoneEngine())
+    let bytes = words.flatMap { word in (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) } }
+    let decoded = engine.disassemble(Data(bytes), address: 0x1000)
+    try #require(decoded.count == words.count)
+    let function = DisassembledFunction(symbol: "_counter", demangledName: nil, startAddress: 0x1000,
+        instructions: decoded.map {
+            Instruction(address: $0.address, text: $0.text, controlFlow: $0.controlFlow,
+                        branchTarget: $0.branchTarget, detail: $0.detail)
+        }, source: .symbol)
+    return ValueTracer().analyze(function, entry: .swiftFunction(scalarArguments: ["x0": 0, "x1": 1]))
+}
+
+/// A checked step ends the header in its overflow guard, so the test that
+/// closes the lap names the counter, but only a test that reads it: one
+/// on an argument names nothing.
+@Test func aLapClosingTestNamesOnlyTheCounterItReads() throws {
+    // mov x8, #10; L: subs x8, x8, #1; b.vs T; cmp x8, #0; b.gt L; ret; T: brk #1
+    let reads = try counterAnalysis([0xd2800148, 0xf1000508, 0x54000086, 0xf100011f, 0x54ffffac, 0xd65f03c0, 0xd4200020])
+    #expect(reads.loopInitializations.values.flatMap { $0 }.map(\.name) == ["i"])
+    // The same with `cmp x1, #5` closing the lap: the counter is not tested.
+    let other = try counterAnalysis([0xd2800148, 0xf1000508, 0x54000086, 0xf100143f, 0x54ffffac, 0xd65f03c0, 0xd4200020])
+    #expect(other.loopInitializations.isEmpty)
+    #expect(other.loopUpdates.isEmpty)
+}
+
 @Test func aLoopCounterIsDeclaredBeforeItsLoopOnlyInAddressOrder() throws {
     func analysis(_ words: [UInt32]) throws -> FunctionAnalysis {
         let engine = try #require(CapstoneEngine())

@@ -1638,8 +1638,15 @@ because it cannot be distinguished from a right one by reading the output.
   test against 0 (`(i - 2) > 0`, Go's `printhexopts` `i <= 0`) is named.
 - **OPEN — loop counters still raw.** A 32-bit counter (`int` at -O1:
   `subs w19, w19, #2`) wraps each step (`((i & M) - 2) & M`) and is not
-  matched. Swift's checked `i -= 2` at -O (`subs; b.vs` then the test in
-  its own block) moves the test off the header, so that loop is declined.
+  matched.
+- **FIXED (COMMIT) — Swift's checked step left its loop counter raw.**
+  `registerloop.swift` checkedDown (`i -= 2`) at -O ends the header in
+  its overflow guard (`subs x19, x19, #2; b.vs trap`) and tests in the
+  block that closes the lap (`cmp x19, #0; b.gt header`), so the header's
+  test could not name the counter. For a register counter, that closing
+  test now serves when it reads the same counter and renders: `var i =
+  arg0 … if ((i - 2) > 0) { i -= 2; continue }`. One on another value
+  names nothing. No fixture or real binary moved beyond the new fixture.
 - **FIXED (9360eeb) — `--pseudo` read a loop variable it never declared.**
   The flat view printed `sink((i + 3))` with no `var i = …`, for slot
   counters at -Onone as for register counters (`registerloop.swift`).

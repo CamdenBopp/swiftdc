@@ -3143,14 +3143,24 @@ public struct ValueTracer: Sendable {
             // idiom, a `cbz`), swift-syntax read `while (true) { … if (x22
             // != x24) { i += 1; continue } }`, and a body could read an `i`
             // that is never declared.
+            // Swift's checked step at -O ends the header in its overflow
+            // guard (`subs x19, x19, #2; b.vs trap`) and tests in the block
+            // that closes the lap (`cmp x19, #0; b.gt header`): that test,
+            // on the same counter, serves when the header's cannot.
             if case .x = comparedKey {
-                guard let branch = blockByStart[header]?.instructions.last,
-                      branch.controlFlow == .conditionalBranch, let detail = branch.detail,
-                      ![AARCH64_INS_CBZ, AARCH64_INS_CBNZ, AARCH64_INS_TBZ, AARCH64_INS_TBNZ].contains(detail.id),
-                      let flags = bodyOut[header]?[Self.flagsKey],
-                      let condition = flagCondition(flags, code: detail.conditionCode,
-                                                    width: bodyOut[header]?[Self.flagsWidthKey]),
-                      Self.rendersFromCounterAlone(condition), !Disassembler.isTruthinessTest(condition)
+                func testRenders(_ block: UInt64) -> Bool {
+                    guard let branch = blockByStart[block]?.instructions.last,
+                          branch.controlFlow == .conditionalBranch, let detail = branch.detail,
+                          ![AARCH64_INS_CBZ, AARCH64_INS_CBNZ, AARCH64_INS_TBZ, AARCH64_INS_TBNZ].contains(detail.id),
+                          let flags = bodyOut[block]?[Self.flagsKey],
+                          Self.comparedInductionId(in: flags) == comparedPid,
+                          let condition = flagCondition(flags, code: detail.conditionCode,
+                                                        width: bodyOut[block]?[Self.flagsWidthKey])
+                    else { return false }
+                    return Self.rendersFromCounterAlone(condition) && !Disassembler.isTruthinessTest(condition)
+                }
+                let closesLap = blockByStart[backFrom]?.instructions.last?.branchTarget == header
+                guard testRenders(header) || (backFrom != header && closesLap && testRenders(backFrom))
                 else { continue }
             }
             // Only the primary induction variable is named in `inState` (the loop
