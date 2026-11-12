@@ -362,6 +362,9 @@ $SWIFTC -parse-as-library -O -emit-library -module-name CStructField cstructfiel
 echo "==> a field tested after it was overwritten (fieldstore.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name FieldStore fieldstore.swift -o libFieldStore.dylib
 
+echo "==> an inner loop's exit that leaves the outer loop too (loopexit.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name LoopExit loopexit.swift -o libLoopExit.dylib
+
 echo "==> SDK calls from their declarations: open, fcntl, ioctl, closedir, sysctl (variadic_calls.c, -O1)"
 $CLANG -O1 -dynamiclib variadic_calls.c -o libVariadicCalls.dylib
 

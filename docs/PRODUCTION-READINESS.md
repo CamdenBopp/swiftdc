@@ -3267,6 +3267,24 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   probe sweep. Blast radius: 34 structured lines in 5 files, each a field
   name becoming its register (`if (x19 != 0)`), including swift-syntax's
   LRUCache where `swift_unownedRetainStrong` sits between.
+
+- **FIXED (COMMIT) — an exit leaving two loops rendered as a `break` into
+  the outer loop.** `loopexit.swift` (-O): `for i { for j { if ext(i+j)
+  == 6 { return }; sink(j) }; sink(-i) }` rendered the exit as `break`,
+  which falls into `sink(-i)` and the outer loop's test; the code
+  returns. The inner loop's exit is where the structurer stops, so after
+  it the parent emits nothing and the text is the rest of the outer
+  loop. Such an exit is now spelled out: the tail it reaches (`return`)
+  or a goto to the code after both loops (`goto loc_734`, `sink(100)`).
+  Found by a probe sweep; 42 structured lines in 5 files, every one a
+  `break` becoming `return` or a goto with its label.
+- **OPEN — inside a loop, an edge to the function's end can fall into the
+  next block.** `for i { mid: for j { for k { if ext(i+j+k) == 6 {
+  break mid }; sink(k) }; sink(-j) }; sink(-100 - i) }` (-O): after the
+  outer loop's test `if (x21 != x19) { goto loc_7fc }`, whose false edge
+  returns, the text continues into `loc_83c` (`sink(-j)`), and the
+  render loops forever where the code returns. The empty edge to the
+  return block is taken as falling through.
   Blast radius: 18 files, 84 structured lines, `x20`/`x19`/`?` becoming
   `self`, plus `self.run(arg0)` style vtable calls in such classes.
 

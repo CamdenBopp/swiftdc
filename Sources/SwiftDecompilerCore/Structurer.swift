@@ -136,6 +136,11 @@ struct ControlFlowStructure {
         let exitNode: Int?
         let body: Set<Int>
         let boundsBody: Bool
+        /// A loop nested in another whose exit is where the emission stops
+        /// (the caller's `stop`): after it, the parent
+        /// emits nothing and the next text is the rest of the outer loop, so
+        /// a `break` would land there. Its exits are spelled out instead.
+        var breakLandsElsewhere = false
         /// A switch lies between this loop and the current statement. Its bare
         /// `break` exits the switch, so the loop exit needs an explicit goto.
         let exitsThroughSwitch: Bool
@@ -476,13 +481,18 @@ struct ControlFlowStructure {
                 for declaration in Self.bakedLoopInitialization(blocks[current].instructions.last) {
                     lines.append("\(pad)\(declaration)")
                 }
-                let context = LoopContext(
+                var context = LoopContext(
                     header: current,
                     exitNode: info.exit ?? (info.exits.count <= 1 ? exit : nil),
                     body: info.body,
                     boundsBody: info.exits.count > 1,
                     exitsThroughSwitch: false
                 )
+                // `for i { for j { if f() { return } } ; g(i) }` at -O: the inner
+                // loop's exit is the epilogue, and its `break` ran `g(i)`.
+                if loop != nil, let exitNode = context.exitNode, exitNode == stop {
+                    context.breakLandsElsewhere = true
+                }
                 if let rotated = whileCondition(header: current, info: info) {
                     visited.insert(current)   // header consumed as the loop condition
                     lines.append("\(pad)while (\(rotated.text)) {")
@@ -568,8 +578,10 @@ struct ControlFlowStructure {
                 Probe.record(.structureUnknownSwitchIndex, at: blocks[current].startAddress, ["cases": .int(cases.count)])
                 lines.append("\(pad)switch (?) {")
                 let caseLoop = loop.map {
-                    LoopContext(header: $0.header, exitNode: $0.exitNode, body: $0.body,
-                                boundsBody: $0.boundsBody, exitsThroughSwitch: true)
+                    var context = LoopContext(header: $0.header, exitNode: $0.exitNode, body: $0.body,
+                                              boundsBody: $0.boundsBody, exitsThroughSwitch: true)
+                    context.breakLandsElsewhere = $0.breakLandsElsewhere
+                    return context
                 }
                 for target in order {
                     guard let arm = index(of: target), let caseLabels = labels[target] else { continue }
@@ -732,7 +744,13 @@ struct ControlFlowStructure {
     /// A break can name this loop only when no switch intervenes. Keeping the
     /// target as a goto otherwise also registers its label in the discovery pass.
     private func loopExitStatement(to target: Int, loop: LoopContext, pad: String, gotoTargets: inout Set<Int>) -> String {
-        guard loop.exitsThroughSwitch else { return "\(pad)break" }
+        if loop.breakLandsElsewhere {
+            // `stop` can be the virtual exit, the function's end: no block
+            // to name, and past every return.
+            if target == exit { return "\(pad)return" }
+            if isTrivialTail(target) { return "\(pad)\(tailStatement(blocks[target]))" }
+        }
+        guard loop.exitsThroughSwitch || loop.breakLandsElsewhere else { return "\(pad)break" }
         gotoTargets.insert(target)
         return "\(pad)goto loc_\(hex(blocks[target].startAddress))"
     }
