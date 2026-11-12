@@ -1604,7 +1604,7 @@ because it cannot be distinguished from a right one by reading the output.
   b`. Found by a probe sweep; 62 structured lines in 17 files, each a `return
   ?` or raw-register condition becoming its fields.
 
-- **FIXED (COMMIT) — a call to an in-image callee that reads stack arguments
+- **FIXED (7cf3711) — a call to an in-image callee that reads stack arguments
   showed only its registers.** `stackargs.c`: `nine(q, 1, …, 7, 100)` read
   `nine(?)`, a claim of one argument, though `nine` loads its ninth from
   `[sp]`. A callee whose straight line from the entry loads an argument
