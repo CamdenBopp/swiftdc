@@ -1,0 +1,24 @@
+// A loop counter held in a register at -O and -Osize, not a stack slot.
+// countUp lowers as `mov x19, #-3; L: add x19, x19, #3; bl sink;
+// cmp x19, #0x3e5; b.lo L`: the counter is i + 3 at the test, which runs
+// while i + 3 < 997 (unsigned), so sink sees 0, 3, …, 999.
+// fromTen lowers as `mov w19, #0xc; L: sub x19, x19, #2; bl sink;
+// cmp x19, #2; b.hi L`: sink sees 10, 8, 6, 4, 2.
+@inline(never) public func sink(_ x: Int) { print(x) }
+
+public func countUp() {
+    var i = 0
+    while i < 1000 { sink(i); i += 3 }
+}
+
+@inline(never) public func fromTen() {
+    var i = 10
+    repeat { sink(i); i -= 2 } while i > 0
+}
+
+// The test reads a closure's result, so its condition does not render:
+// the counter must not be declared or stepped where nothing reads it.
+@inline(never) public func untilLimit(_ limit: () -> Int) {
+    var i = 0
+    repeat { sink(i); i += 1 } while i != limit()
+}

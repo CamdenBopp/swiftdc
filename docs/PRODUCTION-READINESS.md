@@ -1614,6 +1614,28 @@ because it cannot be distinguished from a right one by reading the output.
   load into x19-x30 there is an outlined epilogue's restore, not an
   argument. Found by a probe sweep; Go's ABI0 stubs (all stack-passed) and
   frame-reading outlined fragments also gain `…`.
+- **FIXED (COMMIT) — a loop counter held in a register read as a constant.**
+  `registerloop.swift` at -O: `countUp` keeps `i` in x19 and steps it
+  before the test (`add x19, x19, #3; …; cmp x19, #0x3e5; b.lo`), and
+  rendered `if (x19 <ᵁ 0x3e5) { continue }`, a test on a register nothing
+  in the loop changes. Only frame slots were induction candidates, and the
+  compared operand had to be the bare placeholder. A 64-bit register is
+  now a candidate, and the test may read it stepped by a constant
+  (`i + 3`): `var i = -3 … sink((i + 3)) … i += 3`. A register counter is
+  named only where the lap's closing test renders from the counter,
+  constants and arguments (a flags branch, not a 0/1 Bool test). Named
+  where it does not, swift-syntax declared and stepped an `i` nothing read,
+  and `untilLimit` (a closure's result in the test) read `sink(i)` with no
+  declaration. A register secondary is never renamed in the body, so it is
+  not named. Found by a probe sweep (flow/subs.c).
+- **OPEN — loop counters still raw.** A 32-bit counter (`int` at -O1:
+  `subs w19, w19, #2`) wraps each step (`((i & M) - 2) & M`) and is not
+  matched; a counter that starts from an argument (`var i = n`) has no
+  constant to declare. Both render raw registers, as before.
+- **OPEN — `--pseudo` reads a loop variable it never declares.** The flat
+  view prints `sink(i)` without `var i = …`, for slot counters at -Onone
+  as for register counters. Seen on `registerloop.swift` and
+  `regloop.swift` -Onone `countUp`.
 - **OPEN — a closure's demangled name is read as its signature elsewhere.**
   A closure emitted at a generic abstraction returns through a buffer
   whatever its printed type, and `swiftReturnRegister(forDemangledName:)`

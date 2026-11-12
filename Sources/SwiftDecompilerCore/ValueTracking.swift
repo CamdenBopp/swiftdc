@@ -3087,7 +3087,8 @@ public struct ValueTracer: Sendable {
             // Ordered by the slots' former string keys (`stack@-16` before
             // `stack@-8`): the order numbers the placeholders, and so the names.
             let candidateKeys = preLoopEntry.keys.filter { key in
-                guard case .stack = key, case .immediate = preLoopEntry[key] else { return false }
+                switch key { case .stack, .x: break; default: return false }
+                guard case .immediate = preLoopEntry[key] else { return false }
                 return (headerIn[key] ?? .unknown) == .unknown
             }.sorted { $0.description < $1.description }
             guard !candidateKeys.isEmpty else { continue }
@@ -3122,6 +3123,21 @@ public struct ValueTracer: Sendable {
                   let comparedRec = backOut[comparedKey],
                   Self.isInductionRecurrence(comparedRec, id: comparedPid)
             else { continue }
+            // A register counter is read by name only where the body is
+            // renamed, and the test that closes the lap is what declares it.
+            // Named where that test does not render (a call result, a Bool
+            // idiom, a `cbz`), swift-syntax read `while (true) { … if (x22
+            // != x24) { i += 1; continue } }`, and a body could read an `i`
+            // that is never declared.
+            if case .x = comparedKey {
+                guard let branch = blockByStart[header]?.instructions.last,
+                      branch.controlFlow == .conditionalBranch, let detail = branch.detail,
+                      ![AARCH64_INS_CBZ, AARCH64_INS_CBNZ, AARCH64_INS_TBZ, AARCH64_INS_TBNZ].contains(detail.id),
+                      case .binary(.subtract, let lhs, let rhs)? = bodyOut[header]?[Self.flagsKey],
+                      Self.rendersFromCounterAlone(lhs), Self.rendersFromCounterAlone(rhs),
+                      ![lhs, rhs].contains(where: { $0 == .immediate(0) || $0 == .immediate(1) })
+                else { continue }
+            }
             // Only the primary induction variable is named in `inState` (the loop
             // condition reads it); accumulators/secondaries are unread at the
             // header and only contribute a baked body-update statement.
@@ -3145,8 +3161,10 @@ public struct ValueTracer: Sendable {
             // variables (`total += i`, `seen += 1`). Rendered BEFORE the primary
             // increment (accumulate, then advance).
             var bodyUpdates: [String] = []
+            // A register secondary is never renamed in the body, so its name
+            // would appear only in its own update: slots alone.
             for pid in placeholderId.keys.sorted() where pid != comparedPid {
-                guard let key = placeholderId[pid], let rec = backOut[key],
+                guard let key = placeholderId[pid], case .stack = key, let rec = backOut[key],
                       let (symbol, addend, isAccumulator) = Self.selfRecurrenceUpdate(rec, ownId: pid, names: names)
                 else { continue }
                 let varName: String
@@ -3197,11 +3215,31 @@ public struct ValueTracer: Sendable {
 
     /// The placeholder id of the induction operand in a header's compare flags
     /// (`i - n`), or nil when neither side is a seeded induction placeholder.
+    /// A side may also be the placeholder stepped by a constant (`i + 3`):
+    /// at -O the counter is a register the body advances before its test.
     private static func comparedInductionId(in flags: AbstractValue?) -> Int? {
         guard case .binary(.subtract, let a, let b)? = flags else { return nil }
-        if case .local(let id) = a { return id }
-        if case .local(let id) = b { return id }
-        return nil
+        func placeholder(_ side: AbstractValue) -> Int? {
+            switch side {
+            case .local(let id): return id
+            case .binary(.add, .local(let id), .immediate), .binary(.add, .immediate, .local(let id)),
+                 .binary(.subtract, .local(let id), .immediate):
+                return id
+            default: return nil
+            }
+        }
+        return placeholder(a) ?? placeholder(b)
+    }
+
+    /// Whether a loop test's operand renders from placeholders, constants
+    /// and arguments alone, with no call result or unknown in it.
+    private static func rendersFromCounterAlone(_ value: AbstractValue) -> Bool {
+        switch value {
+        case .local, .immediate, .argument: return true
+        case .binary(_, let lhs, let rhs): return rendersFromCounterAlone(lhs) && rendersFromCounterAlone(rhs)
+        case .unary(_, let operand): return rendersFromCounterAlone(operand)
+        default: return false
+        }
     }
 
     /// Render a proven linear recurrence as the body update `name += c` / `-= c`.

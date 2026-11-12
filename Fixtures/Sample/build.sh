@@ -392,6 +392,10 @@ $SWIFTC -parse-as-library -Onone -emit-library -module-name ClosureCapture closu
 echo "==> a small struct's self words after its formals (valueselfwords.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name ValueSelfWords valueselfwords.swift -o libValueSelfWords.dylib
 
+echo "==> a loop counter held in a register (registerloop.swift, -O and -Osize)"
+$SWIFTC -parse-as-library -O -emit-library -module-name RegisterLoop registerloop.swift -o libRegisterLoop.dylib
+$SWIFTC -parse-as-library -Osize -emit-library -module-name RegisterLoop registerloop.swift -o libRegisterLoop.Osize.dylib
+
 echo "==> an in-image callee that reads a stack argument (stackargs.c, -O1 and -O0)"
 $CLANG -O1 -dynamiclib stackargs.c -o libStackArgs.dylib
 $CLANG -O0 -dynamiclib stackargs.c -o libStackArgs.O0.dylib
