@@ -1586,7 +1586,7 @@ because it cannot be distinguished from a right one by reading the output.
   `AwaitResults.sink(?)` where `sink(awaited1 + 2)` is true. An indirect
   result needs the same, plus the buffer the caller passed (`add x0, x22,
   #0x10`): `useGeneric` reads its Int back from `[x22, #0x10]`.
-- **FIXED (COMMIT) — a closure's call dropped what it captured.** A closure's
+- **FIXED (942703e) — a closure's call dropped what it captured.** A closure's
   printed signature lists its formals only, and its captures follow them as
   arguments: the forwarder for `{ y in y &+ k }` passes k in x1
   (`ldr x1, [x20, #0x10]`) and rendered `closure #1 (arg0)`. A closure's call
