@@ -251,7 +251,11 @@ using `ValueTracer` directly. It records a completed snapshot, not worklist
 iterations. The main decompiler calls it after its final trace.
 `FunctionAnalysis.loopInitializations` exposes typed `LoopInitialization`
 records keyed by the loop header's branch address. Values are exact UInt64 bit
-patterns; stack offsets are relative to the function's entry frame. The
+patterns, or `argument` names the incoming argument the counter starts from
+(the `loopInitialization` event's `value` is then the label `argN`); stack
+offsets are relative to the function's entry frame (nil for a register
+counter). `loopEntryDeclarations` holds the same records keyed by the last
+instruction that enters the loop, for the flat view. The
 structured renderer declares these bindings before entering each loop, so a
 nested initializer runs on every entry from its outer loop. Unknown initial
 values do not acquire a default zero.

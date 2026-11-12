@@ -1628,10 +1628,18 @@ because it cannot be distinguished from a right one by reading the output.
   and `untilLimit` (a closure's result in the test) read `sink(i)` with no
   declaration. A register secondary is never renamed in the body, so it is
   not named. Found by a probe sweep (flow/subs.c).
+- **FIXED (COMMIT) — a loop counter that starts from an argument stayed
+  raw.** `registerloop.swift` countDown (`var i = n`) read `if (x19 > 0)`
+  at -O and LoopEntry's `unknownStart` `while (x8 < x9)` at -Onone: only a
+  constant entry was declared. An entry that is an incoming argument is
+  now declared from it (`var i = arg0`), and a start from a call's result
+  still is not (`fromCall`). The register gate builds the header's real
+  condition and asks the renderer's own Bool-idiom test, so an ordered
+  test against 0 (`(i - 2) > 0`, Go's `printhexopts` `i <= 0`) is named.
 - **OPEN — loop counters still raw.** A 32-bit counter (`int` at -O1:
   `subs w19, w19, #2`) wraps each step (`((i & M) - 2) & M`) and is not
-  matched; a counter that starts from an argument (`var i = n`) has no
-  constant to declare. Both render raw registers, as before.
+  matched. Swift's checked `i -= 2` at -O (`subs; b.vs` then the test in
+  its own block) moves the test off the header, so that loop is declined.
 - **FIXED (9360eeb) — `--pseudo` read a loop variable it never declared.**
   The flat view printed `sink((i + 3))` with no `var i = …`, for slot
   counters at -Onone as for register counters (`registerloop.swift`).

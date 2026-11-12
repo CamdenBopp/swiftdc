@@ -7391,6 +7391,12 @@ public struct Disassembler: Sendable {
 
     /// Name a loop-carried induction variable by id — `i`, `j`, `k`, then `i3`, …
     /// (skips `l`/`m`/`n`, which read poorly next to `1` and common loop bounds).
+    /// `var i = 3`, or `var i = arg0` for a counter that starts from an
+    /// argument.
+    static func loopDeclaration(_ binding: LoopInitialization) -> String {
+        "var \(binding.name) = \(binding.argument.map { "arg\($0)" } ?? renderImmediate(binding.value))"
+    }
+
     static func inductionVariableName(_ id: Int) -> String {
         ["i", "j", "k"].indices.contains(id) ? ["i", "j", "k"][id] : "i\(id)"
     }
@@ -11935,12 +11941,12 @@ public struct Disassembler: Sendable {
                 sourceNotes.append("loop-update: \(ordered.joined(separator: " | "))")
             }
             if let bindings = analysis.loopInitializations[insn.address], !bindings.isEmpty {
-                let declarations = bindings.map { "var \($0.name) = \(Self.renderImmediate($0.value))" }
+                let declarations = bindings.map(Self.loopDeclaration)
                 facts.loopInitializations = declarations
                 sourceNotes.append("loop-init: \(declarations.joined(separator: " | "))")
             }
             if let bindings = analysis.loopEntryDeclarations[insn.address], !bindings.isEmpty {
-                let declarations = bindings.map { "var \($0.name) = \(Self.renderImmediate($0.value))" }
+                let declarations = bindings.map(Self.loopDeclaration)
                 facts.loopEntryDeclarations = declarations
                 sourceNotes.append("loop-entry: \(declarations.joined(separator: " | "))")
             }

@@ -22,3 +22,18 @@ public func countUp() {
     var i = 0
     repeat { sink(i); i += 1 } while i != limit()
 }
+
+// A counter that starts from the argument. Wrapping keeps the -O loop to
+// one block (`mov x19, x0; L: …; sub x19, x19, #2; cmp x19, #0; b.gt L`,
+// or a `subs`): sink sees n, n - 2, … while the value stays positive.
+@inline(never) public func countDown(_ n: Int) {
+    var i = n
+    repeat { sink(i); i &-= 2 } while i > 0
+}
+
+// A counter that starts from a call's result: no constant or argument to
+// declare it from, so it is not named.
+@inline(never) public func fromCall(_ start: () -> Int) {
+    var i = start()
+    repeat { sink(i); i &+= 1 } while i < 100
+}

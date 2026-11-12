@@ -484,10 +484,14 @@ public struct SelfFieldAccess: Sendable, Equatable {
 /// A named loop-carried variable's proven constant value on entry.
 public struct LoopInitialization: Sendable, Equatable {
     public var name: String
+    /// The constant entry value; 0 when the entry is an argument.
     public var value: UInt64
     public var stackOffset: Int64?
-    public init(name: String, value: UInt64, stackOffset: Int64? = nil) {
-        self.name = name; self.value = value; self.stackOffset = stackOffset
+    /// The incoming argument the counter starts from (`var i = arg0`), or
+    /// nil when it starts from `value`.
+    public var argument: Int?
+    public init(name: String, value: UInt64, stackOffset: Int64? = nil, argument: Int? = nil) {
+        self.name = name; self.value = value; self.stackOffset = stackOffset; self.argument = argument
     }
 }
 
@@ -3095,7 +3099,10 @@ public struct ValueTracer: Sendable {
             // `stack@-8`): the order numbers the placeholders, and so the names.
             let candidateKeys = preLoopEntry.keys.filter { key in
                 switch key { case .stack, .x: break; default: return false }
-                guard case .immediate = preLoopEntry[key] else { return false }
+                switch preLoopEntry[key] {
+                case .immediate?, .argument?: break
+                default: return false
+                }
                 return (headerIn[key] ?? .unknown) == .unknown
             }.sorted { $0.description < $1.description }
             guard !candidateKeys.isEmpty else { continue }
@@ -3140,9 +3147,10 @@ public struct ValueTracer: Sendable {
                 guard let branch = blockByStart[header]?.instructions.last,
                       branch.controlFlow == .conditionalBranch, let detail = branch.detail,
                       ![AARCH64_INS_CBZ, AARCH64_INS_CBNZ, AARCH64_INS_TBZ, AARCH64_INS_TBNZ].contains(detail.id),
-                      case .binary(.subtract, let lhs, let rhs)? = bodyOut[header]?[Self.flagsKey],
-                      Self.rendersFromCounterAlone(lhs), Self.rendersFromCounterAlone(rhs),
-                      ![lhs, rhs].contains(where: { $0 == .immediate(0) || $0 == .immediate(1) })
+                      let flags = bodyOut[header]?[Self.flagsKey],
+                      let condition = flagCondition(flags, code: detail.conditionCode,
+                                                    width: bodyOut[header]?[Self.flagsWidthKey]),
+                      Self.rendersFromCounterAlone(condition), !Disassembler.isTruthinessTest(condition)
                 else { continue }
             }
             // Only the primary induction variable is named in `inState` (the loop
@@ -3186,9 +3194,15 @@ public struct ValueTracer: Sendable {
             if let branchAddr = blockByStart[header]?.instructions.last?.address, !bodyUpdates.isEmpty {
                 updates[branchAddr] = bodyUpdates
                 initializations[branchAddr] = names.keys.sorted().compactMap { pid in
-                    guard let key = placeholderId[pid], let name = names[pid],
-                          case .immediate(let value)? = preLoopEntry[key] else { return nil }
-                    return LoopInitialization(name: name, value: value, stackOffset: Self.stackOffset(from: key))
+                    guard let key = placeholderId[pid], let name = names[pid] else { return nil }
+                    switch preLoopEntry[key] {
+                    case .immediate(let value)?:
+                        return LoopInitialization(name: name, value: value, stackOffset: Self.stackOffset(from: key))
+                    case .argument(let index)?:
+                        return LoopInitialization(name: name, value: 0, stackOffset: Self.stackOffset(from: key),
+                                                  argument: index)
+                    default: return nil
+                    }
                 }
                 // A flat view has no loop to declare them at: each block that
                 // enters from outside declares them, when it comes before

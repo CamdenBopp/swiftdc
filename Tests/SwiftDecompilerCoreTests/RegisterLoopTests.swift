@@ -27,11 +27,20 @@ func aRegisterLoopCounterIsNamedAndSteppedIfPresent(path: String) async throws {
     // counter is neither declared nor read by name.
     let until = try structured("RegisterLoop.untilLimit(() -> Swift.Int) -> ()")
     #expect(!until.contains("var i") && !until.contains("(i)") && !until.contains("i += 1"), Comment(rawValue: until))
+    // A counter that starts from the argument is declared from it.
+    let down = try structured("RegisterLoop.countDown(Swift.Int) -> ()")
+    for line in ["var i = arg0", "RegisterLoop.sink(i)", "((i - 2) > 0)", "i -= 2"] {
+        #expect(down.contains(line), Comment(rawValue: down))
+    }
+    #expect(!down.contains("x19"), Comment(rawValue: down))
+    // A start from a closure's result is unproven: nothing is named.
+    let fromCall = try structured("RegisterLoop.fromCall(() -> Swift.Int) -> ()")
+    #expect(!fromCall.contains("var i") && !fromCall.contains("i += 1"), Comment(rawValue: fromCall))
     // -O unrolls fromTen into five calls; -Osize keeps the loop.
     guard path.hasSuffix(".Osize.dylib") else { return }
-    let down = try structured("RegisterLoop.fromTen() -> ()")
+    let ten = try structured("RegisterLoop.fromTen() -> ()")
     for line in ["var i = 12", "RegisterLoop.sink((i - 2))", "((i - 2) >ᵁ 2)", "i -= 2"] {
-        #expect(down.contains(line), Comment(rawValue: down))
+        #expect(ten.contains(line), Comment(rawValue: ten))
     }
 }
 

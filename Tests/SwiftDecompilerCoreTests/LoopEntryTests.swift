@@ -41,11 +41,14 @@ private func loopEntryFunction(_ name: String) async throws -> DisassembledFunct
     #expect(outer < innerInit && innerInit < innerLoop)
 }
 
-@Test func anUnprovenLoopEntryDoesNotInventAnInitializerIfPresent() async throws {
+/// `var i = start`: the counter starts from the second argument, which is
+/// proven, so it is declared from it (a start from a call's result is not:
+/// RegisterLoop's `fromCall`).
+@Test func aLoopEntryFromAnArgumentIsDeclaredFromItIfPresent() async throws {
     guard let function = try await loopEntryFunction("unknownStart") else { return }
     let body = function.renderStructured()
-    #expect(!body.contains("var i ="))
-    #expect(!body.contains("while (i <"))
+    #expect(body.contains("var i = arg1"), Comment(rawValue: body))
+    #expect(body.contains("while (i < arg0)"), Comment(rawValue: body))
 }
 
 @Test func loopEntryFactsAreAvailableToIndependentProbeValidatorsIfPresent() async throws {

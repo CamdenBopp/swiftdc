@@ -171,7 +171,8 @@ public extension Probe {
             for (address, bindings) in analysis.loopInitializations.sorted(by: { $0.key < $1.key }) {
                 for binding in bindings {
                     record(.loopInitialization, at: address, [
-                        "name": .name(binding.name), "value": .uint(binding.value),
+                        "name": .name(binding.name),
+                        "value": binding.argument.map { .label("arg\($0)") } ?? .uint(binding.value),
                         "stackOffset": binding.stackOffset.map { .int(Int($0)) } ?? .label("unknown"),
                     ])
                 }
