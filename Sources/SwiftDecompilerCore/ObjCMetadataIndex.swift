@@ -483,7 +483,7 @@ struct ObjCMetadataSnapshot {
     /// opcode stream. A minimal interpreter of the standard dyld algorithm — only
     /// the opcodes that move the cursor or emit a binding — since MachOKit exposes
     /// the raw `BindOperation`s but not a resolved symbol/address list publicly.
-    private static func externalBindSlots(in machO: MachOFile) -> [UInt64: String] {
+    static func externalBindSlots(in machO: MachOFile) -> [UInt64: String] {
         guard let operations = machO.bindOperations else { return [:] }
         let segments = machO.segments
         let pointerSize: UInt = 8
@@ -491,6 +491,13 @@ struct ObjCMetadataSnapshot {
         var segmentIndex = 0
         var segmentOffset: UInt = 0
         var slots: [UInt64: String] = [:]
+        // A repetition binds at most one slot per pointer of the segments:
+        // one that would do more is malformed and binds nothing.
+        // `DO_BIND_ULEB_TIMES_SKIPPING_ULEB` with a count of 2^40 grew past
+        // 3 GB, and one whose skip wraps the cursor in place never ended.
+        // Every other opcode binds at most once, so the stream's length
+        // bounds it.
+        let budget = segments.reduce(UInt64(1024)) { $0 &+ UInt64(max($1.virtualMemorySize, 0)) / 8 }
 
         func record() {
             guard !symbol.isEmpty, segments.indices.contains(segmentIndex) else { return }
@@ -517,6 +524,7 @@ struct ObjCMetadataSnapshot {
                 record()
                 segmentOffset = segmentOffset &+ pointerSize &+ scale &* pointerSize
             case .do_bind_uleb_times_skipping_uleb(let count, let skip):
+                guard UInt64(count) <= budget else { return [:] }
                 for _ in 0 ..< count {
                     record()
                     segmentOffset = segmentOffset &+ pointerSize &+ skip

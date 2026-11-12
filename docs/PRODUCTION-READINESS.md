@@ -3369,6 +3369,19 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   an if/else whose arms both leave, where nothing falls through. One
   structured line moved in every fixture and toolchain library.
 
+- **FIXED (COMMIT) — a malformed rebase or bind opcode stream trapped,
+  hung or ran away with memory.** Found by a probe patching
+  `libOpcodeFixups.dylib`'s LC_DYLD_INFO streams. A rebase segment offset
+  of 2^63 trapped converting to `Int` in `ChainedRebases.opcodeTargets`
+  (SIGTRAP on `disasm`, `objc --methods`, `xrefs`, `analyze`);
+  `DO_REBASE_ULEB_TIMES 2^28` passed 3 GB in MachOKit's unbounded
+  `rebases` array; `DO_BIND_ULEB_TIMES_SKIPPING_ULEB` with a count of 2^40
+  passed 3 GB, and one whose skip wrapped the cursor in place never ended
+  (`externalBindSlots`). The rebase opcodes are now interpreted in place,
+  with offsets compared before any conversion and a work bound of one per
+  pointer slot of the segments, past which the stream claims nothing; a
+  bind repetition past that bound binds nothing. All 18 patched inputs exit
+  0 on all 11 entry points; no fixture render moved.
 - **FIXED (b7500e0) — an image that rebases by opcode lost every selector
   and CFString.** A deployment target below macOS 12 or iOS 15 links with
   `LC_DYLD_INFO`: a rebased slot holds its target's unslid address, and
