@@ -3351,7 +3351,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   recovered_args: […])`. Found by a probe sweep; the fixture and
   libInputShapeNoStarts.stripped changed.
 
-- **FIXED (COMMIT) — a protocol witness's tail call lost its `return`.** A
+- **FIXED (a565aad) — a protocol witness's tail call lost its `return`.** A
   witness that ends `ldr x0, [x20]; b V.count` forwards the member's result,
   but the tail-return rule read only an ordinary `Module.Type.member`
   caller name, and a witness is `protocol witness for M.P.f() -> Swift.Int
