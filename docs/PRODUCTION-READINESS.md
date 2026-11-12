@@ -1794,7 +1794,7 @@ because it cannot be distinguished from a right one by reading the output.
   clamped to their arity. Swift callees and every other C callee are not: see
   the OPEN arity entries above.
 - **MITIGATED — `self` is conservative.** x20 is read as `self` only for a
-  Swift-mangled callee and only when freshly written, or (since COMMIT) when
+  Swift-mangled callee and only when freshly written, or (since 3ae5002) when
   the callee's own demangled name proves it an instance member of a class,
   which takes self in x20 whoever wrote it: `c.m1() &+ c.m2()` read
   `Box.m2()`, now `Box.m2(self: arg0)` (`selfagain.swift`). OPEN: a fresh
