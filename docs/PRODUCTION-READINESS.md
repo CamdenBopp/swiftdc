@@ -3358,13 +3358,16 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   or a goto to the code after both loops (`goto loc_734`, `sink(100)`).
   Found by a probe sweep; 42 structured lines in 5 files, every one a
   `break` becoming `return` or a goto with its label.
-- **OPEN — inside a loop, an edge to the function's end can fall into the
-  next block.** `for i { mid: for j { for k { if ext(i+j+k) == 6 {
-  break mid }; sink(k) }; sink(-j) }; sink(-100 - i) }` (-O): after the
-  outer loop's test `if (x21 != x19) { goto loc_7fc }`, whose false edge
-  returns, the text continues into `loc_83c` (`sink(-j)`), and the
-  render loops forever where the code returns. The empty edge to the
-  return block is taken as falling through.
+- **FIXED (COMMIT) — inside a loop, an edge to the function's end fell
+  into the next block.** `for i { mid: for j { for k { if ext(i+j+k) == 6
+  { break mid }; sink(k) }; sink(-j) }; sink(-100 - i) }` (-O,
+  `loopexit.swift` threeDeep): the outer latch, emitted inside the middle
+  loop, read `if (x21 != x19) { goto loc_80c }` into `sink(-j)`, and the
+  render looped forever where the code returns. A loop body's own emission
+  that reaches its stop outside the body now spells the transfer (the
+  tail's `return`, or a goto), except at the loop's single exit and after
+  an if/else whose arms both leave, where nothing falls through. One
+  structured line moved in every fixture and toolchain library.
 
 - **FIXED (b7500e0) — an image that rebases by opcode lost every selector
   and CFString.** A deployment target below macOS 12 or iOS 15 links with

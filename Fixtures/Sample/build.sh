@@ -392,6 +392,9 @@ $SWIFTC -parse-as-library -Onone -emit-library -module-name ClosureCapture closu
 echo "==> a small struct's self words after its formals (valueselfwords.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name ValueSelfWords valueselfwords.swift -o libValueSelfWords.dylib
 
+echo "==> loops whose bodies end in an if/else that leaves on both arms (deadexit.s)"
+$CLANG -arch arm64 -dynamiclib deadexit.s -o libDeadExit.dylib
+
 echo "==> a loop counter held in a register (registerloop.swift, -O and -Osize)"
 $SWIFTC -parse-as-library -O -emit-library -module-name RegisterLoop registerloop.swift -o libRegisterLoop.dylib
 $SWIFTC -parse-as-library -Osize -emit-library -module-name RegisterLoop registerloop.swift -o libRegisterLoop.Osize.dylib

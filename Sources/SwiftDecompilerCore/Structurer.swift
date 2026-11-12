@@ -141,6 +141,10 @@ struct ControlFlowStructure {
         /// emits nothing and the next text is the rest of the outer loop, so
         /// a `break` would land there. Its exits are spelled out instead.
         var breakLandsElsewhere = false
+        /// The stop of the loop body's own emission, when it lies outside
+        /// the body. Falling off the end of a loop body runs the loop again,
+        /// so a path that reaches it there is spelled out.
+        var leavesAt: Int? = nil
         /// A switch lies between this loop and the current statement. Its bare
         /// `break` exits the switch, so the loop exit needs an explicit goto.
         let exitsThroughSwitch: Bool
@@ -449,6 +453,11 @@ struct ControlFlowStructure {
         }
         var lines: [String] = []
         var current = start
+        // The arms of the `if` emitted last, when that was an `if`: control
+        // runs off its end unless both arms end in a transfer. Kept, not
+        // judged here: judging every `if` rescanned its arms, and parser
+        // `--structured` ran 7x the instructions.
+        var lastArms: (then: [String], else: [String])?
         while current != stop, current != exit {
             let pad = String(repeating: "    ", count: indent)
 
@@ -493,6 +502,7 @@ struct ControlFlowStructure {
                 if loop != nil, let exitNode = context.exitNode, exitNode == stop {
                     context.breakLandsElsewhere = true
                 }
+                if stop != exit, !info.body.contains(stop) { context.leavesAt = stop }
                 if let rotated = whileCondition(header: current, info: info) {
                     visited.insert(current)   // header consumed as the loop condition
                     lines.append("\(pad)while (\(rotated.text)) {")
@@ -636,6 +646,7 @@ struct ControlFlowStructure {
                     }
                     lines.append("\(pad)}")
                 }
+                lastArms = (thenLines, elseLines)
                 if merge == exit { break }
                 if let loop, loop.boundsBody, !loop.body.contains(merge),
                    !isTrivialTail(merge) {
@@ -645,6 +656,7 @@ struct ControlFlowStructure {
                 }
                 current = merge
             } else if succs.count == 1 {
+                lastArms = nil
                 let only = succs[0]
                 if backSuccessors[current].contains(only) {
                     if let loop, only == loop.header { lines += loopBackStatements(header: loop.header, pad: pad) }
@@ -676,6 +688,23 @@ struct ControlFlowStructure {
                 // its fall-through.
                 if !emittedReturn, let end = sinkTerminator(block) { lines.append("\(pad)\(end)") }
                 break
+            }
+        }
+        // The loop body's own emission reached its stop, outside the body.
+        // Left as fall-through, the body's end ran the loop again where the
+        // code leaves it: `for i { mid: for j { for k { … break mid … } } }`
+        // took the outer loop's exit to the epilogue as the next text.
+        // Not the loop's single exit: every edge to it is already its exit
+        // statement (`edge`, and the check at the top of this loop).
+        // Nor after an `if` whose arms both transfer: nothing reaches it.
+        if current == stop, let loop, loop.leavesAt == stop, stop != loop.exitNode,
+           !(lastArms.map { Self.endsInTransfer($0.then) && Self.endsInTransfer($0.else) } ?? false) {
+            let pad = String(repeating: "    ", count: indent)
+            if isTrivialTail(stop) {
+                lines.append("\(pad)\(tailStatement(blocks[stop]))")
+            } else {
+                gotoTargets.insert(stop)
+                lines.append("\(pad)goto loc_\(hex(blocks[stop].startAddress))")
             }
         }
         return lines
@@ -739,6 +768,43 @@ struct ControlFlowStructure {
         }
         if v == merge || v == exit { return [] }
         return emit(from: v, until: merge, indent: indent, visited: &visited, gotoTargets: &gotoTargets, loop: loop, depth: depth + 1)
+    }
+
+    /// Whether an arm's text ends in a transfer (`break`, `continue`,
+    /// `return`, `goto`, `trap()`, `throw`), or in an `if`/`else` whose arms
+    /// both do. An empty arm falls through, and so, conservatively, does
+    /// anything else that ends in `}` (a loop, an `if` with no `else`).
+    static func endsInTransfer(_ lines: [String]) -> Bool {
+        endsInTransfer(lines, upTo: lines.count)
+    }
+
+    private static func endsInTransfer(_ lines: [String], upTo end: Int) -> Bool {
+        guard end > 0 else { return false }
+        let last = lines[end - 1].trimmingCharacters(in: .whitespaces)
+        if last == "break" || last == "continue" || last == "trap()"
+            || last.hasPrefix("return") || last.hasPrefix("goto ") || last.hasPrefix("throw") {
+            return true
+        }
+        guard last == "}" else { return false }
+        func indent(_ line: String) -> Int { line.prefix { $0 == " " }.count }
+        let depth = indent(lines[end - 1])
+        var elseAt: Int?
+        var index = end - 2
+        while index >= 0 {
+            if indent(lines[index]) == depth {
+                let text = lines[index].trimmingCharacters(in: .whitespaces)
+                if text == "} else {", elseAt == nil {
+                    elseAt = index
+                } else if text.hasPrefix("if ("), text.hasSuffix("{") {
+                    break
+                } else {
+                    return false
+                }
+            }
+            index -= 1
+        }
+        guard index >= 0, let elseAt else { return false }
+        return endsInTransfer(lines, upTo: elseAt) && endsInTransfer(lines, upTo: end - 1)
     }
 
     /// A break can name this loop only when no switch intervenes. Keeping the

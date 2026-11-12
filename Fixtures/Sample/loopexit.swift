@@ -22,3 +22,20 @@ public func breakOuter(_ n: Int) {
 public func leaveBoth(_ n: Int) {
     outer: for i in 0..<n { for j in 0..<n { if ext(i &+ j) == 6 { break outer }; sink(j) } }
 }
+
+// Three deep, leaving the middle loop: the outer loop's latch
+// (`sink(-100 &- i)`, then `cmp; b.eq epilogue`) is emitted inside the
+// middle loop's text, where its edge to the epilogue was the emission's
+// stop and fell through into `sink(-j)`: the render looped forever where
+// the code returns after the last row. True behaviour: for each i, rows j
+// run k until ext(i + j + k) == 6 (then the row and the j loop end) or
+// k == n (then sink(-j)); each i ends with sink(-100 - i).
+public func threeDeep(_ n: Int) {
+    for i in 0..<n {
+        mid: for j in 0..<n {
+            for k in 0..<n { if ext(i &+ j &+ k) == 6 { break mid }; sink(k) }
+            sink(-j)
+        }
+        sink(-100 &- i)
+    }
+}
