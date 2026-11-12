@@ -3299,7 +3299,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   goProgram (opcode-linked), whose six calls through `__go_func`
   function values in `__DATA_CONST` are now named (`main.main()`).
 
-- **FIXED (COMMIT) — an SDK send returning an integer struct rendered as
+- **FIXED (5366c55) — an SDK send returning an integer struct rendered as
   its first word.** `objc_range_return.m`: `return [s
   rangeOfString:@"x"].location` read `return [arg0 rangeOfString:@"x"]`,
   an NSNotFound test read `([arg0 rangeOfString:@"q"] !=
