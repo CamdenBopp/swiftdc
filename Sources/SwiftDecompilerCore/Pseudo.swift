@@ -26,14 +26,36 @@ public extension DisassembledFunction {
         if let objcMethod { lines.append("    // \(objcMethod.signature)") }
         if let asyncLine = asyncHeaderLine() { lines.append("    \(asyncLine)") }
         var statements: [String] = []
+        var declarations: [Int: String] = [:]   // statement index -> declared name
         for insn in instructions {
             let recovered = Self.pseudoStatement(of: insn, hideRuntime: hideRuntime)
             let fallback: String? = if insn.controlFlow != .return { nil }
                 else if signatureThrows { Self.unresolvedSwiftExitStatement }
                 else if hasProvenMachineValueReturn { "return ?" }
                 else { nil }
-            guard let statement = recovered ?? fallback else { continue }
-            statements += statement.components(separatedBy: "\n")
+            if let statement = recovered ?? fallback {
+                statements += statement.components(separatedBy: "\n")
+            }
+            // A loop's counters, declared before the loop is entered: the
+            // flat view has no loop to declare them at, and read them
+            // undeclared (`sink(i)`).
+            for declaration in insn.loopEntryDeclarations {
+                declarations[statements.count] = Self.declaredName(declaration)
+                statements.append(declaration)
+            }
+        }
+        // A declaration nothing after it reads is a loop the flat view does
+        // not show: kept, it is noise, and a leaf read as if it had
+        // statements. A word match that is not a read (inside a literal)
+        // keeps a declaration that is still true.
+        if !declarations.isEmpty {
+            statements = statements.indices.compactMap { index in
+                guard let name = declarations[index] else { return statements[index] }
+                let read = statements[(index + 1)...].indices.contains { later in
+                    declarations[later] == nil && Self.readsWord(name, in: statements[later])
+                }
+                return read ? statements[index] : nil
+            }
         }
         if hideRuntime { statements = Self.foldSwiftIdioms(statements) }
         if instructions.isEmpty {
@@ -46,6 +68,24 @@ public extension DisassembledFunction {
         if let fallThroughNote { lines.append("    \(fallThroughNote)") }
         lines.append("}")
         return lines.joined(separator: "\n")
+    }
+
+    /// The name a `var name = value` declaration binds.
+    static func declaredName(_ declaration: String) -> String {
+        String(declaration.dropFirst("var ".count).prefix { $0 != " " })
+    }
+
+    /// Whether `text` holds `word` as a whole identifier.
+    static func readsWord(_ word: String, in text: String) -> Bool {
+        func isIdentifier(_ c: Character) -> Bool { c.isLetter || c.isNumber || c == "_" }
+        var rest = text[...]
+        while let range = rest.range(of: word) {
+            let before = range.lowerBound == text.startIndex ? nil : text[text.index(before: range.lowerBound)]
+            let after = range.upperBound == text.endIndex ? nil : text[range.upperBound]
+            if !(before.map(isIdentifier) ?? false), !(after.map(isIdentifier) ?? false) { return true }
+            rest = text[range.upperBound...]
+        }
+        return false
     }
 
     /// A span whose last instruction can go on to the next address ends at a
@@ -525,7 +565,9 @@ public extension DisassembledFunction {
         let base = stripNotes(annotation)
         if base.isEmpty || base.hasPrefix("args(") || base.hasPrefix("self=") || base.hasPrefix("→")
             || base.hasPrefix("await=") || base.hasPrefix(indirectJumpNote) || base.hasPrefix("swift-exit=")
-            || base.hasPrefix(thenThrowNote) {
+            || base.hasPrefix(thenThrowNote)
+            // A loop's counters declared on the `b` that enters it.
+            || base.hasPrefix("loop-entry: ") {
             return nil
         }
         return base

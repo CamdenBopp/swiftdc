@@ -18,6 +18,11 @@ func aRegisterLoopCounterIsNamedAndSteppedIfPresent(path: String) async throws {
         #expect(up.contains(line), Comment(rawValue: up))
     }
     #expect(!up.contains("x19"), Comment(rawValue: up))
+    // The flat view declares the counter before the call that reads it.
+    let flat = try #require(functions.first { $0.displayName == "RegisterLoop.countUp() -> ()" }).renderPseudo()
+    let declared = try #require(flat.range(of: "var i = -3"), Comment(rawValue: flat))
+    let read = try #require(flat.range(of: "RegisterLoop.sink((i + 3))"), Comment(rawValue: flat))
+    #expect(declared.lowerBound < read.lowerBound, Comment(rawValue: flat))
     // untilLimit's test reads a closure's result and renders raw, so its
     // counter is neither declared nor read by name.
     let until = try structured("RegisterLoop.untilLimit(() -> Swift.Int) -> ()")
@@ -28,4 +33,30 @@ func aRegisterLoopCounterIsNamedAndSteppedIfPresent(path: String) async throws {
     for line in ["var i = 12", "RegisterLoop.sink((i - 2))", "((i - 2) >ᵁ 2)", "i -= 2"] {
         #expect(down.contains(line), Comment(rawValue: down))
     }
+}
+
+/// The flat view declares a loop's counters on the instruction that enters
+/// the loop, but only where that comes before every block of the loop:
+/// declared below the loop, `--pseudo` would read `i` and declare it after.
+@Test func aLoopCounterIsDeclaredBeforeItsLoopOnlyInAddressOrder() throws {
+    func analysis(_ words: [UInt32]) throws -> FunctionAnalysis {
+        let engine = try #require(CapstoneEngine())
+        let bytes = words.flatMap { word in (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) } }
+        let decoded = engine.disassemble(Data(bytes), address: 0x1000)
+        try #require(decoded.count == words.count)
+        let function = DisassembledFunction(symbol: "_counter", demangledName: nil, startAddress: 0x1000,
+            instructions: decoded.map {
+                Instruction(address: $0.address, text: $0.text, controlFlow: $0.controlFlow,
+                            branchTarget: $0.branchTarget, detail: $0.detail)
+            }, source: .symbol)
+        return ValueTracer().analyze(function, entry: .swiftFunction(scalarArguments: [:]))
+    }
+    // mov x8, #0; L: add x8, x8, #1; cmp x8, #10; b.lt L; ret
+    let ahead = try analysis([0xd2800008, 0x91000508, 0xf100291f, 0x54ffffcb, 0xd65f03c0])
+    #expect(ahead.loopInitializations[0x100c]?.map(\.name) == ["i"])
+    #expect(ahead.loopEntryDeclarations[0x1000]?.map(\.name) == ["i"])
+    // b P; L: add x8, x8, #1; cmp x8, #10; b.lt L; ret; P: mov x8, #0; b L
+    let below = try analysis([0x14000005, 0x91000508, 0xf100291f, 0x54ffffcb, 0xd65f03c0, 0xd2800008, 0x17fffffb])
+    #expect(below.loopInitializations[0x100c]?.map(\.name) == ["i"])
+    #expect(below.loopEntryDeclarations.isEmpty)
 }

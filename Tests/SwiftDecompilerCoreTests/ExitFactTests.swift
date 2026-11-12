@@ -154,6 +154,8 @@ private func textStatement(of insn: Instruction) -> String? {
                       present: !insn.loopUpdates.isEmpty)
                 check("loopInitializations", insn.loopInitializations, parsedList(annotation, after: "loop-init: "),
                       present: !insn.loopInitializations.isEmpty)
+                check("loopEntryDeclarations", insn.loopEntryDeclarations, parsedList(annotation, after: "loop-entry: "),
+                      present: !insn.loopEntryDeclarations.isEmpty)
                 check("fieldRead", insn.fieldRead, parsedFieldRead(annotation), present: insn.fieldRead != nil)
                 check("selfDispatch", insn.isSelfDispatch, notes(of: annotation)?.contains("dispatch=self") == true,
                       present: insn.isSelfDispatch)

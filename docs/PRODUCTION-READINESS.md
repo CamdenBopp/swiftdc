@@ -1632,10 +1632,16 @@ because it cannot be distinguished from a right one by reading the output.
   `subs w19, w19, #2`) wraps each step (`((i & M) - 2) & M`) and is not
   matched; a counter that starts from an argument (`var i = n`) has no
   constant to declare. Both render raw registers, as before.
-- **OPEN — `--pseudo` reads a loop variable it never declares.** The flat
-  view prints `sink(i)` without `var i = …`, for slot counters at -Onone
-  as for register counters. Seen on `registerloop.swift` and
-  `regloop.swift` -Onone `countUp`.
+- **FIXED (COMMIT) — `--pseudo` read a loop variable it never declared.**
+  The flat view printed `sink((i + 3))` with no `var i = …`, for slot
+  counters at -Onone as for register counters (`registerloop.swift`).
+  The tracer now also keys each loop's bindings by the last instruction of
+  every block that enters it from outside, where that instruction comes
+  before every block of the loop, and the flat view declares them there
+  (`var i = -3` above the call). A declaration no later statement reads
+  (the loop test it served is not in the flat view) is dropped, so a leaf
+  keeps its leaf note. 88 pseudo lines in Go and three fixtures, each a
+  declaration above its first read; structured unchanged.
 - **OPEN — a closure's demangled name is read as its signature elsewhere.**
   A closure emitted at a generic abstraction returns through a buffer
   whatever its printed type, and `swiftReturnRegister(forDemangledName:)`

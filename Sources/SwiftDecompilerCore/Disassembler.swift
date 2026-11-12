@@ -117,6 +117,8 @@ public struct Instruction: Sendable {
     public var loopUpdates: [String] { factBox?.facts.loopUpdates ?? [] }
     /// `facts.loopInitializations`.
     public var loopInitializations: [String] { factBox?.facts.loopInitializations ?? [] }
+    /// `facts.loopEntryDeclarations`.
+    public var loopEntryDeclarations: [String] { factBox?.facts.loopEntryDeclarations ?? [] }
     /// `facts.fieldRead`.
     public var fieldRead: String? { factBox?.facts.fieldRead }
     /// `facts.isSelfDispatch`.
@@ -155,6 +157,10 @@ public struct Instruction: Sendable {
         /// For a loop header's branch: the induction variables' declarations
         /// (`loop-init: a | b`).
         public var loopInitializations: [String]
+        /// For the last instruction before a loop it enters: that loop's
+        /// induction variables' declarations, for the flat views
+        /// (`loop-entry: a | b`).
+        public var loopEntryDeclarations: [String] = []
         /// For a read of a field of self: the field's path (`self.x`).
         public var fieldRead: String?
         /// For a call through self's own vtable slot (`dispatch=self`): an
@@ -11932,6 +11938,11 @@ public struct Disassembler: Sendable {
                 let declarations = bindings.map { "var \($0.name) = \(Self.renderImmediate($0.value))" }
                 facts.loopInitializations = declarations
                 sourceNotes.append("loop-init: \(declarations.joined(separator: " | "))")
+            }
+            if let bindings = analysis.loopEntryDeclarations[insn.address], !bindings.isEmpty {
+                let declarations = bindings.map { "var \($0.name) = \(Self.renderImmediate($0.value))" }
+                facts.loopEntryDeclarations = declarations
+                sourceNotes.append("loop-entry: \(declarations.joined(separator: " | "))")
             }
 
             if insn.controlFlow == .branch, let callee,

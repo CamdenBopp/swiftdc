@@ -100,3 +100,12 @@ private func loopEntryFunction(_ name: String) async throws -> DisassembledFunct
     #expect(analysis.loopUpdates.count == 1)
     #expect(analysis.loopInitializations.values.flatMap { $0 }.count == 1)
 }
+
+/// The flat view shows no loop test, so a counter only that test reads is
+/// not declared there: `var i = 3` alone above `return ?` was noise.
+@Test func theFlatViewDeclaresNoCounterItDoesNotReadIfPresent() async throws {
+    guard let function = try await loopEntryFunction("nonzeroStart") else { return }
+    #expect(function.renderStructured().contains("var i = 3"))
+    let flat = function.renderPseudo()
+    #expect(!flat.contains("var "), Comment(rawValue: flat))
+}

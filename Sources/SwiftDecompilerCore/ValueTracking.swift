@@ -522,6 +522,10 @@ public struct FunctionAnalysis: Sendable {
     /// Entry bindings keyed by the header branch. Render immediately before
     /// entering its structured loop, including each nested-loop invocation.
     public var loopInitializations: [UInt64: [LoopInitialization]] = [:]
+    /// The same bindings keyed by the last instruction of each block that
+    /// enters the loop from outside it, where that instruction comes before
+    /// every block of the loop: the flat views declare them there.
+    public var loopEntryDeclarations: [UInt64: [LoopInitialization]] = [:]
     /// x0 immediately before a return or unconditional branch. The enrichment
     /// pass uses Objective-C return types and resolved tail helpers to decide
     /// which of these are honest source-level returns.
@@ -1384,6 +1388,7 @@ public struct ValueTracer: Sendable {
         result.asyncUnboundedMemoryWrites = false
         result.loopUpdates = loopBindings.updates
         result.loopInitializations = loopBindings.initializations
+        result.loopEntryDeclarations = loopBindings.entries
         for block in blocks {
             var registers = inState[block.startAddress] ?? [:]
             for insn in block.instructions {
@@ -3058,9 +3063,11 @@ public struct ValueTracer: Sendable {
         inState: inout [UInt64: State],
         outState: [UInt64: State],
         facts: FunctionFacts
-    ) -> (updates: [UInt64: [String]], initializations: [UInt64: [LoopInitialization]]) {
+    ) -> (updates: [UInt64: [String]], initializations: [UInt64: [LoopInitialization]],
+          entries: [UInt64: [LoopInitialization]]) {
         var updates: [UInt64: [String]] = [:]
         var initializations: [UInt64: [LoopInitialization]] = [:]
+        var entries: [UInt64: [LoopInitialization]] = [:]
         var sourcesByHeader: [UInt64: [UInt64]] = [:]
         for (from, header) in Self.backEdges(blocks: blocks, blockByStart: blockByStart) {
             sourcesByHeader[header, default: []].append(from)
@@ -3183,9 +3190,21 @@ public struct ValueTracer: Sendable {
                           case .immediate(let value)? = preLoopEntry[key] else { return nil }
                     return LoopInitialization(name: name, value: value, stackOffset: Self.stackOffset(from: key))
                 }
+                // A flat view has no loop to declare them at: each block that
+                // enters from outside declares them, when it comes before
+                // every block of the loop in address order. Otherwise the
+                // flat view would read `i` before declaring it.
+                if let bindings = initializations[branchAddr], !bindings.isEmpty,
+                   let firstBlock = body.min() {
+                    for pred in preLoopPreds.sorted() {
+                        guard let last = blockByStart[pred]?.instructions.last?.address,
+                              last < firstBlock else { continue }
+                        entries[last, default: []] += bindings
+                    }
+                }
             }
         }
-        return (updates, initializations)
+        return (updates, initializations, entries)
     }
 
     private static func renameInductionFact(_ value: AbstractValue, from: Int, to: Int) -> AbstractValue? {
