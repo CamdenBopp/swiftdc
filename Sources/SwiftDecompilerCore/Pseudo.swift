@@ -128,6 +128,12 @@ public extension DisassembledFunction {
             // may be an argument (`gp(a, b)` with a and b still in x0 and x1
             // read `recovered_args: []`). It always ends in `…`.
             let arguments = (insn.callArguments ?? []) + ["…"]
+            // A direct `bl` to an address no function name covers (a body
+            // merged with its callee where no boundary was recorded) is no
+            // indirect call: its target is known, only unnamed.
+            if let target = insn.branchTarget {
+                return "sub_\(String(target, radix: 16))(recovered_args: [\(arguments.joined(separator: ", "))])"
+            }
             return "/* unresolved call @ 0x\(String(insn.address, radix: 16)) */ indirect_call(?, recovered_args: [\(arguments.joined(separator: ", "))])"
         }
         guard !insn.resultConsumed else { return nil }

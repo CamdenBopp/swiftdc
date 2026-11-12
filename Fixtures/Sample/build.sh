@@ -375,6 +375,10 @@ $CLANG -fobjc-arc -O1 -dynamiclib -framework Foundation -framework AppKit objc_r
 echo "==> variadic SDK selectors outside the name suffixes (objc_variadic_selectors.m, -O1)"
 $CLANG -fobjc-arc -O1 -dynamiclib -framework Foundation objc_variadic_selectors.m -o libObjCVariadicSelectors.dylib
 
+echo "==> direct calls in a stripped executable with no function starts (mergedcalls.c, -O1)"
+$CLANG -O1 mergedcalls.c -Wl,-no_function_starts -o mergedcalls.stripped
+xcrun strip mergedcalls.stripped
+
 echo "==> SDK calls from their declarations: open, fcntl, ioctl, closedir, sysctl (variadic_calls.c, -O1)"
 $CLANG -O1 -dynamiclib variadic_calls.c -o libVariadicCalls.dylib
 

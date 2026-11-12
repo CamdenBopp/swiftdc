@@ -3332,6 +3332,15 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   first and would have emptied 91 fixtures: a module of free functions
   has no Swift section, but its functions print from symbols. Across the
   fixtures, 121 C and ObjC images change and none loses content.
+
+- **FIXED (COMMIT) — a direct call to an unnamed address rendered as an
+  indirect one.** In a stripped executable with no LC_FUNCTION_STARTS,
+  functions merge into one body and each `bl` lands inside it
+  (`mergedcalls.c`). With no name for the target, the call printed
+  `/* unresolved call */ indirect_call(?, …)`, a claim that the target was
+  unknown, though the `bl` names it. It now reads `sub_100000348(
+  recovered_args: […])`. Found by a probe sweep; the fixture and
+  libInputShapeNoStarts.stripped changed.
   Blast radius: 18 files, 84 structured lines, `x20`/`x19`/`?` becoming
   `self`, plus `self.run(arg0)` style vtable calls in such classes.
 
