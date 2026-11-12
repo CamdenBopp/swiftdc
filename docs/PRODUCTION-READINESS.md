@@ -1603,6 +1603,17 @@ because it cannot be distinguished from a right one by reading the output.
   arg0)`, `return ((self.a * arg0) + self.b)` for the non-commutative `a * k +
   b`. Found by a probe sweep; 62 structured lines in 17 files, each a `return
   ?` or raw-register condition becoming its fields.
+
+- **FIXED (COMMIT) — a call to an in-image callee that reads stack arguments
+  showed only its registers.** `stackargs.c`: `nine(q, 1, …, 7, 100)` read
+  `nine(?)`, a claim of one argument, though `nine` loads its ninth from
+  `[sp]`. A callee whose straight line from the entry loads an argument
+  register from at or above its entry sp reads the caller's outgoing area,
+  so its call now ends in `…` (`nine(?, …)`); the registers between are not
+  filled in, since a float or an aggregate can go to the stack first. A
+  load into x19-x30 there is an outlined epilogue's restore, not an
+  argument. Found by a probe sweep; Go's ABI0 stubs (all stack-passed) and
+  frame-reading outlined fragments also gain `…`.
 - **OPEN — a closure's demangled name is read as its signature elsewhere.**
   A closure emitted at a generic abstraction returns through a buffer
   whatever its printed type, and `swiftReturnRegister(forDemangledName:)`

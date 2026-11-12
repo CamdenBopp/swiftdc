@@ -27,6 +27,9 @@ struct CalleeRegisterFacts: Sendable {
     /// `CalleeRegisterSummary.provenAllocationSites`, for the function's own
     /// tracer.
     let provenAllocationSites: [UInt64]
+    /// `CalleeRegisterSummary.readsIncomingStack`: its call passes stack
+    /// arguments beyond its registers.
+    let readsIncomingStack: Bool
     /// `CalleeRegisterSummary.mayReadRegisters`.
     let mayReadRegisters: UInt32
 
@@ -50,6 +53,7 @@ struct CalleeRegisterFacts: Sendable {
         writesNoFields = summary.writesNoFields
         memoryEffect = summary.memoryEffect
         provenAllocationSites = summary.provenAllocationSites
+        readsIncomingStack = summary.readsIncomingStack
         mayReadRegisters = summary.mayReadRegisters
     }
 

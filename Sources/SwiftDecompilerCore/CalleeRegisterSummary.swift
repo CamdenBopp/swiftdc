@@ -201,6 +201,11 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// own stack saves, directly or through a call to an in-image function
     /// that does (`closeOverReads`).
     var readsFramePointer = false
+    /// The straight line from the entry loads an argument register from at
+    /// or above the entry sp: the caller's outgoing area, which holds only
+    /// stack arguments. Then the call passes more than its registers show
+    /// (`readsIncomingStack(_:)`).
+    var readsIncomingStack = false
     /// The same for x22, the async context register: the body may write the
     /// context the caller holds there.
     var readsContextRegister = false
@@ -708,6 +713,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             inputProofEntry: readFacts?.inputProofEntry ?? instructions.first?.address,
             pureTailTarget: readFacts?.pureTailTarget ?? pureTailTarget(of: function, isFunction: isFunction))
         summary.provenAllocationSites = allocationSites
+        summary.readsIncomingStack = Self.readsIncomingStack(instructions)
         summary.mayReadRegisters = mayRead
         summary.mayWriteResult = writesResult
         summary.resultReads = readFacts?.resultReads ?? Self.resultReads(
@@ -715,6 +721,50 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             provenNonThrowing: DisassembledFunction.splitSignature(function.analysisDisplayName)
                 .map { !$0.isThrowing } ?? false)
         return summary
+    }
+
+    /// Whether a load on the straight line from the entry reads at or above
+    /// the entry sp, before any call, branch or sp change it cannot follow.
+    /// Above the entry sp is the caller's outgoing area, and only stack
+    /// arguments live there: `c9(long a, …, long i)` loads i from `[sp]`.
+    /// The register arguments alone are then not the whole call.
+    static func readsIncomingStack(_ instructions: [Instruction]) -> Bool {
+        var sp: Int64 = 0
+        for insn in instructions {
+            if let flow = insn.controlFlow, flow != .sequential { return false }
+            guard let detail = insn.detail else { return false }
+            if let memory = detail.operands.first(where: { $0.operand.isMemory }),
+               case .memory(let base?, let index, let displacement) = memory.operand, base.kind == .stackPointer {
+                guard index == nil,
+                      let plan = FrameCoordinatePlanner.exactAccess(
+                        .point(sp), displacement: displacement, postIndex: detail.postIndex,
+                        writeback: detail.writeback, trailingImmediate: detail.operands.last?.operand.immediateValue)
+                else { return false }
+                // Into a register a proper function may write before saving
+                // anything. A load into x19-x30 there restores its caller's
+                // registers: an outlined epilogue fragment runs on its
+                // caller's frame (`ldp x29, x30, [sp, #0x10]`), and its
+                // reads above its entry sp are saves, not arguments.
+                let loadsArgumentRegister = detail.operands.contains { info in
+                    guard info.isWritten, case .register(let register) = info.operand else { return false }
+                    if register.kind == .vector { return true }
+                    return register.kind == .gpr && (register.number ?? 99) <= 18
+                }
+                if memory.isRead, !memory.isWritten, plan.start >= 0, loadsArgumentRegister { return true }
+                if case .point(let after)? = plan.after { sp = after }
+                continue
+            }
+            guard detail.writtenRegisterKeys.contains("sp") else { continue }
+            // `sub sp, sp, #n` / `add sp, sp, #n`; any other write loses sp.
+            let operands = detail.operands
+            guard operands.count == 3, operands[0].operand.register?.kind == .stackPointer,
+                  operands[1].operand.register?.kind == .stackPointer,
+                  let amount = operands[2].shiftedImmediate,
+                  detail.id == AARCH64_INS_SUB || detail.id == AARCH64_INS_ADD
+            else { return false }
+            sp += detail.id == AARCH64_INS_SUB ? -amount : amount
+        }
+        return false
     }
 
     private static func pureTailTarget(

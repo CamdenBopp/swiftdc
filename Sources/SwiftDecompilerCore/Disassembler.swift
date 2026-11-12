@@ -9477,6 +9477,14 @@ public struct Disassembler: Sendable {
                         : Array(repeating: .unknown, count: bounded.count + floats)
                 }
                 if !bounded.isEmpty { argumentsByAddress[address] = bounded }
+                // A body that loads from the caller's outgoing area takes
+                // stack arguments too: `c9(?)` claimed one argument where
+                // the call also passes 100 at [sp]. Their count is not
+                // proven, so the list ends in `…`.
+                if summary.readsIncomingStack {
+                    argumentsByAddress[address] = argumentsByAddress[address] ?? []
+                    unprovenVariadicSites.insert(address)
+                }
                 strategy = "body-reads"
                 continue
             }
