@@ -1628,7 +1628,7 @@ because it cannot be distinguished from a right one by reading the output.
   and `untilLimit` (a closure's result in the test) read `sink(i)` with no
   declaration. A register secondary is never renamed in the body, so it is
   not named. Found by a probe sweep (flow/subs.c).
-- **FIXED (COMMIT) — a loop counter that starts from an argument stayed
+- **FIXED (ed8ba03) — a loop counter that starts from an argument stayed
   raw.** `registerloop.swift` countDown (`var i = n`) read `if (x19 > 0)`
   at -O and LoopEntry's `unknownStart` `while (x8 < x9)` at -Onone: only a
   constant entry was declared. An entry that is an incoming argument is
