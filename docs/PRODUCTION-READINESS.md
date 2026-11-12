@@ -3367,7 +3367,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   the code, as `warning: LC_FUNCTION_STARTS lists no address inside the
   code, …`. Found by a probe sweep; no render changed.
 
-- **FIXED (COMMIT) — plain `disasm` blamed its parser for damaged input.**
+- **FIXED (adcead8) — plain `disasm` blamed its parser for damaged input.**
   A dylib whose symbol values all lie outside it makes llvm-objdump print
   `section data ends, _add lies outside valid range` and no instruction,
   and swiftdc said "This is a parser defect, not an empty binary". The
