@@ -3256,7 +3256,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   `LRUCache.(_Node in …).deinit` took its parent `LRUCache`'s field names
   (`self.head`, a field `_Node` does not have) and now shows offsets.
 
-- **FIXED (COMMIT) — a field tested after it was overwritten was named by
+- **FIXED (a9633a5) — a field tested after it was overwritten was named by
   the field.** `fieldstore.swift` (-O): `ldr x0, [x20, #0x10]; str xzr,
   [x20, #0x10]; cbz x0` rendered `self.v = 0` then `if (self.v != 0)`,
   never true, and every destructor that releases an Optional read
