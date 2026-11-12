@@ -3250,7 +3250,11 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   (`SwiftSoup.Evaluator.IsEmpty.method`) has no signature and cannot say
   `static`; taken first, it seeded self in place of the body-proven
   arguments and GoodLinks lost 25 calls' targets (10,849 -> 10,868), so
-  it is declined. Deinit names carry no signature either and keep `?`.
+  it is declined. A destructor has no signature but is never static, so
+  `….deinit` and `….__deallocating_deinit` qualify (FIXED (COMMIT)); the
+  parser had also read `deinit` as a property accessor, so
+  `LRUCache.(_Node in …).deinit` took its parent `LRUCache`'s field names
+  (`self.head`, a field `_Node` does not have) and now shows offsets.
   Blast radius: 18 files, 84 structured lines, `x20`/`x19`/`?` becoming
   `self`, plus `self.run(arg0)` style vtable calls in such classes.
 

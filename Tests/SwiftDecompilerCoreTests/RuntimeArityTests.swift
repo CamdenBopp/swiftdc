@@ -159,7 +159,8 @@ private func noteArguments(_ callee: String, in function: DisassembledFunction) 
     let text = functions.filter { $0.displayName.contains("RuntimeArityWeakBox") }
         .map { $0.renderPseudo() }.joined(separator: "\n")
     #expect(text.contains("swift_weakAssign(&self.target, ?)"), Comment(rawValue: text))
-    #expect(text.contains("swift_weakDestroy(?)"), Comment(rawValue: text))
+    // The deinit's self is seeded, so the weak field is named.
+    #expect(text.contains("swift_weakDestroy(&self.target)"), Comment(rawValue: text))
     #expect(!text.contains("swift_weakAssign()") && !text.contains("swift_weakDestroy()")
             && !text.contains("swift_weakAssign(&self.target)\n"), Comment(rawValue: text))
 }

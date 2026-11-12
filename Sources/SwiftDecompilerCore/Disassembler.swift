@@ -5480,8 +5480,11 @@ public struct Disassembler: Sendable {
         // signature: only that says `static` for a type member. A name
         // metadata gives a stripped body (`SwiftSoup.Evaluator.IsEmpty.method`)
         // does not, and seeding self there lost 25 calls' arguments in one app.
+        // A destructor has no signature to show, but is never static: it
+        // takes the object it destroys in x20.
         if isSwiftMangled(function.symbol), let name = function.analysisName,
-           DisassembledFunction.signatureKnown(displayName: name, objcSignature: nil),
+           DisassembledFunction.signatureKnown(displayName: name, objcSignature: nil)
+            || name.hasSuffix(".__deallocating_deinit") || name.hasSuffix(".deinit"),
            let qualified = qualifiedSelfTypeFromDemangledName(name),
            classTypeIndex.isClass(qualified) {
             return fromSymbol
@@ -5603,7 +5606,10 @@ public struct Disassembler: Sendable {
         guard !nonInstanceMarkers.contains(where: head.contains) else { return nil }
 
         let parts = head.split(separator: ".").map(String.init)
-        let accessors: Set<String> = ["getter", "setter", "modify", "read", "init", "deinit"]
+        // `deinit` is a member of the type, not an accessor of a property:
+        // `Mod.Node.deinit` is Node's, and read as an accessor it named the
+        // module.
+        let accessors: Set<String> = ["getter", "setter", "modify", "read", "init"]
         // `Type.property.accessor` -> the type is 3 from the end.
         // `Type.method`            -> 2 from the end.
         let typeIndex = accessors.contains(parts.last ?? "") ? parts.count - 3 : parts.count - 2

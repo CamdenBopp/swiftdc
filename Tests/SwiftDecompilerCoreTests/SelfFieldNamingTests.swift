@@ -134,6 +134,17 @@ import Foundation
         symbol: "_$s14RetainRegister4NodeC4joinyS2iF", demangledName: "RetainRegister.Node.method",
         startAddress: 0x5000, instructions: [], source: .symbol)
     #expect(Disassembler.selfType(of: unsigned, selfIndex: none, fieldMaps: [:], classTypeIndex: classes) == nil)
+    // A destructor has no signature but is never static.
+    let deinitializer = DisassembledFunction(
+        symbol: "_$s14RetainRegister4NodeCfD", demangledName: "RetainRegister.Node.__deallocating_deinit",
+        startAddress: 0x6000, instructions: [], source: .symbol)
+    #expect(Disassembler.selfType(of: deinitializer, selfIndex: none, fieldMaps: [:], classTypeIndex: classes) == "Node")
+    // The destroying deinit (`fd`) takes self in x20 as well: `add x0, x20,
+    // #0x10` addresses its first stored property at -Onone.
+    let destroyer = DisassembledFunction(
+        symbol: "_$s14RetainRegister4NodeCfd", demangledName: "RetainRegister.Node.deinit",
+        startAddress: 0x7000, instructions: [], source: .symbol)
+    #expect(Disassembler.selfType(of: destroyer, selfIndex: none, fieldMaps: [:], classTypeIndex: classes) == "Node")
     // The vtable index's "not an instance" still wins.
     let staticIndex = SelfTypeIndex(bindings: [
         0x1000: SelfBinding(selfTypeName: "Node", kind: "method", isInstance: false,
