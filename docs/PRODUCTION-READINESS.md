@@ -3358,7 +3358,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   or a goto to the code after both loops (`goto loc_734`, `sink(100)`).
   Found by a probe sweep; 42 structured lines in 5 files, every one a
   `break` becoming `return` or a goto with its label.
-- **FIXED (COMMIT) — inside a loop, an edge to the function's end fell
+- **FIXED (6e302f0) — inside a loop, an edge to the function's end fell
   into the next block.** `for i { mid: for j { for k { if ext(i+j+k) == 6
   { break mid }; sink(k) }; sink(-j) }; sink(-100 - i) }` (-O,
   `loopexit.swift` threeDeep): the outer latch, emitted inside the middle
