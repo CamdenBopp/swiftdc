@@ -359,6 +359,9 @@ $CLANG -O2 -fno-builtin -dynamiclib libc_twins.c -o libLibcTwins.dylib
 echo "==> a class field of an imported C struct, read through its member (cstructfield.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name CStructField cstructfield.swift -o libCStructField.dylib
 
+echo "==> a field tested after it was overwritten (fieldstore.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name FieldStore fieldstore.swift -o libFieldStore.dylib
+
 echo "==> SDK calls from their declarations: open, fcntl, ioctl, closedir, sysctl (variadic_calls.c, -O1)"
 $CLANG -O1 -dynamiclib variadic_calls.c -o libVariadicCalls.dylib
 

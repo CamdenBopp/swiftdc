@@ -1120,6 +1120,21 @@ struct ControlFlowStructure {
     /// test that reads one low bit.
     enum WidthRule { case exact, belowSignedWord, any }
 
+    /// Whether an instruction strictly between `start` and `end` writes
+    /// memory or calls, so a value loaded at `start` may no longer be what
+    /// memory holds at `end`. Every call counts: a release can run a deinit.
+    static func memoryMayChange(after start: Int, before end: Int, in block: BasicBlock) -> Bool {
+        guard start + 1 < end else { return false }
+        return block.instructions[(start + 1)..<end].contains { instruction in
+            if instruction.controlFlow == .call { return true }
+            guard let detail = instruction.detail else { return true }
+            return detail.operands.contains { info in
+                if case .memory = info.operand { return info.isWritten }
+                return false
+            }
+        }
+    }
+
     private func resolve(_ token: String, before: Int, in block: BasicBlock, consumed: inout Set<UInt64>,
                          width rule: WidthRule = .exact) -> String {
         if token.hasPrefix("#") { return Self.cleanImmediate(token) }
@@ -1201,7 +1216,14 @@ struct ControlFlowStructure {
                     if !number || !Self.isBelowSignedWord(instruction, mnemonic: mnemonic, operands: ops) { return token }
                 }
             }
-            if let field = instruction.fieldRead { return field }
+            // A field read names the field's value at the load. A store or a
+            // call before the test may change the field, and the name then
+            // reads as the new value: `ldr x0, [x20, #0x10]; str xzr, [x20,
+            // #0x10]; cbz x0` rendered `self.v = 0; if (self.v != 0)`.
+            if let field = instruction.fieldRead {
+                guard !Self.memoryMayChange(after: index, before: before, in: block) else { return token }
+                return field
+            }
             // The substitution names the definition's source registers, which
             // read as their values at the test. One written in between holds
             // something else there: `and w8, w0, #0xff; add w0, w0, #1; cmp

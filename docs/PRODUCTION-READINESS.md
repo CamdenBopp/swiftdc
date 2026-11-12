@@ -3255,6 +3255,18 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   parser had also read `deinit` as a property accessor, so
   `LRUCache.(_Node in …).deinit` took its parent `LRUCache`'s field names
   (`self.head`, a field `_Node` does not have) and now shows offsets.
+
+- **FIXED (COMMIT) — a field tested after it was overwritten was named by
+  the field.** `fieldstore.swift` (-O): `ldr x0, [x20, #0x10]; str xzr,
+  [x20, #0x10]; cbz x0` rendered `self.v = 0` then `if (self.v != 0)`,
+  never true, and every destructor that releases an Optional read
+  `self.next = 0; if (self.next != 0)` (exposed by the destructor self
+  seeding above). The structurer's text condition names a load by its
+  field only when no store and no call lies between the load and the
+  test; a release can run a deinit, so every call counts. Found by a
+  probe sweep. Blast radius: 34 structured lines in 5 files, each a field
+  name becoming its register (`if (x19 != 0)`), including swift-syntax's
+  LRUCache where `swift_unownedRetainStrong` sits between.
   Blast radius: 18 files, 84 structured lines, `x20`/`x19`/`?` becoming
   `self`, plus `self.run(arg0)` style vtable calls in such classes.
 
