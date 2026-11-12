@@ -3376,7 +3376,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   which decode without llvm-objdump); with no complaint it is still
   reported as swiftdc's parse failure. Found by a probe sweep.
 
-- **FIXED (COMMIT) — `interface` dropped undecodable types silently.** With
+- **FIXED (43d53f3) — `interface` dropped undecodable types silently.** With
   its `__swift5_typeref` words damaged, an image's interface printed `func
   top(_: S.Point)` alone, and Point, Box and Shape vanished; `dump` names
   each. A type the image records in `__swift5_types` that the interface
