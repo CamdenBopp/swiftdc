@@ -1632,7 +1632,7 @@ because it cannot be distinguished from a right one by reading the output.
   `subs w19, w19, #2`) wraps each step (`((i & M) - 2) & M`) and is not
   matched; a counter that starts from an argument (`var i = n`) has no
   constant to declare. Both render raw registers, as before.
-- **FIXED (COMMIT) — `--pseudo` read a loop variable it never declared.**
+- **FIXED (9360eeb) — `--pseudo` read a loop variable it never declared.**
   The flat view printed `sink((i + 3))` with no `var i = …`, for slot
   counters at -Onone as for register counters (`registerloop.swift`).
   The tracer now also keys each loop's bindings by the last instruction of
