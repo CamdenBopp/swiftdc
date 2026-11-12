@@ -3375,6 +3375,16 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   says the input looks damaged (pointing at `--structured`/`--pseudo`,
   which decode without llvm-objdump); with no complaint it is still
   reported as swiftdc's parse failure. Found by a probe sweep.
+
+- **FIXED (COMMIT) — `interface` dropped undecodable types silently.** With
+  its `__swift5_typeref` words damaged, an image's interface printed `func
+  top(_: S.Point)` alone, and Point, Box and Shape vanished; `dump` names
+  each. A type the image records in `__swift5_types` that the interface
+  neither declares nor extends is now listed in a closing note, which
+  states only that it is missing. A first draft claimed "metadata could
+  not be read" and fired falsely on four images (C-imported types,
+  unrecorded types, a private struct printed only as an extension); the
+  final rule fires on no intact fixture or toolchain library.
   Blast radius: 18 files, 84 structured lines, `x20`/`x19`/`?` becoming
   `self`, plus `self.run(arg0)` style vtable calls in such classes.
 

@@ -89,6 +89,7 @@ public struct InterfaceReconstructor: Sendable {
                 text = Self.removing(try await builder.printer.printTypeDefinition(definition).string, from: text)
             }
         }
+        text += Self.unrenderedTypesNote(text, in: machO, showsCImportedTypes: options.showCImportedTypes)
         // Nothing but imports from an image with no Swift section: there is
         // no module here, and the import block read as a valid empty one
         // (`interface` on a C dylib). Empty lets the caller say so, as `dump`
@@ -101,6 +102,37 @@ public struct InterfaceReconstructor: Sendable {
         // The printer's address is the symbol it attributed a member to,
         // which for a stripped witness is a data slot; see MemberAddressAudit.
         return options.memberAddresses ? MemberAddressAudit(machO).audit(text).text : text
+    }
+
+    /// A closing comment naming each type the image records in
+    /// `__swift5_types` that the printed interface neither declares nor
+    /// extends, or an empty string. The builder drops a type it cannot read
+    /// without a word: with its type references damaged, an image's
+    /// interface printed `func top(_: S.Point)` alone, and Point, Box and
+    /// Shape vanished, where `dump` names each. Nothing here proves why a
+    /// type is missing, so the note says only that it is. A C-imported type
+    /// is left out unless shown.
+    static func unrenderedTypesNote(_ text: String, in machO: MachOFile, showsCImportedTypes: Bool = false) -> String {
+        guard let recorded = UnrecordedTypes.ownRecords(in: machO) else { return "" }
+        let missing = recorded.compactMap { type -> String? in
+            let name: String?
+            switch type {
+            case .enum(let model): name = try? model.descriptor.name(in: machO)
+            case .struct(let model): name = try? model.descriptor.name(in: machO)
+            case .class(let model): name = try? model.descriptor.name(in: machO)
+            }
+            guard let name, !name.isEmpty else { return nil }
+            let display = SwiftDeclarationDumper.displayName(of: type, in: machO)
+            if !showsCImportedTypes, display.hasPrefix("__C.") { return nil }
+            let escaped = NSRegularExpression.escapedPattern(for: name)
+            let present = text.range(of: #"\b(struct|class|enum|actor) "# + escaped + #"\b"#,
+                                     options: .regularExpression) != nil
+                || text.range(of: #"\bextension (\S+\.)?"# + escaped + #"\b"#, options: .regularExpression) != nil
+            return present ? nil : "\(SwiftDeclarationDumper.kind(of: type)) \(display)"
+        }
+        guard !missing.isEmpty else { return "" }
+        return "\n// Recorded in this image's __swift5_types but not declared above:\n"
+            + missing.map { "//   \($0)\n" }.joined()
     }
 
     /// `text` without `block`, a whole run of lines of it.
