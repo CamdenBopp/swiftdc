@@ -3333,7 +3333,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   has no Swift section, but its functions print from symbols. Across the
   fixtures, 121 C and ObjC images change and none loses content.
 
-- **FIXED (COMMIT) — a direct call to an unnamed address rendered as an
+- **FIXED (529ed95) — a direct call to an unnamed address rendered as an
   indirect one.** In a stripped executable with no LC_FUNCTION_STARTS,
   functions merge into one body and each `bl` lands inside it
   (`mergedcalls.c`). With no name for the target, the call printed
