@@ -3359,6 +3359,13 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   (`witnesstail.swift`). A witness is now read by its requirement's
   signature. Found by a probe sweep; the fixture and one swift-syntax
   witness (`KeyedContainer.contains`) changed.
+
+- **FIXED (COMMIT) — a damaged LC_FUNCTION_STARTS silenced the boundary
+  warning.** A stripped executable whose table holds one entry far past the
+  image decoded as one function with nothing on stderr, because the warning
+  fired only for an empty table. It now fires when no listed start lies in
+  the code, as `warning: LC_FUNCTION_STARTS lists no address inside the
+  code, …`. Found by a probe sweep; no render changed.
   Blast radius: 18 files, 84 structured lines, `x20`/`x19`/`?` becoming
   `self`, plus `self.run(arg0)` style vtable calls in such classes.
 

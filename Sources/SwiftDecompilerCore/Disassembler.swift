@@ -3661,13 +3661,30 @@ public struct Disassembler: Sendable {
     /// and code its symbols leave unmarked. `clang -Wl,-no_function_starts`
     /// then `strip` gave one function where the source has three, silently.
     func warnOfUnreliableBoundaries(in machO: MachOFile) {
-        guard functionStarts(of: machO).isEmpty, let unmarked = unmarkedEntry(in: machO) else { return }
-        FileHandle.standardError.write(Data("""
-            warning: no LC_FUNCTION_STARTS, and symbols do not mark every function: code at \
+        guard let warning = boundaryWarning(in: machO) else { return }
+        FileHandle.standardError.write(Data(warning.utf8))
+    }
+
+    /// The warning `warnOfUnreliableBoundaries` prints, or nil. A table
+    /// whose entries all lie outside the code marks nothing: a damaged
+    /// LC_FUNCTION_STARTS (one entry far past the image) left a stripped
+    /// executable decoding as one function, with no warning, because the
+    /// table was not empty.
+    func boundaryWarning(in machO: MachOFile) -> String? {
+        let starts = functionStarts(of: machO)
+        let sections = codeSections(in: machO)
+        guard !starts.contains(where: { start in sections.contains { $0.range.contains(start) } }),
+              let unmarked = unmarkedEntry(in: machO)
+        else { return nil }
+        let table = starts.isEmpty
+            ? "no LC_FUNCTION_STARTS"
+            : "LC_FUNCTION_STARTS lists no address inside the code"
+        return """
+            warning: \(table), and symbols do not mark every function: code at \
             0x\(String(unmarked, radix: 16)) is a call target or follows a return, with no boundary. \
             Functions may be merged, so read each body as possibly several.
 
-            """.utf8))
+            """
     }
 
     /// The first address with evidence of a function no boundary marks, or
