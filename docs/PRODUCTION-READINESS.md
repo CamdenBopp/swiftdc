@@ -1594,6 +1594,15 @@ because it cannot be distinguished from a right one by reading the output.
   Found by a probe sweep; 112 structured lines in 16 files gain capture
   arguments, and one stale x0 leaves a precondition message's autoclosure
   (`implicit closure #1 ()`, whose body reads no argument).
+
+- **FIXED (COMMIT) — a small struct's method with formals had no `self`.** A
+  non-mutating method of a struct of integer words takes its self's words in
+  the general registers after its formals (`g(_ k:)`: k in x0, s in x1). Self
+  was seeded only for a method with no formals, so every one with a formal
+  read `return ?`. It is now seeded after the formals: `return (self.s -
+  arg0)`, `return ((self.a * arg0) + self.b)` for the non-commutative `a * k +
+  b`. Found by a probe sweep; 62 structured lines in 17 files, each a `return
+  ?` or raw-register condition becoming its fields.
 - **OPEN — a closure's demangled name is read as its signature elsewhere.**
   A closure emitted at a generic abstraction returns through a buffer
   whatever its printed type, and `swiftReturnRegister(forDemangledName:)`

@@ -610,13 +610,11 @@ private func reconstructionStructured(
         #expect(mixed.contains("return ?"))
         #expect(!mixed.contains("self."))
     }
-    // Adversarial: a method with parameters passes `self` AFTER the params in the
-    // shared GPR bank, an order we don't decompose — declines rather than
-    // mis-reconstruct a non-commutative body.
+    // A method with parameters passes `self` AFTER them in the shared GPR
+    // bank: `combine(_ k:)` has k in x0 and self in x1/x2. The non-commutative
+    // `a * k + b` proves the order: read the other way it is `k * a + …`.
     if let combine = try await reconstructionPseudo("IntPair.combine") {
-        // Its overflow traps render (`trap()`); its arithmetic does not.
-        #expect(!combine.contains("self."), "\(combine)")
-        #expect(!combine.contains("return ("), "\(combine)")
+        #expect(combine.contains("return ((self.a * arg0) + self.b)"), "\(combine)")
     }
 }
 

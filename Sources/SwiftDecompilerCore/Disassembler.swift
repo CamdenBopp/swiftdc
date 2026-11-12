@@ -7540,8 +7540,15 @@ public struct Disassembler: Sendable {
         var floatIndex = 0
         var integerIndex = 0
         let floatingSelfOffsets = selfMap.homogeneousFloatFieldOffsets
+        // A small integer struct's self follows its formals in the general
+        // registers: `g(_ k:)` takes k in x0 and self.s in x1, and `h(_ a:,
+        // _ b:)` self.s in x2. Seeded only when every formal is one register
+        // (the loop below declines anything else), after the last of them.
+        var integerSelfAfterFormals: [Int]?
         if floatingSelfOffsets != nil {
             // Seeded after the formal arguments, below.
+        } else if let selfOffsets = selfMap.wordIntegerFieldOffsetsInRegisters, !parameters.isEmpty {
+            integerSelfAfterFormals = selfOffsets
         } else if let selfOffsets = selfMap.wordIntegerFieldOffsetsInRegisters, parameters.isEmpty {
             // A small integer struct shares the general-register bank with its
             // parameters, and (unlike a float HFA in its own SIMD bank) `self`
@@ -7579,6 +7586,12 @@ public struct Disassembler: Sendable {
                     floatIndex += 1
                 }
                 argumentFieldMaps[index] = map
+            }
+        }
+        if let integerSelfAfterFormals {
+            guard integerIndex + integerSelfAfterFormals.count <= 8 else { return nil }
+            for (word, offset) in integerSelfAfterFormals.enumerated() {
+                seeded["x\(integerIndex + word)"] = .selfFieldValue(offset: offset)
             }
         }
         if let floatingSelfOffsets {
