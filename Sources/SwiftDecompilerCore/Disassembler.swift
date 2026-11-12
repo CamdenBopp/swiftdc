@@ -5923,7 +5923,7 @@ public struct Disassembler: Sendable {
         // Compute caller ABI eligibility once, not once per external branch.
         guard function.objcMethod == nil,
               let first = function.instructions.first, let last = function.instructions.last,
-              let name = function.layoutName,
+              let name = function.layoutName.map({ witnessRequirement($0) ?? $0 }),
               let caller = DisassembledFunction.splitSignature(name), !caller.isAsync, !caller.isThrowing,
               ordinaryHead(caller.head),
               swiftReturnRegister(of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cfg: cfg) != nil
@@ -5941,6 +5941,19 @@ public struct Disassembler: Sendable {
             else { return nil }
             return insn.address
         })
+    }
+
+    /// A protocol witness's requirement, `P4.P.f() -> Swift.Int` of
+    /// `protocol witness for P4.P.f() -> Swift.Int in conformance P4.V :
+    /// P4.P in P4`: the signature the witness is called with, whose result
+    /// it forwards. A witness that tail-calls its member (`ldr x0, [x20];
+    /// b V.f`) rendered `V.f(self: ?)` with no `return`. Nil for any other
+    /// name.
+    static func witnessRequirement(_ name: String) -> String? {
+        let prefix = "protocol witness for "
+        guard name.hasPrefix(prefix), let conformance = name.range(of: " in conformance ", options: .backwards)
+        else { return nil }
+        return String(name[name.index(name.startIndex, offsetBy: prefix.count) ..< conformance.lowerBound])
     }
 
     /// Whether a function signature specialization returns what the

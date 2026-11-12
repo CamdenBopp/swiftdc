@@ -3350,6 +3350,15 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   unknown, though the `bl` names it. It now reads `sub_100000348(
   recovered_args: […])`. Found by a probe sweep; the fixture and
   libInputShapeNoStarts.stripped changed.
+
+- **FIXED (COMMIT) — a protocol witness's tail call lost its `return`.** A
+  witness that ends `ldr x0, [x20]; b V.count` forwards the member's result,
+  but the tail-return rule read only an ordinary `Module.Type.member`
+  caller name, and a witness is `protocol witness for M.P.f() -> Swift.Int
+  in conformance …`: `V.count(self: ?)` with no `return`
+  (`witnesstail.swift`). A witness is now read by its requirement's
+  signature. Found by a probe sweep; the fixture and one swift-syntax
+  witness (`KeyedContainer.contains`) changed.
   Blast radius: 18 files, 84 structured lines, `x20`/`x19`/`?` becoming
   `self`, plus `self.run(arg0)` style vtable calls in such classes.
 

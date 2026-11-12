@@ -383,6 +383,9 @@ echo "==> a receiver left in x20 across a call to another module (selfagain.swif
 $SWIFTC -parse-as-library -O -emit-library -emit-module -module-name SelfAgainKit selfagainkit.swift -o libSelfAgainKit.dylib
 $SWIFTC -parse-as-library -O -emit-library -module-name SelfAgain selfagain.swift -I . -L . -lSelfAgainKit -o libSelfAgain.dylib
 
+echo "==> a protocol witness that tail-calls its member (witnesstail.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name WitnessTail witnesstail.swift -o libWitnessTail.dylib
+
 echo "==> SDK calls from their declarations: open, fcntl, ioctl, closedir, sysctl (variadic_calls.c, -O1)"
 $CLANG -O1 -dynamiclib variadic_calls.c -o libVariadicCalls.dylib
 
