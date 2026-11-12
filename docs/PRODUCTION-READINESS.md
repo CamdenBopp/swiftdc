@@ -3369,7 +3369,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   an if/else whose arms both leave, where nothing falls through. One
   structured line moved in every fixture and toolchain library.
 
-- **FIXED (COMMIT) — a malformed rebase or bind opcode stream trapped,
+- **FIXED (9bfb66a) — a malformed rebase or bind opcode stream trapped,
   hung or ran away with memory.** Found by a probe patching
   `libOpcodeFixups.dylib`'s LC_DYLD_INFO streams. A rebase segment offset
   of 2^63 trapped converting to `Int` in `ChainedRebases.opcodeTargets`
