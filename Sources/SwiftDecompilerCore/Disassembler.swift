@@ -6701,6 +6701,15 @@ public struct Disassembler: Sendable {
                         }
                         argumentMaps[index] = map
                     }
+                    // A struct too large for registers is passed by address,
+                    // one integer register, and that address is the parameter
+                    // (`bigField(_ big: Big, _ k: Int)` loads big.c from
+                    // [x0, #0x10]), as a generic value's is.
+                    if SwiftLowering.directAggregateRegisters(
+                        of: type, fieldMaps: fieldMaps, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) == nil,
+                       banks == (1, 0) {
+                        registers["x\(integerIndex)"] = index
+                    }
                     integerIndex += banks.integers
                     floatIndex += banks.floats
                     continue
