@@ -60,6 +60,53 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## Next: native execution as an oracle (2026-11-13)
+
+Prompted by a look at Microlift and Rosemary. The useful part is the
+experiment, not either project: compare what swiftdc predicts for a
+fixture function with what the CPU does when the function runs on this
+Mac. A prototype ran on `libReconstruction.dylib` (`gradeOf`), outside
+the tree: an in-process single-step trace through a Mach exception port
+needed no entitlement, root or prompt with SIP on, cost 20 to 28 steps
+per call, and checked the three branch conditions and the exit x0 over
+five inputs (17 verified, 0 refuted; a negated prediction was refuted).
+Native first, by priority 5 and 6 above: these give the condition and
+return-value fixes independent evidence.
+
+1. **OPEN: check branch decisions against native execution.** Evaluate
+   each `values.condition` probe record on chosen inputs and compare it
+   with the direction the CPU took in a single-step trace. Denominator:
+   every conditional branch in the callable scalar fixtures, with
+   never-reached and not-evaluable counted apart, never as passes. Our
+   own code only.
+2. **OPEN: check register facts at calls and exits against the same
+   trace.** Compare `values.call` and `values.exit-registers` (x0, x1,
+   x8, x20, x21, d0) with the stepped registers. Denominator: every such
+   fact; an unknown is a decline, not a pass.
+3. **OPEN: widen the native return oracle past x0.** A thunk that seeds
+   x20 and x21 and captures x0, x1, d0 to d3 and x21, so throwing, pair
+   and float returns are scored by execution and not from text.
+   Denominator: every rendered return value and return outcome in the
+   fixtures.
+4. **OPEN: a native sample profile mapped to swiftdc's functions.**
+   Sampled program counters, unslid by the image's load address and
+   bound to it by UUID, bucketed by swiftdc's function ranges and
+   cross-checked against `LC_FUNCTION_STARTS`. A sample outside every
+   function is a completeness defect; a run with no samples is an error,
+   not an empty profile (`sample` returned an empty call graph once).
+5. **DEAD END, for now: Microlift as a second oracle.** It is
+   GPL-3.0-only, so nothing of it may enter this MIT tree: not vendored,
+   no driver that links it, no test that needs it, no committed value
+   derived from it. Its AArch64 guest is early by its own README (no
+   `bl` in execution, no `br`, `ccmp`, bitfield moves, byte or halfword
+   loads, floating point or SIMD) and has no oracle of its own, so a
+   disagreement could not be attributed. By mnemonic, the functions it
+   could run are ones native execution already covers. Rosemary runs
+   apps and observes nothing. Revisit Microlift only as an optional tool
+   a developer installs, whose output is compared from outside. If
+   symbolic reach is wanted, look at permissively licensed tools first.
+
+
 ## Next: defects from reading the compiler source (2026-11-13)
 
 Thirty agents read the Swift compiler's IRGen, SILGen, stdlib and runtime

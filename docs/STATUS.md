@@ -94,7 +94,7 @@ cover results, bodies, or Objective-C methods (4 matched).
 | Output change against the previous commit | every changed line explained in each commit message | `Tools/blast-radius.sh` |
 | Cost budget (instructions, footprint) | within budget; one fixture over, declared (`Perf-cost:` in 36ba8db) | same |
 | GitHub Actions | **no passing run**. `macos-26` jobs get no runner; on `macos-15` (Xcode 26.3, Swift 6.2.4) the fixture build fails before swiftdc is built, on a toolchain older than the one the fixtures need (Swift 6.4 locally) | `.github/workflows/ci.yml` |
-| Independent execution of rendered expressions | only the differential-oracle fixtures (integer returns) | `DifferentialOracleTests` |
+| Independent execution of rendered expressions | return values of the differential-oracle fixtures, integer and floating point (compared bit for bit). Not checked by execution: which way a branch went, registers at call sites, results beyond the first register, memory writes | `DifferentialOracleTests` |
 
 The suite, blast radius and cost budget are run by the author's gate on
 one machine. Until a CI run completes they are author-reported.
