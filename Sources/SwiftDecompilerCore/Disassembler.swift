@@ -7644,6 +7644,20 @@ public struct Disassembler: Sendable {
     /// With `callSites`, a call's result is allowed and its site collected:
     /// the caller binds each (`let r0 = use(…)`) so the comment names the
     /// binding instead of spelling the call a second time.
+    /// Whether x0 at a return is only what calls left there: a call's
+    /// result, or a choice between such on different paths (`if (a) f();
+    /// else g();` ends with one or the other in x0, as does a function
+    /// that returns one of them: the code is the same). A float-returning
+    /// C function under UBSan read `x0 = (… ? r1 : r0)`, its handler's or
+    /// its last call's leftover, while its result was in d0.
+    static func isLeftoverResult(_ value: AbstractValue) -> Bool {
+        switch value {
+        case .callResult: true
+        case .select(_, let whenTrue, let whenFalse): isLeftoverResult(whenTrue) && isLeftoverResult(whenFalse)
+        default: false
+        }
+    }
+
     static func isCallFreeValue(_ value: AbstractValue, callSites: UnsafeMutablePointer<Set<UInt64>>? = nil) -> Bool {
         switch value {
         case .immediate, .address, .argument, .argumentField, .selfFieldValue, .frame, .local:
@@ -11638,7 +11652,7 @@ public struct Disassembler: Sendable {
                 guard let raw = analysis.exitValues[insn.address],
                       case let exit = sanitizeValue(raw), exit != .unknown, exit != .argument(0)
                 else { continue }
-                if case .callResult = exit { continue }
+                if Self.isLeftoverResult(exit) { continue }
                 var calls = Set<UInt64>()
                 guard Self.isCallFreeValue(exit, callSites: &calls) else { continue }
                 unprovenResults[insn.address] = (exit, calls)

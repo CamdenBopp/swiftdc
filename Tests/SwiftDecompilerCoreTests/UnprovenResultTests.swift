@@ -32,6 +32,8 @@ import Testing
     let hidden = try structured("_hidden")
     #expect(!hidden.contains("// x0"), Comment(rawValue: hidden))
     // The last call's result alone is no evidence of a result.
+    let either = try structured("_eitherCall")
+    #expect(!either.contains("// x0"), Comment(rawValue: either))
     let last = try structured("_lastCall")
     #expect(!last.contains("// x0") && !last.contains("let r"), Comment(rawValue: last))
     let quiet = try structured("_quiet")

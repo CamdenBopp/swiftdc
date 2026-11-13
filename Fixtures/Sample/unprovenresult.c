@@ -18,5 +18,10 @@ long twoArgs(long a, long b) { return use(a) + b; }
 // cannot bind; a comment would be the only place the call appeared.
 extern void *swift_task_alloc(unsigned long);
 long hidden(unsigned long n) { return (long)swift_task_alloc(n) + 8; }
+// eitherCall: x0 is one call's result or the other's, by path: leftover,
+// exactly as after a single call (a function returning one of them
+// compiles the same).
+extern long other(long);
+void eitherCall(long a, long b) { long r = a ? use(a) : other(a); *(volatile long *)b = r; }
 void lastCall(long a, long b) { use(a); *(volatile long *)b = use(b); }
 void quiet(long a, long b) { *(volatile long *)b = a; }
