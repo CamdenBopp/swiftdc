@@ -10210,7 +10210,18 @@ public struct Disassembler: Sendable {
                 case .squareRoot: return "sqrt(\(inner))"
                 case .absoluteValue: return "abs(\(inner))"
                 case .toFloat(let bits):
-                    return "\(bits == 64 ? "Double" : bits == 32 ? "Float" : "Float\(bits)")(\(inner))"
+                    // `scvtf` converts its operand as signed. An operand typed
+                    // unsigned reads as unsigned in `Double(x)`, wrong for
+                    // every value with its top bit set: `Double(Int(bitPattern:
+                    // x))` of a UInt rendered `Double(arg0)`. The mirror of
+                    // `unsignedToFloat` below.
+                    let type = bits == 64 ? "Double" : bits == 32 ? "Float" : "Float\(bits)"
+                    let operandType = TypeInference.typeOf(operand, arguments: argumentTypes)
+                    if operandType.isUnsignedInteger {
+                        let width = operandType.width ?? 64
+                        return "\(type)(Int\(width == 64 ? "" : String(width))(bitPattern: \(inner)))"
+                    }
+                    return "\(type)(\(inner))"
                 case .unsignedToFloat(let bits):
                     // `Double(x)` converts a UInt as unsigned, and a value whose
                     // bit 63 is clear the same either way; anything else is
