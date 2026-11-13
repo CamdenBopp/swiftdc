@@ -53,7 +53,7 @@ failure.
   - FIXED (9bd88bb): direct Objective-C methods (`objc_direct`) take no
     `_cmd`, but the structured send read its first argument from x2
     (objc/direct.m).
-  - FIXED (COMMIT): x18 assumed to survive a call: `mov x18, #7; bl ext;
+  - FIXED (a47f0f2): x18 assumed to survive a call: `mov x18, #7; bl ext;
     mov x0, x18` rendered `return 7` (odd/scratch_regs.s).
   - `let r0 = OUTLINED_FUNCTION_2()` for a helper that never writes x0, at
     an async resume at -Osize (swiftabi/asyncs.swift).

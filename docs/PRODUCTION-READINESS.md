@@ -3378,7 +3378,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   a class this image defines whose IMP is in no method list is now read
   from x1. Only the new fixture's renders moved. The whole-file listing
   path still names a local symbol `sub_…`, so there it cannot tell.
-- **FIXED (COMMIT) — x18 was taken to survive a call.** `mov x18, #7; bl
+- **FIXED (a47f0f2) — x18 was taken to survive a call.** `mov x18, #7; bl
   ext; mov x0, x18; ret` rendered `return 7`: the tracer cleared x1-x17 and
   x30 at a call and kept x18 as "reserved". It is the platform register,
   which Apple reserves and nothing promises across a call; a call now
