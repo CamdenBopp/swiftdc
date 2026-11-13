@@ -3436,6 +3436,12 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   set. An operand typed unsigned now converts through its signed bit
   pattern (`Double(Int(bitPattern: arg0))`; `signedfloat.swift`, found by
   the ABI probe). Only the new fixture moved.
+- **FIXED (98d5b42) — an optional protocol property listed @required.**
+  ObjCDump leaves a protocol's optional properties empty, so `objc` put
+  every property under @required. A property whose getter is listed only
+  among the optional methods now renders under @optional
+  (`objcoptionalprop.m`, found by the ABI probe). `objc --image
+  Foundation` moves six lines, each @optional in the SDK headers.
 - **OPEN — the ABI gap probe (2026-11-13).** Twenty read-only agents, one
   ABI area each, checked dev 6b3fd16 against the plain listing of their own
   fixtures: [research/abi-probe-2026-11-13.md](research/abi-probe-2026-11-13.md).
