@@ -781,8 +781,11 @@ struct ControlFlowStructure {
     private static func endsInTransfer(_ lines: [String], upTo end: Int) -> Bool {
         guard end > 0 else { return false }
         let last = lines[end - 1].trimmingCharacters(in: .whitespaces)
-        if last == "break" || last == "continue" || last == "trap()"
-            || last.hasPrefix("return") || last.hasPrefix("goto ") || last.hasPrefix("throw") {
+        // A whole word: `returnValue()` and `throwIfNeeded()` are calls that
+        // fall through, and taken for exits they dropped the transfer this
+        // check guards.
+        if last == "break" || last == "continue" || last == "trap()" || last == "return" || last == "throw"
+            || last.hasPrefix("return ") || last.hasPrefix("goto ") || last.hasPrefix("throw ") {
             return true
         }
         guard last == "}" else { return false }

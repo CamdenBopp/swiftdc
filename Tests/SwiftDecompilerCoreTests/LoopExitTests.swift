@@ -65,6 +65,13 @@ import Testing
     #expect(ControlFlowStructure.endsInTransfer(["    goto loc_10"]))
     #expect(!ControlFlowStructure.endsInTransfer([]))
     #expect(!ControlFlowStructure.endsInTransfer(["    f()"]))
+    // A call whose name starts like a transfer falls through.
+    #expect(!ControlFlowStructure.endsInTransfer(["    returnValue()"]))
+    #expect(!ControlFlowStructure.endsInTransfer(["    throwIfNeeded(?)"]))
+    #expect(!ControlFlowStructure.endsInTransfer(["    gotoNext()"]))
+    #expect(ControlFlowStructure.endsInTransfer(["    return"]))
+    #expect(ControlFlowStructure.endsInTransfer(["    return ?"]))
+    #expect(ControlFlowStructure.endsInTransfer(["    throw ?"]))
     #expect(ControlFlowStructure.endsInTransfer([
         "    if (a) {", "        continue", "    } else {", "        goto loc_10", "    }",
     ]))

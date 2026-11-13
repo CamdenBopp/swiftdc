@@ -3369,6 +3369,13 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   an if/else whose arms both leave, where nothing falls through. One
   structured line moved in every fixture and toolchain library.
 
+- **FIXED (COMMIT) — the loop-exit check took a call for an exit.**
+  `endsInTransfer` (6e302f0) decided an arm leaves when its last line
+  began with `return` or `throw`, so a call named `returnValue()` or
+  `throwIfNeeded()` read as an exit, and an if/else whose other arm left
+  would have dropped the transfer a loop body needs. Found by reading the
+  code, not reproduced in a render; the words are now whole (`return`,
+  `return …`, `throw`, `throw …`). No render moved.
 - **FIXED (9bb1427) — a compare that writes its own operand read one step
   off.** `subs w19, w19, #2; b.hi` compares the value before the
   subtraction, but the text path named the register, which at the branch
