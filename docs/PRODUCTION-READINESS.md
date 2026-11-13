@@ -3395,6 +3395,12 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   (unchecked index); and a 100,000-node export trie (MachOKit's recursion).
   The preflight declines each by its own cause before any reader reaches
   it. All 3,540 runs now exit cleanly; no render moved.
+- **FIXED (58580ca) — `scvtf` on an unsigned operand read as unsigned.**
+  `Double(Int(bitPattern: x))` of a UInt is `scvtf d0, x0; ret` and
+  rendered `return Double(arg0)`, wrong for every value with the top bit
+  set. An operand typed unsigned now converts through its signed bit
+  pattern (`Double(Int(bitPattern: arg0))`; `signedfloat.swift`, found by
+  the ABI probe). Only the new fixture moved.
 - **OPEN — the ABI gap probe (2026-11-13).** Twenty read-only agents, one
   ABI area each, checked dev 6b3fd16 against the plain listing of their own
   fixtures: [research/abi-probe-2026-11-13.md](research/abi-probe-2026-11-13.md).
