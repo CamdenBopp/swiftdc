@@ -59,6 +59,32 @@ model agents under a written rubric (`scores/*/RUBRIC.md`), not by
 execution, and the tables note their judgment calls; Ghidra's columns
 were scored once and not re-scored.
 
+## Entry conventions, against the compiler
+
+The one measurement here with no human or model judgment in it. Each
+corpus source is compiled to LLVM IR, whose `define` lines give every
+function's lowered parameters (with `swiftself`, `sret`, `swiftasync`),
+which fixes its arm64 entry registers. swiftdc's side is what its
+analysis seeded at each entry.
+
+| swiftdc lo1 (f6958c3 + 5 commits), 1,005 functions with parameters | |
+|---|---|
+| Every parameter register seeded | 559 (55.6%) |
+| Some seeded, none wrong | 126 (12.5%) |
+| None seeded (declined) | 301 (30.0%) |
+| A register seeded that the compiler passes no parameter in | 19 (1.9%) |
+
+A further 171 functions take no parameters and are seeded none; 2 could
+not be placed. All 19 wrong entries are one defect: the compiler's
+`default argument N of f(…)` generator functions take no parameters (or
+only metadata), and swiftdc reads `f`'s parameter list out of their name.
+x8 is seeded as a possible result buffer in every function, though the
+compiler passes one in 13 of 1,176.
+
+Reproduce: `Tools/ghidra-compare/interface_oracle.py <swiftdc>
+<built-corpus>`. It covers symbols the compiler emits IR for; it does not
+cover results, bodies, or Objective-C methods (4 matched).
+
 ## Verification of the head commit
 
 | Check | Result | Where |
