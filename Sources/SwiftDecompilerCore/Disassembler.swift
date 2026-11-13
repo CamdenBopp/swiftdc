@@ -5020,12 +5020,56 @@ public struct Disassembler: Sendable {
         /// Layout is `struct __NSConstantString { void *isa; int32 flags; int32 _;
         /// const char *str; long length; }`, so the character pointer sits at
         /// +16 — and is itself rebased, not a literal on-disk pointer.
+        ///
+        /// The flags word at +8 says how the characters are stored and the
+        /// length at +24 how many there are: 0x7c8, that many bytes; 0x7d0,
+        /// that many UTF-16 code units (in `__ustring`). Read as a C string, a
+        /// UTF-16 literal stopped at its first zero byte, `@"héllo"` rendering
+        /// `@"h"`, and `@"a\0b"` (ASCII flags, length 3) `@"a"`. Any other
+        /// flags, or bytes that do not account for the length, decline.
         func cfString(at address: UInt64) -> String? {
             guard cfStringRange?.contains(address) == true,
-                  let target = pointerTarget(at: address &+ 16),
-                  let text = readCString(at: target)
+                  let target = pointerTarget(at: address &+ 16)
             else { return nil }
-            return "@\"\(text)\""
+            func read<T: FixedWidthInteger>(_ at: UInt64, as type: T.Type) -> T? {
+                guard let offset = machO.fileOffset(of: at), offset <= Int.max else { return nil }
+                return UnrecordedTypes.read(Int(offset), as: type, in: machO)
+            }
+            // Without the header's own words (a dyld-cache image whose file
+            // offsets do not reach them), the C string is all there is.
+            guard let flags = read(address &+ 8, as: UInt32.self),
+                  let length = read(address &+ 24, as: UInt64.self)
+            else { return readCString(at: target).map { "@\"\($0)\"" } }
+            guard length <= 4096 else { return nil }
+            switch flags & 0xffff {
+            case 0x7c8:
+                let bytes = (0 ..< length).compactMap { read(target &+ $0, as: UInt8.self) }
+                guard bytes.count == Int(length), read(target &+ length, as: UInt8.self) == 0,
+                      let text = String(bytes: bytes, encoding: .utf8)
+                else { return nil }
+                return "@\"\(Self.literalText(text))\""
+            case 0x7d0:
+                let units = (0 ..< length).compactMap { read(target &+ 2 &* $0, as: UInt16.self) }
+                guard units.count == Int(length) else { return nil }
+                // Strictly: an unpaired surrogate declines rather than
+                // becoming U+FFFD.
+                var text = "", decoder = UTF16(), iterator = units.makeIterator()
+                decoding: while true {
+                    switch decoder.decode(&iterator) {
+                    case .scalarValue(let scalar): text.unicodeScalars.append(scalar)
+                    case .emptyInput: break decoding
+                    case .error: return nil
+                    }
+                }
+                return "@\"\(Self.literalText(text))\""
+            default:
+                return nil
+            }
+        }
+
+        /// A CFString's text, escaped, cut after 48 characters as C strings are.
+        private static func literalText(_ text: String) -> String {
+            text.count > 48 ? escapedLiteralText(String(text.prefix(48))) + "…" : escapedLiteralText(text)
         }
 
         /// A printable C string, crossing subcaches when needed.
