@@ -3542,6 +3542,13 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   -11` (the "UInt against a negative constant" item); a UInt against an
   Int read as Swift's mathematical mixed compare. They now render `<ˢ` or
   `<ᵁ` (`signedcompare.swift`); the differential oracle agrees natively.
+- **FIXED (466b14a) — tail branches to getters, C entry points and from
+  generic callers had no `return`.** `countLit() { "hello".count }`
+  (`b String.count.getter`) and `dynType<T>` (`b swift_getDynamicType`)
+  rendered a bare call. Getters of the caller's result type, C entry
+  points returning one integer register, and generic callers now qualify
+  (`tailforward.swift`); 112 lines in 38 fixtures gained `return`.
+  `AnyObject.Type` results still decline: not yet one register.
 - **OPEN — the Ghidra comparison's defects (2026-11-13).** swiftdc and
   Ghidra 12.2 scored on 2,593 function builds
   ([research/ghidra-comparison-2026-11-13.md](research/ghidra-comparison-2026-11-13.md)).
