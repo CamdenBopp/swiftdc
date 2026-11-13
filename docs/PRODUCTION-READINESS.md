@@ -3378,10 +3378,16 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   a class this image defines whose IMP is in no method list is now read
   from x1. Only the new fixture's renders moved. The whole-file listing
   path still names a local symbol `sub_…`, so there it cannot tell.
+- **FIXED (COMMIT) — x18 was taken to survive a call.** `mov x18, #7; bl
+  ext; mov x0, x18; ret` rendered `return 7`: the tracer cleared x1-x17 and
+  x30 at a call and kept x18 as "reserved". It is the platform register,
+  which Apple reserves and nothing promises across a call; a call now
+  clears it (`platformregister.s`; found by the synthetic corpus,
+  odd/scratch_regs.s). Only the new fixture moved.
 - **OPEN — the synthetic corpus's findings.** `Tools/synthcorpus` (sources
   with hand-checked EXPECT/FORBID directives, `check.py`, `mutate.py`) found,
   against dev 17e6f4c, each listed with its source in its README. Soundness:
-  x18 assumed to survive a call; a `let r0 = OUTLINED_FUNCTION_2()` for a
+  a `let r0 = OUTLINED_FUNCTION_2()` for a
   helper that writes no x0 (async resume, -Osize); a loop entered at its
   body losing its exit test (an invented infinite loop); a UInt compare
   against `0xfffffffffffffffa` as `arg0 > -6`; `if (cond !=)` for reused

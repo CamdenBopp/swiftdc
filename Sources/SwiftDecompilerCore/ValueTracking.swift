@@ -1928,10 +1928,13 @@ public struct ValueTracer: Sendable {
                 if !argumentObjectFields.isEmpty { invalidateArgumentFieldAliases(in: &registers) }
             }
             if !handledAsMemoryHelper { applyCallToResultBuffers(insn, site: site, into: &registers) }
-            // AAPCS64: x0–x17 are caller-saved, so a call clobbers them. x18 is
-            // reserved, x19–x28 are callee-saved — and preserving those is what
-            // carries `self` and locals across a call.
-            for index in 1...17 { registers[.x(index)] = .unknown }
+            // AAPCS64: x0–x17 are caller-saved, so a call clobbers them.
+            // x19–x28 are callee-saved — and preserving those is what carries
+            // `self` and locals across a call. x18 is the platform register:
+            // Apple reserves it, and nothing promises it survives a call, so
+            // it is clobbered too. Kept, `mov x18, #7; bl ext; mov x0, x18`
+            // rendered `return 7`.
+            for index in 1...18 { registers[.x(index)] = .unknown }
             registers[.x(30)] = .unknown
             // A callee handed the context (in an argument register; a call
             // reached with `bl` gets x22 only as callee-saved state) may write

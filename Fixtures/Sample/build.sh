@@ -392,6 +392,9 @@ $SWIFTC -parse-as-library -Onone -emit-library -module-name ClosureCapture closu
 echo "==> a small struct's self words after its formals (valueselfwords.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name ValueSelfWords valueselfwords.swift -o libValueSelfWords.dylib
 
+echo "==> the platform register across a call (platformregister.s)"
+$CLANG -arch arm64 -dynamiclib -undefined dynamic_lookup platformregister.s -o libPlatformRegister.dylib
+
 echo "==> direct Objective-C methods, no _cmd (objcdirect.m, -O0 and -O1)"
 $CLANG -O0 -fobjc-arc -dynamiclib -framework Foundation objcdirect.m -o libObjCDirect.O0.dylib
 $CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation objcdirect.m -o libObjCDirect.dylib
