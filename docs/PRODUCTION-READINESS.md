@@ -3536,6 +3536,12 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   values built from a call's result (`unprovenresult.c`). 140 fixture
   files moved; libFlagWidthProbes costs 12-17% more instructions
   (Perf-cost), +0.01% in total.
+- **FIXED (275a60b) — signed comparisons on UInt read as unsigned.** A
+  signed `lt`/`gt` on UInt operands rendered a plain `<`/`>`, so a signed
+  max read as `max(a, b)` and `signedLowerBound(_: UInt64)` read `arg0 <
+  -11` (the "UInt against a negative constant" item); a UInt against an
+  Int read as Swift's mathematical mixed compare. They now render `<ˢ` or
+  `<ᵁ` (`signedcompare.swift`); the differential oracle agrees natively.
 - **OPEN — the Ghidra comparison's defects (2026-11-13).** swiftdc and
   Ghidra 12.2 scored on 2,593 function builds
   ([research/ghidra-comparison-2026-11-13.md](research/ghidra-comparison-2026-11-13.md)).
