@@ -3369,7 +3369,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   an if/else whose arms both leave, where nothing falls through. One
   structured line moved in every fixture and toolchain library.
 
-- **FIXED (COMMIT) — the loop-exit check took a call for an exit.**
+- **FIXED (b4c7467) — the loop-exit check took a call for an exit.**
   `endsInTransfer` (6e302f0) decided an arm leaves when its last line
   began with `return` or `throw`, so a call named `returnValue()` or
   `throwIfNeeded()` read as an exit, and an if/else whose other arm left
