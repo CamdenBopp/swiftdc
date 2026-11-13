@@ -319,10 +319,11 @@ private func closeRoleBodies(
         let valueCall = try #require(valueCaller.instructions.first { $0.controlFlow == .call })
         // The image has no complete value-type layout for Swift.Int. Keep
         // its ordinary receiver's positive input proof above, but decline
-        // that layout-dependent argument in the rendered call.
+        // that layout-dependent argument in the rendered call: its self is
+        // `?`, not dropped.
         #expect(valueCall.callArguments == ["7"])
         for text in [valueCaller.renderPseudo(), valueCaller.renderStructured()] {
-            #expect(text.contains("Swift.Int.roleRead(7)"), Comment(rawValue: text))
+            #expect(text.contains("Swift.Int.roleRead(self: ?, 7)"), Comment(rawValue: text))
         }
     }
 }

@@ -326,14 +326,15 @@ struct ABISourceLoweringTests {
 /// there, whatever the caller parked in the callee-saved register:
 /// `freshEnum` keeps `v` in x20 across `md.weight(v)`, a by-value enum
 /// method whose self is a trailing word, and read `Mode.weight(self: r0,
-/// r0)` (`parkedself.swift`, ABI review item 2).
+/// r0)` (`parkedself.swift`, ABI review item 2). Its trailing self word is
+/// not reconstructed, so it is `?`: present, and not x20's value.
 @Test func aCalleeThatNeverReadsX20TakesNoSelfIfPresent() async throws {
     let path = "Fixtures/Sample/libParkedSelf.dylib"
     guard FileManager.default.fileExists(atPath: path) else { return }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let text = try #require(functions.first { $0.displayName.hasPrefix("ParkedSelf.freshEnum(") }).renderStructured()
-    #expect(text.contains("ParkedSelf.Mode.weight(r0)"), Comment(rawValue: text))
-    #expect(!text.contains("self"), Comment(rawValue: text))
+    #expect(text.contains("ParkedSelf.Mode.weight(self: ?, r0)"), Comment(rawValue: text))
+    #expect(!text.contains("self: r0"), Comment(rawValue: text))
 }
 
 /// An async callee takes its formals as a synchronous one does when its
@@ -461,14 +462,15 @@ struct ABISourceLoweringTests {
     #expect(try text("callPt").contains("return StructArgs.fPt(?, arg1)"))
     #expect(try text("callSIMD").contains("return StructArgs.fSIMD(?, ?)"))
     #expect(try text("callLead").contains("return StructArgs.fLead(arg0, ?)"))
-    // A value type's method: its formal is unplaced, and `self`'s words,
-    // which follow it, are not shown either.
-    #expect(try text("callScaled").contains("return StructArgs.Pt.scaled(?)"))
+    // A value type's method: its formal is unplaced, and `self`'s two
+    // Doubles follow it in d1 and d2, values not tracked here.
+    #expect(try text("callScaled").contains("return StructArgs.Pt.scaled(self: (?, ?), ?)"))
     // The Mix ends at x1, and W is one integer word: `self`'s 9 in x2
     // follows the formal, as a value method's `self` does, and is its self.
     #expect(try text("callTake").contains("return StructArgs.W.take(self: 9, ?)\n"))
-    // MD's self is an Int in x1 and a Double in d0: no part of it shows.
-    #expect(try text("callMD").contains("return StructArgs.MD.f(3)\n"))
+    // MD's self is an Int in x1 and a Double in d0: which field is in which
+    // bank is not proven here, so it is `?`, but it is there.
+    #expect(try text("callMD").contains("return StructArgs.MD.f(self: ?, 3)\n"))
     // An Array, a Dictionary and a variadic parameter are one word each,
     // so what follows them is placed.
     #expect(try text("callArr").contains("return StructArgs.fArr(arg0, arg1)"))
@@ -663,14 +665,16 @@ struct ABISourceLoweringTests {
 }
 
 /// A value method's `self` follows its formals in the receiver's own
-/// registers: two Doubles for ABIVec2, in d registers, so no x register
-/// after the formals is `self` (abi_source.swift, the oracle executable).
+/// registers: two Doubles for ABIVec2, in d2 and d3 after the formal's d0
+/// and d1, so no x register after the formals is `self`. d2 and d3 hold the
+/// two words an earlier call returned, of which the first renders (`r4`)
+/// (abi_source.swift, the oracle executable).
 @Test func aFloatReceiversSelfIsNoIntegerWordIfPresent() async throws {
     let path = "Fixtures/Sample/abi-source-oracle"
     guard FileManager.default.fileExists(atPath: path) else { return }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
-    #expect(text.contains("ABISource.ABIVec2.dot(?)\n"), Comment(rawValue: text.components(separatedBy: "\n").filter { $0.contains("dot(") }.joined(separator: "\n")))
+    #expect(text.contains("ABISource.ABIVec2.dot(self: (r4, ?), ?)\n"), Comment(rawValue: text.components(separatedBy: "\n").filter { $0.contains("dot(") }.joined(separator: "\n")))
     #expect(!text.contains("ABIVec2.dot(?, "))
 }
 

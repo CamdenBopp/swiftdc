@@ -3369,6 +3369,16 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   an if/else whose arms both leave, where nothing falls through. One
   structured line moved in every fixture and toolchain library.
 
+- **FIXED (COMMIT) — a value receiver with a float word, or a payload
+  enum, vanished from its call.** `Point(x: 3.5, y: 4.25).length()` is
+  `fmov d0, #3.5; fmov d1, #4.25; b length` and read `Point.length()`;
+  `Shape.pair(301, 302).tag(303)` read `Shape.tag(303)`: no receiver at
+  all (`valueselfwords.swift`; found by a probe). An all-float struct's
+  self is now read from the v registers after the float formals, where the
+  in-image callee provably reads them (`length(self: (3.5, 4.25))`); a
+  receiver whose words are not known here, a payload enum or a struct
+  mixing banks, is `self: ?`. 216 structured lines in 29 files, 90 of them
+  `self: ?` on value-type methods whose layout the image does not give.
 - **FIXED (b744493) — a callee with a frame read its stack arguments
   unseen.** 7cf3711 ended a call in `…` when its callee loads from at or
   above its entry sp, but read only sp, on the straight line to the first

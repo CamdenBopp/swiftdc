@@ -703,11 +703,12 @@ private func callTarget(_ function: DisassembledFunction) throws -> UInt64 {
 /// The payload enum method has no context self. This image does not yet
 /// supply its complete direct receiver layout: ordinary positive reads alone
 /// cannot decide which of the remaining physical words are its whole value.
-/// Keep the call, declining that unsupported positional reconstruction.
+/// Keep the call, declining that unsupported positional reconstruction: its
+/// self is `?`, never words picked from the registers, and never dropped
+/// (`Tree.sum()` read as a call with no receiver).
 @Test func aByValueEnumMethodTakesNoSelfIfPresent() async throws {
     guard let text = try await structured("Sample.run", in: "Fixtures/Sample/libSample.dylib") else { return }
-    #expect(text.contains("Sample.Tree.sum()"), Comment(rawValue: text))
-    #expect(!text.contains("Sample.Tree.sum(self:"), Comment(rawValue: text))
+    #expect(text.contains("Sample.Tree.sum(self: ?)"), Comment(rawValue: text))
 }
 
 /// An address that escapes before the frame record exists is no proven

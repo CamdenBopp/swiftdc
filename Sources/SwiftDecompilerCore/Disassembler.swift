@@ -9130,6 +9130,35 @@ public struct Disassembler: Sendable {
                                 $0 < values.count && isWholeIntegerReceiverWord(values[$0]) ? sanitizeValue(values[$0]) : .unknown
                             }
                             followingTypes = following.map { _ in "" }
+                        } else if let summary = receiverSummary, let receiver, receiver.integers == 0,
+                                  receiver.floats > 0, floating + receiver.floats <= 8,
+                                  (floating ..< floating + receiver.floats).allSatisfy({ summary.provenFloatArgumentReads.contains($0) }) {
+                            // A struct of floating-point fields takes its self
+                            // in the v registers after the float formals:
+                            // `P(x: 3.5, y: 4.25).length()` is `fmov d0, #3.5;
+                            // fmov d1, #4.25; b P.length`, and read `length()`.
+                            // A constant renders as the float its bits spell, at
+                            // the width the body reads it.
+                            let words = (floating ..< floating + receiver.floats).map { index -> AbstractValue in
+                                guard index < site.floatArguments.count else { return .unknown }
+                                let value = sanitizeValue(site.floatArguments[index])
+                                guard let bits = summary.floatArgumentWidths[index] else { return .unknown }
+                                return ValueTracer.floatOperand(value, bits: bits)
+                            }
+                            let value: AbstractValue = words.count == 1 ? words[0] : .aggregate(words)
+                            selfValueBySite[address] = value
+                            valueSelfBySite[address] = value
+                        } else if receiverSummary != nil, receiver == nil || receiver?.floats ?? 0 > 0 {
+                            // A receiver whose words are not all known here (a
+                            // payload enum, a struct mixing integer and float
+                            // fields): its self still travels with the call.
+                            // Dropped, `E.pair(301, 302).tag(303)` read
+                            // `E.tag(303)`, a call with no receiver. Only for
+                            // an in-image callee whose body was summarized: an
+                            // imported mutating method (string interpolation's
+                            // `appendLiteral`) takes self in x20, not here.
+                            selfValueBySite[address] = .unknown
+                            valueSelfBySite[address] = .unknown
                         }
                     }
                 }
