@@ -1013,6 +1013,18 @@ struct ControlFlowStructure {
                           let rawRHS = Self.applyingModifier(
                         Self.cleanImmediate(ops[rhsIndex]), operand: ops[rhsIndex], trailing: ops[(rhsIndex + 1)...])
                     else { return ("?", consumed) }
+                    // `subs w19, w19, #2; b.hi` writes the compared register
+                    // too. Read by its name, a register means its value at the
+                    // branch, the result, so `w19 >ᵁ 2` compared the result
+                    // where the code compares the value before it: one step
+                    // off, and a loop read as testing an unchanged register.
+                    // Equality reads exactly as the result against 0 (the Z
+                    // flag); an order declines.
+                    if hasDestination, let written = Self.canonicalRegister(ops[0]),
+                       [lhs, rhs].contains(where: { Self.mentionsRegister(written, in: $0) }) {
+                        guard op == "==" || op == "!=" else { return ("?", consumed) }
+                        return ("\(ops[0]) \(op) 0", consumed)
+                    }
                     // `cmn`/`adds` set the flags from `lhs + rhs`: they compare lhs
                     // with -rhs. Read like `cmp`, `cmn x0, #1; b.eq` (x == -1)
                     // rendered `x0 == 1`. `b.mi`/`b.pl` test the sign of that
@@ -1633,6 +1645,23 @@ struct ControlFlowStructure {
             s = String(value)
         }
         return s
+    }
+
+    /// Whether rendered text reads general register `register` (`x19`) by
+    /// either of its names (`x19`, `w19`) as a whole word.
+    static func mentionsRegister(_ register: String, in text: String) -> Bool {
+        let number = register.dropFirst()
+        for name in ["x\(number)", "w\(number)"] {
+            var rest = text[...]
+            while let range = rest.range(of: name) {
+                let before = range.lowerBound == text.startIndex ? nil : text[text.index(before: range.lowerBound)]
+                let after = range.upperBound == text.endIndex ? nil : text[range.upperBound]
+                let isWord = { (c: Character?) in c.map { $0.isLetter || $0.isNumber || $0 == "_" } ?? false }
+                if !isWord(before), !isWord(after) { return true }
+                rest = text[range.upperBound...]
+            }
+        }
+        return false
     }
 
     private static func canonicalRegister(_ token: String) -> String? {

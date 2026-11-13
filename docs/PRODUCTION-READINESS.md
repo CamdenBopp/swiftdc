@@ -3369,6 +3369,17 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   an if/else whose arms both leave, where nothing falls through. One
   structured line moved in every fixture and toolchain library.
 
+- **FIXED (COMMIT) — a compare that writes its own operand read one step
+  off.** `subs w19, w19, #2; b.hi` compares the value before the
+  subtraction, but the text path named the register, which at the branch
+  holds the value after it: `if (w19 >ᵁ 2)` where the test is `w19 >ᵁ 0`
+  afterwards, and `subs x9, x9, #1; b.ne` read `while (x9 != 1)`, a loop
+  testing a register it never visibly changes (`writtenflags.c`; found by
+  a probe of 32-bit loops, 64-bit too). When the result register is read
+  in an operand's rendering, equality reads as the result against 0 (the Z
+  flag, exact), and an order declines. 2,748 structured lines, most
+  `!= 1` becoming `!= 0`; some old renders also named the wrong register
+  (`x21 != 1` for `subs x22, x22, #1`).
 - **FIXED (9bfb66a) — a malformed rebase or bind opcode stream trapped,
   hung or ran away with memory.** Found by a probe patching
   `libOpcodeFixups.dylib`'s LC_DYLD_INFO streams. A rebase segment offset
