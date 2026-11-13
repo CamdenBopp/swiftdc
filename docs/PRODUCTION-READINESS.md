@@ -119,8 +119,13 @@ wrong output first, by how much ordinary code it touches.
 
 1. **OPEN: a storage entity's type read as a parameter list.** A setter,
    getter, addressor or key path thunk for a function-typed property is
-   seeded from the property's type, and a throwing getter is judged
-   non-throwing, which folds its error test to `(0 != 0)`.
+   seeded from the property's type. FIXED in part: a getter of
+   function-typed storage was judged unable to throw, which folded the
+   caller's error test to `(0 == 0)`; it may now throw, and the three
+   callers in `throwinggetter.swift` keep `error != nil` and decline the
+   merged value (60ce7c7). Still open: the entry and call-site seeds, and a
+   `@_silgen_name` Swift function, which has no `.` in its name and is
+   taken as unable to throw.
 2. **OPEN: overflow-guard folding hides preconditions.** A branch to a
    trap on V or carry is dropped without checking its sense, the last
    flag writer, or that the flags are integer flags.

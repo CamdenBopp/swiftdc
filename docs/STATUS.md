@@ -90,7 +90,7 @@ cover results, bodies, or Objective-C methods (4 matched).
 
 | Check | Result | Where |
 |---|---|---|
-| Enforcing test suite (a missing fixture fails) | 1,765 tests pass at head | local gate, `Tools/integration-gate.sh` |
+| Enforcing test suite (a missing fixture fails) | 1,766 tests pass at head | local gate, `Tools/integration-gate.sh` |
 | Output change against the previous commit | every changed line explained in each commit message | `Tools/blast-radius.sh` |
 | Cost budget (instructions, footprint) | within budget; one fixture over, declared (`Perf-cost:` in 36ba8db) | same |
 | GitHub Actions | **no passing run**. `macos-26` jobs get no runner; on `macos-15` (Xcode 26.3, Swift 6.2.4) the fixture build fails before swiftdc is built, on a toolchain older than the one the fixtures need (Swift 6.4 locally) | `.github/workflows/ci.yml` |
