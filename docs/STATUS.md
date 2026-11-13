@@ -90,7 +90,7 @@ cover results, bodies, or Objective-C methods (4 matched).
 
 | Check | Result | Where |
 |---|---|---|
-| Enforcing test suite (a missing fixture fails) | 1,766 tests pass at head | local gate, `Tools/integration-gate.sh` |
+| Enforcing test suite (a missing fixture fails) | 1,768 tests pass at head | local gate, `Tools/integration-gate.sh` |
 | Output change against the previous commit | every changed line explained in each commit message | `Tools/blast-radius.sh` |
 | Cost budget (instructions, footprint) | within budget; one fixture over, declared (`Perf-cost:` in 36ba8db) | same |
 | GitHub Actions | **no passing run**. `macos-26` jobs get no runner; on `macos-15` (Xcode 26.3, Swift 6.2.4) the fixture build fails before swiftdc is built, on a toolchain older than the one the fixtures need (Swift 6.4 locally) | `.github/workflows/ci.yml` |
@@ -123,8 +123,8 @@ holds. They are recorded as leads, not yet measured, in
 [research/compiler-source-read-2026-11-13.md](research/compiler-source-read-2026-11-13.md)
 and ranked in PRODUCTION-READINESS.md. The three that touch the most
 ordinary code: a property's function type read as an accessor's
-parameter list, preconditions folded away as overflow checks, and
-stores hidden as runtime noise.
+parameter list (fixed in part, 60ce7c7), preconditions folded away as
+overflow checks (fixed, 28df4e7), and stores hidden as runtime noise (open).
 
 1. **C return values.** A function with no signature whose x0 is only
    its last call's result, a float in d0, or a load shows no result (137

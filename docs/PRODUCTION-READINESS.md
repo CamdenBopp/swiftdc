@@ -126,10 +126,17 @@ wrong output first, by how much ordinary code it touches.
    merged value (60ce7c7). Still open: the entry and call-site seeds, and a
    `@_silgen_name` Swift function, which has no `.` in its name and is
    taken as unable to throw.
-2. **OPEN: overflow-guard folding hides preconditions.** A branch to a
-   trap on V or carry is dropped without checking its sense, the last
-   flag writer, or that the flags are integer flags.
-   `precondition(a < b); return a &- b` renders `return (arg0 - arg1)`.
+2. **FIXED (28df4e7): overflow-guard folding hid preconditions.** A branch
+   to a trap on V or carry was dropped without checking which edge
+   trapped, which instruction last wrote the flags, or that a carry test
+   matched its operation. `precondition(a < b); return a &- b` rendered
+   `return (arg0 - arg1)`. The guard now folds only on its arithmetic's
+   own overflow; four preconditions in `guardfold.swift` render their
+   trap and three real checks still fold. Blast radius is that fixture
+   alone, so this is not the mechanism of the open loop bounds-check
+   item. Still open from the same report: a tail branch into a merged
+   body that can trap renders as a plain return, and float compare
+   conditions are declined (`if (?) trap()`).
 3. **OPEN: stores hidden as runtime noise.** `outlined init/assign`
    helpers and the existential assign helper are the statement; a setter
    through one renders as an empty leaf, and the empty-body message
