@@ -7581,6 +7581,9 @@ public struct Disassembler: Sendable {
         // _ b:)` self.s in x2. Seeded only when every formal is one register
         // (the loop below declines anything else), after the last of them.
         var integerSelfAfterFormals: [Int]?
+        // A struct of scalars in both banks: each field follows the formals
+        // in its own bank.
+        var mixedSelfAfterFormals: [(offset: Int, isFloat: Bool)]?
         if floatingSelfOffsets != nil {
             // Seeded after the formal arguments, below.
         } else if let selfOffsets = selfMap.wordIntegerFieldOffsetsInRegisters, !parameters.isEmpty {
@@ -7596,6 +7599,8 @@ public struct Disassembler: Sendable {
                 seeded["x\(offset / 8)"] = .selfFieldValue(offset: offset)
             }
             integerIndex = selfOffsets.count
+        } else if let banks = selfMap.mixedScalarFieldBanksInRegisters {
+            mixedSelfAfterFormals = banks
         } else {
             return nil
         }
@@ -7628,6 +7633,17 @@ public struct Disassembler: Sendable {
             guard integerIndex + integerSelfAfterFormals.count <= 8 else { return nil }
             for (word, offset) in integerSelfAfterFormals.enumerated() {
                 seeded["x\(integerIndex + word)"] = .selfFieldValue(offset: offset)
+            }
+        }
+        if let mixedSelfAfterFormals {
+            for field in mixedSelfAfterFormals {
+                if field.isFloat {
+                    guard floatIndex < 8 else { return nil }
+                    seeded["v\(floatIndex)"] = .selfFieldValue(offset: field.offset); floatIndex += 1
+                } else {
+                    guard integerIndex < 8 else { return nil }
+                    seeded["x\(integerIndex)"] = .selfFieldValue(offset: field.offset); integerIndex += 1
+                }
             }
         }
         if let floatingSelfOffsets {

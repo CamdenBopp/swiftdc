@@ -402,6 +402,9 @@ $CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation objcdirect.m -o libObjCD
 echo "==> optional protocol properties, decided by the getter's list (objcoptionalprop.m, -O1)"
 $CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation objcoptionalprop.m -o libObjCOptionalProp.dylib
 
+echo "==> value self from both register banks (mixedself.swift, -O)"
+xcrun swiftc -O -parse-as-library -emit-library mixedself.swift -module-name MixedSelf -o libMixedSelf.dylib
+
 echo "==> key path intrinsics with live registers past their arguments (keypathintrinsics.swift, -O)"
 xcrun swiftc -O -parse-as-library -emit-library keypathintrinsics.swift -module-name KeyPathIntrinsics -o libKeyPathIntrinsics.dylib
 $CLANG -arch arm64 -dynamiclib -undefined dynamic_lookup keypathintrinsics.s -o libKeyPathIntrinsicsAsm.dylib

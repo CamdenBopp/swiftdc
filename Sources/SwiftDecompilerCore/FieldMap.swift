@@ -92,6 +92,11 @@ public struct FieldMap: Sendable {
     /// built without a descriptor.
     public internal(set) var isGeneric: Bool?
 
+    /// Whether the type is a struct, as opposed to a class or an enum. Only
+    /// a struct is passed as its fields: a class is a reference in x20, and
+    /// its fields start at 0x10. Nil for a map built without a descriptor.
+    public internal(set) var isStruct: Bool?
+
     /// A field's type for display: its mangled name (`Si`), unless the
     /// mangling holds a symbolic reference, a byte from 0x01 to 0x1F and a
     /// relative offset into the binary. Printed raw that was control bytes
@@ -282,6 +287,44 @@ public struct FieldMap: Sendable {
         return members.map(\.offset)
     }
 
+    /// Each field and its register bank when this struct is passed as
+    /// separate scalars of mixed banks: 1–4 fields, each an integer, Bool,
+    /// `Double` or `Float`, each alone in its own 8-byte unit. The Swift
+    /// convention gives each field the next register of its own bank, after
+    /// the formal parameters: `{ i: Int, d: Double, n: Int32 }` arrives as
+    /// x0, d0, w1, and after formals `(k: Int, x: Double)` as x1, d1, w2
+    /// (measured, `M.A.s()` and `M.A.t(_:_:)`). Two fields in one 8-byte
+    /// unit are merged into one register (`{ Int32, Int32 }` is x0), and a
+    /// fifth field passes the whole value by address in x20, so both decline.
+    /// Nil for references, nested aggregates, and anything else.
+    public var mixedScalarFieldBanksInRegisters: [(offset: Int, isFloat: Bool)]? {
+        let members = fields.sorted { $0.offset < $1.offset }
+        // A class instance goes in x20, never as its fields (`isStruct`).
+        guard isStruct == true, (1...4).contains(members.count) else { return nil }
+        let integers: Set<String> = [
+            "Si", "Su", "Sb", "Swift.Int", "Swift.UInt", "Swift.Bool", "s5Int32V", "s6UInt32V", "s5Int16V",
+            "s6UInt16V", "s4Int8V", "s5UInt8V", "Swift.Int32", "Swift.UInt32", "Swift.Int16", "Swift.UInt16", "Swift.Int8", "Swift.UInt8",
+        ]
+        var units = Set<Int>()
+        var result: [(offset: Int, isFloat: Bool)] = []
+        for member in members {
+            // A standard-library type can be a symbolic reference
+            // (`Int32` is `\u{02}…`): read its resolved name.
+            let type = Self.printableTypeName(mangled: member.typeMangledName, resolved: fieldTypeNames[member.name])
+            let isFloat: Bool
+            switch type {
+            case "Sd" where member.bytes == 8, "Swift.Double" where member.bytes == 8,
+                 "Sf" where member.bytes == 4, "Swift.Float" where member.bytes == 4: isFloat = true
+            case let name where integers.contains(name) && member.bytes <= 8: isFloat = false
+            default: return nil
+            }
+            let unit = member.offset / 8
+            guard (member.offset + member.bytes - 1) / 8 == unit, units.insert(unit).inserted else { return nil }
+            result.append((member.offset, isFloat))
+        }
+        return result
+    }
+
     private static func describe(_ resolution: FieldResolution) -> String {
         guard case .unknown(let reason) = resolution else { return "computed" }
         return "\(reason)"
@@ -320,6 +363,7 @@ public enum FieldMapBuilder {
             case .struct(let model): model.descriptor.layout.flags.isGeneric
             case .class(let model): model.descriptor.layout.flags.isGeneric
             }
+            if case .struct = type { map.isStruct = true } else { map.isStruct = false }
             built.append((name, Self.qualifiedName(of: type, in: machO), map))
         }
         var maps = resolvingSimpleNameCollisions(built.map { ($0.name, $0.map) })

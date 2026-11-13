@@ -604,11 +604,11 @@ private func reconstructionStructured(
     if let sum = try await reconstructionPseudo("IntPair.sum") {
         #expect(sum.contains("return (self.a + self.b)"))
     }
-    // Adversarial: a sub-word field breaks the clean 2-word shape, so `self` is
-    // NOT decomposed — declines rather than mis-assigning registers.
+    // A sub-word field still takes a register of its own: `flag` (Bool) in
+    // w0, `count` in x1 (`mov x0, x1; ret`). Under the old offset/8 mapping
+    // this declined; each field now takes the next register of its bank.
     if let mixed = try await reconstructionPseudo("MixedPair.justCount") {
-        #expect(mixed.contains("return ?"))
-        #expect(!mixed.contains("self."))
+        #expect(mixed.contains("return self.count"), "\(mixed)")
     }
     // A method with parameters passes `self` AFTER them in the shared GPR
     // bank: `combine(_ k:)` has k in x0 and self in x1/x2. The non-commutative
@@ -633,13 +633,12 @@ private func reconstructionStructured(
     if let readD = try await reconstructionPseudo("IntQuad.readD") {
         #expect(readD.contains("return self.d"))    // 4th field, offset 0x18 -> x3
     }
-    // Adversarial: mixing an `Int` (GPR) and a `Double` (SIMD) is neither a float
-    // HFA nor an all-integer struct. The `x{n} = offset/8` mapping would wrongly
-    // pull the Double from the GPR bank, so `self` is NOT decomposed — the getter
-    // declines with an unknown return rather than fabricate a field.
+    // Mixing an `Int` (GPR) and a `Double` (SIMD): each field takes the next
+    // register of its own bank, n in x0 and d in d0 (`str x0, [sp]; str d0,
+    // [sp, #8]`), never the `x{n} = offset/8` mapping that would pull the
+    // Double from the GPR bank.
     if let readN = try await reconstructionPseudo("IntThenDouble.readN") {
-        #expect(readN.contains("return ?"))
-        #expect(!readN.contains("self."))
+        #expect(readN.contains("return self.n"), "\(readN)")
     }
 }
 
