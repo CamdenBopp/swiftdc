@@ -45,12 +45,12 @@ DIRECTIVE = re.compile(r"^\s*//\s*(EXPECT|FORBID)\s+(\w+)\s+(\S+)\s+(.+?)\s+::\s
 
 
 def run(binary, args, timeout, memory_mb):
-    """(exit code or signal text, stdout, peak resident MB)."""
+    """(exit code or signal text, stdout, peak resident MB, first stderr line)."""
     command = ["/usr/bin/time", "-l", binary] + args
     try:
         done = subprocess.run(command, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        return f"timeout {timeout}s", "", 0
+        return f"timeout {timeout}s", "", 0, ""
     peak = 0
     match = re.search(rb"(\d+)\s+maximum resident set size", done.stderr)
     if match:
@@ -60,7 +60,9 @@ def run(binary, args, timeout, memory_mb):
         status = f"signal {(-status) if status < 0 else status - 128}"
     elif peak > memory_mb:
         status = f"peak {peak} MB > {memory_mb} MB"
-    return status, done.stdout.decode("utf-8", "replace"), peak
+    lines = [l for l in done.stderr.decode("utf-8", "replace").split("\n")
+             if l.strip() and "maximum resident" not in l and not re.match(r"^\s+\d", l)]
+    return status, done.stdout.decode("utf-8", "replace"), peak, (lines[0][:160] if lines else "")
 
 
 def functions(render):
@@ -115,14 +117,12 @@ def matches(levels, level):
 def check_product(binary, product, source, args):
     failures, renders = [], {}
     for view, template in VIEWS.items():
-        status, output, _ = run(binary, [a.format(f=product) for a in template], args.timeout, args.memory)
+        status, output, _, error = run(binary, [a.format(f=product) for a in template], args.timeout, args.memory)
         if status != 0:
-            # A view that does not apply (objc on a Swift-only image) may
-            # exit nonzero by design; only a signal, a timeout or memory is a
-            # robustness failure there.
-            if isinstance(status, int) and view not in NONEMPTY:
-                continue
-            failures.append(f"{view}: {status}")
+            # Every nonzero exit is a failure and says why. Ignoring them
+            # for the views that may not apply let a command fail on every
+            # product while the corpus reported no robustness failure.
+            failures.append(f"{view}: exit {status}: {error}" if isinstance(status, int) else f"{view}: {status}")
             continue
         if view in NONEMPTY and not output.strip():
             failures.append(f"{view}: empty output")
@@ -130,12 +130,19 @@ def check_product(binary, product, source, args):
     if "structured" in renders:
         failures += [f"structured: {p}" for p in label_problems(renders["structured"])]
         for view in ("structured", "pseudo"):
-            status, again, _ = run(binary, [a.format(f=product) for a in VIEWS[view]], args.timeout, args.memory)
-            if status == 0 and again != renders.get(view):
+            status, again, _, _ = run(binary, [a.format(f=product) for a in VIEWS[view]], args.timeout, args.memory)
+            if status != 0:
+                failures.append(f"{view}: the repeat run failed ({status})")
+            elif again != renders.get(view):
                 failures.append(f"{view}: differs between two processes")
     level = level_of(product, source)
     for number, kind, view, levels, function, text in directives(source):
-        if not matches(levels, level) or view not in renders:
+        if not matches(levels, level):
+            continue
+        if view not in renders:
+            # The view failed above: its directive did not run, which is
+            # not the same as passing.
+            failures.append(f"{source.name}:{number} {kind} {view} {function}: not checked, the view failed")
             continue
         scope = [renders[view]] if function == "*" else [
             f"{header}\n{body}" for header, body in functions(renders[view]).items() if function in header]

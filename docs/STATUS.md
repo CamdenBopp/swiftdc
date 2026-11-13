@@ -77,14 +77,15 @@ one machine. Until a CI run completes they are author-reported.
 | Measurement | Result | Commit |
 |---|---|---|
 | Malformed Mach-O mutants: 354 mutants, 10 entry points, 3,540 runs | 0 signal-terminated (89 before the fix) | d4ed36b |
-| Synthetic corpus: built products with a failing output directive | 52 of 226 | 17e6f4c, not rerun since |
+| Synthetic corpus: built products with a failing output directive | 53 of 226; no command exited nonzero on any product | 5f012f8 |
 
-The corpus count predates the fixes below and has not been rerun: do not
-subtract fixes from it. Its checker also accepts a nonzero exit from six
-commands (`json`, `xrefs`, `interface`, `objc`, `dump`, `analyze`),
-skips a directive whose view failed, and does not record a failed
-determinism repeat; a clean robustness line from it proves less than it
-reads. That is open.
+The corpus checker now fails on a nonzero exit from any command, on a
+failed determinism repeat, and on a directive whose view did not render
+(it used to accept the first for six commands and skip the other two).
+Run strictly, nothing was hiding behind those: all 53 failures are
+output directives. They are failing products, not 53 distinct defects,
+and not a sample of real code. Reproduce: `Tools/synthcorpus/build.sh`
+then `Tools/synthcorpus/check.py --swiftdc <binary>`.
 
 ## Open defect classes, most damaging first
 
