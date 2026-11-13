@@ -414,6 +414,9 @@ $CLANG -arch arm64 -dynamiclib bindaddend.s -lobjc -o libBindAddend.dylib
 echo "==> throwing getters whose storage type is a function type (throwinggetter.swift, -O)"
 $SWIFTC -O -parse-as-library -emit-library -module-name TG throwinggetter.swift -o libThrowingGetter.dylib
 
+echo "==> preconditions that branch to a trap on overflow or carry flags, beside real overflow checks (guardfold.swift, -O)"
+$SWIFTC -O -parse-as-library -emit-library -module-name GF guardfold.swift -o libGuardFold.dylib
+
 echo "==> when a tail branch to a C-named callee returns its result (tailprototype.swift + tailprototype_twin.c, -O)"
 $CLANG -O2 -fno-builtin -c tailprototype_twin.c -o tailprototype_twin.o
 xcrun swiftc -O -parse-as-library -emit-library tailprototype.swift tailprototype_twin.o -module-name TailPrototype -Xlinker -undefined -Xlinker dynamic_lookup -o libTailPrototype.dylib

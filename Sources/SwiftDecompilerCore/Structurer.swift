@@ -1870,42 +1870,89 @@ struct ControlFlowStructure {
     }
 
     /// Recognize Swift's checked-arithmetic **overflow guard**: a conditional
-    /// branch to a pure trap sink, taken on an arithmetic overflow/carry flag
-    /// (what `a &+ b`-style checked `+`/`-`/`+=` lower to — `adds; cset vs; tbnz
-    /// trap`). Returns the non-trap continuation to fall through to (folding the
-    /// guard away), or nil when the block is not such a guard.
+    /// branch to a pure trap sink whose trap edge is the overflow of the
+    /// arithmetic that set the flags (what a checked `+`/`-`/`+=` lowers to:
+    /// `adds; b.vs trap`). Returns the non-trap continuation to fall
+    /// through to (folding the guard away), or nil when the block is not
+    /// such a guard.
     ///
-    /// Distinguished from a genuine bounds/precondition check: those test a `cmp`
-    /// (not a live-destination `adds`/`subs`) and never test the V flag alone, so
-    /// this never eats a real `precondition`/bounds trap.
+    /// Three things must hold, or the branch is a program's own
+    /// `precondition` and stays visible:
+    /// - the flags' last writer in the block is an integer add or subtract.
+    ///   A `cmp` after an earlier `subs` owns the flags (`subs; csel; cmp;
+    ///   b.hs trap` is `precondition(k < n)`), and V after `fcmp` means
+    ///   unordered (`precondition(!x.isNaN)`);
+    /// - the TRAP edge, not merely the branch, is the overflow condition:
+    ///   `adds; b.vc trap` traps when the add did not overflow;
+    /// - a carry test matches its operation: an unsigned add overflows on
+    ///   carry set (`hs`), a subtract on carry clear (`lo`). `subs; b.hs
+    ///   trap` is `precondition(a < b)`.
     private func overflowGuardContinuation(_ blockIndex: Int) -> Int? {
         let block = blocks[blockIndex]
         let succs = block.successors.compactMap { index(of: $0) }
-        guard succs.count == 2, let trapPos = succs.firstIndex(where: { isTrivialTrapTail($0) })
+        guard succs.count == 2, let trapPos = succs.firstIndex(where: { isTrivialTrapTail($0) }),
+              // Both ways trapping is not a guard with a continuation.
+              !isTrivialTrapTail(succs[1 - trapPos])
         else { return nil }
-        guard let cc = testedFlagCondition(of: block) else { return nil }
-        // V flag (`vs`/`vc`) is unambiguously arithmetic overflow. A carry code
-        // (`cs`/`hs`/`cc`/`lo`) is also how an unsigned bounds check branches, so
-        // for those require an arithmetic flag-setter (a live-destination
-        // `adds`/`subs`, never a `cmp`).
-        if cc == "vs" || cc == "vc" {
-            // arithmetic overflow — fold
-        } else if ["cs", "hs", "cc", "lo"].contains(cc), hasArithmeticFlagSetter(block) {
-            // unsigned add/sub carry-overflow — fold
-        } else {
-            return nil
+        guard let tested = testedFlagCondition(of: block), let terminator = block.instructions.last,
+              let taken = terminator.branchTarget,
+              let setter = lastFlagWriter(in: block, before: tested.flagsReadAt)
+        else { return nil }
+        // The condition under which control reaches the trap.
+        let trapIsTaken = taken == blocks[succs[trapPos]].startAddress
+        guard trapIsTaken || taken == blocks[succs[1 - trapPos]].startAddress,
+              let trapCondition = trapIsTaken ? tested.condition : Self.invertedCondition[tested.condition]
+        else { return nil }
+        let (mnemonic, operands) = Self.decode(setter.text)
+        // Signed overflow of an integer add or subtract is only ever tested
+        // by a checked operation, kept result or not: `add x8, x24, #1; cmn
+        // x8, #1; b.vs trap` checks an add whose sum is unused. No source
+        // comparison branches on V alone (`<` tests N != V).
+        if trapCondition == "vs" {
+            return ["adds", "adcs", "subs", "sbcs", "negs", "ngcs", "cmn", "cmp"].contains(mnemonic)
+                ? succs[1 - trapPos] : nil
         }
-        return succs[1 - trapPos]
+        // A carry is also how an unsigned comparison branches, so it needs
+        // the arithmetic's own result to be live, and the edge to match the
+        // operation.
+        guard let destination = operands.first, Self.canonicalRegister(destination) != nil,
+              destination != "xzr", destination != "wzr"
+        else { return nil }
+        let folds: Bool
+        switch mnemonic {
+        case "adds", "adcs": folds = ["hs", "cs"].contains(trapCondition)
+        case "subs", "sbcs": folds = ["lo", "cc"].contains(trapCondition)
+        default: folds = false
+        }
+        return folds ? succs[1 - trapPos] : nil
+    }
+
+    private static let invertedCondition: [String: String] = [
+        "vs": "vc", "vc": "vs", "hs": "lo", "cs": "lo", "lo": "hs", "cc": "hs",
+    ]
+
+    /// The last instruction before index `end` that writes the flags, or
+    /// nil when none in the block does (the flags then come from another
+    /// block, which this does not follow) or when one cannot be decoded.
+    private func lastFlagWriter(in block: BasicBlock, before end: Int) -> Instruction? {
+        for index in stride(from: end - 1, through: 0, by: -1) {
+            let insn = block.instructions[index]
+            guard let detail = insn.detail else { return nil }
+            if detail.updatesFlags { return insn }
+        }
+        return nil
     }
 
     /// The condition code a block's conditional terminator tests, following a
     /// `cset`-materialized flag for a `tbnz`/`cbnz` bit-0 test. Returns the raw
     /// code (`vs`, `hs`, …), or nil when the terminator is not a flag-conditional
     /// branch.
-    private func testedFlagCondition(of block: BasicBlock) -> String? {
+    private func testedFlagCondition(of block: BasicBlock) -> (condition: String, flagsReadAt: Int)? {
         guard let terminator = block.instructions.last else { return nil }
         let (mnemonic, operands) = Self.decode(terminator.text)
-        if mnemonic.hasPrefix("b."), mnemonic.count > 2 { return String(mnemonic.dropFirst(2)) }
+        if mnemonic.hasPrefix("b."), mnemonic.count > 2 {
+            return (String(mnemonic.dropFirst(2)), block.instructions.count - 1)
+        }
         guard mnemonic == "tbnz" || mnemonic == "cbnz",
               let register = operands.first.flatMap(Self.canonicalRegister)
         else { return nil }
@@ -1916,21 +1963,9 @@ struct ControlFlowStructure {
             let (m, ops) = Self.decode(block.instructions[index].text)
             guard let destination = ops.first, Self.canonicalRegister(destination) == register
             else { continue }
-            return m == "cset" && ops.count >= 2 ? ops[1] : nil
+            return m == "cset" && ops.count >= 2 ? (ops[1], index) : nil
         }
         return nil
-    }
-
-    /// Whether the block sets flags via arithmetic with a live destination
-    /// (`adds`/`subs`/`adcs`/`sbcs`, destination not the zero register) — the
-    /// checked `+`/`-`, as opposed to a `cmp`/`subs xzr` comparison.
-    private func hasArithmeticFlagSetter(_ block: BasicBlock) -> Bool {
-        block.instructions.contains { insn in
-            let (m, ops) = Self.decode(insn.text)
-            guard ["adds", "subs", "adcs", "sbcs"].contains(m), let destination = ops.first
-            else { return false }
-            return Self.canonicalRegister(destination) != nil && destination != "xzr" && destination != "wzr"
-        }
     }
 
     private func tailStatement(_ block: BasicBlock) -> String {
