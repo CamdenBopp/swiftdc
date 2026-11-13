@@ -60,6 +60,41 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## Next: features from comparable tools (2026-11-13)
+
+Taken from a read of strongarm (datatheorem), macho_re and
+threatflux-binary-analysis, none of which decompiles. Each fills a gap
+swiftdc has; in this order.
+
+1. **OPEN: cross-references by selector, string and data symbol.**
+   strongarm's `objc_calls_to(classes, selectors)` lists every send of a
+   selector, and it cross-references C strings. `xrefs -f` matches only
+   function names: `xrefs -f _gCounter` answers "No function matched" for a
+   global that exists (second ABI probe, globals). Wanted: `xrefs
+   --selector`, `--string` and data-symbol targets, each consulting the
+   symbol table before reporting nothing (the empty-result rule), and
+   naming defined data symbols in renders, which the probe also found
+   missing.
+2. **OPEN: a built-in resource budget.** threatflux enforces a maximum
+   input size and per-parse caps (100,000 records, 4 KiB names, 32 MiB of
+   names) with a typed error. swiftdc's preflight declines malformed input,
+   but a large app's memory is held only by the external
+   `Tools/audit/guard.sh`. Wanted: a footprint budget inside the run that
+   fails with a diagnostic naming the limit, never a kill.
+3. **OPEN: a binary summary.** macho_re and strongarm report signing,
+   entitlements, hardened runtime, library validation and the
+   `MH_ALLOW_STACK_EXECUTION` and no-heap-execution header flags. swiftdc
+   reads `LC_ENCRYPTION_INFO` and reports none of these. Wanted: an `info`
+   view of the header flags, the code signature's flags and entitlements,
+   and encryption, each read from the binary or reported absent.
+4. **OPEN: control-flow graphs as DOT.** threatflux exports DOT;
+   `disasm --cfg` is text only. Wanted: a DOT form of the same graph.
+
+Not taken: patching and `insert_dylib` (swiftdc reads binaries), entropy
+and packer heuristics and the ELF, PE, Java and Wasm formats (outside the
+Swift and Objective-C scope), bitcode extraction (no longer embedded), and a
+Python API (the JSON output serves scripts).
+
 ## Assumptions the output depends on
 
 Each render is sound under these ABI facts and no others. Code that breaks
