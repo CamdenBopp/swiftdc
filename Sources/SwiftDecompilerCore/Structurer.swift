@@ -1023,6 +1023,19 @@ struct ControlFlowStructure {
                     // off, and a loop read as testing an unchanged register.
                     // Equality reads exactly as the result against 0 (the Z
                     // flag); an order declines.
+                    // A register written between the compare and the branch
+                    // means its new value there too: `cmp w21, w19; add w21,
+                    // w21, #3; b.lt` read `w21 < w19`, three off, and `cmp
+                    // w19, #2; lsr w19, w19, #1; b.lo` read `w19 <ᵁ 2` of the
+                    // shifted value. Such a condition declines.
+                    var laterWrites: Set<String> = []
+                    for between in block.instructions[(index + 1) ..< last] {
+                        guard let keys = between.detail?.writtenRegisterKeys else { return ("?", consumed) }
+                        laterWrites.formUnion(keys)
+                    }
+                    if laterWrites.contains(where: { key in [lhs, rhs].contains { Self.mentionsRegister(key, in: $0) } }) {
+                        return ("?", consumed)
+                    }
                     if hasDestination, let written = Self.canonicalRegister(ops[0]),
                        [lhs, rhs].contains(where: { Self.mentionsRegister(written, in: $0) }) {
                         guard op == "==" || op == "!=" else { return ("?", consumed) }

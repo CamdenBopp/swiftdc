@@ -29,3 +29,21 @@ func aCompareThatWritesItsOperandIsReadByItsResultIfPresent(path: String) async 
     #expect(!ControlFlowStructure.mentionsRegister("x1", in: "x19 > 2"))
     #expect(!ControlFlowStructure.mentionsRegister("x19", in: "arg0"))
 }
+
+/// A register another instruction rewrites between the compare and the
+/// branch means its new value at the branch: `cmp w21, w19; add w21, w21,
+/// #3; b.lt` read `w21 < w19`, three off, and `cmp w19, #1; lsr w19, w19,
+/// #1` read a test of the shifted value. Such a condition declines.
+@Test(arguments: ["Fixtures/Sample/libWrittenFlags.dylib", "Fixtures/Sample/libWrittenFlags.O1.dylib"])
+func aCompareWhoseOperandIsRewrittenBeforeTheBranchDeclinesIfPresent(path: String) async throws {
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func structured(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName == name }, "no \(name)").renderStructured()
+    }
+    let steps = try structured("_two_steps")
+    #expect(!steps.contains("w21 < w19") && steps.contains("if (?)"), Comment(rawValue: steps))
+    let bits = try structured("_each_bit")
+    #expect(!bits.contains("w19 <ᵁ") && !bits.contains("w19 >=ᵁ") && !bits.contains("w19 != 1)") && !bits.contains("w19 == 1)"),
+            Comment(rawValue: bits))
+}

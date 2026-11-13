@@ -3369,6 +3369,14 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   an if/else whose arms both leave, where nothing falls through. One
   structured line moved in every fixture and toolchain library.
 
+- **FIXED (COMMIT) — a compare whose operand is rewritten before the branch
+  read one step late.** `cmp w21, w19; add w21, w21, #3; b.lt` rendered
+  `w21 < w19`, three off, and `cmp w19, #2; lsr w19, w19, #1; b.lo` a test
+  of the shifted value (found by the synthetic corpus, loops and control
+  areas). 9bb1427 handled only a compare that writes its own operand. A
+  condition whose rendered operands read a register any instruction
+  between the flag setter and the branch writes now declines. 116
+  structured lines in 10 files, each such a condition becoming `?`.
 - **FIXED (688ed4c) — a value receiver with a float word, or a payload
   enum, vanished from its call.** `Point(x: 3.5, y: 4.25).length()` is
   `fmov d0, #3.5; fmov d1, #4.25; b length` and read `Point.length()`;
