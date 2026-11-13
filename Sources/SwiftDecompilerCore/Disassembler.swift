@@ -8380,6 +8380,25 @@ public struct Disassembler: Sendable {
                 callTargets[insn.address] = target
             }
         }
+        // A call or tail branch through a register whose value the trace
+        // proved is an in-image function's address (`adrp x8; add x8; blr
+        // x8`) has that function's body to bound its arguments, as a direct
+        // `bl` to it does. Left out, `mov x0, #3; mov x1, #7; blr x8` to a
+        // one-argument function read `one_arg(3, 7)`, and a `br x16` whose
+        // x0 was unknown read `one_arg()`.
+        for insn in function.instructions
+        where (insn.controlFlow == .call || insn.controlFlow == .branch) && callTargets[insn.address] == nil
+            && insn.detail?.operands.first?.operand.register != nil {
+            // The target the trace resolved: carried on the instruction once
+            // it is named, or still the register's proven value.
+            let target: UInt64? = insn.branchTarget ?? {
+                switch analysis.indirectControlFlowTargets[insn.address] {
+                case .address(let address)?, .immediate(let address)?: address
+                default: nil
+                }
+            }()
+            if let target, registerSummaries[target] != nil { callTargets[insn.address] = target }
+        }
         // Vtable targets become named only after the first trace. A newly
         // resolved setter must invalidate its result before downstream values
         // are recovered; rendering-time suppression leaves fabricated values
