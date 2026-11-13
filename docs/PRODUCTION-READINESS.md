@@ -3594,7 +3594,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   arguments.** `blr x8` to a one-argument function rendered `one_arg(3,
   7)`: call targets were collected before the trace. A resolved register
   target now gets the callee's body-read bound (`registercall.s`).
-- **OPEN — default-argument generators seeded with their function's
+- **FIXED (0f1f69b) — default-argument generators seeded with their function's
   parameters.** `default argument 1 of print(…)` takes nothing; swiftdc
   seeds x0 from the name (19 entries, found by
   `Tools/ghidra-compare/interface_oracle.py`, the compiler-lowering check).

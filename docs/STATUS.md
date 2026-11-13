@@ -6,7 +6,7 @@ its commit, its denominator and the command that reproduces it. The long
 history is [PRODUCTION-READINESS.md](PRODUCTION-READINESS.md); this page
 is what to quote.
 
-Updated 2026-11-13, for dev at 5f012f8.
+Updated 2026-11-13. Each table names the commit it was measured at.
 
 ## What to report, and what not to
 
@@ -67,19 +67,20 @@ function's lowered parameters (with `swiftself`, `sret`, `swiftasync`),
 which fixes its arm64 entry registers. swiftdc's side is what its
 analysis seeded at each entry.
 
-| swiftdc at ab29dc3, 1,005 functions with parameters | |
-|---|---|
-| Every parameter register seeded | 559 (55.6%) |
-| Some seeded, none wrong | 126 (12.5%) |
-| None seeded (declined) | 301 (30.0%) |
-| A register seeded that the compiler passes no parameter in | 19 (1.9%) |
+| | swiftdc ab29dc3 | swiftdc 0f1f69b |
+|---|---|---|
+| Functions with parameters | 1,005 | 987 |
+| Every parameter register seeded | 559 (55.6%) | 559 (56.6%) |
+| Some seeded, none wrong | 126 (12.5%) | 126 (12.8%) |
+| None seeded (declined) | 301 (30.0%) | 302 (30.6%) |
+| A register seeded that the compiler passes no parameter in | 19 (1.9%) | 0 |
 
-A further 171 functions take no parameters and are seeded none; 2 could
-not be placed. All 19 wrong entries are one defect: the compiler's
-`default argument N of f(…)` generator functions take no parameters (or
-only metadata), and swiftdc reads `f`'s parameter list out of their name.
-x8 is seeded as a possible result buffer in every function, though the
-compiler passes one in 13 of 1,176.
+The 19 wrong entries were one defect, found by this check and fixed in
+0f1f69b: the compiler's `default argument N of f(…)` generators take no
+parameters (or only metadata), and swiftdc read `f`'s parameter list out
+of their name. Still open from it: x8 is seeded as a possible result
+buffer in every function, though the compiler passes one in 13 of 1,176;
+and 30% of entries are not seeded at all.
 
 Reproduce: `Tools/ghidra-compare/interface_oracle.py <swiftdc>
 <built-corpus>`. It covers symbols the compiler emits IR for; it does not
@@ -89,10 +90,10 @@ cover results, bodies, or Objective-C methods (4 matched).
 
 | Check | Result | Where |
 |---|---|---|
-| Enforcing test suite (a missing fixture fails) | 1,762 tests pass at 5f012f8 | local gate, `Tools/integration-gate.sh` |
+| Enforcing test suite (a missing fixture fails) | 1,764 tests pass at head | local gate, `Tools/integration-gate.sh` |
 | Output change against the previous commit | every changed line explained in each commit message | `Tools/blast-radius.sh` |
 | Cost budget (instructions, footprint) | within budget; one fixture over, declared (`Perf-cost:` in 36ba8db) | same |
-| GitHub Actions | **no run has completed**; the workflow was added at a6937f8 and its first job never got a runner | `.github/workflows/ci.yml` |
+| GitHub Actions | **no passing run**. `macos-26` jobs get no runner; on `macos-15` (Xcode 26.3, Swift 6.2.4) the fixture build fails before swiftdc is built, on a toolchain older than the one the fixtures need (Swift 6.4 locally) | `.github/workflows/ci.yml` |
 | Independent execution of rendered expressions | only the differential-oracle fixtures (integer returns) | `DifferentialOracleTests` |
 
 The suite, blast radius and cost budget are run by the author's gate on
