@@ -402,6 +402,9 @@ $CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation objcdirect.m -o libObjCD
 echo "==> optional protocol properties, decided by the getter's list (objcoptionalprop.m, -O1)"
 $CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation objcoptionalprop.m -o libObjCOptionalProp.dylib
 
+echo "==> what x0 holds at a C function's return, no signature (unprovenresult.c, -O2)"
+$CLANG -O2 -dynamiclib -undefined dynamic_lookup unprovenresult.c -o libUnprovenResult.dylib
+
 echo "==> value self from both register banks (mixedself.swift, -O)"
 xcrun swiftc -O -parse-as-library -emit-library mixedself.swift -module-name MixedSelf -o libMixedSelf.dylib
 

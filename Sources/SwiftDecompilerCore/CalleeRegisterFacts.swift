@@ -33,6 +33,13 @@ struct CalleeRegisterFacts: Sendable {
     /// `CalleeRegisterSummary.mayReadRegisters`.
     let mayReadRegisters: UInt32
 
+    /// Whether anything in the image is evidence about this function's
+    /// result: a caller reads a register after calling it, or its body
+    /// leaves x21 changed (a possible throw). Where there is such evidence
+    /// and it proves no one x0 result (`callerProvenResults`), x0 at a
+    /// return is not offered as a possible result either.
+    var resultEvidence = false
+
     var argumentCount: Int { (argumentReads.max() ?? -1) + 1 }
     var provenArgumentCount: Int { (provenArgumentReads.max() ?? -1) + 1 }
     var provenFloatArgumentCount: Int { (provenFloatArgumentReads.max() ?? -1) + 1 }
@@ -66,7 +73,9 @@ struct CalleeRegisterFacts: Sendable {
         _ summaries: inout [UInt64: CalleeRegisterSummary]
     ) -> (facts: [UInt64: CalleeRegisterFacts], callerProvenResults: [UInt64: Disassembler.SwiftReturnRegister]) {
         let callerProven = CalleeRegisterSummary.callerProvenResults(summaries)
-        let facts = summaries.mapValues(Self.init)
+        let evidence = CalleeRegisterSummary.resultEvidence(summaries)
+        var facts = summaries.mapValues(Self.init)
+        for start in evidence { facts[start]?.resultEvidence = true }
         summaries.removeAll()
         return (facts, callerProven)
     }

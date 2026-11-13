@@ -44,6 +44,7 @@ private func parsedExit(_ annotation: String?) -> Instruction.Exit? {
     if notes.contains(DisassembledFunction.normalSwiftExitNote) { return .normal(nil) }
     for note in notes {
         if note.hasPrefix("return try ") { return .forwarded(String(note.dropFirst("return try ".count))) }
+        if note.hasPrefix("return // x0 = ") { return .unprovenResult(String(note.dropFirst("return // x0 = ".count))) }
         if note.hasPrefix("return ") { return .normal(String(note.dropFirst("return ".count))) }
         if note.hasPrefix("throw ") { return .throw(String(note.dropFirst("throw ".count))) }
     }

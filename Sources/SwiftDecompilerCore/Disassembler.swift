@@ -268,6 +268,11 @@ public struct Instruction: Sendable {
         case `throw`(String)
         /// A throwing function's exit proven neither a return nor a throw.
         case unclassified
+        /// A `ret` of a function no signature describes and no caller proves
+        /// returns a value: what x0 holds there, rendered as a comment. It is
+        /// the result if the function has one, which nothing proves. A bare
+        /// `return` read as void, and a C function returning 42 said nothing.
+        case unprovenResult(String)
         /// A throwing function's exit that hands on a throwing call's
         /// outcome, its error in x21 or the rendered value of its result:
         /// `return try value`.
@@ -281,6 +286,7 @@ public struct Instruction: Sendable {
             case .throw(let error): "throw \(error)"
             case .unclassified: DisassembledFunction.unresolvedSwiftExitNote
             case .forwarded(let value): "return try \(value)"
+            case .unprovenResult(let value): "return // x0 = \(value)"
             }
         }
 
@@ -299,6 +305,7 @@ public struct Instruction: Sendable {
             case .throw(let error): "throw \(error)"
             case .unclassified: DisassembledFunction.unresolvedSwiftExitStatement
             case .forwarded(let value): "return try \(value)"
+            case .unprovenResult(let value): "return // x0 = \(value)"
             }
         }
     }
@@ -7523,6 +7530,25 @@ public struct Disassembler: Sendable {
     /// never use `x20` as a memory base — a `[x20, …]` access proves `self` is the
     /// pointer form (a mutating or indirectly-passed struct, or a class), where
     /// decomposing SIMD registers would be wrong.
+    /// Whether a value is built only from constants, addresses, arguments,
+    /// self's fields and frame addresses, through arithmetic, selects and
+    /// loads: no call's result, and nothing else a comment could not spell
+    /// without repeating a statement.
+    static func isCallFreeValue(_ value: AbstractValue) -> Bool {
+        switch value {
+        case .immediate, .address, .argument, .argumentField, .selfFieldValue, .frame, .local:
+            return true
+        case .binary(_, let lhs, let rhs):
+            return isCallFreeValue(lhs) && isCallFreeValue(rhs)
+        case .unary(_, let operand), .loadedFrom(let operand, _):
+            return isCallFreeValue(operand)
+        case .select(let condition, let whenTrue, let whenFalse):
+            return isCallFreeValue(condition) && isCallFreeValue(whenTrue) && isCallFreeValue(whenFalse)
+        default:
+            return false
+        }
+    }
+
     static func swiftValueTypeSelfFields(
         of function: DisassembledFunction, fieldMaps: [String: FieldMap]
     ) -> (typeName: String, fieldMap: FieldMap,
@@ -11922,6 +11948,23 @@ public struct Disassembler: Sendable {
                 if let caseName = payloadEnumIndex.caseName(ofEnum: returnTypeName, x0: x0, x1: x1) {
                     noteExit(.normal("\(returnTypeName).\(caseName)"))
                 }
+            } else if function.objcMethod == nil, !signatureKnown, functionReturnRegister == nil,
+                      !Self.isSwiftMangled(function.symbol),
+                      registerSummaries[function.startAddress]?.resultEvidence != true,
+                      function.asyncFunclet == nil, isReturn(insn), returnsDirectly,
+                      let raw = analysis.exitValues[insn.address],
+                      case let exit = sanitizeValue(raw), exit != .unknown, exit != .argument(0),
+                      Self.isCallFreeValue(exit) {
+                // No signature and no caller says whether x0 is a result, so
+                // it is shown as what x0 holds, never as the returned value.
+                // Callers that read something else, or a body that may
+                // throw, are evidence x0 is not the result: then nothing.
+                // An x0 still holding the incoming first argument is left
+                // out, or every function that leaves x0 alone would say it,
+                // and so is any x0 built from a call's result: a comment
+                // cannot consume the call, so it read as a second call
+                // (`pthread_main_np()`, then `x0 = (pthread_main_np() …)`).
+                noteExit(.unprovenResult(renderReturnValue(exit, before: insn.address)))
             } else if asyncReturns.contains(insn.address), normalReturnIsProven(at: insn.address), let returnRegister = asyncReturnRegister {
                 let rawExit = returnRegister == .floating
                     ? analysis.exitFloatValues[insn.address]

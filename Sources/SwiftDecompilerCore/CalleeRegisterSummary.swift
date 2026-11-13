@@ -967,6 +967,17 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         }
     }
 
+    /// The functions the image says anything about the result of: a caller
+    /// reads a register after calling it, or the body leaves x21 changed.
+    static func resultEvidence(_ summaries: [UInt64: CalleeRegisterSummary]) -> Set<UInt64> {
+        var evidence = Set<UInt64>()
+        for caller in summaries.keys.sorted() {
+            for (callee, read) in summaries[caller]?.resultReads ?? [:] where !read.isEmpty { evidence.insert(callee) }
+        }
+        for (start, summary) in summaries where summary.clobberedCalleeSaved.contains("x21") { evidence.insert(start) }
+        return evidence
+    }
+
     /// Carries argument reads through calls to in-image functions: each
     /// pending call reads the registers its target reads, among those the
     /// body had not written there. A target with no summary reads every one.
