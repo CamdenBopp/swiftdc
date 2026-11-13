@@ -3369,7 +3369,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   an if/else whose arms both leave, where nothing falls through. One
   structured line moved in every fixture and toolchain library.
 
-- **FIXED (COMMIT) — a callee with a frame read its stack arguments
+- **FIXED (b744493) — a callee with a frame read its stack arguments
   unseen.** 7cf3711 ended a call in `…` when its callee loads from at or
   above its entry sp, but read only sp, on the straight line to the first
   call or branch, into x0-x18: a non-leaf callee with more than eight
