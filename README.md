@@ -512,6 +512,9 @@ script that totals them are in `Tools/ghidra-compare/`.
 
 ## Design notes and research
 
+[docs/STATUS.md](docs/STATUS.md) is the short current record: what was
+measured, at which commit, and what is open. Quote that.
+
 [docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md) is the running
 list of what stands between swiftdc and a decompiler you can trust without
 checking by hand. It covers soundness, completeness, robustness, determinism,
