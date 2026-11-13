@@ -3571,7 +3571,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   The noise list's `objc_autorelease`/`objc_retain` prefixes matched
   `objc_autoreleasePoolPush`/`Pop` and `objc_retainBlock`; those three are
   now always shown (`runtimestatements.m`).
-- **FIXED (61f426e) — a tail branch to an in-image twin returned the
+- **FIXED (3cb21d9) — a tail branch to an in-image twin returned the
   library's result.** `b strlen` to a vendored `void strlen` rendered
   `return strlen(arg0)`: the C prototype now counts only for a branch that
   leaves the image (`tailprototype.swift`, a four-case eligibility matrix).
