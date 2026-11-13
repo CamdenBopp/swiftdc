@@ -723,46 +723,95 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         return summary
     }
 
-    /// Whether a load on the straight line from the entry reads at or above
-    /// the entry sp, before any call, branch or sp change it cannot follow.
-    /// Above the entry sp is the caller's outgoing area, and only stack
-    /// arguments live there: `c9(long a, …, long i)` loads i from `[sp]`.
-    /// The register arguments alone are then not the whole call.
+    /// Whether a load reads at or above the entry sp, on the path that runs
+    /// on from the entry through calls and the fall-through of conditional
+    /// branches, before an unconditional transfer or an sp change it cannot
+    /// follow. Above the entry sp is the caller's outgoing area, and only
+    /// stack arguments live there: `c9(long a, …, long i)` loads i from
+    /// `[sp]`. The register arguments alone are then not the whole call.
+    ///
+    /// A function with a frame reads them through x29 (`add x29, sp, #0x10`
+    /// then `ldr x8, [x29, #0x10]`), after a call (`sinkv(); return a + i`)
+    /// or after a test (`if (a) return sink(i)`): reading only sp on the
+    /// straight line to the first call or branch, those calls rendered as
+    /// complete (`fa(arg0, 1, 2, 3, 4, 5, 6, 7)` at -O0). Neither a call nor
+    /// a conditional branch moves sp, and x29 is preserved across calls.
     static func readsIncomingStack(_ instructions: [Instruction]) -> Bool {
-        var sp: Int64 = 0
+        var sp: Int64? = 0
+        var framePointer: Int64?
+        // Stored below the entry sp: the function has its own frame, so a
+        // read above it is an argument whatever register it loads. Before
+        // that, a load into x19-x30 restores its caller's registers: an
+        // outlined epilogue fragment runs on its caller's frame (`ldp x29,
+        // x30, [sp, #0x10]`), and its reads above its entry sp are saves.
+        var ownsFrame = false
+        // Bytes at or above the entry sp the function wrote itself: a load
+        // of them reads its own value, not an argument. Go spills its
+        // register arguments into the caller's area and reloads them
+        // (`str x0, [sp, #0x38]` … `ldr x1, [sp, #0x48]`), and every Go
+        // call ended in `…`.
+        var ownStores: [Range<Int64>] = []
         for insn in instructions {
-            if let flow = insn.controlFlow, flow != .sequential { return false }
+            switch insn.controlFlow {
+            case .branch?, .return?: return false
+            case nil: return false
+            case .sequential?, .call?, .conditionalBranch?: break
+            }
             guard let detail = insn.detail else { return false }
             if let memory = detail.operands.first(where: { $0.operand.isMemory }),
-               case .memory(let base?, let index, let displacement) = memory.operand, base.kind == .stackPointer {
-                guard index == nil,
+               case .memory(let base?, let index, let displacement) = memory.operand,
+               base.kind == .stackPointer || (base.kind == .gpr && base.number == 29) {
+                let viaFramePointer = base.kind == .gpr
+                guard index == nil, let origin = viaFramePointer ? framePointer : sp,
                       let plan = FrameCoordinatePlanner.exactAccess(
-                        .point(sp), displacement: displacement, postIndex: detail.postIndex,
+                        .point(origin), displacement: displacement, postIndex: detail.postIndex,
                         writeback: detail.writeback, trailingImmediate: detail.operands.last?.operand.immediateValue)
                 else { return false }
-                // Into a register a proper function may write before saving
-                // anything. A load into x19-x30 there restores its caller's
-                // registers: an outlined epilogue fragment runs on its
-                // caller's frame (`ldp x29, x30, [sp, #0x10]`), and its
-                // reads above its entry sp are saves, not arguments.
+                let bytes = detail.operands.reduce(Int64(0)) { total, info in
+                    guard case .register(let register) = info.operand,
+                          register.kind == .gpr || register.kind == .vector || register.kind == .zero
+                    else { return total }
+                    return total + Int64(max(register.widthBits, 8) / 8)
+                }
+                let range = plan.start ..< plan.start + max(bytes, 1)
+                if memory.isWritten {
+                    if plan.start < 0 { ownsFrame = true } else { ownStores.append(range) }
+                }
+                let reloadsOwnStore = range.allSatisfy { byte in ownStores.contains { $0.contains(byte) } }
                 let loadsArgumentRegister = detail.operands.contains { info in
                     guard info.isWritten, case .register(let register) = info.operand else { return false }
                     if register.kind == .vector { return true }
-                    return register.kind == .gpr && (register.number ?? 99) <= 18
+                    return register.kind == .gpr && (ownsFrame || register.number <= 18)
                 }
-                if memory.isRead, !memory.isWritten, plan.start >= 0, loadsArgumentRegister { return true }
-                if case .point(let after)? = plan.after { sp = after }
+                if memory.isRead, !memory.isWritten, plan.start >= 0, loadsArgumentRegister, !reloadsOwnStore { return true }
+                if case .point(let after)? = plan.after {
+                    if viaFramePointer { framePointer = after } else { sp = after }
+                }
                 continue
             }
-            guard detail.writtenRegisterKeys.contains("sp") else { continue }
+            let written = detail.writtenRegisterKeys
+            if written.contains("x29") {
+                // `add x29, sp, #n` or `mov x29, sp` sets the frame pointer
+                // from a known sp; any other write loses it.
+                let operands = detail.operands
+                framePointer = nil
+                if let sp, operands.count >= 2, operands[1].operand.register?.kind == .stackPointer {
+                    if operands.count == 2 { framePointer = sp }
+                    else if operands.count == 3, let amount = operands[2].shiftedImmediate {
+                        if detail.id == AARCH64_INS_ADD { framePointer = sp + amount }
+                        if detail.id == AARCH64_INS_SUB { framePointer = sp - amount }
+                    }
+                }
+            }
+            guard written.contains("sp") else { continue }
             // `sub sp, sp, #n` / `add sp, sp, #n`; any other write loses sp.
             let operands = detail.operands
-            guard operands.count == 3, operands[0].operand.register?.kind == .stackPointer,
+            guard let current = sp, operands.count == 3, operands[0].operand.register?.kind == .stackPointer,
                   operands[1].operand.register?.kind == .stackPointer,
                   let amount = operands[2].shiftedImmediate,
                   detail.id == AARCH64_INS_SUB || detail.id == AARCH64_INS_ADD
             else { return false }
-            sp += detail.id == AARCH64_INS_SUB ? -amount : amount
+            sp = current + (detail.id == AARCH64_INS_SUB ? -amount : amount)
         }
         return false
     }
@@ -817,7 +866,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     }
 
     /// A summary that claims nothing about callee-saved registers.
-    private func claimingNothing() -> CalleeRegisterSummary {
+    func claimingNothing() -> CalleeRegisterSummary {
         CalleeRegisterSummary(
             argumentReads: argumentReads, provenArgumentReads: provenArgumentReads,
             provenFloatArgumentReads: provenFloatArgumentReads, floatArgumentWidths: floatArgumentWidths,
@@ -826,12 +875,14 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             readsContextRegister: readsContextRegister, clobberedCalleeSaved: Self.calleeSavedKeys,
             definitelyClobbered: Self.calleeSavedKeys, callees: callees, memoryEffect: memoryEffect,
             inputProofEntry: inputProofEntry, pureTailTarget: pureTailTarget)
-            .keepingReadRegisters(mayReadRegisters)
+            .keepingReadRegisters(mayReadRegisters, readsIncomingStack: readsIncomingStack)
     }
 
-    private func keepingReadRegisters(_ bits: UInt32) -> CalleeRegisterSummary {
+    /// The facts a rebuild from the initializer would otherwise reset.
+    private func keepingReadRegisters(_ bits: UInt32, readsIncomingStack: Bool) -> CalleeRegisterSummary {
         var summary = self
         summary.mayReadRegisters = bits
+        summary.readsIncomingStack = readsIncomingStack
         return summary
     }
 
@@ -1047,6 +1098,10 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         summary.resultReads = resultReads
         summary.provenAllocationSites = provenAllocationSites
         summary.mayReadRegisters = mayReadRegisters
+        // Its body's stack reads are its own, whatever its callees read: a
+        // callee whose register reads were widened by its calls lost the
+        // flag here, so `fg(…)` read `fg()`.
+        summary.readsIncomingStack = readsIncomingStack
         return summary
     }
 
@@ -1220,6 +1275,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             // place.
             new.provenAllocationSites = old.provenAllocationSites
             new.mayReadRegisters = old.mayReadRegisters
+            new.readsIncomingStack = old.readsIncomingStack
             guard new != old else {
                 summaries[start]?.provenAllocationSites = rebuilt.provenAllocationSites
                 continue

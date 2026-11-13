@@ -403,9 +403,10 @@ echo "==> a loop counter held in a register (registerloop.swift, -O and -Osize)"
 $SWIFTC -parse-as-library -O -emit-library -module-name RegisterLoop registerloop.swift -o libRegisterLoop.dylib
 $SWIFTC -parse-as-library -Osize -emit-library -module-name RegisterLoop registerloop.swift -o libRegisterLoop.Osize.dylib
 
-echo "==> an in-image callee that reads a stack argument (stackargs.c, -O1 and -O0)"
-$CLANG -O1 -dynamiclib stackargs.c -o libStackArgs.dylib
-$CLANG -O0 -dynamiclib stackargs.c -o libStackArgs.O0.dylib
+echo "==> an in-image callee that reads a stack argument, framed or not (stackargs.c, -O1, -O0 and -Oz)"
+$CLANG -O1 -dynamiclib -undefined dynamic_lookup stackargs.c -o libStackArgs.dylib
+$CLANG -O0 -dynamiclib -undefined dynamic_lookup stackargs.c -o libStackArgs.O0.dylib
+$CLANG -Oz -dynamiclib -undefined dynamic_lookup stackargs.c -o libStackArgs.Oz.dylib
 
 echo "==> SDK calls from their declarations: open, fcntl, ioctl, closedir, sysctl (variadic_calls.c, -O1)"
 $CLANG -O1 -dynamiclib variadic_calls.c -o libVariadicCalls.dylib

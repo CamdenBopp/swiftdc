@@ -3369,6 +3369,19 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   an if/else whose arms both leave, where nothing falls through. One
   structured line moved in every fixture and toolchain library.
 
+- **FIXED (COMMIT) — a callee with a frame read its stack arguments
+  unseen.** 7cf3711 ended a call in `…` when its callee loads from at or
+  above its entry sp, but read only sp, on the straight line to the first
+  call or branch, into x0-x18: a non-leaf callee with more than eight
+  arguments reads them through x29 after its prologue (`ldr x8, [x29,
+  #0x10]`), after a call or a test, or into a register it saved, and
+  `framed(arg0, 1, 2, 3, 4, 5, 6, 7)` read as complete at -O0. Three
+  summary rebuilds also reset the flag, so a callee whose reads were
+  widened through its own calls lost it. The scan now follows x29, runs
+  past calls and conditional branches, counts any register once the
+  function stores below its entry sp, and skips a reload of bytes it
+  stored itself (Go's argument spills); the rebuilds carry the flag.
+  Found by a probe (C at every level; Swift unaffected).
 - **FIXED (b4c7467) — the loop-exit check took a call for an exit.**
   `endsInTransfer` (6e302f0) decided an arm leaves when its last line
   began with `return` or `throw`, so a call named `returnValue()` or
