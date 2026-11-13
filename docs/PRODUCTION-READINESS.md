@@ -3369,7 +3369,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   an if/else whose arms both leave, where nothing falls through. One
   structured line moved in every fixture and toolchain library.
 
-- **FIXED (COMMIT) — a compare whose operand is rewritten before the branch
+- **FIXED (b45a1c9) — a compare whose operand is rewritten before the branch
   read one step late.** `cmp w21, w19; add w21, w21, #3; b.lt` rendered
   `w21 < w19`, three off, and `cmp w19, #2; lsr w19, w19, #1; b.lo` a test
   of the shifted value (found by the synthetic corpus, loops and control
