@@ -50,3 +50,6 @@ Benchmarks/outputs/
 work/
 Tools/audit/apps.conf
 __pycache__/
+
+# Synthetic corpus products (regenerate with Tools/synthcorpus/build.sh)
+Tools/synthcorpus/out/

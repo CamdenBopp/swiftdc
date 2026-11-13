@@ -3369,6 +3369,25 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   an if/else whose arms both leave, where nothing falls through. One
   structured line moved in every fixture and toolchain library.
 
+- **OPEN — the synthetic corpus's findings.** `Tools/synthcorpus` (sources
+  with hand-checked EXPECT/FORBID directives, `check.py`, `mutate.py`) found,
+  against dev 17e6f4c, each listed with its source in its README. Soundness:
+  direct Objective-C methods read their first argument from x2 (no `_cmd`);
+  x18 assumed to survive a call; a `let r0 = OUTLINED_FUNCTION_2()` for a
+  helper that writes no x0 (async resume, -Osize); a loop entered at its
+  body losing its exit test (an invented infinite loop); a UInt compare
+  against `0xfffffffffffffffa` as `arg0 > -6`; `if (cond !=)` for reused
+  flags. Completeness: x20 receivers dropped at -Onone, forwarders' tail
+  calls without `return`, outlined epilogues losing a return value, await
+  in a loop without `await`, unnamed 32-bit and call-seeded counters, the
+  plain listing's dropped stack arguments and fabricated `_cmd`, an orphan
+  block merged into a function, a literal pool decoded as code, noreturn
+  calls joined to `return` at -O0. Robustness (`mutate.py`, 89 of 3540
+  runs): MachOKit traps or unbounded reads on a bind special ordinal of -4,
+  opcode stream sizes past the end of the file, function starts that wrap,
+  a zero string-table size, chained-fixup starts past their array, a huge
+  import count, an import name past the pool, and a 100k-deep export trie.
+  Baseline at b45a1c9: 226 products, 53 failing, all on directives.
 - **FIXED (b45a1c9) — a compare whose operand is rewritten before the branch
   read one step late.** `cmp w21, w19; add w21, w21, #3; b.lt` rendered
   `w21 < w19`, three off, and `cmp w19, #2; lsr w19, w19, #1; b.lo` a test
