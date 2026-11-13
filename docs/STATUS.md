@@ -67,7 +67,7 @@ function's lowered parameters (with `swiftself`, `sret`, `swiftasync`),
 which fixes its arm64 entry registers. swiftdc's side is what its
 analysis seeded at each entry.
 
-| swiftdc lo1 (f6958c3 + 5 commits), 1,005 functions with parameters | |
+| swiftdc at ab29dc3, 1,005 functions with parameters | |
 |---|---|
 | Every parameter register seeded | 559 (55.6%) |
 | Some seeded, none wrong | 126 (12.5%) |
