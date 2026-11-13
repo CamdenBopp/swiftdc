@@ -3395,6 +3395,19 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   (unchecked index); and a 100,000-node export trie (MachOKit's recursion).
   The preflight declines each by its own cause before any reader reaches
   it. All 3,540 runs now exit cleanly; no render moved.
+- **OPEN — the ABI gap probe (2026-11-13).** Twenty read-only agents, one
+  ABI area each, checked dev 6b3fd16 against the plain listing of their own
+  fixtures: [research/abi-probe-2026-11-13.md](research/abi-probe-2026-11-13.md).
+  Ranked: a callee without a usable signature taking stale registers as
+  arguments (eight areas: outlined vtable helpers, register tail branches,
+  subscript setters, forwarders, class-bound witnesses, cross-module
+  thunks); outlined fragments taken to produce x0 (-Osize stack
+  protector); no noreturn model at -O2/-Os; arm64e `aut*`/pre-index loads
+  losing every vtable and witness callee; receivers dropped (stale-valid
+  x20, metatypes, by-value enums, protocol-extension methods); value
+  renders (typed array literals as raw bits, `scvtf` on UInt, `__int128`
+  low half, `argN` numbering without a signature); unresolved non-fragile
+  ObjC ivars; a merged throw before its cleanup.
 - **OPEN — the synthetic corpus's findings.** `Tools/synthcorpus` (sources
   with hand-checked EXPECT/FORBID directives, `check.py`, `mutate.py`) found,
   against dev 17e6f4c, each listed with its source in its README. Soundness:
