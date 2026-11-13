@@ -32,7 +32,13 @@ jobs:
           xcrun swiftc --version
           go version
       - name: Fixtures
-        run: Tools/fixtures.sh
+        run: |
+          Tools/fixtures.sh || {
+            # The build log names the source and flag the image's toolchain
+            # rejected; without it the failure says nothing.
+            find "$HOME/Library/Caches/swiftdc-fixtures" -name build.log -exec tail -60 {} \;
+            exit 1
+          }
       - name: Build
         run: swift build --build-tests 2>&1 | tee build.log; ! grep -q "error:" build.log
       - name: Enforcing suite
