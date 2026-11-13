@@ -7640,16 +7640,25 @@ public struct Disassembler: Sendable {
     /// self's fields and frame addresses, through arithmetic, selects and
     /// loads: no call's result, and nothing else a comment could not spell
     /// without repeating a statement.
-    static func isCallFreeValue(_ value: AbstractValue) -> Bool {
+    ///
+    /// With `callSites`, a call's result is allowed and its site collected:
+    /// the caller binds each (`let r0 = use(…)`) so the comment names the
+    /// binding instead of spelling the call a second time.
+    static func isCallFreeValue(_ value: AbstractValue, callSites: UnsafeMutablePointer<Set<UInt64>>? = nil) -> Bool {
         switch value {
         case .immediate, .address, .argument, .argumentField, .selfFieldValue, .frame, .local:
             return true
+        case .callResult(let site):
+            guard let callSites else { return false }
+            callSites.pointee.insert(site)
+            return true
         case .binary(_, let lhs, let rhs):
-            return isCallFreeValue(lhs) && isCallFreeValue(rhs)
+            return isCallFreeValue(lhs, callSites: callSites) && isCallFreeValue(rhs, callSites: callSites)
         case .unary(_, let operand), .loadedFrom(let operand, _):
-            return isCallFreeValue(operand)
+            return isCallFreeValue(operand, callSites: callSites)
         case .select(let condition, let whenTrue, let whenFalse):
-            return isCallFreeValue(condition) && isCallFreeValue(whenTrue) && isCallFreeValue(whenFalse)
+            return isCallFreeValue(condition, callSites: callSites) && isCallFreeValue(whenTrue, callSites: callSites)
+                && isCallFreeValue(whenFalse, callSites: callSites)
         default:
             return false
         }
@@ -11612,6 +11621,31 @@ public struct Disassembler: Sendable {
             default: break
             }
         }
+        // What x0 holds at a return no signature or caller describes
+        // (`Exit.unprovenResult`), and the calls it is built from. Each is
+        // bound at its own instruction, so the comment reads `x0 = (r0 +
+        // arg1)` and the call is spelled once: inline in the comment,
+        // `pthread_main_np()` read as called twice. The result of the last
+        // call alone is no evidence of a result (every function ending in a
+        // call leaves it), nor is an untouched first argument.
+        let unprovenResultEligible = function.objcMethod == nil && functionReturnRegister == nil
+            && function.asyncFunclet == nil && !Self.isSwiftMangled(function.symbol)
+            && !DisassembledFunction.signatureKnown(displayName: function.analysisDisplayName, objcSignature: nil)
+            && registerSummaries[function.startAddress]?.resultEvidence != true
+        var unprovenResults: [UInt64: (value: AbstractValue, calls: Set<UInt64>)] = [:]
+        if unprovenResultEligible, returnsDirectly {
+            for insn in function.instructions where isReturn(insn) {
+                guard let raw = analysis.exitValues[insn.address],
+                      case let exit = sanitizeValue(raw), exit != .unknown, exit != .argument(0)
+                else { continue }
+                if case .callResult = exit { continue }
+                var calls = Set<UInt64>()
+                guard Self.isCallFreeValue(exit, callSites: &calls) else { continue }
+                unprovenResults[insn.address] = (exit, calls)
+                countDirectUses(exit, at: insn.address)
+            }
+        }
+        let unprovenResultCalls = unprovenResults.values.reduce(into: Set<UInt64>()) { $0.formUnion($1.calls) }
         // A call with no name (an unresolved `blr`) renders its arguments and
         // consumes the results in them like any other call, so it uses them:
         // skipped here, a result it took was neither bound nor shown, and
@@ -11706,7 +11740,8 @@ public struct Disassembler: Sendable {
             let feedsUniquenessCheck = (directConsumers[site] ?? []).contains {
                 calleeByAddress[$0].map(DisassembledFunction.isUniquenessCheck) == true
             }
-            guard uses > 1 || contextSelfResultSites.contains(site) || crossesEffect(site) || feedsUniquenessCheck,
+            guard uses > 1 || contextSelfResultSites.contains(site) || crossesEffect(site) || feedsUniquenessCheck
+                    || unprovenResultCalls.contains(site),
                   let callee = calleeByAddress[site],
                   // A uniqueness predicate is a value read at this call, not
                   // a fresh query to repeat after a reference-count change.
@@ -12075,23 +12110,12 @@ public struct Disassembler: Sendable {
                 if let caseName = payloadEnumIndex.caseName(ofEnum: returnTypeName, x0: x0, x1: x1) {
                     noteExit(.normal("\(returnTypeName).\(caseName)"))
                 }
-            } else if function.objcMethod == nil, !signatureKnown, functionReturnRegister == nil,
-                      !Self.isSwiftMangled(function.symbol),
-                      registerSummaries[function.startAddress]?.resultEvidence != true,
-                      function.asyncFunclet == nil, isReturn(insn), returnsDirectly,
-                      let raw = analysis.exitValues[insn.address],
-                      case let exit = sanitizeValue(raw), exit != .unknown, exit != .argument(0),
-                      Self.isCallFreeValue(exit) {
+            } else if let unproven = unprovenResults[insn.address],
+                      unproven.calls.allSatisfy({ boundResultSites[$0] != nil }) {
                 // No signature and no caller says whether x0 is a result, so
-                // it is shown as what x0 holds, never as the returned value.
-                // Callers that read something else, or a body that may
-                // throw, are evidence x0 is not the result: then nothing.
-                // An x0 still holding the incoming first argument is left
-                // out, or every function that leaves x0 alone would say it,
-                // and so is any x0 built from a call's result: a comment
-                // cannot consume the call, so it read as a second call
-                // (`pthread_main_np()`, then `x0 = (pthread_main_np() …)`).
-                noteExit(.unprovenResult(renderReturnValue(exit, before: insn.address)))
+                // it is shown as what x0 holds, never as the returned value
+                // (`unprovenResults`, above, for what qualifies).
+                noteExit(.unprovenResult(renderReturnValue(unproven.value, before: insn.address)))
             } else if asyncReturns.contains(insn.address), normalReturnIsProven(at: insn.address), let returnRegister = asyncReturnRegister {
                 let rawExit = returnRegister == .floating
                     ? analysis.exitFloatValues[insn.address]

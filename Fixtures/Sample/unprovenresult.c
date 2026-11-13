@@ -3,8 +3,10 @@
 // each `ret` as a comment, never as a returned value.
 //   konst:   `mov w0, #42; ret`            x0 = 42
 //   scaled:  a * 3 + b                     x0 = ((arg0 * 3) + arg1)
-//   twoArgs: use(a) + b                    no comment: built from a call's
-//            result, which a comment would show as a second call
+//   twoArgs: use(a) + b                    let r0 = use(…); x0 = (r0 + arg1):
+//            the call bound, so it is spelled once
+//   lastCall: use(a); use(b);              no comment: x0 is only the last
+//            call's result, which every function ending in a call leaves
 //   quiet:   void, x0 untouched            no comment: x0 is still arg0,
 //            which every function that leaves x0 alone would show
 // -O2, external `use` so the call stays.
@@ -12,4 +14,9 @@ extern long use(long);
 long konst(void) { return 42; }
 long scaled(long a, long b) { return a * 3 + b; }
 long twoArgs(long a, long b) { return use(a) + b; }
+// hidden: built from a call swiftdc hides as runtime bookkeeping and so
+// cannot bind; a comment would be the only place the call appeared.
+extern void *swift_task_alloc(unsigned long);
+long hidden(unsigned long n) { return (long)swift_task_alloc(n) + 8; }
+void lastCall(long a, long b) { use(a); *(volatile long *)b = use(b); }
 void quiet(long a, long b) { *(volatile long *)b = a; }

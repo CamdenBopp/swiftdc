@@ -7,7 +7,8 @@ import Testing
 /// its 42. Whether x0 is a result is not in the binary, so it is shown as
 /// a comment on the return (`unprovenresult.c`, -O2). Left out: an x0 still
 /// holding the first argument (every void function would show it), one
-/// built from a call's result (the comment repeated the call), and any
+/// that is only the last call's result (every function ending in a call
+/// leaves one), and any
 /// function whose callers or body are evidence about its result.
 @Test func aSignaturelessReturnShowsWhatX0HoldsIfPresent() async throws {
     let path = "Fixtures/Sample/libUnprovenResult.dylib"
@@ -21,9 +22,18 @@ import Testing
     let scaled = try structured("_scaled")
     #expect(scaled.contains("return // x0 = "), Comment(rawValue: scaled))
     #expect(scaled.contains("arg0") && scaled.contains("arg1"), Comment(rawValue: scaled))
-    // Built from a call's result: shown, the call read as made twice.
+    // Built from a call's result: the call is bound where it is made and
+    // the comment names the binding, so the call is spelled once.
     let two = try structured("_twoArgs")
-    #expect(!two.contains("// x0"), Comment(rawValue: two))
+    #expect(two.contains("let r0 = use(") && two.contains("return // x0 = (r0 + arg1)"), Comment(rawValue: two))
+    #expect(two.components(separatedBy: "use(").count == 2, Comment(rawValue: two))
+    // A call that cannot be bound (hidden runtime bookkeeping) is not
+    // spelled in a comment alone.
+    let hidden = try structured("_hidden")
+    #expect(!hidden.contains("// x0"), Comment(rawValue: hidden))
+    // The last call's result alone is no evidence of a result.
+    let last = try structured("_lastCall")
+    #expect(!last.contains("// x0") && !last.contains("let r"), Comment(rawValue: last))
     let quiet = try structured("_quiet")
     #expect(!quiet.contains("// x0"), Comment(rawValue: quiet))
 
