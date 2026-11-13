@@ -174,12 +174,13 @@ Fixed since: a value struct whose fields span both register banks (an
 
 Also fixed since: a value-returning C function rendered a bare `return`;
 its return now carries what x0 holds as a comment (`return // x0 = 42`,
-36ba8db), unless x0 is built from a call's result.
+36ba8db; a value built from a call binds the call, 5f012f8). The C areas
+have not been re-scored since, so the tables above still count it.
 
 OPEN, in the tracker:
 
-1. A C function whose x0 at return is built from a call's result still
-   renders a bare `return`.
+1. A C function whose x0 is only its last call's result shows no result:
+   nothing in the binary says whether it returns it.
 2. A checked `+` and a wrapping `&+` render the same `+`; the overflow trap is
    folded away, so neither reading is safe.
 3. Leaves with an unseeded parameter decline (`return ?`).

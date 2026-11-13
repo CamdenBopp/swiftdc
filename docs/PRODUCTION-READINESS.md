@@ -3577,13 +3577,18 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   leaves the image (`tailprototype.swift`, a four-case eligibility matrix).
 - **FIXED (8347f86) — `objc_opt_new` rendered as alloc/init.** It is a
   `+new` send: `[C new]` (`optnew.m`).
+- **FIXED (5f012f8) — a signatureless return built from a call stayed bare.**
+  `return use(a) + b` in C rendered only `use(…)`. Its calls are now bound
+  (`let r0 = use(…)`) and the return carries `// x0 = (r0 + arg1)`; the
+  last call's result alone still shows nothing (`unprovenresult.c`). 260
+  lines in 29 fixtures. Not re-scored against Ghidra yet.
 - **OPEN — the Ghidra comparison's defects (2026-11-13).** swiftdc and
   Ghidra 12.2 scored on 2,601 function builds
   ([research/ghidra-comparison-2026-11-13.md](research/ghidra-comparison-2026-11-13.md)).
   swiftdc's wrong rows, by cause: a value-returning C function rendered with
   a bare `return`, which reads as void (317 of 349 wrong interfaces, 277 of
-  594 wrong bodies; now `// x0 = …`, 36ba8db, except where x0 is built
-  from a call's result); a checked `+` and a wrapping `&+` rendered alike, the
+  594 wrong bodies; now `// x0 = …`, 36ba8db and 5f012f8; the re-score
+  is pending); a checked `+` and a wrapping `&+` rendered alike, the
   overflow trap folded away (`addTrap` and `addWrap` both `return (arg0 +
   arg1)`); tail calls without `return` and -Osize outlined return helpers
   dropping the result; void runtime hooks and register-target calls taking
