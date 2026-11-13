@@ -62,9 +62,10 @@ results do not replace previously recorded release performance measurements.
 
 ## Next: features from comparable tools (2026-11-13)
 
-Taken from a read of strongarm (datatheorem), macho_re and
-threatflux-binary-analysis, none of which decompiles. Each fills a gap
-swiftdc has; in this order.
+Taken from reads of strongarm (datatheorem), macho_re,
+threatflux-binary-analysis, XMachOViewer, retools, HexLab, ktool and jtool;
+none of them decompiles Swift. Each fills a gap swiftdc has. Ordered by the
+priorities above: completeness and soundness first, reconstruction last.
 
 1. **OPEN: cross-references by selector, string and data symbol.**
    strongarm's `objc_calls_to(classes, selectors)` lists every send of a
@@ -75,25 +76,70 @@ swiftdc has; in this order.
    symbol table before reporting nothing (the empty-result rule), and
    naming defined data symbols in renders, which the probe also found
    missing.
-2. **OPEN: a built-in resource budget.** threatflux enforces a maximum
+2. **OPEN: block literals.** jtool follows the `str`/`stp` stores that
+   build a stack block to name its invoke function and captures. swiftdc
+   has no block model (no reference to `_NSConcreteStackBlock` in Sources;
+   the first ABI probe: direct block invokes lose returns and captures), so
+   every `dispatch_async(queue, ^{…})` and completion handler loses its
+   body's link. Wanted: a block literal recognised from a bound isa
+   (`_NSConcreteStackBlock`/`GlobalBlock`), an in-image invoke pointer and
+   a descriptor, its captures read at their fixed offsets, each part
+   declined when not proven.
+3. **OPEN: compact unwind as a boundary and frame oracle.** HexLab
+   evaluates `__unwind_info`. It describes nearly every function and where
+   it saves callee-saved registers: a third boundary source beside
+   `LC_FUNCTION_STARTS` and the symbol table (the empty-result rule), and
+   the fix for a stripped `bl` target never split when function starts are
+   absent (second ABI probe, linker). Its saved-register layout checks the
+   frame analysis independently.
+4. **OPEN: an A64 semantics coverage audit.** retools generates its
+   semantics from the architecture manual. swiftdc models them by hand, and
+   gaps are found by luck: `negs` records no flags and `ccmn` declines
+   (second ABI probe, integer arithmetic). Wanted: from Arm's
+   machine-readable A64 specification, every instruction that writes a
+   register or the flags, against what `ValueTracking` models; each
+   unmodelled one an OPEN entry, and native execution (as the CCMP tests
+   do) the oracle for each one modelled.
+5. **OPEN: a built-in resource budget.** threatflux enforces a maximum
    input size and per-parse caps (100,000 records, 4 KiB names, 32 MiB of
    names) with a typed error. swiftdc's preflight declines malformed input,
    but a large app's memory is held only by the external
    `Tools/audit/guard.sh`. Wanted: a footprint budget inside the run that
    fails with a diagnostic naming the limit, never a kill.
-3. **OPEN: a binary summary.** macho_re and strongarm report signing,
+6. **OPEN: DWARF as a validation oracle.** HexLab imports DWARF. Built
+   with `-g`, a fixture's dSYM states its parameters, locals, types and
+   field offsets: an independent check of what swiftdc recovers. Today a
+   valid dSYM is reported as a malformed Mach-O on every entry point (first
+   ABI probe, diagnostics); that is fixed first.
+7. **OPEN: a user annotation file.** jtool's companion file holds
+   user-edited names and per-argument signatures that later runs read.
+   swiftdc's largest error class is a signatureless callee taking stale
+   registers as arguments. Wanted: user-stated signatures and names,
+   rendered marked as asserted by the user, never as proven.
+8. **OPEN: a binary summary.** macho_re and strongarm report signing,
    entitlements, hardened runtime, library validation and the
    `MH_ALLOW_STACK_EXECUTION` and no-heap-execution header flags. swiftdc
    reads `LC_ENCRYPTION_INFO` and reports none of these. Wanted: an `info`
    view of the header flags, the code signature's flags and entitlements,
    and encryption, each read from the binary or reported absent.
-4. **OPEN: control-flow graphs as DOT.** threatflux exports DOT;
+9. **OPEN: library signature catalogs.** HexLab matches functions
+   against versioned catalogs and reports an ambiguous match as ambiguous.
+   For stripped apps with statically linked libraries this names `sub_…`
+   functions; a match must be exact and unique, or it declines.
+10. **OPEN: control-flow graphs as DOT.** threatflux exports DOT;
    `disasm --cfg` is text only. Wanted: a DOT form of the same graph.
+11. **OPEN: cryptographic constants named.** XMachOViewer searches for
+   known tables (the AES S-box, SHA and MD5 round constants). A load from
+   such a table, matched byte for byte, renders its name instead of a
+   `__const` address and an index.
 
-Not taken: patching and `insert_dylib` (swiftdc reads binaries), entropy
-and packer heuristics and the ELF, PE, Java and Wasm formats (outside the
-Swift and Objective-C scope), bitcode extraction (no longer embedded), and a
-Python API (the JSON output serves scripts).
+Not taken: patching, `insert_dylib`, re-signing and entitlement injection
+(swiftdc reads binaries); entropy and packer heuristics, the ELF, PE, Java
+and Wasm formats, kernelcaches and MIG tables (outside the Swift and
+Objective-C scope); bitcode extraction (no longer embedded); `.tbd`
+generation; a Python API (the JSON output serves scripts); binary diffing
+and debugging; an LLM rewrite of the output (it cannot decline, and a
+reader cannot tell its guesses from proven facts).
 
 ## Assumptions the output depends on
 
