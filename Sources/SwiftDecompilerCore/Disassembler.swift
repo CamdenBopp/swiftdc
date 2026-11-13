@@ -5995,6 +5995,9 @@ public struct Disassembler: Sendable {
             guard let args = DisassembledFunction.outermostArgumentListRange(of: head) else { return false }
             var name = withoutPrivateDiscriminators(String(head[..<args.lowerBound].dropLast())).trimmingCharacters(in: .whitespaces)
             if name.hasPrefix("static ") { name.removeFirst("static ".count) }
+            // A generic function's parameter clause (`dynType<A>`, `metaOf<A
+            // where A: AnyObject>`) is not part of its name.
+            if name.hasSuffix(">"), let open = name.firstIndex(of: "<") { name = String(name[..<open]) }
             return name.contains(".") && name.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }
         }
         // Compute caller ABI eligibility once, not once per external branch.
@@ -6003,7 +6006,7 @@ public struct Disassembler: Sendable {
               let name = function.layoutName.map({ witnessRequirement($0) ?? $0 }),
               let caller = DisassembledFunction.splitSignature(name), !caller.isAsync, !caller.isThrowing,
               ordinaryHead(caller.head),
-              swiftReturnRegister(of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cfg: cfg) != nil
+              let callerRegister = swiftReturnRegister(of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cfg: cfg)
         else { return [] }
         return Set(function.instructions.compactMap { insn in
             guard insn.controlFlow == .branch,
@@ -6011,12 +6014,27 @@ public struct Disassembler: Sendable {
                   let printed = DisassembledFunction.calleeName(of: insn),
                   // A proven specialization's result is its own: `bump<Double>`
                   // prints `-> A`, and a tail call to it returns a Double.
-                  case let name = insn.branchTarget.flatMap({ provenSignature($0, printed) }) ?? printed,
-                  let callee = DisassembledFunction.splitSignature(name), !callee.isAsync, !callee.isThrowing,
-                  caller.result == callee.result,
-                  ordinaryHead(callee.head) || signatureSpecializationKeepsResult(callee.head) && ordinaryHead(withoutSpecializationClauses(callee.head))
+                  case let name = insn.branchTarget.flatMap({ provenSignature($0, printed) }) ?? printed
             else { return nil }
-            return insn.address
+            if let callee = DisassembledFunction.splitSignature(name) {
+                guard !callee.isAsync, !callee.isThrowing, caller.result == callee.result,
+                      ordinaryHead(callee.head) || signatureSpecializationKeepsResult(callee.head) && ordinaryHead(withoutSpecializationClauses(callee.head))
+                else { return nil }
+                return insn.address
+            }
+            // A property getter has no argument list: `String.count.getter :
+            // Swift.Int`. Its type is its result.
+            if let getter = name.range(of: ".getter : "),
+               name[getter.upperBound...].trimmingCharacters(in: .whitespaces) == caller.result {
+                return insn.address
+            }
+            // A C entry point (the SDK or the runtime) that returns one
+            // integer register, from a caller that returns one: the branch
+            // hands on its x0 (`b swift_getObjectType`).
+            if callerRegister == .integer, DisassembledFunction.cPrototype(of: name)?.result == "i" {
+                return insn.address
+            }
+            return nil
         })
     }
 
