@@ -9884,8 +9884,13 @@ public struct Disassembler: Sendable {
             let varType = TypeInference.typeOf(varSide, arguments: argumentTypes)
             let x = comparisonOperand(varSide, enumType: nil, depth: depth)
 
-            // Proven unsigned (UInt): the unsigned compare IS a plain Swift `<`.
-            if varType.isUnsignedInteger {
+            // Proven unsigned (UInt): the unsigned compare IS a plain Swift `<`,
+            // unless the other side is a signed value: Swift compares a UInt
+            // with an Int mathematically (`0 < -1` is false), the machine by
+            // bit pattern (true).
+            let otherIsSigned = constant == nil
+                && TypeInference.typeOf(other, arguments: argumentTypes).isSignedInteger
+            if varType.isUnsignedInteger, !otherIsSigned {
                 return "(\(x) \(viewOp.signedForm.symbol) "
                     + "\(comparisonOperand(other, enumType: nil, depth: depth)))"
             }
@@ -9929,6 +9934,21 @@ public struct Disassembler: Sendable {
                 // `<` — its Swift meaning depends on the operand's recovered type.
                 if op.isUnsignedComparison {
                     return renderUnsignedComparison(op, lhs, rhs, negated: negated, depth: depth)
+                }
+                // A signed machine ordering (`lt`, `gt`, ...) on an operand
+                // typed unsigned: a plain `<` there reads as unsigned, so
+                // `Int(bitPattern: a) > Int(bitPattern: b) ? a : b` read
+                // exactly as `max(a, b)`. The signed operation is exposed.
+                if [.less, .lessEqual, .greater, .greaterEqual].contains(op),
+                   [lhs, rhs].contains(where: { TypeInference.typeOf($0, arguments: argumentTypes).isUnsignedInteger }) {
+                    var effectiveOp = negated ? invertedComparison(op)! : op
+                    var (l, r) = (lhs, rhs)
+                    let rhsIsConstant = if case .immediate = rhs { true } else { false }
+                    if case .immediate = lhs, !rhsIsConstant, let mirror = mirroredComparison(effectiveOp) {
+                        (l, r) = (rhs, lhs); effectiveOp = mirror
+                    }
+                    return "(\(comparisonOperand(l, enumType: nil, depth: depth)) \(effectiveOp.symbol)\u{02E2} "
+                        + "\(comparisonOperand(r, enumType: nil, depth: depth)))"
                 }
                 // A single-register (reference) optional compared to 0 is a nil
                 // check: `r != 0` reads `r != nil`. Only when the operand's

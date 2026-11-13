@@ -402,6 +402,9 @@ $CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation objcdirect.m -o libObjCD
 echo "==> optional protocol properties, decided by the getter's list (objcoptionalprop.m, -O1)"
 $CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation objcoptionalprop.m -o libObjCOptionalProp.dylib
 
+echo "==> signed orderings on unsigned operands, and UInt against Int (signedcompare.swift, -O)"
+xcrun swiftc -O -parse-as-library -emit-library signedcompare.swift -module-name SignedCompare -o libSignedCompare.dylib
+
 echo "==> what x0 holds at a C function's return, no signature (unprovenresult.c, -O2)"
 $CLANG -O2 -dynamiclib -undefined dynamic_lookup unprovenresult.c -o libUnprovenResult.dylib
 
