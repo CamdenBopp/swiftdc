@@ -3369,7 +3369,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   an if/else whose arms both leave, where nothing falls through. One
   structured line moved in every fixture and toolchain library.
 
-- **FIXED (COMMIT) — a direct Objective-C method read one register late.**
+- **FIXED (9bd88bb) — a direct Objective-C method read one register late.**
   A method marked `objc_direct` is called by its symbol and takes no
   `_cmd`, so its first keyword is in x1; read like an ordinary method,
   `[box mix:5 with:9]` (`mov w1, #5; mov w2, #9; bl -[DMBox mix:with:]`)
