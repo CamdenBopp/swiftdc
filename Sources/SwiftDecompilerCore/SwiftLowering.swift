@@ -64,6 +64,11 @@ enum SwiftLowering: Equatable, Sendable {
         // qualified:)`). Any other `.Type` may be thin (no register) or carry
         // witness tables.
         if type == "Any.Type" || type == "Swift.Any.Type" { return .oneInteger }
+        // `AnyObject` is a layout constraint, not a protocol with witnesses:
+        // its existential metatype is the class's metadata pointer alone
+        // (measured: `pick(_:_:_:)` selects between x1 and x2, `pass(_:_:)`
+        // takes its Int in x1).
+        if type == "AnyObject.Type" || type == "Swift.AnyObject.Type" { return .oneInteger }
         if multiWord.contains(type) || multiWordGenerics.contains(where: { isWhole(type, generic: $0) })
             || type.hasSuffix(".Type") || type.hasSuffix(".Protocol") || isFunctionType(type) {
             return .direct

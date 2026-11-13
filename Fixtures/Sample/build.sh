@@ -402,6 +402,9 @@ $CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation objcdirect.m -o libObjCD
 echo "==> optional protocol properties, decided by the getter's list (objcoptionalprop.m, -O1)"
 $CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation objcoptionalprop.m -o libObjCOptionalProp.dylib
 
+echo "==> AnyObject.Type in one register (anyobjectmeta.swift, -O)"
+xcrun swiftc -O -parse-as-library -emit-library anyobjectmeta.swift -module-name AnyObjectMeta -o libAnyObjectMeta.dylib
+
 echo "==> tail branches to a getter and to runtime entry points (tailforward.swift, -O)"
 xcrun swiftc -O -parse-as-library -emit-library tailforward.swift -module-name TailForward -o libTailForward.dylib
 
