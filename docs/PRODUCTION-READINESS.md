@@ -3563,6 +3563,10 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   `Wide.sum(arg1)`; the address register is now `arg<n>`. OPEN: field
   reads through it (`big.c` from `[x0, #0x10]`) still decline, since the
   tracer does not model loads through an argument pointer.
+- **FIXED (89920f9) — constant strings read as C strings.** `@"héllo"`
+  rendered `@"h"` and `@"a\0b"` `@"a"`: a `__cfstring` entry's flags and
+  length now decide (bytes or strict UTF-16), and an entry whose length
+  disagrees with its bytes declines (`cfstrings.m`, `cfstrings_short.s`).
 - **OPEN — the Ghidra comparison's defects (2026-11-13).** swiftdc and
   Ghidra 12.2 scored on 2,593 function builds
   ([research/ghidra-comparison-2026-11-13.md](research/ghidra-comparison-2026-11-13.md)).
