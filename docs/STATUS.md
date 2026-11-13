@@ -90,7 +90,7 @@ cover results, bodies, or Objective-C methods (4 matched).
 
 | Check | Result | Where |
 |---|---|---|
-| Enforcing test suite (a missing fixture fails) | 1,764 tests pass at head | local gate, `Tools/integration-gate.sh` |
+| Enforcing test suite (a missing fixture fails) | 1,765 tests pass at head | local gate, `Tools/integration-gate.sh` |
 | Output change against the previous commit | every changed line explained in each commit message | `Tools/blast-radius.sh` |
 | Cost budget (instructions, footprint) | within budget; one fixture over, declared (`Perf-cost:` in 36ba8db) | same |
 | GitHub Actions | **no passing run**. `macos-26` jobs get no runner; on `macos-15` (Xcode 26.3, Swift 6.2.4) the fixture build fails before swiftdc is built, on a toolchain older than the one the fixtures need (Swift 6.4 locally) | `.github/workflows/ci.yml` |
@@ -104,6 +104,7 @@ one machine. Until a CI run completes they are author-reported.
 | Measurement | Result | Commit |
 |---|---|---|
 | Malformed Mach-O mutants: 354 mutants, 10 entry points, 3,540 runs | 0 signal-terminated (89 before the fix) | d4ed36b |
+| An image built with the direct retain/release runtime (a 64-bit bind addend with the top bit set) | exit 0 on 10 entry points (SIGTRAP on 5 before) | b814bc0 |
 | Synthetic corpus: built products with a failing output directive | 53 of 226; no command exited nonzero on any product | 5f012f8 |
 
 The corpus checker now fails on a nonzero exit from any command, on a
@@ -115,6 +116,15 @@ and not a sample of real code. Reproduce: `Tools/synthcorpus/build.sh`
 then `Tools/synthcorpus/check.py --swiftdc <binary>`.
 
 ## Open defect classes, most damaging first
+
+A read of the compiler's own source against swiftdc (thirty areas,
+2026-11-13) reported more wrong-render classes than the list below
+holds. They are recorded as leads, not yet measured, in
+[research/compiler-source-read-2026-11-13.md](research/compiler-source-read-2026-11-13.md)
+and ranked in PRODUCTION-READINESS.md. The three that touch the most
+ordinary code: a property's function type read as an accessor's
+parameter list, preconditions folded away as overflow checks, and
+stores hidden as runtime noise.
 
 1. **C return values.** A function with no signature whose x0 is only
    its last call's result, a float in d0, or a load shows no result (137

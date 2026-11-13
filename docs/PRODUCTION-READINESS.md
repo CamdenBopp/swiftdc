@@ -60,6 +60,60 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## Next: defects from reading the compiler source (2026-11-13)
+
+Thirty agents read the Swift compiler's IRGen, SILGen, stdlib and runtime
+sources against swiftdc, one area each. The findings, with the compiler
+line that states each rule, are in
+[research/compiler-source-read-2026-11-13.md](research/compiler-source-read-2026-11-13.md).
+They are leads with a stated reproduction; each becomes FIXED only with
+its own fixture and a test seen red. Ordered by the priorities above:
+wrong output first, by how much ordinary code it touches.
+
+1. **OPEN: a storage entity's type read as a parameter list.** A setter,
+   getter, addressor or key path thunk for a function-typed property is
+   seeded from the property's type, and a throwing getter is judged
+   non-throwing, which folds its error test to `(0 != 0)`.
+2. **OPEN: overflow-guard folding hides preconditions.** A branch to a
+   trap on V or carry is dropped without checking its sense, the last
+   flag writer, or that the flags are integer flags.
+   `precondition(a < b); return a &- b` renders `return (arg0 - arg1)`.
+3. **OPEN: stores hidden as runtime noise.** `outlined init/assign`
+   helpers and the existential assign helper are the statement; a setter
+   through one renders as an empty leaf, and the empty-body message
+   covers two causes.
+4. **OPEN: a local function's captures.** `$defer` and named local
+   functions are laid out positionally and get a stale argument.
+5. **OPEN: resilient value types.** In a library-evolution image a
+   public struct or enum is passed by address and is read from registers
+   by field. Reproduced.
+6. **OPEN: a hidden leading isolation parameter** on
+   `nonisolated(nonsending)` async functions shifts every formal by two
+   registers; the symbol does not record it.
+7. **OPEN: an outlined fragment's x0** is taken for a call result though
+   the body summary proves it unwritten, and its x8 for a result buffer.
+8. **OPEN: the rest of the wrong-render tables** in the findings
+   document: metatype arguments stripped as plumbing, generic cast types
+   cut short, a tail-called retain printing its call twice, a throw
+   placed before merged cleanups, tuple results with an indirect
+   element, untyped sends with struct arguments, field types collapsed
+   when reflection names are off, `Bool` taken as 0 or 1, `-> Never`
+   callees, direct typed errors, merged specializations, small strings.
+9. **OPEN: the declines both rounds ranked first**: globals named by
+   their symbol, closure contexts typed from capture descriptors, class
+   initializer entries, generic witness calls without method
+   descriptors, collection storage headers, payload enums in registers.
+
+- **FIXED — an import addend with the top bit set trapped `disasm`,
+  `xrefs` and `analyze`.** Found by the runtime read: the direct
+  retain/release runtime binds
+  `__swift_retainRelease_slowpath_mask_v1 + 0x8000000000000000`, and
+  MachOKit's `addend` converts that field to `Int`. `ChainedFixupTable`
+  now compares the raw field with zero. Baseline exits 133 on
+  `libBindAddend.dylib` in five commands, the fix 0 in all ten entry
+  points; blast radius is the new fixture alone (b814bc0).
+
+
 ## Next: features from comparable tools (2026-11-13)
 
 Taken from reads of strongarm (datatheorem), macho_re,
