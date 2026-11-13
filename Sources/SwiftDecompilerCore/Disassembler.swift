@@ -6044,6 +6044,7 @@ public struct Disassembler: Sendable {
         in function: DisassembledFunction,
         enumCaseIndex: EnumCaseIndex = EnumCaseIndex(), classTypeIndex: ClassTypeIndex = ClassTypeIndex(),
         cfg: FunctionCFG? = nil,
+        isInImageFunction: (UInt64) -> Bool = { _ in false },
         provenSignature: (_ target: UInt64, _ printedName: String) -> String? = { _, _ in nil }
     ) -> Set<UInt64> {
         func ordinaryHead(_ head: String) -> Bool {
@@ -6086,7 +6087,15 @@ public struct Disassembler: Sendable {
             // A C entry point (the SDK or the runtime) that returns one
             // integer register, from a caller that returns one: the branch
             // hands on its x0 (`b swift_getObjectType`).
-            if callerRegister == .integer, DisassembledFunction.cPrototype(of: name)?.result == "i" {
+            // The prototype is the library function's. A function of this
+            // image with a C library's name (a vendored `strlen`) is not
+            // that function, and its result is unproven: the table is
+            // evidence only for a call that leaves the image
+            // (`knownArityNameMayHaveTwin`, as argument layout already
+            // requires). A narrow, float, void or two-word result is not one
+            // whole integer register either.
+            if callerRegister == .integer, DisassembledFunction.cPrototype(of: name)?.result == "i",
+               !(insn.branchTarget.map(isInImageFunction) == true && DisassembledFunction.knownArityNameMayHaveTwin(name)) {
                 return insn.address
             }
             return nil
@@ -11842,6 +11851,7 @@ public struct Disassembler: Sendable {
         var observedReturnPaths: [UInt64: AbstractValue]?
         let scalarTailReturns = Self.scalarTailReturnSites(
             in: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cfg: cfg,
+            isInImageFunction: { registerSummaries[$0] != nil },
             provenSignature: { target, printed in
                 guard case .proven(let layout) = resolver.specializationClause(at: target, printedName: printed)
                 else { return nil }

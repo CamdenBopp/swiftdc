@@ -402,6 +402,11 @@ $CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation objcdirect.m -o libObjCD
 echo "==> optional protocol properties, decided by the getter's list (objcoptionalprop.m, -O1)"
 $CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation objcoptionalprop.m -o libObjCOptionalProp.dylib
 
+echo "==> when a tail branch to a C-named callee returns its result (tailprototype.swift + tailprototype_twin.c, -O)"
+$CLANG -O2 -fno-builtin -c tailprototype_twin.c -o tailprototype_twin.o
+xcrun swiftc -O -parse-as-library -emit-library tailprototype.swift tailprototype_twin.o -module-name TailPrototype -Xlinker -undefined -Xlinker dynamic_lookup -o libTailPrototype.dylib
+rm -f tailprototype_twin.o
+
 echo "==> objc_opt_new is a +new send (optnew.m, -O2)"
 $CLANG -O2 -fobjc-arc -dynamiclib -framework Foundation optnew.m -o libOptNew.dylib
 
