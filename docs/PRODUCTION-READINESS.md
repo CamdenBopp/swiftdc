@@ -3527,12 +3527,22 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   formals (`mixedself.swift`); shared 8-byte units and five-field structs
   still decline, and a class never qualifies. 48 structured lines in 11
   fixtures moved, each a `return ?` becoming a checked field read.
+- **FIXED (36ba8db) — a signatureless function's return read as void.**
+  A C function no signature or caller describes rendered a bare `return`
+  (`konst` returning 42), the largest single cause of swiftdc's wrong rows
+  in the Ghidra comparison. The return now carries `// x0 = …` as a
+  comment, never as a returned value, except for Swift symbols, functions
+  the image has result evidence about, an untouched first argument, and
+  values built from a call's result (`unprovenresult.c`). 140 fixture
+  files moved; libFlagWidthProbes costs 12-17% more instructions
+  (Perf-cost), +0.01% in total.
 - **OPEN — the Ghidra comparison's defects (2026-11-13).** swiftdc and
   Ghidra 12.2 scored on 2,593 function builds
   ([research/ghidra-comparison-2026-11-13.md](research/ghidra-comparison-2026-11-13.md)).
   swiftdc's wrong rows, by cause: a value-returning C function rendered with
   a bare `return`, which reads as void (317 of 349 wrong interfaces, 277 of
-  594 wrong bodies); a checked `+` and a wrapping `&+` rendered alike, the
+  594 wrong bodies; now `// x0 = …`, 36ba8db, except where x0 is built
+  from a call's result); a checked `+` and a wrapping `&+` rendered alike, the
   overflow trap folded away (`addTrap` and `addWrap` both `return (arg0 +
   arg1)`); tail calls without `return` and -Osize outlined return helpers
   dropping the result; void runtime hooks and register-target calls taking

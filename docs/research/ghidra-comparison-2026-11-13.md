@@ -138,10 +138,14 @@ Fixed since: a value struct whose fields span both register banks (an
 `Gauge.scaled()` from Ghidra issue #9741 renders its value instead of
 `return ?` (the commit after this document; the scores above predate it).
 
+Also fixed since: a value-returning C function rendered a bare `return`;
+its return now carries what x0 holds as a comment (`return // x0 = 42`,
+36ba8db), unless x0 is built from a call's result.
+
 OPEN, in the tracker:
 
-1. A value-returning C function renders a bare `return` (frames, globals,
-   switch, intmath).
+1. A C function whose x0 at return is built from a call's result still
+   renders a bare `return`.
 2. A checked `+` and a wrapping `&+` render the same `+`; the overflow trap is
    folded away, so neither reading is safe.
 3. Leaves with an unseeded parameter decline (`return ?`).
