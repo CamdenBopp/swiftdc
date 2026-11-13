@@ -402,6 +402,9 @@ $CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation objcdirect.m -o libObjCD
 echo "==> optional protocol properties, decided by the getter's list (objcoptionalprop.m, -O1)"
 $CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation objcoptionalprop.m -o libObjCOptionalProp.dylib
 
+echo "==> runtime calls that are statements, not ARC noise (runtimestatements.m, -O2)"
+$CLANG -O2 -fobjc-arc -dynamiclib -framework Foundation -undefined dynamic_lookup runtimestatements.m -o libRuntimeStatements.dylib
+
 echo "==> constant NSStrings by their flags and length: UTF-16, NUL, empty (cfstrings.m, -O2)"
 $CLANG -O2 -fobjc-arc -dynamiclib -framework Foundation cfstrings.m -o libCFStrings.dylib
 $CLANG -arch arm64 -dynamiclib -framework Foundation cfstrings_short.s -o libCFStringsShort.dylib

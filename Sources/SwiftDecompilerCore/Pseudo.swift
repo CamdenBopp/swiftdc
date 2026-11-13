@@ -1221,8 +1221,19 @@ public extension DisassembledFunction {
             // the lowering of the call, not a statement of the source.
             "swift_task_alloc", "swift_task_dealloc",
         ]
+        // Matched by prefix for the register-specific and `_n` variants
+        // (`objc_retain_x19`, `swift_retain_n`), which also reached names
+        // that are statements: an `@autoreleasepool`'s push and pop (an
+        // `objc_autorelease` prefix), and `objc_retainBlock`, which returns
+        // the block's heap copy rather than its argument. Hidden, a pool's
+        // scope vanished and a block-returning method read `return ?`.
+        if notRuntimeNoise.contains(callee) { return false }
         return prefixes.contains { callee.hasPrefix($0) }
     }
+
+    private static let notRuntimeNoise: Set<String> = [
+        "objc_autoreleasePoolPush", "objc_autoreleasePoolPop", "objc_retainBlock",
+    ]
 
     /// Shared by IR transfer and expression rendering. Swift's runtime ABI
     /// marks these retain results FirstParamReturned; queries and releases
