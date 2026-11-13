@@ -50,8 +50,9 @@ failure.
     branch (`cmp w21, w19; add w21, w21, #3; b.lt`, `cmp w19, #2; lsr w19,
     w19, #1; b.lo`) read by its name, one step off (loops/c_counters.c,
     control/bits.c).
-  - Direct Objective-C methods (`objc_direct`) take no `_cmd`, but the
-    structured send read its first argument from x2 (objc/direct.m).
+  - FIXED (COMMIT): direct Objective-C methods (`objc_direct`) take no
+    `_cmd`, but the structured send read its first argument from x2
+    (objc/direct.m).
   - x18 assumed to survive a call: `mov x18, #7; bl ext; mov x0, x18`
     rendered `return 7` (odd/scratch_regs.s).
   - `let r0 = OUTLINED_FUNCTION_2()` for a helper that never writes x0, at

@@ -123,6 +123,8 @@ public struct Instruction: Sendable {
     public var fieldRead: String? { factBox?.facts.fieldRead }
     /// `facts.isSelfDispatch`.
     public var isSelfDispatch: Bool { factBox?.facts.isSelfDispatch ?? false }
+    /// `facts.isDirectObjCMethod`.
+    public var isDirectObjCMethod: Bool { factBox?.facts.isDirectObjCMethod ?? false }
 
     /// What enrichment proved about an instruction. Each fact names the
     /// note that spells it.
@@ -166,6 +168,9 @@ public struct Instruction: Sendable {
         /// For a call through self's own vtable slot (`dispatch=self`): an
         /// override in a subclass runs instead when self is one.
         public var isSelfDispatch: Bool
+        /// For a call to a direct Objective-C method (`objc-direct`): it takes
+        /// no `_cmd`, so its keyword arguments start at x1.
+        public var isDirectObjCMethod: Bool = false
         /// For a call through a protocol witness table (`<requirement>
         /// witness for A`): the requirement's printed signature, which
         /// gives the call its parameters. The note is the callee's name.
@@ -2118,7 +2123,14 @@ public struct Disassembler: Sendable {
         // name carries the full method shape. Recover the receiver convention
         // from the symbol so `self` survives — without it x0 is never seeded
         // and every receiver renders `?`.
-        let symbolEntry = objcMethod == nil ? Self.objcEntryFromSymbol(function.symbol) : nil
+        var symbolEntry = objcMethod == nil ? Self.objcEntryFromSymbol(function.symbol) : nil
+        // A direct method takes no `_cmd`: its arguments start at x1. Seeded
+        // from x2, `-[DMBox mix:with:]` named its second argument `arg0`.
+        if case .objectiveC(let count, nil)? = symbolEntry,
+           Self.isDirectObjCMethod(function.symbol, at: function.startAddress, in: context.objcIndex) {
+            symbolEntry = .objectiveC(argumentCount: count, scalarArguments: Dictionary(
+                uniqueKeysWithValues: (0 ..< min(count, 7)).map { ("x\($0 + 1)", $0) }))
+        }
         // A resume funclet is entered from the runtime, not called: its name
         // carries the parent's signature, but none of the parent's parameters
         // (nor `self`) is in a register here. Every live value was spilled to
@@ -5818,6 +5830,18 @@ public struct Disassembler: Sendable {
         return locations.filter { location, _ in !location.hasPrefix("stack@") || widths[location] == 8 }
     }
 
+    /// A direct Objective-C method: its symbol names a method (`-[C sel]` or
+    /// `-[C(Category) sel]`) of a class this image defines, and its IMP is in
+    /// no method list. Every other method of such a class is listed, in its
+    /// class's or a category's list; a direct one is called by its symbol and
+    /// takes no `_cmd`. A category IMP added at runtime without metadata is
+    /// on a class another image defines, so it is not taken for one.
+    static func isDirectObjCMethod(_ symbol: String, at address: UInt64, in objcIndex: ObjCMetadataIndex) -> Bool {
+        guard objcIndex.binding(for: address) == nil,
+              let className = objcClassName(fromSymbol: symbol) else { return false }
+        return objcIndex.classObjectNames.values.contains(className)
+    }
+
     private static func objcEntryFromSymbol(_ symbol: String) -> MethodEntryConvention? {
         guard let (_, selector) = objcMethodSymbolParts(symbol) else { return nil }
         let argumentCount = selector.filter { $0 == ":" }.count
@@ -8452,6 +8476,19 @@ public struct Disassembler: Sendable {
         where insn.controlFlow == .call || insn.controlFlow == .branch {
             calleeByAddress[insn.address] = DisassembledFunction.calleeName(of: insn)
         }
+        // A direct method (`__attribute__((objc_direct))`) is called by its
+        // symbol and takes no `_cmd`: its first keyword is in x1. Rendered as
+        // a send that skips x1, `mix:with:` read `[arg0 mix:arg2 with:?]`,
+        // each argument one register late (`Self.isDirectObjCMethod`).
+        var directObjCSites: Set<UInt64> = []
+        if let objcIndex {
+            for (address, callee) in calleeByAddress {
+                if let target = callTargets[address],
+                   Self.isDirectObjCMethod(callee, at: target, in: objcIndex) {
+                    directObjCSites.insert(address)
+                }
+            }
+        }
 
         // Missing body summaries and demangled names are not external ABI
         // proof. Both receiver consumers use the same exact loader binding.
@@ -10323,7 +10360,8 @@ public struct Disassembler: Sendable {
                 // string-level fold can't, because a demangled closure/`throws`
                 // type embeds unbalanced parentheses that defeat its parser.
                 let arguments = DisassembledFunction.strippingGenericPlumbing(rawArguments)
-                if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {
+                if let send = DisassembledFunction.MessageSend(
+                    callee: callee, arguments: arguments, takesCommand: !directObjCSites.contains(addr)) {
                     return send.rendered
                 }
                 let parts = selfValueBySite[addr].map { ["self: \(renderValue($0, depth: depth + 1))"] } ?? []
@@ -10452,7 +10490,8 @@ public struct Disassembler: Sendable {
             let arguments: [String] = renderArguments(
                 normalizedArguments(callee: callee, values: values, at: site), depth: depth, site: site
             )
-            if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {
+            if let send = DisassembledFunction.MessageSend(
+                callee: callee, arguments: arguments, takesCommand: !(site.map(directObjCSites.contains) ?? false)) {
                 return send.rendered
             }
             // A value method's `self` words show on every path that renders
@@ -11978,6 +12017,11 @@ public struct Disassembler: Sendable {
                 let declarations = bindings.map(Self.loopDeclaration)
                 facts.loopEntryDeclarations = declarations
                 sourceNotes.append("loop-entry: \(declarations.joined(separator: " | "))")
+            }
+
+            if directObjCSites.contains(insn.address) {
+                facts.isDirectObjCMethod = true
+                sourceNotes.append(DisassembledFunction.directObjCMethodNote)
             }
 
             if insn.controlFlow == .branch, let callee,

@@ -159,6 +159,9 @@ private func textStatement(of insn: Instruction) -> String? {
                 check("fieldRead", insn.fieldRead, parsedFieldRead(annotation), present: insn.fieldRead != nil)
                 check("selfDispatch", insn.isSelfDispatch, notes(of: annotation)?.contains("dispatch=self") == true,
                       present: insn.isSelfDispatch)
+                check("directObjCMethod", insn.isDirectObjCMethod,
+                      notes(of: annotation)?.contains(DisassembledFunction.directObjCMethodNote) == true,
+                      present: insn.isDirectObjCMethod)
                 let statement = DisassembledFunction.pseudoStatement(of: insn, hideRuntime: true)
                 let oracle = textStatement(of: insn)
                 if statement != oracle { mismatches.append("\(at): statement \(statement ?? "nil"), from notes \(oracle ?? "nil")") }

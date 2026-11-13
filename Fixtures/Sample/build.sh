@@ -392,6 +392,10 @@ $SWIFTC -parse-as-library -Onone -emit-library -module-name ClosureCapture closu
 echo "==> a small struct's self words after its formals (valueselfwords.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name ValueSelfWords valueselfwords.swift -o libValueSelfWords.dylib
 
+echo "==> direct Objective-C methods, no _cmd (objcdirect.m, -O0 and -O1)"
+$CLANG -O0 -fobjc-arc -dynamiclib -framework Foundation objcdirect.m -o libObjCDirect.O0.dylib
+$CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation objcdirect.m -o libObjCDirect.dylib
+
 echo "==> a compare that writes its own operand (writtenflags.c, -O1 and -O2)"
 $CLANG -O1 -dynamiclib -undefined dynamic_lookup writtenflags.c -o libWrittenFlags.O1.dylib
 $CLANG -O2 -dynamiclib -undefined dynamic_lookup writtenflags.c -o libWrittenFlags.dylib

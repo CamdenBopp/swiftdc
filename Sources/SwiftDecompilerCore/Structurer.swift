@@ -1422,7 +1422,8 @@ struct ControlFlowStructure {
         if DisassembledFunction.isRuntimeNoise(insn)
             || DisassembledFunction.isGenericPlumbingCallee(callee) { return nil }
         let arguments = DisassembledFunction.strippingGenericPlumbing(rawArguments)
-        if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {
+        if let send = DisassembledFunction.MessageSend(
+            callee: callee, arguments: arguments, takesCommand: !insn.isDirectObjCMethod) {
             return send.rendered
         }
         if let idiom = DisassembledFunction.objcRuntimeIdiom(callee: callee, arguments: arguments) {

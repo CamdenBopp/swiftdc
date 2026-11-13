@@ -3369,10 +3369,18 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   an if/else whose arms both leave, where nothing falls through. One
   structured line moved in every fixture and toolchain library.
 
+- **FIXED (COMMIT) — a direct Objective-C method read one register late.**
+  A method marked `objc_direct` is called by its symbol and takes no
+  `_cmd`, so its first keyword is in x1; read like an ordinary method,
+  `[box mix:5 with:9]` (`mov w1, #5; mov w2, #9; bl -[DMBox mix:with:]`)
+  rendered `[? mix:9 with:?]` and the body named b `arg0` (found by the
+  synthetic corpus, objc/direct.m). A call to, or the body of, a method of
+  a class this image defines whose IMP is in no method list is now read
+  from x1. Only the new fixture's renders moved. The whole-file listing
+  path still names a local symbol `sub_…`, so there it cannot tell.
 - **OPEN — the synthetic corpus's findings.** `Tools/synthcorpus` (sources
   with hand-checked EXPECT/FORBID directives, `check.py`, `mutate.py`) found,
   against dev 17e6f4c, each listed with its source in its README. Soundness:
-  direct Objective-C methods read their first argument from x2 (no `_cmd`);
   x18 assumed to survive a call; a `let r0 = OUTLINED_FUNCTION_2()` for a
   helper that writes no x0 (async resume, -Osize); a loop entered at its
   body losing its exit test (an invented infinite loop); a UInt compare

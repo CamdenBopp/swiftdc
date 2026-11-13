@@ -185,7 +185,9 @@ public extension DisassembledFunction {
         if hideRuntime, let literal = arrayLiteralPlaceholder(callee: callee) { return literal }
         if hideRuntime, isRuntimeNoise(insn) || isGenericPlumbingCallee(callee) { return nil }
         let arguments = hideRuntime ? strippingGenericPlumbing(rawArguments) : rawArguments
-        if let send = MessageSend(callee: callee, arguments: arguments) { return send.rendered }
+        if let send = MessageSend(callee: callee, arguments: arguments, takesCommand: !insn.isDirectObjCMethod) {
+            return send.rendered
+        }
         if let idiom = objcRuntimeIdiom(callee: callee, arguments: arguments) { return idiom }
         // A Swift method's receiver arrives in x20, not x0, so show it as an
         // explicit `self:` rather than letting it vanish from the call.
@@ -350,7 +352,9 @@ public extension DisassembledFunction {
         ///
         /// Either way `x0` is the receiver and `x1` is `_cmd`, so the selector's
         /// own arguments start at `x2`.
-        init?(callee: String, arguments: [String]) {
+        /// A direct method (`takesCommand: false`) has no `_cmd`: its
+        /// arguments start at x1.
+        init?(callee: String, arguments: [String], takesCommand: Bool = true) {
             let selector: String
             if callee.hasPrefix("objc_msgSend") {
                 if let marker = callee.firstIndex(of: "$") {
@@ -368,7 +372,7 @@ public extension DisassembledFunction {
             guard !selector.isEmpty else { return nil }
             self.receiver = callee.hasPrefix("objc_msgSendSuper") ? "super" : (arguments.first ?? "?")
             self.selector = selector
-            self.arguments = Array(arguments.dropFirst(2))
+            self.arguments = Array(arguments.dropFirst(takesCommand ? 2 : 1))
         }
 
         private static func selectorLiteral(_ text: String) -> String? {
@@ -565,7 +569,7 @@ public extension DisassembledFunction {
         let base = stripNotes(annotation)
         if base.isEmpty || base.hasPrefix("args(") || base.hasPrefix("self=") || base.hasPrefix("→")
             || base.hasPrefix("await=") || base.hasPrefix(indirectJumpNote) || base.hasPrefix("swift-exit=")
-            || base.hasPrefix(thenThrowNote)
+            || base.hasPrefix(thenThrowNote) || base == directObjCMethodNote
             // A loop's counters declared on the `b` that enters it.
             || base.hasPrefix("loop-entry: ") {
             return nil
@@ -625,6 +629,8 @@ public extension DisassembledFunction {
     /// call to that implementation, and its call-graph edge is not proven.
     /// The note spells `Instruction.isSelfDispatch` for display.
     static let selfDispatchMarker = "  dispatch=self"
+    /// The note on a call to a direct Objective-C method.
+    static let directObjCMethodNote = "objc-direct"
 
     /// `self.member` for a self dispatch to `callee`.
     static func selfDispatchCall(_ callee: String) -> String {
