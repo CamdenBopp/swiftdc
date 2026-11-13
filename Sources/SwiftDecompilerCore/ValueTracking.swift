@@ -368,7 +368,8 @@ public enum MethodEntryConvention: Sendable, Equatable {
     /// `genericWitnessTables` the registers holding its witness tables
     /// (register key -> index among its protocol requirements).
     case swiftFunction(scalarArguments: [String: Int], genericMetadata: [String: String] = [:],
-                       genericWitnessTables: [String: Int] = [:], existentialTables: [String: Int] = [:])
+                       genericWitnessTables: [String: Int] = [:], existentialTables: [String: Int] = [:],
+                       argumentFields: [String: [Int]] = [:])
     /// A nonmutating instance method of a small homogeneous floating-point
     /// aggregate struct: `self` (and any HFA parameters) are passed by value in
     /// consecutive SIMD registers, so `seededRegisters` maps each register key to
@@ -1159,7 +1160,12 @@ public struct ValueTracer: Sendable {
             for argument in 6 ..< max(6, min(max(argumentCount, 0), 32)) {
                 state[Self.stackKey(Int64(argument - 6) * 8)] = .argument(argument)
             }
-        case .swiftFunction(let scalarArguments, let genericMetadata, let genericWitnessTables, let existentialTables):
+        case .swiftFunction(let scalarArguments, let genericMetadata, let genericWitnessTables, let existentialTables, let argumentFields):
+            // A struct parameter passed as its fields: each register holds
+            // one field's value, `arg<n>.field` ([argument, offset]).
+            for (register, field) in argumentFields where field.count == 2 {
+                if let location = Location(key: register) { state[location] = .argumentField(argument: field[0], offset: field[1]) }
+            }
             // No `self`/`_cmd` prefix: a Swift function's integer arguments occupy
             // x0…, its floating-point ones v0…. A proven all-scalar signature
             // never spills, so there is nothing past the eighth of each to recover.

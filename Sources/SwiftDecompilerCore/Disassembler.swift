@@ -2190,7 +2190,8 @@ public struct Disassembler: Sendable {
                     classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps)
                 return .swiftFunction(scalarArguments: arguments.scalars, genericMetadata: metadata,
                                       genericWitnessTables: Self.genericWitnessTableRegisters(of: function, metadata: metadata),
-                                      existentialTables: arguments.existentialTables)
+                                      existentialTables: arguments.existentialTables,
+                                      argumentFields: arguments.fields.mapValues { [$0.argument, $0.offset] })
             }()
         } else if !DisassembledFunction.signatureKnown(displayName: function.analysisDisplayName, objcSignature: nil),
                   let summary = context.registerSummaries[function.startAddress], summary.provenArgumentCount > 0 {
@@ -2234,12 +2235,22 @@ public struct Disassembler: Sendable {
             }
         }
         let chainSlots = context.asyncChainSlots[function.startAddress] ?? [:]
-        let classArguments: [Int: (type: String, map: FieldMap)] = if case .swiftFunction(let scalarArguments, _, _, _)? = entry {
+        let classArguments: [Int: (type: String, map: FieldMap)] = if case .swiftFunction(let scalarArguments, _, _, _, _)? = entry {
             Self.classArguments(of: function, scalarArguments: scalarArguments, index: context.classParameterFields)
         } else {
             [:]
         }
         let classArgumentFieldMaps = classArguments.mapValues(\.map)
+        // The field maps of struct parameters passed as their fields, so a
+        // seeded `arg<n>.field` names its field.
+        let functionArgumentFieldMaps: [Int: FieldMap] = if case .swiftFunction(_, _, _, _, let fields)? = entry, !fields.isEmpty {
+            Self.swiftArgumentRegisters(
+                of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex,
+                fieldMaps: context.fieldMaps, isOpaqueExistential: isOpaqueExistential,
+                isClassBoundExistential: isClassBoundExistential)?.fieldMaps ?? [:]
+        } else {
+            [:]
+        }
         let callerProvenResult = objcMethod == nil && symbolEntry == nil && asyncEntry == nil
             && function.asyncFunclet == nil
             && !DisassembledFunction.signatureKnown(displayName: function.analysisDisplayName, objcSignature: nil)
@@ -2250,7 +2261,7 @@ public struct Disassembler: Sendable {
             fieldMap: fieldMap,
             objcFieldSyntax: objcMethod != nil || symbolEntry != nil,
             selfTypeName: selfTypeName, vtableIndex: context.vtableIndex,
-            argumentFieldMaps: valueSelf?.argumentFieldMaps ?? [:],
+            argumentFieldMaps: valueSelf?.argumentFieldMaps ?? functionArgumentFieldMaps,
             classArgumentFieldMaps: classArgumentFieldMaps,
             classArgumentTypes: classArguments.mapValues(\.type),
             enumCaseIndex: context.enumCaseIndex,
@@ -6589,7 +6600,8 @@ public struct Disassembler: Sendable {
         classTypeIndex: ClassTypeIndex = ClassTypeIndex(), fieldMaps: [String: FieldMap] = [:],
         isOpaqueExistential: (String) -> Bool = { _ in false },
         isClassBoundExistential: (String) -> Bool = { _ in false }
-    ) -> (scalars: [String: Int], existentialTables: [String: Int])? {
+    ) -> (scalars: [String: Int], existentialTables: [String: Int],
+          fields: [String: (argument: Int, offset: Int)], fieldMaps: [Int: FieldMap])? {
         guard function.objcMethod == nil, let name = function.layoutName,
               Self.isSwiftMangled(function.symbol),
               Self.signatureSpecializationKeepsLayout(name),
@@ -6614,6 +6626,7 @@ public struct Disassembler: Sendable {
         guard !parameters.isEmpty else { return nil }
 
         var registers: [String: Int] = [:], tables: [String: Int] = [:]
+        var fields: [String: (argument: Int, offset: Int)] = [:], argumentMaps: [Int: FieldMap] = [:]
         var integerIndex = 0, floatIndex = 0
         for (index, parameter) in parameters.enumerated() {
             switch Self.scalarParameterClass(parameter, enumCaseIndex: enumCaseIndex,
@@ -6675,6 +6688,19 @@ public struct Disassembler: Sendable {
                 if let banks = SwiftLowering.aggregateRegisters(
                     of: type, fieldMaps: fieldMaps, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
                     guard integerIndex + banks.integers <= 8, floatIndex + banks.floats <= 8 else { return nil }
+                    // A struct of scalars passed in registers: each field is
+                    // the next register of its own bank, so each register is
+                    // `arg<n>.field` (`borrowFD(_ fd: FileDesc)` reads fd.fd
+                    // in w0).
+                    if let map = Self.namedFieldMap(type, in: fieldMaps),
+                       let layout = map.mixedScalarFieldBanksInRegisters {
+                        var (integer, float) = (integerIndex, floatIndex)
+                        for field in layout {
+                            if field.isFloat { fields["v\(float)"] = (index, field.offset); float += 1 }
+                            else { fields["x\(integer)"] = (index, field.offset); integer += 1 }
+                        }
+                        argumentMaps[index] = map
+                    }
                     integerIndex += banks.integers
                     floatIndex += banks.floats
                     continue
@@ -6690,7 +6716,7 @@ public struct Disassembler: Sendable {
                 integerIndex += words
             }
         }
-        return (registers, tables)
+        return (registers, tables, fields, argumentMaps)
     }
 
     /// The register class of each source parameter of a Swift callee, in order,
@@ -8573,7 +8599,7 @@ public struct Disassembler: Sendable {
         // inside another expression all name the same `self`.
         // The register each seeded parameter arrived in.
         let entryArgumentRegisters: [String: Int] = switch entry {
-        case .swiftFunction(let map, _, _, _)?, .swiftInstance(let map, _)?: map
+        case .swiftFunction(let map, _, _, _, _)?, .swiftInstance(let map, _)?: map
         default: [:]
         }
         /// `values`, the registers from x`first` on, without its trailing run

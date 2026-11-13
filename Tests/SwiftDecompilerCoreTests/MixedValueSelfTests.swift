@@ -23,6 +23,10 @@ import Testing
     #expect(scaledBy.contains("((self.scale - arg1) * Double((self.level - arg0)))"), Comment(rawValue: scaledBy))
     let narrow = try structured("MixedSelf.Narrow.sum(")
     #expect(narrow.contains("self.tag") && narrow.contains("- self.count)"), Comment(rawValue: narrow))
+    // A struct parameter, likewise, before the parameters after it:
+    // `withGauge(_ g: Gauge, _ k: Int)` has k in x2.
+    let with = try structured("MixedSelf.withGauge(")
+    #expect(with.contains("return (arg0.scale * Double((arg1 + arg0.level)))"), Comment(rawValue: with))
     // Two Int32 fields share x0; five fields go through x20.
     #expect(try structured("MixedSelf.Packed.diff(").contains("return ?"))
     #expect(try structured("MixedSelf.Wide.sum(").contains("return ?"))

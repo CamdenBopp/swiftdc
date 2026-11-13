@@ -27,3 +27,8 @@ extension Gauge {
 extension Narrow { @inline(never) public func sum() -> Int { Int(tag) &- count } }
 extension Packed { @inline(never) public func diff() -> Int32 { a &- b } }
 extension Wide { @inline(never) public func sum() -> Int { a &- b &- c &- d &- e } }
+
+// A struct parameter is passed the same way, before the parameters after
+// it: `withGauge(_ g: Gauge, _ k: Int)` takes level in x0, scale in d0,
+// limit in w1 and k in x2; returns Double(level + k) * scale.
+@inline(never) public func withGauge(_ g: Gauge, _ k: Int) -> Double { Double(g.level &+ k) * g.scale }

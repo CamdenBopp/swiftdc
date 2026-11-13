@@ -463,8 +463,9 @@ struct ABISourceLoweringTests {
     #expect(try text("callSIMD").contains("return StructArgs.fSIMD(?, ?)"))
     #expect(try text("callLead").contains("return StructArgs.fLead(arg0, ?)"))
     // A value type's method: its formal is unplaced, and `self`'s two
-    // Doubles follow it in d1 and d2, values not tracked here.
-    #expect(try text("callScaled").contains("return StructArgs.Pt.scaled(self: (?, ?), ?)"))
+    // Doubles follow it in d1 and d2: the caller's own `p`, whose fields
+    // arrive in d0 and d1 (`p.scaled(…)`).
+    #expect(try text("callScaled").contains("return StructArgs.Pt.scaled(self: (arg0.x, arg0.y), ?)"))
     // The Mix ends at x1, and W is one integer word: `self`'s 9 in x2
     // follows the formal, as a value method's `self` does, and is its self.
     #expect(try text("callTake").contains("return StructArgs.W.take(self: 9, ?)\n"))
