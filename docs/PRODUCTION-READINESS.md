@@ -3558,6 +3558,11 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   struct of up to four scalars now seeds each register as `arg<n>.field`
   (`mixedself.swift` withGauge); 47 lines in 15 fixtures, sample apps
   included, moved from `?` to fields.
+- **FIXED (7b5d6a5) — a struct passed by address was not its parameter.**
+  `callWide(_ value: Wide, …)` passed `value` on as `self` and rendered
+  `Wide.sum(arg1)`; the address register is now `arg<n>`. OPEN: field
+  reads through it (`big.c` from `[x0, #0x10]`) still decline, since the
+  tracer does not model loads through an argument pointer.
 - **OPEN — the Ghidra comparison's defects (2026-11-13).** swiftdc and
   Ghidra 12.2 scored on 2,593 function builds
   ([research/ghidra-comparison-2026-11-13.md](research/ghidra-comparison-2026-11-13.md)).
