@@ -3520,6 +3520,18 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   renders (typed array literals as raw bits, `scvtf` on UInt, `__int128`
   low half, `argN` numbering without a signature); unresolved non-fragile
   ObjC ivars; a merged throw before its cleanup.
+- **OPEN — the Ghidra comparison's defects (2026-11-13).** swiftdc and
+  Ghidra 12.2 scored on 2,593 function builds
+  ([research/ghidra-comparison-2026-11-13.md](research/ghidra-comparison-2026-11-13.md)).
+  swiftdc's wrong rows, by cause: a value-returning C function rendered with
+  a bare `return`, which reads as void (317 of 349 wrong interfaces, 277 of
+  594 wrong bodies); a checked `+` and a wrapping `&+` rendered alike, the
+  overflow trap folded away (`addTrap` and `addWrap` both `return (arg0 +
+  arg1)`); tail calls without `return` and -Osize outlined return helpers
+  dropping the result; void runtime hooks and register-target calls taking
+  leftover registers; the first segment of an -O interpolation dropped.
+  Its declines: leaves whose parameters are not seeded (`return ?` for `add
+  w0, w0, #7`), clang's `adr`/`ldrb` C jump tables.
 - **OPEN — the second ABI gap probe (2026-11-13).** Twelve more agents,
   twelve new areas (noncopyable types through instrumented builds), against
   58580ca: [research/abi-probe-2-2026-11-13.md](research/abi-probe-2-2026-11-13.md).

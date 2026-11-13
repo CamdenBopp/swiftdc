@@ -487,6 +487,23 @@ isn't a dyld cache instead of re-checking on every access, which took one
 measured `layout` run from 69.9 s to 4.4 s. `Package.swift` records why each
 dependency is pinned where it is.
 
+## Compared with Ghidra
+
+On 2,593 function builds across twelve Swift and Objective-C ABI areas,
+scored against ground truth
+([details](docs/research/ghidra-comparison-2026-11-13.md)):
+
+| | interface correct / wrong / declined | body correct / partial / wrong / declined |
+|---|---|---|
+| Ghidra 12.2 | 2,024 / 260 / 303 | 1,414 / 375 / 768 / 30 |
+| swiftdc | 1,734 / 349 / 509 | 671 / 912 / 594 / 415 |
+
+On the Swift-specific areas Ghidra's interface was wrong 129 times and
+swiftdc's 7, and Ghidra's body 375 times against 150. Ghidra recovers more
+correct bodies everywhere, and on plain C it is clearly ahead: most of
+swiftdc's wrong rows there are one open defect, a value-returning C function
+rendered with a bare `return`.
+
 ## Design notes and research
 
 [docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md) is the running
@@ -502,6 +519,8 @@ evidence showed.
 
 | Document | Subject |
 |---|---|
+| [ghidra-comparison-2026-11-13.md](docs/research/ghidra-comparison-2026-11-13.md) | swiftdc and Ghidra 12.2 scored against ground truth on 2,593 function builds: interface and body correct, wrong or declined, by ABI area |
+| [abi-probe-2026-11-13.md](docs/research/abi-probe-2026-11-13.md), [abi-probe-2-2026-11-13.md](docs/research/abi-probe-2-2026-11-13.md) | Two rounds of ABI gap probes, 32 areas, ranked by defect class |
 | [decompiler-comparison.md](docs/research/decompiler-comparison.md) | Ghidra, Malimite and LittleSwift compared: where swiftdc wins and loses, and the list of architectural debt |
 | [phase1-type-lattice.md](docs/research/phase1-type-lattice.md) | Per-value type lattice (width and signedness), which fixed the signed/unsigned comparison defect |
 | [phase2-flowing-types.md](docs/research/phase2-flowing-types.md) | Propagating types through the type state inside a body |
