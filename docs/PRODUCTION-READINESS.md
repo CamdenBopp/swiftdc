@@ -3384,7 +3384,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   which Apple reserves and nothing promises across a call; a call now
   clears it (`platformregister.s`; found by the synthetic corpus,
   odd/scratch_regs.s). Only the new fixture moved.
-- **FIXED (COMMIT) — malformed linkedit trapped, read past the file or
+- **FIXED (d4ed36b) — malformed linkedit trapped, read past the file or
   overflowed the stack.** The corpus's mutator (`Tools/synthcorpus/mutate.py`)
   found 89 crashing runs of 3,540, eleven kinds: a bind special ordinal of
   -4 (MachOKit `fatalError`); a rebase, bind or lazy stream size past the
