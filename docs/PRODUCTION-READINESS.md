@@ -3582,6 +3582,14 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   (`let r0 = use(…)`) and the return carries `// x0 = (r0 + arg1)`; the
   last call's result alone still shows nothing (`unprovenresult.c`). 260
   lines in 29 fixtures. Not re-scored against Ghidra yet.
+- **MEASURED — the comparison re-scored at 5f012f8 (2026-11-13b).** Same
+  pinned corpus, swiftdc's columns only: body correct 26% to 33%, body
+  wrong 23% to 18%, interface wrong 14% to 10% (Ghidra 54%, 30%, 10%).
+  OPEN from it: 137 frames and 22 globals bodies still lack a return value
+  (x0 is the last call's result, the result is in d0, or it is loaded);
+  collections did not move (Array loads through a pointer, traps folded
+  in loops); switch still has 60 wrong bodies (undecoded C jump tables,
+  empty loop-switch arms).
 - **OPEN — the Ghidra comparison's defects (2026-11-13).** swiftdc and
   Ghidra 12.2 scored on 2,601 function builds
   ([research/ghidra-comparison-2026-11-13.md](research/ghidra-comparison-2026-11-13.md)).

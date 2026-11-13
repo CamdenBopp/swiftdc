@@ -491,19 +491,19 @@ dependency is pinned where it is.
 
 Both tools decompiled a pinned corpus of 173 builds (2,601 function
 builds, twelve Swift, Objective-C and C areas), scored per function
-against ground truth
+against ground truth, swiftdc twice
 ([details and method](docs/research/ghidra-comparison-2026-11-13.md)):
 
-| | swiftdc | Ghidra 12.2 |
-|---|---|---|
-| Swift areas (1,077 builds): interface wrong | 1% (11) | 12% (129) |
-| Swift areas: body wrong | 14% (150) | 35% (375) |
-| Swift areas: body correct | 21% | 40% |
-| Swift areas: body partial or declined | 65% | 25% |
-| All areas (2,601 builds): interface correct | 67% | 78% |
-| All areas: interface wrong | 14% | 10% |
-| All areas: body correct | 26% | 54% |
-| All areas: body wrong | 23% | 30% |
+| | swiftdc 3837ea3 | swiftdc 5f012f8 | Ghidra 12.2 |
+|---|---|---|---|
+| Swift areas: interface wrong | 1% | 1% | 12% |
+| Swift areas: body wrong | 14% | 13% | 35% |
+| Swift areas: body correct | 21% | 24% | 40% |
+| All areas: interface correct | 67% | 67% | 78% |
+| All areas: interface wrong | 14% | 10% | 10% |
+| All areas: body correct | 26% | 33% | 54% |
+| All areas: body wrong | 23% | 18% | 30% |
+| All areas: body partial or declined | 51% | 49% | 16% |
 
 On Swift, swiftdc is wrong far less often and leaves far more partial or
 declined; Ghidra recovers more and is confidently wrong more. On plain C

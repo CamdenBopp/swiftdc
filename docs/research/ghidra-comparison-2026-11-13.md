@@ -116,6 +116,40 @@ tables are in `Tools/ghidra-compare/scores/2026-11-13/`. Scoring itself
 is by hand (agents under `RUBRIC.md`), so a re-score is a new dated
 directory, not an edit.
 
+## Re-score after the fixes (2026-11-13b)
+
+swiftdc's columns were re-scored on the same pinned corpus at 5f012f8,
+fourteen commits after the first scoring (Ghidra's columns are unchanged;
+tables in `Tools/ghidra-compare/scores/2026-11-13b/`, where `RUN.tsv`
+names the binary). The rubric gained one clause: a `return // x0 = v`
+comment claims no result, so its interface is declined, never correct,
+and its body counts only if `v` checks against the disassembly.
+
+| | swiftdc 3837ea3 | swiftdc 5f012f8 | Ghidra 12.2 |
+|---|---|---|---|
+| Swift areas: interface wrong | 1% | 1% | 12% |
+| Swift areas: body wrong | 14% | 13% | 35% |
+| Swift areas: body correct | 21% | 24% | 40% |
+| All areas: interface correct | 67% | 67% | 78% |
+| All areas: interface wrong | 14% | 10% | 10% |
+| All areas: body correct | 26% | 33% | 54% |
+| All areas: body wrong | 23% | 18% | 30% |
+| All areas: body partial or declined | 51% | 49% | 16% |
+
+swiftdc counts, 2,601 builds: interface 1734 / 356 / 511 to 1748 / 263 / 590 (correct / wrong / declined); body 671 / 912 / 594 / 424 to 862 / 990 / 466 / 283 (correct / partial / wrong / declined).
+
+What moved, by area: integer arithmetic bodies 221 to 329 correct (the C
+half from 0 of 111 to 94); Objective-C wrong bodies 25 to 4; noncopyable
+correct bodies 32 to 47 and interfaces 53 to 67; frames wrong interfaces
+257 to 173. What did not: collections (0 rows changed), and most of the
+bare-return class. Its attribution above was too generous to the fix:
+137 frames bodies, 22 globals bodies and most of switch are still wrong
+for a missing return value, because x0 there is only the last call's
+result (`return use(k)`), the result is a float in d0, or it is loaded
+from memory. No row scored worse; one new comment was wrong (a UBSan
+float function shown an `x0` that was a leftover, fixed after this
+scoring).
+
 ## What each tool gets wrong
 
 Ghidra, confidently:
