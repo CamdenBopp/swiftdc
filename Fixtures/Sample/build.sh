@@ -399,6 +399,9 @@ echo "==> direct Objective-C methods, no _cmd (objcdirect.m, -O0 and -O1)"
 $CLANG -O0 -fobjc-arc -dynamiclib -framework Foundation objcdirect.m -o libObjCDirect.O0.dylib
 $CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation objcdirect.m -o libObjCDirect.dylib
 
+echo "==> optional protocol properties, decided by the getter's list (objcoptionalprop.m, -O1)"
+$CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation objcoptionalprop.m -o libObjCOptionalProp.dylib
+
 echo "==> a signed conversion of an unsigned argument (signedfloat.swift, -O)"
 xcrun swiftc -O -parse-as-library -emit-library signedfloat.swift -module-name SignedFloat -o libSignedFloat.dylib
 

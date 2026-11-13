@@ -292,7 +292,46 @@ struct ObjCMetadataSnapshot {
             }
             snapshot.categories = (objc.categories32 ?? []).compactMap { $0.info(in: machO) }
         }
+        snapshot.protocols = snapshot.protocols.map(separatingOptionalProperties)
         return snapshot.boundingTypeNesting()
+    }
+
+    /// A protocol with each property moved to the optional lists when its
+    /// getter is listed only among the optional methods. A protocol's
+    /// property list carries no optional flag, so ObjCDump leaves every
+    /// property required: `@optional @property NSString *nickname` rendered
+    /// under `@required`. A getter listed in both method lists, or in
+    /// neither, leaves its property where it was.
+    static func separatingOptionalProperties(_ p: ObjCProtocolInfo) -> ObjCProtocolInfo {
+        func getter(_ property: ObjCPropertyInfo) -> String {
+            for attribute in property.attributesString.split(separator: ",") where attribute.hasPrefix("G") {
+                return String(attribute.dropFirst())
+            }
+            return property.name
+        }
+        func split(_ properties: [ObjCPropertyInfo], required: [ObjCMethodInfo], optional: [ObjCMethodInfo])
+            -> (required: [ObjCPropertyInfo], optional: [ObjCPropertyInfo]) {
+            let requiredNames = Set(required.map(\.name)), optionalNames = Set(optional.map(\.name))
+            var kept: [ObjCPropertyInfo] = [], moved: [ObjCPropertyInfo] = []
+            for property in properties {
+                let name = getter(property)
+                if optionalNames.contains(name), !requiredNames.contains(name) {
+                    moved.append(property)
+                } else {
+                    kept.append(property)
+                }
+            }
+            return (kept, moved)
+        }
+        let instance = split(p.properties, required: p.methods, optional: p.optionalMethods)
+        let classSide = split(p.classProperties, required: p.classMethods, optional: p.optionalClassMethods)
+        return ObjCProtocolInfo(
+            name: p.name, protocols: p.protocols.map(separatingOptionalProperties),
+            classProperties: classSide.required, properties: instance.required,
+            classMethods: p.classMethods, methods: p.methods,
+            optionalClassProperties: p.optionalClassProperties + classSide.optional,
+            optionalProperties: p.optionalProperties + instance.optional,
+            optionalClassMethods: p.optionalClassMethods, optionalMethods: p.optionalMethods)
     }
 
     /// The deepest recursion an encoding can drive a recursive decoder to,
