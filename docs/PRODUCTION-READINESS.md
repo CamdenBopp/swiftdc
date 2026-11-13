@@ -3571,6 +3571,12 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   The noise list's `objc_autorelease`/`objc_retain` prefixes matched
   `objc_autoreleasePoolPush`/`Pop` and `objc_retainBlock`; those three are
   now always shown (`runtimestatements.m`).
+- **FIXED (61f426e) — a tail branch to an in-image twin returned the
+  library's result.** `b strlen` to a vendored `void strlen` rendered
+  `return strlen(arg0)`: the C prototype now counts only for a branch that
+  leaves the image (`tailprototype.swift`, a four-case eligibility matrix).
+- **FIXED (8347f86) — `objc_opt_new` rendered as alloc/init.** It is a
+  `+new` send: `[C new]` (`optnew.m`).
 - **OPEN — the Ghidra comparison's defects (2026-11-13).** swiftdc and
   Ghidra 12.2 scored on 2,601 function builds
   ([research/ghidra-comparison-2026-11-13.md](research/ghidra-comparison-2026-11-13.md)).
