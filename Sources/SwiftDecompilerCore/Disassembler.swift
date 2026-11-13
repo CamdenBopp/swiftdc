@@ -6657,6 +6657,11 @@ public struct Disassembler: Sendable {
           fields: [String: (argument: Int, offset: Int)], fieldMaps: [Int: FieldMap])? {
         guard function.objcMethod == nil, let name = function.layoutName,
               Self.isSwiftMangled(function.symbol),
+              // `default argument 1 of print(_:separator:terminator:)` is a
+              // generator with no parameters of its own (the compiler's
+              // lowering: `define … @"…fA0_"()`); the list in its name is
+              // the function's it supplies a default for.
+              !name.hasPrefix("default argument "),
               Self.signatureSpecializationKeepsLayout(name),
               // A getter/setter/accessor or a name without a call signature has no
               // ordinary parameter list to seed.

@@ -402,6 +402,9 @@ $CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation objcdirect.m -o libObjCD
 echo "==> optional protocol properties, decided by the getter's list (objcoptionalprop.m, -O1)"
 $CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation objcoptionalprop.m -o libObjCOptionalProp.dylib
 
+echo "==> a default argument's generator takes no parameters (defaultargument.swift, -Onone)"
+xcrun swiftc -Onone -parse-as-library -emit-library defaultargument.swift -module-name DefaultArgument -o libDefaultArgument.dylib
+
 echo "==> calls through a register to an in-image function (registercall.s)"
 $CLANG -arch arm64 -dynamiclib registercall.s -o libRegisterCall.dylib
 
