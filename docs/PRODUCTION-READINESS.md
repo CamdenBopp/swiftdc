@@ -3520,6 +3520,13 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   renders (typed array literals as raw bits, `scvtf` on UInt, `__int128`
   low half, `argN` numbering without a signature); unresolved non-fragile
   ObjC ivars; a merged throw before its cleanup.
+- **FIXED (87ac62f) — a struct mixing register banks was not read as self.**
+  `Gauge { level: Int, scale: Double, limit: Int32 }.scaled()` (Ghidra
+  issue #9741) rendered `return ?`: only all-Int and all-float structs were
+  seeded. Each field now takes the next register of its own bank after the
+  formals (`mixedself.swift`); shared 8-byte units and five-field structs
+  still decline, and a class never qualifies. 48 structured lines in 11
+  fixtures moved, each a `return ?` becoming a checked field read.
 - **OPEN — the Ghidra comparison's defects (2026-11-13).** swiftdc and
   Ghidra 12.2 scored on 2,593 function builds
   ([research/ghidra-comparison-2026-11-13.md](research/ghidra-comparison-2026-11-13.md)).
