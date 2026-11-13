@@ -2,7 +2,7 @@
 
 How does swiftdc compare with Ghidra on Swift and Objective-C binaries? Both
 decompiled the same 173 fixture builds, and every user-written function was
-scored against ground truth: 2,593 function builds in twelve ABI areas.
+scored against ground truth: 2,601 function builds in twelve ABI areas.
 
 The short answer: **swiftdc says far less, and what it says is wrong far less
 often on Swift-specific code; Ghidra recovers far more, and is confidently
@@ -18,7 +18,7 @@ of one swiftdc defect (C return values, below).
   linker transforms, globals and thread-locals, stack frames and sanitizer
   builds. Each was written for the probe, with comments stating the true
   behaviour, and built at -Onone, -O and -Osize (C at -O0, -O2, -Os, plus
-  instrumented builds). They live in the scratchpad, not the repository.
+  instrumented builds), pinned in `Tools/ghidra-compare/corpus/`.
 - **Ghidra.** 12.2 (the newest release), headless, default analysis, with
   `GHIDRA_SWIFT_DEMANGLER` set so Swift names demangle, then every function's
   prototype and decompiled C (`Tools/ghidra-compare/DumpDecomp.java`).
@@ -44,43 +44,77 @@ Reproduce with `Tools/ghidra-compare/compare.sh <swiftdc> <outdir>
 
 ## Results
 
-Function builds scored, then interface (correct / wrong / declined) and body
-(correct / partial / wrong / declined), Ghidra first.
+On the Swift-specific areas, where the two tools differ most:
+
+| | swiftdc | Ghidra 12.2 |
+|---|---|---|
+| Swift areas (1,077 builds): interface wrong | 1% (11) | 12% (129) |
+| Swift areas: body wrong | 14% (150) | 35% (375) |
+| Swift areas: body correct | 21% | 40% |
+| Swift areas: body partial or declined | 65% | 25% |
+| All areas (2,601 builds): interface correct | 67% | 78% |
+| All areas: interface wrong | 14% | 10% |
+| All areas: body correct | 26% | 54% |
+| All areas: body wrong | 23% | 30% |
+
+Per area, as function builds, then interface (correct / wrong / declined)
+and body (correct / partial / wrong / declined), Ghidra first:
 
 | area | builds | Ghidra interface | swiftdc interface | Ghidra body | swiftdc body |
 |---|---|---|---|---|---|
-| noncopyable | 125 | 72 / 28 / 25 | 53 / 0 / 72 | 73 / 11 / 39 / 2 | 32 / 38 / 6 / 49 |
-| property wrappers | 110 | 71 / 22 / 17 | 49 / 0 / 61 | 70 / 9 / 27 / 4 | 26 / 45 / 14 / 25 |
-| actors | 190 | 71 / 21 / 98 | 133 / 5 / 52 | 77 / 70 / 43 / 0 | 30 / 114 / 18 / 28 |
-| strings | 267 | 240 / 8 / 19 | 228 / 2 / 37 | 38 / 100 / 127 / 2 | 107 / 119 / 25 / 16 |
+| noncopyable | 126 | 73 / 28 / 25 | 53 / 1 / 72 | 73 / 12 / 39 / 2 | 32 / 38 / 6 / 50 |
+| property wrappers | 111 | 72 / 22 / 17 | 49 / 1 / 61 | 70 / 10 / 27 / 4 | 26 / 45 / 14 / 26 |
+| actors | 191 | 72 / 21 / 98 | 133 / 6 / 52 | 77 / 71 / 43 / 0 | 30 / 114 / 18 / 29 |
+| strings | 268 | 241 / 8 / 19 | 228 / 3 / 37 | 38 / 101 / 127 / 2 | 107 / 119 / 25 / 17 |
 | collections | 175 | 144 / 29 / 2 | 175 / 0 / 0 | 110 / 7 / 58 / 0 | 3 / 114 / 43 / 15 |
 | generics, packs | 206 | 125 / 21 / 60 | 157 / 0 / 49 | 62 / 49 / 81 / 14 | 29 / 69 / 44 / 64 |
 | Objective-C runtime | 389 | 382 / 5 / 2 | 381 / 0 / 8 | 226 / 62 / 101 / 0 | 177 / 171 / 25 / 16 |
 | integer arithmetic | 398 | 358 / 34 / 6 | 283 / 0 / 115 | 369 / 0 / 23 / 6 | 221 / 30 / 36 / 111 |
-| switch lowering | 132 | 111 / 6 / 15 | 69 / 60 / 3 | 60 / 17 / 54 / 1 | 12 / 29 / 66 / 25 |
-| linker transforms | 101 | 58 / 37 / 0 † | 22 / 7 / 71 | 49 / 0 / 46 / 0 † | 9 / 41 / 12 / 38 |
-| globals | 151 | 139 / 8 / 4 | 101 / 18 / 32 | 103 / 32 / 15 / 1 | 23 / 76 / 24 / 28 |
+| switch lowering | 133 | 112 / 6 / 15 | 69 / 61 / 3 | 60 / 18 / 54 / 1 | 12 / 29 / 66 / 26 |
+| linker transforms | 102 | 58 / 37 / 6 | 22 / 7 / 73 | 49 / 0 / 47 / 6 | 9 / 41 / 12 / 40 |
+| globals | 153 | 141 / 8 / 4 | 101 / 20 / 32 | 103 / 34 / 15 / 1 | 23 / 76 / 24 / 30 |
 | frames, sanitizers | 349 | 253 / 41 / 55 | 83 / 257 / 9 | 177 / 18 / 154 / 0 | 2 / 66 / 281 / 0 |
-| **total** | **2,593** | **2,024 / 260 / 303** | **1,734 / 349 / 509** | **1,414 / 375 / 768 / 30** | **671 / 912 / 594 / 415** |
+| **total** | **2,601** | **2031 / 260 / 309** | **1734 / 356 / 511** | **1414 / 382 / 769 / 36** | **671 / 912 / 594 / 424** |
 
-† Ghidra did not create 6 linker functions (every function that is a pure
-tail jump); they are not in its counts.
+These are recomputed from the committed per-function tables by
+`Tools/ghidra-compare/tally.py Tools/ghidra-compare/scores/2026-11-13`.
+The first version of this document quoted each scorer's own totals
+(2,593 builds; 349 and 7 where the tables give 356 and 11 for swiftdc's
+wrong interfaces overall and on Swift): the tables are the record, and a
+function Ghidra did not emit counts as declined.
 
 ### Reading it
 
-- **Swift-specific areas** (noncopyable through generics, six areas, 1,073
-  builds): Ghidra's interface is wrong 129 times, swiftdc's 7. Ghidra's body
-  is wrong 375 times, swiftdc's 150. Ghidra's body is correct 430 times,
-  swiftdc's 227.
+- **Swift**: swiftdc's interface is wrong on 1% of builds and Ghidra's on
+  12%; its body is wrong on 14% and Ghidra's on 35%. The price is that 65%
+  of swiftdc's Swift bodies are partial or declined against Ghidra's 25%,
+  and Ghidra gets twice as many bodies fully right. For output an analyst
+  checks, wrong is the expensive outcome; for a first read, Ghidra shows
+  more.
 - **Objective-C**: both get almost every interface right. Ghidra's body is
   correct more often (226 against 177) and wrong four times as often (101
   against 25).
 - **C-heavy areas** (switch, globals, frames, and the C half of integer
-  arithmetic): swiftdc's interface WRONGs (317 of its 349) and most of its
-  body WRONGs come from one defect: a value-returning C function renders a
-  bare `return`, which reads as void. Counted as a decline instead, swiftdc's
-  interface is wrong 32 times in total, and its body WRONGs drop from 594 to
-  317.
+  arithmetic): Ghidra is plainly better. One swiftdc defect, a
+  value-returning C function rendered with a bare `return`, is 317 of its
+  356 wrong interfaces and 277 of its 594 wrong bodies (first addressed
+  in 36ba8db; not re-scored yet).
+- **Overall**, swiftdc's body is fully correct on 26% of builds and
+  Ghidra's on 54%. No single percentage describes swiftdc better than
+  that one, and it is the number to move.
+
+## Reproducing it
+
+The corpus is pinned: `Tools/ghidra-compare/corpus/` holds the 70 sources,
+`build.sh` builds the 173 dylibs, and `MANIFEST.tsv` records each one's
+code hash (`check.sh` verifies a build against it; all 173 match on the
+toolchain named there). `Tools/ghidra-compare/compare.sh <swiftdc>
+<outdir>` builds and checks the corpus, renders it with both tools, and
+writes `RUN.tsv`: the swiftdc binary's hash, the revision, Ghidra's
+version, the toolchain and every input's hash. The rubric and the scored
+tables are in `Tools/ghidra-compare/scores/2026-11-13/`. Scoring itself
+is by hand (agents under `RUBRIC.md`), so a re-score is a new dated
+directory, not an edit.
 
 ## What each tool gets wrong
 
@@ -128,8 +162,8 @@ Neither tool attributed an identically-folded body to the wrong name.
 | `sumAll` (-O) | traps on overflow | `SCARRY8(…)` then the trap | the trap is gone |
 | `-[Kid sum:]` (O2) | fast enumeration sum | the whole loop | `[? integerValue]`, `return ?` |
 
-Per-function tables and more examples are in the scratchpad score files; the
-counts above are their totals.
+Per-function tables and more examples are in
+`Tools/ghidra-compare/scores/2026-11-13/`.
 
 ## Defects this found in swiftdc
 

@@ -3572,7 +3572,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   `objc_autoreleasePoolPush`/`Pop` and `objc_retainBlock`; those three are
   now always shown (`runtimestatements.m`).
 - **OPEN — the Ghidra comparison's defects (2026-11-13).** swiftdc and
-  Ghidra 12.2 scored on 2,593 function builds
+  Ghidra 12.2 scored on 2,601 function builds
   ([research/ghidra-comparison-2026-11-13.md](research/ghidra-comparison-2026-11-13.md)).
   swiftdc's wrong rows, by cause: a value-returning C function rendered with
   a bare `return`, which reads as void (317 of 349 wrong interfaces, 277 of

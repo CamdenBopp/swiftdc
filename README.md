@@ -489,20 +489,26 @@ dependency is pinned where it is.
 
 ## Compared with Ghidra
 
-On 2,593 function builds across twelve Swift and Objective-C ABI areas,
-scored against ground truth
-([details](docs/research/ghidra-comparison-2026-11-13.md)):
+Both tools decompiled a pinned corpus of 173 builds (2,601 function
+builds, twelve Swift, Objective-C and C areas), scored per function
+against ground truth
+([details and method](docs/research/ghidra-comparison-2026-11-13.md)):
 
-| | interface correct / wrong / declined | body correct / partial / wrong / declined |
+| | swiftdc | Ghidra 12.2 |
 |---|---|---|
-| Ghidra 12.2 | 2,024 / 260 / 303 | 1,414 / 375 / 768 / 30 |
-| swiftdc | 1,734 / 349 / 509 | 671 / 912 / 594 / 415 |
+| Swift areas (1,077 builds): interface wrong | 1% (11) | 12% (129) |
+| Swift areas: body wrong | 14% (150) | 35% (375) |
+| Swift areas: body correct | 21% | 40% |
+| Swift areas: body partial or declined | 65% | 25% |
+| All areas (2,601 builds): interface correct | 67% | 78% |
+| All areas: interface wrong | 14% | 10% |
+| All areas: body correct | 26% | 54% |
+| All areas: body wrong | 23% | 30% |
 
-On the Swift-specific areas Ghidra's interface was wrong 129 times and
-swiftdc's 7, and Ghidra's body 375 times against 150. Ghidra recovers more
-correct bodies everywhere, and on plain C it is clearly ahead: most of
-swiftdc's wrong rows there are one open defect, a value-returning C function
-rendered with a bare `return`.
+On Swift, swiftdc is wrong far less often and leaves far more partial or
+declined; Ghidra recovers more and is confidently wrong more. On plain C
+Ghidra is clearly better. The corpus, rubric, scored tables and the
+script that totals them are in `Tools/ghidra-compare/`.
 
 ## Design notes and research
 
@@ -519,7 +525,7 @@ evidence showed.
 
 | Document | Subject |
 |---|---|
-| [ghidra-comparison-2026-11-13.md](docs/research/ghidra-comparison-2026-11-13.md) | swiftdc and Ghidra 12.2 scored against ground truth on 2,593 function builds: interface and body correct, wrong or declined, by ABI area |
+| [ghidra-comparison-2026-11-13.md](docs/research/ghidra-comparison-2026-11-13.md) | swiftdc and Ghidra 12.2 scored against ground truth on 2,601 function builds: interface and body correct, wrong or declined, by ABI area |
 | [abi-probe-2026-11-13.md](docs/research/abi-probe-2026-11-13.md), [abi-probe-2-2026-11-13.md](docs/research/abi-probe-2-2026-11-13.md) | Two rounds of ABI gap probes, 32 areas, ranked by defect class |
 | [decompiler-comparison.md](docs/research/decompiler-comparison.md) | Ghidra, Malimite and LittleSwift compared: where swiftdc wins and loses, and the list of architectural debt |
 | [phase1-type-lattice.md](docs/research/phase1-type-lattice.md) | Per-value type lattice (width and signedness), which fixed the signed/unsigned comparison defect |
