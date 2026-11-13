@@ -3553,6 +3553,11 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   Its existential metatype is the metadata pointer alone (no witness
   tables), so functions returning one declined and parameters after one
   lost their registers; now one integer register (`anyobjectmeta.swift`).
+- **FIXED (d55b351) — struct parameters passed as fields were never seeded.**
+  `borrowFD(_ fd: FileDesc)` rendered `return ?` for `add w0, w0, #7`. A
+  struct of up to four scalars now seeds each register as `arg<n>.field`
+  (`mixedself.swift` withGauge); 47 lines in 15 fixtures, sample apps
+  included, moved from `?` to fields.
 - **OPEN — the Ghidra comparison's defects (2026-11-13).** swiftdc and
   Ghidra 12.2 scored on 2,593 function builds
   ([research/ghidra-comparison-2026-11-13.md](research/ghidra-comparison-2026-11-13.md)).
