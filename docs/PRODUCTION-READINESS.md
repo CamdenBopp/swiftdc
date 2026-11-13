@@ -3369,7 +3369,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   an if/else whose arms both leave, where nothing falls through. One
   structured line moved in every fixture and toolchain library.
 
-- **FIXED (COMMIT) — a compare that writes its own operand read one step
+- **FIXED (9bb1427) — a compare that writes its own operand read one step
   off.** `subs w19, w19, #2; b.hi` compares the value before the
   subtraction, but the text path named the register, which at the branch
   holds the value after it: `if (w19 >ᵁ 2)` where the test is `w19 >ᵁ 0`
