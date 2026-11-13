@@ -5415,6 +5415,18 @@ public struct Disassembler: Sendable {
             name.hasPrefix("_") ? String(name.dropFirst()) : name
         }
 
+        /// Whether an import's own addend is zero, read from its raw field.
+        /// MachOKit's `addend` converts the 64-bit form to `Int` and traps on
+        /// one with the top bit set, which the direct retain/release runtime
+        /// binds (`__swift_retainRelease_slowpath_mask_v1 + 0x8000000000000000`).
+        private static func addendIsZero(_ entry: DyldChainedImport) -> Bool {
+            switch entry {
+            case .general: true
+            case let .addend(info): info.layout.addend == 0
+            case let .addend64(info): info.layout.addend == 0
+            }
+        }
+
         private func build(_ machO: MachOFile) {
             guard !built else { return }
             built = true
@@ -5440,12 +5452,13 @@ public struct Disassembler: Sendable {
                               let name = fixups.symbolName(for: imports[ordinal].info.nameOffset) {
                         binds[offset] = name
                         let entry = imports[ordinal].info
+                        let entryAddendIsZero = Self.addendIsZero(imports[ordinal])
                         if DisassembledFunction.isARCReferenceHelper(Self.arcName(name)),
-                           pointerAddend == 0, entry.addend == 0, !entry.isWeakImport,
+                           pointerAddend == 0, entryAddendIsZero, !entry.isWeakImport,
                            let library = Disassembler.externalLibraryName(ordinal: entry.libraryOrdinal, in: machO) {
                             arcFunctions[offset] = RuntimeFunctionReference(rawSymbol: name, libraryName: library)
                         }
-                        if pointerAddend == 0, entry.addend == 0, !entry.isWeakImport,
+                        if pointerAddend == 0, entryAddendIsZero, !entry.isWeakImport,
                            let library = Disassembler.externalLibraryName(ordinal: entry.libraryOrdinal, in: machO) {
                             importedFunctions[offset] = ImportedFunctionReference(rawSymbol: name, libraryName: library)
                         }
