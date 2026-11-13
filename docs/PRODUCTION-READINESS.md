@@ -3414,6 +3414,19 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   renders (typed array literals as raw bits, `scvtf` on UInt, `__int128`
   low half, `argN` numbering without a signature); unresolved non-fragile
   ObjC ivars; a merged throw before its cleanup.
+- **OPEN — the second ABI gap probe (2026-11-13).** Twelve more agents,
+  twelve new areas (noncopyable types through instrumented builds), against
+  58580ca: [research/abi-probe-2-2026-11-13.md](research/abi-probe-2-2026-11-13.md).
+  Ranked: calls taking arguments the binary bounds away (every `Task {}`
+  site's `TaskPriority.rawValue.getter(arg0)`, zero-formal Array members,
+  value-type deinits, `blr` to an in-image function, the stack probe read
+  as writing every argument register); signed compares on UInt operands;
+  code dropped (a bounds trap folded as an overflow guard, C stores with an
+  extended index, autorelease pools and `objc_retainBlock` hidden by
+  prefix, an interpolation's first segment, `yield`s); wrong values and
+  names (UTF-16 CFStrings truncated, `objc_opt_new` as alloc/init, a GOT
+  data import as its value, an `stp` split out of order, -O0 jump tables
+  rendered as functions); interface spelling; unseeded entries.
 - **OPEN — the synthetic corpus's findings.** `Tools/synthcorpus` (sources
   with hand-checked EXPECT/FORBID directives, `check.py`, `mutate.py`) found,
   against dev 17e6f4c, each listed with its source in its README. Soundness:
