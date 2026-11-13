@@ -251,6 +251,9 @@ public enum MachOPreflight {
         }
         try validateSymbolStrings(prefix: prefix, image: image, path: path)
         try validateChainedFixupsHeader(prefix: prefix, image: image, path: path)
+        try validateChainedImports(prefix: prefix, image: image, path: path)
+        try validateBindSpecialOrdinals(prefix: prefix, image: image, path: path)
+        try validateFunctionStarts(prefix: prefix, image: image, path: path)
         try validateExportTries(prefix: prefix, image: image, path: path)
 
         // Section CONTENTS, for a thin little-endian image. A fat file's
@@ -1134,7 +1137,24 @@ public enum MachOPreflight {
             let index = entries.segments.count - 1
             for page in 0..<Int(pageCount) {
                 guard let first = blob.u16(at: base + 22 + 2 * page) else { break }
-                if first == 0xffff || first & 0x8000 != 0 { continue }   // none, or 32-bit multi-starts
+                if first == 0xffff { continue }
+                if first & 0x8000 != 0 {
+                    // Several chains in one page (32-bit formats): an index into
+                    // the page-start array, read until an entry marked last.
+                    // MachOKit indexes it unchecked: an index past the array
+                    // trapped (`DyldChainedFixups.pointers`).
+                    var overflow = Int(first & 0x7fff)
+                    while true {
+                        guard overflow < Int(pageCount), let entry = blob.u16(at: base + 22 + 2 * overflow) else {
+                            throw BinaryLoadError(
+                                "Malformed Mach-O: \(path) — fixup chains in segment \(segment), page \(page) continue past the page-start array"
+                            )
+                        }
+                        if entry & 0x8000 != 0 { break }
+                        overflow += 1
+                    }
+                    continue
+                }
                 var offset = Int(first)
                 while true {
                     let slot = page * Int(pageSize) + offset
@@ -1389,6 +1409,11 @@ public enum MachOPreflight {
               nsyms > 0
         else { return }
         let entrySize = magic == Magic.machO64LE ? 16 : 12   // nlist_64 / nlist
+        // No string table for symbols that need one: swiftdc's symbol-stub
+        // scan copied a symbol list that read short, and trapped.
+        guard strsize > 0 else {
+            throw BinaryLoadError("Malformed Mach-O: \(path) — \(nsyms) symbol(s) and an empty string table")
+        }
         guard let entries = image.read(offset: Int(symoff), count: Int(nsyms) * entrySize),
               let strings = image.read(offset: Int(stroff), count: Int(strsize))
         else { return }
@@ -1446,6 +1471,148 @@ public enum MachOPreflight {
         }
     }
 
+    /// The import table fits its payload, and each import's name starts
+    /// inside the symbol pool and ends there. MachOKit maps `imports_count`
+    /// entries unchecked and reads each name with `String(cString:)`: a huge
+    /// count (or a format whose entries are wider) read past the file
+    /// (SIGSEGV), and a name past the pool ran `strlen` into whatever was
+    /// mapped beyond it (SIGBUS).
+    static func validateChainedImports(prefix: Data, image: ImageReader, path: String) throws {
+        guard let fixups = chainedFixups(prefix: prefix),
+              let header = image.read(offset: fixups.dataoff, count: chainedFixupsHeader),
+              let importsOffset = header.u32(at: 8), let symbolsOffset = header.u32(at: 12),
+              let count = header.u32(at: 16), let format = header.u32(at: 20)
+        else { return }
+        func fail(_ why: String) -> BinaryLoadError {
+            BinaryLoadError("Malformed Mach-O: \(path) — chained fixups \(why)")
+        }
+        let entry: UInt64
+        switch format {
+        case 1: entry = 4       // dyld_chained_import
+        case 2: entry = 8       // dyld_chained_import_addend
+        case 3: entry = 16      // dyld_chained_import_addend64
+        default: return         // the header check names it
+        }
+        let size = UInt64(fixups.datasize)
+        guard UInt64(importsOffset) + UInt64(count) * entry <= size else {
+            throw fail("list \(count) import(s) of \(entry) bytes at \(importsOffset), past their \(size) bytes")
+        }
+        guard count > 0, UInt64(symbolsOffset) <= size,
+              let imports = image.read(offset: fixups.dataoff + Int(importsOffset), count: Int(UInt64(count) * entry)),
+              let pool = image.read(offset: fixups.dataoff + Int(symbolsOffset), count: fixups.datasize - Int(symbolsOffset))
+        else { return }
+        let poolBytes = [UInt8](pool)
+        for index in 0 ..< Int(count) {
+            let at = index * Int(entry)
+            let name: Int
+            switch format {
+            case 1: name = Int((imports.u32(at: at) ?? 0) >> 9)            // name_offset:23 after lib_ordinal:8, weak:1
+            case 2: name = Int((imports.u32(at: at) ?? 0) >> 9)
+            default: name = Int(imports.u64(at: at).map { $0 >> 32 } ?? 0)   // lib_ordinal:16, weak:1, reserved:15, name_offset:32
+            }
+            guard name < poolBytes.count, poolBytes[name...].contains(0) else {
+                throw fail("name import \(index) at \(name), outside or unterminated in their \(poolBytes.count)-byte symbol pool")
+            }
+        }
+    }
+
+    /// No bind opcode stream may name a special dylib ordinal dyld does not
+    /// define (0 self, -1 main executable, -2 flat lookup, -3 weak lookup):
+    /// MachOKit's `BindOperation` stops on any other with `fatalError`
+    /// (`SET_DYLIB_SPECIAL_IMM` -4 trapped every view but dump).
+    static func validateBindSpecialOrdinals(prefix: Data, image: ImageReader, path: String) throws {
+        guard let filetype = prefix.u32(at: 12), FileType.loadable.contains(filetype) else { return }
+        for command in loadCommands(prefix: prefix) where Command.dyldInfo.contains(command.cmd) {
+            for (stream, name) in [(1, "bind"), (2, "weak bind"), (3, "lazy bind")] {
+                guard let offset = prefix.u32(at: command.offset + 8 + 8 * stream),
+                      let size = prefix.u32(at: command.offset + 12 + 8 * stream), size > 0,
+                      let bytes = image.read(offset: Int(offset), count: Int(size))
+                else { continue }
+                if let special = unknownBindSpecial([UInt8](bytes)) {
+                    throw BinaryLoadError("Malformed Mach-O: \(path) — the \(name) stream names special dylib ordinal \(special)")
+                }
+            }
+        }
+    }
+
+    /// The first special ordinal outside 0...-3 a bind opcode stream sets, or
+    /// nil. Walks the opcodes' operands; a stream it cannot follow (an
+    /// unterminated ULEB or name) stops the walk, which MachOKit survives.
+    static func unknownBindSpecial(_ bytes: [UInt8]) -> Int? {
+        var cursor = 0
+        func skipULEB() -> Bool {
+            while cursor < bytes.count {
+                let byte = bytes[cursor]
+                cursor += 1
+                if byte & 0x80 == 0 { return true }
+            }
+            return false
+        }
+        while cursor < bytes.count {
+            let byte = bytes[cursor]
+            cursor += 1
+            let immediate = Int(byte & 0x0f)
+            switch byte & 0xf0 {
+            case 0x30:                                      // SET_DYLIB_SPECIAL_IMM
+                if immediate != 0 && immediate < 0x0d { return immediate - 16 }
+            case 0x20, 0x60, 0x70, 0x80, 0xa0:              // one ULEB/SLEB operand
+                guard skipULEB() else { return nil }
+            case 0xc0:                                      // two ULEBs
+                guard skipULEB(), skipULEB() else { return nil }
+            case 0x40:                                      // a symbol name
+                guard let end = bytes[cursor...].firstIndex(of: 0) else { return nil }
+                cursor = end + 1
+            case 0xd0:                                      // threaded
+                if immediate == 0 { guard skipULEB() else { return nil } }
+            default:
+                break
+            }
+        }
+        return nil
+    }
+
+    /// LC_FUNCTION_STARTS: a run of ULEB deltas from the text base whose sum
+    /// must stay in range. MachOKit adds them unchecked, and a delta that
+    /// wrapped the sum below the previous start trapped
+    /// (`FunctionStart.readNext`) on every view but dump and interface.
+    static func validateFunctionStarts(prefix: Data, image: ImageReader, path: String) throws {
+        guard let filetype = prefix.u32(at: 12), FileType.loadable.contains(filetype) else { return }
+        for command in loadCommands(prefix: prefix) where command.cmd == 0x26 {
+            guard let offset = prefix.u32(at: command.offset + 8), let size = prefix.u32(at: command.offset + 12),
+                  size > 0, let bytes = image.read(offset: Int(offset), count: Int(size))
+            else { continue }
+            if let why = functionStartsDefect([UInt8](bytes)) {
+                throw BinaryLoadError("Malformed Mach-O: \(path) — \(why)")
+            }
+        }
+    }
+
+    /// What is wrong with an LC_FUNCTION_STARTS payload, or nil: the sum of
+    /// its ULEB deltas must not pass 2^64. A truncated last delta or the
+    /// zero padding after the run ends it, as MachOKit's reader does.
+    static func functionStartsDefect(_ bytes: [UInt8]) -> String? {
+        var cursor = 0
+        var sum: UInt64 = 0
+        while cursor < bytes.count {
+            var value: UInt64 = 0
+            var shift: UInt64 = 0
+            var ended = false
+            while cursor < bytes.count {
+                let byte = bytes[cursor]
+                cursor += 1
+                guard shift < 64 else { break }
+                value |= UInt64(byte & 0x7f) << shift
+                shift += 7
+                if byte & 0x80 == 0 { ended = true; break }
+            }
+            guard ended else { break }
+            let (next, overflow) = sum.addingReportingOverflow(value)
+            guard !overflow else { return "function starts wrap past 2^64 after offset 0x\(String(sum, radix: 16))" }
+            sum = next
+        }
+        return nil
+    }
+
     /// Every export trie's nodes must lie inside it, and each be reached once.
     static func validateExportTries(prefix: Data, image: ImageReader, path: String) throws {
         guard let filetype = prefix.u32(at: 12), FileType.loadable.contains(filetype) else { return }
@@ -1487,9 +1654,14 @@ public enum MachOPreflight {
             }
             return nil
         }
+        // Depth too: an acyclic chain 100,000 nodes deep overflowed MachOKit's
+        // recursion (`interface`, SIGBUS). A real trie is as deep as its
+        // longest name has edges, far below this.
+        let maximumDepth = 4096
         var seen: Set<Int> = [0]
-        var pending = [0]
-        while let node = pending.popLast() {
+        var pending = [(node: 0, depth: 0)]
+        while let (node, depth) = pending.popLast() {
+            guard depth <= maximumDepth else { return "is more than \(maximumDepth) nodes deep" }
             var cursor = node
             guard let terminal = uleb(&cursor), terminal <= UInt64(bytes.count - cursor) else {
                 return "node at \(node) overruns its \(bytes.count) bytes"
@@ -1509,7 +1681,7 @@ public enum MachOPreflight {
                 guard seen.insert(Int(child)).inserted else {
                     return "reaches the node at \(child) twice"
                 }
-                pending.append(Int(child))
+                pending.append((Int(child), depth + 1))
             }
         }
         return nil
@@ -2323,6 +2495,19 @@ public enum MachOPreflight {
             try validateDylib(at: offset, prefix: prefix, bigEndian: bigEndian, index: index, fail: fail)
         case Command.buildVersion:
             try validateBuildVersion(at: offset, prefix: prefix, bigEndian: bigEndian, index: index, fail: fail)
+        case let cmd where Command.dyldInfo.contains(cmd) && loadable:
+            // The rebase, bind, weak, lazy and export streams. MachOKit reads
+            // each with `try!`: a size past the end of the file trapped
+            // (`FileIOError.offsetOutOfBounds`) in disasm, objc and xrefs.
+            let streams = ["rebase", "bind", "weak bind", "lazy bind", "export"]
+            for (stream, name) in streams.enumerated() {
+                guard let dataoff = prefix.u32(at: offset + 8 + 8 * stream, bigEndian: bigEndian),
+                      let datasize = prefix.u32(at: offset + 12 + 8 * stream, bigEndian: bigEndian)
+                else { return }
+                guard Int(dataoff) <= fileSize, Int(datasize) <= fileSize - Int(dataoff) else {
+                    throw fail("load command \(index) puts its \(datasize)-byte \(name) stream at offset \(dataoff) of a \(fileSize)-byte file")
+                }
+            }
         case let cmd where Command.linkeditData.contains(cmd) && loadable:
             // Only a loadable image: a dSYM keeps these commands with offsets
             // into the binary it was split from.

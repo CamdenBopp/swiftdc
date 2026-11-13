@@ -3384,6 +3384,17 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   which Apple reserves and nothing promises across a call; a call now
   clears it (`platformregister.s`; found by the synthetic corpus,
   odd/scratch_regs.s). Only the new fixture moved.
+- **FIXED (COMMIT) — malformed linkedit trapped, read past the file or
+  overflowed the stack.** The corpus's mutator (`Tools/synthcorpus/mutate.py`)
+  found 89 crashing runs of 3,540, eleven kinds: a bind special ordinal of
+  -4 (MachOKit `fatalError`); a rebase, bind or lazy stream size past the
+  end of the file (`try!`); function starts whose deltas wrap (unchecked
+  add); symbols with an empty string table (swiftdc's own stub scan); a
+  chained-fixup import count past its payload, an import name outside the
+  pool (unbounded reads); a multi-start page past the page-start array
+  (unchecked index); and a 100,000-node export trie (MachOKit's recursion).
+  The preflight declines each by its own cause before any reader reaches
+  it. All 3,540 runs now exit cleanly; no render moved.
 - **OPEN — the synthetic corpus's findings.** `Tools/synthcorpus` (sources
   with hand-checked EXPECT/FORBID directives, `check.py`, `mutate.py`) found,
   against dev 17e6f4c, each listed with its source in its README. Soundness:
@@ -3396,12 +3407,9 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   in a loop without `await`, unnamed 32-bit and call-seeded counters, the
   plain listing's dropped stack arguments and fabricated `_cmd`, an orphan
   block merged into a function, a literal pool decoded as code, noreturn
-  calls joined to `return` at -O0. Robustness (`mutate.py`, 89 of 3540
-  runs): MachOKit traps or unbounded reads on a bind special ordinal of -4,
-  opcode stream sizes past the end of the file, function starts that wrap,
-  a zero string-table size, chained-fixup starts past their array, a huge
-  import count, an import name past the pool, and a 100k-deep export trie.
-  Baseline at b45a1c9: 226 products, 53 failing, all on directives.
+  calls joined to `return` at -O0. The robustness findings are FIXED
+  below. Baseline at b45a1c9: 226 products, 53 failing, all on directives;
+  52 after the x18 fix.
 - **FIXED (b45a1c9) — a compare whose operand is rewritten before the branch
   read one step late.** `cmp w21, w19; add w21, w21, #3; b.lt` rendered
   `w21 < w19`, three off, and `cmp w19, #2; lsr w19, w19, #1; b.lo` a test

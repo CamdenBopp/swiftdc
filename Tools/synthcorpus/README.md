@@ -77,7 +77,7 @@ failure.
   - An orphan block merged into the previous function; a branch out of the
     span to a non-start dropped; a literal pool decoded as code; noreturn
     calls joined to `return` at -O0.
-- Robustness (mutate.py): MachOKit `fatalError`/`try!`/unchecked arithmetic
+- FIXED (COMMIT), robustness (mutate.py): MachOKit `fatalError`/`try!`/unchecked arithmetic
   or unbounded reads on a bind special ordinal of -4, opcode stream sizes
   past the end of the file, function starts that wrap below the previous,
   a zero string-table size, chained-fixup starts past their array, a huge
