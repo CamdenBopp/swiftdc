@@ -3548,7 +3548,11 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   rendered a bare call. Getters of the caller's result type, C entry
   points returning one integer register, and generic callers now qualify
   (`tailforward.swift`); 112 lines in 38 fixtures gained `return`.
-  `AnyObject.Type` results still decline: not yet one register.
+  (`AnyObject.Type` results since 9997a59.)
+- **FIXED (9997a59) — `AnyObject.Type` laid out as several registers.**
+  Its existential metatype is the metadata pointer alone (no witness
+  tables), so functions returning one declined and parameters after one
+  lost their registers; now one integer register (`anyobjectmeta.swift`).
 - **OPEN — the Ghidra comparison's defects (2026-11-13).** swiftdc and
   Ghidra 12.2 scored on 2,593 function builds
   ([research/ghidra-comparison-2026-11-13.md](research/ghidra-comparison-2026-11-13.md)).
