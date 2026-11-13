@@ -3499,6 +3499,14 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   among the optional methods now renders under @optional
   (`objcoptionalprop.m`, found by the ABI probe). `objc --image
   Foundation` moves six lines, each @optional in the SDK headers.
+- **FIXED (7602e01) — the key path intrinsics took live registers as
+  arguments.** `swift_getAtKeyPath(local_30, arg1, arg1, arg2)` at -O: the
+  generic stdlib entry points are outside the generated runtime table. A
+  hand-checked table gives the getter two arguments plus its x8 result
+  buffer as an input and each setter three, each read from libswiftCore's
+  body (`keypathintrinsics.swift`, `.s`). Giving the getter its arity
+  alone kept a value stored in its result buffer across the call; passing
+  x8 is part of the fix.
 - **OPEN — the ABI gap probe (2026-11-13).** Twenty read-only agents, one
   ABI area each, checked dev 6b3fd16 against the plain listing of their own
   fixtures: [research/abi-probe-2026-11-13.md](research/abi-probe-2026-11-13.md).
