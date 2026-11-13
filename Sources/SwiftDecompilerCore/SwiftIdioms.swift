@@ -222,6 +222,19 @@ extension DisassembledFunction {
     ///   `f(Swift.Int) -> (Swift.Double) -> Swift.Int`. The *first* depth-0
     ///   arrow ends the declaration. A closure's own name continues after its
     ///   result with ` in <context>`; that tail is not part of the result type.
+    /// Whether a demangled name is a storage entity (`name.accessor :
+    /// Type`), not a function: a top-level ` : ` that no top-level ` -> `
+    /// precedes. The demangler prints an accessor, a variable initializer
+    /// and a property wrapper initializer this way, and an arrow after the
+    /// colon is part of the storage's type. A closure inside an accessor
+    /// (`closure #1 (Swift.Int) -> Swift.Int in M.C.h.getter : …`) has its
+    /// own arrow first and is a function.
+    static func isStorageEntityName(_ name: String) -> Bool {
+        guard let colon = topLevelRange(of: " : ", in: name) else { return false }
+        guard let arrow = topLevelRange(of: " -> ", in: name) else { return true }
+        return colon.lowerBound < arrow.lowerBound
+    }
+
     static func splitSignature(
         _ name: String
     ) -> (head: String, result: String, isAsync: Bool, isThrowing: Bool, thrownType: String?)? {

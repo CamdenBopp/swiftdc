@@ -94,10 +94,16 @@ private func decoded(
 @Test func onlyCLevelSymbolsAndNonThrowingSignaturesProvablyDoNotThrow() {
     for callee in ["memset", "objc_msgSend", "swift_retain",
                    "M.f(Swift.Int) -> Swift.Int",
+                   // A closure in an accessor is a function with its own arrow.
+                   "closure #1 (Swift.Int) -> Swift.Int in M.C.h.getter : (Swift.Int) -> Swift.Int",
                    "outlined destroy of M.T", "type metadata accessor for M.T"] {
         #expect(ValueTracer.provablyDoesNotThrow(callee), "\(callee)")
     }
     for callee in ["", "sub_1000", "M.Validator.method", "M.T.p.getter : Swift.Int",
+                   // The arrow is the storage type's: `get throws` prints the same.
+                   "M.T.subscript.getter : (Swift.Int, Swift.Int) -> Swift.Int",
+                   "static M.T.subscript.getter : (Swift.Int) -> Swift.Int",
+                   "M.T.fn.getter : (Swift.Int) -> Swift.Int",
                    "M.f(Swift.Int) throws -> Swift.Int", "M.f() throws(M.E) -> ()"] {
         #expect(!ValueTracer.provablyDoesNotThrow(callee), "\(callee)")
     }
@@ -286,4 +292,22 @@ private func statementsAfterThrow(_ body: String) -> [String] {
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let text = try #require(functions.first { $0.displayName.hasPrefix("ThrowSelect.plainThrow(") }).renderStructured()
     #expect(text.contains("return (arg0 + (arg0 << 1))"), Comment(rawValue: text))
+}
+
+/// A throwing getter whose storage type is a function type keeps its error
+/// test. `S.subscript.getter : (Swift.Int, Swift.Int) -> Swift.Int` read as
+/// a signature without `throws`, so the caller's armed `mov x21, #0`
+/// survived the call and the test folded: `return ((0 != 0) ? -8 : (r0 +
+/// 100))` with `swift_errorRelease(0)` (`throwinggetter.swift`, -O).
+@Test func aThrowingGetterOfFunctionShapedStorageKeepsItsErrorTestIfPresent() async throws {
+    let path = "Fixtures/Sample/libThrowingGetter.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    for name in ["sub2", "staticSub", "fnProp"] {
+        let function = try #require(functions.first { $0.displayName.contains(".\(name)(") }, "no \(name)")
+        let text = function.renderStructured()
+        #expect(text.contains("error != nil") || text.contains("error == nil"), Comment(rawValue: text))
+        #expect(!text.contains("(0 != 0)") && !text.contains("(0 == 0)") && !text.contains("swift_errorRelease(0)"),
+                Comment(rawValue: text))
+    }
 }

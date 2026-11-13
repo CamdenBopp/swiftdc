@@ -411,6 +411,9 @@ $CLANG -arch arm64 -dynamiclib registercall.s -o libRegisterCall.dylib
 echo "==> a chained bind whose 64-bit import addend has the top bit set (bindaddend.s)"
 $CLANG -arch arm64 -dynamiclib bindaddend.s -lobjc -o libBindAddend.dylib
 
+echo "==> throwing getters whose storage type is a function type (throwinggetter.swift, -O)"
+$SWIFTC -O -parse-as-library -emit-library -module-name TG throwinggetter.swift -o libThrowingGetter.dylib
+
 echo "==> when a tail branch to a C-named callee returns its result (tailprototype.swift + tailprototype_twin.c, -O)"
 $CLANG -O2 -fno-builtin -c tailprototype_twin.c -o tailprototype_twin.o
 xcrun swiftc -O -parse-as-library -emit-library tailprototype.swift tailprototype_twin.o -module-name TailPrototype -Xlinker -undefined -Xlinker dynamic_lookup -o libTailPrototype.dylib

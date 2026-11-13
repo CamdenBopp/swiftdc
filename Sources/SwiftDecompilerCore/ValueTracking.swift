@@ -1691,6 +1691,11 @@ public struct ValueTracer: Sendable {
         guard !callee.isEmpty, !callee.hasPrefix("sub_") else { return false }
         guard callee.contains(".") else { return true }
         if nonThrowingHelperPrefixes.contains(where: callee.hasPrefix) { return true }
+        // A storage entity prints `name.getter : Type`. When the type is a
+        // function type its arrow belongs to the type, and reads as a
+        // signature without `throws`: `S.subscript.getter : (Swift.Int,
+        // Swift.Int) -> Swift.Int` is printed the same for `get throws`.
+        if DisassembledFunction.isStorageEntityName(callee) { return false }
         guard let signature = DisassembledFunction.splitSignature(callee) else { return false }
         return !signature.isThrowing
     }
