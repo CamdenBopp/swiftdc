@@ -106,29 +106,40 @@ priorities above: completeness and soundness first, reconstruction last.
    but a large app's memory is held only by the external
    `Tools/audit/guard.sh`. Wanted: a footprint budget inside the run that
    fails with a diagnostic naming the limit, never a kill.
-6. **OPEN: DWARF as a validation oracle.** HexLab imports DWARF. Built
+6. **OPEN: a reverse-engineering task benchmark.** Sixty practical tasks
+   a reverser really does (a type's layout, which function implements a
+   requirement, a call's argument values, a branch's condition, an app's
+   API endpoints, keychain items, URL routes), each asked of our own
+   fixtures and answered by an oracle that is not swiftdc (source,
+   `.swiftinterface`, reflection dump, dSYM, native execution). Scored as
+   correct, wrong (must stay zero) and declined, per task and optimization
+   level, per commit: [research/re-task-benchmark.md](research/re-task-benchmark.md).
+   Started from doronz88/swift_reversing's hand-reversing questions. A
+   first look: `dump` names no implementation for a resilient
+   conformance's requirements.
+7. **OPEN: DWARF as a validation oracle.** HexLab imports DWARF. Built
    with `-g`, a fixture's dSYM states its parameters, locals, types and
    field offsets: an independent check of what swiftdc recovers. Today a
    valid dSYM is reported as a malformed Mach-O on every entry point (first
    ABI probe, diagnostics); that is fixed first.
-7. **OPEN: a user annotation file.** jtool's companion file holds
+8. **OPEN: a user annotation file.** jtool's companion file holds
    user-edited names and per-argument signatures that later runs read.
    swiftdc's largest error class is a signatureless callee taking stale
    registers as arguments. Wanted: user-stated signatures and names,
    rendered marked as asserted by the user, never as proven.
-8. **OPEN: a binary summary.** macho_re and strongarm report signing,
+9. **OPEN: a binary summary.** macho_re and strongarm report signing,
    entitlements, hardened runtime, library validation and the
    `MH_ALLOW_STACK_EXECUTION` and no-heap-execution header flags. swiftdc
    reads `LC_ENCRYPTION_INFO` and reports none of these. Wanted: an `info`
    view of the header flags, the code signature's flags and entitlements,
    and encryption, each read from the binary or reported absent.
-9. **OPEN: library signature catalogs.** HexLab matches functions
+10. **OPEN: library signature catalogs.** HexLab matches functions
    against versioned catalogs and reports an ambiguous match as ambiguous.
    For stripped apps with statically linked libraries this names `sub_…`
    functions; a match must be exact and unique, or it declines.
-10. **OPEN: control-flow graphs as DOT.** threatflux exports DOT;
+11. **OPEN: control-flow graphs as DOT.** threatflux exports DOT;
    `disasm --cfg` is text only. Wanted: a DOT form of the same graph.
-11. **OPEN: cryptographic constants named.** XMachOViewer searches for
+12. **OPEN: cryptographic constants named.** XMachOViewer searches for
    known tables (the AES S-box, SHA and MD5 round constants). A load from
    such a table, matched byte for byte, renders its name instead of a
    `__const` address and an index.
