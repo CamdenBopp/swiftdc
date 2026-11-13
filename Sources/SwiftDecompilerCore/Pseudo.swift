@@ -243,8 +243,10 @@ public extension DisassembledFunction {
         case "objc_opt_self":      return operand(0)
         case "objc_alloc":         return "[\(operand(0)) alloc]"
         case "objc_allocWithZone": return "[\(operand(0)) allocWithZone:nil]"
-        case "objc_alloc_init",
-             "objc_opt_new":       return "[[\(operand(0)) alloc] init]"
+        case "objc_alloc_init":    return "[[\(operand(0)) alloc] init]"
+        // The runtime sends +new when the class overrides it, so the call
+        // is `new`, not `alloc` then `init`.
+        case "objc_opt_new":       return "[\(operand(0)) new]"
         case "objc_opt_isKindOfClass":
             return "[\(operand(0)) isKindOfClass:\(operand(1))]"
         case "objc_opt_respondsToSelector":

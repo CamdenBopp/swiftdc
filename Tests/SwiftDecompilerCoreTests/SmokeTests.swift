@@ -897,7 +897,7 @@ private func assembledFunction(
     #expect(idiom("objc_alloc", ["NSString"]) == "[NSString alloc]")
     #expect(idiom("objc_opt_class", ["self"]) == "[self class]")
     #expect(idiom("objc_alloc_init", ["Foo"]) == "[[Foo alloc] init]")
-    #expect(idiom("objc_opt_new", ["Foo"]) == "[[Foo alloc] init]")
+    #expect(idiom("objc_opt_new", ["Foo"]) == "[Foo new]")
     #expect(idiom("objc_opt_isKindOfClass", ["x", "[NSNumber class]"]) == "[x isKindOfClass:[NSNumber class]]")
 
     // The composed form. `objc_alloc(objc_opt_class(x))` is `[[x class] alloc]`

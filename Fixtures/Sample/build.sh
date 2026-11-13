@@ -402,6 +402,9 @@ $CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation objcdirect.m -o libObjCD
 echo "==> optional protocol properties, decided by the getter's list (objcoptionalprop.m, -O1)"
 $CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation objcoptionalprop.m -o libObjCOptionalProp.dylib
 
+echo "==> objc_opt_new is a +new send (optnew.m, -O2)"
+$CLANG -O2 -fobjc-arc -dynamiclib -framework Foundation optnew.m -o libOptNew.dylib
+
 echo "==> runtime calls that are statements, not ARC noise (runtimestatements.m, -O2)"
 $CLANG -O2 -fobjc-arc -dynamiclib -framework Foundation -undefined dynamic_lookup runtimestatements.m -o libRuntimeStatements.dylib
 

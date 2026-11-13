@@ -32,13 +32,15 @@ private func occurrences(of needle: String, in text: String) -> Int {
     let expected: [(name: String, binding: String, send: String)] = [
         ("+[SDFactory k1:]", "let r0 = [[self alloc] init]", "[r0 setLimit:arg0]"),
         ("+[SDFactory k2]", "initWithLimit:3]", "[r0 setLimit:4]"),
-        ("+[SDFactory k3]", "let r0 = [[NSMutableArray alloc] init]", "[r0 addObject:@\"x\"]"),
+        // The source says `[NSMutableArray new]`: objc_opt_new.
+        ("+[SDFactory k3]", "let r0 = [NSMutableArray new]", "[r0 addObject:@\"x\"]"),
         ("+[SDFactory k4]", "let r0 = [[NSMutableArray alloc] initWithCapacity:4]", "[r0 addObject:@\"y\"]"),
     ]
     for (name, binding, send) in expected {
         let body = try #require(bodies[name], "\(name) missing")
         for text in [body.structured, body.pseudo] {
-            #expect(occurrences(of: " alloc]", in: text) == 1, "\(name) allocates once: \(text)")
+            #expect(occurrences(of: " alloc]", in: text) + occurrences(of: " new]", in: text) == 1,
+                    "\(name) allocates once: \(text)")
             #expect(text.contains(binding), "\(name): \(text)")
             #expect(text.contains("let r0 = "), "\(name): \(text)")
             #expect(text.contains(send), "\(name): \(text)")

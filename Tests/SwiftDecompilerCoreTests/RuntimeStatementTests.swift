@@ -20,3 +20,17 @@ import Testing
     #expect(heap.contains("objc_retainBlock("), Comment(rawValue: heap))
     #expect(DisassembledFunction.isRuntimeNoise("objc_retain_x19"))
 }
+
+/// `[C new]` compiles to `objc_opt_new(C)`, and the runtime sends `+new`
+/// when the class overrides it. It rendered `[[C alloc] init]`, the same as
+/// `objc_alloc_init` (`optnew.m`: Counted overrides +new to count).
+@Test func objcOptNewIsANewSendIfPresent() async throws {
+    let path = "Fixtures/Sample/libOptNew.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let make = try #require(functions.first { $0.displayName == "_make" }).renderStructured()
+    #expect(make.contains("[Counted new]"), Comment(rawValue: make))
+    let makeInit = try #require(functions.first { $0.displayName == "_makeInit" }).renderStructured()
+    #expect(makeInit.contains("[[Counted alloc] init]"), Comment(rawValue: makeInit))
+}
+
