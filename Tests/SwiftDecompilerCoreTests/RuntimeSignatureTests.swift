@@ -26,8 +26,10 @@ import Testing
     // A context in x22, formals by the async convention.
     #expect(DisassembledFunction.cPrototype(of: "swift_task_switch") == nil)
     #expect(DisassembledFunction.cPrototype(of: "swift_task_future_wait") == nil)
-    // A generic Swift function under a C name: its result goes through x8.
-    #expect(DisassembledFunction.cPrototype(of: "swift_getAtKeyPath") == nil)
+    // A generic Swift function under a C name, unless checked by hand
+    // (SwiftIntrinsicSignatures): its result goes through x8.
+    #expect(DisassembledFunction.cPrototype(of: "swift_getAtKeyPath")?.parameters.count == 2)
+    #expect(ValueTracer.CallFacts(callee: "swift_getAtKeyPath").passedRegisters.contains(.x(8)))
     // RuntimeFunctions.def says one argument; Error.h and the stdlib say five.
     #expect(DisassembledFunction.cPrototype(of: "swift_unexpectedError") == nil)
 }

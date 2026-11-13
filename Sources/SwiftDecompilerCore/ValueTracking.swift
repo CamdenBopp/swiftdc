@@ -1009,6 +1009,7 @@ public struct ValueTracer: Sendable {
             let knownArity = applies ? DisassembledFunction.knownCArity(of: callee) : nil
             passedRegisters = knownArity.map { arity in
                 (0..<arity).map { Location.x($0) }
+                    + (SwiftIntrinsicSignatures.resultThroughX8.contains(callee) ? [Location.x(8)] : [])
             } ?? [.x(0), .x(1), .x(2), .x(3), .x(4), .x(5), .x(6), .x(7), .x(8), .x(20)]
             passesNoStackArguments = applies && ValueTracer.passesNoStackArguments(callee)
             throwsByName = callee.contains(" throws")
