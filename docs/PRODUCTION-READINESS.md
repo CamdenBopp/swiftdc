@@ -3590,6 +3590,14 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   collections did not move (Array loads through a pointer, traps folded
   in loops); switch still has 60 wrong bodies (undecoded C jump tables,
   empty loop-switch arms).
+- **FIXED (1c7033a) — a register call to an in-image function took stale
+  arguments.** `blr x8` to a one-argument function rendered `one_arg(3,
+  7)`: call targets were collected before the trace. A resolved register
+  target now gets the callee's body-read bound (`registercall.s`).
+- **OPEN — default-argument generators seeded with their function's
+  parameters.** `default argument 1 of print(…)` takes nothing; swiftdc
+  seeds x0 from the name (19 entries, found by
+  `Tools/ghidra-compare/interface_oracle.py`, the compiler-lowering check).
 - **OPEN — the Ghidra comparison's defects (2026-11-13).** swiftdc and
   Ghidra 12.2 scored on 2,601 function builds
   ([research/ghidra-comparison-2026-11-13.md](research/ghidra-comparison-2026-11-13.md)).
