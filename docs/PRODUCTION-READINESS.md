@@ -3369,7 +3369,7 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   an if/else whose arms both leave, where nothing falls through. One
   structured line moved in every fixture and toolchain library.
 
-- **FIXED (COMMIT) — a value receiver with a float word, or a payload
+- **FIXED (688ed4c) — a value receiver with a float word, or a payload
   enum, vanished from its call.** `Point(x: 3.5, y: 4.25).length()` is
   `fmov d0, #3.5; fmov d1, #4.25; b length` and read `Point.length()`;
   `Shape.pair(301, 302).tag(303)` read `Shape.tag(303)`: no receiver at
