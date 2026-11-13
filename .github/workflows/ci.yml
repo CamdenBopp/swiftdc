@@ -1,0 +1,44 @@
+# The enforcing suite on every push to dev and every pull request: build,
+# fixtures, then `swift test` with SWIFTDC_REQUIRE_FIXTURES, under which a
+# missing fixture fails instead of skipping (FixturePresenceTests; CI=true
+# enforces it too). The local integration gate (Tools/integration-gate.sh)
+# also runs the release build, blast radius and cost budget, which need
+# the previous revision's binary and are not repeated here.
+name: ci
+on:
+  push:
+    branches: [dev]
+  pull_request:
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  suite:
+    runs-on: macos-26
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          xcrun swiftc --version
+          go version
+      - name: Fixtures
+        run: Tools/fixtures.sh
+      - name: Build
+        run: swift build --build-tests 2>&1 | tee build.log; ! grep -q "error:" build.log
+      - name: Enforcing suite
+        run: |
+          set -o pipefail
+          SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build 2>&1 | tee suite.log | grep -E "recorded an issue|Test run with"
+      - name: Suite log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: suite-log
+          path: |
+            build.log
+            suite.log
