@@ -422,6 +422,11 @@ $CLANG -arch arm64 -c resilient_tail.s -o resilient_tail.o
 $SWIFTC -O -parse-as-library -emit-library -enable-library-evolution -module-name RS resilient.swift resilient_tail.o -o libResilient.dylib
 rm -f resilient_tail.o
 
+echo "==> throws of an error that already exists: a parameter, a stored property, a caught error (throwvalue.swift, -Onone, -O)"
+for level in Onone O; do
+    $SWIFTC -$level -parse-as-library -emit-library -module-name TV throwvalue.swift -o libThrowValue.$level.dylib
+done
+
 echo "==> how x20 carries self into, across and out of calls, tail calls included (selfregister.s)"
 $CLANG -arch arm64 -dynamiclib selfregister.s -o libSelfRegister.dylib
 

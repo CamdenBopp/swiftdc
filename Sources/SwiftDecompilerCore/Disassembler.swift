@@ -11387,9 +11387,33 @@ public struct Disassembler: Sendable {
             }
             return exits
         }()
+        // What `swift_willThrow` was called with, in x21. It is called only
+        // with an error about to be thrown, never null
+        // (swift/lib/SILGen/SILGenStmt.cpp, emitThrow), so an exit whose
+        // x21 is one of these returns that error: by the convention a
+        // non-zero x21 at return is a throw. `throw e` of an error
+        // parameter is `mov x21, x0; bl swift_willThrow; …; ret`, and was
+        // left an unresolved exit, as was any error not from
+        // `swift_allocError`.
+        let willThrowErrors: [AbstractValue] = function.instructions.compactMap { insn in
+            guard insn.controlFlow == .call,
+                  DisassembledFunction.calleeName(of: insn).map({ $0.hasPrefix("swift_willThrow") }) == true,
+                  let error = analysis.callSites[insn.address]?.errorValue
+            else { return nil }
+            return error
+        }
+        func isErrorBox(_ value: AbstractValue) -> Bool {
+            guard case .callResult(let site) = value else { return false }
+            return function.instructions.first { $0.address == site }
+                .flatMap(DisassembledFunction.calleeName(of:))?.hasPrefix("swift_allocError") == true
+        }
         /// Whether x21 at an exit is a proven thrown error: a non-zero flag
-        /// (typed throws) or a fresh `swift_allocError` box.
+        /// (typed throws), a fresh `swift_allocError` box, or the error
+        /// `swift_willThrow` was called with. Two unknowns are not the same
+        /// value: a `ret` shared by a rethrow and a normal return has
+        /// neither known.
         func isThrownError(_ value: AbstractValue) -> Bool {
+            if value != .unknown, willThrowErrors.contains(value) { return true }
             switch value {
             case .immediate(let flag): return flag != 0
             case .callResult(let site):
@@ -12147,6 +12171,14 @@ public struct Disassembler: Sendable {
                    tag <= UInt64(Int.max),
                    let caseName = enumCaseIndex.caseName(ofEnum: errorType, tag: Int(tag)) {
                     thrown = "\(errorType).\(caseName)"
+                } else if throwsSignature?.thrownType == nil,
+                          let error = analysis.exitErrorValues[insn.address].map(sanitizeValue),
+                          willThrowErrors.contains(error), !isErrorBox(error) {
+                    // An untyped error is one pointer in x21: the value
+                    // `swift_willThrow` was given is what is thrown. A fresh
+                    // `swift_allocError` box is no source value (its payload
+                    // is stored into it afterwards), so it stays `?`.
+                    thrown = renderValue(error, depth: 0)
                 }
                 noteExit(.throw(thrown))
             } else if function.objcMethod == nil, isReturn(insn), returnsDirectly,
