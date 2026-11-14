@@ -422,6 +422,9 @@ $CLANG -arch arm64 -c resilient_tail.s -o resilient_tail.o
 $SWIFTC -O -parse-as-library -emit-library -enable-library-evolution -module-name RS resilient.swift resilient_tail.o -o libResilient.dylib
 rm -f resilient_tail.o
 
+echo "==> a caller filling a new async context's header, at -Onone word by word (asyncheader.swift, -Onone)"
+$SWIFTC -Onone -parse-as-library -emit-library -module-name AH asyncheader.swift -o libAsyncHeader.Onone.dylib
+
 echo "==> throws of an error that already exists: a parameter, a stored property, a caught error (throwvalue.swift, -Onone, -O)"
 for level in Onone O; do
     $SWIFTC -$level -parse-as-library -emit-library -module-name TV throwvalue.swift -o libThrowValue.$level.dylib

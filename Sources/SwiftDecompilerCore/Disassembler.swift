@@ -11992,6 +11992,23 @@ public struct Disassembler: Sendable {
         /// arguments are filtered as plumbing, and `store64(r0 + 0x38, type
         /// metadata for Swift.Int)` lost its value that way. A part the
         /// tracer did not prove names the instruction's register (`x0`, its
+        /// Whether a store fills a new callee async context's header: its
+        /// Parent (+0) and ResumeParent (+8), in a block `swift_task_alloc`
+        /// just returned (swift/lib/IRGen/GenCall.cpp, the caller
+        /// initializes both). Async-call bookkeeping, as the `stp x22,
+        /// resume, [x0]` that -O emits is: at -Onone the compiler moves the
+        /// block into x22 first and stores each word alone, and the
+        /// ResumeParent store surfaced as `mem64[x22 + 0x8] = (1) await
+        /// resume partial function for …`.
+        func isCalleeContextHeader(_ write: MemoryWrite) -> Bool {
+            guard case .callResult(let site) = write.base, write.indexRegister == nil, !write.indexed,
+                  write.displacement >= 0, write.displacement + Int64(write.values.count * write.bytes) <= 16,
+                  let call = function.instructions.first(where: { $0.address == site }),
+                  DisassembledFunction.calleeName(of: call) == "swift_task_alloc"
+            else { return false }
+            return true
+        }
+
         /// value at the store); an indexed address is `base[?]`.
         func memoryWriteStatement(_ write: MemoryWrite) -> String {
             func rendered(_ value: AbstractValue, register: String?) -> String {
@@ -12091,7 +12108,8 @@ public struct Disassembler: Sendable {
                 if let write = analysis.memoryWrites[insn.address] {
                     let shown = write.kind == "address"
                         || (write.kind == "result" && !(signatureKnown && everyExitRendersResult))
-                    level = !shown ? write.kind : !statements.isEmpty ? "semantic"
+                    level = isCalleeContextHeader(write) ? "context"
+                        : !shown ? write.kind : !statements.isEmpty ? "semantic"
                         : write.indexed ? "unresolved" : "address"
                     if level == "address" { noteStatement(.assignment(memoryWriteStatement(write))) }
                 } else {
