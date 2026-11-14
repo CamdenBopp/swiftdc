@@ -90,7 +90,7 @@ cover results, bodies, or Objective-C methods (4 matched).
 
 | Check | Result | Where |
 |---|---|---|
-| Enforcing test suite (a missing fixture fails) | 1,778 tests pass at head | local gate, `Tools/integration-gate.sh` |
+| Enforcing test suite (a missing fixture fails) | 1,780 tests pass at head | local gate, `Tools/integration-gate.sh` |
 | Output change against the previous commit | every changed line explained in each commit message | `Tools/blast-radius.sh` |
 | Cost budget (instructions, footprint) | within budget; one fixture over, declared (`Perf-cost:` in 36ba8db) | same |
 | GitHub Actions | **no passing run**. GitHub's hosted images cannot build the fixtures: `macos-26` jobs get no runner, and `macos-15` carries Swift 6.2.4. The workflow now runs on a repository's own Mac when one is registered ([CI.md](CI.md)); none is registered for this repository yet | `.github/workflows/ci.yml`, `Tools/ci/` |

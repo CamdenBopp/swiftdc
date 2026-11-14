@@ -82,8 +82,15 @@ render right.
   test, where x21 after the call is not tracked; and a forwarding tail
   call to a throwing function loses its `return` in hand-written code
   (compiled code renders `return try …`).
-- **OPEN: swiftasync, swifttail, swiftcoro.** The same treatment for
-  x22, the tail-call convention and coroutine frames.
+- **FIXED in part (ff0e782): swiftasync.** Five rules. The frame-pointer
+  marking (bit 60 of the saved x29) and the context spill below the
+  frame record already render as nothing. A caller's stores into a new
+  callee context's header leaked at -Onone (and in two -O fixtures) and
+  are hidden now. Still open: a value kept in the context across an
+  `await` is lost (`await work(?)` for `work(k + 1)`, `return ?` for a
+  sum of two awaited results).
+- **OPEN: swifttail, swiftcoro.** The tail-call convention and
+  coroutine frames.
 
 
 ## Next: native execution as an oracle (2026-11-13)
