@@ -144,8 +144,11 @@ wrong output first, by how much ordinary code it touches.
    fixture files and 33 functions lose the empty-leaf note. Still open:
    the call is printed as a call, not as `dest = src`, and the empty-body
    message still covers "nothing here" and "everything hidden".
-4. **OPEN: a local function's captures.** `$defer` and named local
-   functions are laid out positionally and get a stale argument.
+4. **FIXED (4eac4f5): a local function's captures.** `$defer` and named
+   local functions were laid out from their printed list and got a stale
+   argument (`$defer #1 (r0)`) or lost their captures. They are now laid
+   out by what their bodies read, as closures were. Still open: merged
+   closures and partial apply forwarders keep their own layout.
 5. **FIXED (c45f1ca): resilient value types.** In a library-evolution image
    a public struct or enum is passed by address and was read from
    registers by field: `afterPoint(_ p: Point, _ n: Int) { n &* 5 }`
