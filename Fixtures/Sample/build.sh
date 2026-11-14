@@ -422,6 +422,9 @@ $CLANG -arch arm64 -c resilient_tail.s -o resilient_tail.o
 $SWIFTC -O -parse-as-library -emit-library -enable-library-evolution -module-name RS resilient.swift resilient_tail.o -o libResilient.dylib
 rm -f resilient_tail.o
 
+echo "==> local functions and defer bodies take their captures as arguments (localfunction.swift, -Onone)"
+$SWIFTC -Onone -parse-as-library -emit-library -module-name LF localfunction.swift -o libLocalFunction.Onone.dylib
+
 echo "==> stores through outlined copy helpers and the existential assign helper (hiddenstore.swift, -Onone, -O)"
 for level in Onone O; do
     $SWIFTC -$level -parse-as-library -emit-library -module-name HS hiddenstore.swift -o libHiddenStore.$level.dylib

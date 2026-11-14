@@ -233,6 +233,33 @@ extension DisassembledFunction {
     ///   `f(Swift.Int) -> (Swift.Double) -> Swift.Int`. The *first* depth-0
     ///   arrow ends the declaration. A closure's own name continues after its
     ///   result with ` in <context>`; that tail is not part of the result type.
+    /// Whether a demangled name is a closure or a local function: `closure
+    /// #1 (Swift.Int) -> Swift.Int in M.f()`, `implicit closure #2 @Sendable
+    /// () -> …`, `mix #1 (Swift.Int) -> Swift.Int in M.f()`, `$defer #1 ()
+    /// -> () in M.f()`, `helper #3 <A>(A) -> ()`. Each is declared inside
+    /// another function and takes what it captures as arguments after its
+    /// formals (swift/lib/SIL/IR/SILFunctionType.cpp,
+    /// `lowerCaptureContextParameters`), so its printed parameter list is
+    /// not its register list.
+    ///
+    /// The entity itself must lead the name. A thunk or a merged function
+    /// that names one (`partial apply forwarder for closure #1 …`, `merged
+    /// closure #3 …`) has a convention of its own and is not one.
+    static func isLocalFunctionName(_ name: String) -> Bool {
+        guard let open = name.firstIndex(where: { $0 == "(" || $0 == "<" }) else { return false }
+        var words = name[..<open].split(separator: " ").map(String.init)
+        // Attributes follow the discriminator: `closure #1 @Sendable (…)`.
+        while let last = words.last, last.hasPrefix("@") { words.removeLast() }
+        guard words.count >= 2, let number = words.last, number.count > 1, number.first == "#",
+              number.dropFirst().allSatisfy(\.isNumber)
+        else { return false }
+        let label = words.dropLast()
+        if Array(label) == ["implicit", "closure"] { return true }
+        guard label.count == 1, let identifier = label.first, let first = identifier.first else { return false }
+        return (first == "$" || first == "_" || first.isLetter)
+            && identifier.allSatisfy { $0 == "$" || $0 == "_" || $0.isLetter || $0.isNumber }
+    }
+
     /// Whether a demangled name is a storage entity (`name.accessor :
     /// Type`), not a function: a top-level ` : ` that no top-level ` -> `
     /// precedes. The demangler prints an accessor, a variable initializer
