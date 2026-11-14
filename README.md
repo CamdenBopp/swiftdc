@@ -434,6 +434,12 @@ debug, release and stripped variants, along with the other fixtures, and
 caches them. [CONTRIBUTING.md](CONTRIBUTING.md) covers running the tests
 properly.
 
+Continuous integration runs the same suite on a Mac you register for your
+copy of the repository, since GitHub's hosted images carry too old a Swift.
+`Tools/ci/environment.sh` checks a machine and prints its toolchain, and
+`Tools/ci/setup-runner.sh` walks through the setup; see
+[docs/CI.md](docs/CI.md).
+
 ## Architecture
 
 ```

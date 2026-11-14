@@ -93,7 +93,7 @@ cover results, bodies, or Objective-C methods (4 matched).
 | Enforcing test suite (a missing fixture fails) | 1,774 tests pass at head | local gate, `Tools/integration-gate.sh` |
 | Output change against the previous commit | every changed line explained in each commit message | `Tools/blast-radius.sh` |
 | Cost budget (instructions, footprint) | within budget; one fixture over, declared (`Perf-cost:` in 36ba8db) | same |
-| GitHub Actions | **no passing run**. `macos-26` jobs get no runner; on `macos-15` (Xcode 26.3, Swift 6.2.4) the fixture build fails before swiftdc is built, on a toolchain older than the one the fixtures need (Swift 6.4 locally) | `.github/workflows/ci.yml` |
+| GitHub Actions | **no passing run**. GitHub's hosted images cannot build the fixtures: `macos-26` jobs get no runner, and `macos-15` carries Swift 6.2.4. The workflow now runs on a repository's own Mac when one is registered ([CI.md](CI.md)); none is registered for this repository yet | `.github/workflows/ci.yml`, `Tools/ci/` |
 | Independent execution of rendered expressions | return values of the differential-oracle fixtures, integer and floating point (compared bit for bit). Not checked by execution: which way a branch went, registers at call sites, results beyond the first register, memory writes | `DifferentialOracleTests` |
 
 The suite, blast radius and cost budget are run by the author's gate on

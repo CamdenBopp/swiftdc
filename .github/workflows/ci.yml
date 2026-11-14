@@ -1,7 +1,8 @@
 # The enforcing suite on every push to dev and every pull request: build,
 # fixtures, then `swift test` with SWIFTDC_REQUIRE_FIXTURES, under which a
 # missing fixture fails instead of skipping (FixturePresenceTests; CI=true
-# enforces it too). The local integration gate (Tools/integration-gate.sh)
+# enforces it too). A pull request from a fork waits for a maintainer's
+# approval before it runs; a push never does. The local integration gate (Tools/integration-gate.sh)
 # also runs the release build, blast radius and cost budget, which need
 # the previous revision's binary and are not repeated here.
 name: ci
@@ -14,23 +15,30 @@ concurrency:
   cancel-in-progress: true
 jobs:
   suite:
-    # A `macos-26` job stayed queued with no runner for 50 minutes on
-    # 2026-11-13, so this takes the newest image that does start and
-    # selects its newest Xcode; the toolchain step prints what that is,
-    # and a Swift older than the package needs fails the build loudly.
-    runs-on: macos-15
+    # Where it runs is the repository's choice. With the variable
+    # SWIFTDC_SELF_HOSTED set to true (Tools/ci/setup-runner.sh sets it)
+    # the suite runs on that repository's own Mac, labelled `swiftdc`,
+    # which has the toolchain the fixtures need. Without it, it runs on
+    # the newest hosted image that starts: `macos-26` stayed queued with
+    # no runner for 50 minutes on 2026-11-13, and `macos-15` carries a
+    # Swift too old to build the fixtures, so there the Toolchain step
+    # fails by name instead of the fixture build failing obscurely.
+    # docs/CI.md has the whole picture.
+    runs-on: ${{ vars.SWIFTDC_SELF_HOSTED == 'true' && fromJSON('["self-hosted", "macOS", "ARM64", "swiftdc"]') || 'macos-15' }}
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
+        if: runner.environment == 'github-hosted'
         with:
           go-version: stable
+      - name: Select the newest Xcode
+        if: runner.environment == 'github-hosted'
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
       - name: Toolchain
-        run: |
-          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
-          xcodebuild -version
-          xcrun swiftc --version
-          go version
+        # Prints the exact versions, so two runs can be compared, and
+        # stops here when this machine cannot build the fixtures.
+        run: Tools/ci/environment.sh
       - name: Fixtures
         run: |
           Tools/fixtures.sh || {
