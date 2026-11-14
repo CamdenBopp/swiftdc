@@ -13,6 +13,9 @@ extension DisassembledFunction {
         var index = 0
         while index < statements.count {
             if let (literal, consumed) = matchStringInterpolation(statements, at: index) {
+                // A copy of an operand made inside the run is still a
+                // statement: it goes ahead of the string it fed.
+                out.append(contentsOf: statements[index ..< index + consumed].filter(isStoreHelper))
                 out.append(literal)
                 index += consumed
                 continue
@@ -75,6 +78,14 @@ extension DisassembledFunction {
                 let value = firstArgument(of: statement) ?? "?"
                 components += "\\(\(value))"
                 sawInterpolation = true
+                index += 1
+            } else if isStoreHelper(statement), index + 1 < statements.count,
+                      isInterpolationStep(statements[index + 1]) {
+                // -Onone copies an interpolated operand to a temporary
+                // between two appends (`outlined init with copy of
+                // Swift.String`). It does not end the run: ended there, the
+                // appends after it folded alone and the string lost its
+                // head (`"Circle(\(a)) r=\(b)"` read `"\(a)) r=\(b)"`).
                 index += 1
             } else {
                 break

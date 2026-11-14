@@ -1307,7 +1307,24 @@ public extension DisassembledFunction {
     /// value tracer's "a call that returns its argument" unwrap in `Disassembler`,
     /// and a metadata accessor does not return its argument. This one is
     /// presentation-only.
+    /// Compiler-made helpers that write a value: the outlined copies of an
+    /// address-only value, called as (source, destination, metadata…) and
+    /// returning the destination (swift/lib/IRGen/Outlining.cpp,
+    /// `getOrCreateOutlinedCopyAddrHelperFunction`), an outlined enum tag
+    /// store, and the existential assignment (swift/lib/IRGen/
+    /// GenExistential.cpp). Each is the source's `a = b` or its copy into
+    /// a result, so it is a statement, never scaffolding: hidden, a setter
+    /// rendered as an empty leaf.
+    static func isStoreHelper(_ callee: String) -> Bool {
+        let name = callee.hasPrefix("merged ") ? String(callee.dropFirst("merged ".count)) : callee
+        return ["outlined init with copy of ", "outlined init with take of ",
+                "outlined assign with copy of ", "outlined assign with take of ",
+                "outlined enum tag store of ", "__swift_assign_boxed_opaque_existential",
+        ].contains(where: name.hasPrefix)
+    }
+
     static func isGenericPlumbingCallee(_ callee: String) -> Bool {
+        if isStoreHelper(callee) { return false }
         let prefixes = [
             "outlined ",
             "type metadata accessor for ",
