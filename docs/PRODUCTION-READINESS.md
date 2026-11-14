@@ -143,9 +143,17 @@ wrong output first, by how much ordinary code it touches.
    covers two causes.
 4. **OPEN: a local function's captures.** `$defer` and named local
    functions are laid out positionally and get a stale argument.
-5. **OPEN: resilient value types.** In a library-evolution image a
-   public struct or enum is passed by address and is read from registers
-   by field. Reproduced.
+5. **FIXED (c45f1ca): resilient value types.** In a library-evolution image
+   a public struct or enum is passed by address and was read from
+   registers by field: `afterPoint(_ p: Point, _ n: Int) { n &* 5 }`
+   rendered `return (arg0.y + (arg0.y << 2))`. An enum with case
+   descriptors, and an exported struct, are no longer lowered to
+   registers; a frozen enum and internal types still are. Eleven files
+   move, 250 structured lines, 85 of them getter calls in the
+   swift-syntax dylibs that now show an unknown receiver where they
+   showed none. Still open: an exported `@frozen` struct is declined too,
+   and the parameter after a resilient value is not seeded though its
+   register is known when the type is not frozen.
 6. **OPEN: a hidden leading isolation parameter** on
    `nonisolated(nonsending)` async functions shifts every formal by two
    registers; the symbol does not record it.
@@ -290,6 +298,14 @@ shape it excludes.
   an incoming pointer cannot reach them unless the frame's address escaped.
 - **Outlined code saves x21 where it writes it.** A chain of fragments
   writing x21 would go unseen by its callers' summaries.
+- **A module with no sign of library evolution was built without it.**
+  A resilient struct is passed by address, and is recognised only in an
+  image that defines an enum-case descriptor, a dispatch thunk or a
+  stored-property descriptor (`LibraryEvolutionEvidence`). A resilient
+  module whose public types have no public stored property, enum, class
+  or protocol defines none of them, and its public structs would be read
+  from registers by field. No fixture shows it: such a module's symbols
+  and sections equal a plain build's, so there is nothing to detect.
 
 ---
 
