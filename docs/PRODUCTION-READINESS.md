@@ -137,10 +137,13 @@ wrong output first, by how much ordinary code it touches.
    item. Still open from the same report: a tail branch into a merged
    body that can trap renders as a plain return, and float compare
    conditions are declined (`if (?) trap()`).
-3. **OPEN: stores hidden as runtime noise.** `outlined init/assign`
-   helpers and the existential assign helper are the statement; a setter
-   through one renders as an empty leaf, and the empty-body message
-   covers two causes.
+3. **FIXED in part (77a2886): stores hidden as runtime noise.** `outlined
+   init/assign` helpers, an outlined enum tag store and the existential
+   assign helper are the statement; a setter through one rendered as an
+   empty leaf. They are shown now: 177 store statements appear across 24
+   fixture files and 33 functions lose the empty-leaf note. Still open:
+   the call is printed as a call, not as `dest = src`, and the empty-body
+   message still covers "nothing here" and "everything hidden".
 4. **OPEN: a local function's captures.** `$defer` and named local
    functions are laid out positionally and get a stale argument.
 5. **FIXED (c45f1ca): resilient value types.** In a library-evolution image
