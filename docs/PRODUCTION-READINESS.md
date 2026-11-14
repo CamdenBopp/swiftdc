@@ -60,6 +60,24 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## Next: rules from LLVM's calling-convention tests (2026-11-14)
+
+LLVM's AArch64 code-generation tests for the Swift conventions
+(`llvm/test/CodeGen/AArch64/swiftself.ll`, `swifterror.ll`,
+`swiftasync*.ll`, `swifttail*.ll`, `swiftcoro*.ll`) each state a few
+rules about one register as compact input and expected assembly. Read as
+rules and rewritten as hand-made fixtures (clean room: the rules, not the
+tests, so nothing is copied), each gives a small checklist swiftdc must
+render right.
+
+- **FIXED (ff7264f): swiftself.** Seven rules in `selfregister.s`. Five
+  rendered right; a tail call dropped its receiver (`return C.me()`) and
+  shows it now. Still open: rule seven, a self-returning callee's result
+  stored after the call, renders as the raw `x0`.
+- **OPEN: swifterror, swiftasync, swifttail, swiftcoro.** The same
+  treatment for x21, x22, the tail-call convention and coroutine frames.
+
+
 ## Next: native execution as an oracle (2026-11-13)
 
 Prompted by a look at Microlift and Rosemary. The useful part is the
