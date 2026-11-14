@@ -493,6 +493,14 @@ isn't a dyld cache instead of re-checking on every access, which took one
 measured `layout` run from 69.9 s to 4.4 s. `Package.swift` records why each
 dependency is pinned where it is.
 
+## Samples
+
+[samples/](samples/README.md) shows swiftdc's output on two open-source
+projects, built from source at pinned commits: the swift-argument-parser
+examples and mas. Every function the source files declare is shown
+beside its source and Ghidra's output for the same address, chosen by
+rule rather than by hand.
+
 ## Compared with Ghidra
 
 Both tools decompiled a pinned corpus of 173 builds (2,601 function
