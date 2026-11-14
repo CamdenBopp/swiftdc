@@ -6721,8 +6721,9 @@ public struct Disassembler: Sendable {
                 // still have proven registers: `afterString(_:_:)`'s Int is
                 // x2. Anything else is not provably laid out: seed nothing.
                 let type = Self.parameterType(parameter)
-                // A one-case enum is zero-sized: it takes no register.
-                if enumCaseIndex.isSingleCaseEnum(type) { continue }
+                // A one-case enum is zero-sized: it takes no register. A
+                // resilient one is still passed by address.
+                if enumCaseIndex.isSingleCaseEnum(type), !enumCaseIndex.isResilient(type) { continue }
                 // A value of a generic parameter (`A`, `A.Element`) arrives as
                 // its address, one integer register (as `swiftCallArgumentLayout`
                 // lays it out), and that address is the parameter.
@@ -9183,6 +9184,19 @@ public struct Disassembler: Sendable {
                 valueSelfBySite[address] = value
                 argumentsByAddress[address] = []
                 strategy = "value-getter-self"
+                continue
+            }
+            // A possibly resilient receiver is passed by address in x20,
+            // and the getter takes nothing else. With no value tracked
+            // there the receiver is unknown, not absent: `getter(self: ?)`.
+            if selfValueBySite[address] == nil, let callee = calleeByAddress[address],
+               let property = DisassembledFunction.swiftAccessorProperty(callee), property.isGetter,
+               !callee.hasPrefix("static "), !callee.contains(".subscript"),
+               let accessor = callee.range(of: ".\(property.property).getter"),
+               typeFieldMaps[String(callee[..<accessor.lowerBound])]?.mayBeResilient == true {
+                selfValueBySite[address] = .unknown
+                argumentsByAddress[address] = []
+                strategy = "resilient-getter-self"
                 continue
             }
             // A Swift callee with a proven layout gets exactly its parameters:

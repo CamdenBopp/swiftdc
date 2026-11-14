@@ -37,6 +37,8 @@ enum SwiftLowering: Equatable, Sendable {
         classTypeIndex: ClassTypeIndex = ClassTypeIndex()
     ) -> SwiftLowering {
         let type = type.trimmingCharacters(in: .whitespaces)
+        // A resilient enum is passed by address, whatever its cases.
+        if enumCaseIndex.isResilient(type) { return .unknown }
         if ["()", "Swift.Void", "Swift.Never"].contains(type) || enumCaseIndex.isSingleCaseEnum(type) {
             return .zeroSized
         }
@@ -227,7 +229,10 @@ extension SwiftLowering {
         integerChunks: inout Set<Int>, floats: inout Int
     ) -> Bool {
         guard depth < 8,
-              let map = Disassembler.completeValueLayout(of: type, fieldMaps: fieldMaps, classTypeIndex: classTypeIndex)
+              let map = Disassembler.completeValueLayout(of: type, fieldMaps: fieldMaps, classTypeIndex: classTypeIndex),
+              // A possibly resilient type is passed by address, whatever its
+              // fields; its layout in memory is still the map's.
+              !map.mayBeResilient
         else { return false }
         for field in map.fields {
             let offset = base + field.offset

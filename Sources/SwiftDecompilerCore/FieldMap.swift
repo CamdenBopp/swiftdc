@@ -97,6 +97,13 @@ public struct FieldMap: Sendable {
     /// its fields start at 0x10. Nil for a map built without a descriptor.
     public internal(set) var isStruct: Bool?
 
+    /// Whether the type may be resilient: an exported struct, or an enum
+    /// with case descriptors, of an image compiled with library evolution
+    /// (`LibraryEvolutionEvidence`). Such a type is passed and returned by
+    /// address, so nothing lowers it to registers. Its field offsets are
+    /// still exact: inside its own module the layout is fixed.
+    public internal(set) var mayBeResilient = false
+
     /// A field's type for display: its mangled name (`Si`), unless the
     /// mangling holds a symbolic reference, a byte from 0x01 to 0x1F and a
     /// relative offset into the binary. Printed raw that was control bytes
@@ -244,6 +251,7 @@ public struct FieldMap: Sendable {
     /// `d0…`. Nil for any other shape, so a non-HFA type never triggers the
     /// register-decomposition path.
     public var homogeneousFloatFieldOffsets: [Int]? {
+        guard !mayBeResilient else { return nil }
         let members = fields.sorted { $0.offset < $1.offset }
         guard (1...4).contains(members.count) else { return nil }
         // Double mangles as `Sd`, Float as `Sf`; both are single scalars whose
@@ -277,6 +285,7 @@ public struct FieldMap: Sendable {
     /// or a struct too large for registers all bail, so nothing outside this exact
     /// ABI shape triggers the decomposition.
     public var wordIntegerFieldOffsetsInRegisters: [Int]? {
+        guard !mayBeResilient else { return nil }
         let members = fields.sorted { $0.offset < $1.offset }
         guard (1...4).contains(members.count),
               members.allSatisfy({ $0.bytes == 8 && ($0.typeMangledName == "Si" || $0.typeMangledName == "Su") })
@@ -298,6 +307,7 @@ public struct FieldMap: Sendable {
     /// fifth field passes the whole value by address in x20, so both decline.
     /// Nil for references, nested aggregates, and anything else.
     public var mixedScalarFieldBanksInRegisters: [(offset: Int, isFloat: Bool)]? {
+        guard !mayBeResilient else { return nil }
         let members = fields.sorted { $0.offset < $1.offset }
         // A class instance goes in x20, never as its fields (`isStruct`).
         guard isStruct == true, (1...4).contains(members.count) else { return nil }
@@ -346,6 +356,8 @@ public enum FieldMapBuilder {
     /// the field it could not lay out.
     public static func build(in machO: MachOFile) throws -> [String: FieldMap] {
         let calculator = try StaticLayoutCalculator(machO: machO)
+        let exportedTypes = LibraryEvolutionEvidence.exportedTypes(in: machO)
+        let resilientEnums = exportedTypes.isEmpty ? [] : LibraryEvolutionEvidence.resilientEnums(in: machO)
 
         var built: [(name: String, qualified: String?, map: FieldMap)] = []
         for type in UnrecordedTypes.all(in: machO) {
@@ -364,7 +376,16 @@ public enum FieldMapBuilder {
             case .class(let model): model.descriptor.layout.flags.isGeneric
             }
             if case .struct = type { map.isStruct = true } else { map.isStruct = false }
-            built.append((name, Self.qualifiedName(of: type, in: machO), map))
+            let qualified = Self.qualifiedName(of: type, in: machO)
+            switch type {
+            // A class is a reference whatever its module's resilience.
+            case .class: break
+            // An exported struct may be resilient; nothing marks `@frozen`.
+            case .struct: map.mayBeResilient = qualified.map(exportedTypes.contains) ?? !exportedTypes.isEmpty
+            // An enum is resilient exactly when its cases have descriptors.
+            case .enum: map.mayBeResilient = qualified.map(resilientEnums.contains) ?? !exportedTypes.isEmpty
+            }
+            built.append((name, qualified, map))
         }
         var maps = resolvingSimpleNameCollisions(built.map { ($0.name, $0.map) })
         // Also index each type by its FULLY-QUALIFIED name (`Module.Outer.Type`).
