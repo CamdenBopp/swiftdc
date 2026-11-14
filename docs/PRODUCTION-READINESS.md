@@ -74,8 +74,16 @@ render right.
   rendered right; a tail call dropped its receiver (`return C.me()`) and
   shows it now. Still open: rule seven, a self-returning callee's result
   stored after the call, renders as the raw `x0`.
-- **OPEN: swifterror, swiftasync, swifttail, swiftcoro.** The same
-  treatment for x21, x22, the tail-call convention and coroutine frames.
+- **FIXED in part (81ecc13): swifterror.** Six rules, checked by hand-written
+  and compiled fixtures. Eight arguments with `self` and the error
+  rendered right. A throw of an existing error (`throw e`) was an
+  unresolved exit and now renders `throw arg0`. Still open: a thrown
+  stored error, a rethrow of a callee's error and the `try?` caller's
+  test, where x21 after the call is not tracked; and a forwarding tail
+  call to a throwing function loses its `return` in hand-written code
+  (compiled code renders `return try …`).
+- **OPEN: swiftasync, swifttail, swiftcoro.** The same treatment for
+  x22, the tail-call convention and coroutine frames.
 
 
 ## Next: native execution as an oracle (2026-11-13)
