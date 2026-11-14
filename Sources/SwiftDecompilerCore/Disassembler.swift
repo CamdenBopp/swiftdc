@@ -12081,7 +12081,13 @@ public struct Disassembler: Sendable {
             let callee = calleeByAddress[insn.address]
             let isObjCNonVoid = function.objcMethod.map { !$0.returnsVoid } == true
             if scalarTailReturns.contains(insn.address), let callee {
-                noteExit(.normal(callExpression(callee: callee, values: argumentsByAddress[insn.address] ?? [], site: insn.address)))
+                // A tail call keeps the caller's x20, so a method's receiver
+                // is there exactly as for a `bl`: `b C.me` from a method of C
+                // is `return me(self: self)`, and without it read
+                // `return C.me()`, a call with no receiver.
+                noteExit(.normal(callExpression(
+                    callee: callee, values: argumentsByAddress[insn.address] ?? [], site: insn.address,
+                    selfText: selfValueBySite[insn.address].map { renderValue($0, depth: 0) })))
             }
             if isObjCNonVoid, insn.controlFlow == .return, let field = twoWordFieldReturn(at: insn.address) {
                 noteExit(.normal(field))

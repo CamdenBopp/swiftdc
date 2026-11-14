@@ -422,6 +422,9 @@ $CLANG -arch arm64 -c resilient_tail.s -o resilient_tail.o
 $SWIFTC -O -parse-as-library -emit-library -enable-library-evolution -module-name RS resilient.swift resilient_tail.o -o libResilient.dylib
 rm -f resilient_tail.o
 
+echo "==> how x20 carries self into, across and out of calls, tail calls included (selfregister.s)"
+$CLANG -arch arm64 -dynamiclib selfregister.s -o libSelfRegister.dylib
+
 echo "==> local functions and defer bodies take their captures as arguments (localfunction.swift, -Onone)"
 $SWIFTC -Onone -parse-as-library -emit-library -module-name LF localfunction.swift -o libLocalFunction.Onone.dylib
 
