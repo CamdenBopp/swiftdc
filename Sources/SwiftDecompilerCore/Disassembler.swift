@@ -5985,6 +5985,28 @@ public struct Disassembler: Sendable {
         return ValueTracer.floatOperand(value, bits: bits)
     }
 
+    /// Decimal NaN spelling discards its sign, signaling bit and payload.
+    /// Classify its raw encoding before any FP conversion (including half to
+    /// single), and construct precisely that value at its original width.
+    static func renderFloatingConstant(bits: UInt64, width: Int) -> String? {
+        let format: (name: String, exponent: UInt64, fraction: UInt64, pattern: UInt64)
+        switch width {
+        case 64: format = ("Double", 0x7ff0000000000000, 0x000fffffffffffff, bits)
+        case 32: format = ("Float", 0x7f800000, 0x007fffff, bits & 0xffffffff)
+        case 16: format = ("Float16", 0x7c00, 0x03ff, bits & 0xffff)
+        default: return nil
+        }
+        if format.pattern & format.exponent == format.exponent,
+           format.pattern & format.fraction != 0 {
+            return "\(format.name)(bitPattern: 0x\(String(format.pattern, radix: 16)))"
+        }
+        switch width {
+        case 64: return String(Double(bitPattern: format.pattern))
+        case 32: return String(Float(bitPattern: UInt32(format.pattern)))
+        default: return String(Float(Float16(bitPattern: UInt16(format.pattern))))
+        }
+    }
+
     static func renderTypedConstant(bits: UInt64, type: String) -> String? {
         switch type {
         case "Swift.Bool":
@@ -5992,11 +6014,11 @@ public struct Disassembler: Sendable {
             if bits == 1 { return "true" }
             return nil
         case "Swift.Double", "Swift.Float64", "Swift.CGFloat", "CoreGraphics.CGFloat":
-            return String(Double(bitPattern: bits))
+            return renderFloatingConstant(bits: bits, width: 64)
         case "Swift.Float", "Swift.Float32":
-            return String(Float(bitPattern: UInt32(truncatingIfNeeded: bits)))
+            return renderFloatingConstant(bits: bits, width: 32)
         case "Swift.Float16":
-            return String(Float(Float16(bitPattern: UInt16(truncatingIfNeeded: bits))))
+            return renderFloatingConstant(bits: bits, width: 16)
         // A narrow integer is its register's low bits, read at the declared
         // signedness: the callee reads no more, and the caller may leave the
         // rest as it likes. Read whole, `takeNarrow(-1, -2, -3, …)` rendered
@@ -8255,11 +8277,7 @@ public struct Disassembler: Sendable {
                     return "\(bits == 64 ? "Double" : "Float")(bitPattern: \(inner))"
                 case .floatConstant(let bits):
                     guard case .immediate(let pattern) = operand else { return unknownRenderedValue() }
-                    switch bits {
-                    case 64: return String(Double(bitPattern: pattern))
-                    case 32: return String(Float(bitPattern: UInt32(truncatingIfNeeded: pattern)))
-                    default: return String(Float(Float16(bitPattern: UInt16(truncatingIfNeeded: pattern))))
-                    }
+                    return Self.renderFloatingConstant(bits: pattern, width: bits) ?? unknownRenderedValue()
                 }
             case .aggregate(let values):
                 // A multi-word result's two words together: the call.

@@ -10142,12 +10142,59 @@ Commit messages on dev stay as they are; these are the true records.
   functions match. All four large SDK outputs match. Publication remains
   through the original integration gate.
 
-- **OPEN (soundness): a literal NaN loses its payload when formatted.**
-  `renderValue`'s `.floatConstant` case in `Disassembler.swift` converts the
-  bits through `String(Double(bitPattern: pattern))` (and its narrower
-  equivalents). An authored constant `0x7ff8000000000001`, moved into d0,
-  negated and read as an integer, executes as `0xfff8000000000001` but
-  renders `(-nan).bitPattern`. The payload is absent from that expression;
-  the native canonical negative `Double.nan` has bits `0xfff8000000000000`.
-  Receiver grouping does not repair literal formatting. Argument-supplied
-  NaNs in the new native fixture retain their payloads.
+- **FIXED (2026-11-15, soundness): known floating constants lost NaN encodings
+  when formatted.** `renderValue`'s `.floatConstant` case and the separate
+  `renderTypedConstant` path converted bits through decimal strings. An
+  authored `0x7ff8000000000001`, moved into d0, negated and read as an
+  integer, executes as `0xfff8000000000001` but rendered `(-nan).bitPattern`.
+  The payload was absent; native canonical negative `Double.nan` has bits
+  `0xfff8000000000000`.
+
+  Both owners now use `renderFloatingConstant`: classify normalized IEEE
+  bits without FP conversion, and spell every NaN as a width-specific
+  `Double`, `Float` or `Float16` bit-pattern constructor. Sign, signaling
+  state and payload survive; finite values and infinity keep their spelling.
+  Width normalization happens before formatting, and unsupported widths
+  decline. The half path never widens a NaN to Float before printing it.
+
+  `build-nan-literals.swift` checks 27 emitted LLVM signatures before
+  assembling the authored fixture, including half results and scalar FP
+  arguments. Thirty-five independent native observations check quiet and
+  signaling NaNs, both signs, two payloads, negation and finite controls at
+  all three precisions, plus single/double call arguments. Exact-return tests
+  cover all five analysis APIs. Unit boundaries include canonical and
+  maximal-payload NaNs, dirty upper bits, type aliases, zero, infinity and
+  greatest finite values.
+  A local compiler/native check also preserves all four tested encodings
+  through Double-to-CGFloat coercion.
+
+  Eight compiled mutations fail independently while the native oracle stays
+  green: NaN admission (290 issues), exponent (56), fraction (3), single
+  normalization (18), half normalization (9), expression owner (30), typed
+  owner (233) and unsupported widths (1). Restoring and rebuilding passes
+  all focused tests and reproduces the original CLI hash. After a fresh
+  `swift build --build-tests -j 2`, the fixture-enforced suite passes
+  **1,452 tests in 39 suites**.
+
+  Matched release comparison against `a160817`, using the original
+  `Tools/blast-radius.sh <baseline> <candidate> <out> --real --perf`:
+  **354 inputs in four views plus four SDK workload pairs**, all 1,420 cost
+  rows positive. Instructions are 5,132.6G to 5,131.6G (-0.02%); summed
+  per-render physical peaks are 17,866 MB to 17,884 MB (+0.10%). All default
+  budgets pass. Only `libNaNLiterals.dylib` changes: twenty returns and two
+  call argument lists. Structured/pseudo each change forty lines, listing
+  forty-four, JSON eighty-eight. JSON changes only return annotations and
+  statements plus the two calls' annotations and arguments; all other
+  fields, instructions and functions match. All four large SDK outputs
+  match with zero exits. Publication remains through the original gate.
+
+- **OPEN (soundness): scalar FP literal-pool loads can lose their domain.**
+  `ValueTracer.floatOperand` marks immediates as FP bits but passes `.loaded`
+  through; after literal resolution, a unary expression can instead see an
+  untyped integer. An authored `ldr d0` from `__TEXT,__const`, followed by
+  `fneg d0, d0; fmov x0, d0`, renders `return -0x4004000000000000` for
+  2.5, while native execution returns `0xc004000000000000`. The NaN variant
+  renders `return -0x7ff8000000000001`, while native execution returns
+  `0xfff8000000000001`. Both the baseline and NaN-formatting candidate
+  reproduce this separate data-flow defect; it occurs before the formatter
+  receives a proven floating constant.

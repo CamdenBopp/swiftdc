@@ -627,6 +627,8 @@ echo "==> symbolic vector lanes retain their bit interpretation (vectorbits.s)"
 $CLANG -arch arm64 -dynamiclib vectorbits.s -o libVectorBits.dylib
 echo "==> prefix operands retain grouping before FP bit-pattern reads (floatpostfix.s)"
 $CLANG -arch arm64 -dynamiclib floatpostfix.s -o libFloatPostfix.dylib
+echo "==> exact NaN literals at half, single and double precision (build-nan-literals.swift)"
+swift build-nan-literals.swift
 
 echo "==> fmov immediates in vector and half-precision registers (fpimmediates.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name FPImmediates fpimmediates.swift -o libFPImmediates.dylib
