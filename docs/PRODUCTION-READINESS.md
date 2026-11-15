@@ -10108,3 +10108,46 @@ Commit messages on dev stay as they are; these are the true records.
   large Syntax/Parser diffs preserve 36 query snapshots and one dictionary
   producer, and both SDK cross-reference outputs match. Final publication
   still requires the original `Tools/integration-gate.sh --push`.
+
+## 2026-11-15: preserve prefix grouping before float bit-pattern reads
+
+- **FIXED (soundness): `(-x).bitPattern` rendered as `-x.bitPattern`.**
+  `fneg d0, d0; fmov x0, d0` negates the Double before reading its bits;
+  the old expression applied negation to the integer bits instead. For
+  1.0, the native result is `0xbff0000000000000`, while wrapping integer
+  negation of its bits gives `0xc010000000000000`. Negative literals and
+  negative zero had the same precedence error. The renderer now groups
+  prefix receivers before member access, including prefixes exposed by
+  inlined values. Primary and already-grouped receivers keep their spelling.
+
+  The authored `floatpostfix.s` fixture covers Double and Float, a Q spill,
+  -1.0, -0.0, a plain argument and a compound expression. All five analysis
+  APIs produce the expected exact return lines in pseudo and structured
+  output. Its 42 native checks include signed zero, subnormals, infinity and
+  NaN payloads supplied through arguments. Disabling prefix detection
+  compiles and fails 50 rendering assertions while the native oracle stays
+  green. Restoring the source rebuilds to the identical CLI hash and both
+  focused tests pass. A fresh `swift build --build-tests -j 2` followed by
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build` passes **1,449 tests
+  in 39 suites**.
+
+  Matched release comparison against `d01157d`, using the original
+  `Tools/blast-radius.sh <baseline> <candidate> <out> --real --perf`:
+  **353 inputs in four views plus four SDK workload pairs**, all 1,416 cost
+  rows positive. Instructions are 5,131.4G to 5,128.9G (-0.05%); summed
+  per-render physical peaks are 18,020 MB to 17,791 MB (-1.28%). All default
+  budgets pass. Only `libFloatPostfix.dylib` changes: five corrected returns,
+  ten changed lines each in structured, pseudo and listing, and twenty JSON
+  annotation/statement lines. All other JSON fields, instructions and
+  functions match. All four large SDK outputs match. Publication remains
+  through the original integration gate.
+
+- **OPEN (soundness): a literal NaN loses its payload when formatted.**
+  `renderValue`'s `.floatConstant` case in `Disassembler.swift` converts the
+  bits through `String(Double(bitPattern: pattern))` (and its narrower
+  equivalents). An authored constant `0x7ff8000000000001`, moved into d0,
+  negated and read as an integer, executes as `0xfff8000000000001` but
+  renders `(-nan).bitPattern`. The payload is absent from that expression;
+  the native canonical negative `Double.nan` has bits `0xfff8000000000000`.
+  Receiver grouping does not repair literal formatting. Argument-supplied
+  NaNs in the new native fixture retain their payloads.

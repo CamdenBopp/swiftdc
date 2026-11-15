@@ -8234,7 +8234,13 @@ public struct Disassembler: Sendable {
                     // of another or an unknown width read whole is neither.
                     let type = TypeInference.typeOf(operand, arguments: argumentTypes)
                     if let width = floatWidth(operand) ?? (type.category == .floatingPoint ? type.width ?? 0 : nil) {
-                        return width == bits ? "\(inner).bitPattern" : unknownRenderedValue()
+                        // Member access binds tighter than a prefix operator:
+                        // the bits of -x are (-x).bitPattern, not -x.bitPattern.
+                        // Classify the rendered receiver because passthrough
+                        // calls can expose a prefix from a different IR node.
+                        let prefix = inner.first.map { "-+!~&*".contains($0) } ?? false
+                        let receiver = prefix ? "(\(inner))" : inner
+                        return width == bits ? "\(receiver).bitPattern" : unknownRenderedValue()
                     }
                     return inner
                 case .floatFromBits(let bits):
