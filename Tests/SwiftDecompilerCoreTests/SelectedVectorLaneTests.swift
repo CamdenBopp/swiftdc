@@ -34,7 +34,8 @@ private let selectedLowLane = AbstractValue.select(condition: .argument(0),
         whenFalse: .aggregate([.loaded(0x5000), .loaded(0x5008)]))
     #expect(ValueTracer.scalarView(loaded, bits: 32) == .unknown)
     #expect(ValueTracer.scalarView(loaded, bits: 64) == .select(condition: .argument(0),
-        whenTrue: .loaded(0x4000), whenFalse: .loaded(0x5000)))
+        whenTrue: .unary(.floatFromBits(bits: 64), .loaded(0x4000)),
+        whenFalse: .unary(.floatFromBits(bits: 64), .loaded(0x5000))))
     let equalLow = AbstractValue.select(condition: .unknown,
         whenTrue: .aggregate([.immediate(7), .immediate(19)]),
         whenFalse: .aggregate([.immediate(7), .immediate(23)]))
@@ -141,7 +142,8 @@ private func selectedVectorRoundTrip(
     }
     // Caller-saved vectors lose stale lanes. v0 can hold the fresh result;
     // other caller-saved registers have no corresponding return-value role.
-    #expect(selectedVectorRoundTrip(calls: 1, reloadVector: true, register: 0) == .callResult(0x1000))
+    #expect(selectedVectorRoundTrip(calls: 1, reloadVector: true, register: 0)
+        == .unary(.bitPattern(bits: 64), .callResult(0x1000)))
     for register in [7, 16, 31] {
         #expect(selectedVectorRoundTrip(calls: 1, reloadVector: true, register: register) == nil)
     }

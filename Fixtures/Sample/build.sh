@@ -623,6 +623,8 @@ $CLANG -arch arm64 -dynamiclib vectorimmediates.s -o libVectorImmediates.dylib
 
 echo "==> selected vector lanes through calls and Q spills (selectedvectorlanes.s)"
 $CLANG -arch arm64 -dynamiclib selectedvectorlanes.s -o libSelectedVectorLanes.dylib
+echo "==> symbolic vector lanes retain their bit interpretation (vectorbits.s)"
+$CLANG -arch arm64 -dynamiclib vectorbits.s -o libVectorBits.dylib
 
 echo "==> fmov immediates in vector and half-precision registers (fpimmediates.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name FPImmediates fpimmediates.swift -o libFPImmediates.dylib

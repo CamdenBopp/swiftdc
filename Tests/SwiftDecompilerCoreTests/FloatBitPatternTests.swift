@@ -194,9 +194,9 @@ import Testing
     #expect(trace([0xfd0007e0, 0xfd4007e0, ret]).float == .argument(0))
     // str d0, [sp, #8]; str x0, [sp, #8]; ldr x0, [sp, #8]: the last store's file
     #expect(trace([0xfd0007e0, 0xf90007e0, 0xf94007e0, ret]).value == .argument(0))
-    // str d0, [sp, #16]; str q0, [sp, #16]; ldr x0, [sp, #16]: a store of no
-    // known file leaves none behind
-    #expect(trace([0xfd000be0, 0x3d8007e0, 0xf9400be0, ret]).value == .argument(0))
+    // str d0, [sp, #16]; str q0, [sp, #16]; ldr x0, [sp, #16]: Q stores
+    // raw words, including the bit pattern of a tracked scalar low lane.
+    #expect(trace([0xfd000be0, 0x3d8007e0, 0xf9400be0, ret]).value == double)
     // str d0, [sp, #8]; ldr s0, [sp, #8]: a Double's word is no Float
     #expect(trace([0xfd0007e0, 0xbd400be0, ret]).float == .unknown)
     // str x0, [sp, #8]; ldr s0, [sp, #8]: half of a general store

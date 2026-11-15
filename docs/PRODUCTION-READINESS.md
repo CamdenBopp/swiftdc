@@ -8765,14 +8765,44 @@ Commit messages on dev stay as they are; these are the true records.
   result copy; partial Q reload provenance retains the binding while unknown
   lanes and the return stay unclaimed. No target, argument, value, store or
   return changed. The other three large SDK outputs are byte-identical.
-- **OPEN (soundness): symbolic integer words still lack FP provenance.**
-  An authored `UInt64 -> Double` reduction, `dup v0.2d, x0; ret`, renders
+- **FIXED (2026-11-15, soundness): symbolic vector words retain their bit
+  interpretation.**
+  An authored `UInt64 -> Double` reduction, `dup v0.2d, x0; ret`, rendered
   `return arg0`; native execution reads IEEE bits and returns 1.0, 2.0 and
   -1.0 for 0x3ff0000000000000, 0x4000000000000000 and
   0xbff0000000000000. This preexisting ambiguity between raw words and
   semantic FP arguments is not closed by the selected-constant repair.
+  Packed raw words now project through `floatFromBits`
+  when read as scalar FP values, including predecessor-specific exits.
+  Q spills record raw-word provenance; Q reloads convert scalar FP spills
+  to their bit patterns before packing, and scalar facts stored through Q
+  likewise become raw low words. `vectorbits.s` independently executes the
+  direct DUP return, Q-to-D spill, scalar-D-to-Q-to-integer copy, direct Q
+  spill, and two unchanged-value round trips. The focused regression checks
+  all five analysis APIs. Broader typed memory and register-width provenance
+  remain separate work; this is not a complete bit-provenance model.
   The separate d8-d15 callee-summary issue is fixed in the vector-summary
-  change below; this symbolic-bit-provenance issue remains open.
+  change below.
+
+  Verification: 48 native bit-exact controls cover ordinary values, signed
+  zero, infinity and a NaN payload. All five analysis APIs and the separate
+  predecessor-exit path pass. Six independently compiled mutations fail:
+  scalar projection (10 issues), Q reload normalization (20), Q store bank
+  (10), scalar Q store normalization (10), predecessor projection (2), and
+  selected-bit normalization (4). Restoration rebuilds successfully, and
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build` passes **1,447 tests
+  in 39 suites**, after `swift build --build-tests -j 2`.
+
+  Matched release builds against `cc525d7` pass the original
+  `Tools/blast-radius.sh <baseline> <candidate> <out> --real --perf`:
+  **352 inputs in four views plus four SDK workload pairs**, all 1,412 cost
+  rows positive. Instructions rise 0.16% (5,122.0G to 5,129.9G); summed
+  per-render physical peaks rise 0.24% (17,799 MB to 17,841 MB), within all
+  default budgets. Only `libVectorBits.dylib` changes: four corrected return
+  expressions, eight changed lines each in structured, pseudo and listing,
+  and sixteen JSON lines (annotation and statement). Every other JSON field,
+  instruction and function is unchanged. All four large SDK outputs match.
+  Publication remains through the original integration gate.
 
 ## 2026-11-05: reuse Capstone instruction storage
 

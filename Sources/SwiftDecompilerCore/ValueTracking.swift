@@ -250,7 +250,7 @@ public indirect enum AbstractValue: Equatable, Sendable {
     /// A pure unary expression — `-x`, `sqrt(x)`, `abs(x)`, `~x`. Bounded by the
     /// same depth cap as `.binary`.
     case unary(AbstractUnaryOperator, AbstractValue)
-    /// Consecutive eight-byte values packed into a wider SIMD register. Clang
+    /// Consecutive raw eight-byte words packed into a wider SIMD register. Clang
     /// commonly moves two Objective-C stack arguments at once through `q0`.
     case aggregate([AbstractValue])
     /// A frame-relative address: the stack pointer on function entry, plus this
@@ -1400,7 +1400,7 @@ public struct ValueTracer: Sendable {
                         // consumer can tell "all paths throw" from "some do".
                         result.exitErrorValuesByPredecessor[insn.address, default: [:]][end] = registers[.x(21)] ?? .unknown
                         result.exitValuesByPredecessor[insn.address, default: [:]][end] = registers[.x(0)] ?? .unknown
-                        result.exitFloatValuesByPredecessor[insn.address, default: [:]][end] = registers[.v(0)] ?? .unknown
+                        result.exitFloatValuesByPredecessor[insn.address, default: [:]][end] = Self.scalarView(registers[.v(0)] ?? .unknown, bits: 64)
                         break
                     }
                     transfer(insn, into: &registers, record: nil, recordAccess: nil,
@@ -4219,7 +4219,10 @@ public struct ValueTracer: Sendable {
     /// Other scalar values pass through as they were.
     static func scalarView(_ value: AbstractValue, bits: Int) -> AbstractValue {
         guard bits < 128 else { return value }
-        return packedLane(of: value, index: 0, bits: bits) ?? value
+        // Packed lanes are raw words, including those produced by DUP from
+        // an integer argument. Reading d0 gives those bits an FP meaning.
+        guard let lane = packedLane(of: value, index: 0, bits: bits) else { return value }
+        return float(fromBits: lane, bits: bits)
     }
 
     /// Nil means no packed value was found, so the existing scalar meaning
@@ -4458,6 +4461,11 @@ public struct ValueTracer: Sendable {
         switch value {
         case .unknown, .immediate: return value
         case .unary(.bitPattern(let width), let float) where width == bits: return float
+        case .select(let condition, let whenTrue, let whenFalse):
+            guard expressionDepth(value) < 8 else { return .unknown }
+            return .select(condition: condition,
+                           whenTrue: float(fromBits: whenTrue, bits: bits),
+                           whenFalse: float(fromBits: whenFalse, bits: bits))
         case .binary(.bitAnd, let integer, .immediate(0xffff_ffff)) where bits == 32:
             return float(fromBits: integer, bits: bits)
         default: return expressionDepth(value) < 8 ? .unary(.floatFromBits(bits: bits), value) : .unknown
@@ -4924,7 +4932,14 @@ public struct ValueTracer: Sendable {
             return registers.frame[offset] ?? .unknown
         }
         let words = stride(from: 0, to: bytes, by: 8).map {
-            stackValue(at: offset + Int64($0), bytes: min(8, bytes - $0), in: registers)
+            let wordOffset = offset + Int64($0)
+            let word = stackValue(at: wordOffset, bytes: min(8, bytes - $0), in: registers)
+            // Q registers contain raw words. A scalar FP spill must lose its
+            // semantic FP interpretation before entering that representation.
+            if case .immediate(let bank)? = registers.frame[wordOffset, .bank], bank == 32 || bank == 64 {
+                return bitPattern(of: word, bits: Int(bank))
+            }
+            return word
         }
         // A Q-register reload can retain one known lane while the other is
         // unknown, just like the vector state after an ordinary call.
@@ -4949,10 +4964,10 @@ public struct ValueTracer: Sendable {
         let effect = writeEffect ?? FrameMemoryEffect.legacyTracerExactWrite(start: offset, bytes: Int64(bytes))
         registers.frame.forget(effect, removing: [.value, .width, .outgoing])
         // Which register file wrote the word: a reload into the other one
-        // reinterprets its bits. A store with no register (a modelled copy)
-        // or a wider one leaves it unknown.
+        // reinterprets its bits. Whole SIMD stores contain raw words; a store
+        // with no register (a modelled copy) leaves the bank unknown.
         var file: AbstractValue?
-        if let register, register.kind == .gpr {
+        if let register, register.kind == .gpr || (register.kind == .vector && register.widthBits == 128) {
             file = .immediate(0)
         } else if let register, register.kind == .vector, register.widthBits == 64 || register.widthBits == 32 {
             file = .immediate(UInt64(register.widthBits))
@@ -4962,6 +4977,10 @@ public struct ValueTracer: Sendable {
             words = (0..<max(1, (bytes + 7) / 8)).map {
                 packedLane(of: value, index: $0, bits: 64) ?? .unknown
             }
+        } else if register?.kind == .vector, register?.widthBits == 128 {
+            // A scalar fact in a Q register describes only its low FP lane.
+            // Its upper lane remains unknown; the stored low word is bits.
+            words = [bitPattern(of: value, bits: 64)]
         } else {
             words = [value]
         }
