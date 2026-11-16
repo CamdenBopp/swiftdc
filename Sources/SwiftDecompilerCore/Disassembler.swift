@@ -2222,18 +2222,6 @@ public struct Disassembler: Sendable {
         // result) over the ordinary convention, and bring the context slots the
         // chain pass proved.
         let asyncEntry = Self.asyncConvention(for: function, base: entry, index: context.asyncIndex)
-        if Probe.isActive {
-            let seeded = asyncEntry ?? entry
-            Probe.inFunction(function.startAddress, function.displayName) {
-                Probe.record(.entryConvention, at: function.startAddress, [
-                    "convention": .label(seeded.map(Self.conventionName) ?? "none"),
-                    "selfType": .name(selfTypeName ?? "none"),
-                    "seeds": .object(Dictionary(uniqueKeysWithValues: ValueTracer.entrySeeds(seeded).map {
-                        ($0.register, ProbeValue.abstractValue($0.value))
-                    })),
-                ])
-            }
-        }
         let chainSlots = context.asyncChainSlots[function.startAddress] ?? [:]
         let classArguments: [Int: (type: String, map: FieldMap)] = if case .swiftFunction(let scalarArguments, _, _, _, _)? = entry {
             Self.classArguments(of: function, scalarArguments: scalarArguments, index: context.classParameterFields)
@@ -2250,6 +2238,22 @@ public struct Disassembler: Sendable {
                 isClassBoundExistential: isClassBoundExistential)?.fieldMaps ?? [:]
         } else {
             [:]
+        }
+        if Probe.isActive {
+            let seeded = asyncEntry ?? entry
+            let floatWidths = Self.entryFloatingWidths(seeded,
+                argumentTypes: TypeInference.argumentTypes(of: function, classTypeIndex: context.classTypeIndex),
+                objcMethod: function.objcMethod, fieldMap: fieldMap,
+                argumentFieldMaps: valueSelf?.argumentFieldMaps ?? functionArgumentFieldMaps)
+            Probe.inFunction(function.startAddress, function.displayName) {
+                Probe.record(.entryConvention, at: function.startAddress, [
+                    "convention": .label(seeded.map(Self.conventionName) ?? "none"),
+                    "selfType": .name(selfTypeName ?? "none"),
+                    "seeds": .object(Dictionary(uniqueKeysWithValues: ValueTracer.entrySeeds(seeded, floatWidths: floatWidths).map {
+                        ($0.register, ProbeValue.abstractValue($0.value))
+                    })),
+                ])
+            }
         }
         let callerProvenResult = objcMethod == nil && symbolEntry == nil && asyncEntry == nil
             && function.asyncFunclet == nil
@@ -2513,6 +2517,8 @@ public struct Disassembler: Sendable {
                 }
                 var tracer = ValueTracer()
                 tracer.callFactsCache = callFactsCache
+                tracer.entryFloatWidths = Self.entryFloatingWidths(convention,
+                    argumentTypes: TypeInference.argumentTypes(of: funclet, classTypeIndex: classTypeIndex))
                 if address == entry {
                     entrySuspensions = funclet.instructions.compactMap {
                         index.suspensions[$0.address] != nil ? $0.address : nil
@@ -7662,6 +7668,70 @@ public struct Disassembler: Sendable {
         return .binary(.bitAnd, inner, .immediate(mask))
     }
 
+    /// ABI precision applies only to already-proven SIMD seeds. It never
+    /// creates an argument location or supplies unused upper register bits.
+    static func entryFloatingWidths(
+        _ entry: MethodEntryConvention?, argumentTypes: [Int: ValueType],
+        objcMethod: ObjCMethodBinding? = nil, fieldMap: FieldMap? = nil,
+        argumentFieldMaps: [Int: FieldMap] = [:]
+    ) -> [String: Int] {
+        var arguments = argumentTypes.compactMapValues { type in
+            type.category == .floatingPoint ? type.width : nil
+        }
+        if let method = objcMethod {
+            arguments = [:]
+            if let types = ObjCArgumentABI.parameterTypes(encoding: method.typeEncoding, argumentCount: method.argumentCount) {
+                for (index, type) in types.enumerated() {
+                    if type == "f" { arguments[index] = 32 }
+                    else if type == "d" { arguments[index] = 64 }
+                }
+            }
+        }
+        func fieldWidth(_ map: FieldMap?, offset: Int) -> Int? {
+            guard let map, let field = map.fields.first(where: { $0.offset == offset }),
+                  case .success(.whole(_, let mangled)) = map.lookup(offset: offset, bytes: field.bytes)
+            else { return nil }
+            let type = FieldMap.printableTypeName(mangled: mangled, resolved: map.fieldTypeNames[field.name])
+            switch (type, field.bytes) {
+            case ("s7Float16V", 2), ("Swift.Float16", 2): return 16
+            case ("Sf", 4), ("Swift.Float", 4): return 32
+            case ("Sd", 8), ("Swift.Double", 8): return 64
+            default: return nil
+            }
+        }
+        func width(_ value: AbstractValue) -> Int? {
+            switch value {
+            case .argument(let index): return arguments[index]
+            case .argumentField(let index, let offset): return fieldWidth(argumentFieldMaps[index], offset: offset)
+            case .selfFieldValue(let offset): return fieldWidth(fieldMap, offset: offset)
+            default: return nil
+            }
+        }
+        func seeds(_ values: [String: AbstractValue]) -> [String: Int] {
+            values.compactMapValues(width).filter { $0.key.hasPrefix("v") && [16, 32, 64].contains($0.value) }
+        }
+        switch entry {
+        case .swiftInstance(let map, _):
+            return seeds(map.mapValues { .argument($0) })
+        case .swiftFunction(let map, _, _, _, let fields):
+            var values = map.mapValues { AbstractValue.argument($0) }
+            for (key, field) in fields where field.count == 2 {
+                values[key] = .argumentField(argument: field[0], offset: field[1])
+            }
+            return seeds(values)
+        case .objectiveC(_, let map), .objectiveCInitializer(_, let map):
+            return seeds((map ?? [:]).mapValues { .argument($0) })
+        case .swiftValueInstance(let values): return seeds(values)
+        case .asyncFunclet(let base, let overlay):
+            var widths = entryFloatingWidths(base, argumentTypes: argumentTypes, objcMethod: objcMethod,
+                                             fieldMap: fieldMap, argumentFieldMaps: argumentFieldMaps)
+            for key in overlay.keys { widths[key] = nil }
+            widths.merge(seeds(overlay), uniquingKeysWith: { _, new in new })
+            return widths
+        case nil: return [:]
+        }
+    }
+
     /// In a proven floating context, an immediate (including each selected
     /// arm) is IEEE bits. Other scalar types keep their existing meaning.
     static func floatingPointValue(_ value: AbstractValue, type: String) -> AbstractValue {
@@ -8291,6 +8361,8 @@ public struct Disassembler: Sendable {
 
         var tracer = ValueTracer(calleeConventions: calleeConventions, asyncContextSlots: asyncContextSlots)
         tracer.callFactsCache = callFactsCache
+        tracer.entryFloatWidths = Self.entryFloatingWidths(entry, argumentTypes: argumentTypes,
+            objcMethod: function.objcMethod, fieldMap: fieldMap, argumentFieldMaps: argumentFieldMaps)
         tracer.argumentObjectFields = classArgumentFieldMaps.mapValues(Self.wholeWordFieldWidths)
         tracer.inlinedPrefixes = inlinedPrefixes
         tracer.callResultBank = { callee in
@@ -10602,6 +10674,8 @@ public struct Disassembler: Sendable {
                     let pattern: String
                     if bits == 16 { pattern = "UInt16(truncatingIfNeeded: \(inner))" }
                     else if case .unary(.bitPattern(let source), _) = operand, source < bits {
+                        pattern = "UInt\(bits)(\(inner))"
+                    } else if case .binary(.bitAnd, .unary(.bitPattern(let source), _), _) = operand, source < bits {
                         pattern = "UInt\(bits)(\(inner))"
                     } else if case .binary(.bitAnd, .unary(.bitPattern(let source), _), _) = operand, source > bits {
                         pattern = "UInt\(bits)(truncatingIfNeeded: \(inner))"

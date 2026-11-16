@@ -16,7 +16,7 @@ import Testing
     #expect(text.contains("return (self.q - arg0)"), Comment(rawValue: text))
     // A float formal is in its own bank: self.s is still x0.
     let scaled = try await withStableDependencies { try await LabReport.report(path: path, function: "One.scaled") }
-    #expect(scaled.contains("seeds: x0=self[0] v0=arg0"), Comment(rawValue: scaled))
+    #expect(scaled.contains("seeds: x0=self[0] v0=float-result(arg0)"), Comment(rawValue: scaled))
 }
 
 /// A receiver with a float word travels with its call: a struct of Doubles

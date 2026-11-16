@@ -152,7 +152,7 @@ public enum AbstractUnaryOperator: Equatable, Sendable {
     /// An integer's low `bits` read as the float of that width (`fmov d0,
     /// x0`): `Double(bitPattern: i)`. The mirror of `bitPattern`.
     case floatFromBits(bits: Int)
-    /// A scalar FP result and its physical precision. `upperZero` proves
+    /// A scalar FP value and its physical precision. `upperZero` proves
     /// that the rest of its low 64-bit register word is zero in every FPCR
     /// merging mode; it makes no claim about the high 64 bits of Vn.
     case floatResult(bits: Int, upperZero: Bool)
@@ -606,6 +606,10 @@ public struct ValueTracer: Sendable {
     /// pessimistically: a forwarded x8 poisons the result, and a frame slot
     /// under x8 is clobbered from that offset up.
     public var calleeConventions: [UInt64: CalleeResultConvention]
+
+    /// Proven scalar precision of existing SIMD entry seeds. The ABI supplies
+    /// only these low bits; the rest of the physical register stays unknown.
+    var entryFloatWidths: [String: Int] = [:]
 
     /// Values proven to sit in slots of the function's own async context when
     /// a funclet is entered: slot byte offset → value. Built by a pass over the
@@ -1116,8 +1120,8 @@ public struct ValueTracer: Sendable {
     /// method convention for this exact implementation address.
     /// The registers `entry` seeds before the first instruction, in register
     /// order, for the `analysis.entry` probe.
-    static func entrySeeds(_ entry: MethodEntryConvention?) -> [(register: String, value: AbstractValue)] {
-        initialState(entry: entry).compactMap { element -> (Int, String, AbstractValue)? in
+    static func entrySeeds(_ entry: MethodEntryConvention?, floatWidths: [String: Int] = [:]) -> [(register: String, value: AbstractValue)] {
+        initialState(entry: entry, floatWidths: floatWidths).compactMap { element -> (Int, String, AbstractValue)? in
             switch element.key {
             case .x(let n): (n, "x\(n)", element.value)
             case .v(let n): (100 + n, "v\(n)", element.value)
@@ -1126,7 +1130,8 @@ public struct ValueTracer: Sendable {
         }.sorted { $0.0 < $1.0 }.map { ($0.1, $0.2) }
     }
 
-    private static func initialState(entry: MethodEntryConvention?, asyncContextSlots: [Int: AbstractValue] = [:]) -> State {
+    private static func initialState(entry: MethodEntryConvention?, asyncContextSlots: [Int: AbstractValue] = [:],
+                                     floatWidths: [String: Int] = [:]) -> State {
         // x8 is the indirect-result address in every ARM64 convention, so the
         // seed is a fact about the ABI, not about this function; see
         // `AbstractValue.indirectResultPointer`.
@@ -1205,6 +1210,13 @@ public struct ValueTracer: Sendable {
             }
         case nil:
             break
+        }
+        for (key, bits) in floatWidths {
+            guard let location = Location(key: key), case .v(let number) = location,
+                  (0..<32).contains(number), key == "v\(number)",
+                  let value = state[location], value != .unknown else { continue }
+            state[location] = [16, 32, 64].contains(bits)
+                ? .unary(.floatResult(bits: bits, upperZero: bits == 64), value) : .unknown
         }
         return state
     }
@@ -1328,7 +1340,7 @@ public struct ValueTracer: Sendable {
                 incoming = preds.compactMap { pred in
                     outState[pred].map { Self.refined($0, along: zeroEdges[pred], to: addr) }
                 }
-                if addr == function.startAddress { incoming.append(Self.initialState(entry: entry, asyncContextSlots: asyncContextSlots)) }
+                if addr == function.startAddress { incoming.append(Self.initialState(entry: entry, asyncContextSlots: asyncContextSlots, floatWidths: entryFloatWidths)) }
                 // None of its predecessors has run: not reached yet, so its
                 // entry is unconstrained, not empty. Run from nothing, it
                 // gained facts once a predecessor ran, entry states grew
@@ -2820,7 +2832,7 @@ public struct ValueTracer: Sendable {
                 var inputs = (predecessors[address] ?? []).compactMap { pred in
                     forwarded[pred].map { Self.refined($0, along: zeroEdges[pred], to: address) }
                 }
-                if address == blocks.first?.startAddress { inputs.append(Self.initialState(entry: entry, asyncContextSlots: asyncContextSlots)) }
+                if address == blocks.first?.startAddress { inputs.append(Self.initialState(entry: entry, asyncContextSlots: asyncContextSlots, floatWidths: entryFloatWidths)) }
                 let prior = rawInState[address]
                 inState[address] = Self.meet(inputs)
                 resolveDiamondSelects(blocks: [block], entryAddress: entryAddress, predecessors: predecessors,
@@ -3740,6 +3752,15 @@ public struct ValueTracer: Sendable {
                 clobber(detail, into: &registers); return
             }
             var result = evaluate(effect.value, detail, in: registers)
+            if detail.id == AARCH64_INS_MOV, detail.operands.count == 2,
+               effect.destination.kind == .vector, [64, 128].contains(effect.destination.widthBits),
+               let input = detail.operands[1].operand.register, input.kind == .vector,
+               input.widthBits == effect.destination.widthBits {
+                // A whole vector copy preserves a known narrow scalar even
+                // when the other bits are unknown. It does not read that
+                // scalar as a wider FP value or promise any zero extension.
+                result = registers.registerFacts.snapshotForCopy(Location(input)).value ?? .unknown
+            }
             // `self`'s isa masked with swift_isaMask is `self`'s class
             // metadata, the base of its vtable and generic arguments, as
             // the unmasked isa of a native Swift class is.
