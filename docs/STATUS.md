@@ -6,7 +6,8 @@ its commit, its denominator and the command that reproduces it. The long
 history is [PRODUCTION-READINESS.md](PRODUCTION-READINESS.md); this page
 is what to quote.
 
-Updated 2026-11-13. Each table names the commit it was measured at.
+Updated 2026-11-16. Each measurement names its commit; the benchmark
+tables retain their original measurements.
 
 ## What to report, and what not to
 
@@ -86,18 +87,28 @@ Reproduce: `Tools/ghidra-compare/interface_oracle.py <swiftdc>
 <built-corpus>`. It covers symbols the compiler emits IR for; it does not
 cover results, bodies, or Objective-C methods (4 matched).
 
-## Verification of the head commit
+## Latest local verification
+
+At `542f6a7`, current dev and the seven local FP commits are reconciled.
+The earlier **1,468** count belonged to stale local `23cbcab`, based on
+`cc525d7`; it omitted 260 later upstream commits. It did not establish a
+passing suite for current upstream dev. The merge retains all **1,780**
+upstream test declarations, the **24** local additions, and one new
+integration test: **1,805 tests in 43 suites** pass with fixtures enforced.
+The release comparison below uses freshly built `5bb6fb2` as its baseline.
 
 | Check | Result | Where |
 |---|---|---|
-| Enforcing test suite (a missing fixture fails) | 1,780 tests pass at head | local gate, `Tools/integration-gate.sh` |
-| Output change against the previous commit | every changed line explained in each commit message | `Tools/blast-radius.sh` |
-| Cost budget (instructions, footprint) | within budget; one fixture over, declared (`Perf-cost:` in 36ba8db) | same |
-| GitHub Actions | **no passing run**. GitHub's hosted images cannot build the fixtures: `macos-26` jobs get no runner, and `macos-15` carries Swift 6.2.4. The workflow now runs on a repository's own Mac when one is registered ([CI.md](CI.md)); none is registered for this repository yet | `.github/workflows/ci.yml`, `Tools/ci/` |
+| Enforcing test suite (a missing fixture fails) | 1,805 tests / 43 suites pass at `542f6a7` | `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`, after a fresh test build |
+| Output change against `5bb6fb2` | 26 files / 588 changed lines in each of structured and pseudo; 36 / 682 listing; 36 / 1,388 JSON. Every changed line reviewed and explained in the merge commit | `Tools/blast-radius.sh` |
+| Cost budget (instructions, footprint) | All 2,016 render/workload pairs positive; +0.18% retired instructions, -0.78% summed peak footprint; all default budgets pass without an override | same, `--real --perf` |
+| GitHub Actions, last inspected 2026-11-16 | Latest upstream run at `5bb6fb2` fails at Toolchain: hosted Swift 6.2.4 is below the required 6.4. Fixtures, Build and Enforcing suite are skipped. This is not a CI test pass | [run 43565792018](https://github.com/CamdenBopp/swiftdc/actions/runs/43565792018), [CI.md](CI.md) |
 | Independent execution of rendered expressions | return values of the differential-oracle fixtures, integer and floating point (compared bit for bit). Not checked by execution: which way a branch went, registers at call sites, results beyond the first register, memory writes | `DifferentialOracleTests` |
 
-The suite, blast radius and cost budget are run by the author's gate on
-one machine. Until a CI run completes they are author-reported.
+These checks are local measurements on one machine. Publication still
+requires the original `Tools/integration-gate.sh --push` to rebuild, test
+and compare the committed head. Until a CI run completes, the local
+results are author-reported.
 
 ## Robustness
 

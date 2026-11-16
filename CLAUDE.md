@@ -107,6 +107,12 @@ does not fit in it, so a new whole-image mode should stream
 
 ## Branches, commits, pushes
 
+- Before a new slice, fetch `origin/dev`, inspect `git status` and recent
+  history, and compare local `dev` with `origin/dev`. Reconcile divergence
+  before feature work; never treat a stale local suite as current dev's suite.
+- Develop in the main checkout on `dev`. Do not create additional development
+  worktrees. Reuse the existing dedicated integration-gate checkout only for
+  validation (`SWIFTDC_GATE_TREE`); never edit feature code there.
 - Work on `dev`, which tracks `origin/dev`. Push with
   `git push origin HEAD:dev`. **Never commit to or push master**: merging
   dev into master is the owner's call. Don't push to any other repository
@@ -208,7 +214,8 @@ around what a rebuild costs:
   release build, then the apps, in one command. Review the fixture diffs
   while the release build runs.
 - **Do not touch a tree while it builds** for a measurement or a release.
-  Run a parallel experiment in a second worktree.
+  Finish the measurement before changing sources; park unrelated WIP instead
+  of creating another development worktree.
 - **Ask the analysis, not the render:** `swiftdc lab <binary> -f <name>`
   prints each instruction of the matching functions beside what the
   analysis concluded there: the entry convention and its seeded registers,

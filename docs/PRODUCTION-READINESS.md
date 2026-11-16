@@ -12372,3 +12372,44 @@ ABI review item 11. Truth for every shape is `swiftc -O -emit-ir` on
   payload-enum receiver layout, replacing an expectation based on the old
   unbounded heuristic. Recovering that receiver requires a separate complete
   payload ABI proof.
+
+
+## 2026-11-16: reconcile current dev with local FP provenance fixes
+
+- **VERIFIED (`542f6a7`, soundness):** merge current upstream `5bb6fb2`
+  with the seven local FP commits ending at `23cbcab`. The local branch
+  began at `cc525d7` and omitted 260 later upstream commits. The earlier
+  1,468-test reports described that stale branch, not current upstream dev.
+  No upstream test file or declaration is removed: all 1,780 upstream
+  declarations, 24 local additions and one integration regression test
+  remain. A fresh fixture-enforced run passes **1,805 tests / 43 suites**.
+- Resolve the raw packed-word / call-preserved scalar interaction without
+  interpreting DUP twice or inventing a vector's unknown high lane. Keep
+  packed SIMD frame provenance separate from ordinary GPR stores: narrow
+  reads of packed words truncate; the existing ordinary GPR prefix-read
+  decline remains. Retain current upstream import-identity proofs together
+  with literal pointer-ownership exclusions. Keep the half-move fixture
+  fully named through a local padding symbol, without changing its public
+  ABI or instructions.
+- The release diff exposed an extra GridSampler decline: FP precision
+  markers consumed the C whole-scalar-result validator's recursion limit.
+  Metadata now leaves semantic depth unchanged while the underlying call
+  result validation remains. The new test is compiled red before the fix
+  and checks exact pseudo/structured output across five analysis pipelines.
+  Nine other independent integration mutants compile and fail their
+  targeted tests; all four independent native FP oracles pass in each run.
+- Matched releases against `5bb6fb2` cover **503 inputs in four views plus
+  four SDK workload pairs**, all **2,016** cost rows positive. Retired
+  instructions: **6,078.1G -> 6,089.0G (+0.18%)**. Summed per-render peak
+  footprint: **18,794 -> 18,648 MB (-0.78%)**. All default budgets pass
+  without an override. All four large SDK outputs are byte-identical.
+  Structured and pseudo each change **26 files / 588 lines**, listing
+  **36 / 682**, JSON **36 / 1,388**. JSON changes only 341 annotations,
+  294 statements and 59 call arguments; every change is reviewed and
+  explained in the merge commit. GridSampler matches the baseline again.
+- Fetch and reconcile upstream before each new slice. Develop in the main
+  checkout on `dev`; reuse the existing gate checkout only for validation.
+  Record the verified code hash, then use the original integration gate
+  to publish before starting another feature slice. No readiness or ABI
+  coverage percentage is inferred from the test count. The pinned outcome
+  benchmarks in STATUS.md are unchanged.
