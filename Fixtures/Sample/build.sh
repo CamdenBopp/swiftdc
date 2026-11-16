@@ -147,6 +147,12 @@ $CLANG -arch arm64 -dynamiclib fixpoint_order.s -o libFixpointOrder.dylib
 echo "==> callee-saved registers clobbered through nested and tail calls (preserve_calls.s)"
 $CLANG -arch arm64 -dynamiclib preserve_calls.s -o libPreserveCalls.dylib
 
+echo "==> unwritten GP/FP banks across effectful outlined helpers (outlined_results.s)"
+$CLANG -arch arm64 -dynamiclib outlined_results.s -o libOutlinedResults.dylib
+cp libOutlinedResults.dylib libOutlinedResults.stripped.dylib
+strip -x libOutlinedResults.stripped.dylib
+$CLANG -arch arm64 -O2 outlined_results_native.c outlined_results.s -o outlined_results_native
+
 echo "==> an inlined outlined fragment that moves x29 before an x21 reload (outlined_frame.s)"
 $CLANG -arch arm64 -dynamiclib -undefined dynamic_lookup outlined_frame.s -o libOutlinedFrame.dylib
 

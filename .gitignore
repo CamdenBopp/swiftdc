@@ -56,3 +56,5 @@ __pycache__/
 
 # Synthetic corpus products (regenerate with Tools/synthcorpus/build.sh)
 Tools/synthcorpus/out/
+
+Fixtures/Sample/outlined_results_native

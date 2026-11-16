@@ -669,14 +669,15 @@ struct ABISourceLoweringTests {
 /// A value method's `self` follows its formals in the receiver's own
 /// registers: two Doubles for ABIVec2, in d2 and d3 after the formal's d0
 /// and d1, so no x register after the formals is `self`. d2 and d3 hold the
-/// two words an earlier call returned, of which the first renders (`r4`)
-/// (abi_source.swift, the oracle executable).
+/// two words the constructor forwards. Its shared body is a single ret:
+/// the first receiver word stays 2.0 through the two constructor calls.
+/// The native oracle computes 2*5 + 3*7 = 31 (abi_source_main.swift).
 @Test func aFloatReceiversSelfIsNoIntegerWordIfPresent() async throws {
     let path = "Fixtures/Sample/abi-source-oracle"
     guard FileManager.default.fileExists(atPath: path) else { return }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
-    #expect(text.contains("ABISource.ABIVec2.dot(self: (r4, ?), ?)\n"), Comment(rawValue: text.components(separatedBy: "\n").filter { $0.contains("dot(") }.joined(separator: "\n")))
+    #expect(text.contains("ABISource.ABIVec2.dot(self: (2.0, ?), ?)\n"), Comment(rawValue: text.components(separatedBy: "\n").filter { $0.contains("dot(") }.joined(separator: "\n")))
     #expect(!text.contains("ABIVec2.dot(?, "))
 }
 

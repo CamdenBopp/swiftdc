@@ -8529,6 +8529,12 @@ public struct Disassembler: Sendable {
             }
             // A tail branch passes its arguments the same way a call does.
             callTargets[insn.address] = target
+            if insn.controlFlow == .call, let summary = registerSummaries[target] {
+                var unwritten: CalleeRegisterSummary.ResultRead = []
+                if !summary.mayWriteResult { unwritten.insert(.x0) }
+                if !summary.mayWriteFloatResult { unwritten.insert(.v0) }
+                if !unwritten.isEmpty { tracer.calleeUnwrittenResults[target] = unwritten }
+            }
             if insn.controlFlow == .call, let clobbered = registerSummaries[target]?.clobberedCalleeSaved,
                !clobbered.isEmpty {
                 tracer.calleeClobbers[target] = clobbered

@@ -636,6 +636,10 @@ public struct ValueTracer: Sendable {
     /// saving (`CalleeRegisterSummary`): an outlined fragment reached by `bl`
     /// does not preserve them, so they are forgotten after a call to it.
     var calleeClobbers: [UInt64: Set<String>] = [:]
+    /// A decoded body's result banks it never writes, including through
+    /// calls or outgoing branches. Such a call keeps the physical input;
+    /// it does not produce a new logical result in that bank.
+    var calleeUnwrittenResults: [UInt64: CalleeRegisterSummary.ResultRead] = [:]
     var calleeMemoryEffects: [UInt64: CalleeMemoryEffect] = [:]
     /// Site address → the outlined fragment's instructions that run before
     /// the site's own (`Disassembler.inliningOutlinedFragments`), each at the
@@ -1981,6 +1985,28 @@ public struct ValueTracer: Sendable {
                 if !argumentObjectFields.isEmpty { invalidateArgumentFieldAliases(in: &registers) }
             }
             if !handledAsMemoryHelper { applyCallToResultBuffers(insn, site: site, into: &registers) }
+            // Snapshot after memory/field invalidation: an unchanged register
+            // does not make a symbolic field alias current after a store.
+            var unwrittenResults = insn.branchTarget.flatMap { calleeUnwrittenResults[$0] } ?? []
+            if !unwrittenResults.isEmpty {
+                // A real typed identity function still produces its declared
+                // logical result. Body transport fills only banks without
+                // that contract; it never widens a typed FP result's bits.
+                if call.returnsString || call.hasTupleResult { unwrittenResults = [] }
+                switch call.cResult {
+                case "i"?: unwrittenResults.remove(.x0)
+                case "f"?, "d"?: unwrittenResults.remove(.v0)
+                default: break
+                }
+                switch callResultBank?(call.callee) {
+                case .integer?: unwrittenResults.remove(.x0)
+                case .floating?, .scalarFloating?: unwrittenResults.remove(.v0)
+                case .notOneRegister?: unwrittenResults = []
+                default: break
+                }
+            }
+            let keptGPResult = unwrittenResults.contains(.x0) ? registers.registerFacts.snapshotForCopy(.x(0)) : nil
+            let keptFPResult = unwrittenResults.contains(.v0) ? registers.registerFacts.snapshotForCopy(.v(0)) : nil
             // AAPCS64: x0–x17 are caller-saved, so a call clobbers them.
             // x19–x28 are callee-saved — and preserving those is what carries
             // `self` and locals across a call. x18 is the platform register:
@@ -2099,6 +2125,12 @@ public struct ValueTracer: Sendable {
                 registers[.x(0)] = .callResult(insn.address)
                 registers[.v(0)] = .callResult(insn.address)
                 if call.returnsString { registers[.x(1)] = .callResultHigh(insn.address) }
+            }
+            if let keptGPResult {
+                registers.registerFacts.installCopy(keptGPResult, at: .x(0), fallback: .unknown)
+            }
+            if let keptFPResult {
+                registers.registerFacts.installCopy(keptFPResult, at: .v(0), fallback: .unknown)
             }
             registers[Self.selfFreshKey] = nil
             // AAPCS64 does not preserve NZCV across a call.
