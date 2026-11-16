@@ -709,7 +709,27 @@ public struct ValueTracer: Sendable {
     var callReturnsVoid: (@Sendable (_ callee: String, CallSite) -> Bool)?
 
     /// Where a Swift callee's printed result type puts the whole result.
-    enum CallResultBank: Sendable { case integer, floating, notOneRegister, unknown }
+    enum CallResultBank: Sendable, Equatable {
+        case integer, floating, scalarFloating(bits: Int), notOneRegister, unknown
+
+        var isFloating: Bool {
+            switch self {
+            case .floating, .scalarFloating: true
+            default: false
+            }
+        }
+
+        func floatingValue(at site: UInt64) -> AbstractValue? {
+            switch self {
+            case .scalarFloating(let bits):
+                guard [16, 32, 64].contains(bits) else { return .unknown }
+                // The ABI promises the scalar, not zeroes in unused upper bits.
+                return .unary(.floatResult(bits: bits, upperZero: bits == 64), .callResult(site))
+            case .floating: return .callResult(site)
+            default: return nil
+            }
+        }
+    }
     /// For a callee whose Swift signature names its result: x0 alone, v0
     /// alone, or neither one register (a struct's words, a payload enum, a
     /// generic value). `.unknown` claims nothing.
@@ -2057,7 +2077,8 @@ public struct ValueTracer: Sendable {
                 // d0 passed on read as the whole rect. The register the
                 // result is not in holds whatever the callee left there.
                 registers[.x(0)] = result == "i" ? .callResult(insn.address) : .unknown
-                registers[.v(0)] = result == "f" || result == "d" ? .callResult(insn.address) : nil
+                registers[.v(0)] = (result == "f" ? CallResultBank.scalarFloating(bits: 32)
+                    : result == "d" ? .scalarFloating(bits: 64) : .unknown).floatingValue(at: insn.address)
             } else if !call.returnsString, let bank = callResultBank?(call.callee), bank != .unknown {
                 // A Swift signature says which register is the whole result.
                 // Any other register holds one part of it or whatever the
@@ -2067,8 +2088,8 @@ public struct ValueTracer: Sendable {
                 // A result that is not one register keeps x0 and x1 as this
                 // call's words, as a String's are: passed on together they
                 // are the value; x0 alone is one part, which renders `?`.
-                registers[.x(0)] = bank == .floating ? .unknown : .callResult(insn.address)
-                registers[.v(0)] = bank == .floating ? .callResult(insn.address) : nil
+                registers[.x(0)] = bank.isFloating ? .unknown : .callResult(insn.address)
+                registers[.v(0)] = bank.floatingValue(at: insn.address)
                 if bank == .notOneRegister { registers[.x(1)] = .callResultHigh(insn.address) }
             } else {
                 // The result register — x0 for integer/pointer/reference returns,

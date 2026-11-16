@@ -6292,7 +6292,8 @@ public struct Disassembler: Sendable {
         if containsGenericParameterToken(type) { return .unknown }
         switch swiftReturnRegister(forReturnType: type, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
         case .integer?: return .integer
-        case .floating?: return .floating
+        case .floating?:
+            return scalarFloatingWidth(type).map { .scalarFloating(bits: $0) } ?? .floating
         case nil: return .notOneRegister
         }
     }
@@ -7732,16 +7733,21 @@ public struct Disassembler: Sendable {
         }
     }
 
+    /// Exact scalar types only: a one-register aggregate's bank does not
+    /// establish that its logical value has a numeric bitPattern.
+    static func scalarFloatingWidth(_ type: String) -> Int? {
+        switch type {
+        case "Swift.Double", "Swift.Float64", "Swift.CGFloat", "CoreGraphics.CGFloat": 64
+        case "Swift.Float", "Swift.Float32": 32
+        case "Swift.Float16": 16
+        default: nil
+        }
+    }
+
     /// In a proven floating context, an immediate (including each selected
     /// arm) is IEEE bits. Other scalar types keep their existing meaning.
     static func floatingPointValue(_ value: AbstractValue, type: String) -> AbstractValue {
-        let bits: Int
-        switch type {
-        case "Swift.Double", "Swift.Float64", "Swift.CGFloat", "CoreGraphics.CGFloat": bits = 64
-        case "Swift.Float", "Swift.Float32": bits = 32
-        case "Swift.Float16": bits = 16
-        default: return value
-        }
+        guard let bits = scalarFloatingWidth(type) else { return value }
         return ValueTracer.floatOperand(value, bits: bits)
     }
 
@@ -9987,6 +9993,19 @@ public struct Disassembler: Sendable {
             if let values = sanitize(values) { argumentsByAddress[address] = values }
         }
 
+        // Apply a scalar argument's physical view before collecting producer
+        // uses, as well as before rendering. A wider, unproved read becomes
+        // unknown; its producer must still execute as a standalone call.
+        for (address, types) in laidOutTypes {
+            guard let values = argumentsByAddress[address], values.count == types.count else { continue }
+            argumentsByAddress[address] = zip(values, types).map { value, type in
+                // Literal spelling is already supplied by the typed renderer;
+                // an immediate has no producer to consume here.
+                if case .immediate = value { return value }
+                return Self.floatingPointValue(value, type: type)
+            }
+        }
+
         /// Runtime entry points with a fixed public ABI often inherit unrelated
         /// live values in later argument registers. Keep only parameters the
         /// helper actually accepts before embedding it in a source expression.
@@ -10405,7 +10424,12 @@ public struct Disassembler: Sendable {
             }
         }
 
-        func renderValue(_ value: AbstractValue, depth: Int) -> String {
+        func renderValue(_ rawValue: AbstractValue, depth: Int) -> String {
+            // Precision is consumed by physical projections, not printed.
+            // Peel it without another renderer frame: a chain of FP calls
+            // otherwise exhausts a small worker stack before its depth bound.
+            var value = rawValue
+            while case .unary(.floatResult, let operand) = value { value = operand }
             // A whole aggregate is not the scalar word read from the send.
             // Check before name-based idioms too: an ObjC selector may contain
             // a Swift helper's spelling without having its scalar result.
@@ -11199,6 +11223,12 @@ public struct Disassembler: Sendable {
         // this image publishes — so an immediate tag renders as `Type.case`.
         let returnTypeName: String? = Self.swiftReturnTypeName(of: function)
 
+        func typedReturnValue(_ rawValue: AbstractValue) -> AbstractValue {
+            let value = sanitizeValue(rawValue)
+            guard let returnTypeName else { return value }
+            return Self.narrowedResult(Self.floatingPointValue(value, type: returnTypeName), type: returnTypeName)
+        }
+
         func renderReturnValue(_ rawValue: AbstractValue, before address: UInt64) -> String {
             let initialUnknowns = unknownRenderCount
             defer {
@@ -11253,9 +11283,8 @@ public struct Disassembler: Sendable {
                let name = fieldName(at: matchingStore.offset, bytes: matchingStore.bytes) {
                 return fieldPath(name)
             }
-            if let returnTypeName {
-                return renderValue(Self.narrowedResult(Self.floatingPointValue(value, type: returnTypeName),
-                                                      type: returnTypeName), depth: 0)
+            if returnTypeName != nil {
+                return renderValue(typedReturnValue(value), depth: 0)
             }
             return renderValue(value, depth: 0)
         }
@@ -11868,6 +11897,11 @@ public struct Disassembler: Sendable {
                   let raw = (objcReturnsInX0 ? analysis.exitValues : analysis.exitFloatValues)[insn.address]
             else { return nil }
             let exit = sanitizeValue(raw)
+            if objcReturnsOneFloat {
+                let code = function.objcMethod?.typeEncoding.first { !"rnNoORVA".contains($0) }
+                let value = ValueTracer.floatOperand(exit, bits: code == "f" ? 32 : 64)
+                return value == .unknown ? nil : value
+            }
             return exit == .unknown ? nil : exit
         }
         // A direct call result rendered in more than one place (a branch
@@ -12099,7 +12133,7 @@ public struct Disassembler: Sendable {
                 let value = returnRegister == .floating
                     ? analysis.exitFloatValues[insn.address]
                     : analysis.exitValues[insn.address]
-                if let value { collectCallResults(in: value, into: &consumedCallResults) }
+                if let value { collectCallResults(in: typedReturnValue(value), into: &consumedCallResults) }
             } else if function.objcMethod == nil, isReturn(insn),
                       normalReturnIsProven(at: insn.address),
                       !throwExits.contains(insn.address), returnsDirectly,
@@ -12114,7 +12148,7 @@ public struct Disassembler: Sendable {
                 let value = returnRegister == .floating
                     ? analysis.exitFloatValues[insn.address]
                     : analysis.exitValues[insn.address]
-                if let value { collectCallResults(in: value, into: &consumedCallResults) }
+                if let value { collectCallResults(in: typedReturnValue(value), into: &consumedCallResults) }
             } else if function.objcMethod == nil, insn.controlFlow == .return, !returnsDirectly,
                       normalReturnIsProven(at: insn.address), let indirect = indirectReturn(at: insn.address) {
                 // Likewise an indirect return built from a call's result (the

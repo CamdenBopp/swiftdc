@@ -792,6 +792,9 @@ swift build-fp-copies.swift
 echo "==> scalar FP entry precision and undefined upper bits (build-fp-entries.swift, LLVM -O)"
 swift build-fp-entries.swift
 
+echo "==> scalar FP call precision, physical views and effect preservation (build-fp-returns.swift, LLVM -O)"
+swift build-fp-returns.swift
+
 echo "==> fmov immediates in vector and half-precision registers (fpimmediates.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name FPImmediates fpimmediates.swift -o libFPImmediates.dylib
 
