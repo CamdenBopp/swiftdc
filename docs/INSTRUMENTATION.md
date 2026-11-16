@@ -169,8 +169,7 @@ To reproduce, run the same command with and without `--probe <file>`
 | `values.unmodelled-write` | claim | register, instruction, kept | An instruction writes a register (Capstone access flags) whose proven value the tracer kept: a stale value that renders as a confident argument. |
 | `values.outlined-inlined` | decision | fragment, kind, instructions | A `bl`/`b` to an outlined fragment became what the fragment does there: `call`, `tail-call`, `value`, `store` or `return`. |
 | `values.outlined-declined` | decline | fragment, reason | A site kept its call to a fragment the model cannot carry exactly (`memory`, `result-register`, `callee-saved`, `stack-pointer`, `error-or-context-register`, `link-register`, `chained`, `float-argument`, `empty`, `terminator`, `undecoded`). |
-| `abi.argument-layout` | decision | strategy, callee, count | Which layout set a call's arguments. `positional` is where stale-register fabrications have come from. |
-| `abi.argument-layout` | decision | strategy, callee, count | Which layout set a call's arguments. `positional` is where stale-register fabrications have come from; `unproven-arity` is an undeclared C callee rendered `(…)`. |
+| `abi.argument-layout` | decision | strategy, callee, count | Which layout set a call's arguments. `positional` can expose stale-register fabrications; `unproven-arity` is an undeclared C callee rendered `(…)`. `async-signature-consensus` keeps only GP facts common to zero- and two-word isolation prefixes, with the FP bank independent. `async-unplaced` uses trusted source arity or an unknown tail, never hidden-word body counts. |
 | `abi.summary-cap` | limit | pass | A callee summary gave up: it claims nothing (`argument-reads`), or that every written register is clobbered (`preservation`). For `call-clobbers` the closure over calls stopped, and each function still waiting and every caller of one claims every callee-saved register clobbered. |
 | `types.field-named` | claim | type, offset, bytes, field, fieldType, coverage | A field name at an offset, checkable against DWARF. |
 | `types.field-unnamed` | decline | type, offset, bytes, reason | Why an access stayed `+0x…`. |
@@ -569,3 +568,11 @@ not emit a recovered return-value claim or a raw exit-register snapshot. The
 source view forwards the callee result, while default integer scoring keeps
 the opaque call result not-evaluated. The branch remains a branch for CFG
 and cross-reference analysis.
+
+Async ABI role hints used by `analyzeEachFunction` can identify entries and
+resumes without recovering suspension edges or grouping funclets. These
+metadata-only roles establish neither an awaited result nor its owner.
+`async-signature-consensus` compares both physical GP locations within x0–x7;
+missing or shifted stack words stay unknown. FP facts and the dedicated Swift
+self register are independent of that ambiguity. `async-unplaced` declines
+body-read arity inference when the hidden prefix cannot be placed.

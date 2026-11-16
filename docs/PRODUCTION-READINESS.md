@@ -193,9 +193,12 @@ wrong output first, by how much ordinary code it touches.
    showed none. Still open: an exported `@frozen` struct is declined too,
    and the parameter after a resilient value is not seeded though its
    register is known when the type is not frozen.
-6. **OPEN: a hidden leading isolation parameter** on
-   `nonisolated(nonsending)` async functions shifts every formal by two
-   registers; the symbol does not record it.
+6. **FIXED for soundness (29bb3b2): a hidden leading isolation parameter**
+   on `nonisolated(nonsending)` async functions shifts GP formals by two
+   registers; the symbol does not record it. Unproved GP arguments, fields
+   and metadata now decline. Independent FP and dedicated self facts remain.
+   **OPEN:** recovering which isolation prefix a particular entry uses,
+   including its shifted stack arguments.
 7. **OPEN: an outlined fragment's x0** is taken for a call result though
    the body summary proves it unwritten, and its x8 for a result buffer.
 8. **OPEN: the rest of the wrong-render tables** in the findings
@@ -12563,3 +12566,78 @@ ABI review item 11. Truth for every shape is `swiftc -O -emit-ir` on
   dump/layout/interface/objc/xrefs match; analyze corrects the six raw
   returns; lab only wraps **30 entry seeds, 30 call snapshots and 20 exits**
   with precision metadata. The pinned outcome benchmarks remain unchanged.
+
+
+### 2026-11-16: decline ambiguous async integer argument locations
+
+**FIXED for soundness (29bb3b22ef7135fd9b2160e2b6afef58573e32ca).**
+Published `06c8d0c` renders the authored `outer(a,b)` calling `inner(b,a)`
+as `inner(arg0, arg1 & 0xcfffffffffffffff)` under nonsending isolation.
+The compiler exports the same mangled symbol with either zero or two leading
+isolation words. A printed source signature cannot prove GP placement.
+
+- Entry analysis drops unproved GP formals, fields, metadata and witness
+  tables, retaining independent FP facts and Swift's dedicated self register.
+  An outgoing GP argument survives only if both candidate locations carry
+  the same fact. Shifted stack words decline. Unplaced async callees use a
+  trusted source count or an explicit unknown tail, never a body register
+  count that includes hidden words. `analyzeEachFunction` retains validated
+  entry/resume ABI roles without recovering suspension edges or await-result
+  ownership; resumes inherit no parent parameters.
+- Authored `Fixtures/Sample/build-async-isolation.swift` builds explicit
+  `nonisolated(nonsending)` and `@concurrent` variants at **-O/-Onone/-Osize**,
+  plus a stripped library. It checks **108 LLVM signatures** (102 async
+  entries and six synchronous controls). Native Task drivers pass **426
+  observations**, including **420 effectful leaf evaluations** and six pure
+  constant observations. Integer, mixed FP, struct fields, nine-word stack
+  arguments, class self and an unnamed local callee are covered. The focused
+  libraries disable machine outlining and LLVM function merging to isolate
+  this proof; native drivers retain normal optimization.
+- Every **1,819** published test declaration remains. Six tests are added;
+  four existing files correct GP expectations from unsupported formals to
+  `?`, preserving await bindings, error-path and context-header assertions.
+  **27 distinct mutations are separately compiled red.** Two initial
+  self-preservation mutations survived a vacuous check over a trimmed
+  snapshot; an explicit x6 self-presence assertion then caught both rebuilt
+  mutations. All **636 native observations** (426 new plus 210 awaited-FP)
+  pass under every final mutant. Canonical sources are restored byte-exact
+  and rebuilt before focused checks, **189-test async/FP breadth**, and the
+  full fixture-enforced **1,825-test / 43-suite pass (669.230 s)**.
+  Reproduce: `Tools/fixtures.sh`, `swift build --build-tests`, then
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+- Matched frozen releases against `06c8d0c`, using
+  `Tools/blast-radius.sh <base> <new> <out> --real --perf`, cover **522 inputs**
+  in four views plus four SDK workloads: **2,092 positive cost rows**.
+  Instructions **6,202.5G -> 6,242.3G (+0.64%)**; summed per-run physical
+  peaks **19,458 -> 19,243 MB (-1.10%)**. All default budgets pass without
+  override; all four SDK outputs are byte-identical. Render exits match,
+  including **35 identical expected preflight declines**, not successful
+  decompilations.
+- All differences are reviewed: **28 files** per view, **267 changed lines**
+  each structured and pseudo, **256 listing**, **1,006 JSON**. The **124
+  changed functions** retain call counts and outlined-producer order. JSON
+  changes **226 GP argument leaves to `?`**, four FP aliases to their same
+  producer expression, and seven arity arrays to an explicit unknown tail.
+  It changes **128 annotations and 124 statements**: 105 GP calls, seven
+  arity declarations, 11 GP-derived returns and one raw store target.
+  Fifteen unconsumed producers remain standalone; four sole-use FP bindings
+  inline once. Instruction/address fields stay identical. The old streamed
+  views and JSON already spell actor-witness words differently at **11
+  structured / 18 pseudo** occurrences; all corrected values are unknown
+  in every path.
+- All **98 CLI survey invocations** across seven libraries exit zero:
+  dump/layout/interface/objc/xrefs match; analyze changes **30 annotations**
+  only. Lab changes **76 entry records** (124 GP facts removed), **36 call
+  snapshots** (48 GP facts removed) and **63 layout strategies**, retaining
+  FP, context and dedicated self facts. The pinned outcome benchmarks and
+  readiness estimates remain unchanged.
+
+**OPEN:** choosing the actual isolation prefix, arbitrary values carried in
+async context slots, and the existing outlined-helper false-result model.
+The default-outlining reproduction remains separate and is not claimed fixed.
+A suspension-free constant also already renders `return ?` with the published
+baseline, despite a proven exit x0 of 17. Reproduce with the new constant
+fixture and `swiftdc lab Fixtures/Sample/libAsyncIsolation.O.nonsending.dylib
+-f 'AsyncIsolation.constant'`: the LDR of ResumeParent, MOV w0,#17 and BR
+establish the exit value. The positive control checks that dataflow fact;
+recovering its source return remains open.
