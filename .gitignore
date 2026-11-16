@@ -59,3 +59,5 @@ Tools/synthcorpus/out/
 
 Fixtures/Sample/outlined_results_native
 Fixtures/Sample/body-arity-*-oracle
+
+Fixtures/Sample/unknown-store-*-oracle

@@ -1798,11 +1798,16 @@ public struct ValueTracer: Sendable {
             }
             let incomingX0 = registers[.x(0)] ?? .unknown
             let beforeCall = registers
-            if let effect = insn.branchTarget.flatMap({ calleeMemoryEffects[$0] }),
+            let bodyEffect = insn.branchTarget.flatMap { calleeMemoryEffects[$0] }
+            if let effect = bodyEffect,
                let plan = completeCallPlan(effect, at: insn.address, call: call, before: beforeCall) {
                 applyCompleteCall(plan, at: insn.address, before: beforeCall, into: &registers,
                     recordUnboundedMemoryWrite: recordUnboundedMemoryWrite)
                 return
+            }
+            if let effect = bodyEffect {
+                invalidateFailedCallWrites(effect, before: beforeCall, into: &registers,
+                    recordUnboundedMemoryWrite: recordUnboundedMemoryWrite)
             }
             // `memcpy`/`memset` and the outlined value-witness copies are modelled
             // as the stores they perform (see `applyMemoryHelper`): their source
@@ -1811,7 +1816,7 @@ public struct ValueTracer: Sendable {
             // not apply to them. An in-image function named `memset` is an
             // ordinary call: a `memset(&a, 0, 8)` whose body writes nothing
             // rendered the `a` loaded after it as 0.
-            let memory = insn.branchTarget.flatMap { calleeMemoryEffects[$0] }?.framePlan { register in
+            let memory = bodyEffect?.framePlan { register in
                 if case .frame(let offset)? = beforeCall[Location(register)] { return offset }
                 return nil
             }
@@ -2685,6 +2690,68 @@ public struct ValueTracer: Sendable {
             writes.append((output.destination, value))
         }
         return CompleteCallPlan(stores: resolved, outputs: writes, frameInputs: frameInputs)
+    }
+
+    /// A known context-relative footprint can forget its affected bytes
+    /// without inventing an allocation identity for an unknown pointer.
+    private static func failedCallContextTarget(
+        _ input: AbstractValue?, offset: Int64, bytes: Int64
+    ) -> MemoryTarget? {
+        let context: AbstractValue
+        let baseOffset: Int64
+        switch input {
+        case .asyncContext?: context = .asyncContext; baseOffset = 0
+        case .asyncCalleeContext?: context = .asyncCalleeContext; baseOffset = 0
+        case .binary(.add, let root, .immediate(let bits))?:
+            guard root == .asyncContext || root == .asyncCalleeContext,
+                  let delta = Int64(exactly: bits) else { return nil }
+            context = root
+            baseOffset = delta
+        default: return nil
+        }
+        let (start, overflow) = baseOffset.addingReportingOverflow(offset)
+        let (_, endOverflow) = start.addingReportingOverflow(bytes)
+        guard !overflow, !endOverflow, bytes > 0, let relative = Int(exactly: start)
+        else { return nil }
+        return context == .asyncContext ? .asyncSlot(relative) : .asyncCalleeSlot(relative)
+    }
+
+    /// A failed MUST transaction still has its body's MAY writes. Known frame
+    /// footprints forget cached words; other destinations can alias an async
+    /// context or the caller's result buffer.
+    /// Only the full extent of a proved private-frame write is disjoint; no
+    /// literal or register output from the failed transaction is installed.
+    private func invalidateFailedCallWrites(
+        _ effect: CalleeMemoryEffect, before: State, into registers: inout State,
+        recordUnboundedMemoryWrite: (() -> Void)? = nil
+    ) {
+        guard case .literalStores(let stores, _, _) = effect else { return }
+        for store in stores {
+            let target: MemoryTarget?
+            // BL replaces LR. Its callee-entry value is not a frame alias
+            // the caller happened to have in x30 before the call.
+            let input: AbstractValue? = store.base.kind == .gpr && store.base.number == 30
+                ? nil : before[Location(store.base)]
+            if case .frame(let base)? = input {
+                let (start, overflow) = base.addingReportingOverflow(store.offset)
+                target = overflow ? nil : .stackSlot(Self.stackKey(start))
+                // Fallback escape reach starts at the input base, so it
+                // cannot cover a negative store displacement below that
+                // base. Forget this MAY footprint through the frame owner.
+                let (end, endOverflow) = start.addingReportingOverflow(store.bytes)
+                let write: FrameMemoryEffect = !overflow && !endOverflow && store.bytes > 0
+                    ? FrameMemoryEffect(.finite(lower: start, upper: end), arithmetic: .checked)
+                    : FrameMemoryEffect(arithmetic: .checked, everything: true)
+                Self.forgetFrame(in: &registers, effect: write)
+            } else {
+                target = Self.failedCallContextTarget(input, offset: store.offset, bytes: store.bytes)
+            }
+            let bytes = Int(exactly: store.bytes)
+            if invalidateAsyncMemoryForWrite(target, bytes: bytes, into: &registers) {
+                recordUnboundedMemoryWrite?()
+            }
+            invalidateResultMemoryForWrite(target, bytes: bytes, into: &registers)
+        }
     }
 
     private func applyCompleteCall(_ plan: CompleteCallPlan, at site: UInt64, before: State, into registers: inout State,

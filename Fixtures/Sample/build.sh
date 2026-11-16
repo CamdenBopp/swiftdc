@@ -150,6 +150,9 @@ $CLANG -arch arm64 -dynamiclib fixpoint_order.s -o libFixpointOrder.dylib
 echo "==> callee-saved registers clobbered through nested and tail calls (preserve_calls.s)"
 $CLANG -arch arm64 -dynamiclib preserve_calls.s -o libPreserveCalls.dylib
 
+echo "==> untracked callee stores and disjoint async context controls (unknown_callee_store*, O0/O2/Os)"
+python3 build-unknown-callee-store.py
+
 echo "==> unwritten GP/FP banks across effectful outlined helpers (outlined_results.s)"
 $CLANG -arch arm64 -dynamiclib outlined_results.s -o libOutlinedResults.dylib
 cp libOutlinedResults.dylib libOutlinedResults.stripped.dylib
