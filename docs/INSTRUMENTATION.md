@@ -244,10 +244,15 @@ The `loaded-bits` provenance leaf retains `address` and `bytes` for a narrow
 absolute load. It is raw data, not a pointer slot or a proven FP value;
 an FP operation supplies the interpretation, and literal resolution reads
 only that recorded byte count.
-The unary `float-result` operator records a scalar FP write's `bits` and
+The unary `float-result` operator records a scalar FP value's `bits` and
 `upperZero` proof. The latter covers only the rest of the low 64-bit word,
 under every possible FPCR.NEP merging mode; it does not prove the high half
 of Vn or a source ABI. Its operand remains the semantic FP expression.
+Already-proven scalar FP entry seeds also carry this metadata, including
+trusted floating fields. Half/single entries leave unused bits unknown;
+the entry tag creates no register location. `analysis.entry` reports the
+same precision as the tracer. Whole-vector copies preserve these partial
+facts without interpreting them as wider scalar values.
 This metadata does not consume the semantic expression-depth budget, while
 the bounded probe exporter still counts every exported node.
 

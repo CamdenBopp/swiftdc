@@ -89,20 +89,26 @@ cover results, bodies, or Objective-C methods (4 matched).
 
 ## Latest local verification
 
-At `542f6a7`, current dev and the seven local FP commits are reconciled.
+At `7fd125d`, the scalar FP entry fixture checks **24 LLVM ABI signatures**
+and **192 native observations**. Five new tests cover entry precision,
+physical register views, field proofs, copies and async slot-proof limits.
+All **1,805** upstream test declarations remain; the full fixture-enforced
+suite passes **1,810 tests in 43 suites**. The release comparison below
+uses published `2425b30` as its baseline.
+
+Earlier, at `542f6a7`, dev and the seven local FP commits were reconciled.
 The earlier **1,468** count belonged to stale local `23cbcab`, based on
 `cc525d7`; it omitted 260 later upstream commits. It did not establish a
 passing suite for current upstream dev. The merge retains all **1,780**
 upstream test declarations, the **24** local additions, and one new
-integration test: **1,805 tests in 43 suites** pass with fixtures enforced.
-The release comparison below uses freshly built `5bb6fb2` as its baseline.
+integration test: **1,805 tests in 43 suites** passed at that commit.
 
 | Check | Result | Where |
 |---|---|---|
-| Enforcing test suite (a missing fixture fails) | 1,805 tests / 43 suites pass at `542f6a7` | `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`, after a fresh test build |
-| Output change against `5bb6fb2` | 26 files / 588 changed lines in each of structured and pseudo; 36 / 682 listing; 36 / 1,388 JSON. Every changed line reviewed and explained in the merge commit | `Tools/blast-radius.sh` |
-| Cost budget (instructions, footprint) | All 2,016 render/workload pairs positive; +0.18% retired instructions, -0.78% summed peak footprint; all default budgets pass without an override | same, `--real --perf` |
-| GitHub Actions, last inspected 2026-11-16 | Latest upstream run at `5bb6fb2` fails at Toolchain: hosted Swift 6.2.4 is below the required 6.4. Fixtures, Build and Enforcing suite are skipped. This is not a CI test pass | [run 43565792018](https://github.com/CamdenBopp/swiftdc/actions/runs/43565792018), [CI.md](CI.md) |
+| Enforcing test suite (a missing fixture fails) | 1,810 tests / 43 suites pass at `7fd125d` | `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`, after a fresh test build |
+| Output change against `2425b30` | Only the new FP entry fixture changes: 11 returns, 22 changed lines in each of structured/pseudo/listing; 44 JSON lines (11 annotations and 11 statements). Every changed line reviewed | `Tools/blast-radius.sh` |
+| Cost budget (instructions, footprint) | All 2,020 render/workload pairs positive; -0.02% retired instructions, -0.11% summed peak footprint; all default budgets pass without an override. No meaningful cost difference | same, `--real --perf` |
+| GitHub Actions, last inspected 2026-11-16 | Run at published `2425b30` fails at Toolchain. Fixtures, Build and Enforcing suite are skipped. This is not a CI test pass | [run 43823217745](https://github.com/CamdenBopp/swiftdc/actions/runs/43823217745), [CI.md](CI.md) |
 | Independent execution of rendered expressions | return values of the differential-oracle fixtures, integer and floating point (compared bit for bit). Not checked by execution: which way a branch went, registers at call sites, results beyond the first register, memory writes | `DifferentialOracleTests` |
 
 These checks are local measurements on one machine. Publication still

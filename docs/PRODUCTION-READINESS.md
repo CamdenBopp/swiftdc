@@ -12413,3 +12413,49 @@ ABI review item 11. Truth for every shape is `swiftc -O -emit-ir` on
   to publish before starting another feature slice. No readiness or ABI
   coverage percentage is inferred from the test count. The pinned outcome
   benchmarks in STATUS.md are unchanged.
+
+
+## 2026-11-16: preserve scalar FP entry precision
+
+- **VERIFIED (`7fd125d`, soundness):** an owned Swift-ABI Float16-to-Double
+  function containing only RET rendered `return arg0` at `2425b30`. Native
+  execution with Float16(1) returns Double bits `0x3c00`. Narrow FP parameter
+  types define only their low scalar bits; dirty raw callers disprove any
+  implicit zero-extension assumption for the rest of the physical register.
+- Tag existing proven FP entry seeds with their scalar width, using Swift
+  parameter types, Objective-C f/d encodings, trusted exact floating fields
+  of HFA/mixed structures and async overlays. No register seed is invented
+  and GPR entry values are not retagged. Both entry-state paths and both
+  ordinary/async proof tracers use the precision; entry probes report it.
+  Whole-vector MOV preserves a narrow known value and unknown upper bits.
+  Wider unproved reads decline; narrower reads retain masked encodings.
+- The fixture checks **24 independently emitted LLVM ABI signatures** and
+  **192 native observations**, including all three scalar widths, scalar
+  clears, raw truncation, vector copies, callee-preserved copies across
+  getpid and dirty-upper-bit callers. Five analysis APIs check exact pseudo
+  and structured returns. The synthetic async context-slot test rejects a
+  widened half/single parameter as a portable fact and retains a full-width
+  Double control; this is not a complete native async ABI fixture.
+- **19 distinct compiled mutations** fail the targeted tests while the
+  native oracle remains green. The field-extent mutation initially survived
+  because its constructor filtered the invalid negative control; a computed
+  Swift-layout field exceeding its aggregate size now independently kills
+  it. After the final renderer-cast mutation, restored CLI/test executables
+  are byte-identical to the binaries from the **1,810-test / 43-suite**
+  fixture-enforced pass. All **1,805** upstream test declarations remain.
+  The existing lab assertion retains its register-placement/body checks and
+  expects the new precision metadata.
+- Matched releases against `2425b30` cover **504 inputs in four views plus
+  four SDK workload pairs**: all **2,020** cost rows positive. Retired
+  instructions: **6,092.5G -> 6,091.6G (-0.02%)**; summed per-render peak
+  footprint: **18,626 -> 18,605 MB (-0.11%)**. All default budgets pass with
+  no override; these deltas show no meaningful cost difference. All four
+  large SDK outputs are byte-identical. Only the new entry fixture changes:
+  **22 lines** each in structured/pseudo/listing, **44 JSON lines**, exactly
+  **11 annotations and 11 statements**. Three unproved wider RETs decline,
+  three narrower RETs reinterpret masked bits, three scalar-clear controls
+  retain the correct mask and two preserved narrow parameters recover their
+  value. Dump/layout/interface/objc/xrefs match, analyze changes those eleven
+  annotations and lab shows the corresponding precision/copy facts. All
+  seven commands exit zero for both releases. The pinned outcome benchmarks
+  in STATUS.md are unchanged; no readiness percentage is inferred.
