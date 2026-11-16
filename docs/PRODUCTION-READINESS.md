@@ -10333,13 +10333,84 @@ Commit messages on dev stay as they are; these are the true records.
   (-0.27%). All default budgets pass. All four large SDK outputs match
   with zero exits. Publication remains through the original gate.
 
-- **OPEN (soundness): a computed half can retain its numeric meaning in a wider raw view.**
-  A public Swift-ABI Double function containing `mov w8, #0x3c00;
-  fmov h0, w8; fneg h0, h0; ret` returns Double bits `0xbc00` natively.
-  The Double return reads the zero-extended raw result of the half
-  operation; it is not the numeric conversion of negative Float16 one.
-  Both `d0629be` and the half-move release candidate instead render
-  `return -Float16(1.0)`.
-  Emitted LLVM independently confirms a double result without hidden
-  arguments. Raw half move handling does not cover this computed-value
-  register-view defect.
+- **FIXED (soundness): retain computed scalar FP precision across physical register views.**
+  A Swift-ABI Double function containing `mov w8, #0x3c00;
+  fmov h0, w8; fneg h0, h0; ret` returns Double bits `0xbc00`
+  natively. At `58bda36` it rendered `-Float16(1.0)`; the candidate
+  renders `Double(bitPattern: UInt64((-Float16(1.0)).bitPattern))`.
+  LLVM-emitted signatures independently establish the return ABI.
+
+  Scalar arithmetic and conversion results now retain their written
+  precision. A different register view reads their raw encoding, masks
+  narrowing reads, and widens only when the rest of the low 64-bit word
+  is proven zero. Scalar copies and loads clear that word's remaining
+  bits; stores, copies, call snapshots and exit snapshots preserve the
+  precision until the consumer's register or ABI width is known. Metadata
+  consumes no semantic expression depth, while actual projections still
+  enforce the depth limit. SIMD field stores keep their independent
+  register value rather than replacing its precision with an untyped
+  field alias. High vector bits remain unknown.
+
+  The upper-bit proof respects FEAT_AFP / FPCR.NEP: binary arithmetic
+  can merge Rn, whereas unary arithmetic and conversions can merge the
+  old destination. Dirty merging sources decline wider views. Scalar
+  FMOV clears independently of NEP. The current Apple M2 Pro reports
+  FEAT_AFP absent; the oracle conditionally exercises NEP merging on
+  supporting hardware, but NEP=1 is not claimed as natively verified here.
+  Instruction semantics were checked against Arm's 2025 A64 reference
+  (https://documentation-service.arm.com/static/67e40f3398aa3c3b6eea6a85).
+
+  The owned `build-fp-results.swift` fixture independently validates
+  **202 LLVM signatures**. Exact results are checked through listing,
+  whole-image array, filtered, streaming and analyzeEach paths. Its
+  independent native oracle passes **212 observations**, covering all
+  supported scalar arithmetic/conversion widths, mismatched raw views,
+  NaNs, dirty merging controls, scalar/whole-vector copies, integer reads,
+  frame/pair reloads, byte copies, calls, joins and literal pools.
+  Synthetic tests cover invalid widths, depth bounds, result buffers,
+  field-store precision, snapshot provenance and probe serialization.
+
+  A fresh fixture-enforced suite passes **1,465 tests in 39 suites**.
+  All **43 distinct compiled mutations** are caught. They independently
+  remove producer tagging, upper-bit and merging-source proofs, physical
+  projections, ABI snapshot preservation, narrowing/depth limits,
+  integer/frame/copy encoding, load clearing, field-store protection,
+  inferred widths, probe fields, and renderer casts. Two initially
+  surviving copy mutations are caught by a direct result-buffer copy
+  witness, with no later register reload to repair the missing facts.
+  The native oracle remains green in every final red run. Restored
+  sources are rebuilt before the final suite; their release is byte-
+  identical to the measured candidate. Same-line comment corrections
+  explain the delayed ABI projection.
+
+  Matched release comparison using
+  `Tools/blast-radius.sh <baseline> <candidate> <out> --real --perf`
+  covers **358 inputs in four views plus four SDK workload pairs**:
+  all **1,436 cost rows** have positive counts. Instructions are
+  5,138.0G to 5,137.5G (-0.01%); summed per-render physical peaks are
+  17,882 MB to 17,767 MB (-0.64%). All default budgets pass.
+
+  Structured and pseudo each change 298 lines in two fixtures:
+  `libFPResults.dylib` has 147 corrected returns; `libObjCPairStores.dylib`
+  retains `0` on the second zero-vector store and `(arg0, arg0)` on the
+  second duplicated-vector store, both confirmed by the instructions.
+  Listing changes 300 lines, adding the typed sink's corrected call
+  argument. JSON changes 600 lines: 150 annotations, 149 statements and
+  one argument, with no other leaf changes. Dump, layout, interface,
+  objc and xrefs (`--unreferenced`) match with zero exits. Analyze changes
+  only the new fixture's corresponding annotations.
+
+  Three large SDK outputs match. SwiftParser structured output changes
+  one stack store from raw `s0` to `Float(bitPattern: 0x8533ce2a)`:
+  `ldr d0` at 0x926b4 reads the literal at 0xe9ae0, `str q0` spills it,
+  `ldp q0, q1` reloads it, and `stur s0` at 0x92768 writes its low word.
+  Independent Mach-O segment mapping confirms literal bits `0x8533ce2a`.
+  Publication remains through the original gate.
+
+- **OPEN (soundness): byte copies of untagged FP arguments can lose their raw-bit interpretation.**
+  An owned half-argument reduction stores h0, copies two bytes with
+  memcpy, and reloads an integer. Native execution preserves its payload;
+  the current rendering can instead mask the numeric argument directly.
+  Equivalent Float and Double copies need the same bank evidence.
+  Computed FP results are covered above; general argument-bank handling
+  remains a separate behavior and requires its own proof and commit.

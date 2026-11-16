@@ -152,6 +152,10 @@ public enum AbstractUnaryOperator: Equatable, Sendable {
     /// An integer's low `bits` read as the float of that width (`fmov d0,
     /// x0`): `Double(bitPattern: i)`. The mirror of `bitPattern`.
     case floatFromBits(bits: Int)
+    /// A scalar FP result and its physical precision. `upperZero` proves
+    /// that the rest of its low 64-bit register word is zero in every FPCR
+    /// merging mode; it makes no claim about the high 64 bits of Vn.
+    case floatResult(bits: Int, upperZero: Bool)
 }
 
 /// A small abstract-value lattice for CFG-aware data-flow. Alongside constants
@@ -1332,10 +1336,10 @@ public struct ValueTracer: Sendable {
                 if isAsyncReturn, let value = registers[.x(20)], value != .unknown {
                     result.exitAsyncErrorValues[insn.address] = value
                 }
-                // A floating return is a scalar in d0 or s0: the d view, not
-                // the whole register (`movi v0.2d, #0; ret` is `return 0`).
+                // Preserve scalar precision until the return ABI supplies its view.
+                // Packed vectors still project their known low lane here.
                 if insn.controlFlow == .return || isAsyncReturn,
-                   let value = registers[.v(0)].map({ Self.scalarView($0, bits: 64) }), value != .unknown {
+                   let value = registers[.v(0)].map({ Self.scalarView($0, bits: 64, interpretResult: false) }), value != .unknown {
                     result.exitFloatValues[insn.address] = value
                 }
                 // x1 at a return is the first yielded value of a `yield_once`
@@ -1405,7 +1409,7 @@ public struct ValueTracer: Sendable {
                         // consumer can tell "all paths throw" from "some do".
                         result.exitErrorValuesByPredecessor[insn.address, default: [:]][end] = registers[.x(21)] ?? .unknown
                         result.exitValuesByPredecessor[insn.address, default: [:]][end] = registers[.x(0)] ?? .unknown
-                        result.exitFloatValuesByPredecessor[insn.address, default: [:]][end] = Self.scalarView(registers[.v(0)] ?? .unknown, bits: 64)
+                        result.exitFloatValuesByPredecessor[insn.address, default: [:]][end] = Self.scalarView(registers[.v(0)] ?? .unknown, bits: 64, interpretResult: false)
                         break
                     }
                     transfer(insn, into: &registers, record: nil, recordAccess: nil,
@@ -1970,9 +1974,9 @@ public struct ValueTracer: Sendable {
         }
         return CallSite(
             arguments: trimTrailingUnknown(args) ?? [],
-            // Every reader lays out a scalar `float`/`double` here (an ObjC `f`
-            // or `d`, a Swift Double/Float/CGFloat), so each is the d view.
-            floatArguments: (0...7).map { scalarView(registers[.v($0)] ?? .unknown, bits: 64) },
+            // Consumers supply the ABI width. Keep scalar-result precision here;
+            // projecting to D now would lose narrow results before those reads.
+            floatArguments: (0...7).map { scalarView(registers[.v($0)] ?? .unknown, bits: 64, interpretResult: false) },
             stackArguments: stackArguments,
             stackArgumentWidths: stackArgumentWidths,
             // Only when freshly set for *this* Swift call — see selfFreshKey.
@@ -2345,7 +2349,7 @@ public struct ValueTracer: Sendable {
             if isCopy {
                 switch site.arguments[1] {
                 case .frame(let source):
-                    value = Self.stackValue(at: source + Int64(offset), bytes: bytes, in: registers)
+                    value = Self.stackBits(at: source + Int64(offset), bytes: bytes, in: registers)
                 case .indirectResultPointer:
                     value = registers[Self.resultKey(offset, bytes: bytes)] ?? .unknown
                 case .indirectResultField(let base):
@@ -3401,8 +3405,9 @@ public struct ValueTracer: Sendable {
             let product = floatBinary(op, source(detail.operands[1], in: registers),
                                       source(detail.operands[2], in: registers), bits: dest.widthBits)
             // FNMUL negates the product: `-(a * b)`.
-            write(dest, detail.id == AARCH64_INS_FNMUL ? floatUnary(.negate, product, operandBits: nil) : product,
-                  into: &registers)
+            let merge = detail.operands[1].operand.register.flatMap { registers[Location($0)] } ?? .unknown
+            writeFloatResult(dest, detail.id == AARCH64_INS_FNMUL ? floatUnary(.negate, product, operandBits: nil) : product,
+                             merging: merge, into: &registers)
 
         case AARCH64_INS_FNEG, AARCH64_INS_FSQRT, AARCH64_INS_FABS:
             guard let dest = destinationRegister(detail), dest.kind == .vector,
@@ -3416,8 +3421,8 @@ public struct ValueTracer: Sendable {
             case AARCH64_INS_FABS: .absoluteValue
             default: .negate // FNEG
             }
-            write(dest, floatUnary(op, source(detail.operands[1], in: registers), operandBits: dest.widthBits),
-                  into: &registers)
+            writeFloatResult(dest, floatUnary(op, source(detail.operands[1], in: registers), operandBits: dest.widthBits),
+                             merging: registers[Location(dest)] ?? .unknown, into: &registers)
 
         case AARCH64_INS_FCVT, AARCH64_INS_SCVTF, AARCH64_INS_UCVTF,
              AARCH64_INS_FCVTZS, AARCH64_INS_FCVTZU:
@@ -3455,7 +3460,10 @@ public struct ValueTracer: Sendable {
             }
             let converted = floatUnary(op, operand,
                                        operandBits: input?.kind == .vector ? input?.widthBits : nil)
-            guard detail.operands.count == 3 else { write(dest, converted, into: &registers); return }
+            guard detail.operands.count == 3 else {
+                writeFloatResult(dest, converted, merging: registers[Location(dest)] ?? .unknown, into: &registers)
+                return
+            }
             // Fixed point: `ucvtf d0, x0, #2` is `Double(x0) / 4`, the compiler's
             // folding of `* 0.25`. Only the int-to-float direction is modelled.
             switch op { case .toFloat, .unsignedToFloat: break; default: clobber(detail, into: &registers); return }
@@ -3465,8 +3473,8 @@ public struct ValueTracer: Sendable {
             else { clobber(detail, into: &registers); return }
             let scale = Double(sign: .plus, exponent: Int(fractionBits), significand: 1)
             let scaleBits = dest.widthBits == 64 ? scale.bitPattern : UInt64(Float(scale).bitPattern)
-            write(dest, floatBinary(.divide, converted, .immediate(scaleBits), bits: dest.widthBits),
-                  into: &registers)
+            writeFloatResult(dest, floatBinary(.divide, converted, .immediate(scaleBits), bits: dest.widthBits),
+                             merging: registers[Location(dest)] ?? .unknown, into: &registers)
 
         case AARCH64_INS_FMOV:
             // A register-to-register FP move carries the bits through unchanged;
@@ -3511,7 +3519,8 @@ public struct ValueTracer: Sendable {
             }
             if dest.kind == .vector, dest.widthBits == 16, input.kind == .gpr,
                [32, 64].contains(input.widthBits) {
-                write(dest, Self.float(fromBits: narrowed(value, bits: 16), bits: 16), into: &registers)
+                writeFloatResult(dest, Self.float(fromBits: narrowed(value, bits: 16), bits: 16),
+                                 merging: .immediate(0), into: &registers)
                 return
             }
             // A float register read into a general one is its bit pattern, an
@@ -3530,7 +3539,14 @@ public struct ValueTracer: Sendable {
             // bare, it rendered `(arg0 + arg0)`, an integer add.
             if dest.kind == .vector, input.kind == .gpr, input.widthBits == dest.widthBits,
                dest.widthBits == 64 || dest.widthBits == 32 {
-                write(dest, Self.float(fromBits: value, bits: dest.widthBits), into: &registers)
+                writeFloatResult(dest, Self.float(fromBits: value, bits: dest.widthBits),
+                                 merging: .immediate(0), into: &registers)
+                return
+            }
+            if dest.kind == .vector, input.kind == .vector, dest.widthBits == input.widthBits,
+               [16, 32, 64].contains(dest.widthBits) {
+                // Scalar FMOV always clears its other bits, independently of NEP.
+                writeFloatResult(dest, value, merging: .immediate(0), into: &registers)
                 return
             }
             write(dest, value, into: &registers)
@@ -3605,7 +3621,7 @@ public struct ValueTracer: Sendable {
                         value = Self.bitPattern(of: value, bits: Int(file))
                     case (.vector, 0):
                         let stored = registers.frame[offset, .width]
-                        value = dest.widthBits >= 32 && stored == .immediate(UInt64(bytes))
+                        value = dest.widthBits >= 16 && stored == .immediate(UInt64(bytes))
                             ? Self.float(fromBits: value, bits: dest.widthBits) : .unknown
                     case (.vector, _) where file != UInt64(dest.widthBits):
                         value = .unknown // a Double's word read as a Float, or the reverse
@@ -3613,6 +3629,7 @@ public struct ValueTracer: Sendable {
                     }
                 }
                 if dest.kind == .gpr {
+                    value = Self.integerRegisterValue(value, bits: min(bytes * 8, 64))
                     switch detail.id {
                     case AARCH64_INS_LDRSB, AARCH64_INS_LDURSB,
                          AARCH64_INS_LDRSH, AARCH64_INS_LDURSH,
@@ -3621,7 +3638,7 @@ public struct ValueTracer: Sendable {
                     default: value = narrowed(value, bits: min(bytes * 8, 64))
                     }
                 }
-                write(dest, value, into: &registers)
+                write(dest, Self.reloadedFloat(value, bits: dest.kind == .vector ? dest.widthBits : nil), into: &registers)
             case .absolute(let address):
                 // Only pointer-width loads can safely denote a selref/GOT slot.
                 // A 16-byte vector load from a fixed address is two such words
@@ -3652,7 +3669,8 @@ public struct ValueTracer: Sendable {
                 // Reading the buffer back: only an exact-width match of a tracked
                 // store is known.
                 let bytes = Self.accessBytes(detail) ?? max(dest.widthBits / 8, 1)
-                write(dest, registers[Self.resultKey(offset, bytes: bytes)] ?? .unknown, into: &registers)
+                let value = registers[Self.resultKey(offset, bytes: bytes)] ?? .unknown
+                write(dest, Self.reloadedFloat(value, bits: dest.kind == .vector ? dest.widthBits : nil), into: &registers)
             case .asyncSlot(let offset):
                 // Only a full-width integer load carries a pointer: `ldr w9`
                 // drops its upper bits and `ldr d0` is a floating value. A value
@@ -3721,7 +3739,9 @@ public struct ValueTracer: Sendable {
                 // return even though one path performed arithmetic.
                 if (detail.id == AARCH64_INS_STR || detail.id == AARCH64_INS_STUR),
                    value != .unknown, !Self.isArgument(value), case .selfField(let offset)? = target,
-                   let sourceRegister = first.operand.register {
+                   let sourceRegister = first.operand.register, sourceRegister.kind == .gpr {
+                    // A SIMD register's precision and upper-bit proof must not
+                    // be replaced by an untyped field alias after the store.
                     write(sourceRegister, .selfFieldValue(offset: offset), into: &registers)
                     recordFieldAlias?(offset, sourceRegister.widthBits / 8)
                 }
@@ -3833,7 +3853,7 @@ public struct ValueTracer: Sendable {
                      .throughValue, .none:
                     .unknown
                 }
-                write(register, value, into: &registers)
+                write(register, Self.reloadedFloat(value, bits: register.kind == .vector ? register.widthBits : nil), into: &registers)
             }
             applyWriteback(detail, into: &registers)
 
@@ -4103,8 +4123,74 @@ public struct ValueTracer: Sendable {
 
 
 
-    private func write(_ reg: PhysReg, _ value: AbstractValue, into registers: inout State) {
+    private func writeFloatResult(_ reg: PhysReg, _ value: AbstractValue,
+                                  merging: AbstractValue, into registers: inout State) {
+        guard reg.kind == .vector, [16, 32, 64].contains(reg.widthBits) else {
+            write(reg, value, into: &registers)
+            return
+        }
+        if case .immediate(let raw) = value {
+            let mask: UInt64 = reg.widthBits == 64 ? .max : (UInt64(1) << reg.widthBits) - 1
+            write(reg, .immediate(raw & mask), into: &registers)
+            return
+        }
+        var scalar = Self.floatOperand(value, bits: reg.widthBits)
+        if case .unary(.floatResult(let width, _), let inner) = scalar, width == reg.widthBits { scalar = inner }
+        guard scalar != .unknown else { write(reg, .unknown, into: &registers); return }
+        let zero = Self.zeroAbove(merging, bits: reg.widthBits)
+        write(reg, .unary(.floatResult(bits: reg.widthBits, upperZero: zero), scalar), into: &registers)
+    }
+
+    /// A proof about the low 64-bit physical word, not a numeric FP range.
+    /// If NEP merges unknown upper bits, a narrow result does not define them.
+    private static func zeroAbove(_ value: AbstractValue, bits: Int, depth: Int = 0) -> Bool {
+        guard depth < 8, [16, 32, 64].contains(bits) else { return false }
+        if bits == 64 { return true }
+        let mask = (UInt64(1) << bits) - 1
+        switch value {
+        case .unary(.floatResult(let width, let zero), _): return [16, 32, 64].contains(width) && zero && width <= bits
+        case .unary(.floatFromBits(let width), let integer):
+            return [16, 32, 64].contains(width) && (width <= bits || fitsLowMask(integer, mask: mask))
+        case .unary(.bitPattern(let width), _): return [16, 32, 64].contains(width) && width <= bits
+        case .loadedBits(_, let bytes): return [2, 4].contains(bytes) && bytes * 8 <= bits
+        case .aggregate(let lanes): return lanes.first.map { zeroAbove($0, bits: bits, depth: depth + 1) } ?? false
+        case .select(_, let yes, let no):
+            return zeroAbove(yes, bits: bits, depth: depth + 1) && zeroAbove(no, bits: bits, depth: depth + 1)
+        default: return fitsLowMask(value, mask: mask)
+        }
+    }
+
+    /// Loads clear the rest of the destination register, even when the stored
+    /// scalar had unknown upper register bits before it reached memory.
+    private static func reloadedFloat(_ value: AbstractValue, bits: Int?) -> AbstractValue {
+        guard let bits else { return value }
+        switch value {
+        case .unary(.floatResult(let width, _), let scalar) where bits == width:
+            return .unary(.floatResult(bits: width, upperZero: true), scalar)
+        case .select(let condition, let yes, let no):
+            return .select(condition: condition, whenTrue: reloadedFloat(yes, bits: bits), whenFalse: reloadedFloat(no, bits: bits))
+        default: return value
+        }
+    }
+
+    /// A computed FP value reaching a GPR through a memory copy is its raw
+    /// bits. Integer conversion nodes are already integer and stay untouched.
+    private static func integerRegisterValue(_ value: AbstractValue, bits: Int) -> AbstractValue {
+        switch value {
+        case .unary(.floatResult(let width, _), _), .unary(.floatFromBits(let width), _):
+            guard [16, 32, 64].contains(width) else { return .unknown }
+            let read = min(width, bits)
+            let raw = bitPattern(of: value, bits: width)
+            return read < width ? .binary(.bitAnd, raw, .immediate((UInt64(1) << read) - 1)) : raw
+        case .select(let condition, let yes, let no):
+            return .select(condition: condition, whenTrue: integerRegisterValue(yes, bits: bits), whenFalse: integerRegisterValue(no, bits: bits))
+        default: return value
+        }
+    }
+
+    private func write(_ reg: PhysReg, _ incoming: AbstractValue, into registers: inout State) {
         guard reg.kind != .zero else { return }   // writes to xzr are discarded
+        let value = reg.kind == .gpr ? Self.integerRegisterValue(incoming, bits: reg.widthBits) : incoming
         // A `z` register's low 128 bits are the `v` register of its number,
         // and SVE and SME tuples and tiles overlap several: no vector value
         // survives a write to a register the tracer does not model.
@@ -4237,12 +4323,31 @@ public struct ValueTracer: Sendable {
     /// declines anything else. Project through a select of packed values as
     /// well: a scalar is a select of lanes, never a select of whole tuples.
     /// Other scalar values pass through as they were.
-    static func scalarView(_ value: AbstractValue, bits: Int) -> AbstractValue {
-        guard bits < 128 else { return value }
+    static func scalarView(_ value: AbstractValue, bits: Int, interpretResult: Bool = true) -> AbstractValue {
         // Packed lanes are raw words, including those produced by DUP from
         // an integer argument. Reading d0 gives those bits an FP meaning.
-        guard let lane = packedLane(of: value, index: 0, bits: bits) else { return value }
-        return float(fromBits: lane, bits: bits)
+        if bits < 128, let lane = packedLane(of: value, index: 0, bits: bits) {
+            return float(fromBits: lane, bits: bits)
+        }
+        if interpretResult {
+            switch value {
+            case .unary(.floatResult(let width, let zero), _):
+                guard [16, 32, 64].contains(width) else { return .unknown }
+                if bits == 128 {
+                    let low = width == 64 || zero ? bitPattern(of: value, bits: width) : .unknown
+                    return .aggregate([low, .unknown])
+                }
+                return floatOperand(value, bits: bits)
+            case .unary(.floatFromBits, _): return floatOperand(value, bits: bits)
+            case .select(let condition, let yes, let no):
+                let yes = scalarView(yes, bits: bits)
+                let no = scalarView(no, bits: bits)
+                guard yes != .unknown, no != .unknown else { return .unknown }
+                return .select(condition: condition, whenTrue: yes, whenFalse: no)
+            default: break
+            }
+        }
+        return value
     }
 
     /// Nil means no packed value was found, so the existing scalar meaning
@@ -4254,6 +4359,9 @@ public struct ValueTracer: Sendable {
             guard lanes.indices.contains(index) else { return .unknown }
             let lane = lanes[index]
             if bits == 64 { return lane }
+            if case .unary(.bitPattern(let width), _) = lane, [16, 32, 64].contains(bits) {
+                return width <= bits ? lane : .binary(.bitAnd, lane, .immediate((UInt64(1) << bits) - 1))
+            }
             guard (1..<64).contains(bits), case .immediate(let word) = lane else { return .unknown }
             return .immediate(word & ((1 << UInt64(bits)) - 1))
         case .select(let condition, let whenTrue, let whenFalse):
@@ -4444,11 +4552,24 @@ public struct ValueTracer: Sendable {
         guard [16, 32, 64].contains(bits) else { return .unknown }
         switch value {
         case .immediate, .loaded, .loadedBits: return .unary(.floatConstant(bits: bits), value)
-        case .unary(.floatFromBits(16), let integer) where bits != 16:
-            // A half written by a general-register move zeroes the rest of Vn.
-            // Reading Sn/Dn reinterprets that raw word, never widens the half.
-            let raw = fitsLowMask(integer, mask: 0xffff) ? integer
-                : .binary(.bitAnd, integer, .immediate(0xffff))
+        case .unary(.bitPattern(let width), let scalar):
+            guard [16, 32, 64].contains(width) else { return .unknown }
+            if width == bits { return scalar }
+            let raw: AbstractValue = bits < width
+                ? .binary(.bitAnd, value, .immediate((UInt64(1) << bits) - 1)) : value
+            guard expressionDepth(raw) < 8 else { return .unknown }
+            return .unary(.floatFromBits(bits: bits), raw)
+        case .unary(.floatResult(let width, let zero), _) where width != bits:
+            guard [16, 32, 64].contains(width), bits < width || zero else { return .unknown }
+            var raw = bitPattern(of: value, bits: width)
+            if bits < width { raw = .binary(.bitAnd, raw, .immediate((UInt64(1) << bits) - 1)) }
+            guard expressionDepth(raw) < 8 else { return .unknown }
+            return .unary(.floatFromBits(bits: bits), raw)
+        case .unary(.floatFromBits(let width), let integer) where bits != width:
+            guard [16, 32, 64].contains(width) else { return .unknown }
+            let mask = (UInt64(1) << min(width, bits)) - 1
+            let raw = fitsLowMask(integer, mask: mask) ? integer
+                : .binary(.bitAnd, integer, .immediate(mask))
             guard expressionDepth(raw) < 8 else { return .unknown }
             // Keep the interpretation around the whole raw selection. The
             // move helper may project its arms back to bare integer literals.
@@ -4470,6 +4591,8 @@ public struct ValueTracer: Sendable {
     static func bitPattern(of value: AbstractValue, bits: Int) -> AbstractValue {
         switch value {
         case .unknown, .immediate: return value
+        case .unary(.floatResult(let width, _), .unary(.floatFromBits(let source), let integer))
+            where width == bits && source == bits: return integer
         case .unary(.floatFromBits(let width), let integer) where width == bits: return integer
         case .select(let condition, let whenTrue, let whenFalse):
             // A projected vector lane may select raw bit patterns. Convert
@@ -4822,6 +4945,7 @@ public struct ValueTracer: Sendable {
 
     private static func expressionDepth(_ value: AbstractValue) -> Int {
         switch value {
+        case .unary(.floatResult, let operand): return expressionDepth(operand)
         case .binary(.bitAnd, let value, .immediate(0xffff_ffff)):
             // Word normalization adds no computation dependency. Charging it
             // again made bounded 32-bit CCMP overflow predicates exceed the
@@ -4950,6 +5074,14 @@ public struct ValueTracer: Sendable {
         case .aggregate(let values): return values.contains(where: containsSelfFieldValue)
         default: return false
         }
+    }
+
+    /// A byte copy reads a computed FP result's encoding, including when the
+    /// copy is shorter than its semantic value. Untagged values stay as before.
+    private static func stackBits(at offset: Int64, bytes: Int, in registers: State) -> AbstractValue {
+        let value = stackValue(at: offset, bytes: bytes, in: registers)
+        guard value != .unknown, (1...8).contains(bytes) else { return value }
+        return integerRegisterValue(value, bits: bytes * 8)
     }
 
     /// Read one scalar or a SIMD-packed run of eight-byte stack values.

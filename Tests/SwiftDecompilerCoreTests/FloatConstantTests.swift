@@ -38,8 +38,8 @@ import Testing
         return ValueTracer().analyze(function, entry: nil).exitFloatValues[body.last!.address]
     }
     // mov w8, #5; scvtf d0, w8; ret
-    #expect(exit([0x528000a8, 0x1e620100, 0xd65f03c0]) == .unary(.toFloat(bits: 64), .immediate(5)))
+    #expect(exit([0x528000a8, 0x1e620100, 0xd65f03c0]) == .unary(.floatResult(bits: 64, upperZero: true), .unary(.toFloat(bits: 64), .immediate(5))))
     // mov x9, #0x4059000000000000; fmov d2, x9; fcvt s0, d2; ret
     #expect(exit([0xd2e80b29, 0x9e670122, 0x1e624040, 0xd65f03c0])
-        == .unary(.toFloat(bits: 32), .unary(.floatConstant(bits: 64), .immediate(0x4059000000000000))))
+        == .unary(.floatResult(bits: 32, upperZero: false), .unary(.toFloat(bits: 32), .unary(.floatConstant(bits: 64), .immediate(0x4059000000000000)))))
 }

@@ -42,6 +42,8 @@ public extension ProbeValue {
                 case .floatConstant(let bits): fields["operator"] = .label("float-constant"); fields["bits"] = .int(bits)
                 case .bitPattern(let bits): fields["operator"] = .label("bit-pattern"); fields["bits"] = .int(bits)
                 case .floatFromBits(let bits): fields["operator"] = .label("float-from-bits"); fields["bits"] = .int(bits)
+                case .floatResult(let bits, let zero):
+                    fields["operator"] = .label("float-result"); fields["bits"] = .int(bits); fields["upperZero"] = .bool(zero)
                 case .toInteger(let signed, let bits):
                     fields["operator"] = .label("to-integer"); fields["bits"] = .int(bits); fields["signed"] = .bool(signed)
                 }

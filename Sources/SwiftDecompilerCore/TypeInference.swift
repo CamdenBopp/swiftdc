@@ -141,6 +141,7 @@ public enum TypeInference {
                 return .floating(nil)
             case .toFloat(let bits), .unsignedToFloat(let bits), .floatConstant(let bits), .floatFromBits(let bits):
                 return .floating(bits)
+            case .floatResult(let bits, _): return .floating(bits)
             case .toInteger(let signed, let bits):
                 return signed ? .signedInteger(bits) : .unsignedInteger(bits)
             case .bitPattern(let bits):

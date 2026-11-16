@@ -633,6 +633,8 @@ echo "==> scalar floating literals retain width and domain (build-fp-pools.swift
 swift build-fp-pools.swift
 echo "==> half/GPR bit moves preserve low sixteen bits (build-half-moves.swift)"
 swift build-half-moves.swift
+echo "==> computed scalar FP widths and mode-independent raw views (build-fp-results.swift)"
+swift build-fp-results.swift
 
 echo "==> fmov immediates in vector and half-precision registers (fpimmediates.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name FPImmediates fpimmediates.swift -o libFPImmediates.dylib

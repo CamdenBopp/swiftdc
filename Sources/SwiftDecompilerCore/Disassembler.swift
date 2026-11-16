@@ -8087,6 +8087,7 @@ public struct Disassembler: Sendable {
             case .unary(.toFloat(let bits), _), .unary(.unsignedToFloat(let bits), _),
                  .unary(.floatConstant(let bits), _):
                 return bits
+            case .unary(.floatResult(let bits, _), _): return bits
             case .unary(.toInteger, _), .unary(.bitPattern, _):
                 return nil
             case .unary(_, let operand):
@@ -8294,6 +8295,8 @@ public struct Disassembler: Sendable {
                     return "(\(operand(rhs)) \(mirror.symbol) \(operand(lhs)))"
                 }
                 return "(\(operand(lhs)) \(op.symbol) \(operand(rhs)))"
+            case .unary(.floatResult, let operand):
+                return renderValue(operand, depth: depth)
             case .unary(let op, let operand):
                 guard depth < 8 else { return unknownRenderedValue() }
                 let inner = renderValue(operand, depth: depth + 1)
@@ -8345,11 +8348,18 @@ public struct Disassembler: Sendable {
                         return inner
                     }
                     let type = bits == 64 ? "Double" : bits == 16 ? "Float16" : "Float"
-                    let pattern = bits == 16 ? "UInt16(truncatingIfNeeded: \(inner))" : inner
+                    let pattern: String
+                    if bits == 16 { pattern = "UInt16(truncatingIfNeeded: \(inner))" }
+                    else if case .unary(.bitPattern(let source), _) = operand, source < bits {
+                        pattern = "UInt\(bits)(\(inner))"
+                    } else if case .binary(.bitAnd, .unary(.bitPattern(let source), _), _) = operand, source > bits {
+                        pattern = "UInt\(bits)(truncatingIfNeeded: \(inner))"
+                    } else { pattern = inner }
                     return "\(type)(bitPattern: \(pattern))"
                 case .floatConstant(let bits):
                     guard case .immediate(let pattern) = operand else { return unknownRenderedValue() }
                     return Self.renderFloatingConstant(bits: pattern, width: bits, explicitWidth: true) ?? unknownRenderedValue()
+                case .floatResult: return inner
                 }
             case .aggregate(let values):
                 // A multi-word result's two words together: the call.

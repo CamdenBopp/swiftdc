@@ -62,7 +62,7 @@ import Testing
         let result = ValueTracer().analyze(function, entry: nil)
         return (result.exitValues[body.last!.address], result.exitFloatValues[body.last!.address])
     }
-    let double = AbstractValue.unary(.toFloat(bits: 64), .immediate(5))
+    let double = AbstractValue.unary(.floatResult(bits: 64, upperZero: true), .unary(.toFloat(bits: 64), .immediate(5)))
     // mov w8, #5; scvtf d1, w8; fmov x0, d1; ret
     #expect(trace([0x528000a8, 0x1e620101, 0x9e660020, 0xd65f03c0]).value
         == .unary(.bitPattern(bits: 64), double))
@@ -70,7 +70,7 @@ import Testing
     #expect(trace([0x528000a8, 0x1e620101, 0x9e660029, 0x9e670120, 0xd65f03c0]).float == double)
     // mov w8, #5; scvtf s1, w8; fmov w0, s1; ret
     #expect(trace([0x528000a8, 0x1e220101, 0x1e260020, 0xd65f03c0]).value
-        == .unary(.bitPattern(bits: 32), .unary(.toFloat(bits: 32), .immediate(5))))
+        == .unary(.bitPattern(bits: 32), .unary(.floatResult(bits: 32, upperZero: false), .unary(.toFloat(bits: 32), .immediate(5)))))
     // mov x9, #0x4059000000000000; fmov d2, x9; fmov x0, d2; ret: the same bits
     #expect(trace([0xd2e80b29, 0x9e670122, 0x9e660040, 0xd65f03c0]).value == .immediate(0x4059000000000000))
 }
@@ -123,9 +123,9 @@ import Testing
         return (result.exitValues[body.last!.address], result.exitFloatValues[body.last!.address])
     }
     // fmov d0, x0; ret
-    #expect(trace([0x9e670000, 0xd65f03c0]).float == .unary(.floatFromBits(bits: 64), .argument(0)))
+    #expect(trace([0x9e670000, 0xd65f03c0]).float == .unary(.floatResult(bits: 64, upperZero: true), .unary(.floatFromBits(bits: 64), .argument(0))))
     // fmov s0, w0; ret
-    #expect(trace([0x1e270000, 0xd65f03c0]).float == .unary(.floatFromBits(bits: 32), .argument(0)))
+    #expect(trace([0x1e270000, 0xd65f03c0]).float == .unary(.floatResult(bits: 32, upperZero: true), .unary(.floatFromBits(bits: 32), .argument(0))))
     // fmov d1, x0; fmov x0, d1; ret
     #expect(trace([0x9e670001, 0x9e660020, 0xd65f03c0]).value == .argument(0))
 }

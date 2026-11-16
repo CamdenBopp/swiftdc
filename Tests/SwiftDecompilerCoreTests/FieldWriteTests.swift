@@ -195,13 +195,14 @@ import Testing
 /// `SDPairZeros clear` stores one zeroed q0 over `_v`.. `_s` and then over
 /// `_w`.. `_z`, and the second store rendered `self->{_w, _x, _y, _z} =
 /// self->_v`, a 4-byte field for sixteen bytes. It is named at the
-/// store's width now.
+/// store's width now. SIMD stores now retain their independent register
+/// value instead of becoming an untyped field alias; both zero spans remain 0.
 @Test func aForwardedFieldValueIsNamedAtTheStoresWidthIfPresent() async throws {
     let path = "Fixtures/Sample/libObjCPairStores.dylib"
     guard FileManager.default.fileExists(atPath: path) else { return }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let clear = try #require(functions.first { $0.displayName == "-[SDPairZeros clear]" }).renderPseudo()
-    #expect(clear.contains("self->{_w, _x, _y, _z} = self->{_v, _u, _t, _s}"), Comment(rawValue: clear))
+    #expect(clear.contains("self->{_w, _x, _y, _z} = 0\n"), Comment(rawValue: clear))
 }
 
 /// A store over several fields shows a value only when it is the span's,
@@ -307,5 +308,5 @@ import Testing
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let fill = try #require(functions.first { $0.displayName == "-[SDStraddle fill:]" }).renderPseudo()
     #expect(fill.contains("(self->_s[8..<16], self->_t) = (arg0, arg0)"), Comment(rawValue: fill))
-    #expect(fill.contains("(self->_a, self->_s[0..<8]) = "), Comment(rawValue: fill))
+    #expect(fill.contains("(self->_a, self->_s[0..<8]) = (arg0, arg0)"), Comment(rawValue: fill))
 }
