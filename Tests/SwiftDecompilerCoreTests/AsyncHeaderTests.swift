@@ -12,7 +12,7 @@ import Testing
     guard FileManager.default.fileExists(atPath: path) else { return }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let text = functions.filter { $0.displayName.contains("AH.") }.map { $0.renderStructured() }.joined(separator: "\n")
-    #expect(text.contains("let awaited1 = await AH.work(arg0)"), Comment(rawValue: text))
+    #expect(text.contains("let awaited1 = await AH.work(?)"), Comment(rawValue: text))
     #expect(!text.contains("= (1) await resume") && !text.contains("= (2) await resume"), Comment(rawValue: text))
 }
 

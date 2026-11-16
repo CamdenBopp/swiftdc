@@ -798,6 +798,9 @@ swift build-fp-returns.swift
 echo "==> awaited FP result precision with native async frames (build-async-fp-returns.swift, LLVM -O)"
 swift build-async-fp-returns.swift
 
+echo "==> hidden async isolation arguments and native ABI controls (build-async-isolation.swift, all levels)"
+swift build-async-isolation.swift
+
 echo "==> fmov immediates in vector and half-precision registers (fpimmediates.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name FPImmediates fpimmediates.swift -o libFPImmediates.dylib
 

@@ -337,9 +337,9 @@ struct ABISourceLoweringTests {
     #expect(!text.contains("self: r0"), Comment(rawValue: text))
 }
 
-/// An async callee takes its formals as a synchronous one does when its
-/// result travels in registers, and behind an indirect result's buffer in
-/// x0 otherwise. Laid out by position, `bumpG()` read `bumpG(?)` (x0 the
+/// An async callee's FP bank is independent, but its GP prefix is not in
+/// its printed signature. An indirect result adds another leading buffer.
+/// Laid out by position, `bumpG()` read `bumpG(?)` (x0 the
 /// callee context), `dbl(_: Double)` read `dbl(?)` with the Double in d0
 /// dropped, and `bigRes(_: Int) -> Big5` read `bigRes(?, arg0)`
 /// (`asynccalls.swift`, ABI review item 7).
@@ -349,7 +349,7 @@ struct ABISourceLoweringTests {
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
     for line in ["await AsyncCalls.bumpG()\n", "await AsyncCalls.dbl(arg0)\n",
-                 "await AsyncCalls.twoArgs(arg0, arg1)\n", "await AsyncCalls.bigRes(?)\n"] {
+                 "await AsyncCalls.twoArgs(?, ?)\n", "await AsyncCalls.bigRes(?)\n"] {
         #expect(text.contains(line), "\(line)")
     }
 }
@@ -357,8 +357,8 @@ struct ABISourceLoweringTests {
 /// Inside an async function whose result may be indirect, x0 may be the
 /// result's buffer, which comes before the formals: `bigRes(_ x: Int) async
 /// -> Big5` read `mem64[arg0] = x1`, `arg0` naming the buffer
-/// (`asynccalls.swift`, ABI review a7 #2). One with a direct result is
-/// seeded as before.
+/// (`asynccalls.swift`, ABI review a7 #2). A direct result removes that
+/// buffer uncertainty, but not the optional hidden isolation prefix.
 @Test func anAsyncFunctionWithAnUnprovenResultIsNotSeededIfPresent() async throws {
     let path = "Fixtures/Sample/libAsyncCalls.dylib"
     guard FileManager.default.fileExists(atPath: path) else { return }
@@ -366,7 +366,8 @@ struct ABISourceLoweringTests {
     let big = try #require(functions.first { $0.displayName.hasPrefix("AsyncCalls.bigRes(") }).renderStructured()
     #expect(!big.contains("arg0"), Comment(rawValue: big))
     let two = try #require(functions.first { $0.displayName.hasPrefix("AsyncCalls.twoArgs(") }).renderStructured()
-    #expect(two.contains("return ((arg1 - arg0) + (arg0 << 3))"), Comment(rawValue: two))
+    #expect(two.contains("return ?"), Comment(rawValue: two))
+    #expect(!two.contains("arg0") && !two.contains("arg1"), Comment(rawValue: two))
 }
 
 /// A generic function takes a generic value by address and its metadata

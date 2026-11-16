@@ -37,6 +37,7 @@ Fixtures/Sample/abi-source-resilient-oracle
 Fixtures/Sample/exception-cleanup-oracle
 Fixtures/Sample/async-fp-raw-oracle
 Fixtures/Sample/async-fp-control-oracle
+Fixtures/Sample/async-isolation-*-oracle
 
 # Benchmark harness output (regenerate with Benchmarks/benchmark.swift).
 # The curated samples in Benchmarks/samples/ and the report are tracked; the

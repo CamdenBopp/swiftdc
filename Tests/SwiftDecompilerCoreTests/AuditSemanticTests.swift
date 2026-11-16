@@ -236,7 +236,7 @@ func structuredLoops(_ text: String) -> [(header: String, body: [String], after:
         try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "TypedThrowsAwait.useCode")
     }
     let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
-    #expect(text.contains("await TypedThrowsAwait.codeAsync(arg0)"), Comment(rawValue: text))
+    #expect(text.contains("await TypedThrowsAwait.codeAsync(?)"), Comment(rawValue: text))
     #expect(!text.contains("awaited1"), Comment(rawValue: text))
 }
 
@@ -249,7 +249,7 @@ func structuredLoops(_ text: String) -> [(header: String, body: [String], after:
         try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "awaitThrowing")
     }
     let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
-    #expect(text.contains("let awaited1 = await AsyncFns.fetchOrThrow(arg0)"), Comment(rawValue: text))
+    #expect(text.contains("let awaited1 = await AsyncFns.fetchOrThrow(?)"), Comment(rawValue: text))
 }
 
 /// An await names its result only when the callee returns it in x0 (or v0)
@@ -288,7 +288,7 @@ func structuredLoops(_ text: String) -> [(header: String, body: [String], after:
             let where_ = "\(path), filter \(filter ?? "none")"
             let control = renders(of: "useInt")
             #expect(control.count >= 4, "\(where_): useInt not found")
-            #expect(control.contains { $0.contains("let awaited1 = await AwaitResults.intResult(arg0)") },
+            #expect(control.contains { $0.contains("let awaited1 = await AwaitResults.intResult(?)") },
                     "\(where_): \(control.joined(separator: "\n"))")
             for (name, awaitText) in declined {
                 let texts = renders(of: name)

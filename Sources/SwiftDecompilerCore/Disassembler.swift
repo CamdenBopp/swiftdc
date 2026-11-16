@@ -1485,7 +1485,17 @@ public struct Disassembler: Sendable {
         swiftTargets.subtract(objcIndex.addresses)
         stubs = []
 
-        let asyncIndex = AsyncFuncletIndex.build(hints: nil, functionStarts: [], instructions: { _ in [] }, nameOf: { _ in nil })
+        // Keep declared entry/resume ABI roles even though this API recovers
+        // no suspension edges or owned await results. An unnamed async entry
+        // must not fall back to a C body's register count (hidden words
+        // included), and a resume must not inherit its parent's parameters.
+        let asyncHints = AsyncFuncletIndex.hintSections(in: machO) { address, size in
+            self.sectionBytes(address: address, size: size, in: machO)
+        }
+        let asyncIndex = asyncHints.map {
+            AsyncFuncletIndex.build(hints: $0, functionStarts: boundaries,
+                instructions: { _ in [] }, nameOf: { _ in nil })
+        } ?? .empty
         let fieldMaps = (try? FieldMapBuilder.build(in: machO)) ?? [:]
         let selfIndex = SelfTypeIndex.build(in: machO)
         let vtableIndex = VTableIndex.build(in: machO)
@@ -2144,7 +2154,9 @@ public struct Disassembler: Sendable {
         // the async context before the suspension, and the ABI preserves no
         // callee-saved register across it. Seeding `arg<n>` or x20 from the
         // signature would label the awaited result (x0) as the first parameter.
-        let isResumeFunclet = function.asyncFunclet.map { !$0.isEntry } ?? false
+        let metadataFunclet = context.asyncIndex.funclets[function.startAddress]
+        let isResumeFunclet = (function.asyncFunclet.map { !$0.isEntry } ?? false)
+            || (metadataFunclet.map { $0.kind != nil || $0.ordinal != 0 } ?? false)
         let classSelfTypeName = objcMethod == nil && symbolEntry == nil && !isResumeFunclet
             ? Self.selfType(of: function, selfIndex: context.selfIndex, fieldMaps: context.fieldMaps,
                             classTypeIndex: context.classTypeIndex)
@@ -2161,7 +2173,7 @@ public struct Disassembler: Sendable {
         let resolver = context.resolver
         let isOpaqueExistential: (String) -> Bool = { resolver.opaqueExistentialDescriptor(named: $0) != nil }
         let isClassBoundExistential: (String) -> Bool = { resolver.classBoundExistentialDescriptor(named: $0) != nil }
-        let entry: MethodEntryConvention? = if isResumeFunclet {
+        let ordinaryEntry: MethodEntryConvention? = if isResumeFunclet {
             nil
         } else if let objcMethod {
             objcMethod.isInitializer
@@ -2205,6 +2217,12 @@ public struct Disassembler: Sendable {
         } else {
             nil
         }
+        // Isolation is absent from the mangled signature. Even without
+        // grouping (analyzeEach), x0 may be a formal or the leading actor.
+        let hasAsyncEntryABI = !isResumeFunclet && (function.asyncFunclet?.isEntry == true
+            || (metadataFunclet.map { $0.parent == function.startAddress && $0.kind == nil && $0.ordinal == 0 } ?? false)
+            || function.layoutName.flatMap { DisassembledFunction.splitSignature($0) }?.isAsync == true)
+        let entry = hasAsyncEntryABI ? Self.asyncEntryParameterConvention(ordinaryEntry) : ordinaryEntry
         let fieldMap: FieldMap? = if let objcMethod, !objcMethod.isClassMethod {
             context.objcIndex.fieldMaps[objcMethod.className]
         } else if let className = objcMethod == nil ? Self.objcClassName(fromSymbol: function.symbol) : nil {
@@ -2285,6 +2303,7 @@ public struct Disassembler: Sendable {
             ),
             asyncContextSlots: chainSlots,
             asyncSuspensions: Self.asyncSuspensionNotes(in: function, index: context.asyncIndex),
+            asyncIndex: context.asyncIndex,
             objcIndex: context.objcIndex,
             registerSummaries: context.registerSummaries,
             selfMembers: context.selfMembers,
@@ -2380,22 +2399,33 @@ public struct Disassembler: Sendable {
 
     // MARK: - Async funclets
 
-    /// The register state the async ABI fixes at a funclet's entry, layered
-    /// over `base` (the entry funclet's ordinary convention; ignored for a
-    /// resume funclet, whose registers carry none of the parameters).
-    ///
-    /// - entry / continuation: x22 is the function's own context.
-    /// - await-return: x22 is the awaited callee's context (its first word is
-    ///   the own context), and the callee's direct result is in x0 or v0,
-    ///   named `awaited<N>`, only when the callee's demangled signature proves a
-    ///   single-register result. An unknown callee seeds no result.
-    /// - unknown kind, or no recovered parent: nil, so nothing is claimed.
+    /// Only facts common to an ordinary async entry and one with two hidden
+    /// isolation words. The independent FP bank and Swift's dedicated self
+    /// survive; no ordinary GP formal, field, metadata or table does.
+    static func asyncEntryParameterConvention(_ entry: MethodEntryConvention?) -> MethodEntryConvention? {
+        func floating(_ key: String) -> Bool { (0..<8).contains { key == "v\($0)" } }
+        switch entry {
+        case .swiftFunction(let arguments, _, _, _, let fields):
+            return .swiftFunction(scalarArguments: arguments.filter { floating($0.key) },
+                argumentFields: fields.filter { floating($0.key) })
+        case .swiftInstance(let arguments, _):
+            return .swiftInstance(scalarArguments: arguments.filter { floating($0.key) })
+        case .swiftValueInstance(let seeds):
+            return .swiftValueInstance(seededRegisters: seeds.filter { floating($0.key) || $0.key == "x20" })
+        case .objectiveC, .objectiveCInitializer, .asyncFunclet, nil:
+            return nil
+        }
+    }
+
+    /// The async context and proven direct awaited result. Source GP formals
+    /// have no common entry location across the two possible isolation ABIs.
+    /// Resume funclets never inherit their parent's ordinary parameters.
     static func asyncConvention(
         for function: DisassembledFunction, base: MethodEntryConvention?, index: AsyncFuncletIndex
     ) -> MethodEntryConvention? {
         guard let info = function.asyncFunclet, info.parent != nil else { return nil }
         if info.isEntry {
-            return .asyncFunclet(base: base, seededRegisters: ["x22": .asyncContext])
+            return .asyncFunclet(base: asyncEntryParameterConvention(base), seededRegisters: ["x22": .asyncContext])
         }
         switch info.kind {
         case .continuation:
@@ -6733,6 +6763,8 @@ public struct Disassembler: Sendable {
     /// class-bound existential parameter's witness table (register key ->
     /// parameter index); the parameter itself is the object, in the register
     /// before it.
+    /// For async declarations this is the no-isolation-prefix candidate;
+    /// asyncEntryParameterConvention retains only bank-independent facts.
     static func swiftArgumentRegisters(
         of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
         classTypeIndex: ClassTypeIndex = ClassTypeIndex(), fieldMaps: [String: FieldMap] = [:],
@@ -7125,11 +7157,11 @@ public struct Disassembler: Sendable {
         if let colon = declared.range(of: ".subscript.getter : ("), !declared[..<colon.lowerBound].contains(" ") {
             declared.replaceSubrange(colon, with: ".subscript(")
         }
-        // An async callee takes its context in x22 and its formals as a
-        // synchronous one does, unless its result is indirect, whose buffer
-        // then comes first in x0 (swift/lib/IRGen/GenCall.cpp, the async
-        // signature). Only a result proven to travel in registers is laid
-        // out here.
+        // This describes the candidate without hidden isolation words.
+        // Async call enrichment intersects its GP facts with the candidate
+        // having two leading words; the printed signature cannot select one.
+        // An indirect async result introduces another leading buffer, so
+        // only a result proven to travel in registers is laid out here.
         guard let signature = DisassembledFunction.splitSignature(declared),
               !signature.isAsync || SwiftLowering.of(signature.result, enumCaseIndex: enumCaseIndex,
                                                      classTypeIndex: classTypeIndex).isDirect,
@@ -7290,6 +7322,32 @@ public struct Disassembler: Sendable {
         let stack: [(type: String, kind: ScalarParameterClass)]
         let splitStackWords: Int
         var unplaced: Int { stack.count }
+    }
+
+    /// A source integer word can start at x0 or after two hidden isolation
+    /// words. Keep it only when both physical locations carry the same fact.
+    /// A shifted word past x7 might be on the stack, whose placement is not
+    /// established here. Preserve eight slots so declared arity is unchanged.
+    static func asyncIntegerArgumentConsensus(_ values: [AbstractValue]) -> [AbstractValue] {
+        (0..<8).map { index in
+            guard index + 2 < 8, index + 2 < values.count,
+                  values[index] == values[index + 2] else { return .unknown }
+            return values[index]
+        }
+    }
+
+    /// Entry metadata also identifies async accessors and stripped entries.
+    /// A resume takes context/results, not the original function's formals.
+    static func hasUnprovenAsyncIsolationPrefix(
+        callee: String?, target: UInt64?, index: AsyncFuncletIndex
+    ) -> Bool {
+        if callee?.contains("resume partial function for ") == true { return false }
+        if let target, let info = index.funclets[target] {
+            if info.kind != nil || info.ordinal != 0 { return false }
+            if info.parent == target { return true }
+        }
+        guard let callee, callee.contains(" async ") else { return false }
+        return DisassembledFunction.splitSignature(callee)?.isAsync == true
     }
 
     /// The byte size of each word a parameter of `type` puts on the stack,
@@ -8151,6 +8209,7 @@ public struct Disassembler: Sendable {
         calleeConventions: [UInt64: CalleeResultConvention] = [:],
         asyncContextSlots: [Int: AbstractValue] = [:],
         asyncSuspensions: [UInt64: AsyncSuspensionNote] = [:],
+        asyncIndex: AsyncFuncletIndex = .empty,
         objcIndex: ObjCMetadataIndex? = nil,
         registerSummaries: [UInt64: CalleeRegisterFacts] = [:],
         selfMembers: SelfMemberCache = SelfMemberCache(),
@@ -9279,7 +9338,12 @@ public struct Disassembler: Sendable {
         // In address order: each site records an `abi.argument-layout`
         // probe event, and Dictionary order changes with every process.
         for (address, site) in sites.sorted(by: { $0.key < $1.key }) {
-            var values = site.arguments
+            let hasAsyncIsolationPrefix = Self.hasUnprovenAsyncIsolationPrefix(
+                callee: calleeByAddress[address], target: callTargets[address], index: asyncIndex)
+            let asyncSignature = hasAsyncIsolationPrefix ? calleeByAddress[address].flatMap {
+                DisassembledFunction.splitSignature(layoutName(at: address, callee: $0))
+            } : nil
+            var values = hasAsyncIsolationPrefix ? Self.asyncIntegerArgumentConsensus(site.arguments) : site.arguments
             // Which layout decided this site's arguments. `positional` (the
             // registers as the call found them, trimmed of trailing unknowns)
             // is the one stale values have historically come through.
@@ -9373,9 +9437,9 @@ public struct Disassembler: Sendable {
                 strategy = "resilient-getter-self"
                 continue
             }
-            // A Swift callee with a proven layout gets exactly its parameters:
-            // integer slots from x0… and float slots from v0…, each in order on
-            // its own counter, with no trailing trim, so its arity shows.
+            // A Swift callee gets exactly its declared parameters. Async GP
+            // slots use only facts common to both candidate prefixes; FP
+            // slots keep their independent bank. No trailing trim hides arity.
             // A String's two words are one argument, kept only as a literal
             // both words spell: a known first word over an unknown second is
             // not that String. Read one register per word, `takeTwo(_: String,
@@ -9387,7 +9451,7 @@ public struct Disassembler: Sendable {
                     enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, fieldMaps: typeFieldMaps)
             }
             let swiftSlots = swiftLayout?.slots
-            let cLayout = swiftSlots != nil || isNameTwin(address)
+            let cLayout = hasAsyncIsolationPrefix || swiftSlots != nil || isNameTwin(address)
                 ? nil : calleeByAddress[address].flatMap { Self.cPrototypeLayout(callee: $0) }
             // A value type's method takes its formal parameters from x0 too,
             // and then, unless it is mutating (`self` by address in x20),
@@ -9503,7 +9567,7 @@ public struct Disassembler: Sendable {
                 }
                 var unplaced = Array(repeating: AbstractValue.unknown,
                                      count: cLayout?.unplaced ?? swiftLayout?.unplaced ?? leadingLayout?.unplaced ?? 0)
-                if cLayout == nil, let swiftLayout, !swiftLayout.stack.isEmpty {
+                if !hasAsyncIsolationPrefix, cLayout == nil, let swiftLayout, !swiftLayout.stack.isEmpty {
                     let stackWords = Self.stackParameterWords(
                         swiftLayout, stackArguments: site.stackArguments, widths: site.stackArgumentWidths)
                     unplaced = zip(swiftLayout.stack, stackWords).map { parameter, words in
@@ -9621,7 +9685,26 @@ public struct Disassembler: Sendable {
                     argumentsByAddress[address] = (laidOut + unplaced).map(sanitizeValue) + following
                     laidOutTypes[address] = slots.map(\.type) + unplaced.map { _ in "" } + followingTypes
                 }
-                strategy = leadingSlots != nil ? "swift-leading" : cLayout == nil ? "swift-signature" : "c-declaration"
+                strategy = hasAsyncIsolationPrefix ? "async-signature-consensus"
+                    : leadingSlots != nil ? "swift-leading" : cLayout == nil ? "swift-signature" : "c-declaration"
+                continue
+            }
+            // An unplaced async signature must not retry a body's physical
+            // register count as source arity: that includes hidden isolation
+            // words. Keep a proved source count, or an explicit unknown tail.
+            if hasAsyncIsolationPrefix {
+                if let callee = calleeByAddress[address], Self.signatureSpecializationKeepsLayout(callee),
+                   !DisassembledFunction.isLocalFunctionName(callee), !unprovenGenericLayoutSites.contains(address),
+                   let signature = asyncSignature,
+                   let range = DisassembledFunction.outermostArgumentListRange(of: signature.head) {
+                    let parameters = DisassembledFunction.splitTopLevelArguments(signature.head[range])
+                        .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                    argumentsByAddress[address] = parameters.map { _ in .unknown }
+                } else {
+                    argumentsByAddress[address] = []
+                    unprovenVariadicSites.insert(address)
+                }
+                strategy = "async-unplaced"
                 continue
             }
             // A witness call whose requirement's parameters this cannot
