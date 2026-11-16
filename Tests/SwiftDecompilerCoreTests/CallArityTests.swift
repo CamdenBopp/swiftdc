@@ -83,3 +83,82 @@ private func pseudo(_ filter: String, in fixture: String) async throws -> String
     let text = try await pseudo("widenedTimesConstant", in: fixture)
     #expect(text.contains("Swift.Double.init(arg0)"), "\(text)")
 }
+
+/// A tail branch to a body that never writes x0 or v0, makes no call and
+/// stores only to its own stack returns the x0 it was given. -O `callGen`
+/// is `b sub_3e0`, and sub_3e0 is a lone `ret` (`gen(a, t) { a }`), so it
+/// returns a; it rendered `sub_3e0()` and no return. `passthrough_tail.s`
+/// pins the three guards: `keep` (a lone `ret`) returns n, `store` writes a
+/// global and keeps its call, and `bump` writes x0 and is no passthrough.
+@Test func aTailBranchToABodyThatKeepsX0ReturnsItIfPresent() async throws {
+    let fixture = "Fixtures/Sample/libCallArity.opt.dylib"
+    guard FileManager.default.fileExists(atPath: fixture) else { return }
+    let callGen = try await pseudo("callGen", in: fixture)
+    #expect(callGen.contains("return arg0"), "\(callGen)")
+    let tails = "Fixtures/Sample/libPassthroughTail.dylib"
+    guard FileManager.default.fileExists(atPath: tails) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: tails) }
+    func render(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName.hasPrefix("Passthrough.\(name)(") }).renderStructured()
+    }
+    #expect(try render("callKeep").contains("return arg0\n"))
+    #expect(try render("callStore").contains("store(arg0)"))
+    #expect(!(try render("callStore")).contains("return arg0"))
+    #expect(!(try render("callWrite")).contains("return arg0"))
+}
+
+/// A function with no signature returns what its callers prove: one reads
+/// x0 after calling it, and none reads x1, a float register or x21, or
+/// returns right after the call (handing on a possible error).
+/// `caller_proven.s`: `leaf` returns 7; `pair`'s caller reads x0 and x1,
+/// `thrower`'s tests x21, `fwd`'s returns right after the call,
+/// `setsError` writes x21 itself, and `dleaf`'s result is a float, so none
+/// of those shows a value. Stripped,
+/// the `sample.stripped` specialization of `Direction.init(rawValue:)`
+/// returns its machine value as the unstripped twin's callers read it.
+@Test func aResultItsCallersReadIsReturnedIfPresent() async throws {
+    let path = "Fixtures/Sample/libCallerProven.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func render(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName == name }).renderStructured()
+    }
+    #expect(try render("_leaf").contains("return 7\n"))
+    for name in ["_dleaf", "_pair", "_thrower", "_fwd", "_setsError"] {
+        #expect(!(try render(name)).contains("return"), "\(name)")
+    }
+    let stripped = "Fixtures/Sample/sample.stripped"
+    guard FileManager.default.fileExists(atPath: stripped) else { return }
+    let text = try await withStableDependencies { try await Disassembler().disassemble(path: stripped) }
+        .map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(text.contains("return ((arg0 <ᵁ 4) ? arg0 : 4)"))
+}
+
+
+/// A caller-proven result reaches the structured renderer's own exits: a
+/// tail call out of `tailLeaf` is the value it returns, so the exit reads
+/// `return ?` (or the call), never a bare `return` that says nothing comes
+/// back.
+@Test func aCallerProvenResultReachesATailExitIfPresent() async throws {
+    let path = "Fixtures/Sample/libCallerProven.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = try #require(functions.first { $0.symbol == "_tailLeaf" }).renderStructured()
+    #expect(!text.contains("return\n"), "\(text)")
+}
+
+/// Every rebuild of a function keeps its caller-proven result: dropping it
+/// would turn its declined exits back into a bare `return`.
+@Test func everyRebuildKeepsACallerProvenResult() throws {
+    let engine = try #require(CapstoneEngine())
+    let decoded = try #require(engine.disassemble(Data([0xc0, 0x03, 0x5f, 0xd6]), address: 0x1000).first)
+    let ret = Instruction(address: decoded.address, text: decoded.text, controlFlow: decoded.controlFlow,
+                          branchTarget: decoded.branchTarget, detail: decoded.detail)
+    var function = DisassembledFunction(symbol: "sub_1000", demangledName: nil, startAddress: 0x1000,
+        instructions: [ret], source: .address)
+    function.callerProvenResult = true
+    #expect(function.replacingInstructions([ret]).callerProvenResult)
+    #expect(function.replacingInstructionPayload([ret]).callerProvenResult)
+    #expect(function.retainingCFG(function.controlFlowGraph).callerProvenResult)
+    #expect(function.attachingSwitchTargets([:]).callerProvenResult)
+}

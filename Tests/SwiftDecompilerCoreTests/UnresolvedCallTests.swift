@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import SwiftDecompilerCore
 
@@ -45,3 +46,18 @@ import Testing
     let consumedKnown = Instruction(address: 0x1004, text: "bl _make", controlFlow: .call, resultConsumed: true)
     #expect(DisassembledFunction.callStatement(of: consumedKnown, hideRuntime: true) == nil)
 }
+
+/// A call through a register lists what was tracked, never its arguments:
+/// `indirect_args.c` `callGlobal(a, b)` calls `gp(a, b)` with a and b still
+/// in x0 and x1, which are trimmed as possibly stale, and it read
+/// `recovered_args: []`, a call with nothing. The list always ends in `…`.
+@Test func aCallThroughARegisterNeverListsItsWholeArgumentsIfPresent() async throws {
+    let path = "Fixtures/Sample/libIndirectArgs.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(text.contains("recovered_args: […]"), "\(text)")
+    #expect(!text.contains("recovered_args: []"), "\(text)")
+    #expect(text.contains("recovered_args: [arg1, arg2, arg2, …]"), "\(text)")
+}
+

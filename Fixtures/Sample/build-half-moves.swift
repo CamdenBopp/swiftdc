@@ -88,7 +88,9 @@ for function in functions {
     symbols[function.name] = String(line[start..<end])
     definitions.append(String(matches[0]))
 }
-var assembly = [".text", "nop"]
+// Keep the padding's local symbol: this is a fully named ABI fixture, not
+// a partially stripped image whose trivial callee names must be declined.
+var assembly = [".text", "_half_moves_fixture_start:", "nop"]
 for function in functions {
     assembly += [".p2align 2", ".globl _\(symbols[function.name]!)", "_\(symbols[function.name]!):"]
         + function.code.map { "    " + $0.replacingOccurrences(of: "PRODUCER", with: "_" + symbols["producer"]!) }

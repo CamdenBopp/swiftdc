@@ -30,7 +30,7 @@ final class CacheReader {
             handle = opened
         }
         guard (try? handle.seek(toOffset: localOffset)) != nil else { return nil }
-        return try? handle.read(upToCount: count)
+        return try? handle.readDrained(upToCount: count)
     }
 
     /// A NUL-terminated string at a VM address.
@@ -48,6 +48,12 @@ final class CacheReader {
     func pointer(at slot: UInt64) -> UInt64? {
         guard let fileOffset = full.fileOffset(of: slot) else { return nil }
         return full.resolveRebase(at: fileOffset)
+    }
+
+    func fixedPointer(at slot: UInt64) -> UInt64? {
+        guard let mapping = full.mappingAndSlideInfo(for: slot),
+              !mapping.flags.isDisjoint(with: [.constData, .readOnlyData, .constTproData]) else { return nil }
+        return pointer(at: slot)
     }
 }
 
@@ -72,7 +78,11 @@ final class CacheSymbolResolver {
     private let tracer = ValueTracer()
     /// Sorted by text range, for a binary search on the call target.
     private var images: [(range: Range<UInt64>, base: UInt64, image: MachOFile)] = []
+    /// Each image's whole `__TEXT`, as `images` holds its `__text`, in the
+    /// same order: descriptors sit outside the code.
+    private var textSegments: [Range<UInt64>] = []
     private var exportsByImage: [Int: [UInt64: String]] = [:]
+    private var arcExportsByImage: [Int: [UInt64: Set<String>]] = [:]
     private var resolved: [UInt64: String?] = [:]
 
     /// Nil unless `machO` is a shared-cache image (there is nothing to resolve
@@ -93,6 +103,10 @@ final class CacheSymbolResolver {
             images.append((start ..< (start + UInt64(text.size)), base, image))
         }
         images.sort { $0.range.lowerBound < $1.range.lowerBound }
+        textSegments = images.map { entry in
+            let segment = entry.image.loadCommands.infos(of: LoadCommand.segment64).first { $0.segmentName == "__TEXT" }
+            return entry.base ..< entry.base + UInt64(segment?.vmsize ?? 0)
+        }
     }
 
     /// An image's load address: its `__TEXT` segment's vmaddr.
@@ -115,6 +129,55 @@ final class CacheSymbolResolver {
         let name = resolve(address)
         resolved[address] = name
         return name
+    }
+
+    /// An exact export in the owning runtime image, following the same island
+    /// as display-name resolution. Selector stubs are not ARC identity calls.
+    func arcIdentityContract(forCallTarget address: UInt64, named callee: String) -> Bool {
+        guard DisassembledFunction.isARCReferenceHelper(callee) else { return false }
+        let target: UInt64
+        if symbol(at: address) != nil { target = address }
+        else if let resolved = arcStubTarget(at: address) { target = resolved }
+        else { return false }
+        guard let index = imageIndex(containing: target) else { return false }
+        if arcExportsByImage[index] == nil {
+            let image = images[index]
+            arcExportsByImage[index] = Self.arcExports(image.image.exportedSymbols,
+                                                       imagePath: image.image.imagePath,
+                                                       base: image.base, text: image.range)
+        }
+        let name = callee.hasPrefix("_") ? String(callee.dropFirst()) : callee
+        return arcExportsByImage[index]?[target]?.contains(name) == true
+    }
+
+    /// The exact owning-image export proof, also exercised with conflicting
+    /// export flags. It never treats an interior or wrapped address as an entry.
+    static func arcExports(_ exports: [ExportedSymbol], imagePath: String, base: UInt64,
+                           text: Range<UInt64>) -> [UInt64: Set<String>] {
+        guard RuntimeFunctionReference.isARCRuntimeImage(imagePath) else { return [:] }
+        var table: [UInt64: Set<String>] = [:]
+        for symbol in exports {
+            guard RuntimeFunctionReference.isDirectFunctionExport(symbol),
+                  let offset = symbol.offset, offset >= 0 else { continue }
+            let reference = RuntimeFunctionReference(rawSymbol: symbol.name, libraryName: imagePath)
+            let name = symbol.name.hasPrefix("_") ? String(symbol.name.dropFirst()) : symbol.name
+            let (location, overflow) = base.addingReportingOverflow(UInt64(offset))
+            guard !overflow, text.contains(location), reference.permitsARCIdentity(named: name) else { continue }
+            table[location, default: []].insert(name)
+        }
+        return table
+    }
+
+    private func arcStubTarget(at address: UInt64) -> UInt64? {
+        guard let bytes = reader.bytes(at: address, count: 16) else { return nil }
+        let decoded = engine.disassemble(bytes, address: address)
+        guard let end = decoded.firstIndex(where: { $0.controlFlow == .branch }) else { return nil }
+        let instructions = decoded[...end].map {
+            Instruction(address: $0.address, text: $0.text, controlFlow: $0.controlFlow,
+                        branchTarget: $0.branchTarget, detail: $0.detail)
+        }
+        guard let slot = RuntimeFunctionReference.pointerSlot(in: instructions, startingAt: address) else { return nil }
+        return reader.fixedPointer(at: slot)
     }
 
     private func resolve(_ address: UInt64) -> String? {
@@ -203,6 +266,18 @@ final class CacheSymbolResolver {
     /// address.
     private func symbol(at address: UInt64) -> String? {
         guard let index = imageIndex(containing: address) else { return nil }
+        return exports(ofImage: index)[address]
+    }
+
+    /// The exported symbol at `address` anywhere in an image's `__TEXT`, for
+    /// data a cross-image reference can reach: a protocol requirement
+    /// descriptor lies in `__const`, outside the code `symbol(at:)` covers.
+    func exportName(inTextSegmentAt address: UInt64) -> String? {
+        guard let index = textSegments.firstIndex(where: { $0.contains(address) }) else { return nil }
+        return exports(ofImage: index)[address]
+    }
+
+    private func exports(ofImage index: Int) -> [UInt64: String] {
         if exportsByImage[index] == nil {
             var table: [UInt64: String] = [:]
             let base = images[index].base
@@ -217,7 +292,7 @@ final class CacheSymbolResolver {
             }
             exportsByImage[index] = table
         }
-        return exportsByImage[index]?[address]
+        return exportsByImage[index] ?? [:]
     }
 
     private func imageIndex(containing address: UInt64) -> Int? {

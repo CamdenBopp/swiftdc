@@ -61,6 +61,7 @@ extension BinaryLoader {
     /// `Payload/<App>.app`, returns a `.app`/`.framework` directory as-is, or
     /// `nil` for a plain file.
     private static func bundleDirectory(for input: String) throws -> String? {
+        let input = try followingSymlinks(input)
         let fm = FileManager.default
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: input, isDirectory: &isDir) else {
@@ -92,6 +93,8 @@ extension BinaryLoader {
         var result: [BundleBinary] = []
         if let main = mainExecutable(in: bundleDir) {
             result.append(main)
+        } else if bundleDir.lowercased().hasSuffix(".framework"), let binary = frameworkBinary(bundleDir) {
+            result.append(BundleBinary(name: bundleName(bundleDir), path: binary, kind: .executable))
         }
         for (sub, kind) in [
             ("Frameworks", BundleBinary.Kind.framework),
@@ -126,7 +129,8 @@ extension BinaryLoader {
     }
 
     /// `CFBundleExecutable` from the bundle's `Info.plist`, resolved to the
-    /// binary on disk (iOS layout `<bundle>/<exec>`, macOS `Contents/MacOS/<exec>`).
+    /// binary on disk (iOS layout and macOS framework `<bundle>/<exec>`, macOS
+    /// app `Contents/MacOS/<exec>`).
     private static func mainExecutable(in bundleDir: String) -> BundleBinary? {
         guard let plistPath = infoPlistPath(in: bundleDir),
               let data = FileManager.default.contents(atPath: plistPath),
@@ -142,7 +146,7 @@ extension BinaryLoader {
     }
 
     private static func infoPlistPath(in bundleDir: String) -> String? {
-        for relative in ["Info.plist", "Contents/Info.plist"] {
+        for relative in ["Info.plist", "Contents/Info.plist", "Resources/Info.plist"] {
             let path = (bundleDir as NSString).appendingPathComponent(relative)
             if FileManager.default.fileExists(atPath: path) { return path }
         }

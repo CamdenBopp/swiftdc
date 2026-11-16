@@ -179,15 +179,18 @@ private let accessorGrowthCeiling = 4_096
 /// an accessor synthesized is that the value moves unchanged.
 @Test func aSynthesizedAccessorMovesItsValueUnchanged() throws {
     let engine = try #require(CapstoneEngine())
-    func verdict(_ words: [UInt32], callee: Int? = nil, encoding: String? = nil) -> Bool? {
+    func verdict(_ words: [UInt32], callee: Int? = nil, encoding: String? = nil,
+                 arcIdentityContract: Bool = false) -> Bool? {
         var data = Data()
         for word in words + [0xd65f_03c0] { withUnsafeBytes(of: word.littleEndian) { data.append(contentsOf: $0) } }
         let instructions = engine.disassemble(data, address: 0x1000).enumerated().map { index, decoded in
             let insn = Disassembler.instruction(decoded: decoded)
             guard index == callee else { return insn }
+            var facts = insn.facts
+            facts.arcIdentityContract = arcIdentityContract
             return Instruction(address: insn.address, text: insn.text, annotation: "→ objc_retain",
                                controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
-                               detail: insn.detail, callee: .kept("objc_retain"))
+                               detail: insn.detail, callee: .kept("objc_retain"), facts: facts)
         }
         let binding = encoding.map {
             ObjCMethodBinding(className: "C", selector: "s", typeEncoding: $0, isClassMethod: false, signature: "")
@@ -227,8 +230,9 @@ private let accessorGrowthCeiling = 4_096
     #expect(verdict([storeW2, 0xf900_0422]) == false)               // str x2, [x1, #8]
     // A call ends an argument in x2, not one kept in x19.
     let call: UInt32 = 0x9400_0400
-    #expect(verdict([0xaa00_03f3, call, 0xb900_0e62], callee: 1) == false) // mov x19, x0; bl; str w2, [x19, #12]
-    #expect(verdict([0xaa00_03f4, 0xaa02_03f3, call, 0xf900_0693], callee: 2) == true) // mov x20, x0; mov x19, x2; bl; str x19, [x20, #8]
+    #expect(verdict([0xaa00_03f3, call, 0xb900_0e62], callee: 1, arcIdentityContract: true) == false) // mov x19, x0; bl; str w2, [x19, #12]
+    #expect(verdict([0xaa00_03f4, 0xaa02_03f3, call, 0xf900_0693], callee: 2, arcIdentityContract: true) == true)
+    #expect(verdict([0xaa00_03f4, 0xaa02_03f3, call, 0xf900_0693], callee: 2) == false) // mov x20, x0; mov x19, x2; bl; str x19, [x20, #8]
     // A struct moves through x2 and x8 only when the method's type has one.
     let wide = "{Wide=qqqqq}16@0:8"
     let copyIn: [UInt32] = [0xad40_0440, 0xad02_8400]   // ldp q0, q1, [x2]; stp q0, q1, [x0, #80]
@@ -248,7 +252,7 @@ private let accessorGrowthCeiling = 4_096
     let expected = [
         "- (void)setClamped:(int)arg0;", "- (void)setBumped:(int)arg0;", "- (void)setFixedValue:(int)arg0;",
         "- (void)setTwice:(int)arg0;", "- (int)next;", "- (int)floorValue;", "- (long long)nodeValue;",
-        "- (void)setPatched:(Wide)arg0;",
+        "- (int)ignored;", "- (void)setPatched:(Wide)arg0;",
     ]
     for level in ["O0", "O1", "Os"] {
         let path = "Fixtures/Sample/libAccessorShapes.\(level).dylib"
@@ -261,6 +265,17 @@ private let accessorGrowthCeiling = 4_096
     }
 }
 
+/// `objc_thunk_return.swift`: the `@objc` getter loads the ivar into x0 and
+/// returns it through `objc_retainAutoreleaseReturnValue`, which hands back
+/// its argument, so the getter is synthesized and its line is implied.
+@Test func aGetterReturningThroughARetainIsSynthesizedIfPresent() throws {
+    let path = "Fixtures/Sample/libObjCThunkReturn.dylib"
+    guard FileManager.default.fileExists(atPath: path), let run = try runCLI(["objc", path]) else { return }
+    let lines = run.stdout.split(separator: "\n").map(String.init)
+    #expect(lines.contains { $0.contains("@property") && $0.contains(" label") }, "\(lines)")
+    #expect(!lines.contains { $0.hasPrefix("- (NSString *)label") }, "\(lines)")
+}
+
 /// With no verdict the default header keeps the accessor and says why, one
 /// note per cause; a synthesized control beside them still goes.
 @Test func anAccessorWithNoVerdictIsMarkedWithItsCauseIfPresent() throws {
@@ -270,4 +285,17 @@ private let accessorGrowthCeiling = 4_096
     #expect(lines.contains("- (int)depth; // unclassified accessor: body runs past the 4 KB decode limit"), "\(lines)")
     #expect(lines.contains("- (int)width; // unclassified accessor: no body decoded"), "\(lines)")
     #expect(!lines.contains { $0.hasPrefix("- (int)count") || $0.hasPrefix("- (void)setCount:") }, "\(lines)")
+}
+
+/// `objcivartypes.m`: a bitfield's type is not in its encoding, so it
+/// renders `?` with its width; a `c` ivar is a `char` and a `C` an
+/// `unsigned char`, since arm64's BOOL encodes `B`. Only `_flag` is BOOL.
+@Test func ivarsAreTypedFromTheirOwnEncodingIfPresent() throws {
+    let path = "Fixtures/Sample/libObjCIvarTypes.dylib"
+    guard FileManager.default.fileExists(atPath: path), let run = try runCLI(["objc", path]) else { return }
+    let lines = run.stdout.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+    for expected in ["? _bits : 1;", "? _sbits : 3;", "char _letter;", "unsigned char _byte;", "BOOL _flag;"] {
+        #expect(lines.contains(expected), "\(expected) in \(lines)")
+    }
+    #expect(!lines.contains { $0.hasPrefix("int _bits") || $0 == "BOOL _letter" || $0 == "BOOL _byte" }, "\(lines)")
 }

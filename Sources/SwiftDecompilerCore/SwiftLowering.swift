@@ -37,6 +37,8 @@ enum SwiftLowering: Equatable, Sendable {
         classTypeIndex: ClassTypeIndex = ClassTypeIndex()
     ) -> SwiftLowering {
         let type = type.trimmingCharacters(in: .whitespaces)
+        // A resilient enum is passed by address, whatever its cases.
+        if enumCaseIndex.isResilient(type) { return .unknown }
         if ["()", "Swift.Void", "Swift.Never"].contains(type) || enumCaseIndex.isSingleCaseEnum(type) {
             return .zeroSized
         }
@@ -64,6 +66,11 @@ enum SwiftLowering: Equatable, Sendable {
         // qualified:)`). Any other `.Type` may be thin (no register) or carry
         // witness tables.
         if type == "Any.Type" || type == "Swift.Any.Type" { return .oneInteger }
+        // `AnyObject` is a layout constraint, not a protocol with witnesses:
+        // its existential metatype is the class's metadata pointer alone
+        // (measured: `pick(_:_:_:)` selects between x1 and x2, `pass(_:_:)`
+        // takes its Int in x1).
+        if type == "AnyObject.Type" || type == "Swift.AnyObject.Type" { return .oneInteger }
         if multiWord.contains(type) || multiWordGenerics.contains(where: { isWhole(type, generic: $0) })
             || type.hasSuffix(".Type") || type.hasSuffix(".Protocol") || isFunctionType(type) {
             return .direct
@@ -173,6 +180,30 @@ extension SwiftLowering {
         of type: String, fieldMaps: [String: FieldMap],
         enumCaseIndex: EnumCaseIndex = EnumCaseIndex(), classTypeIndex: ClassTypeIndex = ClassTypeIndex()
     ) -> (integers: Int, floats: Int)? {
+        guard let footprint = aggregateRegisterFootprint(
+            of: type, fieldMaps: fieldMaps, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
+        else { return nil }
+        if footprint.integers + footprint.floats > 4 { return (1, 0) }
+        return footprint
+    }
+
+    /// A complete direct value, never the pointer used to transport an
+    /// indirect formal. The latter does not prove an ordinary value receiver.
+    static func directAggregateRegisters(
+        of type: String, fieldMaps: [String: FieldMap],
+        enumCaseIndex: EnumCaseIndex = EnumCaseIndex(), classTypeIndex: ClassTypeIndex = ClassTypeIndex()
+    ) -> (integers: Int, floats: Int)? {
+        guard let footprint = aggregateRegisterFootprint(
+            of: type, fieldMaps: fieldMaps, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex),
+              footprint.integers + footprint.floats <= 4
+        else { return nil }
+        return footprint
+    }
+
+    private static func aggregateRegisterFootprint(
+        of type: String, fieldMaps: [String: FieldMap],
+        enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex
+    ) -> (integers: Int, floats: Int)? {
         // An explicit Void parameter is still a source argument, but the
         // empty tuple has no payload in either register bank. Keep its opaque
         // slot while placing later arguments; dropping the slot would change
@@ -189,7 +220,6 @@ extension SwiftLowering {
                              classTypeIndex: classTypeIndex, depth: 0,
                              integerChunks: &integerChunks, floats: &floats)
         else { return nil }
-        if integerChunks.count + floats > 4 { return (1, 0) }
         return (integerChunks.count, floats)
     }
 
@@ -199,7 +229,10 @@ extension SwiftLowering {
         integerChunks: inout Set<Int>, floats: inout Int
     ) -> Bool {
         guard depth < 8,
-              let map = Disassembler.completeValueLayout(of: type, fieldMaps: fieldMaps, classTypeIndex: classTypeIndex)
+              let map = Disassembler.completeValueLayout(of: type, fieldMaps: fieldMaps, classTypeIndex: classTypeIndex),
+              // A possibly resilient type is passed by address, whatever its
+              // fields; its layout in memory is still the map's.
+              !map.mayBeResilient
         else { return false }
         for field in map.fields {
             let offset = base + field.offset

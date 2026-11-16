@@ -84,7 +84,7 @@ struct XrefsCommand: AsyncParsableCommand {
         let machO: MachOFile
         if image != nil || imagePath != nil || cache != nil {
             machO = try BinaryLoader.loadMachO(
-                path: path, image: image, imagePath: imagePath, cachePath: cache, binary: binary
+                path: path, architecture: architecture, image: image, imagePath: imagePath, cachePath: cache, binary: binary
             )
         } else if let path {
             let resolved = try BinaryLoader.resolveBinaryInput(path, binary: binary)
@@ -92,11 +92,12 @@ struct XrefsCommand: AsyncParsableCommand {
         } else {
             throw BinaryLoadError("Provide a binary path, or --image <name> to read a dyld shared-cache image.")
         }
+        try Disassembler.requireDecodableCode(machO)
         // One function at a time, keeping only its call sites: holding the
         // whole image's instructions took about 1 KB each.
-        let functions = await disassembler.disassembleStreaming(machO: machO, transform: CallGraph.sites(of:))
+        let sites = await disassembler.disassembleStreaming(machO: machO, transform: CallGraph.callSites(of:))
 
-        let graph = CallGraph(functions: functions)
+        let graph = CallGraph(sites: sites)
         if unreferenced {
             try emit(renderUnreferenced(graph), to: output)
             return
@@ -105,7 +106,7 @@ struct XrefsCommand: AsyncParsableCommand {
         // symbols select it here, as they do for `disasm -f`: `xrefs
         // --function Box.plus` printed "No function matched" for a symbol
         // the binary exports.
-        let folded = functions.filter { disassembler.foldedSymbolMatches($0, needle: function!) }.map(\.startAddress)
+        let folded = sites.filter { disassembler.foldedSymbolMatches(candidates: $0.foldedCandidates, needle: function!) }.map(\.startAddress)
         try emit(renderCrossReferences(graph, needle: function!, folded: folded), to: output)
     }
 

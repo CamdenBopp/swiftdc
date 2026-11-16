@@ -117,10 +117,14 @@ public struct Instruction: Sendable {
     public var loopUpdates: [String] { factBox?.facts.loopUpdates ?? [] }
     /// `facts.loopInitializations`.
     public var loopInitializations: [String] { factBox?.facts.loopInitializations ?? [] }
+    /// `facts.loopEntryDeclarations`.
+    public var loopEntryDeclarations: [String] { factBox?.facts.loopEntryDeclarations ?? [] }
     /// `facts.fieldRead`.
     public var fieldRead: String? { factBox?.facts.fieldRead }
     /// `facts.isSelfDispatch`.
     public var isSelfDispatch: Bool { factBox?.facts.isSelfDispatch ?? false }
+    /// `facts.isDirectObjCMethod`.
+    public var isDirectObjCMethod: Bool { factBox?.facts.isDirectObjCMethod ?? false }
 
     /// What enrichment proved about an instruction. Each fact names the
     /// note that spells it.
@@ -155,11 +159,18 @@ public struct Instruction: Sendable {
         /// For a loop header's branch: the induction variables' declarations
         /// (`loop-init: a | b`).
         public var loopInitializations: [String]
+        /// For the last instruction before a loop it enters: that loop's
+        /// induction variables' declarations, for the flat views
+        /// (`loop-entry: a | b`).
+        public var loopEntryDeclarations: [String] = []
         /// For a read of a field of self: the field's path (`self.x`).
         public var fieldRead: String?
         /// For a call through self's own vtable slot (`dispatch=self`): an
         /// override in a subclass runs instead when self is one.
         public var isSelfDispatch: Bool
+        /// For a call to a direct Objective-C method (`objc-direct`): it takes
+        /// no `_cmd`, so its keyword arguments start at x1.
+        public var isDirectObjCMethod: Bool = false
         /// For a call through a protocol witness table (`<requirement>
         /// witness for A`): the requirement's printed signature, which
         /// gives the call its parameters. The note is the callee's name.
@@ -168,6 +179,15 @@ public struct Instruction: Sendable {
         /// what the fragment does there (`inlined …`). The call graph reads
         /// the site as the call or branch to the fragment it is in the binary.
         public var inlinedFragment: InlinedFragment? = nil
+        /// A call named for the value or protocol witness it calls through
+        /// a table of a type the binary does not fix (`destroy value witness
+        /// for A`): an operation, not an address. Its target may be any
+        /// conforming type's witness, in this image or another, so the call
+        /// graph counts it unresolved, not as an import.
+        public var isWitnessDispatch: Bool = false
+        /// The exact call target was resolved to an ARC entry point in its
+        /// runtime image. A matching symbol spelling alone proves no contract.
+        public var arcIdentityContract: Bool = false
 
         public init(
             exit: Exit? = nil,
@@ -248,6 +268,11 @@ public struct Instruction: Sendable {
         case `throw`(String)
         /// A throwing function's exit proven neither a return nor a throw.
         case unclassified
+        /// A `ret` of a function no signature describes and no caller proves
+        /// returns a value: what x0 holds there, rendered as a comment. It is
+        /// the result if the function has one, which nothing proves. A bare
+        /// `return` read as void, and a C function returning 42 said nothing.
+        case unprovenResult(String)
         /// A throwing function's exit that hands on a throwing call's
         /// outcome, its error in x21 or the rendered value of its result:
         /// `return try value`.
@@ -261,6 +286,7 @@ public struct Instruction: Sendable {
             case .throw(let error): "throw \(error)"
             case .unclassified: DisassembledFunction.unresolvedSwiftExitNote
             case .forwarded(let value): "return try \(value)"
+            case .unprovenResult(let value): "return // x0 = \(value)"
             }
         }
 
@@ -279,6 +305,7 @@ public struct Instruction: Sendable {
             case .throw(let error): "throw \(error)"
             case .unclassified: DisassembledFunction.unresolvedSwiftExitStatement
             case .forwarded(let value): "return try \(value)"
+            case .unprovenResult(let value): "return // x0 = \(value)"
             }
         }
     }
@@ -358,7 +385,8 @@ public enum RecoverySource: String, Sendable {
     /// Named from an Objective-C class/category method record (survives
     /// stripping and carries selector, type encoding, and IMP).
     case objcMetadata = "objc-metadata"
-    /// Boundary known (LC_FUNCTION_STARTS) but no name — synthesized `sub_<addr>`.
+    /// Boundary known (`BoundaryEvidence` says from what) but no name —
+    /// synthesized `sub_<addr>`.
     case address
     /// Boundary known, but the symbol table lists two or more *distinct* symbols
     /// at this address. The release linker's identical-code-folding pass merged
@@ -366,11 +394,27 @@ public enum RecoverySource: String, Sendable {
     /// their mangled names records the merge — so no single symbol can be
     /// attributed. Rendered `sub_<addr>` with the candidates listed, never guessed.
     case foldedSymbols = "folded-symbols"
-    /// Boundary known (LC_FUNCTION_STARTS) and no symbol, but the address is a
+    /// Boundary known and no symbol, but the address is a
     /// resume funclet of an async function: it is stored as a resume pointer by
     /// that function's chain, so it is titled after its parent
     /// (`resume #N of <parent>`). See `AsyncFuncletIndex`.
     case asyncFunclet = "async-funclet"
+}
+
+/// What marks a nameless function's first address.
+public enum BoundaryEvidence: Sendable {
+    case functionStarts
+    /// Nothing does: decoding began here, at the start of a code section or
+    /// of a span. A stripped image with no LC_FUNCTION_STARTS can have one
+    /// such function hold every body up to the next symbol.
+    case decodeStart
+
+    var note: String {
+        switch self {
+        case .functionStarts: "boundary from LC_FUNCTION_STARTS"
+        case .decodeStart: "no recorded boundary: decoding began here"
+        }
+    }
 }
 
 /// A contiguous function body recovered from `__text`.
@@ -399,9 +443,15 @@ public struct DisassembledFunction: Sendable {
     /// Recovered jump tables: `br` address → the target of each case, in case
     /// order (`JumpTables`). Empty when none was proven.
     public let switchTargets: [UInt64: [UInt64]]
+    /// What marks the start of a function no name marks.
+    public let boundary: BoundaryEvidence
     /// The final analysis graph, when this function came through enrichment.
     /// It stores only topology; instruction payloads always come from `instructions`.
     private let retainedCFG: FunctionCFG?
+    /// Its callers prove it returns one integer word in x0, though no
+    /// signature says so (`CalleeRegisterSummary.callerProvenResults`). Set by
+    /// analysis; every rebuild carries it.
+    var callerProvenResult = false
 
     /// Legacy/manual functions safely recover their graph on demand without
     /// changing the public initializer or introducing mutable shared storage.
@@ -417,13 +467,14 @@ public struct DisassembledFunction: Sendable {
         foldedCandidates: [String]? = nil,
         asyncFunclet: AsyncFuncletInfo? = nil,
         switchTargets: [UInt64: [UInt64]] = [:],
-        semanticName: String? = nil
+        semanticName: String? = nil,
+        boundary: BoundaryEvidence = .functionStarts
     ) {
         self.init(
             symbol: symbol, demangledName: demangledName, startAddress: startAddress,
             instructions: instructions, source: source, objcMethod: objcMethod,
             foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet,
-            switchTargets: switchTargets, semanticName: semanticName, retainedCFG: nil
+            switchTargets: switchTargets, semanticName: semanticName, boundary: boundary, retainedCFG: nil
         )
     }
 
@@ -432,8 +483,9 @@ public struct DisassembledFunction: Sendable {
         instructions: [Instruction], source: RecoverySource,
         objcMethod: ObjCMethodBinding?, foldedCandidates: [String]?,
         asyncFunclet: AsyncFuncletInfo?, switchTargets: [UInt64: [UInt64]],
-        semanticName: String?, retainedCFG: FunctionCFG?
+        semanticName: String?, boundary: BoundaryEvidence, retainedCFG: FunctionCFG?
     ) {
+        self.boundary = boundary
         self.symbol = symbol
         self.demangledName = demangledName
         self.semanticName = semanticName
@@ -450,24 +502,31 @@ public struct DisassembledFunction: Sendable {
     /// Replacing machine instructions invalidates the retained topology, even
     /// at the same count. Every other function field is carried over.
     func replacingInstructions(_ instructions: [Instruction]) -> DisassembledFunction {
-        DisassembledFunction(
+        replacingInstructions(instructions, foldedCandidates: foldedCandidates)
+    }
+
+    func replacingInstructions(_ instructions: [Instruction], foldedCandidates: [String]?) -> DisassembledFunction {
+        var result = DisassembledFunction(
             symbol: symbol, demangledName: demangledName, startAddress: startAddress,
             instructions: instructions, source: source, objcMethod: objcMethod,
             foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet,
-            switchTargets: switchTargets, semanticName: semanticName
+            switchTargets: switchTargets, semanticName: semanticName, boundary: boundary
         )
+        result.callerProvenResult = callerProvenResult
+        return result
     }
 
     /// A payload-only rebuild: addresses, order, control flow, branch targets,
     /// trap classification and switch cases must remain unchanged. The graph
     /// owns no instruction copies, so its views read the new payloads.
     func replacingInstructionPayload(_ instructions: [Instruction]) -> DisassembledFunction {
-        let result = DisassembledFunction(
+        var result = DisassembledFunction(
             symbol: symbol, demangledName: demangledName, startAddress: startAddress,
             instructions: instructions, source: source, objcMethod: objcMethod,
             foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet,
-            switchTargets: switchTargets, semanticName: semanticName, retainedCFG: retainedCFG
+            switchTargets: switchTargets, semanticName: semanticName, boundary: boundary, retainedCFG: retainedCFG
         )
+        result.callerProvenResult = callerProvenResult
         retainedCFG?.observeUse(of: result, consumer: "instruction-payload-copy")
         return result
     }
@@ -475,22 +534,26 @@ public struct DisassembledFunction: Sendable {
     /// Attach a graph proven for this exact final instruction topology.
     func retainingCFG(_ cfg: FunctionCFG) -> DisassembledFunction {
         cfg.observeUse(of: self, consumer: "final-cfg-attachment")
-        return DisassembledFunction(
+        var result = DisassembledFunction(
             symbol: symbol, demangledName: demangledName, startAddress: startAddress,
             instructions: instructions, source: source, objcMethod: objcMethod,
             foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet,
-            switchTargets: switchTargets, semanticName: semanticName, retainedCFG: cfg
+            switchTargets: switchTargets, semanticName: semanticName, boundary: boundary, retainedCFG: cfg
         )
+        result.callerProvenResult = callerProvenResult
+        return result
     }
 
     /// The same function with its recovered jump tables attached.
     func attachingSwitchTargets(_ tables: [UInt64: [UInt64]]) -> DisassembledFunction {
-        DisassembledFunction(
+        var result = DisassembledFunction(
             symbol: symbol, demangledName: demangledName, startAddress: startAddress,
             instructions: instructions, source: source, objcMethod: objcMethod,
             foldedCandidates: foldedCandidates, asyncFunclet: asyncFunclet,
-            switchTargets: tables, semanticName: semanticName
+            switchTargets: tables, semanticName: semanticName, boundary: boundary
         )
+        result.callerProvenResult = callerProvenResult
+        return result
     }
 
     /// The same function with the async-funclet grouping attached and, for a
@@ -508,7 +571,7 @@ public struct DisassembledFunction: Sendable {
             startAddress: startAddress, instructions: instructions,
             source: title == nil ? source : .asyncFunclet, objcMethod: objcMethod,
             foldedCandidates: foldedCandidates, asyncFunclet: info,
-            switchTargets: switchTargets, semanticName: semanticName, retainedCFG: retainedCFG
+            switchTargets: switchTargets, semanticName: semanticName, boundary: boundary, retainedCFG: retainedCFG
         )
     }
 
@@ -556,6 +619,19 @@ public struct DisassembledFunction: Sendable {
     /// The name to show: demangled if available, else the raw symbol.
     public var displayName: String { demangledName ?? symbol }
     var analysisName: String? { semanticName ?? demangledName }
+    /// What the mangled clauses of this function's symbol prove.
+    var specializationClause: SpecializationClause {
+        analysisName.map { Self.specializationClause(symbol: symbol, printedName: $0) } ?? .absent
+    }
+    /// The name this function's own registers follow, which is what numbers
+    /// its parameters: a proven specialization's real signature, or the name.
+    /// Every query that indexes a parameter reads this: seeded from the real
+    /// list, `fl<Int8>(A.Type, Swift.Double, Swift.Int)`'s `arg1` is the Int,
+    /// and its printed list calls that a Double.
+    var layoutName: String? {
+        if case .proven(let layout) = specializationClause { return layout.signature }
+        return analysisName
+    }
     var analysisDisplayName: String { analysisName ?? symbol }
 
     /// Render this function as annotated assembly text.
@@ -573,7 +649,7 @@ public struct DisassembledFunction: Sendable {
         case .metadata: "  [recovered from Swift metadata]"
         case .helperShape: "  [recognized by its body: a helper IRGen emits]"
         case .objcMetadata: "  [recovered from Objective-C metadata]"
-        case .asyncFunclet: "  [titled from its async parent; boundary from LC_FUNCTION_STARTS]"
+        case .asyncFunclet: "  [titled from its async parent; \(boundary.note)]"
         case .symbol, .address, .foldedSymbols: ""
         }
         if let objcMethod {
@@ -585,7 +661,10 @@ public struct DisassembledFunction: Sendable {
             lines.append("  // \(foldedCandidates.count) symbols folded onto 0x\(String(startAddress, radix: 16)) by identical code folding; none can be attributed")
             for candidate in foldedCandidates { lines.append("  //   \(candidate)") }
         } else if source == .address {
-            lines.append("  // unnamed function  @ 0x\(String(startAddress, radix: 16))  [boundary from LC_FUNCTION_STARTS]")
+            lines.append("  // unnamed function  @ 0x\(String(startAddress, radix: 16))  [\(boundary.note)]")
+        }
+        if source != .foldedSymbols, foldedCandidates != nil {
+            lines.append("  // a body this short can be shared after strip: references to 0x\(String(startAddress, radix: 16)) decline this name")
         }
         if let asyncLine = asyncHeaderLine() { lines.append("  \(asyncLine)") }
         if instructions.isEmpty { lines.append("  \(Self.noDecodedInstructionNote)") }
@@ -622,6 +701,8 @@ public struct Disassembler: Sendable {
     let codeSectionCache = CodeSection.Cache()
     /// Memoizes each image's Go function table, for one run.
     let goFunctionCache = GoFunctionTable.Cache()
+    /// Memoizes each image's LC_FUNCTION_STARTS as a set, for one run.
+    let boundaryCache = BoundaryCache()
 
     public init(preset: DemanglePreset = .default) {
         self.preset = preset
@@ -635,11 +716,29 @@ public struct Disassembler: Sendable {
         /// source agrees the binary is empty; here one does not, so this is an
         /// analysis failure and must be reported as one rather than returned as
         /// "no functions".
-        case parsedNothing(lines: Int, knownStarts: Int)
+        /// `toolReport` is llvm-objdump's own complaint about the input
+        /// (`section data ends, _add lies outside valid range`), when it made
+        /// one: then the input is damaged, and the parser is not at fault.
+        case parsedNothing(lines: Int, knownStarts: Int, toolReport: String? = nil)
+        /// The image's code is not arm64: the decoder would read its bytes as
+        /// ARM64 anyway and fabricate instructions, so nothing decodes them.
+        case unsupportedArchitecture(String)
         public var description: String {
             switch self {
+            case .unsupportedArchitecture(let architecture):
+                return """
+                    \(architecture) code cannot be analyzed: swiftdc decodes arm64 only. `dump`, `interface`, \
+                    `layout` and `objc` read this image's metadata, and plain `disasm` on a file prints \
+                    llvm-objdump's text.
+                    """
             case .toolFailed(let m): return "llvm-objdump failed: \(m)"
-            case .parsedNothing(let lines, let starts):
+            case .parsedNothing(let lines, let starts, let report?):
+                return """
+                    llvm-objdump could not disassemble this image (\(lines) lines, no instruction), \
+                    though LC_FUNCTION_STARTS lists \(starts) function(s), and it reported: \(report). \
+                    The input looks damaged; `disasm --structured` and `--pseudo` decode it without llvm-objdump.
+                    """
+            case .parsedNothing(let lines, let starts, nil):
                 return """
                     disassembly parse failed: llvm-objdump produced \(lines) lines but no \
                     instruction was recognised, while LC_FUNCTION_STARTS lists \(starts) \
@@ -647,6 +746,36 @@ public struct Disassembler: Sendable {
                     """
             }
         }
+    }
+
+    /// Whether the decoder can read this image's code. Exactly arm64: x86_64
+    /// bytes decoded as ARM64 printed `mem0[x2 + 0x4a] = ?` for `pushq %rbp`
+    /// and exit 0, and arm64_32 decodes but has 32-bit pointers, which every
+    /// analysis behind the decoder assumes are 64.
+    public static func decodesCode(of machO: MachOFile) -> Bool {
+        machO.header.cpu.type == .arm64
+    }
+
+    /// Fails on an image whose code cannot be decoded. Every command that
+    /// reads code calls this: the non-throwing entry points decline to an
+    /// empty result (`codeSections`), and a refusal must not read as one.
+    public static func requireDecodableCode(_ machO: MachOFile) throws {
+        guard decodesCode(of: machO) else {
+            throw DisassembleError.unsupportedArchitecture(BinaryLoader.archName(machO))
+        }
+    }
+
+    /// llvm-objdump's own text for a file, which decodes the slice's real
+    /// architecture. Nothing here goes through the ARM64 decoder, so it
+    /// carries no analysis.
+    public func objdumpListing(path: String, architecture: String? = nil) throws -> String {
+        var args = ["-d", "--macho", "--no-show-raw-insn"]
+        if let architecture { args += ["--arch", architecture] }
+        let result = try Shell.xcrun("llvm-objdump", args + [path])
+        guard result.status == 0 else {
+            throw DisassembleError.toolFailed(result.stderr.isEmpty ? result.stdout : result.stderr)
+        }
+        return result.stdout
     }
 
     /// Disassemble the binary at `path`. For fat binaries pass `architecture`.
@@ -658,6 +787,7 @@ public struct Disassembler: Sendable {
         functionFilter: String? = nil
     ) async throws -> [DisassembledFunction] {
         let machO = try BinaryLoader.load(path: path, architecture: architecture)
+        try Self.requireDecodableCode(machO)
 
         // Filtered: decode in-process with Capstone (only the matched functions'
         // ranges). `llvm-objdump` re-parses the whole binary on every invocation
@@ -736,7 +866,7 @@ public struct Disassembler: Sendable {
         let labels = symbolLabels(in: machO)
         let undecoded = undecodedStarts.map {
             makeFunction(start: $0, instructions: [], labelByAddress: labels, foldedByAddress: [:],
-                         metadataNames: [:], objcIndex: objcIndex)
+                         metadataNames: [:], objcIndex: objcIndex, in: machO)
         }
         guard !instructions.isEmpty else { return undecoded }
         let functions = await assemble(
@@ -783,6 +913,7 @@ public struct Disassembler: Sendable {
         progress: ((_ done: Int, _ total: Int) -> Void)? = nil
     ) async -> [T] {
         Probe.image(machO)
+        warnOfUnreliableBoundaries(in: machO)
         let objcIndex = ObjCMetadataIndex.build(in: machO)
         let labelByAddress = symbolLabels(in: machO)
         var foldedByAddress = foldedSymbolAddresses(in: machO)
@@ -807,6 +938,9 @@ public struct Disassembler: Sendable {
             Self.mergeMetadataFolds(metadata.folded, into: &foldedByAddress, labels: labelByAddress)
         }
         metadataNames.merge(recognizedHelperNames(in: machO, boundaries: boundaries, labels: labelByAddress)) { a, _ in a }
+        let foldSuspects = self.foldSuspects(in: machO, labels: labelByAddress, metadataNames: metadataNames,
+                                             folded: foldedByAddress, objcIndex: objcIndex)
+        let referenceFolds = foldedByAddress.merging(foldSuspects) { a, _ in a }
 
         func span(_ index: Int) -> (start: UInt64, stop: UInt64) {
             let end = CodeSection.containing(boundaries[index], in: sections)!.range.upperBound
@@ -815,17 +949,26 @@ public struct Disassembler: Sendable {
 
         // Cross-function name index. `referenceIndex` and `swiftTargets` read only
         // name-level fields, so name-only stubs (no instructions) suffice.
-        let stubs = boundaries.map {
-            makeFunction(start: $0, instructions: [], labelByAddress: labelByAddress,
-                         foldedByAddress: foldedByAddress,
-                         metadataNames: metadataNames, objcIndex: objcIndex)
-        }
+        // Scoped: a function record per boundary (312 bytes each, 20 MB on
+        // GoodLinks) is not held through pass 1, where the footprint peaks;
+        // `swiftTargets` needs only which of them are Swift.
+        let (indexedNames, swiftStubStarts): ([UInt64: String], [UInt64]) = {
+            let stubs = boundaries.map {
+                makeFunction(start: $0, instructions: [], labelByAddress: labelByAddress,
+                             foldedByAddress: foldedByAddress,
+                             metadataNames: metadataNames, objcIndex: objcIndex, in: machO)
+            }
+            let names = referenceIndex(
+                functions: stubs, labelByAddress: labelByAddress,
+                metadataNames: metadataNames, objcIndex: objcIndex,
+                foldedByAddress: foldedByAddress, foldSuspects: foldSuspects, in: machO
+            )
+            return (names, stubs.filter {
+                $0.objcMethod == nil && (Self.isSwiftMangled($0.symbol) || $0.source == .metadata)
+            }.map(\.startAddress))
+        }()
         let cacheSymbols = CacheSymbolResolver(machO: machO)
-        var names = referenceIndex(
-            functions: stubs, labelByAddress: labelByAddress,
-            metadataNames: metadataNames, objcIndex: objcIndex,
-            foldedByAddress: foldedByAddress, in: machO
-        )
+        var names = indexedNames
         // Pass 1: gather cross-image call targets, one function's instructions at
         // a time, then resolve once — reproduces `crossImageNames` without holding
         // the whole image.
@@ -835,12 +978,33 @@ public struct Disassembler: Sendable {
         var outlinedFragments: [UInt64: OutlinedFragment] = [:]
         let functionStarts = Set(boundaries)
         let isFunction = { (target: UInt64) in functionStarts.contains(target) }
+        let arcReferences = arcFunctionReferences(in: machO)
+        // Names and function membership are fixed for this summary pass.
+        // Remember unknown arities too; sharing an address across images
+        // must never share this image-local result.
+        var summaryArities: [UInt64: Int?] = [:]
         let arity = { [names] target in
-            self.knownArity(ofCallTarget: target, names: names, cacheSymbols: cacheSymbols, isFunction: isFunction)
+            if let cached = summaryArities[target] { return cached }
+            let result = self.knownArity(ofCallTarget: target, names: names, cacheSymbols: cacheSymbols,
+                                         arcFunctions: arcReferences, isFunction: isFunction)
+            summaryArities[target] = .some(result)
+            return result
         }
         let fileRanges = FileBackedRanges(standalone: machO)
         let importStubs = CodeSection.importStubRanges(of: machO)
         let isImportStub = { (target: UInt64) in importStubs.contains { $0.contains(target) } }
+        let isStackProbe = stackProbeRecognizer(in: machO, importStubs: importStubs)
+        var swiftTargets = Set(labelByAddress.compactMap { address, symbol in
+            Self.isSwiftMangled(symbol) ? address : nil
+        })
+        swiftTargets.formUnion(metadataNames.keys)
+        // A recognised IRGen helper is a C function: its x20 is no `self`.
+        swiftTargets.subtract(metadataNames.filter { Self.helperShapeNames.contains($0.value) }.keys)
+        swiftTargets.formUnion(swiftStubStarts)
+        swiftTargets.formUnion(swiftStubAddresses(in: machO))
+        swiftTargets.subtract(objcIndex.addresses)
+        var hasEntryRoleConsumer = Self.needsEntryRegisterProofs(
+            in: machO, names: names, folded: foldedByAddress, swiftTargets: swiftTargets)
         let section = textSection(in: machO)
         func decode(_ span: (start: UInt64, stop: UInt64)) -> [Instruction] {
             section?.instructions(span: span) ?? capstoneInstructions(in: machO, span: span)
@@ -848,6 +1012,7 @@ public struct Disassembler: Sendable {
         for index in boundaries.indices {
             // Muted: pass 2 decodes the same span again and records its events.
             let instructions = Probe.muted { decode(span(index)) }
+            hasEntryRoleConsumer = hasEntryRoleConsumer || Self.hasRawSwiftCall(in: instructions)
             collectUnnamedCallTargets(in: instructions, names: names, into: &targets)
             // The callee-side x8 fact every caller's analysis consults (see
             // `PerFunctionContext.indirectResultUses`); decoded here so pass 2
@@ -856,14 +1021,20 @@ public struct Disassembler: Sendable {
                 let function = makeFunction(
                     start: boundaries[index], instructions: instructions,
                     labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
-                    metadataNames: metadataNames, objcIndex: objcIndex
+                    metadataNames: metadataNames, objcIndex: objcIndex, in: machO
                 )
                 indirectResultUses[boundaries[index]] = Self.indirectResultUse(of: function)
-                outlinedFragments[boundaries[index]] = OutlinedFragment(
-                    start: boundaries[index], instructions: function.instructions)
+                // Without a dyld cache no later pass renames anything, so a
+                // fragment no call may inline is not held through pass 1,
+                // where this run's footprint peaks; with one, the names it
+                // adds decide (`inlinableFragments`, after the resolve).
+                if let fragment = OutlinedFragment(start: boundaries[index], instructions: function.instructions),
+                   cacheSymbols != nil || Self.mayInline(fragment, named: names[boundaries[index]]) {
+                    outlinedFragments[boundaries[index]] = fragment
+                }
                 registerSummaries[boundaries[index]] = CalleeRegisterSummary.of(
                     Self.withJumpTables(function, machO: machO, ranges: fileRanges),
-                    calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub)
+                    calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub, isStackProbe: isStackProbe)
             }
         }
         // Reads first: whether a callee uses the caller's x29 is part of
@@ -874,33 +1045,41 @@ public struct Disassembler: Sendable {
             return Probe.muted {
                 let function = makeFunction(start: start, instructions: decode(span(index)),
                     labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
-                    metadataNames: metadataNames, objcIndex: objcIndex)
+                    metadataNames: metadataNames, objcIndex: objcIndex, in: machO)
                 return CalleeRegisterSummary.of(Self.withJumpTables(function, machO: machO, ranges: fileRanges),
-                    calleeEffects: effects, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub)
+                    calleeEffects: effects, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub, isStackProbe: isStackProbe)
             }
         }
         CalleeRegisterSummary.closeOverReads(&registerSummaries)
+        // Keep the arity closure's original name snapshot. The complete name
+        // index is needed here only to decide whether positive entry-role
+        // proofs have any possible consumer in this image.
+        names = resolveCrossImageNames(targets, into: names, resolver: cacheSymbols)
+        let rebuildingEntryRoles = hasEntryRoleConsumer || Self.needsEntryRegisterProofs(
+            in: machO, names: names, folded: foldedByAddress, swiftTargets: swiftTargets)
         // Clobbers and reloads carried through calls; the few functions
         // whose callees change anything are decoded again.
         let spanIndex = Dictionary(boundaries.indices.map { (boundaries[$0], $0) }, uniquingKeysWith: { a, _ in a })
-        CalleeRegisterSummary.closeOverCalls(&registerSummaries) { start, effects, readFacts in
+        CalleeRegisterSummary.closeOverCalls(&registerSummaries, rebuildingEntryRoles: rebuildingEntryRoles) { start, effects, readFacts, reusePreservation in
             guard let index = spanIndex[start] else { return nil }
             let instructions = Probe.muted { decode(span(index)) }
             guard !instructions.isEmpty else { return nil }
             let function = makeFunction(
                 start: start, instructions: instructions,
                 labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
-                metadataNames: metadataNames, objcIndex: objcIndex
+                metadataNames: metadataNames, objcIndex: objcIndex, in: machO
             )
             return Probe.muted {
                 CalleeRegisterSummary.recomputingPreservation(
                     Self.withJumpTables(function, machO: machO, ranges: fileRanges),
-                    retainingReadsFrom: readFacts, calleeEffects: effects, calleeArity: arity,
-                    isFunction: isFunction, isImportStub: isImportStub)
+                    retainingReadsFrom: readFacts, reusingPreservation: reusePreservation,
+                    rebuildingEntryRoles: rebuildingEntryRoles, calleeEffects: effects, calleeArity: arity,
+                    isFunction: isFunction, isImportStub: isImportStub, isStackProbe: isStackProbe)
             }
         }
         names = resolveCrossImageNames(targets, into: names, resolver: cacheSymbols)
-        CalleeRegisterSummary.closeOverFieldWrites(&registerSummaries) { names[$0] }
+        outlinedFragments = Self.inlinableFragments(outlinedFragments, names: names)
+        if rebuildingEntryRoles { CalleeRegisterSummary.closeOverProvenEntryReads(&registerSummaries) }
         let resolver = ReferenceResolver(
             names: names,
             stringRanges: stringSectionRanges(in: machO),
@@ -910,25 +1089,18 @@ public struct Disassembler: Sendable {
             cfStringRange: sectionRange(named: "__cfstring", in: machO),
             cacheSymbols: cacheSymbols,
             cacheReader: machO.fullCache.map { CacheReader(full: $0) },
+            arcFunctions: arcFunctionReferences(in: machO),
             fileRanges: fileRanges,
-            foldedCandidates: foldedByAddress,
+            foldedCandidates: referenceFolds,
             witnessTables: foldedByAddress.isEmpty ? [] : witnessTables(in: machO),
             protocolDescriptorSymbols: protocolDescriptorSymbols(in: machO),
+            importedStubFunctions: importedStubFunctions(in: machO),
             specializationSymbols: ReferenceResolver.specializationSymbols(
-                labels: labelByAddress, names: names, folded: foldedByAddress)
+                labels: labelByAddress, names: names, folded: referenceFolds)
         )
-
-        var swiftTargets = Set(labelByAddress.compactMap { address, symbol in
-            Self.isSwiftMangled(symbol) ? address : nil
-        })
-        swiftTargets.formUnion(metadataNames.keys)
-        // A recognised IRGen helper is a C function: its x20 is no `self`.
-        swiftTargets.subtract(metadataNames.filter { Self.helperShapeNames.contains($0.value) }.keys)
-        swiftTargets.formUnion(stubs.filter {
-            $0.objcMethod == nil && (Self.isSwiftMangled($0.symbol) || $0.source == .metadata)
-        }.map(\.startAddress))
-        swiftTargets.formUnion(swiftStubAddresses(in: machO))
-        swiftTargets.subtract(objcIndex.addresses)
+        CalleeRegisterSummary.closeOverFieldWrites(&registerSummaries, arcIdentityContract: { target, callee in
+            resolver.arcIdentityContract(at: target, named: callee)
+        }) { names[$0] }
 
         // Async funclet chains, from the hint sections plus a decode of just the
         // funclets' own spans, so the grouping costs no whole-image residency.
@@ -949,7 +1121,7 @@ public struct Disassembler: Sendable {
                 let function = makeFunction(
                     start: address, instructions: instructions,
                     labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
-                    metadataNames: metadataNames, objcIndex: objcIndex
+                    metadataNames: metadataNames, objcIndex: objcIndex, in: machO
                 )
                 return asyncIndex.info(for: address, parentName: { names[$0] })
                     .map(function.attachingAsyncFunclet) ?? function
@@ -957,6 +1129,8 @@ public struct Disassembler: Sendable {
             enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex
         )
         let fieldMaps = (try? FieldMapBuilder.build(in: machO)) ?? [:]
+        // Every closure is done: analysis reads only the facts.
+        let finished = CalleeRegisterFacts.finish(&registerSummaries)
         let context = PerFunctionContext(
             resolver: resolver, swiftTargets: swiftTargets, objcIndex: objcIndex,
             fieldMaps: fieldMaps,
@@ -968,8 +1142,9 @@ public struct Disassembler: Sendable {
             classParameterFields: ClassParameterFieldIndex.build(
                 in: machO, fieldMaps: fieldMaps, classTypeIndex: classTypeIndex, demangle: demangle),
             indirectResultUses: indirectResultUses,
-            registerSummaries: registerSummaries,
+            registerSummaries: finished.facts,
             outlinedFragments: outlinedFragments,
+            callerProvenResults: finished.callerProvenResults,
             asyncIndex: asyncIndex, asyncChainSlots: chainSlots
         )
 
@@ -978,6 +1153,38 @@ public struct Disassembler: Sendable {
         var rendered: [T] = []
         rendered.reserveCapacity(boundaries.count)
         let total = boundaries.count
+        if Self.analysesInParallel(machO: machO, resolver: context.resolver) {
+            // Each function's analysis reads only the finished context, so
+            // functions are analysed across the cores in bounded batches and
+            // handed to `transform` in input order: the same results, in the
+            // same order, as the loop below.
+            _ = machO.cache // resolve MachOKit's lazy memo once, before any reader thread
+            let frozenNames = names
+            let work = ParallelPassTwo(section: section) { index, decoder in
+                let span = span(index)
+                let instructions = decoder?.instructions(span: span) ?? self.capstoneInstructions(in: machO, span: span)
+                let function = self.makeFunction(
+                    start: boundaries[index], instructions: instructions,
+                    labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
+                    metadataNames: metadataNames, objcIndex: objcIndex, in: machO
+                )
+                guard !instructions.isEmpty else { return function }
+                let grouped = asyncIndex.info(for: function.startAddress, parentName: { frozenNames[$0] })
+                    .map(function.attachingAsyncFunclet) ?? function
+                return self.analyzeFunction(grouped, context: context)
+            }
+            var start = 0
+            while start < total {
+                let end = min(start + Self.parallelBatch, total)
+                let functions = Parallel.mapChunks(start ..< end, chunk: Self.parallelChunk) { range in
+                    work.analyze(range)
+                }
+                for function in functions { rendered.append(transform(function)) }
+                if let progress { progress(end, total) }
+                start = end
+            }
+            return rendered
+        }
         for index in boundaries.indices {
             let instructions = decode(span(index))
             if instructions.isEmpty {
@@ -986,13 +1193,13 @@ public struct Disassembler: Sendable {
                 rendered.append(transform(makeFunction(
                     start: boundaries[index], instructions: [],
                     labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
-                    metadataNames: metadataNames, objcIndex: objcIndex
+                    metadataNames: metadataNames, objcIndex: objcIndex, in: machO
                 )))
             } else {
                 let function = makeFunction(
                     start: boundaries[index], instructions: instructions,
                     labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
-                    metadataNames: metadataNames, objcIndex: objcIndex
+                    metadataNames: metadataNames, objcIndex: objcIndex, in: machO
                 )
                 let grouped = asyncIndex.info(for: function.startAddress, parentName: { names[$0] })
                     .map(function.attachingAsyncFunclet) ?? function
@@ -1005,6 +1212,74 @@ public struct Disassembler: Sendable {
             }
         }
         return rendered
+    }
+
+    /// Whether an address a call reaches is `___chkstk_darwin`: a GOT slot
+    /// the loader binds to it, or an import stub whose `adrp; ldr; br`
+    /// loads such a slot. For the preservation summary, which runs before
+    /// any name is resolved. Results are cached; lookups only.
+    func stackProbeRecognizer(in machO: MachOFile, importStubs: [Range<UInt64>]) -> (UInt64) -> Bool {
+        let resolver = ReferenceResolver(names: [:], stringRanges: [], machO: machO, demangleSymbol: { _ in nil })
+        let cache = Mutex<[UInt64: Bool]>([:])
+        return { address in
+            if let known = cache.withLock({ $0[address] }) { return known }
+            var result = resolver.loadedName(at: address) == "__chkstk_darwin"
+            // An import stub lies outside the code sections the decoder
+            // reads (`decodeText`), so its three instructions are decoded
+            // from its own bytes: through the code sections a stub decoded
+            // to nothing, and a probe called through one went unrecognised.
+            if !result, importStubs.contains(where: { $0.contains(address) }),
+               let bytes = self.sectionBytes(address: address, size: 12, in: machO), let engine = CapstoneEngine() {
+                let stub = engine.disassemble(bytes, address: address).map(Self.instruction(decoded:))
+                if stub.count == 3, let slot = CalleeRegisterSummary.stackProbeAddress(
+                    of: Instruction(address: stub[2].address, text: stub[2].text, controlFlow: .call,
+                                    branchTarget: nil, detail: stub[2].detail),
+                    in: stub, index: [stub[2].address: 2]) {
+                    result = resolver.loadedName(at: slot) == "__chkstk_darwin"
+                }
+            }
+            cache.withLock { $0[address] = result }
+            return result
+        }
+    }
+
+    /// Functions per batch of pass 2: what is analysed and held at once
+    /// before `transform` releases it.
+    static let parallelBatch = 256
+    /// Consecutive functions one thread analyses, with one decoder.
+    static let parallelChunk = 8
+
+    /// Whether pass 2 may analyse functions concurrently. Not while a probe
+    /// records (its events must keep their order), not for a dyld-cache
+    /// image (its resolver's cache reader keeps unlocked memo state), and
+    /// not when `SWIFTDC_SERIAL` is set, which is the A/B switch and the
+    /// determinism oracle for this path.
+    static func analysesInParallel(machO: MachOFile, resolver: ReferenceResolver) -> Bool {
+        !Probe.isActive && !machO.isLoadedFromDyldCache
+            && resolver.cacheSymbols == nil && resolver.cacheReader == nil
+            && ProcessInfo.processInfo.environment["SWIFTDC_SERIAL"] == nil
+            && ProcessInfo.processInfo.activeProcessorCount > 1
+    }
+
+    /// Pass 2's per-function work handed to the worker threads. Unchecked
+    /// because it captures the image and the context, which are only read
+    /// once pass 1 ends: their caches are lock-guarded (`SelfMemberCache`,
+    /// `CallResultBankCache`, `ChainedFixupTable`, `DemangleCache`), the one
+    /// unguarded memo (`MachOFile.cache`) is resolved before the threads
+    /// start, and each chunk decodes with an engine of its own.
+    struct ParallelPassTwo: @unchecked Sendable {
+        let section: TextSection?
+        let body: (Int, TextSection?) -> DisassembledFunction
+
+        init(section: TextSection?, body: @escaping (Int, TextSection?) -> DisassembledFunction) {
+            self.section = section
+            self.body = body
+        }
+
+        func analyze(_ range: Range<Int>) -> [DisassembledFunction] {
+            let decoder = section?.withOwnEngine()
+            return range.map { body($0, decoder) }
+        }
     }
 
     /// Disassemble only the functions beginning at `addresses`, each decoded up
@@ -1125,6 +1400,9 @@ public struct Disassembler: Sendable {
         metadataNames.merge(recognizedHelperNames(in: machO, boundaries: sortedBoundaries, labels: labelByAddress)) { a, _ in a }
         var foldedByAddress = foldedSymbolAddresses(in: machO)
         Self.mergeMetadataFolds(metadataFolds, into: &foldedByAddress, labels: labelByAddress)
+        let foldSuspects = self.foldSuspects(in: machO, labels: labelByAddress, metadataNames: metadataNames,
+                                             folded: foldedByAddress, objcIndex: objcIndex)
+        let referenceFolds = foldedByAddress.merging(foldSuspects) { a, _ in a }
 
         // One Capstone engine for every span; each span's bytes are read on
         // their own, so no section is held.
@@ -1142,11 +1420,14 @@ public struct Disassembler: Sendable {
         }
         // The functions of one span, as `segment` cuts the whole list: a
         // span ends at the next span boundary, so no function crosses two.
+        let goData = goFunctions(in: machO)?.dataSpans ?? [:]
         func functions(of span: (start: UInt64, stop: UInt64)) -> [DisassembledFunction] {
             segment(
                 decode(span), boundaries: boundaries, labelByAddress: labelByAddress,
                 foldedByAddress: foldedByAddress, metadataNames: metadataNames, objcIndex: objcIndex,
-                sortedBoundaries: sortedBoundaries)
+                in: machO,
+                sortedBoundaries: sortedBoundaries,
+                dataSpans: goData.filter { $0.key >= span.start && $0.key < span.stop })
         }
 
         // Pass 1: name-level stubs for the name index, and every call
@@ -1168,7 +1449,7 @@ public struct Disassembler: Sendable {
         let names = referenceIndex(
             functions: stubs, labelByAddress: labelByAddress,
             metadataNames: metadataNames, objcIndex: objcIndex,
-            foldedByAddress: foldedByAddress, in: machO
+            foldedByAddress: foldedByAddress, foldSuspects: foldSuspects, in: machO
         )
         let targets = callTargets.filter { names[$0] == nil }
         let resolvedNames = cacheSymbols != nil
@@ -1183,12 +1464,14 @@ public struct Disassembler: Sendable {
             cfStringRange: sectionRange(named: "__cfstring", in: machO),
             cacheSymbols: cacheSymbols,
             cacheReader: machO.fullCache.map { CacheReader(full: $0) },
+            arcFunctions: arcFunctionReferences(in: machO),
             fileRanges: FileBackedRanges(standalone: machO),
-            foldedCandidates: foldedByAddress,
+            foldedCandidates: referenceFolds,
             witnessTables: foldedByAddress.isEmpty ? [] : witnessTables(in: machO),
             protocolDescriptorSymbols: protocolDescriptorSymbols(in: machO),
+            importedStubFunctions: importedStubFunctions(in: machO),
             specializationSymbols: ReferenceResolver.specializationSymbols(
-                labels: labelByAddress, names: resolvedNames, folded: foldedByAddress)
+                labels: labelByAddress, names: resolvedNames, folded: referenceFolds)
         )
         var swiftTargets = Set(labelByAddress.compactMap { address, symbol in
             Self.isSwiftMangled(symbol) ? address : nil
@@ -1219,12 +1502,20 @@ public struct Disassembler: Sendable {
         let isFunction = { (target: UInt64) in boundaries.contains(target) }
         let importStubs = CodeSection.importStubRanges(of: machO)
         let isImportStub = { (target: UInt64) in importStubs.contains { $0.contains(target) } }
+        let isStackProbe = stackProbeRecognizer(in: machO, importStubs: importStubs)
+        var summaryArities: [UInt64: Int?] = [:]
         let arity = { target in
-            self.knownArity(
-                ofCallTarget: target, names: resolver.names, cacheSymbols: cacheSymbols, isFunction: isFunction)
+            if let cached = summaryArities[target] { return cached }
+            let result = self.knownArity(
+                ofCallTarget: target, names: resolver.names, cacheSymbols: cacheSymbols,
+                arcFunctions: resolver.arcFunctions, isFunction: isFunction)
+            summaryArities[target] = .some(result)
+            return result
         }
         var indirectResultUses: [UInt64: IndirectResultUse] = [:]
         var summaries: [UInt64: CalleeRegisterSummary] = [:]
+        var hasEntryRoleConsumer = Self.needsEntryRegisterProofs(
+            in: machO, names: resolvedNames, folded: foldedByAddress, swiftTargets: swiftTargets)
         // The callees decoded below the requested functions, rebuilt from
         // their address when a closure reads them again.
         var calleeBodies = Set<UInt64>()
@@ -1251,10 +1542,11 @@ public struct Disassembler: Sendable {
         var firstAtStart: Set<UInt64> = []
         for span in spans {
             for function in Probe.muted({ functions(of: span) }) where firstAtStart.insert(function.startAddress).inserted {
+                hasEntryRoleConsumer = hasEntryRoleConsumer || Self.hasRawSwiftCall(in: function.instructions)
                 indirectResultUses[function.startAddress] = Self.indirectResultUse(of: function)
                 if let summary = CalleeRegisterSummary.of(
                     Self.withJumpTables(function, machO: machO, ranges: resolver.fileRanges),
-                    calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub) {
+                    calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub, isStackProbe: isStackProbe) {
                     summaries[function.startAddress] = summary
                 }
             }
@@ -1270,10 +1562,11 @@ public struct Disassembler: Sendable {
                     self.decodeFunction(at: target, boundaries: sortedBoundaries, in: machO)
                 }
                 guard !instructions.isEmpty else { continue }
+                hasEntryRoleConsumer = hasEntryRoleConsumer || Self.hasRawSwiftCall(in: instructions)
                 decodedCallees += 1
                 calleeBodies.insert(target)
                 guard let callee = calleeBody(at: target, instructions: instructions), let summary = Probe.muted({
-                    CalleeRegisterSummary.of(callee, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub)
+                    CalleeRegisterSummary.of(callee, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub, isStackProbe: isStackProbe)
                 }) else { continue }
                 summaries[target] = summary
                 next.formUnion(summary.callees.filter { summaries[$0] == nil && boundaries.contains($0) })
@@ -1284,22 +1577,30 @@ public struct Disassembler: Sendable {
             body(at: start).flatMap { function in
                 Probe.muted {
                     CalleeRegisterSummary.of(function, calleeEffects: effects, calleeArity: arity,
-                        isFunction: isFunction, isImportStub: isImportStub)
+                        isFunction: isFunction, isImportStub: isImportStub, isStackProbe: isStackProbe)
                 }
             }
         }
         CalleeRegisterSummary.closeOverReads(&summaries)
-        CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects, readFacts in
+        let rebuildingEntryRoles = hasEntryRoleConsumer || Self.needsEntryRegisterProofs(
+            in: machO, names: resolvedNames, folded: foldedByAddress, swiftTargets: swiftTargets)
+        CalleeRegisterSummary.closeOverCalls(&summaries, rebuildingEntryRoles: rebuildingEntryRoles) { start, effects, readFacts, reusePreservation in
             body(at: start).flatMap { function in
                 Probe.muted {
                     CalleeRegisterSummary.recomputingPreservation(
-                        function, retainingReadsFrom: readFacts, calleeEffects: effects, calleeArity: arity, isFunction: isFunction,
-                        isImportStub: isImportStub)
+                        function, retainingReadsFrom: readFacts, reusingPreservation: reusePreservation,
+                        rebuildingEntryRoles: rebuildingEntryRoles, calleeEffects: effects, calleeArity: arity, isFunction: isFunction,
+                        isImportStub: isImportStub, isStackProbe: isStackProbe)
                 }
             }
         }
-        CalleeRegisterSummary.closeOverFieldWrites(&summaries) { resolvedNames[$0] }
+        if rebuildingEntryRoles { CalleeRegisterSummary.closeOverProvenEntryReads(&summaries) }
+        CalleeRegisterSummary.closeOverFieldWrites(&summaries, arcIdentityContract: { target, callee in
+            resolver.arcIdentityContract(at: target, named: callee)
+        }) { resolvedNames[$0] }
 
+        // Every closure is done: analysis reads only the facts.
+        let finished = CalleeRegisterFacts.finish(&summaries)
         let context = PerFunctionContext(
             resolver: resolver, swiftTargets: swiftTargets, objcIndex: objcIndex,
             fieldMaps: fieldMaps, selfIndex: selfIndex, vtableIndex: vtableIndex,
@@ -1308,7 +1609,8 @@ public struct Disassembler: Sendable {
             classParameterFields: ClassParameterFieldIndex.build(
                 in: machO, fieldMaps: fieldMaps, classTypeIndex: classTypeIndex, demangle: demangle),
             indirectResultUses: indirectResultUses,
-            registerSummaries: summaries,
+            registerSummaries: finished.facts,
+            callerProvenResults: finished.callerProvenResults,
             asyncIndex: asyncIndex, asyncChainSlots: chainSlots
         )
 
@@ -1340,6 +1642,7 @@ public struct Disassembler: Sendable {
         decodedWholeImage: Bool = false
     ) async -> [DisassembledFunction] {
         Probe.image(machO)
+        warnOfUnreliableBoundaries(in: machO)
         var labelByAddress = objdumpLabels
         goLabels(in: machO, adding: &labelByAddress)
         // Function boundaries: LC_FUNCTION_STARTS ∪ label addresses. Function-
@@ -1371,6 +1674,9 @@ public struct Disassembler: Sendable {
         // same on both front-ends regardless of what labels either produced.
         var foldedByAddress = foldedSymbolAddresses(in: machO)
         Self.mergeMetadataFolds(metadataFolds, into: &foldedByAddress, labels: labelByAddress)
+        let foldSuspects = self.foldSuspects(in: machO, labels: labelByAddress, metadataNames: metadataNames,
+                                             folded: foldedByAddress, objcIndex: objcIndex)
+        let referenceFolds = foldedByAddress.merging(foldSuspects) { a, _ in a }
 
         var functions = segment(
             instructions,
@@ -1379,7 +1685,9 @@ public struct Disassembler: Sendable {
             foldedByAddress: foldedByAddress,
             metadataNames: metadataNames,
             objcIndex: objcIndex,
-            emitsUndecodedSpans: decodedWholeImage
+            in: machO,
+            emitsUndecodedSpans: decodedWholeImage,
+            dataSpans: goFunctions(in: machO)?.dataSpans ?? [:]
         )
 
         // Resolve adrp/add(+ldr) operand references to function, type-descriptor,
@@ -1390,7 +1698,7 @@ public struct Disassembler: Sendable {
             names: referenceIndex(
                 functions: functions, labelByAddress: labelByAddress,
                 metadataNames: metadataNames, objcIndex: objcIndex,
-                foldedByAddress: foldedByAddress, in: machO
+                foldedByAddress: foldedByAddress, foldSuspects: foldSuspects, in: machO
             ),
             resolver: cacheSymbols
         )
@@ -1403,12 +1711,14 @@ public struct Disassembler: Sendable {
             cfStringRange: sectionRange(named: "__cfstring", in: machO),
             cacheSymbols: cacheSymbols,
             cacheReader: machO.fullCache.map { CacheReader(full: $0) },
+            arcFunctions: arcFunctionReferences(in: machO),
             fileRanges: FileBackedRanges(standalone: machO),
-            foldedCandidates: foldedByAddress,
+            foldedCandidates: referenceFolds,
             witnessTables: foldedByAddress.isEmpty ? [] : witnessTables(in: machO),
             protocolDescriptorSymbols: protocolDescriptorSymbols(in: machO),
+            importedStubFunctions: importedStubFunctions(in: machO),
             specializationSymbols: ReferenceResolver.specializationSymbols(
-                labels: labelByAddress, names: resolvedNames, folded: foldedByAddress)
+                labels: labelByAddress, names: resolvedNames, folded: referenceFolds)
         )
         // Addresses whose callee uses the Swift calling convention, so `self` in
         // x20 is meaningful there.
@@ -1469,13 +1779,19 @@ public struct Disassembler: Sendable {
         // The bodies the summaries decode, the filtered run's callees
         // included, are where a call site finds its outlined fragment.
         var outlinedFragments: [UInt64: OutlinedFragment] = [:]
-        let registerSummaries: [UInt64: CalleeRegisterSummary] = {
+        let finished: (facts: [UInt64: CalleeRegisterFacts], callerProvenResults: [UInt64: SwiftReturnRegister]) = {
                 let isFunction = { (target: UInt64) in boundaries.contains(target) }
                 let importStubs = CodeSection.importStubRanges(of: machO)
                 let isImportStub = { (target: UInt64) in importStubs.contains { $0.contains(target) } }
+                let isStackProbe = stackProbeRecognizer(in: machO, importStubs: importStubs)
+                var summaryArities: [UInt64: Int?] = [:]
                 let arity = { target in
-                    self.knownArity(
-                        ofCallTarget: target, names: resolver.names, cacheSymbols: cacheSymbols, isFunction: isFunction)
+                    if let cached = summaryArities[target] { return cached }
+                    let result = self.knownArity(
+                        ofCallTarget: target, names: resolver.names, cacheSymbols: cacheSymbols,
+                        arcFunctions: resolver.arcFunctions, isFunction: isFunction)
+                    summaryArities[target] = .some(result)
+                    return result
                 }
                 // A summary reads a switch's `br` as the jump inside the body
                 // it is, not as a tail call out of it.
@@ -1485,11 +1801,14 @@ public struct Disassembler: Sendable {
                 )
                 var summaries = Dictionary(
                     bodies.keys.sorted().compactMap { start in
-                        bodies[start].flatMap { CalleeRegisterSummary.of($0, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub) }
+                        bodies[start].flatMap { CalleeRegisterSummary.of($0, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub, isStackProbe: isStackProbe) }
                             .map { (start, $0) }
                     },
                     uniquingKeysWith: { a, _ in a }
                 )
+                var hasEntryRoleConsumer = Self.needsEntryRegisterProofs(
+                    in: machO, names: resolvedNames, folded: foldedByAddress, swiftTargets: swiftTargets)
+                    || bodies.values.contains { Self.hasRawSwiftCall(in: $0.instructions) }
                 // A filtered run decodes its matches and their direct callees;
                 // a clobber further down (a callee's callee) is decoded here, a
                 // level at a time in address order, so the summaries see what
@@ -1505,6 +1824,7 @@ public struct Disassembler: Sendable {
                             self.decodeFunction(at: target, boundaries: sortedBoundaries, in: machO)
                         }
                         guard !instructions.isEmpty else { continue }
+                        hasEntryRoleConsumer = hasEntryRoleConsumer || Self.hasRawSwiftCall(in: instructions)
                         decoded += 1
                         let body = Self.withJumpTables(
                             DisassembledFunction(
@@ -1513,7 +1833,7 @@ public struct Disassembler: Sendable {
                             machO: machO, ranges: resolver.fileRanges)
                         bodies[target] = body
                         guard let summary = Probe.muted({
-                            CalleeRegisterSummary.of(body, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub)
+                            CalleeRegisterSummary.of(body, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub, isStackProbe: isStackProbe)
                         }) else { continue }
                         summaries[target] = summary
                         next.formUnion(summary.callees.filter { summaries[$0] == nil && boundaries.contains($0) })
@@ -1524,25 +1844,32 @@ public struct Disassembler: Sendable {
                     bodies[start].flatMap { function in
                         Probe.muted {
                             CalleeRegisterSummary.of(function, calleeEffects: effects, calleeArity: arity,
-                                isFunction: isFunction, isImportStub: isImportStub)
+                                isFunction: isFunction, isImportStub: isImportStub, isStackProbe: isStackProbe)
                         }
                     }
                 }
                 CalleeRegisterSummary.closeOverReads(&summaries)
-                CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects, readFacts in
+                let rebuildingEntryRoles = hasEntryRoleConsumer || Self.needsEntryRegisterProofs(
+                    in: machO, names: resolvedNames, folded: foldedByAddress, swiftTargets: swiftTargets)
+                CalleeRegisterSummary.closeOverCalls(&summaries, rebuildingEntryRoles: rebuildingEntryRoles) { start, effects, readFacts, reusePreservation in
                     bodies[start].flatMap { function in
                         Probe.muted {
                             CalleeRegisterSummary.recomputingPreservation(
-                                function, retainingReadsFrom: readFacts, calleeEffects: effects, calleeArity: arity, isFunction: isFunction,
-                                isImportStub: isImportStub)
+                                function, retainingReadsFrom: readFacts, reusingPreservation: reusePreservation,
+                                rebuildingEntryRoles: rebuildingEntryRoles, calleeEffects: effects, calleeArity: arity, isFunction: isFunction,
+                                isImportStub: isImportStub, isStackProbe: isStackProbe)
                         }
                     }
                 }
-                CalleeRegisterSummary.closeOverFieldWrites(&summaries) { resolvedNames[$0] }
+                if rebuildingEntryRoles { CalleeRegisterSummary.closeOverProvenEntryReads(&summaries) }
+                CalleeRegisterSummary.closeOverFieldWrites(&summaries, arcIdentityContract: { target, callee in
+                    resolver.arcIdentityContract(at: target, named: callee)
+                }) { resolvedNames[$0] }
                 for (start, body) in bodies {
                     outlinedFragments[start] = OutlinedFragment(start: start, instructions: body.instructions)
                 }
-                return summaries
+                outlinedFragments = Self.inlinableFragments(outlinedFragments, names: resolvedNames)
+                return CalleeRegisterFacts.finish(&summaries)
             }()
         let context = PerFunctionContext(
             resolver: resolver, swiftTargets: swiftTargets, objcIndex: objcIndex,
@@ -1555,8 +1882,9 @@ public struct Disassembler: Sendable {
                 functions.map { ($0.startAddress, Self.indirectResultUse(of: $0)) },
                 uniquingKeysWith: { a, _ in a }
             ),
-            registerSummaries: registerSummaries,
+            registerSummaries: finished.facts,
             outlinedFragments: outlinedFragments,
+            callerProvenResults: finished.callerProvenResults,
             asyncIndex: asyncIndex, asyncChainSlots: chainSlots
         )
         functions = functions.map { analyzeFunction($0, context: context) }
@@ -1586,8 +1914,13 @@ public struct Disassembler: Sendable {
     /// `-f` on any folded symbol printed "No function matched" for a symbol
     /// the binary exports.
     public func foldedSymbolMatches(_ function: DisassembledFunction, needle: String) -> Bool {
+        foldedSymbolMatches(candidates: function.foldedCandidates, needle: needle)
+    }
+
+    /// `foldedSymbolMatches(_:needle:)` over a function's folded symbols alone.
+    public func foldedSymbolMatches(candidates: [String]?, needle: String) -> Bool {
         let needle = needle.lowercased()
-        return (function.foldedCandidates ?? []).contains { candidate in
+        return (candidates ?? []).contains { candidate in
             candidate.lowercased().contains(needle)
                 || (demangle(candidate).map { matchesName($0, needle: needle) } ?? false)
         }
@@ -1613,10 +1946,14 @@ public struct Disassembler: Sendable {
         var indirectResultUses: [UInt64: IndirectResultUse] = [:]
         /// Function start → what its body proves about the registers a call to
         /// it reads and clobbers, for callees no signature describes.
-        var registerSummaries: [UInt64: CalleeRegisterSummary] = [:]
+        var registerSummaries: [UInt64: CalleeRegisterFacts] = [:]
         /// Function start → its body, when it is short and straight-line
         /// enough to be an outlined fragment a call site can inline.
         var outlinedFragments: [UInt64: OutlinedFragment] = [:]
+        /// Function start → the register its callers prove its result is in
+        /// (`CalleeRegisterSummary.callerProvenResults`), for a function no
+        /// signature describes.
+        var callerProvenResults: [UInt64: SwiftReturnRegister] = [:]
         /// Async funclet chains and their suspension points.
         let asyncIndex: AsyncFuncletIndex
         /// Per resume funclet, the context-slot values definitely initialized
@@ -1793,7 +2130,14 @@ public struct Disassembler: Sendable {
         // name carries the full method shape. Recover the receiver convention
         // from the symbol so `self` survives — without it x0 is never seeded
         // and every receiver renders `?`.
-        let symbolEntry = objcMethod == nil ? Self.objcEntryFromSymbol(function.symbol) : nil
+        var symbolEntry = objcMethod == nil ? Self.objcEntryFromSymbol(function.symbol) : nil
+        // A direct method takes no `_cmd`: its arguments start at x1. Seeded
+        // from x2, `-[DMBox mix:with:]` named its second argument `arg0`.
+        if case .objectiveC(let count, nil)? = symbolEntry,
+           Self.isDirectObjCMethod(function.symbol, at: function.startAddress, in: context.objcIndex) {
+            symbolEntry = .objectiveC(argumentCount: count, scalarArguments: Dictionary(
+                uniqueKeysWithValues: (0 ..< min(count, 7)).map { ("x\($0 + 1)", $0) }))
+        }
         // A resume funclet is entered from the runtime, not called: its name
         // carries the parent's signature, but none of the parent's parameters
         // (nor `self`) is in a register here. Every live value was spilled to
@@ -1802,7 +2146,8 @@ public struct Disassembler: Sendable {
         // signature would label the awaited result (x0) as the first parameter.
         let isResumeFunclet = function.asyncFunclet.map { !$0.isEntry } ?? false
         let classSelfTypeName = objcMethod == nil && symbolEntry == nil && !isResumeFunclet
-            ? Self.selfType(of: function, selfIndex: context.selfIndex, fieldMaps: context.fieldMaps)
+            ? Self.selfType(of: function, selfIndex: context.selfIndex, fieldMaps: context.fieldMaps,
+                            classTypeIndex: context.classTypeIndex)
             : nil
         // A nonmutating HFA-struct instance method passes `self` decomposed in
         // SIMD registers rather than through x20, so it needs the value-self
@@ -1813,6 +2158,9 @@ public struct Disassembler: Sendable {
             ? Self.swiftValueTypeSelfFields(of: function, fieldMaps: context.fieldMaps)
             : nil
         let selfTypeName = classSelfTypeName ?? valueSelf?.typeName
+        let resolver = context.resolver
+        let isOpaqueExistential: (String) -> Bool = { resolver.opaqueExistentialDescriptor(named: $0) != nil }
+        let isClassBoundExistential: (String) -> Bool = { resolver.classBoundExistentialDescriptor(named: $0) != nil }
         let entry: MethodEntryConvention? = if isResumeFunclet {
             nil
         } else if let objcMethod {
@@ -1825,15 +2173,25 @@ public struct Disassembler: Sendable {
             symbolEntry
         } else if let valueSelf {
             .swiftValueInstance(seededRegisters: valueSelf.seeded)
-        } else if classSelfTypeName != nil {
-            .swiftInstance(scalarArguments: Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps) ?? [:])
-        } else if let scalarArgs = Self.swiftScalarArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps) {
+        } else if classSelfTypeName != nil || (!isResumeFunclet && symbolEntry == nil
+                    && Self.swiftEnumSelfType(of: function, enumCaseIndex: context.enumCaseIndex) != nil) {
+            {
+                let arguments = Self.swiftArgumentRegisters(
+                    of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex,
+                    fieldMaps: context.fieldMaps, isOpaqueExistential: isOpaqueExistential,
+                    isClassBoundExistential: isClassBoundExistential)
+                return .swiftInstance(scalarArguments: arguments?.scalars ?? [:],
+                                      existentialTables: arguments?.existentialTables ?? [:])
+            }()
+        } else if let arguments = Self.swiftArgumentRegisters(of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps, isOpaqueExistential: isOpaqueExistential, isClassBoundExistential: isClassBoundExistential) {
             {
                 let metadata = Self.genericMetadataRegisters(
                     of: function, enumCaseIndex: context.enumCaseIndex,
                     classTypeIndex: context.classTypeIndex, fieldMaps: context.fieldMaps)
-                return .swiftFunction(scalarArguments: scalarArgs, genericMetadata: metadata,
-                                      genericWitnessTables: Self.genericWitnessTableRegisters(of: function, metadata: metadata))
+                return .swiftFunction(scalarArguments: arguments.scalars, genericMetadata: metadata,
+                                      genericWitnessTables: Self.genericWitnessTableRegisters(of: function, metadata: metadata),
+                                      existentialTables: arguments.existentialTables,
+                                      argumentFields: arguments.fields.mapValues { [$0.argument, $0.offset] })
             }()
         } else if !DisassembledFunction.signatureKnown(displayName: function.analysisDisplayName, objcSignature: nil),
                   let summary = context.registerSummaries[function.startAddress], summary.provenArgumentCount > 0 {
@@ -1864,20 +2222,48 @@ public struct Disassembler: Sendable {
         // result) over the ordinary convention, and bring the context slots the
         // chain pass proved.
         let asyncEntry = Self.asyncConvention(for: function, base: entry, index: context.asyncIndex)
+        if Probe.isActive {
+            let seeded = asyncEntry ?? entry
+            Probe.inFunction(function.startAddress, function.displayName) {
+                Probe.record(.entryConvention, at: function.startAddress, [
+                    "convention": .label(seeded.map(Self.conventionName) ?? "none"),
+                    "selfType": .name(selfTypeName ?? "none"),
+                    "seeds": .object(Dictionary(uniqueKeysWithValues: ValueTracer.entrySeeds(seeded).map {
+                        ($0.register, ProbeValue.abstractValue($0.value))
+                    })),
+                ])
+            }
+        }
         let chainSlots = context.asyncChainSlots[function.startAddress] ?? [:]
-        let classArgumentFieldMaps: [Int: FieldMap] = if case .swiftFunction(let scalarArguments, _, _)? = entry {
-            Self.classArgumentFieldMaps(of: function, scalarArguments: scalarArguments, index: context.classParameterFields)
+        let classArguments: [Int: (type: String, map: FieldMap)] = if case .swiftFunction(let scalarArguments, _, _, _, _)? = entry {
+            Self.classArguments(of: function, scalarArguments: scalarArguments, index: context.classParameterFields)
         } else {
             [:]
         }
-        return enrichCallArguments(
+        let classArgumentFieldMaps = classArguments.mapValues(\.map)
+        // The field maps of struct parameters passed as their fields, so a
+        // seeded `arg<n>.field` names its field.
+        let functionArgumentFieldMaps: [Int: FieldMap] = if case .swiftFunction(_, _, _, _, let fields)? = entry, !fields.isEmpty {
+            Self.swiftArgumentRegisters(
+                of: function, enumCaseIndex: context.enumCaseIndex, classTypeIndex: context.classTypeIndex,
+                fieldMaps: context.fieldMaps, isOpaqueExistential: isOpaqueExistential,
+                isClassBoundExistential: isClassBoundExistential)?.fieldMaps ?? [:]
+        } else {
+            [:]
+        }
+        let callerProvenResult = objcMethod == nil && symbolEntry == nil && asyncEntry == nil
+            && function.asyncFunclet == nil
+            && !DisassembledFunction.signatureKnown(displayName: function.analysisDisplayName, objcSignature: nil)
+            ? context.callerProvenResults[function.startAddress] : nil
+        var enriched = enrichCallArguments(
             in: function, cfg: cfg, resolver: context.resolver, swiftTargets: context.swiftTargets,
             entry: asyncEntry ?? entry,
             fieldMap: fieldMap,
             objcFieldSyntax: objcMethod != nil || symbolEntry != nil,
             selfTypeName: selfTypeName, vtableIndex: context.vtableIndex,
-            argumentFieldMaps: valueSelf?.argumentFieldMaps ?? [:],
+            argumentFieldMaps: valueSelf?.argumentFieldMaps ?? functionArgumentFieldMaps,
             classArgumentFieldMaps: classArgumentFieldMaps,
+            classArgumentTypes: classArguments.mapValues(\.type),
             enumCaseIndex: context.enumCaseIndex,
             payloadEnumIndex: context.payloadEnumIndex,
             argumentEnumTypes: Self.swiftEnumArgumentTypes(of: function, enumCaseIndex: context.enumCaseIndex),
@@ -1899,8 +2285,11 @@ public struct Disassembler: Sendable {
             registerSummaries: context.registerSummaries,
             selfMembers: context.selfMembers,
             callResultBanks: context.callResultBanks,
-            inlinedPrefixes: inlined.prefixes
+            inlinedPrefixes: inlined.prefixes,
+            callerProvenResult: callerProvenResult
         )
+        enriched.callerProvenResult = callerProvenResult != nil
+        return enriched
     }
 
     /// Each `bl` or `b` to an outlined fragment the tracer can model whole,
@@ -1920,9 +2309,7 @@ public struct Disassembler: Sendable {
         let resolver = context.resolver
         func isFragment(_ target: UInt64) -> Bool {
             guard let fragment = context.outlinedFragments[target] else { return false }
-            let name = resolver.callTargetName(at: target)
-            if name?.hasPrefix(Self.outlinedFragmentPrefix) == true { return true }
-            return (name == nil || name?.hasPrefix("sub_") == true) && fragment.breaksCallingConvention
+            return Self.mayInline(fragment, named: resolver.callTargetName(at: target))
         }
         var annotated: [UInt64: OutlinedFragment] = [:]
         var prefixes: [UInt64: [Instruction]] = [:]
@@ -1969,6 +2356,23 @@ public struct Disassembler: Sendable {
 
     /// LLVM's machine outliner names its fragments `OUTLINED_FUNCTION_<n>`.
     static let outlinedFragmentPrefix = "OUTLINED_FUNCTION_"
+
+    /// Whether a call to the function `fragment` was cut from, named `name`
+    /// (the resolver's name, nil when it has none), may be inlined.
+    static func mayInline(_ fragment: OutlinedFragment, named name: String?) -> Bool {
+        if name?.hasPrefix(outlinedFragmentPrefix) == true { return true }
+        return (name == nil || name?.hasPrefix("sub_") == true) && fragment.breaksCallingConvention
+    }
+
+    /// The fragments a call may inline, once names are final: every short
+    /// body is a candidate when it is decoded, but only these are ever read,
+    /// and the rest held 22 MB (bodies, operands and table) through a
+    /// GoodLinks `xrefs`.
+    static func inlinableFragments(
+        _ fragments: [UInt64: OutlinedFragment], names: [UInt64: String]
+    ) -> [UInt64: OutlinedFragment] {
+        fragments.filter { mayInline($0.value, named: names[$0.key]) }
+    }
 
     // MARK: - Async funclets
 
@@ -2168,7 +2572,10 @@ public struct Disassembler: Sendable {
 
     /// The code sections of `machO` (`CodeSection.of`), in address order,
     /// computed once per image: streaming decodes each function separately.
+    /// None for an image the decoder cannot read (`decodesCode`), so whatever
+    /// reaches here without `requireDecodableCode` claims nothing.
     func codeSections(in machO: MachOFile) -> [CodeSection] {
+        guard Self.decodesCode(of: machO) else { return [] }
         let key = "\(machO.url.path)#\(machO.headerStartOffset)#\(machO.headerStartOffsetInCache)"
         return codeSectionCache.value(for: key) {
             CodeSection.of(machO, functionStarts: functionStarts(of: machO))
@@ -2235,6 +2642,17 @@ public struct Disassembler: Sendable {
             self.engine = engine
         }
 
+        private init(pieces: [(address: UInt64, bytes: Data)], engine: CapstoneEngine) {
+            self.pieces = pieces
+            self.engine = engine
+        }
+
+        /// The same bytes with an engine of its own: a Capstone handle is one
+        /// thread's at a time.
+        func withOwnEngine() -> TextSection? {
+            CapstoneEngine().map { TextSection(pieces: pieces, engine: $0) }
+        }
+
         /// The instructions of `[start, stop)`, clipped to the sections, as
         /// `capstoneInstructions(in:span:)` decodes them.
         func instructions(span: (start: UInt64, stop: UInt64)) -> [Instruction] {
@@ -2255,10 +2673,27 @@ public struct Disassembler: Sendable {
     func textSection(in machO: MachOFile) -> TextSection? {
         let sections = codeSections(in: machO)
         guard !sections.isEmpty else { return nil }
+        // One mapping of the file serves every section of a standalone image.
+        let mapped = machO.isLoadedFromDyldCache ? nil : try? Data(contentsOf: machO.url, options: .alwaysMapped)
         return TextSection(pieces: sections.map { section in
             let size = Int(section.range.upperBound - section.range.lowerBound)
-            return (section.range.lowerBound, sectionBytes(address: section.range.lowerBound, size: size, in: machO), size)
+            let address = section.range.lowerBound
+            return (address, mapped.flatMap { Self.mappedSlice(of: $0, address: address, size: size, in: machO) }
+                ?? sectionBytes(address: address, size: size, in: machO), size)
         })
+    }
+
+    /// A section's bytes as a slice of the mapped file, copying nothing: a
+    /// whole-image run holds them throughout, and the copy (`readElements`
+    /// into an array, then into `Data`) was the largest block at a GoodLinks
+    /// `xrefs` peak, 20 MB, with a second 20 MB while it was made. Mapped
+    /// file pages are clean, so they are not footprint. The slice keeps the
+    /// file's indices. Nil when the range is not in the file.
+    static func mappedSlice(of file: Data, address: UInt64, size: Int, in machO: MachOFile) -> Data? {
+        guard let offset = machO.fileOffset(of: address) else { return nil }
+        let start = machO.headerStartOffset + Int(offset)
+        guard start >= 0, size >= 0, start <= file.count, size <= file.count - start else { return nil }
+        return file[start ..< start + size]
     }
 
     /// Raw bytes of an arbitrary section span (`__text`, `__objc_stubs`, …).
@@ -2268,7 +2703,7 @@ public struct Disassembler: Sendable {
     /// header, and MachOKit's image reader only reaches the header's subcache —
     /// so locate the subcache that maps the section's VM address and read that
     /// subcache file directly.
-    private func sectionBytes(address: UInt64, size: Int, in machO: MachOFile) -> Data? {
+    func sectionBytes(address: UInt64, size: Int, in machO: MachOFile) -> Data? {
         // MachOKit keeps a full cache it finds but not the failure to find
         // one, so for a plain file every `fullCache` read re-opened the
         // file as a dyld cache: 7.4% of a GoodLinks `--pseudo` run.
@@ -2281,7 +2716,7 @@ public struct Disassembler: Sendable {
             defer { try? handle.close() }
             do {
                 try handle.seek(toOffset: localOffset)
-                return try handle.read(upToCount: size)
+                return try handle.readDrained(upToCount: size)
             } catch {
                 return nil
             }
@@ -2330,14 +2765,19 @@ public struct Disassembler: Sendable {
     /// The known argument count of a call target, by the name a call to it
     /// renders: an in-image or stub name, else the dyld cache's, so the
     /// whole-image and streaming paths agree.
-    private func knownArity(
+    // ABI controls exercise this policy directly: a recovered entry signature
+    // can hide an incorrect name-based fallback in the rendered caller.
+    func knownArity(
         ofCallTarget target: UInt64, names: [UInt64: String], cacheSymbols: CacheSymbolResolver?,
-        isFunction: (UInt64) -> Bool
+        arcFunctions: [UInt64: RuntimeFunctionReference], isFunction: (UInt64) -> Bool
     ) -> Int? {
         let name = names[target] ?? cacheSymbols?.name(forCallTarget: target).map {
             demangle($0) ?? Self.stripLeadingUnderscore($0)
         }
         guard let name else { return nil }
+        if DisassembledFunction.isARCReferenceHelper(name),
+           arcFunctions[target]?.permitsARCIdentity(named: name) != true,
+           cacheSymbols?.arcIdentityContract(forCallTarget: target, named: name) != true { return nil }
         // An in-image function named like a C library function is bounded by
         // its own body instead.
         if isFunction(target), DisassembledFunction.knownArityNameMayHaveTwin(name) { return nil }
@@ -2477,30 +2917,134 @@ public struct Disassembler: Sendable {
 
     /// Stub address → the raw symbol of the import it jumps to.
     private func symbolStubSymbols(in machO: MachOFile) -> [UInt64: String] {
+        symbolStubReferences(in: machO).mapValues(\.name)
+    }
+
+    /// A name alone does not distinguish a local definition from an import.
+    /// Keep the raw nlist record until a consumer has checked that origin.
+    private func symbolStubReferences(in machO: MachOFile) -> [UInt64: MachOFile.Symbol] {
         guard let table = machO.indirectSymbols else { return [:] }
         let indirect = Array(table)
         let symbols = Array(machO.symbols)
-        var names: [UInt64: String] = [:]
+        var symbolsByStub: [UInt64: MachOFile.Symbol] = [:]
 
         for section in machO.sections where section.flags.type == .symbol_stubs {
             guard let first = section.indirectSymbolIndex,
                   let count = section.numberOfIndirectSymbols,
                   count > 0, first >= 0, first + count <= indirect.count
             else { continue }
-            let stubSize = section.size / count
+            // The stride from the stubs themselves: Go's linker writes 6 as
+            // its 12-byte stubs' size, and dividing by that count named every
+            // stub from the eleventh on after another (`clock_gettime`'s stub
+            // read `fcntl`). Only an unrecognised shape keeps the header's.
+            let stubSize = Self.stubStride(at: UInt64(section.address), in: machO, bytes: sectionBytes)
+                ?? section.size / count
             guard stubSize > 0 else { continue }
+            let stubs = min(count, section.size / stubSize)
 
-            for slot in 0..<count {
+            for slot in 0..<stubs {
                 guard let symbolIndex = indirect[first + slot].index,
                       symbols.indices.contains(symbolIndex)
                 else { continue }
-                let raw = symbols[symbolIndex].name
-                guard !raw.isEmpty else { continue }
+                let symbol = symbols[symbolIndex]
+                guard !symbol.name.isEmpty else { continue }
                 let address = UInt64(section.address + slot * stubSize)
-                names[address] = raw
+                symbolsByStub[address] = symbol
             }
         }
-        return names
+        return symbolsByStub
+    }
+
+    /// The size of an arm64 import stub, read from the first one: `adrp;
+    /// ldr; br` is 12 bytes, arm64e's `adrp; add; ldr; braa` 16. Nil for any
+    /// other shape.
+    static func stubStride(
+        at address: UInt64, in machO: MachOFile, bytes: (UInt64, Int, MachOFile) -> Data?
+    ) -> Int? {
+        guard let data = bytes(address, 16, machO), let engine = CapstoneEngine() else { return nil }
+        let ids = engine.disassemble(data, address: address).compactMap { $0.detail?.id }
+        guard ids.count >= 3, ids[0] == AARCH64_INS_ADRP else { return nil }
+        if ids[1] == AARCH64_INS_LDR, ids[2] == AARCH64_INS_BR { return 12 }
+        if ids.count == 4, ids[1] == AARCH64_INS_ADD, ids[2] == AARCH64_INS_LDR,
+           ids[3] == AARCH64_INS_BRAA || ids[3] == AARCH64_INS_BRAAZ { return 16 }
+        return nil
+    }
+
+    struct ImportedFunctionReference: Sendable, Equatable {
+        let rawSymbol: String
+        let libraryName: String
+
+        /// Compiler/native ABI reference: one formal String followed by the
+        /// two ordinary receiver words; no context self in x20.
+        var isStringHasPrefix: Bool {
+            Disassembler.stripLeadingUnderscore(rawSymbol) == "$sSS9hasPrefixySbSSF"
+                && ["/usr/lib/swift/libswiftCore.dylib", "@rpath/libswiftCore.dylib"].contains(libraryName)
+        }
+    }
+
+    private func importedStubFunctions(in machO: MachOFile) -> [UInt64: ImportedFunctionReference] {
+        guard !machO.isLoadedFromDyldCache else { return [:] }
+        var imported: [UInt64: ImportedFunctionReference] = [:]
+        for (address, symbol) in symbolStubReferences(in: machO) {
+            guard let flags = symbol.nlist.flags, flags.stab == nil, flags.contains(.ext),
+                  flags.type == .undf, symbol.offset == 0,
+                  let description = symbol.nlist.symbolDescription, description.libraryOrdinalType == nil,
+                  let library = Self.externalLibraryName(ordinal: Int(description.libraryOrdinal), in: machO)
+            else { continue }
+            imported[address] = ImportedFunctionReference(rawSymbol: symbol.name, libraryName: library)
+        }
+        return imported
+    }
+
+    /// Positive ordinary two-level ordinals only: self, flat lookup, weak
+    /// lookup and cache-relative ordinals do not identify an external provider.
+    private static func externalLibraryName(ordinal: Int, in machO: MachOFile) -> String? {
+        guard !machO.isLoadedFromDyldCache, machO.header.flags.contains(.twolevel),
+              !machO.header.flags.contains(.force_flat), ordinal > 0 else { return nil }
+        let dependencies = machO.dependencies
+        guard dependencies.indices.contains(ordinal - 1) else { return nil }
+        let dependency = dependencies[ordinal - 1]
+        if case .weakLoad = dependency.type { return nil }
+        guard !dependency.useFlags.contains(.weak_link) else { return nil }
+        return dependency.dylib.name
+    }
+
+    /// Exact ARC imports, with their two-level providers retained. Local
+    /// definitions use their bodies; an install name does not prove behavior.
+    private func arcFunctionReferences(in machO: MachOFile) -> [UInt64: RuntimeFunctionReference] {
+        guard !machO.isLoadedFromDyldCache else { return [:] }
+        let candidates = symbolStubReferences(in: machO).filter {
+            DisassembledFunction.isARCReferenceHelper(Self.stripLeadingUnderscore($0.value.name))
+        }
+        guard !candidates.isEmpty, let engine = CapstoneEngine() else { return [:] }
+        let bindings = ChainedFixupTable()
+        let sections = machO.sections.filter { $0.flags.type == .symbol_stubs }
+        var references: [UInt64: RuntimeFunctionReference] = [:]
+        for (address, symbol) in candidates {
+            guard let flags = symbol.nlist.flags, flags.stab == nil, flags.contains(.ext),
+                  flags.type == .undf, symbol.offset == 0,
+                  let description = symbol.nlist.symbolDescription, description.libraryOrdinalType == nil,
+                  description.isDisjoint(with: [.weak_ref, .ref_to_weak]),
+                  let library = Self.externalLibraryName(ordinal: Int(description.libraryOrdinal), in: machO)
+            else { continue }
+            let reference = RuntimeFunctionReference(rawSymbol: symbol.name, libraryName: library)
+            guard let section = sections.first(where: {
+                UInt64($0.address) <= address && address - UInt64($0.address) < UInt64($0.size)
+            }), let count = section.numberOfIndirectSymbols, count > 0,
+                  [12, 16].contains(section.size / count),
+                  let bytes = sectionBytes(address: address, size: section.size / count, in: machO)
+            else { continue }
+            let instructions = engine.disassemble(bytes, address: address).map {
+                Instruction(address: $0.address, text: $0.text, controlFlow: $0.controlFlow,
+                            branchTarget: $0.branchTarget, detail: $0.detail)
+            }
+            guard let slot = RuntimeFunctionReference.pointerSlot(in: instructions, startingAt: address),
+                  let offset = machO.fileOffset(of: slot),
+                  bindings.arcFunction(at: UInt64(offset), in: machO) == reference
+            else { continue }
+            references[address] = reference
+        }
+        return references
     }
 
     /// The address a symbol defined in a section names. An absolute symbol
@@ -2533,8 +3077,45 @@ public struct Disassembler: Sendable {
                 labels[address] = symbol.name
             }
         }
+        // Either spelling of a function and its own witness can come first.
+        for (address, symbols) in symbolsSharingAddresses(in: machO, sections: sections) {
+            if let function = Self.functionBehindOwnWitnesses(symbols, demangle: { self.demangle($0) }) {
+                labels[address] = function
+            }
+        }
         goLabels(in: machO, adding: &labels)
         return labels
+    }
+
+    /// The one function `symbols` describe, when every other symbol is that
+    /// function's own witness: `One.hash(into:)` and `protocol witness for
+    /// Hashable.hash(into:) in conformance One` share a body because the
+    /// witness is the function, with nothing to adapt. That is one function
+    /// described twice, not a fold, as a class method and its own witness
+    /// are in `MetadataSymbolizer`. The witness has to name the same member
+    /// with the same signature: `ImplS.y()` folded with the witness for
+    /// `Impl2.x()` is two functions.
+    static func functionBehindOwnWitnesses(_ symbols: [String], demangle: (String) -> String?) -> String? {
+        let witnessSuffix = "TW"
+        let functions = symbols.filter { !$0.hasSuffix(witnessSuffix) }
+        guard functions.count == 1, functions.count < symbols.count, let function = demangle(functions[0]) else { return nil }
+        let prefix = "protocol witness for ", conformanceMarker = " in conformance "
+        for symbol in symbols where symbol.hasSuffix(witnessSuffix) {
+            guard let witness = demangle(symbol), witness.hasPrefix(prefix),
+                  let marker = witness.range(of: conformanceMarker),
+                  let separator = witness.range(of: " : ", range: marker.upperBound ..< witness.endIndex),
+                  let module = witness.range(of: " in ", range: separator.upperBound ..< witness.endIndex)
+            else { return nil }
+            var requirement = witness[witness.index(witness.startIndex, offsetBy: prefix.count) ..< marker.lowerBound]
+            let isStatic = requirement.hasPrefix("static ")
+            if isStatic { requirement = requirement.dropFirst("static ".count) }
+            let proto = witness[separator.upperBound ..< module.lowerBound] + "."
+            guard requirement.hasPrefix(proto) else { return nil }
+            let member = requirement.dropFirst(proto.count)
+            let type = witness[marker.upperBound ..< separator.lowerBound]
+            guard function == (isStatic ? "static " : "") + type + "." + member else { return nil }
+        }
+        return functions[0]
     }
 
     /// Addresses in `__text` that two or more *distinct* symbols name.
@@ -2866,7 +3447,13 @@ public struct Disassembler: Sendable {
     private func foldedSymbolAddresses(in machO: MachOFile) -> [UInt64: [String]] {
         let sections = codeSections(in: machO)
         guard !sections.isEmpty else { return [:] }
+        return symbolsSharingAddresses(in: machO, sections: sections).filter {
+            Self.functionBehindOwnWitnesses($0.value, demangle: { self.demangle($0) }) == nil
+        }
+    }
 
+    /// Every code address two or more distinct symbols name, sorted.
+    private func symbolsSharingAddresses(in machO: MachOFile, sections: [CodeSection]) -> [UInt64: [String]] {
         var namesByAddress: [UInt64: Set<String>] = [:]
         for symbol in machO.symbols where !symbol.name.isEmpty {
             guard let address = Self.sectionAddress(of: symbol),
@@ -2878,6 +3465,67 @@ public struct Disassembler: Sendable {
             .mapValues { $0.sorted() }
     }
 
+    /// Named addresses a stripped image can no longer show are not folded.
+    ///
+    /// `foldedSymbolAddresses` sees a fold only while two symbols survive,
+    /// and `MetadataSymbolizer` only while two owners have records. Strip
+    /// takes the rest: `sf_O.s.exe` called `sf.K.method()` at a body that is
+    /// also a closure-propagated specialization of `closureUser`, because
+    /// `K.other()` was the one name left there. Strip shows as a function
+    /// start with no symbol and no local symbol in code. Either alone says
+    /// nothing: an unstripped image can hold an unlabeled start, and a
+    /// dylib of exports never had a local. An image that keeps its locals
+    /// keeps every partner, so nothing is suspected there.
+    ///
+    /// The result maps an address to the name it would have been credited
+    /// with. Headings keep that name, true of the body, and a reference
+    /// declines as it does at a proven fold. A consumer that knows the owner
+    /// it came through (a vtable slot) still picks it from the candidates.
+    private func foldSuspects(
+        in machO: MachOFile, labels: [UInt64: String], metadataNames: [UInt64: String],
+        folded: [UInt64: [String]], objcIndex: ObjCMetadataIndex
+    ) -> [UInt64: [String]] {
+        let sections = codeSections(in: machO)
+        guard functionStarts(of: machO).contains(where: { labels[$0] == nil }),
+              !machO.symbols.contains(where: { symbol in
+                  symbol.nlist.flags?.contains(.ext) == false && !symbol.name.isEmpty
+                      && Self.sectionAddress(of: symbol).map { CodeSection.containing($0, in: sections) != nil } == true
+              })
+        else { return [:] }
+        var claims = labels
+        for (address, name) in metadataNames where labels[address] == nil && !Self.helperShapeNames.contains(name) {
+            claims[address] = name
+        }
+        var suspects: [UInt64: [String]] = [:]
+        // Reads code words only, by address, through `sectionBytes`: no
+        // metadata and no relative pointer. Additive to the reads being
+        // rerouted in `FileBackedRanges` and the metadata indexes.
+        var window: (start: UInt64, bytes: Data) = (0, Data())
+        for address in claims.keys.sorted() where folded[address] == nil && objcIndex.binding(for: address) == nil {
+            if address < window.start || address + 4 > window.start + UInt64(window.bytes.count)
+                || (address + UInt64(TrivialBody.wordCount * 4) > window.start + UInt64(window.bytes.count)
+                    && window.bytes.count == Self.codeWindowSize) {
+                // A read past the end of the file fails whole, so stop at the section's end.
+                guard let end = CodeSection.containing(address, in: sections)?.range.upperBound else { continue }
+                let length = min(UInt64(Self.codeWindowSize), end - address)
+                window = (address, sectionBytes(address: address, size: Int(length), in: machO) ?? Data())
+            }
+            let offset = Int(address - window.start)
+            let available = min(TrivialBody.wordCount, (window.bytes.count - offset) / 4)
+            let words = window.bytes.withUnsafeBytes { bytes in
+                (0 ..< max(available, 0)).map {
+                    UInt32(littleEndian: bytes.loadUnaligned(fromByteOffset: offset + $0 * 4, as: UInt32.self))
+                }
+            }
+            if TrivialBody.matches(words), let name = claims[address] { suspects[address] = [name] }
+        }
+        return suspects
+    }
+
+    /// `foldSuspects` reads code in windows of this size: a few reads for a
+    /// whole image, without holding its `__text`.
+    private static let codeWindowSize = 1 << 20
+
     // MARK: - Segmentation
 
     private func segment(
@@ -2887,11 +3535,31 @@ public struct Disassembler: Sendable {
         foldedByAddress: [UInt64: [String]],
         metadataNames: [UInt64: String],
         objcIndex: ObjCMetadataIndex,
+        in machO: MachOFile,
         emitsUndecodedSpans: Bool = false,
-        sortedBoundaries: [UInt64]? = nil
+        sortedBoundaries: [UInt64]? = nil,
+        dataSpans: [UInt64: (end: UInt64, name: String)] = [:]
     ) -> [DisassembledFunction] {
         var functions: [DisassembledFunction] = []
         var current: [Instruction] = []
+        // A span a function table lists but whose bytes are data (Go's
+        // build ID) keeps its name and boundary and loses its "instructions";
+        // the two symbols at its address (`go:buildid`, `runtime.text`, a
+        // marker) are no identical-code fold.
+        let instructions = dataSpans.isEmpty ? instructions : instructions.filter { insn in
+            !dataSpans.contains { insn.address >= $0.key && insn.address < $0.value.end }
+        }
+        var labelByAddress = labelByAddress, foldedByAddress = foldedByAddress
+        for (start, span) in dataSpans {
+            foldedByAddress[start] = nil
+            labelByAddress[start] = "_" + span.name
+        }
+        // Decoded one span at a time, a data span is a span with nothing.
+        if instructions.isEmpty, let only = dataSpans.keys.first, dataSpans.count == 1 {
+            return [makeFunction(start: only, instructions: [], labelByAddress: labelByAddress,
+                                 foldedByAddress: foldedByAddress, metadataNames: metadataNames,
+                                 objcIndex: objcIndex, in: machO)]
+        }
         var start: UInt64 = instructions.first?.address ?? 0
 
         func flush() {
@@ -2900,7 +3568,7 @@ public struct Disassembler: Sendable {
                                            labelByAddress: labelByAddress,
                                            foldedByAddress: foldedByAddress,
                                            metadataNames: metadataNames,
-                                           objcIndex: objcIndex))
+                                           objcIndex: objcIndex, in: machO))
             current = []
         }
 
@@ -2931,13 +3599,13 @@ public struct Disassembler: Sendable {
                 // A boundary passed with no instruction of its own before
                 // the next one marks a span that is not code. Only a whole
                 // decode knows that; a filtered one skips other functions.
-                if let passed = crossed, emitsUndecodedSpans {
+                if let passed = crossed, emitsUndecodedSpans || dataSpans[passed] != nil {
                     flush()
                     functions.append(makeFunction(start: passed, instructions: [],
                                                   labelByAddress: labelByAddress,
                                                   foldedByAddress: foldedByAddress,
                                                   metadataNames: metadataNames,
-                                                  objcIndex: objcIndex))
+                                                  objcIndex: objcIndex, in: machO))
                 }
                 crossed = sorted[next]
                 next += 1
@@ -2960,7 +3628,8 @@ public struct Disassembler: Sendable {
         labelByAddress: [UInt64: String],
         foldedByAddress: [UInt64: [String]],
         metadataNames: [UInt64: String],
-        objcIndex: ObjCMetadataIndex
+        objcIndex: ObjCMetadataIndex,
+        in machO: MachOFile
     ) -> DisassembledFunction {
         let subName = "sub_\(String(start, radix: 16))"
         let objcMethod = objcIndex.binding(for: start)
@@ -3018,8 +3687,74 @@ public struct Disassembler: Sendable {
             demangledName: nil,
             startAddress: start,
             instructions: instructions,
-            source: .address
+            source: .address,
+            boundary: recordedStarts(of: machO).contains(start) ? .functionStarts : .decodeStart
         )
+    }
+
+    /// The addresses LC_FUNCTION_STARTS lists. A Go image's table is not
+    /// among them: its entries all have names, so none reaches this question.
+    private func recordedStarts(of machO: MachOFile) -> Set<UInt64> {
+        let key = "\(machO.url.path)#\(machO.headerStartOffset)#\(machO.headerStartOffsetInCache)"
+        return boundaryCache.value(for: key) {
+            Set((machO.functionStarts.map(Array.init) ?? []).map { UInt64($0.offset) })
+        }
+    }
+
+    /// Says so on stderr when nothing can be trusted to
+    /// separate this image's functions: no LC_FUNCTION_STARTS, no Go table,
+    /// and code its symbols leave unmarked. `clang -Wl,-no_function_starts`
+    /// then `strip` gave one function where the source has three, silently.
+    func warnOfUnreliableBoundaries(in machO: MachOFile) {
+        guard let warning = boundaryWarning(in: machO) else { return }
+        FileHandle.standardError.write(Data(warning.utf8))
+    }
+
+    /// The warning `warnOfUnreliableBoundaries` prints, or nil. A table
+    /// whose entries all lie outside the code marks nothing: a damaged
+    /// LC_FUNCTION_STARTS (one entry far past the image) left a stripped
+    /// executable decoding as one function, with no warning, because the
+    /// table was not empty.
+    func boundaryWarning(in machO: MachOFile) -> String? {
+        let starts = functionStarts(of: machO)
+        let sections = codeSections(in: machO)
+        guard !starts.contains(where: { start in sections.contains { $0.range.contains(start) } }),
+              let unmarked = unmarkedEntry(in: machO)
+        else { return nil }
+        let table = starts.isEmpty
+            ? "no LC_FUNCTION_STARTS"
+            : "LC_FUNCTION_STARTS lists no address inside the code"
+        return """
+            warning: \(table), and symbols do not mark every function: code at \
+            0x\(String(unmarked, radix: 16)) is a call target or follows a return, with no boundary. \
+            Functions may be merged, so read each body as possibly several.
+
+            """
+    }
+
+    /// The first address with evidence of a function no boundary marks, or
+    /// nil. Evidence, not a boundary: a direct call's target, or code after a
+    /// return that nothing branches to, which a jump table can also reach.
+    /// Decoded in pieces, and a call target ends the scan, so a stripped
+    /// image costs little and Electron's 140 MB of `__text` is never held.
+    func unmarkedEntry(in machO: MachOFile) -> UInt64? {
+        guard let engine = CapstoneEngine() else { return nil }
+        let sections = codeSections(in: machO)
+        var boundaries = Set(symbolLabels(in: machO).keys)
+        boundaries.formUnion(ObjCMetadataIndex.build(in: machO).addresses)
+        boundaries.formUnion(sections.map(\.range.lowerBound))
+        var scan = UnmarkedEntryScan(boundaries: boundaries, sections: sections)
+        let piece: UInt64 = 1 << 20
+        for section in sections {
+            var low = section.range.lowerBound
+            while low < section.range.upperBound {
+                let high = min(low + piece, section.range.upperBound)
+                defer { low = high }
+                guard let bytes = sectionBytes(address: low, size: Int(high - low), in: machO) else { continue }
+                if let target = scan.read(engine.disassemble(bytes, address: low)) { return target }
+            }
+        }
+        return scan.finish()
     }
 
     // MARK: - Data sources
@@ -3038,6 +3773,28 @@ public struct Disassembler: Sendable {
     /// binary has no functions — an absent oracle proves nothing either way.
     public func declaredFunctionCount(in machO: MachOFile) -> Int {
         functionStarts(of: machO).count
+    }
+
+    /// LC_FUNCTION_STARTS as dyld reads it: deltas from `__TEXT`'s address,
+    /// ending at the first zero. MachOKit's iterator reads past it, through
+    /// the zero padding, each zero another start at the previous address. In
+    /// an image that lists starts that only repeats the last one, but an
+    /// image with none (`nocode.c`: no code, an 8-byte list of zeros)
+    /// came back with one start at `__TEXT`'s base, which is the Mach-O
+    /// header: a whole decode found no instruction where that start promised
+    /// a function and threw `parsedNothing`, "a parser defect, not an empty
+    /// binary", for a binary that is empty.
+    static func linkerFunctionStarts(of machO: MachOFile) -> [UInt64] {
+        guard let starts = machO.functionStarts else { return [] }
+        var previous = machO.segments.first { $0.segmentName == "__TEXT" }.map { UInt64($0.virtualMemoryAddress) }
+        var addresses: [UInt64] = []
+        for entry in starts {
+            let address = UInt64(entry.offset)
+            if address == previous { break }
+            addresses.append(address)
+            previous = address
+        }
+        return addresses
     }
 
     /// VM addresses of every function start from LC_FUNCTION_STARTS, **deduped**.
@@ -3060,10 +3817,7 @@ public struct Disassembler: Sendable {
     /// which its internal linker writes in place of LC_FUNCTION_STARTS.
     func functionStarts(of machO: MachOFile) -> [UInt64] {
         var seen: Set<UInt64> = []
-        var starts = (machO.functionStarts.map(Array.init) ?? []).compactMap { entry in
-            let address = UInt64(entry.offset)
-            return seen.insert(address).inserted ? address : nil
-        }
+        var starts = Self.linkerFunctionStarts(of: machO).filter { seen.insert($0).inserted }
         for entry in goFunctions(in: machO)?.entries ?? [] where seen.insert(entry.address).inserted {
             starts.append(entry.address)
         }
@@ -3096,6 +3850,19 @@ public struct Disassembler: Sendable {
     /// itself out of. Returning [] here unconditionally is what let a
     /// leading-whitespace parse bug masquerade as "no functions" on every
     /// low-based dylib.
+    /// The first line in which llvm-objdump says the input itself is wrong:
+    /// a range or bounds complaint, or an error or warning line. Nil when it
+    /// said nothing of the kind.
+    static func objdumpComplaint(stdout: String, stderr: String) -> String? {
+        let lines = (stderr + "\n" + stdout).split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        return lines.first { line in
+            let lower = line.lowercased()
+            return lower.contains("outside valid range") || lower.contains("truncated") || lower.contains("malformed")
+                || lower.hasPrefix("error") || lower.hasPrefix("warning") || lower.contains(": error:")
+                || lower.contains(": warning:")
+        }
+    }
+
     private func objdumpInstructions(
         _ args: [String], machO: MachOFile
     ) throws -> (instructions: [Instruction], labels: [UInt64: String]) {
@@ -3113,7 +3880,8 @@ public struct Disassembler: Sendable {
             guard knownStarts == 0 else {
                 throw DisassembleError.parsedNothing(
                     lines: result.stdout.split(separator: "\n").count,
-                    knownStarts: knownStarts
+                    knownStarts: knownStarts,
+                    toolReport: Self.objdumpComplaint(stdout: result.stdout, stderr: result.stderr)
                 )
             }
         }
@@ -3298,6 +4066,7 @@ public struct Disassembler: Sendable {
         metadataNames: [UInt64: String],
         objcIndex: ObjCMetadataIndex,
         foldedByAddress: [UInt64: [String]],
+        foldSuspects: [UInt64: [String]],
         in machO: MachOFile
     ) -> [UInt64: String] {
         var names: [UInt64: String] = [:]
@@ -3331,6 +4100,11 @@ public struct Disassembler: Sendable {
                 names[address] = name
             }
         }
+        // A body short enough to be shared keeps its heading, which is true
+        // of the body, but a reference does not know which function it meant.
+        for address in foldSuspects.keys {
+            names[address] = "sub_\(String(address, radix: 16))"
+        }
         for address in objcIndex.addresses where names[address] == nil {
             names[address] = objcIndex.binding(for: address)?.displayName
         }
@@ -3354,8 +4128,8 @@ public struct Disassembler: Sendable {
             case .struct(let model): offset = model.descriptor.offset; name = try? model.descriptor.name(in: machO)
             case .class(let model): offset = model.descriptor.offset; name = try? model.descriptor.name(in: machO)
             }
-            if let name {
-                names[machO.address(forOffset: offset)] = "type descriptor for \(name)"
+            if let name, let address = machO.imageAddress(ofOffset: offset) {
+                names[address] = "type descriptor for \(name)"
             }
         }
         return names
@@ -3454,6 +4228,25 @@ public struct Disassembler: Sendable {
                     callee: .kept(name)
                 )
             }
+            // objdump numbers a stub section by its header's stub size, which
+            // Go's linker writes as 6 for 12-byte stubs, so its `symbol stub
+            // for:` named `clock_gettime`'s stub `_fcntl`. The stub table
+            // reads the stride from the stubs (`stubStride`); where the two
+            // disagree on a C import, the table's name stands, in the text
+            // too, so no later parse of it reads objdump's.
+            if let flow = insn.controlFlow, branchFlows.contains(flow), let target = insn.branchTarget,
+               let range = insn.text.range(of: "symbol stub for: "),
+               let name = resolver.callTargetName(at: target) {
+                let raw = String(insn.text[range.upperBound...].prefix { !$0.isWhitespace && $0 != ";" })
+                let bare = raw.hasPrefix("_") ? String(raw.dropFirst()) : raw
+                if !Self.isSwiftMangled(raw), !name.isEmpty, bare != name {
+                    return Instruction(
+                        address: insn.address, text: insn.text.replacingOccurrences(of: raw, with: "_" + name),
+                        annotation: insn.annotation, controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
+                        callArguments: insn.callArguments, detail: insn.detail, callee: .kept(name)
+                    )
+                }
+            }
             // Only name calls not already annotated — objdump's file-mode calls
             // carry their name in-text; this fills the bare-address in-process path.
             guard insn.annotation == nil,
@@ -3472,7 +4265,27 @@ public struct Disassembler: Sendable {
                 callee: .kept(parsed == name ? name : parsed)
             )
         }
-        return function.replacingInstructionPayload(instructions)
+        let qualified = instructions.map { insn -> Instruction in
+            guard let flow = insn.controlFlow, branchFlows.contains(flow),
+                  let callee = DisassembledFunction.calleeName(of: insn),
+                  DisassembledFunction.isARCReferenceHelper(callee) else { return insn }
+            var facts = insn.facts
+            facts.arcIdentityContract = insn.branchTarget.map {
+                resolver.arcIdentityContract(at: $0, named: callee)
+            } ?? false
+            return Instruction(address: insn.address, text: insn.text, annotation: insn.annotation,
+                               controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
+                               callArguments: insn.callArguments, callSelf: insn.callSelf,
+                               resultConsumed: insn.resultConsumed, sourceType: insn.sourceType,
+                               detail: insn.detail, calleeDisplayName: insn.calleeDisplayName,
+                               callee: .kept(insn.callee), facts: facts)
+        }
+        // A span with no instruction (a Go data span) is no body to share.
+        let suspect = function.source == .foldedSymbols || function.instructions.isEmpty
+            || resolver.declinedFoldName(at: function.startAddress) == nil
+            ? nil : resolver.foldedCandidates[function.startAddress]
+        if let suspect { return function.replacingInstructions(qualified, foldedCandidates: suspect) }
+        return function.replacingInstructionPayload(qualified)
     }
 
     /// Resolve register-indirect calls only when value tracking proves the
@@ -3486,7 +4299,11 @@ public struct Disassembler: Sendable {
         resolver: ReferenceResolver,
         selfTypeName: String? = nil,
         vtableIndex: VTableIndex = VTableIndex(),
-        callArguments: [UInt64: [AbstractValue]] = [:]
+        callArguments: [UInt64: [AbstractValue]] = [:],
+        selfFieldClass: (Int) -> String? = { _ in nil },
+        argumentClass: (Int) -> String? = { _ in nil },
+        argumentFieldClass: (Int, Int) -> String? = { _, _ in nil },
+        argumentType: (Int) -> String? = { _ in nil }
     ) -> (function: DisassembledFunction, changesCFG: Bool) {
         /// Resolve a `blr` target to a (name, address). A class vtable dispatch is
         /// resolved through the class's metadata layout; anything else through the
@@ -3496,16 +4313,116 @@ public struct Disassembler: Sendable {
         let genericRequirements = targets.values.contains(where: {
             if case .loadedFrom(.genericWitnessTable, _) = $0 { true } else { false }
         }) ? Self.genericProtocolRequirements(of: function) : nil
-        func resolve(_ value: AbstractValue) -> (address: UInt64?, name: String, isSelfDispatch: Bool)? {
+        func resolve(_ value: AbstractValue, site: UInt64) -> (address: UInt64?, name: String, isSelfDispatch: Bool)? {
             if case .selfVTableMethod(let offset) = value,
                let selfTypeName,
                let address = vtableIndex.methodAddress(type: selfTypeName, offset: offset),
                let name = resolver.name(at: address, ownedBy: selfTypeName) {
                 return (address, Self.namingItsProperty(name, ownedBy: selfTypeName), true)
             }
-            if let witness = valueWitnessCall(value) { return (nil, witness, false) }
-            if let witness = protocolWitnessCall(value) { return (nil, witness.name, false) }
+            if let dispatch = fieldVTableMethod(value) { return (dispatch.address, dispatch.name, false) }
+            if let witness = existentialWitnessCall(value, site: site) { return (nil, witness, false) }
+            if let witness = valueWitnessCall(value, site: site) { return (nil, witness, false) }
+            if let witness = protocolWitnessCall(value, site: site) { return (nil, witness.name, false) }
             return resolver.indirectCallTarget(for: value).map { ($0.address, $0.name, false) }
+        }
+        /// A class method called on an object held in a stored field of
+        /// `self`: `ldr x20, [x20, #k]; ldr x8, [x20]; ldr x8, [x8, #slot];
+        /// blr x8`. The object is an instance of the field's declared class
+        /// or a subclass, and a subclass keeps the slot for the method it
+        /// overrides, so the slot names the declared class's method there.
+        /// Only a slot the class's own vtable lists, and only when that
+        /// implementation's demangled owner is the field's declared type:
+        /// `VTableIndex` is keyed by simple name, and another module's class
+        /// of the same name must not match.
+        /// A call through word `k` of an opaque existential argument's
+        /// witness table: `ldp x19, x21, [x0, #0x18]` (its metadata and
+        /// table), `ldr x8, [x21, #k]`, the projected value in x20, and the
+        /// metadata and table passed last. The parameter's printed type must
+        /// be a protocol this image declares with an opaque existential, and
+        /// the call must hand on that same metadata and table, as a witness
+        /// takes them. Named `<requirement> witness for argN` from the
+        /// protocol's descriptor.
+        func existentialWitnessCall(_ value: AbstractValue, site: UInt64) -> String? {
+            if let name = classBoundExistentialWitnessCall(value, site: site) { return name }
+            guard case .loadedFrom(.loadedFrom(.argument(let argument), offset: 0x20), let offset) = value,
+                  offset >= 8, offset % 8 == 0,
+                  let type = argumentType(argument),
+                  let descriptor = resolver.opaqueExistentialDescriptor(named: type),
+                  let arguments = callArguments[site], arguments.count >= 2,
+                  arguments[arguments.count - 1] == .loadedFrom(.argument(argument), offset: 0x20),
+                  arguments[arguments.count - 2] == .loadedFrom(.argument(argument), offset: 0x18)
+            else { return nil }
+            if let requirement = resolver.protocolRequirement(descriptor: descriptor, word: offset / 8) {
+                return "\(requirement.name) witness for arg\(argument)"
+            }
+            if let shape = resolver.protocolRequirementShape(descriptor: descriptor, word: offset / 8) {
+                return "\(shape.protocolName) requirement \(shape.index) (\(shape.kind)) witness for arg\(argument)"
+            }
+            return nil
+        }
+        /// A call through word `k` of a class-bound existential argument's
+        /// witness table (`any Named`, the object in xN and the table in
+        /// xN+1): the call must pass `swift_getObjectType(object)` and that
+        /// table last, as a witness on a class-bound existential takes them.
+        func classBoundExistentialWitnessCall(_ value: AbstractValue, site: UInt64) -> String? {
+            guard case .loadedFrom(.existentialWitnessTable(let argument), let offset) = value,
+                  offset >= 8, offset % 8 == 0,
+                  let type = argumentType(argument),
+                  let descriptor = resolver.classBoundExistentialDescriptor(named: type),
+                  let arguments = callArguments[site], arguments.count >= 2,
+                  arguments[arguments.count - 1] == .existentialWitnessTable(argument: argument),
+                  case .callResult(let typeSite) = arguments[arguments.count - 2],
+                  let typeCall = function.instructions.first(where: { $0.address == typeSite }),
+                  DisassembledFunction.calleeName(of: typeCall) == "swift_getObjectType",
+                  callArguments[typeSite]?.first == .argument(argument)
+            else { return nil }
+            if let requirement = resolver.protocolRequirement(descriptor: descriptor, word: offset / 8) {
+                return "\(requirement.name) witness for arg\(argument)"
+            }
+            if let shape = resolver.protocolRequirementShape(descriptor: descriptor, word: offset / 8) {
+                return "\(shape.protocolName) requirement \(shape.index) (\(shape.kind)) witness for arg\(argument)"
+            }
+            return nil
+        }
+        /// A call's result has its callee's declared result type: x0 of a
+        /// call whose demangled signature returns a plain class (or an
+        /// Optional of one, which the dispatch only reaches non-nil). Not a
+        /// specialization, whose printed signature can be its original's, and
+        /// not an async callee, whose result is not x0 at the call.
+        func callResultClass(_ site: UInt64) -> String? {
+            guard let call = function.instructions.first(where: { $0.address == site }),
+                  call.controlFlow == .call,
+                  let name = DisassembledFunction.calleeName(of: call),
+                  !name.contains("specialization"),
+                  let signature = DisassembledFunction.splitSignature(name), !signature.isAsync
+            else { return nil }
+            return Self.plainNominalName(signature.result)
+        }
+        /// A class parameter of a free function is the same: its declared
+        /// type, exactly as the signature prints it (`classArguments`).
+        func fieldVTableMethod(_ value: AbstractValue) -> (address: UInt64, name: String)? {
+            let receiverClass: String?, slot: Int
+            switch value {
+            case .loadedFrom(.loadedFrom(.selfFieldValue(let field), offset: 0), offset: let offset):
+                receiverClass = selfFieldClass(field); slot = offset
+            case .loadedFrom(.loadedFrom(.argument(let argument), offset: 0), offset: let offset):
+                receiverClass = argumentClass(argument); slot = offset
+            case .loadedFrom(.loadedFrom(.argumentField(let argument, let field), offset: 0), offset: let offset):
+                receiverClass = argumentFieldClass(argument, field); slot = offset
+            case .loadedFrom(.loadedFrom(.callResult(let site), offset: 0), offset: let offset):
+                receiverClass = callResultClass(site); slot = offset
+            default:
+                return nil
+            }
+            guard slot >= 0, slot % 8 == 0,
+                  let owner = receiverClass,
+                  let simple = owner.split(separator: ".").last.map(String.init),
+                  let address = vtableIndex.methodAddress(type: simple, offset: slot),
+                  let name = resolver.name(at: address, ownedBy: simple),
+                  name.hasPrefix(owner + ".")
+            else { return nil }
+            return (address, name)
         }
         /// A call through word `k` of a witness table that is one of the key
         /// arguments in `self`'s class metadata: `ldr x22, [x20]; ldr x1,
@@ -3514,9 +4431,34 @@ public struct Disassembler: Sendable {
         /// witness for <parameter>`, with the requirement's signature for
         /// laying out the call, only when the table's protocol and the
         /// slot's requirement are both proven.
-        func protocolWitnessCall(_ value: AbstractValue) -> (name: String, signature: String)? {
+        func protocolWitnessCall(_ value: AbstractValue, site: UInt64) -> (name: String, signature: String?)? {
             if case .loadedFrom(.genericWitnessTable(let index), let offset) = value {
-                return genericWitnessCall(table: index, offset: offset)
+                return genericWitnessCall(table: index, offset: offset).map { ($0.name, $0.signature) }
+            }
+            // A table `swift_conformsToProtocol(T, protocol descriptor)`
+            // returned (include/swift/Runtime/Metadata.h): word k is the
+            // protocol's requirement k - 1. A witness takes Self's metadata
+            // and Self's table as its last two arguments
+            // (lib/IRGen/GenProto.cpp, expandTrailingWitnessSignature), so
+            // the call is one only when it passes this table last and T
+            // just before it. Named by the requirement's method descriptor
+            // where the image keeps it, else by the protocol and the
+            // requirement's index and kind, which the descriptor holds.
+            if case .loadedFrom(.callResult(let tableSite), let offset) = value, offset >= 8, offset % 8 == 0,
+               let tableCall = function.instructions.first(where: { $0.address == tableSite }),
+               DisassembledFunction.calleeName(of: tableCall)?.hasPrefix("swift_conformsToProtocol") == true,
+               let lookup = callArguments[tableSite], lookup.count >= 2, case .address(let descriptor) = lookup[1],
+               lookup[0] != .unknown,
+               let arguments = callArguments[site], arguments.count >= 2,
+               arguments[arguments.count - 1] == .callResult(tableSite), arguments[arguments.count - 2] == lookup[0] {
+                let subject = conformingTypeSpelling(lookup[0])
+                if let requirement = resolver.protocolRequirement(descriptor: descriptor, word: offset / 8) {
+                    return ("\(requirement.name) witness for \(subject)", requirement.signature)
+                }
+                if let shape = resolver.protocolRequirementShape(descriptor: descriptor, word: offset / 8) {
+                    return ("\(shape.protocolName) requirement \(shape.index) (\(shape.kind)) witness for \(subject)", nil)
+                }
+                return nil
             }
             guard case .loadedFrom(.selfVTableMethod(let tableOffset), let offset) = value,
                   offset >= 8, offset % 8 == 0, let selfTypeName,
@@ -3554,23 +4496,93 @@ public struct Disassembler: Sendable {
         /// just before the metadata; ValueWitness.def orders the slots).
         /// Only the eight function slots every table has; past them come
         /// the size, stride and flags.
-        func valueWitnessCall(_ value: AbstractValue) -> String? {
+        /// The name a descriptor argument has: a GOT slot the loader binds
+        /// (`associated type descriptor for Swift.Sequence.Element`) or a
+        /// symbol in this image. Nil when nothing names it.
+        func descriptorName(_ value: AbstractValue) -> String? {
+            switch value {
+            case .loaded(let slot): return resolver.loadedName(at: slot)
+            case .address(let address): return resolver.callTargetName(at: address)
+            default: return nil
+            }
+        }
+        /// A conforming type's metadata as a witness name spells it: a
+        /// generic parameter, an argument, an accessor's type, else `?`.
+        func conformingTypeSpelling(_ value: AbstractValue) -> String {
+            switch value {
+            case .genericMetadata(let name): return name
+            case .argument(let index): return "arg\(index)"
+            case .callResult(let site):
+                let prefix = "type metadata accessor for "
+                if let call = function.instructions.first(where: { $0.address == site }),
+                   let callee = DisassembledFunction.calleeName(of: call), callee.hasPrefix(prefix), callee.count > prefix.count {
+                    return String(callee.dropFirst(prefix.count))
+                }
+                return "?"
+            default: return "?"
+            }
+        }
+        func valueWitnessCall(_ value: AbstractValue, site: UInt64) -> String? {
+            let callSite = site
+            /// The witness at `offset` in a value-witness table: one of the
+            /// eight every table has, or an enum's three after its size,
+            /// stride, flags and extra inhabitant count (`+0x58`, ValueWitness.def).
+            /// An enum slot exists only in an enum's table, so it is named
+            /// only when the call passes the metadata it was loaded through
+            /// where the witness takes its metadata, its last parameter.
+            func slotName(_ offset: Int, metadata: AbstractValue) -> String? {
+                guard offset >= 0, offset % 8 == 0 else { return nil }
+                if offset / 8 < MetadataSymbolizer.valueWitnessNames.count {
+                    return MetadataSymbolizer.valueWitnessNames[offset / 8]
+                }
+                guard offset >= 0x58, (offset - 0x58) / 8 < MetadataSymbolizer.enumValueWitnessNames.count else { return nil }
+                let name = MetadataSymbolizer.enumValueWitnessNames[(offset - 0x58) / 8]
+                guard let arity = DisassembledFunction.valueWitnessArity[name],
+                      let arguments = callArguments[callSite], arguments.count >= arity, arguments[arity - 1] == metadata
+                else { return nil }
+                return name
+            }
             // Metadata loaded from a slot the loader fixes (a GOT or literal
             // pool entry bound to `type metadata for X`): `ldr x2, [x2,
             // #0x60]; ldur x8, [x2, #-0x8]; ldr x8, [x8, #k]; blr x8`.
             if case .loadedFrom(.loadedThrough(let slot, offset: -8), let offset) = value,
-               offset >= 0, offset % 8 == 0, offset / 8 < MetadataSymbolizer.valueWitnessNames.count,
+               let witness = slotName(offset, metadata: .loaded(slot)),
                // `loadedName` names only a slot the loader owns.
                let name = resolver.loadedName(at: slot), name.hasPrefix("type metadata for "),
                name.count > "type metadata for ".count {
-                return "\(MetadataSymbolizer.valueWitnessNames[offset / 8]) value witness for \(name.dropFirst("type metadata for ".count))"
+                return "\(witness) value witness for \(name.dropFirst("type metadata for ".count))"
             }
             guard case .loadedFrom(.loadedFrom(let metadata, offset: -8), let offset) = value,
-                  offset >= 0, offset % 8 == 0, offset / 8 < MetadataSymbolizer.valueWitnessNames.count
+                  let slot = slotName(offset, metadata: metadata)
             else { return nil }
-            let slot = MetadataSymbolizer.valueWitnessNames[offset / 8]
             // A generic parameter's metadata, as the function received it.
             if case .genericMetadata(let name) = metadata { return "\(slot) value witness for \(name)" }
+            // An argument no signature types: a stripped generic function's
+            // metadata is only an incoming register. `[[arg - 8] + k]` is a
+            // value witness when the call passes that same argument where
+            // the witness takes its metadata, its last parameter
+            // (swift/include/swift/ABI/ValueWitness.def): `destroy(x, T)`,
+            // `initializeWithCopy(dest, src, T)`. Named for the argument, as
+            // it renders: no type is known.
+            if case .argument(let index) = metadata {
+                guard let arity = DisassembledFunction.valueWitnessArity[slot],
+                      let arguments = callArguments[site], arguments.count >= arity,
+                      arguments[arity - 1] == metadata
+                else { return nil }
+                return "\(slot) value witness for arg\(index)"
+            }
+            // The metadata in word 3 of the existential container an
+            // argument points to (`ldr x2, [x0, #0x18]; ldur x8, [x2, #-8];
+            // ldr x8, [x8]` in `outlined init with copy of M.Shape`), under
+            // the same proof: the call passes it where the witness takes its
+            // metadata. Named for where it was read, as no type is known.
+            if case .loadedFrom(.argument(let index), offset: 0x18) = metadata {
+                guard let arity = DisassembledFunction.valueWitnessArity[slot],
+                      let arguments = callArguments[site], arguments.count >= arity,
+                      arguments[arity - 1] == metadata
+                else { return nil }
+                return "\(slot) value witness for the metadata at arg\(index) + 0x18"
+            }
             // A generic argument of `self`'s class, read from its isa:
             // `ldr x12, [x20]; ldr x23, [x12, #0x50]` in a method of
             // `LRUCache<A, B>`.
@@ -3585,6 +4597,22 @@ public struct Disassembler: Sendable {
             let prefix = "type metadata accessor for "
             if callee.hasPrefix(prefix), callee.count > prefix.count {
                 return "\(slot) value witness for \(callee.dropFirst(prefix.count))"
+            }
+            // An associated type's metadata: `swift_getAssociatedTypeWitness(
+            // request, table, T, requirements base, associated type
+            // descriptor)` returns T's witness for the associated type the
+            // descriptor names (include/swift/Runtime/Metadata.h). Named
+            // `<slot> value witness for T.Element` when the descriptor is
+            // named and the call passes this metadata back as its last
+            // argument; T is spelled as it renders, `?` when unknown.
+            if callee == "swift_getAssociatedTypeWitness", let arguments = callArguments[site], arguments.count >= 5,
+               let descriptor = descriptorName(arguments[4]),
+               descriptor.hasPrefix("associated type descriptor for "),
+               let associated = descriptor.split(separator: ".").last, !associated.contains(" "),
+               let arity = DisassembledFunction.valueWitnessArity[slot],
+               let witnessArguments = callArguments[callSite], witnessArguments.count >= arity,
+               witnessArguments[arity - 1] == metadata {
+                return "\(slot) value witness for \(conformingTypeSpelling(arguments[2])).\(associated)"
             }
             // The mangled-name metadata helpers fetch the type their cache
             // variable (V1) or name pair (V2) spells.
@@ -3605,7 +4633,7 @@ public struct Disassembler: Sendable {
             guard insn.branchTarget == nil,
                   insn.controlFlow == .call || insn.controlFlow == .branch,
                   let value = targets[insn.address],
-                  let resolved = resolve(value)
+                  let resolved = resolve(value, site: insn.address)
             else { return insn }
             let named = resolved.name + (resolved.isSelfDispatch ? DisassembledFunction.selfDispatchMarker : "")
             let annotation = insn.annotation.map { "\($0)  → \(named)" } ?? "→ \(named)"
@@ -3619,9 +4647,13 @@ public struct Disassembler: Sendable {
             if insn.controlFlow == .branch, target != insn.branchTarget { changesCFG = true }
             var facts = insn.facts
             facts.isSelfDispatch = resolved.isSelfDispatch
-            if let witness = protocolWitnessCall(value), witness.name == resolved.name {
-                facts.witnessRequirement = witness.signature
+            facts.arcIdentityContract = resolver.arcIdentityContract(for: value, named: resolved.name)
+            let protocolWitness = protocolWitnessCall(value, site: insn.address)
+            if let witness = protocolWitness, witness.name == resolved.name, let signature = witness.signature {
+                facts.witnessRequirement = signature
             }
+            facts.isWitnessDispatch = resolved.address == nil
+                && (protocolWitness?.name == resolved.name || valueWitnessCall(value, site: insn.address) == resolved.name)
             return Instruction(
                 address: insn.address, text: insn.text, annotation: annotation,
                 controlFlow: insn.controlFlow, branchTarget: target,
@@ -3671,6 +4703,8 @@ public struct Disassembler: Sendable {
         /// header, so `machO.fileOffset(of:)` returns nil for those addresses and
         /// every read has to go through the full cache instead.
         var cacheReader: CacheReader?
+        /// Import/export identity for ARC calls. Display names never supply it.
+        var arcFunctions: [UInt64: RuntimeFunctionReference] = [:]
         /// File-backed byte ranges of a standalone image; nil inside a cache.
         var fileRanges: FileBackedRanges?
         /// Every name identical code folding put at an address (symbols or
@@ -3683,6 +4717,8 @@ public struct Disassembler: Sendable {
         /// Every protocol and method descriptor symbol, demangled, by address
         /// (`protocolRequirement(descriptor:word:)`).
         var protocolDescriptorSymbols: [UInt64: [String]] = [:]
+        /// Loader-proven external entries, separate from presentation names.
+        var importedStubFunctions: [UInt64: ImportedFunctionReference] = [:]
         /// The mangled symbol of each generic specialization in the image, by
         /// address, so a call to one can be laid out from its substituted
         /// signature (`specializedSignature`). An address the linker folded
@@ -3693,8 +4729,7 @@ public struct Disassembler: Sendable {
         /// The substituted signature of the specialization a call to `target`
         /// names, when its symbol proves one.
         func specializedSignature(at target: UInt64, printedName: String) -> String? {
-            guard printedName.hasPrefix("generic specialization <"), let symbol = specializationSymbols[target]
-            else { return nil }
+            guard let symbol = specializationSymbols[target] else { return nil }
             return DisassembledFunction.specializedSignature(symbol: symbol, printedName: printedName)
         }
 
@@ -3704,6 +4739,13 @@ public struct Disassembler: Sendable {
             guard printedName.hasPrefix("generic specialization <"), let symbol = specializationSymbols[target]
             else { return .unavailable }
             return DisassembledFunction.specializedSignatureProof(symbol: symbol, printedName: printedName)
+        }
+
+        /// What the symbol at `target` proves about the printed name. A
+        /// folded target has no symbol, so nothing beyond the name.
+        func specializationClause(at target: UInt64, printedName: String) -> SpecializationClause {
+            guard let symbol = specializationSymbols[target] else { return .absent }
+            return DisassembledFunction.specializationClause(symbol: symbol, printedName: printedName)
         }
 
         /// The requirement a witness table of the protocol whose descriptor
@@ -3735,6 +4777,75 @@ public struct Disassembler: Sendable {
             let addresses = protocolDescriptorSymbols.filter { $0.value.contains(symbol) }
             guard addresses.count == 1, let match = addresses.first, match.value.count == 1 else { return nil }
             return match.key
+        }
+
+        /// The protocol a descriptor in this image describes, and the index
+        /// and kind of the requirement at witness-table `word`, read from
+        /// the descriptor itself: a stripped image keeps no method
+        /// descriptor to name the requirement, but the descriptor names its
+        /// protocol and module (relative pointers at +8 and +4,
+        /// TargetProtocolDescriptor) and each requirement's kind. The same
+        /// declines as `protocolRequirement`, and a protocol nested in
+        /// anything but a module.
+        func protocolRequirementShape(descriptor: UInt64, word: Int) -> (protocolName: String, index: Int, kind: String)? {
+            guard machO.cache == nil, word >= 1,
+                  let base = machO.fileOffset(of: descriptor).map(Int.init),
+                  let flags = UnrecordedTypes.read(base, as: UInt32.self, in: machO),
+                  let signatureCount = UnrecordedTypes.read(base + 12, as: UInt32.self, in: machO),
+                  let requirementCount = UnrecordedTypes.read(base + 16, as: UInt32.self, in: machO),
+                  flags & 0x1F == 3, (flags >> 18) & 0x3F == 0,
+                  word - 1 < Int(requirementCount), signatureCount < 0x10000,
+                  let requirementFlags = UnrecordedTypes.read(base + 24 + 12 * Int(signatureCount) + 8 * (word - 1), as: UInt32.self, in: machO),
+                  requirementFlags & 0x20 == 0
+            else { return nil }
+            let kinds = [1: "method", 2: "init", 3: "getter", 4: "setter"]
+            guard let kind = kinds[Int(requirementFlags & 0x0F)] else { return nil }
+            // A name is a direct relative pointer to a C string, which can
+            // start at an odd address. Only the parent field is indirectable:
+            // its low bit means "through a GOT slot", which is declined.
+            func relative(_ fieldOffset: Int, from address: UInt64, fileBase: Int, indirectable: Bool = false) -> UInt64? {
+                guard let raw = UnrecordedTypes.read(fileBase + fieldOffset, as: Int32.self, in: machO),
+                      !indirectable || raw & 1 == 0
+                else { return nil }
+                return UInt64(bitPattern: Int64(bitPattern: address &+ UInt64(fieldOffset)) &+ Int64(raw))
+            }
+            guard let nameAddress = relative(8, from: descriptor, fileBase: base),
+                  let name = Self.cString(at: nameAddress, in: machO, ranges: fileRanges), !name.isEmpty,
+                  let parent = relative(4, from: descriptor, fileBase: base, indirectable: true),
+                  let parentBase = machO.fileOffset(of: parent).map(Int.init),
+                  let parentFlags = UnrecordedTypes.read(parentBase, as: UInt32.self, in: machO), parentFlags & 0x1F == 0,
+                  let moduleNameAddress = relative(8, from: parent, fileBase: parentBase),
+                  let module = Self.cString(at: moduleNameAddress, in: machO, ranges: fileRanges), !module.isEmpty
+            else { return nil }
+            return ("\(module).\(name)", word - 1, kind + (requirementFlags & 0x10 == 0 ? ", static" : ""))
+        }
+
+        /// The descriptor of an in-image protocol named exactly `name` whose
+        /// existential is opaque: not class-constrained (ProtocolContext
+        /// flags bit 16 set: `ProtocolClassConstraint::Any`) and no special
+        /// protocol (`Error`'s existential is a box). A value of such an
+        /// `any P` is a five-word container, passed and held by address.
+        /// The descriptor of an in-image Swift protocol named exactly `name`
+        /// whose existential is class-bound (bit 16 clear:
+        /// `ProtocolClassConstraint::Class`, no special protocol): the object
+        /// and one witness table. An `@objc` protocol has no Swift descriptor,
+        /// and its existential takes no table.
+        func classBoundExistentialDescriptor(named name: String) -> UInt64? {
+            guard machO.cache == nil, let descriptor = protocolDescriptor(named: name),
+                  let base = machO.fileOffset(of: descriptor).map(Int.init),
+                  let flags = UnrecordedTypes.read(base, as: UInt32.self, in: machO),
+                  flags & 0x1F == 3, (flags >> 16) & 1 == 0, (flags >> 18) & 0x3F == 0
+            else { return nil }
+            return descriptor
+        }
+
+        func opaqueExistentialDescriptor(named name: String) -> UInt64? {
+            guard machO.cache == nil, let descriptor = protocolDescriptor(named: name),
+                  let base = machO.fileOffset(of: descriptor).map(Int.init),
+                  let flags = UnrecordedTypes.read(base, as: UInt32.self, in: machO),
+                  flags & 0x1F == 3, (flags >> 16) & 1 == 1, (flags >> 18) & 0x3F == 0
+            else { return nil }
+            return descriptor
         }
 
         func protocolRequirement(descriptor: UInt64, word: Int) -> (signature: String, name: String)? {
@@ -3802,7 +4913,7 @@ public struct Disassembler: Sendable {
             labels: [UInt64: String], names: [UInt64: String], folded: [UInt64: [String]]
         ) -> [UInt64: String] {
             var symbols: [UInt64: String] = [:]
-            for (address, name) in names where name.hasPrefix("generic specialization <") {
+            for (address, name) in names where DisassembledFunction.isSpecializationName(name) {
                 guard (folded[address]?.count ?? 0) <= 1, let symbol = labels[address] else { continue }
                 symbols[address] = symbol
             }
@@ -3944,12 +5055,56 @@ public struct Disassembler: Sendable {
         /// Layout is `struct __NSConstantString { void *isa; int32 flags; int32 _;
         /// const char *str; long length; }`, so the character pointer sits at
         /// +16 — and is itself rebased, not a literal on-disk pointer.
+        ///
+        /// The flags word at +8 says how the characters are stored and the
+        /// length at +24 how many there are: 0x7c8, that many bytes; 0x7d0,
+        /// that many UTF-16 code units (in `__ustring`). Read as a C string, a
+        /// UTF-16 literal stopped at its first zero byte, `@"héllo"` rendering
+        /// `@"h"`, and `@"a\0b"` (ASCII flags, length 3) `@"a"`. Any other
+        /// flags, or bytes that do not account for the length, decline.
         func cfString(at address: UInt64) -> String? {
             guard cfStringRange?.contains(address) == true,
-                  let target = pointerTarget(at: address &+ 16),
-                  let text = readCString(at: target)
+                  let target = pointerTarget(at: address &+ 16)
             else { return nil }
-            return "@\"\(text)\""
+            func read<T: FixedWidthInteger>(_ at: UInt64, as type: T.Type) -> T? {
+                guard let offset = machO.fileOffset(of: at), offset <= Int.max else { return nil }
+                return UnrecordedTypes.read(Int(offset), as: type, in: machO)
+            }
+            // Without the header's own words (a dyld-cache image whose file
+            // offsets do not reach them), the C string is all there is.
+            guard let flags = read(address &+ 8, as: UInt32.self),
+                  let length = read(address &+ 24, as: UInt64.self)
+            else { return readCString(at: target).map { "@\"\($0)\"" } }
+            guard length <= 4096 else { return nil }
+            switch flags & 0xffff {
+            case 0x7c8:
+                let bytes = (0 ..< length).compactMap { read(target &+ $0, as: UInt8.self) }
+                guard bytes.count == Int(length), read(target &+ length, as: UInt8.self) == 0,
+                      let text = String(bytes: bytes, encoding: .utf8)
+                else { return nil }
+                return "@\"\(Self.literalText(text))\""
+            case 0x7d0:
+                let units = (0 ..< length).compactMap { read(target &+ 2 &* $0, as: UInt16.self) }
+                guard units.count == Int(length) else { return nil }
+                // Strictly: an unpaired surrogate declines rather than
+                // becoming U+FFFD.
+                var text = "", decoder = UTF16(), iterator = units.makeIterator()
+                decoding: while true {
+                    switch decoder.decode(&iterator) {
+                    case .scalarValue(let scalar): text.unicodeScalars.append(scalar)
+                    case .emptyInput: break decoding
+                    case .error: return nil
+                    }
+                }
+                return "@\"\(Self.literalText(text))\""
+            default:
+                return nil
+            }
+        }
+
+        /// A CFString's text, escaped, cut after 48 characters as C strings are.
+        private static func literalText(_ text: String) -> String {
+            text.count > 48 ? escapedLiteralText(String(text.prefix(48))) + "…" : escapedLiteralText(text)
         }
 
         /// A printable C string, crossing subcaches when needed.
@@ -4056,6 +5211,30 @@ public struct Disassembler: Sendable {
         /// cstring), so it never invents a spurious name for a call.
         func callTargetName(at target: UInt64) -> String? { names[target] }
 
+        func arcIdentityContract(at target: UInt64, named callee: String) -> Bool {
+            arcFunctions[target]?.permitsARCIdentity(named: callee) == true
+                || cacheSymbols?.arcIdentityContract(forCallTarget: target, named: callee) == true
+        }
+
+        func arcIdentityContract(for value: AbstractValue, named callee: String) -> Bool {
+            guard DisassembledFunction.isARCReferenceHelper(callee) else { return false }
+            switch value {
+            case .address(let target), .immediate(let target):
+                return arcIdentityContract(at: target, named: callee)
+            case .loaded(let slot):
+                guard holdsFixedPointer(at: slot) else { return false }
+                if let target = pointerTarget(at: slot) { return arcIdentityContract(at: target, named: callee) }
+                guard let offset = machO.fileOffset(of: slot) else { return false }
+                return chainedFixups.arcFunction(at: UInt64(offset), in: machO)?.permitsARCIdentity(named: callee) == true
+            case .loadedThrough(let slot, let offset):
+                guard offset >= 0, holdsFixedPointer(at: slot), let object = pointerTarget(at: slot) else { return false }
+                let field = object &+ UInt64(offset)
+                guard holdsFixedPointer(at: field), let target = pointerTarget(at: field) else { return false }
+                return arcIdentityContract(at: target, named: callee)
+            default: return false
+            }
+        }
+
         /// A function target proven by an abstract register value. The concrete
         /// address is present for in-image rebases/direct addresses; a GOT bind
         /// can still supply an imported function name without an in-image VM
@@ -4091,6 +5270,22 @@ public struct Disassembler: Sendable {
                       let name = callTargetName(at: target) ?? cacheSymbols?.name(forCallTarget: target)
                 else { return nil }
                 return (target, name)
+            default:
+                return nil
+            }
+        }
+
+        func importedFunction(at target: UInt64) -> ImportedFunctionReference? {
+            importedStubFunctions[target]
+        }
+
+        func importedFunction(for value: AbstractValue) -> ImportedFunctionReference? {
+            switch value {
+            case .address(let target), .immediate(let target):
+                return importedFunction(at: target)
+            case .loaded(let slot):
+                guard holdsFixedPointer(at: slot), let offset = machO.fileOffset(of: slot) else { return nil }
+                return chainedFixups.importedFunction(at: UInt64(offset), in: machO)
             default:
                 return nil
             }
@@ -4196,6 +5391,13 @@ public struct Disassembler: Sendable {
     final class ChainedFixupTable: @unchecked Sendable {
         private let lock = NSLock()
         private var binds: [UInt64: String] = [:]
+        private var arcFunctions: [UInt64: RuntimeFunctionReference] = [:]
+        private var legacyStrongFunctions: [UInt64: RuntimeFunctionReference] = [:]
+        private var legacyLazyEntries: [UInt64: Int] = [:]
+        private var legacyLazyValidity: [UInt64: Bool] = [:]
+        /// Each strong two-level import's raw symbol and library, by fixup
+        /// file offset, for a consumer that checks an import's origin.
+        private var importedFunctions: [UInt64: ImportedFunctionReference] = [:]
         private var rebases: [UInt64: UInt64] = [:]
         private var unresolved: Set<UInt64> = []
         private var built = false
@@ -4205,6 +5407,29 @@ public struct Disassembler: Sendable {
             defer { lock.unlock() }
             build(machO)
             return binds[fileOffset]
+        }
+
+        func importedFunction(at fileOffset: UInt64, in machO: MachOFile) -> ImportedFunctionReference? {
+            lock.lock()
+            defer { lock.unlock() }
+            build(machO)
+            return importedFunctions[fileOffset]
+        }
+
+        func arcFunction(at fileOffset: UInt64, in machO: MachOFile) -> RuntimeFunctionReference? {
+            lock.lock()
+            defer { lock.unlock() }
+            build(machO)
+            if let entry = legacyLazyEntries[fileOffset] {
+                let valid: Bool
+                if let cached = legacyLazyValidity[fileOffset] { valid = cached }
+                else {
+                    valid = legacyLazyStubMatches(slot: fileOffset, entry: entry, in: machO)
+                    legacyLazyValidity[fileOffset] = valid
+                }
+                if !valid { return nil }
+            }
+            return arcFunctions[fileOffset]
         }
 
         func rebaseTarget(at fileOffset: UInt64, in machO: MachOFile) -> UInt64? {
@@ -4238,10 +5463,33 @@ public struct Disassembler: Sendable {
             return false
         }
 
+        private static func arcName(_ name: String) -> String {
+            name.hasPrefix("_") ? String(name.dropFirst()) : name
+        }
+
+        /// Whether an import's own addend is zero, read from its raw field.
+        /// MachOKit's `addend` converts the 64-bit form to `Int` and traps on
+        /// one with the top bit set, which the direct retain/release runtime
+        /// binds (`__swift_retainRelease_slowpath_mask_v1 + 0x8000000000000000`).
+        private static func addendIsZero(_ entry: DyldChainedImport) -> Bool {
+            switch entry {
+            case .general: true
+            case let .addend(info): info.layout.addend == 0
+            case let .addend64(info): info.layout.addend == 0
+            }
+        }
+
         private func build(_ machO: MachOFile) {
             guard !built else { return }
             built = true
-            guard let fixups = machO.dyldChainedFixups, let startsInImage = fixups.startsInImage else { return }
+            guard let fixups = machO.dyldChainedFixups else {
+                buildLegacyBindings(machO)
+                for (offset, target) in ChainedRebases.opcodeTargets(in: machO) ?? [:] {
+                    rebases[UInt64(offset)] = target
+                }
+                return
+            }
+            guard let startsInImage = fixups.startsInImage else { return }
             let imports = fixups.imports
             var seen: Set<UInt64> = []
             for segment in fixups.startsInSegments(of: startsInImage) {
@@ -4255,20 +5503,169 @@ public struct Disassembler: Sendable {
                             unresolved.insert(offset)
                         }
                     } else if pointer.fixupInfo.bind != nil,
-                              let (ordinal, _) = pointer.bindOrdinalAndAddend(for: machO),
+                              let (ordinal, pointerAddend) = pointer.bindOrdinalAndAddend(for: machO),
                               imports.indices.contains(ordinal),
                               let name = fixups.symbolName(for: imports[ordinal].info.nameOffset) {
                         binds[offset] = name
+                        let entry = imports[ordinal].info
+                        let entryAddendIsZero = Self.addendIsZero(imports[ordinal])
+                        if DisassembledFunction.isARCReferenceHelper(Self.arcName(name)),
+                           pointerAddend == 0, entryAddendIsZero, !entry.isWeakImport,
+                           let library = Disassembler.externalLibraryName(ordinal: entry.libraryOrdinal, in: machO) {
+                            arcFunctions[offset] = RuntimeFunctionReference(rawSymbol: name, libraryName: library)
+                        }
+                        if pointerAddend == 0, entryAddendIsZero, !entry.isWeakImport,
+                           let library = Disassembler.externalLibraryName(ordinal: entry.libraryOrdinal, in: machO) {
+                            importedFunctions[offset] = ImportedFunctionReference(rawSymbol: name, libraryName: library)
+                        }
                     } else {
                         unresolved.insert(offset)
                     }
                 }
             }
         }
+
+        /// Preserve the loader program's end marker, flags and entry offsets.
+        /// The BindingSymbol projection alone cannot prove a lazy call target.
+        private func buildLegacyBindings(_ machO: MachOFile) {
+            guard let normal = LegacyImportBindings.decode(machO.bindOperations?.data ?? Data(), kind: .normal),
+                  let lazy = LegacyImportBindings.decode(machO.lazyBindOperations?.data ?? Data(), kind: .lazy),
+                  let weak = LegacyImportBindings.decode(machO.weakBindOperations?.data ?? Data(), kind: .weak)
+            else { return }
+            let segments = Array(machO.segments64)
+            var rejected = Set<UInt64>()
+            var lazyReferences: [Int: RuntimeFunctionReference] = [:]
+            var rejectedEntries = Set<Int>()
+            for symbol in normal + lazy + weak {
+                guard segments.indices.contains(symbol.segment) else {
+                    arcFunctions.removeAll(); legacyStrongFunctions.removeAll(); legacyLazyEntries.removeAll()
+                    return
+                }
+                let segment = segments[symbol.segment]
+                let width: UInt64 = symbol.type == 1 ? 8 : 4
+                let (address, overflow) = UInt64(segment.virtualMemoryAddress).addingReportingOverflow(symbol.offset)
+                let (end, endOverflow) = address.addingReportingOverflow(width - 1)
+                guard !overflow, !endOverflow, UInt64(segment.virtualMemorySize) >= width,
+                      symbol.offset <= UInt64(segment.virtualMemorySize) - width,
+                      let offset = machO.fileOffset(of: address),
+                      let last = machO.fileOffset(of: end), UInt64(last) >= UInt64(offset),
+                      UInt64(last) - UInt64(offset) == width - 1
+                else {
+                    arcFunctions.removeAll(); legacyStrongFunctions.removeAll(); legacyLazyEntries.removeAll()
+                    return
+                }
+                let slot = UInt64(offset)
+                binds[slot] = symbol.symbol
+                guard symbol.type == 1, symbol.addend == 0, !symbol.isWeak,
+                      let library = Disassembler.externalLibraryName(ordinal: symbol.libraryOrdinal, in: machO)
+                else {
+                    rejected.insert(slot)
+                    if let entry = symbol.lazyEntry { rejectedEntries.insert(entry) }
+                    continue
+                }
+                let reference = RuntimeFunctionReference(rawSymbol: symbol.symbol, libraryName: library)
+                if let previous = legacyStrongFunctions[slot], previous != reference { rejected.insert(slot) }
+                legacyStrongFunctions[slot] = reference
+                if let entry = symbol.lazyEntry {
+                    if let previous = legacyLazyEntries[slot], previous != entry { rejected.insert(slot) }
+                    legacyLazyEntries[slot] = entry
+                    if let previous = lazyReferences[entry], previous != reference { rejectedEntries.insert(entry) }
+                    lazyReferences[entry] = reference
+                }
+                if DisassembledFunction.isARCReferenceHelper(Self.arcName(symbol.symbol)) { arcFunctions[slot] = reference }
+            }
+            for slot in rejected {
+                arcFunctions.removeValue(forKey: slot)
+                legacyStrongFunctions.removeValue(forKey: slot)
+            }
+            for (slot, entry) in legacyLazyEntries where rejectedEntries.contains(entry) {
+                arcFunctions.removeValue(forKey: slot)
+                legacyStrongFunctions.removeValue(forKey: slot)
+            }
+        }
+
+        /// A lazy import first enters its own helper, which must select the
+        /// same bind program. Merely finding a bind record at the slot is not
+        /// proof that the initial branch reaches that record's function.
+        private func legacyLazyStubMatches(slot: UInt64, entry: Int, in machO: MachOFile) -> Bool {
+            guard slot <= UInt64(Int.max), entry >= 0, entry <= Int(UInt32.max),
+                  let pointer: UInt64 = UnrecordedTypes.read(Int(slot), as: UInt64.self, in: machO),
+                  let helper = machO.sections.first(where: {
+                      $0.segmentName == "__TEXT" && $0.sectionName == "__stub_helper"
+                          && $0.address >= 0 && $0.size >= 36
+                          && pointer >= UInt64($0.address) && pointer - UInt64($0.address) <= UInt64($0.size - 12)
+                  }) else { return false }
+            let start = UInt64(helper.address)
+            guard pointer >= start + 24, (pointer - start - 24) % 12 == 0 else { return false }
+            func word(at address: UInt64) -> UInt32? {
+                guard let offset = machO.fileOffset(of: address), offset <= Int.max else { return nil }
+                return UnrecordedTypes.read(Int(offset), as: UInt32.self, in: machO)
+            }
+            guard word(at: pointer) == 0x18000050, let jump = word(at: pointer + 4),
+                  jump & 0xfc000000 == 0x14000000, word(at: pointer + 8) == UInt32(entry)
+            else { return false }
+            let displacement = Int64(Int32(bitPattern: jump << 6) >> 6) * 4
+            guard pointer &+ 4 &+ UInt64(bitPattern: displacement) == start,
+                  word(at: start + 8) == 0xa9bf47f0, let engine = CapstoneEngine()
+            else { return false }
+            let words = (0..<6).compactMap { word(at: start + UInt64($0 * 4)) }
+            guard words.count == 6 else { return false }
+            let bytes = words.flatMap { word in (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) } }
+            let code = engine.disassemble(Data(bytes), address: start).map {
+                Instruction(address: $0.address, text: $0.text, controlFlow: $0.controlFlow,
+                            branchTarget: $0.branchTarget, detail: $0.detail)
+            }
+            guard code.count == 6, code[0].detail?.id == AARCH64_INS_ADRP, code[1].detail?.id == AARCH64_INS_ADD,
+                  code[0].detail?.operands.first?.operand.register?.key == "x17",
+                  code[0].detail?.operands.first?.operand.register?.widthBits == 64,
+                  code[1].detail?.operands.first?.operand.register?.key == "x17",
+                  code[1].detail?.operands.first?.operand.register?.widthBits == 64,
+                  code[1].detail?.operands.dropFirst().first?.operand.register?.key == "x17",
+                  code[1].detail?.operands.dropFirst().first?.operand.register?.widthBits == 64,
+                  let binder = RuntimeFunctionReference.pointerSlot(in: Array(code.suffix(3)), startingAt: start + 12),
+                  let binderOffset = machO.fileOffset(of: binder),
+                  legacyLazyEntries[UInt64(binderOffset)] == nil,
+                  let reference = legacyStrongFunctions[UInt64(binderOffset)],
+                  reference.rawSymbol == "dyld_stub_binder",
+                  reference.libraryName == "/usr/lib/libSystem.B.dylib"
+            else { return false }
+            return true
+        }
     }
 
     /// Run value tracking on a function and append recovered call arguments
     /// (`args(…)`) to each call instruction.
+    /// Standard-library scalar types: a value of one is never a reference or
+    /// an address, so never any method's `self` in x20.
+    static let plainScalarTypes: Set<String> = [
+        "Swift.Int", "Swift.Int8", "Swift.Int16", "Swift.Int32", "Swift.Int64",
+        "Swift.UInt", "Swift.UInt8", "Swift.UInt16", "Swift.UInt32", "Swift.UInt64",
+        "Swift.Bool", "Swift.Double", "Swift.Float",
+    ]
+
+    /// Whether `callee`, a demangled Swift name with its signature, is an
+    /// instance member of a type the class index proves a class: such a
+    /// member takes `self` in x20. Static members, allocating initializers,
+    /// thunks and free functions do not parse to an instance member.
+    static func isClassInstanceMember(_ callee: String, classTypeIndex: ClassTypeIndex) -> Bool {
+        guard DisassembledFunction.signatureKnown(displayName: callee, objcSignature: nil),
+              let qualified = qualifiedSelfTypeFromDemangledName(callee)
+        else { return false }
+        return classTypeIndex.isClass(qualified)
+    }
+
+    /// A short name for an entry convention's kind, for the probe.
+    static func conventionName(_ entry: MethodEntryConvention) -> String {
+        switch entry {
+        case .swiftInstance: "swift-instance"
+        case .objectiveC: "objc"
+        case .objectiveCInitializer: "objc-initializer"
+        case .swiftFunction: "swift-function"
+        case .swiftValueInstance: "swift-value-instance"
+        case .asyncFunclet(let base, _): "async-funclet(" + (base.map(conventionName) ?? "none") + ")"
+        }
+    }
+
     /// The type whose instance arrives in x20, for one function — or nil, which
     /// is the honest answer for everything that isn't a Swift instance method.
     ///
@@ -4289,7 +5686,8 @@ public struct Disassembler: Sendable {
     static func selfType(
         of function: DisassembledFunction,
         selfIndex: SelfTypeIndex,
-        fieldMaps: [String: FieldMap]
+        fieldMaps: [String: FieldMap],
+        classTypeIndex: ClassTypeIndex = ClassTypeIndex()
     ) -> String? {
         // A type whose SIMPLE name collided was dropped from the map by the
         // collision guard, but its QUALIFIED key survives — so a self type counts
@@ -4307,10 +5705,67 @@ public struct Disassembler: Sendable {
             guard binding.isInstance else { return nil }
             return binding.selfTypeName
         }
-        guard let fromSymbol = selfTypeFromDemangledName(function.analysisName),
-              resolves(fromSymbol)
+        guard let fromSymbol = selfTypeFromDemangledName(function.analysisName) else { return nil }
+        if resolves(fromSymbol) { return fromSymbol }
+        // A class instance member takes self in x20 whether or not the class
+        // has a stored property to lay out. A final method has no vtable
+        // slot and a property-less class no field map, so neither source
+        // above saw `final class Node: NSObject`'s `join`, and its self was
+        // never seeded. The qualified name must be a class by metadata:
+        // a free function parses to its module, which has no qualified name.
+        // The name must be the function's own demangled symbol, with its
+        // signature: only that says `static` for a type member. A name
+        // metadata gives a stripped body (`SwiftSoup.Evaluator.IsEmpty.method`)
+        // does not, and seeding self there lost 25 calls' arguments in one app.
+        // A destructor has no signature to show, but is never static: it
+        // takes the object it destroys in x20.
+        if isSwiftMangled(function.symbol), let name = function.analysisName,
+           DisassembledFunction.signatureKnown(displayName: name, objcSignature: nil)
+            || name.hasSuffix(".__deallocating_deinit") || name.hasSuffix(".deinit"),
+           let qualified = qualifiedSelfTypeFromDemangledName(name),
+           classTypeIndex.isClass(qualified) {
+            return fromSymbol
+        }
+        return nil
+    }
+
+    /// The no-payload enum an instance member or witness holds by address in
+    /// x20, or nil. A resilient enum's members and every witness of a
+    /// non-class protocol take self `@in_guaranteed`, and the swiftself
+    /// register carries that address; a frozen or private enum's own members
+    /// take the tag in x0 and leave x20 alone. The name cannot tell those
+    /// apart, so the body must: x20 read as a load's base before anything
+    /// writes it, in the straight line from the entry. x20 holds nothing else
+    /// a Swift function dereferences on entry here. A static requirement and
+    /// an initializer have a metatype there, and a closure its context; the
+    /// name excludes those. Of a no-payload enum the byte at self is its tag,
+    /// the case index `EnumCaseIndex` names. A private enum has no qualified
+    /// name there (its parent is an anonymous context) and is declined.
+    static func swiftEnumSelfType(of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex) -> String? {
+        guard function.objcMethod == nil, let name = function.analysisName, isSwiftMangled(function.symbol)
         else { return nil }
-        return fromSymbol
+        let type: String
+        if name.hasPrefix("protocol witness for ") {
+            guard !name.hasPrefix("protocol witness for static "),
+                  let conformance = name.range(of: " in conformance "),
+                  !name[..<conformance.lowerBound].contains(".init("),
+                  let colon = name[conformance.upperBound...].range(of: " : ")
+            else { return nil }
+            type = String(name[conformance.upperBound ..< colon.lowerBound])
+        } else {
+            guard let qualified = qualifiedSelfTypeFromDemangledName(name) else { return nil }
+            type = qualified
+        }
+        guard enumCaseIndex.isNoPayloadEnum(type) else { return nil }
+        for insn in function.instructions {
+            guard (insn.controlFlow ?? .sequential) == .sequential, let detail = insn.detail else { return nil }
+            if insn.text.hasPrefix("ld"), detail.operands.contains(where: { info in
+                if case .memory(let base?, _, _) = info.operand { return base.key == "x20" }
+                return false
+            }) { return type }
+            if detail.writtenRegisterKeys.contains("x20") { return nil }
+        }
+        return nil
     }
 
     /// Strip a trailing `(…)` argument list.
@@ -4388,7 +5843,10 @@ public struct Disassembler: Sendable {
         guard !nonInstanceMarkers.contains(where: head.contains) else { return nil }
 
         let parts = head.split(separator: ".").map(String.init)
-        let accessors: Set<String> = ["getter", "setter", "modify", "read", "init", "deinit"]
+        // `deinit` is a member of the type, not an accessor of a property:
+        // `Mod.Node.deinit` is Node's, and read as an accessor it named the
+        // module.
+        let accessors: Set<String> = ["getter", "setter", "modify", "read", "init"]
         // `Type.property.accessor` -> the type is 3 from the end.
         // `Type.method`            -> 2 from the end.
         let typeIndex = accessors.contains(parts.last ?? "") ? parts.count - 3 : parts.count - 2
@@ -4441,6 +5899,31 @@ public struct Disassembler: Sendable {
         return rawCalleeSymbol(of: insn).map(isSwiftMangled) ?? false
     }
 
+    private static func hasRawSwiftCall(in instructions: [Instruction]) -> Bool {
+        instructions.contains {
+            // The exact call predicate below only accepts these two manglings.
+            // Avoid splitting ordinary instruction text on a non-Swift image.
+            ($0.text.contains("$s") || $0.text.contains("$S")) && isSwiftCall($0, swiftTargets: [])
+        }
+    }
+
+    /// Positive entry-register proofs are consumed by Swift calls and by
+    /// signature-derived leading receiver layouts. A signature need not have
+    /// Swift mangling or metadata, so `swiftTargets.isEmpty` alone is no proof
+    /// that these facts are unused. Any Swift evidence keeps the whole image's
+    /// proof dependency graph, including its ordinary argument/helper bodies.
+    static func needsEntryRegisterProofs(
+        in machO: MachOFile, names: [UInt64: String], folded: [UInt64: [String]], swiftTargets: Set<UInt64>
+    ) -> Bool {
+        guard swiftTargets.isEmpty, machO.fullCache == nil,
+              !machO.sections.contains(where: { $0.sectionName.hasPrefix("__swift") }) else { return true }
+        func possibleConsumer(_ name: String) -> Bool {
+            isSwiftMangled(name) || DisassembledFunction.splitSignature(name) != nil
+        }
+        return names.values.contains(where: possibleConsumer)
+            || folded.values.contains { $0.contains(where: possibleConsumer) }
+    }
+
     /// Split an Objective-C method symbol (`-[Class sel:with:]`, `+[Class sel]`,
     /// or with a category `-[Class(Cat) sel]`) into its owner name and selector.
     /// Nil for anything that is not an ObjC method symbol.
@@ -4478,6 +5961,18 @@ public struct Disassembler: Sendable {
         let locations = ObjCArgumentABI.locations(encoding: method.typeEncoding, argumentCount: method.argumentCount)
         let widths = ObjCArgumentABI.stackSlotWidths(encoding: method.typeEncoding, argumentCount: method.argumentCount)
         return locations.filter { location, _ in !location.hasPrefix("stack@") || widths[location] == 8 }
+    }
+
+    /// A direct Objective-C method: its symbol names a method (`-[C sel]` or
+    /// `-[C(Category) sel]`) of a class this image defines, and its IMP is in
+    /// no method list. Every other method of such a class is listed, in its
+    /// class's or a category's list; a direct one is called by its symbol and
+    /// takes no `_cmd`. A category IMP added at runtime without metadata is
+    /// on a class another image defines, so it is not taken for one.
+    static func isDirectObjCMethod(_ symbol: String, at address: UInt64, in objcIndex: ObjCMetadataIndex) -> Bool {
+        guard objcIndex.binding(for: address) == nil,
+              let className = objcClassName(fromSymbol: symbol) else { return false }
+        return objcIndex.classObjectNames.values.contains(className)
     }
 
     private static func objcEntryFromSymbol(_ symbol: String) -> MethodEntryConvention? {
@@ -4536,7 +6031,7 @@ public struct Disassembler: Sendable {
     /// A function/method spells its result after ` -> `; a property *getter*
     /// demangles as `Type.prop.getter : PropType`.
     static func swiftReturnTypeName(of function: DisassembledFunction) -> String? {
-        guard function.objcMethod == nil, let name = function.analysisName else { return nil }
+        guard function.objcMethod == nil, let name = function.layoutName else { return nil }
         return swiftReturnTypeName(forDemangledName: name)
     }
 
@@ -4619,32 +6114,76 @@ public struct Disassembler: Sendable {
     static func scalarTailReturnSites(
         in function: DisassembledFunction,
         enumCaseIndex: EnumCaseIndex = EnumCaseIndex(), classTypeIndex: ClassTypeIndex = ClassTypeIndex(),
-        cfg: FunctionCFG? = nil
+        cfg: FunctionCFG? = nil,
+        isInImageFunction: (UInt64) -> Bool = { _ in false },
+        provenSignature: (_ target: UInt64, _ printedName: String) -> String? = { _, _ in nil }
     ) -> Set<UInt64> {
         func ordinaryHead(_ head: String) -> Bool {
             guard let args = DisassembledFunction.outermostArgumentListRange(of: head) else { return false }
             var name = withoutPrivateDiscriminators(String(head[..<args.lowerBound].dropLast())).trimmingCharacters(in: .whitespaces)
             if name.hasPrefix("static ") { name.removeFirst("static ".count) }
+            // A generic function's parameter clause (`dynType<A>`, `metaOf<A
+            // where A: AnyObject>`) is not part of its name.
+            if name.hasSuffix(">"), let open = name.firstIndex(of: "<") { name = String(name[..<open]) }
             return name.contains(".") && name.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }
         }
         // Compute caller ABI eligibility once, not once per external branch.
         guard function.objcMethod == nil,
               let first = function.instructions.first, let last = function.instructions.last,
-              let name = function.analysisName,
+              let name = function.layoutName.map({ witnessRequirement($0) ?? $0 }),
               let caller = DisassembledFunction.splitSignature(name), !caller.isAsync, !caller.isThrowing,
               ordinaryHead(caller.head),
-              swiftReturnRegister(of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cfg: cfg) != nil
+              let callerRegister = swiftReturnRegister(of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cfg: cfg)
         else { return [] }
         return Set(function.instructions.compactMap { insn in
             guard insn.controlFlow == .branch,
                   insn.branchTarget.map({ $0 < first.address || $0 > last.address }) ?? true,
-                  let name = DisassembledFunction.calleeName(of: insn),
-                  let callee = DisassembledFunction.splitSignature(name), !callee.isAsync, !callee.isThrowing,
-                  caller.result == callee.result,
-                  ordinaryHead(callee.head) || signatureSpecializationKeepsResult(callee.head) && ordinaryHead(withoutSpecializationClauses(callee.head))
+                  let printed = DisassembledFunction.calleeName(of: insn),
+                  // A proven specialization's result is its own: `bump<Double>`
+                  // prints `-> A`, and a tail call to it returns a Double.
+                  case let name = insn.branchTarget.flatMap({ provenSignature($0, printed) }) ?? printed
             else { return nil }
-            return insn.address
+            if let callee = DisassembledFunction.splitSignature(name) {
+                guard !callee.isAsync, !callee.isThrowing, caller.result == callee.result,
+                      ordinaryHead(callee.head) || signatureSpecializationKeepsResult(callee.head) && ordinaryHead(withoutSpecializationClauses(callee.head))
+                else { return nil }
+                return insn.address
+            }
+            // A property getter has no argument list: `String.count.getter :
+            // Swift.Int`. Its type is its result.
+            if let getter = name.range(of: ".getter : "),
+               name[getter.upperBound...].trimmingCharacters(in: .whitespaces) == caller.result {
+                return insn.address
+            }
+            // A C entry point (the SDK or the runtime) that returns one
+            // integer register, from a caller that returns one: the branch
+            // hands on its x0 (`b swift_getObjectType`).
+            // The prototype is the library function's. A function of this
+            // image with a C library's name (a vendored `strlen`) is not
+            // that function, and its result is unproven: the table is
+            // evidence only for a call that leaves the image
+            // (`knownArityNameMayHaveTwin`, as argument layout already
+            // requires). A narrow, float, void or two-word result is not one
+            // whole integer register either.
+            if callerRegister == .integer, DisassembledFunction.cPrototype(of: name)?.result == "i",
+               !(insn.branchTarget.map(isInImageFunction) == true && DisassembledFunction.knownArityNameMayHaveTwin(name)) {
+                return insn.address
+            }
+            return nil
         })
+    }
+
+    /// A protocol witness's requirement, `P4.P.f() -> Swift.Int` of
+    /// `protocol witness for P4.P.f() -> Swift.Int in conformance P4.V :
+    /// P4.P in P4`: the signature the witness is called with, whose result
+    /// it forwards. A witness that tail-calls its member (`ldr x0, [x20];
+    /// b V.f`) rendered `V.f(self: ?)` with no `return`. Nil for any other
+    /// name.
+    static func witnessRequirement(_ name: String) -> String? {
+        let prefix = "protocol witness for "
+        guard name.hasPrefix(prefix), let conformance = name.range(of: " in conformance ", options: .backwards)
+        else { return nil }
+        return String(name[name.index(name.startIndex, offsetBy: prefix.count) ..< conformance.lowerBound])
     }
 
     /// Whether a function signature specialization returns what the
@@ -5167,10 +6706,33 @@ public struct Disassembler: Sendable {
 
     static func swiftScalarArgumentRegisters(
         of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
-        classTypeIndex: ClassTypeIndex = ClassTypeIndex(), fieldMaps: [String: FieldMap] = [:]
+        classTypeIndex: ClassTypeIndex = ClassTypeIndex(), fieldMaps: [String: FieldMap] = [:],
+        isOpaqueExistential: (String) -> Bool = { _ in false },
+        isClassBoundExistential: (String) -> Bool = { _ in false }
     ) -> [String: Int]? {
-        guard function.objcMethod == nil, let name = function.analysisName,
+        swiftArgumentRegisters(of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex,
+                               fieldMaps: fieldMaps, isOpaqueExistential: isOpaqueExistential,
+                               isClassBoundExistential: isClassBoundExistential)?.scalars
+    }
+
+    /// `swiftScalarArgumentRegisters`, with the register that holds each
+    /// class-bound existential parameter's witness table (register key ->
+    /// parameter index); the parameter itself is the object, in the register
+    /// before it.
+    static func swiftArgumentRegisters(
+        of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
+        classTypeIndex: ClassTypeIndex = ClassTypeIndex(), fieldMaps: [String: FieldMap] = [:],
+        isOpaqueExistential: (String) -> Bool = { _ in false },
+        isClassBoundExistential: (String) -> Bool = { _ in false }
+    ) -> (scalars: [String: Int], existentialTables: [String: Int],
+          fields: [String: (argument: Int, offset: Int)], fieldMaps: [Int: FieldMap])? {
+        guard function.objcMethod == nil, let name = function.layoutName,
               Self.isSwiftMangled(function.symbol),
+              // `default argument 1 of print(_:separator:terminator:)` is a
+              // generator with no parameters of its own (the compiler's
+              // lowering: `define … @"…fA0_"()`); the list in its name is
+              // the function's it supplies a default for.
+              !name.hasPrefix("default argument "),
               Self.signatureSpecializationKeepsLayout(name),
               // A getter/setter/accessor or a name without a call signature has no
               // ordinary parameter list to seed.
@@ -5192,7 +6754,8 @@ public struct Disassembler: Sendable {
         let parameters = DisassembledFunction.splitTopLevelArguments(signature[paramsRange])
         guard !parameters.isEmpty else { return nil }
 
-        var registers: [String: Int] = [:]
+        var registers: [String: Int] = [:], tables: [String: Int] = [:]
+        var fields: [String: (argument: Int, offset: Int)] = [:], argumentMaps: [Int: FieldMap] = [:]
         var integerIndex = 0, floatIndex = 0
         for (index, parameter) in parameters.enumerated() {
             switch Self.scalarParameterClass(parameter, enumCaseIndex: enumCaseIndex,
@@ -5216,8 +6779,9 @@ public struct Disassembler: Sendable {
                 // still have proven registers: `afterString(_:_:)`'s Int is
                 // x2. Anything else is not provably laid out: seed nothing.
                 let type = Self.parameterType(parameter)
-                // A one-case enum is zero-sized: it takes no register.
-                if enumCaseIndex.isSingleCaseEnum(type) { continue }
+                // A one-case enum is zero-sized: it takes no register. A
+                // resilient one is still passed by address.
+                if enumCaseIndex.isSingleCaseEnum(type), !enumCaseIndex.isResilient(type) { continue }
                 // A value of a generic parameter (`A`, `A.Element`) arrives as
                 // its address, one integer register (as `swiftCallArgumentLayout`
                 // lays it out), and that address is the parameter.
@@ -5227,6 +6791,26 @@ public struct Disassembler: Sendable {
                     integerIndex += 1
                     continue
                 }
+                // An opaque existential of a protocol this image declares
+                // (`_ s: any Shape`, printed `Module.Shape`) is a five-word
+                // container passed by address: one integer register, which
+                // is the parameter.
+                if isOpaqueExistential(type) {
+                    guard integerIndex < 8 else { return nil }
+                    registers["x\(integerIndex)"] = index
+                    integerIndex += 1
+                    continue
+                }
+                // A class-bound existential (`_ n: any Named`, `Named:
+                // AnyObject`) is the object and then its one witness table,
+                // two integer registers.
+                if isClassBoundExistential(type) {
+                    guard integerIndex + 2 <= 8 else { return nil }
+                    registers["x\(integerIndex)"] = index
+                    tables["x\(integerIndex + 1)"] = index
+                    integerIndex += 2
+                    continue
+                }
                 // A struct this image lays out takes its fields' registers
                 // (`SwiftLowering.aggregateRegisters`): no one of them is the
                 // parameter, but those after it are placed. Declined,
@@ -5234,6 +6818,28 @@ public struct Disassembler: Sendable {
                 if let banks = SwiftLowering.aggregateRegisters(
                     of: type, fieldMaps: fieldMaps, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
                     guard integerIndex + banks.integers <= 8, floatIndex + banks.floats <= 8 else { return nil }
+                    // A struct of scalars passed in registers: each field is
+                    // the next register of its own bank, so each register is
+                    // `arg<n>.field` (`borrowFD(_ fd: FileDesc)` reads fd.fd
+                    // in w0).
+                    if let map = Self.namedFieldMap(type, in: fieldMaps),
+                       let layout = map.mixedScalarFieldBanksInRegisters {
+                        var (integer, float) = (integerIndex, floatIndex)
+                        for field in layout {
+                            if field.isFloat { fields["v\(float)"] = (index, field.offset); float += 1 }
+                            else { fields["x\(integer)"] = (index, field.offset); integer += 1 }
+                        }
+                        argumentMaps[index] = map
+                    }
+                    // A struct too large for registers is passed by address,
+                    // one integer register, and that address is the parameter
+                    // (`bigField(_ big: Big, _ k: Int)` loads big.c from
+                    // [x0, #0x10]), as a generic value's is.
+                    if SwiftLowering.directAggregateRegisters(
+                        of: type, fieldMaps: fieldMaps, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) == nil,
+                       banks == (1, 0) {
+                        registers["x\(integerIndex)"] = index
+                    }
                     integerIndex += banks.integers
                     floatIndex += banks.floats
                     continue
@@ -5249,7 +6855,7 @@ public struct Disassembler: Sendable {
                 integerIndex += words
             }
         }
-        return registers
+        return (registers, tables, fields, argumentMaps)
     }
 
     /// The register class of each source parameter of a Swift callee, in order,
@@ -5358,6 +6964,25 @@ public struct Disassembler: Sendable {
         let context = String(base[..<dot])
         guard isStatic || !context.contains(".") || classTypeIndex.isClass(context) else { return nil }
         return "\(isStatic ? "static " : "")\(context).setter(\(callee[colon.upperBound...])) -> ()"
+    }
+
+    /// An ordinary property's setter has one logical assigned value even
+    /// when its value-type receiver or value cannot be placed in registers.
+    /// This contract supplies no machine layout: a function-valued property
+    /// is still one value, and a subscript or thunk is not an ordinary setter.
+    static func ordinarySetterAssignedValueType(_ callee: String) -> String? {
+        guard let marker = callee.range(of: ".setter : ") else { return nil }
+        var base = withoutPrivateDiscriminators(String(callee[..<marker.lowerBound]))
+        if base.hasPrefix("static ") { base.removeFirst("static ".count) }
+        guard !base.isEmpty,
+              base.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }),
+              base.split(separator: ".", omittingEmptySubsequences: false).allSatisfy({ !$0.isEmpty }),
+              let dot = base.lastIndex(of: ".")
+        else { return nil }
+        let property = base[base.index(after: dot)...]
+        guard property != "subscript", property != "init", property != "deinit" else { return nil }
+        let type = callee[marker.upperBound...].trimmingCharacters(in: .whitespaces)
+        return type.isEmpty ? nil : type
     }
 
     static let dispatchThunkPrefix = "dispatch thunk of "
@@ -5848,7 +7473,7 @@ public struct Disassembler: Sendable {
     static func swiftEnumArgumentTypes(
         of function: DisassembledFunction, enumCaseIndex: EnumCaseIndex
     ) -> [Int: String] {
-        guard function.objcMethod == nil, let name = function.analysisName,
+        guard function.objcMethod == nil, let name = function.layoutName,
               Self.isSwiftMangled(function.symbol),
               let signature = DisassembledFunction.splitSignature(name)?.head
         else { return [:] }
@@ -5872,7 +7497,7 @@ public struct Disassembler: Sendable {
     /// lets `!b` (lowered `(arg ^ 1) & 1`) fold to `!arg` and `b == true`/`b`
     /// used in a condition read cleanly rather than as a masked integer test.
     static func swiftBoolArgumentIndices(of function: DisassembledFunction) -> Set<Int> {
-        guard function.objcMethod == nil, let name = function.analysisName,
+        guard function.objcMethod == nil, let name = function.layoutName,
               Self.isSwiftMangled(function.symbol),
               let signature = DisassembledFunction.splitSignature(name)?.head
         else { return [] }
@@ -5899,7 +7524,7 @@ public struct Disassembler: Sendable {
     static func swiftFloatArgumentInfo(
         of function: DisassembledFunction
     ) -> (indices: Set<Int>, isDouble: Bool)? {
-        guard function.objcMethod == nil, let name = function.analysisName,
+        guard function.objcMethod == nil, let name = function.layoutName,
               Self.isSwiftMangled(function.symbol),
               let split = DisassembledFunction.splitSignature(name)
         else { return nil }
@@ -5960,7 +7585,8 @@ public struct Disassembler: Sendable {
     static func sizeIsUnknown(_ value: AbstractValue) -> Bool {
         func unknownPart(_ value: AbstractValue) -> Bool {
             switch value {
-            case .unknown, .callResultHigh, .loadedThrough, .loadedFrom, .selfIsaSnapshot, .genericWitnessTable: return true
+            case .unknown, .callResultHigh, .loadedThrough, .loadedFrom, .selfIsaSnapshot, .genericWitnessTable,
+                 .existentialWitnessTable: return true
             case .binary(_, let lhs, let rhs): return unknownPart(lhs) || unknownPart(rhs)
             case .unary(_, let operand): return unknownPart(operand)
             default: return false
@@ -5979,6 +7605,12 @@ public struct Disassembler: Sendable {
 
     /// Name a loop-carried induction variable by id — `i`, `j`, `k`, then `i3`, …
     /// (skips `l`/`m`/`n`, which read poorly next to `1` and common loop bounds).
+    /// `var i = 3`, or `var i = arg0` for a counter that starts from an
+    /// argument.
+    static func loopDeclaration(_ binding: LoopInitialization) -> String {
+        "var \(binding.name) = \(binding.argument.map { "arg\($0)" } ?? renderImmediate(binding.value))"
+    }
+
     static func inductionVariableName(_ id: Int) -> String {
         ["i", "j", "k"].indices.contains(id) ? ["i", "j", "k"][id] : "i\(id)"
     }
@@ -6107,6 +7739,48 @@ public struct Disassembler: Sendable {
     /// never use `x20` as a memory base — a `[x20, …]` access proves `self` is the
     /// pointer form (a mutating or indirectly-passed struct, or a class), where
     /// decomposing SIMD registers would be wrong.
+    /// Whether a value is built only from constants, addresses, arguments,
+    /// self's fields and frame addresses, through arithmetic, selects and
+    /// loads: no call's result, and nothing else a comment could not spell
+    /// without repeating a statement.
+    ///
+    /// With `callSites`, a call's result is allowed and its site collected:
+    /// the caller binds each (`let r0 = use(…)`) so the comment names the
+    /// binding instead of spelling the call a second time.
+    /// Whether x0 at a return is only what calls left there: a call's
+    /// result, or a choice between such on different paths (`if (a) f();
+    /// else g();` ends with one or the other in x0, as does a function
+    /// that returns one of them: the code is the same). A float-returning
+    /// C function under UBSan read `x0 = (… ? r1 : r0)`, its handler's or
+    /// its last call's leftover, while its result was in d0.
+    static func isLeftoverResult(_ value: AbstractValue) -> Bool {
+        switch value {
+        case .callResult: true
+        case .select(_, let whenTrue, let whenFalse): isLeftoverResult(whenTrue) && isLeftoverResult(whenFalse)
+        default: false
+        }
+    }
+
+    static func isCallFreeValue(_ value: AbstractValue, callSites: UnsafeMutablePointer<Set<UInt64>>? = nil) -> Bool {
+        switch value {
+        case .immediate, .address, .argument, .argumentField, .selfFieldValue, .frame, .local:
+            return true
+        case .callResult(let site):
+            guard let callSites else { return false }
+            callSites.pointee.insert(site)
+            return true
+        case .binary(_, let lhs, let rhs):
+            return isCallFreeValue(lhs, callSites: callSites) && isCallFreeValue(rhs, callSites: callSites)
+        case .unary(_, let operand), .loadedFrom(let operand, _):
+            return isCallFreeValue(operand, callSites: callSites)
+        case .select(let condition, let whenTrue, let whenFalse):
+            return isCallFreeValue(condition, callSites: callSites) && isCallFreeValue(whenTrue, callSites: callSites)
+                && isCallFreeValue(whenFalse, callSites: callSites)
+        default:
+            return false
+        }
+    }
+
     static func swiftValueTypeSelfFields(
         of function: DisassembledFunction, fieldMaps: [String: FieldMap]
     ) -> (typeName: String, fieldMap: FieldMap,
@@ -6160,8 +7834,18 @@ public struct Disassembler: Sendable {
         var floatIndex = 0
         var integerIndex = 0
         let floatingSelfOffsets = selfMap.homogeneousFloatFieldOffsets
+        // A small integer struct's self follows its formals in the general
+        // registers: `g(_ k:)` takes k in x0 and self.s in x1, and `h(_ a:,
+        // _ b:)` self.s in x2. Seeded only when every formal is one register
+        // (the loop below declines anything else), after the last of them.
+        var integerSelfAfterFormals: [Int]?
+        // A struct of scalars in both banks: each field follows the formals
+        // in its own bank.
+        var mixedSelfAfterFormals: [(offset: Int, isFloat: Bool)]?
         if floatingSelfOffsets != nil {
             // Seeded after the formal arguments, below.
+        } else if let selfOffsets = selfMap.wordIntegerFieldOffsetsInRegisters, !parameters.isEmpty {
+            integerSelfAfterFormals = selfOffsets
         } else if let selfOffsets = selfMap.wordIntegerFieldOffsetsInRegisters, parameters.isEmpty {
             // A small integer struct shares the general-register bank with its
             // parameters, and (unlike a float HFA in its own SIMD bank) `self`
@@ -6173,6 +7857,8 @@ public struct Disassembler: Sendable {
                 seeded["x\(offset / 8)"] = .selfFieldValue(offset: offset)
             }
             integerIndex = selfOffsets.count
+        } else if let banks = selfMap.mixedScalarFieldBanksInRegisters {
+            mixedSelfAfterFormals = banks
         } else {
             return nil
         }
@@ -6199,6 +7885,23 @@ public struct Disassembler: Sendable {
                     floatIndex += 1
                 }
                 argumentFieldMaps[index] = map
+            }
+        }
+        if let integerSelfAfterFormals {
+            guard integerIndex + integerSelfAfterFormals.count <= 8 else { return nil }
+            for (word, offset) in integerSelfAfterFormals.enumerated() {
+                seeded["x\(integerIndex + word)"] = .selfFieldValue(offset: offset)
+            }
+        }
+        if let mixedSelfAfterFormals {
+            for field in mixedSelfAfterFormals {
+                if field.isFloat {
+                    guard floatIndex < 8 else { return nil }
+                    seeded["v\(floatIndex)"] = .selfFieldValue(offset: field.offset); floatIndex += 1
+                } else {
+                    guard integerIndex < 8 else { return nil }
+                    seeded["x\(integerIndex)"] = .selfFieldValue(offset: field.offset); integerIndex += 1
+                }
             }
         }
         if let floatingSelfOffsets {
@@ -6306,6 +8009,42 @@ public struct Disassembler: Sendable {
             .contains { callee.hasPrefix($0) }
     }
 
+    /// The declared type of the stored field that is exactly the eight
+    /// bytes at `offset` of a type laid out by `map`, when it is a plain
+    /// nominal name (`Module.Engine`, or an Optional of one, whose payload a
+    /// call only reaches once it is non-nil). Nil for a generic, function,
+    /// existential or composed type, and for any offset no single field
+    /// covers exactly.
+    static func declaredClassOfField(at offset: Int, in map: FieldMap?) -> String? {
+        guard let map, case .success(.whole(let name, _)) = map.lookup(offset: offset, bytes: 8),
+              let type = map.fieldTypeNames[name]
+        else { return nil }
+        return plainNominalName(type)
+    }
+
+    /// `type` when it is a plain qualified nominal name, or an Optional of
+    /// one (unwrapped); nil for anything generic, functional, existential,
+    /// composed or unqualified.
+    /// Parameter `index`'s type as the function's signature prints it, the
+    /// numbering the entry convention seeds `.argument(index)` with.
+    static func printedParameterType(of function: DisassembledFunction, at index: Int) -> String? {
+        guard let name = function.layoutName, let split = DisassembledFunction.splitSignature(name),
+              let range = DisassembledFunction.outermostArgumentListRange(of: split.head)
+        else { return nil }
+        let parameters = DisassembledFunction.splitTopLevelArguments(split.head[range])
+        return parameters.indices.contains(index) ? parameterType(parameters[index]) : nil
+    }
+
+    static func plainNominalName(_ type: String) -> String? {
+        var type = type
+        let optional = "Swift.Optional<"
+        if type.hasPrefix(optional), type.hasSuffix(">") { type = String(type.dropFirst(optional.count).dropLast()) }
+        guard !type.isEmpty, type.contains("."),
+              !type.contains(where: { "<>()[]&:, ?!".contains($0) })
+        else { return nil }
+        return type
+    }
+
     private func enrichCallArguments(
         in function: DisassembledFunction,
         cfg: FunctionCFG,
@@ -6318,6 +8057,7 @@ public struct Disassembler: Sendable {
         vtableIndex: VTableIndex = VTableIndex(),
         argumentFieldMaps: [Int: FieldMap] = [:],
         classArgumentFieldMaps: [Int: FieldMap] = [:],
+        classArgumentTypes: [Int: String] = [:],
         enumCaseIndex: EnumCaseIndex = EnumCaseIndex(),
         payloadEnumIndex: PayloadEnumCaseIndex = PayloadEnumCaseIndex(),
         argumentEnumTypes: [Int: String] = [:],
@@ -6329,10 +8069,11 @@ public struct Disassembler: Sendable {
         asyncContextSlots: [Int: AbstractValue] = [:],
         asyncSuspensions: [UInt64: AsyncSuspensionNote] = [:],
         objcIndex: ObjCMetadataIndex? = nil,
-        registerSummaries: [UInt64: CalleeRegisterSummary] = [:],
+        registerSummaries: [UInt64: CalleeRegisterFacts] = [:],
         selfMembers: SelfMemberCache = SelfMemberCache(),
         callResultBanks: CallResultBankCache = CallResultBankCache(),
-        inlinedPrefixes: [UInt64: [Instruction]] = [:]
+        inlinedPrefixes: [UInt64: [Instruction]] = [:],
+        callerProvenResult: SwiftReturnRegister? = nil
     ) -> DisassembledFunction {
         // Floating-point signature info: which arguments are float, and whether
         // the function's float type is double-precision — so a literal operand
@@ -6346,6 +8087,36 @@ public struct Disassembler: Sendable {
         /// A source-level field path for this method convention.
         func fieldPath(_ name: String) -> String {
             objcFieldSyntax ? "self->\(name)" : "self.\(name)"
+        }
+
+        /// Part of a field: its member when the field is an imported C struct
+        /// whose own field record in the image names those bytes (`stamp:
+        /// timespec` at +8 is `stamp.tv_nsec`), else its byte range
+        /// (`name[8..<16]`). A C struct's layout is the C ABI's, which the
+        /// record states; a Swift struct's part keeps its range.
+        /// `owner` is the map `name`'s last component is a field of: self's
+        /// at the top, which resolves the field's symbolic type reference
+        /// (`fieldTypeNames`); a member's own C struct's below.
+        func memberPath(
+            _ name: String, type: String?, subOffset: Int, bytes: Int,
+            field: String? = nil, owner: FieldMap? = nil
+        ) -> String {
+            let fieldName = field ?? name
+            let resolved = type.map { FieldMap.printableTypeName(
+                mangled: $0, resolved: (owner ?? fieldMap)?.fieldTypeNames[fieldName]) }
+            if let resolved, resolved.hasPrefix("__C."), let map = typeFieldMaps[resolved],
+               case .success(let hit) = map.lookup(offset: subOffset, bytes: max(bytes, 1)) {
+                switch hit {
+                case .whole(let member, _):
+                    return "\(name).\(member)"
+                case .part(let member, let memberType, let inner, let innerBytes):
+                    return memberPath("\(name).\(member)", type: memberType, subOffset: inner, bytes: innerBytes,
+                                      field: member, owner: map)
+                case .spans:
+                    break
+                }
+            }
+            return "\(name)[\(subOffset)..<\(subOffset + bytes)]"
         }
 
         /// Render a by-value struct argument's field — `arg1.y` — from the
@@ -6450,7 +8221,7 @@ public struct Disassembler: Sendable {
                 // Async plumbing: the context pointer, the continuation, and an
                 // unproven context slot are not source values.
                 return .unknown
-            case .loadedThrough, .loadedFrom, .selfIsaSnapshot, .genericWitnessTable:
+            case .loadedThrough, .loadedFrom, .selfIsaSnapshot, .genericWitnessTable, .existentialWitnessTable:
                 // A word read through a loaded pointer: named only as a call
                 // target (`indirectCallTarget`), unknown as a value. So is an
                 // isa kept across a call.
@@ -6548,7 +8319,19 @@ public struct Disassembler: Sendable {
             }
         }
         var callTargets: [UInt64: UInt64] = [:]
+        /// Whether a call's arguments follow a signature: the one its
+        /// target's symbol proves whole, or the printed one where that stands.
+        func followsASignature(target: UInt64, callee: String) -> Bool {
+            switch resolver.specializationClause(at: target, printedName: callee) {
+            case .proven(let layout): layout.isComplete
+            case .declined: false
+            case .absent: Self.signatureSpecializationKeepsLayout(callee)
+            }
+        }
         var unprovenTypedErrorSites = Set<UInt64>()
+        // Symbol substitution is independent of whether the body admits a
+        // register summary. Keep its proved layout even for an undecoded body.
+        var specializedLayoutBySite: [UInt64: String] = [:]
         /// The name a call's arguments are laid out by: for a generic
         /// specialization its substituted signature, which says what the
         /// printed `A` is. `bump<Double>(d)` passes d in d0, and read from its
@@ -6556,6 +8339,7 @@ public struct Disassembler: Sendable {
         func layoutName(at address: UInt64, callee: String) -> String {
             if let thunk = witnessLayoutNames[address] { return thunk }
             if let setter = Self.setterLayoutName(callee, classTypeIndex: classTypeIndex) { return setter }
+            if let specialized = specializedLayoutBySite[address] { return specialized }
             return callTargets[address].flatMap { resolver.specializedSignature(at: $0, printedName: callee) } ?? callee
         }
         /// A call through a protocol witness table, laid out as the
@@ -6581,13 +8365,19 @@ public struct Disassembler: Sendable {
                 }
             }
         }
+        if let sites = registerSummaries[function.startAddress]?.provenAllocationSites, !sites.isEmpty {
+            tracer.summaryProvenAllocations = Set(sites)
+        }
         for insn in function.instructions where insn.controlFlow == .call || insn.controlFlow == .branch {
             guard let target = insn.branchTarget else { continue }
             // This proof is about the symbol, independent of whether a body
             // summary or any traced argument values are available.
-            if let callee = DisassembledFunction.calleeName(of: insn),
-               case .unprovenDroppedTypedError = resolver.specializedSignatureProof(at: target, printedName: callee) {
-                unprovenTypedErrorSites.insert(insn.address)
+            if let callee = DisassembledFunction.calleeName(of: insn) {
+                switch resolver.specializedSignatureProof(at: target, printedName: callee) {
+                case .signature(let specialized): specializedLayoutBySite[insn.address] = specialized
+                case .unprovenDroppedTypedError: unprovenTypedErrorSites.insert(insn.address)
+                case .unavailable: break
+                }
             }
             guard registerSummaries[target] != nil else { continue }
             if let memory = registerSummaries[target]?.memoryEffect, case .literalStores = memory {
@@ -6600,6 +8390,10 @@ public struct Disassembler: Sendable {
                 tracer.calleeClobbers[target] = clobbered
             }
             if registerSummaries[target]?.writesNoFields == true { tracer.fieldPreservingCallees.insert(target) }
+            if insn.controlFlow == .call, let mask = registerSummaries[target]?.mayReadRegisters,
+               mask != CalleeRegisterSummary.allRegisterBits {
+                tracer.calleeReadRegisters[target] = mask
+            }
             if insn.controlFlow == .call, registerSummaries[target]?.readsFramePointer == true {
                 tracer.framePointerUsers.insert(target)
             }
@@ -6663,10 +8457,17 @@ public struct Disassembler: Sendable {
             instruction.controlFlow == .branch && instruction.branchTarget == nil
                 && function.switchTargets[instruction.address] == nil ? instruction.address : nil
         })
+        let originalARCContracts = Set(function.instructions.filter { $0.facts.arcIdentityContract }.map(\.address))
         let resolvedControlFlow = annotateIndirectControlFlowTargets(
             in: function, targets: analysis.indirectControlFlowTargets,
             resolver: resolver, selfTypeName: selfTypeName, vtableIndex: vtableIndex,
-            callArguments: analysis.callSites.mapValues(\.arguments)
+            callArguments: analysis.callSites.mapValues(\.arguments),
+            selfFieldClass: { offset in Self.declaredClassOfField(at: offset, in: fieldMap) },
+            argumentClass: { classArgumentTypes[$0] },
+            argumentFieldClass: { argument, offset in
+                Self.declaredClassOfField(at: offset, in: classArgumentFieldMaps[argument])
+            },
+            argumentType: { argument in Self.printedParameterType(of: function, at: argument) }
         )
         let function = resolvedControlFlow.function
         // Resolving an external BR adds its successor address. BLR naming
@@ -6687,18 +8488,43 @@ public struct Disassembler: Sendable {
                 callTargets[insn.address] = target
             }
         }
+        // A call or tail branch through a register whose value the trace
+        // proved is an in-image function's address (`adrp x8; add x8; blr
+        // x8`) has that function's body to bound its arguments, as a direct
+        // `bl` to it does. Left out, `mov x0, #3; mov x1, #7; blr x8` to a
+        // one-argument function read `one_arg(3, 7)`, and a `br x16` whose
+        // x0 was unknown read `one_arg()`.
+        for insn in function.instructions
+        where (insn.controlFlow == .call || insn.controlFlow == .branch) && callTargets[insn.address] == nil
+            && insn.detail?.operands.first?.operand.register != nil {
+            // The target the trace resolved: carried on the instruction once
+            // it is named, or still the register's proven value.
+            let target: UInt64? = insn.branchTarget ?? {
+                switch analysis.indirectControlFlowTargets[insn.address] {
+                case .address(let address)?, .immediate(let address)?: address
+                default: nil
+                }
+            }()
+            if let target, registerSummaries[target] != nil { callTargets[insn.address] = target }
+        }
         // Vtable targets become named only after the first trace. A newly
         // resolved setter must invalidate its result before downstream values
         // are recovered; rendering-time suppression leaves fabricated values
         // inside later expressions.
+        // A value witness named through its table is resolved here too, and
+        // `destroy` returns nothing: its x0 flowed into the next call.
         let resolvedVoidCalls = Set(function.instructions.compactMap { insn -> UInt64? in
             guard insn.controlFlow == .call,
                   let callee = DisassembledFunction.calleeName(of: insn),
                   DisassembledFunction.swiftAccessorProperty(callee)?.isGetter == false
+                    || DisassembledFunction.isVoidValueWitness(callee)
             else { return nil }
             return insn.address
         })
-        if !resolvedVoidCalls.isEmpty {
+        let resolvedARCCalls = function.instructions.contains {
+            $0.facts.arcIdentityContract && !originalARCContracts.contains($0.address)
+        }
+        if !resolvedVoidCalls.isEmpty || resolvedARCCalls {
             tracer.voidCallSites = resolvedVoidCalls
             analysis = tracer.reanalyze(function, entry: entry, cfg: cfg)
         }
@@ -6734,8 +8560,29 @@ public struct Disassembler: Sendable {
             else { return nil }
             return insn.address
         })
+        // A tail branch to an in-image body that writes neither x0 nor v0
+        // and leaves only through `ret` hands back the registers it was
+        // given: it is this function's return of what x0 and v0 hold at the
+        // branch. It makes no call and stores only to its own stack, so the
+        // return is all it does. `callGen` is `b sub_3e0`, and sub_3e0 is a lone `ret`
+        // (`gen(a, t) { a }` specialized), so it returns its arg0; read as an
+        // ordinary tail call it rendered `sub_3e0()` and no return at all.
+        let ownAddresses = Set(function.instructions.map(\.address))
+        let passthroughTailBranches = Set(function.instructions.compactMap { insn -> UInt64? in
+            guard insn.controlFlow == .branch, let target = insn.branchTarget,
+                  !ownAddresses.contains(target),
+                  let summary = registerSummaries[target], !summary.mayWriteResult, !summary.mayWriteFloatResult,
+                  summary.storesOnlyToStack,
+                  // x21 is Swift's error register: a body that may leave
+                  // another value there changes a throwing caller's outcome
+                  // after the branch, where its exit was read.
+                  !summary.clobberedCalleeSaved.contains("x21")
+            else { return nil }
+            return insn.address
+        })
         func isReturn(_ insn: Instruction) -> Bool {
             insn.controlFlow == .return || asyncReturns.contains(insn.address)
+                || passthroughTailBranches.contains(insn.address)
         }
         // `swiftReturnRegister(of:)` declines every async function, because x0 at
         // its `ret` is stale. At a proven async return the result is in x0/v0,
@@ -6779,29 +8626,75 @@ public struct Disassembler: Sendable {
         // arity is unknown, not absent. Not a call through a register the
         // tracer resolved, which may land on an in-image body (`blr x8`
         // into `twice(long)`), nor an in-image callee with a summary.
+        let unprovenARCSites = Set(function.instructions.lazy.filter { insn in
+            guard insn.controlFlow == .call || insn.controlFlow == .branch
+                    || insn.controlFlow == .conditionalBranch else { return false }
+            return DisassembledFunction.calleeName(of: insn).map(DisassembledFunction.isARCReferenceHelper) == true
+                && !insn.facts.arcIdentityContract
+        }.map(\.address))
         let undeclaredCImportCalls = Set(function.instructions.lazy.filter { insn in
             let mnemonic = insn.text.prefix { $0 != " " && $0 != "\t" }
             return (mnemonic == "bl" || mnemonic == "b")
                 && DisassembledFunction.calleeName(of: insn).map(Self.isUndeclaredCSymbol) == true
+                || (unprovenARCSites.contains(insn.address) && callTargets[insn.address] == nil)
         }.map(\.address))
+        var unprovenGenericLayoutSites = Set<UInt64>()
+        var unplacedSetterValueSites = Set<UInt64>()
         for insn in function.instructions
         where insn.controlFlow == .call || insn.controlFlow == .branch {
-            guard sites[insn.address] == nil,
-                  let callee = DisassembledFunction.calleeName(of: insn)
-            else { continue }
-            // So does an in-image callee whose body itself reads an
-            // argument register: `readsFirst(?)`, not `readsFirst()`, when
-            // its argument was loaded through an unknown pointer.
+            guard let callee = DisassembledFunction.calleeName(of: insn) else { continue }
+            if Self.isSwiftCall(insn, swiftTargets: swiftTargets),
+               Self.ordinarySetterAssignedValueType(callee) != nil {
+                let name = layoutName(at: insn.address, callee: callee)
+                // A declined receiver/value ABI does not erase the setter's
+                // assigned source value. Compute this for existing snapshots
+                // as well as missing ones, without requiring a body summary.
+                if Self.swiftCallArgumentLayout(callee: name, enumCaseIndex: enumCaseIndex,
+                       classTypeIndex: classTypeIndex, fieldMaps: typeFieldMaps) == nil,
+                   Self.swiftCallArgumentLayout(callee: name, enumCaseIndex: enumCaseIndex,
+                       classTypeIndex: classTypeIndex, anyContext: true, fieldMaps: typeFieldMaps) == nil {
+                    unplacedSetterValueSites.insert(insn.address)
+                }
+            }
+            if callee.hasPrefix("generic specialization <") {
+                let name = layoutName(at: insn.address, callee: callee)
+                // A printed source formal and a declined concrete layout do
+                // not establish zero arguments. Neither body absence nor a
+                // trailing run of unknown machine values proves its arity.
+                // Zero-formal calls (including proved dropped formals) stay
+                // zero-formal; metadata, x20 and x8 are not source arguments.
+                if let signature = DisassembledFunction.splitSignature(name),
+                   let range = DisassembledFunction.outermostArgumentListRange(of: signature.head),
+                   !signature.head[range].trimmingCharacters(in: .whitespaces).isEmpty,
+                   Self.swiftCallArgumentLayout(callee: name, enumCaseIndex: enumCaseIndex,
+                       classTypeIndex: classTypeIndex, fieldMaps: typeFieldMaps) == nil,
+                   Self.swiftCallArgumentLayout(callee: name, enumCaseIndex: enumCaseIndex,
+                       classTypeIndex: classTypeIndex, anyContext: true, fieldMaps: typeFieldMaps) == nil {
+                    unprovenGenericLayoutSites.insert(insn.address)
+                }
+            }
+            guard sites[insn.address] == nil else { continue }
+            // So does an in-image callee whose body proves an integer or
+            // floating-point input, including an exact direct branch alias:
+            // an unknown argument is still present. For example, `readsFirst(?)`
+            // when its argument was loaded through an unknown pointer.
             guard unprovenTypedErrorSites.contains(insn.address)
+                    || unprovenGenericLayoutSites.contains(insn.address)
+                    || unplacedSetterValueSites.contains(insn.address)
                     || DisassembledFunction.knownCArity(of: callee) != nil
                     || Self.isStringInstanceGetter(callee)
-                    || Self.swiftCallArgumentLayout(
+                    || (Self.swiftCallArgumentLayout(
+                        callee: layoutName(at: insn.address, callee: callee),
+                        enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, fieldMaps: typeFieldMaps
+                    ) ?? Self.swiftCallArgumentLayout(
                         callee: layoutName(at: insn.address, callee: callee),
                         enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, anyContext: true, fieldMaps: typeFieldMaps
-                    ).map { !$0.slots.isEmpty || $0.unplaced > 0 } == true
+                    )).map({ !$0.slots.isEmpty || $0.unplaced > 0 }) == true
                     || (!(callTargets[insn.address] != nil && DisassembledFunction.knownArityNameMayHaveTwin(callee))
                         && Self.cPrototypeLayout(callee: callee) != nil)
-                    || (insn.branchTarget.flatMap { registerSummaries[$0] }?.provenArgumentCount ?? 0) > 0
+                    || insn.branchTarget.flatMap({ registerSummaries[$0] }).map({
+                        $0.provenArgumentCount > 0 || $0.provenFloatArgumentCount > 0
+                    }) == true
                     // An undeclared C callee's arity is unknown, which is
                     // not zero: `P()` read as a call with no arguments.
                     || undeclaredCImportCalls.contains(insn.address)
@@ -6856,20 +8749,59 @@ public struct Disassembler: Sendable {
             return function.replacingInstructions(instructions).retainingCFG(cfg)
         }
 
+        // The no-payload enum self is, when x20 holds its address.
+        let selfEnumType: String? = if case .swiftInstance? = entry {
+            Self.swiftEnumSelfType(of: function, enumCaseIndex: enumCaseIndex)
+        } else { nil }
+
         // Facts of the function's own signature, read once rather than at
         // every instruction: each parses the demangled name, and the return
         // register walks the CFG.
-        let provenMachineValueReturn = function.hasProvenMachineValueReturn
+        // A function no signature describes returns what its callers prove
+        // it does (`callerProvenResult`): one of them reads x0 after calling
+        // it, and none reads x1, v0, v1 or the error register.
+        let provenMachineValueReturn = function.hasProvenMachineValueReturn || callerProvenResult != nil
         let signatureReturnsValue = DisassembledFunction.signatureReturnsValue(
             displayName: function.analysisDisplayName, objcSignature: function.objcMethod?.signature)
+            || callerProvenResult != nil
         let functionReturnRegister = Self.swiftReturnRegister(
             of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cfg: cfg)
+            ?? callerProvenResult
 
         // Callee name per call/tail-call address, for nesting result expressions.
         var calleeByAddress: [UInt64: String] = [:]
         for insn in function.instructions
         where insn.controlFlow == .call || insn.controlFlow == .branch {
             calleeByAddress[insn.address] = DisassembledFunction.calleeName(of: insn)
+        }
+        // A direct method (`__attribute__((objc_direct))`) is called by its
+        // symbol and takes no `_cmd`: its first keyword is in x1. Rendered as
+        // a send that skips x1, `mix:with:` read `[arg0 mix:arg2 with:?]`,
+        // each argument one register late (`Self.isDirectObjCMethod`).
+        var directObjCSites: Set<UInt64> = []
+        if let objcIndex {
+            for (address, callee) in calleeByAddress {
+                if let target = callTargets[address],
+                   Self.isDirectObjCMethod(callee, at: target, in: objcIndex) {
+                    directObjCSites.insert(address)
+                }
+            }
+        }
+
+        // Missing body summaries and demangled names are not external ABI
+        // proof. Both receiver consumers use the same exact loader binding.
+        var importedStringReceiverSites: Set<UInt64> = []
+        for insn in function.instructions where calleeByAddress[insn.address] != nil {
+            let imported: ImportedFunctionReference?
+            if let target = insn.branchTarget {
+                imported = resolver.importedFunction(at: target)
+            } else {
+                imported = analysis.indirectControlFlowTargets[insn.address].flatMap { resolver.importedFunction(for: $0) }
+            }
+            if let imported, imported.isStringHasPrefix,
+               resolver.demangleSymbol(imported.rawSymbol) == calleeByAddress[insn.address] {
+                importedStringReceiverSites.insert(insn.address)
+            }
         }
 
         // x20 is `self` only under the Swift calling convention; for any
@@ -6879,7 +8811,7 @@ public struct Disassembler: Sendable {
         // inside another expression all name the same `self`.
         // The register each seeded parameter arrived in.
         let entryArgumentRegisters: [String: Int] = switch entry {
-        case .swiftFunction(let map, _, _)?, .swiftInstance(let map)?: map
+        case .swiftFunction(let map, _, _, _, _)?, .swiftInstance(let map, _)?: map
         default: [:]
         }
         /// `values`, the registers from x`first` on, without its trailing run
@@ -6916,17 +8848,30 @@ public struct Disassembler: Sendable {
             }
         }
         var selfValueBySite: [UInt64: AbstractValue] = [:]
+        /// The `self` words a value method or getter takes after (or as) its
+        /// formals, by site: the ones every path that renders the call shows.
+        var valueSelfBySite: [UInt64: AbstractValue] = [:]
         for insn in function.instructions {
-            guard let site = sites[insn.address], Self.isSwiftCall(insn, swiftTargets: swiftTargets),
-                  site.selfValue != .unknown
+            guard var site = sites[insn.address], Self.isSwiftCall(insn, swiftTargets: swiftTargets),
+                  !importedStringReceiverSites.contains(insn.address)
             else { continue }
+            // x20 not written since the last call is still the receiver of a
+            // callee whose own name proves it a class instance member: x20
+            // is callee-saved, so `c.m1() + c.m2()` passes c to both, and
+            // the second read `P7.K.m2()`.
+            // A dispatch through self's vtable already renders as `self.m(…)`.
+            if site.selfValue == .unknown, !insn.isSelfDispatch, let callee = calleeByAddress[insn.address],
+               Self.isClassInstanceMember(callee, classTypeIndex: classTypeIndex) {
+                site.selfValue = site.x20Value
+            }
+            guard site.selfValue != .unknown else { continue }
             // A String result's second word moved into x20 is no receiver.
             if case .callResultHigh = site.selfValue { continue }
-            // An in-image callee whose body never reads the x20 it is
-            // handed has no `self` there: the caller parked a temporary in
-            // the callee-saved register (`Mode.weight(self: r0, r0)` for a
-            // by-value enum method, `inner #1 (self: r1, r0)`).
-            if let target = insn.branchTarget, let summary = registerSummaries[target], !summary.readsSelfRegister {
+            // An in-image receiver requires positive entry-x20 use. A MAY
+            // read of an overlapping save through an escaped frame proves
+            // no context-self ABI and must not replace an ordinary argument.
+            if let target = insn.branchTarget, let summary = registerSummaries[target],
+               summary.provenEntryRegisterReads & (1 << 20) == 0 {
                 continue
             }
             if let callee = calleeByAddress[insn.address] {
@@ -6952,6 +8897,15 @@ public struct Disassembler: Sendable {
                    isStatic || !isAddressValue(site.selfValue) { continue }
                 // Nor does a global variable's addressor.
                 if DisassembledFunction.isGlobalVariableAddressor(callee) { continue }
+                // A value a call declared to return as a plain scalar is no
+                // receiver: no method takes an Int as its self, by value or
+                // by address. A caller that parks such a result in x20
+                // (callee-saved) across the next call made `Pair.sum(self:
+                // r0, 1)` and `Mode.code(self: r0)` of m1's Int.
+                if case .callResult(let producer) = site.selfValue,
+                   let producerName = calleeByAddress[producer],
+                   let result = DisassembledFunction.splitSignature(producerName)?.result,
+                   Self.plainScalarTypes.contains(result) { continue }
                 // A free function, `Module.name(…)`, has no `self`; nor does a
                 // specialization of one, whose name prints the original's
                 // after its clause (`function signature specialization
@@ -7023,13 +8977,27 @@ public struct Disassembler: Sendable {
         /// value left for it too: at -O2 `-[Relay relay:to:]` sends
         /// `[o put:x at:7]` with x still in d0, nothing writes it, and the
         /// integer layout rendered `put:7 at:?`. A method's encoding says
-        /// which v registers hold an argument. Any other function, a C
-        /// function or a block, shows none, so its sends keep the integer
-        /// layout.
+        /// which v registers hold an argument, and a Swift signature laid out
+        /// in registers says the same. A function that shows neither, a C
+        /// function or a block, may have been passed a float in any of them:
+        /// `putPassed(o, x)` (C, -O2) sends `put:x at:7` with x still in d0,
+        /// and the integer layout rendered `put:7 at:?`.
         let ownFloatArgumentRegisters: Int = {
-            guard let method = function.objcMethod else { return 0 }
-            let colons = method.selector.filter { $0 == ":" }.count
-            return ObjCArgumentABI.floatRegisterCount(encoding: method.typeEncoding, argumentCount: colons) ?? 0
+            if let method = function.objcMethod {
+                let colons = method.selector.filter { $0 == ":" }.count
+                return ObjCArgumentABI.floatRegisterCount(encoding: method.typeEncoding, argumentCount: colons) ?? 0
+            }
+            if let slots = Self.swiftCallArgumentSlots(
+                callee: function.analysisDisplayName, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
+                return slots.reduce(0) { total, slot in
+                    switch slot.kind {
+                    case .floating: total + slot.registers
+                    case .aggregate(_, let floats): total + floats
+                    case .integer: total
+                    }
+                }
+            }
+            return 8
         }()
         /// Whether a call may leave its result in v0: unless its name's
         /// signature or C prototype returns an integer, a pointer or
@@ -7050,9 +9018,10 @@ public struct Disassembler: Sendable {
             }
             // Runtime entry points of known arity return an integer, a
             // pointer or nothing.
-            return DisassembledFunction.knownCArity(of: callee) == nil
+            return isNameTwin(insn.address) || DisassembledFunction.knownCArity(of: callee) == nil
         }
-        func setsFloatingPointArgument(before address: UInt64) -> Bool {
+        func setsFloatingPointArgument(before address: UInt64, integerGap: Bool = true,
+                                       receiver: AbstractValue = .unknown) -> Bool {
             guard let callIndex = instructionIndex[address] else { return false }
             var settled = Set<Int>()
             var stored = Set<Int>()
@@ -7065,7 +9034,17 @@ public struct Disassembler: Sendable {
                 // may be the argument: `[o zput:f() at:7]` passes f()'s
                 // double in d0 and rendered `zput:7 at:?`.
                 if insn.controlFlow == .call {
-                    if !settled.contains(0), !stored.contains(0), callMayReturnFloat(insn) { return true }
+                    // A send whose receiver is that call's x0 result proves
+                    // the call returned in x0, and a C or Objective-C return
+                    // is in x registers or v registers, never both: v0 holds
+                    // no result of it. `[[F alloc] initWithLimit:3]` then
+                    // `setLimit:4` rendered `setLimit:?`. (A Swift callee can
+                    // return in both, so only a send counts.)
+                    let returnedInX0 = receiver == .callResult(insn.address)
+                        && calleeByAddress[insn.address].map {
+                            selectorName(callee: $0, arguments: sites[insn.address]?.arguments ?? []) != nil
+                        } == true
+                    if !returnedInX0, !settled.contains(0), !stored.contains(0), callMayReturnFloat(insn) { return true }
                     break
                 }
                 if let flow = insn.controlFlow, flow != .sequential { break }
@@ -7096,7 +9075,14 @@ public struct Disassembler: Sendable {
                 if settled.count == 8 { break }
             }
             if callIndex == 0 { reachedEntry = true }
-            return reachedEntry && (0 ..< min(ownFloatArgumentRegisters, 8)).contains { !settled.contains($0) }
+            // A float passed through from the entry takes one of the send's
+            // argument positions, so the integer layout then leaves an
+            // argument register unwritten (`putPassed`: `mov w2, #7` and
+            // nothing in x3, `put:x at:7`). When every integer one is set
+            // up for the send, a float in v0 would make one of those writes
+            // dead.
+            return reachedEntry && integerGap
+                && (0 ..< min(ownFloatArgumentRegisters, 8)).contains { !settled.contains($0) }
         }
 
         /// The quoted literal a String's two words spell, when both are known:
@@ -7131,11 +9117,72 @@ public struct Disassembler: Sendable {
             return fieldPath(name)
         }
 
+        /// A receiver's physical footprint is not a whole String expression.
+        /// Validate both words before sanitizing a call-result high word away.
+        func stringReceiver(_ raw: [AbstractValue]) -> AbstractValue {
+            guard raw.count == 2 else { return .unknown }
+            if let site = stringCallResult(raw[0], raw[1]),
+               calleeByAddress[site].flatMap({ Self.swiftReturnTypeName(forDemangledName: $0) }) == "Swift.String" {
+                return .aggregate(raw)
+            }
+            let words = raw.map(sanitizeValue)
+            return swiftStringLiteral(words[0], words[1]) != nil || selfStringField(words[0], words[1]) != nil
+                ? .aggregate(words) : .unknown
+        }
+
+        /// A whole GPR expression, rather than a whole source value whose
+        /// first word happened to be copied here. Width alone also cannot
+        /// turn a Double field into an integer expression.
+        func isWholeIntegerReceiverWord(_ value: AbstractValue, depth: Int = 0) -> Bool {
+            guard depth < 8 else { return false }
+            func integerField(_ map: FieldMap?, offset: Int) -> Bool {
+                guard let map, let field = map.fields.first(where: { $0.offset == offset }), field.bytes <= 8,
+                      let type = map.fieldTypeNames[field.name]
+                else { return false }
+                return SwiftLowering.of(type, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) == .oneInteger
+            }
+            switch value {
+            case .callResult(let site):
+                return calleeByAddress[site].map {
+                    Self.callResultBank(of: $0, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cache: callResultBanks) == .integer
+                } ?? false
+            case .callResultHigh, .aggregate, .arrayLiteral, .indirectCallResultWord:
+                return false
+            case .selfFieldValue(let offset):
+                guard let widths = selfFieldReadWidths[offset], widths.count == 1, let width = widths.first,
+                      let fieldMap, case .success(.whole) = fieldMap.lookup(offset: offset, bytes: width)
+                else { return false }
+                return integerField(fieldMap, offset: offset)
+            case .argumentField(let argument, let offset):
+                return integerField(argumentFieldMaps[argument] ?? classArgumentFieldMaps[argument], offset: offset)
+            case .binary(_, let lhs, let rhs):
+                return isWholeIntegerReceiverWord(lhs, depth: depth + 1) && isWholeIntegerReceiverWord(rhs, depth: depth + 1)
+            case .select(let condition, let whenTrue, let whenFalse):
+                return isWholeIntegerReceiverWord(condition, depth: depth + 1)
+                    && isWholeIntegerReceiverWord(whenTrue, depth: depth + 1)
+                    && isWholeIntegerReceiverWord(whenFalse, depth: depth + 1)
+            case .unary(let op, let operand):
+                switch op {
+                case .negate, .bitwiseNot, .byteSwap, .leadingZeros, .leadingSignBits, .bitReverse:
+                    return isWholeIntegerReceiverWord(operand, depth: depth + 1)
+                default:
+                    // FP conversions need a separate operand-bank proof.
+                    return false
+                }
+            default:
+                return true
+            }
+        }
+
         /// A call to an in-image function whose name is also a C library
         /// function's in the known-arity table: the table is no evidence for it.
         func isNameTwin(_ address: UInt64) -> Bool {
+            if unprovenARCSites.contains(address) { return true }
             guard callTargets[address] != nil, let callee = calleeByAddress[address] else { return false }
             return DisassembledFunction.knownArityNameMayHaveTwin(callee)
+        }
+        func isRuntimeNoise(_ callee: String, at address: UInt64) -> Bool {
+            !unprovenARCSites.contains(address) && DisassembledFunction.isRuntimeNoise(callee)
         }
 
         var argumentsByAddress: [UInt64: [AbstractValue]] = [:]
@@ -7176,6 +9223,14 @@ public struct Disassembler: Sendable {
                 values = site.errorValue == .unknown ? [] : [site.errorValue]
                 strategy = "will-throw"
             }
+            // `objc_retain_xN` takes the object in xN, nothing in x0: a
+            // Swift method's `objc_retain_x20` read `args(arg0)`, x0's
+            // value, where it retains `self`.
+            if let callee = calleeByAddress[address], ValueTracer.retainedRegister(callee) != nil {
+                argumentsByAddress[address] = [sanitizeValue(site.retainedValue)]
+                strategy = "retained-register"
+                continue
+            }
             // A getter that takes no explicit argument shows none, whatever
             // x0 held: `static DispatchQoS.unspecified.getter(r0)` was a stale
             // register (55 static getters in one app).
@@ -7193,6 +9248,44 @@ public struct Disassembler: Sendable {
             if let callee = calleeByAddress[address], Self.isStringInstanceGetter(callee) {
                 argumentsByAddress[address] = (0 ..< 2).map { $0 < values.count ? sanitizeValue(values[$0]) : .unknown }
                 strategy = "string-getter"
+                continue
+            }
+            // A value type's instance getter takes no formal parameter: its
+            // registers from x0 are `self`'s words, as many as the type
+            // lowers to, and nothing after them. Positional, `Pair(a: x,
+            // b: 4).total` read `Pair.total.getter(arg0, 4)`, a getter with
+            // two arguments. It renders `total.getter(self: (arg0, 4))`.
+            // Only when the site has no `self` in x20: a witness through an
+            // existential, or a struct passed by address (`VersionTuple.
+            // normalized.getter(self: local_80)`), takes it there.
+            if selfValueBySite[address] == nil, let callee = calleeByAddress[address],
+               let property = DisassembledFunction.swiftAccessorProperty(callee), property.isGetter,
+               !callee.hasPrefix("static "), !callee.contains(".subscript"),
+               let accessor = callee.range(of: ".\(property.property).getter"),
+               case let receiver = String(callee[..<accessor.lowerBound]), classTypeIndex.isValueType(receiver),
+               typeFieldMaps[receiver]?.isGeneric == false,
+               let words = SwiftLowering.aggregateRegisters(of: receiver, fieldMaps: typeFieldMaps,
+                                                            enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex),
+               words.floats == 0, (1...4).contains(words.integers) {
+                let own = (0 ..< words.integers).map { $0 < values.count ? sanitizeValue(values[$0]) : .unknown }
+                let value: AbstractValue = own.count == 1 ? own[0] : .aggregate(own)
+                selfValueBySite[address] = value
+                valueSelfBySite[address] = value
+                argumentsByAddress[address] = []
+                strategy = "value-getter-self"
+                continue
+            }
+            // A possibly resilient receiver is passed by address in x20,
+            // and the getter takes nothing else. With no value tracked
+            // there the receiver is unknown, not absent: `getter(self: ?)`.
+            if selfValueBySite[address] == nil, let callee = calleeByAddress[address],
+               let property = DisassembledFunction.swiftAccessorProperty(callee), property.isGetter,
+               !callee.hasPrefix("static "), !callee.contains(".subscript"),
+               let accessor = callee.range(of: ".\(property.property).getter"),
+               typeFieldMaps[String(callee[..<accessor.lowerBound])]?.mayBeResilient == true {
+                selfValueBySite[address] = .unknown
+                argumentsByAddress[address] = []
+                strategy = "resilient-getter-self"
                 continue
             }
             // A Swift callee with a proven layout gets exactly its parameters:
@@ -7265,6 +9358,7 @@ public struct Disassembler: Sendable {
                 case .binary(_, let lhs, let rhs):
                     return holdsWholeResults(lhs, depth: depth + 1) && holdsWholeResults(rhs, depth: depth + 1)
                 case .unary(.toFloat, _), .unary(.unsignedToFloat, _): return true
+                case .unary(.floatResult, let operand): return holdsWholeResults(operand, depth: depth)
                 case .unary(_, let operand): return holdsWholeResults(operand, depth: depth + 1)
                 case .select(let condition, let whenTrue, let whenFalse):
                     return holdsWholeResults(condition, depth: depth + 1) && holdsWholeResults(whenTrue, depth: depth + 1)
@@ -7341,6 +9435,7 @@ public struct Disassembler: Sendable {
                     }
                 }
                 var following: [AbstractValue] = []
+                var followingTypes: [String] = []
                 if leadingSlots != nil {
                     // The registers after the formal parameters are `self`'s
                     // words only for a non-mutating method. A call whose
@@ -7364,23 +9459,82 @@ public struct Disassembler: Sendable {
                     // `self`'s two Doubles in d2 and d3, and read `dot(?,
                     // sub_…())`, a stale x0 as `self`.
                     let receiver = calleeByAddress[address].flatMap(Self.valueMethodReceiver).flatMap {
-                        SwiftLowering.aggregateRegisters(of: $0, fieldMaps: typeFieldMaps,
+                        SwiftLowering.directAggregateRegisters(of: $0, fieldMaps: typeFieldMaps,
                                                          enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
                     }
-                    if selfValueBySite[address] == nil, leadingLayout?.unplaced == 0, !isGeneric,
-                       receiver.map({ $0.floats == 0 }) ?? true {
-                        following = values.dropFirst(integer).map(sanitizeValue)
-                        // A register still holding the value it had at entry
-                        // was not set up for this call: `takeTwo(_: String,
-                        // _: Int)` read `utf8.getter(?, ?, arg1)` for its
-                        // String's words and the Int left in x2.
-                        following = withoutTrailingEntryValues(following, from: integer)
-                        while following.last == .unknown { following.removeLast() }
+                    let receiverSummary = callTargets[address].flatMap { registerSummaries[$0] }
+                    let hasContextRole = receiverSummary.map { $0.provenEntryRegisterReads & (1 << 20) != 0 } ?? false
+                    if selfValueBySite[address] == nil, !hasContextRole, leadingLayout?.unplaced == 0, !isGeneric {
+                        if importedStringReceiverSites.contains(address), integer == 2 {
+                            let raw = (integer ..< integer + 2).map { $0 < values.count ? values[$0] : .unknown }
+                            following = [stringReceiver(raw)]
+                            followingTypes = ["Swift.String"]
+                        } else if let summary = receiverSummary, let receiver, receiver.floats == 0,
+                                  receiver.integers > 0, integer + receiver.integers <= 8,
+                                  (integer ..< integer + receiver.integers).allSatisfy({ summary.provenEntryRegisterReads & (1 << $0) != 0 }) {
+                            // The exact ordinary inputs must be positively
+                            // read, irrespective of legacy MAY-x20 analysis.
+                            // An unchanged entry value is still a real input.
+                            following = (integer ..< integer + receiver.integers).map {
+                                $0 < values.count && isWholeIntegerReceiverWord(values[$0]) ? sanitizeValue(values[$0]) : .unknown
+                            }
+                            followingTypes = following.map { _ in "" }
+                        } else if let summary = receiverSummary, let receiver, receiver.integers == 0,
+                                  receiver.floats > 0, floating + receiver.floats <= 8,
+                                  (floating ..< floating + receiver.floats).allSatisfy({ summary.provenFloatArgumentReads.contains($0) }) {
+                            // A struct of floating-point fields takes its self
+                            // in the v registers after the float formals:
+                            // `P(x: 3.5, y: 4.25).length()` is `fmov d0, #3.5;
+                            // fmov d1, #4.25; b P.length`, and read `length()`.
+                            // A constant renders as the float its bits spell, at
+                            // the width the body reads it.
+                            let words = (floating ..< floating + receiver.floats).map { index -> AbstractValue in
+                                guard index < site.floatArguments.count else { return .unknown }
+                                let value = sanitizeValue(site.floatArguments[index])
+                                guard let bits = summary.floatArgumentWidths[index] else { return .unknown }
+                                return ValueTracer.floatOperand(value, bits: bits)
+                            }
+                            let value: AbstractValue = words.count == 1 ? words[0] : .aggregate(words)
+                            selfValueBySite[address] = value
+                            valueSelfBySite[address] = value
+                        } else if receiverSummary != nil, receiver == nil || receiver?.floats ?? 0 > 0 {
+                            // A receiver whose words are not all known here (a
+                            // payload enum, a struct mixing integer and float
+                            // fields): its self still travels with the call.
+                            // Dropped, `E.pair(301, 302).tag(303)` read
+                            // `E.tag(303)`, a call with no receiver. Only for
+                            // an in-image callee whose body was summarized: an
+                            // imported mutating method (string interpolation's
+                            // `appendLiteral`) takes self in x20, not here.
+                            selfValueBySite[address] = .unknown
+                            valueSelfBySite[address] = .unknown
+                        }
                     }
+                }
+                // Those words are the receiver, not more arguments: listed
+                // after the formals, `Pair(a: 3, b: 4).scaled(k)` read
+                // `Pair.scaled(arg0, 3, 4)`, a one-parameter method with
+                // three. They render as its `self`, `scaled(self: (3, 4),
+                // arg0)`, as a class method's `self` in x20 does.
+                // They are `self` only when the receiver's type lowers to
+                // exactly that many integer words: a method of a generic type
+                // (`Array._endMutation()`) takes the type's metadata there,
+                // which is no `self`.
+                let selfWords = calleeByAddress[address].flatMap(Self.valueMethodReceiver).flatMap { receiver in
+                    typeFieldMaps[receiver]?.isGeneric == false
+                        ? SwiftLowering.aggregateRegisters(of: receiver, fieldMaps: typeFieldMaps,
+                                                           enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
+                        : nil
+                }.flatMap { $0.floats == 0 ? $0.integers : nil }
+                if !following.isEmpty, let selfWords, following.count <= selfWords {
+                    let value: AbstractValue = following.count == 1 ? following[0] : .aggregate(following)
+                    selfValueBySite[address] = value
+                    valueSelfBySite[address] = value
+                    following = []
                 }
                 if !(laidOut + unplaced + following).isEmpty {
                     argumentsByAddress[address] = (laidOut + unplaced).map(sanitizeValue) + following
-                    laidOutTypes[address] = slots.map(\.type) + (unplaced + following).map { _ in "" }
+                    laidOutTypes[address] = slots.map(\.type) + unplaced.map { _ in "" } + followingTypes
                 }
                 strategy = leadingSlots != nil ? "swift-leading" : cLayout == nil ? "swift-signature" : "c-declaration"
                 continue
@@ -7447,6 +9601,26 @@ public struct Disassembler: Sendable {
                     strategy = "c-format-unread"
                 }
                 continue
+            }
+            // A declared variadic with no format (`int open(const char *, int,
+            // ...)`): Apple arm64 passes the fixed arguments in registers and
+            // every variadic one on the stack, so the fixed ones render from
+            // their registers at their declared widths, then `…`. It read
+            // `open(…)` with x0 and w1 set just before the call. Only integer
+            // fixed parameters; an in-image twin is no evidence for the layout.
+            if let callee = calleeByAddress[address], !isNameTwin(address),
+               let prototype = DisassembledFunction.cPrototype(of: callee), prototype.isVariadic,
+               prototype.parameters.count <= 8 {
+                let types = prototype.parameters.compactMap { DisassembledFunction.cIntegerParameterTypes[$0] }
+                if types.count == prototype.parameters.count {
+                    argumentsByAddress[address] = (0 ..< types.count).map {
+                        $0 < values.count ? sanitizeValue(values[$0]) : .unknown
+                    }
+                    laidOutTypes[address] = types
+                    unprovenVariadicSites.insert(address)
+                    strategy = "c-variadic"
+                    continue
+                }
             }
             // A format selector's variadic arguments are exactly its format's
             // conversions, one stack slot each: `?` where a slot is unknown,
@@ -7560,7 +9734,13 @@ public struct Disassembler: Sendable {
                     // travels in v0 and on, so a value left in one of them
                     // for the send disproves that layout: `put:1.5 at:7`
                     // rendered `put:7 at:?`.
-                    if colons > 0, setsFloatingPointArgument(before: address) {
+                    let integerGap = (0 ..< min(colons, 6)).contains { argument in
+                        let index = 2 + argument
+                        guard index < values.count else { return true }
+                        let value = sanitizeValue(values[index])
+                        return value == .unknown || value == .argument(index)
+                    }
+                    if colons > 0, setsFloatingPointArgument(before: address, integerGap: integerGap, receiver: receiver) {
                         argumentsByAddress[address] = ([receiver, selectorValue]
                             + Array(repeating: AbstractValue.unknown, count: colons)).map(sanitizeValue)
                         strategy = "objc-untyped-float"
@@ -7609,6 +9789,25 @@ public struct Disassembler: Sendable {
                         + site.stackArguments.prefix(fixedStackCount)
                 }
             }
+            // An ordinary setter's assigned value is one source formal,
+            // even when neither its value nor receiver placement is proved.
+            // Keep it unplaced instead of reading a guessed positional word;
+            // the separate selfValueBySite receiver remains unchanged.
+            if unplacedSetterValueSites.contains(address) {
+                argumentsByAddress[address] = [.unknown]
+                strategy = "unplaced-setter-value"
+                continue
+            }
+            // A generic specialization whose concrete parameter layout is
+            // unavailable has no proved mapping from machine inputs to source
+            // formals. Keep that uncertainty explicit, including without a
+            // body summary; neither a highest register nor printed A is arity.
+            if unprovenGenericLayoutSites.contains(address) {
+                argumentsByAddress[address] = []
+                unprovenVariadicSites.insert(address)
+                strategy = "unproven-generic-layout"
+                continue
+            }
             // An in-image callee no signature describes passes what its body
             // reads: `bump(void)` after `printf` rendered `bump(printf(…))`,
             // and an outlined fragment that reads no argument register took
@@ -7620,17 +9819,24 @@ public struct Disassembler: Sendable {
             // original's signature, not its own, so it has none either:
             // `<Arg[0] = Dead> of helperI(Swift.Int, Swift.Int)` takes x0
             // alone, and positionally read `helperI(arg1, arg1)`.
+            // A closure's printed signature lists its formals only; what it
+            // captured follows them as more arguments (`ldr x1, [x20, #0x10];
+            // b closure #1` passed k after y, and rendered `closure #1 (arg0)`).
+            // A named local function and a `defer` body (`$defer #1 ()`)
+            // are lowered the same way.
             if let target = callTargets[address], let summary = registerSummaries[target],
                calleeByAddress[address].flatMap({ DisassembledFunction.splitSignature($0) }) == nil
-                || calleeByAddress[address].map({ !Self.signatureSpecializationKeepsLayout($0) }) == true,
+                || calleeByAddress[address].map({ !followsASignature(target: target, callee: $0) }) == true
+                || calleeByAddress[address].map(DisassembledFunction.isLocalFunctionName) == true,
                calleeByAddress[address].flatMap({ selectorName(callee: $0, arguments: values) }) == nil,
                calleeByAddress[address].flatMap(DisassembledFunction.knownCArity(of:)) == nil || isNameTwin(address) {
                 // A register below the highest one read that the body never
                 // reads holds whatever the caller left there, not an argument:
                 // `useSecond` writes x0 before reading it, and
                 // `useSecond(5, 7)` showed the stale 5. Every register
-                // through the highest the body's own instructions read is a
-                // parameter, so an unknown one is `?`, not absent:
+                // through the highest the body's instructions prove (directly
+                // or through an exact branch alias) is a parameter, so an
+                // unknown one is `?`, not absent:
                 // `sink(long)` called with nothing tracked rendered `sink()`.
                 // Past those, a register the body may read only by passing it
                 // to a call is shown when its value is known, as before.
@@ -7663,6 +9869,14 @@ public struct Disassembler: Sendable {
                         : Array(repeating: .unknown, count: bounded.count + floats)
                 }
                 if !bounded.isEmpty { argumentsByAddress[address] = bounded }
+                // A body that loads from the caller's outgoing area takes
+                // stack arguments too: `c9(?)` claimed one argument where
+                // the call also passes 100 at [sp]. Their count is not
+                // proven, so the list ends in `…`.
+                if summary.readsIncomingStack {
+                    argumentsByAddress[address] = argumentsByAddress[address] ?? []
+                    unprovenVariadicSites.insert(address)
+                }
                 strategy = "body-reads"
                 continue
             }
@@ -7755,6 +9969,8 @@ public struct Disassembler: Sendable {
             switch value {
             case .argument(let index):
                 return argumentEnumTypes[index]
+            case .selfFieldValue(offset: 0) where selfEnumType != nil:
+                return selfEnumType
             case .binary(.bitAnd, let inner, .immediate(let mask))
                 where mask == 0xFF || mask == 0xFFFF || mask == 0xFFFF_FFFF:
                 return enumArgumentType(of: inner)
@@ -7940,8 +10156,13 @@ public struct Disassembler: Sendable {
             let varType = TypeInference.typeOf(varSide, arguments: argumentTypes)
             let x = comparisonOperand(varSide, enumType: nil, depth: depth)
 
-            // Proven unsigned (UInt): the unsigned compare IS a plain Swift `<`.
-            if varType.isUnsignedInteger {
+            // Proven unsigned (UInt): the unsigned compare IS a plain Swift `<`,
+            // unless the other side is a signed value: Swift compares a UInt
+            // with an Int mathematically (`0 < -1` is false), the machine by
+            // bit pattern (true).
+            let otherIsSigned = constant == nil
+                && TypeInference.typeOf(other, arguments: argumentTypes).isSignedInteger
+            if varType.isUnsignedInteger, !otherIsSigned {
                 return "(\(x) \(viewOp.signedForm.symbol) "
                     + "\(comparisonOperand(other, enumType: nil, depth: depth)))"
             }
@@ -7985,6 +10206,21 @@ public struct Disassembler: Sendable {
                 // `<` — its Swift meaning depends on the operand's recovered type.
                 if op.isUnsignedComparison {
                     return renderUnsignedComparison(op, lhs, rhs, negated: negated, depth: depth)
+                }
+                // A signed machine ordering (`lt`, `gt`, ...) on an operand
+                // typed unsigned: a plain `<` there reads as unsigned, so
+                // `Int(bitPattern: a) > Int(bitPattern: b) ? a : b` read
+                // exactly as `max(a, b)`. The signed operation is exposed.
+                if [.less, .lessEqual, .greater, .greaterEqual].contains(op),
+                   [lhs, rhs].contains(where: { TypeInference.typeOf($0, arguments: argumentTypes).isUnsignedInteger }) {
+                    var effectiveOp = negated ? invertedComparison(op)! : op
+                    var (l, r) = (lhs, rhs)
+                    let rhsIsConstant = if case .immediate = rhs { true } else { false }
+                    if case .immediate = lhs, !rhsIsConstant, let mirror = mirroredComparison(effectiveOp) {
+                        (l, r) = (rhs, lhs); effectiveOp = mirror
+                    }
+                    return "(\(comparisonOperand(l, enumType: nil, depth: depth)) \(effectiveOp.symbol)\u{02E2} "
+                        + "\(comparisonOperand(r, enumType: nil, depth: depth)))"
                 }
                 // A single-register (reference) optional compared to 0 is a nil
                 // check: `r != 0` reads `r != nil`. Only when the operand's
@@ -8114,7 +10350,8 @@ public struct Disassembler: Sendable {
             switch value {
             case .genericMetadata(let name):
                 return "type metadata for \(name)"
-            case .unknown, .callResultHigh, .loadedBits, .loadedThrough, .loadedFrom, .selfIsaSnapshot, .genericWitnessTable:
+            case .unknown, .callResultHigh, .loadedBits, .loadedThrough, .loadedFrom, .selfIsaSnapshot, .genericWitnessTable,
+                 .existentialWitnessTable:
                 // A String result's second word alone is no source value, nor
                 // is a word read through a loaded pointer (a call through one
                 // is named by its target, `annotateIndirectControlFlowTargets`).
@@ -8138,7 +10375,7 @@ public struct Disassembler: Sendable {
                 // Sanitised to `.unknown` before rendering; plumbing, not a value.
                 return unknownRenderedValue()
             case .address(let a):
-                return resolver.name(at: a) ?? "0x" + String(a, radix: 16)
+                return resolver.name(at: a) ?? objcIndex?.classObjectNames[a] ?? "0x" + String(a, radix: 16)
             case .loaded(let a):
                 // Sanitised above, so a surviving `.loaded` always has a name.
                 return resolver.loadedName(at: a) ?? unknownRenderedValue()
@@ -8158,6 +10395,9 @@ public struct Disassembler: Sendable {
                     return "&self+0x\(String(offset, radix: 16))"
                 }
                 return "&\(fieldPath(name))"
+            case .selfFieldValue(offset: 0) where selfEnumType != nil:
+                // The tag of a no-payload enum is the value itself.
+                return "self"
             case .selfFieldValue(let offset):
                 // Part of a field is not the field: a four-byte read at
                 // `fCurPos + 80` rendered `self->fCurPos`. Every such value
@@ -8167,9 +10407,9 @@ public struct Disassembler: Sendable {
                 if let fieldMap {
                     let widths = selfFieldReadWidths[offset] ?? []
                     if widths.count == 1, let width = widths.first,
-                       case .success(.part(let name, _, let subOffset, let bytes)) =
+                       case .success(.part(let name, let partType, let subOffset, let bytes)) =
                         fieldMap.lookup(offset: offset, bytes: width) {
-                        return fieldPath("\(name)[\(subOffset)..<\(subOffset + bytes)]")
+                        return fieldPath(memberPath(name, type: partType, subOffset: subOffset, bytes: bytes))
                     }
                     if widths.count != 1,
                        case .success(.part(let name, _, let subOffset, _)) = fieldMap.lookup(offset: offset, bytes: 1),
@@ -8310,7 +10550,18 @@ public struct Disassembler: Sendable {
                 case .squareRoot: return "sqrt(\(inner))"
                 case .absoluteValue: return "abs(\(inner))"
                 case .toFloat(let bits):
-                    return "\(bits == 64 ? "Double" : bits == 32 ? "Float" : "Float\(bits)")(\(inner))"
+                    // `scvtf` converts its operand as signed. An operand typed
+                    // unsigned reads as unsigned in `Double(x)`, wrong for
+                    // every value with its top bit set: `Double(Int(bitPattern:
+                    // x))` of a UInt rendered `Double(arg0)`. The mirror of
+                    // `unsignedToFloat` below.
+                    let type = bits == 64 ? "Double" : bits == 32 ? "Float" : "Float\(bits)"
+                    let operandType = TypeInference.typeOf(operand, arguments: argumentTypes)
+                    if operandType.isUnsignedInteger {
+                        let width = operandType.width ?? 64
+                        return "\(type)(Int\(width == 64 ? "" : String(width))(bitPattern: \(inner)))"
+                    }
+                    return "\(type)(\(inner))"
                 case .unsignedToFloat(let bits):
                     // `Double(x)` converts a UInt as unsigned, and a value whose
                     // bit 63 is clear the same either way; anything else is
@@ -8370,7 +10621,10 @@ public struct Disassembler: Sendable {
                     defer { wholeResultSite = saved }
                     return renderValue(values[0], depth: depth)
                 }
-                return "(" + values.map { renderValue($0, depth: depth + 1) }.joined(separator: ", ") + ")"
+                // One lane is a scalar a call preserved the low half of
+                // (`callPreservedVectorValue`); its high lane is unknown.
+                let lanes = values.count == 1 ? values + [.unknown] : values
+                return "(" + lanes.map { renderValue($0, depth: depth + 1) }.joined(separator: ", ") + ")"
             case .callResult(let addr):
                 // x0 after a call whose result spans registers is one part of
                 // it: `mkPair(x).a + 2` read `(mkPair(x) + 2)`.
@@ -8395,7 +10649,7 @@ public struct Disassembler: Sendable {
                 // With nothing tracked at the call the argument is unknown, and
                 // so is what it returns; the call itself is resolved, so it is
                 // no `unresolved call`.
-                if DisassembledFunction.returnsItsArgument(callee) {
+                if !unprovenARCSites.contains(addr), DisassembledFunction.returnsItsArgument(callee) {
                     return inner.first.map { renderValue($0, depth: depth + 1) } ?? unknownRenderedValue()
                 }
                 if DisassembledFunction.isUniquenessCheck(callee) {
@@ -8405,7 +10659,7 @@ public struct Disassembler: Sendable {
                 // The rest of the runtime bookkeeping returns nothing a source
                 // value could be (`swift_release`, `swift_beginAccess` are void):
                 // x0 after one is not a value to name.
-                if DisassembledFunction.isRuntimeNoise(callee) { return unknownRenderedValue() }
+                if isRuntimeNoise(callee, at: addr) { return unknownRenderedValue() }
                 // The mangled-name metadata helper fetches the type its
                 // second argument spells: `type metadata for MN.Box<Swift.Int>`,
                 // not `__swift_instantiateConcreteTypeFromMangledNameV2(0x8008, 0xde8)`.
@@ -8468,7 +10722,8 @@ public struct Disassembler: Sendable {
                 // string-level fold can't, because a demangled closure/`throws`
                 // type embeds unbalanced parentheses that defeat its parser.
                 let arguments = DisassembledFunction.strippingGenericPlumbing(rawArguments)
-                if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {
+                if let send = DisassembledFunction.MessageSend(
+                    callee: callee, arguments: arguments, takesCommand: !directObjCSites.contains(addr)) {
                     return send.rendered
                 }
                 let parts = selfValueBySite[addr].map { ["self: \(renderValue($0, depth: depth + 1))"] } ?? []
@@ -8556,6 +10811,9 @@ public struct Disassembler: Sendable {
                     }
                     index += 1
                 }
+                // A typed fixed part (a declared variadic's) is still followed
+                // by variadic arguments no one counted.
+                if let site, unprovenVariadicSites.contains(site) { parts.append("…") }
                 return parts
             }
             var parts: [String] = []
@@ -8594,9 +10852,15 @@ public struct Disassembler: Sendable {
             let arguments: [String] = renderArguments(
                 normalizedArguments(callee: callee, values: values, at: site), depth: depth, site: site
             )
-            if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {
+            if let send = DisassembledFunction.MessageSend(
+                callee: callee, arguments: arguments, takesCommand: !(site.map(directObjCSites.contains) ?? false)) {
                 return send.rendered
             }
+            // A value method's `self` words show on every path that renders
+            // the call: the exits passed none, and the 9 in x2 vanished from
+            // `return W.take(?)`. Only those words: an x20 `self` the tracer
+            // records for a site stays on the paths that already showed it.
+            let selfText = selfText ?? site.flatMap { valueSelfBySite[$0] }.map { renderValue($0, depth: depth + 1) }
             let parts = (selfText.map { ["self: \($0)"] } ?? []) + arguments
             return "\(site.map { displayCallee(callee, at: $0) } ?? DisassembledFunction.strippedCallee(callee))(\(parts.joined(separator: ", ")))"
         }
@@ -8649,15 +10913,15 @@ public struct Disassembler: Sendable {
                 guard case .selfFieldValue(let offset) = value, let fieldMap else { return nil }
                 switch fieldMap.lookup(offset: offset, bytes: max(bytes, 1)) {
                 case .success(.whole(let name, _)): return fieldPath(name)
-                case .success(.part(let name, _, let subOffset, let bytes)):
-                    return fieldPath("\(name)[\(subOffset)..<\(subOffset + bytes)]")
+                case .success(.part(let name, let partType, let subOffset, let bytes)):
+                    return fieldPath(memberPath(name, type: partType, subOffset: subOffset, bytes: bytes))
                 default: return nil
                 }
             }
             if field.names.count == 1, let fieldMap {
                 switch fieldMap.lookup(offset: access.offset, bytes: max(access.bytes, 1)) {
-                case .success(.part(let partName, _, let subOffset, let bytes)):
-                    let partPath = fieldPath("\(partName)[\(subOffset)..<\(subOffset + bytes)]")
+                case .success(.part(let partName, let partType, let subOffset, let bytes)):
+                    let partPath = fieldPath(memberPath(partName, type: partType, subOffset: subOffset, bytes: bytes))
                     guard let rawValue = access.storedValue, sanitizeValue(rawValue) != .unknown
                     else { return "\(partPath) = …" }
                     let value = sanitizeValue(rawValue)
@@ -8715,8 +10979,8 @@ public struct Disassembler: Sendable {
             if case .selfFieldValue(let source) = value, let fieldMap {
                 switch fieldMap.lookup(offset: source, bytes: max(access.bytes, 1)) {
                 case .success(.whole(let name, _)): return "\(path) = \(fieldPath(name))"
-                case .success(.part(let name, _, let subOffset, let bytes)):
-                    return "\(path) = \(fieldPath("\(name)[\(subOffset)..<\(subOffset + bytes)]"))"
+                case .success(.part(let name, let partType, let subOffset, let bytes)):
+                    return "\(path) = \(fieldPath(memberPath(name, type: partType, subOffset: subOffset, bytes: bytes)))"
                 case .success(.spans(let names)):
                     return "\(path) = \(fieldPath("{\(names.joined(separator: ", "))}"))"
                 case .failure:
@@ -8804,8 +11068,8 @@ public struct Disassembler: Sendable {
                 switch fieldMap.lookup(offset: access.offset + index * width, bytes: width) {
                 case .success(.whole(let name, _)):
                     targets.append(fieldPath(name))
-                case .success(.part(let name, _, let subOffset, let bytes)):
-                    targets.append(fieldPath("\(name)[\(subOffset)..<\(subOffset + bytes)]"))
+                case .success(.part(let name, let partType, let subOffset, let bytes)):
+                    targets.append(fieldPath(memberPath(name, type: partType, subOffset: subOffset, bytes: bytes)))
                 default:
                     return nil
                 }
@@ -8819,8 +11083,8 @@ public struct Disassembler: Sendable {
                     case .whole(let name, _):
                         values.append(fieldPath(name))
                         continue
-                    case .part(let name, _, let subOffset, let bytes):
-                        values.append(fieldPath("\(name)[\(subOffset)..<\(subOffset + bytes)]"))
+                    case .part(let name, let partType, let subOffset, let bytes):
+                        values.append(fieldPath(memberPath(name, type: partType, subOffset: subOffset, bytes: bytes)))
                         continue
                     case .spans:
                         break
@@ -9230,9 +11494,33 @@ public struct Disassembler: Sendable {
             }
             return exits
         }()
+        // What `swift_willThrow` was called with, in x21. It is called only
+        // with an error about to be thrown, never null
+        // (swift/lib/SILGen/SILGenStmt.cpp, emitThrow), so an exit whose
+        // x21 is one of these returns that error: by the convention a
+        // non-zero x21 at return is a throw. `throw e` of an error
+        // parameter is `mov x21, x0; bl swift_willThrow; …; ret`, and was
+        // left an unresolved exit, as was any error not from
+        // `swift_allocError`.
+        let willThrowErrors: [AbstractValue] = function.instructions.compactMap { insn in
+            guard insn.controlFlow == .call,
+                  DisassembledFunction.calleeName(of: insn).map({ $0.hasPrefix("swift_willThrow") }) == true,
+                  let error = analysis.callSites[insn.address]?.errorValue
+            else { return nil }
+            return error
+        }
+        func isErrorBox(_ value: AbstractValue) -> Bool {
+            guard case .callResult(let site) = value else { return false }
+            return function.instructions.first { $0.address == site }
+                .flatMap(DisassembledFunction.calleeName(of:))?.hasPrefix("swift_allocError") == true
+        }
         /// Whether x21 at an exit is a proven thrown error: a non-zero flag
-        /// (typed throws) or a fresh `swift_allocError` box.
+        /// (typed throws), a fresh `swift_allocError` box, or the error
+        /// `swift_willThrow` was called with. Two unknowns are not the same
+        /// value: a `ret` shared by a rethrow and a normal return has
+        /// neither known.
         func isThrownError(_ value: AbstractValue) -> Bool {
+            if value != .unknown, willThrowErrors.contains(value) { return true }
             switch value {
             case .immediate(let flag): return flag != 0
             case .callResult(let site):
@@ -9303,7 +11591,7 @@ public struct Disassembler: Sendable {
         // its own body does not restore it (an outlined fragment).
         func callPreservesX21(_ call: Instruction) -> Bool {
             if tracer.clobbers(atCall: call).contains("x21") { return false }
-            return ValueTracer.provablyDoesNotThrow(DisassembledFunction.calleeName(of: call) ?? "")
+            return ValueTracer.provablyDoesNotThrow(call)
         }
         let syncNoErrorPoints = errorProofBlocks.isEmpty ? [] : SwiftErrorExitProof.noErrorPoints(
             blocks: errorProofBlocks, entry: function.startAddress, key: "x21",
@@ -9446,6 +11734,16 @@ public struct Disassembler: Sendable {
         for (address, value) in analysis.exitFloatValues where returnsDirectly && normalReturnIsProven(at: address) { collectWordSites(in: value, into: &wordSites) }
         for value in analysis.branchConditions.values { collectWordSites(in: value, into: &wordSites) }
         for values in argumentsByAddress.values { for value in values { collectWordSites(in: value, into: &wordSites) } }
+        // Context self is a value use too, including a field loaded from an
+        // indirect result. Keep its producer at the original instruction even
+        // for one adjacent use: a later presentation rewrite can hide the
+        // consuming call, but must never hide the earlier evaluation with it.
+        // The ABI-role map remains independent of presentation filtering.
+        var contextSelfResultSites = Set<UInt64>()
+        for value in selfValueBySite.values {
+            collectWordSites(in: value, into: &wordSites)
+            collectCallResults(in: value, into: &contextSelfResultSites)
+        }
         for access in analysis.selfFieldAccesses.values {
             if let value = access.storedValue { collectWordSites(in: value, into: &wordSites) }
             for value in access.storedValues ?? [] { collectWordSites(in: value, into: &wordSites) }
@@ -9477,6 +11775,7 @@ public struct Disassembler: Sendable {
                   objcReturnsInX0 || objcReturnsOneFloat,
                   insn.controlFlow == .branch,
                   let callee = calleeByAddress[insn.address],
+                  insn.facts.arcIdentityContract,
                   passthroughReturnHelpers.contains(where: callee.hasPrefix),
                   let raw = analysis.exitValues[insn.address]
             else { return nil }
@@ -9520,6 +11819,31 @@ public struct Disassembler: Sendable {
             default: break
             }
         }
+        // What x0 holds at a return no signature or caller describes
+        // (`Exit.unprovenResult`), and the calls it is built from. Each is
+        // bound at its own instruction, so the comment reads `x0 = (r0 +
+        // arg1)` and the call is spelled once: inline in the comment,
+        // `pthread_main_np()` read as called twice. The result of the last
+        // call alone is no evidence of a result (every function ending in a
+        // call leaves it), nor is an untouched first argument.
+        let unprovenResultEligible = function.objcMethod == nil && functionReturnRegister == nil
+            && function.asyncFunclet == nil && !Self.isSwiftMangled(function.symbol)
+            && !DisassembledFunction.signatureKnown(displayName: function.analysisDisplayName, objcSignature: nil)
+            && registerSummaries[function.startAddress]?.resultEvidence != true
+        var unprovenResults: [UInt64: (value: AbstractValue, calls: Set<UInt64>)] = [:]
+        if unprovenResultEligible, returnsDirectly {
+            for insn in function.instructions where isReturn(insn) {
+                guard let raw = analysis.exitValues[insn.address],
+                      case let exit = sanitizeValue(raw), exit != .unknown, exit != .argument(0)
+                else { continue }
+                if Self.isLeftoverResult(exit) { continue }
+                var calls = Set<UInt64>()
+                guard Self.isCallFreeValue(exit, callSites: &calls) else { continue }
+                unprovenResults[insn.address] = (exit, calls)
+                countDirectUses(exit, at: insn.address)
+            }
+        }
+        let unprovenResultCalls = unprovenResults.values.reduce(into: Set<UInt64>()) { $0.formUnion($1.calls) }
         // A call with no name (an unresolved `blr`) renders its arguments and
         // consumes the results in them like any other call, so it uses them:
         // skipped here, a result it took was neither bound nor shown, and
@@ -9533,11 +11857,19 @@ public struct Disassembler: Sendable {
                 values.prefix(1).forEach { countDirectUses($0, at: address) }
                 continue
             }
-            if let callee, DisassembledFunction.isRuntimeNoise(callee) { continue }
+            if let callee, isRuntimeNoise(callee, at: address) { continue }
             (callee.map { normalizedArguments(callee: $0, values: values, at: address) } ?? values)
                 .forEach { countDirectUses($0, at: address) }
+            if let value = valueSelfBySite[address] { countDirectUses(value, at: address) }
         }
+        for (address, value) in selfValueBySite { countDirectUses(value, at: address) }
         for (address, value) in analysis.branchConditions { countDirectUses(value, at: address) }
+        // Declining a complete comparison does not erase a known operand's
+        // producer. The text condition path may still use that saved result;
+        // existing ordering checks must see it before deciding to inline.
+        for (address, producers) in analysis.unresolvedBranchCallResults {
+            for producer in producers { countDirectUses(.callResult(producer), at: address) }
+        }
         for insn in function.instructions where insn.controlFlow == .branch && insn.branchTarget == nil
             && function.switchTargets[insn.address] == nil && !asyncReturns.contains(insn.address) {
             if let target = analysis.indirectControlFlowTargets[insn.address] { countDirectUses(target, at: insn.address) }
@@ -9562,6 +11894,17 @@ public struct Disassembler: Sendable {
         if function.objcMethod == nil, returnsDirectly {
             for insn in function.instructions where isReturn(insn) && normalReturnIsProven(at: insn.address) && !throwExits.contains(insn.address) {
                 swiftStringReturnCall(at: insn.address).map { countDirectUses(.callResult($0), at: insn.address) }
+            }
+        }
+        // A whole indirect result is also evaluated at its producer. Count
+        // the same values the return later consumes, so a call/effect between
+        // producer and return forces the existing binding at the original PC.
+        // Otherwise `makePacket(); effect(); ret` rendered as
+        // `effect(); return makePacket()` after suppressing the producer.
+        if function.objcMethod == nil, !returnsDirectly {
+            for insn in function.instructions where insn.controlFlow == .return && normalReturnIsProven(at: insn.address) {
+                let values = Probe.muted { indirectReturn(at: insn.address)?.consumedValues } ?? []
+                for value in values { countDirectUses(value, at: insn.address) }
             }
         }
         for address in throwingForwardCalls.keys {
@@ -9595,11 +11938,12 @@ public struct Disassembler: Sendable {
             let feedsUniquenessCheck = (directConsumers[site] ?? []).contains {
                 calleeByAddress[$0].map(DisassembledFunction.isUniquenessCheck) == true
             }
-            guard uses > 1 || crossesEffect(site) || feedsUniquenessCheck,
+            guard uses > 1 || contextSelfResultSites.contains(site) || crossesEffect(site) || feedsUniquenessCheck
+                    || unprovenResultCalls.contains(site),
                   let callee = calleeByAddress[site],
                   // A uniqueness predicate is a value read at this call, not
                   // a fresh query to repeat after a reference-count change.
-                  (!DisassembledFunction.isRuntimeNoise(callee) || DisassembledFunction.isUniquenessCheck(callee)),
+                  (!isRuntimeNoise(callee, at: site) || DisassembledFunction.isUniquenessCheck(callee)),
                   !DisassembledFunction.isGenericPlumbingCallee(callee),
                   DisassembledFunction.arrayLiteralPlaceholder(callee: callee) == nil,
                   DisassembledFunction.castPassthroughIndex(of: callee) == nil,
@@ -9642,7 +11986,7 @@ public struct Disassembler: Sendable {
             // nowhere: `bump(void)` dropping a stale x0 erased `pick(twice(x))`.
             if sites[insn.address] != nil,
                DisassembledFunction.calleeName(of: insn)
-                .map({ !DisassembledFunction.isRuntimeNoise($0) }) ?? true {
+                .map({ !isRuntimeNoise($0, at: insn.address) }) ?? true {
                 let values = argumentsByAddress[insn.address] ?? []
                 var rendered = calleeByAddress[insn.address]
                     .map { normalizedArguments(callee: $0, values: values, at: insn.address) } ?? values
@@ -9658,6 +12002,13 @@ public struct Disassembler: Sendable {
                     rendered = Array(rendered.prefix(2 + selector.filter { $0 == ":" }.count))
                 }
                 for value in rendered {
+                    collectCallResults(in: value, into: &consumedCallResults)
+                }
+                // A value method's `self` words render with the call, so a
+                // call result among them is consumed there: left out,
+                // `memcpy(local_48, ?, 40)` printed once as a statement and
+                // again as `Circle.area.getter(self: memcpy(…))`.
+                if let value = valueSelfBySite[insn.address] {
                     collectCallResults(in: value, into: &consumedCallResults)
                 }
             }
@@ -9731,7 +12082,14 @@ public struct Disassembler: Sendable {
         }()
 
         var observedReturnPaths: [UInt64: AbstractValue]?
-        let scalarTailReturns = Self.scalarTailReturnSites(in: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cfg: cfg)
+        let scalarTailReturns = Self.scalarTailReturnSites(
+            in: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cfg: cfg,
+            isInImageFunction: { registerSummaries[$0] != nil },
+            provenSignature: { target, printed in
+                guard case .proven(let layout) = resolver.specializationClause(at: target, printedName: printed)
+                else { return nil }
+                return layout.signature
+            })
         func returnPath(at address: UInt64) -> ProbeValue {
             if observedReturnPaths == nil { observedReturnPaths = Probe.returnPathConditions(analysis, of: function, cfg: cfg) }
             return .abstractValue(observedReturnPaths?[address] ?? .unknown)
@@ -9741,6 +12099,23 @@ public struct Disassembler: Sendable {
         /// arguments are filtered as plumbing, and `store64(r0 + 0x38, type
         /// metadata for Swift.Int)` lost its value that way. A part the
         /// tracer did not prove names the instruction's register (`x0`, its
+        /// Whether a store fills a new callee async context's header: its
+        /// Parent (+0) and ResumeParent (+8), in a block `swift_task_alloc`
+        /// just returned (swift/lib/IRGen/GenCall.cpp, the caller
+        /// initializes both). Async-call bookkeeping, as the `stp x22,
+        /// resume, [x0]` that -O emits is: at -Onone the compiler moves the
+        /// block into x22 first and stores each word alone, and the
+        /// ResumeParent store surfaced as `mem64[x22 + 0x8] = (1) await
+        /// resume partial function for …`.
+        func isCalleeContextHeader(_ write: MemoryWrite) -> Bool {
+            guard case .callResult(let site) = write.base, write.indexRegister == nil, !write.indexed,
+                  write.displacement >= 0, write.displacement + Int64(write.values.count * write.bytes) <= 16,
+                  let call = function.instructions.first(where: { $0.address == site }),
+                  DisassembledFunction.calleeName(of: call) == "swift_task_alloc"
+            else { return false }
+            return true
+        }
+
         /// value at the store); an indexed address is `base[?]`.
         func memoryWriteStatement(_ write: MemoryWrite) -> String {
             func rendered(_ value: AbstractValue, register: String?) -> String {
@@ -9817,9 +12192,9 @@ public struct Disassembler: Sendable {
                         // A load of part of a field reads that byte range.
                         var readPath = fieldPath(name)
                         if field.names.count == 1, let fieldMap,
-                           case .success(.part(let partName, _, let subOffset, let bytes)) =
+                           case .success(.part(let partName, let partType, let subOffset, let bytes)) =
                             fieldMap.lookup(offset: access.offset, bytes: max(access.bytes, 1)) {
-                            readPath = fieldPath("\(partName)[\(subOffset)..<\(subOffset + bytes)]")
+                            readPath = fieldPath(memberPath(partName, type: partType, subOffset: subOffset, bytes: bytes))
                         }
                         facts.fieldRead = readPath
                         sourceNotes.append(readPath)
@@ -9840,7 +12215,8 @@ public struct Disassembler: Sendable {
                 if let write = analysis.memoryWrites[insn.address] {
                     let shown = write.kind == "address"
                         || (write.kind == "result" && !(signatureKnown && everyExitRendersResult))
-                    level = !shown ? write.kind : !statements.isEmpty ? "semantic"
+                    level = isCalleeContextHeader(write) ? "context"
+                        : !shown ? write.kind : !statements.isEmpty ? "semantic"
                         : write.indexed ? "unresolved" : "address"
                     if level == "address" { noteStatement(.assignment(memoryWriteStatement(write))) }
                 } else {
@@ -9854,7 +12230,13 @@ public struct Disassembler: Sendable {
             let callee = calleeByAddress[insn.address]
             let isObjCNonVoid = function.objcMethod.map { !$0.returnsVoid } == true
             if scalarTailReturns.contains(insn.address), let callee {
-                noteExit(.normal(callExpression(callee: callee, values: argumentsByAddress[insn.address] ?? [], site: insn.address)))
+                // A tail call keeps the caller's x20, so a method's receiver
+                // is there exactly as for a `bl`: `b C.me` from a method of C
+                // is `return me(self: self)`, and without it read
+                // `return C.me()`, a call with no receiver.
+                noteExit(.normal(callExpression(
+                    callee: callee, values: argumentsByAddress[insn.address] ?? [], site: insn.address,
+                    selfText: selfValueBySite[insn.address].map { renderValue($0, depth: 0) })))
             }
             if isObjCNonVoid, insn.controlFlow == .return, let field = twoWordFieldReturn(at: insn.address) {
                 noteExit(.normal(field))
@@ -9867,14 +12249,16 @@ public struct Disassembler: Sendable {
                 } else {
                     noteExit(.normal(renderReturnValue(exit, before: insn.address)))
                 }
-            } else if isObjCNonVoid, objcReturnsInX0 || objcReturnsOneFloat,
-                      analysis.exitValues[insn.address] != nil {
+            } else if isObjCNonVoid, objcReturnsInX0 || objcReturnsOneFloat {
                 if insn.controlFlow == .branch, let callee {
                     if let passthrough = objcPassthroughReturnValue(at: insn) {
                         noteExit(.normal(renderReturnValue(passthrough, before: insn.address)))
-                    } else if passthroughReturnHelpers.contains(where: callee.hasPrefix) {
-                        // A passthrough of an unknown value returns nothing provable.
-                    } else if !DisassembledFunction.isRuntimeNoise(callee),
+                    } else if insn.facts.arcIdentityContract, passthroughReturnHelpers.contains(where: callee.hasPrefix) {
+                        // Its declared nonvoid exit remains a value exit even
+                        // when the forwarded object is unknown or absent.
+                        noteExit(.normal("?"))
+                    } else if analysis.exitValues[insn.address] != nil,
+                              !isRuntimeNoise(callee, at: insn.address),
                               !nonScalarObjCResultSites.contains(insn.address),
                               let values = argumentsByAddress[insn.address] {
                         noteExit(.normal(callExpression(callee: callee, values: values, site: insn.address)))
@@ -9912,6 +12296,14 @@ public struct Disassembler: Sendable {
                    tag <= UInt64(Int.max),
                    let caseName = enumCaseIndex.caseName(ofEnum: errorType, tag: Int(tag)) {
                     thrown = "\(errorType).\(caseName)"
+                } else if throwsSignature?.thrownType == nil,
+                          let error = analysis.exitErrorValues[insn.address].map(sanitizeValue),
+                          willThrowErrors.contains(error), !isErrorBox(error) {
+                    // An untyped error is one pointer in x21: the value
+                    // `swift_willThrow` was given is what is thrown. A fresh
+                    // `swift_allocError` box is no source value (its payload
+                    // is stored into it afterwards), so it stays `?`.
+                    thrown = renderValue(error, depth: 0)
                 }
                 noteExit(.throw(thrown))
             } else if function.objcMethod == nil, isReturn(insn), returnsDirectly,
@@ -9948,6 +12340,12 @@ public struct Disassembler: Sendable {
                 if let caseName = payloadEnumIndex.caseName(ofEnum: returnTypeName, x0: x0, x1: x1) {
                     noteExit(.normal("\(returnTypeName).\(caseName)"))
                 }
+            } else if let unproven = unprovenResults[insn.address],
+                      unproven.calls.allSatisfy({ boundResultSites[$0] != nil }) {
+                // No signature and no caller says whether x0 is a result, so
+                // it is shown as what x0 holds, never as the returned value
+                // (`unprovenResults`, above, for what qualifies).
+                noteExit(.unprovenResult(renderReturnValue(unproven.value, before: insn.address)))
             } else if asyncReturns.contains(insn.address), normalReturnIsProven(at: insn.address), let returnRegister = asyncReturnRegister {
                 let rawExit = returnRegister == .floating
                     ? analysis.exitFloatValues[insn.address]
@@ -10062,9 +12460,19 @@ public struct Disassembler: Sendable {
                 sourceNotes.append("loop-update: \(ordered.joined(separator: " | "))")
             }
             if let bindings = analysis.loopInitializations[insn.address], !bindings.isEmpty {
-                let declarations = bindings.map { "var \($0.name) = \(Self.renderImmediate($0.value))" }
+                let declarations = bindings.map(Self.loopDeclaration)
                 facts.loopInitializations = declarations
                 sourceNotes.append("loop-init: \(declarations.joined(separator: " | "))")
+            }
+            if let bindings = analysis.loopEntryDeclarations[insn.address], !bindings.isEmpty {
+                let declarations = bindings.map(Self.loopDeclaration)
+                facts.loopEntryDeclarations = declarations
+                sourceNotes.append("loop-entry: \(declarations.joined(separator: " | "))")
+            }
+
+            if directObjCSites.contains(insn.address) {
+                facts.isDirectObjCMethod = true
+                sourceNotes.append(DisassembledFunction.directObjCMethodNote)
             }
 
             if insn.controlFlow == .branch, let callee,
@@ -10167,8 +12575,7 @@ public struct Disassembler: Sendable {
                 let renderedReturn = exits.lazy.compactMap { exit -> String? in
                     if case .normal(let value?) = exit { "return \(value)" } else { nil }
                 }.first
-                let returnsValue = DisassembledFunction.signatureReturnsValue(
-                    displayName: function.analysisDisplayName, objcSignature: function.objcMethod?.signature)
+                let returnsValue = signatureReturnsValue
                 let status = scalarTailReturns.contains(insn.address) ? "tail-call"
                     : throwExits.contains(insn.address) ? "throw"
                     : notedForward ? "forwarded"
@@ -10429,7 +12836,7 @@ public struct Disassembler: Sendable {
     // MARK: - Demangling / annotation
 
     /// Demangle a Swift mangled symbol token to a readable name.
-    private func demangle(_ token: String) -> String? {
+    func demangle(_ token: String) -> String? {
         var s = token
         if s.hasPrefix("_$s") || s.hasPrefix("_$S") || s.hasPrefix("_$e") {
             s.removeFirst()

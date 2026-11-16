@@ -16,8 +16,13 @@ Fixtures/Sample/sample.release
 Fixtures/Sample/sample.stripped
 Fixtures/Sample/goProgram
 Fixtures/Sample/goProgram.stripped
+Fixtures/Sample/mergedcalls.stripped
 Fixtures/Sample/slidsegments
 Fixtures/Sample/slidsegments_c
+Fixtures/Sample/slidsegments_flat
+Fixtures/Sample/slidsegments_c_flat
+Fixtures/Sample/slidsegments_stripped
+Fixtures/Sample/slidsegments_flat_stripped
 Fixtures/Sample/*.dylib
 Fixtures/Sample/*.dSYM/
 Fixtures/Sample/*.swiftmodule
@@ -26,6 +31,7 @@ Fixtures/Sample/*.swiftsourceinfo
 Fixtures/Sample/*.abi.json
 Fixtures/Sample/*.o
 Fixtures/Sample/*.a2s
+Fixtures/Sample/*.shape
 Fixtures/Sample/abi-source-oracle
 Fixtures/Sample/abi-source-resilient-oracle
 Fixtures/Sample/exception-cleanup-oracle
@@ -44,3 +50,6 @@ Benchmarks/outputs/
 work/
 Tools/audit/apps.conf
 __pycache__/
+
+# Synthetic corpus products (regenerate with Tools/synthcorpus/build.sh)
+Tools/synthcorpus/out/

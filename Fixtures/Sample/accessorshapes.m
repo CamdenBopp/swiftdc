@@ -10,7 +10,9 @@
 //     `csel; str`: a clamp. `add; str`: arithmetic. `mov; str`: a constant.
 //     `str; str`: one argument, two ivars. `ldr; add`, `ldr; csel`: a getter
 //     that computes. `ldr; ldr`: a getter through a pointer ivar. The wide
-//     setter copies through x2 and then overwrites a word.
+//     setter copies through x2 and then overwrites a word. `ignored` reads
+//     its ivar and returns 3: at -O0 a load through self whose value is
+//     stored to the stack, then `mov w0, #3; ret`.
 #import <Foundation/Foundation.h>
 struct Pair { int x, y; };
 struct Node { long tag; long value; };
@@ -45,6 +47,7 @@ struct Wide { long a, b, c, d, e; };
 @property (nonatomic, readonly) int next;
 @property (nonatomic, readonly) int floorValue;
 @property (nonatomic, readonly) long nodeValue;
+@property (nonatomic, readonly) int ignored;
 @property (nonatomic) struct Wide patched;
 @end
 @implementation Computed
@@ -57,5 +60,7 @@ struct Wide { long a, b, c, d, e; };
 @synthesize floorValue = _floorValue;
 - (int)floorValue { return _floorValue > 3 ? _floorValue : 3; }
 - (long)nodeValue { return _node->value; }
+@synthesize ignored = _ignored;
+- (int)ignored { int seen = _ignored; (void)seen; return 3; }
 - (void)setPatched:(struct Wide)patched { _patched = patched; _patched.a = 0; }
 @end

@@ -44,6 +44,7 @@ private func parsedExit(_ annotation: String?) -> Instruction.Exit? {
     if notes.contains(DisassembledFunction.normalSwiftExitNote) { return .normal(nil) }
     for note in notes {
         if note.hasPrefix("return try ") { return .forwarded(String(note.dropFirst("return try ".count))) }
+        if note.hasPrefix("return // x0 = ") { return .unprovenResult(String(note.dropFirst("return // x0 = ".count))) }
         if note.hasPrefix("return ") { return .normal(String(note.dropFirst("return ".count))) }
         if note.hasPrefix("throw ") { return .throw(String(note.dropFirst("throw ".count))) }
     }
@@ -154,9 +155,14 @@ private func textStatement(of insn: Instruction) -> String? {
                       present: !insn.loopUpdates.isEmpty)
                 check("loopInitializations", insn.loopInitializations, parsedList(annotation, after: "loop-init: "),
                       present: !insn.loopInitializations.isEmpty)
+                check("loopEntryDeclarations", insn.loopEntryDeclarations, parsedList(annotation, after: "loop-entry: "),
+                      present: !insn.loopEntryDeclarations.isEmpty)
                 check("fieldRead", insn.fieldRead, parsedFieldRead(annotation), present: insn.fieldRead != nil)
                 check("selfDispatch", insn.isSelfDispatch, notes(of: annotation)?.contains("dispatch=self") == true,
                       present: insn.isSelfDispatch)
+                check("directObjCMethod", insn.isDirectObjCMethod,
+                      notes(of: annotation)?.contains(DisassembledFunction.directObjCMethodNote) == true,
+                      present: insn.isDirectObjCMethod)
                 let statement = DisassembledFunction.pseudoStatement(of: insn, hideRuntime: true)
                 let oracle = textStatement(of: insn)
                 if statement != oracle { mismatches.append("\(at): statement \(statement ?? "nil"), from notes \(oracle ?? "nil")") }
@@ -266,8 +272,8 @@ private func textStatement(of insn: Instruction) -> String? {
 }
 
 /// The rebuilds that keep notes keep their facts: the split of a statement
-/// from the throw after it, and the slimmed sites a streaming call graph
-/// holds.
+/// from the throw after it. The slimmed sites a streaming call graph holds
+/// keep no notes, so they keep only the two facts the graph reads.
 @Test func noteKeepingRebuildsKeepTheFacts() {
     let binding = Instruction.Binding(name: "r0", expression: "make()")
     let call = Instruction(
@@ -284,8 +290,8 @@ private func textStatement(of insn: Instruction) -> String? {
                                          facts: .init(exit: .normal("?")))],
         source: .address)
     let sites = CallGraph.sites(of: function).instructions
-    #expect(sites.first?.binding == binding && sites.first?.thenThrows == true)
-    #expect(sites.last?.exit == .normal("?"))
+    #expect(sites.first?.annotation == nil && sites.first?.binding == nil && sites.first?.thenThrows == false)
+    #expect(sites.last?.annotation == nil && sites.last?.exit == nil)
 
     // Every other fact, through both.
     let every = Instruction.Facts(
@@ -302,7 +308,8 @@ private func textStatement(of insn: Instruction) -> String? {
     #expect(DisassembledFunction.pseudoStatement(of: awaited, hideRuntime: true) == "let r1 = await self.make()\nthrow ?")
     let streamed = CallGraph.sites(of: DisassembledFunction(
         symbol: "fixture", demangledName: nil, startAddress: 0x1000, instructions: [marked], source: .address))
-    #expect(streamed.instructions.first?.facts == every)
+    #expect(streamed.instructions.first?.facts == Instruction.Facts(isSelfDispatch: true))
+    #expect(streamed.instructions.first?.callee == "make")
 }
 
 /// Several exits noted on one instruction: the first is carried, unless a

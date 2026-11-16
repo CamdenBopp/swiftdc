@@ -54,7 +54,7 @@ public struct ObjCDumper: Sendable {
     ) -> [String] {
         let classes = snapshot.classes.map { info -> String in
             let withSuper = injectingSuperclass(
-                info.headerString, class: info.name,
+                correctingIvarTypes(info.headerString, ivars: info.ivars), class: info.name,
                 superclass: snapshot.superclassBinds[info.name]
             )
             return rewritingPropertyAccessors(withSuper, class: info, unknown: unknown, isSynthesized: isSynthesized)
@@ -63,6 +63,37 @@ public struct ObjCDumper: Sendable {
             + snapshot.protocols.map(\.headerString)
             + snapshot.categories.map(\.headerString))
             .map(fixingArrayFields)
+    }
+
+    /// Ivar lines the header printer types from a guess, retyped from the
+    /// ivar's own encoding. A bitfield's encoding (`b1`) records its width
+    /// and nothing else, yet the printer writes `int _bits : 1;` whatever the
+    /// declaration was (`unsigned _bits : 1` included); the type renders `?`.
+    /// And it writes a `c` or `C` ivar as `BOOL _letter`, with no semicolon,
+    /// but on arm64 `BOOL` is `bool` and encodes as `B`: `c` is a `char`, `C`
+    /// an `unsigned char`, which is also what x86_64's `BOOL` is underneath.
+    /// Each line is found by the ivar's name, and only in the exact shape the
+    /// printer gives that encoding, so any other text is left alone.
+    static func correctingIvarTypes(_ header: String, ivars: [ObjCIvarInfo]) -> String {
+        var lines = header.components(separatedBy: "\n")
+        for ivar in ivars {
+            let replacement: (from: String, to: String)?
+            switch ivar.typeEncoding {
+            case "c": replacement = ("BOOL \(ivar.name)", "char \(ivar.name);")
+            case "C": replacement = ("BOOL \(ivar.name)", "unsigned char \(ivar.name);")
+            case let encoding where encoding.first == "b" && encoding.dropFirst().allSatisfy(\.isNumber)
+                && encoding.count > 1:
+                let width = encoding.dropFirst()
+                replacement = ("int \(ivar.name) : \(width);", "? \(ivar.name) : \(width);")
+            default: replacement = nil
+            }
+            guard let replacement else { continue }
+            for index in lines.indices where lines[index].trimmingCharacters(in: .whitespaces) == replacement.from {
+                let indent = lines[index].prefix { $0 == " " || $0 == "\t" }
+                lines[index] = indent + replacement.to
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 
     /// Move an array dimension the type printer emitted *before* the field name

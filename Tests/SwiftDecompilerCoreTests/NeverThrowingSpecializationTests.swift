@@ -98,11 +98,17 @@ private let withUTF8Never =
         #expect(!text.contains("machine_return()"))
         #expect(!text.contains("throw "))
     }
+    // The controls still throw. Their success exit is the -Onone `try` shape
+    // (x21 spilled, tested with `cbz`, reloaded on the zero edge), which edge
+    // refinement now proves a return: `y &+ 1`, true of the source.
     for binding in ["TypedThrowsNeverLib.ProbeError", "Swift.Error"] {
         let control = try specialization(binding)
         #expect(!control.specializationBindsThrownTypeToNever)
         #expect(control.signatureThrows)
-        #expect(control.renderStructured().contains("machine_return()"))
+        let text = control.renderStructured()
+        #expect(text.contains("if (error == nil) {"), Comment(rawValue: text))
+        #expect(text.contains(" ? + 1)"), Comment(rawValue: text))
+        #expect(text.contains("throw ?") || text.contains("machine_return()"), Comment(rawValue: text))
     }
     #expect(try specialization("TypedThrowsNeverLib.ProbeError").renderStructured().contains("throw ?"))
 }

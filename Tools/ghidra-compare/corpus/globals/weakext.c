@@ -1,0 +1,1 @@
+int weakExt = 42;

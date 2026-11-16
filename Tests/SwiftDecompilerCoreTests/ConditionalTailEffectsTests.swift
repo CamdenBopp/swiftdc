@@ -115,7 +115,7 @@ private func tailExits(_ body: DisassembledFunction, effect: CalleeEffect) throw
     #expect(known.pendingReads.isEmpty)
     #expect(known.provenFloatArgumentReads.isEmpty)
     let unknown = try #require(CalleeRegisterSummary.of(body))
-    #expect(unknown.argumentReads == Set(0...7))
+    #expect(unknown.argumentReads == RegisterSet(0...7))
     #expect(unknown.provenFloatArgumentReads.isEmpty)
 }
 
@@ -134,9 +134,9 @@ private func tailExits(_ body: DisassembledFunction, effect: CalleeEffect) throw
                          UInt64(0x2000): try #require(CalleeRegisterSummary.of(leaf))]
         CalleeRegisterSummary.closeOverReads(&summaries)
         let reads = try #require(summaries[0x1000])
-        CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects, readFacts in
+        CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects, readFacts, reusePreservation in
             CalleeRegisterSummary.recomputingPreservation(start == 0x1000 ? middle : leaf,
-                retainingReadsFrom: readFacts, calleeEffects: effects, isFunction: { $0 == 0x2000 })
+                retainingReadsFrom: readFacts, reusingPreservation: reusePreservation, calleeEffects: effects, isFunction: { $0 == 0x2000 })
         }
         let result = try #require(summaries[0x1000])
         #expect(result.effect.clobbers.contains(key))
@@ -164,4 +164,18 @@ private func tailExits(_ body: DisassembledFunction, effect: CalleeEffect) throw
     #expect(queries == 1) // RET's default hook is queried; the switch is not.
     #expect(Set(exits.keys) == [0x1004])
     #expect(exits[0x1004]?["x19"] == .entry("x19"))
+}
+
+/// `closeOverFieldWrites` reads a body's calls only when it stores only to
+/// its stack, and each distinct call alone: a summary keeps them for such a
+/// body only, each once.
+@Test func outgoingCallsAreKeptOnlyWhereFieldWritesReadThem() throws {
+    // bl 0x2000; bl 0x2000; ret: stack-only, one distinct call.
+    let twice = try #require(CalleeRegisterSummary.of(try tailBody([0x94000400, 0x940003ff, 0xd65f03c0])))
+    #expect(twice.storesOnlyToStack)
+    #expect(twice.outgoingCalls.map(\.target) == [0x2000])
+    // str x0, [x1]; bl 0x2000; ret: a store through x1, so no call is read.
+    let storing = try #require(CalleeRegisterSummary.of(try tailBody([0xf9000020, 0x940003ff, 0xd65f03c0])))
+    #expect(!storing.storesOnlyToStack)
+    #expect(storing.outgoingCalls.isEmpty)
 }

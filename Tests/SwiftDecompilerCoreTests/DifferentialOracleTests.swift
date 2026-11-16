@@ -89,6 +89,7 @@ private struct ExpressionParser {
         // markers carry U+1D41 and must be matched before their bare forms.
         let operators = [
             "<=\u{1D41}", ">=\u{1D41}", "<\u{1D41}", ">\u{1D41}", "/\u{1D41}", "%\u{1D41}",
+            ">>\u{02E2}", "<=\u{02E2}", ">=\u{02E2}", "<\u{02E2}", ">\u{02E2}",
             ">>\u{1D41}", ">>\u{02E2}", "<<", ">>", "<=", ">=", "==", "!=", "&&", "||",
             "+", "-", "*", "/", "%", "&", "|", "^", "<", ">", "!", "~", "?", ":", "(", ")",
         ]
@@ -307,10 +308,12 @@ private func integerBinary(_ op: String, _ a: Int, _ b: Int) throws -> EvalValue
         case "mulhᵁ": return .int(Int(bitPattern: UInt(bitPattern: a).multipliedFullWidth(by: UInt(bitPattern: b)).high))
         case "==": return .bool(a == b)
         case "!=": return .bool(a != b)
-        case "<": return .bool(a < b)
-        case "<=": return .bool(a <= b)
-        case ">": return .bool(a > b)
-        case ">=": return .bool(a >= b)
+        // The signed markers name a signed ordering on operands typed
+        // unsigned; on these bit patterns it is the signed one.
+        case "<", "<\u{02E2}": return .bool(a < b)
+        case "<=", "<=\u{02E2}": return .bool(a <= b)
+        case ">", ">\u{02E2}": return .bool(a > b)
+        case ">=", ">=\u{02E2}": return .bool(a >= b)
         // Unsigned comparisons compare the raw bit patterns — the whole point of
         // the U1 fix is that these are NOT the signed ones.
         case "<\u{1D41}": return .bool(UInt(bitPattern: a) < UInt(bitPattern: b))

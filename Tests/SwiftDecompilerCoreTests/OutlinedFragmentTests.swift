@@ -115,7 +115,7 @@ private func inlinedPlan(_ outcome: OutlinedFragment.Outcome) -> OutlinedFragmen
         }
         let getter = try #require(functions.first { $0.displayName.hasPrefix("Reconstruction.ReconError.hashValue.getter") })
         let rendered = getter.renderStructured()
-        #expect(rendered.contains("Swift.Hasher.init(0)\n"), "\(path)\n\(rendered)")
+        #expect(rendered.contains("Swift.Hasher.init(_seed:)(0)\n"), "\(path)\n\(rendered)")
         #expect(rendered.contains("Swift.Hasher._combine(self: local_68, 0)\n"), "\(path)\n\(rendered)")
         #expect(rendered.contains("return Swift.Hasher._finalize(self: local_68)\n"), "\(path)\n\(rendered)")
         #expect(!rendered.contains("OUTLINED_FUNCTION") && !rendered.contains("sub_"), "\(path)\n\(rendered)")
@@ -226,4 +226,26 @@ private func inlinedPlan(_ outcome: OutlinedFragment.Outcome) -> OutlinedFragmen
     #expect(try !fragment([0xD280_0422, 0x1400_0100]).breaksCallingConvention)
     // A frame of its own: sub sp, sp, #16; add x0, sp, #8; add sp, sp, #16; ret.
     #expect(try !fragment([0xD100_43FF, 0x9100_23E0, 0x9100_43FF, 0xD65F_03C0]).breaksCallingConvention)
+}
+
+/// Only a fragment a call may inline is kept once names are final: one
+/// named `OUTLINED_FUNCTION_n`, or an unnamed one whose body breaks the
+/// calling convention. A named function, or an unnamed body that keeps the
+/// convention, is never inlined, so its body is not held.
+@Test func onlyInlinableFragmentsAreKept() throws {
+    let keeps = try fragment([0xd2800020, 0xd65f03c0], at: 0x2000)   // mov x0, #1; ret
+    let breaks = try fragment([0xaa1303e0, 0xd65f03c0], at: 0x3000)  // mov x0, x19; ret
+    #expect(!keeps.breaksCallingConvention && breaks.breaksCallingConvention)
+    let fragments: [UInt64: OutlinedFragment] = [
+        0x2000: keeps, 0x3000: breaks,
+        0x4000: try fragment([0xd2800020, 0xd65f03c0], at: 0x4000),
+        0x5000: try fragment([0xaa1303e0, 0xd65f03c0], at: 0x5000),
+        0x6000: try fragment([0xd2800020, 0xd65f03c0], at: 0x6000),
+    ]
+    let names: [UInt64: String] = [0x4000: "OUTLINED_FUNCTION_3", 0x5000: "helper", 0x6000: "sub_6000"]
+    let kept = Disassembler.inlinableFragments(fragments, names: names)
+    #expect(kept.keys.sorted() == [0x3000, 0x4000])
+    for (start, fragment) in fragments {
+        #expect((kept[start] != nil) == Disassembler.mayInline(fragment, named: names[start]))
+    }
 }

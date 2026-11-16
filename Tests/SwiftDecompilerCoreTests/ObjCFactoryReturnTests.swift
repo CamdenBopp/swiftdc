@@ -31,14 +31,16 @@ private func occurrences(of needle: String, in text: String) -> Int {
     guard let bodies = try await factoryBodies("Fixtures/Sample/libObjCFactoryReturn.dylib") else { return }
     let expected: [(name: String, binding: String, send: String)] = [
         ("+[SDFactory k1:]", "let r0 = [[self alloc] init]", "[r0 setLimit:arg0]"),
-        ("+[SDFactory k2]", "initWithLimit:3]", "[r0 setLimit:"),
-        ("+[SDFactory k3]", "let r0 = [[NSMutableArray alloc] init]", "[r0 addObject:@\"x\"]"),
-        ("+[SDFactory k4]", "let r0 = [[NSMutableArray alloc] initWithCapacity:4]", "[r0 addObject:"),
+        ("+[SDFactory k2]", "initWithLimit:3]", "[r0 setLimit:4]"),
+        // The source says `[NSMutableArray new]`: objc_opt_new.
+        ("+[SDFactory k3]", "let r0 = [NSMutableArray new]", "[r0 addObject:@\"x\"]"),
+        ("+[SDFactory k4]", "let r0 = [[NSMutableArray alloc] initWithCapacity:4]", "[r0 addObject:@\"y\"]"),
     ]
     for (name, binding, send) in expected {
         let body = try #require(bodies[name], "\(name) missing")
         for text in [body.structured, body.pseudo] {
-            #expect(occurrences(of: " alloc]", in: text) == 1, "\(name) allocates once: \(text)")
+            #expect(occurrences(of: " alloc]", in: text) + occurrences(of: " new]", in: text) == 1,
+                    "\(name) allocates once: \(text)")
             #expect(text.contains(binding), "\(name): \(text)")
             #expect(text.contains("let r0 = "), "\(name): \(text)")
             #expect(text.contains(send), "\(name): \(text)")
@@ -56,4 +58,40 @@ private func occurrences(of needle: String, in text: String) -> Int {
         #expect(text.contains("return [[self alloc] init]"), Comment(rawValue: text))
         #expect(!text.contains("let r"), Comment(rawValue: text))
     }
+}
+
+/// An in-image class object passed by address (`adrp; add x0, …` before
+/// `objc_alloc`) is the class: `[[SDFactory alloc] initWithLimit:3]`, which
+/// rendered `[[0x8180 alloc] …]`.
+@Test func anInImageClassObjectIsNamedByItsClassIfPresent() async throws {
+    guard let bodies = try await factoryBodies("Fixtures/Sample/libObjCFactoryReturn.dylib") else { return }
+    let body = try #require(bodies["+[SDFactory k2]"])
+    for text in [body.structured, body.pseudo] {
+        #expect(text.contains("let r0 = [[SDFactory alloc] initWithLimit:3]"), Comment(rawValue: text))
+    }
+}
+
+/// Two classes claiming one class object address name neither: the address
+/// stays raw rather than taking whichever was read first.
+@Test func aClassObjectAddressTwoClassesClaimIsNotNamed() {
+    let names = ObjCMetadataSnapshot.classObjects([
+        (address: 0x8180, name: "A"), (address: 0x8180, name: "B"),
+        (address: 0x81d0, name: "C"), (address: 0x81d0, name: "C"),
+    ])
+    #expect(names == [0x81d0: "C"])
+}
+
+/// A Swift class is in the class list too, but its class object is its type
+/// metadata: named by the class list, `type metadata accessor for
+/// Sample.Widget` read `return SDWidget`, its `@objc` name.
+@Test func aSwiftClassObjectIsNotNamedAsAnObjCClassIfPresent() async throws {
+    let path = "Fixtures/Sample/libSample.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler().disassemble(path: path, functionFilter: "type metadata accessor for Sample.Widget")
+    }
+    let function = try #require(functions.first { $0.displayName == "type metadata accessor for Sample.Widget" })
+    let text = function.renderStructured()
+    #expect(text.contains("0x"), Comment(rawValue: text))
+    #expect(!text.contains("SDWidget"), Comment(rawValue: text))
 }

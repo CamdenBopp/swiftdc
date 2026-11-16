@@ -356,6 +356,150 @@ $CLANG -O2 -dynamiclib arity_twin.c -o libArityTwin.dylib
 echo "==> in-image functions named like C library functions, with other bodies (libc_twins.c, -O2 -fno-builtin)"
 $CLANG -O2 -fno-builtin -dynamiclib libc_twins.c -o libLibcTwins.dylib
 
+echo "==> a class field of an imported C struct, read through its member (cstructfield.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name CStructField cstructfield.swift -o libCStructField.dylib
+
+echo "==> a field tested after it was overwritten (fieldstore.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name FieldStore fieldstore.swift -o libFieldStore.dylib
+
+echo "==> an inner loop's exit that leaves the outer loop too (loopexit.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name LoopExit loopexit.swift -o libLoopExit.dylib
+
+echo "==> the same ObjC with opcode rebases and with chained fixups (opcodefixups.m, -O1)"
+$CLANG -fobjc-arc -O1 -dynamiclib -framework Foundation -mmacosx-version-min=11.0 opcodefixups.m -o libOpcodeFixups.dylib
+$CLANG -fobjc-arc -O1 -dynamiclib -framework Foundation -mmacosx-version-min=13.0 opcodefixups.m -o libOpcodeFixups.chained.dylib
+
+echo "==> SDK sends returning an NSRange in x0 and x1 (objc_range_return.m, -O1)"
+$CLANG -fobjc-arc -O1 -dynamiclib -framework Foundation -framework AppKit objc_range_return.m -o libObjCRangeReturn.dylib
+
+echo "==> variadic SDK selectors outside the name suffixes (objc_variadic_selectors.m, -O1)"
+$CLANG -fobjc-arc -O1 -dynamiclib -framework Foundation objc_variadic_selectors.m -o libObjCVariadicSelectors.dylib
+
+echo "==> direct calls in a stripped executable with no function starts (mergedcalls.c, -O1)"
+$CLANG -O1 mergedcalls.c -Wl,-no_function_starts -o mergedcalls.stripped
+xcrun strip mergedcalls.stripped
+
+echo "==> a receiver left in x20 across a call to another module (selfagain.swift, selfagainkit.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -emit-module -module-name SelfAgainKit selfagainkit.swift -o libSelfAgainKit.dylib
+$SWIFTC -parse-as-library -O -emit-library -module-name SelfAgain selfagain.swift -I . -L . -lSelfAgainKit -o libSelfAgain.dylib
+
+echo "==> a protocol witness that tail-calls its member (witnesstail.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name WitnessTail witnesstail.swift -o libWitnessTail.dylib
+
+echo "==> a closure's captures passed after its formals (closurecapture.swift, -Onone)"
+$SWIFTC -parse-as-library -Onone -emit-library -module-name ClosureCapture closurecapture.swift -o libClosureCapture.dylib
+
+echo "==> a small struct's self words after its formals (valueselfwords.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name ValueSelfWords valueselfwords.swift -o libValueSelfWords.dylib
+
+echo "==> the platform register across a call (platformregister.s)"
+$CLANG -arch arm64 -dynamiclib -undefined dynamic_lookup platformregister.s -o libPlatformRegister.dylib
+
+echo "==> direct Objective-C methods, no _cmd (objcdirect.m, -O0 and -O1)"
+$CLANG -O0 -fobjc-arc -dynamiclib -framework Foundation objcdirect.m -o libObjCDirect.O0.dylib
+$CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation objcdirect.m -o libObjCDirect.dylib
+
+echo "==> optional protocol properties, decided by the getter's list (objcoptionalprop.m, -O1)"
+$CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation objcoptionalprop.m -o libObjCOptionalProp.dylib
+
+echo "==> a default argument's generator takes no parameters (defaultargument.swift, -Onone)"
+xcrun swiftc -Onone -parse-as-library -emit-library defaultargument.swift -module-name DefaultArgument -o libDefaultArgument.dylib
+
+echo "==> calls through a register to an in-image function (registercall.s)"
+$CLANG -arch arm64 -dynamiclib registercall.s -o libRegisterCall.dylib
+
+echo "==> a chained bind whose 64-bit import addend has the top bit set (bindaddend.s)"
+$CLANG -arch arm64 -dynamiclib bindaddend.s -lobjc -o libBindAddend.dylib
+
+echo "==> throwing getters whose storage type is a function type (throwinggetter.swift, -O)"
+$SWIFTC -O -parse-as-library -emit-library -module-name TG throwinggetter.swift -o libThrowingGetter.dylib
+
+echo "==> preconditions that branch to a trap on overflow or carry flags, beside real overflow checks (guardfold.swift, -O)"
+$SWIFTC -O -parse-as-library -emit-library -module-name GF guardfold.swift -o libGuardFold.dylib
+
+echo "==> resilient structs and enums are passed by address (resilient.swift, resilient_tail.s, -O -enable-library-evolution)"
+$CLANG -arch arm64 -c resilient_tail.s -o resilient_tail.o
+$SWIFTC -O -parse-as-library -emit-library -enable-library-evolution -module-name RS resilient.swift resilient_tail.o -o libResilient.dylib
+rm -f resilient_tail.o
+
+echo "==> a caller filling a new async context's header, at -Onone word by word (asyncheader.swift, -Onone)"
+$SWIFTC -Onone -parse-as-library -emit-library -module-name AH asyncheader.swift -o libAsyncHeader.Onone.dylib
+
+echo "==> throws of an error that already exists: a parameter, a stored property, a caught error (throwvalue.swift, -Onone, -O)"
+for level in Onone O; do
+    $SWIFTC -$level -parse-as-library -emit-library -module-name TV throwvalue.swift -o libThrowValue.$level.dylib
+done
+
+echo "==> how x20 carries self into, across and out of calls, tail calls included (selfregister.s)"
+$CLANG -arch arm64 -dynamiclib selfregister.s -o libSelfRegister.dylib
+
+echo "==> local functions and defer bodies take their captures as arguments (localfunction.swift, -Onone)"
+$SWIFTC -Onone -parse-as-library -emit-library -module-name LF localfunction.swift -o libLocalFunction.Onone.dylib
+
+echo "==> stores through outlined copy helpers and the existential assign helper (hiddenstore.swift, -Onone, -O)"
+for level in Onone O; do
+    $SWIFTC -$level -parse-as-library -emit-library -module-name HS hiddenstore.swift -o libHiddenStore.$level.dylib
+done
+
+echo "==> when a tail branch to a C-named callee returns its result (tailprototype.swift + tailprototype_twin.c, -O)"
+$CLANG -O2 -fno-builtin -c tailprototype_twin.c -o tailprototype_twin.o
+xcrun swiftc -O -parse-as-library -emit-library tailprototype.swift tailprototype_twin.o -module-name TailPrototype -Xlinker -undefined -Xlinker dynamic_lookup -o libTailPrototype.dylib
+rm -f tailprototype_twin.o
+
+echo "==> objc_opt_new is a +new send (optnew.m, -O2)"
+$CLANG -O2 -fobjc-arc -dynamiclib -framework Foundation optnew.m -o libOptNew.dylib
+
+echo "==> runtime calls that are statements, not ARC noise (runtimestatements.m, -O2)"
+$CLANG -O2 -fobjc-arc -dynamiclib -framework Foundation -undefined dynamic_lookup runtimestatements.m -o libRuntimeStatements.dylib
+
+echo "==> constant NSStrings by their flags and length: UTF-16, NUL, empty (cfstrings.m, -O2)"
+$CLANG -O2 -fobjc-arc -dynamiclib -framework Foundation cfstrings.m -o libCFStrings.dylib
+$CLANG -arch arm64 -dynamiclib -framework Foundation cfstrings_short.s -o libCFStringsShort.dylib
+
+echo "==> AnyObject.Type in one register (anyobjectmeta.swift, -O)"
+xcrun swiftc -O -parse-as-library -emit-library anyobjectmeta.swift -module-name AnyObjectMeta -o libAnyObjectMeta.dylib
+
+echo "==> tail branches to a getter and to runtime entry points (tailforward.swift, -O)"
+xcrun swiftc -O -parse-as-library -emit-library tailforward.swift -module-name TailForward -o libTailForward.dylib
+
+echo "==> signed orderings on unsigned operands, and UInt against Int (signedcompare.swift, -O)"
+xcrun swiftc -O -parse-as-library -emit-library signedcompare.swift -module-name SignedCompare -o libSignedCompare.dylib
+
+echo "==> what x0 holds at a C function's return, no signature (unprovenresult.c, -O2)"
+$CLANG -O2 -dynamiclib -undefined dynamic_lookup unprovenresult.c -o libUnprovenResult.dylib
+
+echo "==> value self from both register banks (mixedself.swift, -O)"
+xcrun swiftc -O -parse-as-library -emit-library mixedself.swift -module-name MixedSelf -o libMixedSelf.dylib
+
+echo "==> key path intrinsics with live registers past their arguments (keypathintrinsics.swift, -O)"
+xcrun swiftc -O -parse-as-library -emit-library keypathintrinsics.swift -module-name KeyPathIntrinsics -o libKeyPathIntrinsics.dylib
+$CLANG -arch arm64 -dynamiclib -undefined dynamic_lookup keypathintrinsics.s -o libKeyPathIntrinsicsAsm.dylib
+
+echo "==> a signed conversion of an unsigned argument (signedfloat.swift, -O)"
+xcrun swiftc -O -parse-as-library -emit-library signedfloat.swift -module-name SignedFloat -o libSignedFloat.dylib
+
+echo "==> a compare that writes its own operand (writtenflags.c, -O1 and -O2)"
+$CLANG -O1 -dynamiclib -undefined dynamic_lookup writtenflags.c -o libWrittenFlags.O1.dylib
+$CLANG -O2 -dynamiclib -undefined dynamic_lookup writtenflags.c -o libWrittenFlags.dylib
+
+echo "==> loops whose bodies end in an if/else that leaves on both arms (deadexit.s)"
+$CLANG -arch arm64 -dynamiclib deadexit.s -o libDeadExit.dylib
+
+echo "==> a loop counter held in a register (registerloop.swift, -O and -Osize)"
+$SWIFTC -parse-as-library -O -emit-library -module-name RegisterLoop registerloop.swift -o libRegisterLoop.dylib
+$SWIFTC -parse-as-library -Osize -emit-library -module-name RegisterLoop registerloop.swift -o libRegisterLoop.Osize.dylib
+
+echo "==> an in-image callee that reads a stack argument, framed or not (stackargs.c, -O1, -O0 and -Oz)"
+$CLANG -O1 -dynamiclib -undefined dynamic_lookup stackargs.c -o libStackArgs.dylib
+$CLANG -O0 -dynamiclib -undefined dynamic_lookup stackargs.c -o libStackArgs.O0.dylib
+$CLANG -Oz -dynamiclib -undefined dynamic_lookup stackargs.c -o libStackArgs.Oz.dylib
+
+echo "==> SDK calls from their declarations: open, fcntl, ioctl, closedir, sysctl (variadic_calls.c, -O1)"
+$CLANG -O1 -dynamiclib variadic_calls.c -o libVariadicCalls.dylib
+
+echo "==> a call that only decides a branch whose arms render nothing (consumed_call.c, -O1)"
+$CLANG -O1 -dynamiclib -undefined dynamic_lookup consumed_call.c -o libConsumedCall.dylib
+
 echo "==> variadic ObjC fixture (-O1) — format arguments on the stack"
 $CLANG -O1 -fobjc-arc -framework Foundation -dynamiclib variadic.m -o libVariadic.dylib
 
@@ -490,6 +634,9 @@ for level in O0 O1 Os; do
   xcrun clang -arch arm64 -$level -fobjc-arc -dynamiclib -framework Foundation accessorshapes.m -o libAccessorShapes.$level.dylib
 done
 
+echo "==> ivars the encoding types only in part: bitfields, char against BOOL (objcivartypes.m, -O1)"
+xcrun clang -arch arm64 -O1 -dynamiclib -framework Foundation objcivartypes.m -o libObjCIvarTypes.dylib
+
 echo "==> accessors with no verdict: past the decode prefix, outside __text (accessordeclined.m, -O1, ARC)"
 xcrun clang -arch arm64 -O1 -fobjc-arc -dynamiclib -framework Foundation accessordeclined.m -o libAccessorDeclined.dylib
 
@@ -599,6 +746,11 @@ $SWIFTC -parse-as-library -O -emit-library -module-name GenericCalls genericcall
 
 echo "==> a generic specialization that drops its metatype argument, Tt (droppedmeta.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name DroppedMeta droppedmeta.swift -o libDroppedMeta.dylib
+
+echo "==> specializations that drop arguments or propagate closures (droppedargs.swift, -O, -Osize, -Onone)"
+$SWIFTC -parse-as-library -O -emit-library -module-name DroppedArgs droppedargs.swift -o libDroppedArgs.dylib
+$SWIFTC -parse-as-library -Osize -emit-library -module-name DroppedArgs droppedargs.swift -o libDroppedArgs.Osize.dylib
+$SWIFTC -parse-as-library -Onone -emit-library -module-name DroppedArgs droppedargs.swift -o libDroppedArgs.Onone.dylib
 
 echo "==> vector lane moves, ins and umov (vectorlanes.s)"
 $CLANG -arch arm64 -dynamiclib vectorlanes.s -o libVectorLanes.dylib
@@ -758,6 +910,40 @@ $CLANG -arch arm64 -c tf_self.s -o tf_self.o
 $SWIFTC -parse-as-library -O -emit-library -module-name TfSelf tfself.swift tf_self.o -o libTfSelf.dylib
 rm -f tf_self.o
 
+echo "==> a no-payload enum's self by address in x20 (resilientself.swift, resilient_self.s, -Onone, -O, -Osize, library evolution)"
+$CLANG -arch arm64 -c resilient_self.s -o resilient_self.o
+for level in Onone O Osize; do
+    $SWIFTC -parse-as-library -$level -enable-library-evolution -emit-library -module-name ResilientSelf \
+        resilientself.swift resilient_self.o -o libResilientSelf.$level.dylib
+done
+rm -f resilient_self.o
+
+echo "==> a vtable call on self's class-typed field, and a same-named class from another module (fieldvtable.swift, fieldvtable_other.swift, -O, -Onone)"
+for level in O Onone; do
+    suffix=$([ $level = O ] && echo "" || echo ".Onone")
+    rm -rf fvo_module && mkdir fvo_module
+    $SWIFTC -parse-as-library -$level -emit-library -emit-module -module-name FieldVTableOther fieldvtable_other.swift \
+        -emit-module-path fvo_module/FieldVTableOther.swiftmodule \
+        -Xlinker -install_name -Xlinker @rpath/libFieldVTableOther$suffix.dylib -o libFieldVTableOther$suffix.dylib
+    $SWIFTC -parse-as-library -$level -emit-library -module-name FieldVTable fieldvtable.swift -I fvo_module \
+        -L . -lFieldVTableOther$suffix -Xlinker -rpath -Xlinker @loader_path -o libFieldVTable$suffix.dylib
+done
+rm -rf fvo_module
+
+echo "==> requirement calls through an opaque existential argument's witness table (existentialwitness.swift, existential_unpassed.s, -O, -Onone, library evolution)"
+$CLANG -arch arm64 -c existential_unpassed.s -o existential_unpassed.o
+for variant in "O:" "Onone:.Onone" "O -enable-library-evolution:.resilient"; do
+    flags=${variant%%:*}; suffix=${variant#*:}
+    rm -rf ew_module && mkdir ew_module
+    $SWIFTC -parse-as-library -$flags -emit-library -emit-module -module-name ExistentialWitness existentialwitness.swift existential_unpassed.o \
+        -emit-module-path ew_module/ExistentialWitness.swiftmodule \
+        -Xlinker -install_name -Xlinker @rpath/libExistentialWitness$suffix.dylib -o libExistentialWitness$suffix.dylib
+    $SWIFTC -parse-as-library -$flags -emit-library -module-name ExistentialWitnessOracle existentialwitness_oracle.swift \
+        -I ew_module -L . -lExistentialWitness$suffix -Xlinker -rpath -Xlinker @loader_path \
+        -o libExistentialWitnessOracle$suffix.dylib
+done
+rm -rf ew_module existential_unpassed.o
+
 echo "==> types fetched by mangled name, unstripped and stripped (mangledtypes.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name MangledTypes mangledtypes.swift -o libMangledTypes.dylib
 cp libMangledTypes.dylib libMangledTypes.stripped.dylib
@@ -830,18 +1016,54 @@ $SWIFTC -parse-as-library -O -emit-library -module-name ClassParamClient classpa
 
 echo "==> segments at different VM-to-file slides: zero fill ends __DATA, slid segments follow (slidsegments.swift, -O, executable; slidsegments_c.c)"
 $CLANG -arch arm64 -c slidsegments_zerofill.s -o slidsegments_zerofill.o
+$CLANG -arch arm64 -c slidsegments_tail.s -o slidsegments_tail.o
 $CLANG -arch arm64 -O1 -dynamiclib slidsegments_c.c slidsegments_zerofill.o -o slidsegments_c \
     -Wl,-rename_section,__DATA,__data,__DATA_DIRTY,__data -Wl,-sectcreate,__FONT_DATA,__blob,slidsegments_zerofill.s
-$SWIFTC -O -module-name SlidSegments slidsegments.swift slidsegments_zerofill.o -o slidsegments \
+$SWIFTC -O -module-name SlidSegments slidsegments.swift slidsegments_zerofill.o slidsegments_tail.o -o slidsegments \
     -Xlinker -rename_section -Xlinker __DATA -Xlinker __data -Xlinker __DATA_DIRTY -Xlinker __data \
     -Xlinker -rename_section -Xlinker __DATA -Xlinker __objc_selrefs -Xlinker __DATA_DIRTY -Xlinker __objc_selrefs \
     -Xlinker -rename_section -Xlinker __DATA_CONST -Xlinker __got -Xlinker __DATA_DIRTY -Xlinker __got \
-    -Xlinker -rename_section -Xlinker __TEXT -Xlinker __swift5_fieldmd -Xlinker __SWIFT_FIELDS -Xlinker __swift5_fieldmd
+    -Xlinker -rename_section -Xlinker __TEXT -Xlinker __swift5_fieldmd -Xlinker __SWIFT_FIELDS -Xlinker __swift5_fieldmd \
+    -Xlinker -rename_section -Xlinker __TEXT -Xlinker __constg_swiftt -Xlinker __SWIFT_FIELDS -Xlinker __constg_swiftt \
+    -Xlinker -rename_section -Xlinker __TEXT -Xlinker __const -Xlinker __SWIFT_FIELDS -Xlinker __const
+echo "==> the same two linked alike without the zero fill: one slide, the oracle for the renders above (slidsegments_flat, slidsegments_c_flat)"
+$CLANG -arch arm64 -O1 -dynamiclib slidsegments_c.c -DSLIDSEGMENTS_FLAT -o slidsegments_c_flat \
+    -Wl,-rename_section,__DATA,__data,__DATA_DIRTY,__data -Wl,-sectcreate,__FONT_DATA,__blob,slidsegments_zerofill.s
+$SWIFTC -O -module-name SlidSegments slidsegments.swift -o slidsegments_flat \
+    -Xlinker -rename_section -Xlinker __DATA -Xlinker __data -Xlinker __DATA_DIRTY -Xlinker __data \
+    -Xlinker -rename_section -Xlinker __DATA -Xlinker __objc_selrefs -Xlinker __DATA_DIRTY -Xlinker __objc_selrefs \
+    -Xlinker -rename_section -Xlinker __DATA_CONST -Xlinker __got -Xlinker __DATA_DIRTY -Xlinker __got \
+    -Xlinker -rename_section -Xlinker __TEXT -Xlinker __swift5_fieldmd -Xlinker __SWIFT_FIELDS -Xlinker __swift5_fieldmd \
+    -Xlinker -rename_section -Xlinker __TEXT -Xlinker __constg_swiftt -Xlinker __SWIFT_FIELDS -Xlinker __constg_swiftt \
+    -Xlinker -rename_section -Xlinker __TEXT -Xlinker __const -Xlinker __SWIFT_FIELDS -Xlinker __const
+echo "==> both stripped: names then come from metadata, through the pointers the slide moves (slidsegments_stripped, slidsegments_flat_stripped)"
+cp slidsegments slidsegments_stripped
+strip -x slidsegments_stripped 2>/dev/null || strip slidsegments_stripped
+cp slidsegments_flat slidsegments_flat_stripped
+strip -x slidsegments_flat_stripped 2>/dev/null || strip slidsegments_flat_stripped
+
 echo "==> which register holds each parameter at entry (entryseedkit, entryseed, -Onone, -O and -Osize)"
 $SWIFTC -parse-as-library -O -emit-library -emit-module -module-name EntrySeedKit entryseedkit.swift -o libEntrySeedKit.dylib
 $SWIFTC -parse-as-library -Onone -emit-library -module-name EntrySeed entryseed.swift -I . -L . -lEntrySeedKit -o libEntrySeed.dylib
 $SWIFTC -parse-as-library -O -emit-library -module-name EntrySeed entryseed.swift -I . -L . -lEntrySeedKit -o libEntrySeed.opt.dylib
 $SWIFTC -parse-as-library -Osize -emit-library -module-name EntrySeed entryseed.swift -I . -L . -lEntrySeedKit -o libEntrySeed.size.dylib
+
+echo "==> folds strip hides (strippedfold.swift, -O, and a strip -x copy): one surviving name over a body others share"
+$SWIFTC -parse-as-library -O -emit-library -module-name StrippedFold strippedfold.swift -o libStrippedFold.dylib
+cp libStrippedFold.dylib libStrippedFold.stripped.dylib
+strip -x libStrippedFold.stripped.dylib 2>/dev/null || strip libStrippedFold.stripped.dylib
+
+echo "==> input shapes: x86_64, universal, relocatable objects, no LC_FUNCTION_STARTS, no code (inputshape*, -O and -O1)"
+# Not .dylib: the suites that decode every fixture read .dylib files, and these are refused.
+$SWIFTC -O -emit-library -target x86_64-apple-macos13 -module-name InputShape inputshape.swift -o inputshape_x86_64.shape
+$SWIFTC -O -emit-library -target arm64-apple-macos13 -module-name InputShape inputshape.swift -o libInputShape.arm64.dylib
+lipo -create libInputShape.arm64.dylib inputshape_x86_64.shape -output inputshape_universal.shape
+$SWIFTC -O -c -parse-as-library -module-name InputShape inputshape.swift -o inputshape_swift.o
+$CLANG -arch arm64 -O1 -c inputshape_c.c -o inputshape_c.o
+$CLANG -arch arm64 -O1 -dynamiclib inputshape_c.c -o libInputShapeNoStarts.dylib -Wl,-no_function_starts
+cp libInputShapeNoStarts.dylib libInputShapeNoStarts.stripped.dylib
+strip -x libInputShapeNoStarts.stripped.dylib
+$CLANG -arch arm64 -dynamiclib inputshape_empty.c -o inputshape_empty.shape
 
 echo "==> variants:"
 ls -la sample.debug sample.release sample.stripped libSample.dylib libSample.stripped.dylib libReconstruction.dylib
@@ -852,3 +1074,122 @@ $CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib summary_recursive_effec
 
 echo "==> conditional external tail effects, both paths and frame aliases (conditional_tail_effects.s)"
 $CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib conditional_tail_effects.s -o libConditionalTailEffects.dylib
+
+echo "==> a dylib with data and no code: LC_FUNCTION_STARTS is only zero padding (nocode.c, -O1)"
+xcrun clang -arch arm64 -O1 -dynamiclib nocode.c -o libNoCode.dylib
+
+echo "==> dup of a general register into a vector register, returned as a Double (dup_bits.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib dup_bits.s -o libDupBits.dylib
+
+echo "==> tail branches to bodies that never write x0: a lone ret, a store, an add (passthrough_tail.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib passthrough_tail.s -o libPassthroughTail.dylib
+
+echo "==> a non-local label inside a function, listed as a function start (label_split.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib label_split.s -o libLabelSplit.dylib
+
+echo "==> a scalar in a callee-saved vector register across a call, stored whole (vector_preserve.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib vector_preserve.s -o libVectorPreserve.dylib
+
+echo "==> calls through a register with arguments still in their entry registers (indirect_args.c, -O2)"
+$CLANG -arch arm64 -O2 -dynamiclib indirect_args.c -o libIndirectArgs.dylib
+
+echo "==> a struct's self after a method's formals and as a getter's words (valueself.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -module-name ValueSelf valueself.swift -o libValueSelf.dylib
+
+echo "==> functions with no signature whose callers prove (or do not prove) their result (caller_proven.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib caller_proven.s -o libCallerProven.dylib
+
+echo "==> value-witness calls through metadata a stripped generic function receives as an argument (argument_witness.swift, -O; strip -x)"
+$SWIFTC -parse-as-library -O -emit-library -module-name ArgumentWitness argument_witness.swift -o libArgumentWitness.dylib
+cp libArgumentWitness.dylib libArgumentWitness.stripped.dylib
+strip -x libArgumentWitness.stripped.dylib
+
+echo "==> a void value witness followed by a call that reads x0 (void_witness.s; links libswiftCore for the metadata bind)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib void_witness.s -L"$(xcrun --show-sdk-path)/usr/lib/swift" -lswiftCore -o libVoidWitness.dylib
+
+echo "==> value-witness loads whose call does or does not pass the metadata back (value_witness_args.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib value_witness_args.s -o libValueWitnessArgs.dylib
+
+echo "==> value witnesses of an associated type's metadata in an unspecialized generic (associated_witness.swift, -O; strip -x)"
+$SWIFTC -parse-as-library -O -emit-library -module-name AssociatedWitness associated_witness.swift -o libAssociatedWitness.dylib
+cp libAssociatedWitness.dylib libAssociatedWitness.stripped.dylib
+strip -x libAssociatedWitness.stripped.dylib
+
+echo "==> protocol witness calls through a table swift_conformsToProtocol returned (protocol_witness.swift, -O; stripped; library evolution for method descriptors)"
+$SWIFTC -parse-as-library -O -emit-library -module-name ProtocolWitness protocol_witness.swift -o libProtocolWitness.dylib
+cp libProtocolWitness.dylib libProtocolWitness.stripped.dylib
+strip -x libProtocolWitness.stripped.dylib
+$SWIFTC -parse-as-library -O -enable-library-evolution -emit-library -module-name ProtocolWitness protocol_witness.swift -o libProtocolWitness.resilient.dylib
+
+echo "==> protocol witness calls through a hand-built descriptor, with and without (T, table) passed last (protocol_witness_args.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib protocol_witness_args.s -L"$(xcrun --show-sdk-path)/usr/lib/swift" -lswiftCore -o libProtocolWitnessArgs.dylib
+
+echo "==> possible frame reach after lost frame-pointer preservation (frame_may.s)"
+$CLANG -arch arm64 -dynamiclib frame_may.s -o libFrameMay.dylib
+
+echo "==> callee stack reuse invalidates facts below call-time sp (stack_lifetime.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib stack_lifetime.s -o libStackLifetime.dylib
+
+echo "==> ARC identity requires its real provider (arc_identity_origin, -Onone/-O/-Osize)"
+python3 build-arc-origin.py
+
+echo "==> retain the original call result once with real objects (result_identity, -Onone/-O/-Osize)"
+python3 build-result-identity.py
+python3 build-result-identity.py --legacy-bindings
+python3 build-result-identity.py --indirect-calls
+python3 build-result-identity.py --legacy-bindings --indirect-calls
+
+echo "==> an entry-register spill inside an escaped local is not an object boundary (frame_preserve_alias.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib frame_preserve_alias.s -o libFramePreserveAlias.dylib
+
+echo "==> value self and direct/forwarded context self use different registers (self_register_role.swift + self_register_role.s, -O)"
+SELF_REGISTER_ROLE_TMP=$(mktemp -d)
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -c self_register_role.s -o "$SELF_REGISTER_ROLE_TMP/entry.o"
+$SWIFTC -O -parse-as-library -emit-library -module-name SelfRole self_register_role.swift "$SELF_REGISTER_ROLE_TMP/entry.o" -o libSelfRegisterRole.dylib
+rm -rf "$SELF_REGISTER_ROLE_TMP"
+
+echo "==> signature-only receiver proofs without Swift mangling or metadata (entry_role_consumers.s)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib entry_role_consumers.s -o libEntryRoleConsumers.dylib
+
+echo "==> preserve whole indirect-result producer order across effects (indirect_result_order.swift + .s, -Onone, -O and -Osize)"
+INDIRECT_RESULT_ORDER_TMP=$(mktemp -d)
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -c indirect_result_order.s -o "$INDIRECT_RESULT_ORDER_TMP/entry.o"
+$SWIFTC -Onone -parse-as-library -emit-library -module-name IndirectOrder indirect_result_order.swift "$INDIRECT_RESULT_ORDER_TMP/entry.o" -o libIndirectResultOrder.dylib
+$SWIFTC -O -parse-as-library -emit-library -module-name IndirectOrder indirect_result_order.swift "$INDIRECT_RESULT_ORDER_TMP/entry.o" -o libIndirectResultOrder.opt.dylib
+$SWIFTC -Osize -parse-as-library -emit-library -module-name IndirectOrder indirect_result_order.swift "$INDIRECT_RESULT_ORDER_TMP/entry.o" -o libIndirectResultOrder.size.dylib
+rm -rf "$INDIRECT_RESULT_ORDER_TMP"
+
+
+echo "==> context receivers preserve one producer and its order (context_result_use.swift + .s, -Onone, -O and -Osize)"
+CONTEXT_RESULT_USE_TMP=$(mktemp -d)
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -c context_result_use.s -o "$CONTEXT_RESULT_USE_TMP/entry.o"
+$SWIFTC -Onone -parse-as-library -emit-library -module-name SelfUse context_result_use.swift "$CONTEXT_RESULT_USE_TMP/entry.o" -o libContextResultUse.dylib
+$SWIFTC -O -parse-as-library -emit-library -module-name SelfUse context_result_use.swift "$CONTEXT_RESULT_USE_TMP/entry.o" -o libContextResultUse.opt.dylib
+$SWIFTC -Osize -parse-as-library -emit-library -module-name SelfUse context_result_use.swift "$CONTEXT_RESULT_USE_TMP/entry.o" -o libContextResultUse.size.dylib
+rm -rf "$CONTEXT_RESULT_USE_TMP"
+
+
+echo "==> complete body register outputs and caller-owned result aliases (callee_body_transfer.swift + .s, -Onone, -O and -Osize)"
+CALLEE_BODY_TRANSFER_TMP=$(mktemp -d)
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -c callee_body_transfer.s -o "$CALLEE_BODY_TRANSFER_TMP/entry.o"
+$SWIFTC -Onone -parse-as-library -emit-library -module-name PlanAlias callee_body_transfer.swift "$CALLEE_BODY_TRANSFER_TMP/entry.o" -o libCalleeBodyTransfer.dylib
+$SWIFTC -O -parse-as-library -emit-library -module-name PlanAlias callee_body_transfer.swift "$CALLEE_BODY_TRANSFER_TMP/entry.o" -o libCalleeBodyTransfer.opt.dylib
+$SWIFTC -Osize -parse-as-library -emit-library -module-name PlanAlias callee_body_transfer.swift "$CALLEE_BODY_TRANSFER_TMP/entry.o" -o libCalleeBodyTransfer.size.dylib
+rm -rf "$CALLEE_BODY_TRANSFER_TMP"
+
+
+echo "==> caller-owned value-self can alias positive frame coordinates (caller_frame_alias.swift + .s, -Onone, -O and -Osize)"
+CALLER_FRAME_ALIAS_TMP=$(mktemp -d)
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -c caller_frame_alias.s -o "$CALLER_FRAME_ALIAS_TMP/entry.o"
+$SWIFTC -Onone -parse-as-library -emit-library -module-name FrameSelf caller_frame_alias.swift "$CALLER_FRAME_ALIAS_TMP/entry.o" -o libCallerFrameAlias.dylib
+$SWIFTC -O -parse-as-library -emit-library -module-name FrameSelf caller_frame_alias.swift "$CALLER_FRAME_ALIAS_TMP/entry.o" -o libCallerFrameAlias.opt.dylib
+$SWIFTC -Osize -parse-as-library -emit-library -module-name FrameSelf caller_frame_alias.swift "$CALLER_FRAME_ALIAS_TMP/entry.o" -o libCallerFrameAlias.size.dylib
+rm -rf "$CALLER_FRAME_ALIAS_TMP"
+
+echo "==> Imported receiver ABI and unchanged ordinary self (imported_receiver.swift/.s, -Onone/-O/-Osize)"
+IMPORTED_RECEIVER_TMP=$(mktemp -d)
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -c imported_receiver.s -o "$IMPORTED_RECEIVER_TMP/entry.o"
+$SWIFTC -Onone -parse-as-library -emit-library -module-name ImportedSelf imported_receiver.swift "$IMPORTED_RECEIVER_TMP/entry.o" -o libImportedReceiver.dylib
+$SWIFTC -O -parse-as-library -emit-library -module-name ImportedSelf imported_receiver.swift "$IMPORTED_RECEIVER_TMP/entry.o" -o libImportedReceiver.opt.dylib
+$SWIFTC -Osize -parse-as-library -emit-library -module-name ImportedSelf imported_receiver.swift "$IMPORTED_RECEIVER_TMP/entry.o" -o libImportedReceiver.size.dylib
+rm -rf "$IMPORTED_RECEIVER_TMP"

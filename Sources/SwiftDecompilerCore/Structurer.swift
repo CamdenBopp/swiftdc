@@ -33,7 +33,7 @@ public extension DisassembledFunction {
             // cannot throw, but it still threads x21 under the convention of
             // the throwing function it specializes.
             threadsSwiftError: Self.splitSignature(analysisDisplayName)?.isThrowing ?? false,
-            returnsValue: Self.signatureReturnsValue(
+            returnsValue: callerProvenResult || Self.signatureReturnsValue(
                 displayName: analysisDisplayName, objcSignature: objcMethod?.signature
             ),
             isAsync: asyncFunclet != nil || Self.splitSignature(analysisDisplayName)?.isAsync == true
@@ -52,6 +52,9 @@ public extension DisassembledFunction {
         let result = ResultBox()
         ControlFlowStructure.onLargeStack {
             result.lines = cfg.renderLines(header: header, objcLine: objcLine)
+        }
+        if let fallThroughNote, result.lines.last == "}" {
+            result.lines.insert("    \(fallThroughNote)", at: result.lines.count - 1)
         }
         return result.lines.joined(separator: "\n")
     }
@@ -108,7 +111,8 @@ public extension DisassembledFunction {
         if let signature = Self.splitSignature(analysisDisplayName) {
             if signature.isAsync || (signature.isThrowing && !specializationBindsThrownTypeToNever) || signature.result == "Swift.Never" || signature.result == "Never" { return false }
         }
-        return Self.signatureReturnsValue(displayName: analysisDisplayName, objcSignature: objcMethod?.signature)
+        return callerProvenResult
+            || Self.signatureReturnsValue(displayName: analysisDisplayName, objcSignature: objcMethod?.signature)
     }
 }
 
@@ -132,6 +136,15 @@ struct ControlFlowStructure {
         let exitNode: Int?
         let body: Set<Int>
         let boundsBody: Bool
+        /// A loop nested in another whose exit is where the emission stops
+        /// (the caller's `stop`): after it, the parent
+        /// emits nothing and the next text is the rest of the outer loop, so
+        /// a `break` would land there. Its exits are spelled out instead.
+        var breakLandsElsewhere = false
+        /// The stop of the loop body's own emission, when it lies outside
+        /// the body. Falling off the end of a loop body runs the loop again,
+        /// so a path that reaches it there is spelled out.
+        var leavesAt: Int? = nil
         /// A switch lies between this loop and the current statement. Its bare
         /// `break` exits the switch, so the loop exit needs an explicit goto.
         let exitsThroughSwitch: Bool
@@ -440,6 +453,11 @@ struct ControlFlowStructure {
         }
         var lines: [String] = []
         var current = start
+        // The arms of the `if` emitted last, when that was an `if`: control
+        // runs off its end unless both arms end in a transfer. Kept, not
+        // judged here: judging every `if` rescanned its arms, and parser
+        // `--structured` ran 7x the instructions.
+        var lastArms: (then: [String], else: [String])?
         while current != stop, current != exit {
             let pad = String(repeating: "    ", count: indent)
 
@@ -472,13 +490,19 @@ struct ControlFlowStructure {
                 for declaration in Self.bakedLoopInitialization(blocks[current].instructions.last) {
                     lines.append("\(pad)\(declaration)")
                 }
-                let context = LoopContext(
+                var context = LoopContext(
                     header: current,
                     exitNode: info.exit ?? (info.exits.count <= 1 ? exit : nil),
                     body: info.body,
                     boundsBody: info.exits.count > 1,
                     exitsThroughSwitch: false
                 )
+                // `for i { for j { if f() { return } } ; g(i) }` at -O: the inner
+                // loop's exit is the epilogue, and its `break` ran `g(i)`.
+                if loop != nil, let exitNode = context.exitNode, exitNode == stop {
+                    context.breakLandsElsewhere = true
+                }
+                if stop != exit, !info.body.contains(stop) { context.leavesAt = stop }
                 if let rotated = whileCondition(header: current, info: info) {
                     visited.insert(current)   // header consumed as the loop condition
                     lines.append("\(pad)while (\(rotated.text)) {")
@@ -564,8 +588,10 @@ struct ControlFlowStructure {
                 Probe.record(.structureUnknownSwitchIndex, at: blocks[current].startAddress, ["cases": .int(cases.count)])
                 lines.append("\(pad)switch (?) {")
                 let caseLoop = loop.map {
-                    LoopContext(header: $0.header, exitNode: $0.exitNode, body: $0.body,
-                                boundsBody: $0.boundsBody, exitsThroughSwitch: true)
+                    var context = LoopContext(header: $0.header, exitNode: $0.exitNode, body: $0.body,
+                                              boundsBody: $0.boundsBody, exitsThroughSwitch: true)
+                    context.breakLandsElsewhere = $0.breakLandsElsewhere
+                    return context
                 }
                 for target in order {
                     guard let arm = index(of: target), let caseLabels = labels[target] else { continue }
@@ -596,7 +622,17 @@ struct ControlFlowStructure {
                 // Collapse empty branches: drop a no-op `if`, invert when only the
                 // `then` side is empty.
                 if thenLines.isEmpty, elseLines.isEmpty {
-                    // both rejoin immediately — nothing to emit
+                    // Both rejoin immediately: no `if`, but a call the
+                    // condition consumed still ran. `sysctl(…) == 0 ? *p : -1`
+                    // in a function with no proven result rendered `{ return }`.
+                    // A statement between the call and the branch makes the
+                    // call a binding, not part of the condition (measured), so
+                    // a consumed call is the block's last statement.
+                    for insn in blocks[current].instructions where branch?.consumed.contains(insn.address) == true {
+                        guard let statement = DisassembledFunction.pseudoStatement(of: insn, hideRuntime: true)
+                        else { continue }
+                        lines += statement.components(separatedBy: "\n").map { "\(pad)\($0)" }
+                    }
                 } else if thenLines.isEmpty {
                     lines.append("\(pad)if (\(Self.inverted(cond))) {")
                     lines += elseLines
@@ -610,6 +646,7 @@ struct ControlFlowStructure {
                     }
                     lines.append("\(pad)}")
                 }
+                lastArms = (thenLines, elseLines)
                 if merge == exit { break }
                 if let loop, loop.boundsBody, !loop.body.contains(merge),
                    !isTrivialTail(merge) {
@@ -619,6 +656,7 @@ struct ControlFlowStructure {
                 }
                 current = merge
             } else if succs.count == 1 {
+                lastArms = nil
                 let only = succs[0]
                 if backSuccessors[current].contains(only) {
                     if let loop, only == loop.header { lines += loopBackStatements(header: loop.header, pad: pad) }
@@ -650,6 +688,23 @@ struct ControlFlowStructure {
                 // its fall-through.
                 if !emittedReturn, let end = sinkTerminator(block) { lines.append("\(pad)\(end)") }
                 break
+            }
+        }
+        // The loop body's own emission reached its stop, outside the body.
+        // Left as fall-through, the body's end ran the loop again where the
+        // code leaves it: `for i { mid: for j { for k { … break mid … } } }`
+        // took the outer loop's exit to the epilogue as the next text.
+        // Not the loop's single exit: every edge to it is already its exit
+        // statement (`edge`, and the check at the top of this loop).
+        // Nor after an `if` whose arms both transfer: nothing reaches it.
+        if current == stop, let loop, loop.leavesAt == stop, stop != loop.exitNode,
+           !(lastArms.map { Self.endsInTransfer($0.then) && Self.endsInTransfer($0.else) } ?? false) {
+            let pad = String(repeating: "    ", count: indent)
+            if isTrivialTail(stop) {
+                lines.append("\(pad)\(tailStatement(blocks[stop]))")
+            } else {
+                gotoTargets.insert(stop)
+                lines.append("\(pad)goto loc_\(hex(blocks[stop].startAddress))")
             }
         }
         return lines
@@ -715,10 +770,56 @@ struct ControlFlowStructure {
         return emit(from: v, until: merge, indent: indent, visited: &visited, gotoTargets: &gotoTargets, loop: loop, depth: depth + 1)
     }
 
+    /// Whether an arm's text ends in a transfer (`break`, `continue`,
+    /// `return`, `goto`, `trap()`, `throw`), or in an `if`/`else` whose arms
+    /// both do. An empty arm falls through, and so, conservatively, does
+    /// anything else that ends in `}` (a loop, an `if` with no `else`).
+    static func endsInTransfer(_ lines: [String]) -> Bool {
+        endsInTransfer(lines, upTo: lines.count)
+    }
+
+    private static func endsInTransfer(_ lines: [String], upTo end: Int) -> Bool {
+        guard end > 0 else { return false }
+        let last = lines[end - 1].trimmingCharacters(in: .whitespaces)
+        // A whole word: `returnValue()` and `throwIfNeeded()` are calls that
+        // fall through, and taken for exits they dropped the transfer this
+        // check guards.
+        if last == "break" || last == "continue" || last == "trap()" || last == "return" || last == "throw"
+            || last.hasPrefix("return ") || last.hasPrefix("goto ") || last.hasPrefix("throw ") {
+            return true
+        }
+        guard last == "}" else { return false }
+        func indent(_ line: String) -> Int { line.prefix { $0 == " " }.count }
+        let depth = indent(lines[end - 1])
+        var elseAt: Int?
+        var index = end - 2
+        while index >= 0 {
+            if indent(lines[index]) == depth {
+                let text = lines[index].trimmingCharacters(in: .whitespaces)
+                if text == "} else {", elseAt == nil {
+                    elseAt = index
+                } else if text.hasPrefix("if ("), text.hasSuffix("{") {
+                    break
+                } else {
+                    return false
+                }
+            }
+            index -= 1
+        }
+        guard index >= 0, let elseAt else { return false }
+        return endsInTransfer(lines, upTo: elseAt) && endsInTransfer(lines, upTo: end - 1)
+    }
+
     /// A break can name this loop only when no switch intervenes. Keeping the
     /// target as a goto otherwise also registers its label in the discovery pass.
     private func loopExitStatement(to target: Int, loop: LoopContext, pad: String, gotoTargets: inout Set<Int>) -> String {
-        guard loop.exitsThroughSwitch else { return "\(pad)break" }
+        if loop.breakLandsElsewhere {
+            // `stop` can be the virtual exit, the function's end: no block
+            // to name, and past every return.
+            if target == exit { return "\(pad)return" }
+            if isTrivialTail(target) { return "\(pad)\(tailStatement(blocks[target]))" }
+        }
+        guard loop.exitsThroughSwitch || loop.breakLandsElsewhere else { return "\(pad)break" }
         gotoTargets.insert(target)
         return "\(pad)goto loc_\(hex(blocks[target].startAddress))"
     }
@@ -915,6 +1016,31 @@ struct ControlFlowStructure {
                           let rawRHS = Self.applyingModifier(
                         Self.cleanImmediate(ops[rhsIndex]), operand: ops[rhsIndex], trailing: ops[(rhsIndex + 1)...])
                     else { return ("?", consumed) }
+                    // `subs w19, w19, #2; b.hi` writes the compared register
+                    // too. Read by its name, a register means its value at the
+                    // branch, the result, so `w19 >ᵁ 2` compared the result
+                    // where the code compares the value before it: one step
+                    // off, and a loop read as testing an unchanged register.
+                    // Equality reads exactly as the result against 0 (the Z
+                    // flag); an order declines.
+                    // A register written between the compare and the branch
+                    // means its new value there too: `cmp w21, w19; add w21,
+                    // w21, #3; b.lt` read `w21 < w19`, three off, and `cmp
+                    // w19, #2; lsr w19, w19, #1; b.lo` read `w19 <ᵁ 2` of the
+                    // shifted value. Such a condition declines.
+                    var laterWrites: Set<String> = []
+                    for between in block.instructions[(index + 1) ..< last] {
+                        guard let keys = between.detail?.writtenRegisterKeys else { return ("?", consumed) }
+                        laterWrites.formUnion(keys)
+                    }
+                    if laterWrites.contains(where: { key in [lhs, rhs].contains { Self.mentionsRegister(key, in: $0) } }) {
+                        return ("?", consumed)
+                    }
+                    if hasDestination, let written = Self.canonicalRegister(ops[0]),
+                       [lhs, rhs].contains(where: { Self.mentionsRegister(written, in: $0) }) {
+                        guard op == "==" || op == "!=" else { return ("?", consumed) }
+                        return ("\(ops[0]) \(op) 0", consumed)
+                    }
                     // `cmn`/`adds` set the flags from `lhs + rhs`: they compare lhs
                     // with -rhs. Read like `cmp`, `cmn x0, #1; b.eq` (x == -1)
                     // rendered `x0 == 1`. `b.mi`/`b.pl` test the sign of that
@@ -1106,6 +1232,21 @@ struct ControlFlowStructure {
     /// test that reads one low bit.
     enum WidthRule { case exact, belowSignedWord, any }
 
+    /// Whether an instruction strictly between `start` and `end` writes
+    /// memory or calls, so a value loaded at `start` may no longer be what
+    /// memory holds at `end`. Every call counts: a release can run a deinit.
+    static func memoryMayChange(after start: Int, before end: Int, in block: BasicBlock) -> Bool {
+        guard start + 1 < end else { return false }
+        return block.instructions[(start + 1)..<end].contains { instruction in
+            if instruction.controlFlow == .call { return true }
+            guard let detail = instruction.detail else { return true }
+            return detail.operands.contains { info in
+                if case .memory = info.operand { return info.isWritten }
+                return false
+            }
+        }
+    }
+
     private func resolve(_ token: String, before: Int, in block: BasicBlock, consumed: inout Set<UInt64>,
                          width rule: WidthRule = .exact) -> String {
         if token.hasPrefix("#") { return Self.cleanImmediate(token) }
@@ -1133,7 +1274,7 @@ struct ControlFlowStructure {
                     // return x0 unchanged, so the real producer is one call back —
                     // keep walking rather than giving up on the retained result.
                     if let callee = DisassembledFunction.calleeName(of: instruction),
-                       DisassembledFunction.returnsItsArgument(callee) {
+                       instruction.facts.arcIdentityContract, DisassembledFunction.returnsItsArgument(callee) {
                         continue
                     }
                 }
@@ -1150,7 +1291,7 @@ struct ControlFlowStructure {
             // result kept in x21 means the call between is not a swifterror
             // call (`bl f; mov w21, w0; bl g; tbz w21` still reads `!f()`).
             if instruction.controlFlow == .call, register == "x21",
-               !ValueTracer.provablyDoesNotThrow(DisassembledFunction.calleeName(of: instruction) ?? ""),
+               !ValueTracer.provablyDoesNotThrow(instruction),
                !Self.holdsCallResult(x21Before: index, in: block) {
                 return token
             }
@@ -1187,7 +1328,14 @@ struct ControlFlowStructure {
                     if !number || !Self.isBelowSignedWord(instruction, mnemonic: mnemonic, operands: ops) { return token }
                 }
             }
-            if let field = instruction.fieldRead { return field }
+            // A field read names the field's value at the load. A store or a
+            // call before the test may change the field, and the name then
+            // reads as the new value: `ldr x0, [x20, #0x10]; str xzr, [x20,
+            // #0x10]; cbz x0` rendered `self.v = 0; if (self.v != 0)`.
+            if let field = instruction.fieldRead {
+                guard !Self.memoryMayChange(after: index, before: before, in: block) else { return token }
+                return field
+            }
             // The substitution names the definition's source registers, which
             // read as their values at the test. One written in between holds
             // something else there: `and w8, w0, #0xff; add w0, w0, #1; cmp
@@ -1271,10 +1419,11 @@ struct ControlFlowStructure {
         if DisassembledFunction.isUniquenessCheck(callee) {
             return "isKnownUniquelyReferenced(\(rawArguments.first ?? "?"))"
         }
-        if DisassembledFunction.isRuntimeNoise(callee)
+        if DisassembledFunction.isRuntimeNoise(insn)
             || DisassembledFunction.isGenericPlumbingCallee(callee) { return nil }
         let arguments = DisassembledFunction.strippingGenericPlumbing(rawArguments)
-        if let send = DisassembledFunction.MessageSend(callee: callee, arguments: arguments) {
+        if let send = DisassembledFunction.MessageSend(
+            callee: callee, arguments: arguments, takesCommand: !insn.isDirectObjCMethod) {
             return send.rendered
         }
         if let idiom = DisassembledFunction.objcRuntimeIdiom(callee: callee, arguments: arguments) {
@@ -1515,6 +1664,23 @@ struct ControlFlowStructure {
         return s
     }
 
+    /// Whether rendered text reads general register `register` (`x19`) by
+    /// either of its names (`x19`, `w19`) as a whole word.
+    static func mentionsRegister(_ register: String, in text: String) -> Bool {
+        let number = register.dropFirst()
+        for name in ["x\(number)", "w\(number)"] {
+            var rest = text[...]
+            while let range = rest.range(of: name) {
+                let before = range.lowerBound == text.startIndex ? nil : text[text.index(before: range.lowerBound)]
+                let after = range.upperBound == text.endIndex ? nil : text[range.upperBound]
+                let isWord = { (c: Character?) in c.map { $0.isLetter || $0.isNumber || $0 == "_" } ?? false }
+                if !isWord(before), !isWord(after) { return true }
+                rest = text[range.upperBound...]
+            }
+        }
+        return false
+    }
+
     private static func canonicalRegister(_ token: String) -> String? {
         let t = token.trimmingCharacters(in: CharacterSet(charactersIn: "[]!"))
         guard let first = t.first, first == "x" || first == "w",
@@ -1704,42 +1870,89 @@ struct ControlFlowStructure {
     }
 
     /// Recognize Swift's checked-arithmetic **overflow guard**: a conditional
-    /// branch to a pure trap sink, taken on an arithmetic overflow/carry flag
-    /// (what `a &+ b`-style checked `+`/`-`/`+=` lower to — `adds; cset vs; tbnz
-    /// trap`). Returns the non-trap continuation to fall through to (folding the
-    /// guard away), or nil when the block is not such a guard.
+    /// branch to a pure trap sink whose trap edge is the overflow of the
+    /// arithmetic that set the flags (what a checked `+`/`-`/`+=` lowers to:
+    /// `adds; b.vs trap`). Returns the non-trap continuation to fall
+    /// through to (folding the guard away), or nil when the block is not
+    /// such a guard.
     ///
-    /// Distinguished from a genuine bounds/precondition check: those test a `cmp`
-    /// (not a live-destination `adds`/`subs`) and never test the V flag alone, so
-    /// this never eats a real `precondition`/bounds trap.
+    /// Three things must hold, or the branch is a program's own
+    /// `precondition` and stays visible:
+    /// - the flags' last writer in the block is an integer add or subtract.
+    ///   A `cmp` after an earlier `subs` owns the flags (`subs; csel; cmp;
+    ///   b.hs trap` is `precondition(k < n)`), and V after `fcmp` means
+    ///   unordered (`precondition(!x.isNaN)`);
+    /// - the TRAP edge, not merely the branch, is the overflow condition:
+    ///   `adds; b.vc trap` traps when the add did not overflow;
+    /// - a carry test matches its operation: an unsigned add overflows on
+    ///   carry set (`hs`), a subtract on carry clear (`lo`). `subs; b.hs
+    ///   trap` is `precondition(a < b)`.
     private func overflowGuardContinuation(_ blockIndex: Int) -> Int? {
         let block = blocks[blockIndex]
         let succs = block.successors.compactMap { index(of: $0) }
-        guard succs.count == 2, let trapPos = succs.firstIndex(where: { isTrivialTrapTail($0) })
+        guard succs.count == 2, let trapPos = succs.firstIndex(where: { isTrivialTrapTail($0) }),
+              // Both ways trapping is not a guard with a continuation.
+              !isTrivialTrapTail(succs[1 - trapPos])
         else { return nil }
-        guard let cc = testedFlagCondition(of: block) else { return nil }
-        // V flag (`vs`/`vc`) is unambiguously arithmetic overflow. A carry code
-        // (`cs`/`hs`/`cc`/`lo`) is also how an unsigned bounds check branches, so
-        // for those require an arithmetic flag-setter (a live-destination
-        // `adds`/`subs`, never a `cmp`).
-        if cc == "vs" || cc == "vc" {
-            // arithmetic overflow — fold
-        } else if ["cs", "hs", "cc", "lo"].contains(cc), hasArithmeticFlagSetter(block) {
-            // unsigned add/sub carry-overflow — fold
-        } else {
-            return nil
+        guard let tested = testedFlagCondition(of: block), let terminator = block.instructions.last,
+              let taken = terminator.branchTarget,
+              let setter = lastFlagWriter(in: block, before: tested.flagsReadAt)
+        else { return nil }
+        // The condition under which control reaches the trap.
+        let trapIsTaken = taken == blocks[succs[trapPos]].startAddress
+        guard trapIsTaken || taken == blocks[succs[1 - trapPos]].startAddress,
+              let trapCondition = trapIsTaken ? tested.condition : Self.invertedCondition[tested.condition]
+        else { return nil }
+        let (mnemonic, operands) = Self.decode(setter.text)
+        // Signed overflow of an integer add or subtract is only ever tested
+        // by a checked operation, kept result or not: `add x8, x24, #1; cmn
+        // x8, #1; b.vs trap` checks an add whose sum is unused. No source
+        // comparison branches on V alone (`<` tests N != V).
+        if trapCondition == "vs" {
+            return ["adds", "adcs", "subs", "sbcs", "negs", "ngcs", "cmn", "cmp"].contains(mnemonic)
+                ? succs[1 - trapPos] : nil
         }
-        return succs[1 - trapPos]
+        // A carry is also how an unsigned comparison branches, so it needs
+        // the arithmetic's own result to be live, and the edge to match the
+        // operation.
+        guard let destination = operands.first, Self.canonicalRegister(destination) != nil,
+              destination != "xzr", destination != "wzr"
+        else { return nil }
+        let folds: Bool
+        switch mnemonic {
+        case "adds", "adcs": folds = ["hs", "cs"].contains(trapCondition)
+        case "subs", "sbcs": folds = ["lo", "cc"].contains(trapCondition)
+        default: folds = false
+        }
+        return folds ? succs[1 - trapPos] : nil
+    }
+
+    private static let invertedCondition: [String: String] = [
+        "vs": "vc", "vc": "vs", "hs": "lo", "cs": "lo", "lo": "hs", "cc": "hs",
+    ]
+
+    /// The last instruction before index `end` that writes the flags, or
+    /// nil when none in the block does (the flags then come from another
+    /// block, which this does not follow) or when one cannot be decoded.
+    private func lastFlagWriter(in block: BasicBlock, before end: Int) -> Instruction? {
+        for index in stride(from: end - 1, through: 0, by: -1) {
+            let insn = block.instructions[index]
+            guard let detail = insn.detail else { return nil }
+            if detail.updatesFlags { return insn }
+        }
+        return nil
     }
 
     /// The condition code a block's conditional terminator tests, following a
     /// `cset`-materialized flag for a `tbnz`/`cbnz` bit-0 test. Returns the raw
     /// code (`vs`, `hs`, …), or nil when the terminator is not a flag-conditional
     /// branch.
-    private func testedFlagCondition(of block: BasicBlock) -> String? {
+    private func testedFlagCondition(of block: BasicBlock) -> (condition: String, flagsReadAt: Int)? {
         guard let terminator = block.instructions.last else { return nil }
         let (mnemonic, operands) = Self.decode(terminator.text)
-        if mnemonic.hasPrefix("b."), mnemonic.count > 2 { return String(mnemonic.dropFirst(2)) }
+        if mnemonic.hasPrefix("b."), mnemonic.count > 2 {
+            return (String(mnemonic.dropFirst(2)), block.instructions.count - 1)
+        }
         guard mnemonic == "tbnz" || mnemonic == "cbnz",
               let register = operands.first.flatMap(Self.canonicalRegister)
         else { return nil }
@@ -1750,21 +1963,9 @@ struct ControlFlowStructure {
             let (m, ops) = Self.decode(block.instructions[index].text)
             guard let destination = ops.first, Self.canonicalRegister(destination) == register
             else { continue }
-            return m == "cset" && ops.count >= 2 ? ops[1] : nil
+            return m == "cset" && ops.count >= 2 ? (ops[1], index) : nil
         }
         return nil
-    }
-
-    /// Whether the block sets flags via arithmetic with a live destination
-    /// (`adds`/`subs`/`adcs`/`sbcs`, destination not the zero register) — the
-    /// checked `+`/`-`, as opposed to a `cmp`/`subs xzr` comparison.
-    private func hasArithmeticFlagSetter(_ block: BasicBlock) -> Bool {
-        block.instructions.contains { insn in
-            let (m, ops) = Self.decode(insn.text)
-            guard ["adds", "subs", "adcs", "sbcs"].contains(m), let destination = ops.first
-            else { return false }
-            return Self.canonicalRegister(destination) != nil && destination != "xzr" && destination != "wzr"
-        }
     }
 
     private func tailStatement(_ block: BasicBlock) -> String {

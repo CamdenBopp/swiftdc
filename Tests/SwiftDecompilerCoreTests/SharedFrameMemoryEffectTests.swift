@@ -108,13 +108,18 @@ struct SharedFrameMemoryEffectTests {
         return analysis.exitValues[try #require(body.last?.address)] ?? .unknown
     }
 
-    private static func preserved(factOffset: Int, escapeOffsets: [Int]) -> Preservation.Value {
+    private static func preserved(factOffset: Int, escapeOffsets: [Int], knownWrite: Bool = true) -> Preservation.Value {
         let fact = Int64(factOffset - 64)
         var state = Preservation.State(registers: ["sp": .stack(-64)],
                                        slots: [fact: .entry("x19"), -8: .entry("x29")])
+        let x0 = PhysReg(kind: .gpr, number: 0, widthBits: 64)
+        let x9 = PhysReg(kind: .gpr, number: 9, widthBits: 64)
+        let effect = knownWrite ? CalleeEffect(memoryEffect: .literalStores([
+            .init(base: x0, offset: 0, bytes: 8, value: 11, source: x9),
+        ], inputs: [x0])) : CalleeEffect()
         for offset in escapeOffsets {
             state.setRegister("x0", to: .stack(Int64(offset - 64)))
-            Preservation.applyCall(CalleeEffect(), inputs: ["x0"], to: &state, clobbersMayAliasStack: false)
+            Preservation.applyCall(effect, inputs: ["x0"], to: &state, clobbersMayAliasStack: false)
         }
         return state.load(at: fact)
     }
@@ -132,10 +137,15 @@ struct SharedFrameMemoryEffectTests {
     }
 
     @Test func preservationUsesSharedHalfOpenEscapeEffects() {
+        // Half-open bounds come from the callee's complete eight-byte write
+        // footprint, independently of any saved value at the next address.
         #expect(Self.preserved(factOffset: 16, escapeOffsets: [8]) == .entry("x19"))
         #expect(Self.preserved(factOffset: 8, escapeOffsets: [16]) == .entry("x19"))
         #expect(Self.preserved(factOffset: 16, escapeOffsets: [16]) == .unknown)
         #expect(Self.preserved(factOffset: 24, escapeOffsets: [8, 40]) == .entry("x19"))
+        #expect(Self.preserved(factOffset: 16, escapeOffsets: [8], knownWrite: false) == .unknown)
+        #expect(Self.preserved(factOffset: 8, escapeOffsets: [16], knownWrite: false) == .unknown)
+        #expect(Self.preserved(factOffset: 24, escapeOffsets: [8, 40], knownWrite: false) == .unknown)
         // A non-entry snapshot does not bound the escaped object's extent;
         // the shared effect must actually erase this overlapping fact.
         var state = Preservation.State(registers: ["sp": .stack(-64)],
@@ -159,12 +169,11 @@ struct SharedFrameMemoryEffectTests {
         Preservation.applyCall(CalleeEffect(), inputs: [], to: &escaped, clobbersMayAliasStack: false)
         #expect(escaped.load(at: -48) == .unknown)
 
-        // Finite reach must also survive a later call with no new alias.
-        // The incoming value is not an entry-save boundary, so this does
-        // not use the whole-frame escape flag exercised above.
+        // The legacy dynamic bound also survives a later call with no new
+        // alias. This checks persistence, not object ownership for a point.
         var finite = Preservation.State(registers: ["sp": .stack(-64)],
                                         slots: [-48: .incoming(64), -8: .entry("x29")])
-        finite.setRegister("x0", to: .stack(-56))
+        finite.setRegister("x0", to: .below(-32))
         Preservation.applyCall(CalleeEffect(), inputs: ["x0"], to: &finite, clobbersMayAliasStack: false)
         #expect(finite.load(at: -48) == .unknown)
         finite.slots[-48] = .incoming(64)

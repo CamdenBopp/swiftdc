@@ -39,18 +39,18 @@ struct FrameReachMigrationControlsTests {
         #expect(original.count == 8)
     }
 
-    @Test func preservationFreezesEscapeBoundsBeforeEntrySavesChange() {
+    @Test func preservationFreezesLegacyDynamicBoundsBeforeEntrySavesChange() {
         var state = Preservation.State(
-            registers: ["x0": .stack(-48)],
+            registers: ["x0": .below(-32)],
             slots: [-32: .entry("x19"), -8: .entry("x20")])
         state.markEscape(["x0"])
-        #expect(state.escapedRanges == [.init(floor: -48, bound: -32)])
+        #expect(state.escapedRanges == [.init(floor: .min, bound: -32)])
         state.slots[-32] = nil
         state.slots[-40] = .entry("x21")
         state.invalidateSlotsForUnknownWrite(throughStackAlias: false)
         #expect(state.slots[-40] == nil)
         #expect(state.slots[-8] == .entry("x20"))
-        #expect(state.escapedRanges == [.init(floor: -48, bound: -32)])
+        #expect(state.escapedRanges == [.init(floor: .min, bound: -32)])
         #expect(!state.stackAddressEscaped)
     }
 

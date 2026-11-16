@@ -17,14 +17,15 @@ public enum BinaryLoader {
     ///
     /// - Parameters:
     ///   - path: Filesystem path to a Mach-O or fat binary.
-    ///   - architecture: For fat binaries, the slice to select ("arm64",
-    ///     "arm64e", "x86_64"). Ignored for thin binaries.
+    ///   - architecture: The slice to select ("arm64", "arm64e", "x86_64"). A
+    ///     thin binary must be that architecture.
     ///   - allowingWideAddresses: Accept a segment whose address or size is at
     ///     or above 2^63 (`requireSignedAddresses`), for a reader that never
     ///     does address arithmetic on it.
     public static func load(
         path: String, architecture: String? = nil, allowingWideAddresses: Bool = false
     ) throws -> MachOFile {
+        let path = try followingSymlinks(path)
         let url = URL(fileURLWithPath: path)
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw BinaryLoadError("File not found: \(path)")
@@ -46,6 +47,7 @@ public enum BinaryLoader {
 
         switch file {
         case .machO(let loaded):
+            try requireArchitecture(architecture, of: loaded)
             let machO = try withOwnIdentity(loaded, url: url)
             if !allowingWideAddresses { try requireSignedAddresses(machO) }
             forgetCachedImage(machO)
@@ -71,6 +73,47 @@ public enum BinaryLoader {
             forgetCachedImage(match)
             return match
         }
+    }
+
+    /// The file `path` names, past any symbolic link in its last component.
+    /// The boundary for every input: `attributesOfItem` measures a link rather
+    /// than its target, and a bundle is recognized by its name, so a link to
+    /// a dylib read as a 7-byte file and a link to an app as a plain directory.
+    /// A link in an earlier component needs nothing, the system follows it, so
+    /// a path with no link at the end keeps the spelling the user gave it.
+    /// `realpath` is the loop guard: it fails with ELOOP past the kernel's
+    /// limit on links. A trailing slash goes first, because `lstat` follows a
+    /// link through one and a bundle's name has none.
+    static func followingSymlinks(_ path: String) throws -> String {
+        var trimmed = path
+        while trimmed.count > 1, trimmed.hasSuffix("/") { trimmed.removeLast() }
+        var info = stat()
+        guard lstat(trimmed, &info) == 0 else {
+            if errno == ELOOP { throw BinaryLoadError("\(path) is a symbolic link loop.") }
+            return trimmed
+        }
+        guard info.st_mode & S_IFMT == S_IFLNK else { return trimmed }
+        guard let resolved = realpath(trimmed, nil) else {
+            switch errno {
+            case ELOOP:
+                throw BinaryLoadError("\(path) is a symbolic link loop.")
+            case ENOENT:
+                let target = (try? FileManager.default.destinationOfSymbolicLink(atPath: trimmed)) ?? "?"
+                throw BinaryLoadError("\(path) is a dangling symbolic link to \(target).")
+            case let code:
+                throw BinaryLoadError("Cannot follow the symbolic link \(path): \(String(cString: strerror(code)))")
+            }
+        }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
+    /// Fails when `--arch` names anything but the one architecture a thin
+    /// file or a cache image has, in the words a fat file's miss uses. It was
+    /// ignored: `--arch ppc` on an arm64 dylib printed arm64 output, exit 0.
+    static func requireArchitecture(_ architecture: String?, of machO: MachOFile) throws {
+        guard let architecture, architecture != archName(machO) else { return }
+        throw BinaryLoadError("Architecture '\(architecture)' not found. Available: \(archName(machO))")
     }
 
     /// The same file, named by its own path instead of its install name.
@@ -224,11 +267,11 @@ extension BinaryLoader {
         if image != nil, imagePath != nil {
             throw BinaryLoadError("Pass only one of --image or --image-path.")
         }
-        if let image {
-            return try loadFromDyldCache(cachePath: cachePath, selector: .name(image))
-        }
-        if let imagePath {
-            return try loadFromDyldCache(cachePath: cachePath, selector: .path(imagePath))
+        if image != nil || imagePath != nil {
+            let selector: ImageSelector = image.map(ImageSelector.name) ?? .path(imagePath ?? "")
+            let machO = try loadFromDyldCache(cachePath: cachePath, selector: selector)
+            try requireArchitecture(architecture, of: machO)
+            return machO
         }
         if cachePath != nil {
             throw BinaryLoadError("--cache needs --image or --image-path to choose an image from the cache.")
@@ -296,6 +339,8 @@ extension BinaryLoader {
 
     private static func openDyldCache(cachePath: String?) throws -> FullDyldCache {
         if let cachePath {
+            // A cache's subcaches sit beside the file itself, not beside a link to it.
+            let cachePath = try followingSymlinks(cachePath)
             let url = URL(fileURLWithPath: cachePath)
             guard FileManager.default.fileExists(atPath: url.path) else {
                 throw BinaryLoadError("Dyld shared cache not found: \(cachePath)")

@@ -122,7 +122,7 @@ public enum MachOPreflight {
         // 1 MiB covers the header plus load commands of any binary in practice;
         // where it does not, the arithmetic checks still apply and the
         // load-command walk simply stops at the end of what was read.
-        let prefix = (try? handle.read(upToCount: min(fileSize, 1 << 20))) ?? Data()
+        let prefix = (try? handle.readDrained(upToCount: min(fileSize, 1 << 20))) ?? Data()
         try validate(prefix: prefix, fileSize: fileSize, path: url.path)
 
         // A fat file's slices: the core `validateFat` above checks each slice's
@@ -141,7 +141,7 @@ public enum MachOPreflight {
             let (index, extent) = slice
             guard extent.size >= Layout.machHeader32,
                   (try? handle.seek(toOffset: UInt64(extent.offset))) != nil,
-                  let header = try? handle.read(upToCount: min(extent.size, 4096)),
+                  let header = try? handle.readDrained(upToCount: min(extent.size, 4096)),
                   header.count >= Layout.machHeader32
             else { continue }
             try validateSliceThinHeader(
@@ -169,6 +169,42 @@ public enum MachOPreflight {
         )
     }
 
+    /// Whether an object's sections may list relocations: any section's
+    /// `nreloc` is nonzero, or its load commands cannot all be read (a
+    /// big-endian or truncated header counts as holding them).
+    static func mayHoldRelocations(prefix: Data) -> Bool {
+        guard let magic = prefix.u32(at: 0), magic == Magic.machO64LE || magic == Magic.machO32LE,
+              let ncmds = prefix.u32(at: 16) else { return true }
+        let commands = loadCommands(prefix: prefix)
+        guard commands.count == Int(ncmds) else { return true }
+        let is64 = magic == Magic.machO64LE
+        // segment_command(_64): nsects at 64 (48); sections follow at 72 (56),
+        // 80 (68) bytes each, with nreloc at 60 (52).
+        let segment: UInt32 = is64 ? 0x19 : 0x1
+        let nsectsAt = is64 ? 64 : 48, sectionsAt = is64 ? 72 : 56
+        let sectionSize = is64 ? 80 : 68, nrelocAt = is64 ? 60 : 52
+        for command in commands where command.cmd == segment {
+            guard let nsects = prefix.u32(at: command.offset + nsectsAt) else { return true }
+            for index in 0..<Int(nsects) {
+                guard let nreloc = prefix.u32(at: command.offset + sectionsAt + index * sectionSize + nrelocAt)
+                else { return true }
+                if nreloc != 0 { return true }
+            }
+        }
+        return false
+    }
+
+    /// Whether a thin image's header says `MH_OBJECT`.
+    static func isRelocatableObject(prefix: Data) -> Bool {
+        guard let magic = prefix.u32(at: 0) else { return false }
+        let object: UInt32 = 0x1
+        switch magic {
+        case Magic.machO64LE, Magic.machO32LE: return prefix.u32(at: 12) == object
+        case Magic.machO64BE, Magic.machO32BE: return prefix.u32(at: 12, bigEndian: true) == object
+        default: return false
+        }
+    }
+
     /// One image's bytes: the whole file for a thin image, or one fat slice.
     /// Offsets are relative to the image, as its load commands give them, and
     /// a read that would leave the image returns nil.
@@ -180,7 +216,7 @@ public enum MachOPreflight {
         func read(offset: Int, count: Int) -> Data? {
             guard offset >= 0, count >= 0, offset <= size, count <= size - offset,
                   (try? handle.seek(toOffset: UInt64(base + offset))) != nil,
-                  let data = try? handle.read(upToCount: count), data.count == count
+                  let data = try? handle.readDrained(upToCount: count), data.count == count
             else { return nil }
             return data
         }
@@ -190,6 +226,18 @@ public enum MachOPreflight {
     /// start `prefix`.
     static func validateImageContents(prefix: Data, image: ImageReader, path: String) throws {
         let fileSize = image.size
+        // An object's branches, pointers and metadata references hold nothing
+        // until the linker applies its relocations, and swiftdc applies none:
+        // `bl _printf` decoded as a call to offset 0, and a valid Swift
+        // object failed below as malformed for its `__objc_classlist[0]`
+        // of 0. One message, whatever the object holds. An object with no
+        // relocation left has nothing unresolved, and is read as it stands.
+        if isRelocatableObject(prefix: prefix), mayHoldRelocations(prefix: prefix) {
+            throw BinaryLoadError(
+                "Relocatable object: \(path) is not linked, so its calls, pointers and metadata references are "
+                + "unresolved and swiftdc does not read it. Link it first; `xcrun llvm-objdump -d -r --macho` lists its text."
+            )
+        }
         // FairPlay ciphertext is not a malformed image, and no reading of it
         // is true: decoded, it renders fabricated code (the corpus sweep
         // found 11 App Store binaries that exited 0 with only a warning), and
@@ -203,6 +251,9 @@ public enum MachOPreflight {
         }
         try validateSymbolStrings(prefix: prefix, image: image, path: path)
         try validateChainedFixupsHeader(prefix: prefix, image: image, path: path)
+        try validateChainedImports(prefix: prefix, image: image, path: path)
+        try validateBindSpecialOrdinals(prefix: prefix, image: image, path: path)
+        try validateFunctionStarts(prefix: prefix, image: image, path: path)
         try validateExportTries(prefix: prefix, image: image, path: path)
 
         // Section CONTENTS, for a thin little-endian image. A fat file's
@@ -228,18 +279,18 @@ public enum MachOPreflight {
             )
         }
 
-        // A layout the Mach-O readers underneath would misread: decline it by
-        // its own cause before any of them reads it (`misreadSegments`).
+        // A layout no reader can place: decline it by its own cause before any
+        // of them reads it (`misreadSegments`).
         let misread = misreadSegments(prefix: prefix, image: image)
         if !misread.isEmpty {
             let described = misread.map {
                 "\($0.name) (VM offset 0x\(String($0.vmOffset, radix: 16)), file offset 0x\(String($0.fileOffset, radix: 16)))"
             }.joined(separator: ", ")
             throw BinaryLoadError(
-                "Unsupported Mach-O layout: \(path) — \(described) "
-                + "\(misread.count == 1 ? "lies" : "lie") at a different offset in memory than in the file, "
-                + "and \(misread.count == 1 ? "holds" : "hold") fixups or metadata. The Mach-O readers swiftdc uses "
-                + "resolve those by file offset and would read unrelated bytes, so the image is declined rather than misread."
+                "Unsupported Mach-O layout: \(path) — \(described): "
+                + "the fixup chains or the metadata \(misread.count == 1 ? "it holds" : "they hold") cannot be placed, "
+                + "because the chain starts disagree with the segment's address, or its file bytes overlap another "
+                + "segment's. The image is declined rather than misread."
             )
         }
 
@@ -1086,7 +1137,24 @@ public enum MachOPreflight {
             let index = entries.segments.count - 1
             for page in 0..<Int(pageCount) {
                 guard let first = blob.u16(at: base + 22 + 2 * page) else { break }
-                if first == 0xffff || first & 0x8000 != 0 { continue }   // none, or 32-bit multi-starts
+                if first == 0xffff { continue }
+                if first & 0x8000 != 0 {
+                    // Several chains in one page (32-bit formats): an index into
+                    // the page-start array, read until an entry marked last.
+                    // MachOKit indexes it unchecked: an index past the array
+                    // trapped (`DyldChainedFixups.pointers`).
+                    var overflow = Int(first & 0x7fff)
+                    while true {
+                        guard overflow < Int(pageCount), let entry = blob.u16(at: base + 22 + 2 * overflow) else {
+                            throw BinaryLoadError(
+                                "Malformed Mach-O: \(path) — fixup chains in segment \(segment), page \(page) continue past the page-start array"
+                            )
+                        }
+                        if entry & 0x8000 != 0 { break }
+                        overflow += 1
+                    }
+                    continue
+                }
                 var offset = Int(first)
                 while true {
                     let slot = page * Int(pageSize) + offset
@@ -1199,51 +1267,50 @@ public enum MachOPreflight {
         }
     }
 
-    /// The segments whose bytes lie at a different offset from `__TEXT` in
-    /// memory than in the file, and which the Mach-O readers swiftdc depends
-    /// on would read at the file offset of the memory one.
+    /// The segments whose fixups or metadata no reader can place.
     ///
     /// Segments normally keep one slide: each one's file offset from `__TEXT`
     /// equals its VM offset. Zero fill breaks that for every segment after
     /// it, because it takes memory and no file bytes: a user reported an iOS
     /// app whose `__DATA` ends in 0x870000 bytes of it, with segments after
-    /// it. The dependencies conflate the two offsets in two places:
+    /// it. Such an image is read: fixup chains are found through the segment
+    /// that starts at `segment_offset`, and relative pointers through their
+    /// own segment and their target's (`MachOSegmentMap`). Both need that
+    /// mapping to mean one thing, and two layouts leave it without one:
     ///
-    /// - MachOKit reads a segment's fixup chains at
-    ///   `dyld_chained_starts_in_segment.segment_offset`, which dyld defines
-    ///   as the segment's offset in memory, as if it were a file offset
-    ///   (`MachOFile.DyldChainedFixups.pointers(of:in:)`). Every bind and
-    ///   rebase lookup walks those chains: a `try!` traps when the offset is
-    ///   past the file, and otherwise the chains are decoded out of whatever
-    ///   bytes lie there.
-    /// - MachOSwiftSection resolves a relative pointer as `file offset + delta`
-    ///   (`MachOContext.advanceAddress`), but the delta is a VM displacement,
-    ///   so a pointer into or out of such a segment leads to the wrong bytes.
+    /// - A segment's `dyld_chained_starts_in_segment.segment_offset`, which
+    ///   dyld defines as its offset in memory, is not where the segment lies.
+    ///   Its chains would be found in another segment's pages, or nowhere,
+    ///   and with no fixups a slot's raw chain bits read as a pointer.
+    /// - A slid segment that holds fixup chains or a section metadata reaches
+    ///   shares file bytes with another segment. A file offset there is two
+    ///   addresses, and the map claims neither.
     ///
-    /// So a segment counts when it is slid and holds either fixup chains or
-    /// a section Swift or Objective-C metadata reaches by relative pointer.
-    /// A slid segment that holds neither (bitcode in `__LLVM`, font blobs in
-    /// NanoTimeKit's `__FONT_DATA`, measured over 29,155 arm64 images on this
-    /// host: 55 have a slid file-backed segment) is read correctly, because
-    /// code reaches it by address, and does not count.
+    /// A slid segment that holds neither chains nor metadata (bitcode in
+    /// `__LLVM`, font blobs in NanoTimeKit's `__FONT_DATA`) is not reached by
+    /// file offset and does not count.
     static func misreadSegments(
         prefix: Data, image: ImageReader
     ) -> [(name: String, vmOffset: UInt64, fileOffset: UInt64)] {
         guard let segments = segmentTable(prefix: prefix),
               let text = segments.first(where: { $0.name == "__TEXT" })
         else { return [] }
-        // Which segments the chained fixups give chains: a nonzero
-        // `seg_info_offset[i]` in `dyld_chained_starts_in_image`, indexed in
-        // segment-command order.
-        var chained: Set<Int> = []
+        // Which segments the chained fixups give chains, and where they say
+        // each one starts: a nonzero `seg_info_offset[i]` in
+        // `dyld_chained_starts_in_image`, indexed in segment-command order,
+        // leads to a `dyld_chained_starts_in_segment` with `segment_offset`
+        // 8 bytes in. Nil when that cannot be read.
+        var chained: [Int: UInt64?] = [:]
         if let fixups = chainedFixups(prefix: prefix),
            let header = image.read(offset: fixups.dataoff, count: 8),
            let startsOffset = header.u32(at: 4),
            let count = image.read(offset: fixups.dataoff + Int(startsOffset), count: 4)?.u32(at: 0),
            Int(count) <= segments.count,
            let starts = image.read(offset: fixups.dataoff + Int(startsOffset), count: 4 + 4 * Int(count)) {
-            for index in 0..<Int(count) where (starts.u32(at: 4 + 4 * index) ?? 0) != 0 {
-                chained.insert(index)
+            for index in 0..<Int(count) {
+                guard let info = starts.u32(at: 4 + 4 * index), info != 0 else { continue }
+                let field = fixups.dataoff + Int(startsOffset) + Int(info) + 8
+                chained[index] = image.read(offset: field, count: 8)?.u64(at: 0)
             }
         }
         let hasMetadata = segments.contains { segment in
@@ -1253,15 +1320,26 @@ public enum MachOPreflight {
             section.hasPrefix("__swift") || section.hasPrefix("__objc_")
                 || (hasMetadata && ["__got", "__auth_got", "__data", "__const", "__constg_swiftt"].contains(section))
         }
+        func fileRange(_ segment: SegmentEntry) -> Range<UInt64>? {
+            let (end, overflow) = segment.fileoff.addingReportingOverflow(min(segment.filesize, segment.vmsize))
+            return overflow ? nil : segment.fileoff ..< end
+        }
+        func sharesFileBytes(_ index: Int) -> Bool {
+            guard let range = fileRange(segments[index]) else { return true }
+            return segments.indices.contains { other in
+                guard other != index, let bytes = fileRange(segments[other]), !bytes.isEmpty else { return false }
+                return bytes.overlaps(range)
+            }
+        }
         var found: [(name: String, vmOffset: UInt64, fileOffset: UInt64)] = []
         for (index, segment) in segments.enumerated() where segment.filesize > 0 {
             // Wrapping: a segment below `__TEXT` (malformed, or in a file
             // whose `__TEXT` is not first) still compares by its offsets.
             let vmOffset = segment.vmaddr &- text.vmaddr
             let fileOffset = segment.fileoff &- text.fileoff
-            guard vmOffset != fileOffset,
-                  chained.contains(index) || segment.sections.contains(where: reachedByMetadata)
-            else { continue }
+            let startsElsewhere = chained[index].map { $0 != vmOffset } ?? false
+            let counts = chained[index] != nil || segment.sections.contains(where: reachedByMetadata)
+            guard startsElsewhere || (vmOffset != fileOffset && counts && sharesFileBytes(index)) else { continue }
             found.append((segment.name, vmOffset, fileOffset))
         }
         return found
@@ -1331,6 +1409,11 @@ public enum MachOPreflight {
               nsyms > 0
         else { return }
         let entrySize = magic == Magic.machO64LE ? 16 : 12   // nlist_64 / nlist
+        // No string table for symbols that need one: swiftdc's symbol-stub
+        // scan copied a symbol list that read short, and trapped.
+        guard strsize > 0 else {
+            throw BinaryLoadError("Malformed Mach-O: \(path) — \(nsyms) symbol(s) and an empty string table")
+        }
         guard let entries = image.read(offset: Int(symoff), count: Int(nsyms) * entrySize),
               let strings = image.read(offset: Int(stroff), count: Int(strsize))
         else { return }
@@ -1388,6 +1471,148 @@ public enum MachOPreflight {
         }
     }
 
+    /// The import table fits its payload, and each import's name starts
+    /// inside the symbol pool and ends there. MachOKit maps `imports_count`
+    /// entries unchecked and reads each name with `String(cString:)`: a huge
+    /// count (or a format whose entries are wider) read past the file
+    /// (SIGSEGV), and a name past the pool ran `strlen` into whatever was
+    /// mapped beyond it (SIGBUS).
+    static func validateChainedImports(prefix: Data, image: ImageReader, path: String) throws {
+        guard let fixups = chainedFixups(prefix: prefix),
+              let header = image.read(offset: fixups.dataoff, count: chainedFixupsHeader),
+              let importsOffset = header.u32(at: 8), let symbolsOffset = header.u32(at: 12),
+              let count = header.u32(at: 16), let format = header.u32(at: 20)
+        else { return }
+        func fail(_ why: String) -> BinaryLoadError {
+            BinaryLoadError("Malformed Mach-O: \(path) — chained fixups \(why)")
+        }
+        let entry: UInt64
+        switch format {
+        case 1: entry = 4       // dyld_chained_import
+        case 2: entry = 8       // dyld_chained_import_addend
+        case 3: entry = 16      // dyld_chained_import_addend64
+        default: return         // the header check names it
+        }
+        let size = UInt64(fixups.datasize)
+        guard UInt64(importsOffset) + UInt64(count) * entry <= size else {
+            throw fail("list \(count) import(s) of \(entry) bytes at \(importsOffset), past their \(size) bytes")
+        }
+        guard count > 0, UInt64(symbolsOffset) <= size,
+              let imports = image.read(offset: fixups.dataoff + Int(importsOffset), count: Int(UInt64(count) * entry)),
+              let pool = image.read(offset: fixups.dataoff + Int(symbolsOffset), count: fixups.datasize - Int(symbolsOffset))
+        else { return }
+        let poolBytes = [UInt8](pool)
+        for index in 0 ..< Int(count) {
+            let at = index * Int(entry)
+            let name: Int
+            switch format {
+            case 1: name = Int((imports.u32(at: at) ?? 0) >> 9)            // name_offset:23 after lib_ordinal:8, weak:1
+            case 2: name = Int((imports.u32(at: at) ?? 0) >> 9)
+            default: name = Int(imports.u64(at: at).map { $0 >> 32 } ?? 0)   // lib_ordinal:16, weak:1, reserved:15, name_offset:32
+            }
+            guard name < poolBytes.count, poolBytes[name...].contains(0) else {
+                throw fail("name import \(index) at \(name), outside or unterminated in their \(poolBytes.count)-byte symbol pool")
+            }
+        }
+    }
+
+    /// No bind opcode stream may name a special dylib ordinal dyld does not
+    /// define (0 self, -1 main executable, -2 flat lookup, -3 weak lookup):
+    /// MachOKit's `BindOperation` stops on any other with `fatalError`
+    /// (`SET_DYLIB_SPECIAL_IMM` -4 trapped every view but dump).
+    static func validateBindSpecialOrdinals(prefix: Data, image: ImageReader, path: String) throws {
+        guard let filetype = prefix.u32(at: 12), FileType.loadable.contains(filetype) else { return }
+        for command in loadCommands(prefix: prefix) where Command.dyldInfo.contains(command.cmd) {
+            for (stream, name) in [(1, "bind"), (2, "weak bind"), (3, "lazy bind")] {
+                guard let offset = prefix.u32(at: command.offset + 8 + 8 * stream),
+                      let size = prefix.u32(at: command.offset + 12 + 8 * stream), size > 0,
+                      let bytes = image.read(offset: Int(offset), count: Int(size))
+                else { continue }
+                if let special = unknownBindSpecial([UInt8](bytes)) {
+                    throw BinaryLoadError("Malformed Mach-O: \(path) — the \(name) stream names special dylib ordinal \(special)")
+                }
+            }
+        }
+    }
+
+    /// The first special ordinal outside 0...-3 a bind opcode stream sets, or
+    /// nil. Walks the opcodes' operands; a stream it cannot follow (an
+    /// unterminated ULEB or name) stops the walk, which MachOKit survives.
+    static func unknownBindSpecial(_ bytes: [UInt8]) -> Int? {
+        var cursor = 0
+        func skipULEB() -> Bool {
+            while cursor < bytes.count {
+                let byte = bytes[cursor]
+                cursor += 1
+                if byte & 0x80 == 0 { return true }
+            }
+            return false
+        }
+        while cursor < bytes.count {
+            let byte = bytes[cursor]
+            cursor += 1
+            let immediate = Int(byte & 0x0f)
+            switch byte & 0xf0 {
+            case 0x30:                                      // SET_DYLIB_SPECIAL_IMM
+                if immediate != 0 && immediate < 0x0d { return immediate - 16 }
+            case 0x20, 0x60, 0x70, 0x80, 0xa0:              // one ULEB/SLEB operand
+                guard skipULEB() else { return nil }
+            case 0xc0:                                      // two ULEBs
+                guard skipULEB(), skipULEB() else { return nil }
+            case 0x40:                                      // a symbol name
+                guard let end = bytes[cursor...].firstIndex(of: 0) else { return nil }
+                cursor = end + 1
+            case 0xd0:                                      // threaded
+                if immediate == 0 { guard skipULEB() else { return nil } }
+            default:
+                break
+            }
+        }
+        return nil
+    }
+
+    /// LC_FUNCTION_STARTS: a run of ULEB deltas from the text base whose sum
+    /// must stay in range. MachOKit adds them unchecked, and a delta that
+    /// wrapped the sum below the previous start trapped
+    /// (`FunctionStart.readNext`) on every view but dump and interface.
+    static func validateFunctionStarts(prefix: Data, image: ImageReader, path: String) throws {
+        guard let filetype = prefix.u32(at: 12), FileType.loadable.contains(filetype) else { return }
+        for command in loadCommands(prefix: prefix) where command.cmd == 0x26 {
+            guard let offset = prefix.u32(at: command.offset + 8), let size = prefix.u32(at: command.offset + 12),
+                  size > 0, let bytes = image.read(offset: Int(offset), count: Int(size))
+            else { continue }
+            if let why = functionStartsDefect([UInt8](bytes)) {
+                throw BinaryLoadError("Malformed Mach-O: \(path) — \(why)")
+            }
+        }
+    }
+
+    /// What is wrong with an LC_FUNCTION_STARTS payload, or nil: the sum of
+    /// its ULEB deltas must not pass 2^64. A truncated last delta or the
+    /// zero padding after the run ends it, as MachOKit's reader does.
+    static func functionStartsDefect(_ bytes: [UInt8]) -> String? {
+        var cursor = 0
+        var sum: UInt64 = 0
+        while cursor < bytes.count {
+            var value: UInt64 = 0
+            var shift: UInt64 = 0
+            var ended = false
+            while cursor < bytes.count {
+                let byte = bytes[cursor]
+                cursor += 1
+                guard shift < 64 else { break }
+                value |= UInt64(byte & 0x7f) << shift
+                shift += 7
+                if byte & 0x80 == 0 { ended = true; break }
+            }
+            guard ended else { break }
+            let (next, overflow) = sum.addingReportingOverflow(value)
+            guard !overflow else { return "function starts wrap past 2^64 after offset 0x\(String(sum, radix: 16))" }
+            sum = next
+        }
+        return nil
+    }
+
     /// Every export trie's nodes must lie inside it, and each be reached once.
     static func validateExportTries(prefix: Data, image: ImageReader, path: String) throws {
         guard let filetype = prefix.u32(at: 12), FileType.loadable.contains(filetype) else { return }
@@ -1429,9 +1654,14 @@ public enum MachOPreflight {
             }
             return nil
         }
+        // Depth too: an acyclic chain 100,000 nodes deep overflowed MachOKit's
+        // recursion (`interface`, SIGBUS). A real trie is as deep as its
+        // longest name has edges, far below this.
+        let maximumDepth = 4096
         var seen: Set<Int> = [0]
-        var pending = [0]
-        while let node = pending.popLast() {
+        var pending = [(node: 0, depth: 0)]
+        while let (node, depth) = pending.popLast() {
+            guard depth <= maximumDepth else { return "is more than \(maximumDepth) nodes deep" }
             var cursor = node
             guard let terminal = uleb(&cursor), terminal <= UInt64(bytes.count - cursor) else {
                 return "node at \(node) overruns its \(bytes.count) bytes"
@@ -1451,7 +1681,7 @@ public enum MachOPreflight {
                 guard seen.insert(Int(child)).inserted else {
                     return "reaches the node at \(child) twice"
                 }
-                pending.append(Int(child))
+                pending.append((Int(child), depth + 1))
             }
         }
         return nil
@@ -2265,6 +2495,19 @@ public enum MachOPreflight {
             try validateDylib(at: offset, prefix: prefix, bigEndian: bigEndian, index: index, fail: fail)
         case Command.buildVersion:
             try validateBuildVersion(at: offset, prefix: prefix, bigEndian: bigEndian, index: index, fail: fail)
+        case let cmd where Command.dyldInfo.contains(cmd) && loadable:
+            // The rebase, bind, weak, lazy and export streams. MachOKit reads
+            // each with `try!`: a size past the end of the file trapped
+            // (`FileIOError.offsetOutOfBounds`) in disasm, objc and xrefs.
+            let streams = ["rebase", "bind", "weak bind", "lazy bind", "export"]
+            for (stream, name) in streams.enumerated() {
+                guard let dataoff = prefix.u32(at: offset + 8 + 8 * stream, bigEndian: bigEndian),
+                      let datasize = prefix.u32(at: offset + 12 + 8 * stream, bigEndian: bigEndian)
+                else { return }
+                guard Int(dataoff) <= fileSize, Int(datasize) <= fileSize - Int(dataoff) else {
+                    throw fail("load command \(index) puts its \(datasize)-byte \(name) stream at offset \(dataoff) of a \(fileSize)-byte file")
+                }
+            }
         case let cmd where Command.linkeditData.contains(cmd) && loadable:
             // Only a loadable image: a dSYM keeps these commands with offsets
             // into the binary it was split from.

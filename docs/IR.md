@@ -408,6 +408,61 @@ fix, measured and explained like any other.
 
 5. **Value identity and edge refinement.** Recovers declined exits such as the
    -Onone `try` shape and gives conditions and loop variables stable names.
+
+   Landed (2026-11-11) in a narrower, block-local form: the spill and the
+   branch must be in one block, so the identity is proved by replaying that
+   block and needs no fact that outlives it; see PRODUCTION-READINESS.md.
+   The cross-block design below stays the plan for spills made before the
+   branch's block.
+
+   Design (2026-11-11). The target is `Reconstruction.typedForward`
+   at -Onone: `bl typedPick; str x21, [sp, #0x18]; cbz x21, ok; …; ok: ldr x21,
+   [sp, #0x18]; …; ret`. The source returns `r0 + 1` on that path; swiftdc
+   renders `machine_return()` because the reload of x21 is unknown.
+
+   - *Identity, not a value.* After a call that may throw, x21 is `.unknown`
+     today, and it must stay unknown to every consumer that reads it as a
+     value: `exitErrorValues` records any x21 that is not `.unknown`, and the
+     exit classifier reads a recorded value as the thrown error. So the
+     identity is a separate fact, not a new `AbstractValue` case: a State key
+     `copyOf(slot) = register` (and register-to-register), meaning "this slot
+     holds the word that register held when it was stored, and neither has
+     been written since". Nothing renders it.
+   - *Invalidation.* Any write to the register or to any byte of the slot ends
+     the fact. An audit of the write paths (2026-11-11) rules out hooking
+     each one: registers change through 105 subscript assignments in
+     ValueTracking.swift plus `installCopy` and `reset`; frame words through
+     the subscript, `patch` (3 sites), `removeComponents` (2), `forget` (2)
+     and `clearValueStarts`, and the meet. So the identity rides on the facts
+     themselves: the spill stamps one token on the register's fact and the
+     slot's fact, every write replaces a fact (dropping its token) whatever
+     path it takes, and refinement requires the two tokens to match. A join
+     keeps a token only where its facts are equal on every predecessor, which
+     the existing intersection already does once the token is part of the
+     fact. Unknown-valued registers and slots hold no fact today, so the
+     token needs a fact that is present but valueless: that is the change
+     to `TraceFrameRegisterFacts` and `TraceFrameFact` this step makes.
+   - *Refinement point.* The meet in the forward fixpoint is the only place:
+     when an incoming state's predecessor ends in `cbz`/`cbnz` on register R
+     and this block is the edge where R == 0, that state is refined before
+     the meet: R becomes `.immediate(0)`, and so does every slot whose
+     `copyOf` names R. `tbz`/`tbnz` and flag branches are out of scope at
+     first. The snapshot pass and the per-predecessor exit replay
+     (`exitErrorValuesByPredecessor`) read the same refined states, or a
+     path would classify differently from the fixpoint that proved it.
+   - *Soundness argument.* On the zero edge R is 0, and a slot that still
+     holds R's stored word holds 0. Both facts are exact, so the refinement
+     claims nothing a run could contradict. A refinement that reached a slot
+     after an intervening write would fabricate a value, so the invalidation
+     rules carry the whole proof and each needs its own mutation test.
+   - *Tests.* The -Onone and resilient typedForward renders (`return r0 + 1`
+     natively checked), plus hand-built bodies: a store to the slot between
+     the spill and the branch, a write of R, a call between, a join where one
+     path lacks the fact, and the nonzero edge. Each must stay declined, and
+     each invalidation rule is mutated away to watch its test fail.
+   - *Cost.* One more key family in every block state; the cost gate
+     measures it, and a function with no `cbz`/`cbnz` on a spilled register
+     never installs one.
 6. **Renderers read the IR**, then the §9.3 layers above it.
 
 Steps 1–3 and the step 4 extractions of write footprints, fact storage,

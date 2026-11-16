@@ -1,4 +1,5 @@
 import Foundation
+import ObjCDump
 import Testing
 @testable import SwiftDecompilerCore
 
@@ -132,6 +133,71 @@ import Testing
         #expect(!functions.isEmpty, "\(payload.prefix(40))")
         #expect(try ivarFieldNames(url)?.contains("_target") != true, "\(payload.prefix(40))")
     }
+}
+
+/// ObjCDump's header printer decodes each encoding recursively, once per
+/// level, with no bound: 4,000 `^` or 3,000 nested `[1` in one ivar's type
+/// killed `objc` (SIGBUS). An encoding past the bound renders as the unknown
+/// type, so the class still prints, and the ivar keeps its name.
+@Test func headersOfCorruptlyNestedIvarTypesStillPrintIfPresent() throws {
+    let path = "Fixtures/Sample/libObjCNonselfOutgoing.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let original = try Data(contentsOf: URL(fileURLWithPath: path))
+    let target = Data(#"@"SDNonselfTarget""#.utf8) + Data([0])
+    guard let found = original.range(of: target) else {
+        Issue.record("fixture no longer holds the `_target` ivar type string"); return
+    }
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("swiftdc-ivar-nesting-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let payloads = [
+        String(repeating: "^", count: 12_000) + "c",
+        String(repeating: "[1", count: 4_000) + "c" + String(repeating: "]", count: 4_000),
+    ]
+    for (number, payload) in payloads.enumerated() {
+        let bytes = Data(payload.utf8) + Data([0])
+        let start = found.lowerBound, end = start + bytes.count, padding = start + 0x100
+        guard end <= original.count, original[padding..<end].allSatisfy({ $0 == 0 })
+        else { Issue.record("fixture layout changed: no zero padding after `_target`'s type"); return }
+        var corrupt = original
+        corrupt.replaceSubrange(start..<end, with: bytes)
+        let url = directory.appendingPathComponent("nested-\(number).dylib")
+        try corrupt.write(to: url)
+        let image = try BinaryLoader.load(path: url.path)
+        for blocks in [ObjCDumper().blocks(image), ObjCDumper().metadataOnlyBlocks(image)] {
+            let header = try #require(blocks.first { $0.contains("@interface SDNonselfCaller") })
+            #expect(header.contains("unknown _target;"), Comment(rawValue: header))
+        }
+    }
+}
+
+/// The bound only replaces what is too deep, and keeps what the header
+/// prints around the type: every selector label, every property attribute.
+@Test func onlyEncodingsPastTheNestingBoundAreReplaced() {
+    let deep = String(repeating: "^", count: ObjCMetadataSnapshot.maximumDecodedNesting + 1) + "c"
+    let shallow = "{CGRect={CGPoint=dd}{CGSize=dd}}"
+    #expect(ObjCMetadataSnapshot.nestingBound(of: shallow) == 2)
+    #expect(ObjCMetadataSnapshot.nestingBound(of: "^{x=^{y=^c}}") == 5)
+    // Names are text: `{NSRangeOrNot="Ranged"^c}` nests two.
+    #expect(ObjCMetadataSnapshot.nestingBound(of: #"{NSRangeOrNot="Ranged"^c}"#) == 2)
+    var snapshot = ObjCMetadataSnapshot()
+    snapshot.classes = [ObjCClassInfo(
+        name: "C", version: 0, imageName: nil, instanceSize: 16, superClassName: nil, protocols: [],
+        ivars: [ObjCIvarInfo(name: "_deep", typeEncoding: deep, offset: 8),
+                ObjCIvarInfo(name: "_rect", typeEncoding: shallow, offset: 8)],
+        classProperties: [],
+        properties: [ObjCPropertyInfo(name: "p", attributesString: "T\(deep),R,N,V_p", isClassProperty: false)],
+        classMethods: [],
+        methods: [ObjCMethodInfo(name: "set:with:", typeEncoding: "v32@0:8\(deep)16@24", isClassMethod: false, imp: 0x10),
+                  ObjCMethodInfo(name: "rect", typeEncoding: "\(shallow)16@0:8", isClassMethod: false, imp: 0x20)])]
+    let bounded = snapshot.boundingTypeNesting().classes[0]
+    #expect(bounded.ivars.map(\.typeEncoding) == ["?", shallow])
+    #expect(bounded.properties[0].attributesString == "T?,R,N,V_p")
+    #expect(bounded.methods.map(\.typeEncoding) == ["?0@0:0?0?0", "\(shallow)16@0:8"])
+    #expect(bounded.methods[0].headerString == "- (unknown)set:(unknown)arg0 with:(unknown)arg1;")
+    let untouched = ObjCMetadataSnapshot()
+    #expect(untouched.boundingTypeNesting().classes.isEmpty)
 }
 
 /// Objective-C method records carry their IMPs, so names and signatures survive

@@ -44,11 +44,17 @@ public struct CallGraph: Sendable {
     private let callersByCallee: [UInt64: [CallEdge]]
 
     public init(functions: [DisassembledFunction], externalNames: [UInt64: String] = [:]) {
+        self.init(sites: functions.map(Self.callSites(of:)), externalNames: externalNames)
+    }
+
+    /// The graph over each function's call sites alone (`callSites(of:)`),
+    /// which is all `init(functions:)` reads.
+    public init(sites functions: [FunctionCallSites], externalNames: [UInt64: String] = [:]) {
         var names: [UInt64: String] = externalNames
-        for function in functions { names[function.startAddress] = function.displayName }
+        for function in functions { names[function.startAddress] = function.name }
 
         let starts = Set(functions.map(\.startAddress))
-        let spans = functions.map { ($0.startAddress, $0.instructions.last?.address ?? $0.startAddress) }
+        let spans = functions.map { ($0.startAddress, $0.lastAddress) }
             .sorted { $0.0 < $1.0 }
         func insideAFunction(_ address: UInt64) -> Bool {
             var low = 0, high = spans.count
@@ -64,51 +70,42 @@ public struct CallGraph: Sendable {
         var external = 0
         for function in functions {
             let first = function.startAddress
-            let last = function.instructions.last?.address ?? first
-            for analysed in function.instructions {
-                // A site rewritten to what its outlined fragment does is,
-                // in the binary, a `bl` or `b` to the fragment.
-                let insn = analysed.inlinedFragment.map { origin in
-                    Instruction(address: analysed.address, text: analysed.text,
-                                controlFlow: origin.reachedByCall ? .call : .branch,
-                                branchTarget: origin.address, callee: .kept(nil))
-                } ?? analysed
+            let last = function.lastAddress
+            for site in function.sites {
                 let isTailCall: Bool
-                switch insn.controlFlow {
-                case .call:
-                    guard insn.branchTarget != nil else {
+                if site.isCall {
+                    guard site.target != nil else {
                         // A `blr` through a bound GOT slot names its import;
                         // counted as unresolved it inflated the count (69% of
                         // one app's "unresolved" sites had a proven target).
-                        if DisassembledFunction.calleeName(of: insn) != nil { external += 1 } else { unresolved += 1 }
+                        // A witness call is named for an operation, not
+                        // an import: its target is unknown.
+                        if site.callee != nil, !site.isWitnessDispatch { external += 1 } else { unresolved += 1 }
                         continue
                     }
                     isTailCall = false
-                case .branch:
+                } else {
                     // A `b` that leaves the function is a tail call. Without
                     // this edge a function reached only that way (14,401 of
                     // Fiery Feeds' 180,015) reads as having no caller at all.
                     // A branch inside the span, or back to the entry, is the
                     // function's own control flow; one into the middle of
                     // another function is a shared tail, not a call to it.
-                    guard let target = insn.branchTarget, target < first || target > last,
-                          starts.contains(target)
-                            || (!insideAFunction(target) && DisassembledFunction.calleeName(of: insn) != nil)
+                    guard let target = site.target, target < first || target > last,
+                          starts.contains(target) || (!insideAFunction(target) && site.callee != nil)
                     else { continue }
                     isTailCall = true
-                default:
-                    continue
                 }
-                guard let target = insn.branchTarget else { continue }
+                guard let target = site.target else { continue }
                 // Calls into a stub (an import, or an ObjC selector stub) target
                 // an address that is not itself a recovered function, so it has
                 // no entry above — but the call site knows the name.
-                if names[target] == nil, let name = DisassembledFunction.calleeName(of: insn) {
+                if names[target] == nil, let name = site.callee {
                     names[target] = name
                 }
                 edges.append(CallEdge(
-                    site: insn.address, caller: function.startAddress, callee: target, isTailCall: isTailCall,
-                    isSelfDispatch: insn.isSelfDispatch
+                    site: site.address, caller: first, callee: target, isTailCall: isTailCall,
+                    isSelfDispatch: site.isSelfDispatch
                 ))
             }
         }
@@ -122,22 +119,55 @@ public struct CallGraph: Sendable {
         self.callersByCallee = Dictionary(grouping: edges, by: \.callee)
     }
 
+    /// Everything the graph reads of `function`, in the least memory: its
+    /// start, display name and folded symbols, its last address
+    /// (its span) and one `GraphSite` per call or branch. `xrefs` streams
+    /// the image and holds these for every function at once; holding each
+    /// site as an `Instruction` (176 bytes) was 139 MB of a GoodLinks run.
+    /// A site rewritten to what its outlined fragment does is, in the
+    /// binary, a `bl` or `b` to the fragment, and is kept as that.
+    public static func callSites(of function: DisassembledFunction) -> FunctionCallSites {
+        var sites: [GraphSite] = []
+        for insn in function.instructions {
+            if let origin = insn.inlinedFragment {
+                sites.append(GraphSite(address: insn.address, callee: nil, target: origin.address,
+                                      isCall: origin.reachedByCall, isSelfDispatch: false, isWitnessDispatch: false))
+            } else if insn.controlFlow == .call || insn.controlFlow == .branch {
+                sites.append(GraphSite(address: insn.address, callee: insn.callee, target: insn.branchTarget,
+                                      isCall: insn.controlFlow == .call, isSelfDispatch: insn.isSelfDispatch,
+                                      isWitnessDispatch: insn.facts.isWitnessDispatch))
+            }
+        }
+        return FunctionCallSites(
+            startAddress: function.startAddress, name: function.displayName,
+            foldedCandidates: function.foldedCandidates,
+            lastAddress: function.instructions.last?.address ?? function.startAddress,
+            sites: sites)
+    }
+
     /// What the graph reads of `function`: its names, its call and branch
-    /// sites (text and annotation, for callee names) and its last
-    /// instruction (its span). Everything else, the structured detail and
-    /// the recovered arguments, is dropped, so a whole-image graph built while
-    /// streaming holds sites, not instructions: about 1 KB per instruction
-    /// held at once put Swiftcord's 12.4M past 8 GB.
+    /// sites (their typed callee, target and the two facts `init` reads) and
+    /// its last instruction (its span). Everything else, the structured
+    /// detail, the recovered arguments, the annotation and every other fact,
+    /// is dropped, so a whole-image graph built while streaming holds sites,
+    /// not instructions: about 1 KB per instruction held at once put
+    /// Swiftcord's 12.4M past 8 GB. A site's annotation and facts alone held
+    /// most of GoodLinks' `xrefs` peak, since `init` names a callee by its
+    /// typed `callee`, never its notes.
     public static func sites(of function: DisassembledFunction) -> DisassembledFunction {
         let instructions = function.instructions
         var kept: [Instruction] = []
         for (index, insn) in instructions.enumerated()
         where insn.controlFlow == .call || insn.controlFlow == .branch || insn.inlinedFragment != nil
             || index == instructions.count - 1 {
+            var facts = Instruction.Facts()
+            facts.isSelfDispatch = insn.isSelfDispatch
+            facts.inlinedFragment = insn.inlinedFragment
+            facts.isWitnessDispatch = insn.facts.isWitnessDispatch
             kept.append(Instruction(
-                address: insn.address, text: insn.text, annotation: insn.annotation,
+                address: insn.address, text: insn.text, annotation: nil,
                 controlFlow: insn.controlFlow, branchTarget: insn.branchTarget, callee: .kept(insn.callee),
-                facts: insn.facts
+                facts: facts
             ))
         }
         return function.replacingInstructions(kept)
@@ -175,4 +205,35 @@ public struct CallGraph: Sendable {
     public func unreferenced() -> [UInt64] {
         functionAddresses.filter { callersByCallee[$0] == nil }.sorted()
     }
+}
+
+/// One call or branch site, as a call graph reads it.
+public struct GraphSite: Sendable, Equatable {
+    /// Address of the `bl`, `blr`, `b` or `br`.
+    public let address: UInt64
+    /// The typed callee name of the instruction (`Instruction.callee`).
+    public let callee: String?
+    /// The proven target, when there is one.
+    public let target: UInt64?
+    /// A call (`bl`, `blr`) rather than a branch.
+    public let isCall: Bool
+    /// `Instruction.isSelfDispatch`.
+    public let isSelfDispatch: Bool
+    /// `Instruction.Facts.isWitnessDispatch`.
+    public let isWitnessDispatch: Bool
+}
+
+/// A function as a call graph reads it (`CallGraph.callSites(of:)`).
+public struct FunctionCallSites: Sendable {
+    public let startAddress: UInt64
+    /// `DisassembledFunction.displayName`, the graph's name for it.
+    public let name: String
+    /// `DisassembledFunction.foldedCandidates`: the symbols a folded
+    /// address answers to (`Disassembler.foldedSymbolMatches`). Keeping the
+    /// whole function instead, 312 bytes each, was 21 MB of a GoodLinks
+    /// `xrefs`.
+    public let foldedCandidates: [String]?
+    /// Its last instruction's address: the end of its span.
+    public let lastAddress: UInt64
+    public let sites: [GraphSite]
 }

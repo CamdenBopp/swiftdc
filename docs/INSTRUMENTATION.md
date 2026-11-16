@@ -92,6 +92,10 @@ Probe.inFunction(start, name) { … }               // attribute events to a fun
   The structurer runs on its own large-stack `Thread`, so
   `ControlFlowStructure.onLargeStack` carries them across with
   `Probe.context`/`withContext`; task-locals do not cross a raw thread.
+- **A probe run analyses serially.** The streamed views analyse functions
+  across the cores only while no recorder is active, so a probe run keeps
+  its event order and loses no event to a worker thread. Its timing is the
+  serial loop's.
 - **Near-zero cost when off.** A call loads one relaxed atomic (the number of
   installed recorders anywhere in the process) and branches. The payload is
   an `@autoclosure` and is never built.
@@ -214,6 +218,7 @@ now represented directly:
 | `analysis.function` | symbol, instructions, blocks, calls; one completed analysis |
 | `cfg.block` | successors, instructions; CFG evidence |
 | `values.exit-registers` | x0, v0, x20, x21, path; raw facts and branch predicates at ordinary/async returns, not source ABI claims |
+| `analysis.entry` | convention, selfType, seeds (register → value) |
 | `values.call` | arguments, floatingArguments, stackArguments, receiver, indirectResult |
 | `values.condition` | value; signed and unsigned operators stay distinct |
 | `values.loop-initialization` | name, value, stackOffset; proven constant entry binding, at the header branch |
@@ -256,7 +261,11 @@ using `ValueTracer` directly. It records a completed snapshot, not worklist
 iterations. The main decompiler calls it after its final trace.
 `FunctionAnalysis.loopInitializations` exposes typed `LoopInitialization`
 records keyed by the loop header's branch address. Values are exact UInt64 bit
-patterns; stack offsets are relative to the function's entry frame. The
+patterns, or `argument` names the incoming argument the counter starts from
+(the `loopInitialization` event's `value` is then the label `argN`); stack
+offsets are relative to the function's entry frame (nil for a register
+counter). `loopEntryDeclarations` holds the same records keyed by the last
+instruction that enters the loop, for the flat view. The
 structured renderer declares these bindings before entering each loop, so a
 nested initializer runs on every entry from its outer loop. Unknown initial
 values do not acquire a default zero.

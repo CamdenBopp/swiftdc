@@ -649,15 +649,18 @@ private func assembledFunction(
         $0.controlFlow == .call && $0.text.hasPrefix("blr")
     }
     #expect(indirectCalls.count >= 3)
-    #expect(indirectCalls.allSatisfy { $0.branchTarget != nil })
-    #expect(indirectCalls.allSatisfy {
+    // A table read from a frame slot after a call that may clobber x29
+    // declines (the frame escapes, 47ceb26); a call that resolves names the
+    // concrete witness and is a graph edge.
+    let resolved = indirectCalls.filter { $0.branchTarget != nil }
+    #expect(resolved.allSatisfy {
         let annotation = $0.annotation ?? ""
         return annotation.hasPrefix("→ ")
             && (annotation.contains("Circle") || annotation.contains("Rectangle"))
     })
 
     let graph = CallGraph(functions: functions)
-    for call in indirectCalls {
+    for call in resolved {
         #expect(graph.edges.contains { $0.site == call.address && $0.callee == call.branchTarget })
     }
 }
@@ -894,7 +897,7 @@ private func assembledFunction(
     #expect(idiom("objc_alloc", ["NSString"]) == "[NSString alloc]")
     #expect(idiom("objc_opt_class", ["self"]) == "[self class]")
     #expect(idiom("objc_alloc_init", ["Foo"]) == "[[Foo alloc] init]")
-    #expect(idiom("objc_opt_new", ["Foo"]) == "[[Foo alloc] init]")
+    #expect(idiom("objc_opt_new", ["Foo"]) == "[Foo new]")
     #expect(idiom("objc_opt_isKindOfClass", ["x", "[NSNumber class]"]) == "[x isKindOfClass:[NSNumber class]]")
 
     // The composed form. `objc_alloc(objc_opt_class(x))` is `[[x class] alloc]`

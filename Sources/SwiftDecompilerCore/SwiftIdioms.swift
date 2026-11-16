@@ -13,6 +13,9 @@ extension DisassembledFunction {
         var index = 0
         while index < statements.count {
             if let (literal, consumed) = matchStringInterpolation(statements, at: index) {
+                // A copy of an operand made inside the run is still a
+                // statement: it goes ahead of the string it fed.
+                out.append(contentsOf: statements[index ..< index + consumed].filter(isStoreHelper))
                 out.append(literal)
                 index += consumed
                 continue
@@ -76,6 +79,14 @@ extension DisassembledFunction {
                 components += "\\(\(value))"
                 sawInterpolation = true
                 index += 1
+            } else if isStoreHelper(statement), index + 1 < statements.count,
+                      isInterpolationStep(statements[index + 1]) {
+                // -Onone copies an interpolated operand to a temporary
+                // between two appends (`outlined init with copy of
+                // Swift.String`). It does not end the run: ended there, the
+                // appends after it folded alone and the string lost its
+                // head (`"Circle(\(a)) r=\(b)"` read `"\(a)) r=\(b)"`).
+                index += 1
             } else {
                 break
             }
@@ -84,7 +95,7 @@ extension DisassembledFunction {
         // the interpolation returned: `return "q\(x)"`, not the literal and
         // then `return Swift.String.init(?)`.
         if sawInterpolation, sawBuilderInit, index < statements.count,
-           statements[index] == "return Swift.String.init(?)" {
+           ["return Swift.String.init(?)", "return Swift.String.init(stringInterpolation:)(?)"].contains(statements[index]) {
             return ("return \"\(components)\"", index + 1 - start)
         }
         // The `let s = "…"` that consumes the builder into a String — part of the
@@ -92,7 +103,8 @@ extension DisassembledFunction {
         if index < statements.count,
            statements[index].contains("String.init"),
            statements[index].contains("DefaultStringInterpolation.init")
-            || (sawBuilderInit && ["Swift.String.init()", "Swift.String.init(?)"].contains(statements[index])) {
+            || (sawBuilderInit && ["Swift.String.init()", "Swift.String.init(?)",
+                                   "Swift.String.init(stringInterpolation:)(?)"].contains(statements[index])) {
             index += 1
         }
         // A run with no interpolation is just a literal; leave that to the
@@ -221,6 +233,46 @@ extension DisassembledFunction {
     ///   `f(Swift.Int) -> (Swift.Double) -> Swift.Int`. The *first* depth-0
     ///   arrow ends the declaration. A closure's own name continues after its
     ///   result with ` in <context>`; that tail is not part of the result type.
+    /// Whether a demangled name is a closure or a local function: `closure
+    /// #1 (Swift.Int) -> Swift.Int in M.f()`, `implicit closure #2 @Sendable
+    /// () -> …`, `mix #1 (Swift.Int) -> Swift.Int in M.f()`, `$defer #1 ()
+    /// -> () in M.f()`, `helper #3 <A>(A) -> ()`. Each is declared inside
+    /// another function and takes what it captures as arguments after its
+    /// formals (swift/lib/SIL/IR/SILFunctionType.cpp,
+    /// `lowerCaptureContextParameters`), so its printed parameter list is
+    /// not its register list.
+    ///
+    /// The entity itself must lead the name. A thunk or a merged function
+    /// that names one (`partial apply forwarder for closure #1 …`, `merged
+    /// closure #3 …`) has a convention of its own and is not one.
+    static func isLocalFunctionName(_ name: String) -> Bool {
+        guard let open = name.firstIndex(where: { $0 == "(" || $0 == "<" }) else { return false }
+        var words = name[..<open].split(separator: " ").map(String.init)
+        // Attributes follow the discriminator: `closure #1 @Sendable (…)`.
+        while let last = words.last, last.hasPrefix("@") { words.removeLast() }
+        guard words.count >= 2, let number = words.last, number.count > 1, number.first == "#",
+              number.dropFirst().allSatisfy(\.isNumber)
+        else { return false }
+        let label = words.dropLast()
+        if Array(label) == ["implicit", "closure"] { return true }
+        guard label.count == 1, let identifier = label.first, let first = identifier.first else { return false }
+        return (first == "$" || first == "_" || first.isLetter)
+            && identifier.allSatisfy { $0 == "$" || $0 == "_" || $0.isLetter || $0.isNumber }
+    }
+
+    /// Whether a demangled name is a storage entity (`name.accessor :
+    /// Type`), not a function: a top-level ` : ` that no top-level ` -> `
+    /// precedes. The demangler prints an accessor, a variable initializer
+    /// and a property wrapper initializer this way, and an arrow after the
+    /// colon is part of the storage's type. A closure inside an accessor
+    /// (`closure #1 (Swift.Int) -> Swift.Int in M.C.h.getter : …`) has its
+    /// own arrow first and is a function.
+    static func isStorageEntityName(_ name: String) -> Bool {
+        guard let colon = topLevelRange(of: " : ", in: name) else { return false }
+        guard let arrow = topLevelRange(of: " -> ", in: name) else { return true }
+        return colon.lowerBound < arrow.lowerBound
+    }
+
     static func splitSignature(
         _ name: String
     ) -> (head: String, result: String, isAsync: Bool, isThrowing: Bool, thrownType: String?)? {

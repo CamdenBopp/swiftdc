@@ -604,19 +604,17 @@ private func reconstructionStructured(
     if let sum = try await reconstructionPseudo("IntPair.sum") {
         #expect(sum.contains("return (self.a + self.b)"))
     }
-    // Adversarial: a sub-word field breaks the clean 2-word shape, so `self` is
-    // NOT decomposed — declines rather than mis-assigning registers.
+    // A sub-word field still takes a register of its own: `flag` (Bool) in
+    // w0, `count` in x1 (`mov x0, x1; ret`). Under the old offset/8 mapping
+    // this declined; each field now takes the next register of its bank.
     if let mixed = try await reconstructionPseudo("MixedPair.justCount") {
-        #expect(mixed.contains("return ?"))
-        #expect(!mixed.contains("self."))
+        #expect(mixed.contains("return self.count"), "\(mixed)")
     }
-    // Adversarial: a method with parameters passes `self` AFTER the params in the
-    // shared GPR bank, an order we don't decompose — declines rather than
-    // mis-reconstruct a non-commutative body.
+    // A method with parameters passes `self` AFTER them in the shared GPR
+    // bank: `combine(_ k:)` has k in x0 and self in x1/x2. The non-commutative
+    // `a * k + b` proves the order: read the other way it is `k * a + …`.
     if let combine = try await reconstructionPseudo("IntPair.combine") {
-        // Its overflow traps render (`trap()`); its arithmetic does not.
-        #expect(!combine.contains("self."), "\(combine)")
-        #expect(!combine.contains("return ("), "\(combine)")
+        #expect(combine.contains("return ((self.a * arg0) + self.b)"), "\(combine)")
     }
 }
 
@@ -635,13 +633,12 @@ private func reconstructionStructured(
     if let readD = try await reconstructionPseudo("IntQuad.readD") {
         #expect(readD.contains("return self.d"))    // 4th field, offset 0x18 -> x3
     }
-    // Adversarial: mixing an `Int` (GPR) and a `Double` (SIMD) is neither a float
-    // HFA nor an all-integer struct. The `x{n} = offset/8` mapping would wrongly
-    // pull the Double from the GPR bank, so `self` is NOT decomposed — the getter
-    // declines with an unknown return rather than fabricate a field.
+    // Mixing an `Int` (GPR) and a `Double` (SIMD): each field takes the next
+    // register of its own bank, n in x0 and d in d0 (`str x0, [sp]; str d0,
+    // [sp, #8]`), never the `x{n} = offset/8` mapping that would pull the
+    // Double from the GPR bank.
     if let readN = try await reconstructionPseudo("IntThenDouble.readN") {
-        #expect(readN.contains("return ?"))
-        #expect(!readN.contains("self."))
+        #expect(readN.contains("return self.n"), "\(readN)")
     }
 }
 
@@ -893,22 +890,26 @@ private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
 /// than printed as a statement (or, worse, as `return memcpy(…)`).
 @Test func recoversForwardedIndirectResultIfPresent() async throws {
     guard let make = try await reconstructionPseudo("makeWide", in: indirectFixture) else { return }
-    #expect(make.contains("return Indirect.Wide5.init(arg0, arg1, arg2, arg3, arg4)"))
+    #expect(make.contains("let r0 = Indirect.Wide5.init(a:b:c:d:e:)(arg0, arg1, arg2, arg3, arg4)"))
+    #expect(make.contains("return r0"))
+    #expect(make.components(separatedBy: "Indirect.Wide5.init(").count == 2)
     #expect(!make.contains("memcpy"))
     #expect(!make.contains("return arg0"))
 
     guard let constant = try await reconstructionPseudo("constantWide", in: indirectFixture) else { return }
-    #expect(constant.contains("return Indirect.Wide5.init(1, 2, 3, 4, 5)"))
+    #expect(constant.contains("let r0 = Indirect.Wide5.init(a:b:c:d:e:)(1, 2, 3, 4, 5)"))
+    #expect(constant.contains("return r0"))
+    #expect(constant.components(separatedBy: "Indirect.Wide5.init(").count == 2)
 }
 
 /// Caller side: x8 pointed into the caller's frame when it called an x8-indirect
 /// callee, so the frame slots under it hold that call's result and a later load
 /// from one is a field of the result, not a stale local. The call is bound once
-/// (`let r0 = …`) and each field read is `r0.field`: spelling the call out at
-/// every read would show it executed once per field. At -Onone makeWide passes
-/// a frame buffer to its initializer; the buffer lies below the register save
-/// area, so the saved x29 survives the call (`Preservation.State.markEscape`)
-/// and the sum reads the result's fields. At -O the linker folds `makeWide` and `Wide5.init` onto one body, and a
+/// (`let r0 = …`) and each proven field read is `r0.field`: spelling the call
+/// out at every read would show it executed once per field. At -Onone,
+/// makeWide passes a frame buffer to its initializer; that local's reach
+/// excludes makeWide's frame record, so its saved x29 survives. At -O the
+/// linker folds `makeWide` and `Wide5.init` onto one body, and a
 /// call to a folded address takes neither name nor either signature: it read
 /// `let r0 = Indirect.Wide5.init(…)` for a call to `makeWide`. With no
 /// signature the result has no type to lay out, so the -O sum declines.
@@ -916,6 +917,7 @@ private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
     guard let onone = try await reconstructionPseudo("wideSum", in: indirectFixture) else { return }
     #expect(onone.contains("Indirect.makeWide(arg0, arg1, arg2, arg3, arg4)"))
     #expect(onone.contains("return (r0.a + r0.e)"), "\(onone)")
+    #expect(!onone.contains("return arg0"), "\(onone)")
     #expect(onone.components(separatedBy: "makeWide(").count == 2, "the call must render once: \(onone)")
 
     guard let opt = try await reconstructionPseudo(
@@ -923,6 +925,13 @@ private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
     #expect(opt.contains("sub_") && opt.contains("(arg0, arg1, arg2, arg3, arg4)"), "\(opt)")
     #expect(!opt.contains("Wide5.init") && !opt.contains("makeWide"), "\(opt)")
     #expect(opt.contains("return ?"), "\(opt)")
+    for fixture in [indirectFixture, "Fixtures/Sample/libIndirect.opt.dylib"] {
+        let library = try #require(dlopen(fixture, RTLD_NOW | RTLD_LOCAL))
+        defer { dlclose(library) }
+        let address = try #require(dlsym(library, "$s8Indirect7wideSumyS2i_S4itF"))
+        typealias Oracle = @convention(thin) (Int, Int, Int, Int, Int) -> Int
+        #expect(unsafeBitCast(address, to: Oracle.self)(1, 2, 3, 4, 5) == 6)
+    }
 }
 
 /// Negative: a field stored on only one path does not meet at the shared `ret`,
@@ -935,7 +944,7 @@ private let indirectFixture = "Fixtures/Sample/libIndirect.dylib"
     #expect(!opt.contains("return arg0"))
 
     guard let onone = try await reconstructionPseudo("wideMaybeSet", in: indirectFixture) else { return }
-    #expect(onone.contains("let r0 = Indirect.Wide5.init(0, 0, 0, 0, 0)"))
+    #expect(onone.contains("let r0 = Indirect.Wide5.init(a:b:c:d:e:)(0, 0, 0, 0, 0)"))
     #expect(onone.contains("return Indirect.Wide5(a: ?, b: r0.b, c: r0.c, d: r0.d, e: r0.e)"))
     #expect(!onone.contains("return arg0"))
 }
@@ -981,13 +990,21 @@ private struct NativeWide5Result {
 }
 
 /// A callee's result partially overwritten afterwards is neither the call nor a
-/// set of plain stores: the overwritten field is the new value and the rest are
-/// read back as fields of the call's result.
+/// set of plain stores. The optimized callee preserves its frame, so untouched
+/// fields are read back from its result. At -Onone, an initializer receives a
+/// local with no proven extent, which still cannot reach otherWide's frame
+/// record, so otherWide keeps x29 and the fields are read back too.
 @Test func recoversPartiallyOverwrittenIndirectResultIfPresent() async throws {
     for fixture in [indirectFixture, "Fixtures/Sample/libIndirect.opt.dylib"] {
         guard let modified = try await reconstructionPseudo("modifiedWide", in: fixture) else { continue }
-        // otherWide passes its initializer a result buffer below the
-        // register save area, so its x29 restore holds at -Onone too.
+        let library = try #require(dlopen(fixture, RTLD_NOW | RTLD_LOCAL))
+        defer { dlclose(library) }
+        let address = try #require(dlsym(library, "$s8Indirect12modifiedWideyAA5Wide5VSiF"))
+        let native = unsafeBitCast(address, to: (@convention(thin) (Int) -> NativeWide5Result).self)(41)
+        let fields: [Int] = [native.a, native.b, native.c, native.d, native.e]
+        let expected: [Int] = [41, 9, 9, 9, 9]
+        #expect(fields == expected)
+        #expect(modified.components(separatedBy: "Indirect.otherWide(").count == 2)
         #expect(modified.contains("let r0 = Indirect.otherWide("), "in \(fixture)")
         #expect(modified.contains("return Indirect.Wide5(a: arg0, b: r0.b, c: r0.c, d: r0.d, e: r0.e)"), "in \(fixture)")
         #expect(!modified.contains("return arg0"))
@@ -1299,10 +1316,21 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
     #expect(try text("small").contains("return \"ok\""))
     #expect(try text("large").contains("return \"a literal longer than fifteen bytes\""))
     #expect(try text("Person.current").contains("return self.name"))
-    // Kept across a call, the result is bound where the call runs.
+    // Kept across a call, the result is bound where the call runs. The sink
+    // passes a local's address on, which reaches no prologue save, so the
+    // callee-saved carrier registers survive it.
     let forward = try text("forward")
     #expect(forward.contains("let r0 = StringReturns.greeting()\n    StringReturns.sink()\n    return r0"),
             Comment(rawValue: forward))
+    let library = try #require(dlopen(path, RTLD_NOW | RTLD_LOCAL))
+    defer { dlclose(library) }
+    let address = try #require(dlsym(library, "$s13StringReturns7forwardSSyF"))
+    // Destroy the returned String before its library is unloaded.
+    let nativeMatches = {
+        let value = unsafeBitCast(address, to: (@convention(thin) () -> String).self)()
+        return ["hi", "hihi", "hihihi"].contains(value)
+    }()
+    #expect(nativeMatches)
     // With nothing between, the call is the return, not also a statement.
     let fromLocal = try text("fromLocal")
     #expect(fromLocal.contains("return StringReturns.describe("), Comment(rawValue: fromLocal))
@@ -1435,4 +1463,46 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
     #expect(Disassembler.signatureSpecializationRewritesSelf(
         "merged function signature specialization <Arg[1] = Dead> of M.T.x.getter : Swift.Int"))
     #expect(!Disassembler.signatureSpecializationRewritesSelf("generic specialization <Swift.Int> of M.T.f(Swift.Int) -> ()"))
+}
+
+/// A no-payload enum held by address reads its tag through x20: a resilient
+/// enum's members and any enum's witnesses. x20 unseeded, the compares and
+/// the `csel`s built on them were unknown. Seeded, the tag is `self`, and it
+/// compares with the case it spells at every optimization level, and -O and
+/// -Osize's `csel` pairs are a String pick. A frozen
+/// enum's x20 and a payload enum's first byte are neither, and neither is
+/// x20 in a static witness, an initializer or a closure
+/// (resilientself.swift, resilient_self.s).
+@Test func aResilientEnumsSelfIsItsTagIfPresent() async throws {
+    for level in ["Onone", "O", "Osize"] {
+        let path = "Fixtures/Sample/libResilientSelf.\(level).dylib"
+        guard FileManager.default.fileExists(atPath: path) else { return }
+        let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+        func text(_ name: String) throws -> String {
+            try #require(functions.first { $0.displayName.hasPrefix(name) }, "\(level) \(name)").renderStructured()
+        }
+        let alpha = "(self == ResilientSelf.Mode.alpha)"
+        let beta = "(self == ResilientSelf.Mode.beta)"
+        let label = try text("ResilientSelf.Mode.label.getter")
+        let isAlpha = try text("ResilientSelf.Mode.isAlpha.getter")
+        #expect(isAlpha.contains("return \(alpha)"), "\(level): \(isAlpha)")
+        if level == "Onone" {
+            // A branch per case and a String joined in a frame slot: no pick.
+            #expect(label.contains("return ?"), "\(level): \(label)")
+        } else {
+            #expect(label.contains("return (\(alpha) ? \"first\" : (\(beta) ? \"second\" : \"third\"))"), "\(level): \(label)")
+        }
+        let witness = try text("protocol witness for ResilientSelf.Kind.peek")
+        #expect(witness.contains("return (self & 0xffffffff)"), "\(level): \(witness)")
+        let rank = try text("ResilientSelf.Mode.rank(")
+        #expect(rank.contains("self") && rank.contains("arg0"), "\(level): \(rank)")
+        let none = try text("ResilientSelf.Payload.isNone.getter")
+        #expect(!none.contains("self"), "\(level): \(none)")
+        for name in ["protocol witness for static ResilientSelf.Kind.make", "protocol witness for ResilientSelf.Kind.init(seed",
+                     "ResilientSelf.Asm.init(tag", "closure #1 () -> Swift.Int in ResilientSelf.Asm.boxed", "ResilientSelf.Fixed.peek(",
+                     "ResilientSelf.Asm.overwrite(", "ResilientSelf.Asm.jump("] {
+            let body = try text(name)
+            #expect(!body.contains("self"), "\(level) \(name): \(body)")
+        }
+    }
 }

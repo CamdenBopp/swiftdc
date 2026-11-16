@@ -72,6 +72,15 @@ extension Disassembler {
     static func classArgumentFieldMaps(
         of function: DisassembledFunction, scalarArguments: [String: Int], index: ClassParameterFieldIndex
     ) -> [Int: FieldMap] {
+        classArguments(of: function, scalarArguments: scalarArguments, index: index).mapValues(\.map)
+    }
+
+    /// Each class parameter's exact qualified type, as the signature prints
+    /// it, with its field map: the same parameters `classArgumentFieldMaps`
+    /// gives.
+    static func classArguments(
+        of function: DisassembledFunction, scalarArguments: [String: Int], index: ClassParameterFieldIndex
+    ) -> [Int: (type: String, map: FieldMap)] {
         guard let name = function.analysisName, let signature = DisassembledFunction.splitSignature(name),
               !signature.isAsync,
               let range = DisassembledFunction.outermostArgumentListRange(of: signature.head)
@@ -85,9 +94,10 @@ extension Disassembler {
               head.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." })
         else { return [:] }
         let parameters = DisassembledFunction.splitTopLevelArguments(signature.head[range])
-        var maps: [Int: FieldMap] = [:]
+        var maps: [Int: (type: String, map: FieldMap)] = [:]
         for argument in scalarArguments.values where parameters.indices.contains(argument) {
-            maps[argument] = index.fieldMap(ofParameterType: parameterType(parameters[argument]))
+            let type = parameterType(parameters[argument])
+            if let map = index.fieldMap(ofParameterType: type) { maps[argument] = (type, map) }
         }
         return maps
     }

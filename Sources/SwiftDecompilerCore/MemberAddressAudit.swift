@@ -46,7 +46,7 @@ struct MemberAddressAudit {
 
     init(_ machO: MachOFile) {
         codeRanges = MethodImplementation(machO)
-        var starts = Set((machO.functionStarts.map(Array.init) ?? []).map { UInt64($0.offset) })
+        var starts = Set(Disassembler.linkerFunctionStarts(of: machO))
         let declaresStarts = !starts.isEmpty
         var data: [UInt64: String] = [:]
         for symbol in machO.symbols where !symbol.name.isEmpty {

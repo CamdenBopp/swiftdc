@@ -44,7 +44,7 @@ private func body(_ functions: [String: String], _ prefix: String) throws -> Str
     guard let functions = try await pseudo("Fixtures/Sample/libLiteralEscapes.Onone.dylib") else { return }
     // The C string handed to the literal initializer.
     let backslash = try body(functions, "LiteralEscapes.smallBackslash(")
-    #expect(backslash.contains(#"Swift.String.init("c\\nd", 4, 1)"#), "\(backslash)")
+    #expect(backslash.contains(#"Swift.String.init(_builtinStringLiteral:utf8CodeUnitCount:isASCII:)("c\\nd", 4, 1)"#), "\(backslash)")
     // The interpolation keeps each piece as it rendered.
     let interpolated = try body(functions, "LiteralEscapes.interpolated(")
     #expect(interpolated.contains(#""say \"hi\" \(local_"#), "\(interpolated)")

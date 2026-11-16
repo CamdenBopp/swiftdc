@@ -123,3 +123,62 @@ private func symbols() -> [UInt64: String]? {
     ]
     for (what, table) in cases { #expect(parse(table) == nil, "\(what)") }
 }
+
+/// The table lists the build ID as a function, `go:buildid` at the start of
+/// `__text`, and its bytes are the string `\xff Go build ID: "…"`. Decoded,
+/// they read as instructions (`umlal2 v31.4s, …`), and the unstripped image
+/// called its two symbols there an identical-code fold. Name and bytes
+/// agreeing, the span is data: whole and filtered, it keeps its name and has
+/// no instruction, and streaming still lists it as a function.
+@Test func theGoBuildIDIsDataNotCodeIfPresent() async throws {
+    for path in [full, stripped] {
+        guard FileManager.default.fileExists(atPath: path) else { continue }
+        let machO = try BinaryLoader.load(path: path)
+        let disassembler = Disassembler(preset: .default)
+        let table = try #require(disassembler.goFunctions(in: machO))
+        let start = try #require(table.entries.first { $0.name == "go:buildid" }?.address)
+        #expect(table.dataSpans[start] != nil, "\(path)")
+        let whole = try await withStableDependencies { try await disassembler.disassemble(path: path) }
+        let buildID = try #require(whole.first { $0.startAddress == start }, "\(path)")
+        #expect(buildID.symbol == "_go:buildid" && buildID.instructions.isEmpty && buildID.foldedCandidates == nil, "\(path)")
+        #expect(whole.contains { $0.startAddress > start && !$0.instructions.isEmpty })
+        let filtered = try await withStableDependencies {
+            try await disassembler.disassemble(path: path, functionFilter: "go:buildid")
+        }
+        #expect(filtered.count == 1 && filtered[0].instructions.isEmpty, "\(path)")
+    }
+}
+
+/// Both halves of the evidence: the name and the bytes.
+@Test func aBuildIDSpanNeedsItsNameAndItsBytes() {
+    let prefix = GoFunctionTable.buildIDPrefix + Data("abc\"".utf8)
+    let code = Data([0x1f, 0x20, 0x03, 0xd5] + Array(repeating: 0, count: 16))
+    func spans(_ name: String, _ data: Data) -> [UInt64: (end: UInt64, name: String)] {
+        GoFunctionTable.dataSpans(of: [(0x1000, name), (0x1080, "main.main")], textEnd: 0x2000) { address, count in
+            address == 0x1000 ? data.prefix(count) : nil
+        }
+    }
+    #expect(spans("go:buildid", prefix)[0x1000]?.end == 0x1080)
+    #expect(spans("go:buildid", code).isEmpty)
+    #expect(spans("runtime.text", prefix).isEmpty)
+}
+
+/// Go's linker writes 6 as the size of its 12-byte import stubs
+/// (`__symbol_stub1`, reserved2), and stubs numbered by it were named from
+/// the eleventh on after another stub's import, by swiftdc's table and by
+/// objdump's `symbol stub for:` alike: `runtime.walltime_trampoline` read
+/// `fcntl(…)` for the `clock_gettime` its stub's GOT slot is bound to. The
+/// stride now comes from the stubs (`adrp; ldr; br`), and each runtime
+/// trampoline calls the libc function it is named for.
+@Test func goImportStubsAreNamedByTheirOwnStrideIfPresent() async throws {
+    guard FileManager.default.fileExists(atPath: full) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: full) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName == name }, "no \(name)").renderStructured()
+    }
+    #expect(try text("_runtime.walltime_trampoline.abi0").contains("clock_gettime(0, arg0)"))
+    #expect(try text("_runtime.exit_trampoline.abi0").contains("_exit("))
+    #expect(try text("_runtime.mmap_trampoline.abi0").contains("mmap("))
+    #expect(try text("_runtime.usleep_trampoline.abi0").contains("usleep("))
+    #expect(try text("_runtime.open_trampoline.abi0").contains("open("))
+}

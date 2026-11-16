@@ -57,7 +57,7 @@ private let fixture = "Fixtures/Sample/libStringArity.dylib"
     #expect(none.contains("StringArity.takeOptString(?, 7)"), "\(none)")
     // A class method's self is x20, so its formals start at x0.
     let box = try pseudo("callBox")
-    #expect(box.contains("StringArity.Box.put(?, 7)"), "\(box)")
+    #expect(box.contains("StringArity.Box.put(self: arg0, ?, 7)"), "\(box)")
 }
 
 /// Unit view of the footprints.
@@ -120,7 +120,7 @@ private let fixture = "Fixtures/Sample/libStringArity.dylib"
     guard FileManager.default.fileExists(atPath: path) else { return }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let text = functions.map { $0.renderPseudo() }.joined(separator: "\n")
-    #expect(text.contains("Swift._typeName(?, false))") && !text.contains("Swift._typeName(?, false), ?)"),
+    #expect(text.contains("Swift._typeName(_:qualified:)(?, false))") && !text.contains("Swift._typeName(_:qualified:)(?, false), ?)"),
             Comment(rawValue: text.components(separatedBy: "\n").filter { $0.contains("_typeName") }.joined(separator: "\n")))
 }
 

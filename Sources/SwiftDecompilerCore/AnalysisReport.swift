@@ -50,14 +50,31 @@ public struct AnalysisReport: Sendable {
     /// Text report for an already-loaded image — e.g. a dyld shared-cache
     /// framework, which has no standalone file. Disassembly is in-process.
     public func generate(machO: MachOFile) async -> String {
-        let functions = await Disassembler(preset: preset).disassemble(machO: machO)
-        return await text(machO: machO, functions: functions)
+        await report(machO: machO, json: false).text
     }
 
     /// JSON report for an already-loaded image (in-process disassembly).
     public func generateJSON(machO: MachOFile) async -> String {
-        let functions = await Disassembler(preset: preset).disassemble(machO: machO)
-        return await json(machO: machO, functions: functions)
+        await report(machO: machO, json: true).text
+    }
+
+    /// The report for an already-loaded image, and the reason its code could
+    /// not be read, as `report(path:architecture:json:)` gives them.
+    public func report(machO: MachOFile, json: Bool) async -> (text: String, disassemblyError: String?) {
+        let functions: [DisassembledFunction]
+        let failure: String?
+        do {
+            try Disassembler.requireDecodableCode(machO)
+            functions = await Disassembler(preset: preset).disassemble(machO: machO)
+            failure = nil
+        } catch {
+            functions = []
+            failure = String(describing: error)
+        }
+        let text = json
+            ? await self.json(machO: machO, functions: functions, failure: failure)
+            : await self.text(machO: machO, functions: functions, failure: failure)
+        return (text, failure)
     }
 
     // MARK: - Rendering (shared by both input paths)

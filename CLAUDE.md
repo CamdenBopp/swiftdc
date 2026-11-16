@@ -16,8 +16,8 @@ When sources disagree, believe them in this order:
    commit messages carry the reasoning and the numbers.
 3. Reproducible measurements: a command anyone can re-run.
 4. `docs/research/`: true when written, often stale.
-5. Conversation memory and [handoff.md](handoff.md): the weakest. A compacted
-   conversation can carry a "next task" that already shipped.
+5. Conversation memory: the weakest. A compacted conversation can carry a
+   "next task" that already shipped.
 
 When a doc turns out stale, fix it in the same change.
 
@@ -72,11 +72,17 @@ the analysis is in a few large files:
 
 The pipeline:
 
-1. **Decode.** An unfiltered file decodes with llvm-objdump for its listing
-   text, with Capstone attached for detail. A filtered run, a dyld-cache
-   image and `xrefs` decode with Capstone in process.
+1. **Decode.** Unfiltered standalone CLI `--pseudo` and `--structured` views
+   stream through Capstone when JSON is not requested. Plain listing, JSON and
+   the whole-file array API use llvm-objdump for listing text, with Capstone
+   attached for detail. Filtered runs, dyld-cache images and `xrefs` decode with
+   Capstone in process.
 2. **Segment** at `LC_FUNCTION_STARTS`, symbols and ObjC IMPs.
-3. **Analyse** with `analyzeFunction`: tracer, then enrichment.
+3. **Analyse** with `analyzeFunction`: tracer, then enrichment. The streamed
+   views of a standalone image analyse functions across the cores in batches
+   and render them in input order; `SWIFTDC_SERIAL=1` forces the serial loop,
+   and a probe run or a dyld-cache image is always serial. Anything analysis
+   shares across functions must be read-only or lock-guarded.
 4. **Render** from `render`, `renderPseudo`, `renderStructured`,
    `renderCFG` or JSON.
 
@@ -203,6 +209,13 @@ around what a rebuild costs:
   while the release build runs.
 - **Do not touch a tree while it builds** for a measurement or a release.
   Run a parallel experiment in a second worktree.
+- **Ask the analysis, not the render:** `swiftdc lab <binary> -f <name>`
+  prints each instruction of the matching functions beside what the
+  analysis concluded there: the entry convention and its seeded registers,
+  each call's callee, registers and argument layout, each branch condition
+  and the exit registers. It reads the probe records of an ordinary
+  filtered run, so it shows what `disasm` decided. Use it to find which
+  stage went wrong before reading code or diffing renders.
 - **Profile before optimizing a run:** `sample <pid> <seconds>` on a release
   run, then sum the call tree by frame. The first such profile found 7.4%
   of a GoodLinks `--pseudo` run re-opening the file as a dyld cache.
@@ -282,9 +295,11 @@ See [docs/INSTRUMENTATION.md](docs/INSTRUMENTATION.md). In brief:
   on **footprint**, not RSS (compressed pages leave RSS):
   `Tools/audit/guard.sh <outdir> <kill-MB> -- swiftdc …`. Kill well below
   8 GB, because the guard samples once a second and a spike can be shorter.
-- Unfiltered `disasm`/`analyze` on a large app holds the whole image (Enchanted
-  debug, 7M instructions, would need 7 GB+); filter with `-f`, or use `xrefs`,
-  which streams.
+- Whole-image array paths, including standalone plain listing, JSON and
+  `analyze`, retain decoded instructions (Enchanted debug, 7M instructions,
+  would need 7 GB+). The standalone CLI pseudocode views already stream decoded
+  functions and retain rendered strings. Measure their actual peak; filter with
+  `-f` or use streaming APIs when decoded arrays exceed the guard.
 - Measure with a **release** build in its own scratch path (`swift build
   -c release --scratch-path .build-release`, binary
   `.build-release/release/swiftdc`), copied to the scratchpad so later
@@ -311,8 +326,7 @@ the one right after:
 - **OPEN** with the evidence;
 - **DEAD END** with the numbers.
 
-Also update `docs/INSTRUMENTATION.md` when the event catalogue changes, and
-prune `handoff.md` as items ship.
+Also update `docs/INSTRUMENTATION.md` when the event catalogue changes.
 
 ## Privacy: this repository is public
 
@@ -326,9 +340,14 @@ prune `handoff.md` as items ship.
 
 ## Gotchas
 
-- SwiftPM warns that `machokit` has two identities: MachOKit is pinned to the
-  `CamdenBopp/MachOKit` fork for a `MachOFile.cache` performance fix. The
-  warning is expected. Revert to upstream when that fix ships there.
+- SwiftPM warns that `machokit` and its siblings have two identities:
+  MachOKit, MachOKitExtensions, MachOObjCSection and MachOSwiftSection are
+  pinned to `CamdenBopp` forks (`swiftdc-interim/*` branches) for the
+  `MachOFile.cache` memo, reading through slid segments, the
+  `interface` fixes and unaligned reads of file bytes; swift-binary-parse-support,
+  swift-fileio and swift-fileio-extra are pinned to `CamdenBopp` forks for
+  the unaligned reads. The warning is expected. Return each to upstream when
+  its change ships there.
 - `llvm-objdump` comes through `xcrun`. Capstone 6 builds from source as a
   SwiftPM dependency; there is no Homebrew capstone.
 - zsh: `status` is read-only, so use `rc`. An unquoted `$cmd` does not word-split

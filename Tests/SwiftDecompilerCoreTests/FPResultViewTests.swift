@@ -52,6 +52,28 @@ private func resultBits(_ op: String, _ bits: Int) -> UInt64 {
     return values[op]![bits == 16 ? 0 : bits == 32 ? 1 : 2]
 }
 
+@Test func computedFPMetadataDoesNotConsumeCResultProofDepthIfPresent() async throws {
+    let path = "Fixtures/Sample/libGridSampler.opt.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let image = try BinaryLoader.load(path: path)
+    let listing = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let array = await withStableDependencies { await Disassembler().disassemble(machO: image) }
+    let filtered = try await withStableDependencies { try await Disassembler().disassemble(path: path, functionFilter: "Sampler.disk") }
+    let streamed = await withStableDependencies { await Disassembler().disassembleStreaming(machO: image, transform: { $0 }) }
+    let each = await withStableDependencies {
+        await Disassembler().analyzeEachFunction(at: Set(array.map(\.startAddress)), in: image, transform: { $0 })
+    }
+    // Six arithmetic operations carry six precision markers. Those markers
+    // do not make the proof that each C call returns a whole scalar deeper.
+    let expected = "fmod(((((((arg0.b * 3.141592653589793) / 180.0) + atan2(?, ?)) * 180.0) / 3.141592653589793) + 540.0), 360.0)"
+    for group in [listing, array, filtered, streamed, Array(each.values)] {
+        let function = try #require(group.first { $0.displayName.contains("Sampler.disk(") })
+        for text in [function.renderPseudo(), function.renderStructured()] {
+            #expect(text.contains(expected), Comment(rawValue: text))
+        }
+    }
+}
+
 @Test func computedFPResultsKeepPrecisionAndPhysicalViewsInEveryPipelineIfPresent() async throws {
     guard FileManager.default.fileExists(atPath: fpResultPath) else { return }
     let image = try BinaryLoader.load(path: fpResultPath)
@@ -282,6 +304,18 @@ private func resultBits(_ op: String, _ bits: Int) -> UInt64 {
     #expect(ValueTracer.floatOperand(deep, bits: 64) != .unknown)
     deep = .unary(.floatResult(bits: 16, upperZero: true), .binary(.add, deep, literal))
     #expect(ValueTracer.floatOperand(deep, bits: 64) == .unknown)
+    // Current dev preserves scalars across a call in a one-lane wrapper.
+    // It must compose with written precision and raw whole-register reads.
+    let scalar = result(32, true)
+    let preserved = ValueTracer.callPreservedVectorValue(scalar)
+    #expect(preserved == .aggregate([scalar]))
+    #expect(ValueTracer.scalarView(preserved, bits: 32) == scalar)
+    #expect(ValueTracer.scalarView(preserved, bits: 64, interpretResult: false) == scalar)
+    let raw = AbstractValue.unary(.bitPattern(bits: 32), scalar)
+    let whole = ValueTracer.scalarView(preserved, bits: 128)
+    #expect(whole == .aggregate([raw]))
+    #expect(ValueTracer.scalarView(whole, bits: 16) == ValueTracer.floatOperand(raw, bits: 16))
+    #expect(ValueTracer.scalarView(ValueTracer.callPreservedVectorValue(result(32, false)), bits: 64) == .unknown)
     let snapshot = ProbeValue.abstractValue(.unary(.floatResult(bits: 16, upperZero: false), .argument(3)))
     #expect(snapshot == .object(["schema": .label("swiftdc-value/1"), "expression": .object([
         "kind": .label("unary"), "operator": .label("float-result"), "bits": .int(16), "upperZero": .bool(false),
@@ -356,6 +390,35 @@ private func resultBits(_ op: String, _ bits: Int) -> UInt64 {
         return
     }
     #expect(reloadedWidth == 16 && reloadedZero)
+    // Packed SIMD words can be read at a smaller FP width; their high
+    // bits must be discarded before interpreting the scalar. A wider read
+    // than the store established remains unknown.
+    func rawRead(_ words: [UInt32]) -> (gpr: AbstractValue?, fp: AbstractValue?) {
+        let bytes = words.flatMap { word in (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) } }
+        let body = engine.disassemble(Data(bytes), address: 0x1000).map {
+            Instruction(address: $0.address, text: $0.text, controlFlow: $0.controlFlow,
+                        branchTarget: $0.branchTarget, detail: $0.detail)
+        }
+        let function = DisassembledFunction(symbol: "raw", demangledName: nil, startAddress: 0x1000,
+                                            instructions: body, source: .symbol)
+        let result = ValueTracer().analyze(function, entry: .swiftFunction(scalarArguments: ["x0": 0]))
+        return (result.exitValues[body.last!.address], result.exitFloatValues[body.last!.address])
+    }
+    // sub sp,#16; dup v0.2d,x0; str q0,[sp]; ldr s0,[sp]; fmov w0,s0; add sp,#16; ret
+    let word = rawRead([0xd10043ff, 0x4e080c00, 0x3d8003e0, 0xbd4003e0, 0x1e260000, 0x910043ff, 0xd65f03c0])
+    let low32 = AbstractValue.binary(.bitAnd, .argument(0), .immediate(0xffffffff))
+    #expect(word.gpr == low32)
+    #expect(word.fp == .unary(.floatFromBits(bits: 32), .argument(0)))
+    #expect(word.fp.map { ValueTracer.scalarView($0, bits: 64) } == .unary(.floatFromBits(bits: 64), low32))
+    // A literal's constructor folds to its bits, so load-time truncation must
+    // clear the high word before a later D-register read can observe it.
+    let literal = rawRead([0xd2800000, 0xf2a7f000, 0xf2cacf00, 0xf2e24680,
+        0xd10043ff, 0x4e080c00, 0x3d8003e0, 0xbd4003e0, 0x9e660000, 0x910043ff, 0xd65f03c0])
+    #expect(literal.gpr == .immediate(0x3f800000))
+    #expect(literal.fp == .immediate(0x3f800000))
+    // sub sp,#16; str w0,[sp]; ldr d0,[sp]; fmov x0,d0; add sp,#16; ret
+    let overread = rawRead([0xd10043ff, 0xb90003e0, 0xfd4003e0, 0x9e660000, 0x910043ff, 0xd65f03c0])
+    #expect(overread.gpr == nil && overread.fp == nil)
     // A byte copy directly into the caller's result buffer has no later
     // register load to supply the raw-bit interpretation or truncate it.
     let scalar = AbstractValue.unary(.floatResult(bits: 64, upperZero: true),

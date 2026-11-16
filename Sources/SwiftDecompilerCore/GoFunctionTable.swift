@@ -26,6 +26,17 @@ import Synchronization
 /// repeat its entry, a name outside the table.
 struct GoFunctionTable: Sendable {
     let entries: [(address: UInt64, name: String)]
+    /// The end of the text the table covers (its last `entryOff`).
+    var textEnd: UInt64 = 0
+    /// Spans the table lists as functions that hold data. The linker puts the
+    /// build ID at the start of `__text` as a "function" named
+    /// `go:buildid`, and its bytes are the string `\xff Go build ID:
+    /// "…"`: decoded, they read as instructions (`umlal2 v31.4s, …`).
+    /// A span counts only when the name and the bytes agree.
+    var dataSpans: [UInt64: (end: UInt64, name: String)] = [:]
+
+    static let buildIDName = "go:buildid"
+    static let buildIDPrefix = Data([0xff] + Array(" Go build ID: \"".utf8))
 
     static func read(_ machO: MachOFile, bytes: (UInt64, Int) -> Data?) -> GoFunctionTable? {
         guard let section = machO.sections.first(where: { $0.sectionName == "__gopclntab" }),
@@ -33,7 +44,27 @@ struct GoFunctionTable: Sendable {
               let text = machO.sections.first(where: { $0.segmentName == "__TEXT" && $0.sectionName == "__text" }),
               let table = bytes(UInt64(section.address), section.size), table.count == section.size
         else { return nil }
-        return parse(table, textAddress: UInt64(text.address), textSize: UInt64(text.size))
+        guard var parsed = parse(table, textAddress: UInt64(text.address), textSize: UInt64(text.size))
+        else { return nil }
+        parsed.dataSpans = dataSpans(of: parsed.entries, textEnd: parsed.textEnd, bytes: bytes)
+        return parsed
+    }
+
+    /// The entries named `go:buildid` whose bytes begin with the build ID's
+    /// own prefix, each to the next entry. A name alone, or the bytes alone,
+    /// is no span.
+    static func dataSpans(
+        of entries: [(address: UInt64, name: String)], textEnd: UInt64, bytes: (UInt64, Int) -> Data?
+    ) -> [UInt64: (end: UInt64, name: String)] {
+        var spans: [UInt64: (end: UInt64, name: String)] = [:]
+        for (index, entry) in entries.enumerated() where entry.name == buildIDName {
+            let end = index + 1 < entries.count ? entries[index + 1].address : textEnd
+            guard end > entry.address, end - entry.address >= UInt64(buildIDPrefix.count),
+                  let head = bytes(entry.address, buildIDPrefix.count), head == buildIDPrefix
+            else { continue }
+            spans[entry.address] = (end, entry.name)
+        }
+        return spans
     }
 
     static func parse(_ table: Data, textAddress: UInt64, textSize: UInt64) -> GoFunctionTable? {
@@ -77,7 +108,7 @@ struct GoFunctionTable: Sendable {
             entries.append((textAddress + UInt64(entry), name))
             previous = entry
         }
-        return GoFunctionTable(entries: entries)
+        return GoFunctionTable(entries: entries, textEnd: textAddress + UInt64(end))
     }
 
     /// Tables by image, so each of the many readers of function starts in a

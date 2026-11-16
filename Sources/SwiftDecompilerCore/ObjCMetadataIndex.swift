@@ -95,6 +95,18 @@ struct ObjCMetadataSnapshot {
     /// metadata (see `resolveExternalSuperclasses`). Empty on chained-fixup or
     /// shared-cache inputs, where the superclass is already resolved.
     var superclassBinds: [String: String] = [:]
+    /// The address of each Objective-C class object this image defines
+    /// (what `__objc_classlist` points to) → its class. An address two
+    /// classes claim names neither. Standalone images only.
+    var classObjects: [UInt64: String] = [:]
+
+    /// Class object address → class, from each class's address and name.
+    /// An address two classes claim names neither.
+    static func classObjects(_ claims: [(address: UInt64, name: String)]) -> [UInt64: String] {
+        var names: [UInt64: Set<String>] = [:]
+        for claim in claims { names[claim.address, default: []].insert(claim.name) }
+        return names.compactMapValues { $0.count == 1 ? $0.first : nil }
+    }
 
     /// Whether reading this class would take MachOObjCSection down its
     /// shared-cache "relative list list" path — which, on a binary that is not a
@@ -255,6 +267,15 @@ struct ObjCMetadataSnapshot {
             snapshot.superclassBinds = resolveExternalSuperclasses(
                 classes: pairs, boundSlots: boundSlots, in: machO
             )
+            if machO.cache == nil {
+                // A Swift class's object is its type metadata, which a
+                // metadata accessor returns: named by the class's runtime
+                // name it read `return _TtC14Reconstruction3Dog`, or the
+                // `@objc` name of a Swift class. Objective-C classes only.
+                snapshot.classObjects = classObjects(pairs.compactMap { raw, info in
+                    raw.isSwift ? nil : machO.imageAddress(ofOffset: raw.offset).map { ($0, info.name) }
+                })
+            }
             if includeProtocols {
                 snapshot.protocols = (objc.protocols64 ?? []).compactMap { $0.info(in: machO) }
             }
@@ -271,7 +292,168 @@ struct ObjCMetadataSnapshot {
             }
             snapshot.categories = (objc.categories32 ?? []).compactMap { $0.info(in: machO) }
         }
-        return snapshot
+        snapshot.protocols = snapshot.protocols.map(separatingOptionalProperties)
+        return snapshot.boundingTypeNesting()
+    }
+
+    /// A protocol with each property moved to the optional lists when its
+    /// getter is listed only among the optional methods. A protocol's
+    /// property list carries no optional flag, so ObjCDump leaves every
+    /// property required: `@optional @property NSString *nickname` rendered
+    /// under `@required`. A getter listed in both method lists, or in
+    /// neither, leaves its property where it was.
+    static func separatingOptionalProperties(_ p: ObjCProtocolInfo) -> ObjCProtocolInfo {
+        func getter(_ property: ObjCPropertyInfo) -> String {
+            for attribute in property.attributesString.split(separator: ",") where attribute.hasPrefix("G") {
+                return String(attribute.dropFirst())
+            }
+            return property.name
+        }
+        func split(_ properties: [ObjCPropertyInfo], required: [ObjCMethodInfo], optional: [ObjCMethodInfo])
+            -> (required: [ObjCPropertyInfo], optional: [ObjCPropertyInfo]) {
+            let requiredNames = Set(required.map(\.name)), optionalNames = Set(optional.map(\.name))
+            var kept: [ObjCPropertyInfo] = [], moved: [ObjCPropertyInfo] = []
+            for property in properties {
+                let name = getter(property)
+                if optionalNames.contains(name), !requiredNames.contains(name) {
+                    moved.append(property)
+                } else {
+                    kept.append(property)
+                }
+            }
+            return (kept, moved)
+        }
+        let instance = split(p.properties, required: p.methods, optional: p.optionalMethods)
+        let classSide = split(p.classProperties, required: p.classMethods, optional: p.optionalClassMethods)
+        return ObjCProtocolInfo(
+            name: p.name, protocols: p.protocols.map(separatingOptionalProperties),
+            classProperties: classSide.required, properties: instance.required,
+            classMethods: p.classMethods, methods: p.methods,
+            optionalClassProperties: p.optionalClassProperties + classSide.optional,
+            optionalProperties: p.optionalProperties + instance.optional,
+            optionalClassMethods: p.optionalClassMethods, optionalMethods: p.optionalMethods)
+    }
+
+    /// The deepest recursion an encoding can drive a recursive decoder to,
+    /// over-estimated: every pointer or qualifier prefix in the string plus
+    /// the deepest bracket nesting. A decoder's depth at any point is the
+    /// open brackets plus the prefixes on the path to it, which this bounds.
+    /// A struct or union's name (up to its `=`) and a quoted name are text,
+    /// not type codes, so their letters are not counted.
+    static func nestingBound(of encoding: String) -> Int {
+        var prefixes = 0, depth = 0, deepest = 0
+        var inName = false, inQuote = false
+        for byte in encoding.utf8 {
+            if inQuote {
+                if byte == UInt8(ascii: "\"") { inQuote = false }
+                continue
+            }
+            if inName {
+                switch byte {
+                case UInt8(ascii: "="): inName = false
+                case UInt8(ascii: "}"), UInt8(ascii: ")"): inName = false; depth = max(0, depth - 1)
+                case UInt8(ascii: "{"), UInt8(ascii: "("): depth += 1; deepest = max(deepest, depth)
+                default: break
+                }
+                continue
+            }
+            switch byte {
+            case UInt8(ascii: "\""):
+                inQuote = true
+            case UInt8(ascii: "^"), UInt8(ascii: "r"), UInt8(ascii: "n"), UInt8(ascii: "N"),
+                 UInt8(ascii: "o"), UInt8(ascii: "O"), UInt8(ascii: "R"), UInt8(ascii: "V"),
+                 UInt8(ascii: "A"):
+                prefixes += 1
+            case UInt8(ascii: "{"), UInt8(ascii: "("):
+                depth += 1
+                deepest = max(deepest, depth)
+                inName = true
+            case UInt8(ascii: "["):
+                depth += 1
+                deepest = max(deepest, depth)
+            case UInt8(ascii: "}"), UInt8(ascii: "]"), UInt8(ascii: ")"):
+                depth = max(0, depth - 1)
+            default:
+                break
+            }
+        }
+        return prefixes + deepest
+    }
+
+    /// Past this bound an encoding is not handed to ObjCDump, whose
+    /// `ObjCTypeDecoder` recurses once per level with no limit of its own:
+    /// 4,000 `^` or 3,000 nested `[1` in one ivar's type overflowed the
+    /// stack (SIGBUS). The deepest real encoding among 197,428 measured
+    /// nests 11 levels; a long struct of pointer fields adds one prefix per
+    /// field, so the bound leaves room for those.
+    static let maximumDecodedNesting = 512
+
+    /// The snapshot with every type encoding too deep to decode safely
+    /// replaced by the unknown type `?`. A method keeps its selector, one
+    /// unknown per argument, so its header line keeps every label; a
+    /// property keeps its attributes after the type, which never contains
+    /// a comma. Nothing that decodes within the bound changes.
+    func boundingTypeNesting() -> ObjCMetadataSnapshot {
+        func tooDeep(_ encoding: String) -> Bool {
+            encoding.utf8.count > Self.maximumDecodedNesting && Self.nestingBound(of: encoding) > Self.maximumDecodedNesting
+        }
+        func ivar(_ ivar: ObjCIvarInfo) -> ObjCIvarInfo {
+            tooDeep(ivar.typeEncoding) ? ObjCIvarInfo(name: ivar.name, typeEncoding: "?", offset: ivar.offset) : ivar
+        }
+        func method(_ method: ObjCMethodInfo) -> ObjCMethodInfo {
+            guard tooDeep(method.typeEncoding) else { return method }
+            let arguments = method.name.utf8.filter { $0 == UInt8(ascii: ":") }.count
+            // Every type carries an offset, as compiled encodings do.
+            let unknowns = String(repeating: "?0", count: arguments)
+            return ObjCMethodInfo(name: method.name, typeEncoding: "?0@0:0" + unknowns,
+                                  isClassMethod: method.isClassMethod, imp: method.imp)
+        }
+        func property(_ property: ObjCPropertyInfo) -> ObjCPropertyInfo {
+            guard tooDeep(property.attributesString) else { return property }
+            let rest = property.attributesString.firstIndex(of: ",").map { String(property.attributesString[$0...]) } ?? ""
+            return ObjCPropertyInfo(name: property.name, attributesString: "T?" + rest,
+                                    isClassProperty: property.isClassProperty)
+        }
+        func proto(_ p: ObjCProtocolInfo) -> ObjCProtocolInfo {
+            ObjCProtocolInfo(
+                name: p.name, protocols: p.protocols.map(proto),
+                classProperties: p.classProperties.map(property), properties: p.properties.map(property),
+                classMethods: p.classMethods.map(method), methods: p.methods.map(method),
+                optionalClassProperties: p.optionalClassProperties.map(property),
+                optionalProperties: p.optionalProperties.map(property),
+                optionalClassMethods: p.optionalClassMethods.map(method), optionalMethods: p.optionalMethods.map(method))
+        }
+        func deep(_ properties: [ObjCPropertyInfo], _ methods: [ObjCMethodInfo]) -> Bool {
+            properties.contains { tooDeep($0.attributesString) } || methods.contains { tooDeep($0.typeEncoding) }
+        }
+        func protoNeedsRewrite(_ p: ObjCProtocolInfo) -> Bool {
+            deep(p.classProperties + p.properties + p.optionalClassProperties + p.optionalProperties,
+                 p.classMethods + p.methods + p.optionalClassMethods + p.optionalMethods)
+                || p.protocols.contains(where: protoNeedsRewrite)
+        }
+        var result = self
+        result.classes = classes.map { c in
+            guard c.ivars.contains(where: { tooDeep($0.typeEncoding) })
+                    || deep(c.classProperties + c.properties, c.classMethods + c.methods)
+                    || c.protocols.contains(where: protoNeedsRewrite)
+            else { return c }
+            return ObjCClassInfo(
+                name: c.name, version: c.version, imageName: c.imageName, instanceSize: c.instanceSize,
+                superClassName: c.superClassName, protocols: c.protocols.map(proto), ivars: c.ivars.map(ivar),
+                classProperties: c.classProperties.map(property), properties: c.properties.map(property),
+                classMethods: c.classMethods.map(method), methods: c.methods.map(method))
+        }
+        result.protocols = protocols.map { protoNeedsRewrite($0) ? proto($0) : $0 }
+        result.categories = categories.map { c in
+            guard deep(c.classProperties + c.properties, c.classMethods + c.methods)
+                    || c.protocols.contains(where: protoNeedsRewrite)
+            else { return c }
+            return ObjCCategoryInfo(
+                name: c.name, className: c.className, protocols: c.protocols.map(proto),
+                classProperties: c.classProperties.map(property), properties: c.properties.map(property),
+                classMethods: c.classMethods.map(method), methods: c.methods.map(method))
+        }
+        return result
     }
 
     /// Recover superclass names that the metadata leaves nil because the
@@ -293,8 +475,8 @@ struct ObjCMetadataSnapshot {
         var result: [String: String] = [:]
         for (raw, info) in classes where info.superClassName == nil {
             // objc_class layout: isa @ 0, superclass @ 8 (pointer-sized).
-            let slot = machO.address(forOffset: raw.offset + 8)
-            guard let symbol = boundSlots[slot] else { continue }
+            guard let slot = machO.imageAddress(ofOffset: raw.offset + 8),
+                  let symbol = boundSlots[slot] else { continue }
             result[info.name] = objcClassName(fromBindSymbol: symbol)
         }
         return result
@@ -310,8 +492,8 @@ struct ObjCMetadataSnapshot {
         in machO: MachOFile
     ) -> ObjCCategoryInfo? {
         guard let name = raw.name(in: machO) else { return nil }
-        let slot = machO.address(forOffset: raw.offset + 8)
-        guard let symbol = boundSlots[slot] else { return nil }
+        guard let slot = machO.imageAddress(ofOffset: raw.offset + 8),
+              let symbol = boundSlots[slot] else { return nil }
         let className = objcClassName(fromBindSymbol: symbol)
 
         let protocols = raw.protocolList(in: machO)?.protocols(in: machO)?
@@ -340,7 +522,7 @@ struct ObjCMetadataSnapshot {
     /// opcode stream. A minimal interpreter of the standard dyld algorithm — only
     /// the opcodes that move the cursor or emit a binding — since MachOKit exposes
     /// the raw `BindOperation`s but not a resolved symbol/address list publicly.
-    private static func externalBindSlots(in machO: MachOFile) -> [UInt64: String] {
+    static func externalBindSlots(in machO: MachOFile) -> [UInt64: String] {
         guard let operations = machO.bindOperations else { return [:] }
         let segments = machO.segments
         let pointerSize: UInt = 8
@@ -348,6 +530,13 @@ struct ObjCMetadataSnapshot {
         var segmentIndex = 0
         var segmentOffset: UInt = 0
         var slots: [UInt64: String] = [:]
+        // A repetition binds at most one slot per pointer of the segments:
+        // one that would do more is malformed and binds nothing.
+        // `DO_BIND_ULEB_TIMES_SKIPPING_ULEB` with a count of 2^40 grew past
+        // 3 GB, and one whose skip wraps the cursor in place never ended.
+        // Every other opcode binds at most once, so the stream's length
+        // bounds it.
+        let budget = segments.reduce(UInt64(1024)) { $0 &+ UInt64(max($1.virtualMemorySize, 0)) / 8 }
 
         func record() {
             guard !symbol.isEmpty, segments.indices.contains(segmentIndex) else { return }
@@ -374,6 +563,7 @@ struct ObjCMetadataSnapshot {
                 record()
                 segmentOffset = segmentOffset &+ pointerSize &+ scale &* pointerSize
             case .do_bind_uleb_times_skipping_uleb(let count, let skip):
+                guard UInt64(count) <= budget else { return [:] }
                 for _ in 0 ..< count {
                     record()
                     segmentOffset = segmentOffset &+ pointerSize &+ skip
@@ -403,6 +593,10 @@ struct ObjCMetadataSnapshot {
 public struct ObjCMetadataIndex: Sendable {
     private let methods: [UInt64: [ObjCMethodBinding]]
     let fieldMaps: [String: FieldMap]
+    /// The class each of this image's class objects is, by address. A value
+    /// that is one of these addresses is the class itself: `adrp x8, …; add
+    /// x0, x8, #0x180` before `objc_alloc` is `[SDFactory alloc]`.
+    private(set) var classObjectNames: [UInt64: String] = [:]
     /// Every binding of each selector, in implementation-address order. A send
     /// asks for its selector's implementations; scanning every method of the
     /// image per send was 2,521 of 8,875 analysis samples on Fiery Feeds
@@ -549,7 +743,7 @@ public struct ObjCMetadataIndex: Sendable {
     func selectorReturnsOneFloat(_ selector: String) -> Bool {
         let matching = bySelector[selector] ?? []
         let sdk = SDKSelectorReturns.table[selector]
-        guard sdk != "h", !matching.contains(where: \.returnsFloatAggregate) else { return false }
+        guard sdk != "h", sdk != "a", !matching.contains(where: \.returnsFloatAggregate) else { return false }
         return sdk == "f" || matching.contains(where: \.returnsOneFloat)
     }
 
@@ -558,7 +752,7 @@ public struct ObjCMetadataIndex: Sendable {
     /// and an unknown receiver can select any indexed implementation. Even a
     /// one-word struct is not its scalar field as a source-level value.
     func selectorMayReturnAggregate(_ selector: String) -> Bool {
-        SDKSelectorReturns.table[selector] == "h" || selectorHasAggregateDeclaration(selector)
+        ["h", "a"].contains(SDKSelectorReturns.table[selector]) || selectorHasAggregateDeclaration(selector)
     }
 
     /// Indexed aggregate declarations remain a veto even when a receiver's
@@ -612,8 +806,8 @@ public struct ObjCMetadataIndex: Sendable {
         else { return nil }
         let textRange = UInt64(text.address) ..< UInt64(text.address + text.size)
         var candidates = [imp]
-        if let offset = Int(exactly: imp) {
-            candidates.insert(machO.address(forOffset: offset), at: 0)
+        if let offset = Int(exactly: imp), let address = machO.imageAddress(ofOffset: offset) {
+            candidates.insert(address, at: 0)
         }
         return candidates.first(where: textRange.contains)
     }
@@ -641,8 +835,8 @@ public struct ObjCMetadataIndex: Sendable {
             // Keep the raw-address candidate as a backstop for formats where an
             // already-slid pointer is surfaced instead.
             var candidates = [imp]
-            if let offset = Int(exactly: imp) {
-                candidates.insert(machO.address(forOffset: offset), at: 0)
+            if let offset = Int(exactly: imp), let address = machO.imageAddress(ofOffset: offset) {
+                candidates.insert(address, at: 0)
             }
             return candidates.first(where: textRange.contains)
         }
@@ -679,10 +873,12 @@ public struct ObjCMetadataIndex: Sendable {
             }
         }
 
-        return ObjCMetadataIndex(
+        var index = ObjCMetadataIndex(
             methods: methods,
             fieldMaps: buildFieldMaps(classes: snapshot.classes)
         )
+        index.classObjectNames = snapshot.classObjects
+        return index
     }
 
     /// Build ivar maps with inherited fields when the superclass is present in

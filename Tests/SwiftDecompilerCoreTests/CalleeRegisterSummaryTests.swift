@@ -58,7 +58,7 @@ private func shapes() throws -> [String: DisassembledFunction] {
     // x1 is written before its read on one path only: still an argument.
     #expect(try summary("branchy").argumentReads == [0, 1])
     // A tail call may forward any argument register.
-    #expect(try summary("tailcall").argumentReads == Set(0...7))
+    #expect(try summary("tailcall").argumentReads == RegisterSet(0...7))
     // A fragment that rewrites x20 without saving it clobbers it; a function
     // that spills x19 first does not.
     #expect(try summary("fragment").clobberedCalleeSaved == ["x20"])
@@ -226,6 +226,41 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     #expect(control.clobberedCalleeSaved.contains("x29"), "\(control.clobberedCalleeSaved)")
 }
 
+/// A push below a dynamic allocation stays below it. GoodLinks passes
+/// outgoing stack arguments while sp holds an allocation (`stp x28, x0,
+/// [sp, #-0x10]!`), and the writeback made sp unknown before the store was
+/// placed, so the store forgot every save and the callee read as clobbering
+/// x19, x20 and x29. Here `aStoreIntoADynamicAllocationKeepsTheSaves`'
+/// store becomes `stp xzr, xzr, [sp, #-0x10]!`.
+@Test func aPushBelowADynamicAllocationKeepsTheSaves() throws {
+    var words: [UInt32] = [
+        0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xaa0003f3, 0xf9400008, 0x910003e9,
+        0xcb080129, 0x9100013f, 0xa9bf7fff, 0x910003bf, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
+    ]
+    let pushed = try #require(CalleeRegisterSummary.of(try body(words, name: "pushed")))
+    #expect(pushed.clobberedCalleeSaved.isEmpty, "\(pushed.clobberedCalleeSaved)")
+    // A pop moves sp up by its writeback: after `ldr x10, [sp], #0x10` the
+    // allocation's sp may sit 16 bytes higher, at the locals' base, and
+    // `str xzr, [sp, #8]` may then reach the frame record above them.
+    words.replaceSubrange(9...9, with: [0xf84107ea, 0xf90007ff])
+    let popped = try #require(CalleeRegisterSummary.of(try body(words, name: "popped")))
+    #expect(popped.clobberedCalleeSaved.contains("x29"), "\(popped.clobberedCalleeSaved)")
+}
+
+/// Only sp moves within an allocation by writeback. Another register walking
+/// a buffer (`1: ldr x10, [x9], #8; cbnz x10, 1b` over the allocation) would
+/// raise its bound on every iteration and never reach a fixpoint; capped, the
+/// summary would claim every written save clobbered. The walk's base is
+/// unknown instead, and the saves survive the loop.
+@Test func aBufferWalkInsideAnAllocationConverges() throws {
+    let words: [UInt32] = [
+        0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xaa0003f3, 0xf9400008, 0x910003e9,
+        0xcb080129, 0x9100013f, 0xf840852a, 0xb5ffffea, 0x910003bf, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
+    ]
+    let walked = try #require(CalleeRegisterSummary.of(try body(words, name: "walked")))
+    #expect(walked.clobberedCalleeSaved.isEmpty, "\(walked.clobberedCalleeSaved)")
+}
+
 /// A frame alias reaches a call only through a register the callee can take
 /// an input in. One that keeps the calling convention takes the argument
 /// registers, x8, x20 and x21: an indirect call (the machine outliner calls
@@ -285,23 +320,23 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     #expect(try clobbers(0x940003fc).contains("x29")) // bl 0x2000, unknown
 }
 
-/// A local's address handed to a call reaches that local, below the
-/// register save area, not the saves above it, the extent the tracer's
-/// `escapedReach` gives a local:
+/// A local's address gives a coordinate, not a proof of its allocation's
+/// extent. A register spill above it cannot bound an unknown callee's writes:
 ///
 ///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
 ///     sub sp, sp, #0x10; mov x19, x0; mov x0, sp; bl 0x2000
 ///     add sp, sp, #0x10; ldp x20, x19, [sp, #0x10]; ldp x29, x30, [sp], #0x20; ret
 ///
-/// The escape forgot every save, and the summary claimed x19, x20 and x29
-/// clobbered: `-Onone` `makeWide` passing its result buffer to its
-/// initializer read `return ?` in `wideSum` after it.
-@Test func anEscapedLocalReachesNoSaveAboveIt() throws {
+/// Recovering the saves needs a callee footprint or independent ownership
+/// evidence; their current values alone do not supply that evidence.
+@Test func anEscapedLocalHasNoObjectBoundFromRegisterSaves() throws {
     var words: [UInt32] = [
         0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xaa0003f3, 0x910003e0, 0x940003fa,
         0x910043ff, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
     ]
     let local = try #require(CalleeRegisterSummary.of(try body(words, name: "local")))
+    // The frame record and the prologue's saves are no local's: the local's
+    // pointer reaches neither.
     #expect(local.clobberedCalleeSaved.isEmpty, "\(local.clobberedCalleeSaved)")
     // The control: x29's own address, the frame record among the saves, may
     // reach every one of them (`mov x0, x29`).
@@ -310,30 +345,31 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     #expect(record.clobberedCalleeSaved.contains("x29"), "\(record.clobberedCalleeSaved)")
 }
 
-/// An address inside a dynamic allocation, handed to a call, reaches that
-/// allocation, below the frame's locals, and no save:
+/// The dynamic address retains its legacy MAY escape policy, but its size
+/// has no proven sign or bound. It supplies no positive call-time stack
+/// boundary protecting the saved entry values:
 ///
 ///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
 ///     sub sp, sp, #0x10; mov x19, x0; ldr x8, [x0]
 ///     mov x9, sp; sub x9, x9, x8; mov sp, x9; mov x0, x9; bl 0x2000
 ///     mov sp, x29; ldp x20, x19, [sp, #0x10]; ldp x29, x30, [sp], #0x20; ret
-@Test func anEscapedDynamicAllocationReachesNoSave() throws {
+@Test func anUnboundedCallTimeStackCannotProtectSaves() throws {
     let words: [UInt32] = [
         0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xaa0003f3, 0xf9400008, 0x910003e9,
         0xcb080129, 0x9100013f, 0xaa0903e0, 0x940003f6, 0x910003bf, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
     ]
     let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "belowEscape")))
-    #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
+    #expect(summary.clobberedCalleeSaved == ["x19", "x20", "x29"], "\(summary.clobberedCalleeSaved)")
 }
 
-/// The save area is the run of entry values at the top of the frame. An
-/// entry value spilled among the locals (`str x21, [sp]`) is no save, and a
-/// local above it (`add x0, sp, #8`) is still a local:
+/// An entry value spilled among locals (`str x21, [sp]`) supplies no
+/// allocation boundary for a pointer above it (`add x0, sp, #8`). The frame
+/// record above them is no local's, so that pointer cannot reach it:
 ///
 ///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
 ///     sub sp, sp, #0x20; mov x19, x0; str x21, [sp]; add x0, sp, #8
 ///     bl 0x2000; add sp, sp, #0x20; ldp …; ldp …; ret
-@Test func aSpilledEntryValueIsNoPartOfTheSaveArea() throws {
+@Test func aSpilledEntryValueDoesNotProveLocalOwnership() throws {
     let words: [UInt32] = [
         0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10083ff, 0xaa0003f3, 0xf90003f5, 0x910023e0,
         0x940003f9, 0x910083ff, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
@@ -344,7 +380,7 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
 
 /// A join that loses a frame alias's exact offset keeps the offsets it may
 /// hold: x1 is `mov x1, sp`, a local, on one path and no frame address on the
-/// other, so the call reaches at most that local:
+/// other. That possible coordinate must still escape without an object bound:
 ///
 ///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
 ///     sub sp, sp, #0x10; mov x19, x0; cbz x0, 1f; mov x1, sp
@@ -370,28 +406,144 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     #expect(control.clobberedCalleeSaved.contains("x29"), "\(control.clobberedCalleeSaved)")
 }
 
-/// An escaped address reaches the object it points at, up to the next saved
-/// value above it, wherever it lies: a local below the save area, or a byte
-/// local the compiler keeps in the padding word `str x28, [sp, #-0x60]!`
-/// leaves at sp + 8. Two escapes keep two ranges; one widened interval
-/// spanned the saves between them.
+/// A pointer in the saved registers' padding, bytes the prologue never
+/// stored, is a local's: LLVM places small locals there (GoodLinks passes
+/// `x29 - 0x48` as an inout x20 and stores a flag byte at `x29 - 0x41`). Like
+/// a pointer to a local below the save area, it reaches none of the saves:
+/// the save area, like the frame record, is no object of this frame. A
+/// pointer into a word the prologue stored is no local's and reaches them.
 ///
 ///     str x28, [sp, #-0x60]!; stp x27, x26, [sp, #0x10]
 ///     stp x29, x30, [sp, #0x50]; add x29, sp, #0x50; sub sp, sp, #0x10
 ///     mov x27, x0; mov x0, sp; bl 0x2000; add x0, sp, #0x1f; bl 0x2000
 ///     add sp, sp, #0x10; ldp x29, x30, [sp, #0x50]; ldp x27, x26, [sp, #0x10]
 ///     ldr x28, [sp], #0x60; ret
-@Test func anEscapedAddressReachesUpToTheNextSave() throws {
+@Test func escapedCoordinatesDoNotBoundObjectsAtTheNextSave() throws {
     var words: [UInt32] = [
         0xf81a0ffc, 0xa9016bfb, 0xa9057bfd, 0x910143fd, 0xd10043ff, 0xaa0003fb, 0x910003e0,
         0x940003f9, 0x91007fe0, 0x940003f7, 0x910043ff, 0xa9457bfd, 0xa9416bfb, 0xf84607fc, 0xd65f03c0,
     ]
     let gaps = try #require(CalleeRegisterSummary.of(try body(words, name: "gaps")))
+    // `add x0, sp, #0x1f` lies in the padding between x28's save and
+    // x27's: a local's address, so it reaches none of the saves.
     #expect(gaps.clobberedCalleeSaved.isEmpty, "\(gaps.clobberedCalleeSaved)")
-    // The control: `add x0, sp, #0x20` is x27's own save slot.
+    // Both calls given only the local (`mov x0, sp`): below the save area,
+    // it reaches none of it.
+    var local = words
+    local[8] = 0x910003e0
+    let below = try #require(CalleeRegisterSummary.of(try body(local, name: "below")))
+    #expect(below.clobberedCalleeSaved.isEmpty, "\(below.clobberedCalleeSaved)")
+    // `add x0, sp, #0x20` is x27's own save slot, inside the save area: it
+    // may reach the saves above it and the record.
     words[8] = 0x910083e0
     let saved = try #require(CalleeRegisterSummary.of(try body(words, name: "saved")))
-    #expect(saved.clobberedCalleeSaved.contains("x29"), "\(saved.clobberedCalleeSaved)")
+    #expect(saved.clobberedCalleeSaved.isSuperset(of: ["x27", "x29"]), "\(saved.clobberedCalleeSaved)")
+    // The control: `add x0, sp, #0x60` is the frame record's own address.
+    words[8] = 0x910183e0
+    let record = try #require(CalleeRegisterSummary.of(try body(words, name: "record")))
+    #expect(record.clobberedCalleeSaved.contains("x29"), "\(record.clobberedCalleeSaved)")
+    // `add x0, sp, #0x70` is entry sp, above the record: the prologue stored
+    // nothing there, but no byte at or above the record is padding.
+    words[8] = 0x9101c3e0
+    let entry = try #require(CalleeRegisterSummary.of(try body(words, name: "entry")))
+    #expect(entry.clobberedCalleeSaved.contains("x29"), "\(entry.clobberedCalleeSaved)")
+}
+
+/// A local in the save area's padding that the body writes before passing its
+/// address on (GoodLinks: `sturb w25, [x29, #-0x41]`, then `sub x1, x29,
+/// #0x41` to a call) is still padding: only the prologue's stores, before x29
+/// holds the frame address, make a byte of the save area.
+///
+///     str x28, [sp, #-0x60]!; stp x27, x26, [sp, #0x10]
+///     stp x29, x30, [sp, #0x50]; add x29, sp, #0x50; sub sp, sp, #0x10
+///     mov x27, x0; sturb wzr, [x29, #-0x41]; sub x0, x29, #0x41; bl 0x2000
+///     add sp, sp, #0x10; ldp x29, x30, [sp, #0x50]; ldp x27, x26, [sp, #0x10]
+///     ldr x28, [sp], #0x60; ret
+@Test func aBodyStoreDoesNotMakePaddingASave() throws {
+    let words: [UInt32] = [
+        0xf81a0ffc, 0xa9016bfb, 0xa9057bfd, 0x910143fd, 0xd10043ff, 0xaa0003fb, 0x381bf3bf,
+        0xd10107a0, 0x940003f8, 0x910043ff, 0xa9457bfd, 0xa9416bfb, 0xf84607fc, 0xd65f03c0,
+    ]
+    let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "flag")))
+    #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
+}
+
+/// A byte loaded through the frame pointer is data, not a frame address:
+/// storing it to a local escapes nothing (GoodLinks copies a Bool stack
+/// argument, `ldrb w15, [x29, #0x58]; strb w15, [sp, #0x130]`). Its
+/// destination was a possible frame alias, which made the store an escape of
+/// the whole frame, so the callee read as clobbering x19, x20 and x29.
+///
+///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
+///     sub sp, sp, #0x10; mov x19, x0; ldrb w9, [x29, #0x20]; strb w9, [sp]
+///     mov x0, sp; bl 0x2000; add sp, sp, #0x10; ldp x20, x19, [sp, #0x10]
+///     ldp x29, x30, [sp], #0x20; ret
+@Test func aNarrowLoadThroughTheFrameIsNoFrameAddress() throws {
+    var words: [UInt32] = [
+        0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xaa0003f3, 0x394083a9, 0x390003e9,
+        0x910003e0, 0x940003f8, 0x910043ff, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
+    ]
+    let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "flag")))
+    #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
+    // The control: a byte store of x29 itself (`strb w29, [sp]`) still
+    // escapes the frame.
+    words[6] = 0x390003fd
+    let control = try #require(CalleeRegisterSummary.of(try body(words, name: "fp")))
+    #expect(control.clobberedCalleeSaved.contains("x29"), "\(control.clobberedCalleeSaved)")
+    // A post-indexed load's base is still an address: `mov x1, sp;
+    // ldrb w9, [x1], #1; str x1, [x19]` stores a frame address to memory.
+    words[5] = 0x910003e1; words[6] = 0x38401429; words[7] = 0xf9000261
+    let walked = try #require(CalleeRegisterSummary.of(try body(words, name: "walked")))
+    #expect(walked.clobberedCalleeSaved.contains("x29"), "\(walked.clobberedCalleeSaved)")
+}
+
+/// A frame address a body leaves in x8 (`mov x8, sp; add x8, x8, x1`, a
+/// local indexed by an unknown amount, so any word of the frame) is no input
+/// to an in-image callee that never reads x8: the caller's saves and frame
+/// record stay its own. GoodLinks 0x10017e040 leaves such an x8 before a
+/// call, and the frame-wide escape made it clobber x29 for its callers.
+///
+///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
+///     sub sp, sp, #0x10; mov x19, x0; mov x8, sp; add x8, x8, x1; bl 0x2000
+///     add sp, sp, #0x10; ldp x20, x19, [sp, #0x10]; ldp x29, x30, [sp], #0x20; ret
+@Test func aCalleeThatReadsNoX8TakesNoFrameAddressInIt() throws {
+    let words: [UInt32] = [
+        0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xaa0003f3, 0x910003e8,
+        0x8b010108, 0x940003f9, 0x910043ff, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
+    ]
+    let readsX0 = CalleeEffect(mayReadRegisters: 1 << 0)
+    let kept = try #require(CalleeRegisterSummary.of(try body(words, name: "kept"), calleeEffects: { _ in readsX0 }))
+    #expect(kept.clobberedCalleeSaved.isEmpty, "\(kept.clobberedCalleeSaved)")
+    // The control: a callee that may read x8 takes the address.
+    let readsX8 = CalleeEffect(mayReadRegisters: 1 << 8)
+    let taken = try #require(CalleeRegisterSummary.of(try body(words, name: "taken"), calleeEffects: { _ in readsX8 }))
+    #expect(taken.clobberedCalleeSaved.contains("x29"), "\(taken.clobberedCalleeSaved)")
+}
+
+/// The registers a body may read close over its in-image calls: a caller
+/// that leaves its incoming x8 unwritten before `bl` to a body reading x8
+/// may read x8 too; one that writes x8 first does not.
+///
+///     callee: ldr x0, [x8]; ret
+///     caller: stp x29, x30, [sp, #-16]!; mov x29, sp; [mov x8, #0;] bl 0x2000
+///             ldp x29, x30, [sp], #16; ret
+@Test func aBodysReadRegistersCloseOverItsCalls() throws {
+    let callee = try #require(CalleeRegisterSummary.of(try body([0xf9400100, 0xd65f03c0], name: "callee")))
+    #expect(callee.mayReadRegisters == 1 << 8, "\(String(callee.mayReadRegisters, radix: 2))")
+    func closed(_ words: [UInt32]) throws -> UInt32 {
+        let caller = try #require(CalleeRegisterSummary.of(try body(words, name: "caller"), isFunction: { $0 == 0x2000 }))
+        var table: [UInt64: CalleeRegisterSummary] = [0x1000: caller, 0x2000: callee]
+        CalleeRegisterSummary.closeOverReads(&table)
+        return try #require(table[0x1000]).mayReadRegisters
+    }
+    #expect(try closed([0xa9bf7bfd, 0x910003fd, 0x940003fe, 0xa8c17bfd, 0xd65f03c0]) & (1 << 8) != 0)
+    #expect(try closed([0xa9bf7bfd, 0x910003fd, 0xd2800008, 0x940003fd, 0xa8c17bfd, 0xd65f03c0]) & (1 << 8) == 0)
+    // A call to an import may take any of the ABI's inputs still unwritten.
+    let viaImport = try #require(CalleeRegisterSummary.of(
+        try body([0xa9bf7bfd, 0x910003fd, 0x940003fe, 0xa8c17bfd, 0xd65f03c0], name: "import"),
+        isImportStub: { $0 == 0x2000 }))
+    #expect(viaImport.mayReadRegisters == (1 << 9 - 1) | 1 << 20 | 1 << 21,
+            "\(String(viaImport.mayReadRegisters, radix: 2))")
 }
 
 /// A join of two dynamic allocations keeps sp below the higher bound, so a
@@ -412,41 +564,40 @@ private func body(_ words: [UInt32], name: String) throws -> DisassembledFunctio
     #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
 }
 
-/// A join that leaves a register a dynamic allocation's address on one path
-/// and no frame address on the other keeps that bound for an escape:
+/// A join retains the legacy dynamic MAY origin, but that origin does not
+/// prove where the unbounded call-time stack pointer lies:
 ///
 ///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
 ///     sub sp, sp, #0x10; mov x19, x0; ldr x8, [x0]
 ///     mov x9, sp; sub x9, x9, x8; mov sp, x9; cbz x0, 1f; mov x1, x9
 ///     1: bl 0x2000; mov sp, x29; ldp …; ldp …; ret
-@Test func aJoinKeepsAnAllocationsBoundForAnEscape() throws {
+@Test func aDynamicJoinDoesNotProveTheCallTimeStackBoundary() throws {
     let words: [UInt32] = [
         0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xaa0003f3, 0xf9400008, 0x910003e9,
         0xcb080129, 0x9100013f, 0xb4000040, 0xaa0903e1, 0x940003f5, 0x910003bf, 0xa9414ff4,
         0xa8c27bfd, 0xd65f03c0,
     ]
     let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "allocOrNot")))
-    #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
+    #expect(summary.clobberedCalleeSaved == ["x19", "x20", "x29"], "\(summary.clobberedCalleeSaved)")
 }
 
-/// An address inside a dynamic allocation plus an offset in a register
-/// stays inside it: Swift projects a field of the value a buffer holds with
-/// `add x1, x9, x10`, x10 a field offset read from metadata. Handed to a
-/// call, it reaches that allocation, below the frame's locals, and no save:
+/// A projected field retains a dynamic MAY origin. The untyped size and
+/// field offset cannot prove that a later callee's own stack allocation
+/// misses the saved registers:
 ///
 ///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
 ///     sub sp, sp, #0x10; mov x19, x0; ldr x8, [x0]
 ///     mov x9, sp; sub x9, x9, x8; mov sp, x9
 ///     ldrsw x10, [x0, #48]; add x1, x9, x10; blr x2
 ///     mov sp, x29; ldp …; ldp …; ret
-@Test func aFieldOfADynamicAllocationStaysInIt() throws {
+@Test func anUnprovedDynamicFieldCallCannotProtectSaves() throws {
     let words: [UInt32] = [
         0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xaa0003f3, 0xf9400008, 0x910003e9,
         0xcb080129, 0x9100013f, 0xb980300a, 0x8b0a0121, 0xd63f0040, 0x910003bf, 0xa9414ff4,
         0xa8c27bfd, 0xd65f03c0,
     ]
     let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "field")))
-    #expect(summary.clobberedCalleeSaved.isEmpty, "\(summary.clobberedCalleeSaved)")
+    #expect(summary.clobberedCalleeSaved == ["x19", "x20", "x29"], "\(summary.clobberedCalleeSaved)")
 }
 
 /// Where the incoming x20 lives decides whether a body reads it, not
@@ -530,15 +681,183 @@ private func callTarget(_ function: DisassembledFunction) throws -> UInt64 {
 /// The -Onone initializers spill self (`str x20, [sp, #8]; ldr x20,
 /// [sp, #8]; bl Animal.init`), and `Animal.init` returns it: both keep it.
 @Test func anInitializerThatSpillsSelfKeepsItIfPresent() async throws {
-    guard let text = try await structured("__allocating_init", in: "Fixtures/Sample/libReconstruction.dylib") else { return }
-    #expect(text.contains("return Reconstruction.Dog.init(self: swift_allocObject(?, 16, 7))"), Comment(rawValue: text))
-    #expect(text.contains("return Reconstruction.Animal.init(self: swift_allocObject(?, 16, 7))"), Comment(rawValue: text))
+    let path = "Fixtures/Sample/libReconstruction.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler().disassemble(path: path, functionFilter: "__allocating_init")
+    }
+    for type in ["Dog", "Animal"] {
+        let function = try #require(functions.first { $0.displayName.hasPrefix("Reconstruction.\(type).__allocating_init(") })
+        let allocation = try #require(function.instructions.first { $0.callee == "swift_allocObject" })
+        let binding = try #require(allocation.binding)
+        #expect(binding.expression == "swift_allocObject(?, 16, 7)")
+        let initializer = try #require(function.instructions.first { $0.callee?.hasPrefix("Reconstruction.\(type).init(") == true })
+        #expect(initializer.callSelf == binding.name)
+        for text in [function.renderPseudo(), function.renderStructured()] {
+            #expect(text.contains("return Reconstruction.\(type).init(self: \(binding.name))"), Comment(rawValue: text))
+            #expect(text.components(separatedBy: "swift_allocObject(").count == 2, Comment(rawValue: text))
+        }
+    }
 }
 
-/// An enum method takes its payload words, not x20: `Tree.sum` loads x20
-/// (`ldrb w20, [x0, #0x28]`) before any use of it.
+/// The payload enum method has no context self. This image does not yet
+/// supply its complete direct receiver layout: ordinary positive reads alone
+/// cannot decide which of the remaining physical words are its whole value.
+/// Keep the call, declining that unsupported positional reconstruction: its
+/// self is `?`, never words picked from the registers, and never dropped
+/// (`Tree.sum()` read as a call with no receiver).
 @Test func aByValueEnumMethodTakesNoSelfIfPresent() async throws {
     guard let text = try await structured("Sample.run", in: "Fixtures/Sample/libSample.dylib") else { return }
-    #expect(text.contains("Sample.Tree.sum(r"), Comment(rawValue: text))
-    #expect(!text.contains("Sample.Tree.sum(self:"), Comment(rawValue: text))
+    #expect(text.contains("Sample.Tree.sum(self: ?)"), Comment(rawValue: text))
+}
+
+/// An address that escapes before the frame record exists is no proven
+/// local below it. Here it is the record's future slot itself, stored out
+/// before the prologue saves x29 there, so a later unknown callee may
+/// overwrite the saved x29:
+///
+///     sub sp, sp, #0x20; add x9, sp, #0x10; str x9, [x0]; mov x9, #0
+///     stp x29, x30, [sp, #0x10]; add x29, sp, #0x10; bl 0x2000
+///     ldp x29, x30, [sp, #0x10]; add sp, sp, #0x20; ret
+///
+/// No register holds the address at the call, so only the escape at the
+/// store can account for the reach.
+@Test func anAddressEscapedBeforeTheFrameRecordMayReachIt() throws {
+    let words: [UInt32] = [
+        0xd10083ff, 0x910043e9, 0xf9000009, 0xd2800009, 0xa9017bfd, 0x910043fd, 0x940003fa,
+        0xa9417bfd, 0x910083ff, 0xd65f03c0,
+    ]
+    let early = try #require(CalleeRegisterSummary.of(try body(words, name: "early")))
+    #expect(early.clobberedCalleeSaved.contains("x29"), "\(early.clobberedCalleeSaved)")
+}
+
+/// Every way the frame record's own address can reach code this body does
+/// not see keeps the record reachable, so the saved x29 is not claimed:
+/// a callee that reads x29, an unmodelled store of x29, and one path of a
+/// join that stores x29 out.
+@Test func everyEscapeOfTheRecordAddressKeepsItReachable() throws {
+    // stp x29, x30, [sp, #-0x10]!; mov x29, sp; bl 0x2000; ldp …; ret,
+    // where 0x2000 reads the frame pointer.
+    let reader = CalleeRegisterSummary(argumentReads: [], readsFramePointer: true, clobberedCalleeSaved: [])
+    let readsFP = try #require(CalleeRegisterSummary.of(
+        try body([0xa9bf7bfd, 0x910003fd, 0x940003fe, 0xa8c17bfd, 0xd65f03c0], name: "readsFP"),
+        calleeEffects: { _ in reader.effect }, isFunction: { $0 == 0x2000 }))
+    #expect(readsFP.clobberedCalleeSaved.contains("x29"), "\(readsFP.clobberedCalleeSaved)")
+    // stlr x29, [x0] (no modelled store) before an unknown call.
+    let released = try #require(CalleeRegisterSummary.of(try body(
+        [0xa9bf7bfd, 0x910003fd, 0xc89ffc1d, 0x940003fd, 0xa8c17bfd, 0xd65f03c0], name: "released")))
+    #expect(released.clobberedCalleeSaved.contains("x29"), "\(released.clobberedCalleeSaved)")
+    // sub sp, sp, #0x20; stp x29, x30, [sp, #0x10]; add x29, sp, #0x10
+    // cbz x1, 1f; str x29, [sp]; 1: bl 0x2000; ldp …; add sp, sp, #0x20; ret.
+    // One path stores the record's address out; the record slot itself is
+    // intact on both, so only the join's escape fact keeps it reachable.
+    let joined = try #require(CalleeRegisterSummary.of(try body(
+        [0xd10083ff, 0xa9017bfd, 0x910043fd, 0xb4000041, 0xf90003fd, 0x940003fb,
+         0xa9417bfd, 0x910083ff, 0xd65f03c0], name: "joined")))
+    #expect(joined.clobberedCalleeSaved.contains("x29"), "\(joined.clobberedCalleeSaved)")
+}
+
+/// A prologue store at or above entry sp is in the caller's memory, which an
+/// incoming pointer may reach (abi_frame_ownership.s), even in a function
+/// with a frame record:
+///
+///     stp x29, x30, [sp, #-0x10]!; str x19, [sp, #0x10]; mov x29, sp
+///     mov x19, xzr; str x1, [x0]; ldr x19, [sp, #0x10]; ldp x29, x30, [sp], #0x10; ret
+@Test func aPrologueStoreInTheCallersMemoryIsNoOwnSave() throws {
+    let words: [UInt32] = [0xa9bf7bfd, 0xf9000bf3, 0x910003fd, 0xaa1f03f3, 0xf9000001, 0xf9400bf3, 0xa8c17bfd, 0xd65f03c0]
+    let summary = try #require(CalleeRegisterSummary.of(try body(words, name: "callerArea")))
+    #expect(summary.clobberedCalleeSaved.contains("x19"), "\(summary.clobberedCalleeSaved)")
+}
+
+/// Swift's dynamically sized local: `___chkstk_darwin` probes x9 bytes, then
+/// sp moves by that size rounded to 16. While sp holds that allocation, the
+/// next callee's stack starts below the frame, so the saves above survive an
+/// unknown call (the tracer's proof, d9bbf74, in the summary):
+///
+///     stp x29, x30, [sp, #-0x20]!; stp x20, x19, [sp, #0x10]; mov x29, sp
+///     sub sp, sp, #0x10; ldr x9, [x0]; add x8, x9, #15; and x8, x8, #~15; bl ___chkstk_darwin
+///     mov x9, sp; sub x8, x9, x8; mov sp, x8; bl 0x3000
+///     mov sp, x29; ldp x20, x19, [sp, #0x10]; ldp x29, x30, [sp], #0x20; ret
+@Test func aProbedAllocationKeepsTheSavesAboveItAcrossACall() throws {
+    let probe: UInt64 = 0x2000
+    let words: [UInt32] = [
+        0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xf9400009, 0x91003d28, 0x927ced08, 0x940003f9,
+        0x910003e9, 0xcb080128, 0x9100011f, 0x940007f5, 0x910003bf, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
+    ]
+    let proven = try #require(CalleeRegisterSummary.of(try body(words, name: "probed"), isStackProbe: { $0 == probe }))
+    #expect(proven.clobberedCalleeSaved.isEmpty, "\(proven.clobberedCalleeSaved)")
+    #expect(proven.provenAllocationSites == [0x1028], "\(proven.provenAllocationSites)")
+    // The proven move survives closing reads over a pending in-image call
+    // (`replacingReads`), which rebuilds the summary.
+    let pending = try #require(CalleeRegisterSummary.of(
+        try body(words, name: "pending"), isFunction: { $0 == 0x3000 }, isStackProbe: { $0 == probe }))
+    var table: [UInt64: CalleeRegisterSummary] = [0x1000: pending]
+    CalleeRegisterSummary.closeOverReads(&table)
+    #expect(table[0x1000]?.provenAllocationSites == [0x1028], "\(String(describing: table[0x1000]?.provenAllocationSites))")
+    // The call closure's rebuild takes its sites from the rebuilt body: in
+    // place when nothing else changed, and with a changed summary too.
+    #expect(pending.callees.contains(0x3000))
+    let clobbering = CalleeRegisterSummary(argumentReads: [], clobberedCalleeSaved: ["x19"], definitelyClobbered: ["x19"])
+    // A summary the rebuild reproduces field for field takes the in-place
+    // path (one with result reads never does: those are set after the
+    // comparison).
+    var bare = CalleeRegisterSummary(argumentReads: [], clobberedCalleeSaved: [], definitelyClobbered: [], callees: [0x3000])
+    bare.provenAllocationSites = [0x1028]
+    var unchanged: [UInt64: CalleeRegisterSummary] = [0x1000: bare, 0x3000: clobbering]
+    CalleeRegisterSummary.closeOverCalls(&unchanged, rebuildingEntryRoles: false) { start, _, old, _ in
+        guard start == 0x1000 else { return old }
+        var rebuilt = old
+        rebuilt.provenAllocationSites = [0x1028, 0x1030]
+        return rebuilt
+    }
+    #expect(unchanged[0x1000]?.provenAllocationSites == [0x1028, 0x1030])
+    var changed: [UInt64: CalleeRegisterSummary] = [0x1000: pending, 0x3000: clobbering]
+    CalleeRegisterSummary.closeOverCalls(&changed) { start, _, old, _ in
+        guard start == 0x1000 else { return old }
+        var rebuilt = CalleeRegisterSummary(argumentReads: [], clobberedCalleeSaved: ["x20"], definitelyClobbered: ["x20"])
+        rebuilt.provenAllocationSites = [0x1030]
+        return rebuilt
+    }
+    #expect(changed[0x1000]?.provenAllocationSites == [0x1030])
+    // The control: with the probe unrecognised, sp is unknown at the call.
+    let unproven = try #require(CalleeRegisterSummary.of(try body(words, name: "unprobed")))
+    #expect(unproven.clobberedCalleeSaved.isSuperset(of: ["x19", "x20", "x29"]), "\(unproven.clobberedCalleeSaved)")
+    // The control: sp moves by a reload of the size, not the probed value
+    // (`ldr x10, [x0]; add x11, x10, #15; and x11, x11, #~15; mov x9, sp;
+    // sub x8, x9, x11`): another load, so no proof.
+    let reload: [UInt32] = [
+        0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xf9400009, 0x91003d28, 0x927ced08, 0x940003f9,
+        0xf940000a, 0x91003d4b, 0x927ced6b, 0x910003e9, 0xcb0b0128, 0x9100011f, 0x940007f2,
+        0x910003bf, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
+    ]
+    let reloaded = try #require(CalleeRegisterSummary.of(try body(reload, name: "reloaded"), isStackProbe: { $0 == probe }))
+    #expect(reloaded.clobberedCalleeSaved.isSuperset(of: ["x19", "x20", "x29"]), "\(reloaded.clobberedCalleeSaved)")
+}
+
+/// Outgoing stack arguments pushed and popped while sp holds a probed
+/// allocation keep its proof (GoodLinks 0x1003bf44c: `stp x28, x0, [sp,
+/// #-0x10]!; …; bl; add sp, sp, #0x10`). The pop moved sp from below the
+/// allocation's base to below base + 16, which no longer matched the probe's
+/// base, so the next call forgot every save. Here the probed test's call
+/// becomes `stp xzr, xzr, [sp, #-0x10]!; bl 0x3000; add sp, sp, #0x10;
+/// bl 0x3000`.
+@Test func aPopOfStackArgumentsKeepsTheProbedAllocation() throws {
+    let probe: UInt64 = 0x2000
+    var words: [UInt32] = [
+        0xa9be7bfd, 0xa9014ff4, 0x910003fd, 0xd10043ff, 0xf9400009, 0x91003d28, 0x927ced08, 0x940003f9,
+        0x910003e9, 0xcb080128, 0x9100011f, 0xa9bf7fff, 0x940007f4, 0x910043ff, 0x940007f2,
+        0x910003bf, 0xa9414ff4, 0xa8c27bfd, 0xd65f03c0,
+    ]
+    let popped = try #require(CalleeRegisterSummary.of(try body(words, name: "popped"), isStackProbe: { $0 == probe }))
+    #expect(popped.clobberedCalleeSaved.isEmpty, "\(popped.clobberedCalleeSaved)")
+    // A post-indexed pop (`ldr x10, [sp], #0x10`) is the same shift.
+    var loaded = words
+    loaded[13] = 0xf84107ea
+    let reloaded = try #require(CalleeRegisterSummary.of(try body(loaded, name: "loaded"), isStackProbe: { $0 == probe }))
+    #expect(reloaded.clobberedCalleeSaved.isEmpty, "\(reloaded.clobberedCalleeSaved)")
+    // The control: sp taken from an unprobed allocation in another register
+    // (`sub x10, x29, x11; mov sp, x10` for the pop) has no proof to keep.
+    words.replaceSubrange(13...14, with: [0xcb0b03aa, 0x9100015f, 0x940007f1])
+    let resized = try #require(CalleeRegisterSummary.of(try body(words, name: "resized"), isStackProbe: { $0 == probe }))
+    #expect(resized.clobberedCalleeSaved.isSuperset(of: ["x19", "x20", "x29"]), "\(resized.clobberedCalleeSaved)")
 }

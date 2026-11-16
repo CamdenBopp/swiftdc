@@ -62,3 +62,26 @@ NSString *formatLocal(void) { double d = 1.5; return [NSString stringWithFormat:
 - (void)relayCount:(long)n to:(id)o { [o take:n and:4]; }
 - (void)relayAfterCall:(double)x to:(id)o { useDouble(x); [o take:3 and:4]; }
 @end
+// A Swift callee can return in x0 and d0 at once (`Mod.pair() -> Mod.Pair`,
+// a struct of an object and a double), so a send to its x0 result may take
+// its d0 as the double: putPairPart sends put:<pair's double> at:7, not
+// put:7 at:?. Written in assembly because Swift retains the object between
+// the call and the send, and clang emits no Swift-mangled callee.
+__asm__(
+    ".globl \"_$s3Mod4pairAA4PairVyF\"\n"
+    ".p2align 2\n"
+    "\"_$s3Mod4pairAA4PairVyF\":\n"
+    "    adrp x0, _gSink@PAGE\n"
+    "    ldr x0, [x0, _gSink@PAGEOFF]\n"
+    "    fmov d0, #1.5\n"
+    "    ret\n"
+    ".globl _putPairPart\n"
+    ".p2align 2\n"
+    "_putPairPart:\n"
+    "    stp x29, x30, [sp, #-16]!\n"
+    "    mov x29, sp\n"
+    "    bl \"_$s3Mod4pairAA4PairVyF\"\n"
+    "    mov w2, #7\n"
+    "    bl \"_objc_msgSend$put:at:\"\n"
+    "    ldp x29, x30, [sp], #16\n"
+    "    ret\n");

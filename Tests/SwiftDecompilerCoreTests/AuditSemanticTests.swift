@@ -133,6 +133,7 @@ func structuredLoops(_ text: String) -> [(header: String, body: [String], after:
 /// parameters, take nothing in x0–x7, but their names kept them out of the
 /// signature layout, so whatever x0 held printed as an argument:
 /// `Gauge.(tick in _…)(r0)`, `Units.scale.getter(r0)`, `reading.getter(r1)`.
+/// A final class's own members take self in x20, which still holds it.
 @Test func calleesWithoutParametersShowNoArgumentsIfPresent() async throws {
     let path = "Fixtures/Sample/libAuditSemantics.opt.dylib"
     guard FileManager.default.fileExists(atPath: path) else { return }
@@ -141,9 +142,9 @@ func structuredLoops(_ text: String) -> [(header: String, body: [String], after:
     }
     let text = functions.filter { $0.displayName.hasPrefix("AuditSemantics.Gauge.run(") || $0.displayName.hasPrefix("AuditSemantics.scaled(") }
         .map { $0.renderStructured() }.joined(separator: "\n")
-    #expect(text.range(of: #"\(tick in _[0-9A-F]+\)\(\)"#, options: .regularExpression) != nil, Comment(rawValue: text))
+    #expect(text.range(of: #"\(tick in _[0-9A-F]+\)\(self: self\)"#, options: .regularExpression) != nil, Comment(rawValue: text))
     #expect(text.contains("Units.scale.getter()"), Comment(rawValue: text))
-    #expect(text.contains("Gauge.reading.getter()"), Comment(rawValue: text))
+    #expect(text.contains("Gauge.reading.getter(self: self)"), Comment(rawValue: text))
     #expect(Disassembler.withoutPrivateDiscriminators("M.(tick in _0A1B)") == "M.tick")
 }
 

@@ -3,11 +3,17 @@
 // __DATA_DIRTY segment after it and adds a __FONT_DATA segment of raw bytes
 // (`-sectcreate`). Both are slid: VM offset = file offset + 0x870000.
 // __DATA_DIRTY,__data holds rebased pointers (`table`), so it has fixup
-// chains, which MachOKit reads at the VM offset as if it were a file offset.
+// chains, whose starts give the segment's offset in memory, not in the file.
 // __FONT_DATA holds no fixups and no metadata; code reaches it by address
-// only, so it is read correctly and must not count against the image.
+// only.
 // See slidsegments.swift.
+// With SLIDSEGMENTS_FLAT the zero fill is left out and one slide remains:
+// the twin the tests compare this image's renders with.
+#ifdef SLIDSEGMENTS_FLAT
+static char slidsegments_zerofill[1] = { 1 };
+#else
 extern char slidsegments_zerofill[];
+#endif
 
 static int one(void) { return 1; }
 static int two(void) { return 2; }

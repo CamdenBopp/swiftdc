@@ -66,6 +66,8 @@ public extension ProbeValue {
             case .loadedFrom(let base, let offset): return leaf("loaded-from", ["base": child(base), "offset": .int(offset)])
             case .genericMetadata(let name): return leaf("generic-metadata", ["parameter": .label(name)])
             case .genericWitnessTable(let index): return leaf("generic-witness-table", ["requirement": .int(index)])
+            case .existentialWitnessTable(let argument):
+                return leaf("existential-witness-table", ["argument": .int(argument)])
             case .argumentField(let argument, let offset): return leaf("argument-field", ["argument": .int(argument), "offset": .int(offset)])
             case .arrayLiteral(let site, let count): return leaf("array-literal", ["site": .address(site), "count": .int(count)])
             case .frame(let offset): return leaf("frame", ["offset": .int(Int(offset))])
@@ -173,7 +175,8 @@ public extension Probe {
             for (address, bindings) in analysis.loopInitializations.sorted(by: { $0.key < $1.key }) {
                 for binding in bindings {
                     record(.loopInitialization, at: address, [
-                        "name": .name(binding.name), "value": .uint(binding.value),
+                        "name": .name(binding.name),
+                        "value": binding.argument.map { .label("arg\($0)") } ?? .uint(binding.value),
                         "stackOffset": binding.stackOffset.map { .int(Int($0)) } ?? .label("unknown"),
                     ])
                 }
