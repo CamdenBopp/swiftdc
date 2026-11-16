@@ -171,8 +171,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// `pendingReads` until `closeOverReads` gives it that function's reads.
     let argumentReads: RegisterSet
     /// Of those, the registers the body's own instructions read, or an exact
-    /// direct branch alias forwards to a body that proves them. An ordinary call
-    /// proves no parameter: one of unknown arity may pass any unwritten
+    /// direct branch alias or canonical FP/LR frame forwards to a body that
+    /// proves them. Other calls prove no parameter: one of unknown arity may pass any unwritten
     /// register on (`swift_willThrowTyped`'s body reaches x6 and x7 only by
     /// calling `_stdlib_isOSVersionAtLeast…`, and it takes three), and even
     /// a known one's parameter may be whatever the register held (a lazy
@@ -181,7 +181,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     var provenArgumentReads: RegisterSet = []
     /// The floating-point argument registers v0…v7 (by number) the body's own
     /// instructions read before writing them, including an exact direct branch
-    /// alias's proven inputs. An ordinary call proves none, as for
+    /// alias's or canonical FP/LR frame's proven inputs. Other calls prove none, as for
     /// the integer registers. C passes floats on their own counter, so a
     /// body that reads one has parameters the integer reads do not count:
     /// `takef3(double, double, double)` rendered `takef3()`.
@@ -221,7 +221,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// (`closeOverFieldWrites`): an outlined fragment that tail-calls
     /// `swift_beginAccess`. False until proven.
     var writesNoFields = false
-    /// Where the decoded read analysis begins. Pure-alias closure checks this
+    /// Where the decoded read analysis begins. Input-forwarder closure checks this
     /// against the summary dictionary's actual entry key: Capstone can skip an
     /// undecodable prefix, and a function's displayed start alone is not proof.
     var inputProofEntry: UInt64? {
@@ -234,20 +234,37 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// Stored as the branch's offset from the entry, which a `b` keeps
     /// within ±128 MB.
     var pureTailTarget: UInt64? {
-        get {
-            guard hasPureTailTarget, let entry = inputProofEntry else { return nil }
-            return entry &+ UInt64(bitPattern: Int64(pureTailOffset))
-        }
-        set {
-            guard let target = newValue, let entry = inputProofEntry,
-                  let offset = Int32(exactly: Int64(bitPattern: target &- entry))
-            else { pureTailOffset = 0; hasPureTailTarget = false; return }
-            pureTailOffset = offset
-            hasPureTailTarget = true
-        }
+        get { inputForwardKind == .tail ? inputForwardTarget : nil }
+        set { setInputForwardTarget(newValue, kind: .tail) }
     }
+    /// A canonical FP/LR frame around one direct call, with no argument
+    /// transformation. Only its decoded target can supply positive inputs.
+    var framedCallTarget: UInt64? {
+        get { inputForwardKind == .framed ? inputForwardTarget : nil }
+        set { setInputForwardTarget(newValue, kind: .framed) }
+    }
+    private var inputForwardTarget: UInt64? {
+        guard inputForwardKind != .none, let entry = inputProofEntry else { return nil }
+        return entry &+ UInt64(bitPattern: Int64(inputForwardOffset))
+    }
+    private mutating func setInputForwardTarget(_ target: UInt64?, kind: InputForwardKind) {
+        guard let target else {
+            // Initializers copy both optional views. An absent other view
+            // must not erase the one the body actually proved.
+            if inputForwardKind == kind { inputForwardOffset = 0; inputForwardKind = .none }
+            return
+        }
+        guard inputForwardKind == .none || inputForwardKind == kind,
+              let entry = inputProofEntry,
+              let offset = Int32(exactly: Int64(bitPattern: target &- entry))
+        else { inputForwardOffset = 0; inputForwardKind = .none; return }
+        inputForwardOffset = offset
+        inputForwardKind = kind
+    }
+    private enum InputForwardKind: UInt8, Sendable { case none, tail, framed }
     private var inputProofEntryAddress: UInt64 = 0
-    private var pureTailOffset: Int32 = 0
+    // These body shapes are mutually exclusive, so one offset suffices.
+    private var inputForwardOffset: Int32 = 0
     // The entry-role facts are small: stored with the flags so they pack.
     /// Positive uses of incoming x0...x7 and x19...x29 (bit n for xn).
     /// Unlike `readsSelfRegister`, a possible read through escaped memory
@@ -261,7 +278,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// reads x8. All bits when nothing is known.
     var mayReadRegisters: UInt32 = CalleeRegisterSummary.allRegisterBits
     private var hasInputProofEntry = false
-    private var hasPureTailTarget = false
+    private var inputForwardKind: InputForwardKind = .none
     var needsEntryPreservation = false
 
     init(
@@ -273,7 +290,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         needsEntryPreservation: Bool = false, clobberedCalleeSaved: Set<String>,
         definitelyClobbered: Set<String> = [], restoredFrom: [String: Int64] = [:], callees: [UInt64] = [],
         outgoingCalls: [OutgoingCall] = [], storesOnlyToStack: Bool = false, writesNoFields: Bool = false,
-        memoryEffect: CalleeMemoryEffect = .unknown, inputProofEntry: UInt64? = nil, pureTailTarget: UInt64? = nil
+        memoryEffect: CalleeMemoryEffect = .unknown, inputProofEntry: UInt64? = nil, pureTailTarget: UInt64? = nil,
+        framedCallTarget: UInt64? = nil
     ) {
         self.floatArgumentWidths = floatArgumentWidths
         self.resultReads = resultReads
@@ -300,6 +318,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         // The target is stored relative to the entry, so the entry first.
         self.inputProofEntry = inputProofEntry
         self.pureTailTarget = pureTailTarget
+        self.framedCallTarget = framedCallTarget
     }
 
     /// Each call once, indirect calls first, then by target.
@@ -711,7 +730,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             storesOnlyToStack: storesOnlyToStack,
             memoryEffect: readFacts?.memoryEffect ?? CalleeMemoryEffect.discover(in: function),
             inputProofEntry: readFacts?.inputProofEntry ?? instructions.first?.address,
-            pureTailTarget: readFacts?.pureTailTarget ?? pureTailTarget(of: function, isFunction: isFunction))
+            pureTailTarget: readFacts?.pureTailTarget ?? pureTailTarget(of: function, isFunction: isFunction),
+            framedCallTarget: readFacts?.framedCallTarget ?? framedCallTarget(of: function, isFunction: isFunction))
         summary.provenAllocationSites = allocationSites
         summary.readsIncomingStack = Self.readsIncomingStack(instructions)
         summary.mayReadRegisters = mayRead
@@ -827,6 +847,36 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         return target
     }
 
+    static func framedCallTarget(
+        of function: DisassembledFunction, isFunction: (UInt64) -> Bool
+    ) -> UInt64? {
+        let instructions = function.instructions
+        guard instructions.count == 5,
+              instructions.enumerated().allSatisfy({ $0.element.address == function.startAddress + UInt64(4 * $0.offset) }),
+              let save = instructions[0].detail, save.id == AARCH64_INS_STP,
+              save.writeback, !save.postIndex, save.operands.count == 3,
+              case .register(let fp) = save.operands[0].operand, fp.key == "x29", fp.widthBits == 64,
+              case .register(let lr) = save.operands[1].operand, lr.key == "x30", lr.widthBits == 64,
+              case .memory(let sp?, nil, -16) = save.operands[2].operand, sp.kind == .stackPointer,
+              let establish = instructions[1].detail, establish.id == AARCH64_INS_MOV,
+              establish.operands.count == 2,
+              case .register(let frame) = establish.operands[0].operand, frame.key == "x29", frame.widthBits == 64,
+              case .register(let stack) = establish.operands[1].operand, stack.kind == .stackPointer, stack.widthBits == 64,
+              instructions[2].controlFlow == .call, instructions[2].detail?.id == AARCH64_INS_BL,
+              let target = instructions[2].branchTarget, target != function.startAddress, isFunction(target),
+              let restore = instructions[3].detail, restore.id == AARCH64_INS_LDP,
+              restore.writeback, restore.postIndex, restore.operands.count == 4,
+              case .register(let restoredFP) = restore.operands[0].operand, restoredFP.key == "x29", restoredFP.widthBits == 64,
+              case .register(let restoredLR) = restore.operands[1].operand, restoredLR.key == "x30", restoredLR.widthBits == 64,
+              case .memory(let restoredSP?, nil, 0) = restore.operands[2].operand, restoredSP.kind == .stackPointer,
+              restore.operands[3].operand.immediateValue == 16,
+              instructions[4].controlFlow == .return, let exit = instructions[4].detail, exit.id == AARCH64_INS_RET,
+              exit.operands.count <= 1,
+              exit.operands.allSatisfy({ if case .register(let register) = $0.operand { return register.key == "x30" }; return false })
+        else { return nil }
+        return target
+    }
+
     /// Marks each body that writes no field of any object: it stores only
     /// into its own stack, makes no indirect call, and calls only runtime
     /// functions that write none (`CallFacts.writesNoFields`) or bodies
@@ -874,7 +924,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             readsFramePointer: readsFramePointer,
             readsContextRegister: readsContextRegister, clobberedCalleeSaved: Self.calleeSavedKeys,
             definitelyClobbered: Self.calleeSavedKeys, callees: callees, memoryEffect: memoryEffect,
-            inputProofEntry: inputProofEntry, pureTailTarget: pureTailTarget)
+            inputProofEntry: inputProofEntry, pureTailTarget: pureTailTarget, framedCallTarget: framedCallTarget)
             .keepingReadRegisters(mayReadRegisters, readsIncomingStack: readsIncomingStack)
     }
 
@@ -1040,26 +1090,26 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             }
         }
         for start in starts { summaries[start]?.pendingReads = [] }
-        closeOverPureTailInputs(&summaries, starts: starts)
+        closeOverInputForwarders(&summaries, starts: starts)
     }
 
-    /// A single unconditional direct branch is an ABI alias: it changes no
-    /// argument register and performs no work before entering its target.
+    /// A single direct branch or a canonical FP/LR frame around one direct
+    /// call forwards its inputs unchanged. Other calls supply no such proof.
     /// Carry only proved inputs, with their floating-point widths, backwards
-    /// from a decoded non-alias entry. Ordinary calls keep their existing
+    /// from a decoded non-alias entry. Unrecognized calls keep their existing
     /// conservative policy, even when their possible reads close transitively.
     ///
     /// Seed no alias. A cycle, an unknown/interior target, a missing summary
     /// (including a bounded decode), or an undecoded entry cannot gain proof.
     /// Each resolved alias enters the queue once, so this needs neither
     /// recursion nor a depth cap and is bounded by the summary graph's size.
-    private static func closeOverPureTailInputs(
+    private static func closeOverInputForwarders(
         _ summaries: inout [UInt64: CalleeRegisterSummary], starts: [UInt64]
     ) {
         var aliases: [UInt64: [UInt64]] = [:]
         for start in starts {
             guard let summary = summaries[start] else { continue }
-            if let target = summary.pureTailTarget {
+            if let target = summary.inputForwardTarget {
                 // Reclosing the same immutable summaries remains fail-closed:
                 // a stale inherited proof cannot seed an alias cycle.
                 summaries[start]?.provenArgumentReads = []
@@ -1073,7 +1123,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         // Only providers an alias actually reaches need queue space. Reuse the
         // caller's sorted entry list instead of sorting every summary again.
         var worklist = aliases.keys.sorted().filter { target in
-            summaries[target]?.pureTailTarget == nil
+            summaries[target]?.inputForwardTarget == nil
         }
         var resolved = Set(worklist)
         var next = 0
@@ -1104,7 +1154,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             clobberedCalleeSaved: clobberedCalleeSaved,
             definitelyClobbered: definitelyClobbered, restoredFrom: restoredFrom, callees: callees,
             outgoingCalls: outgoingCalls, storesOnlyToStack: storesOnlyToStack, memoryEffect: memoryEffect,
-            inputProofEntry: inputProofEntry, pureTailTarget: pureTailTarget)
+            inputProofEntry: inputProofEntry, pureTailTarget: pureTailTarget, framedCallTarget: framedCallTarget)
         summary.mayWriteResult = mayWriteResult
         summary.resultReads = resultReads
         summary.provenAllocationSites = provenAllocationSites
@@ -1280,7 +1330,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 callees: old.callees,
                 outgoingCalls: old.outgoingCalls,
                 storesOnlyToStack: old.storesOnlyToStack, memoryEffect: old.memoryEffect,
-                inputProofEntry: old.inputProofEntry, pureTailTarget: old.pureTailTarget)
+                inputProofEntry: old.inputProofEntry, pureTailTarget: old.pureTailTarget, framedCallTarget: old.framedCallTarget)
             // The sites change no other summary, so they take no part in
             // the fixpoint's comparison: a change to them alone updates in
             // place.

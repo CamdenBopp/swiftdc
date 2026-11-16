@@ -21,7 +21,8 @@ private func pseudo(_ name: String) async throws -> String {
     let second = try await pseudo("_callUseSecond")
     #expect(second.contains("useSecond(?, 7)"), Comment(rawValue: second))
     let accessor = try await pseudo("_callAccessorLike")
-    #expect(accessor.contains("accessorLike()"), Comment(rawValue: accessor))
+    #expect(accessor.contains("accessorLike(…)"), Comment(rawValue: accessor))
+    #expect(!accessor.contains("accessorLike(5"), Comment(rawValue: accessor))
 }
 
 /// The `args(…)` note of each call to `callee` in `function`'s listing.
@@ -61,16 +62,22 @@ private func noteArguments(_ callee: String, in function: DisassembledFunction) 
 /// spills x0-x2 and reaches x6 and x7 only by calling a function of unknown
 /// arity, and padded to those it read as taking eight
 /// (`libTypedThrowsNever`); `accessorLike` reads x2 only by passing it to
-/// memset and is padded to nothing.
+/// memset. Neither forwarded possibility proves a complete source count, so
+/// both calls keep an explicit unknown tail instead of a speculative word.
 @Test func aBodyBoundedCallPadsOnlyToWhatTheBodyReadsIfPresent() async throws {
     let path = "Fixtures/Sample/libTypedThrowsNever.dylib"
     guard FileManager.default.fileExists(atPath: path), FileManager.default.fileExists(atPath: fixture)
     else { return }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let lists = functions.flatMap { noteArguments("swift_willThrowTyped", in: $0) }
-    #expect(!lists.isEmpty && lists.allSatisfy { $0.count == 3 && !$0.contains("?") }, "\(lists)")
+    #expect(!lists.isEmpty && lists.allSatisfy {
+        let prefix = $0.last == "…" ? Array($0.dropLast()) : $0
+        return prefix.count == 3 && !prefix.contains("?")
+    }, "\(lists)")
+    #expect(lists.filter { $0.last == "…" }.count == 1, "\(lists)")
+    #expect(lists.contains(["arg0", "arg1", "arg2"]), "\(lists)")
     let accessor = try await pseudo("_callAccessorLike")
-    #expect(accessor.contains("accessorLike()"), Comment(rawValue: accessor))
+    #expect(accessor.contains("accessorLike(…)"), Comment(rawValue: accessor))
 }
 
 /// A call whose registers hold nothing tracked leaves no snapshot, so the

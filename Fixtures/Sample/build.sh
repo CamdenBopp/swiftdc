@@ -6,6 +6,9 @@ cd "$(dirname "$0")"
 SWIFTC="xcrun swiftc"
 CLANG="xcrun clang"
 
+echo "==> proved body inputs versus opaque-call bounds (build-body-arity.py, -O0/-O2/-Os)"
+python3 build-body-arity.py
+
 
 echo "==> unknown operator operands keep declared arity (operator_arity.swift, all levels)"
 $CLANG -arch arm64 -O2 -c operator_arity.c -o operator_arity.o

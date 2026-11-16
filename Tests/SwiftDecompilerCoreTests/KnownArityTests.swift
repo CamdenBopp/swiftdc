@@ -123,11 +123,15 @@ func aFailedForcedTryPassesItsFiveArgumentsIfPresent(path: String) async throws 
     let frame = try text("_useTwinFrame")
     #expect(argumentLists(of: "arc4random", in: frame) == [["local_18", "7"]], Comment(rawValue: frame))
     #expect(!frame.contains("sink(5)"), Comment(rawValue: frame))
-    // Its body bounds a stale x2 out, and a relay reads x0 and x1 through it.
+    // Its own body bounds a stale x2 out.
     let stale = try text("_useTwinStale")
     #expect(argumentLists(of: "arc4random", in: stale) == [["?", "7"]], Comment(rawValue: stale))
     let relayed = try text("_useRelay")
-    #expect(argumentLists(of: "relay", in: relayed) == [["?", "5"]], Comment(rawValue: relayed))
+    // This build makes an ordinary call, not an exact branch alias. Its
+    // possible forwarded reads cannot turn the caller's 5 into a formal.
+    let relay = try #require(functions.first { $0.displayName == "_relay" })
+    #expect(relay.instructions.contains { $0.controlFlow == .call })
+    #expect(argumentLists(of: "relay", in: relayed) == [["…"]], Comment(rawValue: relayed))
 }
 
 /// The value tracker modelled any callee named `memset` or `memcpy` as the

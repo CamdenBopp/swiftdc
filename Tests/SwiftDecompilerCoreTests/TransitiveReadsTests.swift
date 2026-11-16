@@ -23,14 +23,15 @@ private func pseudo(_ path: String) async throws -> (array: String, streamed: St
 /// `ordinary_noop`, which is `ret`) and `epilogue_fragment(setup_fragment())`
 /// (it tail-branches to `stack_sink`, also `ret`). A call now reads what its
 /// target reads, so those take nothing, and `epilogue_helper`, whose only
-/// reads are its call to `setup_fragment` (x0 and x1), still takes two.
+/// reads are its call to `setup_fragment` (x0 and x1), retains those possible
+/// machine reads without claiming a source parameter count from them.
 @Test func aCallReadsOnlyWhatItsInImageTargetReadsIfPresent() async throws {
     let saves = "Fixtures/Sample/libABIEscapedSaves.dylib"
     let preserve = "Fixtures/Sample/libPreserveCalls.dylib"
     guard FileManager.default.fileExists(atPath: saves), FileManager.default.fileExists(atPath: preserve)
     else { return }
     for (path, lines) in [(saves, ["control_save_fragment()"]),
-                          (preserve, ["epilogue_fragment()", "epilogue_helper(arg0, arg1)"])] {
+                          (preserve, ["epilogue_fragment()", "epilogue_helper(…)"])] {
         let (array, streamed) = try await pseudo(path)
         for line in lines {
             #expect(array.contains(line), "array path \(path): \(line)")

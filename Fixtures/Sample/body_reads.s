@@ -1,5 +1,6 @@
 // Calls to in-image functions no signature describes. Such a call passes
-// what the callee's body reads (CalleeRegisterSummary.argumentReads).
+// proved reads from the callee's own body (provenArgumentReads), with an
+// unknown tail when possible forwarded reads leave its source arity open.
 //
 // useSecond reads x1 only: it writes x0 before reading it. callUseSecond
 // leaves 5 in x0 and 7 in x1 at the call. True behaviour: useSecond's one

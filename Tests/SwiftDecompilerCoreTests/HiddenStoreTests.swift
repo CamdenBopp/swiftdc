@@ -18,16 +18,16 @@ import Testing
         }
         // Source first, destination second: the field is the destination.
         let setter = try structured("H.setAO")
-        #expect(setter.contains("outlined assign with copy of HS.AO(?, &self.ao)"), "\(level): \(setter)")
+        #expect(setter.contains("outlined assign with copy of HS.AO(?, &self.ao, …)"), "\(level): \(setter)")
         let copy = try structured("copyAO")
-        #expect(copy.contains("outlined init with copy of HS.AO(?, &result)"), "\(level): \(copy)")
+        #expect(copy.contains("outlined init with copy of HS.AO(?, &result, …)"), "\(level): \(copy)")
         let assign = try structured("assignAO")
         #expect(assign.contains("with copy of HS.AO("), "\(level): \(assign)")
         // -Onone calls the existential assign helper (destination, source);
         // -O destroys the old value and copies the new one in.
         let shape = try structured("assignShape")
-        #expect(shape.contains(level == "Onone" ? "__swift_assign_boxed_opaque_existential_1(arg0, arg1)"
-                                                : "outlined init with copy of HS.Shape(arg1, arg0)"),
+        #expect(shape.contains(level == "Onone" ? "__swift_assign_boxed_opaque_existential_1(arg0, arg1, …)"
+                                                : "outlined init with copy of HS.Shape(arg1, arg0, …)"),
                 "\(level): \(shape)")
         for text in [setter, copy, assign, shape] { #expect(!text.contains("no non-runtime calls"), "\(level): \(text)") }
     }

@@ -58,3 +58,4 @@ __pycache__/
 Tools/synthcorpus/out/
 
 Fixtures/Sample/outlined_results_native
+Fixtures/Sample/body-arity-*-oracle

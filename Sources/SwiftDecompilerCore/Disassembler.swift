@@ -10012,14 +10012,16 @@ public struct Disassembler: Sendable {
                 // or through an exact branch alias) is a parameter, so an
                 // unknown one is `?`, not absent:
                 // `sink(long)` called with nothing tracked rendered `sink()`.
-                // Past those, a register the body may read only by passing it
-                // to a call is shown when its value is known, as before.
+                // A possible read through an opaque call proves no additional
+                // source argument, even when its caller left a known word.
+                // Keep that uncertainty as an unknown tail, not a count that
+                // changes with the caller's live registers.
                 let proven = summary.provenArgumentCount
-                var bounded = (0 ..< max(summary.argumentCount, proven)).map {
-                    $0 < values.count && summary.argumentReads.contains($0)
+                let unprovenIntegerTail = summary.argumentCount > proven
+                var bounded = (0 ..< proven).map {
+                    $0 < values.count && summary.provenArgumentReads.contains($0)
                         ? sanitizeValue(values[$0]) : AbstractValue.unknown
                 }
-                while bounded.count > proven, bounded.last == .unknown { bounded.removeLast() }
                 // A body that reads v registers has floating-point parameters
                 // on their own counter. Alone, they are its arguments in
                 // order. Beside integer ones, the order between the two banks
@@ -10038,17 +10040,17 @@ public struct Disassembler: Sendable {
                         }
                         return value
                     }
-                    bounded = bounded.isEmpty
+                    bounded = bounded.isEmpty && !unprovenIntegerTail
                         ? (0 ..< floats).map(floatArgument)
                         : Array(repeating: .unknown, count: bounded.count + floats)
                 }
-                if !bounded.isEmpty { argumentsByAddress[address] = bounded }
+                argumentsByAddress[address] = bounded
                 // A body that loads from the caller's outgoing area takes
                 // stack arguments too: `c9(?)` claimed one argument where
                 // the call also passes 100 at [sp]. Their count is not
-                // proven, so the list ends in `…`.
-                if summary.readsIncomingStack {
-                    argumentsByAddress[address] = argumentsByAddress[address] ?? []
+                // proven, so the list ends in `…`. Possible GP inputs past
+                // the proved prefix have the same unresolved source arity.
+                if summary.readsIncomingStack || unprovenIntegerTail {
                     unprovenVariadicSites.insert(address)
                 }
                 strategy = "body-reads"

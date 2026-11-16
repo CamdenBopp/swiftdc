@@ -306,7 +306,9 @@ func aClosurePropagatedCallHasNoSignatureInItIfPresent(path: String) async throw
 func aCallWithAnUnplacedCaptureFollowsTheBodyIfPresent(path: String) async throws {
     guard let functions = try await functions(path) else { return }
     let string = try caller(functions, "captureString")
-    #expect(string.contains("of DroppedArgs.run(arg0, ?, ?, arg2)"), Comment(rawValue: string))
+    // These four words are proved; possible reads through the remaining
+    // calls do not establish that the source argument list stops there.
+    #expect(string.contains("of DroppedArgs.run(arg0, ?, ?, arg2, …)"), Comment(rawValue: string))
     // x1 is left over from the caller, and the body never reads it.
     let stale = try caller(functions, "captureDoubleThenAdd")
     #expect(!stale.contains("of DroppedArgs.run(arg0, arg1"), Comment(rawValue: stale))

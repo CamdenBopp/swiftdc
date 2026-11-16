@@ -5,8 +5,9 @@
 // reads (x0 and x1), and a frame address passed in x0 escapes into it.
 //
 // useTwinStale leaves 9 in x2 at the call, which only the body bounds out;
-// relay tail-branches to the twin with its own x0 and x1, so it reads them
-// through it.
+// relay forwards its own x0 and x1 to the twin. The compiler can retain an
+// ordinary call and fold its return to zero; that is not an exact branch
+// alias and proves no local input read for relay's source argument count.
 //
 // True behaviour: useTwin and useTwinStale pass (x, 7); useTwinFrame passes
 // 7 to sink, because the call stores 7 into its local first; useRelay passes

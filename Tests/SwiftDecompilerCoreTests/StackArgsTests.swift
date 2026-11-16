@@ -39,7 +39,12 @@ func aFramedCalleeReadingAStackArgumentEndsInEllipsisIfPresent(path: String) asy
         #expect(text.range(of: "\\b\(callee)\\([^)]*…\\)", options: .regularExpression) != nil, Comment(rawValue: text))
     }
     let two = try structured("_callFramedTwo")
-    #expect(two.contains("framedTwo(") && !two.contains("…"), Comment(rawValue: two))
+    // No incoming stack word is read here. The opaque sink can still read
+    // unproved GP inputs, so preserve both proved words and an unknown tail.
+    let first = path.contains(".O0.") ? "arg0" : "?"
+    #expect(two.contains("framedTwo(\(first), 3, …)"), Comment(rawValue: two))
+    let target = try #require(functions.first { $0.displayName == "_framedTwo" })
+    #expect(try #require(CalleeRegisterSummary.of(target)).readsIncomingStack == false)
 }
 
 /// A summary that gives up its callee-saved claims keeps its stack read:

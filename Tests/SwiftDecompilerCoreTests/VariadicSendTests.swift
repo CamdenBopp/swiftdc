@@ -69,7 +69,7 @@ import Foundation
     // A variadic send prints its arguments past the colons, so a call
     // there is printed once, inside it.
     let format = try #require(functions.first { $0.displayName == "_formatFirst" }).renderPseudo()
-    #expect(format.components(separatedBy: "firstValue()").count == 2, Comment(rawValue: format))
+    #expect(format.components(separatedBy: "firstValue(…)").count == 2, Comment(rawValue: format))
 }
 
 /// `objc_unsafeClaimAutoreleasedReturnValue`, which ARC wraps a discarded
