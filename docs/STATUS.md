@@ -89,12 +89,21 @@ cover results, bodies, or Objective-C methods (4 matched).
 
 ## Latest local verification
 
-At `7fd125d`, the scalar FP entry fixture checks **24 LLVM ABI signatures**
+At `59db870`, the scalar FP call fixture checks **44 LLVM ABI signatures**
+and **36 native observations**: 30 Swift returns with a single producer
+counter update, plus six C reads checked at their proven widths. Five new
+tests cover physical result views, outgoing arguments, exact scalar proofs
+and call retention. All **1,810** upstream test declarations and files remain
+unchanged; the enforcing suite passes **1,815 tests in 43 suites**. Fourteen
+separate mutations compile and fail their targeted checks. The release
+comparison below uses published `db2f822` as its baseline. Synthetic
+Objective-C and async return checks do not establish a native async ABI.
+
+Earlier, at `7fd125d`, the scalar FP entry fixture checks **24 LLVM ABI signatures**
 and **192 native observations**. Five new tests cover entry precision,
 physical register views, field proofs, copies and async slot-proof limits.
 All **1,805** upstream test declarations remain; the full fixture-enforced
-suite passes **1,810 tests in 43 suites**. The release comparison below
-uses published `2425b30` as its baseline.
+suite passes **1,810 tests in 43 suites**, compared against `2425b30`.
 
 Earlier, at `542f6a7`, dev and the seven local FP commits were reconciled.
 The earlier **1,468** count belonged to stale local `23cbcab`, based on
@@ -105,11 +114,15 @@ integration test: **1,805 tests in 43 suites** passed at that commit.
 
 | Check | Result | Where |
 |---|---|---|
-| Enforcing test suite (a missing fixture fails) | 1,810 tests / 43 suites pass at `7fd125d` | `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`, after a fresh test build |
-| Output change against `2425b30` | Only the new FP entry fixture changes: 11 returns, 22 changed lines in each of structured/pseudo/listing; 44 JSON lines (11 annotations and 11 statements). Every changed line reviewed | `Tools/blast-radius.sh` |
-| Cost budget (instructions, footprint) | All 2,020 render/workload pairs positive; -0.02% retired instructions, -0.11% summed peak footprint; all default budgets pass without an override. No meaningful cost difference | same, `--real --perf` |
-| GitHub Actions, last inspected 2026-11-16 | Run at published `2425b30` fails at Toolchain. Fixtures, Build and Enforcing suite are skipped. This is not a CI test pass | [run 43823217745](https://github.com/CamdenBopp/swiftdc/actions/runs/43823217745), [CI.md](CI.md) |
+| Enforcing test suite (a missing fixture fails) | 1,815 tests / 43 suites pass at `59db870` | `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`, after a fresh test build |
+| Output change against `db2f822` | FPReturns corrects 24 returns and 10 outgoing arguments; 13 producer calls remain visible when wider reads decline. DroppedArgs.Onone retains one comparison call absent from its unknown return. Structured/pseudo: 62 changed lines each; listing: 68; JSON: 150. Every changed line reviewed | `Tools/blast-radius.sh` |
+| Cost budget (instructions, footprint) | All 2,024 render/workload pairs positive; -0.04% retired instructions, +0.25% summed per-run peak footprint; all default budgets pass without an override. All four SDK outputs match | same, `--real --perf` |
+| GitHub Actions, last inspected 2026-11-16 | Run at published `db2f822` fails at Toolchain (Swift 6.2.4, older than the required 6.4). Fixtures, Build and Enforcing suite are skipped. This is not a CI test pass | [run 43838075389](https://github.com/CamdenBopp/swiftdc/actions/runs/43838075389), [CI.md](CI.md) |
 | Independent execution of rendered expressions | return values of the differential-oracle fixtures, integer and floating point (compared bit for bit). Not checked by execution: which way a branch went, registers at call sites, results beyond the first register, memory writes | `DifferentialOracleTests` |
+
+Render exit statuses match the baseline, including **35** identical expected
+preflight declines for object and unsupported input shapes. Those declines
+are not successful decompilations.
 
 These checks are local measurements on one machine. Publication still
 requires the original `Tools/integration-gate.sh --push` to rebuild, test

@@ -33,9 +33,10 @@ that produced it. When two runs disagree, compare those lines first: a
 fixture can lower differently under another compiler.
 
 Dependencies are pinned by `Package.resolved`, and the fixtures are built
-by `Tools/fixtures.sh`, which caches by the content of each source and
-its build line. A cached fixture built by another compiler is not
-rebuilt, so after changing Xcode clear `~/Library/Caches/swiftdc-fixtures`.
+by `Tools/fixtures.sh`. Its cache key includes every fixture input, the
+Swift and Clang versions, both SDK builds, the host OS build, and the Go
+version. A change to those recorded versions changes the key, and a cache
+miss triggers a build; clearing the cache after an Xcode change is unnecessary.
 
 ## Running the suite by hand
 

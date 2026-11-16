@@ -373,7 +373,11 @@ SWIFTDC_REQUIRE_FIXTURES=1 swift test   # enforcing: a missing fixture fails
 swift build -c release --scratch-path .build-release   # for any timing or memory number (never in .build)
 ```
 
-Requires Apple Silicon, Xcode 26+ (Swift 6.3+; tools version 6.2, macOS 15
-deployment). The Go fixtures (`Fixtures/Sample/gofunctions`) need `go` on the
-path; without it `build.sh` skips them and the enforcing suite names them. `brew install openssl@3` is needed only for the device
-commands.
+Requires Apple Silicon. The package uses tools version 6.2 and macOS 15
+deployment; the full fixture-enforced suite is verified with Swift 6.4 /
+Xcode 27.1. `Tools/ci/environment.sh` requires Swift 6.4 or newer: 6.2.4
+fails while building fixtures, and 6.3 is untried.
+
+The Go fixtures (`Fixtures/Sample/gofunctions`) need `go` on the path;
+without it `build.sh` skips them and the enforcing suite names them.
+`brew install openssl@3` is needed only for the device commands.

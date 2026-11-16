@@ -253,6 +253,14 @@ trusted floating fields. Half/single entries leave unused bits unknown;
 the entry tag creates no register location. `analysis.entry` reports the
 same precision as the tracer. Whole-vector copies preserve these partial
 facts without interpreting them as wider scalar values.
+Exact synchronous Swift scalar call results and declared C `float`/`double`
+results carry the same precision on their existing `call-result` operand
+(`59db870`). Half/single results leave unused bits unknown. A wider read
+can decline without removing the producer call; typed argument and return
+projections run before producer-use collection. Aggregate floating banks,
+grouped selector returns and asynchronous callee contracts do not gain a
+scalar width from this rule. Rendering peels precision wrappers iteratively,
+so nested FP calls add no renderer frame for their metadata.
 This metadata does not consume the semantic expression-depth budget, while
 the bounded probe exporter still counts every exported node.
 

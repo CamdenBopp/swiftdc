@@ -12459,3 +12459,54 @@ ABI review item 11. Truth for every shape is `swiftc -O -emit-ir` on
   annotations and lab shows the corresponding precision/copy facts. All
   seven commands exit zero for both releases. The pinned outcome benchmarks
   in STATUS.md are unchanged; no readiness percentage is inferred.
+
+
+## 2026-11-16: preserve scalar FP call precision and evaluation
+
+- **FIXED (`59db870`, soundness):** published `db2f822` renders
+  `FPReturns.call16to64` as returning its Float16 producer's logical value,
+  although native execution reads Double bits `0x3c00`. Dirty half/single
+  producers leave nonzero upper bits, disproving ABI zero extension. Exact
+  synchronous Swift scalar and C float/double results now carry their width.
+  Wider unproved reads decline while preserving the producer once; narrower
+  reads reinterpret masked bits. Same-width calls retain their logical value.
+- Typed argument/return projections precede producer-use collection. Existing
+  typed immediate spelling remains. Metadata is peeled iteratively during
+  rendering: adding precision to a ten-call chain otherwise reproduced a
+  worker-stack SIGBUS in an existing return-outcome test. The semantic depth
+  limit and its partial/complete claims remain unchanged.
+- Owned `build-fp-returns.swift` checks **44 LLVM ABI signatures**. Five tests
+  retain all **1,810** upstream declarations/files and add **36 native
+  observations** (30 Swift raw returns with counter=1; six C reads at proven
+  widths). Listing, array, filtered, streaming and analyzeEach agree. Exact
+  scalar types, register banks, name twins and invalid widths have controls.
+  Synthetic Objective-C/async return seams check producer retention; this is
+  not a complete native async ABI fixture or proof of values across awaits.
+- **14** distinct compiled mutations fail their targeted checks, including
+  independent C float/double widths, upper bits, typed argument/return use,
+  literal spelling and iterative metadata rendering. The latter restores the
+  same SIGBUS. The native oracle passes under every mutation. Restored sources
+  are rebuilt before 21 focused green checks and the **1,815-test / 43-suite**
+  fixture-enforced pass. Reproduce: `Tools/fixtures.sh`,
+  `swift build --build-tests`, then
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+- Matched releases against `db2f822`, using
+  `Tools/blast-radius.sh <base> <new> <out> --real --perf`: **505 inputs** in
+  four views plus four SDK workloads, **2,024 positive cost rows**.
+  Instructions **6,094.3G -> 6,091.9G (-0.04%)**; summed per-run physical
+  peaks **18,546 -> 18,592 MB (+0.25%)**. All default budgets pass without
+  override; all four SDK outputs are byte-identical. Exit statuses match,
+  including **35** identical expected object/unsupported-input preflight
+  declines. Those are not successful decompilations.
+- Structured/pseudo each change **two files / 62 lines**. FPReturns corrects
+  **24 return expressions** and **10 outgoing arguments**; **13** unproved wider
+  reads retain their standalone producers, and **11** narrower views use
+  masks. DroppedArgs.Onone `moded` retains its enum comparison: its generic
+  size load makes the return unknown, so no rendered return consumes that
+  call. Its raw lab analysis is identical. Listing changes **one file / 68
+  lines**; JSON **two / 150**, exactly **34 annotations**, **24 return
+  statements**, **10 argument values**, and **14 added call statements**.
+  No instruction/address fields change. Dump/layout/interface/objc/xrefs
+  match; analyze changes those 24 returns and 10 arguments; lab wraps 36 exit
+  facts and 15 call snapshots with precision. All seven commands exit zero
+  on FPReturns. The pinned outcome benchmarks remain unchanged.
