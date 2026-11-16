@@ -12510,3 +12510,56 @@ ABI review item 11. Truth for every shape is `swiftc -O -emit-ir` on
   match; analyze changes those 24 returns and 10 arguments; lab wraps 36 exit
   facts and 15 call snapshots with precision. All seven commands exit zero
   on FPReturns. The pinned outcome benchmarks remain unchanged.
+
+## 2026-11-16: preserve awaited scalar FP precision
+
+- **FIXED (`c8640cc`, soundness):** published `889e00f` prints the logical
+  awaited Float16 value for `AsyncFPReturns.view16to64`, although its real
+  Swift continuation returns Double bits `0x3c00` for half 1.0. The resume
+  saves V0 in V8 across `swift_task_dealloc`, then physically copies D8 to
+  D0. Dirty half/single producers prove the unused result bits need not be
+  zero. Wider unproved reads now render `?`; same-width values, narrower
+  masked reads and numeric conversions remain known.
+- Only an existing ownership-proven V0 await result receives the exact
+  callee scalar width. Caller widths supply no evidence. Typed-error,
+  closure, unknown/generic result, integer-bank and shared-owner guards
+  remain. Scalar word copies preserve fitting partial FP facts through
+  bounded one-lane wrappers/selects; full-width, truncating and proven-zero
+  copies keep their ordinary projection and clearing rules.
+- Authored `build-async-fp-returns.swift` checks **40 LLVM entry/resume
+  signatures** and parent continuation operand types. Raw/control libraries
+  keep compiler frames and executor hops; only ten cross-width FCVTs become
+  physical D0/D8 copies in the raw library. Both modes poison unused bits in
+  two narrow producers. Native Task drivers pass **210 observations**,
+  including one-invocation effect checks (clean increment 1, dirty increment
+  2). Disabling the compiler's function-merging pass keeps each tested
+  continuation independent; separate synthetic tests enforce shared-owner
+  rejection. This is a scalar result-boundary proof, not recovery of arbitrary
+  values carried in async context slots.
+- Four new tests retain every **1,815** published declaration/file. Listing,
+  array, filtered and streaming APIs agree on all 30 raw/control resumes;
+  analyzeEach safely omits unproved async grouping. **15** distinct compiled
+  mutations fail width/bank/callee/error/closure/copy/depth checks; native
+  210 passes under each. An initial closure mutation survived because a
+  separate trailing-signature guard already declined it; an isolated
+  source-type-only closure control then caught that rebuilt mutation.
+  Restored sources were rebuilt before **23 focused checks** and the full
+  fixture-enforced **1,819-test / 43-suite pass (705.350 s)**. Reproduce:
+  `Tools/fixtures.sh`, `swift build --build-tests`, then
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+- Matched frozen releases against `889e00f`, using
+  `Tools/blast-radius.sh <base> <new> <out> --real --perf`: **509 inputs** in
+  four views plus four SDK workloads, **2,040 positive cost rows**.
+  Instructions **6,116.5G -> 6,115.8G (-0.01%)**; summed per-run peaks
+  **18,703 -> 18,677 MB (-0.14%)**. Default budgets pass without override;
+  all SDK outputs are byte-identical. All render statuses match, including
+  **35 identical expected preflight declines**, not successful decompilations.
+- Only `libAsyncFPReturns` changes: structured/pseudo/listing each **one
+  file / 12 lines**, JSON **one / 24**. Six raw wider returns now decline:
+  Float16/Dirty16 to Float/Double, Float/Dirty32 to Double. JSON changes
+  exactly **six annotations and six statements**; instruction/address fields
+  stay identical. Every existing fixture output and the numeric control are
+  unchanged. All **28** raw/control CLI survey runs exit zero:
+  dump/layout/interface/objc/xrefs match; analyze corrects the six raw
+  returns; lab only wraps **30 entry seeds, 30 call snapshots and 20 exits**
+  with precision metadata. The pinned outcome benchmarks remain unchanged.
