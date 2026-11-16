@@ -795,6 +795,9 @@ swift build-fp-entries.swift
 echo "==> scalar FP call precision, physical views and effect preservation (build-fp-returns.swift, LLVM -O)"
 swift build-fp-returns.swift
 
+echo "==> awaited FP result precision with native async frames (build-async-fp-returns.swift, LLVM -O)"
+swift build-async-fp-returns.swift
+
 echo "==> fmov immediates in vector and half-precision registers (fpimmediates.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name FPImmediates fpimmediates.swift -o libFPImmediates.dylib
 

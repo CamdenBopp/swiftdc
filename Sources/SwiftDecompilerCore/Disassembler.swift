@@ -2403,7 +2403,14 @@ public struct Disassembler: Sendable {
         case .awaitReturn:
             var seeded: [String: AbstractValue] = ["x22": .asyncCalleeContext]
             if let register = awaitedResultRegister(into: function.startAddress, index: index) {
-                seeded[register] = .awaitResult(info.ordinal)
+                let result = AbstractValue.awaitResult(info.ordinal)
+                if register == "v0", let callee = index.suspension(into: function.startAddress)?.1.calleeName,
+                   let type = swiftReturnTypeName(forDemangledName: callee), let bits = scalarFloatingWidth(type) {
+                    // The awaited ABI promises only its scalar result bits.
+                    seeded[register] = .unary(.floatResult(bits: bits, upperZero: bits == 64), result)
+                } else {
+                    seeded[register] = result
+                }
             }
             return .asyncFunclet(base: nil, seededRegisters: seeded)
         case .unknown, nil:

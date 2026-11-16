@@ -4097,6 +4097,16 @@ public struct ValueTracer: Sendable {
             }
             if dest.kind == .vector, input.kind == .vector, dest.widthBits == input.widthBits,
                [16, 32, 64].contains(dest.widthBits) {
+                // A physical word copy retains proven low scalar bits even
+                // when reading the whole word as an FP value would decline.
+                if detail.operands.count == 2,
+                   detail.operands.allSatisfy({ $0.shift.type == AARCH64_SFT_INVALID
+                       && $0.extender == AARCH64_EXT_INVALID && $0.vectorArrangement == AARCH64LAYOUT_INVALID }),
+                   let raw = registers.registerFacts.snapshotForCopy(Location(input)).value,
+                   let partial = Self.partialFloatingCopy(raw, bits: dest.widthBits) {
+                    write(dest, partial, into: &registers)
+                    return
+                }
                 // Scalar FMOV always clears its other bits, independently of NEP.
                 writeFloatResult(dest, value, merging: .immediate(0), into: &registers)
                 return
@@ -4885,6 +4895,29 @@ public struct ValueTracer: Sendable {
         var word: UInt64 = 0
         for offset in stride(from: 0, to: 64, by: elementBits) { word |= element << UInt64(offset) }
         return totalBits == 128 ? .aggregate([.immediate(word), .immediate(word)]) : .immediate(word)
+    }
+
+    /// Keep partial FP facts through a same-width scalar register copy.
+    /// Every arm must fit in the copied word; full-width/truncating copies
+    /// retain the ordinary FMOV projection and zero-extension rules.
+    static func partialFloatingCopy(_ value: AbstractValue, bits: Int) -> AbstractValue? {
+        guard bits == 32 || bits == 64 else { return nil }
+        func scalar(_ value: AbstractValue, depth: Int) -> (value: AbstractValue, partial: Bool)? {
+            guard depth < 8 else { return nil }
+            switch value {
+            case .unary(.floatResult(let width, let zero), _):
+                guard [16, 32, 64].contains(width), width <= bits else { return nil }
+                return (value, width < bits && !zero)
+            case .aggregate(let lanes) where lanes.count == 1:
+                return scalar(lanes[0], depth: depth + 1)
+            case .select(let condition, let yes, let no):
+                guard let yes = scalar(yes, depth: depth + 1), let no = scalar(no, depth: depth + 1) else { return nil }
+                return (.select(condition: condition, whenTrue: yes.value, whenFalse: no.value), yes.partial || no.partial)
+            default: return nil
+            }
+        }
+        guard let copied = scalar(value, depth: 0), copied.partial else { return nil }
+        return copied.value
     }
 
     /// What a scalar view of a vector register holds: `d0` is the low 64 bits
