@@ -89,7 +89,17 @@ cover results, bodies, or Objective-C methods (4 matched).
 
 ## Latest local verification
 
-At `92e1007`, body-only call layouts no longer turn possible register reads
+At `774ed56`, failed complete callee transfers retain their proved possible
+writes. The native controls pass **105 observations** across C O0/O2/Os,
+covering context, result-buffer and private-frame aliases; the existing
+**15** AsyncCalls native cases also pass. All **1,838** existing test
+declarations remain and every existing test file is byte-identical. Seven
+tests are added; **23** distinct mutations separately compile and fail.
+The fixture-enforced suite passes **1,845 tests / 43 suites**. This is a
+bounded memory-effect correction; unmodelled callees and general source
+reconstruction remain open.
+
+Earlier, at `92e1007`, body-only call layouts no longer turn possible register reads
 into source arguments. The native fixture passes **252 observations / 147
 opaque effects** at O0/O2/Os; eight new tests cover named/stripped images,
 five analysis APIs, GP/FP ambiguity and exact input forwarders. All **1,830**
@@ -126,10 +136,10 @@ integration test: **1,805 tests in 43 suites** passed at that commit.
 
 | Check | Result | Where |
 |---|---|---|
-| Enforcing test suite (a missing fixture fails) | 1,838 tests / 43 suites pass at `92e1007` (709.314 s) | `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`, after a fresh test build |
-| Output change against `46e51b6` | Possible body inputs decline to an unknown tail; exact frame forwarders retain independently proved inputs. Structured/pseudo: 38,379/38,220 changed lines in 146 inputs; listing/JSON: 41,762/141,948 in 154. Every difference reviewed; instruction and function metadata match | `Tools/blast-radius.sh` |
-| Cost budget (instructions, footprint) | All 2,152 render/workload pairs positive; +0.18% retired instructions, -0.14% summed per-run peak footprint; every default budget passes without override. Both SDK xrefs match; two structured SDK outputs differ under the same reviewed argument rules | same, `--real --perf` |
-| GitHub Actions, last inspected 2026-11-16 | Run at published `46e51b6` fails at Toolchain. Fixtures, Build and Enforcing suite are skipped. The runner's Swift 6.2.4 is older than required 6.4. This is not a CI test pass | [run 43906349305](https://github.com/CamdenBopp/swiftdc/actions/runs/43906349305), [CI.md](CI.md) |
+| Enforcing test suite (a missing fixture fails) | 1,845 tests / 43 suites pass at `774ed56` (660.627 s) | `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`, after a fresh test build |
+| Output change against `7efd0d2` | Six false argument returns decline, 13 unproved return labels become indirect branches, and one stale observe(7) becomes observe(?). Seven inputs: structured/pseudo 39 changed lines each, listing 40, JSON 107. Every difference reviewed | `Tools/blast-radius.sh` |
+| Cost budget (instructions, footprint) | All 2,188 render/workload pairs positive; -0.04% retired instructions, +0.10% summed per-run peak footprint; every default budget passes without override. All four SDK outputs match | same, `--real --perf` |
+| GitHub Actions, last inspected 2026-11-16 | Run at published `7efd0d2` fails because no hosted runner was acquired. Suite job cancelled, no steps, no assigned runner; macOS arm64 capacity notices. Tests never started. The earlier `46e51b6` Toolchain failure is a separate run | [run 43953476174](https://github.com/CamdenBopp/swiftdc/actions/runs/43953476174), [CI.md](CI.md) |
 | Independent execution of rendered expressions | return values of the differential-oracle fixtures, integer and floating point (compared bit for bit). Not checked by execution: which way a branch went, registers at call sites, results beyond the first register, memory writes | `DifferentialOracleTests` |
 
 Render exit statuses match the baseline, including **35** identical expected

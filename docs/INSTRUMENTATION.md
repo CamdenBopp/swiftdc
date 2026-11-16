@@ -595,3 +595,14 @@ Unknown targets, incomplete entries, changed arguments and cycles add no
 proof. `lab` can therefore show a new entry seed for such a frame. Its
 `body-reads(0)` can coexist with rendered `(…)`: zero represented prefix
 words does not prove a zero-parameter declaration or a variadic function.
+
+A complete callee effect that cannot instantiate its register/value transaction
+still supplies possible writes (774ed56). Those writes invalidate the frame,
+async-context and result-buffer owners before the ordinary call fallback.
+`lab` therefore no longer reports a stale `exit x0=7` or `exit x0=arg0` after
+such a write. An unresolved ResumeParent removes the exit snapshot and keeps
+the BR as an indirect branch; this does not prove a new return. Known context
+coordinates preserve headers outside the affected extent. The existing
+unbounded-memory-write flag remains set when the write cannot be bounded;
+no new event or schema field is introduced, and failed transactions install
+no literal or register prefix.

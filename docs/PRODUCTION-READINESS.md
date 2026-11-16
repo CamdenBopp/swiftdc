@@ -12810,3 +12810,78 @@ unknown. This change does not fix outlined x8 entry ownership, actual async
 isolation prefixes, arbitrary await context-slot carry or source return
 recovery. Candidate release SHA256:
 `89865267199f73c22b1dca27aac60122b44b5ee0094056090bc2b4c4aff3b7fa`.
+
+
+### 2026-11-16: retain MAY writes after a failed complete callee transfer
+
+**FIXED for soundness (774ed5667cf84f15166e4d70901014543c87a67e).**
+Published `7efd0d2` renders the authored `UnknownStore.frameWord(UInt)` as
+`return arg0`, though native execution returns **99** for seven distinct
+inputs. The helper writes below its incoming x10, but an unknown x11 output
+rejects the complete transaction; upward escape reach then misses the
+private-frame word below that base. Unknown store destinations can likewise
+alias an async context or caller-owned result buffer. Published `lab` reports
+an async exit value **7** where native execution returns **99**.
+
+- Failure to instantiate the complete MUST transaction no longer discards
+  its body-proven MAY stores. Every literal-store footprint goes through
+  the existing frame/context/result owners. Checked frame ranges forget
+  only overlapping facts; unbounded frame ranges forget the frame. Only a
+  complete negative private-frame extent is disjoint from opaque context
+  and result allocations. LR at callee entry is not the caller's pre-BL
+  frame alias. No literal/register prefix of the failed transaction is
+  installed; successful complete transfers are unchanged.
+- Known context-relative coordinates retain their existing precise owner.
+  In particular, ResumeParent at +8 survives a store through a proved
+  context+16 pointer. The original test and native oracle caught an initial
+  over-decline; neither was weakened. Own/callee context identities are
+  separate, arithmetic and widths are checked, and unknown roots receive
+  no borrowed context identity. A body with no stores adds no memory write.
+- Own-source assembly plus native C at O0/O2/Os passes **105 observations**:
+  unknown and disjoint/crossing private pointers, context header/guard words,
+  a five-word caller buffer, and the stale frame word. Named and locally
+  stripped libraries cover all five APIs. analyzeEach retains its existing
+  async-chain-context decline; explicit-ABI raw replay checks its body too.
+  The existing **15** AsyncCalls native cases pass, including incomingLeaf's
+  observed **11**, which the baseline passed to observe as **7**.
+- All **1,838** existing test declarations remain, and every existing test
+  file and assertion is byte-identical. **Seven** tests are added. **23**
+  distinct mutations separately compile and fail: the three memory owners
+  independently (other two green), unknown roots, LR, offset/width/overflow,
+  no-store and multi-store cases, bounded frame erasure, no failed prefix,
+  context coordinate arithmetic and own/callee identity. All 105 new native
+  observations and 15 existing cases pass under each. Canonical source is
+  restored byte-exact and rebuilt: nine focused tests pass (1.590 s), **113
+  tests / five suites** pass (12.846 s), and the full fixture-enforced
+  **1,845 tests / 43 suites pass (660.627 s)**. Reproduce with
+  `Tools/fixtures.sh`, `swift build --build-tests`, then
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+- Matched frozen releases against `7efd0d2`, using `Tools/blast-radius.sh
+  <base> <new> <out> --real --perf`, cover **546 inputs / 2,188 positive cost
+  pairs**. Instructions **6,285.3G -> 6,282.8G (-0.04%)**; summed per-run
+  physical peaks **20,054 -> 20,075 MB (+0.10%)**. All default budgets pass
+  without override. All four whole-image SDK outputs match, as do all
+  render exits, including **35** expected preflight declines.
+- Every difference is reviewed: **seven inputs**, structured/pseudo **39
+  changed lines each**, listing **40**, JSON **107**. Across **19 functions**,
+  physical instructions, addresses, function boundaries, blocks and callee
+  metadata match. Six false arg0 returns decline, 13 unproved return labels
+  become unresolved BRs, and incomingLeaf's stale observe(7) becomes a single
+  observe(?) statement before its unresolved branch. Rendered call counts
+  and evaluation order are retained. All **54 JSON deltas** are 19 changed
+  statements, one added statement, 20 annotations, 13 flow labels and one
+  argument 7 -> ?. Both source views match those exact statement deltas.
+- All **84 CLI survey invocations** pass. Dump/layout/interface/objc/xrefs
+  match; analyze and lab each change 36 annotation/exit lines across the six
+  libraries. The frozen release declines every false frameWord return and
+  removes the two unproved async exits, keeping the private control's 7.
+  All **1,021** source/test/fixture/tool hashes still match the measurements.
+  Readiness estimates and pinned outcome benchmarks remain unchanged.
+
+**OPEN:** complete callee register transport with unknown inputs, unmodelled
+body effects, arbitrary context identities and general async context-slot
+carry. This change retains negative write evidence from the bounded producer;
+it does not recover a source result type or infer a value from a failed
+transaction. Outlined x8 entry ownership remains separate.
+Candidate release SHA256:
+`45d4b7081fc2b2e92b1ab1d8671f67e22f5043d447f35d005f2b2242fa042353`.
