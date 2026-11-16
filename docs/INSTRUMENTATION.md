@@ -169,7 +169,7 @@ To reproduce, run the same command with and without `--probe <file>`
 | `values.unmodelled-write` | claim | register, instruction, kept | An instruction writes a register (Capstone access flags) whose proven value the tracer kept: a stale value that renders as a confident argument. |
 | `values.outlined-inlined` | decision | fragment, kind, instructions | A `bl`/`b` to an outlined fragment became what the fragment does there: `call`, `tail-call`, `value`, `store` or `return`. |
 | `values.outlined-declined` | decline | fragment, reason | A site kept its call to a fragment the model cannot carry exactly (`memory`, `result-register`, `callee-saved`, `stack-pointer`, `error-or-context-register`, `link-register`, `chained`, `float-argument`, `empty`, `terminator`, `undecoded`). |
-| `abi.argument-layout` | decision | strategy, callee, count | Which layout set a call's arguments. `positional` can expose stale-register fabrications; `unproven-arity` is an undeclared C callee rendered `(…)`. `async-signature-consensus` keeps only GP facts common to zero- and two-word isolation prefixes, with the FP bank independent. `async-unplaced` uses trusted source arity or an unknown tail, never hidden-word body counts. |
+| `abi.argument-layout` | decision | strategy, callee, count | Which layout set a call's arguments. For `body-reads`, count is the represented proved prefix (including unknown holes and FP words), excluding any trailing `…`; it is not a complete source arity. `positional` can expose stale-register fabrications; `unproven-arity` is an undeclared C callee rendered `(…)`. `async-signature-consensus` keeps only GP facts common to zero- and two-word isolation prefixes, with the FP bank independent. `async-unplaced` uses trusted source arity or an unknown tail, never hidden-word body counts. |
 | `abi.summary-cap` | limit | pass | A callee summary gave up: it claims nothing (`argument-reads`), or that every written register is clobbered (`preservation`). For `call-clobbers` the closure over calls stopped, and each function still waiting and every caller of one claims every callee-saved register clobbered. |
 | `types.field-named` | claim | type, offset, bytes, field, fieldType, coverage | A field name at an offset, checkable against DWARF. |
 | `types.field-unnamed` | decline | type, offset, bytes, reason | Why an access stayed `+0x…`. |
@@ -584,3 +584,14 @@ result keeps its contract, FP precision remains exact, and field aliases
 are invalidated before transport. A fragment can therefore remain a visible
 call after `values.outlined-declined` while its unchanged result register is
 known independently. No new event or schema field is needed.
+
+For `body-reads` (92e1007), a possible GP read through an opaque call does
+not place a source argument. Words beyond the proved prefix produce an
+unknown tail even when the caller has known values. Holes remain `?`;
+unresolved GP inputs also prevent positioning a floating formal. A single
+direct branch alias or the exact five-instruction FP/LR frame around a
+direct call can carry independently decoded GP/FP input proofs and widths.
+Unknown targets, incomplete entries, changed arguments and cycles add no
+proof. `lab` can therefore show a new entry seed for such a frame. Its
+`body-reads(0)` can coexist with rendered `(…)`: zero represented prefix
+words does not prove a zero-parameter declaration or a variadic function.

@@ -7902,6 +7902,11 @@ if a test was observed to fail without the fix.
   binding inlined at its one remaining use. Six GoodLinks functions lose a
   call from the pseudo view whose only remaining use is generic plumbing
   that view strips; the listing keeps it.
+The following historical layouts are superseded by the 2026-11-16
+proved-input bound (`92e1007`): MAY-only inputs now produce an unknown tail,
+and a value is shown only in a proved slot. In particular, `accessorLike()`
+now reads `accessorLike(…)`.
+
 - **FIXED (completeness): a body-reads call with untracked arguments
   rendered `()`.** A call to an in-image function no signature describes
   passes what its body may read, trimmed of trailing unknowns, so a call
@@ -12726,3 +12731,82 @@ helper effects without a decoded preservation proof, actual async isolation
 prefixes, arbitrary context-slot carry and the constant source-return gap.
 This change proves physical x0/v0 transport through a bounded class of calls;
 it does not recover a source result type from a helper's name.
+
+
+### 2026-11-16: bound body-only calls by positive input proof
+
+**FIXED for soundness (92e1007f313c4a73448cf56d6043623fb65c8700).**
+Published `46e51b6` gives Go `internal/runtime/maps.newobject` six arguments
+though its declaration takes one type pointer. A separate authored C ABI
+reduction returns n+9 and performs one opaque void effect, but renders
+`arity_one(?, ?, ?, ?, ?, 37)` because x5 happens to hold 37. The frozen
+candidate renders `arity_one(?, …)` and Go `newobject(?, …)`.
+
+- `argumentReads` remains a MAY bound for machine analysis. Source arguments
+  now stop at the positive input prefix; only proved slots receive values,
+  holes remain `?`, and possible later GP reads or incoming stack reads
+  append an unknown tail. Unknown GP inputs prevent placing FP formals;
+  mixed GP/FP source order remains unknown. The tail is uncertainty, not a
+  declaration of variadic source code. A probe count excludes the tail.
+- A single direct B alias and an exact five-instruction frame
+  (`stp x29,x30,[sp,#-16]!; mov x29,sp; bl target; ldp x29,x30,[sp],#16; ret`)
+  can carry the decoded target's independently proved GP/FP reads and widths.
+  Strict typed operands, contiguous entry, correct LR return and a declared
+  target are required. Missing/partial entries, changed inputs and cycles
+  cannot seed proof. The original identity tests remain byte-identical.
+  A shared signed offset and forwarding kind fits the unchanged 144-byte
+  summary budget; the first expanded representation failed that test and
+  was replaced, without relaxing its limit.
+- Authored assembly plus separate opaque C provider and C contracts run at
+  O0/O2/Os: **252 native observations / 147 effects**, named and stripped,
+  across all five analysis APIs. Closed GP/FP bodies, B aliases and canonical
+  framed calls retain known values. The private reduction independently
+  passes seven returns / seven effects. No private source is published.
+- All **1,830** existing test declarations remain; **eight** tests are added.
+  Seven existing test files require explicit unknown tails, preserving
+  proved prefixes, stale-word exclusions, field destinations and stack-read
+  distinctions. RuntimeResultIdentityTests and MemoryLayoutTests are
+  byte-identical. **Thirty** mutations separately compile and fail targeted
+  GP-tail/hole/mixed-bank, forwarding shape/provider/cycle/width, packed
+  kind/offset/copy and memory-budget checks. Native execution passes under
+  each. Removing framed proof also fails 80 original identity assertions
+  while 36 native lifetime observations pass. Byte-exact restore and rebuild:
+  13 focused tests pass, 408 tests / nine suites pass, and the full
+  fixture-enforced **1,838 tests / 43 suites pass (709.314 s)**.
+- Reproduce: `Tools/fixtures.sh`, `swift build --build-tests`, then
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`. Frozen matched release
+  comparison against `46e51b6`: `Tools/blast-radius.sh <base> <new> <out>
+  --real --perf`, **537 inputs / 2,152 positive cost pairs**. Instructions
+  **6,260.7G -> 6,272.0G (+0.18%)**; summed per-run physical peaks
+  **19,915 -> 19,888 MB (-0.14%)**. All default budgets pass without override.
+  All 35 expected render declines match. Both SDK xrefs match; both structured
+  SDK outputs differ. Four guarded rerenders match the measured hashes.
+- Every output delta is reviewed: structured/pseudo **146 inputs** and
+  **38,379/38,220 lines**; listing/JSON **154 inputs** and **41,762/141,948
+  lines**. In **4,971** changed JSON functions, instruction/address/branch
+  metadata and function boundaries match. Outlined/sub helper evaluation
+  order is unchanged. Of **20,645** argument sites, 18,074 add a tail, 1,559
+  decline possible words, 149 rename bindings, 594 carry nested tails/renames,
+  one combines decline and a nested tail, 190 carry nested declination or
+  producer inlining, and 65/9 gain caller/target frame proofs. Four nested
+  MainActor expressions regain the accessor argument already in the listing;
+  52 additional empty argument arrays change no value.
+- JSON changes 19,093 statements, adds 21 standalone producers and removes
+  seven bindings: two getfp calls inline once and five uniqueness checks lose
+  speculative uses under the existing runtime filter. One more uniqueness
+  expression and boxed-existential projections disappear only from source
+  output; listings keep the calls. Generic metadata becomes visible ahead of
+  unknown tails under the existing trailing-plumbing rule. Whole-image SDK
+  changes follow the same rules: **13,149 Syntax / 172 Parser functions**, all
+  headers stable. A parser hasError producer moves into its condition after
+  its false second use is declined. No renderer code changes here.
+- All **126 CLI survey invocations** pass. Dump/layout/interface/objc/xrefs
+  match; analyze changes 84 annotation lines and lab 96 layout/seed lines.
+  Readiness estimates and pinned outcome benchmarks remain unchanged.
+
+**OPEN:** arbitrary forwarding frames and transitive calls supply no positive
+source input proof; mixed GP/FP ordering and complete formal counts remain
+unknown. This change does not fix outlined x8 entry ownership, actual async
+isolation prefixes, arbitrary await context-slot carry or source return
+recovery. Candidate release SHA256:
+`89865267199f73c22b1dca27aac60122b44b5ee0094056090bc2b4c4aff3b7fa`.

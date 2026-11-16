@@ -89,15 +89,27 @@ cover results, bodies, or Objective-C methods (4 matched).
 
 ## Latest local verification
 
-At `59db870`, the scalar FP call fixture checks **44 LLVM ABI signatures**
-and **36 native observations**: 30 Swift returns with a single producer
-counter update, plus six C reads checked at their proven widths. Five new
-tests cover physical result views, outgoing arguments, exact scalar proofs
-and call retention. All **1,810** upstream test declarations and files remain
-unchanged; the enforcing suite passes **1,815 tests in 43 suites**. Fourteen
-separate mutations compile and fail their targeted checks. The release
-comparison below uses published `db2f822` as its baseline. Synthetic
-Objective-C and async return checks do not establish a native async ABI.
+At `92e1007`, body-only call layouts no longer turn possible register reads
+into source arguments. The native fixture passes **252 observations / 147
+opaque effects** at O0/O2/Os; eight new tests cover named/stripped images,
+five analysis APIs, GP/FP ambiguity and exact input forwarders. All **1,830**
+existing test declarations remain. Seven old test files change expected
+argument tails; the identity and memory-budget tests are byte-identical.
+**Thirty** separate mutations compile and fail their targeted checks. The
+full fixture-enforced suite passes **1,838 tests / 43 suites**. This does not
+prove complete source arity or arbitrary forwarding through calls.
+
+Earlier, at `7311942`, body-proven unwritten x0/v0 registers retain their
+physical values through opaque helper calls. Five tests were added; **1,830
+tests / 43 suites** passed. Native controls cover 21 assembly observations
+and 142 compiler-generated async observations. At `29bb3b2`, ambiguous async
+integer prefixes were declined; ordinary values carried through arbitrary
+await context slots remain open.
+
+Earlier, at `59db870`, scalar FP call controls checked **44 LLVM ABI
+signatures / 36 native observations** and **1,815 tests / 43 suites** passed.
+Synthetic Objective-C and async return checks did not establish a native
+async ABI.
 
 Earlier, at `7fd125d`, the scalar FP entry fixture checks **24 LLVM ABI signatures**
 and **192 native observations**. Five new tests cover entry precision,
@@ -114,10 +126,10 @@ integration test: **1,805 tests in 43 suites** passed at that commit.
 
 | Check | Result | Where |
 |---|---|---|
-| Enforcing test suite (a missing fixture fails) | 1,815 tests / 43 suites pass at `59db870` | `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`, after a fresh test build |
-| Output change against `db2f822` | FPReturns corrects 24 returns and 10 outgoing arguments; 13 producer calls remain visible when wider reads decline. DroppedArgs.Onone retains one comparison call absent from its unknown return. Structured/pseudo: 62 changed lines each; listing: 68; JSON: 150. Every changed line reviewed | `Tools/blast-radius.sh` |
-| Cost budget (instructions, footprint) | All 2,024 render/workload pairs positive; -0.04% retired instructions, +0.25% summed per-run peak footprint; all default budgets pass without an override. All four SDK outputs match | same, `--real --perf` |
-| GitHub Actions, last inspected 2026-11-16 | Run at published `db2f822` fails at Toolchain (Swift 6.2.4, older than the required 6.4). Fixtures, Build and Enforcing suite are skipped. This is not a CI test pass | [run 43838075389](https://github.com/CamdenBopp/swiftdc/actions/runs/43838075389), [CI.md](CI.md) |
+| Enforcing test suite (a missing fixture fails) | 1,838 tests / 43 suites pass at `92e1007` (709.314 s) | `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`, after a fresh test build |
+| Output change against `46e51b6` | Possible body inputs decline to an unknown tail; exact frame forwarders retain independently proved inputs. Structured/pseudo: 38,379/38,220 changed lines in 146 inputs; listing/JSON: 41,762/141,948 in 154. Every difference reviewed; instruction and function metadata match | `Tools/blast-radius.sh` |
+| Cost budget (instructions, footprint) | All 2,152 render/workload pairs positive; +0.18% retired instructions, -0.14% summed per-run peak footprint; every default budget passes without override. Both SDK xrefs match; two structured SDK outputs differ under the same reviewed argument rules | same, `--real --perf` |
+| GitHub Actions, last inspected 2026-11-16 | Run at published `46e51b6` fails at Toolchain. Fixtures, Build and Enforcing suite are skipped. The runner's Swift 6.2.4 is older than required 6.4. This is not a CI test pass | [run 43906349305](https://github.com/CamdenBopp/swiftdc/actions/runs/43906349305), [CI.md](CI.md) |
 | Independent execution of rendered expressions | return values of the differential-oracle fixtures, integer and floating point (compared bit for bit). Not checked by execution: which way a branch went, registers at call sites, results beyond the first register, memory writes | `DifferentialOracleTests` |
 
 Render exit statuses match the baseline, including **35** identical expected
@@ -185,9 +197,10 @@ constant (275a60b); tail returns to getters and runtime entries
 (466b14a) and their in-image twin guard (3cb21d9); `AnyObject.Type`
 (9997a59); UTF-16 constant strings (89920f9); autorelease pools and
 `objc_retainBlock` hidden as noise (a1200f7); `objc_opt_new` (8347f86).
-Still open from that review's list: an outlined helper given a false x0
-result, a body-entered loop losing its exit test, and the malformed
-condition from reused flags.
+Still open from that review's list: false helper results without a decoded
+preservation proof, a body-entered loop losing its exit test, and the
+malformed condition from reused flags. Body-proven unwritten x0/v0 transport
+was fixed in `7311942`; outlined entry x8 ownership remains open.
 
 ## Not established
 
