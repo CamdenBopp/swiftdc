@@ -27,7 +27,7 @@ import Testing
 }
 
 /// A bit-level operator's result is an integer whatever it read. A word
-/// moved by `memcpy` has no known register file, so the Double arrives bare:
+/// moved by `memcpy` retains the FP store's encoding as a raw integer:
 /// `str d0, [sp, #8]; memcpy(sp, sp + 8, 8); ldrb w8, [sp]; cmp w8, #7`
 /// (`floatbitswidth.s`), and the 7 rendered as the Double `3.5e-323`. A byte
 /// reversal (`ldr x8, [sp]; rev x8, x8`) is integer-only the same way.
@@ -39,10 +39,10 @@ import Testing
         try #require(functions.first { $0.displayName.hasPrefix("FloatBitsWidth.\(name)(") }).renderStructured()
     }
     let copied = try render("copied")
-    #expect(copied.contains("(arg0 & 255) != 7"), "\(copied)")
+    #expect(copied.contains("(arg0.bitPattern & 255) != 7"), "\(copied)")
     #expect(!copied.contains("e-323"))
     let swapped = try render("swapped")
-    #expect(swapped.contains("byteSwap64(arg0) != 7"), "\(swapped)")
+    #expect(swapped.contains("byteSwap64(arg0.bitPattern) != 7"), "\(swapped)")
     #expect(!swapped.contains("e-323"))
 }
 

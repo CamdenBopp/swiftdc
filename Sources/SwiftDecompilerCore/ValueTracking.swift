@@ -3617,7 +3617,7 @@ public struct ValueTracer: Sendable {
                 if value != .unknown, let offset, dest.widthBits <= 64,
                    case .immediate(let file)? = registers.frame[offset, .bank] {
                     switch (dest.kind, file) {
-                    case (.gpr, 32), (.gpr, 64):
+                    case (.gpr, 16), (.gpr, 32), (.gpr, 64):
                         value = Self.bitPattern(of: value, bits: Int(file))
                     case (.vector, 0):
                         let stored = registers.frame[offset, .width]
@@ -5076,12 +5076,26 @@ public struct ValueTracer: Sendable {
         }
     }
 
-    /// A byte copy reads a computed FP result's encoding, including when the
-    /// copy is shorter than its semantic value. Untagged values stay as before.
+    /// A byte copy reads encodings, including for bare FP arguments whose
+    /// interpretation is supplied only by the register bank of their store.
     private static func stackBits(at offset: Int64, bytes: Int, in registers: State) -> AbstractValue {
         let value = stackValue(at: offset, bytes: bytes, in: registers)
         guard value != .unknown, (1...8).contains(bytes) else { return value }
-        return integerRegisterValue(value, bits: bytes * 8)
+        let raw: AbstractValue
+        if case .immediate(let bank)? = registers.frame[offset, .bank], [16, 32, 64].contains(bank) {
+            raw = bitPattern(of: value, bits: Int(bank))
+            if bank <= bytes * 8 { return raw }
+        } else {
+            raw = integerRegisterValue(value, bits: bytes * 8)
+        }
+        // A previous copy may already have erased the producer's bank. Its
+        // raw encoding still must be restricted to this copy's byte count.
+        guard bytes < 8 else { return raw }
+        let mask = (UInt64(1) << (bytes * 8)) - 1
+        if case .immediate(let word) = raw { return .immediate(word & mask) }
+        if case .unary(.bitPattern(let width), _) = raw,
+           [16, 32, 64].contains(width), width <= bytes * 8 { return raw }
+        return fitsLowMask(raw, mask: mask) ? raw : .binary(.bitAnd, raw, .immediate(mask))
     }
 
     /// Read one scalar or a SIMD-packed run of eight-byte stack values.
@@ -5130,7 +5144,7 @@ public struct ValueTracer: Sendable {
         var file: AbstractValue?
         if let register, register.kind == .gpr || (register.kind == .vector && register.widthBits == 128) {
             file = .immediate(0)
-        } else if let register, register.kind == .vector, register.widthBits == 64 || register.widthBits == 32 {
+        } else if let register, register.kind == .vector, [16, 32, 64].contains(register.widthBits) {
             file = .immediate(UInt64(register.widthBits))
         }
         let words: [AbstractValue]

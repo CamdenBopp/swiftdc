@@ -10333,7 +10333,7 @@ Commit messages on dev stay as they are; these are the true records.
   (-0.27%). All default budgets pass. All four large SDK outputs match
   with zero exits. Publication remains through the original gate.
 
-- **FIXED (soundness): retain computed scalar FP precision across physical register views.**
+- **FIXED (soundness, `5a92dc9`): retain computed scalar FP precision across physical register views.**
   A Swift-ABI Double function containing `mov w8, #0x3c00;
   fmov h0, w8; fneg h0, h0; ret` returns Double bits `0xbc00`
   natively. At `58bda36` it rendered `-Float16(1.0)`; the candidate
@@ -10407,10 +10407,57 @@ Commit messages on dev stay as they are; these are the true records.
   Independent Mach-O segment mapping confirms literal bits `0x8533ce2a`.
   Publication remains through the original gate.
 
-- **OPEN (soundness): byte copies of untagged FP arguments can lose their raw-bit interpretation.**
-  An owned half-argument reduction stores h0, copies two bytes with
-  memcpy, and reloads an integer. Native execution preserves its payload;
-  the current rendering can instead mask the numeric argument directly.
-  Equivalent Float and Double copies need the same bank evidence.
-  Computed FP results are covered above; general argument-bank handling
-  remains a separate behavior and requires its own proof and commit.
+- **FIXED (soundness): preserve scalar encodings and byte widths across copies.**
+  At `5a92dc9`, an owned Float16 argument stored with `str h0`, copied by
+  memcpy and loaded with `ldrh w0` renders `(arg0 & 0xffff)`; the native
+  result is the argument's bit pattern. Float and Double copies likewise
+  lose their interpretation, including byte/halfword truncation and
+  memcpy/memmove results. A direct half spill/reload has the same defect.
+
+  Stack facts now record the 16-bit FP bank as well as 32/64. GPR half
+  reloads read that bank's encoding. Memory helpers use the source store's
+  bank to recover raw bits even when the abstract value is a bare argument,
+  then truncate a short copy at the copy boundary. This normalization
+  also applies to already-raw values and literals after a preceding copy,
+  and to short copies of integer words. Already-tagged computed results
+  retain their existing interpretation. Integer-bank copies stay integer;
+  partial overwrites continue to invalidate the old whole-word snapshot.
+  No claim is made about uninitialized bytes beyond a scalar store.
+
+  `build-fp-copies.swift` independently validates **24 LLVM signatures**.
+  All authored functions have exact pseudo/structured assertions through
+  listing, array, filtered, streaming and analyzeEach paths. The separate
+  native oracle passes **192 observations** over zeros, signed zero,
+  subnormals, finite values, infinities, signaling/quiet NaNs and all-one
+  payloads. Cases cover direct loads, memcpy, memmove, short copies, FP
+  reloads, partial overwrites, full replacement and integer-bank controls.
+  Synthetic direct and chained result-buffer copies test raw encodings,
+  byte widths, literal truncation and integer-bank sources without a
+  later load that could repair a missing copy-boundary fact. The chained
+  witness first exposed 14 failures after single-copy cases were green;
+  frame chunks now normalize at every copy boundary.
+
+  A fresh fixture-enforced suite passes **1,468 tests in 39 suites**.
+  All **nine independent compiled mutations** are caught: loss of half
+  store/load banks, loss of copy interpretation or its precision, skipped
+  byte truncation, treating the integer bank as FP, missing literal masks,
+  bypassing normalization for already-raw copies, and accepting an encoding
+  wider than the copied chunk. Both native oracles remain green in each
+  final red run. Restored sources are rebuilt before the final suite.
+  Matched releases built in the same scratch path are compared with
+  `Tools/blast-radius.sh <baseline> <candidate> <out> --real --perf`:
+  **359 inputs in four views plus four SDK workload pairs**, with all
+  **1,440 cost rows** positive. Instructions are 5,142.7G to 5,145.4G
+  (+0.05%); summed per-render physical peaks are 18,053 MB to 18,160 MB
+  (+0.59%). All default budgets pass. All four large SDK outputs match
+  with zero exits.
+
+  Structured, pseudo and listing each change **28 lines in two fixtures**:
+  twelve returns in `libFPCopies.dylib` now read the argument's encoding,
+  and `libFloatBitsWidth.dylib`'s copied byte mask and byte swap likewise
+  use `arg0.bitPattern`. JSON changes 56 lines: fourteen annotations and
+  fourteen statements, with no other leaf changes. Dump, layout, interface,
+  objc and xrefs (`--unreferenced`) match with zero exits; analyze changes
+  only the new fixture's twelve return annotations. The final source
+  matches the restored mutation snapshot and the measured release remains
+  frozen. Publication remains through the original gate.

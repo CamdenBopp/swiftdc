@@ -635,6 +635,8 @@ echo "==> half/GPR bit moves preserve low sixteen bits (build-half-moves.swift)"
 swift build-half-moves.swift
 echo "==> computed scalar FP widths and mode-independent raw views (build-fp-results.swift)"
 swift build-fp-results.swift
+echo "==> scalar FP arguments survive byte copies (build-fp-copies.swift, LLVM -O)"
+swift build-fp-copies.swift
 
 echo "==> fmov immediates in vector and half-precision registers (fpimmediates.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name FPImmediates fpimmediates.swift -o libFPImmediates.dylib
