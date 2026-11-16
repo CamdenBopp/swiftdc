@@ -199,8 +199,11 @@ wrong output first, by how much ordinary code it touches.
    and metadata now decline. Independent FP and dedicated self facts remain.
    **OPEN:** recovering which isolation prefix a particular entry uses,
    including its shifted stack arguments.
-7. **OPEN: an outlined fragment's x0** is taken for a call result though
-   the body summary proves it unwritten, and its x8 for a result buffer.
+7. **FIXED in part (7311942): an outlined fragment's x0/v0** is no longer
+   taken for a new call result when its decoded body proves it unwritten.
+   The physical input survives, retaining FP precision; typed Swift/C result
+   contracts keep priority. **OPEN:** an outlined entry's x8 is still seeded
+   as a result buffer, and other unmodelled helper effects remain.
 8. **OPEN: the rest of the wrong-render tables** in the findings
    document: metatype arguments stripped as plumbing, generic cast types
    cut short, a tail-called retain printing its call twice, a throw
@@ -12641,3 +12644,85 @@ fixture and `swiftdc lab Fixtures/Sample/libAsyncIsolation.O.nonsending.dylib
 -f 'AsyncIsolation.constant'`: the LDR of ResumeParent, MOV w0,#17 and BR
 establish the exit value. The positive control checks that dataflow fact;
 recovering its source return remains open.
+
+
+### 2026-11-16: preserve unwritten result registers through helper calls
+
+**FIXED for soundness (731194275752bd3e45bedcaf20b26a6fa21f5d9c).**
+Published `d6bcfe2` renders native `-Osize` async driver arguments as nested
+`OUTLINED_FUNCTION` results where the machine carries the literal **0.25**
+through helpers. An authored reduction renders
+`return (OUTLINED_FUNCTION_0(37, counter) + 5)` though native execution
+returns **42** and the helper leaves x0 untouched.
+
+- Direct calls use existing decoded-body proofs for x0 and v0 independently.
+  A proven unwritten register keeps its input, including its exact FP
+  precision. Missing summaries, writes and outgoing control flow supply no
+  preservation proof. Values are copied after memory/field invalidation,
+  so unchanged hardware never revives a stale symbolic field value.
+  Swift/C declared result banks, String, tuple and aggregate contracts retain
+  priority: a typed identity still produces its logical call result. Existing
+  FP tests caught that distinction in the first patch.
+- The authored assembly library and stripped copy exercise both banks,
+  helpers that write either bank, and one producer consumed by both helper
+  and return. Stores and x19 writes keep helpers opaque. The native C driver
+  passes **21 observations / 21 helper effects**. Existing compiler-generated
+  concurrent/nonsending `-Osize` drivers pass another **142 observations**
+  with real Task/executor frames; all five analysis APIs retain their proven
+  0.25 arguments. These compiler controls are separate from the assembly
+  reduction.
+- All **1,825** existing test function declarations remain; **five** tests
+  are added. One old expectation changes from an invented `r4` receiver to
+  **2.0**: the constructor target is a single RET, the caller loads 2.0 into
+  d0 and copies it through v8 into the receiver's d2, and native execution
+  prints the expected dot product **31.0**. The receiver's second word stays
+  unknown; the no-integer-receiver assertion remains.
+- **16 distinct mutations separately compile and fail** GP/FP body-proof,
+  transport, stale-field, missing-summary and logical-result contract checks.
+  Native 21 passes under each. After adding real compiler controls, removing
+  the FP proof again makes both mix/mixOuter literal checks fail while the
+  combined **163 native observations** pass. Canonical sources are restored
+  byte-exact and rebuilt; **16 focused checks** and the full fixture-enforced
+  **1,830 tests / 43 suites pass (673.391 s)**. The first full run caught only
+  the independently verified receiver expectation. Reproduce:
+  `Tools/fixtures.sh`, `swift build --build-tests`, then
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+- Matched frozen releases against `d6bcfe2`, using
+  `Tools/blast-radius.sh <base> <new> <out> --real --perf`, cover **525 inputs**
+  in four views plus four whole-image SDK workloads: **2,104 positive cost
+  pairs**. Instructions **6,243.3G -> 6,244.9G (+0.03%)**; summed per-run
+  physical peaks **19,634 -> 19,736 MB (+0.52%)**. All default budgets pass
+  without override; all four whole-image SDK outputs match. Render exits
+  match, including **35 identical expected preflight declines**, not
+  successful decompilations. The final rebuilt release is byte-identical
+  to the measured binary.
+- Every difference is reviewed: **16 files** per view; **185 structured**,
+  **184 pseudo**, **212 listing**, **475 JSON** changed lines. **50 functions**
+  retain instructions, addresses, callee metadata, rendered call counts and
+  helper evaluation order. JSON changes **72 statements**, adds **40** (29
+  standalone calls, three producer bindings, eight raw register returns),
+  changes **96 annotations** and adds **10**. One added condition is the
+  existing low-byte test of arg1 through an identity RET. Its **43 changed
+  argument words** are ten temporary renames, 21 references to the same
+  prior producer, five physical FP literals and seven false GP results
+  declined; one indirect argument list gains its preserved arg0.
+- The other render effects follow those facts: 15 fake/unused bindings
+  disappear with their calls retained; seven existing producers gain a
+  binding; five later bindings renumber. Two print arguments bind the actual
+  allocation instead of an outlined helper; three stripped enum stores name
+  arg0; two false helper returns decline. Two unused String-copy bindings
+  disappear in the plugin-message SDK fixture, with both calls retained.
+  Raw frame/constant register return comments remain explicit. Structured
+  libc-twin output already inferred one bare return where JSON had no
+  statement; the new raw comment explains that spelling difference.
+- All **28 CLI survey invocations** pass. Dump/layout/interface/objc/xrefs
+  are identical; analyze changes nine annotation pairs per library, lab
+  seven named/eight stripped register-value pairs. Instruction/address
+  prefixes stay unchanged. Readiness estimates and pinned outcome benchmarks
+  remain unchanged.
+
+**OPEN:** outlined entry x8 seeding, transport of other untouched registers,
+helper effects without a decoded preservation proof, actual async isolation
+prefixes, arbitrary context-slot carry and the constant source-return gap.
+This change proves physical x0/v0 transport through a bounded class of calls;
+it does not recover a source result type from a helper's name.

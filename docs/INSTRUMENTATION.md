@@ -576,3 +576,11 @@ metadata-only roles establish neither an awaited result nor its owner.
 missing or shifted stack words stay unknown. FP facts and the dedicated Swift
 self register are independent of that ambiguity. `async-unplaced` declines
 body-read arity inference when the hidden prefix cannot be placed.
+
+For an opaque in-image call, `lab` can retain an incoming x0 or v0 value when
+its decoded body proves that register unwritten (7311942). This is physical
+transport, not a new result from that helper. A declared Swift/C logical
+result keeps its contract, FP precision remains exact, and field aliases
+are invalidated before transport. A fragment can therefore remain a visible
+call after `values.outlined-declined` while its unchanged result register is
+known independently. No new event or schema field is needed.
