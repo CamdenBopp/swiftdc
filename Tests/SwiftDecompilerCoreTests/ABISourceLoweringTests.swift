@@ -422,7 +422,7 @@ struct ABISourceLoweringTests {
     }
     #expect(!(try text("fill")).contains("0x4008000000000000"))
     #expect(!(try text("fillF")).contains("0x3ff8000000000000"))
-    #expect(try text("half").contains("return ((arg0 * 3.0) + 0.5)"))
+    #expect(try text("half").contains("return ((arg0 * Float16(3.0)) + Float16(0.5))"))
     #expect(try text("callHalf").contains("FPImmediates.half(1.5)"))
 }
 

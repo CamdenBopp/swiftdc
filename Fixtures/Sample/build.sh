@@ -629,6 +629,8 @@ echo "==> prefix operands retain grouping before FP bit-pattern reads (floatpost
 $CLANG -arch arm64 -dynamiclib floatpostfix.s -o libFloatPostfix.dylib
 echo "==> exact NaN literals at half, single and double precision (build-nan-literals.swift)"
 swift build-nan-literals.swift
+echo "==> scalar floating literals retain width and domain (build-fp-pools.swift)"
+swift build-fp-pools.swift
 
 echo "==> fmov immediates in vector and half-precision registers (fpimmediates.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name FPImmediates fpimmediates.swift -o libFPImmediates.dylib

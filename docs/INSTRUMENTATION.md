@@ -235,6 +235,10 @@ exact `bits`. Unknown values, provenance requiring an external oracle, and
 export truncation remain explicit. The export is bounded to depth 32 / 1,024
 expanded nodes, with explicit truncation markers. It does not add missing machine widths or turn a register fact into a
 proven source ABI. Floating-point immediates are raw bit patterns.
+The `loaded-bits` provenance leaf retains `address` and `bytes` for a narrow
+absolute load. It is raw data, not a pointer slot or a proven FP value;
+an FP operation supplies the interpretation, and literal resolution reads
+only that recorded byte count.
 
 ```json
 {"schema":"swiftdc-value/1","expression":{"kind":"binary","operator":"unsigned-less",

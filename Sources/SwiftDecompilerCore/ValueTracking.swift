@@ -140,7 +140,8 @@ public enum AbstractUnaryOperator: Equatable, Sendable {
     /// `fcvtzu`): `Int(x)`, `UInt32(x)`.
     case toInteger(signed: Bool, bits: Int)
     /// The float of `bits` width whose IEEE bit pattern is the operand, an
-    /// immediate: a float operation's constant operand. Bare, it read as the
+    /// immediate or deferred literal load: a float operation's constant
+    /// operand. Bare, it read as the
     /// integer it is spelled as (`t / 0x4059000000000000`, for `t / 100.0`).
     case floatConstant(bits: Int)
     /// A float's IEEE bits of `bits` width read as an integer (`fmov x8,
@@ -177,6 +178,10 @@ public indirect enum AbstractValue: Equatable, Sendable {
     /// `__objc_selrefs` slot, say); callers that can't resolve it should treat
     /// it as `.unknown`.
     case loaded(UInt64)
+    /// Raw bits of a narrow absolute load. It is not a pointer slot; retaining
+    /// the byte count lets enrichment read a final half/single literal without
+    /// borrowing bytes from the next object or section.
+    case loadedBits(address: UInt64, bytes: Int)
     /// The word at `offset` in the object the pointer stored at `slot`
     /// points to: the second load of `ldur x8, [meta, #-0x8]; ldr x8, [x8,
     /// #0x28]`, a value-witness slot. Whether the image's bytes fix it
@@ -3611,6 +3616,8 @@ public struct ValueTracer: Sendable {
                 let isPointerLoad = detail.id == AARCH64_INS_LDR || detail.id == AARCH64_INS_LDUR
                 if isPointerLoad, dest.kind == .vector, dest.widthBits == 128 {
                     write(dest, .aggregate([.loaded(address), .loaded(address &+ 8)]), into: &registers)
+                } else if isPointerLoad, [16, 32].contains(dest.widthBits) {
+                    write(dest, .loadedBits(address: address, bytes: dest.widthBits / 8), into: &registers)
                 } else {
                     write(dest, isPointerLoad ? .loaded(address) : .unknown, into: &registers)
                 }
@@ -4415,7 +4422,7 @@ public struct ValueTracer: Sendable {
         return .unary(op, value)
     }
 
-    /// An immediate read from a float register as a float operation's operand
+    /// An immediate or deferred load read from a float register as an operand
     /// is an IEEE bit pattern of the operation's width (`mov x8,
     /// #0x4059000000000000; fmov d1, x8; fdiv d0, d0, d1` divides by 100.0).
     /// Marked, it renders as its decimal wherever the expression goes; bare,
@@ -4423,7 +4430,7 @@ public struct ValueTracer: Sendable {
     static func floatOperand(_ value: AbstractValue, bits: Int) -> AbstractValue {
         guard [16, 32, 64].contains(bits) else { return .unknown }
         switch value {
-        case .immediate: return .unary(.floatConstant(bits: bits), value)
+        case .immediate, .loaded, .loadedBits: return .unary(.floatConstant(bits: bits), value)
         case .select(let condition, let whenTrue, let whenFalse):
             // Each arm is a word of IEEE bits; the condition remains integer.
             guard expressionDepth(value) < 8 else { return .unknown }

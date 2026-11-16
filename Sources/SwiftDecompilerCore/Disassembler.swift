@@ -3882,15 +3882,50 @@ public struct Disassembler: Sendable {
         /// anywhere else, including every writable or fixup-bearing section,
         /// where the on-disk bytes are not what runs.
         func literalWord(at address: UInt64) -> UInt64? {
+            literalBits(at: address, bytes: 8)
+        }
+
+        /// A scalar literal at its load width. Section and segment bounds are
+        /// checked by subtraction so an untrusted address cannot wrap an end.
+        func literalBits(at address: UInt64, bytes count: Int) -> UInt64? {
+            guard [2, 4, 8].contains(count) else { return nil }
+            let width = UInt64(count)
             let literalSections: Set<String> = ["__const", "__literal4", "__literal8", "__literal16"]
-            guard let section = machO.sections.first(where: {
+            guard let section = machO.sections64.first(where: {
                 $0.segmentName == "__TEXT" && literalSections.contains($0.sectionName)
-                    && UInt64($0.address) <= address && address + 8 <= UInt64($0.address) + UInt64($0.size)
+                    && $0.layout.addr <= address && $0.layout.size >= width
+                    && address - $0.layout.addr <= $0.layout.size - width
+            }), section.layout.nreloc == 0 else { return nil }
+            switch section.flags.type {
+            case .zerofill?, .gb_zerofill?, .thread_local_zerofill?: return nil
+            default: break
+            }
+            guard let segment = machO.segments64.first(where: {
+                $0.segmentName == "__TEXT" && !$0.initialProtection.contains(.write)
+                    && $0.layout.vmaddr <= address && $0.layout.vmsize >= width
+                    && address - $0.layout.vmaddr <= $0.layout.vmsize - width
             }) else { return nil }
-            _ = section
+            let offset: Int
+            if machO.isLoadedFromDyldCache {
+                // Slidable mappings may encode pointers rather than literal bits.
+                guard let mapping = machO.fullCache?.mappingAndSlideInfo(for: address),
+                      mapping.layout.slideInfoFileSize == 0,
+                      mapping.layout.address <= address, mapping.layout.size >= width,
+                      address - mapping.layout.address <= mapping.layout.size - width else { return nil }
+                offset = machO.resolveOffset(at: address)
+            } else {
+                let delta = address - segment.layout.vmaddr
+                guard segment.layout.filesize >= width,
+                      delta <= segment.layout.filesize - width else { return nil }
+                let (rawOffset, overflow) = segment.layout.fileoff.addingReportingOverflow(delta)
+                guard !overflow, rawOffset <= UInt64(Int.max) - width,
+                      !chainedFixups.overlapsPointer(at: rawOffset, bytes: count, in: machO)
+                else { return nil }
+                offset = Int(rawOffset)
+            }
             guard let bytes: [UInt8] = try? machO.readElements(
-                offset: machO.resolveOffset(at: address), numberOfElements: 8
-            ), bytes.count == 8 else { return nil }
+                offset: offset, numberOfElements: count
+            ), bytes.count == count else { return nil }
             return bytes.enumerated().reduce(UInt64(0)) { $0 | (UInt64($1.element) << (8 * UInt64($1.offset))) }
         }
 
@@ -4162,6 +4197,7 @@ public struct Disassembler: Sendable {
         private let lock = NSLock()
         private var binds: [UInt64: String] = [:]
         private var rebases: [UInt64: UInt64] = [:]
+        private var unresolved: Set<UInt64> = []
         private var built = false
 
         func symbol(at fileOffset: UInt64, in machO: MachOFile) -> String? {
@@ -4186,6 +4222,22 @@ public struct Disassembler: Sendable {
             return rebases
         }
 
+        /// Reject every byte of a chained pointer, including a narrow load
+        /// starting inside it. Unresolved entries are not literal data either.
+        func overlapsPointer(at fileOffset: UInt64, bytes: Int, in machO: MachOFile) -> Bool {
+            guard (1...8).contains(bytes) else { return true }
+            lock.lock()
+            defer { lock.unlock() }
+            build(machO)
+            let (end, overflow) = fileOffset.addingReportingOverflow(UInt64(bytes))
+            guard !overflow else { return true }
+            let start = fileOffset - min(fileOffset, 7)
+            for offset in start..<end {
+                if binds[offset] != nil || rebases[offset] != nil || unresolved.contains(offset) { return true }
+            }
+            return false
+        }
+
         private func build(_ machO: MachOFile) {
             guard !built else { return }
             built = true
@@ -4197,12 +4249,18 @@ public struct Disassembler: Sendable {
                     let offset = UInt64(pointer.offset)
                     guard seen.insert(offset).inserted else { continue }
                     if pointer.fixupInfo.rebase != nil {
-                        if let target = pointer.rebaseTargetRuntimeOffset(for: machO) { rebases[offset] = target }
+                        if let target = pointer.rebaseTargetRuntimeOffset(for: machO) {
+                            rebases[offset] = target
+                        } else {
+                            unresolved.insert(offset)
+                        }
                     } else if pointer.fixupInfo.bind != nil,
                               let (ordinal, _) = pointer.bindOrdinalAndAddend(for: machO),
                               imports.indices.contains(ordinal),
                               let name = fixups.symbolName(for: imports[ordinal].info.nameOffset) {
                         binds[offset] = name
+                    } else {
+                        unresolved.insert(offset)
                     }
                 }
             }
@@ -5988,7 +6046,7 @@ public struct Disassembler: Sendable {
     /// Decimal NaN spelling discards its sign, signaling bit and payload.
     /// Classify its raw encoding before any FP conversion (including half to
     /// single), and construct precisely that value at its original width.
-    static func renderFloatingConstant(bits: UInt64, width: Int) -> String? {
+    static func renderFloatingConstant(bits: UInt64, width: Int, explicitWidth: Bool = false) -> String? {
         let format: (name: String, exponent: UInt64, fraction: UInt64, pattern: UInt64)
         switch width {
         case 64: format = ("Double", 0x7ff0000000000000, 0x000fffffffffffff, bits)
@@ -6000,11 +6058,15 @@ public struct Disassembler: Sendable {
            format.pattern & format.fraction != 0 {
             return "\(format.name)(bitPattern: 0x\(String(format.pattern, radix: 16)))"
         }
-        switch width {
-        case 64: return String(Double(bitPattern: format.pattern))
-        case 32: return String(Float(bitPattern: UInt32(format.pattern)))
-        default: return String(Float(Float16(bitPattern: UInt16(format.pattern))))
+        let decimal: String = switch width {
+        case 64: String(Double(bitPattern: format.pattern))
+        case 32: String(Float(bitPattern: UInt32(format.pattern)))
+        default: String(Float(Float16(bitPattern: UInt16(format.pattern))))
         }
+        // A typed argument/return supplies its literal's precision. Inside an
+        // expression it can instead default to Double: Double(0.1) differs
+        // from widening the Float whose bits are 0x3dcccccd.
+        return explicitWidth && width < 64 ? "\(format.name)(\(decimal))" : decimal
     }
 
     static func renderTypedConstant(bits: UInt64, type: String) -> String? {
@@ -6373,6 +6435,11 @@ public struct Disassembler: Sendable {
         // that arithmetic expressions can contain loaded values.
         func sanitizeValue(_ value: AbstractValue) -> AbstractValue {
             switch value {
+            case .loadedBits(let address, let bytes):
+                guard [2, 4].contains(bytes),
+                      let pattern = resolver.literalBits(at: address, bytes: bytes)
+                else { return .unknown }
+                return .immediate(pattern)
             case .loaded(let address) where resolver.loadedName(at: address) == nil:
                 // A load from the read-only literal pool is the constant itself
                 // (the compiler's lowering of a non-encodable immediate); any
@@ -8043,7 +8110,7 @@ public struct Disassembler: Sendable {
             switch value {
             case .genericMetadata(let name):
                 return "type metadata for \(name)"
-            case .unknown, .callResultHigh, .loadedThrough, .loadedFrom, .selfIsaSnapshot, .genericWitnessTable:
+            case .unknown, .callResultHigh, .loadedBits, .loadedThrough, .loadedFrom, .selfIsaSnapshot, .genericWitnessTable:
                 // A String result's second word alone is no source value, nor
                 // is a word read through a loaded pointer (a call through one
                 // is named by its target, `annotateIndirectControlFlowTargets`).
@@ -8277,7 +8344,7 @@ public struct Disassembler: Sendable {
                     return "\(bits == 64 ? "Double" : "Float")(bitPattern: \(inner))"
                 case .floatConstant(let bits):
                     guard case .immediate(let pattern) = operand else { return unknownRenderedValue() }
-                    return Self.renderFloatingConstant(bits: pattern, width: bits) ?? unknownRenderedValue()
+                    return Self.renderFloatingConstant(bits: pattern, width: bits, explicitWidth: true) ?? unknownRenderedValue()
                 }
             case .aggregate(let values):
                 // A multi-word result's two words together: the call.

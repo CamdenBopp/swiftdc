@@ -10188,13 +10188,92 @@ Commit messages on dev stay as they are; these are the true records.
   fields, instructions and functions match. All four large SDK outputs
   match with zero exits. Publication remains through the original gate.
 
-- **OPEN (soundness): scalar FP literal-pool loads can lose their domain.**
-  `ValueTracer.floatOperand` marks immediates as FP bits but passes `.loaded`
-  through; after literal resolution, a unary expression can instead see an
+- **FIXED (soundness): preserve scalar literal-pool widths and FP domains.**
+  Before this fix, `ValueTracer.floatOperand` marked immediates as FP bits
+  but passed `.loaded` through; after literal resolution, a unary expression could see an
   untyped integer. An authored `ldr d0` from `__TEXT,__const`, followed by
   `fneg d0, d0; fmov x0, d0`, renders `return -0x4004000000000000` for
   2.5, while native execution returns `0xc004000000000000`. The NaN variant
-  renders `return -0x7ff8000000000001`, while native execution returns
-  `0xfff8000000000001`. Both the baseline and NaN-formatting candidate
-  reproduce this separate data-flow defect; it occurs before the formatter
-  receives a proven floating constant.
+  rendered `return -0x7ff8000000000001`, while native execution returns
+  `0xfff8000000000001`. The pre-fix release reproduces both data-flow
+  defects, before the formatter receives a proven floating constant.
+  The corrected expression is
+  `(-2.5).bitPattern`; the NaN uses its exact Double bit-pattern constructor
+  before negation and the bit-pattern read.
+
+  Absolute half/single loads now retain their physical byte count in a raw
+  `loadedBits` value. They do not become pointer slots or semantic floats.
+  FP operations attach their interpretation before enrichment resolves the
+  literal. This distinction matters for `ldr s0; ret` returning Double:
+  native D0 contains the zero-extended raw word, not a widened Float.
+  Inside expressions, narrow constants carry explicit Float/Float16
+  constructors so widening preserves their original rounding:
+  `Double(Float(0.1))`, rather than `Double(0.1)`.
+
+  The scalar reader accepts only 2/4/8 backed bytes in read-only TEXT
+  literal sections, within both section and segment bounds. It rejects
+  section relocations, zero-fill, offset overflow, unrepresentable offsets,
+  and any byte overlapping a known or unresolved chained pointer. Cache
+  reads additionally require a containing mapping without slide info.
+  Narrow reads at actual section ends no longer borrow adjacent bytes.
+
+  Two authored public fixtures check 25 emitted LLVM ABI signatures before
+  assembly. Twenty-eight native observations cover all three precisions,
+  finite and NaN negation, addition, conversions, raw GPR loads, alternate
+  FP register views, section ends and changing writable globals. Exact
+  pseudo/structured returns are checked through all five analysis APIs;
+  separate metadata-only copies exercise reader rejection without dyld
+  loading or executing malformed images.
+
+  Seventeen compiled mutations independently remove wide/narrow FP tagging
+  (41/81 issues), load/read geometry (100/100), explicit precision (60),
+  literal-section admission (2), section bounds (8), relocation/zero-fill/
+  write-protection/file-backing checks (one each), fixup admission (4),
+  interior overlap (1), unresolved fixups (1), and snapshot width (1).
+  Removing unsigned-offset overflow or signed-offset representability
+  separately traps the malformed-input test runner (signal 5). The native
+  oracle passes under every mutation. Restoring and rebuilding reproduces
+  the original CLI hash and passes the focused tests.
+
+  The existing selected-lane and half-immediate assertions now require
+  explicit narrow constructors inside expressions. After a fresh
+  `swift build --build-tests -j 2`, the fixture-enforced suite passes
+  **1,457 tests in 39 suites**. The matched release candidate also fixes
+  both original standalone finite/NaN reductions.
+
+  Structured/pseudo output changes fourteen fixture images. Eighteen
+  returns in the two new pool fixtures gain correct FP interpretation,
+  byte width or section-end recovery. Sixteen existing expressions in
+  Conversions, FPImmediates, FloatReinterpret, ObjCOutgoing, ObjCVReturns
+  and SelectedVectorLanes gain explicit Float/Float16 precision. Four
+  coroutine allocation arguments across the optimized and stripped
+  CoroAccessors images simplify masked adjacent-field bytes to `0`:
+  independent objdump and raw reads at 0xfa4/0xfb4 confirm `ldr w1` reads
+  four zero bytes, followed by `0xc163`/`0x8f32` in the next field.
+  Structured and pseudo have identical 76 changed lines.
+  Listing changes 156 lines in 23 images: the same 38 annotations plus
+  forty async allocation arguments in nine more images. Each additional
+  argument replaces an over-read 64-bit value under `& 0xffffffff` with its
+  exact low word (16/32/48); independent arithmetic checks confirm every
+  old/new masked value agrees. All instruction text remains identical.
+  JSON changes 322 lines in the same 23 images: 78 annotations, 38
+  statements and 45 argument strings (44 low-word reads, one explicit
+  Float constructor). All other fields, functions and instructions match.
+
+  Matched release comparison against `a53d2a5` with the original
+  `Tools/blast-radius.sh <baseline> <candidate> <out> --real --perf` covers
+  **356 inputs in four views plus four SDK workload pairs**, with all
+  1,428 cost rows positive. Instructions are 5,133.7G to 5,132.2G
+  (-0.03%); summed per-render physical peaks are 17,864 MB to 17,908 MB
+  (+0.25%). All default budgets pass. All four large SDK outputs match
+  with zero exits. Publication remains through the original gate.
+
+- **OPEN (soundness): a half-to-GPR bit move can retain FP arithmetic.**
+  An authored Swift-ABI UInt32 function containing `fmov h0, #1.0;
+  fneg h0, h0; fmov w0, h0; ret` returns `0xbc00` natively, the negative
+  half's raw encoding zero-extended to W0. The pre-pool-fix release renders
+  `(-1.0 & 0xffffffff)`; the pool-fix candidate renders
+  `(-Float16(1.0) & 0xffffffff)`. Neither expresses the bit-pattern read.
+  The compiler's emitted LLVM signature independently confirms an i32
+  result without hidden arguments. This separate FMOV width mismatch is
+  not closed by preserving literal-load geometry.

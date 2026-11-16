@@ -228,7 +228,10 @@ private let selectedVectorFixture = "Fixtures/Sample/libSelectedVectorLanes.dyli
                 #expect(!output.contains("0x3ff0") && !output.contains("0x4000")
                     && !output.contains("0x3f80") && !output.contains("0x3c00"), Comment(rawValue: output))
                 #expect(!output.contains("return ?"), Comment(rawValue: output))
-                let selected = "((arg0 == 0) ? 2.0 : 1.0)"
+                let type = name == "float32" ? "Float" : name == "float16" ? "Float16" : nil
+                let one = type.map { "\($0)(1.0)" } ?? "1.0"
+                let two = type.map { "\($0)(2.0)" } ?? "2.0"
+                let selected = "((arg0 == 0) ? \(two) : \(one))"
                 let expected = name == "floatSum" ? "return (\(selected) + \(selected))"
                     : name == "floatCall" ? "return VectorJoin.takeDouble(\(selected))"
                     : name == "floatBodyCall" ? "return selectedVectorBits(\(selected))"

@@ -19,6 +19,8 @@ public extension ProbeValue {
             case .immediate(let bits): return leaf("immediate", ["bits": .uint(bits)])
             case .address(let address): return leaf("address", ["address": .address(address)])
             case .loaded(let address): return leaf("loaded", ["address": .address(address)])
+            case .loadedBits(let address, let bytes):
+                return leaf("loaded-bits", ["address": .address(address), "bytes": .int(bytes)])
             case .callResult(let site): return leaf("call-result", ["site": .address(site)])
             case .callResultHigh(let site): return leaf("call-result-high", ["site": .address(site)])
             case .argument(let index): return leaf("argument", ["index": .int(index)])
