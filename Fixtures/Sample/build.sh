@@ -631,6 +631,8 @@ echo "==> exact NaN literals at half, single and double precision (build-nan-lit
 swift build-nan-literals.swift
 echo "==> scalar floating literals retain width and domain (build-fp-pools.swift)"
 swift build-fp-pools.swift
+echo "==> half/GPR bit moves preserve low sixteen bits (build-half-moves.swift)"
+swift build-half-moves.swift
 
 echo "==> fmov immediates in vector and half-precision registers (fpimmediates.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name FPImmediates fpimmediates.swift -o libFPImmediates.dylib

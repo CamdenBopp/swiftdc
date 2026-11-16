@@ -8050,7 +8050,7 @@ public struct Disassembler: Sendable {
             }
         }
 
-        /// The float width (64 or 32) an expression is anchored to — the signal
+        /// The float width (16, 32 or 64) an expression is anchored to — the signal
         /// that a bare `.immediate` beside it is an IEEE bit pattern, not an
         /// integer. Only a float ARGUMENT, a conversion to float, or a call whose
         /// callee's signature returns a float anchors it: a bare immediate is
@@ -8061,6 +8061,8 @@ public struct Disassembler: Sendable {
         func floatWidth(_ value: AbstractValue) -> Int? {
             switch value {
             case .argument(let index):
+                // The legacy floatInfo groups half with single precision.
+                if argumentTypes[index] == .floating(16) { return 16 }
                 guard let floatInfo, floatInfo.indices.contains(index) else { return nil }
                 return floatInfo.isDouble ? 64 : 32
             case .callResult(let site):
@@ -8068,6 +8070,7 @@ public struct Disassembler: Sendable {
                 switch calleeByAddress[site].flatMap(Self.swiftReturnTypeName(ofDemangled:)) {
                 case "Swift.Double"?, "Swift.Float64"?, "Swift.CGFloat"?, "CoreGraphics.CGFloat"?: return 64
                 case "Swift.Float"?, "Swift.Float32"?: return 32
+                case "Swift.Float16"?: return 16
                 default: return nil
                 }
             case .binary(.bitAnd, _, _), .binary(.bitOr, _, _), .binary(.bitXor, _, _),
@@ -8341,7 +8344,9 @@ public struct Disassembler: Sendable {
                        fieldInfo(at: offset, bytes: bits / 8)?.type == (bits == 64 ? "Sd" : "Sf") {
                         return inner
                     }
-                    return "\(bits == 64 ? "Double" : "Float")(bitPattern: \(inner))"
+                    let type = bits == 64 ? "Double" : bits == 16 ? "Float16" : "Float"
+                    let pattern = bits == 16 ? "UInt16(truncatingIfNeeded: \(inner))" : inner
+                    return "\(type)(bitPattern: \(pattern))"
                 case .floatConstant(let bits):
                     guard case .immediate(let pattern) = operand else { return unknownRenderedValue() }
                     return Self.renderFloatingConstant(bits: pattern, width: bits, explicitWidth: true) ?? unknownRenderedValue()

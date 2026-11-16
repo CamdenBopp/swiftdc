@@ -10268,12 +10268,78 @@ Commit messages on dev stay as they are; these are the true records.
   (+0.25%). All default budgets pass. All four large SDK outputs match
   with zero exits. Publication remains through the original gate.
 
-- **OPEN (soundness): a half-to-GPR bit move can retain FP arithmetic.**
+- **FIXED (soundness): preserve all four half/GPR bit moves.**
   An authored Swift-ABI UInt32 function containing `fmov h0, #1.0;
   fneg h0, h0; fmov w0, h0; ret` returns `0xbc00` natively, the negative
-  half's raw encoding zero-extended to W0. The pre-pool-fix release renders
-  `(-1.0 & 0xffffffff)`; the pool-fix candidate renders
-  `(-Float16(1.0) & 0xffffffff)`. Neither expresses the bit-pattern read.
+  half's raw encoding zero-extended to W0. The `d0629be` release rendered
+  `(-Float16(1.0) & 0xffffffff)`, omitting the bit-pattern read. It also
+  retained dirty upper bits in half/GPR round trips: native `rawX` returns
+  `0x7e01` where that release rendered `0x12340000abcd7e01`.
   The compiler's emitted LLVM signature independently confirms an i32
-  result without hidden arguments. This separate FMOV width mismatch is
-  not closed by preserving literal-load geometry.
+  result without hidden arguments. Literal-load geometry alone did not
+  close this separate FMOV width mismatch.
+
+  H-to-W/X moves now extract the half's bit pattern and zero-extend only
+  sixteen bits, including raw dirty words viewed through H. W/X-to-H moves
+  truncate before creating a half value. Half arguments and call results
+  retain their own precision during bit-pattern rendering, and symbolic
+  half constructors use an explicit truncating UInt16 conversion.
+  A raw half move subsequently read through S/D reinterprets its
+  zero-extended word, rather than numerically widening Float16. The raw
+  word remains bounded even when the abstract constructor's operand was
+  not normalized by an instruction. These four forms also appear in the
+  [Arm instruction reference](https://documentation-service.arm.com/static/6245c734b059dc5ff9a8bdab),
+  D4.31; native execution independently checks their effects here.
+
+  The authored fixture checks 27 emitted LLVM signatures before assembly.
+  Its 127 native observations cover both register widths, signed zero,
+  quiet/signaling NaN payloads, dirty upper bits, addition, argument/call
+  results, round trips and both wider FP views. Exact pseudo/structured
+  returns are checked through all five analysis APIs. A unit boundary
+  additionally checks wider views of unnormalized and selected abstract
+  operands, preserving their raw interpretation and declining at the
+  expression-depth cap.
+
+  Twelve distinct compiled mutations independently remove outward move
+  handling (140 issues), outward width (20), inward handling (140), inward
+  width (80), half constructor type/width (40/40), argument/call precision
+  (40/20), wider interpretation (48), wider raw-word normalization (4),
+  selected-word interpretation (2), and the depth cap (2). The 127-observation
+  native oracle stays green under each. Restoring and rebuilding passes
+  all focused tests and reproduces the original CLI hash.
+
+  A fresh fixture-enforced suite passes **1,460 tests in 39 suites**.
+  The frozen release also fixes the original standalone half-bit-read
+  reduction. A subsequent same-line documentation correction rebuilds to
+  identical debug/release binaries and passes the focused tests again.
+  Matched CLI checks of dump, layout, interface, objc and xrefs
+  (`--unreferenced`) have zero exits and identical output. Analyze changes
+  only the new fixture's 25 return annotations.
+
+  Structured, pseudo and listing each change only `libHalfMoves.dylib`,
+  with the same 25 returns (50 changed lines per view): eight FP-to-GPR
+  bit-pattern reads, four half construction/arithmetic expressions, two
+  integer round trips, four dirty raw constants, one half round trip, and
+  six wider raw FP views. The producer and X-register half round trip
+  remain unchanged controls.
+  JSON changes 100 lines in that same fixture: 25 return annotations and
+  25 statements. Every other field, function and instruction matches.
+
+  Matched release comparison against `d0629be`, using the original
+  `Tools/blast-radius.sh <baseline> <candidate> <out> --real --perf`, covers
+  **357 inputs in four views plus four SDK workload pairs**, with all
+  1,432 cost rows positive. Instructions are 5,135.2G to 5,134.2G
+  (-0.02%); summed per-render physical peaks are 17,968 MB to 17,919 MB
+  (-0.27%). All default budgets pass. All four large SDK outputs match
+  with zero exits. Publication remains through the original gate.
+
+- **OPEN (soundness): a computed half can retain its numeric meaning in a wider raw view.**
+  A public Swift-ABI Double function containing `mov w8, #0x3c00;
+  fmov h0, w8; fneg h0, h0; ret` returns Double bits `0xbc00` natively.
+  The Double return reads the zero-extended raw result of the half
+  operation; it is not the numeric conversion of negative Float16 one.
+  Both `d0629be` and the half-move release candidate instead render
+  `return -Float16(1.0)`.
+  Emitted LLVM independently confirms a double result without hidden
+  arguments. Raw half move handling does not cover this computed-value
+  register-view defect.

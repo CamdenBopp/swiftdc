@@ -3501,6 +3501,19 @@ public struct ValueTracer: Sendable {
                 clobber(detail, into: &registers); return
             }
             let value = source(detail.operands[1], in: registers)
+            // Half/general moves have unequal register widths. Both W and X
+            // receive only H's sixteen bits, zero-extended; the reverse move
+            // discards all but the general register's low sixteen bits.
+            if dest.kind == .gpr, input.kind == .vector, input.widthBits == 16,
+               [32, 64].contains(dest.widthBits) {
+                write(dest, narrowed(Self.bitPattern(of: value, bits: 16), bits: 16), into: &registers)
+                return
+            }
+            if dest.kind == .vector, dest.widthBits == 16, input.kind == .gpr,
+               [32, 64].contains(input.widthBits) {
+                write(dest, Self.float(fromBits: narrowed(value, bits: 16), bits: 16), into: &registers)
+                return
+            }
             // A float register read into a general one is its bit pattern, an
             // integer: `fmov x8, d0; cmp x8, #0x65` compares `a.bitPattern`,
             // not `a`, and its constants are integers. Carried bare, the
@@ -4431,6 +4444,15 @@ public struct ValueTracer: Sendable {
         guard [16, 32, 64].contains(bits) else { return .unknown }
         switch value {
         case .immediate, .loaded, .loadedBits: return .unary(.floatConstant(bits: bits), value)
+        case .unary(.floatFromBits(16), let integer) where bits != 16:
+            // A half written by a general-register move zeroes the rest of Vn.
+            // Reading Sn/Dn reinterprets that raw word, never widens the half.
+            let raw = fitsLowMask(integer, mask: 0xffff) ? integer
+                : .binary(.bitAnd, integer, .immediate(0xffff))
+            guard expressionDepth(raw) < 8 else { return .unknown }
+            // Keep the interpretation around the whole raw selection. The
+            // move helper may project its arms back to bare integer literals.
+            return .unary(.floatFromBits(bits: bits), raw)
         case .select(let condition, let whenTrue, let whenFalse):
             // Each arm is a word of IEEE bits; the condition remains integer.
             guard expressionDepth(value) < 8 else { return .unknown }
