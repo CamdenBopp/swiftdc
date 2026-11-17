@@ -13063,7 +13063,21 @@ Verification:
 
 Candidate release SHA256:
 `d84a096e8e7ab30d54cad7e2ad4336af69289dd8bf4544355c223c82e7e1afa7`.
-The original integration gate is pending for this slice; these are local results.
+Publication follow-up: the original `Tools/integration-gate.sh --push`
+independently rebuilt `9b28a4555c481720b4ab7d65560dc2c9a4fe89e5`, passed
+**1,877 tests / 43 suites (1002.168 s)** and pushed it and code `09324d7` to
+`origin/dev`. The independent release SHA256 is
+`c764cbf3572e9531882a78751ebdc724be019a9fba15663f3d3dce15706ea010`.
+All **583 inputs in each of four views** and all four SDK workload output
+hashes match the reviewed frozen release. All **2,336 paired cost rows** are
+positive; instructions **7,488.1G -> 7,314.2G (-2.32%)**, summed per-run physical
+peaks **22,155 -> 22,102 MB (-0.24%)**. Every default budget passes without
+override. A fresh fetch confirms local dev and origin/dev agree.
+Hosted [run 44121265588](https://github.com/CamdenBopp/swiftdc/actions/runs/44121265588)
+at `9b28a45` was queued when inspected on 2026-11-17; it supplies no test
+result yet. Earlier [run 44073528460](https://github.com/CamdenBopp/swiftdc/actions/runs/44073528460)
+at `e6c478c` failed Toolchain on Xcode 26.3 / Swift 6.2.4, with fixtures,
+build and suite skipped. This is separate from local gate validation.
 
 **OPEN:** complete source arity and GP/FP order through ordinary forwarders,
 nonstandard and stack transports, complete Go input/result layouts, actual sret

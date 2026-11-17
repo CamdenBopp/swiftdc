@@ -105,7 +105,10 @@ input uncertainty; placed-capture, zero-input and closed-body positive controls
 remain. Ten tests are added. **26 unique product mutations** separately compile
 red, with native controls green; an additional run proves the amended capture
 expectations red. The fixture-enforced **1,877 tests / 43 suites** pass
-(827.707 s). The existing integration gate has not yet run for this commit.
+(827.707 s). The original integration gate independently rebuilt `9b28a45`,
+passed the same **1,877 tests / 43 suites** (1002.168 s), passed every default
+cost budget and pushed both commits to `origin/dev`. All **583 inputs in each
+of four views** and all four SDK workload hashes match the reviewed release.
 
 Against `e6c478c`, **583 inputs in four views plus four SDK workloads** give
 **2,336 paired cost rows**: retired instructions **-2.48%**, summed per-run
@@ -189,10 +192,10 @@ integration test: **1,805 tests in 43 suites** passed at that commit.
 
 | Check | Result | Where |
 |---|---|---|
-| Enforcing test suite (a missing fixture fails) | 1,877 tests / 43 suites pass at `09324d7` (827.707 s); integration gate pending for this slice | `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`, after a fresh test build; `Tools/integration-gate.sh --push` |
+| Enforcing test suite (a missing fixture fails) | 1,877 tests / 43 suites pass at `09324d7` (827.707 s); independent gate at published `9b28a45` passes (1002.168 s) | `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`, after a fresh test build; `Tools/integration-gate.sh --push` |
 | Output change against `e6c478c` | 583 inputs in four views. Structured/pseudo: 63 changed inputs, 39,719/40,248 lines; listing/JSON: 75, 41,088/153,241 lines. Every difference reviewed; SDK source outputs differ, xrefs match | `Tools/blast-radius.sh` |
-| Cost budget (instructions, footprint) | Local frozen releases: 2,336 paired rows; -2.48% retired instructions, -0.59% summed per-run peak footprint. Every default budget passes without override; integration gate pending | same, `--real --perf` |
-| GitHub Actions, inspected 2026-11-17 | Run at published `917dea7` fails at Toolchain: Xcode 26.3 / Swift 6.2.4 is below the verified Swift 6.4 requirement. Fixtures, build and enforcing suite are skipped; this is no CI test result. The older `7efd0d2` runner-capacity failure is separate | [run 44070526750](https://github.com/CamdenBopp/swiftdc/actions/runs/44070526750), [CI.md](CI.md) |
+| Cost budget (instructions, footprint) | Published gate: 2,336 paired rows; -2.32% retired instructions, -0.24% summed per-run peak footprint. Every default budget passes without override; output hashes match the reviewed release | same, `--real --perf` |
+| GitHub Actions, inspected 2026-11-17 | Run at published `9b28a45` is queued at inspection, with no test result yet. Earlier `e6c478c` fails Toolchain on Xcode 26.3 / Swift 6.2.4; fixtures, build and suite are skipped. The older runner-capacity failure is separate | [run 44121265588](https://github.com/CamdenBopp/swiftdc/actions/runs/44121265588), [previous run](https://github.com/CamdenBopp/swiftdc/actions/runs/44073528460), [CI.md](CI.md) |
 | Independent execution of rendered expressions | return values of the differential-oracle fixtures, integer and floating point (compared bit for bit). Not checked by execution: which way a branch went, registers at call sites, results beyond the first register, memory writes | `DifferentialOracleTests` |
 
 Render exit statuses match the baseline, including **35** identical expected
